@@ -51,6 +51,9 @@ import {
   ModelRoutingPolicyPatchResponse,
   ModelRoutingPolicyRefreshResponse,
   ModelRoutingPolicyResponse,
+  ModelRoutingBootstrapPreview,
+  ModelRoutingBootstrapRequest,
+  ModelRoutingBootstrapResponse,
   WorkflowPermissionResponse,
   LLMTraceListResponse,
   WorkflowResponse,
@@ -476,6 +479,38 @@ export const workflowApi = {
   ): Promise<ModelRoutingPolicyRefreshResponse> => {
     const response = await api.post(
       `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/policy/refresh`,
+    );
+    return response.data;
+  },
+
+  getModelRoutingBootstrapPreview: async (
+    workflowId: string,
+    nodeId: string,
+  ): Promise<ModelRoutingBootstrapPreview> => {
+    const response = await api.get(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/bootstrap-preview`,
+    );
+    return response.data;
+  },
+
+  getModelRoutingBootstrap: async (
+    workflowId: string,
+    nodeId: string,
+  ): Promise<ModelRoutingBootstrapResponse | null> => {
+    const response = await api.get(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/bootstrap`,
+    );
+    return response.data;
+  },
+
+  createModelRoutingBootstrap: async (
+    workflowId: string,
+    nodeId: string,
+    data: ModelRoutingBootstrapRequest,
+  ): Promise<ModelRoutingBootstrapResponse> => {
+    const response = await api.post(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/bootstrap`,
+      data,
     );
     return response.data;
   },

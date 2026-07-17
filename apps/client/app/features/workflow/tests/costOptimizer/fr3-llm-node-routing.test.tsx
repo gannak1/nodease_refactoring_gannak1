@@ -16,6 +16,8 @@ const workflowApiMock = vi.hoisted(() => ({
   getModelRoutingPolicy: vi.fn(),
   patchModelRoutingPolicy: vi.fn(),
   refreshModelRoutingPolicy: vi.fn(),
+  getModelRoutingBootstrapPreview: vi.fn(),
+  createModelRoutingBootstrap: vi.fn(),
 }));
 
 vi.mock('../../components/nodes/llm/components/ModelSelectDropdown', () => ({
@@ -152,9 +154,33 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       },
       graph_hash: 'b'.repeat(64),
       updated_at: '2026-07-14T00:00:01Z',
+      performance: {
+        total_runs: 24,
+        model_count: 2,
+        last_recorded_at: '2026-07-10T00:00:00+00:00',
+        models: [
+          {
+            model_id: 'gpt-4.1-mini',
+            input_profile: 'short',
+            run_count: 16,
+            success_rate: 1,
+            schema_pass_rate: 1,
+            downstream_success_rate: 1,
+            fallback_rate: 0,
+            avg_cost: 0.0012,
+            avg_latency_ms: 850,
+          },
+        ],
+      },
+      change_policy: {
+        mode: 'event_driven',
+        minimum_new_runs: 3,
+        quality_change_threshold: 0.05,
+        efficiency_improvement_threshold: 0.1,
+      },
       last_update: {
         id: 'update-1',
-        trigger: 'auto_n_runs',
+        trigger: 'score_change',
         status: 'applied',
         eligible_run_count: 20,
         excluded_run_count: 2,
@@ -189,6 +215,30 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       status: 'refreshing',
       trigger: 'manual_refresh',
       scheduled: true,
+    });
+    workflowApiMock.getModelRoutingBootstrapPreview.mockResolvedValue({
+      task_fingerprint: 'fingerprint-1',
+      history_mode: 'synthetic',
+      available_history_count: 0,
+      excluded_history_count: 0,
+      excluded_reason_summary: {},
+      bootstrap: null,
+    });
+    workflowApiMock.createModelRoutingBootstrap.mockResolvedValue({
+      id: 'bootstrap-1',
+      status: 'ready',
+      source: 'synthetic',
+      task_fingerprint: 'fingerprint-1',
+      task_description: '고객 문의를 JSON으로 분류합니다.',
+      default_model_id: 'gpt-4.1',
+      fallback_model_id: 'gpt-4.1-mini',
+      initial_budget_usd: 1,
+      planner_model_id: 'gpt-4.1',
+      planner_cost_usd: 0.01,
+      generation_summary: {
+        history_sample_count: 0,
+        synthetic_sample_count: 15,
+      },
     });
     global.fetch = vi.fn(async () => ({
       ok: true,
@@ -301,37 +351,21 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       graphHash: 'b'.repeat(64),
       updatedAt: '2026-07-14T00:00:01Z',
     });
-    expect(
-      screen.getByText(/권장: 20~50회/),
-    ).toBeInTheDocument();
   });
 
-  it('자동 정책 점검 주기 변경에는 입력군이나 검증 예산을 전송하지 않는다', async () => {
+  it('운영 성적과 정책 교체 기준을 보여주고 횟수 슬라이더는 숨긴다', async () => {
     const node = createLlmNode({ auto_model_routing: true });
     render(<NodeInlinePanel node={node} />);
 
-    const slider = await screen.findByRole('slider', {
-      name: '자동 정책 점검 주기',
-    });
-    fireEvent.change(slider, { target: { value: '45' } });
-    fireEvent.mouseUp(slider);
-
-    await waitFor(() => {
-      expect(workflowApiMock.patchModelRoutingPolicy).toHaveBeenCalledWith(
-        'workflow-1',
-        'llm-1',
-        expect.objectContaining({
-          enabled: true,
-          refresh_every_runs: 45,
-          default_model_id: 'gpt-4.1',
-          fallback_model_id: null,
-          expected_graph_hash: 'a'.repeat(64),
-          expected_updated_at: '2026-07-14T00:00:00Z',
-        }),
-      );
-    });
+    expect(await screen.findByText('운영 성적 자동 반영')).toBeInTheDocument();
+    expect(screen.getByText('24회')).toBeInTheDocument();
+    expect(screen.getByText('정책 교체 보호 기준')).toBeInTheDocument();
+    expect(screen.getByText(/비용·지연 10% 이상 개선/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole('slider', { name: '자동 정책 점검 주기' }),
+    ).not.toBeInTheDocument();
   });
-  it('자동 모델 라우팅 토글 변경을 노드 데이터에 반영한다', async () => {
+  it('자동 모델 라우팅 토글은 기준 생성 전에는 빈 정책을 저장하지 않는다', async () => {
     const node = useWorkflowStore.getState().nodes[0] as AppNode;
 
     render(<NodeInlinePanel node={node} />);
@@ -344,20 +378,95 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       (useWorkflowStore.getState().nodes[0].data as LLMNodeData)
         .auto_model_routing,
     ).toBe(true);
+    expect(workflowApiMock.patchModelRoutingPolicy).not.toHaveBeenCalled();
+  });
+
+  it('작업 설명과 예산으로 초안 단계의 자동 선택 기준을 생성한다', async () => {
+    const node = createLlmNode({ auto_model_routing: true });
+    useWorkflowStore.setState(
+      { ...useWorkflowStore.getState(), nodes: [node] },
+      true,
+    );
+    render(<NodeInlinePanel node={node} />);
+
+    fireEvent.change(await screen.findByLabelText('자동 라우팅 작업 설명'), {
+      target: { value: '고객 문의를 JSON으로 분류하고 위험 문의는 신중하게 판단합니다.' },
+    });
+    const initialBudgetSlider = screen.getByRole('slider', {
+      name: '1회 초기 생성 예산',
+    });
+    fireEvent.change(initialBudgetSlider, { target: { value: '2.5' } });
+
+    expect(screen.getByText('권장: $1~$3')).toBeInTheDocument();
+    expect(initialBudgetSlider).toHaveValue('2.5');
+
+    fireEvent.click(screen.getByRole('button', { name: '자동 선택 기준 만들기' }));
+
     await waitFor(() => {
-      expect(workflowApiMock.patchModelRoutingPolicy).toHaveBeenCalledWith(
+      expect(workflowApiMock.createModelRoutingBootstrap).toHaveBeenCalledWith(
         'workflow-1',
         'llm-1',
         expect.objectContaining({
-          enabled: true,
-          expected_graph_hash: 'a'.repeat(64),
-          expected_updated_at: '2026-07-14T00:00:00Z',
+          task_description: '고객 문의를 JSON으로 분류하고 위험 문의는 신중하게 판단합니다.',
+          default_model_id: 'gpt-4.1',
+          initial_budget_usd: 2.5,
         }),
       );
     });
+    expect(
+      (useWorkflowStore.getState().nodes[0].data as LLMNodeData)
+        .model_routing_bootstrap_id,
+    ).toBe('bootstrap-1');
   });
 
-  it('자동 정책 갱신하기는 refresh API를 요청한다', async () => {
+  it('bootstrap 정책은 난이도별 초기 선택 모델을 보여준다', async () => {
+    workflowApiMock.getModelRoutingPolicy.mockResolvedValueOnce({
+      enabled: true,
+      status: 'active',
+      policy_id: 'policy-bootstrap',
+      policy_version: 'bootstrap-12345678',
+      active_policy: {
+        strategy_id: 'bootstrap_mdeberta_difficulty_v1',
+        default_model_id: 'gpt-4.1-mini',
+        fallback_model_id: 'gpt-4.1',
+        difficulty_models: {
+          economy: 'gpt-4o-mini',
+          balanced: 'gpt-4.1-mini',
+          advanced: 'gpt-4.1',
+        },
+        rules: [],
+      },
+      pending_policy: null,
+      refresh: {
+        refresh_every_runs: 20,
+        eligible_runs_since_last_refresh: 0,
+        next_refresh_after_runs: 20,
+        last_refresh_result: 'applied',
+        last_refresh_at: null,
+      },
+      last_update: null,
+    });
+    const node = createLlmNode({
+      auto_model_routing: true,
+      model_routing_strategy: 'bootstrap_mdeberta_difficulty_v1',
+    });
+    useWorkflowStore.setState(
+      { ...useWorkflowStore.getState(), nodes: [node] },
+      true,
+    );
+
+    render(<NodeInlinePanel node={node} />);
+
+    expect(
+      await screen.findByTestId('routing-bootstrap-policy'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('경제형 요청')).toBeInTheDocument();
+    expect(screen.getByText('균형형 요청')).toBeInTheDocument();
+    expect(screen.getByText('고성능 요청')).toBeInTheDocument();
+    expect(screen.queryByTestId('routing-prior-guided-policy')).not.toBeInTheDocument();
+  });
+
+  it('정책 다시 평가는 refresh API를 요청한다', async () => {
     const node = createLlmNode({ auto_model_routing: true });
     useWorkflowStore.setState(
       { ...useWorkflowStore.getState(), nodes: [node] },
@@ -366,7 +475,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     render(<NodeInlinePanel node={node} />);
 
     fireEvent.click(
-      await screen.findByRole('button', { name: /자동 정책 갱신하기/ }),
+      await screen.findByRole('button', { name: /정책 다시 평가/ }),
     );
 
     expect(workflowApiMock.refreshModelRoutingPolicy).toHaveBeenCalledWith(
@@ -375,7 +484,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     );
   });
 
-  it('첫 배포 운영 실행 전에는 정책 row가 없어 수동 갱신을 막고 이유를 안내한다', async () => {
+  it('배포 전 draft에는 정책이 없고 배포 시 즉시 생성된다고 안내한다', async () => {
     workflowApiMock.getModelRoutingPolicy.mockResolvedValueOnce({
       enabled: true,
       status: 'collecting',
@@ -401,14 +510,14 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     render(<NodeInlinePanel node={node} />);
 
     expect(
-      await screen.findByText(/첫 배포 운영 실행이 완료된 뒤 정책을 갱신할 수 있습니다/),
+      await screen.findByText(/배포할 때 첫 실행용 정책을 즉시 생성합니다/),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: /자동 정책 갱신하기/ }),
+      screen.getByRole('button', { name: /정책 다시 평가/ }),
     ).toBeDisabled();
   });
 
-  it('최근 정책 갱신의 judge 비용과 결과를 보여준다', async () => {
+  it('최근 정책 평가의 운영 표본과 결과를 보여준다', async () => {
     const node = createLlmNode({ auto_model_routing: true });
     useWorkflowStore.setState(
       { ...useWorkflowStore.getState(), nodes: [node] },
@@ -418,22 +527,23 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     render(<NodeInlinePanel node={node} />);
 
     expect(await screen.findByText(/최근 정책 점검/)).toBeInTheDocument();
-    expect(screen.getByText(/자동 갱신 · 반영됨/)).toBeInTheDocument();
-    expect(screen.getByText(/Judge: gpt-4.1-mini/)).toBeInTheDocument();
-    expect(screen.getByText(/비용 \$0\.0012/)).toBeInTheDocument();
+    expect(screen.getByText(/운영 성적 변화 · 반영됨/)).toBeInTheDocument();
+    expect(screen.getByText(/운영 표본 20회 · 제외 2회/)).toBeInTheDocument();
+    expect(screen.queryByText(/Judge:/)).not.toBeInTheDocument();
   });
 
-  it('운영 로그 기반 최적화 진입 버튼을 보여준다', async () => {
+  it('비교 분석 테스트만 상단 액션으로 보여준다', async () => {
     const node = useWorkflowStore.getState().nodes[0] as AppNode;
 
     render(<NodeInlinePanel node={node} />);
 
     expect(
-      await screen.findByRole('button', { name: /^최적화$/ }),
+      await screen.findByRole('button', { name: '비교 분석 테스트' }),
     ).toHaveAttribute(
       'title',
-      '운영 로그 기반 LLM 노드 설정 추천을 검토합니다.',
+      '실행 로그를 기준으로 A/B 비교 분석 테스트 화면을 엽니다.',
     );
+    expect(screen.queryByRole('button', { name: /^최적화$/ })).not.toBeInTheDocument();
     expect(
       await screen.findByRole('checkbox', { name: /자동 모델 라우팅/ }),
     ).toBeInTheDocument();

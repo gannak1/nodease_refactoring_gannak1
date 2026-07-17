@@ -274,12 +274,22 @@ export interface ModelRoutingPolicyResponse {
   enabled: boolean;
   status: 'off' | 'collecting' | 'active' | 'refreshing' | 'pending_review' | 'failed';
   policy_id: string | null;
+  bootstrap_id?: string | null;
   policy_version: string | null;
   active_policy: {
     strategy?: string;
     strategy_id?: string;
     default_model_id?: string;
     fallback_model_id?: string | null;
+    classifier_artifact?: {
+      version?: string;
+      classifier_type?: string;
+      [key: string]: unknown;
+    };
+    difficulty_models?: Partial<
+      Record<'economy' | 'balanced' | 'advanced', string>
+    >;
+    minimum_confidence?: number;
     decision_profiles?: Array<{
       profile: 'short' | 'medium' | 'long' | string;
       selected_model_id: string;
@@ -318,6 +328,30 @@ export interface ModelRoutingPolicyResponse {
     judge_cost: number | null;
     created_at: string | null;
   } | null;
+  performance?: {
+    total_runs: number;
+    model_count: number;
+    last_recorded_at: string | null;
+    models: Array<{
+      model_id: string;
+      input_profile: string;
+      run_count: number;
+      success_rate: number | null;
+      schema_pass_rate: number | null;
+      downstream_success_rate: number | null;
+      fallback_rate: number | null;
+      quality_score: number;
+      avg_cost: number | null;
+      avg_latency_ms: number | null;
+      avg_total_tokens: number | null;
+    }>;
+  };
+  change_policy?: {
+    mode: 'event_driven';
+    minimum_new_runs: number;
+    quality_change_threshold: number;
+    efficiency_improvement_threshold: number;
+  };
 }
 
 export interface ModelRoutingPolicyPatchResponse
@@ -333,6 +367,50 @@ export interface ModelRoutingPolicyPatchRequest extends WorkflowGraphCASExpectat
   default_model_id?: string;
   /** 기본 모델 호출 실패 시 사용하는 사용자가 지정한 대체 모델 */
   fallback_model_id?: string | null;
+}
+
+export interface ModelRoutingBootstrapRequest {
+  task_description: string;
+  default_model_id: string;
+  fallback_model_id?: string | null;
+  initial_budget_usd: number;
+}
+
+export interface ModelRoutingBootstrapSample {
+  id: string;
+  source: 'history' | 'synthetic';
+  difficulty: 'economy' | 'balanced' | 'advanced';
+  safe_input_summary: Record<string, unknown>;
+  input_length: number;
+  knowledge_enabled: boolean;
+  output_format: string;
+  planner_reason?: string | null;
+}
+
+export interface ModelRoutingBootstrapResponse {
+  id: string;
+  status: 'ready' | 'generating' | 'failed' | 'stale' | string;
+  source: 'history' | 'hybrid' | 'synthetic';
+  task_fingerprint: string;
+  task_description: string;
+  default_model_id: string;
+  fallback_model_id?: string | null;
+  initial_budget_usd: number;
+  planner_model_id?: string | null;
+  planner_cost_usd?: number | null;
+  generation_summary: Record<string, unknown>;
+  stale_reason?: string | null;
+  created_at?: string | null;
+  samples?: ModelRoutingBootstrapSample[];
+}
+
+export interface ModelRoutingBootstrapPreview {
+  task_fingerprint: string;
+  history_mode: 'history' | 'hybrid' | 'synthetic';
+  available_history_count: number;
+  excluded_history_count: number;
+  excluded_reason_summary: Record<string, number>;
+  bootstrap: ModelRoutingBootstrapResponse | null;
 }
 
 export interface ModelRoutingPolicyRefreshResponse {

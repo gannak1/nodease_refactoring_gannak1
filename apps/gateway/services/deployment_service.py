@@ -30,6 +30,7 @@ from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.model_routing_policy import LLMNodeModelRoutingBootstrap
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
 from apps.shared.domain.deployment_runtime_policy import (
     SURFACE_AUTHENTICATED_RUN,
@@ -59,6 +60,10 @@ from apps.shared.services.workflow_configuration_preflight import (
 from apps.shared.services.workflow_task_publisher import send_workflow_task
 from apps.workflow_engine.services.model_routing_policy_store import (
     ModelRoutingPolicyStore,
+)
+from apps.workflow_engine.services.model_routing_bootstrap import (
+    downstream_contract_from_graph,
+    task_fingerprint,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,10 +100,7 @@ def _safe_deployment_error_detail(value: Any) -> Any:
         return "Workflow execution failed"
     code = value.get("code")
     if isinstance(code, str) and code.startswith("external_effect."):
-        return (
-            safe_external_effect_error_payload(value)
-            or "Workflow execution failed"
-        )
+        return safe_external_effect_error_payload(value) or "Workflow execution failed"
     return value
 
 
@@ -205,7 +207,11 @@ class DeploymentService:
             organization_id=workflow.organization_id,
         )
         bootstrap_policy_ids: list[uuid.UUID] = []
-
+        DeploymentService._enforce_model_routing_bootstrap_preflight(
+            db,
+            workflow_id=workflow.id,
+            graph_snapshot=graph_snapshot,
+        )
         try:
             graph_snapshot = DeploymentService.bind_workflow_node_targets(
                 db,
@@ -428,6 +434,87 @@ class DeploymentService:
                     "message": "Deployment could not be created.",
                 },
             ) from None
+
+    @staticmethod
+    def _enforce_model_routing_bootstrap_preflight(
+        db: Session,
+        *,
+        workflow_id: uuid.UUID,
+        graph_snapshot: dict[str, Any],
+    ) -> None:
+        """자동 라우팅이 과거 legacy 정책을 조용히 재사용하지 않게 막는다.
+
+        prompt, RAG, 출력 schema, 후속 소비자 계약이 바뀌면 bootstrap에서 학습한
+        난이도 기준도 달라진다. 이 경우 배포를 허용하면 첫 요청이 오래된 분류기로
+        다른 모델을 고를 수 있으므로, 사용자가 중앙 패널에서 기준을 다시 만들도록
+        명확하게 차단한다.
+        """
+        nodes = graph_snapshot.get("nodes") if isinstance(graph_snapshot, dict) else []
+        for node in nodes if isinstance(nodes, list) else []:
+            if not isinstance(node, dict) or node.get("type") != "llmNode":
+                continue
+            node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
+            if not node_data.get("auto_model_routing"):
+                continue
+            node_id = str(node.get("id") or "")
+            bootstrap_id = node_data.get("model_routing_bootstrap_id")
+            # 이미 배포된 prior-guided 정책은 호환 경로로 유지한다. 새 중앙 패널에서
+            # bootstrap을 만든 노드만 이 새 계약을 요구해 기존 배포를 갑자기 막지 않는다.
+            if (
+                not bootstrap_id
+                and node_data.get("model_routing_strategy")
+                != "bootstrap_mdeberta_difficulty_v1"
+            ):
+                continue
+            if not node_id or not bootstrap_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "model_routing.bootstrap_required",
+                        "node_id": node_id,
+                        "message": "자동 모델 라우팅을 배포하려면 먼저 자동 선택 기준을 만드세요.",
+                    },
+                )
+            try:
+                bootstrap_uuid = uuid.UUID(str(bootstrap_id))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "model_routing.bootstrap_invalid",
+                        "node_id": node_id,
+                        "message": "자동 선택 기준 식별자가 올바르지 않습니다.",
+                    },
+                ) from exc
+            bootstrap = db.get(LLMNodeModelRoutingBootstrap, bootstrap_uuid)
+            current_fingerprint = task_fingerprint(
+                node_data,
+                downstream_contract=downstream_contract_from_graph(
+                    graph_snapshot, node_id
+                ),
+            )
+            is_current = (
+                bootstrap is not None
+                and bootstrap.workflow_id == workflow_id
+                and bootstrap.node_id == node_id
+                and bootstrap.status == "ready"
+                and bootstrap.task_fingerprint == current_fingerprint
+                and str(node_data.get("model_routing_bootstrap_fingerprint") or "")
+                == current_fingerprint
+            )
+            if is_current:
+                continue
+            if bootstrap is not None and bootstrap.status == "ready":
+                bootstrap.status = "stale"
+                bootstrap.stale_reason = "task_fingerprint_changed"
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "model_routing.bootstrap_stale",
+                    "node_id": node_id,
+                    "message": "프롬프트·RAG·출력 계약이 바뀌었습니다. 자동 선택 기준을 다시 만드세요.",
+                },
+            )
 
     @staticmethod
     def preview_knowledge_preflight(
@@ -1255,7 +1342,9 @@ class DeploymentService:
         if (
             not normalized
             or len(normalized) > _MAX_LEGACY_CONVERSATION_ID_LENGTH
-            or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
+            or any(
+                ord(character) < 32 or ord(character) == 127 for character in normalized
+            )
         ):
             raise HTTPException(
                 status_code=400,

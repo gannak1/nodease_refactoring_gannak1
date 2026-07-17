@@ -32,10 +32,12 @@ import { isWorkflowChatModelOption } from '@/app/features/workflow/utils/llmMode
 import { VariableTokenEditor } from '../../ui/VariableTokenEditor';
 import { PropertyVisibilityToggle } from '../../ui/PropertyVisibilityToggle';
 import { CostOptimizerEntryAction } from '../../../costOptimizer/CostOptimizerEntryAction';
-import { OptimizationRecommendationModal } from '../../../costOptimizer/OptimizationRecommendationModal';
-import { candidateFromOptions } from '../../../costOptimizer/costOptimizerPlaygroundModel';
 import { workflowApi } from '@/app/features/workflow/api/workflowApi';
-import type { ModelRoutingPolicyResponse } from '@/app/features/workflow/types/Api';
+import type {
+  ModelRoutingBootstrapPreview,
+  ModelRoutingBootstrapResponse,
+  ModelRoutingPolicyResponse,
+} from '@/app/features/workflow/types/Api';
 
 // LLMModelResponse와 일치하는 백엔드 응답 타입
 type ModelOption = {
@@ -48,10 +50,6 @@ type ModelOption = {
 };
 
 const TOKEN_PATTERN = /{{\s*([^}]+?)\s*}}/g;
-const MODEL_ROUTING_REFRESH_MIN = 5;
-const MODEL_ROUTING_REFRESH_MAX = 100;
-const MODEL_ROUTING_REFRESH_STEP = 5;
-const MODEL_ROUTING_REFRESH_RECOMMEND = [20, 50] as const;
 
 const routingProfileLabel = (profile: string) => {
   if (profile === 'short') return '짧은 입력';
@@ -177,78 +175,6 @@ const outputSchemaFromFields = (
 const outputFormatSignatureOf = (outputFormat: LLMNodeData['output_format']) =>
   JSON.stringify(outputFormat ?? null);
 
-const applyRecommendationPatchesToNodeData = (
-  data: LLMNodeData,
-  patches: Record<string, unknown>[],
-): Partial<LLMNodeData> => {
-  const nextData: Record<string, unknown> = {};
-  let nextParameters: Record<string, unknown> | null = null;
-
-  const ensureParameters = () => {
-    if (!nextParameters) {
-      nextParameters = {
-        ...(typeof data.parameters === 'object' && data.parameters
-          ? data.parameters
-          : {}),
-      };
-    }
-    return nextParameters;
-  };
-
-  patches.forEach((patch) => {
-    const parameters = patch.parameters;
-    if (
-      parameters &&
-      typeof parameters === 'object' &&
-      !Array.isArray(parameters)
-    ) {
-      const currentParameters = ensureParameters();
-      Object.entries(parameters).forEach(([key, value]) => {
-        if (value === null) {
-          delete currentParameters[key];
-        } else {
-          currentParameters[key] = value;
-        }
-      });
-    }
-
-    const knowledge = patch.knowledge;
-    if (knowledge && typeof knowledge === 'object' && !Array.isArray(knowledge)) {
-      const knowledgePatch = knowledge as Record<string, unknown>;
-      if (Array.isArray(knowledgePatch.knowledge_base_ids)) {
-        nextData.knowledgeBases = knowledgePatch.knowledge_base_ids
-          .filter((id): id is string => typeof id === 'string' && id.length > 0)
-          .map((id) => ({ id, name: '' }));
-      }
-      if ('top_k' in knowledgePatch) nextData.topK = knowledgePatch.top_k;
-      if ('score_threshold' in knowledgePatch) {
-        nextData.scoreThreshold = knowledgePatch.score_threshold;
-      }
-      if ('dedupe_retrieved_context' in knowledgePatch) {
-        nextData.dedupeRetrievedContext =
-          knowledgePatch.dedupe_retrieved_context;
-      }
-      if ('retrieved_context_max_chars' in knowledgePatch) {
-        nextData.retrievedContextMaxChars =
-          knowledgePatch.retrieved_context_max_chars;
-      }
-      if ('retrieved_context_compression' in knowledgePatch) {
-        nextData.retrievedContextCompression =
-          knowledgePatch.retrieved_context_compression;
-      }
-      if ('answer_grounding_check' in knowledgePatch) {
-        nextData.answerGroundingCheck = knowledgePatch.answer_grounding_check;
-      }
-    }
-  });
-
-  if (nextParameters) {
-    nextData.parameters = nextParameters;
-  }
-
-  return nextData as Partial<LLMNodeData>;
-};
-
 const HelpPopover = ({
   id,
   activeHelp,
@@ -345,15 +271,11 @@ export function LLMNodePanel({
     outputFormatSignatureOf(data.output_format),
   );
   const lastSyncedOutputFormatNodeRef = useRef(nodeId);
-  const routingRefreshEveryRunsRef = useRef(
-    data.model_routing_policy?.refresh?.refresh_every_runs ?? 20,
-  );
 
   const [activeHelp, setActiveHelp] = useState<PromptHelpId | null>(null);
   const [activeSettingsTab, setActiveSettingsTab] = useState<
     'basic' | 'advanced'
   >('basic');
-
   useEffect(() => {
     if (fullscreenNodeSettingsSection !== 'routing') return;
     setActiveSettingsTab('basic');
@@ -378,6 +300,16 @@ export function LLMNodePanel({
   const [routingPolicyError, setRoutingPolicyError] = useState<string | null>(null);
   const [isRoutingPolicyRefreshing, setIsRoutingPolicyRefreshing] =
     useState(false);
+  const [routingBootstrapPreview, setRoutingBootstrapPreview] =
+    useState<ModelRoutingBootstrapPreview | null>(null);
+  const [routingBootstrap, setRoutingBootstrap] =
+    useState<ModelRoutingBootstrapResponse | null>(null);
+  const [routingTaskDescription, setRoutingTaskDescription] = useState(
+    data.model_routing_task_description || '',
+  );
+  const [routingInitialBudgetUsd, setRoutingInitialBudgetUsd] = useState(1);
+  const [isCreatingRoutingBootstrap, setIsCreatingRoutingBootstrap] =
+    useState(false);
 
   // 모델 상태 로드
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
@@ -398,15 +330,6 @@ export function LLMNodePanel({
   const toggleHelp = useCallback((id: PromptHelpId) => {
     setActiveHelp((current) => (current === id ? null : id));
   }, []);
-
-  const applyRecommendationPatches = useCallback(
-    (patches: Record<string, unknown>[]) => {
-      const nextData = applyRecommendationPatchesToNodeData(data, patches);
-      if (Object.keys(nextData).length === 0) return;
-      updateNodeData(nodeId, nextData);
-    },
-    [data, nodeId, updateNodeData],
-  );
 
   // 마법사에서 적용된 프롬프트 처리
   const handleApplyImproved = (improvedPrompt: string) => {
@@ -478,11 +401,25 @@ export function LLMNodePanel({
       policyVersion:
         policy?.policy_version || legacyPolicy?.policy_version || '정책 없음',
       reasonCode: activePolicy
-        ? '모델 사전 지식과 운영 통계로 입력 길이별 정책을 계산합니다.'
+        ? activePolicy.strategy_id === 'bootstrap_mdeberta_difficulty_v1'
+          ? '작업 지문과 안전한 표본으로 난이도를 분류해 모델을 선택합니다.'
+          : '모델 사전 지식과 운영 통계로 입력 길이별 정책을 계산합니다.'
         : '정책 대기 중',
       runsSinceLastRefresh,
       refreshEveryRuns,
       lastUpdate: policy?.last_update ?? null,
+      performance: policy?.performance ?? {
+        total_runs: 0,
+        model_count: 0,
+        last_recorded_at: null,
+        models: [],
+      },
+      changePolicy: policy?.change_policy ?? {
+        mode: 'event_driven' as const,
+        minimum_new_runs: 3,
+        quality_change_threshold: 0.05,
+        efficiency_improvement_threshold: 0.1,
+      },
     };
   }, [
     data.auto_model_routing,
@@ -493,6 +430,15 @@ export function LLMNodePanel({
     () => persistedRoutingPolicy?.active_policy?.decision_profiles ?? [],
     [persistedRoutingPolicy?.active_policy?.decision_profiles],
   );
+  const bootstrapDifficultyModels = useMemo(
+    () => persistedRoutingPolicy?.active_policy?.difficulty_models ?? {},
+    [persistedRoutingPolicy?.active_policy?.difficulty_models],
+  );
+  const isBootstrapRouting =
+    data.model_routing_strategy === 'bootstrap_mdeberta_difficulty_v1' ||
+    persistedRoutingPolicy?.active_policy?.strategy_id ===
+      'bootstrap_mdeberta_difficulty_v1';
+  const isRoutingBootstrapGenerating = routingBootstrap?.status === 'generating';
   const upstreamNodes = useMemo(
     () => getUpstreamNodes(nodeId, nodes, edges),
     [nodeId, nodes, edges],
@@ -617,26 +563,6 @@ export function LLMNodePanel({
     },
     [draftJsonSchemaFields, updateJsonSchemaFields],
   );
-  const handleRoutingRefreshEveryRunsChange = useCallback(
-    (value: number) => {
-      const refreshEveryRuns = Math.min(
-        MODEL_ROUTING_REFRESH_MAX,
-        Math.max(MODEL_ROUTING_REFRESH_MIN, value),
-      );
-      routingRefreshEveryRunsRef.current = refreshEveryRuns;
-      updateNodeData(nodeId, {
-        model_routing_policy: {
-          ...(data.model_routing_policy || {}),
-          refresh: {
-            ...(data.model_routing_policy?.refresh || {}),
-            refresh_every_runs: refreshEveryRuns,
-          },
-        },
-      });
-    },
-    [data.model_routing_policy, nodeId, updateNodeData],
-  );
-
   const loadRoutingPolicy = useCallback(async () => {
     if (!activeWorkflowId) return;
     try {
@@ -649,6 +575,20 @@ export function LLMNodePanel({
     } catch {
       setPersistedRoutingPolicy(null);
       setRoutingPolicyError('정책 상태를 불러오지 못했습니다.');
+    }
+  }, [activeWorkflowId, nodeId]);
+
+  const loadRoutingBootstrapPreview = useCallback(async () => {
+    if (!activeWorkflowId) return;
+    try {
+      const preview = await workflowApi.getModelRoutingBootstrapPreview(
+        activeWorkflowId,
+        nodeId,
+      );
+      setRoutingBootstrapPreview(preview);
+      setRoutingBootstrap(preview.bootstrap);
+    } catch {
+      setRoutingBootstrapPreview(null);
     }
   }, [activeWorkflowId, nodeId]);
 
@@ -688,10 +628,12 @@ export function LLMNodePanel({
   const handleAutoModelRoutingChange = useCallback(
     (enabled: boolean) => {
       handleUpdateData('auto_model_routing', enabled);
-      void syncRoutingPolicy(
-        enabled,
-        routingPolicySummary.refreshEveryRuns,
-      );
+      // 켜는 순간에는 아직 Planner artifact가 없을 수 있다. PATCH로 빈 정책을
+      // 먼저 저장하지 않고, 사용자가 작업 설명을 확인한 뒤 생성 버튼으로 한 번에
+      // 저장한다. 끌 때만 즉시 runtime policy를 off로 전환한다.
+      if (!enabled) {
+        void syncRoutingPolicy(false, routingPolicySummary.refreshEveryRuns);
+      }
     },
     [
       handleUpdateData,
@@ -699,23 +641,6 @@ export function LLMNodePanel({
       syncRoutingPolicy,
     ],
   );
-
-  const handleRoutingRefreshEveryRunsCommit = useCallback((value?: number) => {
-    const refreshEveryRuns = Math.min(
-      MODEL_ROUTING_REFRESH_MAX,
-      Math.max(
-        MODEL_ROUTING_REFRESH_MIN,
-        value ?? routingRefreshEveryRunsRef.current,
-      ),
-    );
-    void syncRoutingPolicy(
-      Boolean(data.auto_model_routing),
-      refreshEveryRuns,
-    );
-  }, [
-    data.auto_model_routing,
-    syncRoutingPolicy,
-  ]);
 
   const handleManualRoutingPolicyRefresh = useCallback(async () => {
     if (
@@ -741,6 +666,56 @@ export function LLMNodePanel({
     loadRoutingPolicy,
     nodeId,
     persistedRoutingPolicy?.policy_id,
+  ]);
+
+  const handleCreateRoutingBootstrap = useCallback(async () => {
+    if (!activeWorkflowId || isCreatingRoutingBootstrap) return;
+    if (!routingTaskDescription.trim()) {
+      setRoutingPolicyError('이 노드가 처리하는 작업을 한 문장 이상 설명하세요.');
+      return;
+    }
+    if (!data.model_id) {
+      setRoutingPolicyError('규칙이 맞지 않을 때 사용할 기본 모델을 선택하세요.');
+      return;
+    }
+    try {
+      setIsCreatingRoutingBootstrap(true);
+      const bootstrap = await workflowApi.createModelRoutingBootstrap(
+        activeWorkflowId,
+        nodeId,
+        {
+          task_description: routingTaskDescription.trim(),
+          default_model_id: data.model_id,
+          fallback_model_id: data.fallback_model_id || null,
+          initial_budget_usd: routingInitialBudgetUsd,
+        },
+      );
+      setRoutingBootstrap(bootstrap);
+      updateNodeData(nodeId, {
+        auto_model_routing: true,
+        model_routing_bootstrap_id: bootstrap.id,
+        model_routing_bootstrap_fingerprint: bootstrap.task_fingerprint,
+        model_routing_task_description: bootstrap.task_description,
+        model_routing_strategy: 'bootstrap_mdeberta_difficulty_v1',
+      });
+      setRoutingPolicyError(null);
+      await Promise.all([loadRoutingBootstrapPreview(), loadRoutingPolicy()]);
+    } catch {
+      setRoutingPolicyError('자동 선택 기준을 만들지 못했습니다. 모델 권한과 작업 설명을 확인하세요.');
+    } finally {
+      setIsCreatingRoutingBootstrap(false);
+    }
+  }, [
+    activeWorkflowId,
+    data.fallback_model_id,
+    data.model_id,
+    isCreatingRoutingBootstrap,
+    loadRoutingBootstrapPreview,
+    loadRoutingPolicy,
+    nodeId,
+    routingInitialBudgetUsd,
+    routingTaskDescription,
+    updateNodeData,
   ]);
 
   // Claude 계열 여부 판별 (모델 옵션 우선, 실패 시 이름 프리픽스 판단)
@@ -990,7 +965,27 @@ export function LLMNodePanel({
       return;
     }
     void loadRoutingPolicy();
-  }, [data.auto_model_routing, loadRoutingPolicy]);
+    void loadRoutingBootstrapPreview();
+  }, [data.auto_model_routing, loadRoutingBootstrapPreview, loadRoutingPolicy]);
+
+  useEffect(() => {
+    if (!data.auto_model_routing || !isRoutingBootstrapGenerating) return;
+
+    // Planner는 Worker에서 여러 LLM 호출로 예문과 규칙을 만든다. UI 요청을 오래
+    // 붙잡지 않고, 생성 중인 artifact만 짧은 간격으로 다시 조회한다.
+    const timer = window.setInterval(() => {
+      void loadRoutingBootstrapPreview();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [
+    data.auto_model_routing,
+    isRoutingBootstrapGenerating,
+    loadRoutingBootstrapPreview,
+  ]);
+
+  useEffect(() => {
+    setRoutingTaskDescription(data.model_routing_task_description || '');
+  }, [data.model_routing_task_description, nodeId]);
 
   useEffect(() => {
     if (!activeHelp) return;
@@ -1007,28 +1002,6 @@ export function LLMNodePanel({
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [activeHelp]);
-
-  const routingRefreshRange = useMemo(() => {
-    const totalRange = MODEL_ROUTING_REFRESH_MAX - MODEL_ROUTING_REFRESH_MIN;
-    const currentPercent =
-      ((routingPolicySummary.refreshEveryRuns - MODEL_ROUTING_REFRESH_MIN) /
-        totalRange) *
-      100;
-    const recommendStart =
-      ((MODEL_ROUTING_REFRESH_RECOMMEND[0] - MODEL_ROUTING_REFRESH_MIN) /
-        totalRange) *
-      100;
-    const recommendEnd =
-      ((MODEL_ROUTING_REFRESH_RECOMMEND[1] - MODEL_ROUTING_REFRESH_MIN) /
-        totalRange) *
-      100;
-
-    return {
-      currentPercent,
-      recommendStart,
-      recommendWidth: recommendEnd - recommendStart,
-    };
-  }, [routingPolicySummary.refreshEveryRuns]);
 
   return (
     <div className="relative flex flex-col gap-2">
@@ -1054,17 +1027,7 @@ export function LLMNodePanel({
               </button>
             ))}
           </div>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <CostOptimizerEntryAction
-              workflowId={activeWorkflowId}
-              nodeId={nodeId}
-              workflowAccess={workflowAccess}
-              hasUnsavedChanges={hasUnsavedChanges}
-              label="최적화"
-              destination="model-routing"
-              title="운영 로그 기반 LLM 노드 설정 추천을 검토합니다."
-              onOpen={() => setIsOptimizationModalOpen(true)}
-            />
+          <div>
             <CostOptimizerEntryAction
               workflowId={activeWorkflowId}
               nodeId={nodeId}
@@ -1168,6 +1131,129 @@ export function LLMNodePanel({
                       />
                     </div>
                   </div>
+                  <div className="mt-3 rounded-md border border-violet-200 bg-violet-50/50 p-3">
+                    <div className="flex items-start gap-1.5">
+                      <div className="text-xs font-semibold text-violet-950">
+                        자동 선택 기준 만들기
+                      </div>
+                      <HelpPopover
+                        id="system"
+                        activeHelp={activeHelp}
+                        onToggle={toggleHelp}
+                        widthClassName="w-72"
+                      >
+                        이 노드의 프롬프트와 작업 설명을 기준으로 간단한 요청과 더
+                        많은 추론이 필요한 요청을 구분하는 기준입니다. 기준을 만든
+                        뒤에는 실행마다 평가용 LLM을 호출하지 않습니다.
+                      </HelpPopover>
+                    </div>
+                    <p className="mt-1 text-[11px] leading-relaxed text-violet-800">
+                      작업 설명과 안전하게 요약한 운영 로그를 사용해 첫 배포부터
+                      사용할 난이도 분류 기준을 만듭니다.
+                    </p>
+                    <label className="mt-3 block text-[11px] font-semibold text-slate-700">
+                      이 노드가 하는 작업
+                      <textarea
+                        className="nodrag mt-1 min-h-20 w-full resize-y rounded border border-slate-300 bg-white px-2 py-1.5 text-xs font-normal text-slate-800 outline-none focus:border-violet-500"
+                        value={routingTaskDescription}
+                        onChange={(event) => setRoutingTaskDescription(event.target.value)}
+                        placeholder="예: 고객 문의를 JSON으로 분류하고, 보상·SLA·개인정보 위험은 더 신중하게 판단합니다."
+                        aria-label="자동 라우팅 작업 설명"
+                      />
+                    </label>
+                    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <section
+                        className="rounded border border-violet-100 bg-white px-2 py-2"
+                        aria-labelledby="routing-initial-budget"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <h4
+                              id="routing-initial-budget"
+                              className="text-[11px] font-semibold text-slate-700"
+                            >
+                              1회 초기 생성 예산
+                            </h4>
+                            <p className="mt-0.5 text-[10px] text-slate-500">
+                              기준을 처음 만들 때만 사용합니다.
+                            </p>
+                          </div>
+                          <output className="rounded border border-violet-200 bg-violet-50 px-2 py-1 text-xs font-semibold text-violet-800">
+                            ${routingInitialBudgetUsd.toFixed(2)}
+                          </output>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.5"
+                          max="10"
+                          step="0.5"
+                          value={routingInitialBudgetUsd}
+                          onChange={(event) =>
+                            setRoutingInitialBudgetUsd(Number(event.target.value))
+                          }
+                          aria-label="1회 초기 생성 예산"
+                          className="nodrag mt-2 w-full accent-violet-600"
+                        />
+                        <div className="mt-1 flex justify-between text-[10px] text-slate-500">
+                          <span>최소 $0.50</span>
+                          <span className="font-semibold text-violet-700">
+                            권장: $1~$3
+                          </span>
+                          <span>최대 $10</span>
+                        </div>
+                      </section>
+                      <div className="rounded border border-violet-100 bg-white px-2 py-1.5 text-[11px] text-violet-900">
+                        <div className="font-semibold">운영 로그 활용</div>
+                        <p className="mt-1">
+                          {routingBootstrapPreview
+                            ? routingBootstrapPreview.history_mode === 'history'
+                              ? `성공 운영 로그 ${routingBootstrapPreview.available_history_count}건으로 생성`
+                              : routingBootstrapPreview.history_mode === 'hybrid'
+                                ? `운영 로그 ${routingBootstrapPreview.available_history_count}건 + 생성 예시`
+                                : '운영 로그가 없어 생성 예시로 시작'
+                            : '운영 로그 확인 중'}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="nodrag mt-3 inline-flex items-center gap-1.5 rounded-md bg-violet-600 px-3 py-2 text-xs font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      onClick={handleCreateRoutingBootstrap}
+                      disabled={
+                        isCreatingRoutingBootstrap ||
+                        isRoutingBootstrapGenerating ||
+                        !activeWorkflowId
+                      }
+                    >
+                      <Wand2 className="h-3.5 w-3.5" />
+                      {isCreatingRoutingBootstrap || isRoutingBootstrapGenerating
+                        ? '기준 생성 중...'
+                        : routingBootstrap
+                          ? '자동 선택 기준 다시 만들기'
+                          : '자동 선택 기준 만들기'}
+                    </button>
+                    {routingBootstrap ? (
+                      <div className="mt-3 rounded border border-violet-100 bg-white p-2 text-[11px] text-slate-700">
+                        <div className="font-semibold text-violet-900">
+                          {routingBootstrap.source === 'history'
+                            ? '운영 로그 기반 초기 정책'
+                            : routingBootstrap.source === 'hybrid'
+                              ? '운영 로그 보강 초기 정책'
+                              : '새 예시 기반 초기 정책'}
+                        </div>
+                      <p className="mt-1">
+                        {routingBootstrap.status === 'generating'
+                          ? '예문과 난이도 규칙을 생성 중입니다. 완료되면 이 화면이 자동으로 갱신됩니다.'
+                          : routingBootstrap.status === 'failed'
+                            ? '기준 생성에 실패했습니다. 모델 권한과 작업 설명을 확인한 뒤 다시 시도하세요.'
+                            : <>표본 {Number(routingBootstrap.generation_summary.history_sample_count || 0) + Number(routingBootstrap.generation_summary.synthetic_sample_count || 0)}개 · Planner 비용{' '}
+                              {routingBootstrap.planner_cost_usd === null || routingBootstrap.planner_cost_usd === undefined
+                                ? '기록 대기'
+                                : `$${routingBootstrap.planner_cost_usd.toFixed(6)}`}</>}
+                      </p>
+                      </div>
+                    ) : null}
+                  </div>
                   <dl className="mt-3 grid grid-cols-1 gap-2 text-[11px] sm:grid-cols-2">
                     <div className="rounded border border-slate-100 bg-slate-50 p-2">
                       <dt className="font-semibold text-slate-500">
@@ -1179,11 +1265,10 @@ export function LLMNodePanel({
                     </div>
                     <div className="rounded border border-slate-100 bg-slate-50 p-2">
                       <dt className="font-semibold text-slate-500">
-                        정책 갱신 기준
+                        운영 반영 방식
                       </dt>
                       <dd className="mt-1 font-semibold text-slate-900">
-                        {routingPolicySummary.runsSinceLastRefresh}/
-                        {routingPolicySummary.refreshEveryRuns}회
+                        실행 완료마다 성적 누적
                       </dd>
                     </div>
                   </dl>
@@ -1198,9 +1283,12 @@ export function LLMNodePanel({
                         </span>
                         <span className="font-semibold text-slate-600">
                           {routingPolicySummary.lastUpdate.trigger ===
-                          'auto_n_runs'
-                            ? '자동 갱신'
-                            : '수동 갱신'}{' '}
+                          'deployment_bootstrap'
+                            ? '배포 정책 생성'
+                            : routingPolicySummary.lastUpdate.trigger ===
+                                'score_change'
+                              ? '운영 성적 변화'
+                              : '직접 재평가'}{' '}
                           ·{' '}
                           {routingPolicySummary.lastUpdate.status === 'applied'
                             ? '반영됨'
@@ -1208,11 +1296,8 @@ export function LLMNodePanel({
                         </span>
                       </div>
                       <p className="mt-1 text-slate-500">
-                        Judge:{' '}
-                        {routingPolicySummary.lastUpdate.judge_model || '없음'}
-                        {routingPolicySummary.lastUpdate.judge_cost !== null
-                          ? ` · 비용 $${routingPolicySummary.lastUpdate.judge_cost}`
-                          : ''}
+                        운영 표본 {routingPolicySummary.lastUpdate.eligible_run_count}회
+                        · 제외 {routingPolicySummary.lastUpdate.excluded_run_count}회
                       </p>
                     </div>
                   ) : null}
@@ -1223,7 +1308,8 @@ export function LLMNodePanel({
                   ) : null}
                   {!persistedRoutingPolicy?.policy_id ? (
                     <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
-                      첫 배포 운영 실행이 완료된 뒤 정책을 갱신할 수 있습니다.
+                      배포할 때 첫 실행용 정책을 즉시 생성합니다. 아직 배포된 정책이
+                      없어 현재 초안에서는 기본 모델을 사용합니다.
                     </p>
                   ) : null}
                   <button
@@ -1240,7 +1326,7 @@ export function LLMNodePanel({
                     <RefreshCw
                       className={`h-3.5 w-3.5 ${isRoutingPolicyRefreshing ? 'animate-spin' : ''}`}
                     />
-                    자동 정책 갱신하기
+                    정책 다시 평가
                   </button>
                   <div
                     data-testid="routing-refresh-controls"
@@ -1249,116 +1335,155 @@ export function LLMNodePanel({
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <div className="text-xs font-semibold text-emerald-900">
-                          자동 정책 점검 주기
+                          운영 성적 자동 반영
                         </div>
                         <p className="mt-0.5 text-[11px] leading-relaxed text-emerald-700">
-                          배포 후 운영 실행이 이 횟수만큼 쌓이면 모델 선택
-                          정책을 다시 점검합니다.
+                          배포 실행이 끝날 때마다 모델별 품질·비용·지연 성적을
+                          누적합니다. 테스트 실행은 포함하지 않습니다.
                         </p>
                       </div>
                       <span className="shrink-0 rounded bg-white px-2 py-1 text-xs font-mono font-semibold text-emerald-800 ring-1 ring-emerald-200">
-                        {routingPolicySummary.refreshEveryRuns}회
+                        {routingPolicySummary.performance.total_runs}회
                       </span>
                     </div>
-                    <div className="mt-3">
-                      <div className="relative h-7">
-                        <div className="pointer-events-none absolute inset-x-0 top-1/2 h-2.5 -translate-y-1/2 overflow-hidden rounded-full bg-white ring-1 ring-emerald-200">
-                          <div
-                            className="absolute inset-y-0 bg-emerald-200"
-                            style={{
-                              left: `${routingRefreshRange.recommendStart}%`,
-                              width: `${routingRefreshRange.recommendWidth}%`,
-                            }}
-                          />
-                          <div
-                            className="absolute inset-y-0 w-0.5 bg-emerald-600"
-                            style={{
-                              left: `${routingRefreshRange.currentPercent}%`,
-                            }}
-                          />
+                    <div className="mt-3 space-y-2">
+                      {routingPolicySummary.performance.models.length === 0 ? (
+                        <div className="rounded border border-dashed border-emerald-200 bg-white px-3 py-2 text-[11px] text-emerald-800">
+                          아직 배포 운영 성적이 없습니다.
                         </div>
-                        <input
-                          type="range"
-                          min={MODEL_ROUTING_REFRESH_MIN}
-                          max={MODEL_ROUTING_REFRESH_MAX}
-                          step={MODEL_ROUTING_REFRESH_STEP}
-                          value={routingPolicySummary.refreshEveryRuns}
-                          onChange={(event) =>
-                            handleRoutingRefreshEveryRunsChange(
-                              Number(event.target.value),
-                            )
-                          }
-                          onMouseUp={() =>
-                            handleRoutingRefreshEveryRunsCommit()
-                          }
-                          onTouchEnd={() =>
-                            handleRoutingRefreshEveryRunsCommit()
-                          }
-                          onKeyUp={() =>
-                            handleRoutingRefreshEveryRunsCommit()
-                          }
-                          className="nodrag absolute inset-0 h-6 w-full cursor-pointer appearance-none bg-transparent accent-emerald-600
-                            [&::-moz-range-track]:bg-transparent
-                            [&::-ms-track]:bg-transparent
-                            [&::-webkit-slider-runnable-track]:bg-transparent"
-                          aria-label="자동 정책 점검 주기"
-                        />
-                      </div>
-                      <div className="mt-1 flex items-center justify-between text-[10px] text-emerald-700/70">
-                        <span>자주 갱신</span>
-                        <span className="font-semibold text-emerald-700">
-                          권장: {MODEL_ROUTING_REFRESH_RECOMMEND[0]}~
-                          {MODEL_ROUTING_REFRESH_RECOMMEND[1]}회
-                        </span>
-                        <span>보수적 갱신</span>
-                      </div>
-                    </div>
-                  </div>
-                  <div
-                    data-testid="routing-prior-guided-policy"
-                    className="order-1 mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3"
-                  >
-                    <div className="text-xs font-semibold text-slate-900">
-                      사전 지식 기반 라우팅 정책
-                    </div>
-                    <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
-                      입력군이나 의미 유사도를 사용하지 않습니다. 모델 기능, 가격,
-                      입력 길이, 출력 형식, 지식 베이스 사용 여부와 운영 통계를
-                      기준으로 실행 모델을 선택합니다.
-                    </p>
-                    {priorGuidedProfiles.length === 0 ? (
-                      <div className="mt-3 rounded border border-dashed border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-500">
-                        정책 계산 대기 중입니다. 정책이 준비되기 전에는 기본 모델을
-                        사용합니다.
-                      </div>
-                    ) : (
-                      <dl className="mt-3 space-y-2">
-                        {priorGuidedProfiles.map((profile) => (
+                      ) : (
+                        routingPolicySummary.performance.models.map((model) => (
                           <div
-                            key={profile.profile}
-                            className="rounded border border-slate-200 bg-white px-2.5 py-2 text-[11px]"
+                            key={`${model.model_id}:${model.input_profile}`}
+                            className="rounded border border-emerald-100 bg-white px-3 py-2 text-[11px]"
                           >
-                            <div className="flex items-center justify-between gap-3">
-                              <dt className="font-semibold text-slate-700">
-                                {routingProfileLabel(profile.profile)}
-                              </dt>
-                              <dd className="font-semibold text-slate-950">
-                                {profile.selected_model_id}
-                              </dd>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="truncate font-semibold text-slate-800">
+                                {model.model_id} ·{' '}
+                                {routingProfileLabel(model.input_profile)}
+                              </span>
+                              <span className="shrink-0 text-slate-500">
+                                {model.run_count}회
+                              </span>
                             </div>
-                            <p className="mt-1 leading-relaxed text-slate-500">
-                              {routingProfileReasonLabel(profile.reason_code)}
-                            </p>
-                            {profile.fallback_model_id ? (
-                              <p className="mt-1 text-slate-500">
-                                대체 모델: {profile.fallback_model_id}
-                              </p>
-                            ) : null}
+                            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-slate-500">
+                              <span>품질 {(model.quality_score * 100).toFixed(1)}%</span>
+                              <span>
+                                평균 비용{' '}
+                                {model.avg_cost === null
+                                  ? '-'
+                                  : `$${model.avg_cost.toFixed(6)}`}
+                              </span>
+                              <span>
+                                평균 지연{' '}
+                                {model.avg_latency_ms === null
+                                  ? '-'
+                                  : `${Math.round(model.avg_latency_ms)}ms`}
+                              </span>
+                            </div>
                           </div>
-                        ))}
-                      </dl>
-                    )}
+                        ))
+                      )}
+                    </div>
+                    <div className="mt-3 rounded border border-emerald-200 bg-white px-3 py-2 text-[11px] text-emerald-900">
+                      <div className="font-semibold">정책 교체 보호 기준</div>
+                      <p className="mt-1 leading-relaxed text-emerald-700">
+                        새 운영 표본 {routingPolicySummary.changePolicy.minimum_new_runs}회
+                        이상 · 품질 하락 방지 · 비용·지연{' '}
+                        {Math.round(
+                          routingPolicySummary.changePolicy
+                            .efficiency_improvement_threshold * 100,
+                        )}
+                        % 이상 개선일 때만 정책을 교체합니다.
+                      </p>
+                    </div>
                   </div>
+                  {isBootstrapRouting ? (
+                    <div
+                      data-testid="routing-bootstrap-policy"
+                      className="order-1 mt-3 rounded-lg border border-violet-200 bg-violet-50/40 p-3"
+                    >
+                      <div className="text-xs font-semibold text-violet-950">
+                        난이도별 초기 선택 모델
+                      </div>
+                      <p className="mt-1 text-[11px] leading-relaxed text-violet-800">
+                        실행 중에는 평가용 LLM을 호출하지 않습니다. 분류 신뢰도가 낮으면
+                        위 기본 모델을 사용합니다.
+                      </p>
+                      {Object.keys(bootstrapDifficultyModels).length === 0 ? (
+                        <div className="mt-3 rounded border border-dashed border-violet-200 bg-white px-3 py-2 text-[11px] text-violet-800">
+                          기준 생성 또는 배포 후 정책이 준비되면 난이도별 모델을 표시합니다.
+                        </div>
+                      ) : (
+                        <dl className="mt-3 space-y-2">
+                          {(['economy', 'balanced', 'advanced'] as const).map((tier) => {
+                            const modelId = bootstrapDifficultyModels[tier];
+                            if (!modelId) return null;
+                            const label =
+                              tier === 'economy'
+                                ? '경제형 요청'
+                                : tier === 'balanced'
+                                  ? '균형형 요청'
+                                  : '고성능 요청';
+                            return (
+                              <div
+                                key={tier}
+                                className="flex items-center justify-between rounded border border-violet-100 bg-white px-2.5 py-2 text-[11px]"
+                              >
+                                <dt className="font-semibold text-slate-700">{label}</dt>
+                                <dd className="font-semibold text-slate-950">{modelId}</dd>
+                              </div>
+                            );
+                          })}
+                        </dl>
+                      )}
+                    </div>
+                  ) : (
+                    <div
+                      data-testid="routing-prior-guided-policy"
+                      className="order-1 mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3"
+                    >
+                      <div className="text-xs font-semibold text-slate-900">
+                        사전 지식 기반 라우팅 정책
+                      </div>
+                      <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+                        모델 기능, 가격, 입력 길이, 출력 형식, 지식 베이스 사용 여부와
+                        운영 통계를 기준으로 실행 모델을 선택합니다.
+                      </p>
+                      {priorGuidedProfiles.length === 0 ? (
+                        <div className="mt-3 rounded border border-dashed border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-500">
+                          정책 계산 대기 중입니다. 정책이 준비되기 전에는 기본 모델을
+                          사용합니다.
+                        </div>
+                      ) : (
+                        <dl className="mt-3 space-y-2">
+                          {priorGuidedProfiles.map((profile) => (
+                            <div
+                              key={profile.profile}
+                              className="rounded border border-slate-200 bg-white px-2.5 py-2 text-[11px]"
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <dt className="font-semibold text-slate-700">
+                                  {routingProfileLabel(profile.profile)}
+                                </dt>
+                                <dd className="font-semibold text-slate-950">
+                                  {profile.selected_model_id}
+                                </dd>
+                              </div>
+                              <p className="mt-1 leading-relaxed text-slate-500">
+                                {routingProfileReasonLabel(profile.reason_code)}
+                              </p>
+                              {profile.fallback_model_id ? (
+                                <p className="mt-1 text-slate-500">
+                                  대체 모델: {profile.fallback_model_id}
+                                </p>
+                              ) : null}
+                            </div>
+                          ))}
+                        </dl>
+                      )}
+                    </div>
+                  )}
                 </div>
               ) : (
                 <>
@@ -1787,25 +1912,6 @@ export function LLMNodePanel({
         </div>
         </>
       )}
-
-      {isOptimizationModalOpen ? (
-        <OptimizationRecommendationModal
-          workflowId={activeWorkflowId}
-          workflowName="현재 workflow"
-          llmNodes={[
-            {
-              id: nodeId,
-              title: String(data.title || 'LLM 노드'),
-              candidateDraft: candidateFromOptions(data),
-            },
-          ]}
-          initialNodeId={nodeId}
-          appliedIds={appliedRecommendationIds}
-          onClose={() => setIsOptimizationModalOpen(false)}
-          onMarkForReview={setAppliedRecommendationIds}
-          onApplyPatches={applyRecommendationPatches}
-        />
-      ) : null}
 
       {/* 프롬프트 마법사 모달 */}
       <PromptWizardModal

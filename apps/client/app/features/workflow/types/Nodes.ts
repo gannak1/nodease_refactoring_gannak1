@@ -155,6 +155,13 @@ export interface LLMNodeData extends BaseNodeData {
   model_id: string;
   fallback_model_id?: string;
   auto_model_routing?: boolean;
+  /** 초안 단계에서 만든 mDeBERTa 난이도 분류 artifact의 식별자 */
+  model_routing_bootstrap_id?: string;
+  /** prompt/RAG/schema/후속 계약이 같은지 배포 시 확인하는 지문 */
+  model_routing_bootstrap_fingerprint?: string;
+  /** Planner에 전달한 사용자 작업 설명. 실제 입력 원문은 저장하지 않는다. */
+  model_routing_task_description?: string;
+  model_routing_strategy?: 'bootstrap_mdeberta_difficulty_v1';
   model_routing_policy?: {
     status?:
       | 'off'

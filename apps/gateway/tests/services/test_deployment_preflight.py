@@ -1687,7 +1687,12 @@ def test_active_redeployment_inherits_model_routing_state(monkeypatch):
         version=1,
     )
     db = _Db(
-        {App: [app], Workflow: [workflow], WorkflowDeployment: [previous_deployment], Schedule: []},
+        {
+            App: [app],
+            Workflow: [workflow],
+            WorkflowDeployment: [previous_deployment],
+            Schedule: [],
+        },
         max_deployment_version=1,
     )
     inherited = []
@@ -1713,8 +1718,9 @@ def test_active_redeployment_inherits_model_routing_state(monkeypatch):
     monkeypatch.setattr(
         deployment_module.ModelRoutingPolicyStore,
         "ensure_policies_for_deployment",
-        lambda _db, **kwargs: bootstrapped.append(kwargs)
-        or [SimpleNamespace(id=uuid.uuid4())],
+        lambda _db, **kwargs: (
+            bootstrapped.append(kwargs) or [SimpleNamespace(id=uuid.uuid4())]
+        ),
     )
     monkeypatch.setattr(
         deployment_module,
@@ -1765,7 +1771,7 @@ def test_active_redeployment_inherits_model_routing_state(monkeypatch):
             "graph_snapshot": deployment.graph_snapshot,
         }
     ]
-    assert published[0][0] == "workflow.model_routing.bootstrap_policy"
+    assert published == []
 
 
 def test_workflow_node_toggle_removes_legacy_schedule_surface(monkeypatch):

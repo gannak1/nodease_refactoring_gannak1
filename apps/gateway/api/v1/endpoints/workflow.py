@@ -64,6 +64,7 @@ from apps.shared.db.models.cost_optimizer import (
 )
 from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.model_routing_policy import (
+    LLMNodeModelRoutingBootstrap,
     LLMNodeModelRoutingPolicy,
     LLMNodeModelRoutingPolicyUpdate,
 )
@@ -91,6 +92,13 @@ from apps.workflow_engine.services.model_routing_policy_refresh import (
 )
 from apps.workflow_engine.services.model_routing_policy_store import (
     ModelRoutingPolicyStore,
+)
+from apps.workflow_engine.services.model_routing_bootstrap import (
+    PersistedModelRoutingBootstrapStore,
+    downstream_contract_from_graph,
+)
+from apps.workflow_engine.services.model_routing_operational_performance import (
+    ModelRoutingOperationalPerformanceService,
 )
 
 # [NEW] 로깅 모델 및 스키마
@@ -223,9 +231,7 @@ def _stream_workflow_events(
                 yield _serialize_workflow_sse_event(event)
 
                 if event.get("type") in ("workflow_finish", "error"):
-                    logger.info(
-                        f"[Gateway] 스트리밍 종료 - type: {event.get('type')}"
-                    )
+                    logger.info(f"[Gateway] 스트리밍 종료 - type: {event.get('type')}")
                     break
     except Exception:
         error_event = {
@@ -326,6 +332,15 @@ class ModelRoutingPolicyPatchRequest(BaseModel):
     expected_updated_at: datetime
 
 
+class ModelRoutingBootstrapRequest(BaseModel):
+    """초안 LLM 노드에서 첫 실행용 난이도 정책을 만드는 요청."""
+
+    task_description: str = Field(min_length=10, max_length=4000)
+    default_model_id: str = Field(min_length=1, max_length=255)
+    fallback_model_id: str | None = Field(default=None, max_length=255)
+    initial_budget_usd: float = Field(default=1.0, ge=0.5, le=10.0)
+
+
 class ModelRoutingPolicyRefreshRequest(BaseModel):
     pass
 
@@ -349,6 +364,7 @@ class ModelRoutingPreviewResponse(BaseModel):
     matched_rule_id: str | None = None
     reason_code: str
     strategy_id: str | None = None
+    decision_factors: dict[str, Any] = Field(default_factory=dict)
     runtime_context: dict[str, Any] = Field(default_factory=dict)
     availability: Literal["available", "fallback"]
     draft_matches_deployment: bool
@@ -965,7 +981,9 @@ def _test_routing_policy_context(
             or not deployed_data.get("auto_model_routing")
         ):
             continue
-        if _node_config_fingerprint(node_data) == _node_config_fingerprint(deployed_data):
+        if _node_config_fingerprint(node_data) == _node_config_fingerprint(
+            deployed_data
+        ):
             matching_node_ids.append(node_id)
 
     if not matching_node_ids:
@@ -981,6 +999,7 @@ def _model_routing_policy_response(
     policy: LLMNodeModelRoutingPolicy | None,
     *,
     enabled: bool,
+    db: Session | None = None,
     latest_update: LLMNodeModelRoutingPolicyUpdate | None = None,
 ) -> dict[str, Any]:
     last_update = _model_routing_policy_update_summary(latest_update)
@@ -989,6 +1008,7 @@ def _model_routing_policy_response(
             "enabled": enabled,
             "status": "collecting" if enabled else "off",
             "policy_id": None,
+            "bootstrap_id": None,
             "policy_version": None,
             "active_policy": None,
             "pending_policy": None,
@@ -1000,6 +1020,13 @@ def _model_routing_policy_response(
                 "last_refresh_at": None,
             },
             "last_update": last_update,
+            "performance": {
+                "total_runs": 0,
+                "model_count": 0,
+                "last_recorded_at": None,
+                "models": [],
+            },
+            "change_policy": _model_routing_change_policy_summary(),
         }
 
     refresh_every_runs = policy.refresh_every_runs
@@ -1008,6 +1035,7 @@ def _model_routing_policy_response(
         "enabled": policy.enabled,
         "status": policy.status,
         "policy_id": str(policy.id),
+        "bootstrap_id": str(policy.bootstrap_id) if policy.bootstrap_id else None,
         "policy_version": policy.policy_version,
         "active_policy": policy.active_policy or None,
         "pending_policy": policy.pending_policy,
@@ -1021,6 +1049,33 @@ def _model_routing_policy_response(
             else None,
         },
         "last_update": last_update,
+        "performance": (
+            ModelRoutingOperationalPerformanceService.response_summary(
+                db,
+                policy_id=policy.id,
+            )
+            if db is not None
+            else {
+                "total_runs": 0,
+                "model_count": 0,
+                "last_recorded_at": None,
+                "models": [],
+            }
+        ),
+        "change_policy": _model_routing_change_policy_summary(),
+    }
+
+
+def _model_routing_change_policy_summary() -> dict[str, Any]:
+    return {
+        "mode": "event_driven",
+        "minimum_new_runs": ModelRoutingOperationalPerformanceService.MIN_NEW_RUNS,
+        "quality_change_threshold": (
+            ModelRoutingOperationalPerformanceService.QUALITY_CHANGE_THRESHOLD
+        ),
+        "efficiency_improvement_threshold": (
+            ModelRoutingOperationalPerformanceService.EFFICIENCY_IMPROVEMENT_THRESHOLD
+        ),
     }
 
 
@@ -1761,11 +1816,7 @@ def _baseline_row_from_records(
             "output_preview": output_preview,
             "messages_preview": [],
             "rag_summary": rag_summary,
-            **(
-                {"model_routing": llm_trace_summary}
-                if llm_trace_summary
-                else {}
-            ),
+            **({"model_routing": llm_trace_summary} if llm_trace_summary else {}),
             "error_message": node_run.error_message,
         },
         "downstream_compatibility": downstream_compatibility,
@@ -1861,7 +1912,9 @@ def get_cost_optimizer_latest_operation_baseline(
         current_node_data=node_data,
     )
     if cohort.get("status") != "active_deployment":
-        raise HTTPException(status_code=409, detail="cost_optimizer.recommendation_stale")
+        raise HTTPException(
+            status_code=409, detail="cost_optimizer.recommendation_stale"
+        )
 
     expected_deployment_id = str(cohort.get("deployment_id"))
     # 현재 draft와 활성 배포 snapshot의 설정 일치는 cohort 해석에서 이미
@@ -3446,9 +3499,7 @@ def get_cost_optimizer_experiment_candidate(
 
     experiment_summary = _cost_optimizer_experiment_summary(db, experiment)
     detail = {
-        key: value
-        for key, value in experiment_summary.items()
-        if key != "candidates"
+        key: value for key, value in experiment_summary.items() if key != "candidates"
     }
     detail["candidate"] = _cost_optimizer_candidate_summary(
         db,
@@ -3626,7 +3677,9 @@ def validate_execution_graph(graph: dict):
             "workflow_edge_from_terminal": "종료 노드에서는 다른 노드로 연결할 수 없습니다.",
         }
         if exc.code == "workflow_edge_source_missing":
-            detail = f"존재하지 않는 노드에서 시작하는 연결입니다. edge: {exc.reference}"
+            detail = (
+                f"존재하지 않는 노드에서 시작하는 연결입니다. edge: {exc.reference}"
+            )
         elif exc.code == "workflow_edge_target_missing":
             detail = f"존재하지 않는 노드로 향하는 연결입니다. edge: {exc.reference}"
         elif exc.code == "workflow_cycle_detected":
@@ -3707,6 +3760,183 @@ def _format_compare_variant(
     }
 
 
+def _model_routing_candidates_for_user(
+    db: Session,
+    *,
+    current_user: User,
+    organization_id: UUID | None,
+    node_data: dict[str, Any],
+) -> list[ModelCandidate]:
+    """초기 정책에는 현재 편집자가 실제 호출할 수 있는 모델만 넣는다."""
+    if organization_id is None:
+        raise HTTPException(
+            status_code=409, detail="model_routing.organization_required"
+        )
+    available_ids = set(
+        WorkflowRuntimeLLMService.get_runtime_available_model_ids_for_user(
+            db,
+            user_id=current_user.id,
+            organization_id=organization_id,
+        )
+    )
+    candidates = [
+        candidate
+        for candidate in ModelRouter.collect_candidates(
+            db, organization_id=organization_id
+        )
+        if candidate.model_id in available_ids
+        and ModelRouter.is_workflow_chat_model(candidate.model_id)
+    ]
+    if not candidates:
+        raise HTTPException(
+            status_code=422, detail="model_routing.no_available_chat_model"
+        )
+    return candidates
+
+
+@router.get("/{workflow_id}/llm-nodes/{node_id}/model-routing/bootstrap-preview")
+def preview_model_routing_bootstrap_endpoint(
+    workflow_id: str,
+    node_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """초안에서도 history/synthetic/hybrid 초기 정책 재료를 미리 보여준다."""
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    node = _ensure_cost_optimizer_llm_node(workflow, node_id)
+    node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    return PersistedModelRoutingBootstrapStore.preview(
+        db,
+        workflow_id=workflow.id,
+        organization_id=workflow.organization_id,
+        node_id=node_id,
+        node_data=node_data,
+        downstream_contract=downstream_contract_from_graph(workflow.graph, node_id),
+    )
+
+
+@router.get("/{workflow_id}/llm-nodes/{node_id}/model-routing/bootstrap")
+def get_model_routing_bootstrap_endpoint(
+    workflow_id: str,
+    node_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    node = _ensure_cost_optimizer_llm_node(workflow, node_id)
+    node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    preview = PersistedModelRoutingBootstrapStore.preview(
+        db,
+        workflow_id=workflow.id,
+        organization_id=workflow.organization_id,
+        node_id=node_id,
+        node_data=node_data,
+        downstream_contract=downstream_contract_from_graph(workflow.graph, node_id),
+    )
+    return preview.get("bootstrap")
+
+
+@router.post("/{workflow_id}/llm-nodes/{node_id}/model-routing/bootstrap")
+def create_model_routing_bootstrap_endpoint(
+    workflow_id: str,
+    node_id: str,
+    request_body: ModelRoutingBootstrapRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Planner 비용을 한 번만 사용해 초안 단계의 최초 난이도 정책을 생성한다."""
+    # 초기 기준 생성은 초안 편집 단계의 작업이다. 실제 배포 권한은 이후 배포 API에서
+    # 별도로 검사하므로, 여기서는 workflow 수정 권한만 요구한다.
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    next_graph = copy.deepcopy(workflow.graph or {})
+    node = _ensure_cost_optimizer_llm_node(
+        SimpleNamespace(id=workflow.id, graph=next_graph), node_id
+    )
+    node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    candidates = _model_routing_candidates_for_user(
+        db,
+        current_user=current_user,
+        organization_id=workflow.organization_id,
+        node_data=node_data,
+    )
+    candidate_ids = {candidate.model_id for candidate in candidates}
+    if request_body.default_model_id not in candidate_ids:
+        raise HTTPException(status_code=422, detail="model_routing.policy_model_unavailable")
+    if (
+        request_body.fallback_model_id
+        and request_body.fallback_model_id not in candidate_ids
+    ):
+        raise HTTPException(status_code=422, detail="model_routing.policy_model_unavailable")
+    if request_body.fallback_model_id == request_body.default_model_id:
+        raise HTTPException(status_code=422, detail="model_routing.fallback_must_differ")
+
+    try:
+        # Planner는 예문/holdout/규칙 생성을 위해 여러 LLM 호출을 수행한다. HTTP
+        # 요청에서 직접 기다리면 proxy timeout이 발생할 수 있으므로, 여기서는
+        # generating artifact를 저장하고 Worker가 이어서 생성하도록 한다.
+        bootstrap, should_enqueue = PersistedModelRoutingBootstrapStore.create_pending(
+            db,
+            workflow_id=workflow.id,
+            organization_id=workflow.organization_id,
+            node_id=node_id,
+            node_data=node_data,
+            task_description=request_body.task_description,
+            default_model_id=request_body.default_model_id,
+            fallback_model_id=request_body.fallback_model_id,
+            initial_budget_usd=request_body.initial_budget_usd,
+            created_by=current_user.id,
+            planner_model_id=request_body.default_model_id,
+            available_candidates=candidates,
+            downstream_contract=downstream_contract_from_graph(next_graph, node_id),
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.exception("[Model-Routing] bootstrap creation failed")
+        raise HTTPException(
+            status_code=502, detail="model_routing.bootstrap_generation_failed"
+        ) from exc
+
+    # 생성 대기 artifact와 draft 참조를 같은 commit으로 저장한다. Worker가 완료하기
+    # 전에는 deployment preflight가 generating 상태를 읽고 배포를 막는다.
+    node_data.update(
+        {
+            "auto_model_routing": True,
+            "model_id": request_body.default_model_id,
+            "fallback_model_id": request_body.fallback_model_id or "",
+            "model_routing_bootstrap_id": str(bootstrap.id),
+            "model_routing_bootstrap_fingerprint": bootstrap.task_fingerprint,
+            "model_routing_task_description": request_body.task_description,
+            "model_routing_strategy": "bootstrap_mdeberta_difficulty_v1",
+        }
+    )
+    node["data"] = node_data
+    workflow.graph = next_graph
+    db.commit()
+    if should_enqueue:
+        try:
+            send_workflow_task(
+                celery_app,
+                "workflow.model_routing.generate_bootstrap",
+                args=[str(bootstrap.id)],
+            )
+        except Exception:
+            # HTTP 성공 뒤 Worker 발행이 실패하면 화면이 계속 생성 중으로 남지 않게
+            # 실패 상태를 저장한다. 사용자는 같은 버튼으로 안전하게 재시도할 수 있다.
+            logger.exception("[Model-Routing] bootstrap generation enqueue failed")
+            PersistedModelRoutingBootstrapStore.mark_pending_generation_failed(
+                db,
+                bootstrap_id=bootstrap.id,
+                error_code="bootstrap_enqueue_failed",
+            )
+            db.commit()
+    return PersistedModelRoutingBootstrapStore.public_summary(
+        bootstrap, include_samples=True, db=db
+    )
+
+
 @router.get("/{workflow_id}/llm-nodes/{node_id}/model-routing/policy")
 def get_model_routing_policy_endpoint(
     workflow_id: str,
@@ -3723,6 +3953,7 @@ def get_model_routing_policy_endpoint(
     return _model_routing_policy_response(
         policy,
         enabled=bool(node_data.get("auto_model_routing")),
+        db=db,
         latest_update=latest_update,
     )
 
@@ -3782,7 +4013,9 @@ def patch_model_routing_policy_endpoint(
     node_data["auto_model_routing"] = request_body.enabled
     request_fields = request_body.model_fields_set
     if "default_model_id" in request_fields and request_body.default_model_id is None:
-        raise HTTPException(status_code=422, detail="model_routing.default_model_required")
+        raise HTTPException(
+            status_code=422, detail="model_routing.default_model_required"
+        )
     configured_model_id = str(
         request_body.default_model_id
         if "default_model_id" in request_fields
@@ -3795,9 +4028,13 @@ def patch_model_routing_policy_endpoint(
     )
     fallback_model_id = str(fallback_model_id or "").strip() or None
     if request_body.enabled and not configured_model_id:
-        raise HTTPException(status_code=422, detail="model_routing.default_model_required")
+        raise HTTPException(
+            status_code=422, detail="model_routing.default_model_required"
+        )
     if fallback_model_id == configured_model_id:
-        raise HTTPException(status_code=422, detail="model_routing.fallback_must_differ")
+        raise HTTPException(
+            status_code=422, detail="model_routing.fallback_must_differ"
+        )
     if "default_model_id" in request_fields:
         node_data["model_id"] = configured_model_id
     if "fallback_model_id" in request_fields:
@@ -3821,7 +4058,10 @@ def patch_model_routing_policy_endpoint(
 
     policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
     if policy is not None:
-        if "default_model_id" in request_fields or "fallback_model_id" in request_fields:
+        if (
+            "default_model_id" in request_fields
+            or "fallback_model_id" in request_fields
+        ):
             execution_subject_id = policy.execution_subject_user_id
             organization_id = policy.organization_id or workflow.organization_id
             if execution_subject_id is None or organization_id is None:
@@ -3867,6 +4107,7 @@ def patch_model_routing_policy_endpoint(
     response = _model_routing_policy_response(
         policy,
         enabled=request_body.enabled,
+        db=db,
     )
     return {**response, **metadata}
 
@@ -4099,7 +4340,9 @@ def get_cost_optimizer_experiment_candidate_endpoint(
     )
 
 
-@router.get("/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/parameter-recommendations")
+@router.get(
+    "/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/parameter-recommendations"
+)
 def get_cost_optimizer_parameter_recommendations_endpoint(
     workflow_id: str,
     node_id: str,
@@ -4209,7 +4452,9 @@ def _cost_optimizer_inline_schema_validation(
     candidate: CostOptimizerCandidateRequest,
     candidate_result: dict[str, Any],
 ) -> dict[str, Any]:
-    output_format = candidate.output_format if isinstance(candidate.output_format, dict) else {}
+    output_format = (
+        candidate.output_format if isinstance(candidate.output_format, dict) else {}
+    )
     if output_format.get("type") != "json":
         return {"status": "not_applicable", "issues": []}
     schema = output_format.get("schema")
@@ -4219,7 +4464,9 @@ def _cost_optimizer_inline_schema_validation(
     validation = validation if isinstance(validation, dict) else {}
     if validation.get("status") in {"valid", "pass", "passed"}:
         return {"status": "passed", "issues": []}
-    errors = validation.get("errors") if isinstance(validation.get("errors"), list) else []
+    errors = (
+        validation.get("errors") if isinstance(validation.get("errors"), list) else []
+    )
     return {
         "status": "failed",
         "issues": [str(error)[:200] for error in errors[:10]],
@@ -4312,7 +4559,9 @@ def _build_cost_optimizer_verification_apply_decision(
     confirmation_reasons: list[str] = []
     if quality_evaluation.get("status") != "completed":
         confirmation_reasons.append("quality_evaluation_unavailable")
-    elif quality_evaluation.get("delta") is not None and quality_evaluation["delta"] < 0:
+    elif (
+        quality_evaluation.get("delta") is not None and quality_evaluation["delta"] < 0
+    ):
         confirmation_reasons.append("quality_score_decreased")
     if quality_evaluation.get("confidence") == "low":
         confirmation_reasons.append("quality_confidence_low")
@@ -4390,7 +4639,9 @@ def _verify_cost_optimizer_recommendations(
     """추천 candidate 실행과 quality judge를 하나의 멱등 검증으로 묶는다."""
     idempotency_key = idempotency_key.strip()
     if not idempotency_key:
-        raise HTTPException(status_code=422, detail="cost_optimizer.idempotency_key_required")
+        raise HTTPException(
+            status_code=422, detail="cost_optimizer.idempotency_key_required"
+        )
     request_fingerprint = _cost_optimizer_recommendation_request_fingerprint(
         workflow=workflow,
         node_id=node_id,
@@ -4425,15 +4676,19 @@ def _verify_cost_optimizer_recommendations(
             recommendations_payload.get("recommendation_fingerprint") or ""
         )
         if (
-            request_body.node_config_fingerprint
-            and request_body.node_config_fingerprint != current_fingerprint
-        ) or (
-            request_body.recommendation_policy_version
-            and request_body.recommendation_policy_version != current_policy_version
-        ) or (
-            request_body.recommendation_fingerprint
-            and request_body.recommendation_fingerprint
-            != current_recommendation_fingerprint
+            (
+                request_body.node_config_fingerprint
+                and request_body.node_config_fingerprint != current_fingerprint
+            )
+            or (
+                request_body.recommendation_policy_version
+                and request_body.recommendation_policy_version != current_policy_version
+            )
+            or (
+                request_body.recommendation_fingerprint
+                and request_body.recommendation_fingerprint
+                != current_recommendation_fingerprint
+            )
         ):
             response = _cost_optimizer_stale_verification_response(
                 "recommendation_stale"
@@ -4551,19 +4806,21 @@ def _verify_cost_optimizer_recommendations(
             downstream_compatibility=downstream_compatibility,
             quality_evaluation=quality_evaluation,
         )
-        baseline_usage = baseline.get("usage") if isinstance(baseline.get("usage"), dict) else {}
+        baseline_usage = (
+            baseline.get("usage") if isinstance(baseline.get("usage"), dict) else {}
+        )
         candidate_usage = (
             candidate_result.get("usage")
             if isinstance(candidate_result.get("usage"), dict)
             else {}
         )
-        candidate_cost = _cost_optimizer_usage_number(candidate_usage, "cost", "total_cost")
+        candidate_cost = _cost_optimizer_usage_number(
+            candidate_usage, "cost", "total_cost"
+        )
         judge_cost = quality_evaluation.get("judge_cost")
         judge_cost = float(judge_cost) if isinstance(judge_cost, (int, float)) else None
         known_new_costs = [
-            cost
-            for cost in (candidate_cost, judge_cost)
-            if cost is not None
+            cost for cost in (candidate_cost, judge_cost) if cost is not None
         ]
         total_new_cost = sum(known_new_costs) if known_new_costs else None
         metrics = {
@@ -4614,10 +4871,18 @@ def _verify_cost_optimizer_recommendations(
                 "model": baseline.get("model"),
                 "deployment_id": baseline.get("deployment_id"),
                 "metrics": {
-                    "cost": _cost_optimizer_usage_number(baseline_usage, "cost", "total_cost"),
-                    "latency_ms": _cost_optimizer_usage_number(baseline_usage, "latency_ms"),
-                    "input_tokens": _cost_optimizer_usage_number(baseline_usage, "prompt_tokens"),
-                    "output_tokens": _cost_optimizer_usage_number(baseline_usage, "completion_tokens"),
+                    "cost": _cost_optimizer_usage_number(
+                        baseline_usage, "cost", "total_cost"
+                    ),
+                    "latency_ms": _cost_optimizer_usage_number(
+                        baseline_usage, "latency_ms"
+                    ),
+                    "input_tokens": _cost_optimizer_usage_number(
+                        baseline_usage, "prompt_tokens"
+                    ),
+                    "output_tokens": _cost_optimizer_usage_number(
+                        baseline_usage, "completion_tokens"
+                    ),
                     "total_tokens": _cost_optimizer_total_tokens(baseline_usage),
                 },
             },
@@ -4673,9 +4938,7 @@ def _verify_cost_optimizer_recommendations(
         raise
 
 
-@router.post(
-    "/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/recommendations/verify"
-)
+@router.post("/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/recommendations/verify")
 def verify_cost_optimizer_recommendations(
     workflow_id: str,
     node_id: str,
@@ -4706,13 +4969,11 @@ def verify_cost_optimizer_recommendations(
         node_id=node_id,
         request_body=request_body,
     )
-    replay_response = (
-        CostOptimizerRecommendationVerificationService.replay_existing(
-            db,
-            user_id=current_user.id,
-            idempotency_key=normalized_idempotency_key,
-            request_fingerprint=request_fingerprint,
-        )
+    replay_response = CostOptimizerRecommendationVerificationService.replay_existing(
+        db,
+        user_id=current_user.id,
+        idempotency_key=normalized_idempotency_key,
+        request_fingerprint=request_fingerprint,
     )
     if replay_response is not None:
         return replay_response
@@ -4978,12 +5239,7 @@ def get_workflow_runs(
         query = query.filter(WorkflowRun.trigger_mode == trigger_mode)
 
     total = query.count()
-    runs = (
-        query.order_by(WorkflowRun.started_at.desc())
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
+    runs = query.order_by(WorkflowRun.started_at.desc()).offset(skip).limit(limit).all()
 
     return {"total": total, "items": runs}
 
@@ -5760,8 +6016,7 @@ async def stream_workflow(
             == "true"
         )
         use_active_deployment_routing_policy = (
-            str(form.get("use_active_deployment_routing_policy", "")).lower()
-            == "true"
+            str(form.get("use_active_deployment_routing_policy", "")).lower() == "true"
         )
     else:
         # JSON 방식 (기존)

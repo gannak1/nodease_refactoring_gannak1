@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from apps.shared.db.models.model_routing_policy import LLMNodeModelRoutingPolicy
@@ -14,6 +15,9 @@ from apps.workflow_engine.services.llm_service import LLMService as WorkflowRunt
 from apps.workflow_engine.services.model_router import (
     ModelRouter,
     ModelRoutingUnavailableError,
+)
+from apps.workflow_engine.services.model_routing_operational_performance import (
+    ModelRoutingOperationalPerformanceService,
 )
 from apps.workflow_engine.workflow.nodes.llm.entities import LLMNodeData
 
@@ -85,11 +89,21 @@ class ModelRoutingPreviewService:
             "active_policy": policy.active_policy,
         }
         try:
+            node_profile = ModelRoutingOperationalPerformanceService.profile_for_policy(
+                db,
+                policy_id=policy.id,
+            )
+        except (SQLAlchemyError, TypeError, ValueError):
+            # 미리보기는 읽기 전용 UX다. 성적 누계가 일시적으로 읽히지 않아도
+            # 전역 profile snapshot으로 선택 결과를 보여 줄 수 있어야 한다.
+            node_profile = None
+        try:
             decision = ModelRouter.resolve_policy(
                 policy_payload,
                 inputs=inputs,
                 node_data=node_data,
                 available_model_ids=available_model_ids,
+                node_profile=node_profile,
             )
         except ModelRoutingUnavailableError as exc:
             raise ModelRoutingPreviewBlockedError(
@@ -121,6 +135,7 @@ class ModelRoutingPreviewService:
             "matched_rule_id": decision.matched_rule_id,
             "reason_code": decision.reason_code,
             "strategy_id": decision.strategy_id,
+            "decision_factors": decision.decision_factors,
             "runtime_context": decision.runtime_context.as_metadata(),
             "availability": availability,
             "draft_matches_deployment": cls._draft_matches_deployment(
