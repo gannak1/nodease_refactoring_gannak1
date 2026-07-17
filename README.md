@@ -176,11 +176,22 @@ cp docker/.env.example docker/.env
 | --- | --- |
 | `SECRET_KEY` | 인증 token 서명 |
 | `MASTER_KEY` | 예약·legacy 설정. 현재 Docker Gateway와 LLM credential의 `encrypted_config` 암호화에는 연결되지 않음 |
-| `ENCRYPTION_KEY` | 기존 암호화 호환 경계 |
-| `MAIL_CREDENTIAL_ENCRYPTION_KEYS` | Mail credential용 versioned keyring. 비어 있으면 호환 `ENCRYPTION_KEY` 경계를 사용 |
-| `MAIL_CREDENTIAL_ACTIVE_KEY_VERSION` | 새 Mail credential을 암호화할 active key version |
+| `ENCRYPTION_KEY` | 현재 shared·legacy 암호화 경로에 필요한 Fernet 호환 URL-safe Base64 32바이트 key. Mail keyring이 비어 있을 때 `v1` fallback으로도 사용 |
+| `MAIL_CREDENTIAL_ENCRYPTION_KEYS` | Mail credential용 JSON keyring. 예: `{"v1":"<Fernet-key>"}` |
+| `MAIL_CREDENTIAL_ACTIVE_KEY_VERSION` | 새 Mail credential을 암호화할 active key version. JSON keyring에 같은 version이 반드시 존재해야 함 |
 
 실제 key, token, credential과 `.env` 파일을 Git, 문서, log에 남기지 마세요. 로컬 파일 저장은 `STORAGE_TYPE=LOCAL`을 사용할 수 있습니다.
+
+현재 shared·legacy 암호화 경로를 위해 다음 명령으로 Fernet key를 생성하고 `ENCRYPTION_KEY=<생성한-key>`를 설정합니다. 생성 결과는 secret storage에 보관하고 문서, Git이나 공유 log에 복사하지 않습니다.
+
+```bash
+docker run --rm python:3.11-slim python -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
+```
+
+Mail credential은 다음 중 한 방식으로 구성합니다.
+
+- 호환 방식: `MAIL_CREDENTIAL_ENCRYPTION_KEYS`를 비워 두면 위 `ENCRYPTION_KEY`를 `v1` key로 사용합니다.
+- Versioned 방식: 별도 Fernet key를 생성해 `MAIL_CREDENTIAL_ENCRYPTION_KEYS={"v1":"<Mail-Fernet-key>"}`와 `MAIL_CREDENTIAL_ACTIVE_KEY_VERSION=v1`을 설정합니다. Rotation 중에는 기존 row를 복호화할 구 key도 JSON에 유지하고 Gateway와 Workflow Worker에 동일한 keyring을 주입합니다.
 
 > [!WARNING]
 > 현재 LLM credential의 `encrypted_config`는 이름과 달리 config JSON을 평문으로 저장합니다. `MASTER_KEY`를 설정해도 이 저장 경로가 암호화되지는 않으므로 운영·공유 DB에 실제 provider key를 넣지 말고 [Data Model의 알려진 차이](./docs/data_model.md#llm_credentials)를 확인합니다.
@@ -259,9 +270,13 @@ CELERY_BROKER_URL=redis://localhost:6379/1
 
 위 Redis 값을 실제 `.env`의 기존 항목에 반영합니다. `redis://redis:6379/...`는 container 내부 DNS용이므로 host에서 실행하는 Gateway의 login limiter와 worker가 연결할 수 없습니다.
 
-### 2. Migration
+### 2. 개발 DB 시작과 Migration
 
-`scripts/dev.sh`는 오래된 schema를 자동 보정하지 않습니다. 서비스를 시작하기 전에 Alembic revision을 최신 상태로 맞춥니다.
+`scripts/setup.sh`는 Docker 서비스를 시작하지 않고, `scripts/dev.sh`는 오래된 schema를 자동 보정하지 않습니다. 먼저 PostgreSQL을 시작하고 healthcheck 완료를 기다린 뒤 Alembic revision을 최신 상태로 맞춥니다.
+
+```bash
+docker compose -f dev/docker-compose.yml up -d --wait --wait-timeout 90 postgres
+```
 
 Windows:
 
