@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -12,6 +13,9 @@ from apps.shared.domain.knowledge_document_ingestion import (
     TERMINAL_JOB_STATUSES,
     retry_delay,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +141,10 @@ class WorkerDocumentIngestionPublisherPort(Protocol):
     def publish(self, job_id: uuid.UUID) -> None: ...
 
 
+class WorkerDocumentIngestionProgressPort(Protocol):
+    def clear(self, document_id: uuid.UUID) -> None: ...
+
+
 class WorkerDocumentIngestionUnitOfWorkPort(Protocol):
     def commit(self) -> None: ...
 
@@ -151,12 +159,14 @@ class ExecuteDocumentIngestionJob:
         authorization: WorkerDocumentIngestionAuthorizationPort,
         runner: WorkerDocumentIngestionRunnerPort,
         unit_of_work: WorkerDocumentIngestionUnitOfWorkPort,
+        progress: WorkerDocumentIngestionProgressPort | None = None,
         lease_seconds: int = DEFAULT_LEASE_SECONDS,
     ) -> None:
         self.repository = repository
         self.authorization = authorization
         self.runner = runner
         self.unit_of_work = unit_of_work
+        self.progress = progress
         self.lease_seconds = lease_seconds
 
     def execute(
@@ -186,7 +196,7 @@ class ExecuteDocumentIngestionJob:
             self.repository.mark_cancelled(
                 job, now=now, reason_code="ingestion.document_missing"
             )
-            self.unit_of_work.commit()
+            self._commit_and_clear_progress(job)
             return WorkerDocumentIngestionResult(
                 "cancelled", "ingestion.document_missing"
             )
@@ -194,7 +204,7 @@ class ExecuteDocumentIngestionJob:
             self.repository.mark_cancelled(
                 job, now=now, reason_code="ingestion.authorization_revoked"
             )
-            self.unit_of_work.commit()
+            self._commit_and_clear_progress(job)
             return WorkerDocumentIngestionResult(
                 "cancelled", "ingestion.authorization_revoked"
             )
@@ -205,7 +215,7 @@ class ExecuteDocumentIngestionJob:
                 reason_code="ingestion.worker_interrupted",
                 retryable=True,
             )
-            self.unit_of_work.commit()
+            self._commit_and_clear_progress(job)
             return WorkerDocumentIngestionResult(
                 "dead_lettered", "ingestion.worker_interrupted"
             )
@@ -273,7 +283,7 @@ class ExecuteDocumentIngestionJob:
         now = self.repository.database_now()
         if kind == "cancelled":
             self.repository.mark_cancelled(job, now=now, reason_code=reason_code)
-            self.unit_of_work.commit()
+            self._commit_and_clear_progress(job)
             return WorkerDocumentIngestionResult("cancelled", reason_code)
         if kind == "retryable" and job.attempt_count < job.max_attempts:
             self.repository.mark_retry_scheduled(
@@ -283,7 +293,7 @@ class ExecuteDocumentIngestionJob:
                 + retry_delay(job_id=job.job_id, attempt_count=job.attempt_count),
                 reason_code=reason_code,
             )
-            self.unit_of_work.commit()
+            self._commit_and_clear_progress(job)
             return WorkerDocumentIngestionResult("retry_scheduled", reason_code)
 
         self.repository.mark_dead_lettered(
@@ -292,8 +302,20 @@ class ExecuteDocumentIngestionJob:
             reason_code=reason_code,
             retryable=(kind == "retryable"),
         )
-        self.unit_of_work.commit()
+        self._commit_and_clear_progress(job)
         return WorkerDocumentIngestionResult("dead_lettered", reason_code)
+
+    def _commit_and_clear_progress(self, job: WorkerDocumentIngestionJob) -> None:
+        self.unit_of_work.commit()
+        if self.progress is not None and job.document_id is not None:
+            try:
+                self.progress.clear(job.document_id)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to clear Knowledge progress projection: error_type=%s",
+                    type(exc).__name__,
+                )
+
 
 class RecoverDocumentIngestionJobs:
     def __init__(

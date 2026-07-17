@@ -344,6 +344,28 @@ class DurableIngestionLeaseLost(RuntimeError):
     pass
 
 
+class DurableIngestionSourceFailure(RuntimeError):
+    """Carry one allowlisted source failure across the durable worker boundary."""
+
+    _SAFE_REASON_CODES = frozenset(
+        {
+            "configuration.invalid",
+            "processing.failed",
+            "resource.hidden",
+            "source.temporarily_unavailable",
+        }
+    )
+
+    def __init__(self, reason_code: object) -> None:
+        normalized = str(reason_code)
+        self.reason_code = (
+            normalized
+            if normalized in self._SAFE_REASON_CODES
+            else "processing.failed"
+        )
+        super().__init__("Source processing failed.")
+
+
 class IngestionOrchestrator:
     def __init__(
         self,
@@ -722,7 +744,7 @@ class IngestionOrchestrator:
         )
         result = processor.process(self._build_config(doc))
         if result.metadata.get("error"):
-            raise Exception(result.metadata["error"])
+            raise DurableIngestionSourceFailure(result.metadata.get("reason_code"))
         return result.chunks
 
     def _build_document_chunks(

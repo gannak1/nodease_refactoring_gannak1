@@ -26,6 +26,7 @@ from apps.gateway.services.ingestion.service import (
     DurableIngestionLeaseLost,
     DurableIngestionLockBusy,
     DurableIngestionNoContent,
+    DurableIngestionSourceFailure,
     IngestionOrchestrator,
 )
 from apps.shared.db.models.knowledge import Document, KnowledgeBase
@@ -126,6 +127,22 @@ class KnowledgeDocumentIngestionJobRunner:
                 ) from exc
             except DurableIngestionLeaseLost as exc:
                 raise DocumentIngestionLeaseLost() from exc
+            except DurableIngestionSourceFailure as exc:
+                if exc.reason_code == "source.temporarily_unavailable":
+                    raise DocumentIngestionRetryableFailure(
+                        "ingestion.source_temporarily_unavailable"
+                    ) from exc
+                if exc.reason_code == "resource.hidden":
+                    raise DocumentIngestionPermanentFailure(
+                        "ingestion.authorization_revoked"
+                    ) from exc
+                if exc.reason_code == "configuration.invalid":
+                    raise DocumentIngestionPermanentFailure(
+                        "ingestion.configuration_invalid"
+                    ) from exc
+                raise DocumentIngestionPermanentFailure(
+                    "ingestion.processing_failed"
+                ) from exc
             except KnowledgeIngestionFinalizationError as exc:
                 if str(exc) in {"fencing_token_mismatch", "stale_ingestion_worker"}:
                     raise DocumentIngestionLeaseLost() from exc

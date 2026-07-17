@@ -12,6 +12,7 @@ from apps.gateway.services.ingestion import job_runner
 from apps.gateway.services.ingestion.job_runner import (
     KnowledgeDocumentIngestionJobRunner,
 )
+from apps.gateway.services.ingestion.service import DurableIngestionSourceFailure
 from apps.shared.db.models.knowledge import Document, KnowledgeBase
 
 
@@ -87,3 +88,58 @@ def test_soft_time_limit_is_retryable_timeout(monkeypatch) -> None:
 
     assert exc_info.value.reason_code == "ingestion.timeout"
     assert sessions[-1].closed is True
+
+
+def test_temporary_source_failure_is_retryable(monkeypatch) -> None:
+    organization_id = uuid4()
+    knowledge_base_id = uuid4()
+    document_id = uuid4()
+    document = SimpleNamespace(
+        id=document_id,
+        knowledge_base_id=knowledge_base_id,
+        chunk_size=800,
+        chunk_overlap=80,
+    )
+    knowledge_base = SimpleNamespace(
+        id=knowledge_base_id,
+        organization_id=organization_id,
+        lifecycle_state="active",
+        sync_state="active",
+        embedding_model="text-embedding-3-small",
+    )
+
+    def session_factory():
+        return FakeSession(document, knowledge_base)
+
+    monkeypatch.setattr(
+        job_runner.IngestionOrchestrator,
+        "process_document_for_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            DurableIngestionSourceFailure("source.temporarily_unavailable")
+        ),
+    )
+    job = WorkerDocumentIngestionJob(
+        job_id=uuid4(),
+        organization_id=organization_id,
+        knowledge_base_id=knowledge_base_id,
+        document_id=document_id,
+        requested_by_user_id=uuid4(),
+        operation="process",
+        generation=1,
+        status="running",
+        attempt_count=1,
+        max_attempts=3,
+        retryable=True,
+        owner_token="owner-token",
+        fencing_token="fencing-token",
+        lease_expires_at=None,
+        next_retry_at=None,
+    )
+
+    with pytest.raises(DocumentIngestionRetryableFailure) as raised:
+        KnowledgeDocumentIngestionJobRunner(
+            session_factory,
+            heartbeat_seconds=60,
+        ).run(job)
+
+    assert raised.value.reason_code == "ingestion.source_temporarily_unavailable"

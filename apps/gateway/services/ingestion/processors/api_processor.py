@@ -14,6 +14,19 @@ from apps.shared.services.egress_guard import (
 )
 
 logger = logging.getLogger(__name__)
+_TRANSIENT_EGRESS_REASONS = frozenset(
+    {
+        "egress.connection_failed",
+        "egress.dns_resolution_failed",
+        "egress.timeout",
+    }
+)
+
+
+def _http_failure_reason(status_code: int) -> str:
+    if status_code in {408, 425, 429} or status_code >= 500:
+        return "source.temporarily_unavailable"
+    return "configuration.invalid"
 
 
 class ApiProcessor(BaseProcessor):
@@ -42,7 +55,7 @@ class ApiProcessor(BaseProcessor):
                 import json
 
                 headers = json.loads(headers)
-            except:
+            except (TypeError, ValueError):
                 headers = {}
 
         # body가 JSON string일 수 있으므로 파싱
@@ -51,11 +64,17 @@ class ApiProcessor(BaseProcessor):
                 import json
 
                 body = json.loads(body)
-            except:
+            except (TypeError, ValueError):
                 body = None
 
         if not url:
-            return ProcessingResult(chunks=[], metadata={"error": "No URL provided"})
+            return ProcessingResult(
+                chunks=[],
+                metadata={
+                    "error": "No URL provided",
+                    "reason_code": "configuration.invalid",
+                },
+            )
 
         try:
             response = safe_http_request(
@@ -70,11 +89,13 @@ class ApiProcessor(BaseProcessor):
                 ),
             )
             if response.status_code >= 400:
+                reason_code = _http_failure_reason(response.status_code)
                 return ProcessingResult(
                     chunks=[],
                     metadata={
                         "error": "External API returned an error.",
                         "status_code": response.status_code,
+                        "reason_code": reason_code,
                     },
                 )
 
@@ -102,11 +123,28 @@ class ApiProcessor(BaseProcessor):
             )
 
         except EgressGuardError as e:
-            logger.warning("[ApiProcessor] Egress guard denied request: %s", e.reason_code)
+            reason_code = (
+                "source.temporarily_unavailable"
+                if e.reason_code in _TRANSIENT_EGRESS_REASONS
+                else "configuration.invalid"
+            )
+            logger.warning(
+                "[ApiProcessor] Egress guard denied request: reason_code=%s",
+                reason_code,
+            )
             return ProcessingResult(
                 chunks=[],
-                metadata={"error": "Outbound request denied.", "reason_code": e.reason_code},
+                metadata={
+                    "error": "Outbound request denied.",
+                    "reason_code": reason_code,
+                },
             )
         except Exception as e:
             logger.error("[ApiProcessor] Request failed: %s", type(e).__name__)
-            return ProcessingResult(chunks=[], metadata={"error": "Request failed."})
+            return ProcessingResult(
+                chunks=[],
+                metadata={
+                    "error": "Request failed.",
+                    "reason_code": "processing.failed",
+                },
+            )

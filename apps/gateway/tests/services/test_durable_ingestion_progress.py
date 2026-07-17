@@ -4,9 +4,11 @@ import pytest
 
 from apps.gateway.services.ingestion.service import (
     DurableIngestionLeaseLost,
+    DurableIngestionSourceFailure,
     IngestionOrchestrator,
 )
 from apps.shared.db.models.knowledge import Document, KnowledgeBase
+from apps.shared.services.ingestion.processors.base import ProcessingResult
 from apps.shared.services.knowledge_ingestion_fencing import (
     ACTIVE_FENCING_TOKEN_HASH_KEY,
 )
@@ -147,3 +149,35 @@ def test_post_commit_completion_only_publishes_advisory_redis_progress(
     )
 
     assert redis_calls == [("knowledge_progress:document-id", "100", 30)]
+
+
+def test_processor_reason_is_normalized_to_typed_durable_source_failure(
+    monkeypatch,
+) -> None:
+    processor = SimpleNamespace(
+        process=lambda _config: ProcessingResult(
+            chunks=[],
+            metadata={
+                "error": "safe processor error",
+                "reason_code": "source.temporarily_unavailable",
+            },
+        )
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.ingestion.service.IngestionFactory.get_processor",
+        lambda *_args, **_kwargs: processor,
+    )
+    service = IngestionOrchestrator(SimpleNamespace())
+    monkeypatch.setattr(service, "_build_config", lambda _document: {})
+
+    with pytest.raises(DurableIngestionSourceFailure) as raised:
+        service._extract_raw_blocks(SimpleNamespace(source_type="DB"))
+
+    assert raised.value.reason_code == "source.temporarily_unavailable"
+
+
+def test_unknown_processor_reason_fails_closed() -> None:
+    error = DurableIngestionSourceFailure("raw.provider.detail")
+
+    assert error.reason_code == "processing.failed"
+    assert str(error) == "Source processing failed."

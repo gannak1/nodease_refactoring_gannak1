@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from apps.gateway.adapters.cache.knowledge_document_ingestion_progress import (
+    RedisDocumentIngestionProgressProjection,
+)
 from apps.gateway.adapters.db.knowledge_document_ingestion_repository import (
     SqlAlchemyDocumentIngestionRepository,
     SqlAlchemyWorkerDocumentIngestionAuthorization,
@@ -29,6 +32,7 @@ def build_execute_document_ingestion_job(
         authorization=SqlAlchemyWorkerDocumentIngestionAuthorization(db),
         runner=KnowledgeDocumentIngestionJobRunner(SessionLocal),
         unit_of_work=SqlAlchemyUnitOfWork(db),
+        progress=RedisDocumentIngestionProgressProjection(),
     )
 
 

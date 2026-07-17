@@ -144,6 +144,17 @@ class FakeUnitOfWork:
         self.rollbacks += 1
 
 
+class FakeProgress:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.cleared = []
+        self.error = error
+
+    def clear(self, document_id):
+        self.cleared.append(document_id)
+        if self.error is not None:
+            raise self.error
+
+
 def _job(**updates) -> WorkerDocumentIngestionJob:
     base = WorkerDocumentIngestionJob(
         job_id=uuid.uuid4(),
@@ -165,12 +176,13 @@ def _job(**updates) -> WorkerDocumentIngestionJob:
     return replace(base, **updates)
 
 
-def _execute(repository, authorization=None, runner=None, uow=None):
+def _execute(repository, authorization=None, runner=None, uow=None, progress=None):
     return ExecuteDocumentIngestionJob(
         repository=repository,
         authorization=authorization or FakeAuthorization(),
         runner=runner or FakeRunner(),
         unit_of_work=uow or FakeUnitOfWork(),
+        progress=progress,
     )
 
 
@@ -231,10 +243,12 @@ def test_retryable_failure_waits_for_due_recovery_publish() -> None:
     runner = FakeRunner(
         DocumentIngestionRetryableFailure("ingestion.source_temporarily_unavailable")
     )
+    progress = FakeProgress()
 
     result = _execute(
         repository,
         runner=runner,
+        progress=progress,
     ).execute(job.job_id, owner_token="o")
 
     assert result.status == "retry_scheduled"
@@ -242,6 +256,7 @@ def test_retryable_failure_waits_for_due_recovery_publish() -> None:
         "retry_scheduled",
         "ingestion.source_temporarily_unavailable",
     )
+    assert progress.cleared == [job.document_id]
 
 
 def test_last_retryable_attempt_is_dead_lettered() -> None:
@@ -259,11 +274,40 @@ def test_lease_lost_does_not_apply_terminal_transition() -> None:
     job = _job()
     repository = FakeRepository(job)
     runner = FakeRunner(DocumentIngestionLeaseLost())
+    progress = FakeProgress()
 
-    result = _execute(repository, runner=runner).execute(job.job_id, owner_token="o")
+    result = _execute(repository, runner=runner, progress=progress).execute(
+        job.job_id, owner_token="o"
+    )
 
     assert result.status == "duplicate"
     assert repository.transition is None
+    assert progress.cleared == []
+
+
+def test_progress_projection_failure_does_not_change_committed_retry_result() -> None:
+    job = _job()
+    repository = FakeRepository(job)
+    runner = FakeRunner(
+        DocumentIngestionRetryableFailure("ingestion.source_temporarily_unavailable")
+    )
+    uow = FakeUnitOfWork()
+    progress = FakeProgress(RuntimeError("redis unavailable"))
+
+    result = _execute(
+        repository,
+        runner=runner,
+        uow=uow,
+        progress=progress,
+    ).execute(job.job_id, owner_token="o")
+
+    assert result.status == "retry_scheduled"
+    assert repository.transition == (
+        "retry_scheduled",
+        "ingestion.source_temporarily_unavailable",
+    )
+    assert uow.commits == 2
+    assert progress.cleared == [job.document_id]
 
 
 def test_recovery_commits_before_publish_and_tolerates_publish_failure() -> None:
