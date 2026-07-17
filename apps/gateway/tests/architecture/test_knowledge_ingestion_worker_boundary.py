@@ -24,11 +24,16 @@ def test_compose_worker_uses_gateway_image_and_only_knowledge_queue() -> None:
     assert "--concurrency=2" in section
     assert "uvicorn" not in section
     assert "disable: true" in section
+    assert "gateway:\n        condition: service_healthy" in section
 
 
 def test_helm_worker_is_migration_first_and_has_bounded_concurrency() -> None:
     template = _read(
         "infra/helm/moduly/templates/knowledge-worker-deployment.yaml"
+    )
+    gateway_template = _read("infra/helm/moduly/templates/gateway-deployment.yaml")
+    storage_template = _read(
+        "infra/helm/moduly/templates/knowledge-storage-pvc.yaml"
     )
     values = _read("infra/helm/moduly/values.yaml")
     production = _read("infra/helm/moduly/values-production.yaml")
@@ -39,9 +44,21 @@ def test_helm_worker_is_migration_first_and_has_bounded_concurrency() -> None:
     assert "apps.gateway.knowledge_worker:app" in template
     assert "--queues=knowledge" in template
     assert "--concurrency={{ .Values.knowledgeWorker.concurrency }}" in template
+    assert "initContainers:" in template
+    assert "apps.gateway.knowledge_worker_readiness" in template
+    assert "claimName: {{ include \"moduly.knowledgeUploadClaimName\" . }}" in template
+    assert "mountPath: /app/uploads" in template
+    assert "mountPath: /app/uploads" in gateway_template
+    assert "fsGroup: {{ .Values.knowledgeWorker.localStorage.fsGroup }}" in template
+    assert (
+        "fsGroup: {{ .Values.knowledgeWorker.localStorage.fsGroup }}"
+        in gateway_template
+    )
+    assert "kind: PersistentVolumeClaim" in storage_template
     assert "knowledgeWorker:\n  enabled: false" in values
     assert "knowledgeWorker:\n  enabled: false" in production
     assert "knowledgeWorker:\n  enabled: true" in local
+    assert "localStorage:\n    enabled: true" in local
 
 
 def test_shared_celery_routes_and_recovers_knowledge_jobs() -> None:

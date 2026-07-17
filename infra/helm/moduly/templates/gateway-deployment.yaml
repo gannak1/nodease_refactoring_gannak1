@@ -1,6 +1,10 @@
 {{- if .Values.gateway.enabled }}
 {{- include "moduly.validateScheduleDispatchMode" . }}
 {{- $connectorTestAllowedPorts := required "connectorTest.allowedPorts is required" .Values.connectorTest.allowedPorts }}
+{{- $storageType := upper (default "LOCAL" .Values.gateway.env.STORAGE_TYPE) }}
+{{- if and .Values.knowledgeWorker.enabled (eq $storageType "LOCAL") (not .Values.knowledgeWorker.localStorage.enabled) }}
+{{- fail "knowledgeWorker.localStorage.enabled must be true when Knowledge worker uses LOCAL storage" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,6 +25,11 @@ spec:
         checksum/config: {{ toYaml .Values | sha256sum }}
         checksum/secret: {{ toYaml .Values.secrets | sha256sum }}
     spec:
+      {{- if and .Values.knowledgeWorker.enabled (eq $storageType "LOCAL") .Values.knowledgeWorker.localStorage.enabled }}
+      securityContext:
+        fsGroup: {{ .Values.knowledgeWorker.localStorage.fsGroup }}
+        fsGroupChangePolicy: OnRootMismatch
+      {{- end }}
       containers:
       - name: gateway
         image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag | default .Chart.AppVersion }}"
@@ -206,6 +215,11 @@ spec:
         
         resources:
           {{- toYaml .Values.gateway.resources | nindent 10 }}
+        {{- if and .Values.knowledgeWorker.enabled (eq $storageType "LOCAL") .Values.knowledgeWorker.localStorage.enabled }}
+        volumeMounts:
+        - name: knowledge-uploads
+          mountPath: /app/uploads
+        {{- end }}
         
         livenessProbe:
           httpGet:
@@ -220,4 +234,10 @@ spec:
             port: http
           initialDelaySeconds: 10
           periodSeconds: 5
+      {{- if and .Values.knowledgeWorker.enabled (eq $storageType "LOCAL") .Values.knowledgeWorker.localStorage.enabled }}
+      volumes:
+      - name: knowledge-uploads
+        persistentVolumeClaim:
+          claimName: {{ include "moduly.knowledgeUploadClaimName" . }}
+      {{- end }}
 {{- end }}

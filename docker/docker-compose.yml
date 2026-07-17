@@ -173,6 +173,8 @@ services:
       PYTHONUNBUFFERED: 1
       PYTHONPATH: /app
     depends_on:
+      gateway:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:

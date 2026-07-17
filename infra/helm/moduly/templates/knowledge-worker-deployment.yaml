@@ -1,4 +1,8 @@
 {{- if .Values.knowledgeWorker.enabled }}
+{{- $storageType := upper (default "LOCAL" .Values.gateway.env.STORAGE_TYPE) }}
+{{- if and (eq $storageType "LOCAL") (not .Values.knowledgeWorker.localStorage.enabled) }}
+{{- fail "knowledgeWorker.localStorage.enabled must be true when Knowledge worker uses LOCAL storage" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,6 +23,45 @@ spec:
         checksum/secret: {{ toYaml .Values.secrets | sha256sum }}
     spec:
       serviceAccountName: {{ include "moduly.serviceAccountName" . }}
+      {{- if and (eq $storageType "LOCAL") .Values.knowledgeWorker.localStorage.enabled }}
+      securityContext:
+        fsGroup: {{ .Values.knowledgeWorker.localStorage.fsGroup }}
+        fsGroupChangePolicy: OnRootMismatch
+      {{- end }}
+      initContainers:
+      - name: wait-for-knowledge-schema
+        image: "{{ default .Values.gateway.image.repository .Values.knowledgeWorker.image.repository }}:{{ default (.Values.gateway.image.tag | default .Chart.AppVersion) .Values.knowledgeWorker.image.tag }}"
+        imagePullPolicy: {{ default .Values.gateway.image.pullPolicy .Values.knowledgeWorker.image.pullPolicy }}
+        command:
+        - python
+        - -m
+        - apps.gateway.knowledge_worker_readiness
+        env:
+        - name: DB_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "moduly.configMapName" . }}
+              key: DB_HOST
+        - name: DB_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "moduly.configMapName" . }}
+              key: DB_PORT
+        - name: DB_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "moduly.configMapName" . }}
+              key: DB_NAME
+        - name: DB_USER
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "moduly.configMapName" . }}
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "moduly.secretName" . }}
+              key: DB_PASSWORD
       containers:
       - name: knowledge-worker
         image: "{{ default .Values.gateway.image.repository .Values.knowledgeWorker.image.repository }}:{{ default (.Values.gateway.image.tag | default .Chart.AppVersion) .Values.knowledgeWorker.image.tag }}"
@@ -139,4 +182,15 @@ spec:
         {{- end }}
         resources:
           {{- toYaml .Values.knowledgeWorker.resources | nindent 10 }}
+        {{- if and (eq $storageType "LOCAL") .Values.knowledgeWorker.localStorage.enabled }}
+        volumeMounts:
+        - name: knowledge-uploads
+          mountPath: /app/uploads
+        {{- end }}
+      {{- if and (eq $storageType "LOCAL") .Values.knowledgeWorker.localStorage.enabled }}
+      volumes:
+      - name: knowledge-uploads
+        persistentVolumeClaim:
+          claimName: {{ include "moduly.knowledgeUploadClaimName" . }}
+      {{- end }}
 {{- end }}

@@ -100,6 +100,11 @@ knowledgeWorker:
   enabled: true
   replicaCount: 1
   concurrency: 1
+  localStorage:
+    enabled: true
+    size: 2Gi
+    accessModes:
+      - ReadWriteOnce
   resources:
     limits:
       cpu: 500m

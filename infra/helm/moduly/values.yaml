@@ -111,6 +111,15 @@ knowledgeWorker:
   enabled: false
   replicaCount: 1
   concurrency: 2
+  # LOCAL storage is valid only when Gateway and worker share this PVC.
+  # Production CLOUD storage does not mount it.
+  localStorage:
+    enabled: false
+    existingClaim: ""
+    size: 5Gi
+    fsGroup: 1000
+    accessModes:
+      - ReadWriteOnce
   image:
     repository: ""
     tag: ""
