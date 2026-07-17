@@ -7,6 +7,7 @@ WorkflowEngine - Gevent-based Workflow Execution Engine
 import logging
 import time
 import uuid
+from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
 import gevent
@@ -50,6 +51,22 @@ from apps.workflow_engine.workflow.errors import (
     NonRetryableWorkflowError,
     WorkflowNodeConfigurationError,
 )
+
+
+class _ControlEdgeState(str, Enum):
+    PENDING = "pending"
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+
+
+class _NodeScheduleState(str, Enum):
+    PENDING = "pending"
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    INACTIVE = "inactive"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class WorkflowEngine:
@@ -228,6 +245,11 @@ class WorkflowEngine:
         self.reverse_graph = {}
         self.edge_handles = {}
         self.data_dependencies = {}
+        self.data_dependents = {}
+        self._incoming_control_edges: dict[str, list[int]] = {}
+        self._outgoing_control_edges: dict[str, list[int]] = {}
+        self._control_edge_states: dict[int, _ControlEdgeState] = {}
+        self._node_schedule_states: dict[str, _NodeScheduleState] = {}
         self._build_optimized_graph()
         self._mail_sensitive_node_ids = self._descendants_of_type("mailNode")
         direct_provider_node_ids = {
@@ -260,6 +282,7 @@ class WorkflowEngine:
 
         # 그래프 구조 검증
         self.validate_graph()
+        self._reset_scheduler_state()
 
     def cleanup(self):
         """실행 완료 후 메모리 정리"""
@@ -284,6 +307,12 @@ class WorkflowEngine:
         self.adjacency_list.clear()
         self.reverse_graph.clear()
         self.edge_handles.clear()
+        self.data_dependencies.clear()
+        self.data_dependents.clear()
+        self._incoming_control_edges.clear()
+        self._outgoing_control_edges.clear()
+        self._control_edge_states.clear()
+        self._node_schedule_states.clear()
         self.nodes_by_type.clear()
         self.execution_context.clear()
         self.user_input = None
@@ -410,10 +439,7 @@ class WorkflowEngine:
 
         start_node = self._find_start_node()
         results = {}
-
-        # 병렬 실행 상태 관리
-        executed_nodes = set()
-        queued_nodes = {start_node}
+        self._reset_scheduler_state()
 
         # [GEVENT] Greenlet 관리
         running_greenlets = {}  # {greenlet: node_id}
@@ -432,6 +458,8 @@ class WorkflowEngine:
                 yield {"type": "workflow_start", "data": {}}
 
             # 초기 시작 노드 실행
+            if not self._claim_node_if_ready(start_node, results):
+                raise RuntimeError("workflow entry node is not ready")
             self._submit_node(
                 start_node,
                 results,
@@ -448,6 +476,10 @@ class WorkflowEngine:
                 if elapsed_time > self.workflow_timeout:
                     timeout_error = TimeoutError("workflow_timeout")
                     self._mark_running_nodes_timeout(running_nodes, timeout_error)
+                    for running_node_id in running_greenlets.values():
+                        self._node_schedule_states[running_node_id] = (
+                            _NodeScheduleState.CANCELLED
+                        )
                     for g in running_greenlets:
                         g.kill()
 
@@ -479,30 +511,34 @@ class WorkflowEngine:
                 for greenlet, node_id in completed:
                     del running_greenlets[greenlet]
                     running_nodes.pop(node_id, None)
-                    executed_nodes.add(node_id)
 
                     try:
                         result_data = greenlet.get()
                         node_result = result_data["result"]
                         results[node_id] = node_result
                         self._propagate_external_effect_output_sensitivity(node_id)
+                        next_nodes = self._complete_node_scheduling(
+                            node_id,
+                            node_result,
+                        )
 
                     except Exception as e:
+                        self._node_schedule_states[node_id] = _NodeScheduleState.FAILED
+                        for running_node_id in running_greenlets.values():
+                            self._node_schedule_states[running_node_id] = (
+                                _NodeScheduleState.CANCELLED
+                            )
                         for g in running_greenlets:
                             g.kill()
 
                         raise e
 
                     # 다음 실행할 노드 탐색 및 제출
-                    next_nodes = self._get_next_nodes(node_id, results[node_id])
-                    for next_node_id in next_nodes:
-                        if (
-                            next_node_id not in executed_nodes
-                            and next_node_id not in queued_nodes
-                            and next_node_id not in running_greenlets.values()
-                            and self._is_ready(next_node_id, results)
+                    for next_node_id in self.node_schemas:
+                        if next_node_id in next_nodes and self._claim_node_if_ready(
+                            next_node_id,
+                            results,
                         ):
-                            queued_nodes.add(next_node_id)
                             self._submit_node(
                                 next_node_id,
                                 results,
@@ -563,7 +599,9 @@ class WorkflowEngine:
         except Exception as e:
             run_id = self.execution_context.get("workflow_run_id")
             safe_error_code = self._error_code(e)
-            safe_payload = e.to_payload() if isinstance(e, ExternalEffectError) else None
+            safe_payload = (
+                e.to_payload() if isinstance(e, ExternalEffectError) else None
+            )
             if not stream_mode:
                 if not self.is_subworkflow:
                     self.logger.update_run_log_error(safe_error_code)
@@ -609,6 +647,9 @@ class WorkflowEngine:
         """
         if node_id not in self.node_instances:
             raise ValueError(f"노드 ID '{node_id}'를 찾을 수 없습니다.")
+        if self._node_schedule_states.get(node_id) != _NodeScheduleState.QUEUED:
+            raise RuntimeError("workflow node was submitted without a scheduling claim")
+        self._node_schedule_states[node_id] = _NodeScheduleState.RUNNING
 
         node_instance = self.node_instances[node_id]
         node_schema = self.node_schemas[node_id]
@@ -955,9 +996,7 @@ class WorkflowEngine:
             workflow_run_id = (
                 uuid.UUID(str(workflow_run_raw)) if workflow_run_raw else None
             )
-            canonical_node_run_id = (
-                uuid.UUID(str(node_run_id)) if node_run_id else None
-            )
+            canonical_node_run_id = uuid.UUID(str(node_run_id)) if node_run_id else None
         except (KeyError, TypeError, ValueError, AttributeError):
             return None
         return ExternalEffectContext(
@@ -1261,17 +1300,124 @@ class WorkflowEngine:
         return self.adjacency_list.get(node_id, [])
 
     def _is_ready(self, node_id: str, results: Dict) -> bool:
-        """현재 노드에 선행되는 노드가 모두 완료되었는지 확인"""
-        if node_id in self.data_dependencies:
-            required_inputs = self.data_dependencies[node_id]
-        else:
-            required_inputs = self.reverse_graph.get(node_id, [])
+        """활성 control edge와 selector source가 모두 준비되었는지 확인합니다."""
+        if self._node_schedule_states.get(node_id) != _NodeScheduleState.PENDING:
+            return False
 
-        return all(inp in results for inp in required_inputs)
+        incoming_edges = self._incoming_control_edges.get(node_id, ())
+        if incoming_edges:
+            incoming_states = [
+                self._control_edge_states[edge_index] for edge_index in incoming_edges
+            ]
+            if _ControlEdgeState.PENDING in incoming_states:
+                return False
+
+            active_edges = [
+                edge_index
+                for edge_index in incoming_edges
+                if self._control_edge_states[edge_index] == _ControlEdgeState.ACTIVE
+            ]
+            if not active_edges:
+                return False
+            if any(
+                self.edges[edge_index].source not in results
+                for edge_index in active_edges
+            ):
+                return False
+        elif node_id != self._find_start_node():
+            return False
+
+        required_inputs = self.data_dependencies.get(node_id, set())
+        return all(source_id in results for source_id in required_inputs)
+
+    def _reset_scheduler_state(self) -> None:
+        self._control_edge_states = {
+            edge_index: _ControlEdgeState.PENDING
+            for edge_index in range(len(self.edges))
+        }
+        self._node_schedule_states = {
+            node_id: _NodeScheduleState.PENDING for node_id in self.node_schemas
+        }
+
+    def _claim_node_if_ready(self, node_id: str, results: Dict) -> bool:
+        if not self._is_ready(node_id, results):
+            return False
+        self._node_schedule_states[node_id] = _NodeScheduleState.QUEUED
+        return True
+
+    def _complete_node_scheduling(
+        self,
+        node_id: str,
+        result: Dict[str, Any],
+    ) -> set[str]:
+        if self._node_schedule_states.get(node_id) != _NodeScheduleState.RUNNING:
+            raise RuntimeError("workflow node completed outside the running state")
+        self._node_schedule_states[node_id] = _NodeScheduleState.SUCCEEDED
+
+        selected_handle = result.get("selected_handle")
+        affected_nodes = set(self.data_dependents.get(node_id, ()))
+        for edge_index in self._outgoing_control_edges.get(node_id, ()):
+            edge = self.edges[edge_index]
+            edge_state = (
+                _ControlEdgeState.ACTIVE
+                if selected_handle is None or edge.sourceHandle == selected_handle
+                else _ControlEdgeState.INACTIVE
+            )
+            self._set_control_edge_state(edge_index, edge_state)
+            affected_nodes.add(edge.target)
+
+        affected_nodes.update(self._propagate_inactive_nodes(affected_nodes))
+        return affected_nodes
+
+    def _set_control_edge_state(
+        self,
+        edge_index: int,
+        state: _ControlEdgeState,
+    ) -> None:
+        current_state = self._control_edge_states[edge_index]
+        if current_state not in (_ControlEdgeState.PENDING, state):
+            raise RuntimeError("workflow control edge state conflict")
+        self._control_edge_states[edge_index] = state
+
+    def _propagate_inactive_nodes(self, candidate_node_ids) -> set[str]:
+        affected_nodes = set(candidate_node_ids)
+        pending = list(candidate_node_ids)
+
+        while pending:
+            node_id = pending.pop()
+            if self._node_schedule_states.get(node_id) != _NodeScheduleState.PENDING:
+                continue
+
+            data_source_inactive = any(
+                self._node_schedule_states.get(source_id) == _NodeScheduleState.INACTIVE
+                for source_id in self.data_dependencies.get(node_id, ())
+            )
+            incoming_edges = self._incoming_control_edges.get(node_id, ())
+            control_path_inactive = bool(incoming_edges) and all(
+                self._control_edge_states[edge_index] == _ControlEdgeState.INACTIVE
+                for edge_index in incoming_edges
+            )
+            if not data_source_inactive and not control_path_inactive:
+                continue
+
+            self._node_schedule_states[node_id] = _NodeScheduleState.INACTIVE
+            downstream_nodes = set(self.data_dependents.get(node_id, ()))
+            for edge_index in self._outgoing_control_edges.get(node_id, ()):
+                self._set_control_edge_state(
+                    edge_index,
+                    _ControlEdgeState.INACTIVE,
+                )
+                downstream_nodes.add(self.edges[edge_index].target)
+
+            for downstream_node_id in downstream_nodes:
+                affected_nodes.add(downstream_node_id)
+                pending.append(downstream_node_id)
+
+        return affected_nodes
 
     def _build_optimized_graph(self):
         """엣지를 분석하여 효율적인 그래프 구조 생성"""
-        for edge in self.edges:
+        for edge_index, edge in enumerate(self.edges):
             if edge.source not in self.adjacency_list:
                 self.adjacency_list[edge.source] = []
             self.adjacency_list[edge.source].append(edge.target)
@@ -1285,6 +1431,9 @@ class WorkflowEngine:
                 self.edge_handles[key] = []
             self.edge_handles[key].append(edge.target)
 
+            self._incoming_control_edges.setdefault(edge.target, []).append(edge_index)
+            self._outgoing_control_edges.setdefault(edge.source, []).append(edge_index)
+
         self._analyze_data_dependencies()
 
     def _descendants_of_type(self, node_type: str) -> set[str]:
@@ -1296,8 +1445,7 @@ class WorkflowEngine:
 
     def _descendants_of_nodes(self, source_node_ids) -> set[str]:
         forward_dependencies: dict[str, set[str]] = {
-            node_id: set(targets)
-            for node_id, targets in self.adjacency_list.items()
+            node_id: set(targets) for node_id, targets in self.adjacency_list.items()
         }
         for target_id, source_ids in self.data_dependencies.items():
             for source_id in source_ids:
@@ -1333,13 +1481,16 @@ class WorkflowEngine:
                     durable_outputs[node_id] = {}
                     continue
                 schema = self.node_schemas[node_id]
-                durable_outputs[node_id] = durable_provider_summary(
-                    node_type=schema.type,
-                    process_data=dict(schema.data or {}),
-                    trace_metadata=getattr(
-                        self.node_instances.get(node_id), "_trace_metadata", {}
-                    ),
-                ) or {}
+                durable_outputs[node_id] = (
+                    durable_provider_summary(
+                        node_type=schema.type,
+                        process_data=dict(schema.data or {}),
+                        trace_metadata=getattr(
+                            self.node_instances.get(node_id), "_trace_metadata", {}
+                        ),
+                    )
+                    or {}
+                )
             return durable_outputs
 
         answer_node_ids = set(self.nodes_by_type.get("answerNode", ()))
@@ -1402,11 +1553,9 @@ class WorkflowEngine:
                 continue
 
             referenced_nodes = self._extract_value_selectors(schema)
-
-            if referenced_nodes:
-                self.data_dependencies[node_id] = referenced_nodes
-            else:
-                self.data_dependencies[node_id] = set()
+            self.data_dependencies[node_id] = referenced_nodes
+            for source_node_id in referenced_nodes:
+                self.data_dependents.setdefault(source_node_id, set()).add(node_id)
 
     def _extract_value_selectors(self, schema: NodeSchema) -> set:
         """NodeSchema의 data에서 모든 value_selector를 추출합니다."""
