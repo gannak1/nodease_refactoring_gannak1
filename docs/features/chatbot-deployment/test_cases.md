@@ -122,6 +122,13 @@ Verified Against: `origin/dev @ 32fb602f`
 - Widget도 공유 `/embed/chat` route에서 같은 allowed/denied parent 결과를 가지되 Conversation Session을 생성하지 않는다.
 - Release B rollback artifact는 broad `http: https: file: data:`를 복원하지 않고 dynamic policy 또는 deny-all `'none'`을 유지한다.
 
+## Citation Tests
+
+- public/internal Chatbot 성공 응답의 safe Citation sidecar가 assistant message 아래에 표시되는지 검증한다.
+- public Chatbot에서 private/denied Collection child evidence가 답변과 Citation에 나타나지 않는지 검증한다.
+- unknown version, malformed item, 내부 identity, URL/path 또는 secret marker가 있는 Citation은 숨기되 assistant 답변은 유지하는지 검증한다.
+- Citation이 없는 no-evidence/legacy 응답과 mobile viewport에서 빈 공간·overflow 없이 렌더링되는지 검증한다.
+
 ## Edge Cases
 
 - 시작 노드에 `conversation_id`/`memory_mode`와 동일 이름의 입력 변수가 있으면 해당 값이 pop되어 삼켜진다.

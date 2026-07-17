@@ -46,6 +46,12 @@ Public Client는 deployment-owned parent embedding policy가 확인된 surface�
 
 `/embed/chat/{urlSlug}` document는 계속 relative info/run API만 사용한다. Parent origin, `document.referrer`, request Origin과 current location을 API body/header/query 또는 policy fallback으로 보내지 않는다.
 
+## Citation List
+
+- 공개 embed Chatbot과 인증 내부 Chatbot은 assistant 답변 아래에 동일한 `CitationList`를 표시한다.
+- 기본 상태는 접힌 목록이고 summary에 출처 수를 표시한다. keyboard로 열고 닫을 수 있어야 한다.
+- `basic`은 라벨과 page/section, `detailed`는 추가로 정제된 preview를 표시한다. raw URL/path나 내부 식별자를 링크로 만들지 않는다.
+
 ## Accessibility
 
 - 내부 질문 입력은 자동 높이 `textarea`, 전송은 `button[type=submit]`이다. `Enter` 전송과 `Shift+Enter` 줄바꿈 안내를 composer 아래에 표시하고 전송 중에는 입력/버튼을 비활성화한다.

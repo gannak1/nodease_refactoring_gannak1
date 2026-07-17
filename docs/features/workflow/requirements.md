@@ -300,6 +300,13 @@ FR-048 기존 실행 계약 보존: Draft/test·Compare·stream publisher는 DB 
 - Missing execution subject는 anonymous public-only로 처리한다. Ambiguous execution subject, suspended/removed membership, inactive service account는 private retrieval fail-closed로 처리한다.
 
 
+## LLM Grounding And Citation Display
+
+- `answerGroundingCheck`는 `off|basic|strict` lexical overlap metadata를 계산하는 옵션이며, 사용자 Citation 표시나 답변 차단을 의미하지 않는다. UI 명칭은 `답변·검색 문서 어휘 일치도`로 표시한다.
+- `citationDisplayMode`는 사용자 응답에서 Citation을 표시하는 독립 옵션이며 `hidden|basic|detailed`를 사용한다.
+- 저장된 기존 node에 `citationDisplayMode`가 없으면 `hidden`으로 해석해 응답 계약을 보존한다. 새 수동 node와 Agent Builder 생성 node는 `basic`을 명시적으로 저장한다.
+- Citation은 Answer node의 data dependency ancestry에 있는 LLM node에서만 모은다. 연결되지 않은 control branch와 subworkflow output의 Citation을 자동 승격하지 않는다.
+
 ## Open Questions
 
 Open Question 중요도는 다음 3단계로 나눈다.

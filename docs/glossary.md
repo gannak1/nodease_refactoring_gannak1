@@ -124,7 +124,7 @@ Status: Draft
 | Document Chunk | 검색과 citation을 위해 Document 또는 Document Version을 나눈 텍스트 조각. 목표 모델에서 chunk text, embedding input, retrieval-visible artifact는 redacted canonical text에서 생성된다. |
 | RAG | Retrieval-Augmented Generation. 질문에 답하기 전에 Knowledge Base에서 관련 문서 조각을 검색해 LLM 응답에 활용하는 방식이다. |
 | Retrieval | 질문 또는 query에 맞는 Document Chunk를 찾는 검색 과정이다. |
-| Citation | 답변이 근거로 삼은 문서/청크 출처 정보. 사용자와 감사자가 답변 근거를 확인하는 데 사용한다. |
+| Citation | 답변이 근거로 삼은 문서/청크 출처 정보. 일반 사용자용 Workflow/Chatbot Citation은 권한을 통과한 실제 prompt evidence의 제한된 safe projection이며 내부 resource identity와 raw content를 포함하지 않는다. 감사·운영용 privileged lineage는 별도 권한·보존 경계를 따른다. |
 | Knowledge Permission Helper | KB permission, collection route scope, source ACL freshness/requester authorization을 service가 재사용할 수 있는 형태로 평가하는 helper. Router나 controller가 permission row 또는 raw source ACL을 직접 조합하지 않게 하는 경계다. |
 | Safe Candidate Set | Permission helper와 source ACL gate를 통과해 router, Workflow Builder, 실행 시점 RAG 경로에 제공할 수 있는 KB/collection/skill 후보와 safe metadata의 집합. 권한 없는 resource id, raw source path/url/title, raw ACL fact, exact denied count를 포함하지 않는다. |
 | Collection Router | Safe Candidate Set 안에서 질문에 적합한 collection/KB 후보를 선택하는 routing component. Access control을 수행하지 않고, 이미 필터링된 safe metadata만 소비한다. |

@@ -44,7 +44,7 @@ FR-011은 Workflow-Aware Adaptive Routing으로 다룬다. 기존 policy/runtime
 | FR-003 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr3-candidate-editor.test.tsx` | 후보 모델/대체 모델 선택 UI, JSON schema key-type row 추가, prompt variable token editor 재사용, compare request schema 변환 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr3-candidate-editor.test.tsx` | 통과 |
 | FR-003 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx` | 원본 LLM 노드 상세 설정의 모델 선택 UI 유지, 모델 라우팅 최적화 진입 버튼, task type 선택 미노출 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx` | 통과 |
 | FR-003 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr3-rag-cost-options.test.tsx` | RAG 비용 최적화 옵션 노출/변경 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr3-rag-cost-options.test.tsx` | 통과 |
-| FR-003 | Workflow runtime | `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py` | 중복 근거 제거, 참조 문서 길이 제한, 검색 문서 압축, 답변 근거 확인 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/nodes/test_llm_node_runtime.py` | 통과 |
+| FR-003 | Workflow runtime | `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py` | 중복 근거 제거, 참조 문서 길이 제한, 검색 문서 압축, 답변·검색 문서 어휘 일치도 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/nodes/test_llm_node_runtime.py` | 통과 |
 | FR-003 | Gateway API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | candidate schema validation, Knowledge Base/model 사용 가능성 검증, schema_failed response/apply 차단 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-004 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr4-fr5-hybrid-compare-flow.test.tsx` | baseline input lock 표시, compare request에 임의 input을 넣지 않음 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr4-fr5-hybrid-compare-flow.test.tsx` | 통과 |
 | FR-004 | Gateway service/API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | baseline input restore, wrong baseline scope | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
@@ -364,13 +364,13 @@ evidence pipeline이 없으면 Workflow-Aware Adaptive Routing 구현 완료로 
 - JSON schema type 후보는 `string`, `number`, `boolean`, `object`, `array`다.
 - 1차 UI는 nested field editor를 제공하지 않고 flat key-type row만 편집한다.
 - B candidate 영역은 여러 Knowledge Base, `topK`, `scoreThreshold`를 편집할 수 있다.
-- B candidate 영역은 중복 근거 제거, 참조 문서 길이 제한, 검색 문서 압축, 답변 근거 확인을 편집할 수 있다.
-- 새 LLM 노드는 중복 근거 제거, 참조 문서 길이 제한, 검색 문서 압축, 답변 근거 확인 기본값을 명시적으로 가지며, 답변 근거 확인은 `basic`이 기본이다.
+- B candidate 영역은 중복 근거 제거, 참조 문서 길이 제한, 검색 문서 압축, 답변·검색 문서 어휘 일치도를 편집할 수 있다.
+- 새 LLM 노드는 중복 근거 제거, 참조 문서 길이 제한, 검색 문서 압축, 답변·검색 문서 어휘 일치도 기본값을 명시적으로 가지며, 해당 값은 `basic`이 기본이다.
 - 참조 문서 길이 제한은 Knowledge/RAG context에만 적용되며 system/user/assistant prompt를 임의로 자르지 않는다.
 - 참조 문서 길이 제한이 비어 있으면 compare request는 `retrieved_context_max_chars: null`을 보낼 수 있고, API는 이를 제한 없음으로 허용한다.
 - 중복 근거 제거가 켜지면 동일한 retrieved chunk content는 한 번만 LLM context에 들어간다.
 - 검색 문서 압축이 켜지면 검색 query와 관련된 문장을 우선 남겨 Knowledge/RAG context를 줄인다.
-- 답변 근거 확인이 켜지면 LLM 응답과 Knowledge/RAG context의 기본 overlap 결과를 safe metadata로 남긴다.
+- 답변·검색 문서 어휘 일치도가 켜지면 LLM 응답과 Knowledge/RAG context의 기본 overlap 결과를 safe metadata로 남긴다.
 - B candidate 영역은 고급 파라미터 섹션에서 `top_p`, `presence_penalty`, `frequency_penalty`, `stop`을 편집할 수 있다.
 - 고급 파라미터 validation은 기존 LLM node 고급 설정 범위를 따른다.
 - 필수 후보 설정이 누락되면 `B 실행` 버튼이 disabled 상태가 되거나 validation message를 표시한다.
@@ -590,6 +590,12 @@ evidence pipeline이 없으면 Workflow-Aware Adaptive Routing 구현 완료로 
 
 - builder 사용자는 baseline 선택부터 B 후보 적용까지 전체 흐름을 완료할 수 있다.
 - member/viewer 사용자는 직접 URL 접근을 시도해도 Cost Optimizer API를 사용할 수 없다.
+
+## MBA-322 Grounding/Citation Terminology
+
+- 새 LLM node의 lexical grounding 기본값과 Citation 기본값을 각각 검증한다.
+- Cost Optimizer 후보 patch가 `answerGroundingCheck`는 기존 계약대로 변경하되 `citationDisplayMode`는 변경·제거하지 않고 보존하는지 검증한다.
+- UI가 lexical overlap 옵션을 Citation 또는 답변 차단 기능으로 오해하게 만드는 기존 `답변 근거 확인` 명칭을 표시하지 않는지 검증한다.
 
 ## Regression Tests
 

@@ -326,6 +326,13 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 - Code-bearing skill은 별도 sandbox/approval/egress/resource-cap gate가 닫히기 전까지 Knowledge 실행 시점 경로에서 실행하지 않는다.
 - Retention purge와 cleanup worker는 terminal state와 legal hold를 확인하고, concurrent worker가 같은 row를 중복 처리하지 못하도록 row lock, marker, idempotency key 중 하나를 사용해야 한다.
 
+## Workflow Citation Projector
+
+- Workflow Engine의 Citation projector는 runtime candidate resolver가 허용한 후보 중 최종 prompt에 실제 포함된 evidence만 입력으로 받는다.
+- manual KB는 승인된 `safe_metadata.safe_label`, source-managed KB/Collection은 active하고 display policy가 approved인 source identity의 `safe_display_name`만 사용자 라벨로 사용할 수 있다. 조건을 충족하지 않으면 일반 라벨로 fail-closed한다.
+- Collection 경유 evidence의 child section과 child resource identity는 projector 경계에서 제거한다.
+- projector 결과는 LLM node instance의 실행별 ephemeral 상태로만 유지하고, Answer node data ancestry를 따라 최종 응답에 투영한다. control-only LLM node와 subworkflow의 sidecar는 상위 응답으로 승격하지 않는다.
+
 ## Accessibility
 
 - Collection과 KB state badge에는 색상만이 아니라 text label이 있어야 한다.

@@ -502,7 +502,7 @@ prompt 입력 영역은 기존 노드 상세 편집과 같이 변수 삽입을 �
 - 중복 근거 제거
 - 참조 문서 길이 제한
 - 검색 문서 압축
-- 답변 근거 확인
+- 답변·검색 문서 어휘 일치도
 
 B candidate 영역은 다음 액션을 포함한다.
 
@@ -573,7 +573,7 @@ stale 상태는 다음 필드 중 하나라도 마지막 B 실행 이후 변경�
 - 중복 근거 제거
 - 참조 문서 길이 제한
 - 검색 문서 압축
-- 답변 근거 확인
+- 답변·검색 문서 어휘 일치도
 
 화면은 A baseline과 B candidate가 같은 입력 기준이라는 점을 명확히 표시한다.
 
@@ -823,7 +823,7 @@ downstream card는 `사용 가능`, `주의 필요`, `사용 불가`, `확인 �
 | `dedupeRetrievedContext` | `data.dedupeRetrievedContext` | `candidate.knowledge.dedupe_retrieved_context` | `candidate_settings.knowledge.dedupe_retrieved_context` | 중복 검색 근거를 제거한다. |
 | `retrievedContextMaxChars` | `data.retrievedContextMaxChars` | `candidate.knowledge.retrieved_context_max_chars` | `candidate_settings.knowledge.retrieved_context_max_chars` | author prompt가 아니라 Knowledge/RAG context만 제한한다. |
 | `retrievedContextCompression` | `data.retrievedContextCompression` | `candidate.knowledge.retrieved_context_compression` | `candidate_settings.knowledge.retrieved_context_compression` | `off`, `light`, `strong`. |
-| `answerGroundingCheck` | `data.answerGroundingCheck` | `candidate.knowledge.answer_grounding_check` | `candidate_settings.knowledge.answer_grounding_check` | `off`, `basic`, `strict`. 새 노드와 값이 없는 기존 노드의 기본값은 `basic`. |
+| `answerGroundingCheck` | `data.answerGroundingCheck` | `candidate.knowledge.answer_grounding_check` | `candidate_settings.knowledge.answer_grounding_check` | `off`, `basic`, `strict`. 답변·검색 문서 lexical overlap metadata만 의미하며 새 노드와 값이 없는 기존 노드의 기본값은 `basic`. |
 
 ### Inspector
 
@@ -977,6 +977,12 @@ Inspector는 탭 구조를 사용한다.
 3. 적용 전 확인 모달을 표시한다.
 4. 사용자가 확인하면 current draft의 target LLM node 설정을 갱신한다.
 5. 적용 후 기존 workflow 저장/테스트 실행 흐름을 유지한다.
+
+## Grounding And Citation Labels
+
+- 후보 설정의 `answerGroundingCheck`는 `답변·검색 문서 어휘 일치도`로 표시한다.
+- `citationDisplayMode`의 `출처 표시` UI는 LLM node reference panel이 소유한다. Cost Optimizer 후보 화면은 이를 직접 편집하지 않는다.
+- A/B 후보 patch는 `citationDisplayMode`를 변경하거나 제거하지 않고 기존 graph 값을 그대로 보존한다.
 
 ## Accessibility
 
