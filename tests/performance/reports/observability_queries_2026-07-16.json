@@ -1,0 +1,27 @@
+{
+  "method": {
+    "database": "local PostgreSQL 15 development container",
+    "iterations": 5,
+    "statistic": "median",
+    "tables": "temporary synthetic tables",
+    "application_data_modified": false
+  },
+  "baseline": {
+    "rows": 100000,
+    "audit_typed_fk_vs_jsonb": {
+      "before_ms": 5.495,
+      "after_ms": 0.026,
+      "speedup": 211.35
+    },
+    "audit_cursor_vs_deep_offset": {
+      "before_ms": 8.547,
+      "after_ms": 0.006,
+      "speedup": 1424.5
+    },
+    "trace_sql_filter_vs_fetch_5000": {
+      "before_ms": 2.224,
+      "after_ms": 0.197,
+      "speedup": 11.28
+    }
+  }
+}
