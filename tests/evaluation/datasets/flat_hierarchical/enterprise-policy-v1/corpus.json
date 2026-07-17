@@ -1,0 +1,174 @@
+{
+  "schema_version": "1",
+  "corpus_id": "enterprise-policy-v1",
+  "documents": [
+    {
+      "source_ref": "src_leave_policy_001",
+      "sampling_cluster_ref": "leave",
+      "split": "development",
+      "source_type": "synthetic",
+      "analysis_role": "primary",
+      "version_role": "current",
+      "title": "휴가 자격 및 신청 규정",
+      "sections": [
+        {"section_key": "annual-entitlement", "hierarchy_path": ["휴가", "연차 자격"], "heading": "연차 자격", "text": "정규 직원은 입사일로부터 30일이 지나면 연차 사용을 신청할 수 있다."},
+        {"section_key": "request-deadline", "hierarchy_path": ["휴가", "신청 기한"], "heading": "신청 기한", "text": "3일을 초과하는 연속 휴가는 시작일 기준 10영업일 전까지 신청한다."},
+        {"section_key": "emergency-notice", "hierarchy_path": ["휴가", "긴급 통지"], "heading": "긴급 통지", "text": "예측할 수 없는 긴급 휴가는 근무 시작 후 2시간 안에 직속 관리자에게 알린다."}
+      ]
+    },
+    {
+      "source_ref": "src_leave_policy_002",
+      "sampling_cluster_ref": "leave",
+      "split": "development",
+      "source_type": "synthetic",
+      "analysis_role": "primary",
+      "version_role": "current",
+      "title": "휴가 승인 및 인수인계 규정",
+      "sections": [
+        {"section_key": "approval-chain", "hierarchy_path": ["휴가", "승인"], "heading": "승인 절차", "text": "5일 이하 휴가는 직속 관리자가 승인하고, 5일을 초과하면 부서장의 추가 승인을 받는다."},
+        {"section_key": "handover", "hierarchy_path": ["휴가", "인수인계"], "heading": "업무 인수인계", "text": "신청자는 승인 전에 진행 중인 업무, 대체 담당자, 긴급 연락 경로를 인수인계 문서에 기록한다."},
+        {"section_key": "conflict-order", "hierarchy_path": ["휴가", "일정 충돌"], "heading": "일정 충돌", "text": "같은 팀의 휴가가 충돌하면 먼저 승인된 신청을 우선하되, 관리자는 필수 운영 인력을 확보해야 한다."}
+      ]
+    },
+    {
+      "source_ref": "src_leave_policy_003",
+      "sampling_cluster_ref": "leave",
+      "split": "development",
+      "source_type": "synthetic",
+      "analysis_role": "primary",
+      "version_role": "current",
+      "title": "휴가 이월 및 소멸 규정",
+      "sections": [
+        {"section_key": "carryover-limit", "hierarchy_path": ["휴가", "이월"], "heading": "이월 한도", "text": "미사용 연차는 최대 5일까지 다음 연도로 이월할 수 있다."},
+        {"section_key": "expiry", "hierarchy_path": ["휴가", "소멸"], "heading": "이월분 소멸", "text": "이월된 연차는 다음 연도 6월 30일까지 사용하지 않으면 소멸한다."},
+        {"section_key": "exception", "hierarchy_path": ["휴가", "예외"], "heading": "업무상 사용 제한 예외", "text": "회사가 서면으로 휴가 사용을 제한한 경우 인사 책임자가 소멸 기한을 최대 3개월 연장할 수 있다."}
+      ]
+    },
+    {
+      "source_ref": "src_expense_rule_001",
+      "sampling_cluster_ref": "expense",
+      "split": "development",
+      "source_type": "synthetic",
+      "analysis_role": "primary",
+      "version_role": "current",
+      "title": "비용 제출 및 증빙 규정",
+      "sections": [
+        {"section_key": "submission", "hierarchy_path": ["비용", "제출"], "heading": "제출 기한", "text": "업무 비용은 지출일로부터 15일 안에 비용 시스템으로 제출한다."},
+        {"section_key": "receipt", "hierarchy_path": ["비용", "증빙"], "heading": "영수증", "text": "건당 3만원을 초과하는 지출에는 항목별 영수증을 첨부한다."},
+        {"section_key": "missing-receipt", "hierarchy_path": ["비용", "증빙", "분실"], "heading": "영수증 분실", "text": "영수증을 분실한 경우 사유서와 거래 내역을 제출하고 재무 관리자의 승인을 받는다."}
+      ]
+    },
+    {
+      "source_ref": "src_expense_rule_002",
+      "sampling_cluster_ref": "expense",
+      "split": "development",
+      "source_type": "synthetic",
+      "analysis_role": "primary",
+      "version_role": "current",
+      "title": "비용 승인 한도 규정",
+      "sections": [
+        {"section_key": "manager-limit", "hierarchy_path": ["비용", "승인", "관리자"], "heading": "관리자 승인", "text": "50만원 이하의 업무 비용은 직속 관리자가 승인한다."},
+        {"section_key": "director-limit", "hierarchy_path": ["비용", "승인", "부서장"], "heading": "부서장 승인", "text": "50만원을 초과하고 300만원 이하인 업무 비용은 부서장이 승인한다."},
+        {"section_key": "finance-limit", "hierarchy_path": ["비용", "승인", "재무"], "heading": "재무 책임자 승인", "text": "300만원을 초과하는 비용은 부서장 승인 후 재무 책임자의 추가 승인을 받는다."}
+      ]
+    },
+    {
+      "source_ref": "src_expense_rule_003",
+      "sampling_cluster_ref": "expense",
+      "split": "development",
+      "source_type": "synthetic",
+      "analysis_role": "primary",
+      "version_role": "current",
+      "title": "비용 제한 및 환급 규정",
+      "sections": [
+        {"section_key": "prohibited", "hierarchy_path": ["비용", "제한"], "heading": "금지 비용", "text": "개인 오락, 교통 법규 위반 과태료, 승인되지 않은 동반자 비용은 환급하지 않는다."},
+        {"section_key": "corporate-card", "hierarchy_path": ["비용", "법인카드"], "heading": "법인카드", "text": "법인카드는 업무 목적에만 사용하고 개인 지출이 섞이면 해당 금액을 5영업일 안에 반환한다."},
+        {"section_key": "refund-cycle", "hierarchy_path": ["비용", "환급"], "heading": "환급 주기", "text": "승인 완료된 비용은 매주 금요일 지급 처리한다."}
+      ]
+    },
+    {
+      "source_ref": "src_security_std_001",
+      "sampling_cluster_ref": "security",
+      "split": "development",
+      "source_type": "synthetic",
+      "analysis_role": "primary",
+      "version_role": "current",
+      "title": "계정 및 인증 보안 기준",
+      "sections": [
+        {"section_key": "account-sharing", "hierarchy_path": ["보안", "계정"], "heading": "계정 공유 금지", "text": "업무 계정은 개인별로 발급하며 다른 직원과 공유할 수 없다."},
+        {"section_key": "mfa", "hierarchy_path": ["보안", "인증"], "heading": "다중 인증", "text": "관리자 콘솔과 외부 네트워크 접속에는 다중 인증을 사용한다."},
+        {"section_key": "password-manager", "hierarchy_path": ["보안", "인증", "비밀번호"], "heading": "비밀번호 관리", "text": "업무 비밀번호는 회사가 승인한 비밀번호 관리자에 보관한다."}
+      ]
+    },
+    {
+      "source_ref": "src_security_std_002",
+      "sampling_cluster_ref": "security",
+      "split": "development",
+      "source_type": "synthetic",
+      "analysis_role": "primary",
+      "version_role": "current",
+      "title": "업무 기기 보안 기준",
+      "sections": [
+        {"section_key": "encryption", "hierarchy_path": ["보안", "기기", "암호화"], "heading": "저장장치 암호화", "text": "업무용 노트북의 내부 저장장치는 전체 디스크 암호화를 활성화한다."},
+        {"section_key": "patch", "hierarchy_path": ["보안", "기기", "패치"], "heading": "보안 패치", "text": "중요 보안 패치는 배포 통지 후 7일 안에 설치한다."},
+        {"section_key": "remote-access", "hierarchy_path": ["보안", "기기", "원격 접속"], "heading": "원격 접속", "text": "사외에서 내부 시스템에 접속할 때는 회사가 관리하는 기기와 승인된 보안 접속 경로를 사용한다."}
+      ]
+    },
+    {
+      "source_ref": "src_security_std_003",
+      "sampling_cluster_ref": "security",
+      "split": "development",
+      "source_type": "synthetic",
+      "analysis_role": "primary",
+      "version_role": "current",
+      "title": "보안 사고 대응 기준",
+      "sections": [
+        {"section_key": "report-window", "hierarchy_path": ["보안", "사고", "보고"], "heading": "초기 보고", "text": "의심스러운 계정 사용이나 정보 유출 징후는 발견 후 30분 안에 보안 대응 채널로 보고한다."},
+        {"section_key": "containment", "hierarchy_path": ["보안", "사고", "격리"], "heading": "초기 격리", "text": "감염이 의심되는 기기는 네트워크에서 분리하되 임의로 초기화하지 않는다."},
+        {"section_key": "evidence", "hierarchy_path": ["보안", "사고", "증거"], "heading": "증거 보존", "text": "사고 관련 로그와 메시지는 삭제하거나 편집하지 않고 원래 형식으로 보존한다."}
+      ]
+    },
+    {
+      "source_ref": "src_records_rule_001",
+      "sampling_cluster_ref": "records",
+      "split": "development",
+      "source_type": "synthetic",
+      "analysis_role": "primary",
+      "version_role": "current",
+      "title": "기록 분류 및 보존 규정",
+      "sections": [
+        {"section_key": "classification", "hierarchy_path": ["기록", "분류"], "heading": "기록 분류", "text": "계약, 인사, 재무, 보안 기록은 생성 시 해당 기록 분류를 지정한다."},
+        {"section_key": "contract-retention", "hierarchy_path": ["기록", "보존", "계약"], "heading": "계약 기록 보존", "text": "계약 기록은 계약 종료일로부터 7년간 보존한다."},
+        {"section_key": "security-retention", "hierarchy_path": ["기록", "보존", "보안"], "heading": "보안 로그 보존", "text": "보안 접속 로그는 생성일로부터 2년간 보존한다."}
+      ]
+    },
+    {
+      "source_ref": "src_records_rule_002",
+      "sampling_cluster_ref": "records",
+      "split": "development",
+      "source_type": "synthetic",
+      "analysis_role": "primary",
+      "version_role": "current",
+      "title": "기록 폐기 및 보존 명령 규정",
+      "sections": [
+        {"section_key": "scheduled-disposal", "hierarchy_path": ["기록", "폐기"], "heading": "정기 폐기", "text": "보존 기간이 끝난 기록은 기록 관리자의 승인 후 복구할 수 없는 방식으로 폐기한다."},
+        {"section_key": "legal-hold", "hierarchy_path": ["기록", "보존 명령"], "heading": "보존 명령", "text": "소송, 조사 또는 감사와 관련된 기록에는 보존 명령을 적용하고 정기 폐기를 중지한다."},
+        {"section_key": "hold-release", "hierarchy_path": ["기록", "보존 명령", "해제"], "heading": "보존 명령 해제", "text": "보존 명령은 법무 책임자의 서면 승인으로만 해제한다."}
+      ]
+    },
+    {
+      "source_ref": "src_records_rule_003",
+      "sampling_cluster_ref": "records",
+      "split": "development",
+      "source_type": "synthetic",
+      "analysis_role": "primary",
+      "version_role": "current",
+      "title": "기록 접근 및 반출 규정",
+      "sections": [
+        {"section_key": "least-privilege", "hierarchy_path": ["기록", "접근"], "heading": "최소 권한", "text": "기록 접근 권한은 업무 수행에 필요한 최소 범위로 부여한다."},
+        {"section_key": "external-export", "hierarchy_path": ["기록", "반출"], "heading": "외부 반출", "text": "기밀 기록을 외부로 반출하려면 기록 소유자와 보안 담당자의 사전 승인을 모두 받는다."},
+        {"section_key": "access-review", "hierarchy_path": ["기록", "점검"], "heading": "접근 권한 점검", "text": "기록 관리자는 분기마다 접근 권한 목록을 검토하고 불필요한 권한을 회수한다."}
+      ]
+    }
+  ]
+}

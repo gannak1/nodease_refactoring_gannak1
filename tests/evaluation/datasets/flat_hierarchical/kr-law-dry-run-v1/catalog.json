@@ -1,0 +1,143 @@
+{
+  "schema_version": "1",
+  "catalog_id": "kr-law-dry-run-v1",
+  "license_ref": "korea-law-open-data",
+  "entries": [
+    {
+      "source_key": "privacy_law",
+      "sampling_cluster_ref": "privacy",
+      "split": "development",
+      "source_type": "law",
+      "analysis_role": "primary",
+      "exact_title": "개인정보 보호법",
+      "history_versions": 1
+    },
+    {
+      "source_key": "privacy_decree",
+      "sampling_cluster_ref": "privacy",
+      "split": "development",
+      "source_type": "law",
+      "analysis_role": "primary",
+      "exact_title": "개인정보 보호법 시행령",
+      "history_versions": 0
+    },
+    {
+      "source_key": "privacy_safety_rule",
+      "sampling_cluster_ref": "privacy",
+      "split": "development",
+      "source_type": "administrative_rule",
+      "analysis_role": "primary",
+      "exact_title": "개인정보의 안전성 확보조치 기준",
+      "history_versions": 0
+    },
+    {
+      "source_key": "privacy_precedent",
+      "sampling_cluster_ref": "privacy",
+      "split": "development",
+      "source_type": "precedent",
+      "analysis_role": "exploratory",
+      "exact_title": "개인정보보호법위반",
+      "resource_id": "618473",
+      "history_versions": 0
+    },
+    {
+      "source_key": "labor_law",
+      "sampling_cluster_ref": "labor",
+      "split": "development",
+      "source_type": "law",
+      "analysis_role": "primary",
+      "exact_title": "근로기준법",
+      "history_versions": 1
+    },
+    {
+      "source_key": "labor_decree",
+      "sampling_cluster_ref": "labor",
+      "split": "development",
+      "source_type": "law",
+      "analysis_role": "primary",
+      "exact_title": "근로기준법 시행령",
+      "history_versions": 0
+    },
+    {
+      "source_key": "safety_law",
+      "sampling_cluster_ref": "safety",
+      "split": "development",
+      "source_type": "law",
+      "analysis_role": "primary",
+      "exact_title": "산업안전보건법",
+      "history_versions": 1
+    },
+    {
+      "source_key": "safety_decree",
+      "sampling_cluster_ref": "safety",
+      "split": "development",
+      "source_type": "law",
+      "analysis_role": "primary",
+      "exact_title": "산업안전보건법 시행령",
+      "history_versions": 0
+    },
+    {
+      "source_key": "safety_rule",
+      "sampling_cluster_ref": "safety",
+      "split": "development",
+      "source_type": "law",
+      "analysis_role": "primary",
+      "exact_title": "산업안전보건법 시행규칙",
+      "history_versions": 0
+    },
+    {
+      "source_key": "records_law",
+      "sampling_cluster_ref": "records",
+      "split": "development",
+      "source_type": "law",
+      "analysis_role": "primary",
+      "exact_title": "공공기록물 관리에 관한 법률",
+      "history_versions": 1
+    },
+    {
+      "source_key": "records_decree",
+      "sampling_cluster_ref": "records",
+      "split": "development",
+      "source_type": "law",
+      "analysis_role": "primary",
+      "exact_title": "공공기록물 관리에 관한 법률 시행령",
+      "history_versions": 0
+    },
+    {
+      "source_key": "procedure_law",
+      "sampling_cluster_ref": "procedure",
+      "split": "development",
+      "source_type": "law",
+      "analysis_role": "primary",
+      "exact_title": "행정절차법",
+      "history_versions": 1
+    },
+    {
+      "source_key": "procedure_decree",
+      "sampling_cluster_ref": "procedure",
+      "split": "development",
+      "source_type": "law",
+      "analysis_role": "primary",
+      "exact_title": "행정절차법 시행령",
+      "history_versions": 0
+    },
+    {
+      "source_key": "electronic_doc_law",
+      "sampling_cluster_ref": "electronic-documents",
+      "split": "development",
+      "source_type": "law",
+      "analysis_role": "primary",
+      "exact_title": "전자문서 및 전자거래 기본법",
+      "history_versions": 1
+    },
+    {
+      "source_key": "electronic_doc_decree",
+      "sampling_cluster_ref": "electronic-documents",
+      "split": "development",
+      "source_type": "law",
+      "analysis_role": "primary",
+      "exact_title": "전자문서 및 전자거래 기본법 시행령",
+      "history_versions": 0
+    }
+  ]
+}
