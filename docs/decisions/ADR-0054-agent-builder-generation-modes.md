@@ -22,7 +22,7 @@ Legacy Preview API와 direct-edit를 동시에 유지하면 graph 생성, valida
 1. **Contract before planning**: mode representation contract는 planner 호출과 request 생성 전에 확정한다. Contract가 표현할 수 없는 mode는 저장 상태를 만들지 않는다.
 2. **Durable state only**: 후속 요청은 DB에 허용된 safe metadata와 persisted workflow graph만 사용한다. 저장하지 않은 parameter 값, full operation, raw prompt 또는 replica memory에 의존하지 않는다.
 3. **Every nonterminal request is cancelable**: 모든 비종료 RequestStatus는 하나의 contract-neutral cancel로 terminal 상태가 될 수 있어야 한다. 기능별 취소 allowlist를 두지 않는다.
-4. **Authorize the final graph at save**: 모든 GraphMutation은 CAS transaction 안에서 final candidate graph의 전체 resource-bearing field를 서버가 다시 추출·분류한다. Managed reference는 현재 권한·lifecycle·relation을 검증하고, resolver 미구현 legacy Editor 연결은 base graph와 connection-relevant 값이 모두 같은 불변 carry-forward만 허용한다. Unknown 또는 신규·변경된 미관리 reference는 저장하지 않는다.
+4. **Authorize the final graph at save**: 모든 GraphMutation은 CAS transaction 안에서 final candidate graph의 전체 resource-bearing field를 서버가 다시 추출·분류한다. Managed reference는 policy registry가 field·operation·resource별로 지정한 최소 permission action과 현재 lifecycle·relation을 검증하고, resolver 미구현 legacy Editor 연결은 base graph와 connection-relevant 값이 모두 같은 불변 carry-forward만 허용한다. Unknown 또는 신규·변경된 미관리 reference는 저장하지 않는다.
 
 ### 1. 정식 생성 모드
 
@@ -95,9 +95,9 @@ Full typed operations는 기존 계약대로 발급 API 응답에서만 전달�
 - 전체 planner를 다시 호출하거나 workflow 전체를 재생성하지 않는다.
 - Canonical graph에 추천값이 이미 materialize돼 있고 recommendation fingerprint와 task version이 변하지 않은 남은 task만 하나의 검토안으로 묶는다.
 - credential, 권한 resource, 외부 부수효과, Condition branch 또는 복수 후보가 남은 task는 단계별 확인 상태로 유지한다.
-- Proposal 생성은 parent request row lock 안에서 expected request version을 확인하고 request version을 증가시킨다. 각 confirm 대상 task의 version도 정확히 한 번 증가시켜 stale decision을 fencing하고, 증가된 task id/version과 recommendation fingerprint를 pending proposal에 snapshot한다. 같은 operation 재시도는 request/task version을 다시 증가시키지 않는다.
+- Proposal 생성은 `Workflow -> AgentBuilderRequest` 순서로 row lock을 얻어 expected graph hash/`updated_at`, request version과 대상 task version을 확인한다. Request와 각 confirm 대상 task의 version을 정확히 한 번 증가시켜 stale decision을 fencing하고, 증가된 task id/version, recommendation fingerprint와 canonical graph hash/`updated_at`만 pending proposal에 snapshot한다. 실제 parameter 값이나 graph fragment는 proposal에 저장하지 않으며 같은 operation 재시도는 version을 다시 증가시키지 않는다.
 - Pending proposal은 snapshot한 confirm 대상 task를 예약한다. 해당 task의 `confirm|set|defer|skip|previous`는 proposal이 `acknowledged|canceled|stale` 중 하나가 되기 전까지 `task_conflict`로 닫고, proposal에 포함되지 않은 guided task만 독립적으로 진행할 수 있다.
-- 사용자가 검토안을 적용하면 parent request row lock 안에서 각 추천 fingerprint와 fenced task version을 다시 검증하고 값 변경 없는 기존 추천만 멱등 batch `confirm`한다. 완료되는 각 task의 version을 다시 정확히 한 번 증가시키고 응답·복구 상태에 갱신된 version을 포함한다. Revalidation이 실패하면 proposal을 `stale`로 terminal 처리해 예약을 해제하며 graph와 task 값은 변경하지 않는다. GraphMutation이나 workflow 저장을 만들지 않는다.
+- 사용자가 검토안을 적용하면 `Workflow -> AgentBuilderRequest` 순서로 잠근 뒤 권위 workflow graph를 다시 읽어 저장된 graph hash/`updated_at`, 추천 fingerprint와 fenced task version을 검증한다. 값 변경 없는 기존 추천만 멱등 batch `confirm`하고 완료되는 각 task version을 다시 정확히 한 번 증가시킨다. Revalidation이 실패하면 proposal을 `stale`로 terminal 처리해 예약을 해제하며 graph와 task 값은 변경하지 않는다. GraphMutation이나 workflow 저장을 만들지 않는다.
 - 값이 없거나 새 값 계산·graph 변경이 필요한 task와 미완료 Knowledge/Collection 선택은 단계별 확인 상태로 유지한다. 여러 task를 바꾸는 신규 batch mutation은 별도 결정 전까지 도입하지 않는다.
 
 ### 6. 구조만 생성
@@ -106,38 +106,39 @@ Full typed operations는 기존 계약대로 발급 API 응답에서만 전달�
 
 ### 7. 저장·동시성·취소
 
-`AgentBuilderRequest`는 mode transition, safe GraphMutation envelope, ParameterTask, Knowledge resolution, quick-completion proposal와 operation idempotency result의 aggregate root다. `AgentBuilderSession`은 이 aggregate의 단일 활성 요청 경계를 소유한다. 다음 불변조건은 endpoint별 설명보다 우선한다.
+`AgentBuilderRequest`는 mode transition, safe GraphMutation envelope, ParameterTask, Knowledge resolution, quick-completion proposal와 operation idempotency result의 aggregate root다. `AgentBuilderSession`은 새 메시지를 배타적으로 막는 foreground request 경계를 소유한다. `planning|clarification_required|mode_transition_required|graph_mutation_ready`는 foreground 상태이고, graph 저장이 끝나 사용자 설정만 기다리는 `parameter_configuration` request는 비차단 open request다. 다음 불변조건은 endpoint별 설명보다 우선한다.
 
-1. 같은 session에는 비종료 request가 최대 하나만 존재하며 기존 request가 terminal임을 확인하기 전에는 같은 의도의 재생성 request를 만들지 않는다.
+1. 같은 session에는 foreground request가 최대 하나만 존재한다. 하나 이상의 `parameter_configuration` request는 기존 request별 task/Knowledge card와 contract를 보존한 채 새 foreground request와 공존할 수 있다. 단, `graph_mutation_ready` response-loss request는 명시적 cancel로 terminal 처리하기 전 같은 의도를 재제출할 수 없다.
 2. Terminal request 아래에는 `pending` proposal, `pending|active|invalid` task, 미완료 Knowledge resolution 또는 저장 전 pending GraphMutation envelope가 남을 수 없다. Parent terminal 전환은 이 child state를 같은 transaction에서 닫고, 변경되는 task/proposal처럼 version을 가진 child의 version을 정확히 한 번 증가시킨다.
 3. 같은 operation id 재시도는 현재 active state를 선택하기 전에 기존 persisted idempotency result를 조회한다. 과거 request의 결과가 있으면 이를 반환하고 이후 생성된 request를 변경하지 않는다.
 4. Snapshot을 만드는 proposal은 생성 transaction에서 대상 task version을 증가시켜 stale writer를 fencing한다. Pending proposal이 예약한 task는 proposal 종료 전 다른 decision으로 변경하지 않는다.
-5. Lock이 필요한 operation은 공통 순서 `Session -> Workflow -> AgentBuilderRequest`의 필요한 suffix만 사용한다. Session-scoped command는 세 row 순서를 모두 지키고 CDS save/request-id cancel은 `Workflow -> AgentBuilderRequest`, proposal/task command는 parent request row lock을 사용한다.
+5. Lock이 필요한 operation은 공통 순서 `Session -> Workflow -> AgentBuilderRequest`에서 필요하지 않은 row를 생략하되 남은 순서를 바꾸지 않는다. Session-scoped cancel은 세 row 순서를 모두 지키고 CDS save, request-id cancel, proposal 생성·acknowledge는 `Workflow -> AgentBuilderRequest`를 사용한다. Workflow revision과 무관한 proposal cancel과 일반 task command만 parent request row lock을 사용한다.
 6. `canonical-v2` quick 이력을 legacy `configure_and_generate`로 축소 projection하지 않는다. Rollback 중 canonical write를 닫을 수는 있지만 보존 기간 안의 canonical terminal 이력이 하나라도 있으면 Gateway dual-contract와 Client dual-read를 유지한다.
 
 | Operation | Lock/fence | Atomic postcondition |
 | --- | --- | --- |
-| Message submit | Session lock | 비종료 request 0건일 때만 `planning` row 1건 생성 |
+| Message submit | Session lock | foreground request 0건일 때만 `planning` row 1건 생성; 기존 `parameter_configuration` request 보존 |
 | Pre-save operation loss recovery | Workflow, request lock | envelope를 `blocked`로 닫고 request는 cancel 전까지 비종료 유지; 신규 message 금지 |
-| Quick-completion proposal 생성 | Request lock, request/task version fence | request와 confirm 대상 task version 증가, pending proposal snapshot·예약 |
-| Proposal acknowledge/cancel/stale | Request lock, stored task fence | proposal terminal, 예약 해제; acknowledge만 task를 completed로 전환하고 task version 재증가 |
-| Session-scoped cancel retry | Session lock 뒤 persisted operation result 우선 조회 | 과거 결과가 있으면 그대로 반환; 없을 때만 현재 비종료 request 선택 |
+| Quick-completion proposal 생성 | Workflow, request lock과 graph/request/task version fence | request와 confirm 대상 task version 증가, 값 없는 pending proposal snapshot·예약 |
+| Proposal acknowledge/stale | Workflow, request lock과 stored graph/task fence | proposal terminal, 예약 해제; acknowledge만 task를 completed로 전환하고 task version 재증가 |
+| Proposal cancel | Request lock과 proposal version | proposal canceled와 예약 해제; graph/task 값 불변 |
+| Session-scoped cancel retry | Session lock 뒤 persisted operation result 우선 조회 | 과거 결과가 있으면 그대로 반환; 없을 때만 응답 전 유일한 `planning` request 선택 |
 | Request cancel | Workflow, request lock; session-scoped이면 Session 선행 | request와 모든 비종료 child를 terminal 처리하고 변경되는 task/proposal version 증가 |
-| Legacy-only rollback | Creation gate와 retained-history aggregate | active canonical 0건만으로 충분하지 않으며 보존 중 canonical request 0건 전에는 dual-read 제거 금지 |
+| Legacy-only rollback | Creation gate와 retained-history aggregate | canonical nonterminal 0건만으로 충분하지 않으며 보존 중 canonical request 0건 전에는 dual-read 제거 금지 |
 
 - 세 모드는 같은 canonical graph hash, workflow `updated_at`, Catalog version과 ADR-0046 CAS 저장 계약을 사용한다.
 - mode 전환과 빠른 완료 요청은 client-generated operation id와 expected request/task version을 포함한다.
 - Request 상태, GraphMutation 상태와 ParameterTask 상태는 서로 다른 enum과 owner를 가진다. `pending_apply|pending_save|pending_ack|acknowledged`는 GraphMutation lifecycle이며 RequestStatus로 저장하지 않는다.
 - stale graph, stale task 또는 중복 operation은 기존 결과를 덮어쓰지 않고 conflict로 닫는다. 다만 full operations를 저장하지 않는 mutation 발급 응답의 재시도는 같은 payload 반환을 보장하지 않고 `operation_payload_unavailable` 복구 계약을 따른다.
 - RequestStatus의 비종료 집합은 `planning|clarification_required|mode_transition_required|graph_mutation_ready|parameter_configuration`이고 이 상태는 모두 contract-neutral request cancel로 종료할 수 있다. `configuration_required`는 model/credential route를 선택한 새 request가 필요한 terminal 상태로 유지한다. 취소는 parent request row lock에서 request version을 증가시켜 늦은 planner 결과와 competing task/transition commit을 차단한다. 남은 task/Knowledge resolution, pending quick-completion proposal와 저장 전 operation envelope도 같은 transaction에서 각각 `canceled|blocked`로 닫고 변경되는 task/proposal version을 증가시킨다.
-- Message submit은 session row를 잠그고 비종료 request가 없을 때 mode contract, mode source와 요청 귀속 metadata를 포함한 `planning` request를 먼저 commit한 뒤 provider를 호출한다. 명시적 control과 `legacy-v1` default는 canonical requested/effective mode도 이때 저장한다. `canonical-v2` default처럼 자연어 mode intent가 필요한 request는 planning 동안 requested/effective mode를 미확정으로 두고 schema-valid planner 결과에서 intent mode 또는 guided fallback을 같은 request lock 안에서 정확히 한 번 확정한다. 같은 session에는 비종료 request를 하나만 허용하고 competing submit은 `request_in_progress`로 거부한다. 동기식 message 응답이 `request_id`를 반환하기 전의 `submitting|planning` UI는 client operation id를 포함한 session-scoped active-request cancel을 호출한다. Server는 session row를 잠근 뒤 terminal request를 포함한 session의 safe operation metadata에서 같은 cancel operation result를 먼저 조회한다. 결과가 없을 때만 유일한 비종료 request를 선택해 기존 request cancel command로 위임하며, active row가 없거나 legacy 이상으로 둘 이상이면 다른 request를 추측해 취소하지 않는다.
+- Message submit은 session row를 잠그고 foreground request가 없을 때 mode contract, mode source와 요청 귀속 metadata를 포함한 `planning` request를 먼저 commit한 뒤 provider를 호출한다. 기존 `parameter_configuration` request와 card는 request별 history에 유지한다. 명시적 control과 `legacy-v1` default는 canonical requested/effective mode도 이때 저장한다. `canonical-v2` default처럼 자연어 mode intent가 필요한 request는 planning 동안 requested/effective mode를 미확정으로 두고 schema-valid planner 결과에서 intent mode 또는 guided fallback을 같은 request lock 안에서 정확히 한 번 확정한다. Competing foreground submit만 `request_in_progress`로 거부한다. 동기식 message 응답이 `request_id`를 반환하기 전의 `submitting|planning` UI는 client operation id를 포함한 session-scoped active-request cancel을 호출한다. Server는 session row를 잠근 뒤 terminal request를 포함한 session의 safe operation metadata에서 같은 cancel operation result를 먼저 조회한다. 결과가 없을 때만 아직 응답되지 않은 유일한 `planning` request를 선택해 기존 request cancel command로 위임하며, 대상이 없거나 legacy 이상으로 둘 이상이면 다른 open request를 추측해 취소하지 않는다.
 - 취소 전에 이미 시작된 provider attempt는 강제 중단을 보장하지 않는다. 응답이 도착하면 실제 발생한 usage fact는 request terminal 상태와 독립적으로 멱등 완료할 수 있지만 planner 결과는 commit하지 않는다. Semantic repair를 포함한 다음 provider attempt를 예약·호출하기 전에는 expected request version과 nonterminal status를 다시 확인하며 취소·stale이면 추가 호출하지 않는다. Usage recorder는 ADR-0026의 repair eligibility나 provider 호출 수를 확대할 수 없다.
 - 취소는 이미 CDS에 저장된 graph를 자동 롤백하지 않는다. 저장 전 operation은 `blocked`로 닫고 Client의 local apply를 Undo하며, 저장이 확정된 operation과 완료 parameter 값은 유지한다. 전체 graph 복구는 기존 Workflow Undo boundary만 사용한다.
 - 한 request에서 Legacy Preview와 direct-edit를 혼용하지 않는다.
 - 외부 generation mode 표현은 선택적 `X-Agent-Builder-Mode-Contract` 요청 헤더로 협상한다. 헤더가 없거나 `legacy-v1`이면 Gateway는 legacy `configure_and_generate` 표현을 반환하고, `canonical-v2`이면 canonical 표현을 반환한다.
-- Message request 생성 시 정규화한 `mode_contract_version=legacy-v1|canonical-v2`를 기존 `AgentBuilderRequest.response_payload`에 고정한다. Raw header와 session 전체 계약은 저장하지 않으며 contract 값이 없는 기존 request는 `legacy-v1`로 읽는다. Active request를 조회하거나 변경하는 후속 endpoint는 고정된 contract와 같은 요청만 허용하고 불일치하면 request payload를 projection하지 않은 채 `mode_contract_mismatch`로 닫는다.
-- Request cancel은 generation mode를 포함하지 않는 contract-neutral 응답으로 제공해 고정 contract를 모르는 복구·운영 경로도 같은 인증·권한 아래 모든 비종료 request를 종료할 수 있게 한다.
-- Rollout은 Gateway가 두 입력을 수용하되 legacy 응답을 유지하는 단계, Client가 두 응답을 읽는 단계, 모든 Gateway replica와 Client dual-read gate 확인 뒤 `canonical-v2`를 허용하는 단계, Client가 canonical 값을 쓰는 순서로 진행한다. `quick_generate`는 canonical-v2와 Backend·Frontend 통합 gate가 모두 준비된 경우에만 노출한다. Rollback은 quick/canonical creation gate를 먼저 닫고 active `canonical-v2` request를 완료·취소해 0건으로 만든 뒤 legacy-write로 전환할 수 있다. 다만 session GET이 반환할 수 있는 보존 기간 내 terminal request까지 포함한 `canonical-v2` retained-history aggregate가 0건이 되기 전에는 Gateway dual-contract와 Client dual-read를 제거하거나 legacy-only Client를 배포하지 않는다. Completed quick을 `configure_and_generate`로 projection하거나 이력을 숨기지 않는다. 두 aggregate는 request id나 payload를 외부에 노출하지 않는 내부 운영 지표다.
+- Message request 생성 시 정규화한 `mode_contract_version=legacy-v1|canonical-v2`를 기존 `AgentBuilderRequest.response_payload`에 고정한다. Raw header와 session 전체 계약은 저장하지 않으며 contract 값이 없는 기존 request는 `legacy-v1`로 읽는다. Request id로 대상을 특정해 조회하거나 변경하는 후속 endpoint는 해당 request에 고정된 contract와 같은 요청만 허용하고 불일치하면 request payload를 projection하지 않은 채 `mode_contract_mismatch`로 닫는다.
+- Request cancel은 generation mode를 포함하지 않는 contract-neutral 응답이다. 인증된 principal이 persisted session/request의 원 소유자와 일치하면 workflow write 권한이나 organization membership이 이후 회수돼도 정확한 opaque id의 본인 request를 종료할 수 있다. 이 cleanup 예외는 graph·parameter·organization 데이터 조회나 수정 권한을 부여하지 않고 `request_id/status`만 반환하며, 소유권 불일치는 resource-hiding으로 닫는다. 인증할 수 없는 만료 request와 rollout drain은 공개 관리자 API가 아니라 내부 expiry/운영 작업이 같은 cancel state machine과 lock 순서를 사용해 종료한다.
+- Rollout은 Gateway가 두 입력을 수용하되 legacy 응답을 유지하는 단계, Client가 두 응답을 읽는 단계, 모든 Gateway replica와 Client dual-read gate 확인 뒤 `canonical-v2`를 허용하는 단계, Client가 canonical 값을 쓰는 순서로 진행한다. `quick_generate`는 canonical-v2와 Backend·Frontend 통합 gate가 모두 준비된 경우에만 노출한다. Rollback은 quick/canonical creation gate를 먼저 닫고 foreground 및 open configuration을 포함한 nonterminal `canonical-v2` request를 완료·취소해 0건으로 만든 뒤 legacy-write로 전환할 수 있다. 다만 session GET이 반환할 수 있는 보존 기간 내 terminal request까지 포함한 `canonical-v2` retained-history aggregate가 0건이 되기 전에는 Gateway dual-contract와 Client dual-read를 제거하거나 legacy-only Client를 배포하지 않는다. Completed quick을 `configure_and_generate`로 projection하거나 이력을 숨기지 않는다. 두 aggregate는 request id나 payload를 외부에 노출하지 않는 내부 운영 지표다.
 
 ### 8. 데이터와 보안
 
@@ -145,7 +146,7 @@ Full typed operations는 기존 계약대로 발급 API 응답에서만 전달�
 - Mode transition 복구에는 값에 독립적인 structured plan과 재입력이 필요한 Catalog `step_id`/`parameter_key`만 저장한다. 실제 parameter 값과 값에 의존하는 graph fragment는 저장하지 않으며 전환 뒤 typed task에서 다시 확인한다.
 - full operations, raw prompt의 민감 부분, credential 원문, token, API key, hidden resource identifier와 외부 payload는 저장·audit·trace하지 않는다.
 - mode metadata를 위한 신규 table 또는 전용 column을 추가하지 않는다.
-- 빠른 생성 eligibility와 mode 전환은 권한 우회 수단이 아니다. 생성 시점과 mutation 발급 시점뿐 아니라 CAS 저장 transaction 안에서도 final candidate graph의 모든 resource-bearing field를 서버가 다시 추출·분류한다. Managed reference는 현재 organization, lifecycle, relation과 use/write 권한을 재검증한다. ADR-0045의 resolver 미구현 Slack/GitHub 연결은 base graph와 connection-relevant 값이 같은 legacy carry-forward만 허용하고 Agent Builder가 추가·변경할 수 없다. Client가 제출한 reference 목록이나 발급 시점 판정을 재사용하지 않으며 실행·배포 preflight도 기존 권한 검사를 유지한다.
+- 빠른 생성 eligibility와 mode 전환은 권한 우회 수단이 아니다. 생성 시점과 mutation 발급 시점뿐 아니라 CAS 저장 transaction 안에서도 final candidate graph의 모든 resource-bearing field를 서버가 다시 추출·분류한다. Managed reference는 field path·mutation kind·resource kind별 policy registry가 지정한 최소 permission action과 현재 organization, lifecycle, relation을 재검증한다. Workflow draft 저장은 workflow `write`, Knowledge/Collection 및 managed credential binding은 대상 resource `use`를 요구하며 단순 reference에 대상 `read|write`를 일괄 요구하지 않는다. ADR-0045의 resolver 미구현 Slack/GitHub 연결은 base graph와 connection-relevant 값이 같은 legacy carry-forward만 허용하고 Agent Builder가 추가·변경할 수 없다. Client가 제출한 reference 목록이나 발급 시점 판정을 재사용하지 않으며 실행·배포 preflight도 기존 권한 검사를 유지한다.
 
 ## Authority and implementation state
 
