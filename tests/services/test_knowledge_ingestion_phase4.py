@@ -15,7 +15,12 @@ from apps.gateway.services.ingestion.service import (
     mark_document_processing_queued,
     recover_timed_out_document_with_artifacts,
 )
-from apps.shared.db.models.knowledge import Document, DocumentVersion, KnowledgeBase
+from apps.shared.db.models.knowledge import (
+    Document,
+    DocumentVersion,
+    KnowledgeBase,
+    KnowledgeDocumentIngestionJob,
+)
 from apps.shared.services.knowledge_ingestion_finalizer import (
     KnowledgeIngestionFinalizationError,
     KnowledgeIngestionFinalizer,
@@ -47,6 +52,17 @@ KB_ID = uuid.UUID("20000000-0000-0000-0000-000000000001")
 DOC_ID = uuid.UUID("30000000-0000-0000-0000-000000000001")
 NEW_VERSION_ID = uuid.UUID("40000000-0000-0000-0000-000000000001")
 OLD_VERSION_ID = uuid.UUID("50000000-0000-0000-0000-000000000001")
+
+
+class FakeNoIngestionJobQuery:
+    def filter(self, *_args):
+        return self
+
+    def order_by(self, *_args):
+        return self
+
+    def first(self):
+        return None
 
 
 class FakeDb:
@@ -794,6 +810,8 @@ def test_lock_not_acquired_before_start_timeout_keeps_document_queued(monkeypatc
             self.closed = False
 
         def query(self, model):
+            if model is KnowledgeDocumentIngestionJob:
+                return FakeNoIngestionJobQuery()
             if model is not Document:
                 return FakeNoArtifactQuery()
             return self
@@ -859,6 +877,8 @@ def test_lock_not_acquired_after_start_timeout_finalizes_failed(monkeypatch):
             self.closed = False
 
         def query(self, model):
+            if model is KnowledgeDocumentIngestionJob:
+                return FakeNoIngestionJobQuery()
             if model is not Document:
                 return FakeNoArtifactQuery()
             return self
@@ -936,6 +956,8 @@ def test_stale_processing_start_without_active_fencing_finalizes_failed():
         commit_count = 0
 
         def query(self, model):
+            if model is KnowledgeDocumentIngestionJob:
+                return FakeNoIngestionJobQuery()
             if model is not Document:
                 return FakeNoArtifactQuery()
             return FakeDocumentQuery()
@@ -992,6 +1014,8 @@ def test_stale_processing_start_keeps_document_with_chunks():
         commit_count = 0
 
         def query(self, model):
+            if model is KnowledgeDocumentIngestionJob:
+                return FakeNoIngestionJobQuery()
             if model is Document:
                 return FakeDocumentQuery()
             return FakeArtifactQuery()
@@ -1087,6 +1111,8 @@ def test_stale_processing_start_keeps_active_fencing_document():
         commit_count = 0
 
         def query(self, model):
+            if model is KnowledgeDocumentIngestionJob:
+                return FakeNoIngestionJobQuery()
             assert model is Document
             return FakeDocumentQuery()
 
@@ -1135,6 +1161,8 @@ def test_stale_active_processing_without_artifacts_finalizes_failed():
         commit_count = 0
 
         def query(self, model):
+            if model is KnowledgeDocumentIngestionJob:
+                return FakeNoIngestionJobQuery()
             if model is Document:
                 return FakeDocumentQuery()
             return FakeNoArtifactQuery()
@@ -1182,6 +1210,8 @@ def test_stale_active_processing_with_recent_progress_heartbeat_keeps_document()
         commit_count = 0
 
         def query(self, model):
+            if model is KnowledgeDocumentIngestionJob:
+                return FakeNoIngestionJobQuery()
             assert model is Document
             return FakeDocumentQuery()
 
@@ -1229,6 +1259,8 @@ def test_stale_active_processing_with_chunks_keeps_document_indexing():
         commit_count = 0
 
         def query(self, model):
+            if model is KnowledgeDocumentIngestionJob:
+                return FakeNoIngestionJobQuery()
             if model is Document:
                 return FakeDocumentQuery()
             return FakeArtifactQuery()
