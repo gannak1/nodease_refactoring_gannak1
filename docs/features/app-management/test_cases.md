@@ -44,6 +44,13 @@ Verified Against: TBD
 - Given `total_cost`가 NULL인 usage row만 있는 App, When 조회한다, Then 비용은 0으로 합산되어 `usage_ratio=0`, `status=normal`이다.
 - Given KST 월 경계의 usage row가 있다, When KST 7월 기준 조회한다, Then KST 7월 1일 00:00:00 row는 포함하고 KST 8월 1일 00:00:00 row는 제외한다.
 
+### AC-6. 운영 현황 보기 전환 (APP-REQ-050)
+
+- Given 저장된 보기 설정이 없다, When `/dashboard/mymodule`을 연다, Then 운영 현황은 그리드 보기로 표시된다.
+- Given 사용자가 `그리드 보기`를 선택한다, When 운영 현황이 다시 렌더링된다, Then 같은 operations row가 카드로 표시되고 App/Workflow 이름은 카드의 큰 제목으로 보인다.
+- Given 사용자가 보기 방식을 선택했다, When 같은 브라우저에서 화면을 다시 연다, Then local storage에 저장된 보기 방식을 복원한다.
+- Given 리스트 또는 그리드 보기를 사용한다, When 실행·열기·앱 설정·배포 상태·자동 최적화 관리 작업을 선택한다, Then 기존 권한 조건과 대상 App/Workflow/Deployment를 그대로 사용한다.
+
 ## Unit Tests
 
 - `AppService.get_user_apps`

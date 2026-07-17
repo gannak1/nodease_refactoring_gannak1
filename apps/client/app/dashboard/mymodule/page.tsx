@@ -10,7 +10,9 @@ import {
   ExternalLink,
   Filter,
   Gauge,
+  LayoutGrid,
   Layers3,
+  List,
   Play,
   Plus,
   RefreshCw,
@@ -58,8 +60,10 @@ import {
 type PermissionFilter = 'all' | 'executable' | 'editable' | 'manageable';
 type DeploymentFilter = 'all' | 'active' | 'inactive' | 'undeployed';
 type RunFilter = 'all' | 'running' | 'failed';
+type OperationsViewMode = 'list' | 'grid';
 
 const PAGE_SIZE = 100;
+const OPERATIONS_VIEW_STORAGE_KEY = 'mymodule:operations-view';
 
 const runLabels: Record<ModuleRunState, string> = {
   running: '실행 중',
@@ -299,6 +303,7 @@ export default function MyModulePage() {
   const [deploymentFilter, setDeploymentFilter] =
     useState<DeploymentFilter>('all');
   const [runFilter, setRunFilter] = useState<RunFilter>('all');
+  const [viewMode, setViewMode] = useState<OperationsViewMode>('grid');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [editingApp, setEditingApp] = useState<App | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -309,10 +314,10 @@ export default function MyModulePage() {
     useState<ModuleOperationRow | null>(null);
   const [automaticOptimizationSummary, setAutomaticOptimizationSummary] =
     useState<DeploymentParameterOptimizationSummary | null>(null);
-  const [isLoadingAutomaticOptimizationId, setIsLoadingAutomaticOptimizationId] =
-    useState<
-    string | null
-  >(null);
+  const [
+    isLoadingAutomaticOptimizationId,
+    setIsLoadingAutomaticOptimizationId,
+  ] = useState<string | null>(null);
   const requestSeqRef = useRef(0);
 
   const buildListParams = useCallback(
@@ -338,6 +343,28 @@ export default function MyModulePage() {
 
     return () => window.clearTimeout(timeoutId);
   }, [searchQuery]);
+
+  useEffect(() => {
+    try {
+      const savedViewMode = window.localStorage.getItem(
+        OPERATIONS_VIEW_STORAGE_KEY,
+      );
+      if (savedViewMode === 'list' || savedViewMode === 'grid') {
+        setViewMode(savedViewMode);
+      }
+    } catch {
+      // 저장소를 사용할 수 없는 환경에서는 기본 그리드 보기를 유지한다.
+    }
+  }, []);
+
+  const handleViewModeChange = (nextViewMode: OperationsViewMode) => {
+    setViewMode(nextViewMode);
+    try {
+      window.localStorage.setItem(OPERATIONS_VIEW_STORAGE_KEY, nextViewMode);
+    } catch {
+      // 보기 전환은 저장 실패와 관계없이 동작한다.
+    }
+  };
 
   const loadModules = useCallback(
     async ({ offset = 0, append = false } = {}) => {
@@ -393,47 +420,44 @@ export default function MyModulePage() {
       window.removeEventListener('openCreateAppModal', handleOpenModal);
   }, []);
 
-  const summary = useMemo(
-    () => {
-      const activeRows = rows.filter((row) => row.deploymentState === 'active');
-      const costSignals = activeRows.map(costSignalOf);
-      const monthlyCost = costSignals.reduce(
-        (total, signal) => total + (signal.monthlyCost ?? 0),
-        0,
-      );
-      const trendSignals = costSignals.filter(
-        (signal) => signal.trendPercent != null,
-      );
-      const recommended = costSignals.filter((signal) => signal.recommended);
-      const atRiskBudget = costSignals.filter(
-        (signal) => isBudgetAtRisk(signal.budgetStatus),
-      );
-      const averageTrend =
-        trendSignals.length > 0
-          ? Math.round(
-              trendSignals.reduce(
-                (total, signal) => total + (signal.trendPercent ?? 0),
-                0,
-              ) / trendSignals.length,
-            )
-          : null;
+  const summary = useMemo(() => {
+    const activeRows = rows.filter((row) => row.deploymentState === 'active');
+    const costSignals = activeRows.map(costSignalOf);
+    const monthlyCost = costSignals.reduce(
+      (total, signal) => total + (signal.monthlyCost ?? 0),
+      0,
+    );
+    const trendSignals = costSignals.filter(
+      (signal) => signal.trendPercent != null,
+    );
+    const recommended = costSignals.filter((signal) => signal.recommended);
+    const atRiskBudget = costSignals.filter((signal) =>
+      isBudgetAtRisk(signal.budgetStatus),
+    );
+    const averageTrend =
+      trendSignals.length > 0
+        ? Math.round(
+            trendSignals.reduce(
+              (total, signal) => total + (signal.trendPercent ?? 0),
+              0,
+            ) / trendSignals.length,
+          )
+        : null;
 
-      return {
-        active: activeRows.length,
-        unavailable: rows.filter(
-          (row) =>
-            row.dataQuality.permissionSourcesUnavailable ||
-            row.dataQuality.latestRunUnavailable,
-        ).length,
-        monthlyCost,
-        recommendedCount: recommended.length,
-        atRiskBudgetCount: atRiskBudget.length,
-        averageTrend,
-        trendSampleCount: trendSignals.length,
-      };
-    },
-    [rows],
-  );
+    return {
+      active: activeRows.length,
+      unavailable: rows.filter(
+        (row) =>
+          row.dataQuality.permissionSourcesUnavailable ||
+          row.dataQuality.latestRunUnavailable,
+      ).length,
+      monthlyCost,
+      recommendedCount: recommended.length,
+      atRiskBudgetCount: atRiskBudget.length,
+      averageTrend,
+      trendSampleCount: trendSignals.length,
+    };
+  }, [rows]);
 
   const handleModuleClick = (row: ModuleOperationRow) => {
     if (!canOpenModule(row)) return;
@@ -478,9 +502,8 @@ export default function MyModulePage() {
 
     setIsLoadingAutomaticOptimizationId(row.app.id);
     try {
-      const summary = await workflowApi.getDeploymentParameterOptimization(
-        deploymentId,
-      );
+      const summary =
+        await workflowApi.getDeploymentParameterOptimization(deploymentId);
       setAutomaticOptimizationSummary(summary);
       setAutomaticOptimizationTarget(row);
     } catch {
@@ -525,7 +548,8 @@ export default function MyModulePage() {
             summary.unavailable > 0 && (
               <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700">
                 <AlertTriangle className="h-3.5 w-3.5" />
-                일부 권한 출처 또는 실행 상태를 확인할 수 없어 확인 필요로 표시됩니다.
+                일부 권한 출처 또는 실행 상태를 확인할 수 없어 확인 필요로
+                표시됩니다.
               </span>
             )
           }
@@ -542,8 +566,7 @@ export default function MyModulePage() {
                 onClick={() => setIsCreateModalOpen(true)}
                 className="inline-flex h-10 items-center gap-2 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800"
               >
-                <Plus className="h-4 w-4" />
-                새 모듈
+                <Plus className="h-4 w-4" />새 모듈
               </button>
             </div>
           }
@@ -594,9 +617,44 @@ export default function MyModulePage() {
           title="운영 현황"
           icon={SlidersHorizontal}
           aside={
-            <span className="text-xs text-slate-500">
-              현재 로드 {rows.length}개{hasMore ? ' 이상' : ''}
-            </span>
+            <div className="flex items-center gap-3">
+              <span className="hidden text-xs text-slate-500 sm:inline">
+                현재 로드 {rows.length}개{hasMore ? ' 이상' : ''}
+              </span>
+              <div
+                className="inline-flex rounded-md border border-slate-200 bg-slate-50 p-1"
+                aria-label="운영 현황 보기 방식"
+              >
+                <button
+                  type="button"
+                  aria-label="리스트 보기"
+                  aria-pressed={viewMode === 'list'}
+                  onClick={() => handleViewModeChange('list')}
+                  className={`inline-flex h-8 items-center gap-1.5 rounded px-2.5 text-xs font-semibold transition-colors ${
+                    viewMode === 'list'
+                      ? 'bg-white text-slate-950 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <List className="h-4 w-4" />
+                  리스트
+                </button>
+                <button
+                  type="button"
+                  aria-label="그리드 보기"
+                  aria-pressed={viewMode === 'grid'}
+                  onClick={() => handleViewModeChange('grid')}
+                  className={`inline-flex h-8 items-center gap-1.5 rounded px-2.5 text-xs font-semibold transition-colors ${
+                    viewMode === 'grid'
+                      ? 'bg-white text-slate-950 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <LayoutGrid className="h-4 w-4" />
+                  그리드
+                </button>
+              </div>
+            </div>
           }
         >
           <div className="border-b border-slate-100 bg-white px-5 py-4">
@@ -652,7 +710,7 @@ export default function MyModulePage() {
           </div>
 
           {isLoading ? (
-            <ModuleListSkeleton />
+            <ModuleListSkeleton viewMode={viewMode} />
           ) : rows.length === 0 ? (
             <div className="px-5 py-12 text-center">
               <p className="text-sm font-semibold text-slate-700">
@@ -671,22 +729,46 @@ export default function MyModulePage() {
               </button>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full table-fixed divide-y divide-slate-100">
-                <thead className="bg-slate-50 text-left text-xs font-semibold text-slate-500">
-                  <tr>
-                    <th className="w-[21%] px-5 py-3">워크플로우</th>
-                    <th className="w-[13%] px-4 py-3">월 예상 비용</th>
-                    <th className="w-[13%] px-4 py-3">증가 추세</th>
-                    <th className="w-[14%] px-4 py-3">예산 사용률</th>
-                    <th className="w-[14%] px-4 py-3">자동 최적화</th>
-                    <th className="w-[11%] px-4 py-3">상태</th>
-                    <th className="w-[14%] px-5 py-3 text-right">작업</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 bg-white">
+            <div>
+              {viewMode === 'list' ? (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full table-fixed divide-y divide-slate-100">
+                    <thead className="bg-slate-50 text-left text-xs font-semibold text-slate-500">
+                      <tr>
+                        <th className="w-[21%] px-5 py-3">워크플로우</th>
+                        <th className="w-[13%] px-4 py-3">월 예상 비용</th>
+                        <th className="w-[13%] px-4 py-3">증가 추세</th>
+                        <th className="w-[14%] px-4 py-3">예산 사용률</th>
+                        <th className="w-[14%] px-4 py-3">자동 최적화</th>
+                        <th className="w-[11%] px-4 py-3">상태</th>
+                        <th className="w-[14%] px-5 py-3 text-right">작업</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {rows.map((row) => (
+                        <ModuleOperationTableRow
+                          key={row.app.id}
+                          row={row}
+                          onRun={() => handleRunModule(row)}
+                          onOpen={() => handleModuleClick(row)}
+                          onEdit={() => handleEditApp(row)}
+                          onToggleDeployment={() => handleToggleDeployment(row)}
+                          onManageAutomaticOptimization={() =>
+                            handleManageAutomaticOptimization(row)
+                          }
+                          isLoadingAutomaticOptimization={
+                            isLoadingAutomaticOptimizationId === row.app.id
+                          }
+                          isOrgManager={isOrgManager}
+                        />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="grid gap-4 bg-slate-50/70 p-5 md:grid-cols-2 xl:grid-cols-3">
                   {rows.map((row) => (
-                    <ModuleOperationTableRow
+                    <ModuleOperationGridCard
                       key={row.app.id}
                       row={row}
                       onRun={() => handleRunModule(row)}
@@ -702,8 +784,8 @@ export default function MyModulePage() {
                       isOrgManager={isOrgManager}
                     />
                   ))}
-                </tbody>
-              </table>
+                </div>
+              )}
               {hasMore && (
                 <div className="border-t border-slate-100 bg-white px-5 py-4 text-center">
                   <button
@@ -1000,6 +1082,215 @@ function ModuleOperationTableRow({
   );
 }
 
+function ModuleOperationGridCard({
+  row,
+  onRun,
+  onOpen,
+  onEdit,
+  onToggleDeployment,
+  onManageAutomaticOptimization,
+  isLoadingAutomaticOptimization,
+  isOrgManager,
+}: {
+  row: ModuleOperationRow;
+  onRun: () => void;
+  onOpen: () => void;
+  onEdit: () => void;
+  onToggleDeployment: () => void;
+  onManageAutomaticOptimization: () => void;
+  isLoadingAutomaticOptimization: boolean;
+  isOrgManager: boolean;
+}) {
+  const deploymentState = row.deploymentState;
+  const canEdit = canEditApp(row, isOrgManager);
+  const canToggle = canToggleDeployment(row);
+  const runBlockMessage = budgetRunBlockMessage(row.app.budget_status);
+  const runDisabledReason = getModuleRunDisabledReason(row);
+  const costSignal = costSignalOf(row);
+  const budgetPercent =
+    costSignal.budgetUsageRatio == null
+      ? null
+      : Math.round(costSignal.budgetUsageRatio * 100);
+  const budgetPresentation = costSignal.budgetStatus
+    ? budgetStatusPresentation[costSignal.budgetStatus]
+    : null;
+
+  return (
+    <article className="flex min-h-[31rem] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
+      <div className="border-b border-slate-100 p-5">
+        <button
+          type="button"
+          onClick={onOpen}
+          disabled={!canOpenModule(row)}
+          className="flex w-full items-start gap-3 text-left disabled:cursor-not-allowed"
+        >
+          <span
+            className="grid h-12 w-12 shrink-0 place-items-center rounded-xl text-xl shadow-sm"
+            style={{ backgroundColor: row.app.icon?.background_color }}
+          >
+            {row.app.icon?.content || 'N'}
+          </span>
+          <span className="min-w-0 flex-1">
+            <h3 className="line-clamp-2 text-xl font-bold leading-7 text-slate-950">
+              {row.app.name}
+            </h3>
+            <span className="mt-1 block text-xs text-slate-400">
+              마지막 수정 {formatDate(row.app.updated_at)}
+            </span>
+          </span>
+        </button>
+        <p className="mt-4 min-h-10 line-clamp-2 text-sm leading-5 text-slate-500">
+          {row.app.description || '설명 없음'}
+        </p>
+        {row.app.budget_status && (
+          <div className="mt-3">
+            <BudgetStatusBadge
+              status={row.app.budget_status.status}
+              usageRatio={row.app.budget_status.usage_ratio}
+            />
+          </div>
+        )}
+      </div>
+
+      <dl className="grid grid-cols-2 gap-px border-b border-slate-100 bg-slate-100">
+        <div className="min-h-24 bg-white p-4">
+          <dt className="text-xs font-medium text-slate-500">월 예상 비용</dt>
+          <dd className="mt-2 text-base font-bold text-slate-950">
+            {deploymentState === 'active'
+              ? formatCurrency(costSignal.monthlyCost)
+              : '배포 후 표시'}
+          </dd>
+          {deploymentState === 'active' &&
+            (costSignal.monthlyCost == null ||
+              costSignal.monthlyCost === 0) && (
+              <p className="mt-1 text-xs text-slate-400">운영 비용 없음</p>
+            )}
+        </div>
+        <div className="min-h-24 bg-white p-4">
+          <dt className="text-xs font-medium text-slate-500">증가 추세</dt>
+          <dd className="mt-2">
+            {deploymentState === 'active' && costSignal.trendPercent != null ? (
+              <Badge
+                className={
+                  costSignal.trendPercent >= 20
+                    ? 'border-red-200 bg-red-50 text-red-700'
+                    : costSignal.trendPercent >= 10
+                      ? 'border-amber-200 bg-amber-50 text-amber-700'
+                      : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                }
+              >
+                {costSignal.trendPercent > 0 ? '+' : ''}
+                {Math.round(costSignal.trendPercent)}%
+              </Badge>
+            ) : (
+              <span className="text-xs font-medium text-slate-400">
+                {deploymentState === 'active' ? '비교 데이터 없음' : '-'}
+              </span>
+            )}
+          </dd>
+        </div>
+        <div className="col-span-2 min-h-24 bg-white p-4">
+          <dt className="text-xs font-medium text-slate-500">예산 사용률</dt>
+          <dd className="mt-2">
+            {deploymentState === 'active' && budgetPercent != null ? (
+              <div>
+                <div className="flex items-center justify-between gap-2 text-sm font-semibold text-slate-700">
+                  <span>{budgetPercent}%</span>
+                  <span className={budgetPresentation?.textClassName}>
+                    {costSignal.budgetStatus
+                      ? budgetStatusLabel[costSignal.budgetStatus]
+                      : '확인 필요'}
+                  </span>
+                </div>
+                <div className="mt-2 h-2 rounded-full bg-slate-100">
+                  <div
+                    className={`h-2 rounded-full ${
+                      budgetPresentation?.barClassName ?? 'bg-slate-300'
+                    }`}
+                    style={{ width: `${Math.min(budgetPercent, 100)}%` }}
+                  />
+                </div>
+              </div>
+            ) : (
+              <span className="text-xs font-medium text-slate-400">
+                {deploymentState === 'active' ? '예산 없음' : '-'}
+              </span>
+            )}
+          </dd>
+        </div>
+      </dl>
+
+      <div className="flex flex-1 flex-col gap-2 border-b border-slate-100 p-4">
+        <p className="text-xs font-medium text-slate-500">자동 최적화</p>
+        <AutomaticOptimizationCell
+          summary={row.automaticOptimization}
+          hasDeployment={Boolean(row.deployment.deployment_id)}
+          canManage={canToggle}
+          isLoading={isLoadingAutomaticOptimization}
+          onManage={onManageAutomaticOptimization}
+        />
+      </div>
+
+      <footer className="flex items-center justify-between gap-3 bg-slate-50/70 p-4">
+        <div className="flex min-w-0 flex-wrap gap-2">
+          <Badge className={deploymentTone[deploymentState]}>
+            {deploymentLabels[deploymentState]}
+          </Badge>
+          {row.latestRun.state !== 'success' && (
+            <Badge className={runTone[row.latestRun.state]}>
+              {runLabels[row.latestRun.state]}
+            </Badge>
+          )}
+          {runBlockMessage && (
+            <span
+              title={runBlockMessage}
+              className="inline-flex items-center rounded bg-red-100 px-2 py-1 text-[10px] font-bold text-red-700"
+            >
+              실행 차단
+            </span>
+          )}
+        </div>
+        <div className="flex shrink-0 gap-1.5">
+          <IconButton
+            label={runDisabledReason || '배포 실행'}
+            onClick={onRun}
+            disabled={Boolean(runDisabledReason)}
+          >
+            <Play className="h-4 w-4" />
+          </IconButton>
+          <IconButton
+            label={canOpenModule(row) ? '편집기 열기' : '조회 권한 확인 필요'}
+            onClick={onOpen}
+            disabled={!canOpenModule(row)}
+          >
+            <ExternalLink className="h-4 w-4" />
+          </IconButton>
+          <IconButton
+            label={canEdit ? '앱 설정 수정' : '앱 설정 관리 권한 필요'}
+            onClick={onEdit}
+            disabled={!canEdit}
+          >
+            <Edit3 className="h-4 w-4" />
+          </IconButton>
+          <IconButton
+            label={
+              canToggle
+                ? '배포 상태 변경'
+                : row.deployment.deployment_id
+                  ? '배포 권한 필요'
+                  : '배포 없음'
+            }
+            onClick={onToggleDeployment}
+            disabled={!canToggle}
+          >
+            <CheckCircle2 className="h-4 w-4" />
+          </IconButton>
+        </div>
+      </footer>
+    </article>
+  );
+}
+
 function Badge({
   children,
   className,
@@ -1041,7 +1332,20 @@ function IconButton({
   );
 }
 
-function ModuleListSkeleton() {
+function ModuleListSkeleton({ viewMode }: { viewMode: OperationsViewMode }) {
+  if (viewMode === 'grid') {
+    return (
+      <div className="grid gap-4 bg-slate-50/70 p-5 md:grid-cols-2 xl:grid-cols-3">
+        {Array.from({ length: 6 }).map((_, index) => (
+          <div
+            key={index}
+            className="h-[31rem] animate-pulse rounded-xl border border-slate-200 bg-white"
+          />
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="divide-y divide-slate-100">
       {Array.from({ length: 5 }).map((_, index) => (
