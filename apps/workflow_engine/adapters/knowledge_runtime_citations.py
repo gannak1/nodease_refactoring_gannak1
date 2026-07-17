@@ -166,7 +166,11 @@ class WorkflowCitationProjector:
                 type(exc).__name__,
             )
             return {}
-        return {str(row.id): self._approved_resource_label(row) for row in rows}
+        return self._project_resource_labels(
+            rows,
+            fallback=GENERIC_DIRECT_CITATION_LABEL,
+            resource_kind="KB",
+        )
 
     def _load_collection_labels(
         self,
@@ -191,7 +195,34 @@ class WorkflowCitationProjector:
                 type(exc).__name__,
             )
             return {}
-        return {str(row.id): self._approved_resource_label(row) for row in rows}
+        return self._project_resource_labels(
+            rows,
+            fallback=GENERIC_COLLECTION_CITATION_LABEL,
+            resource_kind="Collection",
+        )
+
+    @staticmethod
+    def _project_resource_labels(
+        rows: list[Any],
+        *,
+        fallback: str,
+        resource_kind: str,
+    ) -> dict[str, str]:
+        labels: dict[str, str] = {}
+        for row in rows:
+            resource_id = str(row.id)
+            try:
+                labels[resource_id] = WorkflowCitationProjector._approved_resource_label(
+                    row
+                )
+            except Exception as exc:
+                logger.info(
+                    "Workflow Citation %s label projection fallback: error_type=%s",
+                    resource_kind,
+                    type(exc).__name__,
+                )
+                labels[resource_id] = fallback
+        return labels
 
     @staticmethod
     def _approved_resource_label(resource: Any) -> str:
@@ -264,7 +295,12 @@ class WorkflowCitationProjector:
             TracePolicyService.fail_closed_redaction_policy(),
             payload_kind="workflow_citation_preview",
         )
-        if result.failed or not isinstance(result.redacted_payload, str):
+        if (
+            result.failed
+            or result.pii_detected
+            or result.secret_detected
+            or not isinstance(result.redacted_payload, str)
+        ):
             return None
         return sanitize_safe_text(
             result.redacted_payload,

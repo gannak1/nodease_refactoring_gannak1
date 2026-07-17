@@ -835,8 +835,8 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - 조건 분기로 이번 실행에서 skip된 LLM node가 이전 실행의 ephemeral Citation을 재사용하지 않는지 검증한다.
 - final response sidecar는 최대 8개, 전역 rank, stable dedupe를 적용하고 durable run output에서는 제거되는지 검증한다.
 - legacy output 또는 stream node id가 sidecar key와 충돌하면 기존 output·durable output을 보존하고 Citation만 생략하는지 검증한다.
-- detailed preview는 공통 fail-closed redaction을 거치며 redaction 실패 시 preview만 생략하고 답변은 유지하는지 검증한다.
-- Client parser는 unknown version, extra/identity field, URL/file path/secret marker, rank mismatch를 거부하면서 답변 렌더링은 유지하는지 검증한다.
+- detailed preview는 공통 fail-closed redaction을 거치며 redaction 실패 또는 PII/secret 검출 시 preview만 생략하고 답변은 유지하는지 검증한다. 표시명 lazy-load 실패도 generic label로 격리한다.
+- Client parser는 unknown version, extra/identity field, URL/file path/secret marker, rank mismatch와 현재 graph node id에 충돌하는 reserved key를 거부하면서 답변 렌더링은 유지하는지 검증한다.
 - Test sidebar와 인증 실행 화면이 같은 Citation component를 사용하고 keyboard/mobile-safe markup을 유지하는지 검증한다.
 
 ### MBA-283 Generic HTTP Egress Regression

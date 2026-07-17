@@ -124,6 +124,26 @@ describe('deployment run citations', () => {
     expect(citations[0].contentPreview).toBe('연차는 사전에 신청합니다.');
   });
 
+  it('stream node id가 reserved Citation key와 충돌하면 sidecar처럼 해석하지 않는다', () => {
+    expect(
+      getDeploymentRunCitations(
+        {
+          __nodease_citations: {
+            version: 1,
+            items: [
+              {
+                citation_id: 'evidence-1',
+                evidence_rank: 1,
+                label: '노드가 만든 값',
+              },
+            ],
+          },
+        },
+        { knownNodeIds: ['input', '__nodease_citations', 'answer'] },
+      ),
+    ).toEqual([]);
+  });
+
   it.each([
     { version: 99, items: [] },
     { version: 1, items: 'invalid' },

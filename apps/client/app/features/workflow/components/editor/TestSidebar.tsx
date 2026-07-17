@@ -766,7 +766,9 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     nodeResults,
     nodes,
   });
-  const finalResponseCitations = getDeploymentRunCitations(executionResult);
+  const finalResponseCitations = getDeploymentRunCitations(executionResult, {
+    knownNodeIds: nodes.map((node) => node.id),
+  });
   const showFinalResponseCard = shouldShowFinalResponseCard({
     hasExecutionResult,
     error,

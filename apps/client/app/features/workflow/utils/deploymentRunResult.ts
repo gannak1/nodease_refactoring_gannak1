@@ -48,6 +48,10 @@ export type WorkflowCitation = {
   contentPreview?: string;
 };
 
+export type WorkflowCitationParseOptions = {
+  knownNodeIds?: Iterable<string>;
+};
+
 const isSafeCitationText = (value: unknown, maxLength: number): value is string =>
   typeof value === 'string' &&
   value.trim().length > 0 &&
@@ -120,7 +124,14 @@ const parseCitation = (value: unknown): WorkflowCitation | null => {
 
 export const getDeploymentRunCitations = (
   runResponse: unknown,
+  options: WorkflowCitationParseOptions = {},
 ): WorkflowCitation[] => {
+  if (
+    options.knownNodeIds !== undefined &&
+    Array.from(options.knownNodeIds).includes(WORKFLOW_CITATION_RESULT_KEY)
+  ) {
+    return [];
+  }
   const workflowResult =
     isRecord(runResponse) && 'results' in runResponse
       ? runResponse.results

@@ -13,6 +13,7 @@ from apps.shared.domain.knowledge_runtime_candidates import (
 )
 from apps.shared.schemas.rag import ChunkPreview
 from apps.workflow_engine.adapters.knowledge_runtime_citations import (
+    GENERIC_COLLECTION_CITATION_LABEL,
     GENERIC_DIRECT_CITATION_LABEL,
     PromptEvidence,
     WorkflowCitationProjector,
@@ -215,6 +216,65 @@ def test_projector_rechecks_lifecycle_and_source_deletion_for_labels():
         assert {"organization_id", "id", "lifecycle_state", "sync_state"} <= criteria_keys
 
 
+def test_projector_label_projection_failure_falls_back_without_failing_answer():
+    class _BrokenSourceIdentityResource:
+        def __init__(self, resource_id):
+            self.id = resource_id
+            self.source_identity_id = uuid.uuid4()
+
+        @property
+        def source_identity(self):
+            raise RuntimeError("relationship unavailable")
+
+    organization_id = uuid.uuid4()
+    direct_id = uuid.uuid4()
+    collection_child_id = uuid.uuid4()
+    collection_id = uuid.uuid4()
+    projector = WorkflowCitationProjector(
+        db_session=_Session(
+            {
+                KnowledgeBase: [_BrokenSourceIdentityResource(direct_id)],
+                KnowledgeCollection: [_BrokenSourceIdentityResource(collection_id)],
+            }
+        ),
+        organization_id=organization_id,
+        resolution=_resolution(
+            KnowledgeRuntimeCandidate(
+                knowledge_base_id=direct_id,
+                provenance=KnowledgeRuntimeCandidateProvenance(kind="direct"),
+            ),
+            KnowledgeRuntimeCandidate(
+                knowledge_base_id=collection_child_id,
+                provenance=KnowledgeRuntimeCandidateProvenance(
+                    kind="collection",
+                    collection_id=collection_id,
+                ),
+            ),
+        ),
+    )
+
+    envelope = projector.project(
+        [
+            PromptEvidence(
+                knowledge_base_id=str(direct_id),
+                chunk=_chunk(),
+                prompt_content="직접 KB 근거",
+            ),
+            PromptEvidence(
+                knowledge_base_id=str(collection_child_id),
+                chunk=_chunk(),
+                prompt_content="Collection KB 근거",
+            ),
+        ],
+        mode="basic",
+    )
+
+    assert [item.label for item in envelope.items] == [
+        GENERIC_DIRECT_CITATION_LABEL,
+        GENERIC_COLLECTION_CITATION_LABEL,
+    ]
+
+
 def test_detailed_preview_uses_common_redaction_and_fails_closed(monkeypatch):
     organization_id = uuid.uuid4()
     kb_id = uuid.uuid4()
@@ -245,6 +305,8 @@ def test_detailed_preview_uses_common_redaction_and_fails_closed(monkeypatch):
         )
         return SimpleNamespace(
             failed=False,
+            pii_detected=False,
+            secret_detected=False,
             redacted_payload="정제된 미리보기",
         )
 
@@ -271,6 +333,33 @@ def test_detailed_preview_uses_common_redaction_and_fails_closed(monkeypatch):
 
     monkeypatch.setattr(
         "apps.workflow_engine.adapters.knowledge_runtime_citations.TraceRedactionService.redact_payload",
-        lambda *_args, **_kwargs: SimpleNamespace(failed=True, redacted_payload=None),
+        lambda *_args, **_kwargs: SimpleNamespace(
+            failed=True,
+            pii_detected=False,
+            secret_detected=True,
+            redacted_payload=None,
+        ),
+    )
+    assert projector.project(evidence, mode="detailed").items[0].content_preview is None
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.adapters.knowledge_runtime_citations.TraceRedactionService.redact_payload",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            failed=False,
+            pii_detected=True,
+            secret_detected=False,
+            redacted_payload="마스킹된 미리보기",
+        ),
+    )
+    assert projector.project(evidence, mode="detailed").items[0].content_preview is None
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.adapters.knowledge_runtime_citations.TraceRedactionService.redact_payload",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            failed=False,
+            pii_detected=False,
+            secret_detected=True,
+            redacted_payload="마스킹된 미리보기",
+        ),
     )
     assert projector.project(evidence, mode="detailed").items[0].content_preview is None
