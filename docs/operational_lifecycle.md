@@ -1,7 +1,7 @@
 # Operational Lifecycle, Retention And Async Ownership
 
 Status: Draft
-Verified Against: origin/dev @ 50661eaf434f9e77d882822fd97f8935ffb139b6
+Verified Against: origin/dev @ deb7af7910ea0dc395cfb095f5b9f54aa8cfc709
 
 ## 목적과 문서 권한
 
@@ -20,6 +20,7 @@ Linear issue 번호는 구현 추적용이며 설계 권한이 아니다. Curren
 | --- | --- |
 | Current | 최신 dev에 physical record와 주 실행 경로가 존재한다. |
 | Partial | 일부 record 또는 경로는 구현됐지만 recovery, retention, security invariant 중 하나 이상이 목표에 미달한다. |
+| Pending Merge | 구현과 문서가 별도 브랜치에 존재하지만 최신 dev에는 아직 병합되지 않았다. Current inventory나 운영 전제로 사용하지 않는다. |
 | Target | 승인된 방향이지만 구현 완료를 뜻하지 않는다. |
 | Decision Required | 보존 기간, purge 조건, migration 방식처럼 별도 제품·보안·운영 결정이 필요하다. |
 
@@ -33,6 +34,7 @@ Linear issue 번호는 구현 추적용이며 설계 권한이 아니다. Curren
 6. Operational record에는 raw secret, credential 원문, provider raw payload, source raw content와 사용자 입력 원문을 기본 저장하지 않는다. Retry에 payload가 필요하면 최소화·암호화·접근 통제·제한 보존을 별도로 정의한다.
 7. `succeeded`, `failed`, `cancelled`, `dead_lettered` 같은 terminal 의미와 사용자-facing 상태를 구분한다. 내부 exact count나 target identity를 공개 projection으로 자동 노출하지 않는다.
 8. Retention cleanup은 terminal 여부, legal hold, replay/reopen 가능성, 참조 무결성과 현재 owner 부재를 확인한 뒤 수행한다. Cleanup 자체도 idempotent하고 복구 가능해야 한다.
+9. Linear 이슈나 미병합 브랜치의 구현·Accepted ADR은 최신 dev의 Current 계약을 선행 변경하지 않는다. 병합 뒤 physical schema, 운영 배포와 feature 문서를 함께 검증한 경우에만 Current로 전환한다.
 
 ## Lifecycle과 비동기 소유권 매트릭스
 
@@ -44,10 +46,11 @@ Linear issue 번호는 구현 추적용이며 설계 권한이 아니다. Curren
 | Schedule dispatch | `schedules`, active deployment/App 상태 | `schedule_dispatch_claims` | Scheduler가 canonical schedule/deployment를 확인하고 occurrence claim을 DB에 확정 | Scheduler/Workflow worker가 deterministic admission과 claim state를 사용. Disabled 상태에서도 visibility/retention maintenance는 계속 수행 | Current |
 | Workflow external effect | 고정된 workflow/deployment graph와 logical execution identity | `workflow_node_effect_attempts` | Workflow Engine application use case가 stable slot과 frozen provider contract를 짧은 transaction으로 claim·전이 | Claim owner만 provider를 호출한다. 같은 logical execution 재진입이 만료 attempt를 정리하며 별도 전역 recovery scheduler는 두지 않음 | Current |
 | Knowledge Collection sync | `knowledge_collections`, membership과 child KB/document current state | `knowledge_collection_sync_jobs`, `knowledge_collection_sync_job_items` | Sync request service가 immutable topology revision과 bounded item snapshot을 durable job으로 확정 | Collection sync worker가 lease, fresh requester authority와 per-document advisory lock을 검증. Redelivery/stale lease는 DB job/item state로 복구 | Current |
-| Knowledge ingestion/finalization | `documents`, `document_versions`, active version과 retrieval-visible artifact | `knowledge_ingestion_outbox` | Ingestion/finalization transaction이 processed state와 필요한 Outbox를 함께 확정해야 함 | Knowledge ingestion worker/recovery path가 finalization·orphan cleanup을 멱등 처리. 모든 ingestion surface의 target invariant 적용과 hard-delete cleanup 연계는 아직 완결되지 않음 | Partial |
+| Knowledge document process/sync 실행 | `documents`, `document_versions`, active version과 retrieval-visible artifact | `knowledge_document_ingestion_jobs` (MBA-288) | MBA-288 브랜치 계약은 Document queued projection·설정과 job을 같은 transaction에 저장하고 commit 뒤 job UUID만 발행한다. 최신 dev의 process-local `BackgroundTasks`를 아직 대체하지 않음 | 전용 Knowledge worker가 fresh authority, lease/heartbeat/fencing, bounded retry와 due recovery를 소유하는 구현이 별도 브랜치에 있음 | Pending Merge |
+| Knowledge active-version finalization과 superseded cleanup | `documents`, `document_versions`, active version과 version-scoped chunk | `knowledge_ingestion_outbox`는 현재 `cleanup_superseded` 물리 정리 intent만 소유하며 process/sync 요청 job이 아님 | Finalizer가 active pointer 전환, 이전 version `superseded`와 cleanup Outbox insert를 같은 transaction에 확정 | Log System task와 processor가 due/stale lease를 처리한다. 현재 handler는 superseded chunk cleanup에 한정되고 정기 schedule, 완전한 dead-letter/redrive, hard-delete/object/vector cleanup 연계는 MBA-184 범위 | Partial |
 | Trace retention | `trace_payloads`와 visibility/redaction/retention policy | `trace_retention_policies` 및 cleanup 대상 row | Trace 저장 경계가 payload kind와 retention expiry를 정책에 따라 확정 | Log System retention task가 terminal/expiry를 기준으로 정리하고 raw access audit는 별도 보존 | Current |
 | Standalone RAG answer retention | `rag_answer_runs.retention_expires_at`와 safe summaries | 별도 answer run row가 lifecycle anchor | RAG answer service가 requested/running/terminal 상태와 expiry를 저장 | Log System/Shared retention 경계가 terminal row만 잠금 기반으로 정리. Audit/usage는 별도 보존 계약을 따름 | Current |
-| Knowledge Base hard delete | KB visibility/lifecycle와 direct permission, document/storage/index artifact | Current lifecycle facade와 일부 `knowledge_ingestion_outbox` record | Current service는 permission/DB 정리와 best-effort physical cleanup을 조율하지만 완전한 durable cleanup transaction은 아님 | Target은 retry/dead-letter/redrive 가능한 cleanup Outbox/reconciler. MBA-184가 전환 추적 항목 | Partial |
+| Knowledge Base hard delete | KB visibility/lifecycle와 direct permission, document/storage/index artifact | Current lifecycle facade. `knowledge_ingestion_outbox`의 현재 `cleanup_superseded` event만으로 hard-delete 전체를 보장하지 않음 | Current service는 permission/DB 정리와 best-effort physical cleanup을 조율하지만 완전한 durable cleanup transaction은 아님 | Target은 retry/dead-letter/redrive 가능한 cleanup Outbox/reconciler. MBA-184가 전환 추적 항목 | Partial |
 | LLM usage 기록 | 실제 provider call의 normalized usage fact | `llm_usage_logs` | 현재 LLM service가 token/cost/latency와 safe correlation을 DB에 기록 | 누락 reconciliation, billing-safe snapshot과 독립 retention ledger는 MBA-287 범위에서 보강 필요 | Partial |
 | LLM credential revoke와 secret purge | `llm_credentials.is_valid`와 credential permission/revision | Current revoke에는 별도 purge job이 없음 | 현재 DELETE service가 `is_valid=false`를 동기 commit하며 row와 secret material은 유지 | 신규 호출 차단은 Current. Secret crypto-shred/physical purge, legal hold와 실패 복구는 별도 worker/lifecycle 결정 필요 | Current revoke / Decision Required purge |
 
@@ -60,8 +63,9 @@ Linear issue 번호는 구현 추적용이며 설계 권한이 아니다. Curren
 | Trace payload | `trace_retention_policies`와 expiry 기반 cleanup | Raw access event 보존, legal hold, 실행 중 여부, redaction 정책 | Current policy 경계 유지 |
 | `rag_answer_runs` | Row별 `retention_expires_at`; raw query/answer 대신 safe hash/summary 저장 | Terminal state, legal hold, audit/usage 독립 보존 | Current |
 | KC sync job/item | Terminal 뒤 기본 30일 bounded cleanup | Active lease 없음, terminal 집계 완료, canonical audit 분리 보존 | Current |
+| Knowledge document ingestion job | MBA-288 브랜치 계약은 terminal 뒤 기본 30일 bounded cleanup을 정의하지만 최신 dev에는 table과 운영 cleanup이 없음 | Terminal state, active lease/heartbeat 없음, finalization commit 완료, canonical audit/document version 독립 보존 | Pending Merge |
 | External effect attempt | 현재 자동 cleanup 없음 | Broker duplicate-delivery 최대 기간, `replay_deadline_at`, reopen 불가, 결과 재사용 필요 종료를 모두 증명 | Decision Required |
-| Knowledge artifact/outbox | Current coverage가 surface별로 다름 | Retrieval exclusion 선행, active reference 없음, legal hold, storage/index cleanup terminal, stale worker 차단 | MBA-184 및 Knowledge ingestion 후속 |
+| Knowledge cleanup outbox/artifact | 현재 `cleanup_superseded` processor는 있으나 terminal Outbox row의 자동 보존 만료와 전체 storage/index/hard-delete cleanup schedule은 완결되지 않음 | Retrieval exclusion 선행, active reference 없음, legal hold, cleanup terminal, stale worker 차단, redrive 불필요 | MBA-184 |
 | LLM usage | Credential revoke와 무관하게 유지 | Billing/audit window, legal hold, aggregate 대체 가능성, safe historical meaning 보존 | MBA-287에서 정책화 필요 |
 | LLM credential secret | Revoke 뒤에도 current row에 남음 | 모든 신규 capability 차단, grace/recovery 정책, legal hold, key/version과 audit, purge retry terminal | MBA-248 및 별도 purge 결정 필요 |
 
@@ -84,6 +88,7 @@ Linear issue 번호는 구현 추적용이며 설계 권한이 아니다. Curren
 - Queue payload만 있고 durable admission/claim이 없다면 중복 전달과 publish-loss 허용 여부를 feature test에 명시한다.
 - Retention 일수를 추가할 때 expiry 기준 시각, terminal 조건, legal hold, cascade/SET NULL, batch 상한과 failure state를 함께 정의한다.
 - Secret 또는 raw payload를 보존하는 새 job은 별도 encryption/key lifecycle, access permission과 safe dead-letter projection 없이 도입하지 않는다.
+- Pending Merge 항목이 dev에 병합되면 physical table inventory, migration head, worker/Beat 배포, schema readiness, Gateway와 worker의 storage 접근 계약과 feature 문서까지 확인한 뒤 Current/Partial을 다시 판정한다. Redis progress는 durable job을 대체하지 않으며 terminal commit 뒤 정리되는 advisory projection으로만 검증한다.
 - Current/Partial/Target 상태를 바꿀 때 관련 feature requirements, API, component, test case와 [data_model.md](data_model.md)를 함께 갱신한다.
 
 ## 관련 문서

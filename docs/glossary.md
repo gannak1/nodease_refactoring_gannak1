@@ -155,10 +155,11 @@ Status: Draft
 | Raw/Compliance Access | Raw Knowledge Artifact를 조회하는 별도 권한/flow. Agent answer, SSE stream, retrieval context와 분리되며 raw access audit이 선행돼야 한다. |
 | Capped Preview | 사용자에게 출처 이해를 돕기 위해 제공하는 redacted and length-limited 미리보기 텍스트. Durable audit/trace/usage summary나 embedding input으로 복사하지 않는다. |
 | Metadata Filter | 문서 metadata의 allowlist된 필드로 검색 범위를 좁히는 필터. 권한의 source가 아니며 RBAC/source ACL 판정을 대체하지 않는다. |
-| Classification | 문서 민감도 분류 metadata convention. 전용 column이 아니라 `documents.meta_info.classification`을 사용한다. |
+| Classification | ADR-0007의 문서 보안 민감도 metadata convention(`public`, `internal`, `confidential`, `pii`). 전용 column이 아니라 `documents.meta_info.classification`을 사용하며 문서 유형, 업무 주제, taxonomy 또는 chunking profile과 같은 의미가 아니다. Current demo/legacy의 다른 문자열은 canonical 보안 등급 확장이 아니라 정리 대상 compatibility data다. |
 | Ingestion Lock | 같은 source item 또는 document-level KB에 대한 동시 ingestion/finalization을 막는 lock. Owner token, TTL renew, fencing token 또는 DB advisory lock 같은 방어가 필요하다. |
 | Fencing Token | 오래된 worker가 lock 만료 뒤 새 worker의 artifact를 finalize하거나 삭제하지 못하게 하는 단조 증가 또는 소유권 확인 token. |
-| Knowledge Ingestion Outbox | DB state와 object storage, vector index, external artifact cleanup/finalization side effect를 조정하는 retry 가능한 outbox. DB commit 전 physical delete나 external side effect가 먼저 확정되는 것을 피한다. |
+| Knowledge Document Ingestion Job | Document process/sync/resume/reindex 요청의 durable 실행 record. MBA-288 브랜치에 구현됐지만 최신 dev에는 아직 병합되지 않았으며, queue task ID나 Redis progress가 source of truth가 아니다. Physical cleanup을 소유하는 Knowledge Ingestion Outbox와 구분한다. |
+| Knowledge Ingestion Outbox | Active version 전환 뒤 superseded chunk와 향후 object/vector/orphan artifact의 physical cleanup side effect를 조정하는 retry 가능한 outbox. 최신 dev의 handler는 `cleanup_superseded`에 한정되며 process/sync 요청 job이 아니다. DB commit 전 physical delete나 external side effect가 먼저 확정되는 것을 피한다. |
 | Recovery Scanner | outbox, staging version, orphan artifact, failed cleanup 같은 불완전 상태를 찾아 idempotent하게 재시도하거나 dead-letter 처리하는 운영 worker. |
 | Tombstone | Source item이 원천 source에서 삭제되었거나 더 이상 열거되지 않는 상태를 나타내는 marker. 기본적으로 citation/audit history를 즉시 삭제한다는 뜻은 아니다. |
 | Sync Run | Connector가 source item/content/ACL을 동기화하는 실행 1회. Lease, cursor, retry/backoff, dead-letter 상태를 가져야 한다. |

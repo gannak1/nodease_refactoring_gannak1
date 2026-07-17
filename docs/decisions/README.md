@@ -8,6 +8,7 @@
 - DB schema, RBAC, audit, data retention, organization boundary, 보안 경계는 ADR 후보로 본다.
 - ADR은 결정의 이유와 선택지를 기록한다. 현재 구현 기준은 관련 문서(`docs/`, `features/`)에도 반드시 반영한다.
 - 파일명은 `ADR-NNNN-topic-slug.md` 형식을 사용한다. `NNNN`은 4자리 순번이다.
+- 병렬 브랜치의 ADR 번호는 예약된 전역 식별자가 아니다. Merge 또는 rebase 직전에 최신 dev의 인덱스를 기준으로 중복을 확인하고, 충돌하면 아직 병합되지 않은 ADR의 파일명·제목·본문 링크·인덱스를 함께 재번호한다. 같은 번호의 서로 다른 결정을 dev에 병합하지 않는다.
 - ADR 본문은 작성 시점의 기록으로 보존하고 소급 수정하지 않는다. 결정이 바뀌면 새 ADR을 추가하고 이전 ADR을 참조한다. 단 머리말 `Status`는 기록이 아니라 상태이므로 `Superseded` 등으로 전이할 수 있다.
 - 새 ADR의 메타 블록은 `Status`만 필수로 하고, 관련 결정이 있으면 `Related ADRs`를 선택적으로 추가한다. `Date`는 git history가 답하므로 넣지 않고, 구현 반영 여부는 이 README의 `현재 코드 기준` 열이 담당하므로 `Verified Against`도 넣지 않는다.
 - 이관 ADR의 `Date`, `Original`, `Verified Against` 필드는 이관 당시 기록으로 보존하며, 새 ADR 기준으로 소급 정리하지 않는다.

@@ -48,6 +48,13 @@ Active 승격 조건은 문서 종류에 따라 다르다.
 
 `Verified Against`는 상태값이 아니라 코드 대조 검증 기록이다. Active 문서라도 코드가 바뀌어 검증이 낡으면 `Verified Against`를 재검증 후 갱신하며, 이때 `Status`는 그대로 유지한다.
 
+## Parallel Branch Convergence
+
+- `Current`와 Current table inventory는 최신 dev에 병합된 schema·실행 경로만 뜻한다. 별도 브랜치의 구현은 필요한 경우 `Pending Merge` 또는 Target으로 표시하고, 병합 전 `Verified Against` 기준을 선행 변경하지 않는다.
+- ADR, feature requirement, test case의 순번은 병렬 브랜치에서 예약되지 않는다. Merge 또는 rebase 직전에 같은 문서의 최신 dev와 대조해 중복 번호를 재배정하고 모든 내부 링크·표·테스트 참조를 함께 갱신한다.
+- 미병합 ADR을 current 상위 문서의 authority로 링크하지 않는다. 병합 시 ADR 번호 충돌, 상태, 인덱스 등록과 관련 feature 문서 반영을 한 번에 확인한다.
+- 병렬 구현이 같은 책임을 다른 table/job/outbox로 정의하면 이름을 합치는 대신 business source of truth, execution job과 physical cleanup intent를 먼저 구분한다.
+
 ## Archive Boundary
 
 `docs_old/` is a historical archive only. It may contain preserved metadata such as `Source of Truth: Yes` from before the documentation restructure, but that metadata is not current authority.

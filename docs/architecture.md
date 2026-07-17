@@ -81,6 +81,8 @@ Agent Builder direct-edit 구조는 Accepted [ADR-0045](decisions/ADR-0045-agent
 
 Direct-edit protocol은 MBA-228의 단일 기능 PR에서 nullable `AgentBuilderSession.protocol_version` additive migration과 null/`direct_edit_v1` mixed read로 전환한다. 신규 session은 `direct_edit_v1`을 기록하고 기존 null Preview session은 backfill이나 자동 변환 없이 `stale_protocol`로 닫는다. Preview API/UI는 direct-edit parity와 필수 integration/E2E 검증을 통과한 뒤 제거한다. Frontend와 Gateway의 서로 다른 revision을 함께 운영하는 무중단 전환, staged rollout/rollback, 배포 gate와 image artifact 정책은 별도 배포 설계가 소유한다.
 
+최신 dev의 generation mode 계약은 `configure_and_generate`(default)와 `structure_only` 두 값이다. MBA-293 브랜치는 이를 `guided_generate`, `quick_generate`, `structure_only`와 명시적 quick apply 흐름으로 전환하는 목표 문서를 작성 중이지만 아직 Current 계약이 아니다. PRD는 특정 mode label이나 화면 단계 수를 고정하지 않고 자연어 생성, 필수 설정 보완, 권한·validation·CAS 저장, 별도 테스트라는 사용자 결과만 요구한다.
+
 | 구성요소 | 책임 |
 | --- | --- |
 | Memory Domain/Application | Conversation Session, Turn, Access Grant, final/provisional entry와 summary, dependency, lifecycle과 retention policy의 단일 업무 mutation owner |
@@ -387,7 +389,7 @@ Workflow node type 계약은 [ADR-0024](decisions/ADR-0024-agent-builder-node-ca
 
 ## 5. Current compatibility debt와 Nodease 목표
 
-- **Deployment `auth_secret` — Current**: deployment 생성 응답의 `auth_secret` 원문과 이를 표시·복사하는 Client 경로는 root commit `de6f9e26`부터 이어진 활성 Moduly 계약이다. 인증·배포 권한을 통과한 생성 응답이지만 일반 resource 응답에서 secret을 반환하므로 [PRD](PRD.md) NFR-004의 Nodease 목표와 일치하지 않는다. **Target**: 일반 생성·조회 응답에서는 원문을 제거하고, 필요하면 명시적 one-time 발급·회전 surface에서만 재표시 불가능한 방식으로 전달한다. 기존 Client와 호출자의 전환, rotation·recovery 계약은 MBA-247에서 함께 검증한다.
+- **Deployment `auth_secret` — Current**: deployment 생성 응답의 `auth_secret` 원문과 이를 표시·복사하는 Client 경로는 root commit `de6f9e26`부터 이어진 활성 Moduly 계약이다. 인증·배포 권한을 통과한 생성 응답이지만 일반 resource 응답에서 secret을 반환하므로 [PRD](PRD.md) NFR-004의 Nodease 목표와 일치하지 않는다. **Target**: 일반 생성·조회 응답에서는 원문을 제거하고, 명시적 one-time 발급·회전 surface에서만 신규 원문을 전달한다. DB에는 비가역 verifier와 rotation version/grace metadata만 남기고, 권한·CAS·transaction-bound audit·response no-store를 적용한 뒤 rolling migration 수렴 후 legacy 원문 column을 제거한다. MBA-247 브랜치에 이 전환 구현이 작성 중이지만 최신 dev에는 아직 병합되지 않았으므로 현재 위험을 해소된 것으로 표시하지 않는다.
 - **Workflow external node output — Current**: Generic HTTP의 `status/data/headers`, GitHub comment의 기존 result field와 이를 downstream 또는 실행 응답으로 전달하는 dataflow도 root commit `de6f9e26`부터 이어진 활성 Moduly 계약이다. Nodease 작업으로 durable log/trace의 raw provider output 저장은 제한했지만 사용자 응답 경계까지 안전해진 것은 아니다. **Target**: operation별 allowlist output, downstream용 typed projection, 사용자-facing response projection을 분리하고 각 surface에서 secret·cookie·내부 식별자·과도한 body를 제거한다. 기존 graph selector를 무조건 깨지 않도록 사용 field inventory, graph/version별 migration, 명시적 validation error와 rollback 기준을 먼저 정의한다. Slack 전용 node는 [ADR-0037](decisions/ADR-0037-slack-dedicated-delivery-boundary.md)의 safe projection을 유지하며 raw output 계약을 다시 확장하지 않는다.
 - **Workflow Worker public-port egress 잔여 위험**: ADR-0050의 NetworkPolicy는 private·metadata destination과 비허용 port를 차단하지만 public 80/443·143/993의 우회 direct dial까지 proxy-only로 강제하지 않는다. 같은 pod를 선택하는 allow-all egress policy, NetworkPolicy 미집행 CNI, node-local/`hostNetwork` 예외가 있으면 방어가 약화될 수 있으므로 배포 검증과 후속 proxy/admission 경계가 필요하다.
 - **RAG proxy/URL preview SSRF surface**: 현재 `/api/v1/rag/proxy/preview`와 URL 기반 preview/upload 계열은 목표 `OutboundEgressGuard` 계약에 맞는 구현 검증이 필요하다. Production release 전에는 egress guard 이관 또는 명시적 risk acceptance가 필요하다.
