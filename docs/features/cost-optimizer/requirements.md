@@ -16,20 +16,15 @@ FR-011의 현재 제품 계약은 `judge_bootstrap_incremental_v1`다. 이 계�
 초기 운영 요청은 Judge LLM이 현재 요청에 맞는 모델을 선택하고, 그 선택과 실제 실행
 결과가 쌓일수록 로컬 라우터가 Judge를 대신한다.
 
-| 동일 작업 지문의 성공 운영 로그 | 초기 표본 | 정책 출처 |
-| --- | --- | --- |
-| 0건 | Planner가 만든 실행 가능한 합성 JSON payload | `synthetic` |
-| 1~11건 | 가림 처리한 운영 표본과 부족한 범위의 합성 payload | `hybrid` |
-| 12건 이상 | 최대 24개 대표 운영 표본 | `history` |
-
 작업 지문은 prompt, 입력 매핑, 출력 schema, RAG/retrieval 설정, downstream 계약을 포함한다.
 수동 모델, fallback 모델, 자동 라우팅 ON/OFF 값은 포함하지 않는다. 따라서 수동 모델만
 바뀐 경우에는 bootstrap을 재사용할 수 있지만, 실제 작업을 바꾸는 prompt/RAG/schema/downstream
 변경은 bootstrap을 오래됨 상태로 만들고 다시 생성을 요구한다.
 
-초기 생성은 작업 설명과 node 계약을 정리하고 Judge가 사용할 안전한 요청 계약을 만든다.
-이 과정의 Planner 비용은 사용자가 정한 1회 초기 생성 예산($0.50~$10, 기본 $1)에서만
-사용한다. 배포 후 후보 replay 비용은 월간 재검증 예산에서 별도로 차감한다.
+초기 생성은 외부 Planner나 후보 모델을 호출하지 않는다. 작업 지문, 사용 가능한 후보 모델,
+사용자가 고른 기본·대체 모델, 비어 있는 local learning 상태를 하나의 Judge-first artifact로
+동기 저장한다. 같은 작업 지문의 성공 운영 로그 수는 UI 참고 정보로만 집계하며 초기 모델
+선택 label로 재사용하지 않는다.
 
 일반 실행은 현재 문의의 주제 키워드나 문장 유사도를 저장·검색하지 않는다. 초기 단계에서는
 **변수 치환이 끝난 prompt와 들어온 입력**을 Judge에 일시적으로 전달해, 실행 주체가 쓸 수
@@ -43,9 +38,8 @@ Judge 선택 label은 로컬 mDeBERTa 모델 선택 분류기를 점진적으로
 bootstrap과 local artifact를 오래됨으로 표시하고 Judge-first로 다시 시작한다.
 
 배포 후 성공 운영 실행이 설정 주기만큼 쌓이면 Judge 선택 label 수와 모델별 품질·비용·지연을
-재평가한다. local router가 충분히 학습됐는지는 이 시점의 품질 gate로만 전환하며, 모델 후보의
-추가 성능 검증이 필요할 때만 제한된 replay를 별도로 사용한다. Canary와 Shadow는 이번 범위에
-포함하지 않는다.
+재평가한다. local router가 충분히 학습됐는지는 이 시점의 품질 gate로만 전환한다. 정책 갱신은
+정적 rule이나 별도 난이도 모델을 만들지 않고 학습 모드만 조정한다.
 
 이 기능의 첫 번째 목표는 workflow 전체를 A/B 테스트하는 것이 아니라, 사용자가 선택한 특정 LLM 노드 하나에 대해 현재 설정과 후보 설정을 같은 입력 기준으로 비교할 수 있게 하는 것이다.
 
@@ -78,12 +72,12 @@ Cost Optimizer는 이 질문에 답하기 위한 기능이다.
 
 ## Current Implementation Snapshot
 
-현재 구현은 Cost Optimizer를 두 흐름으로 나눈다.
+현재 구현은 Cost Optimizer 비교와 자동 모델 라우팅을 분리한다.
 
 1. `비교 분석 테스트`: 특정 LLM 노드의 과거 `workflow_node_runs.id`를 baseline으로 직접 선택하고, 같은 입력으로 B candidate를 실행해 결과를 비교한다.
-2. `모델 라우팅 최적화`: 최신 baseline과 과거 Cost Optimizer experiment/candidate 이력을 읽어, 사용자가 선택한 전략(`자동 균형`, `비용 우선`, `속도 우선`)에 맞는 검증된 후보가 있는지 보여준다.
+2. `자동 모델 라우팅`: LLM 노드 설정에서 Judge-first 정책을 준비한다. 초기에는 runtime Judge가 실행 모델을 선택하고, 안전한 선택 label과 운영 품질이 충분히 쌓이면 로컬 라우터가 먼저 선택한다.
 
-baseline 선택 UI는 현재 최신 로그를 자동으로 고정하지 않는다. 사용자는 baseline 목록에서 비교 기준 실행 로그를 직접 선택해야 한다. `GET /baselines/latest` API는 모델 라우팅 추천 화면과 API 호환을 위해 남아 있지만, A/B workspace 진입의 기본 UX는 “선택 없이 최신 baseline 자동 사용”이 아니다.
+baseline 선택 UI는 현재 최신 로그를 자동으로 고정하지 않는다. 사용자는 baseline 목록에서 비교 기준 실행 로그를 직접 선택해야 한다. `GET /baselines/latest` API는 추천 모달 검증과 API 호환을 위해 남아 있지만, A/B workspace 진입의 기본 UX는 “선택 없이 최신 baseline 자동 사용”이 아니다.
 
 정책 기반 자동 모델 라우팅의 실행 기준은 별도 policy 저장소다. 현재 코드는 active policy 저장, runtime 일반 rule 평가, 실행 주체 기준 credential Hard Gate, 운영 run 집계와 전역 모델 profile·노드별 운영 성적 반영을 제공한다. 입력군 발견, 의미 유사도 계산, 입력군별 후보 Replay/Judge 검증은 활성 제품 경로에서 제거했다.
 
@@ -453,14 +447,12 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 
 #### 초기 정책 생성
 
-- 사용자는 LLM 노드에서 자동 라우팅을 켜고 작업 설명, 기본 모델, 기본 대체 모델,
-  초기 생성 예산을 입력한다.
+- 사용자는 LLM 노드에서 자동 라우팅을 켜고 작업 설명, 기본 모델, 기본 대체 모델을 입력한다.
 - bootstrap은 system/user/assistant prompt, 입력 매핑, 출력 형식과 schema, RAG 설정,
   후속 노드 계약을 읽어 Judge 요청 계약과 로컬 router artifact 초기 상태를 만든다.
+- bootstrap 생성은 외부 LLM을 호출하지 않으며 즉시 `ready` 상태가 된다.
 - 초기 Judge는 현재 요청별로 `selected_model_id`, `confidence`, `reason_code`를 반환한다.
   Judge label은 로컬 모델 선택 분류기의 학습 데이터이며 runtime keyword rule이 아니다.
-- 같은 작업 지문의 성공 운영 로그가 0건이면 안전한 합성 표본을, 1~11건이면 운영
-  표본과 필요한 합성 표본을, 12건 이상이면 대표 운영 표본을 사용한다.
 - 학습은 실행 중 메모리에 있는 rendered prompt로 mDeBERTa feature를 만든 뒤, 원문 대신
   가중치·Judge 선택·실행 결과 안전 요약만 저장한다. RAG 문서 원문은 Judge와
   artifact에 넣지 않고 retrieval 사용 여부·문맥 길이·출처 수 같은 구조 정보만 쓴다.
@@ -486,16 +478,14 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 - 설정한 점검 주기에 도달하면 완료된 Judge 표본과 운영 성적을 다시 평가한다.
   최소 표본 수, 최소 두 개 이상의 선택 모델, schema/downstream 성공률, fallback 비율 기준을
   충족하면 `local_first`로 전환한다. 기준을 잃으면 다시 `judge_first`로 돌아간다.
-- 제한된 replay는 후보 모델 자체의 성능 재검증에만 사용하며, Judge-first 초기 전환의 필수
-  조건은 아니다.
-- 재평가 비용은 초기 bootstrap 예산과 별도의 월간 검증 예산에서 관리한다.
+- 재평가는 추가 Planner/Judge 호출 없이 이미 누적된 Judge label과 완료된 운영 결과를 읽는다.
 
 #### 제외 범위
 
 - 입력군, 대표 예문, semantic cohort, embedding 유사도, cohort별 lifecycle과
   cohort별 Replay/Judge gate는 제품 경로와 저장소에서 제거한다.
-- 과거 배포가 남긴 semantic cohort 정책은 migration에서 삭제한다. 다음 실행에서
-  현재 bootstrap 정책을 새로 만들거나, 설정된 기본 모델로 안전하게 시작한다.
+- 과거 전략 정책은 신규 runtime에서 실행하지 않는다. 정책 refresh 시 정적 rule을 버리고
+  Judge-first 기본·대체 모델과 빈 학습 상태로 한 번 이관하며, 이관 전 실행은 저장 모델로 닫는다.
 ### FR-012. LLM 파라미터 추천 룰셋
 
 Cost Optimizer는 모델 교체뿐 아니라 LLM 노드의 파라미터 조정 후보도 추천한다.

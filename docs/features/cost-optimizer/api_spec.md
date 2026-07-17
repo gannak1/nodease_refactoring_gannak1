@@ -12,9 +12,9 @@ FR-011은 `judge_bootstrap_incremental_v1` 정책으로 다룬다. 초기 운영
 권한 모델이 바뀐 경우에는 Judge로 돌아간다. 원문 prompt/input/KB 내용은 API 응답, policy
 artifact, 학습 이력에 저장하지 않는다.
 
-bootstrap API는 `enabled`, 작업 설명, 기본/대체 모델, 초기 생성 예산을 받고, 응답에는 원문이
-아닌 작업 계약 safe summary와 Judge-first 상태만 포함한다. 기존 semantic cohort API는 이력/호환
-경로이며 신규 bootstrap runtime의 source of truth가 아니다.
+bootstrap API는 작업 설명과 기본/대체 모델을 받고 외부 LLM 호출 없이 Judge-first artifact를
+동기 생성한다. 응답에는 작업 지문, 후보 모델 safe summary와 준비 상태만 포함한다. 이전 전략의
+정적 rule이나 semantic cohort는 신규 runtime의 source of truth가 아니다.
 
 Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baseline 실행 로그를 선택하고, 같은 입력으로 B 후보 설정을 실행한 뒤, 선택한 후보를 현재 draft에 적용하는 흐름을 지원한다.
 
@@ -58,7 +58,7 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 현재 policy 상태, 누적 운영 run 수, active/pending policy 조회 | FR-011 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/bootstrap-preview` | 동일 작업 지문의 안전한 운영 로그 수와 초기 생성 방식 미리 보기 | FR-011 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/bootstrap` | 현재 bootstrap artifact와 가림 처리한 표본 summary 조회 | FR-011 | builder 이상 |
-| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/bootstrap` | 작업 설명/기본 모델/예산으로 초안 Judge-first bootstrap 생성 | FR-011 | builder 이상 |
+| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/bootstrap` | 작업 설명과 기본·대체 모델로 초안 Judge-first bootstrap을 동기 생성 | FR-011 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/preview` | active deployment policy를 기록 없이 한 번 평가해 선택 모델과 근거를 반환 | FR-011 | execute |
 | PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 자동 라우팅 ON/OFF, 기본 모델/대체 모델, 정책 점검 주기 변경 | FR-011 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy/refresh` | 현재 운영 성적으로 policy 재평가 작업을 예약 | FR-011 | builder 이상 |
@@ -81,10 +81,9 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-008 | `PATCH apply` | `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-009 | LLM usage/cost logging/history | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/`, `apps/shared/db/models/cost_optimizer.py`, `apps/shared/services/cost_optimizer_retention.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py`, `apps/shared/tests/services/test_cost_optimizer_retention.py` | 통과 |
 | FR-010 | builder permission enforcement | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/gateway/auth/permissions.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
-| FR-011 | policy persistence, runtime evaluator, event idempotency, refresh task, credential guard, trace | `apps/shared/db/models/model_routing_policy.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/tasks.py`, `apps/workflow_engine/services/model_routing_policy_refresh.py`, `apps/workflow_engine/services/model_routing_policy_refresh_task.py`, `apps/workflow_engine/workflow/nodes/llm/llm_node.py` | 기반 구현 완료 | 기존 FR-011 targeted tests | 통과 |
-| FR-011 | legacy prior-guided/complexity runtime | 기존 legacy service와 compatibility policy | 호환 유지 | 기존 targeted tests | 통과 |
-| FR-011 | Judge bootstrap, local model-choice router, runtime candidate selection | `apps/workflow_engine/services/model_routing_runtime_judge.py`, `model_routing_incremental_learning.py`, `model_routing_mdeberta_classifier.py`, `model_router.py`, `llm_node.py` | 진행중 | `apps/workflow_engine/tests/services/test_model_routing_runtime_judge.py`, `test_model_routing_incremental_learning.py`, `test_model_routing_policy_refresh_task.py`, `test_llm_node_runtime.py` | 집중 테스트 통과 |
-| FR-011 | 실제 DB Replay evidence에서 proposal·active policy까지 이어지는 자동 통합과 분석 API | 기존 refresh service와 Gateway endpoint 확장 | 구현 필요 | PostgreSQL integration test | 미작성 |
+| FR-011 | Judge-first policy persistence, event idempotency, refresh, credential guard, trace | `apps/shared/db/models/model_routing_policy.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/tasks.py`, `apps/workflow_engine/services/model_routing_policy_refresh_task.py`, `apps/workflow_engine/workflow/nodes/llm/llm_node.py` | 구현 완료 | FR-011 targeted tests | 통과 |
+| FR-011 | Runtime Judge, 점진 학습 local classifier, runtime candidate selection | `apps/workflow_engine/services/model_routing_runtime_judge.py`, `model_routing_incremental_learning.py`, `model_routing_local_classifier.py`, `model_router.py`, `llm_node.py` | 구현 완료 | `test_model_router.py`, `test_model_routing_incremental_learning.py`, `test_model_routing_policy_refresh_task.py`, `test_llm_node_runtime.py` | 집중 테스트 통과 |
+| FR-011 | 과거 정책 호환 경계 | refresh 시 Judge-first로 1회 이관하고 신규 runtime에서는 레거시 rule을 실행하지 않음 | 구현 완료 | `test_model_routing_policy_refresh_task.py`, `test_llm_node_runtime.py` | 통과 |
 | FR-012 | LLM parameter recommendation contract | `apps/gateway/services/cost_optimizer_parameter_recommendation_service.py`, `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 기록 있음 |
 | FR-013 | Recommendation/compare verification orchestration, quality judge, history summary, modal/result-analysis UI | `apps/gateway/services/cost_optimizer_recommendation_verification_service.py`, `apps/gateway/services/cost_optimizer_output_quality_service.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/shared/db/models/cost_optimizer.py`, `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, `apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | Gateway/frontend targeted test 통과 |
 | FR-014 | deployment config, plan persistence, operations summary, verification spend guard | `apps/shared/db/models/deployment_parameter_optimization.py`, `apps/gateway/services/deployment_parameter_optimization_service.py`, `apps/gateway/api/v1/endpoints/deployment.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/gateway/services/app_service.py` | 수집/상태/예산 설정과 실제 검증 비용 누적 구현 | `apps/gateway/tests/services/test_deployment_parameter_optimization_service.py`, `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, operations API targeted test | 통과 |
@@ -127,7 +126,7 @@ Judge가 판단할 노드 계약과 비어 있는 local router 학습 상태를 
 | --- | --- | --- |
 | GET /workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/bootstrap-preview | write | 현재 node 설정에서 사용할 운영 표본 수와 예상 bootstrap source를 미리 본다. |
 | GET /workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/bootstrap | write | 현재 작업 지문과 일치하는 bootstrap safe summary를 조회한다. |
-| POST /workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/bootstrap | write | Planner bootstrap 생성을 요청하고 node draft에 bootstrap 분류기 참조를 저장한다. |
+| POST /workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/bootstrap | write | Judge-first artifact를 동기 생성하고 node draft에 bootstrap 참조를 저장한다. |
 
 POST bootstrap request:
 
@@ -135,18 +134,17 @@ POST bootstrap request:
 {
   "task_description": "고객 문의를 JSON으로 분류하고 문서 근거가 없으면 안전하게 답변합니다.",
   "default_model_id": "gpt-4.1-mini",
-  "fallback_model_id": "gpt-4.1",
-  "initial_budget_usd": 1.0
+  "fallback_model_id": "gpt-4.1"
 }
 ~~~
 
-task_description은 10~4,000자, initial_budget_usd는 $0.50~$10 범위다. 기본/대체 모델은
+task_description은 10~4,000자다. 기본/대체 모델은
 현재 편집자가 실제로 사용할 수 있는 chat model이어야 하며 서로 같을 수 없다.
 
 Bootstrap response는 id, status, source, task_fingerprint, default_model_id,
-fallback_model_id, initial_budget_usd, planner_model_id, planner_cost_usd,
-generation_summary, stale_reason을 반환한다. 생성 요청 response에는 안전한 작업 계약 요약이
-포함될 수 있다. 원문 prompt, 입력, 검색 문서 원문, embedding vector는 반환하지 않는다.
+fallback_model_id, generation_summary, stale_reason을 반환한다. `generation_summary`에는
+strategy ID, 후보 모델 ID, 참고용 동일 작업 운영 로그 수, `planner_called=false`가 포함된다.
+원문 prompt, 입력, 검색 문서 원문, embedding vector는 반환하지 않는다.
 
 ### Policy Contract
 
@@ -219,10 +217,9 @@ Preview request는 raw 입력을 server 내부에서만 평가하고 response에
 Preview response는 deployment_version, policy_version, decision_source,
 selected_model_id, fallback_model_id, default_model_id, configured_fallback_model_id,
 matched_rule_id, reason_code, strategy_id, decision_factors, runtime_context을
-반환한다. Preview는 운영 요청이 아니므로 Judge를 호출·학습·과금하지 않는다. `judge_first`
-preview의 `decision_source`는 `test_policy_preview`이며, 실제 Judge가 선택하기 전의 기본
-모델을 예상값으로 반환한다. 따라서 preview의 모델은 배포 실행에서 Judge가 고를 실제 모델을
-확정한 결과가 아니다.
+반환한다. Preview는 운영 요청이 아니므로 Judge를 호출·학습·과금하지 않는다. local artifact가
+충분히 확신하면 local 선택을, 그렇지 않으면 기본 또는 대체 모델을 예상값으로 반환한다.
+따라서 preview의 모델은 배포 실행에서 Judge가 고를 실제 모델을 확정한 결과가 아니다.
 
 실행 trace의 `llm.model_routing`에는 정책 ID/version, 선택·대체 모델, strategy ID,
 reason code, runtime context, `decision_source`, `judge_called`를 남긴다. Judge가 호출된
@@ -235,13 +232,13 @@ reason code, runtime context, `decision_source`, `judge_called`를 남긴다. Ju
 
 | 테이블 | 역할 |
 | --- | --- |
-| llm_node_model_routing_bootstraps | 초안 단계부터 존재하는 작업 지문별 bootstrap artifact와 Planner 비용 |
-| llm_node_model_routing_bootstrap_samples | bootstrap에 사용한 안전 요약 표본 |
+| llm_node_model_routing_bootstraps | 초안 단계부터 존재하는 작업 지문별 Judge-first artifact. 과거 Planner 컬럼은 migration 호환용이며 신규 API에서 사용하지 않는다. |
+| llm_node_model_routing_bootstrap_samples | 과거 bootstrap 표본 호환 table. 신규 Judge-first 생성 경로는 row를 만들지 않는다. |
 | llm_node_model_routing_policies | 배포/node별 active 및 pending policy, 점검 상태 |
 | llm_node_model_routing_policy_updates | 정책 재평가의 trigger, 안전한 입력/출력 요약, 결과 |
 | llm_node_model_routing_policy_run_events | 배포 후 운영 실행의 중복 없는 점검 카운터 |
 | llm_node_model_routing_performances | 배포/node/model/입력 길이 profile별 운영 성적 |
-| llm_model_routing_global_profiles | 모델 카탈로그의 전역 품질·비용·지연·fallback 사전 profile |
+| llm_model_routing_global_profiles | 과거 전략 호환 table. 신규 Judge-first runtime은 참조하지 않는다. |
 
 테스트 실행과 Cost Optimizer candidate 비교 실행은 운영 정책 카운터와 성적에 포함하지 않는다.
 ## LLM Parameter Recommendation Contract

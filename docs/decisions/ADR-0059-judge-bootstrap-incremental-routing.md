@@ -48,5 +48,6 @@ metadata에 기록한다. 따라서 운영 총비용에는 포함되지만 노�
 - 로컬 모델은 Judge의 결정을 그대로 흉내 내는 데서 끝나지 않는다. 운영 결과의
   schema/downstream/실행 성공률이 기준을 통과하지 못하면 local-first 전환을 보류하거나
   되돌린다.
-- 현재 `bootstrap_request_complexity_regression_v4` 정책은 호환 조회만 유지하며, 새
-  bootstrap과 신규 배포 policy는 이 ADR의 전략을 사용한다.
+- 과거 전략의 DB row와 migration schema는 데이터 호환을 위해 유지하지만 신규 runtime은
+  이를 실행하지 않는다. refresh 시 정적 rule을 제거한 Judge-first 정책으로 한 번 이관하고,
+  이관 전 실행은 노드에 저장된 기본 모델로 안전하게 닫는다.
