@@ -238,6 +238,7 @@ def test_department_onboarding_graph_references_exact_rbac_demo_kbs():
     assert llm_node["data"]["model_id"] == demo_seed.DEMO_CHAT_MINI_MODEL
     assert llm_node["data"]["scoreThreshold"] == 0.3
     assert llm_node["data"]["topK"] == 3
+    assert llm_node["data"]["answerGroundingCheck"] == "basic"
     assert [item["id"] for item in llm_node["data"]["knowledgeBases"]] == [
         str(demo_seed.KB_IDS["internal_onboarding"]),
         str(demo_seed.KB_IDS["internal_developer_onboarding_rules"]),
