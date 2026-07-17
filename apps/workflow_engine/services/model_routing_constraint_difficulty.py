@@ -1,7 +1,7 @@
 """Workflow constraint-based experimental model routing strategy.
 
-This module intentionally does not read semantic cohorts, intent, task type, or
-domain keywords. It is an experiment boundary and is not wired into the active
+This module intentionally does not read request meaning, task type, or domain
+keywords. It is an experiment boundary and is not wired into the active
 deployment policy runtime.
 """
 
@@ -12,14 +12,13 @@ import hashlib
 import math
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import tiktoken
 
 
 STRATEGY_ID = "constraint_difficulty_v1"
 PRIOR_GUIDED_STRATEGY_ID = "prior_guided_adaptive_v1"
-SEMANTIC_STRATEGY_ID = "semantic_cohort_v1"
 _TIER_RANK = {"low": 0, "balanced": 1, "high": 2}
 _MAX_RAG_CHUNKS_PER_KB = 8
 _UNBOUNDED_RAG_CHUNK_TOKEN_ESTIMATE = 4_000
@@ -1130,32 +1129,6 @@ class PriorGuidedAdaptiveRouter:
             expected_latency_ms=latency,
             source="catalog_tier_default",
         )
-
-
-class ConstraintRoutingStrategyDispatcher:
-    """Thin dispatch used by experiments; active runtime wiring is unchanged."""
-
-    def __init__(
-        self,
-        *,
-        semantic_strategy: Callable[..., Any],
-        constraint_strategy: ConstraintDifficultyRouter,
-        prior_guided_strategy: PriorGuidedAdaptiveRouter | None = None,
-    ) -> None:
-        self._semantic_strategy = semantic_strategy
-        self._constraint_strategy = constraint_strategy
-        self._prior_guided_strategy = prior_guided_strategy
-
-    def dispatch(self, strategy_id: str, **kwargs: Any) -> Any:
-        if strategy_id == SEMANTIC_STRATEGY_ID:
-            return self._semantic_strategy(**kwargs)
-        if strategy_id == STRATEGY_ID:
-            return self._constraint_strategy.route(**kwargs)
-        if strategy_id == PRIOR_GUIDED_STRATEGY_ID:
-            if self._prior_guided_strategy is None:
-                raise ValueError("Prior-guided strategy is not configured")
-            return self._prior_guided_strategy.route(**kwargs)
-        raise ValueError(f"Unknown model routing strategy: {strategy_id}")
 
 
 @lru_cache(maxsize=1)

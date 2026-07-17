@@ -7,6 +7,127 @@ from apps.workflow_engine.services.model_router import (
 )
 
 
+def test_request_complexity_policy_routes_each_rendered_request_by_difficulty(monkeypatch):
+    """같은 노드에서도 요청 프롬프트 난이도에 따라 다른 모델을 선택한다."""
+    classifier_inputs: list[str] = []
+
+    def predict(_artifact, feature_text):
+        classifier_inputs.append(feature_text)
+        if "충돌하는 근거를 비교" in feature_text:
+            return SimpleNamespace(
+                difficulty="advanced",
+                confidence=0.92,
+                probabilities={"economy": 0.02, "balanced": 0.06, "advanced": 0.92},
+                difficulty_score=91.0,
+            )
+        return SimpleNamespace(
+            difficulty="economy",
+            confidence=0.94,
+            probabilities={"economy": 0.94, "balanced": 0.04, "advanced": 0.02},
+            difficulty_score=8.0,
+        )
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.services.model_router.MDebertaDifficultyClassifier.predict",
+        predict,
+    )
+    policy = {
+        "active_policy": {
+            "strategy_id": "bootstrap_request_complexity_v3",
+            "default_model_id": "gpt-4o-mini",
+            "fallback_model_id": "gpt-5-mini",
+            "classifier_artifact": {"kind": "mdeberta_linear_difficulty_v1"},
+            "global_profile_catalog": _global_profile_catalog(),
+        }
+    }
+    node_data = SimpleNamespace(
+        model_id="gpt-4o-mini",
+        fallback_model_id="gpt-5-mini",
+        parameters={"max_tokens": 512},
+        knowledgeBases=[],
+        knowledgeCollections=[],
+        output_format={"type": "json"},
+        system_prompt="복수 조건을 JSON으로 판정합니다.",
+        user_prompt="{{message}}",
+        assistant_prompt="",
+        task_type="generate",
+    )
+
+    decisions = [
+        ModelRouter.resolve_policy(
+            policy,
+            inputs={"message": message},
+            node_data=node_data,
+            available_model_ids=["gpt-4o-mini", "gpt-5-mini", "gpt-5.4", "gpt-5.6"],
+        )
+        for message in (
+            "휴가 신청 메뉴가 어디에 있나요?",
+            "충돌하는 근거를 비교하고 예외 승인 조건까지 판단해 주세요.",
+        )
+    ]
+
+    assert decisions[0].selected_model_id in {"gpt-4o-mini", "gpt-5-mini"}
+    assert decisions[1].selected_model_id == "gpt-5.4"
+    assert decisions[0].selected_model_id != decisions[1].selected_model_id
+    assert [decision.reason_code for decision in decisions] == [
+        "bootstrap_global_profile_economy",
+        "bootstrap_global_profile_advanced",
+    ]
+    assert all(
+        decision.decision_factors["routing_basis"] == "request_prompt_complexity_classifier"
+        for decision in decisions
+    )
+    assert "휴가 신청 메뉴가 어디에 있나요?" in classifier_inputs[0]
+    assert "충돌하는 근거를 비교" in classifier_inputs[1]
+
+
+def test_request_complexity_policy_ranks_catalog_even_when_confidence_is_low(monkeypatch):
+    """v3의 낮은 분류 신뢰도는 기본 모델 고정이 아니라 보수적 후보 순위화로 처리한다."""
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.services.model_router.MDebertaDifficultyClassifier.predict",
+        lambda _artifact, _feature_text: SimpleNamespace(
+            difficulty="advanced",
+            confidence=0.40,
+            probabilities={"economy": 0.25, "balanced": 0.35, "advanced": 0.40},
+            difficulty_score=57.5,
+        ),
+    )
+    policy = {
+        "active_policy": {
+            "strategy_id": "bootstrap_request_complexity_v3",
+            "default_model_id": "gpt-5.6",
+            "fallback_model_id": "gpt-5.4",
+            "minimum_confidence": 0.45,
+            "classifier_artifact": {"kind": "mdeberta_linear_difficulty_v1"},
+            "global_profile_catalog": _global_profile_catalog(),
+        }
+    }
+    node_data = SimpleNamespace(
+        model_id="gpt-5.6",
+        fallback_model_id="gpt-5.4",
+        parameters={"max_tokens": 512},
+        knowledgeBases=[],
+        knowledgeCollections=[],
+        output_format={"type": "json"},
+        system_prompt="복수 조건을 JSON으로 판정합니다.",
+        user_prompt="{{message}}",
+        assistant_prompt="",
+        task_type="generate",
+    )
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "조건이 일부 충돌하지만 근거를 종합해 판단해 주세요."},
+        node_data=node_data,
+        available_model_ids=["gpt-4o-mini", "gpt-5-mini", "gpt-5.4", "gpt-5.6"],
+    )
+
+    assert decision.reason_code.startswith("bootstrap_global_profile_")
+    assert decision.selected_model_id != "gpt-5.6"
+    assert decision.decision_factors["confidence_status"] == "low"
+
+
 def _global_profile_catalog() -> dict:
     """새 bootstrap policy가 저장하는 전체 후보 profile snapshot fixture."""
     def profile(*, economy: float, balanced: float, advanced: float, latency: int):
@@ -615,8 +736,8 @@ def test_bootstrap_policy_prefers_confident_classifier_over_broad_planner_rule(
     assert decision.decision_factors["classification_status"] == "matched"
 
 
-def test_bootstrap_classifier_feature_ignores_runtime_only_prompt_and_rag_context():
-    """학습 표본에 없는 runtime-only 문맥은 분류 feature에 섞지 않는다."""
+def test_bootstrap_classifier_feature_includes_rendered_prompt_but_not_rag_contents():
+    """요청별 난이도에는 렌더링 prompt를 쓰되 RAG 원문은 넣지 않는다."""
     node_data = SimpleNamespace(
         model_id="gpt-4.1",
         fallback_model_id="gpt-4.1-mini",
@@ -626,20 +747,35 @@ def test_bootstrap_classifier_feature_ignores_runtime_only_prompt_and_rag_contex
         system_prompt="문서 근거를 바탕으로 답합니다.",
         user_prompt="질문: {{message}}",
         assistant_prompt="",
+        referenced_variables=[
+            SimpleNamespace(
+                name="message",
+                value_selector=["webhook", "message"],
+            )
+        ],
         task_type="generate",
     )
     baseline = ModelRouter.bootstrap_classifier_feature_text(
-        {"message": "휴가 신청 메뉴 위치를 알려 주세요."},
+        {"webhook": {"message": "휴가 신청 메뉴 위치를 알려 주세요."}},
         node_data,
     )
     runtime = ModelRouter.bootstrap_classifier_feature_text(
-        {"message": "휴가 신청 메뉴 위치를 알려 주세요."},
+        {"webhook": {"message": "휴가 신청 메뉴 위치를 알려 주세요."}},
         node_data,
         rendered_prompt_parts=("새로 렌더된 긴 프롬프트",),
-        rag_metadata={"retrieved_document_count": 4, "context_characters": 12000},
+        rag_metadata={
+            "knowledge_enabled": True,
+            "retrieved_context_chars": 12000,
+            "source_count": 4,
+            "raw_document": "절대 분류 feature에 들어가면 안 되는 RAG 원문",
+        },
     )
 
-    assert runtime == baseline
+    assert "질문: 휴가 신청 메뉴 위치를 알려 주세요." in baseline
+    assert baseline != runtime
+    assert "새로 렌더된 긴 프롬프트" in runtime
+    assert "RAG_RUNTIME_METADATA" in runtime
+    assert "절대 분류 feature에 들어가면 안 되는 RAG 원문" not in runtime
 
 
 def test_bootstrap_policy_uses_planner_rule_when_classifier_artifact_is_missing():

@@ -156,8 +156,6 @@ class TestModelRoutingPreviewService:
         assert result["matched_rule_id"] == "route-routine-support"
         assert result["strategy_id"] == "prior_guided_adaptive_v1"
         assert result["runtime_context"]["input_length_bucket"] == "short"
-        assert "matched_cohort" not in result
-        assert "semantic_evaluation" not in result
         assert result["draft_matches_deployment"] is False
         assert "inputs" not in result
         runtime_client.assert_not_called()

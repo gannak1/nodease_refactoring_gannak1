@@ -1031,11 +1031,12 @@ def _model_routing_policy_response(
 
     refresh_every_runs = policy.refresh_every_runs
     eligible = policy.eligible_runs_since_last_refresh
+    bootstrap_id = getattr(policy, "bootstrap_id", None)
     return {
         "enabled": policy.enabled,
         "status": policy.status,
         "policy_id": str(policy.id),
-        "bootstrap_id": str(policy.bootstrap_id) if policy.bootstrap_id else None,
+        "bootstrap_id": str(bootstrap_id) if bootstrap_id else None,
         "policy_version": policy.policy_version,
         "active_policy": policy.active_policy or None,
         "pending_policy": policy.pending_policy,
@@ -3909,7 +3910,7 @@ def create_model_routing_bootstrap_endpoint(
             "model_routing_bootstrap_id": str(bootstrap.id),
             "model_routing_bootstrap_fingerprint": bootstrap.task_fingerprint,
             "model_routing_task_description": request_body.task_description,
-            "model_routing_strategy": "bootstrap_mdeberta_difficulty_v1",
+            "model_routing_strategy": "bootstrap_request_complexity_v3",
         }
     )
     node["data"] = node_data

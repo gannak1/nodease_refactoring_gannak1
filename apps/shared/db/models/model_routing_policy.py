@@ -99,9 +99,6 @@ class LLMNodeModelRoutingPolicy(Base):
     validation_budget_usd: Mapped[Decimal] = mapped_column(
         Numeric(12, 6), nullable=False, default=3
     )
-    # 자동/직접 등록 입력군이 동시에 늘어나도 runtime catalog가 과도하게 커지지
-    # 않도록 policy 단위의 활성 입력군 상한을 보관한다.
-    max_cohorts: Mapped[int] = mapped_column(Integer, nullable=False, default=6)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

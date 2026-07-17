@@ -214,64 +214,6 @@ def test_policy_refresh_sends_segmented_evidence_and_rejects_keyword_rules_witho
     assert rules == []
 
 
-def test_judge_prompt_summarizes_semantic_catalog_without_vectors_or_hashes():
-    """Judge는 Route 구조만 보고 대형 representative vector는 전달받지 않는다."""
-    current_policy = _preserved_policy()
-    current_policy["active_policy"]["semantic_router"] = {
-        "route_catalog_version": "ticket-routing-v2",
-        "encoder_model_id": "text-embedding-3-small",
-        "top_k": 8,
-        "aggregation": "max",
-        "min_margin": 0.03,
-        "routes": [
-            {
-                "cohort_id": "routine_support",
-                "label": "일반 사용 안내",
-                "threshold": 0.55,
-                "representatives": [
-                    {
-                        "utterance_hash": "must-not-reach-judge",
-                        "embedding": [0.1, 0.2, 0.3],
-                    },
-                    {
-                        "utterance_hash": "also-private",
-                        "embedding": [0.4, 0.5, 0.6],
-                    },
-                ],
-            }
-        ],
-    }
-    request = _request(current_policy)
-
-    messages = ModelRoutingPolicyRefreshService._build_messages(  # noqa: SLF001
-        request,
-        ModelRoutingPolicyRefreshService._sanitize_candidates(  # noqa: SLF001
-            request.candidate_models
-        ),
-    )
-    payload = json.loads(messages[1]["content"])
-    semantic = payload["current_policy"]["active_policy"]["semantic_router"]
-
-    assert semantic == {
-        "route_catalog_version": "ticket-routing-v2",
-        "encoder_model_id": "text-embedding-3-small",
-        "top_k": 8,
-        "aggregation": "max",
-        "min_margin": 0.03,
-        "routes": [
-            {
-                "cohort_id": "routine_support",
-                "label": "일반 사용 안내",
-                "threshold": 0.55,
-                "representative_count": 2,
-            }
-        ],
-    }
-    serialized = messages[1]["content"]
-    assert "must-not-reach-judge" not in serialized
-    assert '"embedding"' not in serialized
-
-
 def test_policy_refresh_accepts_judge_generated_rule_set():
     """judge가 만든 rule set은 후보 모델 검증 후 active policy로 정규화된다."""
     judge = _JudgeClient(

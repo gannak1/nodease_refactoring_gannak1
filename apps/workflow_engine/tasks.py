@@ -224,6 +224,9 @@ def generate_model_routing_bootstrap(self, bootstrap_id: str):
             bootstrap_id=bootstrap_uuid,
             planner=planner,
             available_candidates=candidates,
+            # Worker에서 실제 mDeBERTa 분류기를 학습한다. HTTP 요청은 generating
+            # row만 저장하므로 model download가 API timeout을 만들지 않는다.
+            defer_classifier=False,
         )
         if completed is None:
             session.commit()
@@ -240,22 +243,13 @@ def generate_model_routing_bootstrap(self, bootstrap_id: str):
                     )
                 )
             )
+            # bootstrap 생성 전후 어느 쪽에서 deployment policy row가 생겼는지와
+            # 관계없이 요청 난이도 classifier artifact를 같은 정책에 반영한다.
+            PersistedModelRoutingBootstrapStore.finalize_request_complexity_classifier(
+                session,
+                bootstrap_id=completed.id,
+            )
         session.commit()
-        if completed.status == "ready":
-            try:
-                celery_app.send_task(
-                    "workflow.model_routing.build_bootstrap_classifier",
-                    args=[str(completed.id)],
-                    kwargs={},
-                    argsrepr="[workflow arguments redacted]",
-                    kwargsrepr="{workflow arguments redacted}",
-                )
-            except Exception:
-                # 규칙 기반 정책은 이미 ready 상태다. classifier 갱신 재시도는
-                # 별도 task/운영 도구가 처리할 수 있으므로 최초 기준을 실패시키지 않는다.
-                logger.exception(
-                    "[Model-Routing] deferred bootstrap classifier enqueue failed"
-                )
         return {"status": completed.status, "bootstrap_id": str(completed.id)}
     except Exception as exc:
         session.rollback()
@@ -278,14 +272,14 @@ def generate_model_routing_bootstrap(self, bootstrap_id: str):
     base=RedactedWorkflowTask,
 )
 def build_model_routing_bootstrap_classifier(self, bootstrap_id: str):
-    """Planner rule 저장 뒤 mDeBERTa artifact를 별도 worker에서 준비한다."""
+    """이전 queue 메시지용 classifier artifact 동기화 task다."""
     from apps.workflow_engine.services.model_routing_bootstrap import (
         PersistedModelRoutingBootstrapStore,
     )
 
     session = SessionLocal()
     try:
-        bootstrap = PersistedModelRoutingBootstrapStore.build_deferred_classifier(
+        bootstrap = PersistedModelRoutingBootstrapStore.finalize_request_complexity_classifier(
             session,
             bootstrap_id=uuid.UUID(str(bootstrap_id)),
         )

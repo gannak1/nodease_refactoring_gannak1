@@ -285,7 +285,6 @@ class PriorGuidedPolicyCompiler:
                 "strategy_id": PRIOR_GUIDED_STRATEGY_ID,
                 "profile_count": len(decision_profiles),
                 "candidate_count": len(candidate_rows),
-                "uses_semantic_cohorts": False,
                 "judge_called": False,
             },
         )

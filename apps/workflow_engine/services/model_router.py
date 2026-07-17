@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Iterable, Mapping, Optional
 
+from jinja2 import Environment
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
@@ -30,6 +31,10 @@ OPERATIONAL_TRIGGER_MODES = {
     RunTriggerMode.SCHEDULER,
     RunTriggerMode.APP,
 }
+
+# 난이도 분류기 학습 표본도 LLM node runtime과 같은 변수 매핑으로 prompt를
+# 렌더링한다. 이 환경은 분류 feature를 만들기만 하며 LLM 호출에는 사용하지 않는다.
+_routing_jinja_env = Environment(autoescape=False)
 
 WORKFLOW_CHAT_MODEL_ALIASES = {
     "gpt-5.5",
@@ -458,6 +463,30 @@ class ModelRouter:
         )
         runtime_context = cls.infer_runtime_context(inputs, node_data)
         strategy_id = cls._first_non_empty(active_policy.get("strategy_id"))
+        if strategy_id == "bootstrap_request_complexity_v3":
+            return cls._resolve_bootstrap_difficulty_policy(
+                active_policy,
+                inputs=inputs,
+                node_data=node_data,
+                runtime_context=runtime_context,
+                allowed_models=allowed_models,
+                default_model_id=default_model_id,
+                fallback_model_id=fallback_model_id,
+                strategy_id=strategy_id,
+                routing_feature_text=routing_feature_text,
+                node_profile=node_profile,
+            )
+        if strategy_id == "bootstrap_task_complexity_v2":
+            return cls._resolve_bootstrap_task_complexity_policy(
+                active_policy,
+                runtime_context=runtime_context,
+                allowed_models=allowed_models,
+                default_model_id=default_model_id,
+                fallback_model_id=fallback_model_id,
+                strategy_id=strategy_id,
+                node_data=node_data,
+                node_profile=node_profile,
+            )
         if strategy_id == "bootstrap_mdeberta_difficulty_v1":
             return cls._resolve_bootstrap_difficulty_policy(
                 active_policy,
@@ -633,7 +662,7 @@ class ModelRouter:
         # 통과한 classifier가 있으면 먼저 사용하고, Planner phrase rule은 confidence가
         # 낮거나 해당 난이도가 아직 검증되지 않았을 때만 보조한다. 그렇지 않으면
         # ``순서`` 같은 넓은 단어가 고위험 요청을 먼저 가로채 일반화가 무너진다.
-        can_use_planner_rules = (
+        can_use_planner_rules = strategy_id != "bootstrap_request_complexity_v3" and (
             bool(validated_rule_ids)
             if has_individual_rule_validation
             else generalization_validation is None
@@ -651,8 +680,13 @@ class ModelRouter:
         prediction = None
         fallback_reason = "bootstrap_classifier_missing"
         fallback_factors: dict[str, Any] = {"classification_status": "artifact_missing"}
+        # v3는 Planner가 요청별 난이도를 라벨링해 만든 classifier를 첫 실행부터 쓴다.
+        # holdout 요약은 운영 품질을 관찰하는 용도이며, 예전 v1/v2처럼 "검증 전에는
+        # 무조건 기본 모델"로 고착시키는 runtime gate가 아니다.
         classifier_globally_allowed = (
-            generalization_validation is None or bool(classifier_validation.get("passed"))
+            strategy_id == "bootstrap_request_complexity_v3"
+            or generalization_validation is None
+            or bool(classifier_validation.get("passed"))
         )
         validated_difficulties = {
             str(value).strip()
@@ -728,9 +762,23 @@ class ModelRouter:
                     if classifier_validation_scope == "difficulty"
                     else active_policy.get("minimum_confidence")
                 ),
-                default=0.55,
+                default=(0.45 if strategy_id == "bootstrap_request_complexity_v3" else 0.55),
             )
-            if prediction.confidence >= min_confidence:
+            confidence_status = (
+                "matched"
+                if prediction.confidence >= min_confidence
+                else "low"
+            )
+            # v3는 세 난이도 확률 전체를 전역 모델 profile에 전달해 후보를 순위화한다.
+            # 초기에 표본이 적으면 단일 등급 확률이 45%에 못 미칠 수 있는데, 이를
+            # 기본 모델 고정으로 처리하면 첫 배포부터 요청별 라우팅한다는 계약이
+            # 무너진다. 낮은 신뢰도는 후보의 보수적인 품질/불확실성 점수에 반영하고
+            # trace에 남기되, 기본 모델로 즉시 되돌아가는 hard gate로 쓰지 않는다.
+            should_rank_catalog = (
+                strategy_id == "bootstrap_request_complexity_v3"
+                or prediction.confidence >= min_confidence
+            )
+            if should_rank_catalog:
                 global_profile_decision = cls._bootstrap_global_profile_decision(
                     active_policy,
                     difficulty=prediction.difficulty,
@@ -743,12 +791,18 @@ class ModelRouter:
                     strategy_id=strategy_id,
                     node_profile=node_profile,
                     classification_factors={
-                        "classification_status": "matched",
+                        "routing_basis": (
+                            "request_prompt_complexity_classifier"
+                            if strategy_id == "bootstrap_request_complexity_v3"
+                            else "bootstrap_difficulty_classifier"
+                        ),
+                        "classification_status": confidence_status,
                         "confidence": prediction.confidence,
                         "difficulty_score": getattr(
                             prediction, "difficulty_score", None
                         ),
                         "minimum_confidence": min_confidence,
+                        "confidence_status": confidence_status,
                         "probabilities": prediction.probabilities,
                         "classification_validation_scope": classifier_validation_scope,
                     },
@@ -774,6 +828,11 @@ class ModelRouter:
                     runtime_context=runtime_context,
                     strategy_id=strategy_id,
                     decision_factors={
+                        "routing_basis": (
+                            "request_prompt_complexity_classifier"
+                            if strategy_id == "bootstrap_request_complexity_v3"
+                            else "bootstrap_difficulty_classifier"
+                        ),
                         "classification_status": "matched",
                         "difficulty": prediction.difficulty,
                         "confidence": prediction.confidence,
@@ -818,6 +877,14 @@ class ModelRouter:
             if planner_decision is not None:
                 return planner_decision
 
+        fallback_factors.setdefault(
+            "routing_basis",
+            (
+                "request_prompt_complexity_classifier"
+                if strategy_id == "bootstrap_request_complexity_v3"
+                else "bootstrap_difficulty_classifier"
+            ),
+        )
         return ModelRoutingPolicyDecision(
             selected_model_id=default_selected,
             fallback_model_id=default_fallback,
@@ -826,6 +893,109 @@ class ModelRouter:
             runtime_context=runtime_context,
             strategy_id=strategy_id,
             decision_factors=fallback_factors,
+        )
+
+    @classmethod
+    def _resolve_bootstrap_task_complexity_policy(
+        cls,
+        active_policy: dict[str, Any],
+        *,
+        runtime_context: ModelRoutingRuntimeContext,
+        allowed_models: set[str] | None,
+        default_model_id: str,
+        fallback_model_id: str | None,
+        strategy_id: str,
+        node_data: Any,
+        node_profile: NodeRunProfile | None,
+    ) -> ModelRoutingPolicyDecision:
+        """저장된 노드 작업 난이도로 후보 catalog를 고른다.
+
+        이 경로는 현재 실행 input의 의미, keyword, embedding을 읽지 않는다.
+        Planner가 bootstrap 시점에 prompt/output/RAG/downstream 계약을 분석해 저장한
+        profile이 같은 노드의 모든 실행에 적용된다.
+        """
+        profile = active_policy.get("task_complexity_profile")
+        profile = profile if isinstance(profile, dict) else {}
+        try:
+            complexity_score = max(0, min(100, int(float(profile.get("score")))))
+        except (TypeError, ValueError):
+            complexity_score = 50
+        difficulty = (
+            "economy"
+            if complexity_score <= 33
+            else "balanced"
+            if complexity_score <= 66
+            else "advanced"
+        )
+        dimensions = {
+            key: max(0, min(5, int(value)))
+            for key, value in profile.items()
+            if key
+            in {
+                "reasoning_depth",
+                "instruction_complexity",
+                "schema_precision",
+                "context_synthesis",
+                "grounding_requirement",
+                "output_generation_demand",
+                "ambiguity",
+            }
+            and isinstance(value, (int, float))
+        }
+        factors = {
+            "routing_basis": "stored_task_complexity_profile",
+            "classification_status": "static_task_profile",
+            "difficulty": difficulty,
+            "task_complexity_score": complexity_score,
+            "task_complexity_dimensions": dimensions,
+            "task_complexity_profile_kind": str(
+                profile.get("kind") or "planner_task_complexity_v1"
+            ),
+            "planner_reason": str(profile.get("reason") or ""),
+        }
+        global_profile_decision = cls._bootstrap_global_profile_decision(
+            active_policy,
+            difficulty=difficulty,
+            probabilities={difficulty: 1.0},
+            runtime_context=runtime_context,
+            node_data=node_data,
+            allowed_models=allowed_models,
+            default_model_id=default_model_id,
+            fallback_model_id=fallback_model_id,
+            strategy_id=strategy_id,
+            node_profile=node_profile,
+            matched_rule_id=f"task-complexity-{difficulty}",
+            reason_prefix="bootstrap_task_complexity",
+            classification_factors=factors,
+        )
+        if global_profile_decision is not None:
+            return global_profile_decision
+
+        difficulty_models = active_policy.get("difficulty_models")
+        difficulty_models = (
+            difficulty_models if isinstance(difficulty_models, dict) else {}
+        )
+        selected_model = cls._first_available_model(
+            [difficulty_models.get(difficulty), default_model_id, fallback_model_id],
+            allowed_models,
+        )
+        if not selected_model:
+            raise ModelRoutingUnavailableError(
+                "No task-complexity routing model is available to the execution subject."
+            )
+        resolved_fallback = cls._first_available_model(
+            [fallback_model_id, default_model_id],
+            allowed_models,
+            exclude=selected_model,
+        )
+        return ModelRoutingPolicyDecision(
+            selected_model_id=selected_model,
+            fallback_model_id=resolved_fallback,
+            matched_rule_id=f"task-complexity-{difficulty}",
+            reason_code=f"bootstrap_task_complexity_{difficulty}",
+            runtime_context=runtime_context,
+            strategy_id=strategy_id,
+            decision_factors=factors,
         )
 
     @staticmethod
@@ -1260,10 +1430,11 @@ class ModelRouter:
         node_data: Any,
         runtime_context: ModelRoutingRuntimeContext,
     ) -> str:
-        """분류용 입력은 변하는 요청과 구조적 제약만 포함한다.
+        """분류용 입력의 공통 부분을 만든다.
 
-        한 bootstrap policy는 하나의 LLM node에만 연결된다. 해당 node의 prompt는
-        모든 표본에 공통이므로 feature에 섞으면 질문 간 난이도 차이가 희석된다.
+        요청별 난이도는 입력만이 아니라 같은 입력이 어떤 prompt/출력 계약 아래에서
+        처리되는지도 함께 봐야 한다. 실제 실행에서 렌더링된 prompt는
+        :meth:`bootstrap_classifier_feature_text`가 추가한다.
         """
         metadata = {
             "output_format": runtime_context.output_format,
@@ -1271,11 +1442,19 @@ class ModelRouter:
             "knowledge_enabled": runtime_context.knowledge_enabled,
             "input_length_bucket": runtime_context.input_length_bucket,
         }
-        return "\n".join(
+        prompt_contract = "\n".join(
+            str(cls._node_data_value(node_data, field, default="") or "").strip()
+            for field in ("system_prompt", "user_prompt", "assistant_prompt")
+            if str(cls._node_data_value(node_data, field, default="") or "").strip()
+        )
+        return "\n\n".join(
             part
             for part in (
-                cls._flatten_text(inputs),
-                json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                f"TASK_CONTRACT:\n{prompt_contract}" if prompt_contract else "",
+                f"REQUEST_INPUT:\n{cls._flatten_text(inputs)}"
+                if cls._flatten_text(inputs)
+                else "",
+                f"STRUCTURAL_CONSTRAINTS:\n{json.dumps(metadata, ensure_ascii=False, sort_keys=True)}",
             )
             if part
         )
@@ -1289,14 +1468,121 @@ class ModelRouter:
         rendered_prompt_parts: Iterable[str] | None = None,
         rag_metadata: dict[str, Any] | None = None,
     ) -> str:
-        """Bootstrap 학습과 runtime이 동일하게 쓰는 난이도 분류 feature 계약이다.
+        """Bootstrap 학습과 runtime이 공유하는 요청 난이도 feature 계약이다.
 
-        렌더된 prompt와 실제 RAG 검색 결과는 bootstrap 표본에 존재하지 않는 실행 전용
-        데이터다. 호환성을 위해 인자는 남기지만 분류 feature에 넣지 않는다.
+        runtime에서는 변수 치환이 끝난 prompt와 실제 요청을 함께 넣는다. RAG 문서
+        원문이나 실행마다 달라지는 검색 결과는 넣지 않으며, node의 고정 RAG 설정은
+        구조 feature로만 반영한다. 이 문자열은 분류기 호출 중 메모리에만 존재하며
+        artifact, trace, API response에는 저장하지 않는다.
         """
-        _ = rendered_prompt_parts, rag_metadata
         runtime_context = cls.infer_runtime_context(inputs, node_data)
-        return cls._bootstrap_feature_text(inputs, node_data, runtime_context)
+        base = cls._bootstrap_feature_text(inputs, node_data, runtime_context)
+        if rendered_prompt_parts is None:
+            rendered_prompt_parts = cls._render_prompt_parts_for_classifier(
+                inputs,
+                node_data,
+            )
+        rendered = "\n".join(
+            str(value or "").strip()
+            for value in (rendered_prompt_parts or [])
+            if str(value or "").strip()
+        )
+        safe_rag_metadata = {
+            key: value
+            for key, value in (rag_metadata or {}).items()
+            if key in {"knowledge_enabled", "retrieved_context_chars", "source_count"}
+            and isinstance(value, (bool, int, float, str))
+        }
+        # mDeBERTa는 최대 512 tokens까지만 읽는다. 긴 system prompt가 있어도 이번
+        # 요청의 @변수 값이 잘리지 않도록 현재 입력과 변수 치환된 prompt를 먼저 둔다.
+        # node의 고정 계약은 뒤에서 보강하되, 학습·실행 모두 같은 순서를 사용한다.
+        current_request = cls._flatten_text(inputs)
+        parts = []
+        if current_request:
+            parts.append(f"CURRENT_REQUEST:\n{current_request}")
+        if rendered:
+            parts.append(f"RENDERED_PROMPT:\n{rendered}")
+        parts.append(base)
+        if safe_rag_metadata:
+            parts.append(
+                "RAG_RUNTIME_METADATA:\n"
+                + json.dumps(safe_rag_metadata, ensure_ascii=False, sort_keys=True)
+            )
+        return "\n\n".join(part for part in parts if part)
+
+    @classmethod
+    def _render_prompt_parts_for_classifier(
+        cls,
+        inputs: dict[str, Any],
+        node_data: Any,
+    ) -> tuple[str, str, str]:
+        """Bootstrap 표본에도 runtime과 같은 prompt 변수 매핑을 적용한다.
+
+        난이도는 변수가 치환된 system/user/assistant prompt 전체로 계산한다. 이 helper는
+        학습 feature 용도이며 결과를 DB나 trace에 저장하지 않는다. 별도 LLM에 전달하지
+        않으므로 runtime prompt의 untrusted-input marker 정책과는 분리한다.
+        """
+        values: dict[str, Any] = {}
+        referenced_variables = cls._node_data_value(
+            node_data,
+            "referenced_variables",
+            default=[],
+        )
+        if not isinstance(referenced_variables, list):
+            referenced_variables = []
+        for variable in referenced_variables:
+            name = str(
+                cls._node_data_value(variable, "name", default="") or ""
+            ).strip()
+            selector = cls._node_data_value(variable, "value_selector", default=[])
+            if not name or not isinstance(selector, list) or not selector:
+                continue
+            source = inputs.get(str(selector[0]))
+            value = cls._nested_input_value(source, selector[1:])
+            values[name] = "" if value is None else value
+
+        return (
+            cls._render_classifier_template(
+                cls._node_data_value(node_data, "user_prompt", default=""),
+                values,
+            ),
+            cls._render_classifier_template(
+                cls._node_data_value(node_data, "system_prompt", default=""),
+                values,
+            ),
+            cls._render_classifier_template(
+                cls._node_data_value(node_data, "assistant_prompt", default=""),
+                values,
+            ),
+        )
+
+    @staticmethod
+    def _node_data_value(value: Any, field: str, *, default: Any = None) -> Any:
+        if isinstance(value, Mapping):
+            return value.get(field, default)
+        return getattr(value, field, default)
+
+    @staticmethod
+    def _nested_input_value(value: Any, path: list[Any]) -> Any:
+        current = value
+        for key in path:
+            if isinstance(current, Mapping):
+                current = current.get(str(key))
+            else:
+                return None
+        return current
+
+    @staticmethod
+    def _render_classifier_template(template: Any, context: dict[str, Any]) -> str:
+        source = str(template or "")
+        if not source:
+            return ""
+        try:
+            return _routing_jinja_env.from_string(source).render(**context)
+        except Exception:
+            # 분류 feature 보강이 workflow 실행 자체를 막으면 안 된다. 실제 node
+            # render는 별도로 오류를 처리하므로 여기서는 template 원문을 사용한다.
+            return source
 
     @staticmethod
     def _normalize_confidence(value: Any, *, default: float) -> float:
@@ -1384,28 +1670,30 @@ class ModelRouter:
             for prompt in (
                 str(value or "").strip()
                 for value in (
-                    getattr(node_data, "system_prompt", None),
-                    getattr(node_data, "user_prompt", None),
-                    getattr(node_data, "assistant_prompt", None),
+                    cls._node_data_value(node_data, "system_prompt"),
+                    cls._node_data_value(node_data, "user_prompt"),
+                    cls._node_data_value(node_data, "assistant_prompt"),
                 )
             )
             if prompt
         )
-        routing_context = getattr(node_data, "model_routing_context", None)
+        routing_context = cls._node_data_value(node_data, "model_routing_context")
         routing_context = routing_context if isinstance(routing_context, dict) else {}
         knowledge_enabled = bool(
-            getattr(node_data, "knowledgeBases", None)
-            or getattr(node_data, "knowledgeCollections", None)
+            cls._node_data_value(node_data, "knowledgeBases")
+            or cls._node_data_value(node_data, "knowledgeCollections")
         )
         output_format = cls._output_format_name(
-            getattr(node_data, "output_format", None)
+            cls._node_data_value(node_data, "output_format")
         )
-        schema_required = cls._schema_required(getattr(node_data, "output_format", None))
+        schema_required = cls._schema_required(
+            cls._node_data_value(node_data, "output_format")
+        )
         customer_facing = bool(routing_context.get("customer_facing", False))
         node_task = cls._first_non_empty(
             routing_context.get("node_task"),
             routing_context.get("category"),
-            getattr(node_data, "task_type", None),
+            cls._node_data_value(node_data, "task_type"),
         ) or "generate"
         risk_level = cls._first_non_empty(routing_context.get("risk_level")) or "medium"
         intent = cls._first_non_empty(routing_context.get("intent"), node_task) or "generate"

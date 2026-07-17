@@ -101,10 +101,13 @@ class PersistedModelRoutingPolicyRefreshService:
                 if isinstance(policy.active_policy, dict)
                 else {}
             )
-            if (
-                active_policy.get("strategy_id")
-                == "bootstrap_mdeberta_difficulty_v1"
-            ):
+            if active_policy.get("strategy_id") in {
+                "bootstrap_request_complexity_v3",
+                "bootstrap_task_complexity_v2",
+                # 이전 snapshot은 신규 profile로 다시 만들기 전까지 current policy를
+                # 유지한다. refresh가 prior-guided 정책으로 덮어쓰지 않게 한다.
+                "bootstrap_mdeberta_difficulty_v1",
+            }:
                 return cls._refresh_bootstrap_policy(
                     db,
                     policy=policy,
@@ -195,10 +198,13 @@ class PersistedModelRoutingPolicyRefreshService:
         }
         update.input_summary = {
             "model_profile": profile.as_snapshot(),
-            "strategy_id": "bootstrap_mdeberta_difficulty_v1",
+            "strategy_id": str(
+                (policy.active_policy or {}).get("strategy_id")
+                or "bootstrap_request_complexity_v3"
+            ),
         }
         update.output_summary = {
-            "reason": "난이도별 후보 replay 증거가 없어 기존 bootstrap 정책을 유지했습니다.",
+            "reason": "후보 replay 증거가 없어 기존 요청 난이도 bootstrap 정책을 유지했습니다.",
             "replay_required": True,
         }
         update.error_code = None

@@ -1661,7 +1661,7 @@ def test_workflow_node_create_does_not_create_schedule_surface(monkeypatch):
     assert scheduler.added == []
 
 
-def test_active_redeployment_inherits_model_routing_state(monkeypatch):
+def test_active_redeployment_creates_fresh_model_routing_policy(monkeypatch):
     app_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
     previous_deployment_id = uuid.uuid4()
@@ -1695,7 +1695,6 @@ def test_active_redeployment_inherits_model_routing_state(monkeypatch):
         },
         max_deployment_version=1,
     )
-    inherited = []
     bootstrapped = []
     published = []
     monkeypatch.setattr(
@@ -1709,11 +1708,6 @@ def test_active_redeployment_inherits_model_routing_state(monkeypatch):
     monkeypatch.setattr(
         "apps.gateway.services.scheduler_service.get_scheduler_service",
         lambda: _Scheduler(),
-    )
-    monkeypatch.setattr(
-        deployment_module.ModelRoutingPolicyInheritanceService,
-        "inherit_for_deployment",
-        lambda _db, **kwargs: inherited.append(kwargs) or 1,
     )
     monkeypatch.setattr(
         deployment_module.ModelRoutingPolicyStore,
@@ -1754,14 +1748,6 @@ def test_active_redeployment_inherits_model_routing_state(monkeypatch):
         runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
     )
 
-    assert inherited == [
-        {
-            "workflow_id": workflow_id,
-            "source_deployment_id": previous_deployment_id,
-            "target_deployment_id": deployment.id,
-            "target_graph": deployment.graph_snapshot,
-        }
-    ]
     assert bootstrapped == [
         {
             "workflow_id": workflow_id,

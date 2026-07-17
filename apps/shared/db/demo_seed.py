@@ -116,12 +116,9 @@ DEMO_MODEL_ROUTER_BALANCED_MODEL = "gpt-4.1-mini"
 DEMO_ONBOARDING_ROUTER_MODEL = "gpt-4.1"
 DEMO_EMBEDDING_MODEL = "text-embedding-3-small"
 DEMO_EMBEDDING_DIMENSION = 1536
-# 모델 라우팅은 문서 검색과 달리 입력 문의의 의미상 군집을 구분해야 한다.
-# RAG 문서용 small 임베딩을 바꾸지 않고, routing catalog에만 더 정밀한 encoder를 쓴다.
-DEMO_MODEL_ROUTER_EMBEDDING_MODEL = "text-embedding-3-large"
 ENTERPRISE_REQUEST_ROUTING_NAME = "엔터프라이즈 통합 업무 요청 처리"
 ENTERPRISE_REQUEST_ROUTING_DESCRIPTION = (
-    "사내 문서 RAG와 입력군별 자동 모델 라우팅으로 다양한 업무 요청을 처리하는 workflow"
+    "사내 문서 RAG와 난이도 기반 자동 모델 라우팅으로 다양한 업무 요청을 처리하는 workflow"
 )
 DEMO_REPO_ROOT = Path(__file__).resolve().parents[3]
 DEMO_LEGAL_DOCS_LABOR_DIR = DEMO_REPO_ROOT / "local" / "legal-docs-labor"
@@ -245,7 +242,6 @@ CREDENTIAL_MODEL_REL_IDS = {
     DEMO_MODEL_ROUTER_FALLBACK_MODEL: _uuid(925),
     DEMO_MODEL_ROUTER_CHEAP_MODEL: _uuid(926),
     DEMO_MODEL_ROUTER_BALANCED_MODEL: _uuid(927),
-    DEMO_MODEL_ROUTER_EMBEDDING_MODEL: _uuid(928),
     DEMO_ONBOARDING_ROUTER_MODEL: _uuid(929),
 }
 
@@ -2259,7 +2255,7 @@ def _team_onboarding_access_control_graph() -> dict[str, Any]:
 
 
 def _team_onboarding_adaptive_routing_graph() -> dict[str, Any]:
-    """권한 데모를 그대로 사용하되 자동 라우팅 실험 설정만 추가한다."""
+    """??? RAG workflow? ?? ?? ?? ??? ??? ????."""
     graph = copy.deepcopy(_team_onboarding_access_control_graph())
     llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-answer")
     data = llm_node["data"]
@@ -2267,73 +2263,17 @@ def _team_onboarding_adaptive_routing_graph() -> dict[str, Any]:
     data["fallback_model_id"] = None
     data["auto_model_routing"] = True
     data["model_routing_context"] = {
-        "semantic_router": {
-            "encoder_model_id": DEMO_MODEL_ROUTER_EMBEDDING_MODEL,
-            "input_paths": ["start-question.question"],
-            # 온보딩 입력군은 한 주제 안에서도 계정·일정·메신저처럼 표현 범위가
-            # 넓다. 대표 문장 전체의 중심점보다 질문과 가장 가까운 두 예문을
-            # 평균내야 실제 운영 문의가 기본 모델로 과도하게 빠지지 않는다.
-            "aggregation": "top_k_mean",
-            "top_k": 2,
-        }
+        "customer_facing": False,
+        "node_task": "employee_onboarding_guidance",
+        "risk_level": "low",
     }
     data["model_routing_policy"] = {
         "refresh": {"refresh_every_runs": 5},
         "validation_budget_usd": 3.0,
-        "max_cohorts": 6,
         "excluded_model_ids": ["gpt-5.6-sol"],
-        "cohort_drafts": [
-            {
-                "id": str(_uuid(950)),
-                "key": "common_security",
-                "label": "공통 계정·보안 온보딩",
-                "representative_query": (
-                    "입사 첫날 SSO와 다중 인증, 필수 보안 교육 완료 순서를 알려 주세요."
-                ),
-                "representative_examples": [
-                    "입사 첫날 SSO와 다중 인증, 필수 보안 교육 완료 순서를 알려 주세요.",
-                    "신규 입사자가 계정 보안 설정을 마치는 절차가 궁금합니다.",
-                    "첫 출근 전에 MFA 등록과 보안 교육을 완료하고 싶습니다.",
-                    "사내 메신저 공지 채널과 소속 팀 채널에는 어떤 순서로 참여하나요?",
-                    "첫 주 공통 일정과 팀 리드에게 완료 상태를 공유하는 방법을 알려 주세요.",
-                ],
-                "fixed": True,
-            },
-            {
-                "id": str(_uuid(951)),
-                "key": "platform_access",
-                "label": "플랫폼 개발환경·접근 권한",
-                "representative_query": (
-                    "플랫폼개발팀 신입이 Git, VPN과 운영 조회 권한을 신청하는 절차를 알려 주세요."
-                ),
-                "representative_examples": [
-                    "플랫폼개발팀 신입이 Git, VPN과 운영 조회 권한을 신청하는 절차를 알려 주세요.",
-                    "개발 저장소와 VPN 접근 권한은 어떤 순서로 신청하나요?",
-                    "신입 개발자가 운영 로그를 조회하려면 무엇을 준비해야 하나요?",
-                    "로컬 개발환경과 샘플 서비스 테스트를 완료하는 기준을 알려 주세요.",
-                    "배포 파이프라인 실습 전에 비운영 환경과 운영 환경을 구분하는 방법이 궁금합니다.",
-                ],
-                "fixed": False,
-            },
-            {
-                "id": str(_uuid(952)),
-                "key": "sales_enablement",
-                "label": "영업 CRM·고객 데이터 온보딩",
-                "representative_query": (
-                    "영업팀 신입이 CRM 접근 권한과 고객 데이터 취급 교육을 준비하는 순서를 알려 주세요."
-                ),
-                "representative_examples": [
-                    "영업팀 신입이 CRM 접근 권한과 고객 데이터 취급 교육을 준비하는 순서를 알려 주세요.",
-                    "신규 영업 담당자가 CRM을 사용하려면 어떤 교육이 필요한가요?",
-                    "고객 데이터를 다루기 전에 받아야 하는 권한과 교육을 알려 주세요.",
-                    "CRM에서 담당 고객만 조회하도록 최소 접근 범위를 확인하는 방법을 알려 주세요.",
-                    "할인 예외가 포함된 견적을 고객에게 보내기 전에 받아야 하는 승인을 알려 주세요.",
-                ],
-                "fixed": False,
-            },
-        ],
     }
     return graph
+
 
 
 def _ticket_ops_graph() -> dict[str, Any]:
@@ -2546,232 +2486,32 @@ def _ticket_ops_graph() -> dict[str, Any]:
 
 
 def _model_router_ticket_ops_graph() -> dict[str, Any]:
+    """?? ?? workflow? ?? ??? ?? ?? ??? ??? ????."""
     graph = _ticket_ops_graph()
     for node in graph["nodes"]:
         if node["id"] != "llm-triage":
             continue
         node["data"].update(
             {
-                "title": "보상/SLA 위험 판단",
-                "description": "고객 보상, SLA, 장애 영향 범위를 보수적으로 판단합니다.",
+                "title": "??/SLA ?? ??",
+                "description": "?? ??, SLA, ?? ?? ??? ????? ?????.",
                 "model_id": DEMO_MODEL_ROUTER_FALLBACK_MODEL,
                 "fallback_model_id": DEMO_MODEL_ROUTER_BALANCED_MODEL,
                 "auto_model_routing": True,
-                "model_routing_policy": {
-                    "refresh": {"refresh_every_runs": 10},
-                    "max_cohorts": 4,
-                    "cohort_drafts": [
-                        {
-                            "id": str(_uuid(970)),
-                            "key": "routine_support",
-                            "label": "일반 사용 안내",
-                            "representative_query": "정산 파일을 다시 생성하고 다운로드하는 방법을 알려 주세요.",
-                            "representative_examples": [
-                                "정산 파일을 다시 생성하고 다운로드하는 방법을 알려 주세요.",
-                                "내보낸 보고서는 어디에서 다시 받을 수 있나요?",
-                                "화면에서 알림과 표시 설정을 바꾸는 방법이 궁금합니다.",
-                            ],
-                            "fixed": True,
-                        },
-                        {
-                            "id": str(_uuid(971)),
-                            "key": "account_billing",
-                            "label": "계정 및 결제 문제",
-                            "representative_query": "결제는 완료됐지만 팀원 초대와 계정 권한 변경이 실패합니다.",
-                            "representative_examples": [
-                                "결제는 완료됐지만 팀원 초대와 계정 권한 변경이 실패합니다.",
-                                "구독 결제 후에도 계정이 무료 상태로 표시됩니다.",
-                                "팀원 초대 메일이 오지 않고 권한 변경도 반영되지 않습니다.",
-                            ],
-                            "fixed": False,
-                        },
-                        {
-                            "id": str(_uuid(972)),
-                            "key": "high_risk",
-                            "label": "보안 및 SLA 고위험",
-                            "representative_query": "SLA 위반 가능성이 있는 장애로 고객 보상과 보안 대응을 검토해 주세요.",
-                            "representative_examples": [
-                                "SLA 위반 가능성이 있는 장애로 고객 보상과 보안 대응을 검토해 주세요.",
-                                "개인정보 유출 가능성이 있어 즉시 사고 대응이 필요합니다.",
-                                "관리자 계정이 탈취된 것 같아 긴급 조치를 요청합니다.",
-                                "결제 API 장애가 장기화되어 고객 크레딧 보상을 검토해야 합니다.",
-                                "보안 사고와 서비스 중단이 함께 발생해 법무 검토가 필요합니다.",
-                            ],
-                            "fixed": True,
-                            "safety_protected": True,
-                        },
-                    ],
-                },
                 "model_routing_context": {
                     "customer_facing": True,
                     "node_task": "customer_support_triage",
                     "risk_level": "medium",
-                    "semantic_router": {
-                        "route_catalog_version": "demo-ticket-routing-v7",
-                        "encoder_model_id": DEMO_MODEL_ROUTER_EMBEDDING_MODEL,
-                        "input_paths": ["webhook-ticket.message"],
-                        "top_k": 8,
-                        "aggregation": "centroid",
-                        "min_margin": 0.005,
-                        "routes": [
-                            {
-                                "cohort_id": "routine_support",
-                                "label": "일반 사용 안내",
-                                "threshold": 0.35,
-                                "utterances": [
-                                    "정산 파일을 다시 생성하는 방법을 알려 주세요.",
-                                    "다운로드한 보고서는 어디에서 확인하나요?",
-                                    "팀원 초대 메일을 다시 보내고 싶습니다.",
-                                    "프로필 이름과 알림 설정은 어디서 바꾸나요?",
-                                    "사용 방법과 메뉴 위치를 안내해 주세요.",
-                                    "비밀번호 재설정 링크를 다시 받고 싶어요.",
-                                    "내보낸 CSV 파일을 찾을 수 없습니다.",
-                                    "일반 계정 설정을 변경하는 방법이 궁금합니다.",
-                                    "날짜 형식과 화면 언어 같은 표시 설정을 바꾸고 싶습니다.",
-                                    "대시보드 카드와 위젯 순서를 다시 배치하는 방법을 알려 주세요.",
-                                    "예약 시간과 기본 시간대 표시를 변경하고 싶습니다.",
-                                    "푸시 알림과 이메일 알림을 각각 설정하고 싶습니다.",
-                                    "워크플로우를 복제하거나 다른 폴더로 옮기는 방법이 필요합니다.",
-                                    "보관한 모듈과 이전 보고서를 다시 찾는 위치를 알려 주세요.",
-                                    "API 요청 예제와 사용 설명서를 확인할 수 있는 곳이 궁금합니다.",
-                                    "화면 테마와 사용자 환경 설정을 변경하고 싶습니다.",
-                                    "보관함으로 옮긴 항목을 복원하거나 다시 열고 싶습니다.",
-                                    "저장해 둔 응답 양식과 템플릿 이름을 수정하고 싶습니다.",
-                                    "정기적으로 받는 사용 보고서의 구독과 발송 주기를 설정하고 싶습니다.",
-                                    "보고서 수신 알림과 이메일 전달 설정을 변경하고 싶습니다.",
-                                    "목록에 표시되는 열과 정렬 순서를 사용자 설정으로 바꾸고 싶습니다.",
-                                    "즐겨찾기와 최근 사용 항목을 관리하는 메뉴를 찾고 있습니다.",
-                                ],
-                            },
-                            {
-                                "cohort_id": "account_billing",
-                                "label": "계정 및 결제 문제",
-                                "threshold": 0.38,
-                                "utterances": [
-                                    "결제는 완료됐지만 구독이 활성화되지 않았습니다.",
-                                    "청구 금액과 세금계산서 내역이 맞지 않습니다.",
-                                    "팀원 초대가 실패하고 계정 권한을 바꿀 수 없습니다.",
-                                    "중복 결제를 확인하고 환불 절차를 알려 주세요.",
-                                    "요금제를 변경했는데 사용 한도가 반영되지 않았습니다.",
-                                    "관리자 계정의 소유권을 다른 직원에게 이전하고 싶습니다.",
-                                    "기업 계약 갱신과 청구서를 확인해 주세요.",
-                                    "로그인은 되지만 조직 워크스페이스에 접근할 수 없습니다.",
-                                    "법인 결제 카드를 변경하려는데 결제 수단 저장이 실패합니다.",
-                                    "자동 결제가 실패한 뒤 유료 기능이 잠겨 복구가 필요합니다.",
-                                    "이번 달 초과 사용량과 추가 과금 계산 기준을 확인해 주세요.",
-                                    "해외 결제 통화와 부가세가 청구서에 잘못 표시된 것 같습니다.",
-                                    "환불 승인은 완료됐지만 카드 취소 내역이 반영되지 않았습니다.",
-                                    "좌석 수를 줄였는데 다음 청구 금액이 바뀌지 않았습니다.",
-                                    "결제 관리자와 청구서 수신 담당자를 변경하고 싶습니다.",
-                                    "추가 구매한 크레딧과 사용 한도가 계정에 반영되지 않았습니다.",
-                                    "세금계산서의 회사 정보와 등록 번호를 고쳐 재발행하고 싶습니다.",
-                                    "월별 청구서를 받을 회계 담당자 이메일을 추가하고 싶습니다.",
-                                    "영수증과 청구 문서의 수신 주소를 변경해 주세요.",
-                                    "사업자 정보가 바뀌어 이전 청구서를 정정 발급해야 합니다.",
-                                    "구독 결제 담당자와 결제 알림 수신자를 교체하고 싶습니다.",
-                                    "청구서 발송 설정과 회계 연락처를 관리하고 싶습니다.",
-                                ],
-                            },
-                            {
-                                "cohort_id": "high_risk",
-                                "label": "보안 및 SLA 고위험",
-                                "threshold": 0.34,
-                                "safety_override": True,
-                                "lexical_override_threshold": 1.0,
-                                "lexical_signals": [
-                                    {"term": "보안 사고", "weight": 1.0},
-                                    {"term": "계정 탈취", "weight": 1.5},
-                                    {"term": "공격자", "weight": 1.0},
-                                    {"term": "변조", "weight": 1.0},
-                                    {"term": "위조", "weight": 1.0},
-                                    {"term": "침해", "weight": 1.0},
-                                    {"term": "유출", "weight": 1.0},
-                                    {"term": "외부 공개", "weight": 1.0},
-                                    {"term": "공개 저장소", "weight": 1.0},
-                                    {"term": "무단 접근", "weight": 1.0},
-                                    {"term": "인증 우회", "weight": 1.0},
-                                    {"term": "권한 상승", "weight": 1.0},
-                                    {"term": "랜섬웨어", "weight": 1.5},
-                                    {"term": "악성 파일", "weight": 1.0},
-                                    {"term": "SLA 위반", "weight": 1.0},
-                                    {"term": "서비스 중단", "weight": 1.0},
-                                    {"term": "전체 장애", "weight": 1.0},
-                                    {"term": "대규모 장애", "weight": 1.0},
-                                    {"term": "규제 위반", "weight": 1.0},
-                                    {"term": "법정 신고", "weight": 1.0},
-                                    {"term": "법무 검토", "weight": 1.0},
-                                    {"term": "환불 분쟁", "weight": 1.0},
-                                    {"term": "감사 로그 삭제", "weight": 1.0},
-                                    {"term": "감사 기록 위조", "weight": 1.0},
-                                    {"term": "원장 손상", "weight": 1.0},
-                                    {"term": "금전 피해", "weight": 1.0},
-                                    {"term": "비밀 키 노출", "weight": 1.0},
-                                    {"term": "API 키 유출", "weight": 1.0},
-                                    {"term": "account takeover", "weight": 1.5},
-                                    {"term": "credential leak", "weight": 1.0},
-                                    {"term": "data breach", "weight": 1.0},
-                                    {"term": "unauthorized access", "weight": 1.0},
-                                    {"term": "security incident", "weight": 1.0},
-                                    {"term": "ransomware", "weight": 1.5},
-                                    {"term": "privilege escalation", "weight": 1.0},
-                                    {"term": "service outage", "weight": 1.0},
-                                    {"term": "sla breach", "weight": 1.0},
-                                ],
-                                "utterances": [
-                                    "SLA 위반 가능성이 있어 고객 보상안을 검토해 주세요.",
-                                    "결제 API 장애로 여러 고객의 정산이 실패했습니다.",
-                                    "관리자 계정 탈취와 개인정보 노출이 의심됩니다.",
-                                    "보안 사고로 모든 API 키를 긴급 폐기해야 합니다.",
-                                    "법무 검토가 필요한 고객 데이터 삭제 요청입니다.",
-                                    "서비스 전체 장애가 발생해 즉시 대응이 필요합니다.",
-                                    "크레딧 보상 승인이 필요한 대규모 장애입니다.",
-                                    "권한 상승 공격으로 민감 정보가 노출되었을 수 있습니다.",
-                                    "고객 개인정보가 권한 없는 사용자에게 노출된 정황이 있습니다.",
-                                    "운영 서버에서 랜섬웨어가 의심되어 즉시 격리가 필요합니다.",
-                                    "위조된 웹훅이 운영 주문과 데이터를 변경한 것으로 보입니다.",
-                                    "고객 문서가 공개 링크로 외부에 노출된 상태입니다.",
-                                    "감사 로그가 삭제되거나 위조된 흔적을 조사해야 합니다.",
-                                    "규제 기관 사고 보고 기한 전에 영향 범위를 확인해야 합니다.",
-                                    "퇴사자 계정이 SSO를 우회해 운영 환경에 접근했습니다.",
-                                    "백업 복구 실패로 재해 복구 목표 시간을 넘길 위험이 있습니다.",
-                                    "인증 우회로 관리자 기능이 노출되어 즉시 접근을 차단해야 합니다.",
-                                    "민감한 고객 파일이 외부 공개 상태라 긴급 회수가 필요합니다.",
-                                    "운영 데이터가 비정상적으로 변경되어 사고 대응을 시작해야 합니다.",
-                                    "악성 파일 감염 정황으로 서버와 계정을 격리해야 합니다.",
-                                    "보안 감사 기록의 무결성이 훼손되어 조사와 보고가 필요합니다.",
-                                    "규제 위반 가능성이 있는 데이터 이동을 즉시 조사해야 합니다.",
-                                ],
-                            },
-                        ],
-                    },
                 },
-                "knowledgeBases": [],
-                "dedupeRetrievedContext": False,
-                "system_prompt": (
-                    "고객지원 티켓을 처리하는 AI입니다."
-                    "필드는 \"긴급도\", \"답변 초안\" 두 개만 사용합니다. "
-                    "답변 초안은 고객에게 보낼 수 있는 3문장 이내의 간결한 문장으로 작성하세요."
-                ),
-                "user_prompt": (
-                    "고객 등급: {{ customerTier }}\n"
-                    "문의: {{ message }}\n"
-                    "승인 필요 여부와 고객 답변 초안을 작성하세요."
-                ),
-                "parameters": {"temperature": 0.2, "max_tokens": 700},
-                "output_format": {
-                    "type": "json",
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "긴급도": {"type": "boolean"},
-                            "답변 초안": {"type": "string"},
-                        },
-                        "required": ["긴급도", "답변 초안"],
-                    },
+                "model_routing_policy": {
+                    "refresh": {"refresh_every_runs": 10},
+                    "validation_budget_usd": 3.0,
+                    "excluded_model_ids": ["gpt-5.6-sol"],
                 },
             }
         )
     return graph
+
 
 
 def _enterprise_request_routing_graph() -> dict[str, Any]:
@@ -2807,78 +2547,11 @@ def _enterprise_request_routing_graph() -> dict[str, Any]:
                 "customer_facing": False,
                 "node_task": "enterprise_internal_request",
                 "risk_level": "medium",
-                "semantic_router": {
-                    "encoder_model_id": DEMO_MODEL_ROUTER_EMBEDDING_MODEL,
-                    "input_paths": ["webhook-request.query"],
-                    "aggregation": "centroid",
-                },
             },
             "model_routing_policy": {
                 "refresh": {"refresh_every_runs": 10},
                 "validation_budget_usd": 3.0,
-                "max_cohorts": 8,
                 "excluded_model_ids": ["gpt-5.6-sol"],
-                "cohort_drafts": [
-                    {
-                        "id": str(_uuid(960)),
-                        "key": "routine_usage_guidance",
-                        "label": "단순 사용 안내",
-                        "representative_query": (
-                            "사내 시스템에서 증명서를 내려받는 위치와 절차를 알려 주세요."
-                        ),
-                        "representative_examples": [
-                            "사내 시스템에서 증명서를 내려받는 위치와 절차를 알려 주세요.",
-                            "재직 증명서를 어디에서 발급할 수 있나요?",
-                            "회사 제출용 서류를 다시 다운로드하고 싶습니다.",
-                        ],
-                        "fixed": True,
-                    },
-                    {
-                        "id": str(_uuid(961)),
-                        "key": "account_access_request",
-                        "label": "계정·접근 권한",
-                        "representative_query": (
-                            "퇴사자 Git 저장소와 VPN 접근 권한을 회수하는 절차를 알려 주세요."
-                        ),
-                        "representative_examples": [
-                            "퇴사자 Git 저장소와 VPN 접근 권한을 회수하는 절차를 알려 주세요.",
-                            "프로젝트 종료자의 운영 시스템 권한을 제거하고 싶습니다.",
-                            "휴직자의 계정과 원격 접속 권한을 일시 중지해 주세요.",
-                        ],
-                        "fixed": True,
-                    },
-                    {
-                        "id": str(_uuid(962)),
-                        "key": "finance_closing_approval",
-                        "label": "재무 결산·지급 승인",
-                        "representative_query": (
-                            "해외 지급 건의 증빙과 월말 결산 승인 절차를 확인해 주세요."
-                        ),
-                        "representative_examples": [
-                            "해외 지급 건의 증빙과 월말 결산 승인 절차를 확인해 주세요.",
-                            "월말 비용 정산에 필요한 승인 서류가 무엇인지 궁금합니다.",
-                            "해외 송금 요청을 결재받는 순서를 알려 주세요.",
-                        ],
-                        "fixed": True,
-                    },
-                    {
-                        "id": str(_uuid(963)),
-                        "key": "security_privacy_incident",
-                        "label": "보안·개인정보 사고",
-                        "representative_query": (
-                            "고객 개인정보가 외부 메일로 전송됐을 때 즉시 해야 할 조치를 알려 주세요."
-                        ),
-                        "representative_examples": [
-                            "고객 개인정보가 외부 메일로 전송됐을 때 즉시 해야 할 조치를 알려 주세요.",
-                            "공개 저장소에 고객 데이터와 비밀키가 올라갔습니다.",
-                            "관리자 계정 탈취가 의심되어 긴급 대응이 필요합니다.",
-                            "외부 협력사에 개인정보 파일을 잘못 공유했습니다.",
-                            "보안 사고로 서비스가 중단되어 법무와 고객 공지가 필요합니다.",
-                        ],
-                        "fixed": True,
-                        "safety_protected": True,
-                    },
-                ],
             },
             "knowledgeBases": [
                 _knowledge_base_ref(key)
@@ -3812,12 +3485,6 @@ def _ensure_openai_provider_and_models(db: Session) -> tuple[LLMProvider, dict[s
             Decimal("0.000000"),
             8191,
         ),
-        DEMO_MODEL_ROUTER_EMBEDDING_MODEL: (
-            "embedding",
-            Decimal("0.000130"),
-            Decimal("0.000000"),
-            8191,
-        ),
     }
     models: dict[str, LLMModel] = {}
     for model_id, (
@@ -4518,13 +4185,11 @@ def _seed_llm_credential(
     ]
     if runtime_credential_enabled:
         relation_model_names.append(DEMO_EMBEDDING_MODEL)
-        relation_model_names.append(DEMO_MODEL_ROUTER_EMBEDDING_MODEL)
     else:
         db.query(LLMRelCredentialModel).filter(
             LLMRelCredentialModel.id.in_(
                 [
                     CREDENTIAL_MODEL_REL_IDS[DEMO_EMBEDDING_MODEL],
-                    CREDENTIAL_MODEL_REL_IDS[DEMO_MODEL_ROUTER_EMBEDDING_MODEL],
                 ]
             )
         ).delete(synchronize_session=False)

@@ -243,39 +243,7 @@ class ModelRoutingPolicyRefreshService:
         active_policy = safe_policy.get("active_policy")
         if not isinstance(active_policy, dict):
             return safe_policy
-        semantic_router = active_policy.get("semantic_router")
-        if isinstance(semantic_router, dict):
-            active_policy["semantic_router"] = cls._semantic_router_summary(
-                semantic_router
-            )
         return safe_policy
-
-    @staticmethod
-    def _semantic_router_summary(semantic_router: dict[str, Any]) -> dict[str, Any]:
-        routes = semantic_router.get("routes")
-        routes = routes if isinstance(routes, list) else []
-        summary = {
-            key: semantic_router.get(key)
-            for key in (
-                "route_catalog_version",
-                "encoder_model_id",
-                "top_k",
-                "aggregation",
-                "min_margin",
-            )
-            if key in semantic_router
-        }
-        summary["routes"] = [
-            {
-                "cohort_id": route.get("cohort_id"),
-                "label": route.get("label"),
-                "threshold": route.get("threshold"),
-                "representative_count": len(route.get("representatives") or []),
-            }
-            for route in routes
-            if isinstance(route, dict)
-        ]
-        return summary
 
     @classmethod
     def _normalize_generated_policy(

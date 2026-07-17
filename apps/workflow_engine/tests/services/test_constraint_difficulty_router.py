@@ -12,7 +12,6 @@ from apps.workflow_engine.services.model_routing_constraint_difficulty import (
     ConstraintExplorationContext,
     PriorGuidedAdaptiveRouter,
     ConstraintRoutingUnavailableError,
-    ConstraintRoutingStrategyDispatcher,
     ConstraintValidationEvidence,
 )
 
@@ -337,7 +336,7 @@ def test_prior_guided_router_corrects_an_optimistic_prior_with_local_failures():
     ].effective_evidence_samples == 20
 
 
-def test_feature_extractor_uses_constraints_not_semantic_fields():
+def test_feature_extractor_uses_constraints_not_request_meaning_fields():
     features = ConstraintDifficultyFeatureExtractor.extract(_request())
 
     assert features.signature.output_contract == "json"
@@ -346,7 +345,7 @@ def test_feature_extractor_uses_constraints_not_semantic_fields():
     assert features.signature.downstream_strictness == "none"
     assert "intent" not in features.signature.as_metadata()
     assert "task_type" not in features.signature.as_metadata()
-    assert "semantic_cohort_id" not in features.signature.as_metadata()
+    assert "customer_facing" not in features.signature.as_metadata()
 
 
 def test_candidate_filter_excludes_models_without_execution_subject_access():
@@ -733,34 +732,3 @@ def test_decision_trace_contains_strategy_signature_exclusions_and_no_judge():
         "context_window_insufficient",
     }
     assert trace["judge_called"] is False
-
-
-def test_strategy_dispatch_keeps_semantic_and_constraint_strategies_separate():
-    semantic_calls = []
-
-    def semantic_strategy(**kwargs):
-        semantic_calls.append(kwargs)
-        return "semantic-result"
-
-    dispatcher = ConstraintRoutingStrategyDispatcher(
-        semantic_strategy=semantic_strategy,
-        constraint_strategy=ConstraintDifficultyRouter(),
-    )
-
-    assert dispatcher.dispatch("semantic_cohort_v1", marker="existing") == (
-        "semantic-result"
-    )
-    assert semantic_calls == [{"marker": "existing"}]
-
-    request = _request()
-    signature = ConstraintDifficultyFeatureExtractor.extract(request).signature
-    decision = dispatcher.dispatch(
-        "constraint_difficulty_v1",
-        request=request,
-        candidates=[LOW, HIGH],
-        evidence=[_passing_evidence("low-model", signature)],
-        safe_default_model_id="high-model",
-    )
-
-    assert decision.strategy_id == "constraint_difficulty_v1"
-    assert decision.selected_model_id == "low-model"

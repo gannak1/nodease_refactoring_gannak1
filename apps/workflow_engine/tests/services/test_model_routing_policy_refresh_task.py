@@ -37,7 +37,7 @@ def _policy(*, enabled: bool = True):
     )
 
 
-def test_refresh_compiles_prior_guided_policy_without_semantic_router():
+def test_refresh_compiles_prior_guided_policy():
     from apps.workflow_engine.services.model_routing_policy_refresh_task import (
         PersistedModelRoutingPolicyRefreshService,
     )
@@ -120,7 +120,6 @@ def test_refresh_compiles_prior_guided_policy_without_semantic_router():
 
     assert update.status == "applied"
     assert policy.active_policy["strategy_id"] == "prior_guided_adaptive_v1"
-    assert "semantic_router" not in policy.active_policy
     assert policy.eligible_runs_since_last_refresh == 2
     assert update.judge_model is None
     compile_policy.assert_called_once()
@@ -161,16 +160,17 @@ def test_refresh_keeps_current_policy_when_auto_routing_is_off():
     assert policy.refresh_requested_at is None
 
 
-def test_refresh_keeps_bootstrap_classifier_policy_without_replacing_strategy():
-    """재평가가 bootstrap 난이도 분류기를 legacy compiler로 덮어쓰면 안 된다."""
+def test_refresh_keeps_task_complexity_bootstrap_policy_without_replacing_strategy():
+    """재평가가 작업 난이도 bootstrap 정책을 prior-guided 정책으로 덮어쓰면 안 된다."""
     from apps.workflow_engine.services.model_routing_policy_refresh_task import (
         PersistedModelRoutingPolicyRefreshService,
     )
 
     policy = _policy()
     policy.active_policy = {
-        "strategy_id": "bootstrap_mdeberta_difficulty_v1",
+        "strategy_id": "bootstrap_task_complexity_v2",
         "default_model_id": "gpt-4.1-mini",
+        "task_complexity_profile": {"score": 72, "tier": "advanced"},
         "difficulty_models": {"economy": "gpt-4o-mini"},
     }
     deployment = SimpleNamespace(
@@ -220,7 +220,7 @@ def test_refresh_keeps_bootstrap_classifier_policy_without_replacing_strategy():
         )
 
     assert update.status == "kept_current"
-    assert policy.active_policy["strategy_id"] == "bootstrap_mdeberta_difficulty_v1"
+    assert policy.active_policy["strategy_id"] == "bootstrap_task_complexity_v2"
     assert update.output_summary["replay_required"] is True
     compile_policy.assert_not_called()
 

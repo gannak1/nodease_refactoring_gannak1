@@ -93,11 +93,7 @@ def test_prior_guided_compiler_builds_non_semantic_constraint_rules():
 
     policy = result.active_policy
     assert policy["strategy_id"] == PRIOR_GUIDED_STRATEGY_ID
-    assert "semantic_router" not in policy
     assert policy["decision_profiles"]
-    assert all(
-        "semantic_cohort_id" not in rule.get("when", {}) for rule in policy["rules"]
-    )
     assert {rule["when"]["input_length_bucket"] for rule in policy["rules"]} <= {
         "short",
         "medium",

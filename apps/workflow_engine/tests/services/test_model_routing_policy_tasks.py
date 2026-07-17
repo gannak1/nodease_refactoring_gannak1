@@ -113,7 +113,7 @@ def test_deployment_bootstrap_task_compiles_prior_guided_policy_without_validati
 
 
 def test_generate_bootstrap_task_runs_planner_outside_gateway_request():
-    """기준 생성은 Worker에서 완료하고, 성공 후에만 classifier task를 예약한다."""
+    """기준 생성은 Worker에서 완료하고, 별도 encoder 학습 task를 예약하지 않는다."""
     from apps.workflow_engine import tasks
     from apps.workflow_engine.services.llm_service import LLMService
     from apps.workflow_engine.services.model_router import ModelRouter
@@ -164,11 +164,16 @@ def test_generate_bootstrap_task_runs_planner_outside_gateway_request():
             "complete_pending",
             return_value=completed,
         ) as complete_pending,
+        patch.object(
+            PersistedModelRoutingBootstrapStore,
+            "finalize_request_complexity_classifier",
+        ) as finalize_profile,
         patch.object(tasks.celery_app, "send_task") as send_task,
     ):
         result = tasks.generate_model_routing_bootstrap.__wrapped__(str(bootstrap_id))
 
     complete_pending.assert_called_once()
+    finalize_profile.assert_called_once_with(session, bootstrap_id=bootstrap_id)
     session.commit.assert_called_once()
-    send_task.assert_called_once()
+    send_task.assert_not_called()
     assert result == {"status": "ready", "bootstrap_id": str(bootstrap_id)}

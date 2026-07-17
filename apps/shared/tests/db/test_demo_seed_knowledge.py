@@ -514,26 +514,15 @@ def test_team_onboarding_adaptive_routing_demo_only_changes_routing_settings():
     assert experiment_data["parameters"] == source_data["parameters"]
     assert experiment_data["model_id"] == "gpt-4.1"
     assert experiment_data["auto_model_routing"] is True
-    semantic_router = experiment_data["model_routing_context"]["semantic_router"]
-    # 온보딩 질문은 계정·보안·메신저·일정처럼 표현 범위가 넓다. 대표 문장을
-    # 하나의 중심점으로 평균내면 관련 질문도 멀어질 수 있으므로 가까운 예문을
-    # 우선 반영하는 top_k_mean contract를 사용한다.
-    assert semantic_router["aggregation"] == "top_k_mean"
-    assert semantic_router["top_k"] == 2
+    assert experiment_data["model_routing_context"] == {
+        "customer_facing": False,
+        "node_task": "employee_onboarding_guidance",
+        "risk_level": "low",
+    }
     policy = experiment_data["model_routing_policy"]
     assert policy["refresh"]["refresh_every_runs"] == 5
     assert policy["validation_budget_usd"] == 3.0
-    assert policy["max_cohorts"] == 6
     assert policy["excluded_model_ids"] == ["gpt-5.6-sol"]
-    cohort_drafts = policy["cohort_drafts"]
-    assert len(cohort_drafts) == 3
-    assert sum(bool(item["fixed"]) for item in cohort_drafts) == 1
-    assert {
-        item["key"] for item in cohort_drafts
-    } == {"common_security", "platform_access", "sales_enablement"}
-    assert all(len(item["representative_examples"]) == 5 for item in cohort_drafts)
-    common_draft = next(item for item in cohort_drafts if item["key"] == "common_security")
-    assert any("메신저" in example for example in common_draft["representative_examples"])
 
 
 def test_team_onboarding_adaptive_routing_app_is_seeded_for_people_manager(
@@ -575,41 +564,27 @@ def test_team_onboarding_adaptive_routing_app_is_seeded_for_people_manager(
     assert call["deployment_type"] is demo_seed.DeploymentType.INTERNAL_CHATBOT
 
 
-def test_enterprise_request_routing_graph_has_four_default_cohort_drafts():
-    """통합 업무 요청 workflow는 자동 라우팅과 4개 기본 입력군을 함께 제공한다."""
+def test_enterprise_request_routing_graph_uses_current_routing_context():
+    """통합 업무 요청 workflow는 입력군 없이 현재 난이도 라우팅 설정을 제공한다."""
     graph = demo_seed._enterprise_request_routing_graph()
     llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-request")
     data = llm_node["data"]
 
     assert data["auto_model_routing"] is True
     assert data["model_id"] == demo_seed.DEMO_ONBOARDING_ROUTER_MODEL
-    assert data["model_routing_context"]["semantic_router"]["input_paths"] == [
-        "webhook-request.query"
-    ]
+    assert data["model_routing_context"] == {
+        "customer_facing": False,
+        "node_task": "enterprise_internal_request",
+        "risk_level": "medium",
+    }
 
     policy = data["model_routing_policy"]
     assert policy["refresh"]["refresh_every_runs"] == 10
-    cohort_drafts = policy["cohort_drafts"]
-    assert len(cohort_drafts) == 4
-    assert {
-        (draft["key"], draft["label"])
-        for draft in cohort_drafts
-    } == {
-        ("routine_usage_guidance", "단순 사용 안내"),
-        ("account_access_request", "계정·접근 권한"),
-        ("finance_closing_approval", "재무 결산·지급 승인"),
-        ("security_privacy_incident", "보안·개인정보 사고"),
+    assert policy == {
+        "refresh": {"refresh_every_runs": 10},
+        "validation_budget_usd": 3.0,
+        "excluded_model_ids": ["gpt-5.6-sol"],
     }
-    assert all(draft["representative_query"].strip() for draft in cohort_drafts)
-    assert all(len(draft["representative_examples"]) >= 3 for draft in cohort_drafts)
-    assert all(draft["fixed"] is True for draft in cohort_drafts)
-    security_cohort = next(
-        draft
-        for draft in cohort_drafts
-        if draft["key"] == "security_privacy_incident"
-    )
-    assert security_cohort["safety_protected"] is True
-    assert len(security_cohort["representative_examples"]) == 5
     node_ids = {node["id"] for node in graph["nodes"]}
     assert all(
         edge["source"] in node_ids and edge["target"] in node_ids
@@ -1164,11 +1139,10 @@ def test_demo_seed_chat_models_use_gpt_5_4_family():
         demo_seed.DEMO_MODEL_ROUTER_BALANCED_MODEL,
         demo_seed.DEMO_ONBOARDING_ROUTER_MODEL,
         demo_seed.DEMO_EMBEDDING_MODEL,
-        demo_seed.DEMO_MODEL_ROUTER_EMBEDDING_MODEL,
     }
 
 
-def test_model_router_demo_workflow_enables_versioned_semantic_cohorts():
+def test_model_router_demo_workflow_uses_current_routing_context():
     graph = demo_seed._model_router_ticket_ops_graph()
     llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-triage")
     data = llm_node["data"]
@@ -1176,49 +1150,15 @@ def test_model_router_demo_workflow_enables_versioned_semantic_cohorts():
     assert data["auto_model_routing"] is True
     assert data["model_id"] == "gpt-4.1"
     assert data["fallback_model_id"] == "gpt-4.1-mini"
-    cohort_drafts = data["model_routing_policy"]["cohort_drafts"]
-    assert all(len(draft["representative_examples"]) >= 3 for draft in cohort_drafts)
-    high_risk_draft = next(
-        draft for draft in cohort_drafts if draft["key"] == "high_risk"
-    )
-    assert high_risk_draft["safety_protected"] is True
-    assert len(high_risk_draft["representative_examples"]) == 5
-    semantic_router = data["model_routing_context"]["semantic_router"]
-    assert semantic_router["route_catalog_version"] == "demo-ticket-routing-v7"
-    assert (
-        semantic_router["encoder_model_id"]
-        == demo_seed.DEMO_MODEL_ROUTER_EMBEDDING_MODEL
-    )
-    assert semantic_router["input_paths"] == ["webhook-ticket.message"]
-    assert semantic_router["aggregation"] == "centroid"
-    assert semantic_router["min_margin"] == 0.005
-
-    routes = semantic_router["routes"]
-    assert {route["cohort_id"] for route in routes} == {
-        "routine_support",
-        "account_billing",
-        "high_risk",
+    assert data["model_routing_context"] == {
+        "customer_facing": True,
+        "node_task": "customer_support_triage",
+        "risk_level": "medium",
     }
-    high_risk = next(route for route in routes if route["cohort_id"] == "high_risk")
-    assert high_risk["safety_override"] is True
-    assert high_risk["lexical_override_threshold"] == 1.0
-    assert {signal["term"] for signal in high_risk["lexical_signals"]} >= {
-        "계정 탈취",
-        "변조",
-        "법무 검토",
-        "환불 분쟁",
-        "unauthorized access",
-    }
-    assert all(len(route["utterances"]) >= 12 for route in routes)
-    utterances = [
-        utterance for route in routes for utterance in route["utterances"]
-    ]
-    assert len(utterances) == len(set(utterances))
-    assert all(0 < route["threshold"] < 1 for route in routes)
-    assert {route["cohort_id"]: route["threshold"] for route in routes} == {
-        "routine_support": 0.35,
-        "account_billing": 0.38,
-        "high_risk": 0.34,
+    assert data["model_routing_policy"] == {
+        "refresh": {"refresh_every_runs": 10},
+        "validation_budget_usd": 3.0,
+        "excluded_model_ids": ["gpt-5.6-sol"],
     }
 
 
@@ -1411,6 +1351,7 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     routing_performance_revision = script.get_revision("bb7c8d9e0f13")
     routing_bootstrap_artifacts_revision = script.get_revision("bc8d9e0f1a24")
     routing_global_profiles_revision = script.get_revision("bd9e0f1a2b35")
+    retired_input_cohort_cleanup_revision = script.get_revision("c6f8a1b2d3e4")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -1476,7 +1417,8 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     assert "aa0b1c2d3e4f" in ancestry
     assert "ab1c2d3e4f50" in ancestry
     assert "b0c1d2e3f4a5" in ancestry
-    assert script.get_heads() == ["bd9e0f1a2b35"]
+    assert retired_input_cohort_cleanup_revision.down_revision == "bd9e0f1a2b35"
+    assert script.get_heads() == ["c6f8a1b2d3e4"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

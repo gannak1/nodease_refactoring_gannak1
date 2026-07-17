@@ -437,10 +437,12 @@ class LLMNode(Node[LLMNodeData]):
                     if isinstance(persisted_policy.active_policy, dict)
                     else {}
                 )
-                if (
-                    active_policy.get("strategy_id")
-                    == "bootstrap_mdeberta_difficulty_v1"
-                ):
+                if active_policy.get("strategy_id") in {
+                    "bootstrap_request_complexity_v3",
+                    "bootstrap_task_complexity_v2",
+                    # 이미 배포된 v1 snapshot만 호환 경로로 유지한다.
+                    "bootstrap_mdeberta_difficulty_v1",
+                }:
                     # 전역 profile은 policy snapshot에 있고, 노드별 운영 성적만
                     # 별도 누계에서 읽는다. 이 조회 실패가 실제 LLM 실행을 막으면
                     # 안 되므로 전역 profile 점수만으로 계속 라우팅한다.
@@ -821,11 +823,22 @@ class LLMNode(Node[LLMNodeData]):
                     {"role": "assistant", "content": rendered_assistant_prompt}
                 )
 
-            # Bootstrap classifier는 학습·실행에서 같은 요청 feature만 사용한다.
-            # runtime RAG 결과나 렌더된 prompt를 섞으면 학습 표본과 비교 기준이 달라진다.
+            # v3는 현재 요청과 변수 치환이 끝난 prompt를 함께 읽어 난이도 점수를
+            # 계산한다. 학습 표본에는 실제 검색 결과가 없으므로, runtime 검색 문맥을
+            # 덧붙이지 않는다. RAG 설정 자체는 공통 구조 feature에 이미 포함된다.
+            # 이 feature는 호출 중 메모리에만 있으며 trace나 DB artifact에 남기지 않는다.
             routing_feature_text = ModelRouter.bootstrap_classifier_feature_text(
                 inputs,
                 self.data,
+                rendered_prompt_parts=[
+                    # 공통 safety/schema 문구는 모든 요청에 거의 동일하며 bootstrap
+                    # 학습 표본에는 포함되지 않는다. 현재 요청이 tokenizer 앞부분에
+                    # 오도록 user prompt를 먼저 전달하고, 작성자가 만든 나머지 prompt도
+                    # 같은 계약으로 분류기에 전달한다.
+                    rendered_user_prompt,
+                    system_content,
+                    rendered_assistant_prompt,
+                ],
             )
             selected_model_id, fallback_model_id, model_routing_metadata = (
                 self._resolve_model_routing_policy(

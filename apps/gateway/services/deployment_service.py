@@ -49,9 +49,6 @@ from apps.shared.domain.workflow_graph import (
 )
 from apps.shared.schemas.deployment import DeploymentCreate, DeploymentPreflightResponse
 from apps.shared.services.permissions import has_workflow_permission
-from apps.shared.services.model_routing_policy_inheritance import (
-    ModelRoutingPolicyInheritanceService,
-)
 from apps.shared.services.workflow_configuration_preflight import (
     WorkflowConfigurationPreflightError,
     enforce_workflow_configuration_preflight,
@@ -333,17 +330,9 @@ class DeploymentService:
 
             # 8.1. 같은 앱의 기존 배포를 모두 비활성화 (단일 활성화 정책)
             if db_obj.is_active:
-                # 정책과 입력군은 배포 snapshot에 귀속된다. 재배포 시 이전 활성
-                # snapshot의 검증 근거를 먼저 새 snapshot으로 복제해야 UI와 runtime이
-                # 같은 정책을 계속 조회할 수 있다.
-                ModelRoutingPolicyInheritanceService.inherit_for_deployment(
-                    db,
-                    workflow_id=workflow.id,
-                    source_deployment_id=app.active_deployment_id,
-                    target_deployment_id=db_obj.id,
-                    target_graph=graph_snapshot,
-                )
-                bootstrap_policies = ModelRoutingPolicyStore.ensure_policies_for_deployment(
+                # bootstrap 정책은 현재 deployment snapshot의 작업 지문과 실행 주체
+                # 권한을 기준으로 다시 만든다. 이전 입력군 기반 정책은 상속하지 않는다.
+                ModelRoutingPolicyStore.ensure_policies_for_deployment(
                     db,
                     workflow_id=workflow.id,
                     deployment_id=db_obj.id,
@@ -351,7 +340,6 @@ class DeploymentService:
                     execution_subject_user_id=user_id,
                     graph_snapshot=graph_snapshot,
                 )
-                bootstrap_policy_ids = [policy.id for policy in bootstrap_policies]
                 from apps.gateway.services.scheduler_service import (
                     get_scheduler_service,
                 )
@@ -384,22 +372,6 @@ class DeploymentService:
 
             db.commit()
             db.refresh(db_obj)
-
-            for policy_id in bootstrap_policy_ids:
-                try:
-                    send_workflow_task(
-                        celery_app,
-                        "workflow.model_routing.bootstrap_policy",
-                        args=[str(policy_id)],
-                    )
-                except Exception as exc:
-                    # 배포 데이터는 이미 확정됐다. 브로커 장애로 배포 응답까지
-                    # 실패시키지 않고 수동 정책 갱신으로 복구할 수 있게 남긴다.
-                    logger.warning(
-                        "Model routing bootstrap publish failed: policy_id=%s error_type=%s",
-                        policy_id,
-                        type(exc).__name__,
-                    )
 
             # 응답에는 public path를 구성하는 slug만 projection한다.
             db_obj.url_slug = app.url_slug

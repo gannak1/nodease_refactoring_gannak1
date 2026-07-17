@@ -8,6 +8,7 @@ from apps.workflow_engine.services.model_routing_bootstrap import (
     PersistedModelRoutingBootstrapStore,
     task_fingerprint,
 )
+from apps.workflow_engine.services.model_router import ModelRouter
 
 
 def _node(**overrides):
@@ -76,6 +77,111 @@ class _Planner:
         ]
 
 
+class _TaskComplexityPlanner(_Planner):
+    def create_task_complexity_profile(self, *, task_summary):
+        assert task_summary["output_format"]["type"] == "json"
+        return {
+            "score": 78,
+            # Planner가 잘못된 tier를 반환해도 score 기반으로 정규화돼야 한다.
+            "tier": "economy",
+            "reasoning_depth": 4,
+            "instruction_complexity": 4,
+            "schema_precision": 5,
+            "context_synthesis": 2,
+            "grounding_requirement": 3,
+            "output_generation_demand": 2,
+            "ambiguity": 3,
+            "reason": "복수 조건과 엄격한 JSON 계약을 함께 만족해야 합니다.",
+        }
+
+
+def test_bootstrap_uses_planner_task_complexity_profile_not_example_similarity():
+    result = ModelRoutingBootstrapPlanner.plan(
+        node_data=_node(),
+        task_description="고객 문의를 JSON으로 분류합니다.",
+        history_runs=[],
+        initial_budget_usd=1.0,
+        planner=_TaskComplexityPlanner(),
+    )
+
+    assert result.task_complexity_profile["kind"] == "planner_task_complexity_v1"
+    assert result.task_complexity_profile["score"] == 78
+    assert result.task_complexity_profile["tier"] == "advanced"
+    assert result.task_complexity_profile["reasoning_depth"] == 4
+
+
+def test_bootstrap_feature_keeps_dict_node_contract_and_renders_request():
+    """초안 API가 넘기는 dict node_data도 runtime과 같은 난이도 feature를 만든다."""
+    feature = ModelRouter.bootstrap_classifier_feature_text(
+        {"webhook": {"message": "예외 세 건을 비교해 JSON으로 승인 여부를 판정해 주세요."}},
+        _node().__dict__,
+    )
+
+    assert "RENDERED_PROMPT:" in feature
+    assert "예외 세 건을 비교해 JSON으로 승인 여부를 판정해 주세요." in feature
+    assert feature.index("CURRENT_REQUEST:") < feature.index("TASK_CONTRACT:")
+    assert '"output_format": "json"' in feature
+    assert '"schema_required": true' in feature
+    assert '"knowledge_enabled": false' in feature
+
+
+def test_bootstrap_feature_uses_current_values_in_every_prompt_part():
+    """난이도는 user prompt뿐 아니라 @변수가 쓰인 모든 prompt를 기준으로 계산한다."""
+    feature = ModelRouter.bootstrap_classifier_feature_text(
+        {"webhook": {"message": "조건 세 개가 충돌할 때 예외 승인 여부를 판단해 주세요."}},
+        _node(
+            system_prompt="운영 정책: {{message}}",
+            user_prompt="고객 요청: {{message}}",
+            assistant_prompt="응답 전에 검토할 내용: {{message}}",
+        ).__dict__,
+    )
+
+    # 현재 요청, 세 prompt, 공통 요청 입력에 같은 값이 남는다. 횟수보다 모든
+    # prompt 영역에 실제 값이 전달되는 계약이 중요하다.
+    assert feature.count("조건 세 개가 충돌할 때 예외 승인 여부를 판단해 주세요.") >= 4
+    assert "[UNTRUSTED_INPUT:message]" not in feature
+
+
+def test_bootstrap_plan_maps_generated_payload_to_llm_input_shape():
+    """합성 외부 payload도 LLM 노드가 실제 변수 selector로 읽는 구조로 바꾼다."""
+    plan = ModelRoutingBootstrapPlanner.plan(
+        node_data=_node().__dict__,
+        task_description="요청 난이도에 따라 JSON 답변을 생성합니다.",
+        history_runs=[],
+        initial_budget_usd=0.5,
+        planner=_Planner(),
+    )
+
+    economy_feature = next(
+        sample.feature_text
+        for sample in plan.samples
+        if sample.difficulty == "economy"
+    )
+
+    assert "CURRENT_REQUEST:\nwebhook: message: economy synthetic 0" in economy_feature
+    assert "RENDERED_PROMPT:\neconomy synthetic 0\n고객 문의를 JSON으로 분류합니다." in economy_feature
+
+
+def test_bootstrap_plan_maps_history_payload_to_llm_input_shape():
+    """과거 node run의 안전 요약도 같은 selector 구조로 학습한다."""
+    plan = ModelRoutingBootstrapPlanner.plan(
+        node_data=_node().__dict__,
+        task_description="요청 난이도에 따라 JSON 답변을 생성합니다.",
+        history_runs=[_run(1)],
+        initial_budget_usd=0.5,
+        planner=_Planner(),
+    )
+
+    history_feature = next(
+        sample.feature_text
+        for sample in plan.samples
+        if sample.source == "history"
+    )
+
+    assert "CURRENT_REQUEST:\nwebhook: message: 마스킹된 운영 문의 1" in history_feature
+    assert "RENDERED_PROMPT:\n마스킹된 운영 문의 1\n고객 문의를 JSON으로 분류합니다." in history_feature
+
+
 class _RuleRepairPlanner(_Planner):
     def __init__(self):
         self.repair_calls = 0
@@ -137,7 +243,7 @@ class _RuleRepairPlanner(_Planner):
         ]
 
 
-def test_bootstrap_without_history_uses_diverse_synthetic_samples_for_generalization():
+def test_bootstrap_without_history_creates_labeled_samples_for_request_classifier():
     result = ModelRoutingBootstrapPlanner.plan(
         node_data=_node(),
         task_description="고객 문의를 위험도별로 JSON 분류합니다.",
@@ -153,24 +259,16 @@ def test_bootstrap_without_history_uses_diverse_synthetic_samples_for_generaliza
         "balanced",
         "advanced",
     }
+    assert all(sample.source == "synthetic" for sample in result.samples)
     assert {sample.source for sample in result.samples} == {"synthetic"}
-    # 한 난이도당 여러 표현을 학습해야 새 문장에 대한 의미 비교가 가능하다.
     assert len(result.samples) == 30
-    assert result.difficulty_rules == [
-        {
-            "id": "planner-economy",
-            "difficulty": "economy",
-            "keyword_any": ["위치", "메뉴"],
-            "keyword_all": [],
-            "minimum_matches": 1,
-            "priority": 100,
-            "reason": "단일 사실 확인",
-        }
-    ]
+    assert result.validation_samples == []
+    assert result.difficulty_rules == []
+    assert result.rule_generalization["status"] == "not_used"
 
 
-def test_bootstrap_separates_training_examples_from_unseen_generalization_examples():
-    """정책은 학습에 쓰지 않은 표현으로 먼저 일반화 여부를 확인해야 한다."""
+def test_bootstrap_does_not_create_holdout_examples_for_runtime_topic_classification():
+    """예문은 runtime 난이도 분류기를 학습하거나 검증하는 데 쓰지 않는다."""
 
     class _SplitPlanner(_Planner):
         def create_samples(
@@ -205,17 +303,13 @@ def test_bootstrap_separates_training_examples_from_unseen_generalization_exampl
     )
 
     assert result.samples
-    assert result.validation_samples
     assert {sample.sample_role for sample in result.samples} == {"training"}
-    assert {sample.sample_role for sample in result.validation_samples} == {"validation"}
-    assert all(
-        "검증 표현" in str(sample.safe_input_summary)
-        for sample in result.validation_samples
-    )
+    assert result.validation_samples == []
+    assert result.difficulty_rules == []
 
 
-def test_bootstrap_repair_validates_rules_against_held_out_examples_not_training_examples():
-    """학습 예문만 맞는 규칙은 새 표현에서 실패하므로 활성 정책에 쓰면 안 된다."""
+def test_bootstrap_does_not_turn_examples_into_keyword_routing_rules():
+    """입력 주제 키워드는 새 bootstrap policy의 runtime 조건이 될 수 없다."""
 
     class _HeldOutRepairPlanner(_Planner):
         def create_samples(self, *, sample_role="training", **_kwargs):
@@ -295,16 +389,11 @@ def test_bootstrap_repair_validates_rules_against_held_out_examples_not_training
         planner=_HeldOutRepairPlanner(),
     )
 
-    assert result.rule_generalization["passed"] is True
-    assert result.rule_generalization["total_count"] == 3
-    assert [rule["id"] for rule in result.difficulty_rules] == [
-        "economy-lookup-shape",
-        "balanced-process-shape",
-        "advanced-conflict-shape",
-    ]
+    assert result.difficulty_rules == []
+    assert result.rule_generalization == {"status": "not_used", "passed": False}
 
 
-def test_bootstrap_repairs_rules_that_cannot_classify_its_own_synthetic_samples():
+def test_bootstrap_never_requests_keyword_rule_repair_for_synthetic_examples():
     planner = _RuleRepairPlanner()
 
     result = ModelRoutingBootstrapPlanner.plan(
@@ -315,12 +404,8 @@ def test_bootstrap_repairs_rules_that_cannot_classify_its_own_synthetic_samples(
         planner=planner,
     )
 
-    assert planner.repair_calls == 1
-    assert [rule["id"] for rule in result.difficulty_rules] == [
-        "economy-lookup",
-        "balanced-procedure",
-        "advanced-risk",
-    ]
+    assert planner.repair_calls == 0
+    assert result.difficulty_rules == []
 
 
 def test_rule_generalization_keeps_individually_safe_rules_when_another_rule_is_broad():
@@ -528,7 +613,7 @@ def test_classifier_generalization_allows_only_reliable_predicted_difficulties(
     assert result["per_difficulty"]["advanced"]["passed"] is True
 
 
-def test_bootstrap_with_partial_history_keeps_history_and_fills_missing_tiers():
+def test_bootstrap_with_partial_history_fills_missing_difficulty_training_ranges():
     result = ModelRoutingBootstrapPlanner.plan(
         node_data=_node(),
         task_description="고객 문의를 위험도별로 JSON 분류합니다.",
@@ -541,6 +626,11 @@ def test_bootstrap_with_partial_history_keeps_history_and_fills_missing_tiers():
     assert result.history_sample_count == 4
     assert any(sample.source == "history" for sample in result.samples)
     assert any(sample.source == "synthetic" for sample in result.samples)
+    assert {sample.difficulty for sample in result.samples} == {
+        "economy",
+        "balanced",
+        "advanced",
+    }
 
 
 def test_bootstrap_can_defer_classifier_artifact_without_loading_mdeberta(monkeypatch):
@@ -637,7 +727,7 @@ def test_pending_bootstrap_does_not_enqueue_duplicate_generation(monkeypatch):
     assert should_enqueue is False
 
 
-def test_deferred_classifier_artifact_is_copied_to_existing_deployment_policy():
+def test_classifier_artifact_is_copied_to_existing_deployment_policy_as_v3():
     """비동기 classifier가 준비되면 이미 배포된 policy도 새 artifact를 사용해야 한다."""
     policy = SimpleNamespace(
         active_policy={
@@ -656,22 +746,22 @@ def test_deferred_classifier_artifact_is_copied_to_existing_deployment_policy():
     )
 
     assert policy.active_policy["classifier_artifact"] == artifact
-    assert policy.active_policy["strategy_id"] == "bootstrap_mdeberta_difficulty_v1"
+    assert policy.active_policy["strategy_id"] == "bootstrap_request_complexity_v3"
+    assert policy.active_policy["rules"] == []
 
 
-def test_deferred_classifier_syncs_existing_policy_when_bootstrap_is_already_ready(
-    monkeypatch,
-):
-    """재시도 task도 과거 policy의 빈 artifact를 복구할 수 있어야 한다."""
+def test_deferred_task_syncs_ready_classifier_to_deployment_policy():
+    """이전 queue task도 준비된 v3 classifier artifact를 배포 정책에 반영한다."""
     bootstrap_id = uuid4()
-    artifact = {
-        "kind": "mdeberta_centroid_v1",
-        "tier_centroids": {"economy": [0.1, 0.2]},
+    profile = {
+        "kind": "planner_task_complexity_v1",
+        "score": 74,
+        "tier": "advanced",
     }
     bootstrap = SimpleNamespace(
         id=bootstrap_id,
-        generation_summary={"classifier_status": "ready"},
-        classifier_artifact=artifact,
+        generation_summary={"task_complexity_profile": profile},
+        classifier_artifact={"kind": "mdeberta_linear_difficulty_v1"},
     )
     policy = SimpleNamespace(active_policy={"classifier_artifact": {}})
 
@@ -695,11 +785,14 @@ def test_deferred_classifier_syncs_existing_policy_when_bootstrap_is_already_rea
     )
 
     assert result is bootstrap
-    assert policy.active_policy["classifier_artifact"] == artifact
+    assert bootstrap.classifier_artifact == {"kind": "mdeberta_linear_difficulty_v1"}
+    assert policy.active_policy["task_complexity_profile"] == profile
+    assert policy.active_policy["strategy_id"] == "bootstrap_request_complexity_v3"
+    assert policy.active_policy["classifier_artifact"] == {"kind": "mdeberta_linear_difficulty_v1"}
 
 
-def test_active_policy_carries_generalization_validation_and_calibrated_threshold():
-    """배포 runtime은 bootstrap의 holdout 검증 결과를 그대로 읽어야 한다."""
+def test_active_policy_carries_request_classifier_and_task_profile_for_display():
+    """새 배포 runtime은 classifier를 쓰고 task profile은 생성 근거로만 유지한다."""
     bootstrap = SimpleNamespace(
         id=uuid4(),
         task_fingerprint="fingerprint",
@@ -712,22 +805,22 @@ def test_active_policy_carries_generalization_validation_and_calibrated_threshol
                 "balanced": "gpt-4.1-mini",
                 "advanced": "gpt-5.4",
             },
-            "difficulty_rules": [{"id": "balanced-order"}],
-            "generalization_validation": {
-                "rules": {"passed": True, "accuracy": 1.0},
-                "classifier": {
-                    "passed": True,
-                    "minimum_confidence": 0.39,
-                },
+            "task_complexity_profile": {
+                "kind": "planner_task_complexity_v1",
+                "score": 58,
+                "tier": "balanced",
+                "reasoning_depth": 3,
             },
         },
     )
 
     policy = PersistedModelRoutingBootstrapStore.active_policy_for_bootstrap(bootstrap)
 
-    assert policy["minimum_confidence"] == 0.39
-    assert policy["generalization_validation"]["rules"]["passed"] is True
-    assert policy["generalization_validation"]["classifier"]["passed"] is True
+    assert policy["strategy_id"] == "bootstrap_request_complexity_v3"
+    assert policy["task_complexity_profile"]["tier"] == "balanced"
+    assert policy["minimum_confidence"] == 0.45
+    assert policy["classifier_artifact"] == {"kind": "multilingual_e5_prototype_v1"}
+    assert policy["rules"] == []
 
 
 def test_bootstrap_rule_normalization_rejects_full_sentence_terms():
@@ -800,7 +893,7 @@ def test_bootstrap_rule_normalization_removes_terms_shared_by_multiple_tiers():
     ]
 
 
-def test_bootstrap_with_sufficient_history_does_not_generate_synthetic_samples():
+def test_bootstrap_with_history_fills_tiers_that_are_underrepresented_after_split():
     result = ModelRoutingBootstrapPlanner.plan(
         node_data=_node(),
         task_description="고객 문의를 위험도별로 JSON 분류합니다.",
@@ -809,7 +902,7 @@ def test_bootstrap_with_sufficient_history_does_not_generate_synthetic_samples()
         planner=_Planner(),
     )
 
-    assert result.source == "history"
+    assert result.source == "hybrid"
     assert result.history_sample_count == 12
     assert len(result.samples) + len(result.validation_samples) == 12
     assert {sample.source for sample in result.samples} == {"history"}

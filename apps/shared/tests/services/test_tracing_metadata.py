@@ -140,7 +140,7 @@ def test_llm_span_metadata_preserves_model_routing_summary_only():
     }
 
 
-def test_llm_span_metadata_preserves_safe_runtime_policy_outcome_fields():
+def test_llm_span_metadata_preserves_current_routing_fields_without_sensitive_values():
     metadata = TraceMetadataSanitizer.sanitize_span_metadata(
         "llmNode",
         {
@@ -151,25 +151,13 @@ def test_llm_span_metadata_preserves_safe_runtime_policy_outcome_fields():
                 "downstream_status": "passed",
                 "fallback_used": True,
                 "policy_id": "policy-1",
-                "matched_rule_id": "short-json",
-                "matched_cohort_id": "routine_support",
-                "cohort_matcher": "hybrid",
-                "semantic_route_label": "단순 사용·안내 문의",
-                "semantic_candidate_cohort_id": "routine_support",
-                "semantic_candidate_label": "단순 사용·안내 문의",
-                "semantic_similarity": 0.88,
-                "semantic_threshold": 0.75,
-                "semantic_runner_up_score": 0.51,
-                "semantic_margin": 0.37,
-                "semantic_match_status": "matched",
-                "semantic_decision_source": "safety_override",
-                "semantic_lexical_score": 2.0,
-                "semantic_lexical_signal_count": 2,
-                "semantic_safety_override": True,
-                "route_catalog_version": "ticket-routing-v1",
-                "semantic_encoder_model": "text-embedding-test",
+                "policy_version": "bootstrap-1234",
+                "strategy_id": "bootstrap_task_complexity_v2",
+                "selected_model": "gpt-4.1-mini",
+                "fallback_model": "gpt-4.1",
+                "matched_rule_id": "task-complexity-balanced",
                 "decision_source": "active_policy",
-                "reason_code": "quality_gate_passed",
+                "reason_code": "bootstrap_task_complexity_balanced",
                 "judge_called": False,
                 "input_length_bucket": "short",
                 "prompt_length_bucket": "medium",
@@ -177,8 +165,7 @@ def test_llm_span_metadata_preserves_safe_runtime_policy_outcome_fields():
                 "schema_required": True,
                 "knowledge_enabled": False,
                 "raw_input": "secret input",
-                "query_vector": [0.1, 0.2, 0.3],
-                "matched_lexical_signals": ["credential leak"],
+                "raw_prompt": "secret prompt",
             }
         },
     )
@@ -187,19 +174,12 @@ def test_llm_span_metadata_preserves_safe_runtime_policy_outcome_fields():
     assert metadata["llm"]["finish_reason"] == "stop"
     assert metadata["llm"]["repetition_rate"] == 0.125
     assert metadata["llm"]["input_length_bucket"] == "short"
-    assert metadata["llm"]["matched_cohort_id"] == "routine_support"
-    assert metadata["llm"]["semantic_candidate_cohort_id"] == "routine_support"
-    assert metadata["llm"]["semantic_candidate_label"] == "단순 사용·안내 문의"
-    assert metadata["llm"]["semantic_similarity"] == 0.88
-    assert metadata["llm"]["semantic_match_status"] == "matched"
-    assert metadata["llm"]["semantic_decision_source"] == "safety_override"
-    assert metadata["llm"]["semantic_lexical_score"] == 2.0
-    assert metadata["llm"]["semantic_lexical_signal_count"] == 2
-    assert metadata["llm"]["semantic_safety_override"] is True
-    assert metadata["llm"]["route_catalog_version"] == "ticket-routing-v1"
+    assert metadata["llm"]["matched_rule_id"] == "task-complexity-balanced"
+    assert metadata["llm"]["decision_source"] == "active_policy"
+    assert metadata["llm"]["strategy_id"] == "bootstrap_task_complexity_v2"
+    assert metadata["llm"]["selected_model"] == "gpt-4.1-mini"
     assert "raw_input" not in metadata["llm"]
-    assert "query_vector" not in metadata["llm"]
-    assert "matched_lexical_signals" not in metadata["llm"]
+    assert "raw_prompt" not in metadata["llm"]
 
 
 def test_llm_span_metadata_preserves_safe_model_routing_decision_factors_only():

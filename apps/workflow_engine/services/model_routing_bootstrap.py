@@ -94,6 +94,7 @@ class BootstrapSample:
 class BootstrapPlan:
     source: BootstrapSource
     task_fingerprint: str
+    task_complexity_profile: dict[str, Any]
     samples: list[BootstrapSample]
     validation_samples: list[BootstrapSample]
     difficulty_rules: list[dict[str, Any]]
@@ -106,6 +107,12 @@ class BootstrapPlan:
 
 
 class BootstrapPlanner(Protocol):
+    def create_task_complexity_profile(
+        self,
+        *,
+        task_summary: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
     def label_history(
         self,
         *,
@@ -145,6 +152,40 @@ class LLMJsonBootstrapPlanner:
             "total_tokens": 0.0,
             "cost": 0.0,
         }
+
+    def create_task_complexity_profile(
+        self,
+        *,
+        task_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        """노드가 요구하는 능력 수준을 한 번만 분석한다.
+
+        이 결과는 요청별 주제 분류가 아니다. 동일한 LLM 노드가 수행할 작업의
+        prompt, 출력 계약, RAG, 후속 계약을 바탕으로 만드는 고정 프로필이다.
+        """
+        result = self._invoke(
+            "Analyze the capability required by this one LLM node. This is not a "
+            "classification of incoming request topics. Score the node task from 0 to 100 "
+            "using its prompts, input/output contract, JSON schema precision, RAG/retrieval "
+            "requirements, and downstream contract. Return a compact explanation and integer "
+            "dimension scores from 0 to 5. Do not choose a model and do not use customer or "
+            "document subject matter as a proxy for difficulty. Return JSON only.",
+            {
+                "task": task_summary,
+                "response_schema": {
+                    "score": "integer 0..100",
+                    "reasoning_depth": "integer 0..5",
+                    "instruction_complexity": "integer 0..5",
+                    "schema_precision": "integer 0..5",
+                    "context_synthesis": "integer 0..5",
+                    "grounding_requirement": "integer 0..5",
+                    "output_generation_demand": "integer 0..5",
+                    "ambiguity": "integer 0..5",
+                    "reason": "short safe Korean explanation",
+                },
+            },
+        )
+        return result
 
     def label_history(
         self,
@@ -200,26 +241,21 @@ class LLMJsonBootstrapPlanner:
         sample_role: BootstrapSampleRole = "training",
         reference_samples: list[BootstrapSample] | None = None,
     ) -> list[dict[str, Any]]:
-        is_validation = sample_role == "validation"
-        reference_payloads = [
-            {
-                "difficulty": sample.difficulty,
-                "input": sample.safe_input_summary,
-            }
-            for sample in (reference_samples or [])[:18]
-        ]
+        _ = sample_role, reference_samples
         payload = {
             "task": task_summary,
             "missing_difficulties": missing_tiers,
             "count_per_difficulty": count_per_tier,
             "sample_budget_usd": round(sample_budget_usd, 4),
-            "sample_role": sample_role,
-            "reference_training_samples": reference_payloads,
             "response_schema": {
                 "samples": [
                     {
                         "difficulty": "economy | balanced | advanced",
-                        "payload": "JSON object accepted by the workflow input",
+                        "payload": (
+                            "JSON object in the LLM node input shape. Top-level keys "
+                            "must match input_variables[].value_selector[0], and nested "
+                            "values must follow the remaining selector path."
+                        ),
                         "feature_text": "non-secret short explanation of the payload task",
                         "coverage_tag": "distinct request-shape tag",
                         "reason": "why this capability tier is needed",
@@ -227,31 +263,15 @@ class LLMJsonBootstrapPlanner:
                 ]
             },
         }
-        role_instruction = (
-            "Create independent held-out validation payloads. They must require the "
-            "same difficulty tier but use different subject nouns, Korean phrasing, and "
-            "request-shape wording from reference_training_samples. Do not copy an exact "
-            "cue or sentence from a reference sample. "
-            if is_validation
-            else "Create training payloads that cover the request shapes below. "
-        )
         result = self._invoke(
-            f"{role_instruction}Create executable JSON payloads for the requested difficulty tiers. "
+            "Create executable representative JSON payloads for the requested task "
+            "complexity tier. These labeled examples train a per-request difficulty "
+            "classifier, not a topic or keyword router. "
             "Respect required input variables. Include RAG cases when knowledge is "
             "enabled: single source, synthesis, conflicting sources, and no evidence. "
-            "These payloads train a local semantic classifier, so coverage diversity is "
-            "more important than repeating the same wording. Within each difficulty, use "
-            "different request shapes and different Korean expressions; do not merely swap "
-            "a team name or noun. Economy coverage must spread across direct fact lookup, "
-            "location/navigation, schedule/date, required field, document/source lookup, "
-            "and one simple eligibility question. Balanced coverage must spread across "
-            "ordered steps, role/policy comparison, two related actions, conditional "
-            "procedure, and multi-document synthesis. Advanced coverage must spread across "
-            "conflicting instructions, risk or incident handling, exception approval, "
-            "missing evidence, time pressure, competing priorities, and multiple constraints. "
-            "Use a distinct coverage_tag for every request shape. Do not make a domain noun, "
-            "role title, team name, or one example-specific fact the only signal of a difficulty. "
-            "The same difficulty must remain recognizable after the document subject changes. "
+            "Use different request shapes and Korean expressions. Do not merely replace a team "
+            "name or noun. The node's prompt, output contract, RAG configuration, and downstream "
+            "contract determine the tier; do not infer the tier from the input subject matter. "
             "Return JSON only and never invent credentials, secrets, or raw documents.",
             payload,
             max_tokens=min(6200, max(3200, 190 * count_per_tier * len(missing_tiers))),
@@ -480,66 +500,59 @@ class ModelRoutingBootstrapPlanner:
             task_description=task_description,
             downstream_contract=downstream_contract,
         )
-        labels = cls._label_history(
+        task_complexity_profile = cls._create_task_complexity_profile(
             planner,
             task_summary=task_summary,
-            history_runs=selected_history,
         )
-        history_samples = [
-            BootstrapSample(
-                source="history",
-                difficulty=labels[run.node_run_id][0],
-                safe_input_summary=run.safe_input_summary,
-                feature_text=run.feature_text,
-                source_node_run_id=run.node_run_id,
-                reason=labels[run.node_run_id][1],
-                input_length=run.input_length,
-                knowledge_enabled=run.knowledge_enabled,
-                output_format=run.output_format,
-            )
-            for run in selected_history
-            if run.node_run_id in labels
-        ]
-
-        if len(history_samples) >= MIN_HISTORY_FOR_HISTORY_ONLY:
-            training_samples, validation_samples = cls._split_history_samples(
-                history_samples
-            )
-            difficulty_rules = cls._create_difficulty_rules(
+        task_tier = str(task_complexity_profile["tier"])
+        try:
+            history_labels = cls._label_history(
                 planner,
                 task_summary=task_summary,
-                samples=training_samples,
-                node_data=node_data,
-                repair_samples=validation_samples,
+                history_runs=selected_history,
             )
-            difficulty_rules = cls._sanitize_difficulty_rules_with_holdout(
-                difficulty_rules,
-                node_data=node_data,
-                validation_samples=validation_samples,
+        except (RuntimeError, ValueError, TypeError):
+            # Planner 문제가 bootstrap 전체를 막지 않도록, 라벨을 얻지 못한 표본은
+            # display용 작업 프로필 등급으로만 최소 보완한다.
+            history_labels = {}
+
+        history_samples = []
+        for run in selected_history:
+            difficulty, reason = history_labels.get(
+                run.node_run_id,
+                (task_tier, str(task_complexity_profile.get("reason") or "") or None),
             )
-            return BootstrapPlan(
-                source="history",
-                task_fingerprint=fingerprint,
-                samples=training_samples,
-                validation_samples=validation_samples,
-                difficulty_rules=difficulty_rules,
-                rule_generalization=cls._rule_generalization(
-                    difficulty_rules,
-                    node_data=node_data,
-                    validation_samples=validation_samples,
-                ),
-                history_sample_count=len(history_samples),
-                synthetic_sample_count=0,
-                excluded_history_count=excluded_history_count,
-                planner_budget_usd=round(initial_budget_usd * 0.15, 4),
-                sample_generation_budget_usd=round(initial_budget_usd * 0.85, 4),
+            history_samples.append(
+                BootstrapSample(
+                    source="history",
+                    difficulty=difficulty,
+                    safe_input_summary=run.safe_input_summary,
+                    feature_text=ModelRouter.bootstrap_classifier_feature_text(
+                        cls._classifier_inputs_for_node(
+                            run.safe_input_summary,
+                            node_data,
+                        ),
+                        node_data,
+                    ),
+                    source_node_run_id=run.node_run_id,
+                    reason=reason,
+                    input_length=run.input_length,
+                    knowledge_enabled=run.knowledge_enabled,
+                    output_format=run.output_format,
+                )
             )
 
-        counts = {tier: 0 for tier in DIFFICULTY_TIERS}
-        for sample in history_samples:
-            counts[sample.difficulty] += 1
-        missing_tiers = [
-            tier for tier in DIFFICULTY_TIERS if counts[tier] < MIN_SAMPLES_PER_TIER
+        training_history, validation_history = cls._split_history_samples(history_samples)
+        sample_counts = {
+            tier: sum(1 for sample in training_history if sample.difficulty == tier)
+            for tier in DIFFICULTY_TIERS
+        }
+        # 난이도 분류기는 최소 두 등급을 학습해야 한다. 과거 로그가 많아도 한 가지
+        # 난이도만 있다면 빠진 난이도별 실행 가능한 payload를 합성해 빈 구간을 보완한다.
+        missing_tiers: list[DifficultyTier] = [
+            tier
+            for tier in DIFFICULTY_TIERS
+            if sample_counts[tier] < MIN_SAMPLES_PER_TIER
         ]
         synthetic = cls._create_synthetic_samples(
             planner,
@@ -551,42 +564,15 @@ class ModelRoutingBootstrapPlanner:
             sample_role="training",
         )
         source: BootstrapSource = "hybrid" if history_samples else "synthetic"
-        all_samples = [*history_samples, *synthetic]
-        # 별도 holdout 표본은 artifact 학습과 rule 작성에 넣지 않는다. 여기서
-        # 표현을 바꾸어 만들어야 실제 문장에서도 route가 되는지 확인할 수 있다.
-        validation_samples = cls._create_synthetic_samples(
-            planner,
-            node_data=node_data,
-            task_summary=task_summary,
-            missing_tiers=list(DIFFICULTY_TIERS),
-            count_per_tier=cls._validation_sample_count_per_tier(initial_budget_usd),
-            sample_budget_usd=initial_budget_usd * 0.20,
-            sample_role="validation",
-            reference_samples=all_samples,
-        )
-        difficulty_rules = cls._create_difficulty_rules(
-            planner,
-            task_summary=task_summary,
-            samples=all_samples,
-            node_data=node_data,
-            repair_samples=validation_samples,
-        )
-        difficulty_rules = cls._sanitize_difficulty_rules_with_holdout(
-            difficulty_rules,
-            node_data=node_data,
-            validation_samples=validation_samples,
-        )
+        all_samples = [*training_history, *synthetic]
         return BootstrapPlan(
             source=source,
             task_fingerprint=fingerprint,
+            task_complexity_profile=task_complexity_profile,
             samples=all_samples,
-            validation_samples=validation_samples,
-            difficulty_rules=difficulty_rules,
-            rule_generalization=cls._rule_generalization(
-                difficulty_rules,
-                node_data=node_data,
-                validation_samples=validation_samples,
-            ),
+            validation_samples=validation_history,
+            difficulty_rules=[],
+            rule_generalization={"status": "not_used", "passed": False},
             history_sample_count=len(history_samples),
             synthetic_sample_count=len(synthetic),
             excluded_history_count=excluded_history_count,
@@ -598,6 +584,84 @@ class ModelRoutingBootstrapPlanner:
     def _validate_budget(value: float) -> None:
         if not 0.5 <= float(value) <= 10.0:
             raise ValueError("초기 정책 생성 예산은 $0.50~$10 범위여야 합니다.")
+
+    @classmethod
+    def _create_task_complexity_profile(
+        cls,
+        planner: BootstrapPlanner,
+        *,
+        task_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Planner 결과를 정규화하고, 테스트/장애 시 구조 기반 안전 기본값을 만든다."""
+        creator = getattr(planner, "create_task_complexity_profile", None)
+        raw_profile = creator(task_summary=task_summary) if callable(creator) else {}
+        raw_profile = raw_profile if isinstance(raw_profile, dict) else {}
+
+        def score(value: Any, default: int) -> int:
+            try:
+                return max(0, min(5, int(value)))
+            except (TypeError, ValueError):
+                return default
+
+        prompts = task_summary.get("prompts")
+        prompts = prompts if isinstance(prompts, dict) else {}
+        input_variables = task_summary.get("input_variables")
+        input_variables = input_variables if isinstance(input_variables, list) else []
+        output_format = task_summary.get("output_format")
+        output_format = output_format if isinstance(output_format, dict) else {}
+        downstream_contract = task_summary.get("downstream_contract")
+        downstream_contract = (
+            downstream_contract if isinstance(downstream_contract, dict) else {}
+        )
+        knowledge_enabled = bool(task_summary.get("knowledge_enabled"))
+        structural_defaults = {
+            "reasoning_depth": 2 + int(bool(downstream_contract.get("consumers"))),
+            "instruction_complexity": min(
+                5, sum(bool(str(value).strip()) for value in prompts.values()) + int(len(input_variables) > 2)
+            ),
+            "schema_precision": 4 if str(output_format.get("type") or "").lower() == "json" else 1,
+            "context_synthesis": 4 if knowledge_enabled else 1,
+            "grounding_requirement": 4 if knowledge_enabled else 1,
+            "output_generation_demand": 2,
+            "ambiguity": 2,
+        }
+        dimensions = {
+            key: score(raw_profile.get(key), default)
+            for key, default in structural_defaults.items()
+        }
+        try:
+            raw_score = int(raw_profile.get("score"))
+        except (TypeError, ValueError):
+            raw_score = round(
+                100
+                * (
+                    dimensions["reasoning_depth"] * 0.24
+                    + dimensions["instruction_complexity"] * 0.16
+                    + dimensions["schema_precision"] * 0.16
+                    + dimensions["context_synthesis"] * 0.16
+                    + dimensions["grounding_requirement"] * 0.12
+                    + dimensions["output_generation_demand"] * 0.08
+                    + dimensions["ambiguity"] * 0.08
+                )
+                / 5
+            )
+        normalized_score = max(0, min(100, raw_score))
+        tier: DifficultyTier = (
+            "economy"
+            if normalized_score <= 33
+            else "balanced"
+            if normalized_score <= 66
+            else "advanced"
+        )
+        reason = str(raw_profile.get("reason") or "").strip()
+        return {
+            "kind": "planner_task_complexity_v1",
+            "score": normalized_score,
+            "tier": tier,
+            **dimensions,
+            "reason": reason or "노드의 prompt, 출력 계약, RAG와 후속 계약을 기준으로 난이도를 계산했습니다.",
+            "source": "planner" if raw_profile else "structural_fallback",
+        }
 
     @staticmethod
     def _sample_count_per_tier(initial_budget_usd: float) -> int:
@@ -702,11 +766,12 @@ class ModelRoutingBootstrapPlanner:
             payload = item.get("payload")
             if tier not in DIFFICULTY_TIERS or not isinstance(payload, dict):
                 continue
+            # 학습 입력은 실제 runtime과 같은 계약을 사용해야 한다. payload만
+            # 직렬화하면 runtime의 prompt/출력 계약/RAG 구조 정보가 빠져 같은
+            # 요청도 학습과 실행에서 다른 feature가 된다.
             feature_text = ModelRouter.bootstrap_classifier_feature_text(
-                payload,
-                SimpleNamespace(**node_data)
-                if isinstance(node_data, dict)
-                else node_data,
+                cls._classifier_inputs_for_node(payload, node_data),
+                node_data,
             )
             if not feature_text:
                 continue
@@ -718,13 +783,79 @@ class ModelRoutingBootstrapPlanner:
                     feature_text=feature_text,
                     source_node_run_id=None,
                     reason=str(item.get("reason") or "") or None,
-                    input_length=len(feature_text),
+                    input_length=len(
+                        json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                    ),
                     knowledge_enabled=bool(task_summary.get("knowledge_enabled")),
                     output_format=str(task_summary.get("output_format") or "text"),
                     sample_role=sample_role,
                 )
             )
         return samples
+
+    @staticmethod
+    def _classifier_inputs_for_node(
+        payload: dict[str, Any],
+        node_data: Any,
+    ) -> dict[str, Any]:
+        """Planner payload를 LLM node의 실제 selector 입력 구조로 정규화한다.
+
+        Planner는 workflow 외부에서 들어오는 JSON을 생성할 수 있지만, LLM node는
+        ``referenced_variables[].value_selector``의 첫 값인 upstream node ID 아래에서
+        값을 읽는다. source node ID가 하나이고 Planner가 평평한 payload를 만들면
+        이를 source ID 아래에 감싸 runtime prompt와 같은 값을 렌더링한다. 여러
+        source가 있는 경우에는 variable name을 대응 selector path에 채운다.
+        """
+        normalized = dict(payload)
+        referenced_variables = _node_value(
+            node_data,
+            "referenced_variables",
+            [],
+        )
+        if not isinstance(referenced_variables, list):
+            return normalized
+
+        bindings: list[tuple[str, list[Any], str]] = []
+        source_ids: list[str] = []
+        for variable in referenced_variables:
+            selector = _node_value(variable, "value_selector", [])
+            name = str(_node_value(variable, "name", "") or "").strip()
+            if not isinstance(selector, list) or not selector:
+                continue
+            source_id = str(selector[0] or "").strip()
+            if not source_id:
+                continue
+            bindings.append((source_id, list(selector[1:]), name))
+            if source_id not in source_ids:
+                source_ids.append(source_id)
+
+        if not source_ids:
+            return normalized
+        if len(source_ids) == 1 and source_ids[0] not in normalized:
+            return {source_ids[0]: normalized}
+
+        for source_id, path, name in bindings:
+            if source_id in normalized or not name or name not in payload:
+                continue
+            value = payload[name]
+            if not path:
+                normalized[source_id] = value
+                continue
+            source_value = normalized.get(source_id)
+            source_mapping = (
+                dict(source_value) if isinstance(source_value, dict) else {}
+            )
+            current = source_mapping
+            for key in path[:-1]:
+                key_text = str(key)
+                nested = current.get(key_text)
+                if not isinstance(nested, dict):
+                    nested = {}
+                    current[key_text] = nested
+                current = nested
+            current[str(path[-1])] = value
+            normalized[source_id] = source_mapping
+        return normalized
 
     @classmethod
     def _rule_generalization(
@@ -1295,14 +1426,14 @@ class PersistedModelRoutingBootstrapStore:
         )
         artifact, classifier_status = cls._classifier_artifact_for_plan(
             plan,
-            embedder=embedder,
             defer_classifier=defer_classifier,
+            embedder=embedder,
         )
         classifier_generalization = cls._classifier_generalization_for_samples(
             artifact,
             validation_samples=plan.validation_samples,
             embedder=embedder,
-            pending=defer_classifier,
+            pending=classifier_status == "pending",
         )
         (
             difficulty_models,
@@ -1355,14 +1486,12 @@ class PersistedModelRoutingBootstrapStore:
             "difficulty_models": difficulty_models,
             "global_profile_matches": global_profile_matches,
             "global_profile_catalog": global_profile_catalog,
-            "difficulty_rules": plan.difficulty_rules,
+            "task_complexity_profile": plan.task_complexity_profile,
+            "profile_status": "ready",
             "classifier_status": classifier_status,
-            "generalization_validation": {
-                "rules": plan.rule_generalization,
-                "classifier": classifier_generalization,
-            },
-            # DB row를 늘리지 않고도 deferred classifier task가 같은 holdout을
-            # 재현할 수 있도록, redaction된 입력 요약만 남긴다.
+            # v3는 keyword rule이 아니라 요청 난이도 분류기만 사용한다.
+            "difficulty_rules": [],
+            "generalization_validation": {"classifier": classifier_generalization},
             "validation_samples": cls._validation_sample_summaries(
                 plan.validation_samples
             ),
@@ -1499,7 +1628,7 @@ class PersistedModelRoutingBootstrapStore:
             "synthetic_sample_count": 0,
             "excluded_history_count": sum(exclusions.values()),
             "excluded_reason_summary": exclusions,
-            "classifier_status": "not_started",
+            "profile_status": "generating",
             "generation_status": "queued",
         }
         bootstrap.stale_reason = None
@@ -1517,6 +1646,7 @@ class PersistedModelRoutingBootstrapStore:
         bootstrap_id: uuid.UUID,
         planner: BootstrapPlanner,
         available_candidates: list[ModelCandidate],
+        defer_classifier: bool = False,
     ) -> LLMNodeModelRoutingBootstrap | None:
         """Worker에서 generating bootstrap을 실제 Planner 결과로 완성한다.
 
@@ -1570,7 +1700,7 @@ class PersistedModelRoutingBootstrapStore:
             planner_model_id=bootstrap.planner_model_id,
             available_candidates=available_candidates,
             downstream_contract=downstream_contract,
-            defer_classifier=True,
+            defer_classifier=defer_classifier,
         )
         return completed
 
@@ -1799,17 +1929,17 @@ class PersistedModelRoutingBootstrapStore:
         return samples
 
     @classmethod
-    def build_deferred_classifier(
+    def finalize_request_complexity_classifier(
         cls,
         db: Session,
         *,
         bootstrap_id: uuid.UUID,
     ) -> LLMNodeModelRoutingBootstrap | None:
-        """이미 저장된 안전 표본으로 classifier artifact만 비동기 생성한다.
+        """완성된 요청 난이도 분류기를 이미 배포된 정책에도 반영한다.
 
-        Planner rule은 이 작업보다 먼저 저장되므로, artifact 생성 실패는 첫 배포
-        라우팅을 막지 않는다. raw 운영 입력을 새 테이블에 복사하지 않고 기존 safe
-        summary만 classifier 입력으로 사용한다.
+        bootstrap 생성 Worker가 학습한 artifact를 policy snapshot에 복사한다. 정책은
+        요청별 classifier와 전역 모델 profile을 사용하고, task profile은 화면 설명과
+        artifact 생성 근거로만 남긴다.
         """
         bootstrap = db.get(LLMNodeModelRoutingBootstrap, bootstrap_id)
         if bootstrap is None:
@@ -1819,73 +1949,100 @@ class PersistedModelRoutingBootstrapStore:
             if isinstance(bootstrap.generation_summary, dict)
             else {}
         )
-        if summary.get("classifier_status") == "ready" and isinstance(
-            bootstrap.classifier_artifact, dict
-        ) and bootstrap.classifier_artifact:
-            # bootstrap은 초안에서 먼저 만들어지고 deployment policy는 그 이후에
-            # snapshot으로 복사된다. 비동기 classifier가 준비된 시점에는 이미 만든
-            # policy snapshot에도 artifact를 동기화해야 runtime이 기본 모델로만
-            # 떨어지지 않는다. 재시도 task도 이 경로를 타므로 기존 빈 snapshot을
-            # 복구할 수 있다.
-            cls._sync_classifier_artifact_to_deployment_policies(
-                db,
-                bootstrap_id=bootstrap.id,
-                artifact=bootstrap.classifier_artifact,
-                classifier_generalization=cls._classifier_generalization_from_summary(
-                    summary
-                ),
-            )
+        artifact = bootstrap.classifier_artifact
+        if not isinstance(artifact, dict) or not artifact:
             return bootstrap
-
-        workflow = db.get(Workflow, bootstrap.workflow_id)
-        node = _graph_node(getattr(workflow, "graph", None), bootstrap.node_id)
-        node_data = (
-            node.get("data")
-            if isinstance(node, dict) and isinstance(node.get("data"), dict)
-            else {}
-        )
-        samples = (
-            db.query(LLMNodeModelRoutingBootstrapSample)
-            .filter(LLMNodeModelRoutingBootstrapSample.bootstrap_id == bootstrap.id)
-            .order_by(LLMNodeModelRoutingBootstrapSample.ordinal.asc())
-            .all()
-        )
-        examples = [
-            (
-                ModelRouter.bootstrap_classifier_feature_text(
-                    sample.safe_input_summary or {},
-                    SimpleNamespace(**node_data),
-                ),
-                str(sample.difficulty),
-            )
-            for sample in samples
-            if isinstance(sample.safe_input_summary, dict)
-        ]
-        bootstrap.classifier_artifact = MDebertaDifficultyClassifier.fit(examples)
-        validation_samples = cls._validation_samples_from_summary(
-            summary,
-            node_data=node_data,
-        )
-        generalization_validation = (
-            dict(summary.get("generalization_validation"))
-            if isinstance(summary.get("generalization_validation"), dict)
-            else {}
-        )
-        generalization_validation["classifier"] = cls._classifier_generalization_for_samples(
-            bootstrap.classifier_artifact,
-            validation_samples=validation_samples,
-        )
-        summary["generalization_validation"] = generalization_validation
+        summary["profile_status"] = "ready"
         summary["classifier_status"] = "ready"
-        summary.pop("classifier_error", None)
         bootstrap.generation_summary = summary
-        cls._sync_classifier_artifact_to_deployment_policies(
+        profile = summary.get("task_complexity_profile")
+        cls._sync_request_complexity_classifier_to_deployment_policies(
             db,
             bootstrap_id=bootstrap.id,
-            artifact=bootstrap.classifier_artifact,
-            classifier_generalization=generalization_validation["classifier"],
+            artifact=artifact,
+            classifier_generalization=cls._classifier_generalization_from_summary(summary),
+            task_complexity_profile=profile if isinstance(profile, dict) else None,
         )
         return bootstrap
+
+    @classmethod
+    def build_deferred_classifier(
+        cls,
+        db: Session,
+        *,
+        bootstrap_id: uuid.UUID,
+    ) -> LLMNodeModelRoutingBootstrap | None:
+        """이미 발행된 queue 메시지가 준비된 artifact를 policy에 반영하는 호환 경로다."""
+        return cls.finalize_request_complexity_classifier(
+            db,
+            bootstrap_id=bootstrap_id,
+        )
+
+    @staticmethod
+    def _apply_request_complexity_classifier_to_policy(
+        policy: LLMNodeModelRoutingPolicy,
+        *,
+        artifact: dict[str, Any],
+        classifier_generalization: dict[str, Any] | None,
+        task_complexity_profile: dict[str, Any] | None = None,
+    ) -> None:
+        active_policy = (
+            dict(policy.active_policy)
+            if isinstance(policy.active_policy, dict)
+            else {}
+        )
+        active_policy["strategy_id"] = "bootstrap_request_complexity_v3"
+        active_policy["classifier_artifact"] = dict(artifact)
+        if task_complexity_profile is not None:
+            active_policy["task_complexity_profile"] = dict(task_complexity_profile)
+        active_policy.pop("difficulty_rules", None)
+        active_policy["rules"] = []
+        if classifier_generalization is not None:
+            validations = (
+                dict(active_policy.get("generalization_validation"))
+                if isinstance(active_policy.get("generalization_validation"), dict)
+                else {}
+            )
+            validations["classifier"] = dict(classifier_generalization)
+            active_policy["generalization_validation"] = validations
+        policy.active_policy = active_policy
+
+    @classmethod
+    def _sync_request_complexity_classifier_to_deployment_policies(
+        cls,
+        db: Session,
+        *,
+        bootstrap_id: uuid.UUID,
+        artifact: dict[str, Any],
+        classifier_generalization: dict[str, Any] | None,
+        task_complexity_profile: dict[str, Any] | None = None,
+    ) -> int:
+        policies = (
+            db.query(LLMNodeModelRoutingPolicy)
+            .filter(LLMNodeModelRoutingPolicy.bootstrap_id == bootstrap_id)
+            .all()
+        )
+        for policy in policies:
+            cls._apply_request_complexity_classifier_to_policy(
+                policy,
+                artifact=artifact,
+                classifier_generalization=classifier_generalization,
+                task_complexity_profile=task_complexity_profile,
+            )
+        return len(policies)
+
+    @classmethod
+    def finalize_task_complexity_profile(
+        cls,
+        db: Session,
+        *,
+        bootstrap_id: uuid.UUID,
+    ) -> LLMNodeModelRoutingBootstrap | None:
+        """기존 Worker/테스트 호출명을 유지하는 v3 호환 별칭이다."""
+        return cls.finalize_request_complexity_classifier(
+            db,
+            bootstrap_id=bootstrap_id,
+        )
 
     @staticmethod
     def _apply_classifier_artifact_to_policy(
@@ -1901,6 +2058,9 @@ class PersistedModelRoutingBootstrapStore:
             else {}
         )
         active_policy["classifier_artifact"] = dict(artifact)
+        active_policy["strategy_id"] = "bootstrap_request_complexity_v3"
+        active_policy.pop("difficulty_rules", None)
+        active_policy["rules"] = []
         if classifier_generalization is not None:
             generalization_validation = (
                 dict(active_policy.get("generalization_validation"))
@@ -1973,30 +2133,32 @@ class PersistedModelRoutingBootstrapStore:
         summary = bootstrap.generation_summary if isinstance(bootstrap.generation_summary, dict) else {}
         difficulty_models = summary.get("difficulty_models")
         difficulty_models = difficulty_models if isinstance(difficulty_models, dict) else {}
-        generalization_validation = summary.get("generalization_validation")
-        generalization_validation = (
-            dict(generalization_validation)
-            if isinstance(generalization_validation, dict)
+        task_complexity_profile = summary.get("task_complexity_profile")
+        task_complexity_profile = (
+            dict(task_complexity_profile)
+            if isinstance(task_complexity_profile, dict)
             else {}
         )
-        classifier_validation = generalization_validation.get("classifier")
-        classifier_validation = (
-            classifier_validation if isinstance(classifier_validation, dict) else {}
-        )
-        try:
-            minimum_confidence = float(classifier_validation.get("minimum_confidence"))
-        except (TypeError, ValueError):
-            minimum_confidence = 0.55
         return {
-            "strategy": "bootstrap_mdeberta_difficulty",
-            "strategy_id": "bootstrap_mdeberta_difficulty_v1",
+            "strategy": "bootstrap_request_complexity",
+            "strategy_id": "bootstrap_request_complexity_v3",
             "policy_version": f"bootstrap-{str(bootstrap.id)[:8]}",
             "bootstrap_id": str(bootstrap.id),
             "task_fingerprint": bootstrap.task_fingerprint,
             "default_model_id": bootstrap.default_model_id,
             "fallback_model_id": bootstrap.fallback_model_id,
-            "minimum_confidence": minimum_confidence,
-            "classifier_artifact": bootstrap.classifier_artifact,
+            "task_complexity_profile": task_complexity_profile,
+            "classifier_artifact": (
+                dict(bootstrap.classifier_artifact)
+                if isinstance(bootstrap.classifier_artifact, dict)
+                else {}
+            ),
+            "minimum_confidence": 0.45,
+            "generalization_validation": (
+                summary.get("generalization_validation")
+                if isinstance(summary.get("generalization_validation"), dict)
+                else {}
+            ),
             "difficulty_models": difficulty_models,
             "global_profile_matches": (
                 summary.get("global_profile_matches")
@@ -2007,12 +2169,6 @@ class PersistedModelRoutingBootstrapStore:
                 summary.get("global_profile_catalog")
                 if isinstance(summary.get("global_profile_catalog"), dict)
                 else {}
-            ),
-            "generalization_validation": generalization_validation,
-            "difficulty_rules": (
-                summary.get("difficulty_rules")
-                if isinstance(summary.get("difficulty_rules"), list)
-                else []
             ),
             "rules": [],
         }
