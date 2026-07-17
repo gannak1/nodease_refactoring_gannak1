@@ -16,6 +16,7 @@ from apps.shared.services.tracing.payload import TracePayloadService
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+
 class TraceQueryService:
     """추적 라우터에서 사용하는 추적 조회 서비스."""
 
