@@ -52,14 +52,14 @@ Option 3과 option 5를 채택한다.
 - Worker는 job row를 `FOR UPDATE`로 읽고 terminal, valid running lease와 future retry를 실행하지
   않는다. 실행 직전에 requester의 current organization membership과 KB write 또는 sync authority를
   다시 확인한다.
-- Claim은 opaque owner token, fencing token, DB clock 기반 lease와 heartbeat를 기록한다. Heartbeat는
+- Claim은 opaque owner token, fencing token, PostgreSQL `clock_timestamp()` 기반 lease와 heartbeat를 기록한다. 장기 ingestion transaction의 시작 시각에 고정되는 `now()`는 lease 판정에 사용하지 않는다. Heartbeat는
   본 실행과 다른 DB session을 사용한다. Owner token과 fencing token이 일치해도 execution lease가 DB
   clock 기준으로 만료되었으면 heartbeat, worker lock과 success finalization을 모두 거부한다.
 - Retryable failure는 bounded exponential backoff와 `next_retry_at`을 저장한다. Future retry를 즉시
   재발행하지 않고 due recovery scanner가 발행 책임을 소유한다. Soft time limit과 allowlisted
   transient failure만 자동 retry하며 unknown failure는 safe dead-letter로 닫는다. Processor의 raw
   error 문자열은 retry 판단에 사용하지 않고 orchestration 경계에서 allowlisted typed source reason으로
-  정규화한다. DB/API와 remote FILE egress의 timeout, connection, DNS 및 API 408/425/429/5xx만
+  정규화한다. Remote FILE processor는 `EgressGuardError`의 typed reason을 generic exception으로 감싸지 않는다. DB/API와 remote FILE egress의 timeout, connection, DNS 및 API 408/425/429/5xx만
   transient source failure로 분류한다. Private target 등 egress policy 차단은 retry하지 않는다.
 - Retry exhaustion은 `dead_lettered`로 남긴다. 권한 있는 manual retry는 terminal row를 되살리지
   않고 새 generation job을 만든다.
@@ -69,7 +69,7 @@ Option 3과 option 5를 채택한다.
   terminal cleanup을 계속한다. Retry/dead-letter 전이와 pending/retry job의 dispatch lease 획득은 이
   잠금 아래 수행해 역순 잠금 교착을 만들지 않는다.
 - Active version finalization, Document completed projection과 job succeeded 전이는 같은 DB
-  transaction에서 fencing token을 확인해 확정한다. Stale worker의 progress와 finalization은
+  transaction에서 fencing token을 확인해 확정한다. Chunk progress 발행 전에는 별도 짧은 DB session으로 current owner/fence와 실제 wall-clock lease를 확인한다. Stale worker의 progress와 finalization은
   거부한다. Chunk 준비 단계의 advisory progress는 99 이하로 제한한다. 완료 progress=100도 이
   transaction에 포함하며 성공 commit 뒤에만 Redis advisory 100을 알린다. 새 admission과
   retry/cancel/dead-letter/recovery 전이는 canonical DB commit 뒤 해당 document의
@@ -82,8 +82,10 @@ Option 3과 option 5를 채택한다.
 
 - Process/sync/resume/reindex는 durable admission 성공 뒤 `202` 또는 기존 update 응답을 반환한다.
   Status API는 allowlisted job state만 `Cache-Control: no-store`로 반환한다.
-- Retry/status/progress를 포함해 새 table을 사용하는 API는 권한 확인 뒤 schema readiness를 검사하고
+- Retry/status/progress와 processing document 상세 reconciliation을 포함해 새 table을 사용하는 API는 권한 확인 뒤 schema readiness를 검사하고
   stale schema를 raw DB 오류가 아닌 `503 knowledge.ingestion_schema_not_ready`로 닫는다.
+- Approval resume의 동일 intent 재요청은 첫 admission이 Document를 `indexing`으로 바꾼 뒤에도 active job을 재사용한다. Required status는 새 job을 만들 때만 적용한다.
+- Content/model/chunking이 unchanged인 no-op은 KB active ready version의 `legacy_document_id`가 현재 Document와 일치할 때만 허용한다. Legacy multi-document pointer가 다른 Document를 가리키면 정상 재색인한다.
 - `knowledge` worker는 Gateway image/parser/storage 의존성을 사용하고 다른 Celery queue를 소비하지
   않는다. Worker bootstep은 필수 table, column, unique constraint와 index가 없으면 queue 소비 전에
   startup을 실패시킨다. Compose worker는 migration을 수행한 Gateway health 이후 시작하며 Kubernetes
