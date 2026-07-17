@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_LLM_CREDENTIAL_DB_TEST"
 DB_PREFIX = "mbased_llm_credential"
-PRE_ENCRYPTION_REVISION = "aa0b1c2d3e4f"
+PRE_ENCRYPTION_REVISION = "b0c1d2e3f4a5"
 ENCRYPTION_REVISION = "c2e8f4a91d67"
 
 

@@ -1,7 +1,7 @@
 """Add LLM credential encryption envelope metadata.
 
 Revision ID: c2e8f4a91d67
-Revises: aa0b1c2d3e4f
+Revises: ab1c2d3e4f50
 """
 
 from collections.abc import Sequence
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c2e8f4a91d67"
-down_revision: str | Sequence[str] | None = "aa0b1c2d3e4f"
+down_revision: str | Sequence[str] | None = "b0c1d2e3f4a5"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

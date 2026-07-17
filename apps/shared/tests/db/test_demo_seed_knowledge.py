@@ -1270,7 +1270,7 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
         "ab1c2d3e4f50",
     }
     assert app_auth_secret_revision.down_revision == "ac2d3e4f5061"
-    assert llm_credential_encryption_revision.down_revision == "aa0b1c2d3e4f"
+    assert llm_credential_encryption_revision.down_revision == "b0c1d2e3f4a5"
     assert "2b6c7d8e9f02" in ancestry
     assert "a6f4d2c8e1b7" in ancestry
     assert "a9b0c1d2e3f4" in ancestry

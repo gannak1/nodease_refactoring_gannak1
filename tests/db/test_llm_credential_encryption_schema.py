@@ -23,7 +23,7 @@ def test_llm_credential_model_declares_nullable_encryption_envelope_metadata():
 
 def test_llm_credential_encryption_revision_extends_current_head():
     assert revision.revision == "c2e8f4a91d67"
-    assert revision.down_revision == "aa0b1c2d3e4f"
+    assert revision.down_revision == "b0c1d2e3f4a5"
 
 
 def test_llm_credential_encryption_downgrade_rejects_encrypted_rows(monkeypatch):
