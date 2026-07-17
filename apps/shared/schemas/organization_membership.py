@@ -112,6 +112,16 @@ class OrganizationMemberResponse(BaseModel):
         return _validate_organization_auth_state(value) or value
 
 
+class MemberCurrentMonthUsage(BaseModel):
+    total_cost: float = Field(default=0.0, ge=0)
+    workflow_execution_cost: float = Field(default=0.0, ge=0)
+    agent_builder_cost: float = Field(default=0.0, ge=0)
+
+
+class OrganizationMemberListItemResponse(OrganizationMemberResponse):
+    current_month_usage: MemberCurrentMonthUsage
+
+
 class OrganizationSummaryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

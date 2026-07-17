@@ -2,9 +2,8 @@ from datetime import datetime
 from typing import Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
-
 from apps.shared.schemas.permission import WorkflowPermissionSource
+from pydantic import BaseModel, Field
 
 
 class AppIcon(BaseModel):
@@ -38,7 +37,11 @@ class AppBudgetStatus(BaseModel):
 
 class AppOperationMetrics(BaseModel):
     current_month_cost: float
+    current_month_workflow_execution_cost: float
+    current_month_agent_builder_cost: float
     projected_month_cost: Optional[float] = None
+    projected_month_workflow_execution_cost: Optional[float] = None
+    projected_month_agent_builder_cost: Optional[float] = None
     previous_month_cost: float
     trend_percent: Optional[float] = None
 

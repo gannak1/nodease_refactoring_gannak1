@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from fastapi import HTTPException
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -11,9 +13,12 @@ from apps.gateway.adapters.db.access_management_locking import (
 from apps.gateway.services.workflow_permission_lock import (
     lock_workflow_permission_scope,
 )
+from apps.gateway.services.admin_usage_service import AdminUsageService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.context import get_current_metadata
+from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import AuditLog
+from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_AUTH_MEMBER,
@@ -33,8 +38,16 @@ from apps.shared.db.models.team import (
 )
 from apps.shared.db.models.user import User
 from apps.shared.db.models.user_app_creation_permission import UserAppCreationPermission
+from apps.shared.db.models.workflow import Workflow
+from apps.shared.domain.llm_usage import (
+    AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
+    is_agent_builder_intent_usage,
+    is_billable_llm_usage,
+)
 from apps.shared.schemas.organization_membership import (
+    MemberCurrentMonthUsage,
     OrganizationMemberInviteRequest,
+    OrganizationMemberListItemResponse,
     OrganizationMemberRemoveResponse,
     OrganizationMemberResponse,
     OrganizationMemberUpdateRequest,
@@ -204,6 +217,183 @@ def _member_response(membership: OrganizationMembership) -> OrganizationMemberRe
         removed_at=membership.removed_at,
         created_at=membership.created_at,
         updated_at=membership.updated_at,
+    )
+
+
+def _empty_member_current_month_usage() -> MemberCurrentMonthUsage:
+    return MemberCurrentMonthUsage()
+
+
+def _member_current_month_usage_response(
+    member: OrganizationMemberResponse,
+    usage: MemberCurrentMonthUsage,
+) -> OrganizationMemberListItemResponse:
+    return OrganizationMemberListItemResponse(
+        **member.model_dump(),
+        current_month_usage=usage,
+    )
+
+
+def _member_current_month_usage(
+    db: Session,
+    *,
+    organization_id: Any,
+    user_ids: list[Any],
+) -> dict[Any, MemberCurrentMonthUsage]:
+    if not user_ids:
+        return {}
+
+    period = AdminUsageService.resolve_month_period_kst(_now())
+    if hasattr(db, "usage_logs"):
+        return _member_current_month_usage_fake(
+            db,
+            organization_id=organization_id,
+            user_ids=user_ids,
+            start_at=period.start_at,
+            end_at=period.end_at,
+        )
+    return _member_current_month_usage_query(
+        db,
+        organization_id=organization_id,
+        user_ids=user_ids,
+        start_at=period.start_at,
+        end_at=period.end_at,
+    )
+
+
+def _member_current_month_usage_fake(
+    db: Any,
+    *,
+    organization_id: Any,
+    user_ids: list[Any],
+    start_at: datetime,
+    end_at: datetime,
+) -> dict[Any, MemberCurrentMonthUsage]:
+    totals = {user_id: Decimal("0") for user_id in user_ids}
+    agent_builder_totals = {user_id: Decimal("0") for user_id in user_ids}
+    workflow_organizations = {
+        workflow.id: workflow.organization_id
+        for workflow in getattr(db, "workflows", [])
+    }
+    eligible_workflow_ids = {
+        app.workflow_id
+        for app in getattr(db, "apps", [])
+        if app.organization_id == organization_id
+        and app.workflow_id is not None
+        and workflow_organizations.get(app.workflow_id) == organization_id
+    }
+
+    for usage in db.usage_logs:
+        if (
+            usage.user_id not in totals
+            or usage.workflow_id not in eligible_workflow_ids
+            or usage.organization_id not in {None, organization_id}
+            or not start_at <= usage.created_at < end_at
+            or not is_billable_llm_usage(
+                getattr(usage, "runtime_surface", None),
+                getattr(usage, "status", "success"),
+            )
+        ):
+            continue
+        cost = AdminUsageService.coalesce_cost(usage.total_cost)
+        totals[usage.user_id] += cost
+        if is_agent_builder_intent_usage(
+            getattr(usage, "runtime_surface", None)
+        ):
+            agent_builder_totals[usage.user_id] += cost
+
+    return {
+        user_id: _member_usage_costs(total, agent_builder_totals[user_id])
+        for user_id, total in totals.items()
+    }
+
+
+def _member_current_month_usage_query(
+    db: Session,
+    *,
+    organization_id: Any,
+    user_ids: list[Any],
+    start_at: datetime,
+    end_at: datetime,
+) -> dict[Any, MemberCurrentMonthUsage]:
+    result = {user_id: _empty_member_current_month_usage() for user_id in user_ids}
+    eligible_workflows = (
+        db.query(App.workflow_id.label("workflow_id"))
+        .join(
+            Workflow,
+            and_(
+                Workflow.id == App.workflow_id,
+                Workflow.organization_id == organization_id,
+            ),
+        )
+        .filter(
+            App.organization_id == organization_id,
+            App.workflow_id.isnot(None),
+        )
+        .distinct()
+        .subquery()
+    )
+    usage_cost = func.coalesce(LLMUsageLog.total_cost, 0)
+    total_cost = func.coalesce(func.sum(usage_cost), 0).label("total_cost")
+    agent_builder_cost = func.coalesce(
+        func.sum(
+            case(
+                (
+                    LLMUsageLog.runtime_surface
+                    == AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
+                    usage_cost,
+                ),
+                else_=0,
+            )
+        ),
+        0,
+    ).label("agent_builder_cost")
+    rows = (
+        db.query(
+            LLMUsageLog.user_id.label("user_id"),
+            total_cost,
+            agent_builder_cost,
+        )
+        .join(
+            eligible_workflows,
+            LLMUsageLog.workflow_id == eligible_workflows.c.workflow_id,
+        )
+        .filter(
+            LLMUsageLog.user_id.in_(user_ids),
+            or_(
+                LLMUsageLog.organization_id == organization_id,
+                LLMUsageLog.organization_id.is_(None),
+            ),
+            LLMUsageLog.created_at >= start_at,
+            LLMUsageLog.created_at < end_at,
+            or_(
+                LLMUsageLog.runtime_surface.is_(None),
+                LLMUsageLog.runtime_surface
+                != AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
+                LLMUsageLog.status == "success",
+            ),
+        )
+        .group_by(LLMUsageLog.user_id)
+        .all()
+    )
+    for row in rows:
+        result[row.user_id] = _member_usage_costs(
+            row.total_cost,
+            row.agent_builder_cost,
+        )
+    return result
+
+
+def _member_usage_costs(
+    total_cost: Any,
+    agent_builder_cost: Any,
+) -> MemberCurrentMonthUsage:
+    total = AdminUsageService.coalesce_cost(total_cost)
+    agent_builder = AdminUsageService.coalesce_cost(agent_builder_cost)
+    return MemberCurrentMonthUsage(
+        total_cost=float(total),
+        workflow_execution_cost=float(total - agent_builder),
+        agent_builder_cost=float(agent_builder),
     )
 
 
@@ -408,7 +598,7 @@ class OrganizationMemberService:
         current_user: User,
         organization_id: Any,
         state: str | None = None,
-    ) -> list[OrganizationMemberResponse]:
+    ) -> list[OrganizationMemberListItemResponse]:
         _get_active_organization(db, organization_id)
         _ensure_manager(db, current_user, organization_id)
         if state is not None:
@@ -432,7 +622,22 @@ class OrganizationMemberService:
             )
             .all()
         )
-        return [_member_response(membership) for membership in memberships]
+        members = [_member_response(membership) for membership in memberships]
+        usage_by_user = _member_current_month_usage(
+            db,
+            organization_id=organization_id,
+            user_ids=[member.user_id for member in members],
+        )
+        return [
+            _member_current_month_usage_response(
+                member,
+                usage_by_user.get(
+                    member.user_id,
+                    _empty_member_current_month_usage(),
+                ),
+            )
+            for member in members
+        ]
 
     @staticmethod
     def invite_member(

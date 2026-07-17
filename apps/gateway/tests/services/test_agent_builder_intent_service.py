@@ -1,9 +1,15 @@
 import json
 import uuid
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
 
+from apps.gateway.application.agent_builder.intent_usage import (
+    AgentBuilderIntentUsageContext,
+    AgentBuilderIntentUsageRecordingError,
+    AgentBuilderIntentUsageReservation,
+)
 from apps.gateway.services.agent_builder_intent_service import (
     AgentBuilderIntentExtraction,
     AgentBuilderIntentExtractionError,
@@ -17,7 +23,9 @@ from apps.gateway.services.agent_builder_service import AgentBuilderService
 from apps.gateway.services.llm_service import LLMCredentialNotAvailableError
 from apps.shared.schemas.agent_builder import AgentBuilderMessageRequest
 from apps.shared.services.llm_client.openai_client import OpenAIClient
-from apps.shared.services.workflow_node_catalog import agent_builder_supported_capabilities
+from apps.shared.services.workflow_node_catalog import (
+    agent_builder_supported_capabilities,
+)
 
 
 class FakeDb:
@@ -59,6 +67,69 @@ class SchemaConstrainedFakeLLMClient(FakeLLMClient):
 class ProviderFailingFakeLLMClient:
     def invoke_sync(self, _messages, **_kwargs):
         raise ValueError("provider raw failure must not escape")
+
+
+class UsageSequenceFakeLLMClient:
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.calls = []
+
+    def invoke_sync(self, messages, **kwargs):
+        self.calls.append((messages, kwargs))
+        payload = self.payloads.pop(0)
+        attempt = len(self.calls)
+        return {
+            "choices": [{"message": {"content": json.dumps(payload)}}],
+            "usage": {
+                "prompt_tokens": attempt * 10,
+                "completion_tokens": attempt * 2,
+            },
+        }
+
+
+class CapturingUsageRecorder:
+    def __init__(self, error=None, *, reserve_error=None, cancel_error=None):
+        self.reservations = []
+        self.calls = []
+        self.canceled = []
+        self.error = error
+        self.reserve_error = reserve_error
+        self.cancel_error = cancel_error
+
+    def reserve(
+        self,
+        context,
+        *,
+        credential_id,
+        model_id,
+        model_api_id,
+        attempt,
+    ):
+        if self.reserve_error is not None:
+            raise self.reserve_error
+        reservation = AgentBuilderIntentUsageReservation(
+            id=uuid.uuid4(),
+            context=context,
+            credential_id=credential_id,
+            model_id=model_id,
+            model_api_id=model_api_id,
+            attempt=attempt,
+            input_price_1k=Decimal("0.001"),
+            output_price_1k=Decimal("0.002"),
+        )
+        self.reservations.append(reservation)
+        return reservation
+
+    def record(self, reservation, sample):
+        self.calls.append((reservation.context, sample))
+        if self.error is not None:
+            raise self.error
+        return uuid.uuid4()
+
+    def cancel(self, reservation):
+        self.canceled.append(reservation)
+        if self.cancel_error is not None:
+            raise self.cancel_error
 
 
 class FakeIntentExtractor:
@@ -1198,6 +1269,288 @@ def test_llm_intent_extractor_repairs_schema_failure_once():
     assert result.ordered_capabilities == ["start_input", "answer"]
     assert len(client.calls) == 2
     assert "SCHEMA_VALIDATION_FAILED" in str(client.calls[1][0])
+
+
+def test_llm_intent_extractor_records_initial_and_repair_attempts_separately():
+    client = UsageSequenceFakeLLMClient(
+        [
+            {
+                "request_type": "invalid",
+                "draft_mode": "new_workflow",
+                "intent_summary": "invalid",
+                "ordered_capabilities": [],
+            },
+            {
+                "request_type": "new_workflow",
+                "draft_mode": "new_workflow",
+                "intent_summary": "입력을 응답으로 연결",
+                "ordered_capabilities": ["start_input", "answer"],
+            },
+        ]
+    )
+    recorder = CapturingUsageRecorder()
+    context = AgentBuilderIntentUsageContext(
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+    )
+    credential_id = uuid.uuid4()
+    model_id = uuid.uuid4()
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=context.user_id,
+        organization_id=context.organization_id,
+        runtime_loader=lambda **_kwargs: SimpleNamespace(
+            client=client,
+            credential_id=credential_id,
+            model_id="model-example",
+            model_db_id=model_id,
+            organization_id=context.organization_id,
+        ),
+        usage_recorder=recorder,
+    )
+
+    result = extractor.extract(
+        safe_message="입력과 응답 노드를 만들어줘",
+        workflow_context={"workflow_present": False, "nodes": []},
+        usage_context=context,
+    )
+
+    assert result.request_type == "new_workflow"
+    assert len(recorder.calls) == 2
+    assert len(recorder.reservations) == 2
+    assert [sample.attempt for _, sample in recorder.calls] == [1, 2]
+    assert [sample.prompt_tokens for _, sample in recorder.calls] == [10, 20]
+    assert [sample.completion_tokens for _, sample in recorder.calls] == [2, 4]
+    assert all(call_context == context for call_context, _ in recorder.calls)
+    assert all(sample.credential_id == credential_id for _, sample in recorder.calls)
+    assert all(sample.model_id == model_id for _, sample in recorder.calls)
+
+
+def test_llm_intent_extractor_records_semantic_failure_before_repair():
+    client = UsageSequenceFakeLLMClient(
+        [
+            {
+                "request_type": "modify_workflow",
+                "draft_mode": "modify_workflow",
+                "intent_summary": "수정 대상을 찾지 못함",
+                "ordered_capabilities": [],
+                "edit": None,
+            },
+            {
+                "request_type": "new_workflow",
+                "draft_mode": "new_workflow",
+                "intent_summary": "입력을 응답으로 연결",
+                "ordered_capabilities": ["start_input", "answer"],
+            },
+        ]
+    )
+    recorder = CapturingUsageRecorder()
+    context = AgentBuilderIntentUsageContext(
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=context.user_id,
+        organization_id=context.organization_id,
+        runtime_loader=lambda **_kwargs: SimpleNamespace(
+            client=client,
+            credential_id=uuid.uuid4(),
+            model_id="model-example",
+            model_db_id=uuid.uuid4(),
+            organization_id=context.organization_id,
+        ),
+        usage_recorder=recorder,
+    )
+
+    result = extractor.extract(
+        safe_message="새 입력과 응답 흐름을 만들어줘",
+        workflow_context={"workflow_present": True, "nodes": []},
+        usage_context=context,
+    )
+
+    assert result.request_type == "new_workflow"
+    assert [sample.attempt for _, sample in recorder.calls] == [1, 2]
+    assert [sample.prompt_tokens for _, sample in recorder.calls] == [10, 20]
+
+
+def test_llm_intent_extractor_does_not_record_when_provider_has_no_response():
+    recorder = CapturingUsageRecorder()
+    context = AgentBuilderIntentUsageContext(
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=context.user_id,
+        organization_id=context.organization_id,
+        runtime_loader=lambda **_kwargs: SimpleNamespace(
+            client=ProviderFailingFakeLLMClient(),
+            credential_id=uuid.uuid4(),
+            model_id="model-example",
+            model_db_id=uuid.uuid4(),
+            organization_id=context.organization_id,
+        ),
+        usage_recorder=recorder,
+    )
+
+    with pytest.raises(AgentBuilderIntentExtractionError):
+        extractor.extract(
+            safe_message="입력과 응답 노드를 만들어줘",
+            workflow_context={"workflow_present": False, "nodes": []},
+            usage_context=context,
+        )
+
+    assert recorder.calls == []
+    assert len(recorder.reservations) == 1
+    assert recorder.canceled == recorder.reservations
+
+
+def test_llm_intent_extractor_fails_without_usage_and_does_not_recall_provider():
+    client = FakeLLMClient(
+        {
+            "request_type": "new_workflow",
+            "draft_mode": "new_workflow",
+            "intent_summary": "입력과 응답 연결",
+            "ordered_capabilities": ["start_input", "answer"],
+        }
+    )
+    recorder = CapturingUsageRecorder()
+    context = AgentBuilderIntentUsageContext(
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=context.user_id,
+        organization_id=context.organization_id,
+        runtime_loader=lambda **_kwargs: SimpleNamespace(
+            client=client,
+            credential_id=uuid.uuid4(),
+            model_id="model-example",
+            model_db_id=uuid.uuid4(),
+            organization_id=context.organization_id,
+        ),
+        usage_recorder=recorder,
+    )
+
+    with pytest.raises(AgentBuilderIntentUsageRecordingError):
+        extractor.extract(
+            safe_message="입력과 응답 노드를 만들어줘",
+            workflow_context={"workflow_present": False, "nodes": []},
+            usage_context=context,
+        )
+
+    assert len(client.calls) == 1
+    assert recorder.calls == []
+    assert recorder.canceled == recorder.reservations
+
+
+def test_llm_intent_extractor_does_not_recall_provider_when_usage_recording_fails():
+    client = UsageSequenceFakeLLMClient(
+        [
+            {
+                "request_type": "new_workflow",
+                "draft_mode": "new_workflow",
+                "intent_summary": "입력을 응답으로 연결",
+                "ordered_capabilities": ["start_input", "answer"],
+            }
+        ]
+    )
+    recorder = CapturingUsageRecorder(
+        AgentBuilderIntentUsageRecordingError("intent_usage_recording_failed")
+    )
+    context = AgentBuilderIntentUsageContext(
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=context.user_id,
+        organization_id=context.organization_id,
+        runtime_loader=lambda **_kwargs: SimpleNamespace(
+            client=client,
+            credential_id=uuid.uuid4(),
+            model_id="model-example",
+            model_db_id=uuid.uuid4(),
+            organization_id=context.organization_id,
+        ),
+        usage_recorder=recorder,
+    )
+
+    with pytest.raises(AgentBuilderIntentUsageRecordingError):
+        extractor.extract(
+            safe_message="입력과 응답 노드를 만들어줘",
+            workflow_context={"workflow_present": False, "nodes": []},
+            usage_context=context,
+        )
+
+    assert len(client.calls) == 1
+    assert len(recorder.calls) == 1
+    assert recorder.canceled == []
+
+
+def test_llm_intent_extractor_reserves_usage_before_provider_call():
+    client = UsageSequenceFakeLLMClient(
+        [
+            {
+                "request_type": "new_workflow",
+                "draft_mode": "new_workflow",
+                "intent_summary": "입력과 응답 연결",
+                "ordered_capabilities": ["start_input", "answer"],
+            }
+        ]
+    )
+    context = AgentBuilderIntentUsageContext(
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+    )
+    recorder = CapturingUsageRecorder(
+        reserve_error=AgentBuilderIntentUsageRecordingError(
+            "intent_usage_recording_failed"
+        )
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=context.user_id,
+        organization_id=context.organization_id,
+        runtime_loader=lambda **_kwargs: SimpleNamespace(
+            client=client,
+            credential_id=uuid.uuid4(),
+            model_id="model-example",
+            model_db_id=uuid.uuid4(),
+            organization_id=context.organization_id,
+        ),
+        usage_recorder=recorder,
+    )
+
+    with pytest.raises(AgentBuilderIntentUsageRecordingError):
+        extractor.extract(
+            safe_message="입력과 응답 노드를 만들어줘",
+            workflow_context={"workflow_present": False, "nodes": []},
+            usage_context=context,
+        )
+
+    assert client.calls == []
+    assert recorder.calls == []
 
 
 def test_llm_intent_extractor_reports_permission_aware_runtime_failure():

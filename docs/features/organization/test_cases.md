@@ -30,6 +30,7 @@ Status: Draft
 | ORG-TC-U003 | active organization 목록은 active membership만 사용해야 한다. | invited/suspended/removed membership organization이 결과에 포함된다. | 테스트 실패. |
 | ORG-TC-U004 | membership summary는 active/invited만 반환해야 한다. | invited membership이 빠지거나 removed/suspended membership이 포함된다. | 테스트 실패. |
 | ORG-TC-U005 | member list 기본값은 removed를 제외하고, `state=removed`는 removed만 조회해야 한다. | 기본 조회에 removed가 포함되거나 removed 조회가 빈 목록이다. | 테스트 실패. |
+| ORG-TC-U005a | member list의 이번 달 비용은 current membership state가 아니라 eligible usage의 `user_id`를 기준으로 합산해야 한다. | invited/suspended/removed member의 당월 usage가 0으로 숨겨지거나, usage가 없는 member가 0 이외 비용을 받거나, 다른 organization usage가 섞인다. | 각 member의 `current_month_usage`는 당월 사용자별 비용 합계이며, usage가 없는 member만 모든 비용 0이다. |
 | ORG-TC-U006 | organization auth state는 `member` 또는 `manager`만 허용해야 한다. | `owner`, `admin`, `viewer`가 organization auth state로 통과한다. | 테스트 실패. |
 | ORG-TC-U007 | member invitation은 자기 자신 초대와 잘못된 재초대 상태 전이를 거부해야 한다. | self invite가 성공하거나 suspended member가 invitation으로 invited가 된다. | `400` 또는 `409`. |
 | ORG-TC-U008 | removed member 재초대는 기존 membership을 invited로 되살려야 한다. | 새 duplicate membership을 만들거나 removed 상태가 유지된다. | 기존 row의 state가 invited로 변경된다. |
@@ -71,6 +72,7 @@ Status: Draft
 | ORG-TC-A005 | scope 안 non-manager는 manager API를 사용할 수 없어야 한다. | active member가 organization/team/member manager endpoint를 호출한다. | `403`, `permission.denied`. |
 | ORG-TC-A006 | organization PATCH는 빈 update, blank name, null options를 거부해야 한다. | `{}`, blank `name`, 또는 null `options`를 보낸다. | `400`, `validation.failed`. |
 | ORG-TC-A007 | member list는 invalid state filter를 거부해야 한다. | `?state=unknown`. | `400`, `Invalid membership state.` |
+| ORG-TC-A007a | member list 비용 응답은 App primary workflow와 organization scope를 지키며, legacy NULL usage만 포함해야 한다. | non-primary workflow 또는 명시적 다른 organization usage가 member 비용에 합산된다. | `total_cost = workflow_execution_cost + agent_builder_cost`, 타 organization usage 제외. |
 | ORG-TC-A008 | member invite/update request는 unknown body field를 거부해야 한다. | body에 정의되지 않은 field를 추가한다. | `422` validation envelope. |
 | ORG-TC-A009 | `/members/me/accept`는 literal `me` route로 처리되어야 한다. | `/members/me/accept`가 `{user_id}` route로 해석된다. | 테스트 실패. |
 | ORG-TC-A009a | `/members/me/decline`은 literal `me` route로 처리되어야 한다. | `/members/me/decline`이 `{user_id}` route로 해석된다. | 테스트 실패. |

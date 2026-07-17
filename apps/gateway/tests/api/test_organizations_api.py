@@ -22,6 +22,8 @@ from apps.shared.db.models.organization_membership import OrganizationMembership
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
 from apps.shared.schemas.organization_membership import (
+    MemberCurrentMonthUsage,
+    OrganizationMemberListItemResponse,
     OrganizationMemberRemoveResponse,
     OrganizationMemberResponse,
     RevokedUserPermissionCounts,
@@ -439,7 +441,7 @@ class TestOrganizationsApi(unittest.TestCase):
     def test_route_lists_members(self):
         organization_id = uuid4()
         user_id = uuid4()
-        member = _member_response(organization_id=organization_id)
+        member = _member_list_item_response(organization_id=organization_id)
 
         app.dependency_overrides[get_db] = lambda: SimpleNamespace()
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
@@ -456,6 +458,14 @@ class TestOrganizationsApi(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()[0]["id"], str(member.id))
+        self.assertEqual(
+            response.json()[0]["current_month_usage"],
+            {
+                "total_cost": 3.5,
+                "workflow_execution_cost": 2.0,
+                "agent_builder_cost": 1.5,
+            },
+        )
         service.assert_called_once()
         self.assertEqual(service.call_args.args[2], organization_id)
         self.assertEqual(service.call_args.args[3], "active")
@@ -1414,6 +1424,28 @@ def _member_response(
         removed_at=None,
         created_at=now,
         updated_at=now,
+    )
+
+
+def _member_list_item_response(
+    organization_id,
+    user_id=None,
+    membership_state="active",
+    organization_auth_state="member",
+):
+    member = _member_response(
+        organization_id=organization_id,
+        user_id=user_id,
+        membership_state=membership_state,
+        organization_auth_state=organization_auth_state,
+    )
+    return OrganizationMemberListItemResponse(
+        **member.model_dump(),
+        current_month_usage=MemberCurrentMonthUsage(
+            total_cost=3.5,
+            workflow_execution_cost=2.0,
+            agent_builder_cost=1.5,
+        ),
     )
 
 

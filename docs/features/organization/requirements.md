@@ -37,6 +37,7 @@ Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organiza
 - ORG-REQ-010: organization 수정 성공은 `organization.update` audit을 기록해야 한다.
 - ORG-REQ-011: organization member 목록 조회는 organization manager만 수행할 수 있어야 한다.
 - ORG-REQ-012: member 목록 조회는 기본적으로 active, invited, suspended membership을 반환하고, `state=removed`가 지정되면 removed membership을 조회할 수 있어야 한다.
+- ORG-REQ-012A: member 목록은 각 member의 이번 달(KST) LLM 비용 묶음(`total_cost`, `workflow_execution_cost`, `agent_builder_cost`)을 함께 반환해야 한다. 비용은 member의 현재 membership state가 아니라 기간 안에 해당 `user_id`로 기록된 eligible usage를 기준으로 합산한다. 따라서 invited, suspended, removed member도 해당 달 사용 기록이 있으면 실제 비용을 반환하고, 사용 기록이 없을 때만 모든 비용을 0으로 반환한다. eligible usage, legacy `organization_id IS NULL`, 명시적 타 organization usage 제외, Agent Builder 성공 행과 비용 구분 규칙은 admin-dashboard FR-012와 동일하다.
 - ORG-REQ-013: organization manager는 active user id와 `organization_auth_state`(`member` 또는 `manager`)로 멤버를 초대할 수 있어야 한다.
 - ORG-REQ-014: 멤버 초대는 자기 자신 초대를 거부해야 한다.
 - ORG-REQ-015: 이미 active 또는 invited인 멤버를 다시 초대하면 기존 membership을 반환해야 한다.

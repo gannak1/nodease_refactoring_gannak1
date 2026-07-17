@@ -4,6 +4,7 @@ import { activeOrganizationHeaders } from '@/lib/activeOrganization';
 import type {
   MembershipState,
   OrganizationMember,
+  OrganizationMemberListItem,
   OrganizationMemberInviteRequest,
   OrganizationMemberRemoveResponse,
   OrganizationMemberUpdateRequest,
@@ -40,7 +41,7 @@ export const organizationApi = {
   listMembers: async (
     organizationId: string,
     state?: MembershipState,
-  ): Promise<OrganizationMember[]> => {
+  ): Promise<OrganizationMemberListItem[]> => {
     const response = await apiClient.get(
       `/organizations/${organizationId}/members`,
       {

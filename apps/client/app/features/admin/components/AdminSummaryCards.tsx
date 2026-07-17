@@ -122,7 +122,28 @@ export function AdminSummaryCards() {
         descriptionClassName="mt-2 text-sm"
         description={
           summary
-            ? `${summary.month} · USD · KST 달력 월 기준`
+            ? (
+                <div className="space-y-1">
+                  <p>{summary.month} · USD · KST 달력 월 기준</p>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">
+                    <span>
+                      워크플로 실행{' '}
+                      {formatCost(
+                        summary.workflow_execution_cost ??
+                          Math.max(
+                            summary.total_cost -
+                              (summary.agent_builder_cost ?? 0),
+                            0,
+                          ),
+                      )}
+                    </span>
+                    <span>
+                      Agent Builder{' '}
+                      {formatCost(summary.agent_builder_cost ?? 0)}
+                    </span>
+                  </div>
+                </div>
+              )
             : failed
               ? '요약을 불러오지 못했습니다'
               : undefined

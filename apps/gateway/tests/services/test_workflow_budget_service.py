@@ -247,6 +247,14 @@ def test_get_current_month_cost_uses_kst_month_boundaries_and_null_as_zero():
                 total_cost=None,
                 created_at=datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc),
             ),
+            _usage_log(
+                organization_id,
+                workflow_id,
+                total_cost=Decimal("100.000000"),
+                created_at=datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc),
+                runtime_surface="agent_builder_intent",
+                status="pending",
+            ),
             # 다른 workflow 제외
             _usage_log(
                 organization_id,
@@ -824,7 +832,15 @@ class _UsageDb:
         self.budgets = budgets or []
 
 
-def _usage_log(organization_id, workflow_id, *, total_cost, created_at):
+def _usage_log(
+    organization_id,
+    workflow_id,
+    *,
+    total_cost,
+    created_at,
+    runtime_surface=None,
+    status="success",
+):
     return SimpleNamespace(
         organization_id=organization_id,
         workflow_id=workflow_id,
@@ -832,6 +848,8 @@ def _usage_log(organization_id, workflow_id, *, total_cost, created_at):
         completion_tokens=1,
         total_cost=total_cost,
         created_at=created_at,
+        runtime_surface=runtime_surface,
+        status=status,
     )
 
 

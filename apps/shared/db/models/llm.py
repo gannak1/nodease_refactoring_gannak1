@@ -9,12 +9,16 @@ from apps.shared.db.base import Base
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
+    String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -250,6 +254,39 @@ class LLMUsageLog(Base):
     """
 
     __tablename__ = "llm_usage_logs"
+    __table_args__ = (
+        CheckConstraint(
+            "runtime_attempt IS NULL OR runtime_attempt > 0",
+            name="ck_llm_usage_logs_runtime_attempt_positive",
+        ),
+        CheckConstraint(
+            "runtime_surface <> 'agent_builder_intent' OR "
+            "(runtime_session_id IS NOT NULL AND runtime_request_id IS NOT NULL "
+            "AND runtime_attempt IS NOT NULL)",
+            name="ck_llm_usage_logs_agent_builder_runtime_identity",
+        ),
+        CheckConstraint(
+            "runtime_surface <> 'agent_builder_intent' OR "
+            "(prompt_tokens >= 0 AND completion_tokens >= 0 "
+            "AND total_cost IS NOT NULL AND total_cost >= 0 AND latency_ms >= 0)",
+            name="ck_llm_usage_logs_agent_builder_billing_facts",
+        ),
+        Index(
+            "uq_llm_usage_logs_agent_builder_attempt",
+            "runtime_surface",
+            "runtime_session_id",
+            "runtime_request_id",
+            "runtime_attempt",
+            unique=True,
+            postgresql_where=text("runtime_surface = 'agent_builder_intent'"),
+        ),
+        Index(
+            "ix_llm_usage_logs_org_surface_created",
+            "organization_id",
+            "runtime_surface",
+            "created_at",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
@@ -263,16 +300,16 @@ class LLMUsageLog(Base):
     organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("organization.id"), nullable=True, index=True,
     )
-    credential_id: Mapped[uuid.UUID] = mapped_column(
+    credential_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("llm_credentials.id", ondelete="SET NULL"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
-    model_id: Mapped[uuid.UUID] = mapped_column(
+    model_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("llm_models.id", ondelete="SET NULL"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
 
@@ -292,6 +329,16 @@ class LLMUsageLog(Base):
         index=True,
     )
     node_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    runtime_surface: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    runtime_session_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True), nullable=True
+    )
+    runtime_request_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True), nullable=True
+    )
+    runtime_attempt: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -307,7 +354,9 @@ class LLMUsageLog(Base):
     )
 
     # Relations
-    credential: Mapped["LLMCredential"] = relationship(
+    credential: Mapped[Optional["LLMCredential"]] = relationship(
         "LLMCredential", back_populates="usage_logs"
     )
-    model: Mapped["LLMModel"] = relationship("LLMModel", back_populates="usage_logs")
+    model: Mapped[Optional["LLMModel"]] = relationship(
+        "LLMModel", back_populates="usage_logs"
+    )

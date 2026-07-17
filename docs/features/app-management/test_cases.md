@@ -5,6 +5,9 @@ Verified Against: TBD
 
 ## Acceptance Criteria
 
+- Given 미배포 workflow에 테스트 실행 또는 Agent Builder 비용이 있다, When `/dashboard/mymodule`을 렌더링한다, Then `배포 후 표시`로 숨기지 않고 월 예상 총비용 아래에 `테스트 실행`과 `Agent Builder` 비용을 표시한다.
+- Given 당월 중 테스트 실행 또는 Agent Builder 비용이 발생한 workflow를 이후 배포했다, When `/dashboard/mymodule`을 렌더링한다, Then 배포 전 비용을 초기화하거나 제외하지 않고 `테스트/배포 실행`과 `Agent Builder` 비용 및 그 합계인 월 예상 총비용을 표시한다.
+
 ### AC-1. App 목록 예산 상태 (APP-REQ-010, APP-REQ-030)
 
 - Given 사용자가 읽을 수 있는 App의 primary workflow에 활성 예산이 있고 당월 비용이 기록되어 있다, When `GET /apps`를 호출한다, Then 해당 App의 `budget_status`는 `usage_ratio`와 `status`만 포함한다.
@@ -16,6 +19,9 @@ Verified Against: TBD
 
 - Given `/dashboard/mymodule`에 표시되는 App row의 primary workflow에 활성 예산이 있다, When `GET /apps/operations`를 호출한다, Then `row.app.budget_status`는 `GET /apps`와 동일한 shape로 반환된다.
 - Given `/dashboard/mymodule`에 표시되는 App row의 primary workflow에 당월/전월 `llm_usage_logs` 비용이 있다, When `GET /apps/operations`를 호출한다, Then `row.app.operation_metrics`는 당월 비용, 월 예상 비용, 전월 비용, 전월 대비 증감률을 반환한다.
+- Given primary workflow에 Agent Builder planner/repair usage가 있다, When `GET /apps`와 `GET /apps/operations`를 호출한다, Then 해당 비용은 예산 사용률, 당월 비용과 월 예상 총비용에 포함되고 `operation_metrics`의 Agent Builder 구분 필드에도 반환된다.
+- Given workflow 실행 usage와 Agent Builder usage가 함께 있다, When `/dashboard/mymodule`을 렌더링한다, Then 상단 예상 월 비용과 활성 workflow 비용 칸은 총비용 아래에 두 구분값을 표시하며 구분값의 합은 총비용과 같다.
+- Given Agent Builder usage의 model/credential 연결이 삭제로 NULL이 됐다, When 운영 비용을 조회한다, Then 보존된 token/cost는 primary workflow 비용과 월 예상 비용에서 제외되지 않는다.
 - Given 전월 비용이 0이거나 없다, When `GET /apps/operations`를 호출한다, Then `row.app.operation_metrics.trend_percent`는 null이고 클라이언트는 더미 증가율을 만들지 않는다.
 - Given `/dashboard/mymodule`에 표시되는 App row의 `workflow_id`가 null이고 같은 `app_id`의 과거/보조 workflow에 활성 예산이 있다, When `GET /apps/operations`를 호출한다, Then `row.app.budget_status`는 null이다.
 - Given `row.app.budget_status.status`가 `exceeded`다, When 클라이언트가 `/dashboard/mymodule`을 렌더링한다, Then row는 예산 상태 badge와 "실행 차단" 표시를 보여준다.

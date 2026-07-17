@@ -7,12 +7,17 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, case, func, or_
 
 from apps.shared.db.models.app import App
 from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_budget import WorkflowBudget
+from apps.shared.domain.llm_usage import (
+    AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
+    is_agent_builder_intent_usage,
+    is_billable_llm_usage,
+)
 from apps.shared.schemas.admin_usage import (
     AdminBudgetSummaryBlock,
     AdminOrganizationSummaryResponse,
@@ -29,6 +34,16 @@ KST = ZoneInfo("Asia/Seoul")
 class AdminUsagePeriod:
     start_at: datetime
     end_at: datetime
+
+
+@dataclass(frozen=True)
+class UsageCostBreakdown:
+    total_cost: Decimal
+    agent_builder_cost: Decimal
+
+    @property
+    def workflow_execution_cost(self) -> Decimal:
+        return self.total_cost - self.agent_builder_cost
 
 
 class AdminUsageService:
@@ -100,12 +115,14 @@ class AdminUsageService:
         budget_now = now or datetime.now(KST)
         period = AdminUsageService.resolve_month_period_kst(budget_now)
         if hasattr(db, "usage_logs"):
-            total_cost = _organization_period_cost_fake(db, organization_id, period)
+            costs = _organization_period_cost_fake(db, organization_id, period)
         else:
-            total_cost = _organization_period_cost_query(db, organization_id, period)
+            costs = _organization_period_cost_query(db, organization_id, period)
         return AdminOrganizationSummaryResponse(
             month=period.start_at.strftime("%Y-%m"),
-            total_cost=float(total_cost),
+            total_cost=float(costs.total_cost),
+            workflow_execution_cost=float(costs.workflow_execution_cost),
+            agent_builder_cost=float(costs.agent_builder_cost),
             budget=_budget_summary_block(
                 db,
                 organization_id=organization_id,
@@ -135,6 +152,10 @@ def _aggregate_workflow_usage_fake(
             aggregate is None
             or not _is_usage_in_period(usage, period)
             or not _is_usage_in_organization(usage, organization_id)
+            or not is_billable_llm_usage(
+                getattr(usage, "runtime_surface", None),
+                getattr(usage, "status", "success"),
+            )
         ):
             continue
         _add_usage(aggregate, usage)
@@ -208,6 +229,7 @@ def _aggregate_workflow_usage_query(
     ).label("completion_tokens")
     call_count = func.count(LLMUsageLog.id).label("call_count")
     total_cost = _total_cost_sum().label("total_cost")
+    agent_builder_cost = _agent_builder_cost_sum().label("agent_builder_cost")
 
     query = (
         db.query(
@@ -217,6 +239,7 @@ def _aggregate_workflow_usage_query(
             completion_tokens,
             call_count,
             total_cost,
+            agent_builder_cost,
         )
         .join(
             Workflow,
@@ -270,10 +293,32 @@ def _total_cost_sum():
     return func.coalesce(func.sum(func.coalesce(LLMUsageLog.total_cost, 0)), 0)
 
 
+def _agent_builder_cost_sum():
+    return func.coalesce(
+        func.sum(
+            case(
+                (
+                    LLMUsageLog.runtime_surface
+                    == AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
+                    func.coalesce(LLMUsageLog.total_cost, 0),
+                ),
+                else_=0,
+            )
+        ),
+        0,
+    )
+
+
 def _usage_in_period_conditions(period: AdminUsagePeriod):
     return (
         LLMUsageLog.created_at >= period.start_at,
         LLMUsageLog.created_at < period.end_at,
+        or_(
+            LLMUsageLog.runtime_surface.is_(None),
+            LLMUsageLog.runtime_surface
+            != AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
+            LLMUsageLog.status == "success",
+        ),
     )
 
 
@@ -281,32 +326,45 @@ def _organization_period_cost_query(
     db,
     organization_id: Any,
     period: AdminUsagePeriod,
-) -> Decimal:
-    total = (
-        db.query(_total_cost_sum())
+) -> UsageCostBreakdown:
+    row = (
+        db.query(
+            _total_cost_sum().label("total_cost"),
+            _agent_builder_cost_sum().label("agent_builder_cost"),
+        )
         .filter(
             LLMUsageLog.organization_id == organization_id,
             *_usage_in_period_conditions(period),
         )
-        .scalar()
+        .one()
     )
-    return AdminUsageService.coalesce_cost(total)
+    return _cost_breakdown(row.total_cost, row.agent_builder_cost)
 
 
 def _organization_period_cost_fake(
     db,
     organization_id: Any,
     period: AdminUsagePeriod,
-) -> Decimal:
-    return sum(
-        (
-            AdminUsageService.coalesce_cost(usage.total_cost)
-            for usage in db.usage_logs
-            if usage.organization_id == organization_id
-            and period.start_at <= usage.created_at < period.end_at
-        ),
-        Decimal("0"),
-    )
+) -> UsageCostBreakdown:
+    total_cost = Decimal("0")
+    agent_builder_cost = Decimal("0")
+    for usage in db.usage_logs:
+        if (
+            usage.organization_id != organization_id
+            or not period.start_at <= usage.created_at < period.end_at
+            or not is_billable_llm_usage(
+                getattr(usage, "runtime_surface", None),
+                getattr(usage, "status", "success"),
+            )
+        ):
+            continue
+        cost = AdminUsageService.coalesce_cost(usage.total_cost)
+        total_cost += cost
+        if is_agent_builder_intent_usage(
+            getattr(usage, "runtime_surface", None)
+        ):
+            agent_builder_cost += cost
+    return UsageCostBreakdown(total_cost, agent_builder_cost)
 
 
 def _is_usage_in_period(usage: Any, period: AdminUsagePeriod) -> bool:
@@ -325,6 +383,8 @@ def _empty_usage_item(workflow_id: Any, workflow_name: str) -> dict[str, Any]:
         "completion_tokens": 0,
         "call_count": 0,
         "total_cost": Decimal("0"),
+        "workflow_execution_cost": Decimal("0"),
+        "agent_builder_cost": Decimal("0"),
     }
 
 
@@ -332,17 +392,32 @@ def _add_usage(aggregate: dict[str, Any], usage: Any) -> None:
     aggregate["prompt_tokens"] += usage.prompt_tokens or 0
     aggregate["completion_tokens"] += usage.completion_tokens or 0
     aggregate["call_count"] += 1
-    aggregate["total_cost"] += AdminUsageService.coalesce_cost(usage.total_cost)
+    cost = AdminUsageService.coalesce_cost(usage.total_cost)
+    aggregate["total_cost"] += cost
+    if is_agent_builder_intent_usage(getattr(usage, "runtime_surface", None)):
+        aggregate["agent_builder_cost"] += cost
+    else:
+        aggregate["workflow_execution_cost"] += cost
 
 
 def _usage_item_from_row(row: Any) -> AdminWorkflowUsageItem:
+    costs = _cost_breakdown(row.total_cost, row.agent_builder_cost)
     return AdminWorkflowUsageItem(
         workflow_id=row.workflow_id,
         workflow_name=row.workflow_name,
         prompt_tokens=int(row.prompt_tokens or 0),
         completion_tokens=int(row.completion_tokens or 0),
         call_count=int(row.call_count or 0),
-        total_cost=float(row.total_cost or 0),
+        total_cost=float(costs.total_cost),
+        workflow_execution_cost=float(costs.workflow_execution_cost),
+        agent_builder_cost=float(costs.agent_builder_cost),
+    )
+
+
+def _cost_breakdown(total_cost: Any, agent_builder_cost: Any) -> UsageCostBreakdown:
+    return UsageCostBreakdown(
+        total_cost=AdminUsageService.coalesce_cost(total_cost),
+        agent_builder_cost=AdminUsageService.coalesce_cost(agent_builder_cost),
     )
 
 

@@ -47,6 +47,8 @@ const usageResponse = {
       completion_tokens: 2345,
       call_count: 87,
       total_cost: 12.345678,
+      workflow_execution_cost: 10,
+      agent_builder_cost: 2.345678,
     },
     {
       workflow_id: 'wf-2',
@@ -55,6 +57,8 @@ const usageResponse = {
       completion_tokens: 5,
       call_count: 2,
       total_cost: 0.123456,
+      workflow_execution_cost: 0.1,
+      agent_builder_cost: 0.023456,
     },
   ],
 };

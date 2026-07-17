@@ -193,6 +193,8 @@ function AutomaticOptimizationCell({
 
 type CostOptimizationSignal = {
   monthlyCost: number | null;
+  workflowExecutionCost: number | null;
+  agentBuilderCost: number | null;
   trendPercent: number | null;
   budgetUsageRatio: number | null;
   budgetStatus: BudgetUsageStatus | null;
@@ -219,20 +221,17 @@ const budgetStatusPresentation: Record<
 };
 
 const costSignalOf = (row: ModuleOperationRow): CostOptimizationSignal => {
-  if (row.deploymentState !== 'active') {
-    return {
-      monthlyCost: 0,
-      trendPercent: null,
-      budgetUsageRatio: row.app.budget_status?.usage_ratio ?? null,
-      budgetStatus: row.app.budget_status?.status ?? null,
-      recommended: false,
-      reason: '배포 중인 워크플로우가 아닙니다.',
-    };
-  }
-
   const metrics = row.app.operation_metrics;
   const monthlyCost =
     metrics?.projected_month_cost ?? metrics?.current_month_cost ?? null;
+  const agentBuilderCost =
+    metrics?.projected_month_agent_builder_cost ??
+    metrics?.current_month_agent_builder_cost ??
+    0;
+  const workflowExecutionCost =
+    metrics?.projected_month_workflow_execution_cost ??
+    metrics?.current_month_workflow_execution_cost ??
+    (monthlyCost == null ? null : Math.max(monthlyCost - agentBuilderCost, 0));
   const trendPercent = metrics?.trend_percent ?? null;
   const budgetUsageRatio = row.app.budget_status?.usage_ratio ?? null;
   const budgetStatus = row.app.budget_status?.status ?? null;
@@ -257,6 +256,8 @@ const costSignalOf = (row: ModuleOperationRow): CostOptimizationSignal => {
 
   return {
     monthlyCost,
+    workflowExecutionCost,
+    agentBuilderCost,
     trendPercent,
     budgetUsageRatio,
     budgetStatus,
@@ -420,44 +421,57 @@ export default function MyModulePage() {
       window.removeEventListener('openCreateAppModal', handleOpenModal);
   }, []);
 
-  const summary = useMemo(() => {
-    const activeRows = rows.filter((row) => row.deploymentState === 'active');
-    const costSignals = activeRows.map(costSignalOf);
-    const monthlyCost = costSignals.reduce(
-      (total, signal) => total + (signal.monthlyCost ?? 0),
-      0,
-    );
-    const trendSignals = costSignals.filter(
-      (signal) => signal.trendPercent != null,
-    );
-    const recommended = costSignals.filter((signal) => signal.recommended);
-    const atRiskBudget = costSignals.filter((signal) =>
-      isBudgetAtRisk(signal.budgetStatus),
-    );
-    const averageTrend =
-      trendSignals.length > 0
-        ? Math.round(
-            trendSignals.reduce(
-              (total, signal) => total + (signal.trendPercent ?? 0),
-              0,
-            ) / trendSignals.length,
-          )
-        : null;
+  const summary = useMemo(
+    () => {
+      const activeRows = rows.filter((row) => row.deploymentState === 'active');
+      const costSignals = activeRows.map(costSignalOf);
+      const monthlyCost = costSignals.reduce(
+        (total, signal) => total + (signal.monthlyCost ?? 0),
+        0,
+      );
+      const workflowExecutionCost = costSignals.reduce(
+        (total, signal) => total + (signal.workflowExecutionCost ?? 0),
+        0,
+      );
+      const agentBuilderCost = costSignals.reduce(
+        (total, signal) => total + (signal.agentBuilderCost ?? 0),
+        0,
+      );
+      const trendSignals = costSignals.filter(
+        (signal) => signal.trendPercent != null,
+      );
+      const recommended = costSignals.filter((signal) => signal.recommended);
+      const atRiskBudget = costSignals.filter(
+        (signal) => isBudgetAtRisk(signal.budgetStatus),
+      );
+      const averageTrend =
+        trendSignals.length > 0
+          ? Math.round(
+              trendSignals.reduce(
+                (total, signal) => total + (signal.trendPercent ?? 0),
+                0,
+              ) / trendSignals.length,
+            )
+          : null;
 
-    return {
-      active: activeRows.length,
-      unavailable: rows.filter(
-        (row) =>
-          row.dataQuality.permissionSourcesUnavailable ||
-          row.dataQuality.latestRunUnavailable,
-      ).length,
-      monthlyCost,
-      recommendedCount: recommended.length,
-      atRiskBudgetCount: atRiskBudget.length,
-      averageTrend,
-      trendSampleCount: trendSignals.length,
-    };
-  }, [rows]);
+      return {
+        active: activeRows.length,
+        unavailable: rows.filter(
+          (row) =>
+            row.dataQuality.permissionSourcesUnavailable ||
+            row.dataQuality.latestRunUnavailable,
+        ).length,
+        monthlyCost,
+        workflowExecutionCost,
+        agentBuilderCost,
+        recommendedCount: recommended.length,
+        atRiskBudgetCount: atRiskBudget.length,
+        averageTrend,
+        trendSampleCount: trendSignals.length,
+      };
+    },
+    [rows],
+  );
 
   const handleModuleClick = (row: ModuleOperationRow) => {
     if (!canOpenModule(row)) return;
@@ -584,7 +598,15 @@ export default function MyModulePage() {
             value={formatCurrency(summary.monthlyCost)}
             icon={DollarSign}
             iconClassName="text-emerald-600"
-            description={`${summary.active}개 배포 workflow의 당월 사용량 기준`}
+            description={
+              <div className="space-y-1">
+                <p>{summary.active}개 배포 workflow의 당월 사용량 기준</p>
+                <p>
+                  워크플로 실행 {formatCurrency(summary.workflowExecutionCost)}
+                </p>
+                <p>Agent Builder {formatCurrency(summary.agentBuilderCost)}</p>
+              </div>
+            }
           />
           <DashboardSummaryCard
             label="평균 증가 추세"
@@ -945,21 +967,26 @@ function ModuleOperationTableRow({
         </button>
       </td>
       <td className="px-4 py-4 align-top">
-        {row.deploymentState === 'active' ? (
-          <div>
-            <p className="font-semibold text-slate-950">
-              {formatCurrency(costSignal.monthlyCost)}
+        <div>
+          <p className="font-semibold text-slate-950">
+            {formatCurrency(costSignal.monthlyCost)}
+          </p>
+          <div
+            className="mt-1 space-y-0.5 text-xs text-slate-500"
+            aria-label={`${row.app.name} 예상 비용 구성`}
+          >
+            <p>
+              {row.deploymentState === 'undeployed'
+                ? '테스트 실행'
+                : '테스트/배포 실행'}{' '}
+              {formatCurrency(costSignal.workflowExecutionCost)}
             </p>
-            {(costSignal.monthlyCost == null ||
-              costSignal.monthlyCost === 0) && (
-              <p className="mt-1 text-xs text-slate-500">운영 비용 없음</p>
-            )}
+            <p>Agent Builder {formatCurrency(costSignal.agentBuilderCost)}</p>
           </div>
-        ) : (
-          <span className="text-xs font-medium text-slate-400">
-            배포 후 표시
-          </span>
-        )}
+          {(costSignal.monthlyCost == null || costSignal.monthlyCost === 0) && (
+            <p className="mt-1 text-xs text-slate-500">비용 없음</p>
+          )}
+        </div>
       </td>
       <td className="px-4 py-4 align-top">
         {row.deploymentState === 'active' && trendPercent != null ? (

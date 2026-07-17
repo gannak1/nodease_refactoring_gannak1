@@ -39,6 +39,7 @@ from apps.shared.schemas.organization import (
 )
 from apps.shared.schemas.organization_membership import (
     OrganizationMemberInviteRequest,
+    OrganizationMemberListItemResponse,
     OrganizationMemberRemoveResponse,
     OrganizationMemberResponse,
     OrganizationMemberUpdateRequest,
@@ -212,7 +213,7 @@ def get_current_organization(
 
 @router.get(
     "/{organization_id}/members",
-    response_model=list[OrganizationMemberResponse],
+    response_model=list[OrganizationMemberListItemResponse],
 )
 def list_members(
     request: Request,

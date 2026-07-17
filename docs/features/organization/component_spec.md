@@ -177,10 +177,14 @@ Verified Against: feature/mba-127 @ 258b26a9
   - 이름/email 검색 input
   - membership state filter(`전체 상태`, `활성`, `초대 중`, `정지`, `제거`)
   - organization auth filter(`전체 권한`, `관리자`, `멤버`)
-  - member table columns: 이름, 상태, 조직 권한, 초대, 수락, 작업
+  - member table columns: 이름, 상태, 조직 권한, 비용 (USD), 초대, 수락, 작업
   - `MemberStateBadge`, `OrganizationAuthBadge`, `MemberActions`
+- 비용:
+  - `비용 (USD) ↓`는 이번 달 KST 기준의 `current_month_usage.total_cost`를 비용 내림차순으로 표시하고, 동률은 이름과 user id 순으로 안정적으로 정렬한다.
+  - 총비용 아래에 비용 탭과 동일하게 `워크플로우 실행`과 `Agent Builder` 구분 비용을 표시한다.
+  - membership state는 비용 표시의 조건이 아니다. invited, suspended, removed row도 해당 달에 사용자 usage가 있으면 실제 비용을 표시하며, usage가 없을 때만 `$0.00`을 표시한다.
 - 제한:
-  - removed member row는 action 대신 `제거됨`을 표시한다.
+  - removed member row는 action 대신 `제거됨`을 표시하지만, 과거 사용 기록에서 집계된 비용은 유지해 표시한다.
   - current user를 알 수 없으면 member action button을 비활성화한다.
   - 자기 자신이거나 마지막 active manager인 row는 `정지`, `강등`, `제거` button을 비활성화한다.
 

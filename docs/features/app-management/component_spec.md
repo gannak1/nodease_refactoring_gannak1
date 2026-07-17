@@ -1,7 +1,7 @@
 # App Management Component Spec
 
 Status: Draft
-Verified Against: feature/mba-132 @ a843ec7
+Verified Against: TBD
 
 ## Screens
 
@@ -14,7 +14,8 @@ Budget Management 확장:
 - row의 `app.budget_status`가 있으면 모듈명/설명 아래에 `BudgetStatusBadge`를 표시한다.
 - `budget_status.status`가 `exceeded`면 실행 상태 영역에 "실행 차단" 표시를 추가하고, title/tooltip 문구는 "월 예산 초과로 실행이 차단되었습니다"를 사용한다.
 - `budget_status`가 null이면 기존 row 레이아웃을 유지하고 예산 관련 텍스트를 표시하지 않는다.
-- row의 `app.operation_metrics`가 있으면 월 예상 비용, 전월 대비 증가 추세, 최적화 권장 판단의 원천으로 사용한다.
+- row의 `app.operation_metrics`가 있으면 월 예상 비용, 전월 대비 증가 추세, 최적화 권장 판단의 원천으로 사용한다. 월 예상 총비용 아래에는 `워크플로 실행`과 `Agent Builder` 예상 비용을 함께 표시한다.
+- 상단 예상 월 비용 카드도 총비용을 주 값으로 유지하고 활성 workflow의 `워크플로 실행` 및 `Agent Builder` 합계를 바로 아래에 표시한다. 별도 Agent Builder 대시보드나 카드 페이지는 만들지 않는다.
 - `operation_metrics`가 null이거나 `trend_percent`가 null이면 클라이언트는 더미 비용/추세를 만들지 않고 "운영 비용 없음" 또는 "비교 데이터 없음"으로 표시한다.
 - `budget_status`는 예산 사용률/상태 전용이고, `operation_metrics`는 `/dashboard/mymodule` 운영 비용 지표 전용이다. 두 필드를 합쳐서 해석하지 않는다.
 - 현재 화면의 "열기"는 조회/편집 진입이므로 예산 초과 상태에서도 차단하지 않는다. 실제 실행 차단은 Gateway 실행 경로와 Workflow 편집 화면의 429 처리에서 보장한다.
@@ -28,6 +29,8 @@ Budget Management 확장:
 - 보기 방식이 달라도 검색, 필터, 더 보기, 권한별 disabled 조건과 각 작업의 대상은 동일하다.
 
 ## Components
+
+- `/dashboard/mymodule`의 월 예상 비용은 배포 상태와 관계없이 표시한다. 미배포 row는 `테스트 실행`과 `Agent Builder`로, 배포 이력이 있는 활성·비활성 row는 배포 전 비용을 포함한 `테스트/배포 실행`과 `Agent Builder`로 구분한다.
 
 - `BudgetStatusBadge`: Budget Management feature의 공용 배지를 재사용한다.
 

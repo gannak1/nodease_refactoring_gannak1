@@ -4,7 +4,7 @@ from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
@@ -16,6 +16,7 @@ from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.llm import LLMModel, LLMProvider, LLMUsageLog
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
+from apps.shared.domain.llm_usage import AGENT_BUILDER_INTENT_RUNTIME_SURFACE
 from apps.shared.schemas.llm import (
     LLMCredentialCreate,
     LLMCredentialModelOptionResponse,
@@ -223,6 +224,14 @@ def get_top_expensive_models(
             .join(LLMProvider, LLMModel.provider_id == LLMProvider.id)
             .filter(LLMUsageLog.created_at >= start_of_month)
             .filter(LLMUsageLog.user_id == current_user.id)  # 사용자별 필터링
+            .filter(
+                or_(
+                    LLMUsageLog.runtime_surface.is_(None),
+                    LLMUsageLog.runtime_surface
+                    != AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
+                    LLMUsageLog.status == "success",
+                )
+            )
             .group_by(LLMModel.id, LLMModel.name, LLMProvider.id, LLMProvider.name)
             .order_by(desc("total_cost"))
             .limit(3)

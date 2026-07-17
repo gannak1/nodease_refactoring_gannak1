@@ -1,7 +1,7 @@
 # Admin Dashboard Component Spec
 
 Status: Draft
-Verified Against: feature/mba-188 @ 59d1cc51
+Verified Against: TBD
 
 검증 값은 MBA-188 actor access, audit detail 연동 섹션에 적용한다. 기존 비용/권한 신청 섹션의 기준은 해당 feature 문서와 git history를 따른다.
 
@@ -49,7 +49,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - 활성 예산은 있지만 위험/초과 workflow가 0개면 `<0개 위험>`과 상태별 0건을 표시한다.
 - API의 `budget` 블록이 null이면 카드에 "예산 미설정" 상태를 표시한다.
 - 카드 전체를 클릭하면 `/dashboard/admin?tab=usage`로 이동한다. 별도 링크 문구는 표시하지 않고, 접근 가능한 이름으로 이동 목적을 제공해 키보드로 접근할 수 있어야 한다.
-- 이번 달 LLM 비용 카드도 카드 전체를 클릭하면 `/dashboard/admin?tab=usage`로 이동한다.
+- 이번 달 LLM 비용 카드는 기존 총비용을 주 값으로 유지하고 바로 아래에 `워크플로 실행`과 `Agent Builder` 비용을 표시한다. 카드 전체를 클릭하면 `/dashboard/admin?tab=usage`로 이동한다.
 - 하단 요약 카드 전체를 클릭하면 활성 멤버는 `/dashboard/admin?tab=organization-structure&view=members`, 활성 팀은 `/dashboard/admin?tab=organization-structure&view=teams`, LLM Credentials는 `/dashboard/admin?tab=credentials`, 지식 기반은 `/dashboard/admin?tab=knowledge`로 이동한다. 모든 링크는 별도 링크 문구 없이 접근 가능한 이름과 키보드 포커스 표시를 제공한다.
 - 요약 조회 중에는 기존 집계 중 상태를 유지하고, 실패하면 "요약을 불러오지 못했습니다"를 표시한다.
 - 데이터 원천: `GET /admin/summary`.
@@ -135,7 +135,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 
 - 기간 필터: 기본 이번 달(KST), `startAt`/`endAt` 지정 가능.
 - 테이블 row 기준: organization scope 안의 App primary workflow 전체. 기간 안에 사용량이 없는 workflow도 표시하고 호출 수, prompt/completion tokens, 비용은 0으로 보여준다.
-- 테이블 컬럼: workflow 이름, 호출 수, prompt/completion tokens, 비용(USD 2자리), 예산. 비용 내림차순 고정 정렬이며 같은 비용에서는 workflow 이름/id 순서로 안정적으로 보인다.
+- 테이블 컬럼: workflow 이름, 호출 수, prompt/completion tokens, 비용(USD 2자리), 예산. 비용 칸은 기존 총비용을 주 값으로 유지하고 그 아래에 `워크플로 실행`과 `Agent Builder` 비용을 표시한다. 별도 열을 늘리지 않는다. 총비용 내림차순 고정 정렬이며 같은 비용에서는 workflow 이름/id 순서로 안정적으로 보인다.
 - 예산 컬럼은 활성 예산이 있으면 예산 금액(USD 2자리), 사용률(%), 상태 배지(`BudgetStatusBadge`)를 표시한다. `budget` null이면 "미설정"을 표시한다.
 - 모든 행에 `예산 설정` 버튼을 제공하고, 클릭 시 `BudgetEditModal`을 열어 `GET/PUT /admin/workflow-budgets/{workflow_id}`로 조회/저장한다. 저장 성공 시 비용 목록과 요약 카드를 다시 조회한다.
 - 행에 해당 workflow로 이동하는 링크/버튼을 둔다 — 비용 최적화 실행은 workflow 문맥의 [cost-optimizer](../cost-optimizer/component_spec.md) 범위이며 이 탭은 진입만 제공한다.

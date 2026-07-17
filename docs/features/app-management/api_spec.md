@@ -54,7 +54,11 @@ Budget Management 확장 시 `app.budget_status`는 `GET /apps`의 `budget_statu
     },
     "operation_metrics": {
       "current_month_cost": 12.34,
+      "current_month_workflow_execution_cost": 10.0,
+      "current_month_agent_builder_cost": 2.34,
       "projected_month_cost": 24.68,
+      "projected_month_workflow_execution_cost": 20.0,
+      "projected_month_agent_builder_cost": 4.68,
       "previous_month_cost": 10.0,
       "trend_percent": 146.8
     }
@@ -66,9 +70,12 @@ Budget Management 확장 시 `app.budget_status`는 `GET /apps`의 `budget_statu
 
 - `operation_metrics`는 `/dashboard/mymodule` 비용/추세 UI 전용 요약이다.
 - `current_month_cost`: 현재 KST 월의 `llm_usage_logs.total_cost` 합계.
+- `current_month_workflow_execution_cost`, `current_month_agent_builder_cost`: 현재 월 총비용의 구분값. Agent Builder는 exact `runtime_surface=agent_builder_intent`, workflow 실행은 NULL과 그 밖의 surface다.
 - `projected_month_cost`: 현재 월 경과 비율을 기준으로 단순 projection한 월 예상 비용. 계산할 수 없으면 null이다.
+- `projected_month_workflow_execution_cost`, `projected_month_agent_builder_cost`: 각 당월 구분값에 총비용과 같은 projection 배수를 적용한 값이다. 두 값의 합은 `projected_month_cost`와 같다.
 - `previous_month_cost`: 직전 KST 월의 `llm_usage_logs.total_cost` 합계.
 - `trend_percent`: `projected_month_cost`와 `previous_month_cost`의 증감률. 직전 월 비용이 0이면 null이다.
+- 전월 추세와 `budget_status`는 기존 총비용 기준이며 구분별 추세나 별도 Agent Builder 예산은 제공하지 않는다.
 - `operation_metrics`는 `budget_status`와 별도 필드이며 `GET /apps` 응답에는 포함하지 않는다.
 
 ## Errors

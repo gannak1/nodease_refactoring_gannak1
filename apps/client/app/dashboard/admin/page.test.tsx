@@ -77,6 +77,11 @@ const member = {
   accepted_at: '2026-07-01T00:00:00Z',
   suspended_at: null,
   removed_at: null,
+  current_month_usage: {
+    total_cost: 0,
+    workflow_execution_cost: 0,
+    agent_builder_cost: 0,
+  },
 };
 
 const team = {
@@ -227,6 +232,50 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
     expect(
       screen.getByRole('link', { name: '지식 기반 탭에서 확인' }),
     ).toHaveAttribute('href', '/dashboard/admin?tab=knowledge');
+  });
+
+  it('renders current month member usage in descending cost order', async () => {
+    organizationApiMock.listMembers.mockImplementation(
+      (_organizationId: string, state?: string) =>
+        Promise.resolve(
+          state === 'removed'
+            ? []
+            : [
+                {
+                  ...member,
+                  id: 'membership-low',
+                  user_id: 'user-low',
+                  user_name: 'Low cost',
+                  current_month_usage: {
+                    total_cost: 1.25,
+                    workflow_execution_cost: 1.25,
+                    agent_builder_cost: 0,
+                  },
+                },
+                {
+                  ...member,
+                  id: 'membership-high',
+                  user_id: 'user-high',
+                  user_name: 'High cost',
+                  current_month_usage: {
+                    total_cost: 5,
+                    workflow_execution_cost: 2,
+                    agent_builder_cost: 3,
+                  },
+                },
+              ],
+        ),
+    );
+
+    render(<AdminConsolePage />);
+
+    expect(await screen.findByText('비용 (USD) ↓')).toBeInTheDocument();
+    const rows = within(screen.getByRole('table')).getAllByRole('row');
+    expect(within(rows[1]).getByText('High cost')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('$5.00')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('Agent Builder $3.00')).toBeInTheDocument();
+    expect(within(rows[2]).getByText('Low cost')).toBeInTheDocument();
+    expect(within(rows[2]).getByText('$1.25')).toBeInTheDocument();
   });
 });
 

@@ -28,7 +28,11 @@ export type ModuleOperationAppSummary = {
   budget_status?: BudgetStatusPayload | null;
   operation_metrics?: {
     current_month_cost: number;
+    current_month_workflow_execution_cost: number;
+    current_month_agent_builder_cost: number;
     projected_month_cost?: number | null;
+    projected_month_workflow_execution_cost?: number | null;
+    projected_month_agent_builder_cost?: number | null;
     previous_month_cost: number;
     trend_percent?: number | null;
   } | null;

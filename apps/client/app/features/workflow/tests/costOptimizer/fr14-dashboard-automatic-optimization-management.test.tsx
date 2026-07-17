@@ -54,7 +54,11 @@ describe('FR-014 내 모듈 자동 최적화 관리', () => {
           budget_status: { status: 'at_risk', usage_ratio: 0.95 },
           operation_metrics: {
             current_month_cost: 10,
+            current_month_workflow_execution_cost: 7,
+            current_month_agent_builder_cost: 3,
             projected_month_cost: 20,
+            projected_month_workflow_execution_cost: 14,
+            projected_month_agent_builder_cost: 6,
             previous_month_cost: 8,
           },
         },
@@ -122,7 +126,11 @@ describe('FR-014 내 모듈 자동 최적화 관리', () => {
           budget_status: { status: 'normal', usage_ratio: 0.81 },
           operation_metrics: {
             current_month_cost: 10,
+            current_month_workflow_execution_cost: 7,
+            current_month_agent_builder_cost: 3,
             projected_month_cost: 20,
+            projected_month_workflow_execution_cost: 14,
+            projected_month_agent_builder_cost: 6,
             previous_month_cost: 8,
           },
         },
@@ -143,5 +151,57 @@ describe('FR-014 내 모듈 자동 최적화 관리', () => {
     const usage = (await screen.findAllByText('81%')).at(-1)!;
     expect(usage.parentElement).toHaveTextContent('정상');
     expect(usage.parentElement).not.toHaveTextContent('위험');
+  });
+
+  it('월 예상 총비용 아래에 테스트/배포 실행과 Agent Builder 비용을 구분한다', async () => {
+    render(<MyModulePage />);
+
+    const breakdown = await screen.findByLabelText(
+      '예산 위험 티켓 처리 예상 비용 구성',
+    );
+    expect(breakdown).toHaveTextContent('테스트/배포 실행 $14.000');
+    expect(breakdown).toHaveTextContent('Agent Builder $6.000');
+  });
+
+  it('미배포 워크플로우도 테스트 실행과 Agent Builder 월 예상 비용을 표시한다', async () => {
+    vi.mocked(moduleOperationsApi.listModuleOperations).mockResolvedValueOnce([
+      {
+        app: {
+          id: 'app-undeployed',
+          name: '배포 전 워크플로우',
+          workflow_id: 'workflow-undeployed',
+          created_at: '2026-07-11T00:00:00.000Z',
+          updated_at: '2026-07-11T00:00:00.000Z',
+          operation_metrics: {
+            current_month_cost: 3,
+            current_month_workflow_execution_cost: 2,
+            current_month_agent_builder_cost: 1,
+            projected_month_cost: 6,
+            projected_month_workflow_execution_cost: 4,
+            projected_month_agent_builder_cost: 2,
+            previous_month_cost: 0,
+          },
+        },
+        deployment: { state: 'undeployed' },
+        deploymentState: 'undeployed',
+        latestRun: { state: 'not_started' },
+        permissionStatus: 'loaded',
+        permissionSources: [],
+        dataQuality: {
+          permissionSourcesUnavailable: false,
+          latestRunUnavailable: false,
+        },
+      },
+    ] as never);
+
+    render(<MyModulePage />);
+
+    const breakdown = await screen.findByLabelText(
+      '배포 전 워크플로우 예상 비용 구성',
+    );
+    expect(breakdown.parentElement).toHaveTextContent('$6.000');
+    expect(breakdown).toHaveTextContent('테스트 실행 $4.000');
+    expect(breakdown).toHaveTextContent('Agent Builder $2.000');
+    expect(screen.queryByText('배포 후 표시')).not.toBeInTheDocument();
   });
 });

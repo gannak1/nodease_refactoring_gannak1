@@ -14,6 +14,8 @@ export type AdminWorkflowUsageItem = {
   completion_tokens: number;
   call_count: number;
   total_cost: number;
+  workflow_execution_cost: number;
+  agent_builder_cost: number;
   budget?: AdminWorkflowBudgetUsage | null;
 };
 
@@ -38,5 +40,7 @@ export type AdminBudgetSummary = {
 export type AdminOrganizationSummary = {
   month: string;
   total_cost: number;
+  workflow_execution_cost: number;
+  agent_builder_cost: number;
   budget: AdminBudgetSummary | null;
 };

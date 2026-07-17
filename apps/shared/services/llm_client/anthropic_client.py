@@ -147,9 +147,22 @@ class AnthropicClient(BaseLLMClient):
                 text_content += block.get("text", "")
 
         # 사용량 변환
-        usage = anthropic_response.get("usage", {})
-        prompt_tokens = usage.get("input_tokens", 0)
-        completion_tokens = usage.get("output_tokens", 0)
+        usage = anthropic_response.get("usage")
+        normalized_usage: Dict[str, Any] = {}
+        if isinstance(usage, dict):
+            prompt_tokens = usage.get("input_tokens")
+            completion_tokens = usage.get("output_tokens")
+            if prompt_tokens is not None:
+                normalized_usage["prompt_tokens"] = prompt_tokens
+            if completion_tokens is not None:
+                normalized_usage["completion_tokens"] = completion_tokens
+            if (
+                isinstance(prompt_tokens, int)
+                and not isinstance(prompt_tokens, bool)
+                and isinstance(completion_tokens, int)
+                and not isinstance(completion_tokens, bool)
+            ):
+                normalized_usage["total_tokens"] = prompt_tokens + completion_tokens
 
         return {
             "choices": [
@@ -161,11 +174,7 @@ class AnthropicClient(BaseLLMClient):
                     "finish_reason": anthropic_response.get("stop_reason", "stop")
                 }
             ],
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens
-            }
+            "usage": normalized_usage,
         }
 
     def get_num_tokens(self, messages: List[Dict[str, Any]]) -> int:

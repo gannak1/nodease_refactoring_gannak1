@@ -52,6 +52,14 @@ def test_app_budget_status_boundaries_and_null_conditions():
             ),
             _usage_log(
                 organization_id,
+                workflow_ids["normal"],
+                total_cost=Decimal("100.00"),
+                created_at=datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc),
+                runtime_surface="agent_builder_intent",
+                status="pending",
+            ),
+            _usage_log(
+                organization_id,
                 workflow_ids["at_risk"],
                 total_cost=Decimal("80.00"),
                 created_at=datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc),
@@ -171,8 +179,23 @@ def test_app_operation_metrics_uses_real_monthly_usage_and_trend():
             _usage_log(
                 organization_id,
                 workflow_id,
-                total_cost=Decimal("15.00"),
+                total_cost=Decimal("10.00"),
                 created_at=datetime(2026, 7, 10, 0, 0, tzinfo=KST),
+            ),
+            _usage_log(
+                organization_id,
+                workflow_id,
+                total_cost=Decimal("5.00"),
+                created_at=datetime(2026, 7, 10, 0, 0, tzinfo=KST),
+                runtime_surface="agent_builder_intent",
+            ),
+            _usage_log(
+                organization_id,
+                workflow_id,
+                total_cost=Decimal("100.00"),
+                created_at=datetime(2026, 7, 10, 0, 0, tzinfo=KST),
+                runtime_surface="agent_builder_intent",
+                status="pending",
             ),
         ],
     )
@@ -185,7 +208,11 @@ def test_app_operation_metrics_uses_real_monthly_usage_and_trend():
 
     assert metrics[workflow_id] == {
         "current_month_cost": pytest.approx(15.0),
+        "current_month_workflow_execution_cost": pytest.approx(10.0),
+        "current_month_agent_builder_cost": pytest.approx(5.0),
         "projected_month_cost": pytest.approx(31.0),
+        "projected_month_workflow_execution_cost": pytest.approx(62 / 3),
+        "projected_month_agent_builder_cost": pytest.approx(31 / 3),
         "previous_month_cost": pytest.approx(10.0),
         "trend_percent": pytest.approx(210.0),
     }
@@ -380,7 +407,15 @@ def _budget_row(organization_id, workflow_id, monthly_budget_usd, *, is_enabled=
     )
 
 
-def _usage_log(organization_id, workflow_id, *, total_cost, created_at):
+def _usage_log(
+    organization_id,
+    workflow_id,
+    *,
+    total_cost,
+    created_at,
+    runtime_surface=None,
+    status="success",
+):
     return SimpleNamespace(
         organization_id=organization_id,
         workflow_id=workflow_id,
@@ -388,4 +423,6 @@ def _usage_log(organization_id, workflow_id, *, total_cost, created_at):
         completion_tokens=1,
         total_cost=total_cost,
         created_at=created_at,
+        runtime_surface=runtime_surface,
+        status=status,
     )

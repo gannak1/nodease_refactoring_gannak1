@@ -202,7 +202,11 @@ Query parameter:
 | --- | --- | --- | --- |
 | `state` | `string` | 아니오 | `active`, `invited`, `suspended`, `removed` 중 하나. 없으면 active/invited/suspended를 반환한다. |
 
-성공 응답: `200 OK`, `OrganizationMemberResponse[]`.
+성공 응답: `200 OK`, `OrganizationMemberListItemResponse[]`.
+
+- 각 item의 `current_month_usage`는 이번 달 KST 반개구간 `[month_start, next_month_start)`의 사용자별 비용 묶음이다.
+- 비용은 current membership state와 무관하게 item의 `user_id`에 귀속된 eligible usage를 합산한다. 따라서 `invited`, `suspended`, `removed` member도 그 달 usage가 있으면 비용을 반환하며, usage가 없을 때만 0을 반환한다.
+- eligible usage의 App primary workflow, organization/legacy NULL, Agent Builder 성공 행, 타 organization 제외 정책은 `GET /admin/usage/workflows`와 동일하다. `total_cost = workflow_execution_cost + agent_builder_cost`를 만족한다.
 
 ### `POST /organizations/{organization_id}/members/invitations`
 
@@ -776,6 +780,20 @@ DELETE permission endpoints는 request body를 사용하지 않는다.
 | `removed_at` | `datetime \| null` |
 | `created_at` | `datetime` |
 | `updated_at` | `datetime` |
+
+`OrganizationMemberListItemResponse`는 `OrganizationMemberResponse`에 다음 필드를 추가한다.
+
+| 필드 | 타입 | 비고 |
+| --- | --- | --- |
+| `current_month_usage` | `MemberCurrentMonthUsage` | 이번 달 KST 사용자별 비용 묶음 |
+
+`MemberCurrentMonthUsage`:
+
+| 필드 | 타입 |
+| --- | --- |
+| `total_cost` | `number` |
+| `workflow_execution_cost` | `number` |
+| `agent_builder_cost` | `number` |
 
 `PermissionRequestResponse`:
 

@@ -5,10 +5,14 @@ from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session, joinedload
 
-from apps.gateway.services.admin_usage_service import AdminUsageService, KST
+from apps.gateway.services.admin_usage_service import (
+    AdminUsageService,
+    KST,
+    UsageCostBreakdown,
+)
 from apps.gateway.services.deployment_parameter_optimization_service import (
     DeploymentParameterOptimizationService,
 )
@@ -25,6 +29,11 @@ from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.workflow_run import WorkflowRun
+from apps.shared.domain.llm_usage import (
+    AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
+    is_agent_builder_intent_usage,
+    is_billable_llm_usage,
+)
 from apps.shared.permissions import (
     AUTH_STATE_MANAGER,
     normalize_resource_auth_state,
@@ -915,7 +924,7 @@ class AppService:
         kst_now = (now or datetime.now(KST)).astimezone(KST)
         current_period = AdminUsageService.resolve_month_period_kst(kst_now)
         previous_period = _previous_month_period_kst(current_period.start_at)
-        current_costs = _budget_status_costs(
+        current_costs = _operation_cost_breakdowns(
             db,
             workflow_ids=target_ids,
             period=current_period,
@@ -940,7 +949,11 @@ class AppService:
         projection_multiplier = total_seconds / elapsed_seconds
 
         for workflow_id in target_ids:
-            current_cost = current_costs.get(workflow_id, Decimal("0"))
+            current_breakdown = current_costs.get(
+                workflow_id,
+                UsageCostBreakdown(Decimal("0"), Decimal("0")),
+            )
+            current_cost = current_breakdown.total_cost
             previous_cost = previous_costs.get(workflow_id, Decimal("0"))
             projected_cost = (
                 current_cost * projection_multiplier
@@ -954,7 +967,20 @@ class AppService:
                 )
             metrics[workflow_id] = {
                 "current_month_cost": float(current_cost),
+                "current_month_workflow_execution_cost": float(
+                    current_breakdown.workflow_execution_cost
+                ),
+                "current_month_agent_builder_cost": float(
+                    current_breakdown.agent_builder_cost
+                ),
                 "projected_month_cost": float(projected_cost),
+                "projected_month_workflow_execution_cost": float(
+                    current_breakdown.workflow_execution_cost
+                    * projection_multiplier
+                ),
+                "projected_month_agent_builder_cost": float(
+                    current_breakdown.agent_builder_cost * projection_multiplier
+                ),
                 "previous_month_cost": float(previous_cost),
                 "trend_percent": trend_percent,
             }
@@ -1368,6 +1394,109 @@ def _budget_status_costs(
     )
 
 
+def _operation_cost_breakdowns(
+    db: Session,
+    *,
+    workflow_ids: list[Any],
+    period,
+) -> dict[Any, UsageCostBreakdown]:
+    if hasattr(db, "budgets"):
+        return _fake_operation_cost_breakdowns(
+            db,
+            workflow_ids=workflow_ids,
+            period=period,
+        )
+    return _operation_cost_breakdowns_query(
+        db,
+        workflow_ids=workflow_ids,
+        period=period,
+    )
+
+
+def _fake_operation_cost_breakdowns(
+    db,
+    *,
+    workflow_ids: list[Any],
+    period,
+) -> dict[Any, UsageCostBreakdown]:
+    workflow_id_set = set(workflow_ids)
+    totals = {workflow_id: Decimal("0") for workflow_id in workflow_id_set}
+    agent_builder_totals = {
+        workflow_id: Decimal("0") for workflow_id in workflow_id_set
+    }
+    for usage in getattr(db, "usage_logs", []):
+        if usage.workflow_id not in workflow_id_set:
+            continue
+        if not period.start_at <= usage.created_at < period.end_at:
+            continue
+        if not is_billable_llm_usage(
+            getattr(usage, "runtime_surface", None),
+            getattr(usage, "status", "success"),
+        ):
+            continue
+        cost = AdminUsageService.coalesce_cost(usage.total_cost)
+        totals[usage.workflow_id] += cost
+        if is_agent_builder_intent_usage(
+            getattr(usage, "runtime_surface", None)
+        ):
+            agent_builder_totals[usage.workflow_id] += cost
+    return {
+        workflow_id: UsageCostBreakdown(
+            total_cost=totals[workflow_id],
+            agent_builder_cost=agent_builder_totals[workflow_id],
+        )
+        for workflow_id in workflow_id_set
+    }
+
+
+def _operation_cost_breakdowns_query(
+    db: Session,
+    *,
+    workflow_ids: list[Any],
+    period,
+) -> dict[Any, UsageCostBreakdown]:
+    total_cost = func.coalesce(
+        func.sum(func.coalesce(LLMUsageLog.total_cost, 0)), 0
+    ).label("total_cost")
+    agent_builder_cost = func.coalesce(
+        func.sum(
+            case(
+                (
+                    LLMUsageLog.runtime_surface
+                    == AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
+                    func.coalesce(LLMUsageLog.total_cost, 0),
+                ),
+                else_=0,
+            )
+        ),
+        0,
+    ).label("agent_builder_cost")
+    rows = (
+        db.query(
+            LLMUsageLog.workflow_id.label("workflow_id"),
+            total_cost,
+            agent_builder_cost,
+        )
+        .filter(
+            LLMUsageLog.workflow_id.in_(set(workflow_ids)),
+            LLMUsageLog.created_at >= period.start_at,
+            LLMUsageLog.created_at < period.end_at,
+            _billable_usage_condition(),
+        )
+        .group_by(LLMUsageLog.workflow_id)
+        .all()
+    )
+    return {
+        row.workflow_id: UsageCostBreakdown(
+            total_cost=AdminUsageService.coalesce_cost(row.total_cost),
+            agent_builder_cost=AdminUsageService.coalesce_cost(
+                row.agent_builder_cost
+            ),
+        )
+        for row in rows
+    }
+
+
 def _member_budget_status(
     budget,
     *,
@@ -1400,6 +1529,11 @@ def _fake_budget_status_costs(
             continue
         if not (period.start_at <= usage.created_at < period.end_at):
             continue
+        if not is_billable_llm_usage(
+            getattr(usage, "runtime_surface", None),
+            getattr(usage, "status", "success"),
+        ):
+            continue
         costs[usage.workflow_id] += AdminUsageService.coalesce_cost(
             usage.total_cost
         )
@@ -1421,6 +1555,7 @@ def _budget_status_costs_query(
             LLMUsageLog.workflow_id.in_(set(workflow_ids)),
             LLMUsageLog.created_at >= period.start_at,
             LLMUsageLog.created_at < period.end_at,
+            _billable_usage_condition(),
         )
         .group_by(LLMUsageLog.workflow_id)
         .all()
@@ -1429,3 +1564,11 @@ def _budget_status_costs_query(
         row.workflow_id: AdminUsageService.coalesce_cost(row.total_cost)
         for row in rows
     }
+
+
+def _billable_usage_condition():
+    return or_(
+        LLMUsageLog.runtime_surface.is_(None),
+        LLMUsageLog.runtime_surface != AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
+        LLMUsageLog.status == "success",
+    )

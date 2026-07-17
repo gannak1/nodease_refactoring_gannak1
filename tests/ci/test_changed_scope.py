@@ -93,6 +93,35 @@ def test_agent_builder_change_selects_agent_builder_postgres():
     assert scope.knowledge_postgres is False
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "apps/gateway/api/v1/endpoints/llm.py",
+        "apps/gateway/api/v1/endpoints/organization.py",
+        "apps/gateway/services/admin_usage_service.py",
+        "apps/gateway/services/agent_builder_intent_service.py",
+        "apps/gateway/services/app_service.py",
+        "apps/gateway/services/llm_service.py",
+        "apps/gateway/services/organization_member_service.py",
+        "apps/gateway/services/workflow_budget_service.py",
+        "apps/shared/db/models/llm.py",
+        "apps/shared/domain/llm_usage.py",
+        "apps/shared/schemas/organization_membership.py",
+        "apps/shared/services/llm_client/anthropic_client.py",
+        "apps/shared/services/llm_client/google_client.py",
+        "apps/shared/services/llm_client/openai_client.py",
+        "apps/gateway/tests/integration/test_agent_builder_intent_usage_postgres.py",
+        "apps/gateway/tests/services/test_llm_client_base.py",
+        "apps/gateway/tests/services/test_llm_client_openai.py",
+        "apps/shared/tests/services/test_anthropic_client.py",
+    ],
+)
+def test_agent_builder_usage_change_selects_agent_builder_postgres(path: str):
+    scope = classify_paths([path])
+
+    assert scope.agent_builder_postgres is True
+
+
 def test_knowledge_runtime_change_selects_knowledge_postgres():
     scope = classify_paths(
         ["apps/workflow_engine/application/runtime_retrieval/knowledge_candidates.py"]

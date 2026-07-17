@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+from decimal import Decimal
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -139,6 +141,113 @@ def test_member_list_defaults_to_non_removed_and_filters_state(monkeypatch):
 
     assert {item.user_id for item in default_result} == {manager.id, member.id}
     assert [item.user_id for item in removed_result] == [removed.id]
+
+
+def test_member_list_uses_current_month_user_usage_across_membership_states(
+    monkeypatch,
+):
+    now = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
+    manager = _user()
+    invited = _user()
+    suspended = _user()
+    removed = _user()
+    no_usage = _user()
+    foreign_organization = _organization("Other", created_by=manager.id)
+    organization = _organization("Acme", created_by=manager.id)
+    primary_workflow = SimpleNamespace(id=uuid4(), organization_id=organization.id)
+    non_primary_workflow = SimpleNamespace(
+        id=uuid4(), organization_id=organization.id
+    )
+
+    def usage(
+        user_id,
+        cost,
+        *,
+        workflow_id=primary_workflow.id,
+        organization_id=organization.id,
+        runtime_surface=None,
+        status="success",
+    ):
+        return SimpleNamespace(
+            user_id=user_id,
+            workflow_id=workflow_id,
+            organization_id=organization_id,
+            total_cost=Decimal(cost),
+            runtime_surface=runtime_surface,
+            status=status,
+            created_at=now,
+        )
+
+    db = _Db(
+        users=[manager, invited, suspended, removed, no_usage],
+        organizations=[organization, foreign_organization],
+        memberships=[
+            _membership(manager, organization, auth_state=ORGANIZATION_AUTH_MANAGER),
+            _membership(invited, organization, ORGANIZATION_MEMBERSHIP_INVITED),
+            _membership(suspended, organization, ORGANIZATION_MEMBERSHIP_SUSPENDED),
+            _membership(removed, organization, ORGANIZATION_MEMBERSHIP_REMOVED),
+            _membership(no_usage, organization),
+        ],
+        apps=[
+            SimpleNamespace(
+                organization_id=organization.id,
+                workflow_id=primary_workflow.id,
+            )
+        ],
+        workflows=[primary_workflow, non_primary_workflow],
+        usage_logs=[
+            usage(manager.id, "1.25"),
+            usage(
+                invited.id,
+                "2.50",
+                runtime_surface="agent_builder_intent",
+            ),
+            usage(suspended.id, "3.00", organization_id=None),
+            usage(
+                removed.id,
+                "4.25",
+                runtime_surface="agent_builder_intent",
+            ),
+            usage(invited.id, "90.00", organization_id=foreign_organization.id),
+            usage(invited.id, "91.00", workflow_id=non_primary_workflow.id),
+            usage(
+                invited.id,
+                "92.00",
+                runtime_surface="agent_builder_intent",
+                status="pending",
+            ),
+        ],
+    )
+    monkeypatch.setattr(member_service_module, "_now", lambda: now)
+    monkeypatch.setattr(
+        member_service_module,
+        "has_organization_manager_permission",
+        lambda *args: True,
+    )
+
+    current_members = OrganizationMemberService.list_members(
+        db,
+        manager,
+        organization.id,
+    )
+    removed_members = OrganizationMemberService.list_members(
+        db,
+        manager,
+        organization.id,
+        state=ORGANIZATION_MEMBERSHIP_REMOVED,
+    )
+    current_by_user = {member.user_id: member for member in current_members}
+
+    assert current_by_user[manager.id].current_month_usage.total_cost == 1.25
+    assert current_by_user[manager.id].current_month_usage.agent_builder_cost == 0
+    assert current_by_user[invited.id].current_month_usage.total_cost == 2.5
+    assert current_by_user[invited.id].current_month_usage.workflow_execution_cost == 0
+    assert current_by_user[invited.id].current_month_usage.agent_builder_cost == 2.5
+    assert current_by_user[suspended.id].current_month_usage.total_cost == 3.0
+    assert current_by_user[no_usage.id].current_month_usage.total_cost == 0
+    assert removed_members[0].user_id == removed.id
+    assert removed_members[0].current_month_usage.total_cost == 4.25
+    assert removed_members[0].current_month_usage.agent_builder_cost == 4.25
 
 
 def test_invite_is_idempotent_and_reinvite_removed_records_audit(monkeypatch):
@@ -1163,6 +1272,9 @@ class _Db:
         llm_permissions=None,
         mail_permissions=None,
         app_creation_permissions=None,
+        apps=None,
+        workflows=None,
+        usage_logs=None,
     ):
         self.users = users or []
         self.organizations = organizations or []
@@ -1172,6 +1284,9 @@ class _Db:
         self.llm_permissions = llm_permissions or []
         self.mail_permissions = mail_permissions or []
         self.app_creation_permissions = app_creation_permissions or []
+        self.apps = apps or []
+        self.workflows = workflows or []
+        self.usage_logs = usage_logs or []
         self.audit_logs = []
         self.commits = 0
         self.rollbacks = 0

@@ -58,6 +58,7 @@ import type {
   MembershipState,
   OrganizationAuthState,
   OrganizationMember,
+  OrganizationMemberListItem,
   OrganizationMemberRemoveResponse,
   OrganizationResponse,
 } from '@/app/features/organization/types/Organization';
@@ -111,6 +112,12 @@ const stateOrder: Record<MembershipState, number> = {
   suspended: 2,
   removed: 3,
 };
+const RESOURCE_AUTH_STATES: ResourceAuthState[] = [
+  'viewer',
+  'operator',
+  'builder',
+  'manager',
+];
 
 const formatDateTime = (value?: string | null) =>
   value ? new Date(value).toLocaleString() : '-';
@@ -125,7 +132,9 @@ const getErrorMessage = (error: unknown, fallback: string) => {
   return error instanceof Error ? error.message : fallback;
 };
 
-const uniqueMembers = (items: OrganizationMember[]) =>
+const formatCost = (value: number) => `$${value.toFixed(2)}`;
+
+const uniqueMembers = (items: OrganizationMemberListItem[]) =>
   Array.from(new Map(items.map((member) => [member.id, member])).values());
 
 const normalizeText = (value?: string | null) => (value || '').toLowerCase();
@@ -148,7 +157,7 @@ export default function AdminConsolePage() {
     null,
   );
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const [members, setMembers] = useState<OrganizationMember[]>([]);
+  const [members, setMembers] = useState<OrganizationMemberListItem[]>([]);
   const [teams, setTeams] = useState<TeamResponse[]>([]);
   const [teamMembers, setTeamMembers] = useState<
     Record<string, TeamMemberResponse[]>
@@ -359,10 +368,13 @@ export default function AdminConsolePage() {
         );
       })
       .sort((left, right) => {
-        const stateDiff =
-          stateOrder[left.membership_state] - stateOrder[right.membership_state];
-        if (stateDiff !== 0) return stateDiff;
-        return left.user_name.localeCompare(right.user_name);
+        const costDiff =
+          right.current_month_usage.total_cost -
+          left.current_month_usage.total_cost;
+        if (costDiff !== 0) return costDiff;
+        const nameDiff = left.user_name.localeCompare(right.user_name);
+        if (nameDiff !== 0) return nameDiff;
+        return left.user_id.localeCompare(right.user_id);
       });
   }, [memberAuthFilter, memberQuery, memberStateFilter, members]);
 
@@ -1744,7 +1756,7 @@ function MembersTab({
   onUpdateMember,
   onRemoveMember,
 }: {
-  members: OrganizationMember[];
+  members: OrganizationMemberListItem[];
   page: number;
   onPageChange: (page: number) => void;
   query: string;
@@ -1823,6 +1835,7 @@ function MembersTab({
               <th className="px-5 py-3">이름</th>
               <th className="px-5 py-3">상태</th>
               <th className="px-5 py-3">조직 권한</th>
+              <th className="px-5 py-3 text-right">비용 (USD) ↓</th>
               <th className="px-5 py-3">초대</th>
               <th className="px-5 py-3">수락</th>
               <th className="px-5 py-3">작업</th>
@@ -1831,7 +1844,7 @@ function MembersTab({
           <tbody className="divide-y divide-slate-100">
             {pageItems.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-5 py-10 text-center text-slate-500">
+                <td colSpan={7} className="px-5 py-10 text-center text-slate-500">
                   조건에 맞는 멤버가 없습니다.
                 </td>
               </tr>
@@ -1862,6 +1875,25 @@ function MembersTab({
                       <OrganizationAuthBadge
                         state={member.organization_auth_state}
                       />
+                    </td>
+                    <td className="px-5 py-4 text-right">
+                      <p className="font-semibold text-slate-900">
+                        {formatCost(member.current_month_usage.total_cost)}
+                      </p>
+                      <div className="mt-1 space-y-0.5 text-xs text-slate-500">
+                        <p>
+                          워크플로우 실행{' '}
+                          {formatCost(
+                            member.current_month_usage.workflow_execution_cost,
+                          )}
+                        </p>
+                        <p>
+                          Agent Builder{' '}
+                          {formatCost(
+                            member.current_month_usage.agent_builder_cost,
+                          )}
+                        </p>
+                      </div>
                     </td>
                     <td className="px-5 py-4 text-xs text-slate-500">
                       {formatDateTime(member.invited_at)}

@@ -32,6 +32,8 @@ class AdminWorkflowUsageItem(BaseModel):
     completion_tokens: int
     call_count: int
     total_cost: float
+    workflow_execution_cost: float
+    agent_builder_cost: float
     budget: AdminWorkflowBudgetBlock | None = None
 
 
@@ -44,4 +46,6 @@ class AdminWorkflowUsageResponse(BaseModel):
 class AdminOrganizationSummaryResponse(BaseModel):
     month: str
     total_cost: float
+    workflow_execution_cost: float
+    agent_builder_cost: float
     budget: AdminBudgetSummaryBlock | None = None
