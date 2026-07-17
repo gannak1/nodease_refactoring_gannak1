@@ -4,6 +4,7 @@ Status: Draft
 ## 화면
 
 - Credential management/listing surface는 active organization의 credential 상태를 표시한다. 개인 사용자 credential 등록 화면을 제공하지 않는다.
+- Credential 제거 action은 물리 삭제로 오해되지 않도록 revoke/사용 중지 의미와 기존 usage·audit 이력 보존을 안내한다. Current API의 legacy `deleted` message를 secret purge 완료로 표시하지 않는다.
 - Credential 등록 UI는 organization manager에게만 노출한다. 일반 member, builder/operator, credential `use` 권한자에게는 등록 control을 숨기고 서버 403을 최종 경계로 둔다.
 - Agent answer option surface는 실행 가능한 safe model/credential pair만 표시한다.
 
@@ -18,12 +19,13 @@ Status: Draft
 
 ## 상태
 
-- credential: `valid`, `invalid`, `not_visible`, `use_denied`
+- credential: `valid`, `revoked/invalid`, `not_visible`, `use_denied`
 - credential-model relation: `verified`, `not_verified`, `inactive`, `missing`
 
 ## 상호작용
 
 - Organization manager가 credential을 등록하면 provider key 검증과 credential-model relation sync가 수행되고, UI는 raw key를 다시 표시하지 않는다.
+- Credential revoke 성공 뒤 UI는 해당 credential을 실행 가능한 option에서 제거하고 상태를 다시 조회한다. Secret physical purge가 완료됐다는 문구는 표시하지 않는다.
 - 일반 member가 직접 credential 등록 endpoint를 호출하면 UI 노출 여부와 무관하게 서버가 거부해야 한다.
 - Standalone RAG answer는 answer-run 생성 전에 credential/model preflight를 호출한다.
 - Auto collection mode는 explicit KB mode와 같은 generation credential/model preflight를 사용한다.

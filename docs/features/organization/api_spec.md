@@ -572,7 +572,7 @@ Missing direct permission/App-creation row revoke는 기존 revoke 정책과 같
 
 Version column은 추가하지 않는다. 같은 row의 값이 바뀌었다가 현재 expected/desired value로 돌아온 value-only ABA는 current-state semantics상 unchanged일 수 있고, row id가 바뀐 ABA만 stale로 강제한다. 중간 변경 이력은 canonical audit에서 확인한다.
 
-Mutation과 canonical audit row는 같은 DB transaction에서 성공해야 한다. Durable outbox 일반화는 MBA-189 범위이며, actor-management 진입점을 이유로 기존 row-level canonical action과 별도 aggregate action을 중복 기록하지 않는다.
+Mutation과 canonical audit row는 같은 DB transaction에서 성공해야 한다. Generic audit producer에는 `audit_event_outbox`가 구현되어 있지만 이 transaction-bound canonical audit 경로를 대체하지 않는다. Actor-management 진입점을 이유로 기존 row-level canonical action과 별도 aggregate action을 중복 기록하지 않는다.
 
 Lock 순서는 ADR-0023을 따른다. Last-manager 후보 suspend/demote는 active manager membership을 membership id 순으로 먼저 잠근 뒤 대응 User row를 같은 membership 순서로 잠그고 globally active manager 수를 다시 계산한다. 다른 action은 target membership, target User, resource/team, child row 순서로 잠근다. Overlapping legacy mutation route도 같은 coordinator/protocol을 사용하되 기존 authorization, response/status, latent row/team affiliation 관리 정책을 보존한다. Actor-only manager-override block은 legacy route 계약을 변경하지 않는다. 이 lock은 actor action 시점의 global state를 안정화하지만 이후 별도 global account deactivation을 금지하지 않는다.
 

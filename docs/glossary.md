@@ -43,11 +43,10 @@ Status: Draft
 | Deployment | Workflow를 공개 또는 인증 내부 실행 표면으로 활성화한 결과. DB에서는 `workflow_deployments` table을 사용한다. |
 | Public Chatbot | `DeploymentType.chatbot`으로 게시하는 무인증 공개 채팅 표면. Execution subject 없이 anonymous public-only RAG 경계를 사용한다. |
 | Internal Chatbot | `DeploymentType.internal_chatbot`으로 게시하는 인증 내부 채팅 표면. 로그인 사용자를 execution subject로 사용하고 workflow·Knowledge 권한을 실행 시점에 다시 검사한다. |
-| Execution Subject | Workflow 실행 시점의 데이터 접근 권한을 평가하는 실제 사용자 또는 승인된 실행 주체. Workflow/deployment owner와 구분하며, 명시되지 않으면 owner 권한으로 fallback하지 않는다. |
+| Execution Subject | Workflow 실행 시점에 Knowledge/source 등 데이터 접근 권한을 평가하는 실제 사용자 또는 승인된 실행 주체. Interactive user 또는 향후 승인된 service account가 될 수 있다. Workflow/deployment owner, credential/billing principal과 Conversation Access Grant로 대체하거나, 명시되지 않은 경우 owner 권한으로 fallback하지 않는다. |
 | Schedule | Deployment 실행을 정해진 시간/주기로 트리거하는 설정. DB에서는 `schedules` table을 사용하며 deployment와 1:1 관계다. |
 | Webhook | 외부 시스템이 HTTP 요청으로 Workflow를 실행하게 하는 인바운드 트리거. |
 | Public Run API | 배포된 workflow를 app secret 기반 Bearer 인증으로 실행하는 public endpoint 계열. 일반 사용자 세션 인증과 구분한다. |
-| Execution Subject | 실행 시점에 Knowledge/source 등 데이터 권한을 평가할 principal. Interactive user 또는 향후 승인된 service account가 될 수 있으며 credential/billing principal, App owner와 Conversation Access Grant를 대신 사용하지 않는다. |
 | Anonymous Public Audience | Execution Subject가 없는 public runtime의 principal kind. Public visibility/exposure policy만 평가하며 synthetic user/subject ID나 private permission을 만들지 않는다. |
 | Credential Principal | Provider credential 사용 근거가 되는 server-derived principal. Credential 선택·사용에만 쓰며 Knowledge Execution Subject나 Audit Actor로 승격하지 않는다. |
 | Billing Principal | Provider usage와 budget을 귀속할 organization/workflow/deployment 주체. Execution Subject, Credential Principal과 Audit Actor와 별도로 파생한다. |
@@ -156,10 +155,11 @@ Status: Draft
 | Raw/Compliance Access | Raw Knowledge Artifact를 조회하는 별도 권한/flow. Agent answer, SSE stream, retrieval context와 분리되며 raw access audit이 선행돼야 한다. |
 | Capped Preview | 사용자에게 출처 이해를 돕기 위해 제공하는 redacted and length-limited 미리보기 텍스트. Durable audit/trace/usage summary나 embedding input으로 복사하지 않는다. |
 | Metadata Filter | 문서 metadata의 allowlist된 필드로 검색 범위를 좁히는 필터. 권한의 source가 아니며 RBAC/source ACL 판정을 대체하지 않는다. |
-| Classification | 문서 민감도 분류 metadata convention. 전용 column이 아니라 `documents.meta_info.classification`을 사용한다. |
+| Classification | ADR-0007의 문서 보안 민감도 metadata convention(`public`, `internal`, `confidential`, `pii`). 전용 column이 아니라 `documents.meta_info.classification`을 사용하며 문서 유형, 업무 주제, taxonomy 또는 chunking profile과 같은 의미가 아니다. Current demo/legacy의 다른 문자열은 canonical 보안 등급 확장이 아니라 정리 대상 compatibility data다. |
 | Ingestion Lock | 같은 source item 또는 document-level KB에 대한 동시 ingestion/finalization을 막는 lock. Owner token, TTL renew, fencing token 또는 DB advisory lock 같은 방어가 필요하다. |
 | Fencing Token | 오래된 worker가 lock 만료 뒤 새 worker의 artifact를 finalize하거나 삭제하지 못하게 하는 단조 증가 또는 소유권 확인 token. |
-| Knowledge Ingestion Outbox | DB state와 object storage, vector index, external artifact cleanup/finalization side effect를 조정하는 retry 가능한 outbox. DB commit 전 physical delete나 external side effect가 먼저 확정되는 것을 피한다. |
+| Knowledge Document Ingestion Job | Document process/sync/resume/reindex 요청의 durable 실행 record. MBA-288 브랜치에 구현됐지만 최신 dev에는 아직 병합되지 않았으며, queue task ID나 Redis progress가 source of truth가 아니다. Physical cleanup을 소유하는 Knowledge Ingestion Outbox와 구분한다. |
+| Knowledge Ingestion Outbox | Active version 전환 뒤 superseded chunk와 향후 object/vector/orphan artifact의 physical cleanup side effect를 조정하는 retry 가능한 outbox. 최신 dev의 handler는 `cleanup_superseded`에 한정되며 process/sync 요청 job이 아니다. DB commit 전 physical delete나 external side effect가 먼저 확정되는 것을 피한다. |
 | Recovery Scanner | outbox, staging version, orphan artifact, failed cleanup 같은 불완전 상태를 찾아 idempotent하게 재시도하거나 dead-letter 처리하는 운영 worker. |
 | Tombstone | Source item이 원천 source에서 삭제되었거나 더 이상 열거되지 않는 상태를 나타내는 marker. 기본적으로 citation/audit history를 즉시 삭제한다는 뜻은 아니다. |
 | Sync Run | Connector가 source item/content/ACL을 동기화하는 실행 1회. Lease, cursor, retry/backoff, dead-letter 상태를 가져야 한다. |
