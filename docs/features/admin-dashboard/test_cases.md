@@ -113,6 +113,19 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - Given scope 안 actor policy block, When audit detail을 열면, Then `policy.block`, failure status, scoped target user, requested action, machine policy reason와 sanitized optional reason만 safe metadata로 표시된다. Scope가 확인된 opaque resource/team id 외 `change_summary`/name/email/raw request/expected snapshot은 없다.
 - Given `summary` 외 allowlist metadata key에 nested object, malformed UUID, unknown resource/policy reason 또는 boolean count가 저장됨, When audit detail을 열면, Then 해당 malformed field는 생략되고 detail 전체가 500으로 실패하지 않는다. 기존 `summary`는 secret-like nested key를 제거하는 sanitized JSON 계약을 유지한다.
 
+### AC-8. Resource permission 표 선택 modal
+
+- Given 관리자가 `권한` 탭에서 `권한 부여`를 선택했을 때, Then resource table, grantee table, permission radio group이 있는 modal이 열린다.
+- Given permission card를 확인했을 때, Then modal을 여는 action은 `권한 부여` 하나만 표시되고 selected resource 영역에 같은 역할의 중복 button이 없다.
+- Given 관리자가 기존 권한을 조회하거나 회수하려 할 때, When 본문의 `리소스 필터 변경`을 펼치면, Then 리소스 유형과 이름 검색 결과가 현재 선택 조건 아래에 넓게 표시된다.
+- Given 본문 리소스 필터에서 결과를 선택했을 때, Then 별도 저장이나 권한 부여 없이 selected resource와 permission 목록이 즉시 해당 리소스로 바뀐다.
+- Given resource table에서 이름을 검색하거나 resource type을 변경했을 때, Then 일치하는 현재 organization resource만 표시되고 하나를 선택할 수 있다.
+- Given grantee table에서 team/user direct 유형을 변경하거나 이름을 검색했을 때, Then active team 또는 active organization member만 표시되고 하나를 선택할 수 있다.
+- Given resource 또는 grantee 결과가 많을 때, Then 각 table은 modal 전체 높이를 늘리지 않고 제한된 내부 영역에서 독립적으로 스크롤하며 header를 고정한다.
+- Given modal에서 다른 resource/grantee/auth state를 선택하거나 취소했을 때, Then 바깥 page의 selected resource와 permission 목록은 바뀌지 않는다.
+- Given 권한 PUT 요청이 진행 중일 때, When 배경/X/취소/Escape로 닫기를 시도하거나 resource/grantee/auth state 입력을 조작하면, Then modal은 닫히지 않고 모든 입력은 disabled 상태를 유지한다.
+- Given resource, grantee, permission을 선택해 저장했을 때, Then 기존 단일 PUT permission endpoint를 호출하고 성공한 경우에만 modal을 닫고 selected resource permission 목록을 갱신한다.
+
 ## Unit Tests
 
 단위 테스트는 endpoint/TestClient보다 service/helper method 계약을 우선 검증한다. 아래 class명은 구현 경계의 권장 이름이다. 구현 과정에서 이름이 달라지더라도 동일한 책임 단위가 보존되어야 한다.
