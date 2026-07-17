@@ -5604,7 +5604,7 @@ def test_knowledge_search_limits_retrieved_context_chars(monkeypatch):
             return [
                 ChunkPreview(
                     chunk_id=uuid.uuid4(),
-                    content="1234567890ABCDEFGHIJ",
+                        content="abcdefghijKLMNOPQRST",
                     document_id=uuid.uuid4(),
                     filename="long.md",
                     similarity_score=0.93,
@@ -5659,10 +5659,10 @@ def test_knowledge_search_limits_retrieved_context_chars(monkeypatch):
 
     assert "[참조 문서: 참조 문서]" in context
     assert "long.md" not in context
-    assert "".join(content_lines) == "1234567890"
-    assert "ABCDEFGHIJ" not in context
+    assert "".join(content_lines) == "abcdefghij"
+    assert "KLMNOPQRST" not in context
     assert len(metadata) == 1
-    assert rag_result.user_citations.items[0].content_preview == "1234567890"
+    assert rag_result.user_citations.items[0].content_preview == "abcdefghij"
 
 
 def test_knowledge_search_compresses_retrieved_context_by_query(monkeypatch):

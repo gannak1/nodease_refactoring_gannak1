@@ -1,4 +1,5 @@
 import uuid
+from types import SimpleNamespace
 
 from apps.shared.db.models.knowledge import (
     KnowledgeBase,
@@ -212,3 +213,64 @@ def test_projector_rechecks_lifecycle_and_source_deletion_for_labels():
             for item in query.criteria
         }
         assert {"organization_id", "id", "lifecycle_state", "sync_state"} <= criteria_keys
+
+
+def test_detailed_preview_uses_common_redaction_and_fails_closed(monkeypatch):
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+    kb = KnowledgeBase(
+        id=kb_id,
+        organization_id=organization_id,
+        user_id=uuid.uuid4(),
+        name="안전한 문서",
+        safe_metadata={"safe_label": "안전한 문서"},
+    )
+    projector = WorkflowCitationProjector(
+        db_session=_Session({KnowledgeBase: [kb]}),
+        organization_id=organization_id,
+        resolution=_resolution(
+            KnowledgeRuntimeCandidate(
+                knowledge_base_id=kb_id,
+                provenance=KnowledgeRuntimeCandidateProvenance(kind="direct"),
+            )
+        ),
+    )
+    observed = {}
+
+    def redact(value, policy, payload_kind):
+        observed.update(
+            value=value,
+            raw_payload_storage_enabled=policy.raw_payload_storage_enabled,
+            payload_kind=payload_kind,
+        )
+        return SimpleNamespace(
+            failed=False,
+            redacted_payload="정제된 미리보기",
+        )
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.adapters.knowledge_runtime_citations.TraceRedactionService.redact_payload",
+        redact,
+    )
+    evidence = [
+        PromptEvidence(
+            knowledge_base_id=str(kb_id),
+            chunk=_chunk(),
+            prompt_content="원본 근거 본문",
+        )
+    ]
+
+    envelope = projector.project(evidence, mode="detailed")
+
+    assert envelope.items[0].content_preview == "정제된 미리보기"
+    assert observed == {
+        "value": "원본 근거 본문",
+        "raw_payload_storage_enabled": False,
+        "payload_kind": "workflow_citation_preview",
+    }
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.adapters.knowledge_runtime_citations.TraceRedactionService.redact_payload",
+        lambda *_args, **_kwargs: SimpleNamespace(failed=True, redacted_payload=None),
+    )
+    assert projector.project(evidence, mode="detailed").items[0].content_preview is None

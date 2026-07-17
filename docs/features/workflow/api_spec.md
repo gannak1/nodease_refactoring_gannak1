@@ -477,6 +477,7 @@ Blocking response:
 - 성공한 test/deployment/public Chatbot 실행의 최종 결과는 authorized prompt evidence가 있고 `citationDisplayMode != hidden`이면 `__nodease_citations` version 1 sidecar를 추가할 수 있다.
 - sidecar의 schema와 비노출 필드는 [Knowledge API Spec](../knowledge/api_spec.md)의 `Workflow User Citation Sidecar`를 따른다.
 - 기존 final output field와 output schema는 변경하지 않는다. Citation parser가 모르는 version이나 malformed item을 만나면 해당 Citation을 무시하되 최종 답변은 유지한다.
+- CodeNode의 `inputs[].source="node-id.variable"`가 Answer data lineage에 연결되면 해당 source LLM의 Citation도 함께 집계한다. Citation key가 legacy output 또는 stream node id와 충돌하면 기존 결과를 보존하고 Citation만 생략한다.
 - `__nodease_citations`는 사용자 응답 전용이다. Workflow Engine은 durable run output을 기록하기 전에 reserved sidecar를 제거한다.
 
 ## Slack Node 저장·실행 계약

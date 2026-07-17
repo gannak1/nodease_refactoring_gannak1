@@ -22,6 +22,8 @@ from apps.shared.services.knowledge_safe_text import (
     safe_label_from_text,
     sanitize_safe_text,
 )
+from apps.shared.services.tracing.policy import TracePolicyService
+from apps.shared.services.tracing.redaction import TraceRedactionService
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +91,7 @@ class WorkflowCitationProjector:
                 collection_derived=(candidate.provenance.kind == "collection"),
             )
             preview = (
-                sanitize_safe_text(
-                    item.prompt_content,
-                    max_length=MAX_WORKFLOW_CITATION_PREVIEW_LENGTH,
-                )
+                self._safe_content_preview(item.prompt_content)
                 if mode == "detailed"
                 else None
             )
@@ -255,6 +254,21 @@ class WorkflowCitationProjector:
         return sanitize_safe_text(
             section_value,
             max_length=MAX_WORKFLOW_CITATION_SECTION_LENGTH,
+        )
+
+    @staticmethod
+    def _safe_content_preview(value: str) -> str | None:
+        """Use the common fail-closed redaction policy before a user-visible preview."""
+        result = TraceRedactionService.redact_payload(
+            value,
+            TracePolicyService.fail_closed_redaction_policy(),
+            payload_kind="workflow_citation_preview",
+        )
+        if result.failed or not isinstance(result.redacted_payload, str):
+            return None
+        return sanitize_safe_text(
+            result.redacted_payload,
+            max_length=MAX_WORKFLOW_CITATION_PREVIEW_LENGTH,
         )
 
     @staticmethod

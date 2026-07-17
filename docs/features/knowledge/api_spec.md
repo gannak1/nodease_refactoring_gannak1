@@ -879,9 +879,9 @@ Workflow/Chatbot 최종 응답은 사용자 표시용 Citation이 있을 때만 
 ```
 
 - item은 최대 8개이며 `citation_id`는 응답 내 전역 `evidence_rank`와 일치한다.
-- `content_preview`는 `detailed` mode에서만 최대 300자의 정제된 prompt evidence를 담는다.
+- `content_preview`는 `detailed` mode에서만 최대 300자의 정제된 prompt evidence를 담는다. 공통 fail-closed redaction을 먼저 적용하므로 secret/PII 검출 또는 redaction 실패 시 preview를 생략한다.
 - `knowledge_base_id`, `collection_id`, `document_id`, `document_version_id`, `chunk_id`, raw filename/path/URL, score와 child-local rank는 금지한다.
-- sidecar는 서버가 소유한다. Answer node 출력에 같은 key가 있어도 제거하고 server projection으로만 채운다.
+- sidecar는 서버가 만든 projection만 추가한다. legacy final output 또는 stream node-result map에 같은 key가 이미 있으면 기존 output을 덮어쓰거나 제거하지 않고 Citation sidecar만 생략한다.
 - Citation이 없거나 설정이 `hidden`이면 sidecar를 생략한다. sidecar 생성 실패는 답변 자체를 실패시키지 않는다.
 - 이 sidecar는 사용자 응답용이며 durable run output과 일반 audit/trace payload에는 저장하지 않는다.
 

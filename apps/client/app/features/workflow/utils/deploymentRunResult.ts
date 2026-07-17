@@ -30,6 +30,9 @@ const ALLOWED_CITATION_KEYS = new Set([
   'content_preview',
 ]);
 
+const isLegacyDisplayOutput = (key: string, value: unknown): value is string =>
+  !key.startsWith('__nodease_') && typeof value === 'string' && value.trim().length > 0;
+
 const hasControlCharacter = (value: string): boolean =>
   Array.from(value).some((character) => {
     const codePoint = character.codePointAt(0) ?? 0;
@@ -158,6 +161,20 @@ export const getDeploymentRunFinalPreview = (
         return buildFinalResponsePreview(
           workflowResult[output.variable],
           output.label || '워크플로우 최종 출력',
+        );
+      }
+    }
+
+    // Older deployments can have no output schema while still returning one
+    // custom-named text output. Preserve that user-visible response path.
+    if (!deployment?.output_schema?.outputs?.length) {
+      const legacyOutput = Object.entries(workflowResult).find(([key, value]) =>
+        isLegacyDisplayOutput(key, value),
+      );
+      if (legacyOutput) {
+        return buildFinalResponsePreview(
+          legacyOutput[1],
+          '워크플로우 최종 출력',
         );
       }
     }

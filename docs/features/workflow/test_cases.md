@@ -831,8 +831,11 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - 새 LLM node와 Agent Builder node는 `citationDisplayMode=basic`, legacy missing field는 `hidden`인지 검증한다.
 - Grounding lexical metadata 옵션과 Citation 표시 옵션을 서로 독립적으로 변경할 수 있는지 검증한다.
 - Answer data ancestry에 있는 LLM Citation만 최종 응답에 병합하고 control-only node와 subworkflow reserved key를 제외하는지 검증한다.
+- `LLM -> CodeNode inputs[].source -> Answer` data path도 Citation lineage에 포함되는지 검증한다.
 - 조건 분기로 이번 실행에서 skip된 LLM node가 이전 실행의 ephemeral Citation을 재사용하지 않는지 검증한다.
 - final response sidecar는 최대 8개, 전역 rank, stable dedupe를 적용하고 durable run output에서는 제거되는지 검증한다.
+- legacy output 또는 stream node id가 sidecar key와 충돌하면 기존 output·durable output을 보존하고 Citation만 생략하는지 검증한다.
+- detailed preview는 공통 fail-closed redaction을 거치며 redaction 실패 시 preview만 생략하고 답변은 유지하는지 검증한다.
 - Client parser는 unknown version, extra/identity field, URL/file path/secret marker, rank mismatch를 거부하면서 답변 렌더링은 유지하는지 검증한다.
 - Test sidebar와 인증 실행 화면이 같은 Citation component를 사용하고 keyboard/mobile-safe markup을 유지하는지 검증한다.
 

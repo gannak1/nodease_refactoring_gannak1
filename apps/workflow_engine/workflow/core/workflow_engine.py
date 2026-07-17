@@ -1596,6 +1596,21 @@ class WorkflowEngine:
                     extract_from_value(item)
 
         extract_from_value(data_dict)
+
+        # CodeNode input은 selector 배열 대신 "node-id.variable" source를 사용한다.
+        # Citation lineage에도 실제 데이터 전달 경로를 포함해야 한다.
+        if schema.type == "codeNode":
+            inputs = data_dict.get("inputs")
+            if isinstance(inputs, list):
+                for input_item in inputs:
+                    if not isinstance(input_item, dict):
+                        continue
+                    source = input_item.get("source")
+                    if not isinstance(source, str):
+                        continue
+                    source_node_id, separator, _ = source.partition(".")
+                    if separator and source_node_id in self.node_schemas:
+                        referenced_nodes.add(source_node_id)
         return referenced_nodes
 
     def _get_context(self, node_id: str, results: Dict) -> Dict[str, Any]:
@@ -1623,13 +1638,13 @@ class WorkflowEngine:
             return outputs
 
         response = dict(outputs)
-        # Answer output이 reserved key를 흉내 내더라도 server projection만 신뢰한다.
-        response.pop(WORKFLOW_CITATION_RESULT_KEY, None)
-        if self.is_subworkflow:
+        self._user_citations_attached = False
+        if self.is_subworkflow or self._has_user_citation_key_collision(response):
             return response
         envelope = self._collect_user_citations(all_results)
         if envelope.items:
             response[WORKFLOW_CITATION_RESULT_KEY] = envelope.model_dump(mode="json")
+            self._user_citations_attached = True
         return response
 
     def _collect_user_citations(
@@ -1701,8 +1716,15 @@ class WorkflowEngine:
         return ancestors
 
     @staticmethod
-    def _without_user_citations(outputs: Any) -> Any:
-        if not isinstance(outputs, dict) or WORKFLOW_CITATION_RESULT_KEY not in outputs:
+    def _has_user_citation_key_collision(response: dict[str, Any]) -> bool:
+        return WORKFLOW_CITATION_RESULT_KEY in response
+
+    def _without_user_citations(self, outputs: Any) -> Any:
+        if (
+            not isinstance(outputs, dict)
+            or not getattr(self, "_user_citations_attached", False)
+            or WORKFLOW_CITATION_RESULT_KEY not in outputs
+        ):
             return outputs
         durable_outputs = dict(outputs)
         durable_outputs.pop(WORKFLOW_CITATION_RESULT_KEY, None)

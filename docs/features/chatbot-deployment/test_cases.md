@@ -128,6 +128,7 @@ Verified Against: `origin/dev @ 32fb602f`
 - public Chatbot에서 private/denied Collection child evidence가 답변과 Citation에 나타나지 않는지 검증한다.
 - unknown version, malformed item, 내부 identity, URL/path 또는 secret marker가 있는 Citation은 숨기되 assistant 답변은 유지하는지 검증한다.
 - Citation이 없는 no-evidence/legacy 응답과 mobile viewport에서 빈 공간·overflow 없이 렌더링되는지 검증한다.
+- `output_schema`가 없거나 비어 있는 legacy public Chatbot이 custom-named text output 하나를 반환해도 해당 답변을 계속 표시하는지 검증한다.
 
 ## Edge Cases
 

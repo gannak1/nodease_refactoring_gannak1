@@ -70,6 +70,21 @@ describe('deployment run final preview', () => {
     expect(preview.text).toBe('실제 최종 사용자 답변');
     expect(preview.sourceLabel).toBe('최종 답변');
   });
+
+  it('output schema가 없는 기존 챗봇의 단일 custom text output을 표시한다', () => {
+    const preview = getDeploymentRunFinalPreview(
+      { ...deployment, output_schema: undefined },
+      {
+        status: 'success',
+        results: {
+          final_answer: '기존 챗봇 응답도 유지합니다.',
+        },
+      },
+    );
+
+    expect(preview.kind).toBe('text');
+    expect(preview.text).toBe('기존 챗봇 응답도 유지합니다.');
+  });
 });
 
 describe('deployment run citations', () => {
