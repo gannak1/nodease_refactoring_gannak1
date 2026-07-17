@@ -108,7 +108,7 @@ def _seed_scope(engine) -> dict[str, uuid.UUID]:
             organization_id=ids["organization"],
             name="Mail Race App",
             url_slug=f"mail-race-{ids['app']}",
-            auth_secret="non-secret-test-value",
+            auth_secret=None,
             created_by=ids["user"],
         )
         session.add(app)

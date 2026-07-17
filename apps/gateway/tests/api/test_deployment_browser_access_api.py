@@ -72,7 +72,6 @@ def _revision(actor_id: uuid.UUID, *, active: bool = False) -> BrowserAccessRevi
         is_active=active,
         browser_access_policy=_policy(),
         url_slug="public-chatbot",
-        auth_secret=None,
     )
 
 

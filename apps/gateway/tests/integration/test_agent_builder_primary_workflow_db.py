@@ -274,7 +274,7 @@ def _app_context(db: Session):
         organization_id=organization.id,
         name="Agent Builder Primary Test",
         url_slug=f"agent-builder-primary-{uuid.uuid4().hex}",
-        auth_secret="test-placeholder",
+        auth_secret=None,
         created_by=actor.id,
     )
     db.add(app)

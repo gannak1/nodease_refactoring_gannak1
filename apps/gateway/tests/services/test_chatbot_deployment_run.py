@@ -21,6 +21,10 @@ from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDe
 from apps.shared.domain.deployment_runtime_policy import (
     DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
 )
+from apps.shared.domain.app_auth_secret import (
+    APP_AUTH_SECRET_VERIFIER_VERSION,
+    app_auth_secret_verifier,
+)
 
 
 # --- 실행 헬퍼 ---------------------------------------------------------------
@@ -752,7 +756,10 @@ def _deployed_app(deployment_type):
         id=uuid4(),
         name="챗봇 앱",
         url_slug=f"chatbot-{uuid4().hex[:8]}",
-        auth_secret="deploy-secret",
+        auth_secret=None,
+        auth_secret_verifier=app_auth_secret_verifier("deploy-secret"),
+        auth_secret_verifier_version=APP_AUTH_SECRET_VERIFIER_VERSION,
+        auth_secret_generation=1,
         workflow_id=workflow_id,
         organization_id=organization_id,
         active_deployment_id=deployment_id,

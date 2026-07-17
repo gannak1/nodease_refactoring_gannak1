@@ -9,6 +9,13 @@ vi.mock('sonner', () => ({
   },
 }));
 
+vi.mock(
+  '@/app/features/app/components/AppAuthSecretControl',
+  () => ({
+    AppAuthSecretControl: () => <div>App Secret lifecycle</div>,
+  }),
+);
+
 const writeClipboard = vi.fn();
 
 beforeEach(() => {
@@ -31,9 +38,9 @@ describe('SuccessStep', () => {
         onClose={vi.fn()}
         result={{
           success: true,
+          appId: 'app-1',
           version: 1,
           url_slug: 'incident-hook',
-          auth_secret: 'webhook-secret-value',
         }}
       />,
     );
@@ -41,9 +48,7 @@ describe('SuccessStep', () => {
     expect(
       screen.getByText('http://localhost:3000/api/v1/hooks/incident-hook'),
     ).toBeVisible();
-    expect(
-      screen.getByText('Authorization: Bearer <Secret Key>'),
-    ).toBeVisible();
+    expect(screen.getByText('App Secret lifecycle')).toBeVisible();
     expect(screen.queryByText(/\?token=/)).not.toBeInTheDocument();
     expect(screen.queryByText(/통합 URL/)).not.toBeInTheDocument();
 
@@ -51,11 +56,7 @@ describe('SuccessStep', () => {
     expect(writeClipboard).toHaveBeenCalledWith(
       'http://localhost:3000/api/v1/hooks/incident-hook',
     );
-
-    fireEvent.click(screen.getByTitle('Authorization 헤더 복사'));
-    expect(writeClipboard).toHaveBeenLastCalledWith(
-      'Authorization: Bearer webhook-secret-value',
-    );
+    expect(screen.queryByText('webhook-secret-value')).not.toBeInTheDocument();
   });
 
   it('shows a non-blocking preflight warning after a successful deployment', () => {

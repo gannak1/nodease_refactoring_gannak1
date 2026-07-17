@@ -1002,7 +1002,7 @@ def test_create_preserves_preflight_http_exception(monkeypatch):
         workflow_id=workflow_id,
         organization_id=uuid.uuid4(),
         url_slug="app-slug",
-        auth_secret="existing-secret",
+        auth_secret=None,
         created_by=uuid.uuid4(),
     )
     workflow = _row(
@@ -1057,7 +1057,7 @@ def test_create_binding_error_prefers_common_preflight_envelope(
         workflow_id=workflow_id,
         organization_id=uuid.uuid4(),
         url_slug="app-slug",
-        auth_secret="existing-secret",
+        auth_secret=None,
         created_by=actor_id,
     )
     workflow = _row(
@@ -1142,7 +1142,7 @@ def test_inactive_create_rejects_mail_inline_secret_with_common_preflight_error(
         workflow_id=workflow_id,
         organization_id=organization_id,
         url_slug="app-slug",
-        auth_secret="existing-secret",
+        auth_secret=None,
         created_by=actor_id,
     )
     workflow = _row(
@@ -1205,7 +1205,7 @@ def test_inactive_create_preserves_unresolved_mail_snapshot(monkeypatch):
         workflow_id=workflow_id,
         organization_id=organization_id,
         url_slug="app-slug",
-        auth_secret="existing-secret",
+        auth_secret=None,
         created_by=actor_id,
     )
     workflow = _row(
@@ -1261,7 +1261,7 @@ def test_inactive_create_rejects_unavailable_mail_reference(
         workflow_id=workflow_id,
         organization_id=organization_id,
         url_slug="app-slug",
-        auth_secret="existing-secret",
+        auth_secret=None,
         created_by=actor_id,
     )
     workflow = _row(
@@ -1319,7 +1319,7 @@ def test_create_preserves_mail_credential_permission_denial(monkeypatch):
         workflow_id=workflow_id,
         organization_id=organization_id,
         url_slug="app-slug",
-        auth_secret="existing-secret",
+        auth_secret=None,
         created_by=actor_id,
     )
     workflow = _row(
@@ -1377,7 +1377,7 @@ def test_inactive_create_rejects_malformed_graph(monkeypatch):
         workflow_id=workflow_id,
         organization_id=organization_id,
         url_slug="app-slug",
-        auth_secret="existing-secret",
+        auth_secret=None,
         created_by=actor_id,
     )
     workflow = _row(
@@ -1419,7 +1419,7 @@ def test_inactive_create_does_not_mutate_active_surface(monkeypatch):
         organization_id=uuid.uuid4(),
         active_deployment_id=active_deployment_id,
         url_slug="app-slug",
-        auth_secret="existing-secret",
+        auth_secret=None,
         created_by=uuid.uuid4(),
     )
     workflow = _row(
@@ -1482,7 +1482,7 @@ def test_active_schedule_create_rolls_back_on_invalid_schedule_configuration(
         organization_id=uuid.uuid4(),
         active_deployment_id=None,
         url_slug="schedule-slug",
-        auth_secret="existing-secret",
+        auth_secret=None,
         created_by=uuid.uuid4(),
     )
     workflow = _row(
@@ -1543,7 +1543,7 @@ def test_active_schedule_create_hides_unexpected_scheduler_error(monkeypatch):
         organization_id=uuid.uuid4(),
         active_deployment_id=None,
         url_slug="schedule-error-slug",
-        auth_secret="existing-secret",
+        auth_secret=None,
         created_by=uuid.uuid4(),
     )
     workflow = _row(
@@ -1608,7 +1608,7 @@ def test_workflow_node_create_does_not_create_schedule_surface(monkeypatch):
         organization_id=uuid.uuid4(),
         active_deployment_id=None,
         url_slug="module-slug",
-        auth_secret="existing-secret",
+        auth_secret=None,
         created_by=uuid.uuid4(),
     )
     workflow = _row(
@@ -1671,7 +1671,7 @@ def test_active_redeployment_inherits_model_routing_state(monkeypatch):
         organization_id=uuid.uuid4(),
         active_deployment_id=previous_deployment_id,
         url_slug="routing-slug",
-        auth_secret="existing-secret",
+        auth_secret="existing-auth-secret",
         created_by=uuid.uuid4(),
     )
     workflow = _row(

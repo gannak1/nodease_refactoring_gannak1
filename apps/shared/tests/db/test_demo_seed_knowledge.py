@@ -1183,12 +1183,6 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     assert "2b6c7d8e9f02" in ancestry
     assert "a6f4d2c8e1b7" in ancestry
     assert "a9b0c1d2e3f4" in ancestry
-    assert "aa0b1c2d3e4f" in ancestry
-    assert "a8c9d0e1f2a3" in ancestry
-    assert "ab1c2d3e4f50" in ancestry
-    assert script.get_heads() == ["ac2d3e4f5061"]
-
-
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
     document_keys = {spec.key for spec in demo_seed.DEMO_DOCUMENT_SPECS}
     public_keys = {

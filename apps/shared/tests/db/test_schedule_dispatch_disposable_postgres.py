@@ -372,7 +372,7 @@ def _seed_active_schedule(database: str, config: DisposablePostgresConfig):
                 organization_id=ids["organization"],
                 name="Schedule Test App",
                 url_slug=f"schedule-{ids['app']}",
-                auth_secret="non-secret-test-value",
+                auth_secret=None,
                 created_by=ids["user"],
             )
             session.add(app)

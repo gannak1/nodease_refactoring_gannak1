@@ -500,7 +500,7 @@ def test_agent_builder_apply_save_persists_layout_models_and_audit_without_execu
         name="Agent Builder Apply Integration",
         description="Transactional apply/save verification",
         url_slug=f"agent-builder-apply-{uuid.uuid4().hex}",
-        auth_secret="integration-placeholder",
+        auth_secret=None,
         created_by=actor.id,
     )
     db_session.add(app)
@@ -853,7 +853,7 @@ def test_header_selection_stays_in_planner_while_new_agent_persists_recommendati
         organization_id=organization.id,
         name="Agent Builder Default Model",
         url_slug=f"agent-builder-default-model-{uuid.uuid4().hex}",
-        auth_secret="integration-placeholder",
+        auth_secret=None,
         created_by=actor.id,
     )
     db_session.add(app)
@@ -1022,7 +1022,7 @@ def test_agent_builder_new_workflow_apply_rebinds_session_scope(db_session):
         organization_id=organization.id,
         name="Agent Builder New Workflow",
         url_slug=f"agent-builder-new-{uuid.uuid4().hex}",
-        auth_secret="integration-placeholder",
+        auth_secret=None,
         created_by=actor.id,
     )
     db_session.add(app)

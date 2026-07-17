@@ -22,6 +22,10 @@ from starlette.requests import Request
 from apps.gateway.api.v1.endpoints import workflow as workflow_endpoint
 from apps.gateway.application.webhook_ingress import DEFAULT_WEBHOOK_INGRESS_POLICY
 from apps.shared.audit.actions import AuditAction
+from apps.shared.domain.app_auth_secret import (
+    APP_AUTH_SECRET_VERIFIER_VERSION,
+    app_auth_secret_verifier,
+)
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.domain.deployment_runtime_policy import (
@@ -426,7 +430,10 @@ def test_webhook_blocks_exceeded_budget_before_background_dispatch():
         id=uuid4(),
         name="예산 초과 웹훅 앱",
         url_slug=f"hook-{uuid4().hex[:8]}",
-        auth_secret="hook-secret",
+        auth_secret=None,
+        auth_secret_verifier=app_auth_secret_verifier("hook-secret"),
+        auth_secret_verifier_version=APP_AUTH_SECRET_VERIFIER_VERSION,
+        auth_secret_generation=1,
         workflow_id=workflow_id,
         organization_id=organization_id,
         active_deployment_id=deployment_id,
@@ -496,7 +503,10 @@ def test_webhook_rejects_non_webhook_deployment_before_budget_or_dispatch():
         id=uuid4(),
         name="비웹훅 배포 차단",
         url_slug=f"hook-{uuid4().hex[:8]}",
-        auth_secret="hook-secret",
+        auth_secret=None,
+        auth_secret_verifier=app_auth_secret_verifier("hook-secret"),
+        auth_secret_verifier_version=APP_AUTH_SECRET_VERIFIER_VERSION,
+        auth_secret_generation=1,
         workflow_id=workflow_id,
         organization_id=organization_id,
         active_deployment_id=deployment_id,

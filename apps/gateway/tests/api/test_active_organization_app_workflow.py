@@ -1589,7 +1589,7 @@ def _route_app(id, organization_id, workflow_id, created_by):
         },
         workflow_id=workflow_id,
         url_slug=f"app-{id.hex[:8]}",
-        auth_secret="secret",
+        auth_secret=None,
         is_market=False,
         created_by=created_by,
         created_at=now,

@@ -1,6 +1,7 @@
 import pytest
 from apps.shared.audit import listeners
 from apps.shared.audit.context import clear_current_metadata, set_current_metadata
+from apps.shared.db.models.app import App
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.organization import Organization
@@ -49,6 +50,16 @@ def test_connection_audit_masks_endpoint_and_identity_fields():
         "encrypted_ssh_password",
         "encrypted_ssh_private_key",
     }
+
+
+def test_app_audit_masks_raw_and_verifier_secret_fields():
+    assert listeners.SENSITIVE_FIELDS[App] >= {
+        "auth_secret",
+        "auth_secret_verifier",
+        "auth_secret_previous_verifier",
+    }
+    for field in listeners.SENSITIVE_FIELDS[App]:
+        assert listeners._mask(App, field, "must-not-leak") == "***changed***"
 
 
 def test_layer_b_tracks_security_and_deployment_models():

@@ -99,7 +99,6 @@ def _source() -> BrowserAccessSourceSnapshot:
         output_schema={"outputs": []},
         description="source",
         url_slug="public-chatbot",
-        auth_secret=None,
     )
 
 
@@ -161,7 +160,6 @@ def test_lock_source_locks_app_before_reloading_source() -> None:
         workflow_id=workflow_id,
         organization_id=organization_id,
         url_slug="widget",
-        auth_secret=None,
     )
     workflow = SimpleNamespace(id=workflow_id, organization_id=organization_id)
     db = _Db(
@@ -190,7 +188,6 @@ def test_create_inactive_revision_clones_locked_source_and_marks_manual_audit() 
         id=source.app_id,
         active_deployment_id=uuid.uuid4(),
         url_slug=source.url_slug,
-        auth_secret=source.auth_secret,
     )
     db = _Db(_Query(scalar=8))
     repository = SqlAlchemyDeploymentBrowserAccessRepository(db)
