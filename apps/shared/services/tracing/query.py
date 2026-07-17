@@ -267,19 +267,22 @@ class TraceQueryService:
         )
         if not allowed_app_ids:
             return query.filter(WorkflowRun.id.is_(None))
-        allowed_workflow_ids = select(Workflow.id).where(
-            Workflow.app_id.in_(allowed_app_ids)
+        workflow_app_id = (
+            select(Workflow.app_id)
+            .where(Workflow.id == WorkflowRun.workflow_id)
+            .scalar_subquery()
         )
-        allowed_deployment_ids = select(WorkflowDeployment.id).where(
-            WorkflowDeployment.app_id.in_(allowed_app_ids)
+        deployment_app_id = (
+            select(WorkflowDeployment.app_id)
+            .where(WorkflowDeployment.id == WorkflowRun.deployment_id)
+            .scalar_subquery()
         )
-        return query.filter(
-            or_(
-                WorkflowRun.app_id.in_(allowed_app_ids),
-                WorkflowRun.workflow_id.in_(allowed_workflow_ids),
-                WorkflowRun.deployment_id.in_(allowed_deployment_ids),
-            )
+        effective_app_id = func.coalesce(
+            WorkflowRun.app_id,
+            workflow_app_id,
+            deployment_app_id,
         )
+        return query.filter(effective_app_id.in_(allowed_app_ids))
 
     @staticmethod
     def _metadata_visible_owned_app_ids(db: Session, user_id: Any) -> list[Any]:

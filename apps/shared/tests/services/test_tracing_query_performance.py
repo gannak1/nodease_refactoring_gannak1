@@ -50,6 +50,35 @@ def test_list_traces_applies_visibility_before_limit_without_python_filter(
     assert "workflow_deployments.app_id" in visibility_sql
 
 
+def test_trace_visibility_sql_preserves_canonical_app_resolution_precedence(
+    monkeypatch,
+):
+    query = _CaptureTraceQuery()
+    db = _CaptureSession(query)
+    user = SimpleNamespace(id=uuid4())
+    monkeypatch.setattr(
+        TraceAccessService,
+        "is_system_admin",
+        lambda _db, _user: False,
+    )
+    monkeypatch.setattr(
+        TraceQueryService,
+        "_metadata_visible_owned_app_ids",
+        lambda _db, _user_id: [uuid4()],
+    )
+
+    TraceQueryService._apply_trace_visibility_filter(db, query, user)
+
+    visibility_sql = str(query.filters[-1]).lower()
+    assert "coalesce" in visibility_sql
+    assert visibility_sql.index("workflow_runs.app_id") < visibility_sql.index(
+        "workflows.app_id"
+    )
+    assert visibility_sql.index("workflows.app_id") < visibility_sql.index(
+        "workflow_deployments.app_id"
+    )
+
+
 def test_visible_owned_apps_resolve_app_policy_before_global_policy():
     allowed_app_id = uuid4()
     denied_app_id = uuid4()
