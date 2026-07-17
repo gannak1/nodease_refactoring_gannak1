@@ -26,7 +26,7 @@ describe('adminApi.listAuditLogs', () => {
     mockedGet.mockResolvedValueOnce({ data: { total: 0, items: [] } });
 
     const result = await adminApi.listAuditLogs({
-      page: 2,
+      cursor: 'cursor-2',
       limit: 20,
       action: 'workflow.deploy',
       actorId: undefined,
@@ -34,7 +34,7 @@ describe('adminApi.listAuditLogs', () => {
     });
 
     expect(mockedGet).toHaveBeenCalledWith('/admin/audit-logs', {
-      params: { page: 2, limit: 20, action: 'workflow.deploy' },
+      params: { cursor: 'cursor-2', limit: 20, action: 'workflow.deploy' },
     });
     expect(result).toEqual({ total: 0, items: [] });
   });

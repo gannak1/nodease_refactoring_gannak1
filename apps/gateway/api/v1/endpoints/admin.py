@@ -261,7 +261,7 @@ def _serialize_workflow_budget(
 @router.get("/audit-logs", response_model=AdminAuditLogListResponse)
 def list_audit_logs(
     request: Request,
-    page: int = Query(default=1, ge=1),
+    cursor: str | None = Query(default=None, max_length=512),
     limit: int = Query(default=20, ge=1, le=100),
     actor_id: Annotated[UUID | None, Query(alias="actorId")] = None,
     action: str | None = None,
@@ -291,7 +291,7 @@ def list_audit_logs(
             start_at=period.start_at,
             end_at=period.end_at,
         ),
-        page=page,
+        cursor=cursor,
         limit=limit,
     )
 

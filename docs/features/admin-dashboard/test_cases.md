@@ -22,6 +22,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 ### AC-1. audit log 검색/상세 (FR-011)
 
 - Given 조직 A의 audit `auditor` 이상 권한 사용자, When `GET /admin/audit-logs`를 호출하면, Then 조직 A scope의 audit log만 `occurred_at` 내림차순으로 반환된다.
+- Given 감사 로그 첫 page 응답의 `next_cursor`, When 같은 필터로 다음 page를 조회하면, Then `(occurred_at, id)` 이후 row가 중복 없이 반환되고 후속 page는 COUNT 없이 `total=null`을 반환하며 malformed cursor는 `400`이다. Client는 첫 page의 total snapshot을 유지한다.
 - Given 행위자/action/대상/기간/status 필터, When 각각 또는 조합(AND)으로 조회하면, Then 조건에 맞는 row만 반환된다. action 값은 canonical action 문자열 기준이다 ([ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)).
 - Given `startAt`/`endAt` 기간 필터, When `occurred_at`이 `startAt`과 정확히 같은 row와 `endAt`과 정확히 같은 row가 있으면, Then 전자는 포함되고 후자는 제외된다 (`[start, end)`).
 - Given 개별 로그 상세 조회, When `GET /admin/audit-logs/{id}`를 호출하면, Then actor, action, target, status, timestamp와 allowlist metadata만 반환되고 raw payload/secret 계열 값은 포함되지 않는다.

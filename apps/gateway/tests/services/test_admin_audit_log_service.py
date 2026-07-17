@@ -121,7 +121,6 @@ def test_list_audit_logs_scopes_filters_and_sorts_descending(monkeypatch):
             start_at=datetime(2026, 7, 1, 0, tzinfo=timezone.utc),
             end_at=datetime(2026, 7, 3, 0, tzinfo=timezone.utc),
         ),
-        page=1,
         limit=20,
     )
 
@@ -129,8 +128,76 @@ def test_list_audit_logs_scopes_filters_and_sorts_descending(monkeypatch):
     assert [item.id for item in result.items] == [newer_match.id, older_match.id]
     assert result.items[0].workflow_run_id == workflow_run_id
     assert result.items[0].workflow_node_run_id == workflow_node_run_id
-    assert db.query_for(AuditLog).offset_value == 0
-    assert db.query_for(AuditLog).limit_value == 20
+    assert result.next_cursor is None
+    assert db.query_for(AuditLog).offset_value is None
+    assert db.query_for(AuditLog).limit_value == 21
+
+
+def test_list_audit_logs_uses_stable_cursor_for_next_page(monkeypatch):
+    AdminAuditLogService, _ = _service()
+    organization_id = uuid4()
+    occurred_at = datetime(2026, 7, 2, 9, tzinfo=timezone.utc)
+    logs = [
+        _audit_log(
+            organization_id=organization_id,
+            actor_id=uuid4(),
+            action="workflow.execute",
+            target_type="workflow",
+            target_id=f"wf-{index}",
+            status=AuditStatus.SUCCESS,
+            occurred_at=occurred_at,
+        )
+        for index in range(4)
+    ]
+    db = _AuditLogSession(logs)
+    monkeypatch.setattr(
+        "apps.gateway.services.admin_audit_log_service.AdminPermissionGuard.require_audit_reader",
+        lambda *args: None,
+    )
+
+    first = AdminAuditLogService.list_audit_logs(
+        db,
+        current_user=SimpleNamespace(id=uuid4()),
+        organization_id=organization_id,
+        limit=2,
+    )
+    second_db = _AuditLogSession(logs)
+    second = AdminAuditLogService.list_audit_logs(
+        second_db,
+        current_user=SimpleNamespace(id=uuid4()),
+        organization_id=organization_id,
+        cursor=first.next_cursor,
+        limit=2,
+    )
+
+    assert first.total == 4
+    assert first.next_cursor is not None
+    assert second.total is None
+    assert second.next_cursor is None
+    assert db.query_for(AuditLog).count_calls == 1
+    assert second_db.query_for(AuditLog).count_calls == 0
+    assert not ({item.id for item in first.items} & {item.id for item in second.items})
+    assert [item.id for item in first.items + second.items] == [
+        log.id for log in sorted(logs, key=lambda log: log.id, reverse=True)
+    ]
+
+
+def test_list_audit_logs_rejects_invalid_cursor_before_query(monkeypatch):
+    AdminAuditLogService, _ = _service()
+    monkeypatch.setattr(
+        "apps.gateway.services.admin_audit_log_service.AdminPermissionGuard.require_audit_reader",
+        lambda *args: None,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        AdminAuditLogService.list_audit_logs(
+            _AuditLogSession([]),
+            current_user=SimpleNamespace(id=uuid4()),
+            organization_id=uuid4(),
+            cursor="not-a-valid-cursor",
+        )
+
+    assert exc.value.status_code == 400
 
 
 def test_list_audit_logs_adds_snapshot_actor_and_batch_target_displays(monkeypatch):
@@ -1151,6 +1218,7 @@ class _AuditLogQuery:
         self.logs = list(logs)
         self.offset_value = None
         self.limit_value = None
+        self.count_calls = 0
 
     def filter(self, *conditions):
         self.logs = [
@@ -1173,6 +1241,7 @@ class _AuditLogQuery:
         return self
 
     def count(self):
+        self.count_calls += 1
         return len(self.logs)
 
     def all(self):
@@ -1188,11 +1257,19 @@ def _matches_condition(log, condition):
     # FR-011 green 구현에서 필요한 audit_logs 컬럼 조건만 명시적으로 지원한다.
     if callable(condition):
         return condition(log)
+    clauses = getattr(condition, "clauses", None)
+    if clauses is not None:
+        matches = [_matches_condition(log, clause) for clause in clauses]
+        if condition.operator is sqlalchemy_operators.or_:
+            return any(matches)
+        return all(matches)
     column = str(condition.left)
     value = condition.right.value
     operator = condition.operator
     if column == "audit_logs.id" and operator is eq:
         return log.id == value
+    if column == "audit_logs.id" and operator is lt:
+        return log.id < value
     if column == "audit_logs.actor_id" and operator is eq:
         return log.actor_id == value
     if column == "audit_logs.action" and operator is eq:
@@ -1207,6 +1284,8 @@ def _matches_condition(log, condition):
         return log.occurred_at >= value
     if column == "audit_logs.occurred_at" and operator is lt:
         return log.occurred_at < value
+    if column == "audit_logs.occurred_at" and operator is eq:
+        return log.occurred_at == value
     if "audit_logs.audit_metadata" in column and operator is eq:
         return (log.audit_metadata or {}).get("organization_id") == value
     raise AssertionError(f"Unsupported audit filter condition: {condition}")

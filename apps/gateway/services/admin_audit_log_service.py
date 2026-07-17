@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -7,7 +10,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import desc
+from sqlalchemy import and_, desc, or_
 from sqlalchemy.orm import Session
 
 from apps.gateway.services.admin_audit_display_service import AdminAuditDisplayService
@@ -222,6 +225,39 @@ def _raise_audit_reader_denied(user_id: Any, organization_id: Any) -> None:
 
 class AdminAuditLogService:
     @staticmethod
+    def encode_cursor(item: Any) -> str:
+        payload = json.dumps(
+            {"occurred_at": item.occurred_at.isoformat(), "id": str(item.id)},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def decode_cursor(cursor: str) -> tuple[datetime, UUID]:
+        if not cursor or len(cursor) > 512:
+            raise HTTPException(status_code=400, detail="Invalid cursor")
+        try:
+            padded = cursor + "=" * (-len(cursor) % 4)
+            raw = base64.b64decode(padded, altchars=b"-_", validate=True)
+            payload = json.loads(raw.decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError
+            occurred_at = datetime.fromisoformat(payload["occurred_at"])
+            audit_log_id = UUID(payload["id"])
+            if occurred_at.tzinfo is None or occurred_at.utcoffset() is None:
+                raise ValueError
+        except (
+            binascii.Error,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            UnicodeDecodeError,
+            ValueError,
+        ) as error:
+            raise HTTPException(status_code=400, detail="Invalid cursor") from error
+        return occurred_at, audit_log_id
+
+    @staticmethod
     def resolve_period(
         start_at: datetime | None = None,
         end_at: datetime | None = None,
@@ -238,22 +274,41 @@ class AdminAuditLogService:
         current_user: User,
         organization_id: Any,
         filters: AdminAuditLogFilters | None = None,
-        page: int = 1,
+        cursor: str | None = None,
         limit: int = 20,
     ) -> AdminAuditLogListResponse:
         AdminPermissionGuard.require_audit_reader(db, current_user, organization_id)
+        cursor_position = AdminAuditLogService.decode_cursor(cursor) if cursor else None
         filters = filters or AdminAuditLogFilters()
         query = _filtered_query(db, organization_id, filters)
-        total = query.count()
-        items = (
+        total = query.count() if cursor_position is None else None
+        if cursor_position:
+            cursor_time, cursor_id = cursor_position
+            query = query.filter(
+                or_(
+                    AuditLog.occurred_at < cursor_time,
+                    and_(
+                        AuditLog.occurred_at == cursor_time,
+                        AuditLog.id < cursor_id,
+                    ),
+                )
+            )
+        rows = (
             query.order_by(desc(AuditLog.occurred_at), desc(AuditLog.id))
-            .offset((page - 1) * limit)
-            .limit(limit)
+            .limit(limit + 1)
             .all()
+        )
+        has_more = len(rows) > limit
+        items = rows[:limit]
+        next_cursor = (
+            AdminAuditLogService.encode_cursor(items[-1])
+            if has_more and items
+            else None
         )
         displays = AdminAuditDisplayService.resolve(db, organization_id, items)
         return AdminAuditLogListResponse(
             total=total,
+            next_cursor=next_cursor,
             items=[
                 _list_item(
                     item,

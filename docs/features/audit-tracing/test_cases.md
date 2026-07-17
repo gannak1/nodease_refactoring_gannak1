@@ -50,6 +50,7 @@ Status: Draft
 - Audit list/detail은 canonical actor/target ID를 유지하면서 safe `actor_display`/`target_display`를 additive하게 반환한다. Actor snapshot의 name/email scalar를 우선하고 snapshot이 없을 때만 current same-organization member를 사용한다.
 - Organization/user/team/workflow primary App/App/Knowledge Base target은 current organization과 target-type allowlist를 통과할 때만 current safe name을 반환한다. Cross-organization, hidden, deleted, malformed, unsupported target은 display를 생략하고 ID-only fallback을 유지한다.
 - 한 page의 target display resolution은 target type별 batch query를 사용하고 audit row 수만큼 query가 증가하지 않는다. Resolver 오류는 list/detail 전체 실패가 아니라 display 생략으로 처리한다.
+- Trace 목록은 visibility 조건을 `LIMIT` 전에 SQL에 적용하고 정확한 visible total을 반환한다. App 정책은 organization/global 정책보다 우선하며 목록 row마다 `check_trace_access`를 호출하지 않는다. Run/Workflow/Deployment의 App ID가 충돌하면 상세 조회와 같은 Run > Workflow > Deployment 우선순위를 적용하고 하위 fallback App 권한으로 우회하지 않는다.
 - Detail의 allowlisted metadata/change summary UUID는 `resolved_references`에 포함된 same-organization safe reference만 병기할 수 있고, map에 없는 UUID나 hidden resource를 추론하지 않는다.
 - Audit `auditor`/`raw_auditor`는 audit list/detail을 조회할 수 있지만 actor access profile/team-membership/resource/action API는 `403`이다.
 - Security Alert evidence API는 실제 연결된 audit만 `AuditLogSchema` 수준으로 반환하고 generic metadata/before/after/change summary를 inline 노출하지 않는다.

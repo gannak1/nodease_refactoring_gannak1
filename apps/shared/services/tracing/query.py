@@ -6,16 +6,15 @@ from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.workflow_run import (
     TracePayload,
+    TraceVisibilityPolicy,
     WorkflowNodeRun,
     WorkflowRun,
 )
 from apps.shared.services.tracing.access import VIEW_RAW, TraceAccessService
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.shared.services.tracing.payload import TracePayloadService
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
-
-TRACE_LIST_SCAN_LIMIT = 5000
 
 
 class TraceQueryService:
@@ -60,39 +59,15 @@ class TraceQueryService:
         query = TraceQueryService._apply_trace_visibility_filter(db, query, user)
         safe_limit = max(1, min(limit, 100))
         offset = max(page - 1, 0) * safe_limit
-        batch_size = max(safe_limit * 4, 100)
         ordered_query = query.order_by(WorkflowRun.started_at.desc())
-        scanned = 0
-        visible_total = 0
-        page_items: list[WorkflowRun] = []
-
-        # 권한 판정은 Python 정책 로직이 필요하므로 DB에서 제한된 배치만 가져와 순회합니다.
-        while scanned < TRACE_LIST_SCAN_LIMIT:
-            current_batch_size = min(batch_size, TRACE_LIST_SCAN_LIMIT - scanned)
-            candidates = ordered_query.offset(scanned).limit(current_batch_size).all()
-            if not candidates:
-                break
-            scanned += len(candidates)
-            for run in candidates:
-                if not TraceAccessService.check_trace_access(db, run, user).allowed:
-                    continue
-                if visible_total >= offset and len(page_items) < safe_limit:
-                    page_items.append(run)
-                visible_total += 1
-
-        remaining_candidates_exist = False
-        if scanned >= TRACE_LIST_SCAN_LIMIT:
-            remaining_candidates_exist = (
-                ordered_query.offset(scanned).limit(1).first() is not None
-            )
-        scan_limit_reached = scanned >= TRACE_LIST_SCAN_LIMIT and remaining_candidates_exist
-        has_more = scan_limit_reached or visible_total > offset + len(page_items)
+        visible_total = query.count()
+        page_items = ordered_query.offset(offset).limit(safe_limit).all()
         return {
             "total": visible_total,
             "items": [TraceQueryService.trace_summary(run) for run in page_items],
-            "has_more": has_more,
-            "total_is_estimated": scan_limit_reached,
-            "scan_limit_reached": scan_limit_reached,
+            "has_more": visible_total > offset + len(page_items),
+            "total_is_estimated": False,
+            "scan_limit_reached": False,
         }
 
     @staticmethod
@@ -288,20 +263,84 @@ class TraceQueryService:
         if user is None or getattr(user, "id", None) is None:
             return query.filter(WorkflowRun.id.is_(None))
 
-        owned_app_ids = db.query(App.id).filter(App.created_by == user.id)
-        owned_workflow_ids = db.query(Workflow.id).filter(
-            Workflow.app_id.in_(owned_app_ids)
+        allowed_app_ids = TraceQueryService._metadata_visible_owned_app_ids(
+            db, user.id
         )
-        owned_deployment_ids = db.query(WorkflowDeployment.id).filter(
-            WorkflowDeployment.app_id.in_(owned_app_ids)
+        if not allowed_app_ids:
+            return query.filter(WorkflowRun.id.is_(None))
+        workflow_app_id = (
+            select(Workflow.app_id)
+            .where(Workflow.id == WorkflowRun.workflow_id)
+            .scalar_subquery()
         )
-        return query.filter(
-            or_(
-                WorkflowRun.app_id.in_(owned_app_ids),
-                WorkflowRun.workflow_id.in_(owned_workflow_ids),
-                WorkflowRun.deployment_id.in_(owned_deployment_ids),
+        deployment_app_id = (
+            select(WorkflowDeployment.app_id)
+            .where(WorkflowDeployment.id == WorkflowRun.deployment_id)
+            .scalar_subquery()
+        )
+        effective_app_id = func.coalesce(
+            WorkflowRun.app_id,
+            workflow_app_id,
+            deployment_app_id,
+        )
+        return query.filter(effective_app_id.in_(allowed_app_ids))
+
+    @staticmethod
+    def _metadata_visible_owned_app_ids(db: Session, user_id: Any) -> list[Any]:
+        owned_apps = (
+            db.query(App.id, App.organization_id)
+            .filter(App.created_by == user_id)
+            .all()
+        )
+        if not owned_apps:
+            return []
+
+        app_ids = [row[0] for row in owned_apps]
+        organization_ids = list({row[1] for row in owned_apps if row[1] is not None})
+        scope_conditions = [
+            and_(
+                TraceVisibilityPolicy.scope_type == "app",
+                TraceVisibilityPolicy.scope_id.in_(app_ids),
+            ),
+            and_(
+                TraceVisibilityPolicy.scope_type == "global",
+                TraceVisibilityPolicy.scope_id.is_(None),
+            ),
+        ]
+        if organization_ids:
+            scope_conditions.append(
+                and_(
+                    TraceVisibilityPolicy.scope_type == "organization",
+                    TraceVisibilityPolicy.scope_id.in_(organization_ids),
+                )
             )
+        policies = (
+            db.query(TraceVisibilityPolicy)
+            .filter(
+                TraceVisibilityPolicy.is_active.is_(True),
+                or_(*scope_conditions),
+            )
+            .order_by(TraceVisibilityPolicy.updated_at.desc())
+            .all()
         )
+        by_scope: dict[tuple[str, Any], Any] = {}
+        for policy in policies:
+            by_scope.setdefault((policy.scope_type, policy.scope_id), policy)
+
+        global_policy = by_scope.get(("global", None))
+        allowed_app_ids = []
+        for app_id, organization_id in owned_apps:
+            policy = (
+                by_scope.get(("app", app_id))
+                or by_scope.get(("organization", organization_id))
+                or global_policy
+            )
+            if policy is None or (
+                policy.owner_trace_access_enabled
+                and not policy.deny_owner_trace_access
+            ):
+                allowed_app_ids.append(app_id)
+        return allowed_app_ids
 
     @staticmethod
     def _latest_trace_payload(
