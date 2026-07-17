@@ -275,6 +275,7 @@ Concrete dependency 조립은 `apps/gateway/composition/agent_builder.py`가 담
 - generation mode와 intent model selection
 - request submit/cancel
 - result group과 오류 상태 연결
+- mobile viewport에서는 좌우 여백 안의 전체 너비를 사용하고, desktop viewport에서는 가시성을 위해 화면 너비의 50%를 사용한다. 고정 최대 높이를 두지 않고 viewport 기준 높이를 사용해 panel 상단이 editor 상단 영역까지 확장된다. Launcher는 하단 Flow 설정 island와 같은 높이의 bottom control row에 배치한다.
 
 금지:
 

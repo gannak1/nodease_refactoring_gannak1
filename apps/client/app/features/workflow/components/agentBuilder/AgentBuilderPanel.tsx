@@ -1658,13 +1658,13 @@ export function AgentBuilderPanel({
 
   return (
     <div
-      className="fixed bottom-[72px] left-2 right-2 z-50 flex flex-col items-end gap-3 sm:left-auto sm:right-5 sm:w-[380px]"
+      className="fixed bottom-5 left-2 right-2 z-50 flex flex-col items-end gap-3 sm:left-auto sm:right-5 sm:w-[50vw]"
       onKeyDown={(event) => event.stopPropagation()}
     >
       {isOpen && !isMinimized && (
         <section
           ref={panelRef}
-          className="flex h-[min(520px,calc(100dvh-6rem))] w-full flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl sm:w-[380px]"
+          className="flex h-[calc(100dvh-7.75rem)] w-full flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl sm:w-[50vw]"
           aria-label="Agent Builder panel"
         >
           <header className="flex items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
