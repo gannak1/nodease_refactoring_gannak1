@@ -15,7 +15,10 @@ KC sync 요청·상태 조회와 durable execution 계약은 [ADR-0048](../../de
 | GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | Active organization + KB `read`. Detail capability는 `can_read/use/write/read_content/manage`와 빈 active manual KB에 최초 source를 등록할 수 있는 `can_register_initial_document`를 반환한다 |
 | GET | `/api/v1/knowledge/{kb_id}/documents/{document_id}/edit-config` | Document preview/process 설정 복원 | Active organization + KB `write`. Bounded property/aggregate/serialized-size allowlist만 반환하고 read detail과 encrypted source config를 재사용하지 않는다. 성공 응답은 `Cache-Control: no-store`다 |
 | POST | `/api/v1/knowledge/{kb_id}/documents/{document_id}/preview` | Document 설정 미리보기 | Active organization + KB `write`. DB source는 submitted/fallback opaque Connection reference가 current user 소유인지 확인한 뒤 processor를 호출한다. Resolver 저장소 장애는 `503 connection.reference_unavailable`, processor 직전 재검증의 temporary failure는 `503 source.temporarily_unavailable`로 닫는다 |
-| POST | `/api/v1/knowledge/{kb_id}/documents/{document_id}/process` | Document 설정 저장 및 background ingestion | Active organization + KB `write`. DB source는 Connection owner 검증과 설정 allowlist를 통과한 뒤 owner Connection row를 잠그고 metadata commit까지 유지해 Connector 삭제와 직렬화한다. Background processor는 dial 직전에 같은 owner 정책을 재검증한다. Missing/malformed/other-owner reference는 `404 resource.hidden`, lock 또는 commit의 transient contention은 `503 connection.reference_busy`, 기타 persistence failure는 `503 connection.reference_unavailable`로 닫는다 |
+| POST | `/api/v1/knowledge/{kb_id}/documents/{document_id}/process` | Document 설정 저장과 durable 처리 시작 | Active organization + KB `write`. DB source는 Connection owner 검증과 설정 allowlist를 통과한 뒤 owner Connection row를 잠그고 sanitized metadata·queued Document projection·job commit까지 유지해 Connector 삭제와 직렬화한다. Worker는 dial 직전에 같은 owner 정책을 재검증한다. 성공한 `202`는 opaque `job_id`, `reused`, `dispatch_deferred`만 추가 반환한다. Missing/malformed/other-owner reference는 `404 resource.hidden`, lock 또는 commit의 transient contention은 `503 connection.reference_busy`, 기타 persistence failure는 `503 connection.reference_unavailable`로 닫는다 |
+| POST | `/api/v1/knowledge/{kb_id}/documents/{document_id}/sync` | 기존 설정으로 durable sync 시작 | Active organization + KB `write` 및 source sync에는 `sync_manage`. DB Connection reference를 다시 잠그고 job UUID만 발행한다 |
+| GET | `/api/v1/knowledge/{kb_id}/documents/{document_id}/ingestion` | 최신 ingestion job safe status | Active organization + KB `read`. `Cache-Control: no-store`; raw source/provider/error/token 없이 operation, status, attempt, retryability와 safe reason/timestamp만 반환한다 |
+| POST | `/api/v1/knowledge/{kb_id}/documents/{document_id}/ingestion/retry` | Retryable dead-letter의 새 generation 생성 | Active organization + KB `write`; 이전 operation이 sync면 `sync_manage`도 재검사한다. Latest job ID를 고정해 권한 확인과 redrive 사이 TOCTOU를 차단한다 |
 | GET | `/api/v1/knowledge/{kb_id}/safe-metadata` | allowlisted KB recommendation metadata 조회 | active organization, KB `manage`; 권한 없는 resource는 404로 숨긴다 |
 | PATCH | `/api/v1/knowledge/{kb_id}/safe-metadata` | `safe_label`, `kb_safe_description`, `kb_safe_topics` 수정 | active organization, KB `manage`, sanitizer, audit. 일반 KB 설정 PATCH와 분리한다 |
 | POST | `/api/v1/knowledge/{kb_id}/archive`, `/restore` | Manual KB lifecycle 전이 | KB `manage` 또는 domain `lifecycle_manage`; source-managed KB는 source-owned로 차단 |
@@ -29,6 +32,7 @@ KC sync 요청·상태 조회와 durable execution 계약은 [ADR-0048](../../de
 | POST | `/api/v1/rag/agent/answer` | 명시 `knowledge_base_id` 기반 standalone Agent answer | KB use, generation model/credential use |
 | POST | `/api/v1/rag/agent/answer/stream` | standalone Agent answer SSE | KB use, generation model/credential use |
 | GET | `/api/v1/rag/document/{document_id}/progress?organizationId={active_organization_id}` | 문서 처리 상태 SSE | Native EventSource의 custom header 제약 때문에 active organization을 query parameter로 전달한다. Gateway는 stream 생성 전에 active organization + KB `read`를 검증하며, 권한 없는 document의 상태·오류·Redis progress를 노출하지 않는다. 응답은 `Cache-Control: no-cache, no-store`, `X-Accel-Buffering: no`를 사용한다 |
+| POST | `/api/v1/rag/document/{document_id}/confirm?strategy={strategy}` | 승인 대기 Document의 durable resume | Active organization + KB `write`, `waiting_for_approval`, allowlisted strategy를 요구한다. Job UUID만 queue에 발행하고 `job_id/reused/dispatch_deferred`를 반환한다 |
 | GET | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}` | KB에 부여된 team/user direct permission 목록 | manager 또는 KB `manage`, active organization |
 | PUT | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}/teams/{team_id}` | team KB permission 생성/갱신 | manager 또는 KB `manage`, active organization |
 | PUT | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}/users/{user_id}` | user direct KB permission 생성/갱신 | manager 또는 KB `manage`, active organization |
@@ -469,9 +473,11 @@ Validation 실패 응답도 같은 금지선을 따른다. Safe summary 입력�
 
 ## Document Processing Status
 
-Document processing status endpoints, including `GET /api/v1/knowledge/{kb_id}/documents/{document_id}` and `GET /api/v1/rag/document/{document_id}/progress`, must surface stale processing recovery. If a queued document never starts before the start timeout, the response eventually returns `status=failed` with a safe retryable message. If active processing has an active fencing token but no recent DB progress heartbeat, retrieval-visible chunk, or ready document version after the active stall timeout, the response also returns `status=failed`.
+Document processing status endpoints, including `GET /api/v1/knowledge/{kb_id}/documents/{document_id}`, `GET .../ingestion` and `GET /api/v1/rag/document/{document_id}/progress`, use the durable job when present. `pending`, due-policy 안의 `retry_scheduled`, valid running lease와 recent heartbeat를 legacy enqueue timeout만으로 `failed`로 바꾸지 않는다. Expired lease는 recovery task가 retry 또는 dead-letter로 전환하고 fixed safe message를 Document projection에 반영한다.
 
 Redis progress and Redis lock availability are not part of the public contract. The API must not require Redis to avoid infinite `processing`; Redis unavailable paths either continue through local processing fallback or become a safe terminal failure.
+
+새 ingestion table을 읽거나 쓰는 endpoint는 resource authorization 뒤 schema readiness를 검사한다. Missing/incomplete schema는 `503 knowledge.ingestion_schema_not_ready`와 allowlisted `details.reason`만 반환하며 DB exception, missing SQL, source config를 반사하지 않는다.
 
 ## Request Model
 

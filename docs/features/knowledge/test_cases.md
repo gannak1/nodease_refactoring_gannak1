@@ -499,6 +499,20 @@ KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048]
 
 ## Performance And Load Tests
 
+### MBA-288 Durable Document Ingestion
+
+- Process/sync/resume/reindex admission은 Document 또는 KB row lock 아래 설정·queued projection·job을 한 transaction에 저장한다. Commit 실패에는 job과 Document 변경이 모두 없고, commit 뒤 broker publish 실패에는 pending job이 남아 recovery로 실행 가능해야 한다.
+- 동일 Document의 concurrent request는 실제 PostgreSQL partial unique와 row lock에서 active job 하나만 남긴다. Same intent는 같은 job을 반환하고 다른 intent 및 partial KB reindex conflict는 전체 rollback한다.
+- Worker duplicate delivery, future retry, valid lease와 terminal job은 parser/provider를 호출하지 않는다. Claim winner 하나만 runner에 진입하고 owner/fencing token이 다른 heartbeat, progress, failure와 finalization은 거부된다.
+- Soft time limit과 allowlisted transient DB/provider failure는 bounded `retry_scheduled`로, unknown/permanent failure는 safe dead-letter로 전환한다. Retry task는 `next_retry_at` 전에 즉시 재발행하지 않고 due recovery가 발행한다. 최대 attempt 뒤 자동 실행은 없다.
+- Crash/lease expiry recovery는 running owner/fence를 무효화하고 retry 또는 dead-letter로 전환한다. Late heartbeat와 finalizer가 새 generation의 Document progress/active pointer/job result를 덮지 못해야 한다.
+- Active version swap, Document completed와 job succeeded는 같은 transaction에서 확정한다. Parse/chunk/embed/finalization 실패와 rollback은 이전 active ready version을 유지하며 pre-finalized chunk를 retrieval에 노출하지 않는다.
+- Worker-start authorization은 current organization membership과 KB write 또는 sync authority를 재검사한다. Revoke가 authorization query 전에 commit되면 source/provider 호출 없이 cancel하고, hidden resource identity는 status/log에 노출하지 않는다.
+- Status와 SSE는 owner/fencing token, input revision, idempotency key, raw source config/path/content, provider exception을 반환하지 않는다. Status는 `no-store`이고 unknown reason은 allowlisted generic code로 축소한다.
+- Missing table/column/idempotency unique/active partial unique/due·lease index는 worker startup과 API readiness에서 fail-closed한다. API는 권한 확인 뒤 `503 knowledge.ingestion_schema_not_ready`를 반환하고 raw introspection 오류를 반사하지 않는다.
+- Docker Compose와 Helm rendering은 Gateway image 기반 `knowledge` queue 전용 worker, bounded concurrency/prefetch, recovery beat route와 migration-first disabled production default를 검증한다. 다른 queue worker는 Knowledge table readiness에 결합되지 않는다.
+- Migration은 최신 dev 기준 Alembic single head를 유지하고 실제 disposable PostgreSQL에서 upgrade, active-job unique, concurrent claim, heartbeat fencing과 terminal cleanup을 검증한다.
+
 - Bulk permission helper는 per-KB database query 없이 user-candidate lookup과 KB-centric lookup을 처리한다.
 - Candidate cap은 stable ordering으로 큰 candidate set을 deterministic하게 잘라낸다.
 - MBA-232 runtime candidate ID/authorization은 invocation 사이에 cache하지 않는다. 향후 별도 승인된 candidate cache는 permission/freshness revision을 포함하고 ACL revocation 시 invalidation되어야 한다.
