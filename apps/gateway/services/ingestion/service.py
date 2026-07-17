@@ -7,7 +7,7 @@ import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from uuid import UUID, uuid4
 
 import tiktoken
@@ -21,6 +21,8 @@ from apps.shared.db.models.knowledge import (
     Document,
     DocumentChunk,
     DocumentVersion,
+    KnowledgeBase,
+    KnowledgeDocumentIngestionJob,
     SourceType,
 )
 from apps.shared.db.session import SessionLocal
@@ -176,6 +178,51 @@ def finalize_stale_processing_start(
     if not doc or doc.status not in {"indexing", "processing"}:
         return False
 
+    latest_job = (
+        db.query(KnowledgeDocumentIngestionJob)
+        .filter(KnowledgeDocumentIngestionJob.document_id == document_id)
+        .order_by(
+            KnowledgeDocumentIngestionJob.requested_at.desc(),
+            KnowledgeDocumentIngestionJob.id.desc(),
+        )
+        .first()
+    )
+    if latest_job is not None:
+        if latest_job.status in {"pending", "running", "retry_scheduled"}:
+            return False
+        if latest_job.status == "succeeded":
+            if _has_document_completion_artifacts(db, doc):
+                meta_info = dict(doc.meta_info or {})
+                meta_info.pop(ACTIVE_FENCING_TOKEN_HASH_KEY, None)
+                meta_info["progress"] = 100
+                meta_info["processing_current_step"] = "Processing completed."
+                doc.meta_info = meta_info
+                doc.status = "completed"
+                doc.error_message = None
+                doc.updated_at = _aware_datetime(now) or datetime.now(timezone.utc)
+                db.commit()
+                return True
+            return False
+        if latest_job.status in {"dead_lettered", "cancelled"}:
+            meta_info = dict(doc.meta_info or {})
+            meta_info.pop(ACTIVE_FENCING_TOKEN_HASH_KEY, None)
+            meta_info["progress"] = 0
+            meta_info["processing_current_step"] = (
+                "Processing failed."
+                if latest_job.status == "dead_lettered"
+                else "Processing cancelled."
+            )
+            doc.meta_info = meta_info
+            doc.status = "failed"
+            doc.error_message = (
+                "Document processing failed."
+                if latest_job.status == "dead_lettered"
+                else "Document processing was cancelled."
+            )
+            doc.updated_at = _aware_datetime(now) or datetime.now(timezone.utc)
+            db.commit()
+            return True
+
     meta_info = dict(doc.meta_info or {})
     checked_at = _aware_datetime(now) or datetime.now(timezone.utc)
     queued_at = (
@@ -281,6 +328,22 @@ class DocumentChunkingResult:
     content_hash: str
 
 
+class DurableIngestionDocumentMissing(RuntimeError):
+    pass
+
+
+class DurableIngestionLockBusy(RuntimeError):
+    pass
+
+
+class DurableIngestionNoContent(RuntimeError):
+    pass
+
+
+class DurableIngestionLeaseLost(RuntimeError):
+    pass
+
+
 class IngestionOrchestrator:
     def __init__(
         self,
@@ -295,6 +358,8 @@ class IngestionOrchestrator:
         self.user_id = user_id
         self.organization_id = organization_id
         self.ai_model = ai_model
+        self._durable_job_mode = False
+        self._active_progress_fencing_token: str | None = None
 
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
@@ -434,6 +499,159 @@ class IngestionOrchestrator:
                 if session:
                     session.close()
 
+    def process_document_for_job(
+        self,
+        document_id: UUID,
+        *,
+        session: Session,
+        fencing_token: str,
+        finalize_job: Callable[[UUID | None, datetime], bool],
+    ) -> UUID | None:
+        """Execute ingestion under a durable job and one finalization transaction."""
+
+        with self._document_processing_lock(document_id) as acquired:
+            if not acquired:
+                raise DurableIngestionLockBusy()
+
+            previous_db = self.db
+            self.db = session
+            self._durable_job_mode = True
+            self._active_progress_fencing_token = fencing_token
+            try:
+                doc = self._lock_durable_document_scope(document_id)
+
+                initial_status = doc.status
+                self._mark_document_indexing(
+                    document_id,
+                    fencing_token,
+                    commit=False,
+                )
+                acquire_document_write_lock(self.db, document_id)
+
+                raw_blocks = self._extract_raw_blocks(doc)
+                if not raw_blocks:
+                    raise DurableIngestionNoContent()
+
+                chunking_result = self._build_document_chunks(doc, raw_blocks)
+                if self._has_current_artifacts(
+                    doc,
+                    chunking_result=chunking_result,
+                    initial_status=initial_status,
+                ):
+                    self._update_status(
+                        document_id,
+                        "completed",
+                        progress=100,
+                        meta_updates={
+                            ACTIVE_FENCING_TOKEN_HASH_KEY: None,
+                            "processing_progress": 100,
+                            "processing_progress_updated_at": datetime.now(
+                                timezone.utc
+                            ).isoformat(),
+                            "processing_current_step": "Processing completed.",
+                        },
+                        commit=False,
+                    )
+                    result_version_id = doc.knowledge_base.active_document_version_id
+                    completed_at = datetime.now(timezone.utc)
+                    if not finalize_job(result_version_id, completed_at):
+                        raise DurableIngestionLeaseLost()
+                    self.db.commit()
+                    self._update_progress_redis(
+                        document_id,
+                        100,
+                        expire=True,
+                        persist_metadata=False,
+                    )
+                    return result_version_id
+
+                document_version, _ = self._create_indexing_version(
+                    doc,
+                    chunking_result=chunking_result,
+                    fencing_token=fencing_token,
+                )
+                if document_version is None:
+                    raise RuntimeError("organization-scoped ingestion version is required")
+
+                self._persist_chunks_with_embeddings(
+                    doc,
+                    chunking_result.chunks,
+                    chunking_mode=chunking_result.chunking_mode,
+                    chunking_fingerprint=chunking_result.chunking_fingerprint,
+                    document_version=document_version,
+                )
+                self._finalize_indexing_version(
+                    doc,
+                    document_version,
+                    fencing_token=fencing_token,
+                    commit=False,
+                )
+                self._update_status(
+                    document_id,
+                    "completed",
+                    progress=100,
+                    meta_updates={
+                        "processing_progress": 100,
+                        "processing_progress_updated_at": datetime.now(
+                            timezone.utc
+                        ).isoformat(),
+                        "processing_current_step": "Processing completed.",
+                    },
+                    commit=False,
+                )
+                completed_at = datetime.now(timezone.utc)
+                if not finalize_job(document_version.id, completed_at):
+                    raise DurableIngestionLeaseLost()
+                self.db.commit()
+                self._update_progress_redis(
+                    document_id,
+                    100,
+                    expire=True,
+                    persist_metadata=False,
+                )
+                return document_version.id
+            except Exception:
+                self.db.rollback()
+                raise
+            finally:
+                self._active_progress_fencing_token = None
+                self._durable_job_mode = False
+                self.db = previous_db
+
+    def _lock_durable_document_scope(self, document_id: UUID) -> Document:
+        knowledge_base_id = (
+            self.db.query(Document.knowledge_base_id)
+            .filter(Document.id == document_id)
+            .scalar()
+        )
+        if knowledge_base_id is None:
+            raise DurableIngestionDocumentMissing()
+
+        knowledge_base = (
+            self.db.query(KnowledgeBase)
+            .filter(
+                KnowledgeBase.id == knowledge_base_id,
+                KnowledgeBase.organization_id == self.organization_id,
+            )
+            .with_for_update()
+            .one_or_none()
+        )
+        if knowledge_base is None:
+            raise DurableIngestionDocumentMissing()
+
+        document = (
+            self.db.query(Document)
+            .filter(
+                Document.id == document_id,
+                Document.knowledge_base_id == knowledge_base.id,
+            )
+            .with_for_update()
+            .one_or_none()
+        )
+        if document is None:
+            raise DurableIngestionDocumentMissing()
+        return document
+
     @contextmanager
     def _document_processing_lock(self, document_id: UUID):
         lock_context = None
@@ -462,19 +680,24 @@ class IngestionOrchestrator:
         try:
             if finalize_stale_processing_start(session, document_id):
                 self._update_progress_redis(document_id, 0, expire=True)
-        except Exception:
+        except Exception as exc:
             session.rollback()
-            logger.exception(
-                "Failed to finalize document after lock acquisition failure: %s",
+            logger.error(
+                "Failed to finalize document after lock acquisition failure: "
+                "document_id=%s error_type=%s",
                 document_id,
+                type(exc).__name__,
             )
         finally:
             session.close()
 
     def _mark_document_indexing(
-        self, document_id: UUID, ingestion_fencing_token: str
+        self,
+        document_id: UUID,
+        ingestion_fencing_token: str,
+        *,
+        commit: bool = True,
     ) -> None:
-        self._update_progress_redis(document_id, 0)
         processing_started_at = datetime.now(timezone.utc).isoformat()
         self._update_status(
             document_id,
@@ -486,7 +709,9 @@ class IngestionOrchestrator:
                 "processing_started_at": processing_started_at,
                 "processing_current_step": "Processing started.",
             },
+            commit=commit,
         )
+        self._update_progress_redis(document_id, 0)
 
     def _extract_raw_blocks(self, doc: Document) -> List[Dict[str, Any]]:
         processor = IngestionFactory.get_processor(
@@ -652,6 +877,7 @@ class IngestionOrchestrator:
         document_version: DocumentVersion,
         *,
         fencing_token: str,
+        commit: bool = True,
     ) -> None:
         KnowledgeIngestionFinalizer(self.db).finalize_active_version(
             document_version,
@@ -660,7 +886,10 @@ class IngestionOrchestrator:
         doc.status = "completed"
         doc.error_message = None
         doc.updated_at = datetime.now(timezone.utc)
-        self.db.commit()
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
 
     def _handle_processing_failure(
         self,
@@ -721,7 +950,12 @@ class IngestionOrchestrator:
             self.db.rollback()
 
     def _update_progress_redis(
-        self, document_id: UUID, progress: int, expire: bool = False
+        self,
+        document_id: UUID,
+        progress: int,
+        expire: bool = False,
+        *,
+        persist_metadata: bool = True,
     ):
         """
         진행률을 Redis에 저장 (DB 과부하 방지)
@@ -730,6 +964,11 @@ class IngestionOrchestrator:
         """
         from apps.shared.pubsub import get_redis_client
 
+        # Durable attempts must pass the DB fencing check before publishing an
+        # advisory Redis progress value. Otherwise a stale worker could make
+        # the UI observe progress that its DB transaction can no longer own.
+        if persist_metadata:
+            self._update_progress_metadata(document_id, progress)
         try:
             redis_client = get_redis_client()
             key = f"knowledge_progress:{document_id}"
@@ -750,12 +989,16 @@ class IngestionOrchestrator:
 
             # 진행률 저장
             redis_client.set(key, str(progress), ex=600)
-        except Exception as e:
-            logger.warning(f"Failed to update progress in Redis: {e}")
-        finally:
-            self._update_progress_metadata(document_id, progress)
+        except Exception as exc:
+            logger.warning(
+                "Failed to update progress in Redis: error_type=%s",
+                type(exc).__name__,
+            )
 
     def _update_progress_metadata(self, document_id: UUID, progress: int) -> None:
+        if self._durable_job_mode:
+            self._update_progress_metadata_in_active_session(document_id, progress)
+            return
         session = SessionLocal()
         try:
             doc = session.query(Document).get(document_id)
@@ -783,6 +1026,29 @@ class IngestionOrchestrator:
             )
         finally:
             session.close()
+
+    def _update_progress_metadata_in_active_session(
+        self, document_id: UUID, progress: int
+    ) -> None:
+        doc = self.db.query(Document).get(document_id)
+        if not doc or doc.status not in {"indexing", "processing"}:
+            return
+        fencing_token = self._active_progress_fencing_token
+        if fencing_token:
+            expected_hash = KnowledgeIngestionFencing.hash_token(fencing_token)
+            if KnowledgeIngestionFencing.active_document_hash(doc) != expected_hash:
+                raise DurableIngestionLeaseLost()
+        meta_info = dict(doc.meta_info or {})
+        current_progress = meta_info.get("progress")
+        if isinstance(current_progress, (int, float)) and progress < current_progress:
+            return
+        meta_info["progress"] = progress
+        meta_info["processing_progress"] = progress
+        meta_info["processing_progress_updated_at"] = datetime.now(
+            timezone.utc
+        ).isoformat()
+        doc.meta_info = meta_info
+        self.db.flush()
 
     def resume_processing(self, document_id: UUID, strategy: str):
         """
@@ -1209,8 +1475,11 @@ class IngestionOrchestrator:
                     truncated = encoded[:MAX_TOKENS_PER_TEXT]
                     content = encoding.decode(truncated)
                     chunk["content"] = content
-                except Exception as e:
-                    logger.error(f"Failed to truncate text: {e}")
+                except Exception as exc:
+                    logger.error(
+                        "Failed to truncate embedding input: error_type=%s",
+                        type(exc).__name__,
+                    )
 
             # 배치 크기 체크
             if len(current_batch) >= MAX_TEXTS_PER_BATCH:
@@ -1307,10 +1576,13 @@ class IngestionOrchestrator:
                 r = Rake()
                 r.extract_keywords_from_text(content)
                 keywords = r.get_ranked_phrases()[:10]
-            except Exception as e:
+            except Exception as exc:
                 # 키워드 추출 실패는 치명적이지 않음 (로그만 남김)
                 if not keyword_error_logged:
-                    logger.warning(f"Keyword extraction failed: {e}")
+                    logger.warning(
+                        "Keyword extraction failed: error_type=%s",
+                        type(exc).__name__,
+                    )
                     keyword_error_logged = True
 
             # 메타데이터에 키워드 추가
@@ -1320,12 +1592,16 @@ class IngestionOrchestrator:
             # Content 전체 암호화
             try:
                 encrypted_content = encryption_manager.encrypt(content)
-            except Exception as e:
-                logger.error(f"Failed to encrypt content for chunk {i}: {e}")
+            except Exception as exc:
+                logger.error(
+                    "Failed to encrypt chunk content: chunk_index=%s error_type=%s",
+                    i,
+                    type(exc).__name__,
+                )
                 if is_hierarchical:
                     raise RuntimeError(
                         "hierarchical chunk encryption failed"
-                    ) from e
+                    ) from exc
                 # 기존 flat 경로의 호환성은 이번 범위에서 유지한다.
                 encrypted_content = content
 
@@ -1481,6 +1757,7 @@ class IngestionOrchestrator:
         error_message: str = None,
         progress: int = None,
         meta_updates: dict[str, Any | None] | None = None,
+        commit: bool = True,
     ):
         doc = self.db.query(Document).get(document_id)
         if doc:
@@ -1500,7 +1777,10 @@ class IngestionOrchestrator:
                         new_meta[key] = value
                 doc.meta_info = new_meta
 
-            self.db.commit()
+            if commit:
+                self.db.commit()
+            else:
+                self.db.flush()
 
     def _safe_ingestion_error_message(self, error: Exception) -> str:
         if isinstance(error, KnowledgeIngestionFinalizationError):

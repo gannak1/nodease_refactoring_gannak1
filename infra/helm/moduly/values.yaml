@@ -105,6 +105,24 @@ gateway:
     # Node environment
     NODE_ENV: "production"
 
+# Knowledge document ingestion worker. Enable only after the additive
+# migration has been applied; startup readiness rejects a stale schema.
+knowledgeWorker:
+  enabled: false
+  replicaCount: 1
+  concurrency: 2
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: ""
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
 # Worker (Workflow Engine)
 worker:
   enabled: true

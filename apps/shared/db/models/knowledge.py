@@ -1175,6 +1175,151 @@ class KnowledgeIngestionOutbox(Base):
     )
 
 
+class KnowledgeDocumentIngestionJob(Base):
+    """Durable admission, lease, and terminal record for document ingestion."""
+
+    __tablename__ = "knowledge_document_ingestion_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "idempotency_key",
+            name="uq_knowledge_document_ingestion_jobs_org_idempotency",
+        ),
+        CheckConstraint(
+            "operation_kind IN ('process', 'sync', 'resume', 'reindex')",
+            name="ck_knowledge_document_ingestion_jobs_operation",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'retry_scheduled', 'succeeded', "
+            "'dead_lettered', 'cancelled')",
+            name="ck_knowledge_document_ingestion_jobs_status",
+        ),
+        CheckConstraint(
+            "generation > 0 AND attempt_count >= 0 AND max_attempts > 0",
+            name="ck_knowledge_document_ingestion_jobs_attempts",
+        ),
+        CheckConstraint(
+            "(status = 'running' AND owner_token IS NOT NULL "
+            "AND fencing_token IS NOT NULL AND lease_expires_at IS NOT NULL "
+            "AND heartbeat_at IS NOT NULL) OR "
+            "(status <> 'running' AND owner_token IS NULL "
+            "AND fencing_token IS NULL AND lease_expires_at IS NULL)",
+            name="ck_knowledge_document_ingestion_jobs_lease",
+        ),
+        CheckConstraint(
+            "(status = 'dead_lettered' AND dead_lettered_at IS NOT NULL) OR "
+            "(status <> 'dead_lettered' AND dead_lettered_at IS NULL)",
+            name="ck_knowledge_document_ingestion_jobs_dead_letter",
+        ),
+        Index(
+            "uq_knowledge_document_ingestion_jobs_active_document",
+            "document_id",
+            unique=True,
+            postgresql_where=text(
+                "document_id IS NOT NULL AND status IN "
+                "('pending', 'running', 'retry_scheduled')"
+            ),
+        ),
+        Index(
+            "ix_knowledge_document_ingestion_jobs_due",
+            "status",
+            "next_retry_at",
+            "requested_at",
+        ),
+        Index(
+            "ix_knowledge_document_ingestion_jobs_stale_lease",
+            "status",
+            "lease_expires_at",
+        ),
+        Index(
+            "ix_knowledge_document_ingestion_jobs_org_document_requested",
+            "organization_id",
+            "document_id",
+            "requested_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization.id"), nullable=False, index=True
+    )
+    knowledge_base_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_bases.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    document_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    requested_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    operation_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_revision: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", server_default=text("'pending'")
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=3, server_default=text("3")
+    )
+    retryable: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    safe_reason_code: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    owner_token: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    fencing_token: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    dead_lettered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    result_document_version_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("document_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    safe_metadata: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+
 class RAGAnswerRun(Base):
     """
     Standalone RAG Agent answer 실행 기준 record.

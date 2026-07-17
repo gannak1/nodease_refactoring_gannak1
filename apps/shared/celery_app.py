@@ -55,6 +55,7 @@ celery_app.conf.update(
         "log.*": {"queue": "log"},
         "audit.*": {"queue": "log"},  # 감사 로그도 log_system 워커가 소비
         "security_alert.*": {"queue": "log"},
+        "knowledge.*": {"queue": "knowledge"},
     },
     beat_schedule={
         "security-alert-reconciliation": {
@@ -76,6 +77,11 @@ celery_app.conf.update(
             "task": "workflow.knowledge_collection_sync.recover",
             "schedule": 30.0,
             "options": {"queue": "workflow"},
+        },
+        "knowledge-document-ingestion-recovery": {
+            "task": "knowledge.document_ingestion.recover",
+            "schedule": 30.0,
+            "options": {"queue": "knowledge"},
         },
     },
     # 태스크 설정
@@ -112,6 +118,8 @@ from celery.signals import worker_init, worker_process_init  # noqa: E402
 @worker_init.connect
 def validate_worker_schedule_schema(**kwargs):
     """Fail worker startup before consuming claim tasks on a stale schema."""
+    if os.getenv("CELERY_WORKER_ROLE") == "knowledge":
+        return
     from apps.shared.db.session import engine
     from apps.shared.services.schedule_dispatch_schema_readiness import (
         require_schedule_dispatch_migration_ready,
@@ -134,6 +142,10 @@ def init_worker_process(**kwargs):
     from apps.shared.services.schedule_dispatch_schema_readiness import (
         require_schedule_dispatch_migration_ready,
     )
+
+    if os.getenv("CELERY_WORKER_ROLE") == "knowledge":
+        engine.dispose()
+        return
 
     settings = schedule_dispatch_settings_from_environment(os.environ)
 
