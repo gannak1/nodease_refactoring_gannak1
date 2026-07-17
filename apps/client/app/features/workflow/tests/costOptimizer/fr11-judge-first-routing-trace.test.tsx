@@ -23,6 +23,9 @@ describe('FR-011 Judge-first model routing trace', () => {
             judge: {
               model: 'gpt-4.1-mini',
               confidence: 0.84,
+              difficulty_score: 78,
+              reason_short: '근거 종합 필요',
+              eligible_model_count: 2,
               reason_code: 'structured_reasoning_required',
               cost: 0.00013,
             },
@@ -47,6 +50,9 @@ describe('FR-011 Judge-first model routing trace', () => {
     expect(screen.getByText('이번 Judge 판단')).toBeVisible();
     expect(screen.getByText(/Judge 모델: gpt-4.1-mini/)).toBeVisible();
     expect(screen.getByText(/판단 확신도 84.0%/)).toBeVisible();
+    expect(screen.getByText('난이도 78/100')).toBeVisible();
+    expect(screen.getByText('사유: 근거 종합 필요')).toBeVisible();
+    expect(screen.getByText('품질 통과 후보 2개')).toBeVisible();
     expect(screen.getByText(/Judge 비용 \$0.000130/)).toBeVisible();
     expect(
       screen.getByText(

@@ -3887,7 +3887,7 @@ def test_deployed_judge_bootstrap_uses_judge_and_records_safe_learning_label(mon
                 "choices": [
                     {
                         "message": {
-                            "content": '{"selected_model_id":"gpt-4o-mini","confidence":0.9,"reason_code":"judge_short"}'
+                            "content": '{"difficulty_score":18,"confidence":0.9,"reason_short":"단순 안내 요청","reason_code":"economy_fit"}'
                         }
                     }
                 ],
@@ -3927,6 +3927,32 @@ def test_deployed_judge_bootstrap_uses_judge_and_records_safe_learning_label(mon
         },
     )
     monkeypatch.setattr(node, "_available_routing_model_ids", lambda _db: ["gpt-4o-mini", "gpt-5-mini"])
+    monkeypatch.setattr(
+        node,
+        "_routing_candidate_profiles",
+        lambda *_args: [
+            {
+                "model_id": "gpt-4o-mini",
+                "input_price_per_1k": 0.00015,
+                "output_price_per_1k": 0.0006,
+                "quality_by_difficulty": {
+                    "economy": 0.94,
+                    "balanced": 0.84,
+                    "advanced": 0.68,
+                },
+            },
+            {
+                "model_id": "gpt-5-mini",
+                "input_price_per_1k": 0.00025,
+                "output_price_per_1k": 0.002,
+                "quality_by_difficulty": {
+                    "economy": 0.98,
+                    "balanced": 0.95,
+                    "advanced": 0.90,
+                },
+            },
+        ],
+    )
     monkeypatch.setattr(node, "_resolve_credential_principal_user", lambda: user_id)
     monkeypatch.setattr(node, "_require_runtime_organization_id", lambda *_args: uuid.uuid4())
 
@@ -3938,6 +3964,9 @@ def test_deployed_judge_bootstrap_uses_judge_and_records_safe_learning_label(mon
     assert fallback == "gpt-5-mini"
     assert metadata["decision_source"] == "runtime_judge"
     assert metadata["judge_called"] is True
+    assert metadata["judge"]["difficulty_score"] == 18
+    assert metadata["judge"]["reason_short"] == "단순 안내 요청"
+    assert metadata["judge"]["eligible_model_count"] == 2
     assert metadata["judge"]["usage_log_error"] == "RuntimeError"
     assert captured["policy_id"] == str(policy_id)
     assert captured["selected_model_id"] == "gpt-4o-mini"

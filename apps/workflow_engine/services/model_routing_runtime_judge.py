@@ -24,7 +24,9 @@ class RuntimeJudgeClient(Protocol):
 class RuntimeJudgeDecision:
     selected_model_id: str | None
     required_difficulty: str | None
+    difficulty_score: int | None
     confidence: float
+    reason_short: str | None
     reason_code: str
     usage: dict[str, Any]
 
@@ -40,7 +42,18 @@ class RuntimeJudgeDecision:
             metadata["selected_model"] = self.selected_model_id
         if self.required_difficulty:
             metadata["required_difficulty"] = self.required_difficulty
+        if self.difficulty_score is not None:
+            metadata["difficulty_score"] = self.difficulty_score
+        if self.reason_short:
+            metadata["reason_short"] = self.reason_short
         return metadata
+
+
+@dataclass(frozen=True)
+class CatalogSelection:
+    selected_model_id: str | None
+    eligible_model_count: int
+    required_quality_floor: float | None
 
 
 class ModelRoutingRuntimeJudge:
@@ -51,8 +64,26 @@ class ModelRoutingRuntimeJudge:
     """
 
     MAX_FEATURE_CHARS = 3_000
-    # reasoning 모델도 짧은 JSON 판단을 완결할 수 있도록 여유를 둔다.
+    # Judge 비용 상한은 제품 설정으로 정한 256 token을 유지한다.
     MAX_OUTPUT_TOKENS = 256
+    MIN_CONFIDENCE_FOR_CATALOG_SELECTION = 0.65
+    _RETRY_FEATURE_CHARS = 1_200
+    _RETRYABLE_PROVIDER_REASON_CODES = {"responses_incomplete"}
+    _REASON_SHORT_BY_CODE = {
+        "simple_response": "단순 응답 처리",
+        "multi_constraint": "여러 조건 종합",
+        "evidence_synthesis": "근거 종합 판단",
+        "structured_precision": "정확한 형식 필요",
+        "high_risk_reasoning": "고위험 판단 필요",
+        "ambiguous_request": "모호한 요청 해석",
+        "long_context": "긴 문맥 종합",
+    }
+
+    @classmethod
+    def confidence_allows_catalog_selection(cls, confidence: float) -> bool:
+        """Judge가 충분히 확신할 때만 점수 기반 모델 교체를 허용한다."""
+
+        return confidence >= cls.MIN_CONFIDENCE_FOR_CATALOG_SELECTION
 
     @classmethod
     def decide(
@@ -68,19 +99,34 @@ class ModelRoutingRuntimeJudge:
         if not candidates:
             raise RuntimeJudgeResponseError("no candidate models")
 
-        response = client.invoke_sync(
-            messages=cls._messages(
-                candidate_model_ids=candidates,
-                routing_feature_text=routing_feature_text,
-                rag_context=rag_context,
-                candidate_profiles=candidate_profiles,
-            ),
-            temperature=0,
-            max_tokens=cls.MAX_OUTPUT_TOKENS,
-            # GPT-5 Responses API는 JSON 응답 형식이 명시돼야 작은 output budget에서
-            # minimal reasoning 기본값을 적용한다. Judge는 항상 JSON 계약만 필요하다.
-            response_format={"type": "json_object"},
-        )
+        request_kwargs = {
+            "temperature": 0,
+            "max_tokens": cls.MAX_OUTPUT_TOKENS,
+            "response_format": {"type": "json_object"},
+        }
+        try:
+            response = client.invoke_sync(
+                messages=cls._messages(
+                    candidate_model_ids=candidates,
+                    routing_feature_text=routing_feature_text,
+                    rag_context=rag_context,
+                    candidate_profiles=candidate_profiles,
+                ),
+                **request_kwargs,
+            )
+        except Exception as exc:
+            # GPT-5.4 계열은 minimal effort를 지원하지 않아 256 token 안에서
+            # 내부 추론을 끝내지 못할 수 있다. 동일 한도에서 한 번만 더 짧은
+            # 계약으로 재시도한다. 정상 요청에는 추가 호출이 없다.
+            if str(getattr(exc, "reason_code", "")) not in cls._RETRYABLE_PROVIDER_REASON_CODES:
+                raise
+            response = client.invoke_sync(
+                messages=cls._retry_messages(
+                    routing_feature_text=routing_feature_text,
+                    rag_context=rag_context,
+                ),
+                **request_kwargs,
+            )
         content = cls._response_content(response)
         try:
             payload = json.loads(content)
@@ -91,9 +137,27 @@ class ModelRoutingRuntimeJudge:
 
         selected_model_id = str(payload.get("selected_model_id") or "").strip() or None
         required_difficulty = str(payload.get("required_difficulty") or "").strip() or None
+        raw_difficulty_score = payload.get("difficulty_score")
+        difficulty_score: int | None = None
+        if raw_difficulty_score is not None:
+            if isinstance(raw_difficulty_score, bool):
+                raise RuntimeJudgeResponseError("invalid difficulty score")
+            try:
+                difficulty_score = int(raw_difficulty_score)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeJudgeResponseError("invalid difficulty score") from exc
+            if not 0 <= difficulty_score <= 100:
+                raise RuntimeJudgeResponseError("difficulty score must be between 0 and 100")
+        reason_code = str(payload.get("reason_code") or "judge_selected").strip()[:80]
+        reason_short = str(payload.get("reason_short") or "").strip() or None
+        if reason_short is None:
+            reason_short = cls._REASON_SHORT_BY_CODE.get(reason_code)
+        if difficulty_score is not None:
+            if not reason_short or len(reason_short) > 14 or not any("가" <= char <= "힣" for char in reason_short):
+                raise RuntimeJudgeResponseError("invalid short reason")
         if selected_model_id and selected_model_id not in candidates:
             raise RuntimeJudgeResponseError("unavailable model selected by judge")
-        if not selected_model_id and required_difficulty not in {"economy", "balanced", "advanced"}:
+        if not selected_model_id and difficulty_score is None and required_difficulty not in {"economy", "balanced", "advanced"}:
             raise RuntimeJudgeResponseError("invalid required difficulty")
         try:
             confidence = float(payload.get("confidence"))
@@ -102,12 +166,17 @@ class ModelRoutingRuntimeJudge:
         if not 0.0 <= confidence <= 1.0:
             raise RuntimeJudgeResponseError("confidence must be between 0 and 1")
 
-        reason_code = str(payload.get("reason_code") or "judge_selected").strip()
         return RuntimeJudgeDecision(
             selected_model_id=selected_model_id,
-            required_difficulty=required_difficulty,
+            required_difficulty=(
+                required_difficulty
+                if required_difficulty in {"economy", "balanced", "advanced"}
+                else cls._difficulty_band(difficulty_score)
+            ),
+            difficulty_score=difficulty_score,
             confidence=confidence,
-            reason_code=reason_code[:80],
+            reason_short=reason_short,
+            reason_code=reason_code,
             usage=cls._safe_usage(response.get("usage") if isinstance(response, dict) else None),
         )
 
@@ -115,18 +184,21 @@ class ModelRoutingRuntimeJudge:
     def select_catalog_candidate(
         candidate_profiles: list[dict[str, Any]],
         *,
-        required_difficulty: str | None,
-    ) -> str | None:
-        """난이도별 최소 품질을 만족하는 가장 저렴한 실행 가능 후보를 고른다.
+        difficulty_score: int | None,
+        required_difficulty: str | None = None,
+    ) -> CatalogSelection:
+        """점수에 필요한 품질을 만족하는 가장 저렴한 실행 가능 후보를 고른다.
 
         Judge는 난이도만 판단한다. 모델 선택은 저장된 공개 카탈로그 수치로
         결정해, 짧은 Judge 응답 예산이 모델별 가격·품질 비교에 소모되지 않게 한다.
         """
 
-        thresholds = {"economy": 0.72, "balanced": 0.80, "advanced": 0.85}
-        threshold = thresholds.get(required_difficulty or "")
-        if threshold is None:
-            return None
+        if difficulty_score is None:
+            legacy_scores = {"economy": 20, "balanced": 50, "advanced": 80}
+            difficulty_score = legacy_scores.get(required_difficulty or "")
+        if difficulty_score is None:
+            return CatalogSelection(None, 0, None)
+        threshold = 0.70 + (float(difficulty_score) / 100.0) * 0.20
 
         eligible: list[tuple[float, float, str]] = []
         for profile in candidate_profiles:
@@ -134,8 +206,11 @@ class ModelRoutingRuntimeJudge:
             quality = profile.get("quality_by_difficulty")
             if not model_id or not isinstance(quality, dict):
                 continue
-            score = quality.get(required_difficulty)
-            if not isinstance(score, (int, float)) or float(score) < threshold:
+            expected_quality = ModelRoutingRuntimeJudge._quality_at_score(
+                quality,
+                difficulty_score,
+            )
+            if expected_quality is None or expected_quality < threshold:
                 continue
             input_price = profile.get("input_price_per_1k")
             output_price = profile.get("output_price_per_1k")
@@ -149,7 +224,37 @@ class ModelRoutingRuntimeJudge:
                     model_id,
                 )
             )
-        return min(eligible)[2] if eligible else None
+        return CatalogSelection(
+            selected_model_id=min(eligible)[2] if eligible else None,
+            eligible_model_count=len(eligible),
+            required_quality_floor=round(threshold, 3),
+        )
+
+    @staticmethod
+    def _difficulty_band(score: int | None) -> str | None:
+        if score is None:
+            return None
+        if score < 35:
+            return "economy"
+        if score < 65:
+            return "balanced"
+        return "advanced"
+
+    @staticmethod
+    def _quality_at_score(
+        quality_by_difficulty: dict[str, Any],
+        difficulty_score: int,
+    ) -> float | None:
+        values = []
+        for key in ("economy", "balanced", "advanced"):
+            value = quality_by_difficulty.get(key)
+            if not isinstance(value, (int, float)):
+                return None
+            values.append(float(value))
+        economy, balanced, advanced = values
+        if difficulty_score <= 50:
+            return economy + (balanced - economy) * (difficulty_score / 50.0)
+        return balanced + (advanced - balanced) * ((difficulty_score - 50) / 50.0)
 
     @classmethod
     def _messages(
@@ -165,16 +270,42 @@ class ModelRoutingRuntimeJudge:
         del candidate_model_ids, candidate_profiles
         instruction = (
             "당신은 워크플로우 LLM 요청 난이도 Judge입니다. 현재 요청, 렌더된 프롬프트, "
-            "출력 제약과 실제 RAG 검색량을 보고 필요한 수준을 economy, balanced, advanced 중 "
-            "하나로만 분류하세요. 모델을 고르거나 가격을 추정하지 마세요. "
-            "economy는 짧고 단순한 변환·분류·안내, balanced는 여러 조건을 종합하는 일반 업무, "
-            "advanced는 높은 정확도·안전성·다단계 추론·충돌 근거 판단이 필요한 업무입니다. "
+            "출력 제약과 실제 RAG 검색량을 보고 필요한 난이도를 0~100 정수로 점수화하세요. "
+            "모델을 고르거나 가격을 추정하지 마세요. 0은 짧고 단순한 변환·분류·안내이고, "
+            "50은 여러 조건을 종합하는 일반 업무, 100은 높은 정확도·안전성·다단계 추론·충돌 근거 판단입니다. "
+            "요청이 짧아도 삭제·승인·보상·접근 변경처럼 되돌리기 어렵거나, 서로 충돌하는 의무·근거를 "
+            "판단해야 하면 70점 이상으로 평가하세요. 반대로 단순 안내나 이미 정해진 절차 설명은 30점 이하입니다. "
+            "reason_short에는 판단 이유를 한국어 8~14자로만 작성하세요. "
             "반드시 JSON object 하나만 반환하세요: "
-            '{"required_difficulty":"balanced","confidence":0.0,'
-            '"reason_code":"balanced_quality"}.'
+            '{"difficulty_score":58,"confidence":0.0,'
+            '"reason_short":"여러 조건 종합","reason_code":"balanced_quality"}.'
         )
         body = {
             "request_feature": str(routing_feature_text or "")[: cls.MAX_FEATURE_CHARS],
+            "rag_context": cls._safe_rag_context(rag_context),
+        }
+        return [
+            {"role": "system", "content": instruction},
+            {"role": "user", "content": json.dumps(body, ensure_ascii=False)},
+        ]
+
+    @classmethod
+    def _retry_messages(
+        cls,
+        *,
+        routing_feature_text: str,
+        rag_context: dict[str, Any] | None,
+    ) -> list[dict[str, str]]:
+        """응답 미완료 때만 쓰는 최소 Judge 계약이다."""
+
+        instruction = (
+            "요청 난이도를 0~100으로 평가하세요. 모델 선택 금지. "
+            "JSON 하나만 반환: {\"difficulty_score\":0,\"confidence\":0.0,"
+            "\"reason_code\":\"simple_response|multi_constraint|evidence_synthesis|"
+            "structured_precision|high_risk_reasoning|ambiguous_request|long_context\"}."
+        )
+        body = {
+            "request_feature": str(routing_feature_text or "")[: cls._RETRY_FEATURE_CHARS],
             "rag_context": cls._safe_rag_context(rag_context),
         }
         return [

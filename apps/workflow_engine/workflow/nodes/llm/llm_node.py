@@ -608,12 +608,22 @@ class LLMNode(Node[LLMNodeData]):
             else:
                 # Judge가 정상적으로 고른 모델은 usage 기록이나 학습 artifact 저장이
                 # 일시 실패하더라도 유지한다. 두 후속 작업은 관측성/학습 보조 경로다.
-                selected_model_id = (
-                    ModelRoutingRuntimeJudge.select_catalog_candidate(
-                        candidate_profiles,
-                        required_difficulty=judge_decision.required_difficulty,
+                catalog_selection = ModelRoutingRuntimeJudge.select_catalog_candidate(
+                    candidate_profiles,
+                    difficulty_score=judge_decision.difficulty_score,
+                    required_difficulty=judge_decision.required_difficulty,
+                )
+                confidence_allows_selection = (
+                    ModelRoutingRuntimeJudge.confidence_allows_catalog_selection(
+                        judge_decision.confidence
                     )
-                    or judge_decision.selected_model_id
+                )
+                selected_model_id = (
+                    catalog_selection.selected_model_id
+                    if confidence_allows_selection
+                    else None
+                ) or (
+                    judge_decision.selected_model_id
                     or judge_default_model_id
                 )
                 if fallback_model_id == selected_model_id:
@@ -633,7 +643,16 @@ class LLMNode(Node[LLMNodeData]):
                 reason_code = judge_decision.reason_code
                 judge_metadata = judge_decision.safe_metadata()
                 judge_metadata["model"] = judge_model_id
-                judge_metadata["selection_source"] = "catalog_quality_then_cost"
+                judge_metadata["selection_source"] = (
+                    "catalog_quality_then_cost"
+                    if confidence_allows_selection
+                    else "low_confidence_default"
+                )
+                judge_metadata["eligible_model_count"] = catalog_selection.eligible_model_count
+                judge_metadata["required_quality_floor"] = catalog_selection.required_quality_floor
+                judge_metadata["minimum_selection_confidence"] = (
+                    ModelRoutingRuntimeJudge.MIN_CONFIDENCE_FOR_CATALOG_SELECTION
+                )
 
                 usage = judge_decision.usage
                 if usage:

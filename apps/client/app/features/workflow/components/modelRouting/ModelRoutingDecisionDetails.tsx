@@ -15,6 +15,10 @@ type JudgeSummary = {
   model?: string;
   confidence?: number;
   reasonCode?: string;
+  difficultyScore?: number;
+  reasonShort?: string;
+  eligibleModelCount?: number;
+  requiredQualityFloor?: number;
   cost?: number;
 };
 
@@ -88,6 +92,10 @@ const judgeOf = (value: unknown): JudgeSummary | undefined => {
     model: stringValue(value.model),
     confidence: numberValue(value.confidence),
     reasonCode: stringValue(value.reason_code),
+    difficultyScore: numberValue(value.difficulty_score),
+    reasonShort: stringValue(value.reason_short),
+    eligibleModelCount: numberValue(value.eligible_model_count),
+    requiredQualityFloor: numberValue(value.required_quality_floor),
     cost: numberValue(value.cost),
   };
 };
@@ -196,7 +204,7 @@ export function ModelRoutingDecisionDetails({
           {isDeploymentPolicyTest
             ? '활성 배포 정책을 테스트에만 적용했습니다. 이 결과는 로컬 라우터 학습에 포함되지 않습니다.'
             : summary.decisionSource === 'runtime_judge'
-              ? '이번 요청은 Judge가 후보 모델을 비교해 선택했습니다.'
+              ? '이번 요청의 난이도를 Judge가 판정하고, 서버가 통과 후보 중 모델을 선택했습니다.'
               : summary.decisionSource === 'local_router'
                 ? '누적된 Judge 선택을 학습한 로컬 라우터가 먼저 선택했습니다.'
                 : 'Judge-first 정책을 적용할 수 없어 저장된 기본 모델로 실행했습니다.'}
@@ -234,12 +242,14 @@ export function ModelRoutingDecisionDetails({
         ) : null}
       </div>
 
-      <div className="sm:col-span-2">
-        <dt className="text-gray-500">선택 이유</dt>
-        <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-          {reasonText(summary.reasonCode)}
-        </dd>
-      </div>
+      {!(isJudgeFirst && summary.judge?.difficultyScore !== undefined) ? (
+        <div className="sm:col-span-2">
+          <dt className="text-gray-500">선택 이유</dt>
+          <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+            {reasonText(summary.reasonCode)}
+          </dd>
+        </div>
+      ) : null}
 
       {summary.fallbackModel ? (
         <div className="sm:col-span-2">
@@ -272,6 +282,18 @@ export function ModelRoutingDecisionDetails({
             {summary.judge.confidence === undefined
               ? '-'
               : `${(summary.judge.confidence * 100).toFixed(1)}%`}
+          </dd>
+          <dd className="mt-2 grid gap-2 sm:grid-cols-3">
+            <span className="rounded border border-violet-200 bg-white px-2 py-1">
+              난이도 {summary.judge.difficultyScore ?? '-'}
+              {summary.judge.difficultyScore === undefined ? '' : '/100'}
+            </span>
+            <span className="rounded border border-violet-200 bg-white px-2 py-1">
+              사유: {summary.judge.reasonShort || '-'}
+            </span>
+            <span className="rounded border border-violet-200 bg-white px-2 py-1">
+              품질 통과 후보 {summary.judge.eligibleModelCount ?? '-'}개
+            </span>
           </dd>
           <dd className="mt-1 text-gray-500">
             판단 코드: {summary.judge.reasonCode || '-'}
