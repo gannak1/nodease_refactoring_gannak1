@@ -5,11 +5,15 @@ import {
   screen,
   waitFor,
 } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { appApi } from '@/app/features/app/api/appApi';
 
-import { AppAuthSecretControl } from './AppAuthSecretControl';
+import {
+  AppAuthSecretControl,
+  type IssuedAppAuthSecret,
+} from './AppAuthSecretControl';
 
 vi.mock('@/app/features/app/api/appApi', () => ({
   appApi: {
@@ -27,6 +31,19 @@ vi.mock('sonner', () => ({
 
 const mockedAppApi = vi.mocked(appApi);
 const writeClipboard = vi.fn().mockResolvedValue(undefined);
+
+function ControlledSecretHarness() {
+  const [issuedSecret, setIssuedSecret] =
+    useState<IssuedAppAuthSecret | null>(null);
+
+  return (
+    <AppAuthSecretControl
+      appId="app-1"
+      issuedSecret={issuedSecret}
+      onSecretAvailable={setIssuedSecret}
+    />
+  );
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -151,6 +168,39 @@ describe('AppAuthSecretControl', () => {
         revoke_previous_immediately: true,
       }),
     );
+  });
+
+  it('keeps a controlled secret visible without an immediate status refetch', async () => {
+    mockedAppApi.getAuthSecretStatus.mockResolvedValue({
+      configured: true,
+      version: 1,
+      rotation_enabled: true,
+      rotated_at: '2026-07-17T02:00:00Z',
+      previous_grace_active: false,
+      previous_valid_until: null,
+    });
+    mockedAppApi.rotateAuthSecret.mockResolvedValue({
+      secret: 'controlled-one-time-secret',
+      version: 2,
+      rotated_at: '2026-07-17T03:00:00Z',
+      previous_grace_active: false,
+      previous_valid_until: null,
+    });
+
+    render(<ControlledSecretHarness />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '교체' }));
+    fireEvent.click(screen.getByRole('button', { name: '교체 확인' }));
+
+    expect(
+      await screen.findByDisplayValue('controlled-one-time-secret'),
+    ).toBeVisible();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(mockedAppApi.getAuthSecretStatus).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByDisplayValue('controlled-one-time-secret'),
+    ).toBeVisible();
   });
 
   it('keeps a parent-owned one-time secret when the control remounts', async () => {

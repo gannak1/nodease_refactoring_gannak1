@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Copy,
@@ -56,6 +56,7 @@ export function AppAuthSecretControl({
   const [loading, setLoading] = useState(true);
   const [rotating, setRotating] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
+  const controlledIssuedSecretRef = useRef(controlledIssuedSecret);
   const isIssuedSecretControlled = controlledIssuedSecret !== undefined;
   const issuedSecret = isIssuedSecretControlled
     ? controlledIssuedSecret
@@ -76,6 +77,10 @@ export function AppAuthSecretControl({
   );
 
   useEffect(() => {
+    controlledIssuedSecretRef.current = controlledIssuedSecret;
+  }, [controlledIssuedSecret]);
+
+  useEffect(() => {
     let active = true;
     setLoading(true);
     setUnavailable(false);
@@ -89,9 +94,11 @@ export function AppAuthSecretControl({
       .getAuthSecretStatus(appId)
       .then((nextStatus) => {
         if (active) {
+          const currentControlledIssuedSecret =
+            controlledIssuedSecretRef.current;
           if (
-            controlledIssuedSecret &&
-            controlledIssuedSecret.version !== nextStatus.version
+            currentControlledIssuedSecret &&
+            currentControlledIssuedSecret.version !== nextStatus.version
           ) {
             updateIssuedSecret(null);
             setShowSecret(false);
@@ -116,7 +123,6 @@ export function AppAuthSecretControl({
     };
   }, [
     appId,
-    controlledIssuedSecret,
     isIssuedSecretControlled,
     onReadinessChange,
     updateIssuedSecret,

@@ -257,6 +257,54 @@ def test_demo_upsert_preserves_valid_rotated_app_secret_state_without_reset():
     assert demo_seed._app_seed_values(None, seed_values) == seed_values
 
 
+def test_test_profile_seed_preserves_valid_rotated_app_secret_state_without_reset(
+    monkeypatch,
+):
+    now = datetime(2026, 7, 18, tzinfo=timezone.utc)
+    existing = SimpleNamespace(
+        auth_secret="legacy-raw-value",
+        auth_secret_verifier=app_auth_secret_verifier("current-value"),
+        auth_secret_verifier_version=APP_AUTH_SECRET_VERIFIER_VERSION,
+        auth_secret_generation=4,
+        auth_secret_previous_verifier=app_auth_secret_verifier("previous-value"),
+        auth_secret_previous_verifier_version=APP_AUTH_SECRET_VERIFIER_VERSION,
+        auth_secret_previous_valid_until=now + timedelta(minutes=5),
+        auth_secret_rotated_at=now,
+    )
+    captured_app_values = []
+
+    class FakeSession:
+        def get(self, model, row_id):
+            if model is demo_seed.App and row_id == demo_seed.TEST_APP_ID:
+                return existing
+            return None
+
+        def flush(self):
+            return None
+
+        def commit(self):
+            return None
+
+    def capture_upsert(_db, model, row_id, values):
+        if model is demo_seed.App and row_id == demo_seed.TEST_APP_ID:
+            captured_app_values.append(values)
+        return SimpleNamespace(id=row_id)
+
+    monkeypatch.setattr(demo_seed, "_adopt_existing_test_user_ids", lambda _db: None)
+    monkeypatch.setattr(demo_seed, "hash_password", lambda _value: "hashed")
+    monkeypatch.setattr(demo_seed, "_upsert_by_id", capture_upsert)
+
+    demo_seed.seed_test_data(FakeSession())
+
+    assert len(captured_app_values) == 1
+    values = captured_app_values[0]
+    assert values["name"] == "테스트용 기능 검증 워크플로우"
+    assert values["auth_secret"] is None
+    assert all(
+        field not in values for field in demo_seed._MANAGED_APP_SECRET_STATE_FIELDS
+    )
+
+
 def test_hr_policy_collection_references_precomputed_indexed_kbs():
     fixture = demo_seed._read_demo_knowledge_fixture()
     indexed_keys = {spec.key for spec in demo_seed.DEMO_DOCUMENT_SPECS}
@@ -1225,6 +1273,7 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     assert "a6f4d2c8e1b7" in ancestry
     assert "a9b0c1d2e3f4" in ancestry
     assert "aa0b1c2d3e4f" in ancestry
+    assert "ab1c2d3e4f50" in ancestry
     assert "b0c1d2e3f4a5" in ancestry
 
 
