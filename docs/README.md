@@ -12,6 +12,7 @@ This directory is the active documentation root for Nodease. When active docs co
 | --- | --- |
 | Product requirements | [PRD.md](PRD.md) |
 | Architecture and service boundaries | [architecture.md](architecture.md) |
+| Operational lifecycle, retention and async ownership | [operational_lifecycle.md](operational_lifecycle.md) |
 | Data model and RBAC policy | [data_model.md](data_model.md) |
 | Shared terminology | [glossary.md](glossary.md) |
 | Design decisions | [decisions/](decisions/) |

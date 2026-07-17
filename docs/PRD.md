@@ -41,9 +41,9 @@ Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI �
 
 ### 3.1 이번 범위: 4개 데모 축
 
-| 축 | 현재 상태 | 이번에 만드는 것 |
+| 축 | 현재 상태 | 목표 사용자 흐름 |
 | --- | --- | --- |
-| **Agent Builder** | node 단위 wizard만 존재 (prompt/code/template 개선·생성) | 프롬프트 입력 → workflow 초안 생성 → Preview Mode 검토 → `적용 및 저장`. 예: "사내 복지, 휴가, 인사 정책 문서를 바탕으로 직원 질문에 답변해줘" → `[입력] → [Knowledge Base-backed LLM] → [응답]` |
+| **Agent Builder** | 자연어 요청으로 workflow 초안을 만들고 필수 설정을 보완해 저장하는 경로와 기존 node 단위 wizard가 함께 존재 | 프롬프트 입력 → workflow 초안 생성 → 필수 설정 검토·보완 → 저장 → 별도 테스트 실행. 예: "사내 복지, 휴가, 인사 정책 문서를 바탕으로 직원 질문에 답변해줘" → `[입력] → [Knowledge Base-backed LLM] → [응답]` |
 | **Admin 대시보드** | `audit_logs`, `llm_usage_logs`, `workflow_runs` 데이터는 이미 쌓임 | 조회 UI: 권한 신청/승인 이력, 누가 언제 뭘 했는지(audit), workflow별 비용(usage), 예산 위험 표시 |
 | **비용 최적화** | `POST /api/v1/workflows/{id}/compare` 모델 비교 API 구현됨 | "비용 최적화" UI: LLM 노드의 현재 설정과 후보 설정을 같은 입력으로 비교하고, `modelRouting`, `promptRouting`, task-aware RAG, `responseFormat`, `maxOutputTokens` 조정에 따른 비용·품질 차이를 표시 |
 | **통합 RAG** | KB 구축/검색, metadata-aware·hierarchical retrieval 구현됨 | 현재 데모는 준비된 KB 검색/citation과 권한 경계를 유지하고, 목표 구조는 gate 승인 후 자동 수집 가능한 사내 지식 통합 저장소, document-level KB 권한 경계, collection 기반 routing으로 확장 |
@@ -84,11 +84,11 @@ Conversation Memory는 현재 4개 데모 축의 완료 조건이 아니라 후�
 7. 신입사원은 다시 `내 워크플로우` 화면으로 돌아와 새 모듈을 생성한다.
 8. 신입사원은 Agent Builder에 자연어로 만들고 싶은 workflow를 요청한다.
 9. Agent Builder는 입력 노드, Knowledge Base가 연결된 LLM 노드, 응답 노드로 구성된 workflow 초안을 생성한다.
-10. 신입사원은 Preview Mode에서 draft graph와 Node Detail Panel의 내부 설정을 확인한다.
-11. 신입사원은 `적용 및 저장`을 선택하고, 시스템은 권한 재확인, stale check, validation 재확인과 apply/save audit 기록을 모두 통과한 경우에만 workflow graph 저장 성공으로 완료한다.
+10. 신입사원은 생성된 graph와 Node Detail Panel의 내부 설정을 확인하고, 실행에 필요한 설정을 보완한다.
+11. 신입사원은 workflow를 저장한다. 시스템은 현재 권한과 저장 가능한 설정인지 다시 검증하고, 성공한 저장 행위를 audit log에 기록한다.
 12. 신입사원은 저장된 workflow를 별도 테스트 실행하고, 응답 노드에서 결과가 반환되는 것을 확인한다.
 13. 신입사원은 workflow를 배포하고, 배포된 workflow를 실행한다.
-14. workflow 생성, 권한 승인, Agent Builder 적용 및 저장, 배포, 실행 행위는 audit log에 기록된다.
+14. workflow 생성, 권한 승인, Agent Builder를 통한 workflow 저장, 배포, 실행 행위는 audit log에 기록된다.
 
 시연에서 사용하는 Agent Builder workflow는 사내 지식 통합 질의 workflow다. 이 workflow는 직원의 질문을 입력으로 받아, 사내 복지/휴가/인사 정책 문서가 색인된 Knowledge Base를 검색하고, LLM이 권한이 허용된 문서 근거를 바탕으로 답변을 생성한다. Slack 등 외부 채널 연동은 이번 시연에서 제외하고, Nodease 내부 입력 노드와 응답 노드로 결과를 확인한다.
 
@@ -165,9 +165,9 @@ RAG 보안 경계: 어떤 RAG 모드에서도 권한 없는 문서는 검색 후
 9. 신입사원은 흩어진 사내 문서를 검색해 답변하는 RAG workflow 생성을 자연어로 요청한다.
 10. 예시 요청은 "사내 복지, 휴가, 인사 정책 문서를 통합 검색해서 직원 질문에 답변하는 워크플로우를 만들어줘"로 한다.
 11. Agent Builder는 입력 노드, Knowledge Base-backed LLM 노드, Answer 노드로 구성된 초안을 생성한다.
-12. 신입사원은 Preview Mode에서 draft graph를 읽기 전용으로 확인한다.
-13. LLM 노드를 선택해 Node Detail Panel에서 사내 문서 Knowledge Base binding, 입력/출력 mapping, validation 상태를 확인한다.
-14. 신입사원은 `적용 및 저장`을 선택하고, 시스템은 권한 재확인, stale check, validation 재확인과 apply/save audit 기록을 모두 통과한 경우에만 workflow graph 저장 성공으로 완료한다.
+12. 신입사원은 생성된 graph와 노드 구성을 확인한다.
+13. LLM 노드를 선택해 Node Detail Panel에서 사내 문서 Knowledge Base binding, 입력/출력 mapping, 필수 설정 상태를 확인하고 필요한 값을 보완한다.
+14. 신입사원은 workflow를 저장한다. 시스템은 현재 권한과 저장 가능한 설정인지 다시 검증한 경우에만 저장을 완료한다.
 15. 저장된 workflow의 테스트 입력에 사내 문서 질문을 넣는다. 예: "가족돌봄휴가를 연차와 붙여서 사용할 수 있어? 신청은 어디서 해야 해?"
 16. workflow를 테스트 실행한다.
 17. LLM 노드는 권한이 허용된 Knowledge Base에서 관련 문서를 검색하고, 검색 결과를 바탕으로 답변을 생성한다.
@@ -178,7 +178,7 @@ RAG 보안 경계: 어떤 RAG 모드에서도 권한 없는 문서는 검색 후
 **3막 — 관리자 감사/운영 관측**
 
 21. 관리자가 admin 화면으로 돌아간다.
-22. 관리자는 audit 목록에서 권한 신청, 권한 승인, Agent Builder 적용 및 저장, workflow 배포, 실행 기록을 확인한다.
+22. 관리자는 audit 목록에서 권한 신청, 권한 승인, Agent Builder를 통한 workflow 저장, workflow 배포, 실행 기록을 확인한다.
 23. 이번 달 조직 LLM 사용 비용을 확인한다.
 24. 예산 위험/초과 workflow 개수를 확인한다.
 
@@ -212,7 +212,7 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 ### Agent Builder — [features/agent-builder/](features/agent-builder/requirements.md)
 
 - FR-001: 자연어 프롬프트로부터 실행 가능한 workflow 초안 생성
-- FR-002: 생성된 workflow 초안을 Preview Mode에서 검토하고, `적용 및 저장`으로 저장한 뒤 별도 테스트 실행
+- FR-002: 생성된 workflow 초안과 필수 설정을 검토·보완하고 저장한 뒤 별도 테스트 실행
 - FR-003: 생성 결과에 필요한 credential/권한이 없으면 사전 안내
 - FR-004: Knowledge Base-backed LLM node 설정을 포함한 사내 지식 통합 RAG workflow 초안 생성
 
@@ -266,7 +266,7 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 | NFR-001 | 권한 enforcement | 모든 리소스 API는 서버(Gateway)에서 권한을 판정한다. 프론트 UI 차단만으로 처리하지 않는다. |
 | NFR-002 | 테넌시 경계 | 리소스 접근은 organization 경계 안에서만 허용한다 (`X-Organization-Id`, [ADR-0009](decisions/ADR-0009-active-organization-header-context.md)). |
 | NFR-003 | 감사 기록 | 주요 행위는 canonical audit action으로 기록한다 ([ADR-0008](decisions/ADR-0008-audit-action-naming-standard.md)). |
-| NFR-004 | Secret 비노출 | credential 원문, API key, token, raw payload는 응답/로그/trace에 노출하지 않는다. |
+| NFR-004 | 민감정보 경계 | credential 원문, API key, token 등 secret은 일반 resource 응답, log, audit, trace projection에 포함하지 않는다. 명시적 발급·회전 또는 보호된 raw trace처럼 원문 처리가 제품 기능상 필요한 경우에는 별도 응답 surface, 최소 권한, 제한 보존, 접근 감사를 갖춘 계약으로 분리한다. 외부 provider 결과와 workflow output은 실행 surface별 projection·redaction 정책을 따른다. |
 | NFR-005 | 기존 경로 보존 | workflow 생성/저장/실행/배포의 기존 경로가 깨지지 않는다. |
 | NFR-006 | 성능 목표 | TBD (데모 환경 기준 목표치 확정 필요) |
 | NFR-007 | RAG 권한 경계 | 모든 RAG 검색 모드는 권한 검사를 통과한 문서만 검색 후보로 사용한다. 권한 없는 문서는 검색 후보, prompt, citation, trace 어디에도 포함되지 않는다. 권한/정책상 제외된 문서를 화면에 표시할 때는 문서명과 정확한 건수를 노출하지 않는 안전한 요약(bucketed summary)으로만 표시한다. |
@@ -279,15 +279,12 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 이 프로젝트의 성공 기준은 **데모 시나리오 완주**다. 시연은 통합 데모 흐름으로 진행하며, 아래 시나리오별 조건이 그 흐름 안에서 모두 동작하면 성공으로 판단한다.
 
 - [ ] 시나리오 1 (권한 신청): 권한 없는 신입사원이 workflow 생성/배포 권한을 신청하고, 관리자가 승인한 뒤 새 workflow 생성까지 완주
-- [ ] 시나리오 1 (Agent Builder): Agent Builder가 사내 복지/휴가/인사 정책을 바탕으로 Knowledge Base-backed RAG workflow 초안을 만들고, Preview Mode에서 내부 설정을 확인한 뒤 `적용 및 저장`으로 저장하고, 별도 테스트 실행에서 응답과 citation/retrieval 근거를 확인
+- [ ] 시나리오 1 (Agent Builder): Agent Builder가 사내 복지/휴가/인사 정책을 바탕으로 Knowledge Base-backed RAG workflow 초안을 만들고, 필수 설정을 검토·보완해 저장한 뒤 별도 테스트 실행에서 응답과 citation/retrieval 근거를 확인
 - [ ] 시나리오 2: 조직 관리자가 audit와 비용/예산 위험 요약을 확인하고, 반복 권한·정책 차단에서 생성된 Security Alert를 Sidebar와 Admin Dashboard에서 확인·조사·해결하며 필요한 경우 current organization user access를 수동 조치
 - [ ] 시나리오 3: 비용 위험 workflow를 trace로 분석하고 LLM 노드 단위 A/B 비교를 통해 `modelRouting`, `promptRouting`, task-aware RAG, `responseFormat`, `maxOutputTokens` 조정 효과를 확인
 
 ## 8. Open Questions
 
-- 비용 최적화의 "품질 차이 Y"를 어떤 지표로 계산할지 (LLM judge, 규칙 기반, 사람 평가)
-- 예산의 설정 주체와 기간 단위 (관리자 vs workflow 소유 빌더, 월 단위 여부)
-- 권한 신청/승인의 canonical audit action 명명 (ADR-0008 갱신 시 확정)
 - NFR-006 성능 목표치
 - 통합 RAG의 destructive production cutover/reset, raw artifact opt-in, code-bearing Knowledge Skill, platform-wide Workflow egress guard는 [ADR-0017](decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md) 범위 밖이며 별도 승인 전까지 구현하지 않는다.
 

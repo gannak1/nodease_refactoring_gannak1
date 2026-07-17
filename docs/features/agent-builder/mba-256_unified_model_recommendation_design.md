@@ -288,7 +288,7 @@ Header에 후보가 없으면 기존처럼 전송을 막고 설정 필요 상태
 2. 정렬된 chat model 후보의 첫 항목을 추천한다.
 3. 새 LLM node에는 실행용 model ID만 기록한다.
 4. 후보가 없으면 기존처럼 모델 미결정 상태를 유지하고 생성 결과에 안내를 포함한다.
-5. Preview Mode에서는 model을 읽기 전용으로 표시한다. 사용자는 `적용 및 저장` 성공 후 일반 Workflow Editor에서 model을 바꿀 수 있으며 추천 정책은 이를 다시 덮어쓰지 않는다.
+5. Direct-edit flow에서는 추천 model을 active editor graph에 반영하고 사용자가 Node Detail Panel에서 바꿀 수 있다. 사용자가 명시적으로 변경한 model을 추천 정책이 다시 덮어쓰지 않는다.
 
 이미 존재하는 node 또는 기존 workflow에는 이 정책을 소급 적용하지 않는다.
 
@@ -383,7 +383,7 @@ API schema 변경이 발견되면 MBA-256 범위에서 임의로 확장하지 �
 - 새 LLM node가 통합 정책의 첫 model ID를 가짐
 - 기존 node의 model ID를 변경하지 않음
 - 여러 새 LLM node에 같은 정책을 결정적으로 적용함
-- Preview Mode에서는 model을 수정할 수 없고 적용 및 저장 후 일반 Workflow Editor에서 변경할 수 있음
+- Direct-edit로 반영된 model을 일반 Workflow Editor에서 변경할 수 있고 추천 정책이 명시적 변경을 덮어쓰지 않음
 - 후보가 없으면 credential을 graph에 넣지 않고 미결정 상태를 유지함
 - graph에 secret-like 값이 없음
 

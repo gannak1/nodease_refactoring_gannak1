@@ -23,7 +23,7 @@ Agent Builder Header와 generated LLM node는 Gateway의 하나의 결정적 추
 - Header의 사용자 선택은 현재 message request에서만 사용하고 session, draft metadata, workflow graph 또는 별도 model-selection column에 저장하지 않으며 generated LLM node model로 복사하지 않는다.
 - Generated LLM node는 같은 후보 집합과 추천 정책의 첫 model ID를 사용한다. 기존 node와 사용자가 저장 후 변경한 model은 덮어쓰지 않고 새로 생성한 node에만 추천한다.
 - 추천 후보가 없으면 Header는 configuration-required 상태로 message 전송을 막는다. Generated LLM node는 `model_id`가 비어 있는 `configuration_state=unresolved` node와 설정 필요 warning을 만들고 draft 생성은 계속한다.
-- Preview Mode에서는 generated node model을 읽기 전용으로 표시한다. 사용자는 `적용 및 저장` 성공 후 일반 Workflow Editor에서 model을 변경할 수 있다.
+- ADR-0045/ADR-0046의 direct-edit flow에서는 generated node model을 active editor graph에 반영하고 필요한 설정을 Node Detail Panel에서 보완할 수 있다. 사용자가 model을 명시적으로 변경하면 추천 정책은 이를 다시 덮어쓰지 않는다.
 - Server는 message와 workflow 실행 요청에서 credential/model 관계와 권한을 다시 검증한다. 추천은 실행 권한을 영구 부여하지 않는다.
 - API response, graph, prompt, trace, audit, session에는 credential 원문, API key, token, encrypted config 또는 raw provider response를 포함하지 않는다. Generated graph에는 safe model ID만 저장한다.
 

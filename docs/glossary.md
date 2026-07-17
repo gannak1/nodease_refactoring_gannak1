@@ -43,11 +43,10 @@ Status: Draft
 | Deployment | Workflow를 공개 또는 인증 내부 실행 표면으로 활성화한 결과. DB에서는 `workflow_deployments` table을 사용한다. |
 | Public Chatbot | `DeploymentType.chatbot`으로 게시하는 무인증 공개 채팅 표면. Execution subject 없이 anonymous public-only RAG 경계를 사용한다. |
 | Internal Chatbot | `DeploymentType.internal_chatbot`으로 게시하는 인증 내부 채팅 표면. 로그인 사용자를 execution subject로 사용하고 workflow·Knowledge 권한을 실행 시점에 다시 검사한다. |
-| Execution Subject | Workflow 실행 시점의 데이터 접근 권한을 평가하는 실제 사용자 또는 승인된 실행 주체. Workflow/deployment owner와 구분하며, 명시되지 않으면 owner 권한으로 fallback하지 않는다. |
+| Execution Subject | Workflow 실행 시점에 Knowledge/source 등 데이터 접근 권한을 평가하는 실제 사용자 또는 승인된 실행 주체. Interactive user 또는 향후 승인된 service account가 될 수 있다. Workflow/deployment owner, credential/billing principal과 Conversation Access Grant로 대체하거나, 명시되지 않은 경우 owner 권한으로 fallback하지 않는다. |
 | Schedule | Deployment 실행을 정해진 시간/주기로 트리거하는 설정. DB에서는 `schedules` table을 사용하며 deployment와 1:1 관계다. |
 | Webhook | 외부 시스템이 HTTP 요청으로 Workflow를 실행하게 하는 인바운드 트리거. |
 | Public Run API | 배포된 workflow를 app secret 기반 Bearer 인증으로 실행하는 public endpoint 계열. 일반 사용자 세션 인증과 구분한다. |
-| Execution Subject | 실행 시점에 Knowledge/source 등 데이터 권한을 평가할 principal. Interactive user 또는 향후 승인된 service account가 될 수 있으며 credential/billing principal, App owner와 Conversation Access Grant를 대신 사용하지 않는다. |
 | Anonymous Public Audience | Execution Subject가 없는 public runtime의 principal kind. Public visibility/exposure policy만 평가하며 synthetic user/subject ID나 private permission을 만들지 않는다. |
 | Credential Principal | Provider credential 사용 근거가 되는 server-derived principal. Credential 선택·사용에만 쓰며 Knowledge Execution Subject나 Audit Actor로 승격하지 않는다. |
 | Billing Principal | Provider usage와 budget을 귀속할 organization/workflow/deployment 주체. Execution Subject, Credential Principal과 Audit Actor와 별도로 파생한다. |

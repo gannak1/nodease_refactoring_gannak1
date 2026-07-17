@@ -9,7 +9,7 @@ Status: Draft
 | GET | `/api/v1/llm/my-models` | 현재 model listing surface | 현재 동작 |
 | GET | `/api/v1/llm/credentials` | 현재 credential listing surface | 현재 동작. 목표 Agent answer option 계약이 아니다 |
 | POST | `/api/v1/llm/credentials` | active organization에 LLM credential을 등록하고 provider 모델 relation을 동기화한다 | Organization manager only |
-| DELETE | `/api/v1/llm/credentials/{credential_id}` | active organization의 LLM credential을 삭제한다 | Organization manager 또는 credential `manage` |
+| DELETE | `/api/v1/llm/credentials/{credential_id}` | active organization의 LLM credential을 revoke한다. Current 구현은 `is_valid=false`이며 row를 hard delete하지 않는다 | Organization manager 또는 credential `manage` |
 
 ## 요청과 응답 모델
 
@@ -25,6 +25,12 @@ Request:
 - `api_key`: raw secret. 저장 직후 응답, audit, trace, usage metadata에 원문을 반환하지 않는다.
 
 Response는 `LLMCredentialResponse`를 사용할 수 있지만, `encrypted_config`, raw `api_key`, provider raw response는 포함하지 않는다. `user_id`가 포함되는 구현에서는 등록 행위자 reference로만 해석하고 개인 credential 소유권으로 표시하지 않는다.
+
+### Credential Revocation
+
+현재 `DELETE /api/v1/llm/credentials/{credential_id}`는 이름과 legacy 성공 message에 `delete/deleted`를 사용하지만 의미는 revoke다. Service는 `llm_credentials.is_valid=false`만 commit하며 credential row, credential-model relation, 기존 `llm_usage_logs`와 저장된 secret material을 삭제하지 않는다. Revoke 뒤 신규 option 선택, capability 발급과 provider 호출은 fail-closed해야 한다.
+
+Secret physical purge 또는 crypto-shred는 이 endpoint의 현재 계약이 아니다. 이를 추가할 때는 historical usage/audit 보존, FK nullability 또는 tombstone/snapshot, retention/legal-hold와 실패 복구를 함께 정의해야 하며, 단순 hard delete로 현재 DELETE의 의미를 바꾸지 않는다.
 
 ### Agent Answer Option
 
@@ -42,6 +48,7 @@ Option response는 전체 credential read schema가 아니라 실행 선택을 �
 
 - Credential 등록 요청자가 target organization manager가 아니면 `403 permission.denied`로 실패해야 한다.
 - Organization scope 밖 `organization_id` 또는 credential id는 resource hiding 정책에 따라 `404 resource.not_found`로 숨긴다.
+- Credential DELETE 성공은 revoke를 의미한다. 이미 기록된 usage/audit를 cascade delete하거나 secret이 물리 삭제됐다고 응답해서는 안 된다.
 - Knowledge target flow에서 generation model/credential이 없거나 보이지 않으면 answer run 생성 전에 실패한다.
 - Credential `use` denial은 KB permission 및 source ACL authorization과 독립된 permission failure다.
 - Verified credential-model relation이 없으면 fail-closed로 처리하며, client는 fallback model/credential selection을 추론하면 안 된다.
