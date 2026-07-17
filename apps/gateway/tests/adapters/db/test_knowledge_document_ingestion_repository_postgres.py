@@ -4,13 +4,14 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, func, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
 
@@ -397,6 +398,51 @@ def test_postgres_expired_lease_cannot_heartbeat_or_finalize(
             owner_token="owner",
             fencing_token="fence",
         ) is None
+        db.rollback()
+    finally:
+        db.close()
+
+
+def test_postgres_long_transaction_uses_wall_clock_for_lease_finalization(
+    postgres_engine,
+) -> None:
+    scope = _seed_scope(postgres_engine)
+    session_factory = sessionmaker(bind=postgres_engine, expire_on_commit=False)
+    seed = session_factory()
+    job = _job(scope, status="running")
+    job.lease_expires_at = datetime.now(timezone.utc) + timedelta(milliseconds=500)
+    seed.add(job)
+    seed.commit()
+    job_id = job.id
+    seed.close()
+
+    db = session_factory()
+    try:
+        transaction_now = db.query(func.now()).scalar()
+        assert transaction_now is not None
+        time.sleep(0.75)
+        assert db.query(func.now()).scalar() == transaction_now
+        wall_clock_now = db.query(func.clock_timestamp()).scalar()
+        assert wall_clock_now is not None
+        repository = SqlAlchemyDocumentIngestionRepository(db)
+        assert (
+            repository.is_owned_worker_job_current(
+                job_id,
+                owner_token="owner",
+                fencing_token="fence",
+            )
+            is False
+        )
+        assert (
+            repository.mark_succeeded(
+                job_id,
+                owner_token="owner",
+                fencing_token="fence",
+                result_document_version_id=None,
+                now=wall_clock_now,
+            )
+            is False
+        )
         db.rollback()
     finally:
         db.close()

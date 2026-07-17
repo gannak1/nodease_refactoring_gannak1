@@ -143,10 +143,8 @@ class FileProcessor(BaseProcessor):
                     allowed_content_types=DOCUMENT_RESPONSE_CONTENT_TYPES,
                 ),
             )
-        except EgressGuardError as e:
-            raise RuntimeError(
-                f"Remote file download denied: {e.reason_code}"
-            ) from e
+        except EgressGuardError:
+            raise
         except Exception as e:
             raise RuntimeError("Remote file download failed.") from e
 

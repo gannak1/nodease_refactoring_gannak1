@@ -388,6 +388,7 @@ class IngestionOrchestrator:
         self.ai_model = ai_model
         self._durable_job_mode = False
         self._active_progress_fencing_token: str | None = None
+        self._active_progress_lease_guard: Callable[[], bool] | None = None
 
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
@@ -534,6 +535,7 @@ class IngestionOrchestrator:
         session: Session,
         fencing_token: str,
         finalize_job: Callable[[UUID | None, datetime], bool],
+        lease_is_current: Callable[[], bool],
     ) -> UUID | None:
         """Execute ingestion under a durable job and one finalization transaction."""
 
@@ -545,6 +547,7 @@ class IngestionOrchestrator:
             self.db = session
             self._durable_job_mode = True
             self._active_progress_fencing_token = fencing_token
+            self._active_progress_lease_guard = lease_is_current
             try:
                 doc = self._lock_durable_document_scope(document_id)
 
@@ -643,6 +646,7 @@ class IngestionOrchestrator:
                 raise
             finally:
                 self._active_progress_fencing_token = None
+                self._active_progress_lease_guard = None
                 self._durable_job_mode = False
                 self.db = previous_db
 
@@ -858,9 +862,23 @@ class IngestionOrchestrator:
         initial_status: str,
     ) -> bool:
         meta = dict(doc.meta_info or {})
+        knowledge_base = getattr(doc, "knowledge_base", None)
+        active_version = (
+            getattr(knowledge_base, "active_document_version", None)
+            if knowledge_base is not None
+            else None
+        )
+        has_document_owned_active_version = (
+            active_version is not None
+            and getattr(knowledge_base, "active_document_version_id", None)
+            == active_version.id
+            and active_version.status == "ready"
+            and active_version.legacy_document_id == doc.id
+        )
         # 실패했던 문서는 같은 content라도 재처리한다. 임베딩 모델이나 chunking 설정이 바뀐 경우도 재처리 대상이다.
         return (
-            doc.content_hash == chunking_result.content_hash
+            has_document_owned_active_version
+            and doc.content_hash == chunking_result.content_hash
             and doc.embedding_model == self.ai_model
             and meta.get("chunking_fingerprint_hash")
             == chunking_result.chunking_fingerprint
@@ -996,6 +1014,12 @@ class IngestionOrchestrator:
         # advisory Redis progress value. Otherwise a stale worker could make
         # the UI observe progress that its DB transaction can no longer own.
         if persist_metadata:
+            if (
+                self._durable_job_mode
+                and self._active_progress_lease_guard is not None
+                and not self._active_progress_lease_guard()
+            ):
+                raise DurableIngestionLeaseLost()
             self._update_progress_metadata(document_id, progress)
         try:
             redis_client = get_redis_client()

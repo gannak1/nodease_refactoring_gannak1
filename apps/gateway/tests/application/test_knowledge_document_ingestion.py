@@ -243,6 +243,30 @@ def test_same_active_intent_is_reused_without_mutating_document() -> None:
     assert unit_of_work.rollback_count == 1
 
 
+def test_resume_retry_reuses_active_job_after_document_status_changes() -> None:
+    target = replace(_target(), document_status="waiting_for_approval")
+    repository = FakeRepository(target)
+    command = replace(
+        _command(target),
+        operation="resume",
+        required_document_status="waiting_for_approval",
+    )
+    first = _use_case(repository).execute(command)
+    repository.target = replace(target, document_status="indexing")
+    repository.active = first.job
+    repository.applied = False
+    repository.created = False
+    unit_of_work = FakeUnitOfWork()
+
+    retried = _use_case(repository, unit_of_work=unit_of_work).execute(command)
+
+    assert retried.reused is True
+    assert retried.job.job_id == first.job.job_id
+    assert repository.applied is False
+    assert repository.created is False
+    assert unit_of_work.rollback_count == 1
+
+
 def test_changed_settings_conflict_before_document_mutation() -> None:
     target = _target()
     repository = FakeRepository(target)

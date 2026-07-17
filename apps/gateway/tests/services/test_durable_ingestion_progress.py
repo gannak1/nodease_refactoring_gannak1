@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from apps.gateway.services.ingestion.service import (
+    DocumentChunkingResult,
     DurableIngestionLeaseLost,
     DurableIngestionSourceFailure,
     IngestionOrchestrator,
@@ -12,6 +13,7 @@ from apps.shared.db.models.knowledge import Document, KnowledgeBase
 from apps.shared.services.ingestion.processors.base import ProcessingResult
 from apps.shared.services.knowledge_ingestion_fencing import (
     ACTIVE_FENCING_TOKEN_HASH_KEY,
+    KnowledgeIngestionFencing,
 )
 
 
@@ -120,6 +122,37 @@ def test_stale_attempt_is_rejected_before_redis_progress_write(monkeypatch) -> N
     assert redis_requested is False
 
 
+def test_expired_job_lease_is_rejected_before_progress_flush_or_redis(
+    monkeypatch,
+) -> None:
+    token = "current-attempt"
+    document = SimpleNamespace(
+        status="indexing",
+        meta_info={
+            ACTIVE_FENCING_TOKEN_HASH_KEY: KnowledgeIngestionFencing.hash_token(token)
+        },
+    )
+    db = FakeDb(document)
+    service = IngestionOrchestrator(db)
+    service._durable_job_mode = True
+    service._active_progress_fencing_token = token
+    service._active_progress_lease_guard = lambda: False
+    redis_requested = False
+
+    def get_redis_client():
+        nonlocal redis_requested
+        redis_requested = True
+        return SimpleNamespace()
+
+    monkeypatch.setattr("apps.shared.pubsub.get_redis_client", get_redis_client)
+
+    with pytest.raises(DurableIngestionLeaseLost):
+        service._update_progress_redis("document-id", 80)
+
+    assert db.flushes == 0
+    assert redis_requested is False
+
+
 def test_post_commit_completion_only_publishes_advisory_redis_progress(
     monkeypatch,
 ) -> None:
@@ -162,6 +195,52 @@ def test_chunk_progress_never_reports_completion_before_finalization(
     expected: int,
 ) -> None:
     assert _pre_finalization_chunk_progress(completed, total) == expected
+
+
+def test_current_artifact_noop_requires_active_version_owned_by_document() -> None:
+    document_id = "document-id"
+    version = SimpleNamespace(
+        id="version-id",
+        status="ready",
+        legacy_document_id="other-document-id",
+    )
+    knowledge_base = SimpleNamespace(
+        active_document_version_id=version.id,
+        active_document_version=version,
+    )
+    document = SimpleNamespace(
+        id=document_id,
+        content_hash="content-hash",
+        embedding_model="text-embedding-3-small",
+        meta_info={"chunking_fingerprint_hash": "chunking-hash"},
+        knowledge_base=knowledge_base,
+    )
+    chunking_result = DocumentChunkingResult(
+        chunks=[],
+        chunking_mode="flat",
+        chunking_fingerprint="chunking-hash",
+        content_hash="content-hash",
+    )
+    service = IngestionOrchestrator(SimpleNamespace())
+
+    assert (
+        service._has_current_artifacts(
+            document,
+            chunking_result=chunking_result,
+            initial_status="completed",
+        )
+        is False
+    )
+
+    version.legacy_document_id = document_id
+    assert (
+        service._has_current_artifacts(
+            document,
+            chunking_result=chunking_result,
+            initial_status="completed",
+        )
+        is True
+    )
 
 
 def test_processor_reason_is_normalized_to_typed_durable_source_failure(

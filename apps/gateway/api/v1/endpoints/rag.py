@@ -750,7 +750,7 @@ async def confirm_document_parsing(
     비용 승인 대기 중인 문서의 파싱을 재개합니다.
     """
     organization_id = parse_organization_id(request, x_organization_id)
-    kb, doc = _authorize_knowledge_document_action(
+    kb, _ = _authorize_knowledge_document_action(
         request,
         db,
         current_user,
@@ -758,9 +758,6 @@ async def confirm_document_parsing(
         document_id,
         "write",
     )
-
-    if doc.status != "waiting_for_approval":
-        raise HTTPException(status_code=400, detail="Document remains in invalid state")
 
     if strategy not in {"llamaparse", "general"}:
         raise_api_error(

@@ -905,6 +905,11 @@ def test_direct_document_detail_projects_internal_metadata(monkeypatch):
     )
     monkeypatch.setattr(
         knowledge_endpoint,
+        "_ensure_document_ingestion_schema_ready",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
         "recover_timed_out_document_with_artifacts",
         lambda *args, **kwargs: False,
     )
@@ -919,6 +924,53 @@ def test_direct_document_detail_projects_internal_metadata(monkeypatch):
     )
 
     assert response.meta_info == {"progress": 20}
+
+
+def test_document_detail_checks_ingestion_readiness_after_authorization(
+    monkeypatch,
+):
+    events: list[str] = []
+    knowledge_base_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+
+    def authorize(*_args, **_kwargs):
+        events.append("authorization")
+        return (
+            SimpleNamespace(id=knowledge_base_id),
+            SimpleNamespace(id=document_id, status="processing"),
+        )
+
+    def require_readiness(*_args, **_kwargs):
+        events.append("readiness")
+        raise RuntimeError("schema not ready")
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_authorized_knowledge_document",
+        authorize,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_ensure_document_ingestion_schema_ready",
+        require_readiness,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "finalize_stale_processing_start",
+        lambda *_args, **_kwargs: events.append("reconciliation"),
+    )
+
+    with pytest.raises(RuntimeError, match="schema not ready"):
+        knowledge_endpoint.get_document(
+            kb_id=knowledge_base_id,
+            document_id=document_id,
+            request=SimpleNamespace(),
+            x_organization_id=str(uuid.uuid4()),
+            db=object(),
+            current_user=SimpleNamespace(id=uuid.uuid4()),
+        )
+
+    assert events == ["authorization", "readiness"]
 
 
 def test_direct_document_detail_replaces_persisted_failure_detail(monkeypatch):

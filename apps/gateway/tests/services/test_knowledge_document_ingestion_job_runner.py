@@ -5,15 +5,21 @@ import pytest
 from billiard.exceptions import SoftTimeLimitExceeded
 
 from apps.gateway.application.knowledge_document_ingestion.worker import (
+    DocumentIngestionLeaseLost,
     DocumentIngestionPermanentFailure,
     DocumentIngestionRetryableFailure,
     WorkerDocumentIngestionJob,
 )
 from apps.gateway.services.ingestion import job_runner
+from apps.gateway.services.ingestion.processors import file_processor
+from apps.gateway.services.ingestion.processors.file_processor import FileProcessor
 from apps.gateway.services.ingestion.job_runner import (
     KnowledgeDocumentIngestionJobRunner,
 )
-from apps.gateway.services.ingestion.service import DurableIngestionSourceFailure
+from apps.gateway.services.ingestion.service import (
+    DurableIngestionLeaseLost,
+    DurableIngestionSourceFailure,
+)
 from apps.shared.db.models.knowledge import Document, KnowledgeBase
 from apps.shared.services.egress_guard import EgressGuardError
 
@@ -167,6 +173,67 @@ def test_temporary_source_failure_is_retryable(monkeypatch) -> None:
     assert raised.value.reason_code == "ingestion.source_temporarily_unavailable"
 
 
+@pytest.mark.parametrize("lease_session_unavailable", [False, True])
+def test_runner_wires_current_job_lease_guard_into_progress_path(
+    monkeypatch,
+    lease_session_unavailable,
+) -> None:
+    organization_id = uuid4()
+    knowledge_base_id = uuid4()
+    document_id = uuid4()
+    document = SimpleNamespace(
+        id=document_id,
+        knowledge_base_id=knowledge_base_id,
+        chunk_size=800,
+        chunk_overlap=80,
+    )
+    knowledge_base = SimpleNamespace(
+        id=knowledge_base_id,
+        organization_id=organization_id,
+        lifecycle_state="active",
+        sync_state="active",
+        embedding_model="text-embedding-3-small",
+    )
+
+    class ExpiredLeaseRepository:
+        def __init__(self, _session) -> None:
+            pass
+
+        def is_owned_worker_job_current(self, *_args, **_kwargs) -> bool:
+            return False
+
+    def process_with_progress_guard(*_args, **kwargs):
+        if not kwargs["lease_is_current"]():
+            raise DurableIngestionLeaseLost()
+        pytest.fail("expired lease must stop durable progress")
+
+    monkeypatch.setattr(
+        job_runner,
+        "SqlAlchemyDocumentIngestionRepository",
+        ExpiredLeaseRepository,
+    )
+    monkeypatch.setattr(
+        job_runner.IngestionOrchestrator,
+        "process_document_for_job",
+        process_with_progress_guard,
+    )
+
+    session_count = 0
+
+    def session_factory():
+        nonlocal session_count
+        session_count += 1
+        if lease_session_unavailable and session_count == 2:
+            raise RuntimeError("lease database unavailable")
+        return FakeSession(document, knowledge_base)
+
+    with pytest.raises(DocumentIngestionLeaseLost):
+        KnowledgeDocumentIngestionJobRunner(
+            session_factory,
+            heartbeat_seconds=60,
+        ).run(_worker_job(organization_id, knowledge_base_id, document_id))
+
+
 @pytest.mark.parametrize(
     ("egress_reason", "expected_exception", "expected_reason"),
     [
@@ -216,11 +283,21 @@ def test_file_egress_failure_uses_safe_retry_allowlist(
     )
 
     monkeypatch.setattr(
-        job_runner.IngestionOrchestrator,
-        "process_document_for_job",
+        file_processor,
+        "download_url_to_temp_file",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             EgressGuardError(egress_reason)
         ),
+    )
+
+    def process_remote_file(*_args, **_kwargs):
+        processor = FileProcessor.__new__(FileProcessor)
+        return processor._download_file("https://files.example.test/document.pdf")
+
+    monkeypatch.setattr(
+        job_runner.IngestionOrchestrator,
+        "process_document_for_job",
+        process_remote_file,
     )
 
     with pytest.raises(expected_exception) as raised:

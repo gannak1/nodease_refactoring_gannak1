@@ -223,11 +223,6 @@ class RequestDocumentIngestion:
                 self.unit_of_work.rollback()
                 raise DocumentIngestionHidden()
             self._require_supported_target(target)
-            if (
-                command.required_document_status is not None
-                and target.document_status != command.required_document_status
-            ):
-                raise DocumentIngestionPolicyBlocked("ingestion.configuration_invalid")
 
             active = self.repository.find_active_job(command.document_id)
             generation = (
@@ -248,6 +243,12 @@ class RequestDocumentIngestion:
                     return DocumentIngestionRequestResult(active, True, deferred)
                 self.unit_of_work.rollback()
                 raise DocumentIngestionConflict()
+
+            if (
+                command.required_document_status is not None
+                and target.document_status != command.required_document_status
+            ):
+                raise DocumentIngestionPolicyBlocked("ingestion.configuration_invalid")
 
             now = self.repository.database_now()
             self.repository.apply_settings_and_mark_queued(

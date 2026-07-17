@@ -2192,6 +2192,9 @@ def get_document(
         current_user,
     )
 
+    if doc.status in {"indexing", "processing"}:
+        _ensure_document_ingestion_schema_ready(db, request)
+
     if finalize_stale_processing_start(
         db,
         doc.id,

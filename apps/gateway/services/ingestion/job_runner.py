@@ -97,6 +97,39 @@ class KnowledgeDocumentIngestionJobRunner:
 
                 repository = SqlAlchemyDocumentIngestionRepository(session)
 
+                def lease_is_current() -> bool:
+                    if heartbeat.lease_lost:
+                        return False
+                    lease_session: Session | None = None
+                    current = False
+                    try:
+                        lease_session = self.session_factory()
+                        current = SqlAlchemyDocumentIngestionRepository(
+                            lease_session
+                        ).is_owned_worker_job_current(
+                            job.job_id,
+                            owner_token=job.owner_token or "",
+                            fencing_token=job.fencing_token or "",
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Knowledge ingestion lease check failed: error_type=%s",
+                            type(exc).__name__,
+                        )
+                    finally:
+                        if lease_session is not None:
+                            try:
+                                lease_session.close()
+                            except Exception as exc:
+                                logger.warning(
+                                    "Knowledge ingestion lease session close failed: "
+                                    "error_type=%s",
+                                    type(exc).__name__,
+                                )
+                    if not current:
+                        heartbeat.lease_lost = True
+                    return current
+
                 def finalize_job(
                     result_document_version_id: uuid.UUID | None,
                     completed_at,
@@ -123,6 +156,7 @@ class KnowledgeDocumentIngestionJobRunner:
                     session=session,
                     fencing_token=job.fencing_token,
                     finalize_job=finalize_job,
+                    lease_is_current=lease_is_current,
                 )
                 return result
             except DurableIngestionDocumentMissing as exc:

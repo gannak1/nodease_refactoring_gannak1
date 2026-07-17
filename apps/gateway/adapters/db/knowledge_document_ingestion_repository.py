@@ -45,7 +45,7 @@ class SqlAlchemyDocumentIngestionRepository:
         self._locked_worker_job: KnowledgeDocumentIngestionJob | None = None
 
     def database_now(self) -> datetime:
-        value = self.db.query(func.now()).scalar()
+        value = self.db.query(func.clock_timestamp()).scalar()
         return value or datetime.now(timezone.utc)
 
     def lock_document_scope(
@@ -309,7 +309,8 @@ class SqlAlchemyDocumentIngestionRepository:
                 KnowledgeDocumentIngestionJob.status == "running",
                 KnowledgeDocumentIngestionJob.owner_token == owner_token,
                 KnowledgeDocumentIngestionJob.fencing_token == fencing_token,
-                KnowledgeDocumentIngestionJob.lease_expires_at > func.now(),
+                KnowledgeDocumentIngestionJob.lease_expires_at
+                > func.clock_timestamp(),
             )
             .one_or_none()
         )
@@ -326,7 +327,8 @@ class SqlAlchemyDocumentIngestionRepository:
                 KnowledgeDocumentIngestionJob.status == "running",
                 KnowledgeDocumentIngestionJob.owner_token == owner_token,
                 KnowledgeDocumentIngestionJob.fencing_token == fencing_token,
-                KnowledgeDocumentIngestionJob.lease_expires_at > func.now(),
+                KnowledgeDocumentIngestionJob.lease_expires_at
+                > func.clock_timestamp(),
             )
             .with_for_update()
             .one_or_none()
@@ -350,7 +352,8 @@ class SqlAlchemyDocumentIngestionRepository:
                 KnowledgeDocumentIngestionJob.status == "running",
                 KnowledgeDocumentIngestionJob.owner_token == owner_token,
                 KnowledgeDocumentIngestionJob.fencing_token == fencing_token,
-                KnowledgeDocumentIngestionJob.lease_expires_at > func.now(),
+                KnowledgeDocumentIngestionJob.lease_expires_at
+                > func.clock_timestamp(),
             )
             .update(
                 {
@@ -379,7 +382,8 @@ class SqlAlchemyDocumentIngestionRepository:
                 KnowledgeDocumentIngestionJob.status == "running",
                 KnowledgeDocumentIngestionJob.owner_token == owner_token,
                 KnowledgeDocumentIngestionJob.fencing_token == fencing_token,
-                KnowledgeDocumentIngestionJob.lease_expires_at > func.now(),
+                KnowledgeDocumentIngestionJob.lease_expires_at
+                > func.clock_timestamp(),
             )
             .update(
                 {
@@ -401,6 +405,27 @@ class SqlAlchemyDocumentIngestionRepository:
             )
         )
         return int(updated or 0) == 1
+
+    def is_owned_worker_job_current(
+        self,
+        job_id: uuid.UUID,
+        *,
+        owner_token: str,
+        fencing_token: str,
+    ) -> bool:
+        current = (
+            self.db.query(KnowledgeDocumentIngestionJob.id)
+            .filter(
+                KnowledgeDocumentIngestionJob.id == job_id,
+                KnowledgeDocumentIngestionJob.status == "running",
+                KnowledgeDocumentIngestionJob.owner_token == owner_token,
+                KnowledgeDocumentIngestionJob.fencing_token == fencing_token,
+                KnowledgeDocumentIngestionJob.lease_expires_at
+                > func.clock_timestamp(),
+            )
+            .scalar()
+        )
+        return current is not None
 
     def mark_retry_scheduled(
         self,
