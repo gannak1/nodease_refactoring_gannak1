@@ -4,7 +4,11 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from apps.shared.db.session import SessionLocal
 from apps.shared.db.models.knowledge import Document, KnowledgeBase, SourceType
+from apps.shared.services.connection_runtime_snapshot import (
+    ConnectionRuntimeSnapshotProvider,
+)
 from apps.shared.services.ingestion.processors.db_processor import DbProcessor
 from apps.shared.services.ingestion.vector_store_service import VectorStoreService
 from apps.shared.services.permissions import has_knowledge_base_permission
@@ -35,7 +39,13 @@ class SyncService:
         self.user_id = user_id
         self.organization_id = self._coerce_uuid(organization_id)
         # Shared Processors & Services
-        self.db_processor = DbProcessor(db_session=db, user_id=user_id)
+        self.db_processor = DbProcessor(
+            db_session=db,
+            user_id=user_id,
+            connection_snapshot_provider=ConnectionRuntimeSnapshotProvider(
+                SessionLocal
+            ),
+        )
         self.vector_store_service = VectorStoreService(db=db, user_id=user_id)
 
     @staticmethod

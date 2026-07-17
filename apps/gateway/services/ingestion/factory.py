@@ -3,7 +3,11 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from apps.shared.db.session import SessionLocal
 from apps.shared.db.models.knowledge import SourceType
+from apps.shared.services.connection_runtime_snapshot import (
+    ConnectionRuntimeSnapshotProvider,
+)
 from apps.shared.services.ingestion.processors.base import BaseProcessor
 
 
@@ -46,7 +50,14 @@ class IngestionFactory:
         elif source_type == SourceType.DB:
             from apps.shared.services.ingestion.processors.db_processor import DbProcessor
 
-            return DbProcessor(db_session, user_id, organization_id)
+            return DbProcessor(
+                db_session,
+                user_id,
+                organization_id,
+                connection_snapshot_provider=ConnectionRuntimeSnapshotProvider(
+                    SessionLocal
+                ),
+            )
 
         # 알 수 없는 타입이나 Enum 값과 일치하는 문자열 입력에 대한 대비책(Fallback)
         # (타입 힌트는 SourceType으로 되어 있지만, 실제 실행 시(runtime) 문자열이 전달될 가능성 고려)

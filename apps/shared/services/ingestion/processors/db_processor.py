@@ -4,9 +4,12 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict
 
+from apps.shared.services.connection_runtime_snapshot import (
+    ConnectionRuntimeSnapshotConfigurationInvalid,
+    ConnectionRuntimeSnapshotProvider,
+)
 from apps.shared.services.connection_use_resolver import (
     ConnectionUseDenied,
-    ConnectionUseResolver,
     ConnectionUseUnavailable,
 )
 from apps.shared.services.ingestion.chunkers.adaptive_db_chunker import (
@@ -36,6 +39,17 @@ class DbProcessor(BaseProcessor):
     외부 DB 연결 정보를 사용하여 SQL을 실행하고,
     결과 Row를 자연어로 변환하여 청킹합니다.
     """
+
+    def __init__(
+        self,
+        db_session=None,
+        user_id=None,
+        organization_id=None,
+        *,
+        connection_snapshot_provider: ConnectionRuntimeSnapshotProvider | None = None,
+    ) -> None:
+        super().__init__(db_session, user_id, organization_id)
+        self.connection_snapshot_provider = connection_snapshot_provider
 
     @staticmethod
     def _convert_to_json_serializable(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -77,8 +91,11 @@ class DbProcessor(BaseProcessor):
             # 또는 meta_info에서 필요한 정보 전달
         }
         """
+        if self.connection_snapshot_provider is None:
+            return self._connection_lookup_unavailable_result()
+
         try:
-            conn_record = ConnectionUseResolver(self.db).resolve(
+            connection_snapshot = self.connection_snapshot_provider.load(
                 source_config.get("connection_id"),
                 execution_subject_user_id=self.user_id,
             )
@@ -86,64 +103,15 @@ class DbProcessor(BaseProcessor):
             return self._connection_unavailable_result()
         except ConnectionUseUnavailable:
             return self._connection_lookup_unavailable_result()
+        except ConnectionRuntimeSnapshotConfigurationInvalid:
+            return self._connection_configuration_invalid_result()
 
         # Connector 인스턴스 생성
-        connector = self._get_connector(conn_record.type)
+        connector = self._get_connector(connection_snapshot.adapter_type)
         if not connector:
-            return ProcessingResult(
-                chunks=[],
-                metadata={
-                    "error": "Connection configuration unavailable",
-                    "error_code": "configuration_invalid",
-                    "reason_code": "configuration.invalid",
-                },
-            )
+            return self._connection_configuration_invalid_result()
 
-        # 연결 설정 복호화
-        try:
-            config_dict = {
-                "host": conn_record.host,
-                "port": conn_record.port,
-                "database": conn_record.database,
-                "username": conn_record.username,
-                "password": encryption_manager.decrypt(
-                    conn_record.encrypted_password
-                ),
-            }
-
-            # SSH 설정 추가
-            if conn_record.use_ssh:
-                ssh_config = {
-                    "enabled": True,
-                    "host": conn_record.ssh_host,
-                    "port": conn_record.ssh_port,
-                    "username": conn_record.ssh_username,
-                    "auth_type": conn_record.ssh_auth_type,
-                }
-
-                if conn_record.ssh_auth_type == "key":
-                    ssh_config["private_key"] = encryption_manager.decrypt(
-                        conn_record.encrypted_ssh_private_key
-                    )
-                else:
-                    ssh_config["password"] = encryption_manager.decrypt(
-                        conn_record.encrypted_ssh_password
-                    )
-
-                config_dict["ssh"] = ssh_config
-        except Exception as exc:
-            logger.warning(
-                "DB connection configuration could not be decrypted: error_type=%s",
-                type(exc).__name__,
-            )
-            return ProcessingResult(
-                chunks=[],
-                metadata={
-                    "error": "Connection configuration unavailable",
-                    "error_code": "configuration_invalid",
-                    "reason_code": "configuration.invalid",
-                },
-            )
+        config_dict = connection_snapshot.to_connector_config()
 
         # 3. 데이터 패칭
         chunks = []
@@ -233,6 +201,17 @@ class DbProcessor(BaseProcessor):
                 "error": "Connection lookup unavailable",
                 "error_code": "temporarily_unavailable",
                 "reason_code": "source.temporarily_unavailable",
+            },
+        )
+
+    @staticmethod
+    def _connection_configuration_invalid_result() -> ProcessingResult:
+        return ProcessingResult(
+            chunks=[],
+            metadata={
+                "error": "Connection configuration unavailable",
+                "error_code": "configuration_invalid",
+                "reason_code": "configuration.invalid",
             },
         )
 

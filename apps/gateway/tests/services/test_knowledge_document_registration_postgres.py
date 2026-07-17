@@ -4,8 +4,10 @@ import subprocess
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from pathlib import Path
 from threading import Barrier
+from time import monotonic
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -13,10 +15,11 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from apps.gateway.services.connection_lifecycle_service import (
+    ConnectionLifecycleBusy,
+    ConnectionLifecycleConflict,
     ConnectionLifecycleHidden,
     ConnectionLifecycleInUse,
     ConnectionLifecycleService,
-    ConnectionLifecycleUnavailable,
 )
 from apps.gateway.services.knowledge_document_registration_service import (
     KnowledgeDocumentRegistrationHidden,
@@ -35,11 +38,15 @@ from apps.shared.db.models.knowledge import (
 )
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.user import User
+from apps.shared.services.connection_runtime_snapshot import (
+    ConnectionRuntimeSnapshotProvider,
+)
 from apps.shared.tests.helpers.disposable_postgres import (
     DisposablePostgresConfig,
     DisposablePostgresConfigurationError,
     quote_disposable_database_name,
 )
+from apps.shared.utils.encryption import encryption_manager
 
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
@@ -643,14 +650,18 @@ def test_connection_reference_lock_serializes_settings_save_with_delete(
         document = writer_db.query(Document).filter_by(id=document_id).one()
 
         with postgres_session_factory() as contender_db:
-            contender_db.execute(text("SET LOCAL lock_timeout = '200ms'"))
-            with pytest.raises(ConnectionLifecycleUnavailable):
+            started_at = monotonic()
+            with pytest.raises(ConnectionLifecycleBusy):
                 ConnectionLifecycleService(
                     contender_db
                 ).delete_unreferenced_connection(
                     connection_id=connection_id,
                     owner_id=owner_id,
                 )
+            assert monotonic() - started_at < 5
+            assert contender_db.in_transaction() is False
+            assert contender_db.execute(text("SELECT 1")).scalar_one() == 1
+            contender_db.rollback()
 
         document.meta_info = {
             "db_config": {"connection_id": str(connection_id)}
@@ -663,3 +674,192 @@ def test_connection_reference_lock_serializes_settings_save_with_delete(
                 connection_id=connection_id,
                 owner_id=owner_id,
             )
+
+
+def test_runtime_snapshot_releases_its_transaction_before_connection_mutation(
+    postgres_session_factory,
+    monkeypatch,
+):
+    _organization_id, knowledge_base_id = _create_empty_knowledge_base(
+        postgres_session_factory
+    )
+    connection_id = uuid.uuid4()
+    with postgres_session_factory() as setup_db:
+        owner_id = (
+            setup_db.query(KnowledgeBase.user_id)
+            .filter(KnowledgeBase.id == knowledge_base_id)
+            .scalar()
+        )
+        setup_db.add(
+            Connection(
+                id=connection_id,
+                user_id=owner_id,
+                name="Runtime snapshot DB",
+                type="postgres",
+                host="db.invalid",
+                port=5432,
+                database="runtime",
+                username="runtime",
+                encrypted_password="encrypted-placeholder",
+                use_ssh=False,
+            )
+        )
+        setup_db.commit()
+
+    monkeypatch.setattr(encryption_manager, "decrypt", lambda _value: "test-value")
+    snapshot = ConnectionRuntimeSnapshotProvider(postgres_session_factory).load(
+        connection_id,
+        execution_subject_user_id=owner_id,
+    )
+
+    assert snapshot.adapter_type == "postgres"
+    with postgres_session_factory() as mutation_db:
+        locked = ConnectionLifecycleService(
+            mutation_db
+        ).lock_owned_connection_for_reference(
+            connection_id=connection_id,
+            owner_id=owner_id,
+        )
+        assert locked.id == connection_id
+        mutation_db.rollback()
+
+
+def test_connection_reference_update_rejects_stale_document_revision(
+    postgres_session_factory,
+):
+    organization_id, knowledge_base_id = _create_empty_knowledge_base(
+        postgres_session_factory
+    )
+    connection_id = uuid.uuid4()
+    with postgres_session_factory() as setup_db:
+        owner_id = (
+            setup_db.query(KnowledgeBase.user_id)
+            .filter(KnowledgeBase.id == knowledge_base_id)
+            .scalar()
+        )
+        setup_db.add(
+            Connection(
+                id=connection_id,
+                user_id=owner_id,
+                name="Stale reference DB",
+                type="postgres",
+                host="db.invalid",
+                port=5432,
+                database="stale-reference",
+                username="stale-reference",
+                encrypted_password="encrypted-placeholder",
+                use_ssh=False,
+            )
+        )
+        setup_db.commit()
+
+    with postgres_session_factory() as register_db:
+        document_id = KnowledgeDocumentRegistrationService(
+            register_db
+        ).register_initial_document(
+            knowledge_base_id=knowledge_base_id,
+            organization_id=organization_id,
+            filename="Stale reference DB",
+            file_path=None,
+            chunk_size=500,
+            chunk_overlap=50,
+            source_type=SourceType.DB,
+            meta_info={},
+        )
+
+    with postgres_session_factory() as stale_db:
+        stale_document = stale_db.query(Document).filter_by(id=document_id).one()
+        expected_updated_at = stale_document.updated_at
+        assert expected_updated_at is not None
+
+        with postgres_session_factory() as concurrent_db:
+            concurrent_document = (
+                concurrent_db.query(Document).filter_by(id=document_id).one()
+            )
+            concurrent_document.updated_at = expected_updated_at + timedelta(seconds=1)
+            concurrent_document.chunk_size = 640
+            concurrent_db.commit()
+
+        with pytest.raises(ConnectionLifecycleConflict):
+            ConnectionLifecycleService(
+                stale_db
+            ).lock_owned_connection_and_document_for_reference(
+                connection_id=connection_id,
+                owner_id=owner_id,
+                document_id=document_id,
+                expected_document_updated_at=expected_updated_at,
+            )
+        assert stale_db.in_transaction() is False
+
+    with postgres_session_factory() as verification_db:
+        document = verification_db.query(Document).filter_by(id=document_id).one()
+        assert document.chunk_size == 640
+
+
+def test_connection_deadlock_is_normalized_and_new_session_remains_usable(
+    postgres_session_factory,
+):
+    _organization_id, knowledge_base_id = _create_empty_knowledge_base(
+        postgres_session_factory
+    )
+    connection_ids = (uuid.uuid4(), uuid.uuid4())
+    with postgres_session_factory() as setup_db:
+        owner_id = (
+            setup_db.query(KnowledgeBase.user_id)
+            .filter(KnowledgeBase.id == knowledge_base_id)
+            .scalar()
+        )
+        for index, connection_id in enumerate(connection_ids):
+            setup_db.add(
+                Connection(
+                    id=connection_id,
+                    user_id=owner_id,
+                    name=f"Deadlock DB {index}",
+                    type="postgres",
+                    host="db.invalid",
+                    port=5432,
+                    database="deadlock",
+                    username="deadlock",
+                    encrypted_password="encrypted-placeholder",
+                    use_ssh=False,
+                )
+            )
+        setup_db.commit()
+
+    barrier = Barrier(2)
+
+    def lock_in_order(first_id, second_id) -> str:
+        with postgres_session_factory() as db:
+            service = ConnectionLifecycleService(db)
+            service.lock_owned_connection_for_reference(
+                connection_id=first_id,
+                owner_id=owner_id,
+            )
+            barrier.wait(timeout=10)
+            try:
+                service.lock_owned_connection_for_reference(
+                    connection_id=second_id,
+                    owner_id=owner_id,
+                )
+                db.commit()
+                return "acquired"
+            except ConnectionLifecycleBusy:
+                assert db.in_transaction() is False
+                return "busy"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            lock_in_order,
+            connection_ids[0],
+            connection_ids[1],
+        )
+        second = executor.submit(
+            lock_in_order,
+            connection_ids[1],
+            connection_ids[0],
+        )
+        outcomes = sorted((first.result(timeout=15), second.result(timeout=15)))
+
+    assert outcomes == ["acquired", "busy"]
+    with postgres_session_factory() as verification_db:
+        assert verification_db.execute(text("SELECT 1")).scalar_one() == 1

@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from apps.shared.db.session import SessionLocal
 from apps.shared.db.models.knowledge import (
     Document,
     KnowledgeBase,
@@ -16,6 +17,9 @@ from apps.shared.db.models.knowledge import (
     SourceType,
 )
 from apps.shared.domain.knowledge_collection_sync import sync_target_revision
+from apps.shared.services.connection_runtime_snapshot import (
+    ConnectionRuntimeSnapshotProvider,
+)
 from apps.shared.services.ingestion.chunk_selection import (
     filter_chunks_by_selection,
 )
@@ -112,9 +116,13 @@ class SqlAlchemyKnowledgeCollectionSyncDocument:
         self._validate_selections(source_config.get("selections"))
 
         try:
-            result = DbProcessor(db_session=self.db, user_id=actor_id).process(
-                source_config
-            )
+            result = DbProcessor(
+                db_session=self.db,
+                user_id=actor_id,
+                connection_snapshot_provider=ConnectionRuntimeSnapshotProvider(
+                    SessionLocal
+                ),
+            ).process(source_config)
             error_code = result.metadata.get("error_code")
             if error_code == "configuration_invalid":
                 raise SyncTargetConfigurationInvalid()

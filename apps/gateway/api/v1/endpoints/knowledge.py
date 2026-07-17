@@ -66,6 +66,8 @@ from apps.gateway.services.ingestion.service import (
 )
 from apps.gateway.services.knowledge_candidate_resolver import KnowledgeCandidateResolver
 from apps.gateway.services.connection_lifecycle_service import (
+    ConnectionLifecycleBusy,
+    ConnectionLifecycleConflict,
     ConnectionLifecycleHidden,
     ConnectionLifecycleService,
     ConnectionLifecycleUnavailable,
@@ -2214,9 +2216,13 @@ def _lock_db_connection_reference(
         )
 
     try:
-        ConnectionLifecycleService(db).lock_owned_connection_for_reference(
+        ConnectionLifecycleService(
+            db
+        ).lock_owned_connection_and_document_for_reference(
             connection_id=connection_id,
             owner_id=owner_id,
+            document_id=document.id,
+            expected_document_updated_at=document.updated_at,
         )
     except ConnectionLifecycleHidden:
         db.rollback()
@@ -2225,6 +2231,22 @@ def _lock_db_connection_reference(
             404,
             "resource.hidden",
             "Connection not found.",
+        )
+    except ConnectionLifecycleBusy:
+        db.rollback()
+        raise_api_error(
+            request,
+            503,
+            "connection.reference_busy",
+            "The DB connection reference is temporarily busy.",
+        )
+    except ConnectionLifecycleConflict:
+        db.rollback()
+        raise_api_error(
+            request,
+            409,
+            "connection.reference_conflict",
+            "The DB connection reference changed concurrently.",
         )
     except ConnectionLifecycleUnavailable:
         db.rollback()
