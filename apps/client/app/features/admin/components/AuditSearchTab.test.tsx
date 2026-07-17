@@ -115,7 +115,7 @@ describe('AuditSearchTab', () => {
       'dateTime',
       auditItem.occurred_at,
     );
-    expect(mockedList).toHaveBeenCalledWith({ page: 1, limit: 20 });
+    expect(mockedList).toHaveBeenCalledWith({ limit: 20 });
   });
 
   it('safe 표시명을 먼저 보여주고 canonical UUID와 복사 버튼을 병기한다', async () => {
@@ -210,9 +210,49 @@ describe('AuditSearchTab', () => {
       expect(mockedList).toHaveBeenLastCalledWith({
         action: 'workflow.deploy',
         status: 'failure',
-        page: 1,
         limit: 20,
       }),
+    );
+  });
+
+  it('다음 cursor를 저장하고 이전 페이지 cursor를 재사용한다', async () => {
+    const secondPageItem = {
+      ...auditItem,
+      id: 'audit-2',
+      action: 'workflow.delete',
+    };
+    mockedList
+      .mockResolvedValueOnce({
+        total: 21,
+        next_cursor: 'cursor-2',
+        items: [auditItem],
+      })
+      .mockResolvedValueOnce({
+        total: 21,
+        next_cursor: null,
+        items: [secondPageItem],
+      })
+      .mockResolvedValueOnce({
+        total: 21,
+        next_cursor: 'cursor-2',
+        items: [auditItem],
+      });
+
+    render(<AuditSearchTab members={members} />);
+    await screen.findByText('workflow.deploy');
+
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    await waitFor(() =>
+      expect(mockedList).toHaveBeenLastCalledWith({
+        cursor: 'cursor-2',
+        limit: 20,
+      }),
+    );
+    expect(await screen.findByText('workflow.delete')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '이전' }));
+    await waitFor(() =>
+      expect(mockedList).toHaveBeenLastCalledWith({ limit: 20 }),
     );
   });
 

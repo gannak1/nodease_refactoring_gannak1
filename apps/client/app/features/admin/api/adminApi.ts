@@ -25,7 +25,7 @@ import type {
 } from '../types/SecurityAlert';
 
 export type AuditLogListParams = AuditLogSearchFilters & {
-  page?: number;
+  cursor?: string;
   limit?: number;
 };
 

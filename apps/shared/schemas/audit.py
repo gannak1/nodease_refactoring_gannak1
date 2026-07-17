@@ -40,6 +40,7 @@ class AdminAuditLogSchema(AuditLogSchema):
 
 class AdminAuditLogListResponse(BaseModel):
     total: int
+    next_cursor: Optional[str] = None
     items: List[AdminAuditLogSchema]
 
 

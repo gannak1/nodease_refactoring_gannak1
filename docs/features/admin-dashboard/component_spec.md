@@ -59,7 +59,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - 필터 바: 행위자(기존 `ActiveOrganizationMemberPicker` 재사용), action(canonical action 문자열 입력/선택), 대상 타입/ID, 기간(`startAt`/`endAt`, KST 기준 입력), status. 필터 초기화 버튼을 둔다.
 - 결과 테이블 컬럼: 발생 시각(사용자 로컬 시간대 렌더링), 행위자, action(사용자 친화 라벨 병기 — canonical action에서 파생), 대상, status 배지.
 - 행위자와 대상은 safe display label을 먼저 표시하고 canonical UUID를 보조 text와 복사 가능한 값으로 병기한다. Display가 없으면 UUID만 표시한다.
-- Pagination: `page`/`limit` 기반, 기존 목록 패턴을 따른다.
+- Pagination: Audit 목록은 opaque cursor history를 사용해 이전/다음 이동을 제공한다. 필터를 새로 적용하거나 초기화하면 cursor history를 비우고 첫 페이지부터 조회한다.
 - 행 클릭 → `AuditDetailDrawer` 열림.
 - User actor cell은 별도 button으로 렌더링한다. Organization manager가 active/suspended current organization member actor를 선택하면 row click propagation을 중단하고 `ActorAccessDrawer`를 연다.
 - Auditor-only admin page 노출은 기존 후순위 범위를 유지한다. 이후 해당 page가 열리더라도 auditor-only, system/null actor, invited/removed/missing historical actor에는 actor management control을 제공하지 않고 audit row/detail 동작만 유지한다.
@@ -152,7 +152,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 ## Interactions
 
 1. 탭 전환: 기존 admin 페이지 탭 패턴을 따른다. 탭 상태는 페이지 내 state로 유지한다.
-2. audit 검색: 필터 변경 → 조회 버튼 또는 디바운스 적용 → 1페이지부터 재조회.
+2. audit 검색: 필터 변경 → 조회 버튼 또는 디바운스 적용 → cursor history 초기화 → 첫 페이지부터 재조회.
 3. audit 행 클릭 → 드로어 열림. ESC/바깥 클릭/닫기 버튼으로 닫힘.
 4. audit user actor 클릭 → ActorAccessDrawer → 항목 선택 → ActorAccessConfirmDialog → single access action → profile/resource/audit 재조회.
 5. 권한 탭의 권한 신청 카드에서 `승인` 클릭 → ConfirmDialog → 확정 → API 호출 → 성공 toast → 목록 갱신. 거절도 동일 흐름.

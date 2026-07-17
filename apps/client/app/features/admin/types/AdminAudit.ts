@@ -22,6 +22,7 @@ export type AuditLogItem = {
 
 export type AuditLogListResponse = {
   total: number;
+  next_cursor?: string | null;
   items: AuditLogItem[];
 };
 

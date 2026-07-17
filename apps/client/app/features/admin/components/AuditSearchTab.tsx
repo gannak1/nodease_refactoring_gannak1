@@ -76,10 +76,13 @@ export function AuditSearchTab({
   onActorAccessChanged,
 }: AuditSearchTabProps) {
   const [form, setForm] = useState<FilterForm>(EMPTY_FORM);
-  const [applied, setApplied] = useState<{
-    filters: AuditLogSearchFilters;
-    page: number;
-  }>({ filters: {}, page: 1 });
+  const [appliedFilters, setAppliedFilters] =
+    useState<AuditLogSearchFilters>({});
+  const [cursorHistory, setCursorHistory] = useState<(string | null)[]>([
+    null,
+  ]);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [items, setItems] = useState<AuditLogItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -107,15 +110,19 @@ export function AuditSearchTab({
     setError(null);
     try {
       const data = await adminApi.listAuditLogs({
-        ...applied.filters,
-        page: applied.page,
+        ...appliedFilters,
+        ...(cursorHistory[pageIndex]
+          ? { cursor: cursorHistory[pageIndex] as string }
+          : {}),
         limit: PAGE_SIZE,
       });
       setItems(data.items);
       setTotal(data.total);
+      setNextCursor(data.next_cursor ?? null);
     } catch (err) {
       setItems([]);
       setTotal(0);
+      setNextCursor(null);
       if (isAxiosError(err) && err.response?.status === 403) {
         setError({
           kind: 'forbidden',
@@ -131,17 +138,27 @@ export function AuditSearchTab({
     } finally {
       setLoading(false);
     }
-  }, [applied]);
+  }, [appliedFilters, cursorHistory, pageIndex]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  const search = () => setApplied({ filters: toFilters(form), page: 1 });
+  const resetPagination = () => {
+    setCursorHistory([null]);
+    setPageIndex(0);
+    setNextCursor(null);
+  };
+
+  const search = () => {
+    setAppliedFilters(toFilters(form));
+    resetPagination();
+  };
 
   const reset = () => {
     setForm(EMPTY_FORM);
-    setApplied({ filters: {}, page: 1 });
+    setAppliedFilters({});
+    resetPagination();
   };
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -402,10 +419,24 @@ export function AuditSearchTab({
             </table>
           </div>
           <AdminPagination
-            page={applied.page}
+            page={pageIndex + 1}
             totalPages={totalPages}
             total={total}
-            onPageChange={(page) => setApplied((prev) => ({ ...prev, page }))}
+            hasNext={Boolean(nextCursor)}
+            onPageChange={(page) => {
+              const targetIndex = page - 1;
+              if (targetIndex < pageIndex) {
+                setPageIndex(targetIndex);
+                return;
+              }
+              if (targetIndex === pageIndex + 1 && nextCursor) {
+                setCursorHistory((current) => [
+                  ...current.slice(0, pageIndex + 1),
+                  nextCursor,
+                ]);
+                setPageIndex(targetIndex);
+              }
+            }}
           />
         </>
       )}

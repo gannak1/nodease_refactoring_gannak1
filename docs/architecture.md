@@ -22,6 +22,8 @@ Audit Outbox rollout 4에서 Shared `record_audit()`은 audit event id와 직렬
 
 Workflow 관련 audit는 JSONB correlation만 사용하지 않고 nullable indexed `workflow_run_id`/`workflow_node_run_id` FK로 실행 기록과 연결한다. 기존 metadata 값은 실제 참조 row가 확인된 경우에만 typed 컬럼으로 backfill하며 Run/NodeRun 삭제 시 AuditLog는 유지하고 FK만 NULL로 만든다.
 
+관리자 AuditLog 목록은 `(occurred_at, id)` 인덱스와 opaque cursor를 사용해 깊은 OFFSET scan을 피한다. 필터와 organization scope는 cursor 조건보다 먼저 동일하게 적용한다.
+
 Password login abuse prevention은 [ADR-0047](decisions/ADR-0047-password-login-abuse-prevention-boundary.md)를 따른다. Gateway의 password login application use case가 credential adapter 앞에서 Redis admission port를 호출하고, adapter는 account, trusted source network, account+network의 versioned HMAC token-bucket을 하나의 Lua 실행으로 처리한다. Limited/unavailable request는 password 검증 전에 각각 generic `429`/fail-closed `503`으로 종료한다. Raw account/network identity와 fingerprint는 audit, metric과 log에 저장하지 않는다.
 
 Security Alert MVP는 [ADR-0028](decisions/ADR-0028-security-alert-detection-and-lifecycle.md)의 architecture를 따른다. MBA-223의 audit normalization, MBA-211의 alert/evidence 영속 모델·lifecycle service, MBA-212의 실시간 detector와 PostgreSQL watermark 기반 reconciler, MBA-213의 관리자 API, MBA-214의 notification/client 표면이 구현됐다. Reconciliation은 Celery Beat에 60초 주기로 등록되고 한 실행에서 최대 100건을 처리하며, 로컬 개발 스크립트, Docker Compose와 Helm chart가 Worker와 분리된 singleton Beat 프로세스를 실행한다.
