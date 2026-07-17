@@ -30,6 +30,32 @@ def upgrade() -> None:
         existing_type=postgresql.UUID(as_uuid=True),
         nullable=True,
     )
+    op.drop_constraint(
+        "llm_usage_logs_credential_id_fkey",
+        "llm_usage_logs",
+        type_="foreignkey",
+    )
+    op.create_foreign_key(
+        "llm_usage_logs_credential_id_fkey",
+        "llm_usage_logs",
+        "llm_credentials",
+        ["credential_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
+    op.drop_constraint(
+        "llm_usage_logs_model_id_fkey",
+        "llm_usage_logs",
+        type_="foreignkey",
+    )
+    op.create_foreign_key(
+        "llm_usage_logs_model_id_fkey",
+        "llm_usage_logs",
+        "llm_models",
+        ["model_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
     op.add_column(
         "llm_usage_logs",
         sa.Column("runtime_surface", sa.String(length=64), nullable=True),
@@ -147,6 +173,16 @@ def downgrade() -> None:
     op.drop_column("llm_usage_logs", "runtime_request_id")
     op.drop_column("llm_usage_logs", "runtime_session_id")
     op.drop_column("llm_usage_logs", "runtime_surface")
+    op.drop_constraint(
+        "llm_usage_logs_model_id_fkey",
+        "llm_usage_logs",
+        type_="foreignkey",
+    )
+    op.drop_constraint(
+        "llm_usage_logs_credential_id_fkey",
+        "llm_usage_logs",
+        type_="foreignkey",
+    )
     op.alter_column(
         "llm_usage_logs",
         "model_id",
@@ -158,4 +194,18 @@ def downgrade() -> None:
         "credential_id",
         existing_type=postgresql.UUID(as_uuid=True),
         nullable=False,
+    )
+    op.create_foreign_key(
+        "llm_usage_logs_model_id_fkey",
+        "llm_usage_logs",
+        "llm_models",
+        ["model_id"],
+        ["id"],
+    )
+    op.create_foreign_key(
+        "llm_usage_logs_credential_id_fkey",
+        "llm_usage_logs",
+        "llm_credentials",
+        ["credential_id"],
+        ["id"],
     )

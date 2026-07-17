@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, delete, func, insert, select, text, update
+from sqlalchemy import create_engine, delete, func, inspect, insert, select, text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
 
@@ -114,6 +114,16 @@ def _run_alembic(
             "alembic failed for disposable Agent Builder usage database; "
             "stdout/stderr omitted to avoid leaking local configuration"
         )
+
+
+def _usage_history_reference_delete_actions(connection) -> dict[str, str | None]:
+    return {
+        foreign_key["constrained_columns"][0]: foreign_key["options"].get(
+            "ondelete"
+        )
+        for foreign_key in inspect(connection).get_foreign_keys("llm_usage_logs")
+        if foreign_key["constrained_columns"] in (["credential_id"], ["model_id"])
+    }
 
 
 @contextmanager
@@ -1165,6 +1175,9 @@ def test_migration_has_nullable_history_links_and_agent_builder_attempt_key(
                 )
             ).scalars()
         )
+        history_reference_actions = _usage_history_reference_delete_actions(
+            connection
+        )
 
     assert set(nullable) == {
         "credential_id",
@@ -1181,6 +1194,10 @@ def test_migration_has_nullable_history_links_and_agent_builder_attempt_key(
         "ck_llm_usage_logs_runtime_attempt_positive",
         "ck_llm_usage_logs_agent_builder_runtime_identity",
         "ck_llm_usage_logs_agent_builder_billing_facts",
+    }
+    assert history_reference_actions == {
+        "credential_id": "SET NULL",
+        "model_id": "SET NULL",
     }
 
 
@@ -1261,7 +1278,7 @@ def test_migration_round_trip_on_empty_usage_history():
         _run_alembic(database, config, "downgrade", "a7b8c9d0e1f2")
         downgraded_engine = create_engine(config.database_url(database))
         try:
-            with downgraded_engine.connect() as connection:
+            with downgraded_engine.begin() as connection:
                 runtime_columns = connection.execute(
                     text(
                         """
@@ -1284,6 +1301,36 @@ def test_migration_round_trip_on_empty_usage_history():
                         )
                     ).all()
                 )
+                connection.execute(
+                    text(
+                        "ALTER TABLE llm_usage_logs "
+                        "DROP CONSTRAINT llm_usage_logs_credential_id_fkey"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "ALTER TABLE llm_usage_logs "
+                        "DROP CONSTRAINT llm_usage_logs_model_id_fkey"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "ALTER TABLE llm_usage_logs "
+                        "ADD CONSTRAINT llm_usage_logs_credential_id_fkey "
+                        "FOREIGN KEY (credential_id) REFERENCES llm_credentials(id)"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "ALTER TABLE llm_usage_logs "
+                        "ADD CONSTRAINT llm_usage_logs_model_id_fkey "
+                        "FOREIGN KEY (model_id) REFERENCES llm_models(id)"
+                    )
+                )
+                assert _usage_history_reference_delete_actions(connection) == {
+                    "credential_id": None,
+                    "model_id": None,
+                }
             assert runtime_columns == []
             assert set(required_links.values()) == {"NO"}
         finally:
@@ -1299,6 +1346,10 @@ def test_migration_round_trip_on_empty_usage_history():
                     ).scalar_one()
                     == "a8c9d0e1f2a3"
                 )
+                assert _usage_history_reference_delete_actions(connection) == {
+                    "credential_id": "SET NULL",
+                    "model_id": "SET NULL",
+                }
         finally:
             upgraded_engine.dispose()
 
