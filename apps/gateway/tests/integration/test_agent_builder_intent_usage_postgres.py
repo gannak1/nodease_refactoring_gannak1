@@ -45,6 +45,9 @@ from apps.shared.db.models.agent_builder import (
     AgentBuilderSession,
 )
 from apps.shared.db.models.app import App
+from apps.shared.db.models.deployment_parameter_optimization import (
+    DeploymentParameterOptimizationPlan,
+)
 from apps.shared.db.models.llm import (
     LLMCredential,
     LLMModel,
@@ -61,8 +64,13 @@ from apps.shared.db.models.organization_membership import (
     ORGANIZATION_MEMBERSHIP_SUSPENDED,
     OrganizationMembership,
 )
+from apps.shared.db.models.team import UserWorkflowPermission
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_deployment import (
+    DeploymentType,
+    WorkflowDeployment,
+)
 from apps.shared.tests.helpers.disposable_postgres import (
     DisposablePostgresConfig,
     DisposablePostgresConfigurationError,
@@ -481,6 +489,353 @@ def test_usage_record_is_idempotent_and_included_in_existing_projections(
             "current_month_agent_builder_cost"
         ] == pytest.approx(0.004)
         assert metrics[seed.workflow_id]["projected_month_cost"] >= 0.004
+
+
+def test_operation_cost_summary_uses_real_postgres_active_and_permission_scope(
+    usage_database,
+):
+    engine, _ = usage_database
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    seed = _seed_contract(session_factory)
+    usage_service = AgentBuilderIntentUsageService(session_factory=session_factory)
+    _record(usage_service, seed)
+
+    with session_factory.begin() as db:
+        included_app = db.get(App, seed.app_id)
+        assert included_app is not None
+        included_deployment = WorkflowDeployment(
+            app_id=included_app.id,
+            version=1,
+            type=DeploymentType.CHATBOT,
+            graph_snapshot={"nodes": [], "edges": []},
+            created_by=seed.user_id,
+            is_active=True,
+        )
+        db.add(included_deployment)
+        db.flush()
+        included_app.active_deployment_id = included_deployment.id
+        db.add(
+            DeploymentParameterOptimizationPlan(
+                deployment_id=included_deployment.id,
+                app_id=included_app.id,
+                workflow_id=seed.workflow_id,
+                node_ids=["llm-summary"],
+                enabled=True,
+                check_every_runs=50,
+                monthly_validation_budget_usd=3.0,
+                validation_spend_usd=0.0,
+                validation_spend_month="2026-07",
+                status="collecting",
+                active_parameter_patch={},
+            )
+        )
+
+        member = User(
+            email=f"cost-summary-member-{uuid.uuid4().hex}@example.invalid",
+            name="Cost Summary Member",
+            social_provider="local",
+        )
+        db.add(member)
+        db.flush()
+        db.add_all(
+            [
+                OrganizationMembership(
+                    organization_id=seed.organization_id,
+                    user_id=member.id,
+                    membership_state=ORGANIZATION_MEMBERSHIP_ACTIVE,
+                    organization_auth_state=ORGANIZATION_AUTH_MEMBER,
+                    invited_by=seed.user_id,
+                    invited_at=datetime.now(timezone.utc),
+                    accepted_at=datetime.now(timezone.utc),
+                ),
+                UserWorkflowPermission(
+                    grantee_organization_id=seed.organization_id,
+                    workflow_id=seed.workflow_id,
+                    user_id=member.id,
+                    auth_state="builder",
+                    assigned_by=seed.user_id,
+                    options={"source": "cost-summary-test"},
+                    flags=0,
+                ),
+            ]
+        )
+
+        def add_deployed_primary_workflow(name: str, is_active: bool) -> uuid.UUID:
+            app = App(
+                organization_id=seed.organization_id,
+                name=name,
+                url_slug=f"cost-summary-{uuid.uuid4().hex}",
+                auth_secret="",
+                created_by=seed.user_id,
+            )
+            db.add(app)
+            db.flush()
+            workflow = Workflow(
+                organization_id=seed.organization_id,
+                app_id=app.id,
+                graph={"nodes": [], "edges": []},
+                created_by=seed.user_id,
+                updated_by=seed.user_id,
+            )
+            db.add(workflow)
+            db.flush()
+            app.workflow_id = workflow.id
+            deployment = WorkflowDeployment(
+                app_id=app.id,
+                version=1,
+                type=DeploymentType.CHATBOT,
+                graph_snapshot={"nodes": [], "edges": []},
+                created_by=seed.user_id,
+                is_active=is_active,
+            )
+            db.add(deployment)
+            db.flush()
+            app.active_deployment_id = deployment.id
+            return workflow.id
+
+        unreadable_workflow_id = add_deployed_primary_workflow(
+            "Unreadable Active Workflow",
+            is_active=True,
+        )
+        inactive_workflow_id = add_deployed_primary_workflow(
+            "Inactive Workflow",
+            is_active=False,
+        )
+        mislinked_app = App(
+            organization_id=seed.organization_id,
+            name="Mislinked Active Deployment",
+            url_slug=f"cost-summary-mislinked-{uuid.uuid4().hex}",
+            auth_secret="",
+            created_by=seed.user_id,
+        )
+        db.add(mislinked_app)
+        db.flush()
+        mislinked_workflow = Workflow(
+            organization_id=seed.organization_id,
+            app_id=mislinked_app.id,
+            graph={"nodes": [], "edges": []},
+            created_by=seed.user_id,
+            updated_by=seed.user_id,
+        )
+        db.add(mislinked_workflow)
+        db.flush()
+        mislinked_app.workflow_id = mislinked_workflow.id
+        # apps.active_deployment_id has no FK, so this represents a stale cross-App pointer.
+        mislinked_app.active_deployment_id = included_deployment.id
+        mislinked_app_id = mislinked_app.id
+        db.add(
+            UserWorkflowPermission(
+                grantee_organization_id=seed.organization_id,
+                workflow_id=mislinked_workflow.id,
+                user_id=member.id,
+                auth_state="builder",
+                assigned_by=seed.user_id,
+                options={"source": "cost-summary-mislinked-test"},
+                flags=0,
+            )
+        )
+        db.add_all(
+            [
+                _workflow_usage_log(
+                    seed,
+                    user_id=seed.user_id,
+                    organization_id=seed.organization_id,
+                    total_cost=Decimal("0.006000"),
+                ),
+                _workflow_usage_log(
+                    seed,
+                    user_id=seed.user_id,
+                    organization_id=seed.organization_id,
+                    workflow_id=unreadable_workflow_id,
+                    total_cost=Decimal("5.000000"),
+                ),
+                _workflow_usage_log(
+                    seed,
+                    user_id=seed.user_id,
+                    organization_id=seed.organization_id,
+                    workflow_id=inactive_workflow_id,
+                    total_cost=Decimal("7.000000"),
+                ),
+                _workflow_usage_log(
+                    seed,
+                    user_id=seed.user_id,
+                    organization_id=seed.organization_id,
+                    workflow_id=mislinked_workflow.id,
+                    total_cost=Decimal("11.000000"),
+                ),
+            ]
+        )
+
+    now = datetime.now(timezone.utc)
+    period = AdminUsageService.resolve_month_period_kst(now)
+    multiplier = Decimal(
+        str((period.end_at - period.start_at).total_seconds())
+    ) / Decimal(str(max((now - period.start_at).total_seconds(), 1)))
+    with session_factory() as db:
+        summary = AppService.get_app_operations_cost_summary(
+            db,
+            user_id=member.id,
+            organization_id=seed.organization_id,
+            now=now,
+        )
+        operation_rows = AppService.list_app_operations(
+            db,
+            user_id=member.id,
+            organization_id=seed.organization_id,
+        )
+
+    assert summary.active_workflow_count == 1
+    assert summary.projected_month_workflow_execution_cost == pytest.approx(
+        float(Decimal("0.006000") * multiplier)
+    )
+    assert summary.projected_month_agent_builder_cost == pytest.approx(
+        float(Decimal("0.004000") * multiplier)
+    )
+    assert summary.projected_month_cost == pytest.approx(
+        float(Decimal("0.010000") * multiplier)
+    )
+    rows_by_app_id = {row.app.id: row for row in operation_rows}
+    assert rows_by_app_id[seed.app_id].deployment.state == "active"
+    assert rows_by_app_id[seed.app_id].automatic_optimization is not None
+    assert rows_by_app_id[mislinked_app_id].deployment.state == "undeployed"
+    assert rows_by_app_id[mislinked_app_id].automatic_optimization is None
+
+
+def test_operations_exclude_cross_organization_primary_workflow(
+    usage_database,
+):
+    engine, _ = usage_database
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    seed = _seed_contract(session_factory)
+
+    with session_factory.begin() as db:
+        foreign_organization = Organization(
+            name=f"Foreign Organization {uuid.uuid4().hex}",
+            created_by=seed.user_id,
+            managed_by=seed.user_id,
+        )
+        db.add(foreign_organization)
+        db.flush()
+        foreign_app = App(
+            organization_id=foreign_organization.id,
+            name="Foreign Workflow App",
+            url_slug=f"foreign-workflow-{uuid.uuid4().hex}",
+            auth_secret="",
+            created_by=seed.user_id,
+        )
+        db.add(foreign_app)
+        db.flush()
+        foreign_workflow = Workflow(
+            organization_id=foreign_organization.id,
+            app_id=foreign_app.id,
+            graph={"nodes": [], "edges": []},
+            created_by=seed.user_id,
+            updated_by=seed.user_id,
+        )
+        db.add(foreign_workflow)
+        db.flush()
+
+        same_organization_app = App(
+            organization_id=seed.organization_id,
+            name="Other App In Current Organization",
+            url_slug=f"other-app-{uuid.uuid4().hex}",
+            auth_secret="",
+            created_by=seed.user_id,
+        )
+        db.add(same_organization_app)
+        db.flush()
+        same_organization_workflow = Workflow(
+            organization_id=seed.organization_id,
+            app_id=same_organization_app.id,
+            graph={"nodes": [], "edges": []},
+            created_by=seed.user_id,
+            updated_by=seed.user_id,
+        )
+        db.add(same_organization_workflow)
+        db.flush()
+
+        mislinked_app = App(
+            organization_id=seed.organization_id,
+            name="Cross Organization Primary Pointer",
+            url_slug=f"cross-organization-{uuid.uuid4().hex}",
+            auth_secret="",
+            created_by=seed.user_id,
+            workflow_id=foreign_workflow.id,
+        )
+        db.add(mislinked_app)
+        db.flush()
+        deployment = WorkflowDeployment(
+            app_id=mislinked_app.id,
+            version=1,
+            type=DeploymentType.CHATBOT,
+            graph_snapshot={"nodes": [], "edges": []},
+            created_by=seed.user_id,
+            is_active=True,
+        )
+        db.add(deployment)
+        db.flush()
+        mislinked_app.active_deployment_id = deployment.id
+
+        cross_app_pointer = App(
+            organization_id=seed.organization_id,
+            name="Cross App Primary Pointer",
+            url_slug=f"cross-app-{uuid.uuid4().hex}",
+            auth_secret="",
+            created_by=seed.user_id,
+            workflow_id=same_organization_workflow.id,
+        )
+        db.add(cross_app_pointer)
+        db.flush()
+        cross_app_deployment = WorkflowDeployment(
+            app_id=cross_app_pointer.id,
+            version=1,
+            type=DeploymentType.CHATBOT,
+            graph_snapshot={"nodes": [], "edges": []},
+            created_by=seed.user_id,
+            is_active=True,
+        )
+        db.add(cross_app_deployment)
+        db.flush()
+        cross_app_pointer.active_deployment_id = cross_app_deployment.id
+        db.add(
+            _workflow_usage_log(
+                seed,
+                user_id=seed.user_id,
+                organization_id=foreign_organization.id,
+                workflow_id=foreign_workflow.id,
+                total_cost=Decimal("11.000000"),
+            )
+        )
+        db.add(
+            _workflow_usage_log(
+                seed,
+                user_id=seed.user_id,
+                organization_id=seed.organization_id,
+                workflow_id=same_organization_workflow.id,
+                total_cost=Decimal("7.000000"),
+            )
+        )
+        mislinked_app_id = mislinked_app.id
+        cross_app_pointer_id = cross_app_pointer.id
+
+    now = datetime.now(timezone.utc)
+    with session_factory() as db:
+        summary = AppService.get_app_operations_cost_summary(
+            db,
+            user_id=seed.user_id,
+            organization_id=seed.organization_id,
+            now=now,
+        )
+        operation_rows = AppService.list_app_operations(
+            db,
+            user_id=seed.user_id,
+            organization_id=seed.organization_id,
+        )
+
+    assert summary.active_workflow_count == 0
+    assert summary.projected_month_cost == 0
+    assert all(row.app.id != mislinked_app_id for row in operation_rows)
+    assert all(row.app.id != cross_app_pointer_id for row in operation_rows)
 
 
 def test_member_current_month_usage_uses_primary_workflow_and_organization_scope(
@@ -1275,7 +1630,7 @@ def test_migration_round_trip_on_empty_usage_history():
 
     with _disposable_database(config) as (engine, database):
         engine.dispose()
-        _run_alembic(database, config, "downgrade", "a7b8c9d0e1f2")
+        _run_alembic(database, config, "downgrade", "aa0b1c2d3e4f")
         downgraded_engine = create_engine(config.database_url(database))
         try:
             with downgraded_engine.begin() as connection:
@@ -1374,7 +1729,7 @@ def test_migration_downgrade_rejects_agent_builder_usage_history():
             database,
             config,
             "downgrade",
-            "a7b8c9d0e1f2",
+            "aa0b1c2d3e4f",
         )
 
         preserved_engine = create_engine(config.database_url(database))

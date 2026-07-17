@@ -214,6 +214,36 @@ def test_list_app_operations_uses_active_organization_header(monkeypatch):
     }
 
 
+def test_get_app_operations_cost_summary_uses_active_organization_header(monkeypatch):
+    organization_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4())
+    captured = {}
+
+    monkeypatch.setattr(
+        app_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, user_id: organization_id,
+    )
+    monkeypatch.setattr(
+        app_endpoint.AppService,
+        "get_app_operations_cost_summary",
+        lambda db, **kwargs: captured.update(kwargs) or {"active_workflow_count": 0},
+    )
+
+    result = app_endpoint.get_app_operations_cost_summary(
+        request=object(),
+        x_organization_id=str(organization_id),
+        db=object(),
+        current_user=user,
+    )
+
+    assert result == {"active_workflow_count": 0}
+    assert captured == {
+        "user_id": user.id,
+        "organization_id": organization_id,
+    }
+
+
 def test_create_workflow_uses_active_organization_header(monkeypatch):
     organization_id = uuid.uuid4()
     user = SimpleNamespace(id=uuid.uuid4())
@@ -269,6 +299,9 @@ class _FakeQuery:
 
     def filter(self, *args, **kwargs):
         self.filters.extend(args)
+        return self
+
+    def outerjoin(self, *args, **kwargs):
         return self
 
     def options(self, *args, **kwargs):
@@ -572,7 +605,7 @@ def test_list_app_operations_attaches_member_budget_status_from_grouped_lookup(
     assert captured["workflow_ids"] == [workflow_id]
 
 
-def test_list_app_operations_returns_null_budget_status_when_lookup_races(
+def test_list_app_operations_recovers_optional_projection_lookup_failures(
     monkeypatch,
 ):
     organization_id = uuid.uuid4()
@@ -602,7 +635,7 @@ def test_list_app_operations_returns_null_budget_status_when_lookup_races(
     )
 
     def permission_sources_by_workflow_ids(*args, **kwargs):
-        assert db.rollback_count == 1
+        assert db.rollback_count == 2
         return {}
 
     monkeypatch.setattr(
@@ -628,6 +661,17 @@ def test_list_app_operations_returns_null_budget_status_when_lookup_races(
         raising=False,
     )
 
+    def operation_metrics_by_workflow_id(*args, **kwargs):
+        raise RuntimeError(
+            "usage row changed while operations list was being built"
+        )
+
+    monkeypatch.setattr(
+        AppService,
+        "_operation_metrics_by_workflow_id",
+        operation_metrics_by_workflow_id,
+    )
+
     rows = AppService.list_app_operations(
         db,
         user_id=user_id,
@@ -635,7 +679,7 @@ def test_list_app_operations_returns_null_budget_status_when_lookup_races(
     )
 
     assert rows[0].model_dump()["app"].get("budget_status", "missing") is None
-    assert db.rollback_count == 1
+    assert db.rollback_count == 2
 
 
 def test_list_app_operations_filters_by_capability(monkeypatch):
@@ -749,6 +793,129 @@ def test_list_app_operations_stops_permission_scan_after_page_is_filled(monkeypa
 
     assert [row.app.name for row in rows] == ["모듈 0"]
     assert checked_app_ids == [apps[0].id]
+
+
+def test_operation_cost_summary_includes_all_readable_active_workflows(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    apps = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            organization_id=organization_id,
+            name=f"모듈 {index}",
+            description=None,
+            icon=None,
+            workflow_id=uuid.uuid4(),
+            active_deployment=SimpleNamespace(is_active=True),
+            created_by=user_id,
+            created_at=now,
+            updated_at=now,
+        )
+        for index in range(101)
+    ]
+    db = _FakeDb(apps)
+    captured = {}
+    for app in apps:
+        app.active_deployment.app_id = app.id
+
+    monkeypatch.setattr(
+        app_service,
+        "has_organization_manager_permission",
+        lambda *args: True,
+    )
+    monkeypatch.setattr(
+        AppService,
+        "_operation_metrics_by_workflow_id",
+        lambda _db, workflow_ids, **kwargs: captured.update(
+            {"workflow_ids": workflow_ids, "now": kwargs["now"]}
+        )
+        or {
+            workflow_id: {
+                "projected_month_cost": 3,
+                "projected_month_workflow_execution_cost": 2,
+                "projected_month_agent_builder_cost": 1,
+            }
+            for workflow_id in workflow_ids
+        },
+    )
+
+    summary = AppService.get_app_operations_cost_summary(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+        now=now,
+    )
+
+    assert len(captured["workflow_ids"]) == 101
+    assert summary.active_workflow_count == 101
+    assert summary.projected_month_cost == pytest.approx(303)
+    assert summary.projected_month_workflow_execution_cost == pytest.approx(202)
+    assert summary.projected_month_agent_builder_cost == pytest.approx(101)
+
+
+def test_operation_cost_summary_batches_non_manager_permission_sources(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    apps = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            organization_id=organization_id,
+            name=f"모듈 {index}",
+            description=None,
+            icon=None,
+            workflow_id=uuid.uuid4(),
+            active_deployment=SimpleNamespace(is_active=True),
+            created_by=user_id,
+            created_at=now,
+            updated_at=now,
+        )
+        for index in range(101)
+    ]
+    db = _FakeDb(apps)
+    captured = {}
+    for app in apps:
+        app.active_deployment.app_id = app.id
+
+    monkeypatch.setattr(
+        app_service,
+        "has_organization_manager_permission",
+        lambda *args: False,
+    )
+    monkeypatch.setattr(
+        app_service,
+        "get_workflow_permission_sources_by_workflow_ids",
+        lambda _db, _user_id, workflow_ids, _organization_id: captured.update(
+            {"workflow_ids": workflow_ids}
+        )
+        or {
+            workflow_id: [SimpleNamespace(auth_state="builder")]
+            for workflow_id in workflow_ids
+        },
+    )
+    monkeypatch.setattr(
+        AppService,
+        "_operation_metrics_by_workflow_id",
+        lambda _db, workflow_ids, **kwargs: {
+            workflow_id: {
+                "projected_month_cost": 3,
+                "projected_month_workflow_execution_cost": 2,
+                "projected_month_agent_builder_cost": 1,
+            }
+            for workflow_id in workflow_ids
+        },
+    )
+
+    summary = AppService.get_app_operations_cost_summary(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+        now=now,
+    )
+
+    assert len(captured["workflow_ids"]) == 101
+    assert summary.active_workflow_count == 101
 
 
 def test_escape_like_pattern_treats_wildcards_as_literals():
@@ -1210,6 +1377,9 @@ class _RouteQuery:
         self.filter_expressions = []
 
     def join(self, *args, **kwargs):
+        return self
+
+    def outerjoin(self, *args, **kwargs):
         return self
 
     def filter(self, *expressions):

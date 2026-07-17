@@ -8,6 +8,37 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 
+def _safe_billing_usage(usage: Any) -> Dict[str, int] | None:
+    if not isinstance(usage, dict):
+        return None
+    prompt_tokens = usage.get("prompt_tokens", usage.get("input_tokens"))
+    completion_tokens = usage.get(
+        "completion_tokens",
+        usage.get("output_tokens"),
+    )
+    if (
+        isinstance(prompt_tokens, bool)
+        or not isinstance(prompt_tokens, int)
+        or prompt_tokens < 0
+        or isinstance(completion_tokens, bool)
+        or not isinstance(completion_tokens, int)
+        or completion_tokens < 0
+    ):
+        return None
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+    }
+
+
+class LLMResponseValidationError(ValueError):
+    """Provider output was unusable after a response with optional safe usage."""
+
+    def __init__(self, message: str, *, usage: Any = None):
+        super().__init__(message)
+        self.usage: Dict[str, int] | None = _safe_billing_usage(usage)
+
+
 class BaseLLMClient(ABC):
     """
     provider별 클라이언트의 기본 구조를 정의합니다.

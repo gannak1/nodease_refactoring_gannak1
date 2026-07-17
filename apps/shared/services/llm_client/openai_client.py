@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 import tiktoken
 
-from .base import BaseLLMClient
+from .base import BaseLLMClient, LLMResponseValidationError
 
 
 class OpenAIClient(BaseLLMClient):
@@ -212,14 +212,6 @@ class OpenAIClient(BaseLLMClient):
         if "choices" in data:
             return data
 
-        response_status = data.get("status")
-        if response_status in {"incomplete", "failed", "cancelled"}:
-            raise ValueError(
-                "OpenAI Responses 응답이 완료되지 않았습니다: "
-                f"status={response_status}, "
-                f"summary={self._summarize_responses_response(data)}"
-            )
-
         usage = data.get("usage", {})
         if not isinstance(usage, dict):
             usage = {}
@@ -238,28 +230,56 @@ class OpenAIClient(BaseLLMClient):
                 + mapped_usage.get("completion_tokens", 0)
             )
 
+        response_status = data.get("status")
+        if response_status in {"incomplete", "failed", "cancelled"}:
+            raise LLMResponseValidationError(
+                "OpenAI Responses 응답이 완료되지 않았습니다: "
+                f"status={response_status}, "
+                f"summary={self._summarize_responses_response(data)}",
+                usage=mapped_usage,
+            )
+
         text = ""
         if isinstance(data.get("output_text"), str):
             text = data.get("output_text", "")
         else:
-            output = data.get("output") or []
-            for item in output:
-                if not isinstance(item, dict):
-                    continue
-                if isinstance(item.get("text"), str):
-                    text += item.get("text", "")
-                contents = item.get("content") or []
-                for content in contents:
-                    if isinstance(content, dict):
-                        if content.get("type") in ("output_text", "text"):
-                            text += str(content.get("text", ""))
-                    elif isinstance(content, str):
-                        text += content
+            try:
+                output = data.get("output") or []
+                if not isinstance(output, list):
+                    raise TypeError("output must be a list")
+                for item in output:
+                    if not isinstance(item, dict):
+                        raise TypeError("output item must be an object")
+                    item_text = item.get("text")
+                    if item_text is not None:
+                        if not isinstance(item_text, str):
+                            raise TypeError("output text must be a string")
+                        text += item_text
+                    contents = item.get("content") or []
+                    if not isinstance(contents, list):
+                        raise TypeError("output content must be a list")
+                    for content in contents:
+                        if isinstance(content, dict):
+                            if content.get("type") in ("output_text", "text"):
+                                content_text = content.get("text", "")
+                                if not isinstance(content_text, str):
+                                    raise TypeError("content text must be a string")
+                                text += content_text
+                        elif isinstance(content, str):
+                            text += content
+                        else:
+                            raise TypeError("content block must be an object or string")
+            except (AttributeError, TypeError) as exc:
+                raise LLMResponseValidationError(
+                    "OpenAI Responses response content is invalid",
+                    usage=mapped_usage,
+                ) from exc
 
         if not text.strip():
-            raise ValueError(
+            raise LLMResponseValidationError(
                 "OpenAI Responses 응답에 사용할 수 있는 텍스트가 없습니다: "
-                f"summary={self._summarize_responses_response(data)}"
+                f"summary={self._summarize_responses_response(data)}",
+                usage=mapped_usage,
             )
 
         finish_reason = None
@@ -550,6 +570,8 @@ class OpenAIClient(BaseLLMClient):
                 messages=messages,
                 timeout_seconds=timeout_seconds,
             )
+        except LLMResponseValidationError:
+            raise
         except ValueError:
             if not self._should_try_legacy_completions():
                 raise
@@ -667,6 +689,8 @@ class OpenAIClient(BaseLLMClient):
                 if itype:
                     output_types[itype] = output_types.get(itype, 0) + 1
                 contents = item.get("content") or []
+                if not isinstance(contents, list):
+                    continue
                 for content in contents:
                     if isinstance(content, dict):
                         ctype = content.get("type")
@@ -718,6 +742,8 @@ class OpenAIClient(BaseLLMClient):
                 messages=messages,
                 timeout_seconds=timeout_seconds,
             )
+        except LLMResponseValidationError:
+            raise
         except ValueError:
             pass
 

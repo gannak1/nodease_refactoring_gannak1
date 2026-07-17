@@ -22,6 +22,8 @@ from apps.gateway.services.agent_builder_intent_service import (
 from apps.gateway.services.agent_builder_service import AgentBuilderService
 from apps.gateway.services.llm_service import LLMCredentialNotAvailableError
 from apps.shared.schemas.agent_builder import AgentBuilderMessageRequest
+from apps.shared.services.llm_client.base import LLMResponseValidationError
+from apps.shared.services.llm_client.google_client import GoogleClient
 from apps.shared.services.llm_client.openai_client import OpenAIClient
 from apps.shared.services.workflow_node_catalog import (
     agent_builder_supported_capabilities,
@@ -67,6 +69,22 @@ class SchemaConstrainedFakeLLMClient(FakeLLMClient):
 class ProviderFailingFakeLLMClient:
     def invoke_sync(self, _messages, **_kwargs):
         raise ValueError("provider raw failure must not escape")
+
+
+class UsageResponseValidationFailingFakeLLMClient:
+    def __init__(self):
+        self.calls = 0
+
+    def invoke_sync(self, _messages, **_kwargs):
+        self.calls += 1
+        raise LLMResponseValidationError(
+            "safe provider response validation failure",
+            usage={
+                "input_tokens": 12,
+                "output_tokens": 3,
+                "provider_detail": "must-not-cross-boundary",
+            },
+        )
 
 
 class UsageSequenceFakeLLMClient:
@@ -130,6 +148,43 @@ class CapturingUsageRecorder:
         self.canceled.append(reservation)
         if self.cancel_error is not None:
             raise self.cancel_error
+
+
+def _google_client_with_response(monkeypatch, response_payload):
+    calls = []
+
+    class MockResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return response_payload
+
+    class MockAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, url, *, headers, json):
+            calls.append({"url": url, "headers": headers, "json": json})
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.google_client.httpx.AsyncClient",
+        lambda **_kwargs: MockAsyncClient(),
+    )
+    return (
+        GoogleClient(
+            model_id="models/gemini-test",
+            credentials={
+                "apiKey": object(),
+                "baseUrl": "https://google.invalid/v1beta/openai",
+            },
+        ),
+        calls,
+    )
 
 
 class FakeIntentExtractor:
@@ -1412,6 +1467,154 @@ def test_llm_intent_extractor_does_not_record_when_provider_has_no_response():
 
     assert recorder.calls == []
     assert len(recorder.reservations) == 1
+    assert recorder.canceled == recorder.reservations
+
+
+def test_llm_intent_extractor_records_usage_before_provider_content_error():
+    client = UsageResponseValidationFailingFakeLLMClient()
+    recorder = CapturingUsageRecorder()
+    context = AgentBuilderIntentUsageContext(
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=context.user_id,
+        organization_id=context.organization_id,
+        runtime_loader=lambda **_kwargs: SimpleNamespace(
+            client=client,
+            credential_id=uuid.uuid4(),
+            model_id="model-example",
+            model_db_id=uuid.uuid4(),
+            organization_id=context.organization_id,
+        ),
+        usage_recorder=recorder,
+    )
+
+    with pytest.raises(
+        AgentBuilderIntentExtractionError,
+        match="LLM intent response is invalid",
+    ):
+        extractor.extract(
+            safe_message="입력과 응답 노드를 만들어줘",
+            workflow_context={"workflow_present": False, "nodes": []},
+            usage_context=context,
+        )
+
+    assert client.calls == 1
+    assert len(recorder.calls) == 1
+    _, sample = recorder.calls[0]
+    assert sample.prompt_tokens == 12
+    assert sample.completion_tokens == 3
+    assert recorder.canceled == []
+
+
+def test_google_intent_extractor_records_usage_before_invalid_content(monkeypatch):
+    client, provider_calls = _google_client_with_response(
+        monkeypatch,
+        {
+            "choices": [{"message": {"content": ""}}],
+            "usage": {"prompt_tokens": 17, "completion_tokens": 5},
+        },
+    )
+    recorder = CapturingUsageRecorder()
+    context = AgentBuilderIntentUsageContext(
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=context.user_id,
+        organization_id=context.organization_id,
+        runtime_loader=lambda **_kwargs: SimpleNamespace(
+            client=client,
+            credential_id=uuid.uuid4(),
+            model_id=client.model_id,
+            model_db_id=uuid.uuid4(),
+            organization_id=context.organization_id,
+        ),
+        knowledge_context_loader=lambda **_kwargs: [],
+        usage_recorder=recorder,
+    )
+
+    with pytest.raises(
+        AgentBuilderIntentExtractionError,
+        match="LLM intent response is invalid",
+    ):
+        extractor.extract(
+            safe_message="입력과 응답 노드를 만들어줘",
+            workflow_context={"workflow_present": False, "nodes": []},
+            usage_context=context,
+        )
+
+    assert len(provider_calls) == 1
+    assert len(recorder.calls) == 1
+    _, sample = recorder.calls[0]
+    assert sample.prompt_tokens == 17
+    assert sample.completion_tokens == 5
+    assert recorder.canceled == []
+
+
+def test_google_intent_extractor_fails_without_usage_and_does_not_recall_provider(
+    monkeypatch,
+):
+    client, provider_calls = _google_client_with_response(
+        monkeypatch,
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "request_type": "new_workflow",
+                                "draft_mode": "new_workflow",
+                                "intent_summary": "입력과 응답 연결",
+                                "ordered_capabilities": ["start_input", "answer"],
+                            }
+                        )
+                    }
+                }
+            ]
+        },
+    )
+    recorder = CapturingUsageRecorder()
+    context = AgentBuilderIntentUsageContext(
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=context.user_id,
+        organization_id=context.organization_id,
+        runtime_loader=lambda **_kwargs: SimpleNamespace(
+            client=client,
+            credential_id=uuid.uuid4(),
+            model_id=client.model_id,
+            model_db_id=uuid.uuid4(),
+            organization_id=context.organization_id,
+        ),
+        knowledge_context_loader=lambda **_kwargs: [],
+        usage_recorder=recorder,
+    )
+
+    with pytest.raises(AgentBuilderIntentUsageRecordingError):
+        extractor.extract(
+            safe_message="입력과 응답 노드를 만들어줘",
+            workflow_context={"workflow_present": False, "nodes": []},
+            usage_context=context,
+        )
+
+    assert len(provider_calls) == 1
+    assert recorder.calls == []
     assert recorder.canceled == recorder.reservations
 
 

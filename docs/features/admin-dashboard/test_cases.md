@@ -11,8 +11,6 @@ Security Alert FR-013의 상세 rule/worker/API/component/E2E matrix는 [Securit
 - Given Security Alert deep link의 유효한 `alertId`, When 새로고침하면, Then 같은 tab/detail이 복원된다. Invalid/cross-org ID는 safe 404로 처리한다.
 - Given Alert detail에서 `사용자 접근 관리` 선택, When ActorAccessDrawer로 전환하면, Then 두 drawer가 겹치지 않고 기존 organization access-management 정책을 재사용하며 alert를 자동 resolve하지 않는다.
 - Given Security Alert 기능 활성화, When audit/비용/권한 탭의 권한 신청·App 생성 권한 카드를 사용하면, Then 기존 API, 권한, pagination, drawer 흐름이 회귀하지 않는다.
-Verified Against: TBD
-
 검증 값은 MBA-188 actor access와 audit detail 확장 case에 적용한다. 기존 비용/권한 신청 case의 기준은 해당 feature 문서와 git history를 따른다.
 
 [requirements.md](requirements.md)의 FR-011~FR-018과 [api_spec.md](api_spec.md), [component_spec.md](component_spec.md)를 검증한다. 신청 제출 측(FR-041)의 인수 조건은 [organization](../organization/requirements.md) 범위이며, 여기서는 관리자 측 흐름과 E2E 연결만 다룬다.

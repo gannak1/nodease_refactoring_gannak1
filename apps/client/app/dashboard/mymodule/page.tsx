@@ -35,6 +35,7 @@ import {
 import {
   moduleOperationsApi,
   type ModuleOperationRow,
+  type ModuleOperationsCostSummary,
   type ModuleOperationsListParams,
   type ModuleRunState,
 } from '@/app/features/app/api/moduleOperationsApi';
@@ -266,6 +267,40 @@ const costSignalOf = (row: ModuleOperationRow): CostOptimizationSignal => {
   };
 };
 
+function ModuleProjectedCost({
+  appName,
+  deploymentState,
+  costSignal,
+  valueClassName,
+}: {
+  appName: string;
+  deploymentState: ModuleOperationRow['deploymentState'];
+  costSignal: CostOptimizationSignal;
+  valueClassName: string;
+}) {
+  const hasNoCost =
+    costSignal.monthlyCost == null || costSignal.monthlyCost === 0;
+
+  return (
+    <div>
+      <p className={valueClassName}>{formatCurrency(costSignal.monthlyCost)}</p>
+      <div
+        className="mt-1 space-y-0.5 text-xs text-slate-500"
+        aria-label={`${appName} 예상 비용 구성`}
+      >
+        <p>
+          {deploymentState === 'undeployed'
+            ? '테스트 실행'
+            : '테스트/배포 실행'}{' '}
+          {formatCurrency(costSignal.workflowExecutionCost)}
+        </p>
+        <p>Agent Builder {formatCurrency(costSignal.agentBuilderCost)}</p>
+      </div>
+      {hasNoCost && <p className="mt-1 text-xs text-slate-400">비용 없음</p>}
+    </div>
+  );
+}
+
 type OrganizationResponse = {
   id: string;
   name: string;
@@ -296,6 +331,11 @@ const capabilityParamOf = (
 export default function MyModulePage() {
   const router = useRouter();
   const [rows, setRows] = useState<ModuleOperationRow[]>([]);
+  const [costSummary, setCostSummary] =
+    useState<ModuleOperationsCostSummary | null>(null);
+  const [costSummaryState, setCostSummaryState] = useState<
+    'loading' | 'ready' | 'error'
+  >('loading');
   const [isOrgManager, setIsOrgManager] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
@@ -376,6 +416,20 @@ export default function MyModulePage() {
           setIsLoadingMore(true);
         } else {
           setIsLoading(true);
+          setCostSummary(null);
+          setCostSummaryState('loading');
+          void moduleOperationsApi
+            .getModuleOperationsCostSummary()
+            .then((nextCostSummary) => {
+              if (requestSeq !== requestSeqRef.current) return;
+              setCostSummary(nextCostSummary);
+              setCostSummaryState('ready');
+            })
+            .catch(() => {
+              if (requestSeq !== requestSeqRef.current) return;
+              setCostSummary(null);
+              setCostSummaryState('error');
+            });
         }
         setError('');
         const data = await moduleOperationsApi.listModuleOperations(
@@ -425,18 +479,6 @@ export default function MyModulePage() {
     () => {
       const activeRows = rows.filter((row) => row.deploymentState === 'active');
       const costSignals = activeRows.map(costSignalOf);
-      const monthlyCost = costSignals.reduce(
-        (total, signal) => total + (signal.monthlyCost ?? 0),
-        0,
-      );
-      const workflowExecutionCost = costSignals.reduce(
-        (total, signal) => total + (signal.workflowExecutionCost ?? 0),
-        0,
-      );
-      const agentBuilderCost = costSignals.reduce(
-        (total, signal) => total + (signal.agentBuilderCost ?? 0),
-        0,
-      );
       const trendSignals = costSignals.filter(
         (signal) => signal.trendPercent != null,
       );
@@ -461,9 +503,6 @@ export default function MyModulePage() {
             row.dataQuality.permissionSourcesUnavailable ||
             row.dataQuality.latestRunUnavailable,
         ).length,
-        monthlyCost,
-        workflowExecutionCost,
-        agentBuilderCost,
         recommendedCount: recommended.length,
         atRiskBudgetCount: atRiskBudget.length,
         averageTrend,
@@ -595,17 +634,38 @@ export default function MyModulePage() {
         <section className="grid gap-4 md:grid-cols-4">
           <DashboardSummaryCard
             label="예상 월 비용"
-            value={formatCurrency(summary.monthlyCost)}
+            value={
+              costSummaryState === 'ready'
+                ? formatCurrency(costSummary?.projected_month_cost)
+                : '-'
+            }
             icon={DollarSign}
             iconClassName="text-emerald-600"
             description={
-              <div className="space-y-1">
-                <p>{summary.active}개 배포 workflow의 당월 사용량 기준</p>
-                <p>
-                  워크플로 실행 {formatCurrency(summary.workflowExecutionCost)}
-                </p>
-                <p>Agent Builder {formatCurrency(summary.agentBuilderCost)}</p>
-              </div>
+              costSummaryState === 'ready' && costSummary ? (
+                <div className="space-y-1">
+                  <p>
+                    {costSummary.active_workflow_count}개 배포 workflow의
+                    당월 사용량 기준
+                  </p>
+                  <p>
+                    워크플로 실행{' '}
+                    {formatCurrency(
+                      costSummary.projected_month_workflow_execution_cost,
+                    )}
+                  </p>
+                  <p>
+                    Agent Builder{' '}
+                    {formatCurrency(
+                      costSummary.projected_month_agent_builder_cost,
+                    )}
+                  </p>
+                </div>
+              ) : costSummaryState === 'loading' ? (
+                '예상 비용을 불러오는 중입니다.'
+              ) : (
+                '예상 비용을 확인할 수 없습니다.'
+              )
             }
           />
           <DashboardSummaryCard
@@ -967,26 +1027,12 @@ function ModuleOperationTableRow({
         </button>
       </td>
       <td className="px-4 py-4 align-top">
-        <div>
-          <p className="font-semibold text-slate-950">
-            {formatCurrency(costSignal.monthlyCost)}
-          </p>
-          <div
-            className="mt-1 space-y-0.5 text-xs text-slate-500"
-            aria-label={`${row.app.name} 예상 비용 구성`}
-          >
-            <p>
-              {row.deploymentState === 'undeployed'
-                ? '테스트 실행'
-                : '테스트/배포 실행'}{' '}
-              {formatCurrency(costSignal.workflowExecutionCost)}
-            </p>
-            <p>Agent Builder {formatCurrency(costSignal.agentBuilderCost)}</p>
-          </div>
-          {(costSignal.monthlyCost == null || costSignal.monthlyCost === 0) && (
-            <p className="mt-1 text-xs text-slate-500">비용 없음</p>
-          )}
-        </div>
+        <ModuleProjectedCost
+          appName={row.app.name}
+          deploymentState={row.deploymentState}
+          costSignal={costSignal}
+          valueClassName="font-semibold text-slate-950"
+        />
       </td>
       <td className="px-4 py-4 align-top">
         {row.deploymentState === 'active' && trendPercent != null ? (
@@ -1182,16 +1228,14 @@ function ModuleOperationGridCard({
       <dl className="grid grid-cols-2 gap-px border-b border-slate-100 bg-slate-100">
         <div className="min-h-24 bg-white p-4">
           <dt className="text-xs font-medium text-slate-500">월 예상 비용</dt>
-          <dd className="mt-2 text-base font-bold text-slate-950">
-            {deploymentState === 'active'
-              ? formatCurrency(costSignal.monthlyCost)
-              : '배포 후 표시'}
+          <dd className="mt-2">
+            <ModuleProjectedCost
+              appName={row.app.name}
+              deploymentState={deploymentState}
+              costSignal={costSignal}
+              valueClassName="text-base font-bold text-slate-950"
+            />
           </dd>
-          {deploymentState === 'active' &&
-            (costSignal.monthlyCost == null ||
-              costSignal.monthlyCost === 0) && (
-              <p className="mt-1 text-xs text-slate-400">운영 비용 없음</p>
-            )}
         </div>
         <div className="min-h-24 bg-white p-4">
           <dt className="text-xs font-medium text-slate-500">증가 추세</dt>

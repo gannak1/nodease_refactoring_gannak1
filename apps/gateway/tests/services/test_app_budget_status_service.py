@@ -389,6 +389,31 @@ def test_attach_budget_status_ignores_secondary_workflow_when_primary_has_no_bud
     assert app.budget_status is None
 
 
+def test_attach_operation_metrics_rolls_back_failed_optional_lookup(monkeypatch):
+    class RollbackTrackingDb:
+        def __init__(self):
+            self.rollback_calls = 0
+
+        def rollback(self):
+            self.rollback_calls += 1
+
+    def fail_metrics_lookup(*_args, **_kwargs):
+        raise RuntimeError("simulated projection lookup failure")
+
+    db = RollbackTrackingDb()
+    app = SimpleNamespace(workflow_id=uuid4())
+    monkeypatch.setattr(
+        AppService,
+        "_operation_metrics_by_workflow_id",
+        staticmethod(fail_metrics_lookup),
+    )
+
+    AppService._attach_operation_metrics(db, [app])
+
+    assert db.rollback_calls == 1
+    assert app.operation_metrics is None
+
+
 class _BudgetStatusDb:
     def __init__(self, *, budgets, usage_logs, workflows=None):
         self.budgets = budgets

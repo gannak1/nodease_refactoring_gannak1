@@ -1,8 +1,6 @@
 # Admin Dashboard Component Spec
 
 Status: Draft
-Verified Against: TBD
-
 검증 값은 MBA-188 actor access, audit detail 연동 섹션에 적용한다. 기존 비용/권한 신청 섹션의 기준은 해당 feature 문서와 git history를 따른다.
 
 기존 관리자 페이지 `/dashboard/admin`(`apps/client/app/dashboard/admin/page.tsx`)을 확장한다. 이 페이지는 관리 tab 구조와 공용 컴포넌트(`DashboardPageHeader`, `DashboardPanel`, `DashboardSummaryCard`)를 갖고 있다. MBA-141 목표 계약은 기존 `멤버`/`팀` 상위 tab을 `조직 구성` 하나로 통합하고 내부 `view=members|teams`로 전환한다. 이 feature는 새 화면을 만들지 않고 다음을 추가/전환한다.

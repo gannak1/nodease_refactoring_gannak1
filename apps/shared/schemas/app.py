@@ -46,6 +46,15 @@ class AppOperationMetrics(BaseModel):
     trend_percent: Optional[float] = None
 
 
+class AppOperationsCostSummary(BaseModel):
+    """All readable active deployment workflows for the My Module cost card."""
+
+    active_workflow_count: int = Field(default=0, ge=0)
+    projected_month_cost: float = Field(default=0.0, ge=0)
+    projected_month_workflow_execution_cost: float = Field(default=0.0, ge=0)
+    projected_month_agent_builder_cost: float = Field(default=0.0, ge=0)
+
+
 class AppResponse(BaseModel):
     """앱 응답 스키마"""
 

@@ -100,6 +100,13 @@ export type ModuleOperationsListParams = {
   offset?: number;
 };
 
+export type ModuleOperationsCostSummary = {
+  active_workflow_count: number;
+  projected_month_cost: number;
+  projected_month_workflow_execution_cost: number;
+  projected_month_agent_builder_cost: number;
+};
+
 type OperationsApiRow = {
   app: ModuleOperationAppSummary;
   permission?: WorkflowPermissionSummary;
@@ -155,4 +162,12 @@ export const moduleOperationsApi = {
     });
     return response.data.map(normalizeOperationsApiRow);
   },
+
+  getModuleOperationsCostSummary:
+    async (): Promise<ModuleOperationsCostSummary> => {
+      const response = await apiClient.get<ModuleOperationsCostSummary>(
+        '/apps/operations/cost-summary',
+      );
+      return response.data;
+    },
 };

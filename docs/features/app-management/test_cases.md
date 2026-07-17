@@ -1,7 +1,6 @@
 # App Management Test Cases
 
 Status: Draft
-Verified Against: TBD
 
 ## Acceptance Criteria
 
@@ -21,6 +20,12 @@ Verified Against: TBD
 - Given `/dashboard/mymodule`에 표시되는 App row의 primary workflow에 당월/전월 `llm_usage_logs` 비용이 있다, When `GET /apps/operations`를 호출한다, Then `row.app.operation_metrics`는 당월 비용, 월 예상 비용, 전월 비용, 전월 대비 증감률을 반환한다.
 - Given primary workflow에 Agent Builder planner/repair usage가 있다, When `GET /apps`와 `GET /apps/operations`를 호출한다, Then 해당 비용은 예산 사용률, 당월 비용과 월 예상 총비용에 포함되고 `operation_metrics`의 Agent Builder 구분 필드에도 반환된다.
 - Given workflow 실행 usage와 Agent Builder usage가 함께 있다, When `/dashboard/mymodule`을 렌더링한다, Then 상단 예상 월 비용과 활성 workflow 비용 칸은 총비용 아래에 두 구분값을 표시하며 구분값의 합은 총비용과 같다.
+- Given 운영 가능한 활성 배포 workflow가 101개 이상이다, When 첫 목록 페이지의 `/dashboard/mymodule`을 렌더링한다, Then 상단 예상 월 비용은 첫 100개 행만 합산하지 않고 `GET /apps/operations/cost-summary`의 전체 합계를 표시한다.
+- Given App의 `active_deployment_id`가 다른 App의 활성 deployment를 가리킨다, When `GET /apps/operations/cost-summary`를 호출한다, Then 해당 App primary workflow는 활성 workflow 수와 비용 합계에서 제외된다.
+- Given App의 `active_deployment_id`가 다른 App의 활성 deployment를 가리킨다, When `GET /apps/operations`를 호출한다, Then 해당 row는 다른 App deployment를 `active`로 표시하지 않고 해당 App의 실제 배포 이력으로 `inactive` 또는 `undeployed`를 반환하며 `automatic_optimization`은 null이다.
+- Given active organization의 App `workflow_id`가 다른 App 또는 다른 organization 소유 workflow를 가리킨다, When `GET /apps/operations` 또는 `GET /apps/operations/cost-summary`를 호출한다, Then 해당 App은 운영 row, 활성 workflow 수, 비용 합계에서 제외되고 다른 workflow의 권한·최근 실행·비용으로 대체하지 않는다.
+- Given `GET /apps/operations/cost-summary` 요청이 진행 중이다, When `/dashboard/mymodule`을 렌더링한다, Then 상단 카드는 비용 값을 `-`로 표시하고 비용 확인 실패 상태를 표시하지 않는다.
+- Given `GET /apps/operations/cost-summary` 조회가 실패한다, When `/dashboard/mymodule`을 렌더링한다, Then 상단 카드는 목록 행 비용을 임의로 합산하지 않고 비용 확인 실패 상태를 표시한다.
 - Given Agent Builder usage의 model/credential 연결이 삭제로 NULL이 됐다, When 운영 비용을 조회한다, Then 보존된 token/cost는 primary workflow 비용과 월 예상 비용에서 제외되지 않는다.
 - Given 전월 비용이 0이거나 없다, When `GET /apps/operations`를 호출한다, Then `row.app.operation_metrics.trend_percent`는 null이고 클라이언트는 더미 증가율을 만들지 않는다.
 - Given `/dashboard/mymodule`에 표시되는 App row의 `workflow_id`가 null이고 같은 `app_id`의 과거/보조 workflow에 활성 예산이 있다, When `GET /apps/operations`를 호출한다, Then `row.app.budget_status`는 null이다.
@@ -73,6 +78,7 @@ Verified Against: TBD
   - Given 안전 요약 응답, Then 예산 금액과 당월 비용 원문은 포함하지 않는다.
   - Given workflow `execute` 전용 사용자가 App을 읽거나 실행할 수 있다, When operations row를 조회하면, Then 해당 App은 운영 현황 목록에서 제외된다.
   - Given workflow `write` 이상 사용자가 App을 조회한다, When operations row를 조회하면, Then 해당 App은 운영 현황 목록에 포함될 수 있다.
+  - Given App의 null이 아닌 primary `workflow_id`가 다른 App 또는 organization 소유 workflow를 가리킨다, When operations row를 생성하면, Then 해당 App을 제외하고 그 workflow의 권한·실행·비용을 조회하지 않는다.
   - Given operations page/batch에 여러 App의 primary workflow가 포함된다, When rows를 생성하면, Then primary workflow id 기준 batch 단위 grouped query로 예산 상태를 계산한다.
   - Given primary workflow의 당월 usage 중 `organization_id`가 NULL인 기존 로그가 있다, When rows를 생성하면, Then 해당 비용도 포함해 `row.app.budget_status`를 계산한다.
   - Given KST 월초 직후(예: 2026-07-31 16:00 UTC = 2026-08-01 01:00 KST), When rows를 생성하면, Then 8월 KST 비용 기준으로 `budget_status`를 계산한다.
@@ -91,6 +97,7 @@ Verified Against: TBD
   - `row.app.workflow_id`가 null이면 같은 `app_id`의 보조 workflow 예산 상태를 노출하지 않고 `app.budget_status=null`을 반환한다.
   - workflow `execute` 전용 사용자와 권한이 없는 App/Workflow는 목록에서 제외되며, 예산 상태만으로 노출되지 않는다.
   - organization manager 또는 workflow `write` 이상 사용자는 운영 현황 row를 조회할 수 있다.
+  - App과 primary workflow의 App/organization 소유 관계가 일치하지 않으면 organization manager라도 row와 비용 요약에 포함되지 않는다.
   - KST 월 경계 row 포함/제외 기준이 `GET /apps`와 동일하다.
 
 ## E2E Tests

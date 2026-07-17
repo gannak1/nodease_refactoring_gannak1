@@ -12,6 +12,7 @@ from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
 from apps.shared.schemas.app import (
     AppCreateRequest,
+    AppOperationsCostSummary,
     AppOperationRow,
     AppResponse,
     AppUpdateRequest,
@@ -166,6 +167,27 @@ def list_app_operations(
         run_state=run_state,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get(
+    "/operations/cost-summary",
+    response_model=AppOperationsCostSummary,
+)
+def get_app_operations_cost_summary(
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the all-pages active deployment cost summary for My Module."""
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    return AppService.get_app_operations_cost_summary(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
     )
 
 

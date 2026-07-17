@@ -11,7 +11,10 @@ import httpx
 import pytest
 
 from apps.shared.services.llm_client import OpenAIClient
-from apps.shared.services.llm_client.base import BaseLLMClient
+from apps.shared.services.llm_client.base import (
+    BaseLLMClient,
+    LLMResponseValidationError,
+)
 
 
 @pytest.mark.asyncio
@@ -840,7 +843,11 @@ def test_openai_invoke_sync_responses_empty_output_is_error(monkeypatch):
                         "summary": [],
                     }
                 ],
-                "usage": {"input_tokens": 12, "output_tokens": 30},
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 30,
+                    "provider_detail": "must-not-cross-boundary",
+                },
             }
 
     class MockClient:
@@ -866,8 +873,17 @@ def test_openai_invoke_sync_responses_empty_output_is_error(monkeypatch):
         credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
     )
 
-    with pytest.raises(ValueError, match="사용할 수 있는 텍스트가 없습니다"):
+    with pytest.raises(
+        LLMResponseValidationError,
+        match="사용할 수 있는 텍스트가 없습니다",
+    ) as exc_info:
         client.invoke_sync([{"role": "user", "content": "Return a json object."}])
+
+    assert exc_info.value.usage == {
+        "prompt_tokens": 12,
+        "completion_tokens": 30,
+    }
+    assert "provider_detail" not in exc_info.value.usage
 
 
 def test_openai_invoke_sync_responses_incomplete_status_is_error(monkeypatch):
@@ -909,8 +925,71 @@ def test_openai_invoke_sync_responses_incomplete_status_is_error(monkeypatch):
         credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
     )
 
-    with pytest.raises(ValueError, match="응답이 완료되지 않았습니다"):
+    with pytest.raises(
+        LLMResponseValidationError,
+        match="응답이 완료되지 않았습니다",
+    ) as exc_info:
         client.invoke_sync([{"role": "user", "content": "Return a json object."}])
+
+    assert exc_info.value.usage == {
+        "prompt_tokens": 12,
+        "completion_tokens": 30,
+    }
+
+
+def test_openai_responses_invalid_content_preserves_safe_usage():
+    client = OpenAIClient(
+        model_id="gpt-5",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    with pytest.raises(LLMResponseValidationError) as exc_info:
+        client._convert_responses_response(
+            {
+                "status": "completed",
+                "output": [{"content": {"type": "output_text"}}],
+                "usage": {"input_tokens": 7, "output_tokens": 2},
+            }
+        )
+
+    assert exc_info.value.usage == {
+        "prompt_tokens": 7,
+        "completion_tokens": 2,
+    }
+
+
+def test_openai_billable_response_validation_error_skips_legacy_fallback(
+    monkeypatch,
+):
+    client = OpenAIClient(
+        model_id="text-davinci-example",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    def fail_with_usage(**_kwargs):
+        raise LLMResponseValidationError(
+            "provider response invalid",
+            usage={"input_tokens": 12, "output_tokens": 3},
+        )
+
+    class NoLegacyClient:
+        def post(self, *_args, **_kwargs):
+            raise AssertionError("billable validation errors must not call completions")
+
+    monkeypatch.setattr(client, "_invoke_responses_endpoint_sync", fail_with_usage)
+
+    with pytest.raises(LLMResponseValidationError) as exc_info:
+        client._invoke_non_chat_model_sync(
+            NoLegacyClient(),
+            payload={"model": "text-davinci-example"},
+            messages=[{"role": "user", "content": "hello"}],
+            timeout_seconds=60,
+        )
+
+    assert exc_info.value.usage == {
+        "prompt_tokens": 12,
+        "completion_tokens": 3,
+    }
 
 
 def test_openai_invoke_sync_chat_model_uses_sync_http_client(monkeypatch):

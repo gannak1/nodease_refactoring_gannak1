@@ -1,8 +1,6 @@
 # Admin Dashboard API Spec
 
 Status: Draft
-Verified Against: TBD
-
 검증 값은 MBA-188 audit detail의 metadata/change summary 확장에 적용한다. 기존 usage/summary/permission-request 계약의 기준은 해당 feature 문서와 git history를 따른다.
 
 관리자 대시보드 전용 API는 `/api/v1/admin/*` prefix로 통합한다. 모든 endpoint는 인증과 `X-Organization-Id` header를 요구하고, 조회/처리 범위는 해당 organization scope로 제한한다 ([ADR-0009](../../decisions/ADR-0009-active-organization-header-context.md)). 권한 신청의 제출(신청자 측 `POST /api/v1/permission-requests`)은 [organization](../organization/api_spec.md) 범위이며 이 문서에 포함하지 않는다.

@@ -36,6 +36,7 @@ from apps.shared.schemas.agent_builder import (
     AgentBuilderKnowledgePlacement,
     AgentBuilderParameterGuidanceHint,
 )
+from apps.shared.services.llm_client.base import LLMResponseValidationError
 from apps.shared.services.workflow_node_catalog import (
     agent_builder_supported_capabilities,
     load_workflow_node_catalog,
@@ -785,6 +786,20 @@ class LLMAgentBuilderIntentExtractor:
                     max_tokens=4000,
                     response_format=response_format,
                 )
+            except LLMResponseValidationError as exc:
+                if reservation is not None:
+                    latency_ms = (perf_counter() - started_at) * 1000
+                    if exc.usage is None:
+                        self._cancel_usage(reservation)
+                    else:
+                        self._record_usage(
+                            reservation=reservation,
+                            usage=exc.usage,
+                            latency_ms=latency_ms,
+                        )
+                raise AgentBuilderIntentExtractionError(
+                    "LLM intent response is invalid"
+                ) from exc
             except Exception as exc:
                 if reservation is not None:
                     self._cancel_usage(reservation)
@@ -795,7 +810,9 @@ class LLMAgentBuilderIntentExtractor:
             if reservation is not None:
                 self._record_usage(
                     reservation=reservation,
-                    response=response,
+                    usage=(
+                        response.get("usage") if isinstance(response, dict) else None
+                    ),
                     latency_ms=(perf_counter() - started_at) * 1000,
                 )
 
@@ -920,11 +937,10 @@ class LLMAgentBuilderIntentExtractor:
         self,
         *,
         reservation: AgentBuilderIntentUsageReservation,
-        response: Any,
+        usage: Any,
         latency_ms: float,
     ) -> None:
         try:
-            usage = response.get("usage") if isinstance(response, dict) else None
             sample = normalize_intent_usage_sample(
                 usage,
                 credential_id=reservation.credential_id,
