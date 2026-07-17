@@ -1,35 +1,42 @@
 # RAG Evaluation Test Suite
 
-RAG(Retrieval-Augmented Generation) 검색 시스템의 성능을 평가하기 위한 종합 테스트 스위트입니다.
+RAG retrieval 품질을 검증하는 내부 QA/engineering 도구다. Production API나 사용자 기능이 아니며 benchmark 결과가 runtime 설정을 자동 변경하지 않는다.
 
-## 🚀 Quick Start (전체 워크플로우)
+기존 `rag_evaluator.py`/`rag_metrics.py`는 legacy substring baseline 호환용이다. Flat·Hierarchical 비교는 strict dataset, opaque evidence ref, sealed artifact lineage와 paired statistics를 사용하는 별도 명령을 사용한다.
 
-```bash
-cd apps/server
+## Flat·Hierarchical 비교 범위
 
-# 1. HotpotQA 데이터셋 다운로드 (50개 샘플)
-python tests/evaluation/prepare_datasets.py --dataset hotpotqa --samples 50
+- Primary estimand: `controlled_child_boundary_retrieval_effect`
+- Independent variable: `hierarchy_mode=flat|parent_child`
+- Controls: 같은 source snapshot, child boundary/vector, query vector, hybrid setting, threshold/top-k, actor와 permission
+- Primary source tier policy: `ignore` (hierarchy 효과와 tier tie-break 효과 분리)
+- Primary run: retrieval-only, reranker/rewrite OFF
+- Inference: source/topic sampling-cluster paired delta, BCa bootstrap 95% CI
+- Safety: unanswerable paired-binomial risk-difference CI
+- Output: sanitized canonical JSON, Markdown, offline self-contained HTML
 
-# 2. 문서를 Knowledge Base에 인덱싱
-python tests/evaluation/index_documents.py --dataset hotpotqa --kb-name "RAG Eval - HotpotQA"
-
-# 3. 벤치마크 실행 (KB ID는 2번에서 출력됨)
-python tests/evaluation/run_benchmark.py --kb-id YOUR_KB_ID --dataset hotpotqa --samples 50
-
-# 4. 리포트 확인
-cat tests/evaluation/reports/rag_eval_hotpotqa_*.md
-```
+Generation 평가와 제품 dashboard는 이 초기 범위에 포함하지 않는다.
 
 ## 📂 구조
 
 ```
 tests/evaluation/
 ├── __init__.py
-├── rag_metrics.py        # 평가 지표 구현
-├── rag_evaluator.py      # 평가 프레임워크
-├── test_rag_baseline.py  # 베이스라인 테스트
+├── rag_metrics.py                         # legacy baseline metric
+├── rag_evaluator.py                       # legacy baseline runner
+├── schemas.py / protocol.py               # strict contract와 artifact lineage
+├── evidence_refs.py / judgment_pool.py    # opaque ref와 blind pool
+├── paired_metrics.py / paired_statistics.py
+├── paired_runner.py / comparison_report.py
+├── run_flat_hierarchical_benchmark.py
+├── law_development_pilot.py / run_law_development_pilot.py
+├── corpus_authoring.py / law_open_data.py
+├── prepare_flat_hierarchical_corpus.py
+├── test_rag_baseline.py
+├── tests/                                  # deterministic benchmark tests
 ├── datasets/
-│   └── sample_qa.json    # 샘플 데이터셋
+│   ├── sample_qa.json                      # legacy 샘플 데이터셋
+│   └── flat_hierarchical/                  # source catalog와 synthetic input
 └── reports/              # 평가 리포트 저장
 ```
 
@@ -37,10 +44,64 @@ tests/evaluation/
 
 ### 1. 단위 테스트 실행
 
-```bash
-cd apps/server
-pytest tests/evaluation/test_rag_baseline.py -v
+```powershell
+$env:PYTHONPATH=(git rev-parse --show-toplevel)
+apps/gateway/.venv/Scripts/python.exe -m pytest tests/evaluation/test_rag_baseline.py tests/evaluation/tests -q
 ```
+
+### Flat·Hierarchical strict workflow
+
+```powershell
+apps/gateway/.venv/Scripts/python.exe tests/evaluation/run_flat_hierarchical_benchmark.py validate --dataset <dataset.json> --protocol <protocol.json>
+apps/gateway/.venv/Scripts/python.exe tests/evaluation/run_flat_hierarchical_benchmark.py plan-sample --pilot <pilot-summary.json>
+apps/gateway/.venv/Scripts/python.exe tests/evaluation/run_flat_hierarchical_benchmark.py verify-indexes --flat-manifest <ignored-flat-index.json> --hierarchical-manifest <ignored-hierarchical-index.json> --output <safe-equality-summary.json>
+apps/gateway/.venv/Scripts/python.exe tests/evaluation/run_flat_hierarchical_benchmark.py seal-run --input <retrieval-run.json> --output <sealed-output.json>
+apps/gateway/.venv/Scripts/python.exe tests/evaluation/run_flat_hierarchical_benchmark.py build-judgment-pool --sealed-input <sealed-output.json> --protocol <protocol.json> --output <blind-pool.json>
+apps/gateway/.venv/Scripts/python.exe tests/evaluation/run_flat_hierarchical_benchmark.py freeze-qrels --sealed-input <sealed-output.json> --pool <blind-pool.json> --assessments <blind-assessment-bundle.json> --output <final-qrels.json> --summary-output <assessment-summary.json>
+apps/gateway/.venv/Scripts/python.exe tests/evaluation/run_flat_hierarchical_benchmark.py verify-stability --primary-sealed <sealed-output.json> --replicate-sealed <replicate-sealed-output.json> --protocol <protocol.json> --output <stability-summary.json>
+apps/gateway/.venv/Scripts/python.exe tests/evaluation/run_flat_hierarchical_benchmark.py score --sealed-input <sealed-output.json> --protocol <protocol.json> --pool <blind-pool.json> --qrels <final-qrels.json> --output <result.json> --latency-observations <optional-latency-artifact.json>
+apps/gateway/.venv/Scripts/python.exe tests/evaluation/run_flat_hierarchical_benchmark.py render --input <result.json> --output-dir tests/evaluation/reports/<run-id>
+```
+
+`sealed-output`, blind assessment와 final qrels에는 승인된 safe corpus만 사용한다. Restricted corpus와 source binding은 Git ignored local 경로에 두고 raw source content, vector, credential이나 secret을 CLI argument 또는 report에 넣지 않는다. Blind pool은 사전 작성 required evidence와 양쪽 condition 후보를 포함하되 condition/score/rank를 제거한다. 정확히 두 평가자의 독립 판정, 역할 분리 확인, 모든 disagreement adjudication이 완료되어야 qrels를 동결할 수 있다.
+
+Evaluation observer는 `EvaluationRetrievalDiagnostics.from_protocol(...)`로 생성한다. 이 factory가 `scan_cap`과 `score_precision`을 각각 protocol의 `complete_tie_group_cap`과 `score_precision`에서 가져온다. Scan cap은 최소 `max(pool depth, top_k * 10)`이어야 한다. `score`의 bootstrap 횟수는 protocol에서 파생되며, `--bootstrap-iterations`를 명시하면 protocol 값과 정확히 같아야 한다. `seal-run`은 기존 output을 덮어쓰지 않으므로 새 protocol/dataset version 없이 같은 holdout artifact를 교체할 수 없다.
+
+Stability 비교는 selection depth와 그 cutoff의 complete exact-score tie group까지만 수행한다. Observer가 진단을 위해 더 수집한 scan-cap tail은 pool, metric 또는 stability 대상이 아니다. Paired index의 condition별 chunk UUID는 서로 달라도 canonical child ordinal의 상대 순서를 같게 보존해야 하며, 임의 UUID 순서가 RRF rank 차이가 되면 index equality를 충족한 것으로 보지 않는다.
+
+### Corpus acquisition and preparation
+
+국가법령정보센터 Open API 인증 식별자는 저장소 루트 `.env`의 `NODEASE_EVAL_LAW_OC`로만 주입한다. 값은 명령 인자나 출력에 넣지 않는다. Open API 신청 화면에서 이 카탈로그가 사용하는 법령, 행정규칙과 판례 목록·본문 범위를 먼저 활성화해야 한다.
+
+```powershell
+$catalog = "tests/evaluation/datasets/flat_hierarchical/kr-law-dry-run-v1/catalog.json"
+$corpus = "tests/evaluation/datasets/flat_hierarchical/enterprise-policy-v1/corpus.json"
+$questions = "tests/evaluation/datasets/flat_hierarchical/enterprise-policy-v1/questions.json"
+
+apps/gateway/.venv/Scripts/python.exe tests/evaluation/prepare_flat_hierarchical_corpus.py probe-law-access --catalog $catalog
+apps/gateway/.venv/Scripts/python.exe tests/evaluation/prepare_flat_hierarchical_corpus.py collect-law --catalog $catalog --snapshot-id <new-snapshot-id>
+apps/gateway/.venv/Scripts/python.exe tests/evaluation/prepare_flat_hierarchical_corpus.py draft-law-development --catalog $catalog --snapshot-id <existing-law-snapshot-id> --bundle-id <new-question-bundle-id>
+apps/gateway/.venv/Scripts/python.exe tests/evaluation/prepare_flat_hierarchical_corpus.py prepare-synthetic --corpus $corpus --questions $questions --snapshot-id <new-snapshot-id>
+```
+
+산출물은 `local/evaluation-data/mba-279/kr-law/<snapshot-id>/`, `local/evaluation-data/mba-279/kr-law-development/<bundle-id>/` 또는 `local/evaluation-data/mba-279/enterprise-policy/<snapshot-id>/`에 생성된다. 기존 snapshot과 question bundle은 덮어쓰지 않는다. 국가법령 source JSON은 API가 OC를 포함해 반환하는 미사용 detail-link field를 제거한 뒤 `source-json/`에 저장한다. 정규화 content, source binding과 provenance도 ignored local 경로에만 두며 Git에는 source selection catalog와 출처 고지만 저장한다. 외부 JSON의 단일 객체/배열 차이는 target별 adapter가 내부 canonical section으로 정규화한다. Public-law question bundle은 source snapshot을 수정하지 않고 100개 development draft와 local review worksheet를 만든다. 구조 검증 결과인 `structural_pilot_ready=true`는 사람의 semantic/answerability/evidence review 완료를 뜻하지 않으며 `quality_pilot_ready=false`인 bundle을 품질 결론에 사용하지 않는다. 추적되는 synthetic package는 development pipeline 검증용이고 unseen confirmatory holdout이 아니다. 판례 결과는 `exploratory`로만 해석한다.
+
+### Public-law development retrieval dry-run
+
+실제 provider credential, migrated PostgreSQL, active evaluation actor가 준비된 로컬 환경에서만 실행한다. 출력 경로는 create-only ignored local artifact이며 CI에서 실행하지 않는다.
+
+```powershell
+apps/gateway/.venv/Scripts/python.exe tests/evaluation/run_law_development_pilot.py `
+  --snapshot-dir local/evaluation-data/mba-279/kr-law/<snapshot-id> `
+  --bundle-dir local/evaluation-data/mba-279/kr-law-development/<bundle-id> `
+  --run-root local/evaluation-data/mba-279/pilot-runs/<run-id> `
+  --run-id <run-id> `
+  --env-file .env `
+  --threshold 0.0 `
+  --hybrid-search
+```
+
+현재 non-rerank hybrid/hierarchy branch는 similarity가 아니라 RRF score에 threshold를 적용하므로 engineering dry-run은 `threshold=0.0`으로 candidate truncation을 분리한다. 이 값은 production 권장값이나 safety abstention 정책이 아니다. Human review가 끝나지 않은 question bundle의 출력은 `exploratory_unreviewed_labels`이며, 실제 실행했다는 이유로 quality gate나 runtime default를 변경하지 않는다.
 
 ### 2. 베이스라인 성능 측정
 
@@ -137,6 +198,9 @@ Metrics:
 
 - 실제 DB 연결 테스트는 `@pytest.mark.skip` 처리되어 있음
 - HuggingFace 데이터셋 사용 시 `pip install datasets` 필요
+- 실제 retrieval/pilot은 승인된 평가 organization, actor, KB와 provider credential이 필요하며 CI에서 실행하지 않는다.
+- Holdout은 protocol/code/split/N을 freeze한 뒤 한 번의 complete paired execution으로 봉인한다.
+- Generated Flat·Hierarchical report는 기본적으로 Git에 포함하지 않는다.
 
 ## Agent Builder Intent Evaluation
 
