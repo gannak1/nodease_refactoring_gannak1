@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+# Repository imports intentionally follow the sys.path bootstrap below.
+# ruff: noqa: E402
+
 import copy
 import json
 import pathlib

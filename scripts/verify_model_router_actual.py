@@ -13,6 +13,9 @@
 
 from __future__ import annotations
 
+# Repository imports intentionally follow the sys.path bootstrap below.
+# ruff: noqa: E402
+
 import argparse
 import asyncio
 import json
@@ -757,7 +760,7 @@ def _provider_for_model(db, model_id: str) -> str | None:
         db.query(LLMModel)
         .filter(
             LLMModel.model_id_for_api_call == model_id,
-            LLMModel.is_active == True,
+            LLMModel.is_active.is_(True),
         )
         .first()
     )

@@ -7,6 +7,9 @@ observes how ModelRouter changes the active policy every 20 deployed runs.
 
 from __future__ import annotations
 
+# Repository imports intentionally follow the sys.path bootstrap below.
+# ruff: noqa: E402
+
 import argparse
 import copy
 import json
