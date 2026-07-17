@@ -106,18 +106,6 @@ type TeamEditorState =
 
 const PAGE_SIZE = 20;
 const AUTH_STATES: OrganizationAuthState[] = ['member', 'manager'];
-const stateOrder: Record<MembershipState, number> = {
-  active: 0,
-  invited: 1,
-  suspended: 2,
-  removed: 3,
-};
-const RESOURCE_AUTH_STATES: ResourceAuthState[] = [
-  'viewer',
-  'operator',
-  'builder',
-  'manager',
-];
 
 const formatDateTime = (value?: string | null) =>
   value ? new Date(value).toLocaleString() : '-';
