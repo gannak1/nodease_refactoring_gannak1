@@ -21,13 +21,19 @@ describe('AdminSummaryCards', () => {
     mockedSummary.mockResolvedValue({
       month: '2026-07',
       total_cost: 123.456789,
+      workflow_execution_cost: 120,
+      agent_builder_cost: 3.456789,
       budget: null,
     });
 
     render(<AdminSummaryCards />);
 
     expect(await screen.findByText('$123.46')).toHaveClass('mt-2', 'text-2xl');
-    expect(screen.getByText(/2026-07/)).toHaveClass('mt-2', 'text-sm');
+    expect(
+      screen.getByText(/2026-07/).parentElement?.parentElement,
+    ).toHaveClass('mt-2', 'text-sm');
+    expect(screen.getByText('워크플로 실행 $120.00')).toBeInTheDocument();
+    expect(screen.getByText('Agent Builder $3.46')).toBeInTheDocument();
     expect(screen.getByText('예산 미설정')).toBeInTheDocument();
     expect(
       screen.getByRole('link', {

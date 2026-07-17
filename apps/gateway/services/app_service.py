@@ -5,10 +5,14 @@ from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import case, func, or_, true
 from sqlalchemy.orm import Session, joinedload
 
-from apps.gateway.services.admin_usage_service import AdminUsageService, KST
+from apps.gateway.services.admin_usage_service import (
+    AdminUsageService,
+    KST,
+    UsageCostBreakdown,
+)
 from apps.gateway.services.deployment_parameter_optimization_service import (
     DeploymentParameterOptimizationService,
 )
@@ -25,6 +29,11 @@ from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.workflow_run import WorkflowRun
+from apps.shared.domain.llm_usage import (
+    AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
+    is_agent_builder_intent_usage,
+    is_billable_llm_usage,
+)
 from apps.shared.permissions import (
     AUTH_STATE_MANAGER,
     normalize_resource_auth_state,
@@ -33,6 +42,7 @@ from apps.shared.permissions import (
 )
 from apps.shared.schemas.app import (
     AppOperationAppSummary,
+    AppOperationsCostSummary,
     AppOperationDeploymentSummary,
     AppOperationLatestRunSummary,
     AppOperationPermissionSummary,
@@ -400,9 +410,7 @@ class AppService:
         운영 목록에는 공개 URL slug와 인증 secret이 노출되면 안 되므로
         AppResponse 대신 목록 전용 안전 요약 응답 모델을 사용한다.
         """
-        query = db.query(App).options(joinedload(App.active_deployment))
-        if organization_id:
-            query = query.filter(App.organization_id == organization_id)
+        query = AppService._operation_apps_query(db, organization_id)
         if q and q.strip():
             escaped_query = AppService._escape_like_pattern(q.strip())
             pattern = f"%{escaped_query}%"
@@ -432,6 +440,120 @@ class AppService:
             db, ordered_query, user_id, limit, offset
         )
         return AppService._build_operation_rows_for_apps(db, candidate_apps, user_id)
+
+    @staticmethod
+    def get_app_operations_cost_summary(
+        db: Session,
+        user_id,
+        organization_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> AppOperationsCostSummary:
+        """Return the all-pages cost total for readable active deployments."""
+        query = AppService._operation_apps_query(db, organization_id).order_by(
+            App.updated_at.desc(), App.name.asc(), App.id.asc()
+        )
+        active_workflow_ids: list[Any] = []
+        for batch in AppService._operation_app_batches(query, limit=100):
+            for app in batch:
+                active_deployment = AppService._own_active_deployment(app)
+                if (
+                    app.workflow_id is None
+                    or active_deployment is None
+                ):
+                    continue
+                active_workflow_ids.append(app.workflow_id)
+
+        workflow_ids = AppService._readable_operation_workflow_ids(
+            db,
+            user_id=user_id,
+            organization_id=organization_id,
+            workflow_ids=active_workflow_ids,
+        )
+        if not workflow_ids:
+            return AppOperationsCostSummary()
+
+        metrics = AppService._operation_metrics_by_workflow_id(
+            db,
+            workflow_ids,
+            organization_id=organization_id,
+            now=now or datetime.now(KST),
+        )
+        projected_total = Decimal("0")
+        projected_workflow_execution = Decimal("0")
+        projected_agent_builder = Decimal("0")
+        for workflow_id in workflow_ids:
+            metric = metrics.get(workflow_id) or {}
+            projected_total += AdminUsageService.coalesce_cost(
+                metric.get("projected_month_cost")
+            )
+            projected_workflow_execution += AdminUsageService.coalesce_cost(
+                metric.get("projected_month_workflow_execution_cost")
+            )
+            projected_agent_builder += AdminUsageService.coalesce_cost(
+                metric.get("projected_month_agent_builder_cost")
+            )
+
+        return AppOperationsCostSummary(
+            active_workflow_count=len(workflow_ids),
+            projected_month_cost=float(projected_total),
+            projected_month_workflow_execution_cost=float(
+                projected_workflow_execution
+            ),
+            projected_month_agent_builder_cost=float(projected_agent_builder),
+        )
+
+    @staticmethod
+    def _operation_apps_query(db: Session, organization_id: str | None):
+        """Return operation Apps with a valid primary workflow when one is set."""
+        query = (
+            db.query(App)
+            .outerjoin(Workflow, Workflow.id == App.workflow_id)
+            .options(joinedload(App.active_deployment))
+        )
+        if organization_id:
+            query = query.filter(App.organization_id == organization_id)
+
+        # A nullable primary pointer is a supported legacy state. A non-null
+        # pointer must belong to this App and organization before its runs,
+        # permissions, or costs can be used by the operations surface.
+        return query.filter(
+            or_(
+                App.workflow_id.is_(None),
+                (Workflow.app_id == App.id)
+                & Workflow.organization_id.is_not_distinct_from(App.organization_id),
+            )
+        )
+
+    @staticmethod
+    def _readable_operation_workflow_ids(
+        db: Session,
+        *,
+        user_id,
+        organization_id: str,
+        workflow_ids: list[Any],
+    ) -> list[Any]:
+        """Return write-capable workflows without per-App permission queries."""
+        unique_workflow_ids = _unique_workflow_ids(workflow_ids)
+        if not unique_workflow_ids:
+            return []
+        if has_organization_manager_permission(db, user_id, organization_id):
+            return unique_workflow_ids
+
+        sources_by_workflow_id = get_workflow_permission_sources_by_workflow_ids(
+            db,
+            user_id,
+            unique_workflow_ids,
+            organization_id,
+        )
+        return [
+            workflow_id
+            for workflow_id in unique_workflow_ids
+            if any(
+                workflow_auth_state_allows(source.auth_state, "write")
+                for source in sources_by_workflow_id.get(workflow_id, [])
+            )
+        ]
 
     @staticmethod
     def _escape_like_pattern(value: str) -> str:
@@ -497,14 +619,15 @@ class AppService:
         deployment_history = AppService._deployment_history_by_app_id(
             db, [app.id for app in candidate_apps]
         )
+        active_deployment_by_app_id = {
+            app.id: deployment
+            for app in candidate_apps
+            if (deployment := AppService._own_active_deployment(app)) is not None
+        }
         automatic_optimization_by_deployment_id = (
             DeploymentParameterOptimizationService.summaries_by_deployment_id(
                 db,
-                [
-                    app.active_deployment_id
-                    for app in candidate_apps
-                    if app.active_deployment_id
-                ],
+                [deployment.id for deployment in active_deployment_by_app_id.values()],
             )
         )
         workflow_ids = [app.workflow_id for app in candidate_apps if app.workflow_id]
@@ -639,7 +762,11 @@ class AppService:
                 latest_runs.get(app.workflow_id)
             ),
             automatic_optimization=automatic_optimization_by_deployment_id.get(
-                app.active_deployment_id
+                active_deployment.id
+                if (
+                    active_deployment := AppService._own_active_deployment(app)
+                ) is not None
+                else None
             ),
         )
 
@@ -741,7 +868,7 @@ class AppService:
     def _operation_deployment_summary(
         app: App, latest_deployment: WorkflowDeployment | None
     ) -> AppOperationDeploymentSummary:
-        active_deployment = app.active_deployment
+        active_deployment = AppService._own_active_deployment(app)
         # deployment 비활성화 시 app.active_deployment_id가 비워질 수 있으므로
         # inactive 여부는 app field만 보지 않고 deployment 이력으로 판단한다.
         if active_deployment and active_deployment.is_active:
@@ -759,6 +886,18 @@ class AppService:
                 is_active=False,
             )
         return AppOperationDeploymentSummary(state="undeployed")
+
+    @staticmethod
+    def _own_active_deployment(app: App) -> WorkflowDeployment | None:
+        """Return the current App's active deployment, never a stale foreign pointer."""
+        active_deployment = getattr(app, "active_deployment", None)
+        if (
+            active_deployment is None
+            or getattr(active_deployment, "app_id", None) != app.id
+            or not getattr(active_deployment, "is_active", False)
+        ):
+            return None
+        return active_deployment
 
     @staticmethod
     def _operation_latest_run_summary(
@@ -855,7 +994,7 @@ class AppService:
                     now=datetime.now(KST),
                 )
             except Exception:
-                _rollback_budget_status_lookup(db)
+                _rollback_optional_projection_lookup(db)
                 statuses = {}
 
         for app in apps:
@@ -885,9 +1024,11 @@ class AppService:
                 metrics = AppService._operation_metrics_by_workflow_id(
                     db,
                     workflow_ids,
+                    organization_id=apps[0].organization_id if apps else None,
                     now=datetime.now(KST),
                 )
             except Exception:
+                _rollback_optional_projection_lookup(db)
                 metrics = {}
 
         for app in apps:
@@ -905,6 +1046,7 @@ class AppService:
         db: Session,
         workflow_ids: list[Any],
         *,
+        organization_id: Any | None = None,
         now: datetime | None = None,
     ) -> dict[Any, dict[str, Any] | None]:
         target_ids = _unique_workflow_ids(workflow_ids)
@@ -915,15 +1057,17 @@ class AppService:
         kst_now = (now or datetime.now(KST)).astimezone(KST)
         current_period = AdminUsageService.resolve_month_period_kst(kst_now)
         previous_period = _previous_month_period_kst(current_period.start_at)
-        current_costs = _budget_status_costs(
+        current_costs = _operation_cost_breakdowns(
             db,
             workflow_ids=target_ids,
             period=current_period,
+            organization_id=organization_id,
         )
         previous_costs = _budget_status_costs(
             db,
             workflow_ids=target_ids,
             period=previous_period,
+            organization_id=organization_id,
         )
 
         total_seconds = Decimal(
@@ -940,7 +1084,11 @@ class AppService:
         projection_multiplier = total_seconds / elapsed_seconds
 
         for workflow_id in target_ids:
-            current_cost = current_costs.get(workflow_id, Decimal("0"))
+            current_breakdown = current_costs.get(
+                workflow_id,
+                UsageCostBreakdown(Decimal("0"), Decimal("0")),
+            )
+            current_cost = current_breakdown.total_cost
             previous_cost = previous_costs.get(workflow_id, Decimal("0"))
             projected_cost = (
                 current_cost * projection_multiplier
@@ -954,7 +1102,20 @@ class AppService:
                 )
             metrics[workflow_id] = {
                 "current_month_cost": float(current_cost),
+                "current_month_workflow_execution_cost": float(
+                    current_breakdown.workflow_execution_cost
+                ),
+                "current_month_agent_builder_cost": float(
+                    current_breakdown.agent_builder_cost
+                ),
                 "projected_month_cost": float(projected_cost),
+                "projected_month_workflow_execution_cost": float(
+                    current_breakdown.workflow_execution_cost
+                    * projection_multiplier
+                ),
+                "projected_month_agent_builder_cost": float(
+                    current_breakdown.agent_builder_cost * projection_multiplier
+                ),
                 "previous_month_cost": float(previous_cost),
                 "trend_percent": trend_percent,
             }
@@ -983,6 +1144,7 @@ class AppService:
             db,
             workflow_ids=target_ids,
             period=period,
+            organization_id=organization_id,
         )
 
         for budget in budgets:
@@ -1265,7 +1427,7 @@ def _workflow_id_candidates_by_app_key(
     }
 
 
-def _rollback_budget_status_lookup(db: Session) -> None:
+def _rollback_optional_projection_lookup(db: Session) -> None:
     rollback = getattr(db, "rollback", None)
     if callable(rollback):
         rollback()
@@ -1354,18 +1516,132 @@ def _budget_status_costs(
     *,
     workflow_ids: list[Any],
     period,
+    organization_id: Any | None = None,
 ) -> dict[Any, Decimal]:
     if hasattr(db, "budgets"):
         return _fake_budget_status_costs(
             db,
             workflow_ids=workflow_ids,
             period=period,
+            organization_id=organization_id,
         )
     return _budget_status_costs_query(
         db,
         workflow_ids=workflow_ids,
         period=period,
+        organization_id=organization_id,
     )
+
+
+def _operation_cost_breakdowns(
+    db: Session,
+    *,
+    workflow_ids: list[Any],
+    period,
+    organization_id: Any | None = None,
+) -> dict[Any, UsageCostBreakdown]:
+    if hasattr(db, "budgets"):
+        return _fake_operation_cost_breakdowns(
+            db,
+            workflow_ids=workflow_ids,
+            period=period,
+            organization_id=organization_id,
+        )
+    return _operation_cost_breakdowns_query(
+        db,
+        workflow_ids=workflow_ids,
+        period=period,
+        organization_id=organization_id,
+    )
+
+
+def _fake_operation_cost_breakdowns(
+    db,
+    *,
+    workflow_ids: list[Any],
+    period,
+    organization_id: Any | None = None,
+) -> dict[Any, UsageCostBreakdown]:
+    workflow_id_set = set(workflow_ids)
+    totals = {workflow_id: Decimal("0") for workflow_id in workflow_id_set}
+    agent_builder_totals = {
+        workflow_id: Decimal("0") for workflow_id in workflow_id_set
+    }
+    for usage in getattr(db, "usage_logs", []):
+        if usage.workflow_id not in workflow_id_set:
+            continue
+        if not _usage_matches_organization_scope(usage, organization_id):
+            continue
+        if not period.start_at <= usage.created_at < period.end_at:
+            continue
+        if not is_billable_llm_usage(
+            getattr(usage, "runtime_surface", None),
+            getattr(usage, "status", "success"),
+        ):
+            continue
+        cost = AdminUsageService.coalesce_cost(usage.total_cost)
+        totals[usage.workflow_id] += cost
+        if is_agent_builder_intent_usage(
+            getattr(usage, "runtime_surface", None)
+        ):
+            agent_builder_totals[usage.workflow_id] += cost
+    return {
+        workflow_id: UsageCostBreakdown(
+            total_cost=totals[workflow_id],
+            agent_builder_cost=agent_builder_totals[workflow_id],
+        )
+        for workflow_id in workflow_id_set
+    }
+
+
+def _operation_cost_breakdowns_query(
+    db: Session,
+    *,
+    workflow_ids: list[Any],
+    period,
+    organization_id: Any | None = None,
+) -> dict[Any, UsageCostBreakdown]:
+    total_cost = func.coalesce(
+        func.sum(func.coalesce(LLMUsageLog.total_cost, 0)), 0
+    ).label("total_cost")
+    agent_builder_cost = func.coalesce(
+        func.sum(
+            case(
+                (
+                    LLMUsageLog.runtime_surface
+                    == AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
+                    func.coalesce(LLMUsageLog.total_cost, 0),
+                ),
+                else_=0,
+            )
+        ),
+        0,
+    ).label("agent_builder_cost")
+    rows = (
+        db.query(
+            LLMUsageLog.workflow_id.label("workflow_id"),
+            total_cost,
+            agent_builder_cost,
+        )
+        .filter(
+            LLMUsageLog.workflow_id.in_(set(workflow_ids)),
+            LLMUsageLog.created_at >= period.start_at,
+            LLMUsageLog.created_at < period.end_at,
+            _usage_organization_scope_condition(organization_id),
+            _billable_usage_condition(),
+        )
+        .group_by(LLMUsageLog.workflow_id)
+        .all()
+    )
+    return {
+        row.workflow_id: UsageCostBreakdown(
+            total_cost=AdminUsageService.coalesce_cost(row.total_cost),
+            agent_builder_cost=AdminUsageService.coalesce_cost(
+                row.agent_builder_cost
+            ),
+        )
+        for row in rows
+    }
 
 
 def _member_budget_status(
@@ -1392,13 +1668,21 @@ def _fake_budget_status_costs(
     *,
     workflow_ids: list[Any],
     period,
+    organization_id: Any | None = None,
 ) -> dict[Any, Decimal]:
     workflow_id_set = set(workflow_ids)
     costs = {workflow_id: Decimal("0") for workflow_id in workflow_id_set}
     for usage in getattr(db, "usage_logs", []):
         if usage.workflow_id not in workflow_id_set:
             continue
+        if not _usage_matches_organization_scope(usage, organization_id):
+            continue
         if not (period.start_at <= usage.created_at < period.end_at):
+            continue
+        if not is_billable_llm_usage(
+            getattr(usage, "runtime_surface", None),
+            getattr(usage, "status", "success"),
+        ):
             continue
         costs[usage.workflow_id] += AdminUsageService.coalesce_cost(
             usage.total_cost
@@ -1411,6 +1695,7 @@ def _budget_status_costs_query(
     *,
     workflow_ids: list[Any],
     period,
+    organization_id: Any | None = None,
 ) -> dict[Any, Decimal]:
     total_cost = func.coalesce(
         func.sum(func.coalesce(LLMUsageLog.total_cost, 0)), 0
@@ -1421,6 +1706,8 @@ def _budget_status_costs_query(
             LLMUsageLog.workflow_id.in_(set(workflow_ids)),
             LLMUsageLog.created_at >= period.start_at,
             LLMUsageLog.created_at < period.end_at,
+            _usage_organization_scope_condition(organization_id),
+            _billable_usage_condition(),
         )
         .group_by(LLMUsageLog.workflow_id)
         .all()
@@ -1429,3 +1716,27 @@ def _budget_status_costs_query(
         row.workflow_id: AdminUsageService.coalesce_cost(row.total_cost)
         for row in rows
     }
+
+
+def _billable_usage_condition():
+    return or_(
+        LLMUsageLog.runtime_surface.is_(None),
+        LLMUsageLog.runtime_surface != AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
+        LLMUsageLog.status == "success",
+    )
+
+
+def _usage_organization_scope_condition(organization_id: Any | None):
+    if organization_id is None:
+        return true()
+    return or_(
+        LLMUsageLog.organization_id == organization_id,
+        LLMUsageLog.organization_id.is_(None),
+    )
+
+
+def _usage_matches_organization_scope(usage, organization_id: Any | None) -> bool:
+    if organization_id is None:
+        return True
+    usage_organization_id = getattr(usage, "organization_id", None)
+    return usage_organization_id is None or usage_organization_id == organization_id

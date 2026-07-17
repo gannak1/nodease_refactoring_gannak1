@@ -6,6 +6,9 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
+from apps.gateway.application.agent_builder.intent_usage import (
+    AgentBuilderIntentUsageRecordingError,
+)
 from apps.gateway.services import agent_builder_service as service_module
 from apps.gateway.services.agent_builder_service import (
     AgentBuilderService,
@@ -16,11 +19,11 @@ from apps.shared.schemas.agent_builder import (
     AgentBuilderApplyResponse,
     AgentBuilderEditOperation,
     AgentBuilderEditTargetReference,
-    AgentBuilderMessageResponse,
     AgentBuilderMessageRequest,
-    AgentBuilderPlannedStep,
+    AgentBuilderMessageResponse,
     AgentBuilderParameterGroup,
     AgentBuilderParameterTask,
+    AgentBuilderPlannedStep,
     AgentBuilderStructuredRequest,
 )
 from apps.shared.schemas.knowledge import (
@@ -74,6 +77,196 @@ class FakeQuery:
 
     def first(self):
         return self.result
+
+
+class UsageRecordingFailingIntentExtractor:
+    def __init__(self):
+        self.calls = []
+
+    def extract(self, **kwargs):
+        self.calls.append(kwargs)
+        raise AgentBuilderIntentUsageRecordingError(
+            "intent_usage_recording_failed"
+        )
+
+
+class UnexpectedIntentExtractor:
+    def __init__(self):
+        self.calls = []
+
+    def extract(self, **kwargs):
+        self.calls.append(kwargs)
+        raise AssertionError("provider must not be called for a non-primary workflow")
+
+
+def test_submit_message_returns_safe_usage_recording_failure(monkeypatch):
+    db = FakeDb()
+    session_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4())
+    session = SimpleNamespace(
+        id=session_id,
+        workflow_id=workflow_id,
+        app_id=app_id,
+        status="active",
+        protocol_version="direct_edit_v1",
+        updated_at=None,
+    )
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        app_id=app_id,
+        graph={"nodes": [], "edges": []},
+    )
+    extractor = UsageRecordingFailingIntentExtractor()
+    service = AgentBuilderService(
+        db,
+        user=user,
+        organization_id=organization_id,
+        intent_extractor=extractor,
+    )
+
+    def flush_with_generated_ids():
+        db.flushed = True
+        for row in db.added:
+            if getattr(row, "id", None) is None:
+                row.id = uuid.uuid4()
+
+    db.flush = flush_with_generated_ids
+    monkeypatch.setattr(service, "_session_or_404", lambda _: session)
+    monkeypatch.setattr(service, "_lock_session_for_request", lambda value: value)
+    monkeypatch.setattr(service, "_reject_if_pending", lambda _: None)
+    monkeypatch.setattr(service, "_workflow_in_active_org", lambda _: workflow)
+    monkeypatch.setattr(
+        service,
+        "_app_in_active_org",
+        lambda _: SimpleNamespace(id=app_id, workflow_id=workflow_id),
+    )
+    monkeypatch.setattr(
+        service,
+        "_selected_knowledge_candidate_context",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "ensure_workflow_permission",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "add_action_audit",
+        lambda *_args, **_kwargs: None,
+    )
+
+    response = service.submit_message(
+        session_id,
+        AgentBuilderMessageRequest(
+            message="입력을 요약하는 워크플로를 만들어줘",
+            workflow_id=workflow_id,
+        ),
+    )
+
+    assert response.status == "failed"
+    assert response.validation_result is not None
+    assert [issue.code for issue in response.validation_result.issues] == [
+        "INTENT_USAGE_RECORDING_FAILED"
+    ]
+    assert len(extractor.calls) == 1
+    usage_context = extractor.calls[0]["usage_context"]
+    assert usage_context.user_id == user.id
+    assert usage_context.organization_id == organization_id
+    assert usage_context.workflow_id == workflow_id
+    assert usage_context.session_id == session_id
+    assert usage_context.request_id == response.request_id
+    assert "입력을 요약" not in str(response.model_dump(mode="json"))
+
+
+@pytest.mark.parametrize("scope_mismatch", ["request_session", "app_primary"])
+def test_submit_message_rejects_non_primary_usage_scope_before_provider(
+    monkeypatch,
+    scope_mismatch,
+):
+    db = FakeDb()
+    app_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    session_workflow_id = uuid.uuid4()
+    requested_workflow_id = (
+        uuid.uuid4()
+        if scope_mismatch == "request_session"
+        else session_workflow_id
+    )
+    primary_workflow_id = (
+        session_workflow_id
+        if scope_mismatch == "request_session"
+        else uuid.uuid4()
+    )
+    session = SimpleNamespace(
+        id=uuid.uuid4(),
+        workflow_id=session_workflow_id,
+        app_id=app_id,
+        status="active",
+        protocol_version="direct_edit_v1",
+        updated_at=None,
+    )
+    workflow = SimpleNamespace(
+        id=requested_workflow_id,
+        app_id=app_id,
+        graph={"nodes": [], "edges": []},
+    )
+    extractor = UnexpectedIntentExtractor()
+    service = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=organization_id,
+        intent_extractor=extractor,
+    )
+
+    def flush_with_generated_ids():
+        db.flushed = True
+        for row in db.added:
+            if getattr(row, "id", None) is None:
+                row.id = uuid.uuid4()
+
+    db.flush = flush_with_generated_ids
+    monkeypatch.setattr(service, "_session_or_404", lambda _: session)
+    monkeypatch.setattr(service, "_lock_session_for_request", lambda value: value)
+    monkeypatch.setattr(service, "_reject_if_pending", lambda _: None)
+    monkeypatch.setattr(service, "_workflow_in_active_org", lambda _: workflow)
+    monkeypatch.setattr(
+        service,
+        "_app_in_active_org",
+        lambda _: SimpleNamespace(id=app_id, workflow_id=primary_workflow_id),
+    )
+    monkeypatch.setattr(
+        service,
+        "_selected_knowledge_candidate_context",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "ensure_workflow_permission",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "add_action_audit",
+        lambda *_args, **_kwargs: None,
+    )
+
+    response = service.submit_message(
+        session.id,
+        AgentBuilderMessageRequest(
+            message="입력과 응답 노드를 만들어줘",
+            workflow_id=requested_workflow_id,
+        ),
+    )
+
+    assert response.status == "failed"
+    assert [issue.code for issue in response.validation_result.issues] == [
+        "INTENT_USAGE_RECORDING_FAILED"
+    ]
+    assert extractor.calls == []
 
 
 def _ready_modify_draft(preview_graph, *, workflow_id=None):

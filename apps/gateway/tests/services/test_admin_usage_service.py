@@ -724,6 +724,31 @@ def test_get_organization_summary_sums_current_month_costs_with_null_as_zero():
                 completion_tokens=3,
                 total_cost=Decimal("0.234567"),
                 created_at=datetime(2026, 7, 12, 0, 0, tzinfo=timezone.utc),
+                runtime_surface="agent_builder_intent",
+            ),
+            _usage_log(
+                None,
+                workflow_id,
+                prompt_tokens=2,
+                completion_tokens=1,
+                total_cost=Decimal("0.400000"),
+                created_at=datetime(2026, 7, 12, 1, 0, tzinfo=timezone.utc),
+            ),
+            _usage_log(
+                other_organization_id,
+                workflow_id,
+                prompt_tokens=999,
+                completion_tokens=999,
+                total_cost=Decimal("98.000000"),
+                created_at=datetime(2026, 7, 12, 2, 0, tzinfo=timezone.utc),
+            ),
+            _usage_log(
+                None,
+                other_workflow_id,
+                prompt_tokens=999,
+                completion_tokens=999,
+                total_cost=Decimal("97.000000"),
+                created_at=datetime(2026, 7, 12, 3, 0, tzinfo=timezone.utc),
             ),
             _usage_log(
                 other_organization_id,
@@ -761,7 +786,9 @@ def test_get_organization_summary_sums_current_month_costs_with_null_as_zero():
     )
 
     assert summary.month == "2026-07"
-    assert summary.total_cost == pytest.approx(1.334567)
+    assert summary.total_cost == pytest.approx(1.734567)
+    assert summary.workflow_execution_cost == pytest.approx(1.5)
+    assert summary.agent_builder_cost == pytest.approx(0.234567)
     # 예산 feature(FR-051) 확정 전에는 budget 블록을 None으로 반환한다.
     assert summary.budget is None
 
@@ -837,6 +864,7 @@ def _usage_log(
     completion_tokens,
     total_cost,
     created_at,
+    runtime_surface=None,
 ):
     return SimpleNamespace(
         organization_id=organization_id,
@@ -845,6 +873,7 @@ def _usage_log(
         completion_tokens=completion_tokens,
         total_cost=total_cost,
         created_at=created_at,
+        runtime_surface=runtime_surface,
     )
 
 

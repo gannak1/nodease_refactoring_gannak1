@@ -50,7 +50,7 @@ type DashboardSummaryCardProps = {
   iconClassName?: string;
   valueClassName?: string;
   descriptionClassName?: string;
-  description?: string;
+  description?: ReactNode;
   href?: string;
   linkAriaLabel?: string;
 };
@@ -77,9 +77,9 @@ export function DashboardSummaryCard({
             {value}
           </p>
           {description && (
-            <p className={`text-slate-500 ${descriptionClassName}`}>
+            <div className={`text-slate-500 ${descriptionClassName}`}>
               {description}
-            </p>
+            </div>
           )}
         </div>
         <Icon className={`h-5 w-5 shrink-0 ${iconClassName}`} />

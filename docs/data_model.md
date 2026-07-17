@@ -1104,12 +1104,16 @@ LLM token/cost/latency 원천.
 | id | UUID | PK |
 | user_id | UUID | NOT NULL, FK→users.id |
 | organization_id | UUID | NULL, FK→organization.id |
-| credential_id | UUID | NOT NULL, FK→llm_credentials.id (SET NULL) — current model has a NOT NULL/SET NULL mismatch; future usage-log schema changes must resolve this by making the FK nullable or changing delete behavior |
-| model_id | UUID | NOT NULL, FK→llm_models.id (SET NULL) — current model has a NOT NULL/SET NULL mismatch; future usage-log schema changes must resolve this by making the FK nullable or changing delete behavior |
+| credential_id | UUID | NULL, FK→llm_credentials.id (SET NULL) — 신규 기록에는 실제 credential ID가 필수이며 삭제 뒤 과거 token/cost 보존을 위해서만 NULL 허용 |
+| model_id | UUID | NULL, FK→llm_models.id (SET NULL) — 신규 기록에는 실제 model ID가 필수이며 삭제 뒤 과거 token/cost 보존을 위해서만 NULL 허용 |
 | workflow_id | UUID | NULL, FK→workflows.id |
 | workflow_run_id | UUID | NULL, FK→workflow_runs.id (SET NULL) |
 | cost_optimizer_candidate_id | UUID | NULL, FK→cost_optimizer_candidates.id (SET NULL) — candidate summary가 정리돼도 usage fact는 유지 |
 | node_id | TEXT | NULL — graph 내 string 참조 |
+| runtime_surface | VARCHAR(64) | NULL — Agent Builder intent는 `agent_builder_intent`, 기존 row는 NULL |
+| runtime_session_id | UUID | NULL — runtime provenance snapshot, FK 없음 |
+| runtime_request_id | UUID | NULL — 논리 요청 snapshot, FK 없음 |
+| runtime_attempt | INTEGER | NULL, 1 이상 — 최초 planner 1, repair 2 |
 | prompt_tokens / completion_tokens | INTEGER | NOT NULL |
 | total_cost | NUMERIC(10,6) | NULL |
 | latency_ms | INTEGER | NOT NULL |
@@ -1118,8 +1122,11 @@ LLM token/cost/latency 원천.
 | created_at | DATETIME | NOT NULL |
 
 - RAG 전용 FK(`rag_answer_run_id`)를 추가하지 않는다. standalone answer와의 연결은 correlation convention이다.
-- 일반 credential revoke는 row를 삭제하지 않으므로 현재 `credential_id`/`model_id`의 `NOT NULL + ON DELETE SET NULL` 모순을 실행시키지 않는다. 다만 향후 hard purge 또는 catalog row 삭제를 지원하려면 migration 전에 FK nullability와 historical projection을 함께 결정해야 한다.
-- Usage는 청구·비용 분석·감사의 historical fact이므로 credential/model과 함께 cascade delete하지 않는다. Target 보존 정책은 무기한 보존을 전제하지 않되, 삭제 뒤에도 provider/model/pricing/billing 의미를 재구성할 최소 snapshot 또는 tombstone을 정의하고 organization별 retention·법적 보존·purge 규칙을 적용해야 한다. 현재 schema에 없는 snapshot column을 이 문서만으로 확정하지 않는다.
+- Agent Builder intent row는 `(runtime_surface, runtime_session_id, runtime_request_id, runtime_attempt)` partial unique key로 중복을 제거한다. Provider 호출 전 `pending` 행은 token/cost/latency 0으로 예약하고 응답 뒤 같은 행을 `success`로 완료한다. 해당 surface에서는 session/request/attempt가 모두 필수이며 prompt/completion token, total cost와 latency는 음수가 될 수 없다. `total_cost`도 필수다.
+- Model 또는 credential 삭제 시 연결 ID만 NULL이 되며 token, 당시 계산된 비용, user/organization/workflow 귀속은 유지한다. 일반 조직·workflow·예산 집계는 이 행을 계속 합산한다 ([ADR-0055](decisions/ADR-0055-agent-builder-intent-usage-attribution.md)).
+- 비용 구분 집계는 `runtime_surface='agent_builder_intent' AND status='success'`인 행만 Agent Builder 비용·token·호출 수로 포함한다. Pending 행은 미확정 운영 증거이며 집계에서 제외한다. NULL과 그 밖의 surface는 기존 workflow 실행 비용 분류를 유지한다. 두 구분값의 합은 기존 총비용과 같아야 하며 예산과 전월 추세는 총비용 기준을 유지한다.
+- 일반 credential revoke는 row를 삭제하지 않는다. Hard purge 또는 catalog row 삭제는 nullable FK와 `SET NULL`로 연결 ID만 해제하며, 이력 비용 행은 삭제하지 않는다.
+- Usage는 청구·비용 분석·감사의 historical fact이므로 credential/model과 함께 cascade delete하지 않는다. 현재 schema는 삭제 뒤 token/cost와 귀속을 보존하지만 provider/model/pricing 식별 스냅샷을 정의하지 않는다. 이 식별 정보와 organization별 retention·법적 보존·purge 규칙은 후속 결정으로 분리한다.
 
 ### 외부 연동
 

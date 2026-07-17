@@ -11,12 +11,30 @@ from fastapi import HTTPException
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from apps.gateway.adapters.db.agent_builder_repository import AgentBuilderRepository
+from apps.gateway.application.agent_builder.condition_branches import (
+    normalize_condition_outgoing_edges,
+)
+from apps.gateway.application.agent_builder.intent_usage import (
+    AgentBuilderIntentUsageContext,
+    AgentBuilderIntentUsageRecordingError,
+)
+from apps.gateway.application.agent_builder.knowledge_timing import (
+    materialize_before_graph_plan,
+)
+from apps.gateway.application.agent_builder.parameter_tasks import (
+    remove_direct_edit_external_credential_tasks,
+    remove_direct_edit_knowledge_parameter_tasks,
+)
+from apps.gateway.application.agent_builder.semantic_plan import CAPABILITY_STEP_IDS
+from apps.gateway.application.agent_builder.service import DirectEditOrchestrator
 from apps.gateway.auth.permissions import (
     ensure_workflow_permission,
     recorded_permission_denied_exception,
 )
-from apps.gateway.services.app_service import AppService
-from apps.gateway.services.app_lifecycle_lock import lock_app_for_lifecycle
+from apps.gateway.services.agent_builder.parameter_candidates import (
+    ParameterCandidateProvider,
+)
 from apps.gateway.services.agent_builder_intent_service import (
     AgentBuilderIntentExtraction,
     AgentBuilderIntentExtractionError,
@@ -25,6 +43,8 @@ from apps.gateway.services.agent_builder_intent_service import (
     safe_intent_extraction_reason,
     validate_intent_semantics,
 )
+from apps.gateway.services.app_lifecycle_lock import lock_app_for_lifecycle
+from apps.gateway.services.app_service import AppService
 from apps.gateway.services.audit_records import add_action_audit
 from apps.gateway.services.knowledge_rag_recommendation_service import (
     KnowledgeRAGRecommendationService,
@@ -32,22 +52,6 @@ from apps.gateway.services.knowledge_rag_recommendation_service import (
 from apps.gateway.services.llm_service import LLMService
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.workflow_service import WorkflowService
-from apps.gateway.application.agent_builder.condition_branches import (
-    normalize_condition_outgoing_edges,
-)
-from apps.gateway.application.agent_builder.parameter_tasks import (
-    remove_direct_edit_external_credential_tasks,
-    remove_direct_edit_knowledge_parameter_tasks,
-)
-from apps.gateway.application.agent_builder.semantic_plan import CAPABILITY_STEP_IDS
-from apps.gateway.application.agent_builder.service import DirectEditOrchestrator
-from apps.gateway.services.agent_builder.parameter_candidates import (
-    ParameterCandidateProvider,
-)
-from apps.gateway.application.agent_builder.knowledge_timing import (
-    materialize_before_graph_plan,
-)
-from apps.gateway.adapters.db.agent_builder_repository import AgentBuilderRepository
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.agent_builder import (
     AgentBuilderDraft,
@@ -65,8 +69,8 @@ from apps.shared.schemas.agent_builder import (
     AgentBuilderDraftPreview,
     AgentBuilderEditOperation,
     AgentBuilderEditTargetReference,
-    AgentBuilderKnowledgeRequirement,
     AgentBuilderKnowledgePlacement,
+    AgentBuilderKnowledgeRequirement,
     AgentBuilderMessageRequest,
     AgentBuilderMessageResponse,
     AgentBuilderMissingParameter,
@@ -79,15 +83,16 @@ from apps.shared.schemas.agent_builder import (
     AgentBuilderStructuredRequest,
     AgentBuilderValidationIssue,
     AgentBuilderValidationResult,
-    GraphMutationSafeEnvelope,
     GraphMutationCompletionContext,
+    GraphMutationSafeEnvelope,
 )
-
-
 from apps.shared.schemas.knowledge import KnowledgeRAGRecommendationRequest
+from apps.shared.services.permission_audit import record_resource_permission_denied
 from apps.shared.services.permissions import (
     has_workflow_permission,
 )
+from apps.shared.services.tracing.policy import TracePolicyService
+from apps.shared.services.tracing.redaction import TraceRedactionService
 from apps.shared.services.workflow_layout import calculate_workflow_auto_layout
 from apps.shared.services.workflow_node_catalog import (
     agent_builder_supported_capabilities,
@@ -97,10 +102,6 @@ from apps.shared.services.workflow_node_catalog import (
     node_type_for_capability,
     validate_workflow_graph_connections,
 )
-from apps.shared.services.permission_audit import record_resource_permission_denied
-from apps.shared.services.tracing.policy import TracePolicyService
-from apps.shared.services.tracing.redaction import TraceRedactionService
-
 
 logger = logging.getLogger(__name__)
 
@@ -1160,10 +1161,27 @@ class AgentBuilderService:
                 )
                 self.db.commit()
                 return response
+            usage_context = None
+            if selected_kb_context is None and self.intent_extractor is not None:
+                usage_context = self._primary_intent_usage_context(
+                    session=session,
+                    request=message_request,
+                    request_id=request_row.id,
+                    workflow=workflow,
+                    app=app,
+                )
             structured = (
                 selected_kb_context["structured_request"]
                 if selected_kb_context
-                else self._structure_request(message_request, workflow)
+                else self._structure_request(
+                    message_request,
+                    workflow,
+                    **(
+                        {"usage_context": usage_context}
+                        if usage_context is not None
+                        else {}
+                    ),
+                )
             )
             effective_selected_edge_id = self._selected_edge_id_for_structured_request(
                 workflow,
@@ -1211,6 +1229,32 @@ class AgentBuilderService:
                     else None
                 ),
             )
+        except AgentBuilderIntentUsageRecordingError:
+            response = AgentBuilderMessageResponse(
+                request_id=request_row.id,
+                status="failed",
+                validation_result=AgentBuilderValidationResult(
+                    valid=False,
+                    issues=[
+                        AgentBuilderValidationIssue(
+                            code="INTENT_USAGE_RECORDING_FAILED",
+                            message=(
+                                "Agent Builder 사용량 기록을 확인할 수 없어 "
+                                "요청을 안전하게 중단했습니다."
+                            ),
+                            path="message",
+                        )
+                    ],
+                ),
+                warnings=[SAFE_SIDE_EFFECT_NOTICE],
+            )
+            self._finish_request(
+                request_row,
+                response,
+                direct_edit=direct_edit_session,
+            )
+            self.db.commit()
+            return response
         except AgentBuilderIntentRuntimeUnavailableError:
             response = AgentBuilderMessageResponse(
                 request_id=request_row.id,
@@ -2531,6 +2575,8 @@ class AgentBuilderService:
         self,
         request: AgentBuilderMessageRequest,
         workflow: Workflow | None,
+        *,
+        usage_context: AgentBuilderIntentUsageContext | None = None,
     ) -> AgentBuilderStructuredRequest:
         if self.intent_extractor is None:
             raise AgentBuilderIntentRuntimeUnavailableError(
@@ -2538,10 +2584,13 @@ class AgentBuilderService:
             )
         workflow_context = self._safe_intent_workflow_context(workflow, request)
         safe_message = _safe_summary(request.message, limit=2000)
-        extraction = self.intent_extractor.extract(
-            safe_message=safe_message,
-            workflow_context=workflow_context,
-        )
+        extract_kwargs: dict[str, Any] = {
+            "safe_message": safe_message,
+            "workflow_context": workflow_context,
+        }
+        if usage_context is not None:
+            extract_kwargs["usage_context"] = usage_context
+        extraction = self.intent_extractor.extract(**extract_kwargs)
         validate_intent_semantics(
             extraction,
             workflow_context,
@@ -2551,6 +2600,46 @@ class AgentBuilderService:
             extraction,
             request=request,
             workflow=workflow,
+        )
+
+    def _primary_intent_usage_context(
+        self,
+        *,
+        session: AgentBuilderSession,
+        request: AgentBuilderMessageRequest,
+        request_id: uuid.UUID,
+        workflow: Workflow | None,
+        app: App | None,
+    ) -> AgentBuilderIntentUsageContext:
+        if workflow is None or app is None:
+            raise AgentBuilderIntentUsageRecordingError(
+                "intent_usage_recording_failed"
+            )
+
+        workflow_id = workflow.id
+        app_id = workflow.app_id
+        scope_matches = (
+            session.workflow_id == workflow_id
+            and session.app_id == app_id
+            and app.id == app_id
+            and app.workflow_id == workflow_id
+            and (
+                request.workflow_id is None
+                or request.workflow_id == workflow_id
+            )
+            and (request.app_id is None or request.app_id == app_id)
+        )
+        if not scope_matches:
+            raise AgentBuilderIntentUsageRecordingError(
+                "intent_usage_recording_failed"
+            )
+
+        return AgentBuilderIntentUsageContext(
+            user_id=self.user.id,
+            organization_id=self.organization_id,
+            workflow_id=workflow_id,
+            session_id=session.id,
+            request_id=request_id,
         )
 
     def _normalize_intent_extraction(

@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 
 import httpx
 
-from .base import BaseLLMClient
+from .base import BaseLLMClient, LLMResponseValidationError
 
 
 class AnthropicClient(BaseLLMClient):
@@ -120,6 +120,8 @@ class AnthropicClient(BaseLLMClient):
             data = resp.json()
             # Anthropic 응답을 OpenAI 호환 형식으로 변환
             return self._convert_to_openai_format(data)
+        except LLMResponseValidationError:
+            raise
         except ValueError as exc:
             raise ValueError("Anthropic 응답을 JSON으로 파싱할 수 없습니다.") from exc
 
@@ -139,17 +141,46 @@ class AnthropicClient(BaseLLMClient):
             "usage": {"prompt_tokens": X, "completion_tokens": Y, "total_tokens": Z}
         }
         """
-        # 컨텐츠 추출
+        # 사용량 변환
+        usage = anthropic_response.get("usage")
+        normalized_usage: Dict[str, Any] = {}
+        if isinstance(usage, dict):
+            prompt_tokens = usage.get("input_tokens")
+            completion_tokens = usage.get("output_tokens")
+            if prompt_tokens is not None:
+                normalized_usage["prompt_tokens"] = prompt_tokens
+            if completion_tokens is not None:
+                normalized_usage["completion_tokens"] = completion_tokens
+            if (
+                isinstance(prompt_tokens, int)
+                and not isinstance(prompt_tokens, bool)
+                and isinstance(completion_tokens, int)
+                and not isinstance(completion_tokens, bool)
+            ):
+                normalized_usage["total_tokens"] = prompt_tokens + completion_tokens
+
+        # 콘텐츠 검증 실패 전에도 billing usage는 분리할 수 있어야 한다.
         content_blocks = anthropic_response.get("content", [])
+        if not isinstance(content_blocks, list):
+            raise LLMResponseValidationError(
+                "Anthropic response content is invalid",
+                usage=normalized_usage,
+            )
         text_content = ""
         for block in content_blocks:
+            if not isinstance(block, dict):
+                raise LLMResponseValidationError(
+                    "Anthropic response content is invalid",
+                    usage=normalized_usage,
+                )
             if block.get("type") == "text":
-                text_content += block.get("text", "")
-
-        # 사용량 변환
-        usage = anthropic_response.get("usage", {})
-        prompt_tokens = usage.get("input_tokens", 0)
-        completion_tokens = usage.get("output_tokens", 0)
+                text = block.get("text", "")
+                if not isinstance(text, str):
+                    raise LLMResponseValidationError(
+                        "Anthropic response content is invalid",
+                        usage=normalized_usage,
+                    )
+                text_content += text
 
         return {
             "choices": [
@@ -161,11 +192,7 @@ class AnthropicClient(BaseLLMClient):
                     "finish_reason": anthropic_response.get("stop_reason", "stop")
                 }
             ],
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens
-            }
+            "usage": normalized_usage,
         }
 
     def get_num_tokens(self, messages: List[Dict[str, Any]]) -> int:

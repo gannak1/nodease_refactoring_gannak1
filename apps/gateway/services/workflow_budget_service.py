@@ -31,6 +31,10 @@ from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_budget import WorkflowBudget
+from apps.shared.domain.llm_usage import (
+    AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
+    is_billable_llm_usage,
+)
 
 BUDGET_AT_RISK_RATIO = Decimal("0.8")
 BUDGET_EXCEEDED_RATIO = Decimal("1.0")
@@ -336,6 +340,10 @@ def _current_month_cost_fake(
             for usage in db.usage_logs
             if usage.workflow_id == workflow_id
             and period.start_at <= usage.created_at < period.end_at
+            and is_billable_llm_usage(
+                getattr(usage, "runtime_surface", None),
+                getattr(usage, "status", "success"),
+            )
             and (
                 organization_id is None
                 or usage.organization_id is None
@@ -357,6 +365,7 @@ def _current_month_cost_query(
         LLMUsageLog.workflow_id == workflow_id,
         LLMUsageLog.created_at >= period.start_at,
         LLMUsageLog.created_at < period.end_at,
+        _billable_usage_condition(),
     )
     if organization_id is not None:
         query = query.filter(
@@ -367,6 +376,14 @@ def _current_month_cost_query(
         )
     total = query.scalar()
     return AdminUsageService.coalesce_cost(total)
+
+
+def _billable_usage_condition():
+    return or_(
+        LLMUsageLog.runtime_surface.is_(None),
+        LLMUsageLog.runtime_surface != AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
+        LLMUsageLog.status == "success",
+    )
 
 
 def _update_budget(

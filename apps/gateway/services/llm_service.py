@@ -9,8 +9,8 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from apps.gateway.application.agent_builder.model_recommendation_policy import (
-    ModelRecommendationCandidate,
     SUPPORTED_PROVIDER_ORDER,
+    ModelRecommendationCandidate,
     sort_model_candidates,
 )
 from apps.gateway.services.organization_context import ensure_user_default_organization
@@ -31,14 +31,14 @@ from apps.shared.schemas.llm import (
     LLMModelResponse,
     LLMProviderResponse,
 )
+from apps.shared.services.llm_client import get_llm_client
+from apps.shared.services.llm_usage_context import resolve_llm_usage_context
+from apps.shared.services.permission_audit import record_resource_permission_denied
 from apps.shared.services.permissions import (
     get_effective_llm_credential_auth_state,
     has_llm_credential_permission,
     has_organization_manager_permission,
 )
-from apps.shared.services.llm_client import get_llm_client
-from apps.shared.services.llm_usage_context import resolve_llm_usage_context
-from apps.shared.services.permission_audit import record_resource_permission_denied
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,7 @@ class WizardLLMRuntime:
     client: Any
     credential_id: uuid.UUID
     model_id: str
+    model_db_id: uuid.UUID
     organization_id: uuid.UUID
 
 
@@ -1117,6 +1118,7 @@ class LLMService:
                         credential,
                         provider,
                         model_id,
+                        model.id,
                     )
                 )
 
@@ -1129,6 +1131,7 @@ class LLMService:
                 credential,
                 provider,
                 model_id,
+                model_db_id,
             ) in verified_candidates:
                 if not has_llm_credential_permission(
                     db,
@@ -1184,6 +1187,7 @@ class LLMService:
                     client=client,
                     credential_id=credential.id,
                     model_id=model_id,
+                    model_db_id=model_db_id,
                     organization_id=organization_uuid,
                 )
 
@@ -1364,6 +1368,7 @@ class LLMService:
             client=client,
             credential_id=credential.id,
             model_id=model.model_id_for_api_call,
+            model_db_id=model.id,
             organization_id=organization_uuid,
         )
 
@@ -1887,6 +1892,9 @@ class LLMService:
         """
         특정 모델의 가격 정보를 업데이트합니다.
         """
+        if input_price < 0 or output_price < 0:
+            raise ValueError("Model pricing must be non-negative")
+
         model = db.query(LLMModel).filter(LLMModel.id == model_id).first()
         if not model:
             raise ValueError(f"Model {model_id} not found")

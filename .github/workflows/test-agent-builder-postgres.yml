@@ -7,18 +7,34 @@ on:
       - dev
     paths:
       - "apps/gateway/adapters/db/agent_builder_repository.py"
+      - "apps/gateway/api/v1/endpoints/llm.py"
+      - "apps/gateway/api/v1/endpoints/organization.py"
       - "apps/gateway/application/agent_builder/**"
       - "apps/gateway/composition/agent_builder.py"
+      - "apps/gateway/services/admin_usage_service.py"
       - "apps/gateway/services/agent_builder/**"
+      - "apps/gateway/services/agent_builder_intent_service.py"
       - "apps/gateway/services/agent_builder_service.py"
+      - "apps/gateway/services/app_service.py"
+      - "apps/gateway/services/llm_service.py"
+      - "apps/gateway/services/organization_member_service.py"
+      - "apps/gateway/services/workflow_budget_service.py"
+      - "apps/shared/services/llm_client/**"
+      - "apps/gateway/tests/integration/test_agent_builder_intent_usage_postgres.py"
+      - "apps/gateway/tests/services/test_llm_client_base.py"
+      - "apps/gateway/tests/services/test_llm_client_openai.py"
+      - "apps/shared/tests/services/test_anthropic_client.py"
       - "apps/gateway/services/workflow_service.py"
       - "apps/gateway/tests/integration/test_agent_builder_model_selection_db.py"
       - "apps/gateway/tests/integration/test_agent_builder_primary_workflow_db.py"
       - "apps/gateway/tests/integration/test_agent_builder_workflow_cas.py"
       - "apps/shared/alembic/**"
       - "apps/shared/db/models/agent_builder.py"
+      - "apps/shared/db/models/llm.py"
       - "apps/shared/db/models/workflow.py"
+      - "apps/shared/domain/llm_usage.py"
       - "apps/shared/schemas/agent_builder.py"
+      - "apps/shared/schemas/organization_membership.py"
       - "apps/shared/schemas/workflow.py"
       - ".github/workflows/test-agent-builder-postgres.yml"
 
@@ -81,4 +97,5 @@ jobs:
           apps/gateway/tests/integration/test_agent_builder_model_selection_db.py
           apps/gateway/tests/integration/test_agent_builder_primary_workflow_db.py
           apps/gateway/tests/integration/test_agent_builder_workflow_cas.py
+          apps/gateway/tests/integration/test_agent_builder_intent_usage_postgres.py
           -q

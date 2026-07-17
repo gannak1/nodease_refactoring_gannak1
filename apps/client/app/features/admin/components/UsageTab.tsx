@@ -224,7 +224,18 @@ export function UsageTab() {
                     {item.completion_tokens.toLocaleString()}
                   </td>
                   <td className="px-3 py-3 text-right font-semibold text-slate-900">
-                    {formatCost(item.total_cost)}
+                    <p>{formatCost(item.total_cost)}</p>
+                    <div
+                      className="mt-1 space-y-0.5 text-xs font-normal text-slate-500"
+                      aria-label={`${item.workflow_name} 비용 구성`}
+                    >
+                      <p>
+                        워크플로 실행 {formatCost(item.workflow_execution_cost)}
+                      </p>
+                      <p>
+                        Agent Builder {formatCost(item.agent_builder_cost)}
+                      </p>
+                    </div>
                   </td>
                   <td className="px-3 py-3">
                     <div className="flex flex-col items-start gap-2">

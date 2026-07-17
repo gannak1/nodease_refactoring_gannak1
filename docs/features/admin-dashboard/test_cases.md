@@ -11,8 +11,6 @@ Security Alert FR-013의 상세 rule/worker/API/component/E2E matrix는 [Securit
 - Given Security Alert deep link의 유효한 `alertId`, When 새로고침하면, Then 같은 tab/detail이 복원된다. Invalid/cross-org ID는 safe 404로 처리한다.
 - Given Alert detail에서 `사용자 접근 관리` 선택, When ActorAccessDrawer로 전환하면, Then 두 drawer가 겹치지 않고 기존 organization access-management 정책을 재사용하며 alert를 자동 resolve하지 않는다.
 - Given Security Alert 기능 활성화, When audit/비용/권한 탭의 권한 신청·App 생성 권한 카드를 사용하면, Then 기존 API, 권한, pagination, drawer 흐름이 회귀하지 않는다.
-Verified Against: feature/mba-188 @ 59d1cc51
-
 검증 값은 MBA-188 actor access와 audit detail 확장 case에 적용한다. 기존 비용/권한 신청 case의 기준은 해당 feature 문서와 git history를 따른다.
 
 [requirements.md](requirements.md)의 FR-011~FR-018과 [api_spec.md](api_spec.md), [component_spec.md](component_spec.md)를 검증한다. 신청 제출 측(FR-041)의 인수 조건은 [organization](../organization/requirements.md) 범위이며, 여기서는 관리자 측 흐름과 E2E 연결만 다룬다.
@@ -38,8 +36,10 @@ Verified Against: feature/mba-188 @ 59d1cc51
 
 - Given 기간 미지정 조회, When `GET /admin/usage/workflows`를 호출하면, Then 이번 달(KST 달력 월) 기준으로 집계된다.
 - Given 조직 A에 App primary workflow가 여러 개 있다, When `GET /admin/usage/workflows`를 호출하면, Then 기간 안의 usage 존재 여부와 무관하게 조직 A의 App primary workflow 전체가 반환된다.
-- Given 기간 안에 usage row가 없는 workflow, When 집계를 조회하면, Then 해당 workflow는 응답에 포함되고 prompt/completion tokens, `call_count`, `total_cost`가 모두 0이다.
+- Given 기간 안에 usage row가 없는 workflow, When 집계를 조회하면, Then 해당 workflow는 응답에 포함되고 prompt/completion tokens, `call_count`, `total_cost`, `workflow_execution_cost`, `agent_builder_cost`가 모두 0이다.
 - Given 조직 A의 `llm_usage_logs`, When 집계를 조회하면, Then workflow별 합계(prompt/completion tokens, call_count, total_cost)가 원천 row 합산과 일치하고, `total_cost`가 NULL인 row는 0으로 합산된다.
+- Given 조직 A primary workflow에 `runtime_surface=agent_builder_intent`인 planner와 repair usage가 있다, When workflow 비용과 조직 월간 비용을 조회하면, Then 두 attempt의 token/cost/call count가 기존 usage와 함께 합산되고 별도 Agent Builder row나 전용 API 없이 기존 응답의 `agent_builder_cost`로 구분된다.
+- Given Agent Builder usage가 참조하던 model 또는 credential이 삭제됐다, When 비용을 조회하면, Then NULL이 된 연결 ID와 무관하게 보존된 token/cost가 조직과 workflow 합계에 포함된다.
 - Given 조직 A primary workflow에 조직 A usage, NULL organization legacy usage, 조직 B로 명시된 usage가 함께 있다, When 조직 A로 조회하면, Then 조직 A와 NULL usage만 합산하고 조직 B usage는 token, call count, 비용과 budget 상태에서 제외한다.
 - Given 조직 A App의 `workflow_id`가 조직 B Workflow를 가리키거나 존재하지 않는 Workflow를 가리킨다, When 조직 A로 조회하면, Then 해당 App은 목록과 `total`에서 제외되고 workflow 이름, usage, budget link를 노출하지 않는다.
 - Given 집계 결과, Then 목록은 `total_cost` 내림차순이고, 비용이 같은 row는 workflow 이름/id 순서로 안정 정렬되며, 비용 값은 반올림 없이 원본 정밀도로 반환된다.
@@ -198,7 +198,8 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - `aggregate_workflow_usage(db, organization_id, period, page, limit)`
   - Given organization scope 안의 App primary workflow 여러 개, When 집계하면, Then usage row 유무와 무관하게 전체 primary workflow가 응답 대상이 된다.
   - Given workflow별 usage row 여러 개, When 집계하면, Then prompt tokens/completion tokens/call_count/total_cost가 원천 row 합산과 일치한다.
-  - Given usage row가 없는 workflow, When 집계하면, Then prompt tokens/completion tokens/call_count/total_cost는 모두 0이다.
+  - Given workflow 실행 row와 `runtime_surface=agent_builder_intent` row가 함께 있다, When 집계하면, Then `workflow_execution_cost`와 `agent_builder_cost`로 구분되고 두 값의 합이 `total_cost`와 같다.
+  - Given usage row가 없는 workflow, When 집계하면, Then prompt tokens/completion tokens/call_count/total_cost/workflow_execution_cost/agent_builder_cost는 모두 0이다.
   - Given App primary workflow가 있을 때, When 집계 응답 item을 만들면, Then `workflow_name`은 primary workflow를 가리키는 `App.name`이다.
   - Given `total_cost`가 `NULL`인 row, When 집계하면, Then 0으로 합산한다.
   - Given 조직 B UUID가 명시된 usage row와 NULL organization legacy row가 조직 A primary workflow에 함께 있다, When 조직 A로 조회하면, Then 전자는 제외하고 후자는 합산한다.
@@ -209,6 +210,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
   - Given page/limit, When 응답을 만들면, Then `total`은 usage row가 있는 workflow 수가 아니라 응답 대상 App primary workflow 전체 건수이고 `items`는 page slice다.
 - `get_organization_summary(db, organization_id, now)`
   - Given 이번 달 usage row, When summary를 조회하면, Then 조직 월간 `total_cost` 합계를 반환한다.
+  - Given 이번 달 Agent Builder usage가 있다, When summary를 조회하면, Then 총비용을 유지하면서 workflow 실행 비용과 Agent Builder 비용을 별도 필드로 반환한다.
   - Given `total_cost`가 `NULL`인 row, When summary를 조회하면, Then 0으로 합산한다.
   - Given 활성 예산 workflow가 0개인 조직, When summary를 조회하면, Then `budget`은 `None`이다.
 - `classify_budget_usage(total_cost, budget_amount)`

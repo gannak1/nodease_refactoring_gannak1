@@ -178,6 +178,7 @@ describe('SecurityAlertsTab', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: '조회' }));
     await waitFor(() => expect(mockedList).toHaveBeenCalledTimes(2));
+    await screen.findByRole('table');
 
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
 
@@ -203,6 +204,7 @@ describe('SecurityAlertsTab', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: '조회' }));
     await waitFor(() => expect(mockedList).toHaveBeenCalledTimes(2));
+    await screen.findByRole('table');
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
     await waitFor(() => expect(mockedList).toHaveBeenCalledTimes(3));
 

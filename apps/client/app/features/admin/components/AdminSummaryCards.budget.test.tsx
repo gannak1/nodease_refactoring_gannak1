@@ -25,6 +25,8 @@ describe('AdminSummaryCards 예산 카드', () => {
     mockedSummary.mockResolvedValue({
       month: '2026-07',
       total_cost: 123.456789,
+      workflow_execution_cost: 120,
+      agent_builder_cost: 3.456789,
       budget: {
         budgeted_workflow_count: 5,
         at_risk_count: 1,
@@ -59,6 +61,8 @@ describe('AdminSummaryCards 예산 카드', () => {
     mockedSummary.mockResolvedValue({
       month: '2026-07',
       total_cost: 10,
+      workflow_execution_cost: 8,
+      agent_builder_cost: 2,
       budget: {
         budgeted_workflow_count: 3,
         at_risk_count: 0,

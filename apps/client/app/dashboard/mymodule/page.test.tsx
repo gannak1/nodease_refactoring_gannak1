@@ -17,6 +17,7 @@ vi.mock('next/navigation', () => ({
 
 vi.mock('@/app/features/app/api/moduleOperationsApi', () => ({
   moduleOperationsApi: {
+    getModuleOperationsCostSummary: vi.fn(),
     listModuleOperations: vi.fn(),
   },
 }));
@@ -72,6 +73,14 @@ describe('내 모듈 운영 현황 보기 전환', () => {
     vi.mocked(moduleOperationsApi.listModuleOperations).mockResolvedValue([
       operationRow,
     ] as never);
+    vi.mocked(
+      moduleOperationsApi.getModuleOperationsCostSummary,
+    ).mockResolvedValue({
+      active_workflow_count: 1,
+      projected_month_cost: 2,
+      projected_month_workflow_execution_cost: 2,
+      projected_month_agent_builder_cost: 0,
+    } as never);
     vi.mocked(apiClient.get).mockResolvedValue({
       data: { id: 'org-1', name: '데모 조직', is_manager: true },
     } as never);

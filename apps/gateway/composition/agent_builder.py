@@ -6,6 +6,9 @@ from uuid import UUID
 from fastapi import Request
 from sqlalchemy.orm import Session
 
+from apps.gateway.services.agent_builder.intent_usage_service import (
+    AgentBuilderIntentUsageService,
+)
 from apps.gateway.services.agent_builder.knowledge_selection_service import (
     KnowledgeSelectionService,
 )
@@ -19,8 +22,8 @@ from apps.gateway.services.agent_builder_intent_service import (
     LLMAgentBuilderIntentExtractor,
 )
 from apps.gateway.services.agent_builder_service import (
-    AgentBuilderService,
     NO_KB_CANDIDATE_ID,
+    AgentBuilderService,
 )
 from apps.gateway.services.llm_service import LLMService
 from apps.gateway.services.organization_context import resolve_active_organization_id
@@ -49,6 +52,7 @@ class AgentBuilderComposition:
                 organization_id=self.organization_id,
                 credential_id=intent_credential_id,
                 model_id=intent_model_id,
+                usage_recorder=AgentBuilderIntentUsageService(),
             ),
         )
 

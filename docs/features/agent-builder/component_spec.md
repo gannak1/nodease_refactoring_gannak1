@@ -114,7 +114,7 @@ Transport adapter는 `X-Agent-Builder-Mode-Contract`를 읽어 legacy/canonical 
 제약:
 
 - 정상 request당 provider 호출 한 번. 최초 schema-valid 결과의 semantic invariant 위반에만 safe-code repair 최대 한 번
-- provider/JSON/schema failure에는 repair하지 않고 fail-closed
+- provider 호출, content 추출, JSON 파싱, non-object JSON 또는 Pydantic 구조 schema 실패에는 repair하지 않고 fail-closed
 - parameter, Knowledge와 task 전환 중 추가 planner 호출 금지
 - secret-like input 차단 또는 redaction 후 호출
 - parameter key와 validation rule을 결정하지 않음
@@ -290,6 +290,35 @@ API endpoint와 graph builder가 permission query를 직접 작성하지 않는�
 - revert에서 current graph가 원 result hash인지, candidate가 원 base hash인지 검증
 
 일반 editor의 mutation context 없는 save 호환성은 유지한다. Agent Builder acknowledgement는 이 CAS save 결과만 사용할 수 있다.
+
+### 2.14 IntentUsageRecorder
+
+위치:
+
+- 순수 계약: `apps/gateway/application/agent_builder/intent_usage.py`
+- 영속 구현: `apps/gateway/services/agent_builder/intent_usage_service.py`
+- 조립: `apps/gateway/composition/agent_builder.py`
+
+책임:
+
+- intent runtime이 실제 사용할 model DB ID와 credential DB ID로 provider 호출 전 pending 사용량 행과 가격을 예약
+- 최초 planner와 repair를 request의 attempt 1, 2로 분리
+- pending 예약 전에 request/session/App primary workflow와 model/credential 관계 확인. 과거 workflow 이력은 유지하되 non-primary scope의 신규 호출은 차단
+- provider 응답 직후 content/schema/semantic validation 전에 token·latency로 예약된 같은 행을 success로 완료. Raw content/choices/provider 응답 전체는 normalizer와 recorder에 전달하지 않음
+- 예약에서 model/credential/가격을 고정하고 완료 저장 재시도에서 현재 가격이나 runtime을 다시 조회하지 않음
+- 별도 SQLAlchemy session/transaction과 PostgreSQL partial unique key로 중복 provider 호출과 중복 완료 방지
+- 호출 실패 또는 usage 누락은 pending 행을 삭제하고, 호출 중 model/credential 삭제로 FK가 NULL이 되어도 예약된 행의 나머지 fact가 같으면 완료
+- pending Agent Builder 행은 비용·token·호출 수·Top Model 집계에서 제외
+- 기존 organization/workflow 비용, workflow budget과 App operation metric이 합산할 `llm_usage_logs` row 생성
+- 저장 성공을 확인할 수 없을 때 provider 재호출 없이 안전 오류 반환
+
+저장 금지:
+
+- 사용자 message와 workflow context
+- system prompt와 provider response content
+- credential config, API key, token과 exception 원문
+
+모델 또는 credential 삭제 뒤에는 usage row의 연결 ID만 NULL이 될 수 있다. 당시 token/cost와 user/organization/workflow 귀속은 보존한다. Agent Builder 전용 endpoint/대시보드와 Workflow Engine usage 재설계는 이 component 범위가 아니며, 기존 관리·내 모듈 화면의 additive 비용 구분만 제공한다.
 
 ## 3. Shared Schemas
 

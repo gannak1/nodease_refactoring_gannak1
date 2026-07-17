@@ -58,6 +58,8 @@ const usageResponse = {
       completion_tokens: 2345,
       call_count: 87,
       total_cost: 92.345678,
+      workflow_execution_cost: 90,
+      agent_builder_cost: 2.345678,
       budget: {
         monthly_budget_usd: 100,
         current_month_cost: 92.345678,
@@ -72,6 +74,8 @@ const usageResponse = {
       completion_tokens: 5,
       call_count: 2,
       total_cost: 0.123456,
+      workflow_execution_cost: 0.1,
+      agent_builder_cost: 0.023456,
       budget: null,
     },
   ],
@@ -93,6 +97,8 @@ describe('UsageTab 예산 컬럼', () => {
     // BudgetStatusBadge — 사용률 정수 반올림 + 상태 라벨
     expect(screen.getByText('92%')).toBeInTheDocument();
     expect(screen.getByText('위험')).toBeInTheDocument();
+    expect(screen.getByText('워크플로 실행 $90.00')).toBeInTheDocument();
+    expect(screen.getByText('Agent Builder $2.35')).toBeInTheDocument();
     // budget null은 오류가 아니라 미설정 상태
     expect(screen.getByText('미설정')).toBeInTheDocument();
     // 두 행 모두 예산 설정 진입을 제공한다

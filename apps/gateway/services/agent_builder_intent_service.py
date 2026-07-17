@@ -4,32 +4,42 @@ import json
 import re
 import uuid
 from collections.abc import Callable
+from time import perf_counter
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.orm import Session
 
-from apps.gateway.services.llm_service import (
-    LLMCredentialNotAvailableError,
-    LLMService,
-)
-from apps.gateway.services.knowledge_rag_recommendation_service import (
-    KnowledgeRAGRecommendationService,
-)
-from apps.shared.services.workflow_node_catalog import (
-    agent_builder_supported_capabilities,
-    load_workflow_node_catalog,
-)
-from apps.shared.schemas.agent_builder import (
-    AgentBuilderExplicitParameterValue,
-    AgentBuilderKnowledgePlacement,
-    AgentBuilderParameterGuidanceHint,
+from apps.gateway.application.agent_builder.intent_usage import (
+    AgentBuilderIntentUsageContext,
+    AgentBuilderIntentUsageRecorder,
+    AgentBuilderIntentUsageRecordingError,
+    AgentBuilderIntentUsageReservation,
+    AgentBuilderIntentUsageSampleError,
+    normalize_intent_usage_sample,
 )
 from apps.gateway.application.agent_builder.semantic_plan import (
     catalog_parameter_guide,
     normalize_explicit_parameter_values,
     normalize_parameter_guidance_hints,
     planned_step_ids,
+)
+from apps.gateway.services.knowledge_rag_recommendation_service import (
+    KnowledgeRAGRecommendationService,
+)
+from apps.gateway.services.llm_service import (
+    LLMCredentialNotAvailableError,
+    LLMService,
+)
+from apps.shared.schemas.agent_builder import (
+    AgentBuilderExplicitParameterValue,
+    AgentBuilderKnowledgePlacement,
+    AgentBuilderParameterGuidanceHint,
+)
+from apps.shared.services.llm_client.base import LLMResponseValidationError
+from apps.shared.services.workflow_node_catalog import (
+    agent_builder_supported_capabilities,
+    load_workflow_node_catalog,
 )
 
 
@@ -128,6 +138,7 @@ class AgentBuilderIntentExtractor(Protocol):
         *,
         safe_message: str,
         workflow_context: dict[str, Any],
+        usage_context: AgentBuilderIntentUsageContext | None = None,
     ) -> AgentBuilderIntentExtraction: ...
 
 
@@ -631,6 +642,7 @@ class LLMAgentBuilderIntentExtractor:
         model_id: uuid.UUID | None = None,
         runtime_loader: Callable[..., Any] | None = None,
         knowledge_context_loader: Callable[..., list[dict[str, Any]]] | None = None,
+        usage_recorder: AgentBuilderIntentUsageRecorder | None = None,
     ) -> None:
         self.db = db
         self.user_id = user_id
@@ -643,6 +655,7 @@ class LLMAgentBuilderIntentExtractor:
         self.knowledge_context_loader = (
             knowledge_context_loader or self._load_safe_knowledge_context
         )
+        self.usage_recorder = usage_recorder
         self.requires_explicit_selection = runtime_loader is None
 
     def extract(
@@ -650,7 +663,19 @@ class LLMAgentBuilderIntentExtractor:
         *,
         safe_message: str,
         workflow_context: dict[str, Any],
+        usage_context: AgentBuilderIntentUsageContext | None = None,
     ) -> AgentBuilderIntentExtraction:
+        if (usage_context is None) != (self.usage_recorder is None):
+            raise AgentBuilderIntentUsageRecordingError(
+                "intent_usage_recording_failed"
+            )
+        if usage_context is not None and (
+            usage_context.user_id != self.user_id
+            or usage_context.organization_id != self.organization_id
+        ):
+            raise AgentBuilderIntentUsageRecordingError(
+                "intent_usage_recording_failed"
+            )
         if self.requires_explicit_selection and (
             self.credential_id is None or self.model_id is None
         ):
@@ -736,6 +761,24 @@ class LLMAgentBuilderIntentExtractor:
         for attempt in range(2):
             extraction: AgentBuilderIntentExtraction | None = None
             repair_codes: list[str] = []
+            reservation: AgentBuilderIntentUsageReservation | None = None
+            if usage_context is not None:
+                assert self.usage_recorder is not None
+                try:
+                    reservation = self.usage_recorder.reserve(
+                        usage_context,
+                        credential_id=runtime.credential_id,
+                        model_id=runtime.model_db_id,
+                        model_api_id=runtime.model_id,
+                        attempt=attempt + 1,
+                    )
+                except AgentBuilderIntentUsageRecordingError:
+                    raise
+                except Exception as exc:
+                    raise AgentBuilderIntentUsageRecordingError(
+                        "intent_usage_recording_failed"
+                    ) from exc
+            started_at = perf_counter()
             try:
                 response = runtime.client.invoke_sync(
                     messages,
@@ -743,24 +786,48 @@ class LLMAgentBuilderIntentExtractor:
                     max_tokens=4000,
                     response_format=response_format,
                 )
+            except LLMResponseValidationError as exc:
+                if reservation is not None:
+                    latency_ms = (perf_counter() - started_at) * 1000
+                    if exc.usage is None:
+                        self._cancel_usage(reservation)
+                    else:
+                        self._record_usage(
+                            reservation=reservation,
+                            usage=exc.usage,
+                            latency_ms=latency_ms,
+                        )
+                raise AgentBuilderIntentExtractionError(
+                    "LLM intent response is invalid"
+                ) from exc
+            except Exception as exc:
+                if reservation is not None:
+                    self._cancel_usage(reservation)
+                raise AgentBuilderIntentExtractionError(
+                    "Agent Builder intent provider call failed"
+                ) from exc
+
+            if reservation is not None:
+                self._record_usage(
+                    reservation=reservation,
+                    usage=(
+                        response.get("usage") if isinstance(response, dict) else None
+                    ),
+                    latency_ms=(perf_counter() - started_at) * 1000,
+                )
+
+            try:
                 payload = _json_object(_response_content(response))
                 extraction = AgentBuilderIntentExtraction.model_validate(payload)
             except AgentBuilderIntentExtractionError:
                 raise
             except ValidationError as exc:
-                if attempt == 1:
-                    raise AgentBuilderIntentExtractionError(
-                        "Agent Builder intent extraction failed"
-                    ) from exc
-                repair_codes = ["SCHEMA_VALIDATION_FAILED"]
-                if any(
-                    error.get("loc", ())[:1] == ("knowledge_placements",)
-                    for error in exc.errors()
-                ):
-                    repair_codes.append("KNOWLEDGE_BINDING_TARGET_REQUIRED")
+                raise AgentBuilderIntentExtractionError(
+                    "Agent Builder intent extraction failed"
+                ) from exc
             except Exception as exc:
                 raise AgentBuilderIntentExtractionError(
-                    "Agent Builder intent provider call failed"
+                    "Agent Builder intent extraction failed"
                 ) from exc
 
             if extraction is not None:
@@ -858,6 +925,52 @@ class LLMAgentBuilderIntentExtractor:
         raise AgentBuilderIntentExtractionError(
             "Agent Builder intent extraction failed"
         )
+
+    def _record_usage(
+        self,
+        *,
+        reservation: AgentBuilderIntentUsageReservation,
+        usage: Any,
+        latency_ms: float,
+    ) -> None:
+        try:
+            sample = normalize_intent_usage_sample(
+                usage,
+                credential_id=reservation.credential_id,
+                model_id=reservation.model_id,
+                model_api_id=reservation.model_api_id,
+                attempt=reservation.attempt,
+                latency_ms=latency_ms,
+            )
+        except (AgentBuilderIntentUsageSampleError, AttributeError, TypeError) as exc:
+            self._cancel_usage(reservation)
+            raise AgentBuilderIntentUsageRecordingError(
+                "intent_usage_recording_failed"
+            ) from exc
+
+        try:
+            assert self.usage_recorder is not None
+            self.usage_recorder.record(reservation, sample)
+        except AgentBuilderIntentUsageRecordingError:
+            raise
+        except Exception as exc:
+            raise AgentBuilderIntentUsageRecordingError(
+                "intent_usage_recording_failed"
+            ) from exc
+
+    def _cancel_usage(
+        self,
+        reservation: AgentBuilderIntentUsageReservation,
+    ) -> None:
+        try:
+            assert self.usage_recorder is not None
+            self.usage_recorder.cancel(reservation)
+        except AgentBuilderIntentUsageRecordingError:
+            raise
+        except Exception as exc:
+            raise AgentBuilderIntentUsageRecordingError(
+                "intent_usage_recording_failed"
+            ) from exc
 
     def _load_safe_knowledge_context(
         self,

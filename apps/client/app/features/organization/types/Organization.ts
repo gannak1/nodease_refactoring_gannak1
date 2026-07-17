@@ -32,6 +32,16 @@ export type OrganizationMember = {
   updated_at: string;
 };
 
+export type MemberCurrentMonthUsage = {
+  total_cost: number;
+  workflow_execution_cost: number;
+  agent_builder_cost: number;
+};
+
+export type OrganizationMemberListItem = OrganizationMember & {
+  current_month_usage: MemberCurrentMonthUsage;
+};
+
 export type OrganizationMemberInviteRequest = {
   user_id: string;
   organization_auth_state?: OrganizationAuthState;

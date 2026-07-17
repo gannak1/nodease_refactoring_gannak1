@@ -1157,7 +1157,12 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 - Graph CDS save와 persisted revert save는 기존 `add_action_audit`를 graph write와 같은 transaction에 기록한다. Audit insert 실패 시 graph write도 rollback한다.
 - audit metadata에는 safe ids, parameter key, action, reason만 포함한다.
 - `credential_id`와 `model_id`는 permission/runtime 차단 audit에 기록할 수 있지만 credential name/config와 secret은 기록하지 않는다.
-- planner와 repair 호출의 usage/cost attribution은 현재 API 계약에 포함하지 않는다. 후속 구현에서도 raw provider response나 credential config를 저장하지 않는다.
+- `POST /sessions/{session_id}/messages`는 planner와 repair provider 호출 전에 기존 `llm_usage_logs`에 attempt별 pending 행을 예약한다. 예약은 실제 user/organization/workflow/model/credential과 당시 가격을 고정하며 같은 attempt가 이미 존재하면 provider 호출 전에 거절한다.
+- Provider 응답 뒤 content/schema 검증 전에 token usage mapping만 분리해 예약된 같은 행을 token/cost/latency와 success 상태로 완료한다. Raw content와 choices는 normalizer/recorder 경계를 넘지 않는다. Provider 응답 없음 또는 검증 가능한 usage 누락은 pending 행을 삭제한다.
+- 예약 전에 request workflow, direct-edit session workflow와 App의 현재 primary workflow가 같은지 확인한다. 과거 workflow row와 관련 이력은 삭제하지 않지만 primary가 아닌 workflow의 신규 Agent Builder provider 호출은 비용 발생 전에 거절한다. 예약 뒤 호출 중 primary/model/credential이 변경되거나 model·credential이 삭제되어 연결 ID가 NULL이 되어도 예약 당시 귀속과 가격으로 완료한다.
+- 완료 저장 재시도는 예약에서 확정한 model/credential/가격과 최초 provider 응답의 token/latency를 그대로 사용하고 현재 설정이나 가격을 다시 조회하지 않는다. 완료를 확인할 수 없으면 provider를 재호출하지 않으며 pending 행은 집계에서 제외한다.
+- 기록 성공을 확인할 수 없거나 provider 성공 응답에 검증 가능한 usage가 없으면 request를 `failed`로 종료하고 validation issue `INTENT_USAGE_RECORDING_FAILED`를 반환한다. 이미 완료된 provider 호출을 다시 실행하지 않으며 raw provider response, prompt/context, credential config와 secret은 응답·로그·usage row에 저장하지 않는다.
+- 기록된 비용은 기존 Admin organization/workflow 집계, workflow budget과 `/apps/operations` 월 예상 비용에 포함된다. Agent Builder 전용 endpoint는 추가하지 않으며 기존 Admin과 App operation 응답에 총비용을 보존한 구분 필드만 additive하게 제공한다.
 
 ## 12. Compatibility Plan
 
