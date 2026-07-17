@@ -23,7 +23,6 @@ import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 from typing import Any, Iterable
 
 import requests
@@ -36,7 +35,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from apps.shared.db.models.app import App
 from apps.shared.db.models.model_routing_cohort import (  # noqa: E402
     LLMNodeModelRoutingCohort,
     LLMNodeModelRoutingModelEvidence,
@@ -48,6 +46,10 @@ from apps.shared.db.models.model_routing_policy import (  # noqa: E402
 )
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment  # noqa: E402
 from apps.shared.db.session import SessionLocal  # noqa: E402
+from scripts.experiments.model_routing.secret_input import (  # noqa: E402
+    DEFAULT_WEBHOOK_SECRET_ENV,
+    read_required_secret,
+)
 WORKFLOW_ID = "91000000-0000-0000-0000-000000000002"
 DEPLOYMENT_ID = "91000000-0000-0000-0000-000000000003"
 ORGANIZATION_ID = "10200000-0000-0000-0000-000000000100"
@@ -281,18 +283,6 @@ def _reset_adaptive_state() -> None:
         db.commit()
 
 
-def _webhook_secret() -> str:
-    with SessionLocal() as db:
-        secret = (
-            db.query(App.auth_secret)
-            .filter(App.url_slug == APP_SLUG)
-            .scalar()
-        )
-    if not secret:
-        raise RuntimeError("실험 대상 webhook 인증 정보를 찾지 못했습니다.")
-    return str(secret)
-
-
 def _observation_from_row(row: Any, *, case: ExperimentCase) -> RunObservation:
     output = row["outputs"] if isinstance(row["outputs"], dict) else {}
     trace_root = row["trace_metadata"] if isinstance(row["trace_metadata"], dict) else {}
@@ -324,6 +314,7 @@ def _execute_cases(
     experiment_id: str,
     timeout_seconds: int,
     request_batch_size: int,
+    webhook_secret: str,
 ) -> list[RunObservation]:
     """실제 배포 요청을 제한된 동시성으로 실행하고 terminal node log를 수집한다.
 
@@ -332,7 +323,6 @@ def _execute_cases(
     막기 위해 기본값은 한 건씩 실행한다.
     """
     cases = list(cases)
-    secret = _webhook_secret()
     session = requests.Session()
     if request_batch_size < 1:
         raise ValueError("request_batch_size는 1 이상이어야 합니다.")
@@ -347,7 +337,7 @@ def _execute_cases(
         for case in batch:
             response = session.post(
                 f"{base_url.rstrip('/')}/api/v1/hooks/{APP_SLUG}",
-                headers={"X-Webhook-Secret": secret},
+                headers={"X-Webhook-Secret": webhook_secret},
                 json={
                     "message": case.message,
                     "customerTier": case.customer_tier,
@@ -783,11 +773,20 @@ def main() -> int:
     parser.add_argument("--output-dir", type=pathlib.Path, default=ROOT / "reports" / "model-routing")
     parser.add_argument("--confirm-live", action="store_true")
     parser.add_argument("--reset-adaptive-state", action="store_true")
+    parser.add_argument(
+        "--webhook-secret-env",
+        default=DEFAULT_WEBHOOK_SECRET_ENV,
+        help="실제 배포 webhook secret을 읽을 환경변수 이름입니다.",
+    )
     args = parser.parse_args()
     if not args.confirm_live:
         parser.error("실제 provider 비용이 발생합니다. --confirm-live를 명시하세요.")
     if not args.reset_adaptive_state:
         parser.error("재현 가능한 검증에는 --reset-adaptive-state가 필요합니다.")
+    try:
+        webhook_secret = read_required_secret(args.webhook_secret_env)
+    except ValueError as error:
+        parser.error(str(error))
 
     # 숫자로만 이어진 시간 문자열은 trace redaction 정책에서 전화번호/식별자처럼
     # 처리될 수 있다. UUID hex는 실험 상관관계용 불투명 식별자이며 입력 원문이 아니다.
@@ -803,6 +802,7 @@ def main() -> int:
         experiment_id=experiment_id,
         timeout_seconds=args.timeout_seconds,
         request_batch_size=args.request_batch_size,
+        webhook_secret=webhook_secret,
     )
     _wait_for_refresh_update(expected_update_count=1, timeout_seconds=args.validation_timeout_seconds)
     discovery.extend(
@@ -812,6 +812,7 @@ def main() -> int:
             experiment_id=experiment_id,
             timeout_seconds=args.timeout_seconds,
             request_batch_size=args.request_batch_size,
+            webhook_secret=webhook_secret,
         )
     )
     activation_state = _wait_for_validation_activation(
@@ -825,6 +826,7 @@ def main() -> int:
         experiment_id=experiment_id,
         timeout_seconds=args.timeout_seconds,
         request_batch_size=args.request_batch_size,
+        webhook_secret=webhook_secret,
     )
     json_path, markdown_path = _write_report(
         output_dir=args.output_dir,

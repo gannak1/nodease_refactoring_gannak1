@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { InputStep } from './InputStep';
 
 const defaultProps = {
+  issuedSecret: null,
+  onSecretAvailable: vi.fn(),
   deploymentType: 'chatbot' as const,
   deploymentTypeLabel: '공개 챗봇',
   description: '',

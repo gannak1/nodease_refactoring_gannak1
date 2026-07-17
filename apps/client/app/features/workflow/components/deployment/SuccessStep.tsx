@@ -11,18 +11,21 @@ import { AppAuthSecretControl } from '@/app/features/app/components/AppAuthSecre
 interface SuccessStepProps {
   result: DeploymentResult;
   deploymentType: DeploymentType;
+  issuedSecret: string | null;
+  onSecretAvailable: (secret: string | null) => void;
   onClose: () => void;
 }
 
 export function SuccessStep({
   result,
   deploymentType,
+  issuedSecret,
+  onSecretAvailable,
   onClose,
 }: SuccessStepProps) {
   const [inputValues, setInputValues] = useState<Record<string, any>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [testResponse, setTestResponse] = useState<string | null>(null);
-  const [issuedSecret, setIssuedSecret] = useState<string | null>(null);
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -334,7 +337,11 @@ ${authHeader}  -d '{
 
               {result.appId && (
                 <div className="border-l-2 border-gray-200 pl-4">
-                  <AppAuthSecretControl appId={result.appId} />
+                  <AppAuthSecretControl
+                    appId={result.appId}
+                    issuedSecret={issuedSecret}
+                    onSecretAvailable={onSecretAvailable}
+                  />
                 </div>
               )}
             </div>
@@ -390,7 +397,8 @@ ${authHeader}  -d '{
                   <div className="border-l-2 border-gray-200 pl-4">
                     <AppAuthSecretControl
                       appId={result.appId}
-                      onSecretAvailable={setIssuedSecret}
+                      issuedSecret={issuedSecret}
+                      onSecretAvailable={onSecretAvailable}
                     />
                   </div>
                 )}

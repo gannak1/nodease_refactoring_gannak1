@@ -19,29 +19,46 @@ import {
 
 interface AppAuthSecretControlProps {
   appId: string;
+  issuedSecret?: string | null;
   onSecretAvailable?: (secret: string | null) => void;
 }
 
 export function AppAuthSecretControl({
   appId,
+  issuedSecret: controlledIssuedSecret,
   onSecretAvailable,
 }: AppAuthSecretControlProps) {
   const [status, setStatus] = useState<AppAuthSecretStatus | null>(null);
-  const [issuedSecret, setIssuedSecret] = useState<string | null>(null);
+  const [localIssuedSecret, setLocalIssuedSecret] = useState<string | null>(
+    null,
+  );
   const [showSecret, setShowSecret] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [revokeImmediately, setRevokeImmediately] = useState(false);
   const [loading, setLoading] = useState(true);
   const [rotating, setRotating] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
+  const isIssuedSecretControlled = controlledIssuedSecret !== undefined;
+  const issuedSecret = isIssuedSecretControlled
+    ? controlledIssuedSecret
+    : localIssuedSecret;
+
+  const updateIssuedSecret = (secret: string | null) => {
+    if (!isIssuedSecretControlled) {
+      setLocalIssuedSecret(secret);
+    }
+    onSecretAvailable?.(secret);
+  };
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setUnavailable(false);
     setStatus(null);
-    setIssuedSecret(null);
-    onSecretAvailable?.(null);
+    if (!isIssuedSecretControlled) {
+      setLocalIssuedSecret(null);
+      onSecretAvailable?.(null);
+    }
 
     void appApi
       .getAuthSecretStatus(appId)
@@ -58,7 +75,7 @@ export function AppAuthSecretControl({
     return () => {
       active = false;
     };
-  }, [appId, onSecretAvailable]);
+  }, [appId, isIssuedSecretControlled, onSecretAvailable]);
 
   const beginRotation = () => {
     setRevokeImmediately(false);
@@ -82,10 +99,9 @@ export function AppAuthSecretControl({
         previous_valid_until: result.previous_valid_until,
       };
       setStatus(nextStatus);
-      setIssuedSecret(result.secret);
+      updateIssuedSecret(result.secret);
       setShowSecret(true);
       setConfirming(false);
-      onSecretAvailable?.(result.secret);
       toast.success('새 App secret이 발급되었습니다.');
     } catch {
       toast.error('Secret 상태가 변경되었습니다. 상태를 새로 확인해주세요.');

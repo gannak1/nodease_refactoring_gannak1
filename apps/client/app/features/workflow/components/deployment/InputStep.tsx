@@ -13,6 +13,8 @@ import { BrowserAccessPolicyEditor } from './BrowserAccessPolicyEditor';
 
 interface InputStepProps {
   appId?: string;
+  issuedSecret: string | null;
+  onSecretAvailable: (secret: string | null) => void;
   deploymentType: DeploymentType;
   deploymentTypeLabel: string;
   description: string;
@@ -31,6 +33,8 @@ interface InputStepProps {
 
 export function InputStep({
   appId,
+  issuedSecret,
+  onSecretAvailable,
   deploymentType,
   deploymentTypeLabel,
   description,
@@ -68,7 +72,11 @@ export function InputStep({
 
       <div className="max-h-[65vh] space-y-6 overflow-y-auto p-6">
         {requiresAppAuthSecret && appId && (
-          <AppAuthSecretControl appId={appId} />
+          <AppAuthSecretControl
+            appId={appId}
+            issuedSecret={issuedSecret}
+            onSecretAvailable={onSecretAvailable}
+          />
         )}
 
         <div>

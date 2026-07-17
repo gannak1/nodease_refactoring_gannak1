@@ -129,6 +129,29 @@ describe('AppAuthSecretControl', () => {
     );
   });
 
+  it('keeps a parent-owned one-time secret when the control remounts', async () => {
+    const onSecretAvailable = vi.fn();
+    mockedAppApi.getAuthSecretStatus.mockResolvedValue({
+      configured: true,
+      version: 1,
+      rotation_enabled: true,
+      rotated_at: '2026-07-17T03:00:00Z',
+      previous_grace_active: false,
+      previous_valid_until: null,
+    });
+
+    render(
+      <AppAuthSecretControl
+        appId="app-1"
+        issuedSecret="one-time-secret"
+        onSecretAvailable={onSecretAvailable}
+      />,
+    );
+
+    expect(await screen.findByDisplayValue('one-time-secret')).toBeVisible();
+    expect(onSecretAvailable).not.toHaveBeenCalledWith(null);
+  });
+
   it('does not automatically retry a failed rotation', async () => {
     mockedAppApi.getAuthSecretStatus
       .mockResolvedValueOnce({

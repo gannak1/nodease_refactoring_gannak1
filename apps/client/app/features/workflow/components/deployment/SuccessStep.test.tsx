@@ -17,6 +17,10 @@ vi.mock(
 );
 
 const writeClipboard = vi.fn();
+const secretProps = {
+  issuedSecret: null,
+  onSecretAvailable: vi.fn(),
+};
 
 beforeEach(() => {
   Object.defineProperty(navigator, 'clipboard', {
@@ -34,6 +38,7 @@ describe('SuccessStep', () => {
   it('keeps the webhook secret out of the URL and requires header authentication', () => {
     render(
       <SuccessStep
+        {...secretProps}
         deploymentType="webhook"
         onClose={vi.fn()}
         result={{
@@ -62,6 +67,7 @@ describe('SuccessStep', () => {
   it('shows a non-blocking preflight warning after a successful deployment', () => {
     render(
       <SuccessStep
+        {...secretProps}
         deploymentType="api"
         onClose={vi.fn()}
         result={{
@@ -84,6 +90,7 @@ describe('SuccessStep', () => {
   it('public chatbot shows only the anonymous public link', () => {
     render(
       <SuccessStep
+        {...secretProps}
         deploymentType="chatbot"
         onClose={vi.fn()}
         result={{
@@ -112,6 +119,7 @@ describe('SuccessStep', () => {
   it('shows iframe code and the authoritative parent origins only when enabled', () => {
     render(
       <SuccessStep
+        {...secretProps}
         deploymentType="chatbot"
         onClose={vi.fn()}
         result={{
@@ -141,6 +149,7 @@ describe('SuccessStep', () => {
   it('keeps a disabled widget limited to its direct link', () => {
     render(
       <SuccessStep
+        {...secretProps}
         deploymentType="widget"
         onClose={vi.fn()}
         result={{
@@ -162,6 +171,7 @@ describe('SuccessStep', () => {
   it('internal chatbot shows only the authenticated run link', () => {
     render(
       <SuccessStep
+        {...secretProps}
         deploymentType="internal_chatbot"
         onClose={vi.fn()}
         result={{

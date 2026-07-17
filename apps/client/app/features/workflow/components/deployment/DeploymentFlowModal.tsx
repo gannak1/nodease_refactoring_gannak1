@@ -43,6 +43,7 @@ export function DeploymentFlowModal({
   const [description, setDescription] = useState('');
   const [deploymentResult, setDeploymentResult] =
     useState<DeploymentResult | null>(null);
+  const [issuedSecret, setIssuedSecret] = useState<string | null>(null);
   const [isDeploying, setIsDeploying] = useState(false);
   const [embeddingEnabled, setEmbeddingEnabled] = useState(false);
   const [parentOrigins, setParentOrigins] = useState<string[]>(['']);
@@ -55,6 +56,10 @@ export function DeploymentFlowModal({
     });
   const [browserAccessPolicy, setBrowserAccessPolicy] =
     useState<DeploymentBrowserAccessPolicy>();
+
+  useEffect(() => {
+    setIssuedSecret(null);
+  }, [appId, isOpen]);
 
   // Reset state when modal opens
   useEffect(() => {
@@ -211,6 +216,8 @@ export function DeploymentFlowModal({
           {currentStep === 'input' && (
             <InputStep
               appId={appId}
+              issuedSecret={issuedSecret}
+              onSecretAvailable={setIssuedSecret}
               deploymentType={deploymentType}
               deploymentTypeLabel={getDeploymentTypeName()}
               description={description}
@@ -263,6 +270,8 @@ export function DeploymentFlowModal({
             <SuccessStep
               result={deploymentResult}
               deploymentType={deploymentType}
+              issuedSecret={issuedSecret}
+              onSecretAvailable={setIssuedSecret}
               onClose={onClose}
             />
           )}

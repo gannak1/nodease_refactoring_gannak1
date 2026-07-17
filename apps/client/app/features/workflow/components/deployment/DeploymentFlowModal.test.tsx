@@ -4,8 +4,25 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DeploymentFlowModal } from './DeploymentFlowModal';
 
 vi.mock('@/app/features/app/components/AppAuthSecretControl', () => ({
-  AppAuthSecretControl: ({ appId }: { appId: string }) => (
-    <div>Secret 발급 준비: {appId}</div>
+  AppAuthSecretControl: ({
+    appId,
+    issuedSecret,
+    onSecretAvailable,
+  }: {
+    appId: string;
+    issuedSecret?: string | null;
+    onSecretAvailable?: (secret: string | null) => void;
+  }) => (
+    <div>
+      <span>Secret 발급 준비: {appId}</span>
+      <span>현재 Secret: {issuedSecret || '없음'}</span>
+      <button
+        type="button"
+        onClick={() => onSecretAvailable?.('one-time-secret')}
+      >
+        Secret 발급
+      </button>
+    </div>
   ),
 }));
 
@@ -50,5 +67,41 @@ describe('DeploymentFlowModal', () => {
         monthly_validation_budget_usd: 4.5,
       }),
     );
+  });
+
+  it('preserves a one-time App secret through deployment steps in memory', async () => {
+    const onDeploy = vi.fn().mockResolvedValue({
+      success: true,
+      appId: 'app-1',
+      version: 1,
+      url_slug: 'demo-api',
+    });
+
+    const renderModal = (isOpen: boolean) => (
+      <DeploymentFlowModal
+        isOpen={isOpen}
+        onClose={vi.fn()}
+        appId="app-1"
+        deploymentType="api"
+        llmNodes={[]}
+        onDeploy={onDeploy}
+      />
+    );
+    const { rerender } = render(renderModal(true));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Secret 발급' }));
+    expect(screen.getByText('현재 Secret: one-time-secret')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    fireEvent.click(screen.getByRole('button', { name: '배포하기' }));
+
+    expect(
+      await screen.findByText('현재 Secret: one-time-secret'),
+    ).toBeVisible();
+    expect(screen.getByRole('button', { name: '테스트 실행' })).toBeEnabled();
+
+    rerender(renderModal(false));
+    rerender(renderModal(true));
+    expect(await screen.findByText('현재 Secret: 없음')).toBeVisible();
   });
 });
