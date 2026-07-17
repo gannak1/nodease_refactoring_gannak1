@@ -85,6 +85,7 @@ def _document(connection_id: uuid.UUID) -> SimpleNamespace:
         chunk_overlap=50,
         meta_info={"connection_id": str(connection_id), "chunking_mode": "flat"},
         file_path=None,
+        updated_at=None,
     )
 
 
@@ -502,6 +503,15 @@ async def test_process_normalizes_owned_connection_reference(
     )
     background_process = Mock()
     ingestion_service = SimpleNamespace(process_document=background_process)
+    reference_lock = Mock()
+
+    class FakeConnectionLifecycleService:
+        def __init__(self, db):
+            assert db is db_session
+
+        def lock_owned_connection_and_document_for_reference(self, **kwargs):
+            reference_lock(**kwargs)
+
     monkeypatch.setattr(
         knowledge_endpoint,
         "_authorized_knowledge_document",
@@ -522,6 +532,11 @@ async def test_process_normalizes_owned_connection_reference(
         knowledge_endpoint,
         "IngestionService",
         Mock(return_value=ingestion_service),
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "ConnectionLifecycleService",
+        FakeConnectionLifecycleService,
     )
 
     response = await knowledge_endpoint.process_document.__wrapped__(
@@ -553,6 +568,12 @@ async def test_process_normalizes_owned_connection_reference(
     )
 
     assert response["status"] == "processing"
+    reference_lock.assert_called_once_with(
+        connection_id=connection_id,
+        owner_id=owner_id,
+        document_id=document.id,
+        expected_document_updated_at=None,
+    )
     assert document.meta_info["connection_id"] == str(connection_id)
     assert "connection_id" not in document.meta_info["db_config"]
     serialized = repr(document.meta_info)
