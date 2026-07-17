@@ -103,6 +103,36 @@ apps/gateway/.venv/Scripts/python.exe tests/evaluation/run_law_development_pilot
 
 현재 non-rerank hybrid/hierarchy branch는 similarity가 아니라 RRF score에 threshold를 적용하므로 engineering dry-run은 `threshold=0.0`으로 candidate truncation을 분리한다. 이 값은 production 권장값이나 safety abstention 정책이 아니다. Human review가 끝나지 않은 question bundle의 출력은 `exploratory_unreviewed_labels`이며, 실제 실행했다는 이유로 quality gate나 runtime default를 변경하지 않는다.
 
+### Development question AI review
+
+현재 100문항 development bundle은 두 개의 격리된 `gpt-5.6-sol` maximum-reasoning pass로 전수
+검토할 수 있다. 두 pass는 retrieval condition, rank, metric과 서로의 결과를 받지 않고 반대 question ID
+순서로 검토한다. 검토 중에는 browser, network와 외부 model API를 사용하지 않는다. 정확한 rubric과
+비노출 경계는 `ai_review_protocol.md`를 따른다.
+
+각 pass의 row-level JSONL은 ignored local evaluation-data 경로에만 둔다. 다음 명령은 두 파일의 strict
+schema, 100개 unique question ID, field-level agreement와 disagreement 목록을 검증하고 raw query나
+source text가 없는 create-only summary를 만든다.
+
+```powershell
+apps/gateway/.venv/Scripts/python.exe -m tests.evaluation.ai_review_agreement `
+  --pass-one local/evaluation-data/mba-279/ai-review/<run-id>/pass-1.jsonl `
+  --pass-two local/evaluation-data/mba-279/ai-review/<run-id>/pass-2.jsonl `
+  --protocol tests/evaluation/ai_review_protocol.md `
+  --output local/evaluation-data/mba-279/ai-review/<run-id>/agreement.json
+```
+
+어느 review field라도 불일치하면 두 pass를 보지 않은 blind third pass로 해당 question ID만 다시
+검토한다. 최종 실행에서는 `--adjudication <adjudication.jsonl>`과
+`--final-output <final-review.json>`을 함께 지정하고 새 summary output 경로를 사용한다. Adjudication
+파일은 최초 agreement가 열거한 disagreement ID와 정확히 일치해야 한다.
+
+이 검토는 immutable question bundle을 덮어쓰거나 기존 dry-run status를 바꾸지 않는다. 두 pass의
+일치성은 machine-reviewed development evidence만 보강한다. Human-reviewed qrels, unseen holdout,
+confirmatory cluster floor와 adjudication을 대체하지 않으며 production 기본값의 승인 근거로 사용하지
+않는다. MBA-279의 sanitized aggregate 결과와 해석 경계는
+`docs/engineering/rag-flat-hierarchical-development-evaluation.md`에 기록한다.
+
 ### Chunk profile development ablation
 
 `run_chunk_profile_experiment.py`는 같은 prepared corpus, 질문, query vector, embedding model과 실제
