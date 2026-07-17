@@ -60,7 +60,7 @@ Workflow 생성과 설정 확인 단계에서는 Knowledge retrieval, Slack 전�
 
 | 영역 | 현재 제공 범위 | 공식 문서 |
 | --- | --- | --- |
-| **Workflow Builder & Runtime** | React Flow 기반 graph 편집, CAS 저장, test 실행, deployment, 수동·Schedule·Webhook·API 실행 | [Workflow](./docs/features/workflow/requirements.md) |
+| **Workflow Builder & Runtime** | React Flow 기반 graph 편집, CAS 저장, test 실행, deployment, 수동·Webhook·API 실행과 배포 profile에서 활성화한 Schedule 실행 | [Workflow](./docs/features/workflow/requirements.md) |
 | **Workflow Node** | Start부터 Gmail Draft·Mail Acknowledge까지 canonical catalog 기준 18개 실행 node | [Node Catalog ADR](./docs/decisions/ADR-0024-agent-builder-node-capability-catalog.md) |
 | **Agent Builder** | 자연어를 typed GraphMutation과 ParameterTask로 변환하고 Editor 적용·CAS 저장·acknowledgement로 연결 | [Agent Builder](./docs/features/agent-builder/requirements.md) |
 | **Organization & RBAC** | active organization, Organization/Team membership, 역할, team·user direct permission과 resource action 강제 | [Organization](./docs/features/organization/requirements.md) |
@@ -185,10 +185,23 @@ cp docker/.env.example docker/.env
 ### 2. 실행
 
 ```bash
+# 이미지를 먼저 준비합니다.
 docker compose \
   --env-file docker/.env \
   -f docker/docker-compose.yml \
-  up -d --build
+  build
+
+# Gateway와 그 의존성만 먼저 시작하고 migration·readiness 완료를 기다립니다.
+docker compose \
+  --env-file docker/.env \
+  -f docker/docker-compose.yml \
+  up -d --wait gateway
+
+# Schema가 준비된 뒤 Workflow/Log worker와 나머지 서비스를 시작합니다.
+docker compose \
+  --env-file docker/.env \
+  -f docker/docker-compose.yml \
+  up -d
 
 docker compose \
   --env-file docker/.env \
@@ -196,12 +209,15 @@ docker compose \
   ps
 ```
 
-Docker Gateway entrypoint는 시작 전에 Alembic migration을 `heads`까지 적용합니다.
+Docker Gateway entrypoint는 시작 전에 Alembic migration을 `heads`까지 적용합니다. 첫 기동에서 Gateway와 worker를 동시에 시작하면 worker의 schema readiness 검사가 migration보다 먼저 실행될 수 있으므로 위 순서를 유지합니다.
+
+> [!IMPORTANT]
+> `docker/.env.example`은 안전을 위해 `SCHEDULE_DISPATCH_MODE=disabled`를 기본값으로 사용합니다. 이 상태에서는 Schedule node를 편집·배포할 수 있어도 신규 schedule claim과 dispatch는 실행되지 않습니다. `claim` 활성화는 Gateway와 Workflow Worker의 동일 설정, migration/readiness, rollback을 함께 맞추는 coordinated rollout이므로 [Deployment 요구사항](./docs/features/deployment/requirements.md)을 확인한 뒤 적용합니다.
 
 - Web UI: [http://localhost](http://localhost)
 - API health: [http://localhost/api/v1/health](http://localhost/api/v1/health)
 
-첫 접속 후 계정을 만들고 Organization을 생성하거나 초대받은 Organization을 선택합니다. 시연용 데이터가 필요하면 일반 실행과 분리된 [Local Demo DB 절차](./docs/demo/local-demo-db.md)를 사용합니다.
+첫 접속 후 계정을 만들고 Organization을 생성하거나 초대받은 Organization을 선택합니다. Docker-only Quick Start는 demo seed를 자동 구성하지 않으며 Gateway image에도 host용 seed script가 포함되지 않습니다. 시연용 데이터가 필요하면 먼저 아래 Development 설정으로 host Python environment를 준비한 뒤 [Local Demo DB 절차](./docs/demo/local-demo-db.md)를 사용합니다.
 
 ### 3. 종료
 
@@ -230,9 +246,15 @@ Host 개발은 PostgreSQL, Redis, pgAdmin과 Sandbox를 Docker로 실행하고 C
 ```bash
 cp dev/.env.example .env
 # .env의 필수 secret과 사용할 provider 설정을 안전한 값으로 구성합니다.
+# Gateway와 worker는 host process이므로 Docker service DNS가 아닌 localhost를 사용합니다.
+REDIS_HOST=localhost
+REDIS_URL=redis://localhost:6379/0
+CELERY_BROKER_URL=redis://localhost:6379/1
 
 ./scripts/setup.sh
 ```
+
+위 Redis 값을 실제 `.env`의 기존 항목에 반영합니다. `redis://redis:6379/...`는 container 내부 DNS용이므로 host에서 실행하는 Gateway의 login limiter와 worker가 연결할 수 없습니다.
 
 ### 2. Migration
 
@@ -276,11 +298,22 @@ Demo seed는 선택 사항입니다. `Base.metadata.create_all()`은 기존 tabl
 
 먼저 변경 도메인의 관련 테스트를 실행하고, 공유 경계나 권한·schema를 변경했을 때만 범위를 넓힙니다. 전체 회귀는 필요한 경우 PR 직전에 한 번 실행합니다.
 
-전체 저장소 검증:
+`scripts/setup.sh`는 runtime dependency만 설치합니다. Backend pytest를 실행하기 전 각 test runner venv에 `dev` extra를 설치합니다.
+
+```bash
+# Linux/macOS. Windows에서는 .venv/bin/python을 .venv/Scripts/python.exe로 바꿉니다.
+apps/gateway/.venv/bin/python -m pip install -e "apps/gateway[dev]"
+apps/log_system/.venv/bin/python -m pip install -e "apps/log_system[dev]"
+apps/workflow_engine/.venv/bin/python -m pip install -e "apps/workflow_engine[dev]"
+```
+
+Backend·Shared·Workflow Engine·Log System·Sandbox pytest와 Client production build를 실행하는 공통 script:
 
 ```bash
 ./scripts/test.sh
 ```
+
+이 script의 Client 단계는 `npm run build`만 실행하며 ESLint와 Vitest는 포함하지 않습니다. Client까지 전체 검증으로 보고하려면 아래 Client 명령도 함께 실행합니다.
 
 주요 component 검증:
 
