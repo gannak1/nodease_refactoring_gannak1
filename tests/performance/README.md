@@ -10,6 +10,8 @@ PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/bin/python \
 
 결과의 `before_ms`/`after_ms`는 반복 실행 중앙값이고 `speedup`은 `before / after`다. 합성 데이터 결과이므로 운영 DB에서는 `EXPLAIN (ANALYZE, BUFFERS)`로 다시 확인한다.
 
+Audit cursor 항목은 운영 목록과 동일하게 `audit_metadata ->> 'organization_id'` 조건을 양쪽 쿼리에 적용한다. 100개 조직 중 한 조직의 행을 대상으로 90% 지점까지 이동하며, cursor도 같은 조직 범위에서 만든다. `audit_filtered_total_count`는 정확한 전체 개수 조회 비용이고 `audit_first_page_count_plus_page`는 첫 페이지의 COUNT와 목록 조회를 연속 실행한 시간이다. `audit_followup_cursor_count_skip`은 같은 후속 cursor 페이지에서 기존 `COUNT+페이지`와 개선된 `페이지 단독`을 비교한다. `audit_original_offset_vs_optimized_followup`은 최초 OFFSET 구현과 최종 cursor+COUNT 생략 구현을 비교한다. 권한 확인과 표시명 조회, HTTP 직렬화 시간은 포함하지 않는다.
+
 Trace 항목은 실제 visibility policy join 전체가 아니라 `5,000건 fetch 후 필터`와 `SQL에서 visible 20건 제한`의 조회량 차이를 단순화해 측정한다. 실제 `/api/v1/traces` 응답 시간으로 해석하지 않는다.
 
-측정 결과는 `reports/`에 실행 날짜별 JSON으로 보관한다.
+측정 결과는 `reports/`에 데이터 규모와 실행 날짜별 JSON으로 보관한다. 같은 날짜에 데이터 규모가 다르면 파일명에 `100k`처럼 행 수를 표시한다.
