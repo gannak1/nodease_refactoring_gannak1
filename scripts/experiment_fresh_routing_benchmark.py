@@ -221,6 +221,26 @@ class ExperimentClient(EnterpriseExperimentClient):
             raise RuntimeError(f"{method} {path} 응답이 object가 아닙니다.")
         return payload
 
+    def get_json_list(
+        self,
+        path: str,
+        *,
+        timeout: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """목록 응답 API를 object 전용 get_json과 구분해 읽는다."""
+        response = self.session.get(
+            f"{self.base_url}{path}",
+            timeout=timeout or self.timeout_seconds,
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"GET {path} 실패: {_safe_detail(response)}")
+        payload = response.json()
+        if not isinstance(payload, list) or not all(
+            isinstance(item, dict) for item in payload
+        ):
+            raise RuntimeError(f"GET {path} 응답이 object 목록이 아닙니다.")
+        return payload
+
 
 def _all_case_pools() -> dict[str, tuple[tuple[str, str, str], ...]]:
     combined: dict[str, tuple[tuple[str, str, str], ...]] = {}
