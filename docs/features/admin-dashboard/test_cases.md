@@ -122,6 +122,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - Given resource table에서 이름을 검색하거나 resource type을 변경했을 때, Then 일치하는 현재 organization resource만 표시되고 하나를 선택할 수 있다.
 - Given grantee table에서 team/user direct 유형을 변경하거나 이름을 검색했을 때, Then active team 또는 active organization member만 표시되고 하나를 선택할 수 있다.
 - Given modal에서 다른 resource/grantee/auth state를 선택하거나 취소했을 때, Then 바깥 page의 selected resource와 permission 목록은 바뀌지 않는다.
+- Given 권한 PUT 요청이 진행 중일 때, When 배경/X/취소/Escape로 닫기를 시도하거나 resource/grantee/auth state 입력을 조작하면, Then modal은 닫히지 않고 모든 입력은 disabled 상태를 유지한다.
 - Given resource, grantee, permission을 선택해 저장했을 때, Then 기존 단일 PUT permission endpoint를 호출하고 성공한 경우에만 modal을 닫고 selected resource permission 목록을 갱신한다.
 
 ## Unit Tests

@@ -2639,6 +2639,7 @@ function PermissionGrantModal({
   );
 
   const submitGrant = async () => {
+    if (actionPending) return;
     const success = await onGrant({
       resourceType: draftResourceType,
       resourceId: draftResourceId,
@@ -2649,19 +2650,29 @@ function PermissionGrantModal({
     if (success !== false) onClose();
   };
 
+  const requestClose = () => {
+    if (!actionPending) onClose();
+  };
+
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/45 px-4 py-6">
       <div
         className="absolute inset-0"
-        onClick={onClose}
+        onClick={requestClose}
         aria-hidden="true"
       />
       <div
         role="dialog"
         aria-modal="true"
+        aria-busy={actionPending}
         aria-label="리소스 권한 부여"
         onKeyDown={(event) => {
-          if (event.key === 'Escape') onClose();
+          if (event.key !== 'Escape') return;
+          if (actionPending) {
+            event.preventDefault();
+            return;
+          }
+          onClose();
         }}
         className="relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl"
       >
@@ -2674,9 +2685,10 @@ function PermissionGrantModal({
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
+            disabled={actionPending}
             aria-label="권한 부여 닫기"
-            className="rounded-md p-2 text-slate-500 hover:bg-slate-100"
+            className="rounded-md p-2 text-slate-500 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <X className="h-5 w-5" aria-hidden="true" />
           </button>
@@ -2702,6 +2714,7 @@ function PermissionGrantModal({
                   <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
                   <input
                     type="search"
+                    disabled={actionPending}
                     value={resourceQuery}
                     onChange={(event) => setResourceQuery(event.target.value)}
                     className="h-10 w-full rounded-md border border-slate-300 bg-white pl-9 pr-3 text-sm"
@@ -2712,6 +2725,7 @@ function PermissionGrantModal({
               <label className="flex flex-col gap-1.5 text-xs font-medium text-slate-600">
                 리소스 유형
                 <select
+                  disabled={actionPending}
                   value={draftResourceType}
                   onChange={(event) => {
                     const nextType = event.target.value as ResourceType;
@@ -2739,7 +2753,7 @@ function PermissionGrantModal({
                   ) : (
                     visibleResources.map((item) => (
                       <tr key={item.id}>
-                        <td className="px-3 py-3"><input type="radio" name="permission-resource" checked={draftResourceId === item.id} onChange={() => setDraftResourceId(item.id)} aria-label={`${item.name} 선택`} /></td>
+                        <td className="px-3 py-3"><input type="radio" name="permission-resource" disabled={actionPending} checked={draftResourceId === item.id} onChange={() => setDraftResourceId(item.id)} aria-label={`${item.name} 선택`} /></td>
                         <td className="px-3 py-3 font-medium text-blue-700">{item.name}</td>
                         <td className="px-3 py-3 text-slate-600">{resourceTypeLabel(draftResourceType)}</td>
                         <td className="px-3 py-3 text-slate-500">현재 조직에서 사용할 수 있는 리소스</td>
@@ -2765,12 +2779,12 @@ function PermissionGrantModal({
                 대상 검색
                 <span className="relative">
                   <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
-                  <input type="search" value={granteeQuery} onChange={(event) => setGranteeQuery(event.target.value)} className="h-10 w-full rounded-md border border-slate-300 bg-white pl-9 pr-3 text-sm" placeholder="팀 또는 사용자 검색" />
+                  <input type="search" disabled={actionPending} value={granteeQuery} onChange={(event) => setGranteeQuery(event.target.value)} className="h-10 w-full rounded-md border border-slate-300 bg-white pl-9 pr-3 text-sm" placeholder="팀 또는 사용자 검색" />
                 </span>
               </label>
               <label className="flex flex-col gap-1.5 text-xs font-medium text-slate-600">
                 대상 유형
-                <select value={draftGranteeType} onChange={(event) => {
+                <select disabled={actionPending} value={draftGranteeType} onChange={(event) => {
                   const nextType = event.target.value as GranteeType;
                   setDraftGranteeType(nextType);
                   setDraftGranteeId(
@@ -2794,7 +2808,7 @@ function PermissionGrantModal({
                   ) : (
                     visibleGrantees.map((item) => (
                       <tr key={item.id}>
-                        <td className="px-3 py-3"><input type="radio" name="permission-grantee" checked={draftGranteeId === item.id} onChange={() => setDraftGranteeId(item.id)} aria-label={`${item.name} 선택`} /></td>
+                        <td className="px-3 py-3"><input type="radio" name="permission-grantee" disabled={actionPending} checked={draftGranteeId === item.id} onChange={() => setDraftGranteeId(item.id)} aria-label={`${item.name} 선택`} /></td>
                         <td className="px-3 py-3 font-medium text-blue-700">{item.name}</td>
                         <td className="px-3 py-3 text-slate-600">{draftGranteeType === 'team' ? 'Team' : 'User direct'}</td>
                         <td className="px-3 py-3 text-slate-500">{item.detail}</td>
@@ -2812,7 +2826,7 @@ function PermissionGrantModal({
             <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               {RESOURCE_AUTH_STATES.map((state) => (
                 <label key={state} className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-3 text-sm ${draftAuthState === state ? 'border-blue-600 bg-blue-50 text-blue-800' : 'border-slate-300 text-slate-700'}`}>
-                  <input type="radio" name="permission-auth-state" value={state} checked={draftAuthState === state} onChange={() => setDraftAuthState(state)} />
+                  <input type="radio" name="permission-auth-state" value={state} disabled={actionPending} checked={draftAuthState === state} onChange={() => setDraftAuthState(state)} />
                   {resourcePermissionLabel(draftResourceType, state)}
                 </label>
               ))}
@@ -2825,8 +2839,8 @@ function PermissionGrantModal({
             리소스 {draftResourceId ? 1 : 0}개 · 대상 {draftGranteeId ? 1 : 0}개 · {resourcePermissionLabel(draftResourceType, draftAuthState)}
           </p>
           <div className="flex items-center gap-2">
-            <button type="button" onClick={onClose} className="h-10 rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50">취소</button>
-            <button type="button" onClick={submitGrant} disabled={actionPending || !draftResourceId || !draftGranteeId} className="h-10 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40">선택한 권한 부여</button>
+            <button type="button" onClick={requestClose} disabled={actionPending} className="h-10 rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">취소</button>
+            <button type="button" onClick={submitGrant} disabled={actionPending || !draftResourceId || !draftGranteeId} className="h-10 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40">{actionPending ? '저장 중...' : '선택한 권한 부여'}</button>
           </div>
         </div>
       </div>

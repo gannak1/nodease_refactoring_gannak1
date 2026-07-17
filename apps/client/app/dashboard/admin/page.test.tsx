@@ -331,6 +331,35 @@ describe('PermissionsTab 표 기반 권한 부여', () => {
     expect(screen.getByText('Enterprise 고객 티켓 처리')).toBeVisible();
   });
 
+  it('권한 저장 중에는 모든 닫기 경로와 선택 입력을 잠근다', () => {
+    renderPermissionsTab({ actionPending: true });
+    fireEvent.click(screen.getByRole('button', { name: '권한 부여' }));
+
+    const dialog = screen.getByRole('dialog', { name: '리소스 권한 부여' });
+    const backdrop = dialog.previousElementSibling;
+    expect(dialog).toHaveAttribute('aria-busy', 'true');
+    expect(backdrop).not.toBeNull();
+
+    fireEvent.click(backdrop!);
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: '권한 부여 닫기' }));
+    fireEvent.click(screen.getByRole('button', { name: '취소' }));
+
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '권한 부여 닫기' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '취소' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '저장 중...' })).toBeDisabled();
+    within(dialog)
+      .getAllByRole('searchbox')
+      .forEach((input) => expect(input).toBeDisabled());
+    within(dialog)
+      .getAllByRole('combobox')
+      .forEach((select) => expect(select).toBeDisabled());
+    within(dialog)
+      .getAllByRole('radio')
+      .forEach((radio) => expect(radio).toBeDisabled());
+  });
+
   it('본문 리소스 필터로 저장 없이 권한 조회 대상을 바꾼다', () => {
     const { onGrant, onSelectResource } = renderPermissionsTab();
 

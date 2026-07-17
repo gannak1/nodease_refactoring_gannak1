@@ -534,6 +534,7 @@ Verified Against: feature/mba-127 @ 258b26a9
 - Resource와 grantee는 현재 단일 PUT API 계약에 맞춰 각각 하나만 선택한다. 각 table은 이름 검색과 유형 전환을 제공하고 현재 선택을 radio로 표시한다.
 - Modal의 resource type/resource/grantee/auth state는 draft state다. 선택 또는 취소만으로 바깥 permission card의 selected resource와 permission 목록을 변경하지 않는다.
 - Grant PUT 성공 후에만 modal draft를 page selection에 반영하고, 방금 권한을 부여한 resource의 permission 목록을 조회한다. 실패하면 modal과 기존 page selection을 유지한다.
+- Grant PUT 처리 중에는 modal에 busy 상태를 표시하고 배경/X/취소/Escape 닫기와 resource/grantee/auth state 입력을 모두 비활성화한다.
 - Modal 밖의 permission card는 현재 selected resource와 기존 team/user permission 목록을 표시한다.
 - grantee type이 team이면 active team select를 사용한다.
 - grantee type이 user이면 `ActiveOrganizationMemberPicker`로 active member만 선택하게 한다.
