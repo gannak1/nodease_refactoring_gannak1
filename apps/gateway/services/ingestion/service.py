@@ -73,6 +73,12 @@ _SAFE_PREVIEW_SOURCE_REASON_CODES = frozenset(
 )
 
 
+def _pre_finalization_chunk_progress(completed: int, total: int) -> int:
+    safe_total = max(1, int(total))
+    safe_completed = max(0, min(int(completed), safe_total))
+    return min(99, 80 + int((safe_completed / safe_total) * 20))
+
+
 class IngestionPreviewSourceError(ValueError):
     """Carry only a safe processor reason across the preview service boundary."""
 
@@ -1569,7 +1575,7 @@ class IngestionOrchestrator:
         for i, chunk in enumerate(chunks):
             # 10개마다 진행률 업데이트 (나머지 20% 비중)
             if (i + 1) % 10 == 0 or (i + 1) == len(chunks):
-                progress = 80 + int(((i + 1) / len(chunks)) * 20)
+                progress = _pre_finalization_chunk_progress(i + 1, len(chunks))
                 # Redis에 진행률 저장
                 self._update_progress_redis(doc.id, progress)
 

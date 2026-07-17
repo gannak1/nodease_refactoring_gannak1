@@ -241,6 +241,21 @@ class SqlAlchemyDocumentIngestionRepository:
     def lock_worker_job(
         self, job_id: uuid.UUID
     ) -> WorkerDocumentIngestionJob | None:
+        self._locked_worker_job = None
+        candidate = (
+            self.db.query(
+                KnowledgeDocumentIngestionJob.knowledge_base_id,
+                KnowledgeDocumentIngestionJob.document_id,
+            )
+            .filter(KnowledgeDocumentIngestionJob.id == job_id)
+            .one_or_none()
+        )
+        if candidate is None or not self._lock_worker_scope_rows(
+            knowledge_base_id=candidate.knowledge_base_id,
+            document_id=candidate.document_id,
+            skip_locked=False,
+        ):
+            return None
         row = (
             self.db.query(KnowledgeDocumentIngestionJob)
             .filter(KnowledgeDocumentIngestionJob.id == job_id)
@@ -283,6 +298,27 @@ class SqlAlchemyDocumentIngestionRepository:
         owner_token: str,
         fencing_token: str,
     ) -> WorkerDocumentIngestionJob | None:
+        self._locked_worker_job = None
+        candidate = (
+            self.db.query(
+                KnowledgeDocumentIngestionJob.knowledge_base_id,
+                KnowledgeDocumentIngestionJob.document_id,
+            )
+            .filter(
+                KnowledgeDocumentIngestionJob.id == job_id,
+                KnowledgeDocumentIngestionJob.status == "running",
+                KnowledgeDocumentIngestionJob.owner_token == owner_token,
+                KnowledgeDocumentIngestionJob.fencing_token == fencing_token,
+                KnowledgeDocumentIngestionJob.lease_expires_at > func.now(),
+            )
+            .one_or_none()
+        )
+        if candidate is None or not self._lock_worker_scope_rows(
+            knowledge_base_id=candidate.knowledge_base_id,
+            document_id=candidate.document_id,
+            skip_locked=False,
+        ):
+            return None
         row = (
             self.db.query(KnowledgeDocumentIngestionJob)
             .filter(
@@ -473,21 +509,12 @@ class SqlAlchemyDocumentIngestionRepository:
             if len(recoveries) >= limit:
                 break
 
-            # All document-ingestion writers use KB -> Document -> job lock order.
-            if candidate.knowledge_base_id is not None:
-                (
-                    self.db.query(KnowledgeBase.id)
-                    .filter(KnowledgeBase.id == candidate.knowledge_base_id)
-                    .with_for_update()
-                    .one_or_none()
-                )
-            if candidate.document_id is not None:
-                (
-                    self.db.query(Document.id)
-                    .filter(Document.id == candidate.document_id)
-                    .with_for_update()
-                    .one_or_none()
-                )
+            if not self._lock_worker_scope_rows(
+                knowledge_base_id=candidate.knowledge_base_id,
+                document_id=candidate.document_id,
+                skip_locked=True,
+            ):
+                continue
             row = (
                 self.db.query(KnowledgeDocumentIngestionJob)
                 .filter(KnowledgeDocumentIngestionJob.id == candidate.id)
@@ -594,7 +621,9 @@ class SqlAlchemyDocumentIngestionRepository:
     ) -> None:
         if job.document_id is None:
             return
-        document = self.db.get(Document, job.document_id)
+        document = self._locked_documents.get(job.document_id)
+        if document is None:
+            document = self.db.get(Document, job.document_id)
         if document is None:
             return
         meta_info = dict(document.meta_info or {})
@@ -607,6 +636,39 @@ class SqlAlchemyDocumentIngestionRepository:
         document.status = status
         document.error_message = error_message
         document.updated_at = now
+
+    def _lock_worker_scope_rows(
+        self,
+        *,
+        knowledge_base_id: uuid.UUID | None,
+        document_id: uuid.UUID | None,
+        skip_locked: bool,
+    ) -> bool:
+        if knowledge_base_id is not None:
+            knowledge_base = (
+                self.db.query(KnowledgeBase)
+                .filter(KnowledgeBase.id == knowledge_base_id)
+                .with_for_update(skip_locked=skip_locked)
+                .one_or_none()
+            )
+            if knowledge_base is None:
+                return False
+            self._locked_knowledge_base = knowledge_base
+
+        if document_id is not None:
+            document_query = self.db.query(Document).filter(Document.id == document_id)
+            if knowledge_base_id is not None:
+                document_query = document_query.filter(
+                    Document.knowledge_base_id == knowledge_base_id
+                )
+            document = (
+                document_query.with_for_update(skip_locked=skip_locked).one_or_none()
+            )
+            if document is None:
+                return False
+            self._locked_document = document
+            self._locked_documents[document.id] = document
+        return True
 
     @staticmethod
     def _recovery_due_filter(now: datetime):

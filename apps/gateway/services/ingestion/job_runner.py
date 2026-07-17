@@ -37,9 +37,17 @@ from apps.shared.domain.knowledge_document_ingestion import (
 from apps.shared.services.knowledge_ingestion_finalizer import (
     KnowledgeIngestionFinalizationError,
 )
+from apps.shared.services.egress_guard import EgressGuardError
 
 
 logger = logging.getLogger(__name__)
+_TRANSIENT_EGRESS_REASON_CODES = frozenset(
+    {
+        "egress.connection_failed",
+        "egress.dns_resolution_failed",
+        "egress.timeout",
+    }
+)
 
 
 class KnowledgeDocumentIngestionJobRunner:
@@ -154,6 +162,14 @@ class KnowledgeDocumentIngestionJobRunner:
             except (OperationalError, TimeoutError, ConnectionError) as exc:
                 raise DocumentIngestionRetryableFailure(
                     "ingestion.source_temporarily_unavailable"
+                ) from exc
+            except EgressGuardError as exc:
+                if exc.reason_code in _TRANSIENT_EGRESS_REASON_CODES:
+                    raise DocumentIngestionRetryableFailure(
+                        "ingestion.source_temporarily_unavailable"
+                    ) from exc
+                raise DocumentIngestionPermanentFailure(
+                    "ingestion.processing_failed"
                 ) from exc
             except (
                 DocumentIngestionCancelled,

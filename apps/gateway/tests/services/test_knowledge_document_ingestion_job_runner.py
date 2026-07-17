@@ -5,6 +5,7 @@ import pytest
 from billiard.exceptions import SoftTimeLimitExceeded
 
 from apps.gateway.application.knowledge_document_ingestion.worker import (
+    DocumentIngestionPermanentFailure,
     DocumentIngestionRetryableFailure,
     WorkerDocumentIngestionJob,
 )
@@ -14,6 +15,7 @@ from apps.gateway.services.ingestion.job_runner import (
 )
 from apps.gateway.services.ingestion.service import DurableIngestionSourceFailure
 from apps.shared.db.models.knowledge import Document, KnowledgeBase
+from apps.shared.services.egress_guard import EgressGuardError
 
 
 class FakeSession:
@@ -31,6 +33,26 @@ class FakeSession:
 
     def close(self):
         self.closed = True
+
+
+def _worker_job(organization_id, knowledge_base_id, document_id):
+    return WorkerDocumentIngestionJob(
+        job_id=uuid4(),
+        organization_id=organization_id,
+        knowledge_base_id=knowledge_base_id,
+        document_id=document_id,
+        requested_by_user_id=uuid4(),
+        operation="process",
+        generation=1,
+        status="running",
+        attempt_count=1,
+        max_attempts=3,
+        retryable=True,
+        owner_token="owner-token",
+        fencing_token="fencing-token",
+        lease_expires_at=None,
+        next_retry_at=None,
+    )
 
 
 def test_soft_time_limit_is_retryable_timeout(monkeypatch) -> None:
@@ -143,3 +165,68 @@ def test_temporary_source_failure_is_retryable(monkeypatch) -> None:
         ).run(job)
 
     assert raised.value.reason_code == "ingestion.source_temporarily_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("egress_reason", "expected_exception", "expected_reason"),
+    [
+        (
+            "egress.timeout",
+            DocumentIngestionRetryableFailure,
+            "ingestion.source_temporarily_unavailable",
+        ),
+        (
+            "egress.connection_failed",
+            DocumentIngestionRetryableFailure,
+            "ingestion.source_temporarily_unavailable",
+        ),
+        (
+            "egress.dns_resolution_failed",
+            DocumentIngestionRetryableFailure,
+            "ingestion.source_temporarily_unavailable",
+        ),
+        (
+            "egress.private_target",
+            DocumentIngestionPermanentFailure,
+            "ingestion.processing_failed",
+        ),
+    ],
+)
+def test_file_egress_failure_uses_safe_retry_allowlist(
+    monkeypatch,
+    egress_reason,
+    expected_exception,
+    expected_reason,
+) -> None:
+    organization_id = uuid4()
+    knowledge_base_id = uuid4()
+    document_id = uuid4()
+    document = SimpleNamespace(
+        id=document_id,
+        knowledge_base_id=knowledge_base_id,
+        chunk_size=800,
+        chunk_overlap=80,
+    )
+    knowledge_base = SimpleNamespace(
+        id=knowledge_base_id,
+        organization_id=organization_id,
+        lifecycle_state="active",
+        sync_state="active",
+        embedding_model="text-embedding-3-small",
+    )
+
+    monkeypatch.setattr(
+        job_runner.IngestionOrchestrator,
+        "process_document_for_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            EgressGuardError(egress_reason)
+        ),
+    )
+
+    with pytest.raises(expected_exception) as raised:
+        KnowledgeDocumentIngestionJobRunner(
+            lambda: FakeSession(document, knowledge_base),
+            heartbeat_seconds=60,
+        ).run(_worker_job(organization_id, knowledge_base_id, document_id))
+
+    assert raised.value.reason_code == expected_reason

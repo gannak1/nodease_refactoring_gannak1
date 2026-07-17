@@ -6,6 +6,7 @@ from apps.gateway.services.ingestion.service import (
     DurableIngestionLeaseLost,
     DurableIngestionSourceFailure,
     IngestionOrchestrator,
+    _pre_finalization_chunk_progress,
 )
 from apps.shared.db.models.knowledge import Document, KnowledgeBase
 from apps.shared.services.ingestion.processors.base import ProcessingResult
@@ -149,6 +150,18 @@ def test_post_commit_completion_only_publishes_advisory_redis_progress(
     )
 
     assert redis_calls == [("knowledge_progress:document-id", "100", 30)]
+
+
+@pytest.mark.parametrize(
+    ("completed", "total", "expected"),
+    [(0, 10, 80), (5, 10, 90), (10, 10, 99), (20, 10, 99)],
+)
+def test_chunk_progress_never_reports_completion_before_finalization(
+    completed: int,
+    total: int,
+    expected: int,
+) -> None:
+    assert _pre_finalization_chunk_progress(completed, total) == expected
 
 
 def test_processor_reason_is_normalized_to_typed_durable_source_failure(

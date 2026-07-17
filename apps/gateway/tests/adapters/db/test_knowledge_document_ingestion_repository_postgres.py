@@ -402,46 +402,44 @@ def test_postgres_expired_lease_cannot_heartbeat_or_finalize(
         db.close()
 
 
-def test_postgres_recovery_uses_document_before_job_lock_order(
+def test_postgres_recovery_skips_locked_scope_and_processes_later_job(
     postgres_engine,
 ) -> None:
-    scope = _seed_scope(postgres_engine)
-    _, _, knowledge_base_id, document_id = scope
+    locked_scope = _seed_scope(postgres_engine)
+    ready_scope = _seed_scope(postgres_engine)
+    _, _, locked_knowledge_base_id, locked_document_id = locked_scope
     session_factory = sessionmaker(bind=postgres_engine, expire_on_commit=False)
     seed = session_factory()
-    job = _job(scope, status="running", expired=True)
-    seed.add(job)
+    locked_job = _job(locked_scope, status="running", expired=True)
+    ready_job = _job(ready_scope)
+    locked_job.requested_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    seed.add_all([locked_job, ready_job])
     seed.commit()
-    job_id = job.id
+    locked_job_id = locked_job.id
+    ready_job_id = ready_job.id
     seed.close()
 
-    document_locked = threading.Event()
-    release_finalizer = threading.Event()
+    locker = session_factory()
+    locked_knowledge_base = locker.query(KnowledgeBase).filter(
+        KnowledgeBase.id == locked_knowledge_base_id
+    ).with_for_update().one()
+    locked_document = locker.query(Document).filter(
+        Document.id == locked_document_id
+    ).with_for_update().one()
+    assert locked_knowledge_base.id == locked_knowledge_base_id
+    assert locked_document.id == locked_document_id
 
-    def finalize_expired_owner() -> bool:
-        db = session_factory()
-        try:
-            db.query(KnowledgeBase).filter(
-                KnowledgeBase.id == knowledge_base_id
-            ).with_for_update().one()
-            db.query(Document).filter(Document.id == document_id).with_for_update().one()
-            document_locked.set()
-            assert release_finalizer.wait(timeout=5)
-            repository = SqlAlchemyDocumentIngestionRepository(db)
-            result = repository.mark_succeeded(
-                job_id,
-                owner_token="owner",
-                fencing_token="fence",
-                result_document_version_id=None,
-                now=repository.database_now(),
-            )
-            db.commit()
-            return result
-        finally:
-            db.close()
+    probe = session_factory()
+    try:
+        with pytest.raises(OperationalError):
+            probe.query(KnowledgeBase).filter(
+                KnowledgeBase.id == locked_knowledge_base_id
+            ).with_for_update(nowait=True).one()
+        probe.rollback()
+    finally:
+        probe.close()
 
-    def recover_expired_owner():
-        assert document_locked.wait(timeout=5)
+    def recover_due_jobs():
         db = session_factory()
         try:
             repository = SqlAlchemyDocumentIngestionRepository(db)
@@ -454,13 +452,139 @@ def test_postgres_recovery_uses_document_before_job_lock_order(
         finally:
             db.close()
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        finalizer = executor.submit(finalize_expired_owner)
-        assert document_locked.wait(timeout=5)
-        recovery = executor.submit(recover_expired_owner)
-        threading.Event().wait(0.2)
-        release_finalizer.set()
-        assert finalizer.result(timeout=5) is False
-        recovered = recovery.result(timeout=5)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            recovered = executor.submit(recover_due_jobs).result(timeout=3)
+        recovered_ids = [item.job_id for item in recovered]
+        assert ready_job_id in recovered_ids
+        assert locked_job_id not in recovered_ids
+    finally:
+        locker.rollback()
+        locker.close()
 
-    assert job_id in [item.job_id for item in recovered]
+    recovered_after_unlock = recover_due_jobs()
+    assert locked_job_id in [item.job_id for item in recovered_after_unlock]
+
+
+def test_postgres_failure_transition_uses_scope_before_job_lock_order(
+    postgres_engine,
+) -> None:
+    scope = _seed_scope(postgres_engine)
+    _, organization_id, knowledge_base_id, document_id = scope
+    session_factory = sessionmaker(bind=postgres_engine, expire_on_commit=False)
+    seed = session_factory()
+    job = _job(scope, status="running")
+    seed.add(job)
+    seed.commit()
+    job_id = job.id
+    seed.close()
+
+    scope_locked = threading.Event()
+    allow_admission_job_lock = threading.Event()
+
+    def admission_lock_then_job() -> None:
+        db = session_factory()
+        try:
+            repository = SqlAlchemyDocumentIngestionRepository(db)
+            assert repository.lock_document_scope(
+                organization_id,
+                knowledge_base_id,
+                document_id,
+            ) is not None
+            scope_locked.set()
+            assert allow_admission_job_lock.wait(timeout=5)
+            assert repository.find_active_job(document_id) is not None
+            db.commit()
+        finally:
+            db.close()
+
+    def transition_failure() -> None:
+        assert scope_locked.wait(timeout=5)
+        db = session_factory()
+        try:
+            repository = SqlAlchemyDocumentIngestionRepository(db)
+            locked = repository.lock_owned_worker_job(
+                job_id,
+                owner_token="owner",
+                fencing_token="fence",
+            )
+            assert locked is not None
+            now = repository.database_now()
+            repository.mark_retry_scheduled(
+                locked,
+                now=now,
+                next_retry_at=now + timedelta(minutes=1),
+                reason_code="ingestion.source_temporarily_unavailable",
+            )
+            db.commit()
+        finally:
+            db.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        admission = executor.submit(admission_lock_then_job)
+        assert scope_locked.wait(timeout=5)
+        failure = executor.submit(transition_failure)
+        threading.Event().wait(0.2)
+        allow_admission_job_lock.set()
+        admission.result(timeout=5)
+        failure.result(timeout=5)
+
+    verify = session_factory()
+    try:
+        persisted = verify.get(KnowledgeDocumentIngestionJob, job_id)
+        assert persisted is not None
+        assert persisted.status == "retry_scheduled"
+    finally:
+        verify.close()
+
+
+def test_postgres_worker_claim_uses_scope_before_job_lock_order(
+    postgres_engine,
+) -> None:
+    scope = _seed_scope(postgres_engine)
+    _, organization_id, knowledge_base_id, document_id = scope
+    session_factory = sessionmaker(bind=postgres_engine, expire_on_commit=False)
+    seed = session_factory()
+    job = _job(scope)
+    seed.add(job)
+    seed.commit()
+    job_id = job.id
+    seed.close()
+
+    scope_locked = threading.Event()
+    allow_admission_job_lock = threading.Event()
+
+    def admission_lock_then_job() -> None:
+        db = session_factory()
+        try:
+            repository = SqlAlchemyDocumentIngestionRepository(db)
+            assert repository.lock_document_scope(
+                organization_id,
+                knowledge_base_id,
+                document_id,
+            ) is not None
+            scope_locked.set()
+            assert allow_admission_job_lock.wait(timeout=5)
+            assert repository.find_active_job(document_id) is not None
+            db.commit()
+        finally:
+            db.close()
+
+    def claim_worker_job() -> None:
+        assert scope_locked.wait(timeout=5)
+        db = session_factory()
+        try:
+            repository = SqlAlchemyDocumentIngestionRepository(db)
+            assert repository.lock_worker_job(job_id) is not None
+            db.commit()
+        finally:
+            db.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        admission = executor.submit(admission_lock_then_job)
+        assert scope_locked.wait(timeout=5)
+        claim = executor.submit(claim_worker_job)
+        threading.Event().wait(0.2)
+        allow_admission_job_lock.set()
+        admission.result(timeout=5)
+        claim.result(timeout=5)
