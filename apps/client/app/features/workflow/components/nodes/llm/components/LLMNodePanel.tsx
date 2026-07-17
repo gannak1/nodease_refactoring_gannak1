@@ -401,8 +401,12 @@ export function LLMNodePanel({
       policyVersion:
         policy?.policy_version || legacyPolicy?.policy_version || '정책 없음',
       reasonCode: activePolicy
-        ? activePolicy.strategy_id === 'bootstrap_mdeberta_difficulty_v1'
-          ? '작업 지문과 안전한 표본으로 난이도를 분류해 모델을 선택합니다.'
+        ? activePolicy.strategy_id === 'bootstrap_request_complexity_v3'
+          ? '현재 요청과 변수 치환된 프롬프트의 난이도 점수로 모델을 선택합니다.'
+          : activePolicy.strategy_id === 'bootstrap_task_complexity_v2'
+            ? '이전 정책은 노드 전체의 고정 난이도로 모델을 선택합니다. 새 기준을 만들면 요청별 난이도 점수로 전환됩니다.'
+          : activePolicy.strategy_id === 'bootstrap_mdeberta_difficulty_v1'
+            ? '이전 정책의 난이도 분류 결과를 사용 중입니다. 새 기준을 다시 만들면 작업 난이도 프로필로 전환됩니다.'
           : '모델 사전 지식과 운영 통계로 입력 길이별 정책을 계산합니다.'
         : '정책 대기 중',
       runsSinceLastRefresh,
@@ -434,8 +438,18 @@ export function LLMNodePanel({
     () => persistedRoutingPolicy?.active_policy?.difficulty_models ?? {},
     [persistedRoutingPolicy?.active_policy?.difficulty_models],
   );
+  const bootstrapTaskComplexityProfile = useMemo(
+    () => persistedRoutingPolicy?.active_policy?.task_complexity_profile ?? null,
+    [persistedRoutingPolicy?.active_policy?.task_complexity_profile],
+  );
   const isBootstrapRouting =
+    data.model_routing_strategy === 'bootstrap_request_complexity_v3' ||
+    data.model_routing_strategy === 'bootstrap_task_complexity_v2' ||
     data.model_routing_strategy === 'bootstrap_mdeberta_difficulty_v1' ||
+    persistedRoutingPolicy?.active_policy?.strategy_id ===
+      'bootstrap_request_complexity_v3' ||
+    persistedRoutingPolicy?.active_policy?.strategy_id ===
+      'bootstrap_task_complexity_v2' ||
     persistedRoutingPolicy?.active_policy?.strategy_id ===
       'bootstrap_mdeberta_difficulty_v1';
   const isRoutingBootstrapGenerating = routingBootstrap?.status === 'generating';
@@ -1404,12 +1418,32 @@ export function LLMNodePanel({
                       className="order-1 mt-3 rounded-lg border border-violet-200 bg-violet-50/40 p-3"
                     >
                       <div className="text-xs font-semibold text-violet-950">
-                        난이도별 초기 선택 모델
+                        요청 난이도 분류기
                       </div>
                       <p className="mt-1 text-[11px] leading-relaxed text-violet-800">
-                        실행 중에는 평가용 LLM을 호출하지 않습니다. 분류 신뢰도가 낮으면
-                        위 기본 모델을 사용합니다.
+                        요청 주제 키워드를 고정 분류하지 않습니다. 실행마다 변수 치환된 프롬프트와
+                        들어온 요청을 읽어 난이도 점수를 계산한 뒤 후보 모델을 비교합니다.
                       </p>
+                      {bootstrapTaskComplexityProfile ? (
+                        <div className="mt-3 rounded border border-violet-100 bg-white px-3 py-2 text-[11px] text-violet-900">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="font-semibold">초기 작업 계약 분석</span>
+                            <span className="font-mono font-semibold">
+                              {bootstrapTaskComplexityProfile.score ?? '-'} / 100 ·{' '}
+                              {bootstrapTaskComplexityProfile.tier === 'economy'
+                                ? '경제형'
+                                : bootstrapTaskComplexityProfile.tier === 'advanced'
+                                  ? '고성능형'
+                                  : '균형형'}
+                            </span>
+                          </div>
+                          {bootstrapTaskComplexityProfile.reason ? (
+                            <p className="mt-1 leading-relaxed text-violet-800">
+                              {bootstrapTaskComplexityProfile.reason}
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
                       {Object.keys(bootstrapDifficultyModels).length === 0 ? (
                         <div className="mt-3 rounded border border-dashed border-violet-200 bg-white px-3 py-2 text-[11px] text-violet-800">
                           기준 생성 또는 배포 후 정책이 준비되면 난이도별 모델을 표시합니다.

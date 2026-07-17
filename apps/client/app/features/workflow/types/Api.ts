@@ -281,15 +281,29 @@ export interface ModelRoutingPolicyResponse {
     strategy_id?: string;
     default_model_id?: string;
     fallback_model_id?: string | null;
-    classifier_artifact?: {
-      version?: string;
-      classifier_type?: string;
-      [key: string]: unknown;
+    task_complexity_profile?: {
+      kind?: string;
+      score?: number;
+      tier?: 'economy' | 'balanced' | 'advanced';
+      reasoning_depth?: number;
+      instruction_complexity?: number;
+      schema_precision?: number;
+      context_synthesis?: number;
+      grounding_requirement?: number;
+      output_generation_demand?: number;
+      ambiguity?: number;
+      reason?: string;
     };
+    classifier_artifact?: {
+      kind?: string;
+      version?: string;
+      tier_sample_counts?: Partial<Record<'economy' | 'balanced' | 'advanced', number>>;
+    };
+    minimum_confidence?: number;
+    generalization_validation?: Record<string, unknown>;
     difficulty_models?: Partial<
       Record<'economy' | 'balanced' | 'advanced', string>
     >;
-    minimum_confidence?: number;
     decision_profiles?: Array<{
       profile: 'short' | 'medium' | 'long' | string;
       selected_model_id: string;

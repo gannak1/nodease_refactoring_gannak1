@@ -126,8 +126,6 @@ const runDetail = (
       },
       trace_metadata: {
         selected_model: model,
-        semantic_route_label:
-          id === 'baseline-run' ? '고위험 문의' : '일반 문의',
         matched_rule_id: id === 'baseline-run' ? 'high-risk' : 'general',
         policy_version: id === 'baseline-run' ? 'policy-v1' : 'policy-v2',
         policy_source: 'active_deployment',

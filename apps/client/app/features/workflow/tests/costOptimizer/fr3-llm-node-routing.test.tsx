@@ -419,16 +419,29 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     ).toBe('bootstrap-1');
   });
 
-  it('bootstrap 정책은 난이도별 초기 선택 모델을 보여준다', async () => {
+  it('bootstrap 정책은 요청별 난이도 분류기와 후보 모델을 보여준다', async () => {
     workflowApiMock.getModelRoutingPolicy.mockResolvedValueOnce({
       enabled: true,
       status: 'active',
       policy_id: 'policy-bootstrap',
       policy_version: 'bootstrap-12345678',
       active_policy: {
-        strategy_id: 'bootstrap_mdeberta_difficulty_v1',
+        strategy_id: 'bootstrap_request_complexity_v3',
         default_model_id: 'gpt-4.1-mini',
         fallback_model_id: 'gpt-4.1',
+        task_complexity_profile: {
+          kind: 'planner_task_complexity_v1',
+          score: 78,
+          tier: 'advanced',
+          reasoning_depth: 4,
+          instruction_complexity: 4,
+          schema_precision: 5,
+          context_synthesis: 3,
+          grounding_requirement: 3,
+          output_generation_demand: 2,
+          ambiguity: 2,
+          reason: '복수 조건과 엄격한 JSON 계약을 함께 만족해야 합니다.',
+        },
         difficulty_models: {
           economy: 'gpt-4o-mini',
           balanced: 'gpt-4.1-mini',
@@ -448,7 +461,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     });
     const node = createLlmNode({
       auto_model_routing: true,
-      model_routing_strategy: 'bootstrap_mdeberta_difficulty_v1',
+      model_routing_strategy: 'bootstrap_request_complexity_v3',
     });
     useWorkflowStore.setState(
       { ...useWorkflowStore.getState(), nodes: [node] },
@@ -459,6 +472,14 @@ describe('FR-003 LLM node model routing optimization entry', () => {
 
     expect(
       await screen.findByTestId('routing-bootstrap-policy'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('요청 난이도 분류기')).toBeInTheDocument();
+    expect(
+      screen.getByText('초기 작업 계약 분석'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('78 / 100 · 고성능형')).toBeInTheDocument();
+    expect(
+      screen.getByText('복수 조건과 엄격한 JSON 계약을 함께 만족해야 합니다.'),
     ).toBeInTheDocument();
     expect(screen.getByText('경제형 요청')).toBeInTheDocument();
     expect(screen.getByText('균형형 요청')).toBeInTheDocument();

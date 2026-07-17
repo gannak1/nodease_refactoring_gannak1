@@ -62,14 +62,17 @@ vi.mock('../store/useWorkflowStore', () => {
               fallback_from_model: 'gpt-5.6-luna',
               fallback_reason_code: 'provider_call_failed',
               decision_source: 'active_policy',
-              reason_code: 'quality_gate_passed_cost_reduction',
-              semantic_candidate_label: '단순 사용 안내',
-              semantic_similarity: 0.61,
-              semantic_threshold: 0.75,
-              semantic_match_status: 'no_match',
+              strategy_id: 'bootstrap_task_complexity_v2',
+              reason_code: 'bootstrap_task_complexity_balanced',
               judge_called: false,
               policy_source: 'active_deployment',
               included_in_policy_learning: false,
+              runtime_context: {
+                input_length_bucket: 'medium',
+                output_format: 'json',
+                schema_required: true,
+                knowledge_enabled: false,
+              },
             },
           },
         },
@@ -136,8 +139,12 @@ describe('TestSidebar node execution details', () => {
       ),
     ).toBeVisible();
     expect(screen.getByText('배포 정책 기준 테스트')).toBeVisible();
-    expect(screen.getByText('단순 사용 안내')).toBeVisible();
-    expect(screen.getByText('기준 미달로 기본 모델 사용')).toBeVisible();
+    expect(screen.getByText('보통 입력')).toBeVisible();
+    expect(
+      screen.getByText(
+        '현재 작업의 복잡도와 비용·응답 속도를 함께 고려해 균형형 후보를 선택했습니다.',
+      ),
+    ).toBeVisible();
     expect(
       screen.getByText(
         (_, element) => element?.textContent === '최초 선택: gpt-5.6-luna',

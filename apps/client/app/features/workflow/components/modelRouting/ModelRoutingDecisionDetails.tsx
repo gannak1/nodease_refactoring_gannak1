@@ -19,6 +19,10 @@ type RoutingDecisionFactors = {
   expectedTotalCostUsd?: number;
   expectedLatencyMs?: number;
   priorSource?: string;
+  routingBasis?: string;
+  difficulty?: string;
+  difficultyScore?: number;
+  confidence?: number;
 };
 
 type ModelRoutingSummary = {
@@ -95,6 +99,10 @@ const decisionFactorsOf = (value: unknown): RoutingDecisionFactors => {
     expectedTotalCostUsd: numberValue(score.expected_total_cost_usd),
     expectedLatencyMs: numberValue(score.expected_latency_ms),
     priorSource: stringValue(score.prior_source),
+    routingBasis: stringValue(value.routing_basis),
+    difficulty: stringValue(value.difficulty),
+    difficultyScore: numberValue(value.difficulty_score),
+    confidence: numberValue(value.confidence),
   };
 };
 
@@ -148,6 +156,18 @@ const lengthBucketLabel = (bucket?: string): string => {
 
 const reasonText = (reasonCode?: string): string => {
   switch (reasonCode) {
+    case 'bootstrap_global_profile_economy':
+      return '이번 요청의 난이도 점수가 경제형 범위여서, 품질 기준 안에서 비용 효율이 높은 후보를 선택했습니다.';
+    case 'bootstrap_global_profile_balanced':
+      return '이번 요청의 난이도 점수가 균형형 범위여서, 품질과 비용·응답 속도를 함께 고려한 후보를 선택했습니다.';
+    case 'bootstrap_global_profile_advanced':
+      return '이번 요청의 난이도 점수가 고성능 범위여서, 더 높은 추론·정확도 요구를 만족하는 후보를 선택했습니다.';
+    case 'bootstrap_task_complexity_economy':
+      return '현재 작업은 경제형 모델로 처리할 수 있다고 판단해 비용 효율이 높은 후보를 선택했습니다.';
+    case 'bootstrap_task_complexity_balanced':
+      return '현재 작업의 복잡도와 비용·응답 속도를 함께 고려해 균형형 후보를 선택했습니다.';
+    case 'bootstrap_task_complexity_advanced':
+      return '현재 작업에는 더 높은 추론·정확도 요구가 있다고 판단해 고성능 후보를 선택했습니다.';
     case 'prior_guided_utility_selected':
       return '품질 하한을 만족한 후보 중 예상 비용과 지연 시간을 함께 비교해 선택했습니다.';
     case 'prior_guided_constraints_safe_default':
@@ -188,6 +208,10 @@ export function ModelRoutingDecisionDetails({
   if (!summary) return null;
 
   const isPriorGuided = summary.strategyId === 'prior_guided_adaptive_v1';
+  const isBootstrapTaskComplexity =
+    summary.strategyId === 'bootstrap_task_complexity_v2';
+  const isRequestComplexity =
+    summary.strategyId === 'bootstrap_request_complexity_v3';
   const isDeploymentPolicyTest =
     summary.policySource === 'active_deployment' &&
     summary.includedInPolicyLearning === false;
@@ -205,6 +229,10 @@ export function ModelRoutingDecisionDetails({
         <dt className="font-semibold text-emerald-700 dark:text-emerald-200">
           {isDeploymentPolicyTest
             ? '배포 정책 기준 테스트'
+            : isRequestComplexity
+              ? '요청 난이도 기반 자동 라우팅'
+              : isBootstrapTaskComplexity
+              ? '작업 복잡도 기반 자동 라우팅'
             : isPriorGuided
               ? '사전 지식 기반 적응형 라우팅'
               : '자동 라우팅'}
@@ -253,6 +281,32 @@ export function ModelRoutingDecisionDetails({
               근거 출처: {priorSourceText(factors.priorSource)}
             </dd>
           ) : null}
+        </div>
+      ) : null}
+
+      {isRequestComplexity && factors.difficultyScore !== undefined ? (
+        <div className="sm:col-span-2 rounded-md border border-emerald-200 bg-white p-3 dark:border-emerald-900 dark:bg-gray-900">
+          <dt className="font-semibold text-gray-700 dark:text-gray-200">
+            이번 요청의 난이도 판정
+          </dt>
+          <dd className="mt-2 flex flex-wrap gap-2 text-gray-700 dark:text-gray-200">
+            <span className="rounded bg-emerald-50 px-2 py-1">
+              난이도 점수 {Math.round(factors.difficultyScore)}/100
+            </span>
+            {factors.difficulty ? (
+              <span className="rounded bg-emerald-50 px-2 py-1">
+                등급 {factors.difficulty}
+              </span>
+            ) : null}
+            {factors.confidence !== undefined ? (
+              <span className="rounded bg-emerald-50 px-2 py-1">
+                분류 신뢰도 {(factors.confidence * 100).toFixed(1)}%
+              </span>
+            ) : null}
+          </dd>
+          <dd className="mt-2 text-gray-500">
+            변수 치환이 끝난 프롬프트와 이번 입력을 함께 읽어 계산했습니다. 요청 원문과 RAG 문서 원문은 이 화면이나 실행 로그에 저장하지 않습니다.
+          </dd>
         </div>
       ) : null}
 
