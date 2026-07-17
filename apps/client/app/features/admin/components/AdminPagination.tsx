@@ -31,7 +31,13 @@ export function AdminPagination({
         </button>
         <button
           type="button"
-          onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+          onClick={() =>
+            onPageChange(
+              hasNext === undefined
+                ? Math.min(totalPages, page + 1)
+                : page + 1,
+            )
+          }
           disabled={hasNext === undefined ? page >= totalPages : !hasNext}
           className="h-8 rounded-md border border-slate-200 px-3 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
         >
