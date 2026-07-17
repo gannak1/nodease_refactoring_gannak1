@@ -1,7 +1,7 @@
 # Deployment Component Spec
 
 Status: Draft
-Verified Against: `feature/mba-247 @ 311a4bc2`
+Verified Against: `feature/mba-247 @ 3ac5df3c`
 
 ## Screens
 
@@ -43,6 +43,8 @@ Verified Against: `feature/mba-247 @ 311a4bc2`
 - `AppAuthSecretService`는 status, App row lock, expected-version CAS, verifier 검증, current/previous transition과 필수 audit outbox transaction을 소유한다. Endpoint와 deployment/webhook ingress는 verifier 규칙을 복제하지 않는다.
 - Expand release는 lifecycle mutation gate를 기본 `disabled`로 유지하고 generation 0 raw-only late arrival만 제한적으로 검증한다. 모든 Gateway Pod가 verifier-aware revision으로 수렴한 뒤 별도 설정 rollout에서 gate를 `active`로 바꾸며, 활성화 뒤 persistence adapter는 current raw를 저장하지 않는다. Generation 1 이상에서는 verifier만 인증 권위다.
 - Active API/Webhook 배포 모달은 preflight 이전 input 단계에서 App secret status와 발급·교체 control을 표시한다. Preflight가 `app.auth_secret_lifecycle_unavailable` 또는 `deployment.app_auth_secret_required`를 반환하면 배포를 시도하지 않고 Gateway 전환 대기 또는 같은 App secret 발급 action을 유지한다. Input 단계에서 발급한 one-time secret은 배포 모달이 열린 동안에만 메모리에 보존하여 success 단계의 복사·테스트에 전달하고, 모달을 닫거나 다시 열면 폐기한다. Inactive draft 저장은 유지한다.
+- API/Webhook input은 App secret safe status를 `checking`, `ready`, `secret_required`, `lifecycle_unavailable`, `status_unavailable`로 투영한다. `configured=true`이면 lifecycle mutation gate가 disabled여도 기존 credential로 배포할 수 있으므로 `ready`이며 발급·교체 command만 숨긴다. 미설정, status 조회 실패 또는 App identity 누락은 `ready`가 될 때까지 다음 단계를 fail-closed로 차단한다.
+- Client readiness gate는 사용자 흐름의 조기 차단일 뿐 활성화 권위가 아니다. Gateway는 create/toggle에서 현재 App 상태를 다시 검증한다. Client 오류 formatter는 top-level 표준 error envelope과 legacy nested envelope을 모두 읽되, required action은 allowlist된 label만 표시한다.
 - Gateway endpoint는 ASGI/HTTP inbound adapter로 raw header occurrence와 query key presence를 추출하고 bounded stream을 수신한다. Framework-independent `application/webhook_ingress` policy가 credential/media/JSON limits를 판정하며 endpoint는 typed error를 static HTTP code로 mapping한다.
 - Existing capture, active deployment/runtime policy, budget와 background publish orchestration은 ingress validation 뒤의 transitional path로 유지한다. Client validation은 보안 판단이 아니며 Gateway를 우회할 수 없다.
 - Gateway의 outermost ASGI middleware는 `/api/v1/hooks` query에서 `token` field를 값 보존 없이 제거하고 boolean marker로 400 rejection을 유지해 Uvicorn access log 노출을 막는다. Repository Nginx는 `/api/v1/hooks/` 전용 location의 access/error log를 억제하고 1 MiB/5초 idle body guard와 request streaming을 적용한다.

@@ -1,7 +1,7 @@
 # Deployment Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-247 @ 311a4bc2`
+Verified Against: `feature/mba-247 @ 3ac5df3c`
 
 ## Unit Tests
 
@@ -109,6 +109,10 @@ Verified Against: `feature/mba-247 @ 311a4bc2`
 ## E2E Tests
 
 - 배포 설정과 Webhook node의 secret control은 safe status만 표시하고 명시적 발급/rotation 성공 직후에만 신규 secret을 보여준다. 화면 재진입, reload와 일반 App/Deployment refetch로 secret을 복구할 수 없다.
+- API/Webhook 배포 input은 status 조회 중, 미설정, lifecycle mutation disabled 상태의 미설정 App, status 조회 실패와 App ID 누락에서 다음 단계를 차단한다. `configured=true`이면 mutation gate가 disabled여도 기존 credential 배포는 허용하고 발급·교체만 비활성화한다. 발급 성공 callback 뒤에만 다음 단계가 활성화된다.
+- Deployment 오류 formatter는 top-level 표준 `{error: ...}`와 legacy nested `{detail: {error: ...}}`를 모두 처리한다. `deployment.app_auth_secret_required`와 `app.auth_secret_lifecycle_unavailable`은 generic Axios 문구 대신 안전한 상태를 표시하고, unknown required action이나 raw detail은 렌더링하지 않는다.
+- REST API load client는 `Authorization: Bearer`만 사용하고 폐기된 `X-Auth-Secret`을 전송하지 않는다. 테스트 시작·실패·리포트에서 token 값, prefix 또는 일부 preview를 출력하지 않는 정적 계약 테스트를 유지한다.
+- Direct-runtime 검증 script가 ingress를 호출하지 않더라도 고정 raw App secret fixture를 저장하지 않는다. Legacy raw-only fixture는 같은 candidate의 verifier로 승격하고, 미설정 fixture만 임시 candidate를 생성·폐기하며 verifier-only canonical state를 저장한다. 이미 유효한 managed state는 불필요하게 rotation하지 않는다.
 - One-time secret copy는 browser storage, URL, analytics와 console에 원문을 남기지 않는다. 기본 rotation 안내는 previous가 최대 5분 유효함을, 즉시 폐기 선택은 기존 consumer가 즉시 실패할 수 있음을 명확히 표시한다.
 - Version conflict와 응답 유실 UI는 POST를 자동 재시도하지 않고 status refresh 후 사용자가 새 rotation을 명시적으로 선택하게 한다.
 
