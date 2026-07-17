@@ -191,7 +191,7 @@ Manual recorder는 update에도 changed field만이 아니라 target별 complete
 
 ## Architecture Scope
 
-MBA-188은 실제 actor access use case에 필요한 package와 adapter만 만든다. 빈 audit domain scaffold나 repository 전체 audit migration roadmap을 이 변경에 포함하지 않는다. 이 구현은 access mutation과 canonical AuditLog를 같은 DB transaction에 기록한다. 이후 generic audit producer에는 `audit_event_outbox`가 도입됐지만, access mutation의 transaction-bound canonical AuditLog를 대체하는 선택지가 아니다.
+MBA-188은 실제 actor access use case에 필요한 package와 adapter만 만든다. 빈 audit domain scaffold나 repository 전체 audit migration roadmap을 이 변경에 포함하지 않는다. 이 구현은 access mutation과 canonical AuditLog를 같은 DB transaction에 기록한다. Durable outbox 일반화는 MBA-189 범위이며 MBA-188의 대체 구현 선택지가 아니다.
 
 ADR-0022가 첫 실제 pilot으로 고정한 deployment preflight use case/port/adapter 이관을 먼저 완료해야 한다. MBA-183은 package scaffold까지만 반영했으므로 Linear MBA-191에서 reference implementation을 완성하고, MBA-188의 `access_management` code implementation은 그 완료 뒤 시작한다. Pilot 순서를 변경하려면 별도 ADR로 ADR-0022를 대체한다.
 
