@@ -43,7 +43,9 @@ Option 3과 option 5를 채택한다.
   SHA-256 digest로 만든다. Raw source path/config/content는 key, job metadata, Celery payload와 log에
   저장하지 않는다.
 - Commit 뒤 publisher는 job UUID 하나만 `knowledge` queue로 전송한다. Publish 실패는 request
-  transaction을 되돌리지 않으며 periodic recovery가 due job을 다시 발행한다.
+  transaction을 되돌리지 않으며 periodic recovery가 due job을 다시 발행한다. Recovery가 발행 대상으로
+  고른 `pending|retry_scheduled` job에는 DB clock 기반의 bounded dispatch lease를 먼저 기록한다. Lease가
+  유효한 동안 같은 job을 다시 발행하지 않으며 broker 전달 자체의 exactly-once를 주장하지 않는다.
 
 ### Worker claim, retry and finalization
 
@@ -51,7 +53,8 @@ Option 3과 option 5를 채택한다.
   않는다. 실행 직전에 requester의 current organization membership과 KB write 또는 sync authority를
   다시 확인한다.
 - Claim은 opaque owner token, fencing token, DB clock 기반 lease와 heartbeat를 기록한다. Heartbeat는
-  본 실행과 다른 DB session을 사용한다.
+  본 실행과 다른 DB session을 사용한다. Owner token과 fencing token이 일치해도 execution lease가 DB
+  clock 기준으로 만료되었으면 heartbeat, worker lock과 success finalization을 모두 거부한다.
 - Retryable failure는 bounded exponential backoff와 `next_retry_at`을 저장한다. Future retry를 즉시
   재발행하지 않고 due recovery scanner가 발행 책임을 소유한다. Soft time limit과 allowlisted
   transient failure만 자동 retry하며 unknown failure는 safe dead-letter로 닫는다. Processor의 raw
@@ -59,12 +62,15 @@ Option 3과 option 5를 채택한다.
   정규화한다. DB/API timeout, connection, DNS, 408/425/429/5xx만 transient source failure로 분류한다.
 - Retry exhaustion은 `dead_lettered`로 남긴다. 권한 있는 manual retry는 terminal row를 되살리지
   않고 새 generation job을 만든다.
+- Recovery는 후보를 찾은 뒤 admission/finalization과 같은 `KnowledgeBase -> Document -> job` 순서로
+  canonical row lock을 획득하고 due 상태를 다시 확인한다. Retry/dead-letter 전이와 pending/retry job의
+  dispatch lease 획득은 이 잠금 아래 수행해 worker finalization과의 역순 잠금 교착을 만들지 않는다.
 - Active version finalization, Document completed projection과 job succeeded 전이는 같은 DB
   transaction에서 fencing token을 확인해 확정한다. Stale worker의 progress와 finalization은
   거부한다. 완료 progress=100도 이 transaction에 포함하며 commit 뒤에는 Redis advisory 값만
-  알린다. Retry/cancel/dead-letter 전이는 DB commit 뒤 이전 attempt의 Redis key를 삭제해 DB의 0
-  projection으로 fallback한다. Lease를 잃은 worker는 cache를 삭제하지 않는다. Redis progress는 권위
-  상태가 아니다.
+  알린다. 새 admission과 retry/cancel/dead-letter/recovery 전이는 canonical DB commit 뒤 해당 document의
+  Redis key를 삭제해 새 attempt 또는 DB projection으로 fallback한다. Lease를 잃은 worker는 cache를
+  삭제하지 않는다. Redis progress는 권위 상태가 아니다.
 - Terminal job은 기본 30일 뒤 bounded cleanup한다. Canonical audit와 document version retention은
   별도 정책을 따른다.
 
@@ -77,7 +83,9 @@ Option 3과 option 5를 채택한다.
 - `knowledge` worker는 Gateway image/parser/storage 의존성을 사용하고 다른 Celery queue를 소비하지
   않는다. Worker bootstep은 필수 table, column, unique constraint와 index가 없으면 queue 소비 전에
   startup을 실패시킨다. Compose worker는 migration을 수행한 Gateway health 이후 시작하며 Kubernetes
-  worker는 bounded init readiness를 통과한 뒤 Celery bootstep에서 다시 fail-closed 검사한다.
+  worker는 bounded init readiness를 통과한 뒤 Celery bootstep에서 다시 fail-closed 검사한다. Helm
+  chart가 ServiceAccount 생성을 소유하는 설정에서는 worker가 참조하는 동일 이름의 ServiceAccount를
+  렌더링하고, 외부 ServiceAccount를 사용하는 설정에서는 chart가 새 리소스를 생성하지 않는다.
 - `STORAGE_TYPE=LOCAL`로 전용 worker를 활성화하면 Gateway와 worker는 동일 upload PVC를 마운트해야
   하고 non-root container가 쓸 수 있도록 명시한 fsGroup을 적용해야 한다. Helm은 shared local storage
   설정이 없으면 rendering을 거부한다. Production `CLOUD` storage는 이 PVC를 사용하지 않는다.
