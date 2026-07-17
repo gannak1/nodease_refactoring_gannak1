@@ -28,5 +28,8 @@ def test_ingestion_job_model_has_lease_and_terminal_constraints() -> None:
     }
 
     assert "ck_knowledge_document_ingestion_jobs_lease" in constraint_names
+    assert (
+        "ck_knowledge_document_ingestion_jobs_dispatch_lease" in constraint_names
+    )
     assert "ck_knowledge_document_ingestion_jobs_dead_letter" in constraint_names
     assert "uq_knowledge_document_ingestion_jobs_org_idempotency" in constraint_names

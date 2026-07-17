@@ -27,6 +27,7 @@ REQUIRED_COLUMNS = frozenset(
         "fencing_token",
         "lease_expires_at",
         "heartbeat_at",
+        "dispatch_lease_expires_at",
         "next_retry_at",
         "requested_at",
         "started_at",

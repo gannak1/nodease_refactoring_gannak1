@@ -344,10 +344,123 @@ def test_postgres_recovery_requeues_expired_lease(postgres_engine) -> None:
         recovered = repository.recover_due(now=repository.database_now(), limit=10)
         db.commit()
         row = db.get(KnowledgeDocumentIngestionJob, job_id)
-        assert job_id in recovered
+        assert job_id in [recovery.job_id for recovery in recovered]
         assert row is not None
         assert row.status == "retry_scheduled"
         assert row.owner_token is None
         assert row.fencing_token is None
+        assert row.dispatch_lease_expires_at is not None
+
+        immediate = repository.recover_due(
+            now=repository.database_now(),
+            limit=10,
+        )
+        assert immediate == []
     finally:
         db.close()
+
+
+def test_postgres_expired_lease_cannot_heartbeat_or_finalize(
+    postgres_engine,
+) -> None:
+    scope = _seed_scope(postgres_engine)
+    session_factory = sessionmaker(bind=postgres_engine, expire_on_commit=False)
+    seed = session_factory()
+    job = _job(scope, status="running", expired=True)
+    seed.add(job)
+    seed.commit()
+    job_id = job.id
+    seed.close()
+
+    db = session_factory()
+    try:
+        repository = SqlAlchemyDocumentIngestionRepository(db)
+        now = repository.database_now()
+        assert repository.heartbeat(
+            job_id,
+            owner_token="owner",
+            fencing_token="fence",
+            now=now,
+            lease_expires_at=now + timedelta(minutes=15),
+        ) is False
+        db.rollback()
+        assert repository.mark_succeeded(
+            job_id,
+            owner_token="owner",
+            fencing_token="fence",
+            result_document_version_id=None,
+            now=repository.database_now(),
+        ) is False
+        db.rollback()
+        assert repository.lock_owned_worker_job(
+            job_id,
+            owner_token="owner",
+            fencing_token="fence",
+        ) is None
+        db.rollback()
+    finally:
+        db.close()
+
+
+def test_postgres_recovery_uses_document_before_job_lock_order(
+    postgres_engine,
+) -> None:
+    scope = _seed_scope(postgres_engine)
+    _, _, knowledge_base_id, document_id = scope
+    session_factory = sessionmaker(bind=postgres_engine, expire_on_commit=False)
+    seed = session_factory()
+    job = _job(scope, status="running", expired=True)
+    seed.add(job)
+    seed.commit()
+    job_id = job.id
+    seed.close()
+
+    document_locked = threading.Event()
+    release_finalizer = threading.Event()
+
+    def finalize_expired_owner() -> bool:
+        db = session_factory()
+        try:
+            db.query(KnowledgeBase).filter(
+                KnowledgeBase.id == knowledge_base_id
+            ).with_for_update().one()
+            db.query(Document).filter(Document.id == document_id).with_for_update().one()
+            document_locked.set()
+            assert release_finalizer.wait(timeout=5)
+            repository = SqlAlchemyDocumentIngestionRepository(db)
+            result = repository.mark_succeeded(
+                job_id,
+                owner_token="owner",
+                fencing_token="fence",
+                result_document_version_id=None,
+                now=repository.database_now(),
+            )
+            db.commit()
+            return result
+        finally:
+            db.close()
+
+    def recover_expired_owner():
+        assert document_locked.wait(timeout=5)
+        db = session_factory()
+        try:
+            repository = SqlAlchemyDocumentIngestionRepository(db)
+            recovered = repository.recover_due(
+                now=repository.database_now(),
+                limit=10,
+            )
+            db.commit()
+            return recovered
+        finally:
+            db.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        finalizer = executor.submit(finalize_expired_owner)
+        assert document_locked.wait(timeout=5)
+        recovery = executor.submit(recover_expired_owner)
+        threading.Event().wait(0.2)
+        release_finalizer.set()
+        assert finalizer.result(timeout=5) is False
+        recovered = recovery.result(timeout=5)
+
+    assert job_id in [item.job_id for item in recovered]

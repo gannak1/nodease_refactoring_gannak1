@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from apps.gateway.application.knowledge_document_ingestion.worker import (
+    RecoveredDocumentIngestionJob,
     WorkerDocumentIngestionJob,
 )
 from apps.gateway.application.knowledge_document_ingestion.use_cases import (
@@ -25,7 +26,10 @@ from apps.shared.db.models.knowledge import (
     KnowledgeBase,
     KnowledgeDocumentIngestionJob,
 )
-from apps.shared.domain.knowledge_document_ingestion import safe_reason_code
+from apps.shared.domain.knowledge_document_ingestion import (
+    DEFAULT_DISPATCH_LEASE_SECONDS,
+    safe_reason_code,
+)
 from apps.shared.services.knowledge_ingestion_fencing import (
     ACTIVE_FENCING_TOKEN_HASH_KEY,
 )
@@ -223,6 +227,8 @@ class SqlAlchemyDocumentIngestionRepository:
             attempt_count=0,
             max_attempts=max_attempts,
             retryable=True,
+            dispatch_lease_expires_at=now
+            + timedelta(seconds=DEFAULT_DISPATCH_LEASE_SECONDS),
             next_retry_at=now,
             requested_at=now,
             updated_at=now,
@@ -262,6 +268,7 @@ class SqlAlchemyDocumentIngestionRepository:
         row.fencing_token = fencing_token
         row.lease_expires_at = lease_expires_at
         row.heartbeat_at = now
+        row.dispatch_lease_expires_at = None
         row.next_retry_at = None
         row.safe_reason_code = None
         row.started_at = row.started_at or now
@@ -283,6 +290,7 @@ class SqlAlchemyDocumentIngestionRepository:
                 KnowledgeDocumentIngestionJob.status == "running",
                 KnowledgeDocumentIngestionJob.owner_token == owner_token,
                 KnowledgeDocumentIngestionJob.fencing_token == fencing_token,
+                KnowledgeDocumentIngestionJob.lease_expires_at > func.now(),
             )
             .with_for_update()
             .one_or_none()
@@ -306,6 +314,7 @@ class SqlAlchemyDocumentIngestionRepository:
                 KnowledgeDocumentIngestionJob.status == "running",
                 KnowledgeDocumentIngestionJob.owner_token == owner_token,
                 KnowledgeDocumentIngestionJob.fencing_token == fencing_token,
+                KnowledgeDocumentIngestionJob.lease_expires_at > func.now(),
             )
             .update(
                 {
@@ -334,6 +343,7 @@ class SqlAlchemyDocumentIngestionRepository:
                 KnowledgeDocumentIngestionJob.status == "running",
                 KnowledgeDocumentIngestionJob.owner_token == owner_token,
                 KnowledgeDocumentIngestionJob.fencing_token == fencing_token,
+                KnowledgeDocumentIngestionJob.lease_expires_at > func.now(),
             )
             .update(
                 {
@@ -346,6 +356,7 @@ class SqlAlchemyDocumentIngestionRepository:
                     KnowledgeDocumentIngestionJob.owner_token: None,
                     KnowledgeDocumentIngestionJob.fencing_token: None,
                     KnowledgeDocumentIngestionJob.lease_expires_at: None,
+                    KnowledgeDocumentIngestionJob.dispatch_lease_expires_at: None,
                     KnowledgeDocumentIngestionJob.next_retry_at: None,
                     KnowledgeDocumentIngestionJob.completed_at: now,
                     KnowledgeDocumentIngestionJob.updated_at: now,
@@ -370,6 +381,7 @@ class SqlAlchemyDocumentIngestionRepository:
         row.owner_token = None
         row.fencing_token = None
         row.lease_expires_at = None
+        row.dispatch_lease_expires_at = None
         row.next_retry_at = next_retry_at
         row.updated_at = now
         self._project_document_state(
@@ -395,6 +407,7 @@ class SqlAlchemyDocumentIngestionRepository:
         row.owner_token = None
         row.fencing_token = None
         row.lease_expires_at = None
+        row.dispatch_lease_expires_at = None
         row.next_retry_at = None
         row.dead_lettered_at = now
         row.completed_at = now
@@ -421,6 +434,7 @@ class SqlAlchemyDocumentIngestionRepository:
         row.owner_token = None
         row.fencing_token = None
         row.lease_expires_at = None
+        row.dispatch_lease_expires_at = None
         row.next_retry_at = None
         row.completed_at = now
         row.updated_at = now
@@ -432,36 +446,58 @@ class SqlAlchemyDocumentIngestionRepository:
             now=now,
         )
 
-    def recover_due(self, *, now: datetime, limit: int) -> list[uuid.UUID]:
-        rows = (
-            self.db.query(KnowledgeDocumentIngestionJob)
-            .filter(
-                or_(
-                    and_(
-                        KnowledgeDocumentIngestionJob.status.in_(
-                            ["pending", "retry_scheduled"]
-                        ),
-                        or_(
-                            KnowledgeDocumentIngestionJob.next_retry_at.is_(None),
-                            KnowledgeDocumentIngestionJob.next_retry_at <= now,
-                        ),
-                    ),
-                    and_(
-                        KnowledgeDocumentIngestionJob.status == "running",
-                        KnowledgeDocumentIngestionJob.lease_expires_at <= now,
-                    ),
-                )
+    def recover_due(
+        self, *, now: datetime, limit: int
+    ) -> list[RecoveredDocumentIngestionJob]:
+        if limit <= 0:
+            return []
+        candidates = (
+            self.db.query(
+                KnowledgeDocumentIngestionJob.id,
+                KnowledgeDocumentIngestionJob.knowledge_base_id,
+                KnowledgeDocumentIngestionJob.document_id,
             )
+            .filter(self._recovery_due_filter(now))
             .order_by(
                 KnowledgeDocumentIngestionJob.requested_at.asc(),
                 KnowledgeDocumentIngestionJob.id.asc(),
             )
-            .with_for_update(skip_locked=True)
-            .limit(limit)
+            .limit(limit * 4)
             .all()
         )
-        due_ids: list[uuid.UUID] = []
-        for row in rows:
+        recoveries: list[RecoveredDocumentIngestionJob] = []
+        dispatch_lease_expires_at = now + timedelta(
+            seconds=DEFAULT_DISPATCH_LEASE_SECONDS
+        )
+        for candidate in candidates:
+            if len(recoveries) >= limit:
+                break
+
+            # All document-ingestion writers use KB -> Document -> job lock order.
+            if candidate.knowledge_base_id is not None:
+                (
+                    self.db.query(KnowledgeBase.id)
+                    .filter(KnowledgeBase.id == candidate.knowledge_base_id)
+                    .with_for_update()
+                    .one_or_none()
+                )
+            if candidate.document_id is not None:
+                (
+                    self.db.query(Document.id)
+                    .filter(Document.id == candidate.document_id)
+                    .with_for_update()
+                    .one_or_none()
+                )
+            row = (
+                self.db.query(KnowledgeDocumentIngestionJob)
+                .filter(KnowledgeDocumentIngestionJob.id == candidate.id)
+                .with_for_update(skip_locked=True)
+                .one_or_none()
+            )
+            if row is None or not self._is_recovery_due(row, now=now):
+                continue
+
+            should_publish = True
             if row.status == "running":
                 if row.attempt_count >= row.max_attempts:
                     row.status = "dead_lettered"
@@ -470,6 +506,7 @@ class SqlAlchemyDocumentIngestionRepository:
                     row.owner_token = None
                     row.fencing_token = None
                     row.lease_expires_at = None
+                    row.dispatch_lease_expires_at = None
                     row.next_retry_at = None
                     row.dead_lettered_at = now
                     row.completed_at = now
@@ -481,24 +518,36 @@ class SqlAlchemyDocumentIngestionRepository:
                         step="Processing failed.",
                         now=now,
                     )
-                    continue
-                row.status = "retry_scheduled"
-                row.retryable = True
-                row.safe_reason_code = "ingestion.worker_interrupted"
-                row.owner_token = None
-                row.fencing_token = None
-                row.lease_expires_at = None
-                row.next_retry_at = now
+                    should_publish = False
+                else:
+                    row.status = "retry_scheduled"
+                    row.retryable = True
+                    row.safe_reason_code = "ingestion.worker_interrupted"
+                    row.owner_token = None
+                    row.fencing_token = None
+                    row.lease_expires_at = None
+                    row.dispatch_lease_expires_at = dispatch_lease_expires_at
+                    row.next_retry_at = now
+                    row.updated_at = now
+                    self._project_document_state(
+                        row,
+                        status="indexing",
+                        error_message=None,
+                        step="Processing retry scheduled.",
+                        now=now,
+                    )
+            else:
+                row.dispatch_lease_expires_at = dispatch_lease_expires_at
                 row.updated_at = now
-                self._project_document_state(
-                    row,
-                    status="indexing",
-                    error_message=None,
-                    step="Processing retry scheduled.",
-                    now=now,
+
+            recoveries.append(
+                RecoveredDocumentIngestionJob(
+                    job_id=row.id,
+                    document_id=row.document_id,
+                    should_publish=should_publish,
                 )
-            due_ids.append(row.id)
-        return due_ids
+            )
+        return recoveries
 
     def delete_expired_terminal(self, *, before: datetime, limit: int) -> int:
         ids = [
@@ -558,6 +607,45 @@ class SqlAlchemyDocumentIngestionRepository:
         document.status = status
         document.error_message = error_message
         document.updated_at = now
+
+    @staticmethod
+    def _recovery_due_filter(now: datetime):
+        return or_(
+            and_(
+                KnowledgeDocumentIngestionJob.status.in_(
+                    ["pending", "retry_scheduled"]
+                ),
+                or_(
+                    KnowledgeDocumentIngestionJob.next_retry_at.is_(None),
+                    KnowledgeDocumentIngestionJob.next_retry_at <= now,
+                ),
+                or_(
+                    KnowledgeDocumentIngestionJob.dispatch_lease_expires_at.is_(None),
+                    KnowledgeDocumentIngestionJob.dispatch_lease_expires_at <= now,
+                ),
+            ),
+            and_(
+                KnowledgeDocumentIngestionJob.status == "running",
+                KnowledgeDocumentIngestionJob.lease_expires_at <= now,
+            ),
+        )
+
+    @staticmethod
+    def _is_recovery_due(
+        row: KnowledgeDocumentIngestionJob,
+        *,
+        now: datetime,
+    ) -> bool:
+        if row.status == "running":
+            return row.lease_expires_at is not None and row.lease_expires_at <= now
+        if row.status not in {"pending", "retry_scheduled"}:
+            return False
+        retry_due = row.next_retry_at is None or row.next_retry_at <= now
+        dispatch_due = (
+            row.dispatch_lease_expires_at is None
+            or row.dispatch_lease_expires_at <= now
+        )
+        return retry_due and dispatch_due
 
     @staticmethod
     def _target_snapshot(

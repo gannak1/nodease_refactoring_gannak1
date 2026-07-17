@@ -1207,6 +1207,11 @@ class KnowledgeDocumentIngestionJob(Base):
             name="ck_knowledge_document_ingestion_jobs_lease",
         ),
         CheckConstraint(
+            "dispatch_lease_expires_at IS NULL OR "
+            "status IN ('pending', 'retry_scheduled')",
+            name="ck_knowledge_document_ingestion_jobs_dispatch_lease",
+        ),
+        CheckConstraint(
             "(status = 'dead_lettered' AND dead_lettered_at IS NOT NULL) OR "
             "(status <> 'dead_lettered' AND dead_lettered_at IS NULL)",
             name="ck_knowledge_document_ingestion_jobs_dead_letter",
@@ -1224,6 +1229,7 @@ class KnowledgeDocumentIngestionJob(Base):
             "ix_knowledge_document_ingestion_jobs_due",
             "status",
             "next_retry_at",
+            "dispatch_lease_expires_at",
             "requested_at",
         ),
         Index(
@@ -1285,6 +1291,9 @@ class KnowledgeDocumentIngestionJob(Base):
         DateTime(timezone=True), nullable=True
     )
     heartbeat_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    dispatch_lease_expires_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     next_retry_at: Mapped[Optional[datetime]] = mapped_column(

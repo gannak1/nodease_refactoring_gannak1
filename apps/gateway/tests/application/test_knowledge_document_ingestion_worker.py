@@ -8,6 +8,7 @@ from apps.gateway.application.knowledge_document_ingestion.worker import (
     DocumentIngestionLeaseLost,
     DocumentIngestionRetryableFailure,
     ExecuteDocumentIngestionJob,
+    RecoveredDocumentIngestionJob,
     RecoverDocumentIngestionJobs,
     WorkerDocumentIngestionJob,
 )
@@ -20,7 +21,18 @@ class FakeRepository:
     def __init__(self, job: WorkerDocumentIngestionJob | None) -> None:
         self.job = job
         self.transition: tuple[str, str | None] | None = None
-        self.recovered = [uuid.uuid4(), uuid.uuid4()]
+        self.recovered = [
+            RecoveredDocumentIngestionJob(
+                job_id=uuid.uuid4(),
+                document_id=uuid.uuid4(),
+                should_publish=True,
+            ),
+            RecoveredDocumentIngestionJob(
+                job_id=uuid.uuid4(),
+                document_id=uuid.uuid4(),
+                should_publish=False,
+            ),
+        ]
         self.deleted = 2
 
     def database_now(self):
@@ -314,13 +326,18 @@ def test_recovery_commits_before_publish_and_tolerates_publish_failure() -> None
     repository = FakeRepository(None)
     publisher = FakePublisher(fails=True)
     uow = FakeUnitOfWork()
+    progress = FakeProgress()
 
     result = RecoverDocumentIngestionJobs(
         repository=repository,
         publisher=publisher,
         unit_of_work=uow,
+        progress=progress,
     ).execute()
 
     assert result == {"recovered": 2, "published": 0, "deleted": 2}
     assert uow.commits == 1
-    assert publisher.published == repository.recovered
+    assert publisher.published == [repository.recovered[0].job_id]
+    assert progress.cleared == [
+        recovery.document_id for recovery in repository.recovered
+    ]

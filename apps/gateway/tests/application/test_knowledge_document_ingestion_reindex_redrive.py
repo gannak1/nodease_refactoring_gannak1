@@ -174,16 +174,26 @@ class FakeUnitOfWork:
         self.rollbacks += 1
 
 
+class FakeProgress:
+    def __init__(self) -> None:
+        self.cleared = []
+
+    def clear(self, document_id):
+        self.cleared.append(document_id)
+
+
 def test_reindex_admits_all_documents_before_publishing() -> None:
     targets = (_target(), _target())
     repository = FakeRepository(targets)
     publisher = FakePublisher()
     uow = FakeUnitOfWork()
+    progress = FakeProgress()
 
     result = RequestKnowledgeBaseReindex(
         repository=repository,
         publisher=publisher,
         unit_of_work=uow,
+        progress=progress,
     ).execute(
         RequestKnowledgeBaseReindexCommand(
             actor_id=ACTOR_ID,
@@ -201,6 +211,7 @@ def test_reindex_admits_all_documents_before_publishing() -> None:
     assert len(repository.created) == 2
     assert len(repository.applied) == 2
     assert uow.commits == 1
+    assert progress.cleared == [target.document_id for target in targets]
     assert publisher.published == [job.job_id for job in result.jobs]
 
 
@@ -237,11 +248,13 @@ def test_reindex_empty_knowledge_base_updates_model_without_phantom_job() -> Non
     repository = FakeRepository(())
     publisher = FakePublisher()
     uow = FakeUnitOfWork()
+    progress = FakeProgress()
 
     result = RequestKnowledgeBaseReindex(
         repository=repository,
         publisher=publisher,
         unit_of_work=uow,
+        progress=progress,
     ).execute(
         RequestKnowledgeBaseReindexCommand(
             actor_id=ACTOR_ID,
@@ -255,6 +268,7 @@ def test_reindex_empty_knowledge_base_updates_model_without_phantom_job() -> Non
     assert repository.model_update is not None
     assert publisher.published == []
     assert uow.commits == 1
+    assert progress.cleared == []
 
 
 def test_redrive_creates_new_generation_for_exact_terminal_job() -> None:
@@ -264,11 +278,13 @@ def test_redrive_creates_new_generation_for_exact_terminal_job() -> None:
     repository.latest_by_document[target.document_id] = previous
     publisher = FakePublisher()
     uow = FakeUnitOfWork()
+    progress = FakeProgress()
 
     result = RedriveDocumentIngestion(
         repository=repository,
         publisher=publisher,
         unit_of_work=uow,
+        progress=progress,
     ).execute(
         RedriveDocumentIngestionCommand(
             actor_id=ACTOR_ID,
@@ -284,6 +300,7 @@ def test_redrive_creates_new_generation_for_exact_terminal_job() -> None:
     assert result.job.job_id != previous.job_id
     assert publisher.published == [result.job.job_id]
     assert uow.commits == 1
+    assert progress.cleared == [target.document_id]
 
 
 def test_redrive_rejects_job_changed_after_authorization() -> None:

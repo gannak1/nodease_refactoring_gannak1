@@ -103,6 +103,14 @@ class FakeUnitOfWork:
         self.rollback_count += 1
 
 
+class FakeProgress:
+    def __init__(self) -> None:
+        self.cleared = []
+
+    def clear(self, document_id):
+        self.cleared.append(document_id)
+
+
 def _target() -> AdmissionDocumentSnapshot:
     return AdmissionDocumentSnapshot(
         document_id=uuid.uuid4(),
@@ -169,11 +177,12 @@ def _job(
     )
 
 
-def _use_case(repository, publisher=None, unit_of_work=None):
+def _use_case(repository, publisher=None, unit_of_work=None, progress=None):
     return RequestDocumentIngestion(
         repository=repository,
         publisher=publisher or FakePublisher(),
         unit_of_work=unit_of_work or FakeUnitOfWork(),
+        progress=progress,
     )
 
 
@@ -182,8 +191,11 @@ def test_new_request_commits_job_and_document_before_publish() -> None:
     repository = FakeRepository(target)
     publisher = FakePublisher()
     unit_of_work = FakeUnitOfWork()
+    progress = FakeProgress()
 
-    result = _use_case(repository, publisher, unit_of_work).execute(_command(target))
+    result = _use_case(repository, publisher, unit_of_work, progress).execute(
+        _command(target)
+    )
 
     assert isinstance(result, DocumentIngestionRequestResult)
     assert result.reused is False
@@ -192,6 +204,7 @@ def test_new_request_commits_job_and_document_before_publish() -> None:
     assert repository.created is True
     assert unit_of_work.flush_count == 1
     assert unit_of_work.commit_count == 1
+    assert progress.cleared == [target.document_id]
     assert publisher.published == [result.job.job_id]
 
 

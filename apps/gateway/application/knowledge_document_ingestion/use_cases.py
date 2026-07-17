@@ -6,6 +6,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Mapping, Protocol
 
+from apps.gateway.application.knowledge_document_ingestion.progress import (
+    DocumentIngestionProgressPort,
+    clear_progress_projection,
+)
+
 from apps.shared.domain.knowledge_document_ingestion import (
     DEFAULT_MAX_ATTEMPTS,
     build_idempotency_key,
@@ -198,10 +203,12 @@ class RequestDocumentIngestion:
         repository: DocumentIngestionRepositoryPort,
         publisher: DocumentIngestionPublisherPort,
         unit_of_work: DocumentIngestionUnitOfWorkPort,
+        progress: DocumentIngestionProgressPort | None = None,
     ) -> None:
         self.repository = repository
         self.publisher = publisher
         self.unit_of_work = unit_of_work
+        self.progress = progress
 
     def execute(
         self, command: RequestDocumentIngestionCommand
@@ -275,6 +282,7 @@ class RequestDocumentIngestion:
             self.unit_of_work.rollback()
             raise DocumentIngestionPersistenceFailed() from exc
 
+        clear_progress_projection(self.progress, command.document_id)
         deferred = self._publish(job.job_id)
         return DocumentIngestionRequestResult(job, False, deferred)
 
@@ -298,10 +306,12 @@ class RequestKnowledgeBaseReindex:
         repository: DocumentIngestionRepositoryPort,
         publisher: DocumentIngestionPublisherPort,
         unit_of_work: DocumentIngestionUnitOfWorkPort,
+        progress: DocumentIngestionProgressPort | None = None,
     ) -> None:
         self.repository = repository
         self.publisher = publisher
         self.unit_of_work = unit_of_work
+        self.progress = progress
 
     def execute(
         self, command: RequestKnowledgeBaseReindexCommand
@@ -412,6 +422,8 @@ class RequestKnowledgeBaseReindex:
             self.unit_of_work.rollback()
             raise DocumentIngestionPersistenceFailed() from exc
 
+        for job in jobs:
+            clear_progress_projection(self.progress, job.document_id)
         deferred = self._publish_all(tuple(jobs))
         return KnowledgeBaseReindexRequestResult(
             jobs=tuple(jobs),
@@ -452,10 +464,12 @@ class RedriveDocumentIngestion:
         repository: DocumentIngestionRepositoryPort,
         publisher: DocumentIngestionPublisherPort,
         unit_of_work: DocumentIngestionUnitOfWorkPort,
+        progress: DocumentIngestionProgressPort | None = None,
     ) -> None:
         self.repository = repository
         self.publisher = publisher
         self.unit_of_work = unit_of_work
+        self.progress = progress
 
     def execute(
         self, command: RedriveDocumentIngestionCommand
@@ -532,6 +546,7 @@ class RedriveDocumentIngestion:
             self.unit_of_work.rollback()
             raise DocumentIngestionPersistenceFailed() from exc
 
+        clear_progress_projection(self.progress, command.document_id)
         try:
             self.publisher.publish(job.job_id)
             deferred = False

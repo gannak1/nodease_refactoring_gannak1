@@ -52,6 +52,11 @@ def upgrade() -> None:
         sa.Column("fencing_token", sa.String(length=128), nullable=True),
         sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("heartbeat_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column(
+            "dispatch_lease_expires_at",
+            sa.DateTime(timezone=True),
+            nullable=True,
+        ),
         sa.Column("next_retry_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
             "requested_at",
@@ -101,6 +106,11 @@ def upgrade() -> None:
             name="ck_knowledge_document_ingestion_jobs_lease",
         ),
         sa.CheckConstraint(
+            "dispatch_lease_expires_at IS NULL OR "
+            "status IN ('pending', 'retry_scheduled')",
+            name="ck_knowledge_document_ingestion_jobs_dispatch_lease",
+        ),
+        sa.CheckConstraint(
             "(status = 'dead_lettered' AND dead_lettered_at IS NOT NULL) OR "
             "(status <> 'dead_lettered' AND dead_lettered_at IS NULL)",
             name="ck_knowledge_document_ingestion_jobs_dead_letter",
@@ -142,7 +152,12 @@ def upgrade() -> None:
     op.create_index(
         "ix_knowledge_document_ingestion_jobs_due",
         "knowledge_document_ingestion_jobs",
-        ["status", "next_retry_at", "requested_at"],
+        [
+            "status",
+            "next_retry_at",
+            "dispatch_lease_expires_at",
+            "requested_at",
+        ],
         unique=False,
     )
     op.create_index(

@@ -43,4 +43,5 @@ def build_recover_document_ingestion_jobs(
         repository=SqlAlchemyDocumentIngestionRepository(db),
         publisher=CeleryKnowledgeDocumentIngestionPublisher(celery_app),
         unit_of_work=SqlAlchemyUnitOfWork(db),
+        progress=RedisDocumentIngestionProgressProjection(),
     )

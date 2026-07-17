@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal, Protocol
+
+from apps.gateway.application.knowledge_document_ingestion.progress import (
+    DocumentIngestionProgressPort,
+    clear_progress_projection,
+)
 
 from apps.shared.domain.knowledge_document_ingestion import (
     DEFAULT_LEASE_SECONDS,
@@ -13,9 +17,6 @@ from apps.shared.domain.knowledge_document_ingestion import (
     TERMINAL_JOB_STATUSES,
     retry_delay,
 )
-
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,13 @@ class WorkerDocumentIngestionResult:
         "cancelled",
     ]
     reason_code: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveredDocumentIngestionJob:
+    job_id: uuid.UUID
+    document_id: uuid.UUID | None
+    should_publish: bool
 
 
 class DocumentIngestionLeaseLost(Exception):
@@ -124,7 +132,9 @@ class WorkerDocumentIngestionRepositoryPort(Protocol):
         reason_code: str,
     ) -> None: ...
 
-    def recover_due(self, *, now: datetime, limit: int) -> list[uuid.UUID]: ...
+    def recover_due(
+        self, *, now: datetime, limit: int
+    ) -> list[RecoveredDocumentIngestionJob]: ...
 
     def delete_expired_terminal(self, *, before: datetime, limit: int) -> int: ...
 
@@ -141,10 +151,6 @@ class WorkerDocumentIngestionPublisherPort(Protocol):
     def publish(self, job_id: uuid.UUID) -> None: ...
 
 
-class WorkerDocumentIngestionProgressPort(Protocol):
-    def clear(self, document_id: uuid.UUID) -> None: ...
-
-
 class WorkerDocumentIngestionUnitOfWorkPort(Protocol):
     def commit(self) -> None: ...
 
@@ -159,7 +165,7 @@ class ExecuteDocumentIngestionJob:
         authorization: WorkerDocumentIngestionAuthorizationPort,
         runner: WorkerDocumentIngestionRunnerPort,
         unit_of_work: WorkerDocumentIngestionUnitOfWorkPort,
-        progress: WorkerDocumentIngestionProgressPort | None = None,
+        progress: DocumentIngestionProgressPort | None = None,
         lease_seconds: int = DEFAULT_LEASE_SECONDS,
     ) -> None:
         self.repository = repository
@@ -307,14 +313,7 @@ class ExecuteDocumentIngestionJob:
 
     def _commit_and_clear_progress(self, job: WorkerDocumentIngestionJob) -> None:
         self.unit_of_work.commit()
-        if self.progress is not None and job.document_id is not None:
-            try:
-                self.progress.clear(job.document_id)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to clear Knowledge progress projection: error_type=%s",
-                    type(exc).__name__,
-                )
+        clear_progress_projection(self.progress, job.document_id)
 
 
 class RecoverDocumentIngestionJobs:
@@ -324,15 +323,17 @@ class RecoverDocumentIngestionJobs:
         repository: WorkerDocumentIngestionRepositoryPort,
         publisher: WorkerDocumentIngestionPublisherPort,
         unit_of_work: WorkerDocumentIngestionUnitOfWorkPort,
+        progress: DocumentIngestionProgressPort | None = None,
     ) -> None:
         self.repository = repository
         self.publisher = publisher
         self.unit_of_work = unit_of_work
+        self.progress = progress
 
     def execute(self) -> dict[str, int]:
         now = self.repository.database_now()
         try:
-            job_ids = self.repository.recover_due(
+            recoveries = self.repository.recover_due(
                 now=now,
                 limit=DEFAULT_RECOVERY_BATCH_SIZE,
             )
@@ -345,11 +346,20 @@ class RecoverDocumentIngestionJobs:
             self.unit_of_work.rollback()
             raise
 
+        for recovery in recoveries:
+            clear_progress_projection(self.progress, recovery.document_id)
+
         published = 0
-        for job_id in job_ids:
+        for recovery in recoveries:
+            if not recovery.should_publish:
+                continue
             try:
-                self.publisher.publish(job_id)
+                self.publisher.publish(recovery.job_id)
                 published += 1
             except Exception:
                 continue
-        return {"recovered": len(job_ids), "published": published, "deleted": deleted}
+        return {
+            "recovered": len(recoveries),
+            "published": published,
+            "deleted": deleted,
+        }

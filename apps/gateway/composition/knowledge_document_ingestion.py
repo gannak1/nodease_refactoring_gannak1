@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from apps.gateway.adapters.cache.knowledge_document_ingestion_progress import (
+    RedisDocumentIngestionProgressProjection,
+)
 from apps.gateway.adapters.db.knowledge_document_ingestion_repository import (
     SqlAlchemyDocumentIngestionRepository,
 )
@@ -23,6 +26,7 @@ def build_request_document_ingestion(db: Session) -> RequestDocumentIngestion:
         repository=SqlAlchemyDocumentIngestionRepository(db),
         publisher=CeleryKnowledgeDocumentIngestionPublisher(celery_app),
         unit_of_work=SqlAlchemyUnitOfWork(db),
+        progress=RedisDocumentIngestionProgressProjection(),
     )
 
 
@@ -31,6 +35,7 @@ def build_request_knowledge_base_reindex(db: Session) -> RequestKnowledgeBaseRei
         repository=SqlAlchemyDocumentIngestionRepository(db),
         publisher=CeleryKnowledgeDocumentIngestionPublisher(celery_app),
         unit_of_work=SqlAlchemyUnitOfWork(db),
+        progress=RedisDocumentIngestionProgressProjection(),
     )
 
 
@@ -46,4 +51,5 @@ def build_redrive_document_ingestion(db: Session) -> RedriveDocumentIngestion:
         repository=SqlAlchemyDocumentIngestionRepository(db),
         publisher=CeleryKnowledgeDocumentIngestionPublisher(celery_app),
         unit_of_work=SqlAlchemyUnitOfWork(db),
+        progress=RedisDocumentIngestionProgressProjection(),
     )
