@@ -36,6 +36,10 @@ class ModelRoutingOperationalPerformanceService:
     MIN_NEW_RUNS = 3
     QUALITY_CHANGE_THRESHOLD = 0.05
     EFFICIENCY_IMPROVEMENT_THRESHOLD = 0.10
+    _SCHEMA_NOT_REQUIRED_STATUSES = {
+        "not_applicable",
+        "not_required",
+    }
 
     @classmethod
     def learning_contract_outcome(
@@ -75,7 +79,8 @@ class ModelRoutingOperationalPerformanceService:
             return False, "fallback_used"
 
         schema_status = llm.get("schema_status") or trace.get("schema_status")
-        if schema_status is not None and not cls._passed(schema_status):
+        schema_evaluated, schema_passed = cls._schema_evaluation(schema_status)
+        if schema_evaluated and not schema_passed:
             return False, "schema_failed"
         downstream_status = llm.get("downstream_status") or trace.get(
             "downstream_status"
@@ -140,7 +145,7 @@ class ModelRoutingOperationalPerformanceService:
         downstream_status = llm.get("downstream_status") or trace.get(
             "downstream_status"
         )
-        schema_evaluated = schema_status is not None
+        schema_evaluated, schema_passed = cls._schema_evaluation(schema_status)
         downstream_evaluated = downstream_status is not None or workflow_status in {
             "success",
             "failed",
@@ -153,7 +158,7 @@ class ModelRoutingOperationalPerformanceService:
             model_id=model_id,
             input_profile=str(runtime_context.get("input_length_bucket") or "unknown"),
             success_count=int(success),
-            schema_pass_count=int(schema_evaluated and cls._passed(schema_status)),
+            schema_pass_count=int(schema_evaluated and schema_passed),
             schema_eval_count=int(schema_evaluated),
             downstream_success_count=int(downstream_evaluated and downstream_passed),
             downstream_eval_count=int(downstream_evaluated),
@@ -166,6 +171,15 @@ class ModelRoutingOperationalPerformanceService:
             + int(getattr(usage_log, "completion_tokens", 0) or 0),
             total_latency_ms=int(getattr(usage_log, "latency_ms", 0) or 0),
         )
+
+    @classmethod
+    def _schema_evaluation(cls, value: Any) -> tuple[bool, bool]:
+        if value is None:
+            return False, False
+        normalized = cls._status(value)
+        if normalized in cls._SCHEMA_NOT_REQUIRED_STATUSES:
+            return False, False
+        return True, cls._passed(value)
 
     @classmethod
     def record_sample(

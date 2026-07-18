@@ -312,6 +312,25 @@ RAG_RESULT_FIELDS = {
     "token_count",
 }
 
+_MODEL_ROUTING_REASON_SHORT_BY_CODE = {
+    "advanced_quality": "고급 품질 판단",
+    "ambiguous_request": "모호한 요청 해석",
+    "balanced_quality": "균형 품질 판단",
+    "contract_reliability": "운영 성적 반영",
+    "economy_fit": "경제형 모델 적합",
+    "evidence_synthesis": "근거 종합 판단",
+    "high_risk_reasoning": "고위험 판단 필요",
+    "judge_selected": "모델 적합 판단",
+    "long_context": "긴 문맥 종합",
+    "multi_constraint": "여러 조건 종합",
+    "request_capability_match": "요청 역량 적합",
+    "short_answer": "짧은 응답 적합",
+    "simple_request": "단순 요청 적합",
+    "simple_response": "단순 응답 처리",
+    "structured_precision": "정확한 형식 필요",
+}
+_UNRECOGNIZED_MODEL_ROUTING_REASON_CODE = "judge_reason_unrecognized"
+
 
 class TraceMetadataSanitizer:
     """Tracing metadata를 scope별 allowlist로 제한하는 공용 경계."""
@@ -447,7 +466,7 @@ class TraceMetadataSanitizer:
 
     @classmethod
     def _sanitize_model_routing_judge(cls, value: Any) -> dict[str, Any]:
-        """Judge 호출 결과 중 정책 설명에 필요한 수치만 trace에 남긴다."""
+        """Judge 호출 결과 중 정책 설명에 필요한 제한된 값만 trace에 남긴다."""
         safe_value = cls.sanitize_json_safe(value)
         if not isinstance(safe_value, dict):
             return {}
@@ -456,12 +475,20 @@ class TraceMetadataSanitizer:
             {
                 "model",
                 "selected_model",
-                "reason_code",
                 "error_code",
                 "usage_log_error",
                 "learning_error",
             },
         )
+        raw_reason_code = safe_value.get("reason_code")
+        reason_code = raw_reason_code.strip() if isinstance(raw_reason_code, str) else ""
+        if reason_code:
+            reason_short = _MODEL_ROUTING_REASON_SHORT_BY_CODE.get(reason_code)
+            if reason_short is None:
+                sanitized["reason_code"] = _UNRECOGNIZED_MODEL_ROUTING_REASON_CODE
+            else:
+                sanitized["reason_code"] = reason_code
+                sanitized["reason_short"] = reason_short
         confidence = safe_value.get("confidence")
         if (
             not isinstance(confidence, bool)

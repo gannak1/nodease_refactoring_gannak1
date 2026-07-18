@@ -17,6 +17,10 @@ from apps.shared.db.models.llm import (
     LLMModel,
     LLMRelCredentialModel,
 )
+from apps.workflow_engine.services.llm_output_contract import (
+    build_json_output_schema_instruction,
+    response_format_requires_json_instruction,
+)
 from apps.workflow_engine.services.model_routing_judge_first_policy import (
     JUDGE_FIRST_STRATEGY_ID,
 )
@@ -87,6 +91,10 @@ BLOCKED_WORKFLOW_MODEL_TYPES = {
     "moderation",
 }
 VERSION_SUFFIX_PATTERN = re.compile(r"-(?:\d{4}-\d{2}-\d{2}|\d{8})$")
+
+
+class ModelRoutingPromptRenderError(ValueError):
+    """Routing feature용 prompt template을 안전하게 렌더링할 수 없다."""
 
 
 @dataclass(frozen=True)
@@ -258,6 +266,7 @@ class ModelRouter:
     _JUDGE_REQUEST_CHAR_BUDGET = 1_650
     _JUDGE_TASK_DESCRIPTION_CHAR_BUDGET = 420
     _JUDGE_PROMPT_SECTION_CHAR_BUDGET = 180
+    _JUDGE_OUTPUT_CONTRACT_CHAR_BUDGET = 720
 
     @classmethod
     def resolve_policy(
@@ -413,14 +422,7 @@ class ModelRouter:
         """
 
         if rendered_prompt_parts is None:
-            rendered_prompt_parts = [
-                str(cls._node_data_value(node_data, field) or "")
-                for field in (
-                    "system_prompt",
-                    "user_prompt",
-                    "assistant_prompt",
-                )
-            ]
+            rendered_prompt_parts = cls.render_prompt_parts(inputs, node_data)
 
         prompt_values = list(rendered_prompt_parts)[:3]
         prompt_values.extend([""] * (3 - len(prompt_values)))
@@ -441,6 +443,9 @@ class ModelRouter:
         if task_description:
             task_contract_parts.append(f"TASK_DESCRIPTION:\n{task_description}")
         task_contract_parts.append(f"PROMPT_CONSTRAINTS:\n{prompt_feature}")
+        output_contract = cls._judge_output_contract(node_data)
+        if output_contract:
+            task_contract_parts.append(f"OUTPUT_CONTRACT:\n{output_contract}")
 
         request_text = cls._flatten_text(inputs)[: cls._JUDGE_REQUEST_CHAR_BUDGET]
         safe_rag_metadata = {
@@ -474,6 +479,46 @@ class ModelRouter:
         if len(text) <= cls._JUDGE_PROMPT_SECTION_CHAR_BUDGET:
             return text
         return text[: cls._JUDGE_PROMPT_SECTION_CHAR_BUDGET - 1].rstrip() + "…"
+
+    @classmethod
+    def _judge_output_contract(cls, node_data: Any) -> str:
+        """구조화 출력 복잡도 신호를 prompt 예산과 독립적으로 보존한다."""
+
+        parameters = cls._node_data_value(node_data, "parameters", default={})
+        parameters = parameters if isinstance(parameters, Mapping) else {}
+        output_format = cls._node_data_value(node_data, "output_format")
+        force_json_object = response_format_requires_json_instruction(
+            parameters.get("response_format")
+        )
+        schema_instruction = build_json_output_schema_instruction(
+            output_format,
+            force_json_object=force_json_object,
+        )
+        if not schema_instruction:
+            return ""
+
+        schema = (
+            output_format.get("schema") if isinstance(output_format, dict) else None
+        )
+        properties = schema.get("properties") if isinstance(schema, dict) else None
+        required = schema.get("required") if isinstance(schema, dict) else None
+        summary = (
+            "OUTPUT_MODE: json_object\n"
+            "SCHEMA_PRESENT: "
+            f"{str(isinstance(schema, dict) and bool(schema)).lower()}\n"
+            "TOP_LEVEL_TYPE: "
+            f"{schema.get('type', 'unspecified') if isinstance(schema, dict) else 'unspecified'}\n"
+            "TOP_LEVEL_PROPERTY_COUNT: "
+            f"{len(properties) if isinstance(properties, dict) else 0}\n"
+            "REQUIRED_PROPERTY_COUNT: "
+            f"{len(required) if isinstance(required, list) else 0}"
+        )
+        contract = f"{summary}\n\n{schema_instruction}"
+        if len(contract) <= cls._JUDGE_OUTPUT_CONTRACT_CHAR_BUDGET:
+            return contract
+        return (
+            contract[: cls._JUDGE_OUTPUT_CONTRACT_CHAR_BUDGET - 1].rstrip() + "…"
+        )
 
     @classmethod
     def _judge_task_description(cls, node_data: Any) -> str:
@@ -613,11 +658,13 @@ class ModelRouter:
         return None
 
     @classmethod
-    def _render_prompt_parts(
+    def render_prompt_parts(
         cls,
         inputs: dict[str, Any],
         node_data: Any,
     ) -> tuple[str, str, str]:
+        """Preview와 runtime routing이 공유하는 side-effect 없는 prompt renderer."""
+
         values: dict[str, Any] = {}
         referenced_variables = cls._node_data_value(
             node_data,
@@ -632,10 +679,18 @@ class ModelRouter:
             if not name or not isinstance(selector, list) or not selector:
                 continue
             source = inputs.get(str(selector[0]))
-            values[name] = cls._nested_value(source, selector[1:])
-        return tuple(
-            cls._render_template(cls._node_data_value(node_data, field, default=""), values)
-            for field in ("user_prompt", "system_prompt", "assistant_prompt")
+            value = cls._nested_value(source, selector[1:])
+            values[name] = value if value is not None else ""
+        rendered = {
+            field: cls._render_template(
+                cls._node_data_value(node_data, field, default=""), values
+            )
+            for field in ("system_prompt", "user_prompt", "assistant_prompt")
+        }
+        return (
+            rendered["system_prompt"],
+            rendered["user_prompt"],
+            rendered["assistant_prompt"],
         )
 
     @staticmethod
@@ -660,8 +715,10 @@ class ModelRouter:
             return ""
         try:
             return _routing_jinja_env.from_string(source).render(**context)
-        except Exception:
-            return source
+        except Exception as exc:
+            raise ModelRoutingPromptRenderError(
+                "model_routing.prompt_render_failed"
+            ) from exc
 
     @classmethod
     def _flatten_text(cls, value: Any) -> str:

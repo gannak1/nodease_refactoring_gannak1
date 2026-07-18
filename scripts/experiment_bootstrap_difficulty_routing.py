@@ -613,6 +613,43 @@ def wait_for_bootstrap_classifier(
         sleep(max(0.0, poll_interval_seconds))
 
 
+def _bootstrap_request_body(
+    *,
+    draft_metadata: dict[str, Any],
+    default_model_id: str,
+    fallback_model_id: str,
+    initial_budget_usd: float,
+) -> dict[str, Any]:
+    """직전 draft write의 canonical CAS metadata로 bootstrap 요청을 만든다."""
+
+    graph_hash = draft_metadata.get("graph_hash")
+    updated_at = draft_metadata.get("updated_at")
+    if (
+        not isinstance(graph_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", graph_hash) is None
+        or not isinstance(updated_at, str)
+        or not updated_at.strip()
+    ):
+        raise RuntimeError("draft 저장 응답에 canonical CAS metadata가 없습니다.")
+    try:
+        parsed_updated_at = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RuntimeError(
+            "draft 저장 응답의 canonical updated_at이 올바르지 않습니다."
+        ) from exc
+    if parsed_updated_at.tzinfo is None:
+        raise RuntimeError("draft 저장 응답의 canonical updated_at에 timezone이 없습니다.")
+
+    return {
+        "task_description": TASK_DESCRIPTION,
+        "default_model_id": default_model_id,
+        "fallback_model_id": fallback_model_id,
+        "initial_budget_usd": initial_budget_usd,
+        "expected_graph_hash": graph_hash,
+        "expected_updated_at": updated_at,
+    }
+
+
 def create_automatic_target(
     client: ExperimentClient,
     *,
@@ -639,18 +676,18 @@ def create_automatic_target(
         fallback_model_id=fallback_model_id,
     )
     configured = _copy_llm_rag_configuration(source_draft, configured)
-    client.request_object(
+    saved_draft = client.request_object(
         "POST", f"/api/v1/workflows/{workflow_id}/draft", body=configured
     )
     client.request_object(
         "POST",
         f"/api/v1/workflows/{workflow_id}/llm-nodes/{NODE_ID}/model-routing/bootstrap",
-        body={
-            "task_description": TASK_DESCRIPTION,
-            "default_model_id": default_model_id,
-            "fallback_model_id": fallback_model_id,
-            "initial_budget_usd": initial_budget_usd,
-        },
+        body=_bootstrap_request_body(
+            draft_metadata=saved_draft,
+            default_model_id=default_model_id,
+            fallback_model_id=fallback_model_id,
+            initial_budget_usd=initial_budget_usd,
+        ),
         timeout=1200,
     )
     bootstrap = wait_for_bootstrap_classifier(

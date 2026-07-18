@@ -768,10 +768,30 @@ def test_openai_responses_keeps_explicit_reasoning_effort_for_json_output():
 def test_openai_responses_small_text_budget_defaults_to_minimal_reasoning():
     """작은 출력 한도에서는 GPT-5 추론만으로 응답이 끝나는 것을 막는다."""
     client = OpenAIClient(
-        model_id="gpt-5.6-luna",
+        model_id="gpt-5-mini",
         credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
     )
     messages = [{"role": "user", "content": "사내 온보딩 절차를 요약해 주세요."}]
+
+    payload = client._build_responses_request_payload(
+        {
+            "model": "gpt-5-mini",
+            "messages": messages,
+            "max_completion_tokens": 900,
+        },
+        messages,
+    )
+
+    assert payload["max_output_tokens"] == 900
+    assert payload["reasoning"] == {"effort": "minimal"}
+
+
+def test_openai_responses_unknown_model_omits_unconfirmed_reasoning_effort():
+    client = OpenAIClient(
+        model_id="gpt-5.6-luna",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+    messages = [{"role": "user", "content": "요약해 주세요."}]
 
     payload = client._build_responses_request_payload(
         {
@@ -783,7 +803,7 @@ def test_openai_responses_small_text_budget_defaults_to_minimal_reasoning():
     )
 
     assert payload["max_output_tokens"] == 900
-    assert payload["reasoning"] == {"effort": "minimal"}
+    assert "reasoning" not in payload
 
 
 def test_openai_invoke_sync_responses_error_body_is_wrapped(monkeypatch):

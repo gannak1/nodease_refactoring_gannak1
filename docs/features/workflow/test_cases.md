@@ -813,7 +813,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Canonical draft GET과 successful draft POST가 실제 persisted `workflow_id`, server-calculated `graph_hash`, DB `updated_at`을 반환하고 synthetic revision을 반환하지 않는지 확인한다. Agent Builder 저장, version 복원 또는 test 전 저장 뒤 수동 편집 autosync가 직전 POST metadata를 사용하며 stale metadata로 409에 빠지지 않는지 확인한다.
 - 일반 autosync 두 개가 같은 expected hash/timestamp로 경쟁하면 row lock 뒤 하나만 성공하고 다른 요청은 `409 stale_graph`인지 확인한다.
 - 일반 autosync와 Agent Builder mutation save가 같은 base에서 경쟁해도 공통 CAS가 silent overwrite를 막고 Agent Builder의 expected-result validation은 추가로 유지되는지 확인한다.
-- Agent Builder acknowledgement 뒤 stale snapshot을 가진 Model Routing policy PATCH 또는 Cost Optimizer apply/recommendation apply가 실행되면 workflow row lock 뒤 `409 stale_graph`로 닫히고 graph와 policy/candidate 부가 상태를 모두 보존하는지 확인한다. 성공 경로는 canonical `graph_hash`와 `updated_at`을 반환하고 frontend 공통 metadata를 갱신해야 한다.
+- Agent Builder acknowledgement 뒤 stale snapshot을 가진 Model Routing bootstrap POST/policy PATCH 또는 Cost Optimizer apply/recommendation apply가 실행되면 workflow row lock 뒤 `409 stale_graph`로 닫히고 graph와 bootstrap/policy/candidate 부가 상태를 모두 보존하는지 확인한다. 성공 경로는 canonical `graph_hash`와 `updated_at`을 반환하고 frontend 공통 metadata를 갱신해야 한다.
 - Canonical draft 재조회가 local Workflow history, Agent Builder pending boundary와 ambiguous save context를 초기화하지 않는지 확인한다.
 - Save/ack/revert/redo response loss에서 canonical graph metadata로 applied/unapplied/stale을 판정하고 결과 확정 전 pending history를 삭제하지 않는지 확인한다.
 

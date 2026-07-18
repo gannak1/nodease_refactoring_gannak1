@@ -1,6 +1,9 @@
+import pytest
+
 from scripts.experiment_bootstrap_difficulty_routing import (
     AUTHENTICATED_EXPERIMENT_DEPLOYMENT_TYPE,
     RoutingObservation,
+    _bootstrap_request_body,
     _local_http_auth_cookie_header,
     assert_rag_embedding_models_available,
     _deployment_create_body,
@@ -234,6 +237,43 @@ def test_wait_for_bootstrap_classifier_blocks_deployment_until_ready():
     )
 
     assert result["generation_summary"]["classifier_status"] == "ready"
+
+
+def test_bootstrap_request_uses_canonical_metadata_from_saved_draft():
+    request = _bootstrap_request_body(
+        draft_metadata={
+            "graph_hash": "a" * 64,
+            "updated_at": "2026-07-18T08:30:00+00:00",
+        },
+        default_model_id="gpt-4.1-mini",
+        fallback_model_id="gpt-4.1",
+        initial_budget_usd=0.25,
+    )
+
+    assert request["expected_graph_hash"] == "a" * 64
+    assert request["expected_updated_at"] == "2026-07-18T08:30:00+00:00"
+    assert request["default_model_id"] == "gpt-4.1-mini"
+
+
+@pytest.mark.parametrize(
+    "draft_metadata",
+    [
+        {},
+        {"graph_hash": "short", "updated_at": "2026-07-18T08:30:00+00:00"},
+        {"graph_hash": "a" * 64, "updated_at": "not-a-date"},
+        {"graph_hash": "a" * 64, "updated_at": "2026-07-18T08:30:00"},
+    ],
+)
+def test_bootstrap_request_rejects_missing_or_invalid_canonical_metadata(
+    draft_metadata,
+):
+    with pytest.raises(RuntimeError, match="canonical"):
+        _bootstrap_request_body(
+            draft_metadata=draft_metadata,
+            default_model_id="gpt-4.1-mini",
+            fallback_model_id="gpt-4.1",
+            initial_budget_usd=0.25,
+        )
 
 
 def test_experiment_clone_restores_the_source_llm_rag_contract():

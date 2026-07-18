@@ -9,6 +9,7 @@ from apps.workflow_engine.services.model_router import (
 from apps.workflow_engine.services.model_routing_judge_first_policy import (
     build_judge_first_active_policy,
 )
+from apps.workflow_engine.workflow.nodes.llm.entities import LLMNodeData
 
 
 def _node(**overrides):
@@ -180,6 +181,92 @@ def test_routing_feature_contains_all_node_prompts_and_runtime_signals():
     assert "여러 근거를 비교" in feature_with_description
 
 
+def test_llm_node_data_preserves_bounded_model_routing_task_description():
+    description = "여러 근거를 비교해 조건 충돌을 설명합니다."
+    node_data = LLMNodeData.model_validate(
+        {
+            "title": "계약 검토",
+            "model_id": "gpt-4.1-mini",
+            "model_routing_task_description": description,
+        }
+    )
+
+    dumped = node_data.model_dump()
+    feature = ModelRouter.routing_feature_text(
+        {"message": "휴가 규정과 운영 규정을 비교해 주세요."},
+        node_data,
+    )
+
+    assert dumped["model_routing_task_description"] == description
+    assert f"TASK_DESCRIPTION:\n{description}" in feature
+
+    with pytest.raises(ValueError):
+        LLMNodeData.model_validate(
+            {
+                "title": "계약 검토",
+                "model_id": "gpt-4.1-mini",
+                "model_routing_task_description": "가" * 4001,
+            }
+        )
+
+
+def test_routing_feature_renders_variables_and_json_output_contract():
+    node_data = _node(
+        system_prompt="{{department}} 정책을 검토합니다.",
+        user_prompt="질문: {{question}}",
+        assistant_prompt="응답 형식: {{format}}",
+        referenced_variables=[
+            {"name": "department", "value_selector": ["start", "department"]},
+            {"name": "question", "value_selector": ["start", "question"]},
+            {"name": "format", "value_selector": ["start", "format"]},
+        ],
+        output_format={
+            "type": "json",
+            "schema": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+            },
+        },
+    )
+
+    feature = ModelRouter.routing_feature_text(
+        {
+            "start": {
+                "department": "개발팀",
+                "question": "휴가 규정을 알려 주세요.",
+                "format": "요약",
+            }
+        },
+        node_data,
+    )
+
+    assert "SYSTEM_PROMPT:\n개발팀 정책을 검토합니다." in feature
+    assert "USER_PROMPT:\n질문: 휴가 규정을 알려 주세요." in feature
+    assert "ASSISTANT_PROMPT:\n응답 형식: 요약" in feature
+    assert "OUTPUT_CONTRACT:\nOUTPUT_MODE: json_object" in feature
+    assert "TOP_LEVEL_PROPERTY_COUNT: 1" in feature
+    assert "json schema:" in feature
+    assert '"answer"' in feature
+    assert "{{" not in feature
+
+    missing_value_feature = ModelRouter.routing_feature_text({}, node_data)
+    assert "None" not in missing_value_feature
+    assert "{{" not in missing_value_feature
+
+
+def test_routing_feature_truncates_task_description_to_judge_budget():
+    feature = ModelRouter.routing_feature_text(
+        {"message": "요청"},
+        _node(model_routing_task_description="가" * 4000),
+    )
+
+    description = feature.split("TASK_DESCRIPTION:\n", 1)[1].split(
+        "\n\nPROMPT_CONSTRAINTS:", 1
+    )[0]
+    assert len(description) == 420
+    assert description.endswith("…")
+
+
 def test_routing_feature_preserves_current_request_when_node_prompts_are_long():
     long_prompt = "고정 작업 계약 " * 1_000
     request = "짧지만 여러 예외 조건을 함께 검토해 승인 여부를 결정해 주세요."
@@ -194,3 +281,31 @@ def test_routing_feature_preserves_current_request_when_node_prompts_are_long():
     assert "NODE_TASK_CONTRACT:" in feature
     assert len(feature) < 3_000
     assert feature.count("…") == 3
+
+
+def test_routing_feature_preserves_json_contract_when_system_prompt_is_long():
+    feature = ModelRouter.routing_feature_text(
+        {"message": "판정 결과를 구조화해 주세요."},
+        _node(
+            system_prompt="긴 시스템 제약 " * 1_000,
+            output_format={
+                "type": "json",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "decision": {"type": "string"},
+                        "confidence": {"type": "number"},
+                    },
+                    "required": ["decision", "confidence"],
+                },
+            },
+        ),
+    )
+
+    prompt_contract, output_contract = feature.split("\n\nOUTPUT_CONTRACT:\n", 1)
+    assert prompt_contract.count("…") == 1
+    assert '"decision"' not in prompt_contract
+    assert "OUTPUT_MODE: json_object" in output_contract
+    assert "TOP_LEVEL_PROPERTY_COUNT: 2" in output_contract
+    assert "REQUIRED_PROPERTY_COUNT: 2" in output_contract
+    assert '"decision"' in output_contract
