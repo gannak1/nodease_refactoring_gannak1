@@ -34,6 +34,8 @@ Security Alert MVP는 [ADR-0028](decisions/ADR-0028-security-alert-detection-and
 
 LLM credential 저장 암호화는 [ADR-0057](decisions/ADR-0057-llm-credential-at-rest-encryption-and-rotation.md)를 따른다. Shared config service가 versioned envelope의 encrypt/decrypt와 legacy 판정을 단독 소유하고 Gateway, Workflow Engine, RAG answer, embedding과 parser는 ORM ciphertext를 직접 해석하지 않는다. Gateway, Workflow Worker와 Knowledge Worker는 동일 keyring을 시작 시 검증하며 평문 backfill과 key rotation은 application 요청과 분리된 제한 batch 운영 경로가 수행한다.
 
+Provider 실행 권한 경계는 [ADR-0064](decisions/ADR-0064-provider-execution-capability-boundary.md)을 따른다. LLM Credentials가 immutable deployment-version LLM node별 단일 active credential policy와 short-lived opaque capability를 소유하고, Workflow Runtime은 trusted execution control과 실제 prompt/output 요청량만 전달한다. Issuer는 current credential `use`, verified relation, policy·permission·provider-routing·pricing revision과 canonical model pricing을 admission에서 다시 확인하고 capability를 provider 호출 전에 commit한다. Credential config는 Shared decrypt 경계에서만 materialize하며 network I/O 중 control transaction session을 유지하지 않는다. 현재 provider-routing fingerprint는 중앙 egress authorization을 대체하지 않고, durable usage/provider-attempt ledger와 legacy runtime activation은 각각 MBA-287과 MBA-320이 소유한다.
+
 | 구성요소 | 위치 | 책임 |
 | --- | --- | --- |
 | Security Alert Audit Normalizer | audit producer와 shared contract | 탐지 대상 `permission.denied`의 검증된 organization provenance와 `policy.block`의 canonical `policy_reason`을 제공한다 |
