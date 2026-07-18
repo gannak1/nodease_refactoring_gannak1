@@ -46,6 +46,19 @@ def test_actionlint_validates_only_changed_workflow_files():
     assert 'actionlint@v1.7.12 "${workflow_files[@]}"' in workflow
 
 
+def test_helm_validation_registers_chart_dependency_repositories():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+
+    assert "helm repo add bitnami https://charts.bitnami.com/bitnami" in workflow
+    assert (
+        "helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx"
+        in workflow
+    )
+    assert workflow.index("helm repo add bitnami") < workflow.index(
+        "helm dependency build infra/helm/moduly"
+    )
+
+
 def test_knowledge_postgres_workflow_runs_durable_ingestion_contract():
     workflow = KNOWLEDGE_POSTGRES_PATH.read_text(encoding="utf-8")
 
