@@ -1,7 +1,7 @@
 # PR CI 품질 게이트
 
 Status: Draft
-Verified Against: feature/mba-328 @ 64bc7912
+Verified Against: feature/mba-328 @ f425ab83
 
 ## 목적
 
@@ -192,7 +192,7 @@ actionlint .github/workflows/pr-quality-gate.yml .github/workflows/pr-ci-control
 
 - GitHub Actions: 일반 변경에서는 추가·수정·이름 변경된 workflow를 검사한다. CI 제어 변경에서는 기존 배포 workflow의 ShellCheck 부채와 분리된 안정적 smoke 대상으로 품질 게이트, 신뢰 가드와 네 PostgreSQL 계약 workflow를 고정 버전 actionlint로 검사한다.
 - Helm: dependency lock 기반 build, 기본/production values lint와 template render
-- Kubernetes: client-side manifest parse
+- Kubernetes: 목표 EKS `1.31`에 맞춘 `kubeconform v0.8.0` strict schema 검증을 실행하며 cluster API에 접속하지 않음
 - Terraform: format, backend 없는 init, validate
 - Docker Compose: Compose 변경 또는 CI 제어 변경 시 tracked Compose 구성을 모두 해석한다. `compose.<variant>.yml`과 `docker-compose.<variant>.yml`은 같은 디렉터리의 기본 Compose 파일과 합성해 검사한다.
 - Dockerfile: 일반 변경에서는 변경된 Dockerfile을 검사하고, CI 제어 변경에서는 tracked Dockerfile 전체에 BuildKit check를 실행한다.
