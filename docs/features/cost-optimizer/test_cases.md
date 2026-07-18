@@ -10,6 +10,11 @@ FR-011은 `prior_guided_adaptive_v1`으로 다룬다. 모델 catalog와 운영 �
 
 테스트는 LLM 노드 단위 Cost Optimizer 흐름을 기준으로 한다. 모델 라우팅은 자동 라우팅 토글과 active policy 평가뿐 아니라, operational/replay evidence 출처 분리, Hard Gate, 적합성 분석, candidate 품질 gate, 결정론적 optimizer와 decision trace를 검증한다. 고정 20회는 호환 trigger 테스트일 뿐 adaptive routing 완료 기준이 아니다.
 
+FR-011 Runtime Judge 테스트는 provider 공식 문서 기반 특화 태그와 운영 측정값을 구분하고,
+공식 별칭을 후보 하나로 정규화하며, Sol 같은 일반 전문 업무 모델과 o3 같은 전문 추론 모델이
+동일한 `advanced` 후보로 뭉개지지 않는지 검증한다. 특화 태그는 모델 선택을 확정하는 품질
+점수가 아니며 실제 운영 계약 성적이 충분하면 운영 증거가 우선한다.
+
 현재 구현 기준으로 baseline 선택 UI는 최신 baseline을 자동 고정하지 않는다. 테스트는 baseline 목록에서 사용자가 row를 직접 선택한 뒤 B candidate 영역이 열리는 흐름을 기준으로 한다.
 
 ## Test Matrix

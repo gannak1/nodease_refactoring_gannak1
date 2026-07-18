@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from apps.shared.services.model_routing_global_profile_catalog import (
+    canonical_model_routing_id,
+    deduplicate_model_routing_ids,
+)
+
 
 JUDGE_FIRST_STRATEGY_ID = "judge_bootstrap_incremental_v1"
 DEFAULT_LOCAL_CONFIDENCE_THRESHOLD = 0.78
@@ -19,14 +24,17 @@ def build_judge_first_active_policy(
 ) -> dict[str, Any]:
     """실행 가능한 후보만 포함한 Judge-first active policy를 만든다."""
 
-    candidates = _unique_model_ids(candidate_model_ids)
+    candidates = deduplicate_model_routing_ids(candidate_model_ids)
     default_model = str(default_model_id or "").strip()
     if not default_model:
         raise ValueError("model_routing.default_model_required")
+    default_model = _available_representative(default_model, candidates) or default_model
     if default_model not in candidates:
         candidates.insert(0, default_model)
 
     fallback_model = str(fallback_model_id or "").strip() or None
+    if fallback_model:
+        fallback_model = _available_representative(fallback_model, candidates) or fallback_model
     if fallback_model and fallback_model not in candidates:
         candidates.append(fallback_model)
     if fallback_model == default_model:
@@ -84,12 +92,13 @@ def _empty_learning() -> dict[str, Any]:
     }
 
 
-def _unique_model_ids(model_ids: Iterable[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for model_id in model_ids:
-        value = str(model_id or "").strip()
-        if value and value not in seen:
-            seen.add(value)
-            result.append(value)
-    return result
+def _available_representative(model_id: str, candidates: list[str]) -> str | None:
+    canonical_id = canonical_model_routing_id(model_id)
+    return next(
+        (
+            candidate
+            for candidate in candidates
+            if canonical_model_routing_id(candidate) == canonical_id
+        ),
+        None,
+    )

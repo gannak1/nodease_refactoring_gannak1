@@ -778,7 +778,13 @@ class LLMNode(Node[LLMNodeData]):
                 profile["capability_tier"] = catalog_entry.capability_tier
                 catalog_metadata = catalog_metadata_for_model_id(model_id)
                 profile["official_position"] = catalog_metadata["official_position"]
+                profile["model_role"] = catalog_metadata["model_role"]
                 profile["catalog_lifecycle"] = catalog_metadata["lifecycle"]
+                profile["canonical_model_id"] = catalog_metadata["canonical_model_id"]
+                profile["specialization_tags"] = catalog_metadata[
+                    "specialization_tags"
+                ]
+                profile["catalog_evidence_type"] = catalog_metadata["evidence_type"]
 
             global_profile = profile_by_llm_model_id.get(row.id) if row is not None else None
             if global_profile is not None:

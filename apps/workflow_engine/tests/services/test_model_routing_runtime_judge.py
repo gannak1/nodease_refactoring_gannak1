@@ -6,6 +6,7 @@ from apps.workflow_engine.services.model_routing_runtime_judge import (
     RuntimeJudgeResponseError,
 )
 from apps.shared.services.llm_client.base import ProviderInvocationError
+from apps.workflow_engine.workflow.nodes.llm.llm_node import LLMNode
 
 
 class _JudgeClient:
@@ -152,6 +153,80 @@ def test_runtime_judge_marks_non_rag_request_without_inventing_retrieval_metrics
 
     prompt_body = __import__("json").loads(client.calls[0]["messages"][1]["content"])
     assert prompt_body["rag_context"] == {"used": False}
+
+
+def test_runtime_judge_collapses_sol_alias_and_receives_source_backed_specializations():
+    client = _JudgeClient(
+        '{"selected_model_id":"gpt-5.6-sol","confidence":0.88,'
+        '"reason_short":"전문 업무 종합","reason_code":"professional_synthesis"}'
+    )
+
+    decision = ModelRoutingRuntimeJudge.decide(
+        client=client,
+        candidate_model_ids=["gpt-5.6", "gpt-5.6-sol", "o3"],
+        routing_feature_text="여러 부서 자료를 통합해 경영진 보고서를 작성합니다.",
+        candidate_profiles=[
+            {
+                "model_id": "gpt-5.6-sol",
+                "canonical_model_id": "gpt-5.6-sol",
+                "evidence_type": "provider_documentation",
+                "model_role": "frontier_generalist",
+                "specialization_tags": [
+                    "complex_professional_work",
+                    "complex_reasoning",
+                    "coding",
+                ],
+            },
+            {
+                "model_id": "o3",
+                "canonical_model_id": "o3",
+                "evidence_type": "provider_documentation",
+                "model_role": "reasoning_specialist",
+                "specialization_tags": [
+                    "multi_step_reasoning",
+                    "math_reasoning",
+                    "scientific_reasoning",
+                ],
+            },
+        ],
+    )
+
+    assert decision.selected_model_id == "gpt-5.6-sol"
+    prompt_body = __import__("json").loads(client.calls[0]["messages"][1]["content"])
+    assert [row["id"] for row in prompt_body["candidate_models"]] == [
+        "gpt-5.6-sol",
+        "o3",
+    ]
+    assert prompt_body["candidate_models"][0]["specialization_tags"] == [
+        "complex_professional_work",
+        "complex_reasoning",
+        "coding",
+    ]
+    assert prompt_body["candidate_models"][0]["evidence_type"] == "provider_documentation"
+    assert prompt_body["candidate_models"][0]["model_role"] == "frontier_generalist"
+    assert prompt_body["candidate_models"][1]["specialization_tags"] == [
+        "multi_step_reasoning",
+        "math_reasoning",
+        "scientific_reasoning",
+    ]
+    assert prompt_body["candidate_models"][1]["model_role"] == "reasoning_specialist"
+    instruction = client.calls[0]["messages"][0]["content"]
+    assert "공급자 공식 특화 태그는 약한 사전 정보" in instruction
+    assert "일반 전문 업무 능력과 전문 추론 능력을 같은 것으로 취급하지 마세요" in instruction
+    assert "reasoning_specialist인 후보는 형식 논증이나 다단계 추론 자체가 핵심일 때" in instruction
+
+
+def test_llm_node_builds_distinct_source_backed_profiles_for_sol_and_o3():
+    profiles = LLMNode._routing_candidate_profiles(
+        object(),
+        ["gpt-5.6-sol", "o3"],
+    )
+
+    assert profiles[0]["canonical_model_id"] == "gpt-5.6-sol"
+    assert profiles[0]["catalog_evidence_type"] == "provider_documentation"
+    assert "complex_professional_work" in profiles[0]["specialization_tags"]
+    assert "math_reasoning" in profiles[1]["specialization_tags"]
+    assert profiles[0]["specialization_tags"] != profiles[1]["specialization_tags"]
 
 
 def test_runtime_judge_receives_operational_contract_evidence_as_stronger_than_catalog_prior():

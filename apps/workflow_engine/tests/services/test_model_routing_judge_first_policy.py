@@ -28,6 +28,18 @@ def test_builder_creates_only_judge_first_policy_contract():
     }
 
 
+def test_builder_collapses_provider_aliases_to_one_executable_candidate():
+    policy = build_judge_first_active_policy(
+        policy_version="judge-first-v2",
+        default_model_id="gpt-5.6",
+        fallback_model_id="o3",
+        candidate_model_ids=["gpt-5.6", "gpt-5.6-sol", "o3"],
+    )
+
+    assert policy["default_model_id"] == "gpt-5.6-sol"
+    assert policy["candidate_model_ids"] == ["gpt-5.6-sol", "o3"]
+
+
 def test_legacy_policy_is_normalized_without_reusing_legacy_rules():
     legacy = {
         "strategy_id": "prior_guided_adaptive_v1",

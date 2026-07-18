@@ -11,6 +11,10 @@ import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from apps.shared.services.model_routing_global_profile_catalog import (
+    deduplicate_model_routing_ids,
+)
+
 
 class RuntimeJudgeResponseError(ValueError):
     """Judge가 계약 밖의 응답을 반환했을 때 사용하는 오류다."""
@@ -191,6 +195,9 @@ class ModelRoutingRuntimeJudge:
             "후보마다 필요한 능력과 실제 계약 성적을 직접 비교해, 이번 요청을 안정적으로 수행할 최소 충분 후보 하나를 선택하세요. "
             "후보 목록의 순서, 모델 ID의 숫자, capability_tier 하나만으로 선택하지 말고 모든 후보를 비교하세요. capability_tier는 약한 사전 정보일 뿐이며, 가격·지연·실패율은 필요한 능력을 만족하는 후보들 사이에서만 비교하세요. "
             "candidate_models의 capability_tier와 official_position은 provider가 공개한 역할 구분을 구조화한 약한 사전 정보이며, 측정된 품질·지연·실패율이 아닙니다. "
+            "공급자 공식 특화 태그는 약한 사전 정보입니다. 요청에 실제로 필요한 능력과 태그가 직접 맞을 때만 사용하고, 일반 전문 업무 능력과 전문 추론 능력을 같은 것으로 취급하지 마세요. "
+            "예를 들어 전문 업무 전반에 맞는 후보와 수학·과학·코드의 다단계 추론에 특화된 후보가 모두 있으면, 단순히 둘 다 advanced라는 이유로 같은 후보처럼 보지 마세요. "
+            "model_role이 reasoning_specialist인 후보는 형식 논증이나 다단계 추론 자체가 핵심일 때 우선 검토하고, 전문 문서 작성·종합 결과물처럼 폭넓은 업무 완성도가 핵심이면 frontier_generalist를 우선 검토하세요. "
             "quality_for_*와 latency_ms_for_*가 있는 경우에만 Nodease가 별도로 보유한 사전 측정치입니다. "
             "candidate_models의 operational_*은 실제 배포 실행에서 나온 workflow 계약 성적입니다. "
             "operational_run_count가 5건 이상이면, schema·후속 노드 성공률이 낮거나 fallback 비율이 높은 후보를 "
@@ -384,6 +391,32 @@ class ModelRoutingRuntimeJudge:
             official_position = raw.get("official_position")
             if isinstance(official_position, str) and official_position:
                 safe["official_position"] = official_position[:80]
+            model_role = raw.get("model_role")
+            if model_role in {
+                "efficient_generalist",
+                "balanced_generalist",
+                "non_reasoning_generalist",
+                "frontier_generalist",
+                "reasoning_generalist",
+                "reasoning_specialist",
+                "general_purpose",
+            }:
+                safe["model_role"] = model_role
+            canonical_model_id = raw.get("canonical_model_id")
+            if isinstance(canonical_model_id, str) and canonical_model_id:
+                safe["canonical_model_id"] = canonical_model_id[:120]
+            evidence_type = raw.get("catalog_evidence_type") or raw.get("evidence_type")
+            if evidence_type == "provider_documentation":
+                safe["evidence_type"] = evidence_type
+            specialization_tags = raw.get("specialization_tags")
+            if isinstance(specialization_tags, list):
+                safe_tags = [
+                    tag[:80]
+                    for tag in specialization_tags
+                    if isinstance(tag, str) and tag
+                ][:12]
+                if safe_tags:
+                    safe["specialization_tags"] = safe_tags
             catalog_lifecycle = raw.get("catalog_lifecycle")
             if catalog_lifecycle in {"listed", "preview"}:
                 safe["catalog_lifecycle"] = catalog_lifecycle
@@ -440,10 +473,24 @@ class ModelRoutingRuntimeJudge:
                 row["input_price_per_1k"] = input_price
             if isinstance(output_price, (int, float)):
                 row["output_price_per_1k"] = output_price
-            for key in ("capability_tier", "official_position", "catalog_lifecycle"):
+            for key in (
+                "capability_tier",
+                "official_position",
+                "model_role",
+                "catalog_lifecycle",
+            ):
                 value = profile.get(key)
                 if isinstance(value, str) and value:
                     row[key] = value
+            canonical_model_id = profile.get("canonical_model_id")
+            if isinstance(canonical_model_id, str) and canonical_model_id:
+                row["canonical_model_id"] = canonical_model_id
+            evidence_type = profile.get("evidence_type")
+            if evidence_type == "provider_documentation":
+                row["evidence_type"] = evidence_type
+            specialization_tags = profile.get("specialization_tags")
+            if isinstance(specialization_tags, list) and specialization_tags:
+                row["specialization_tags"] = specialization_tags
             quality = profile.get("quality_by_difficulty")
             if isinstance(quality, dict):
                 for source_key, output_key in (
@@ -483,14 +530,7 @@ class ModelRoutingRuntimeJudge:
 
     @staticmethod
     def _normalized_candidates(candidate_model_ids: list[str]) -> list[str]:
-        seen: set[str] = set()
-        result: list[str] = []
-        for model_id in candidate_model_ids:
-            normalized = str(model_id or "").strip()
-            if normalized and normalized not in seen:
-                seen.add(normalized)
-                result.append(normalized)
-        return result
+        return deduplicate_model_routing_ids(candidate_model_ids)
 
     @staticmethod
     def _response_content(response: Any) -> str:

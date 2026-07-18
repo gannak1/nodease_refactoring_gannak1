@@ -116,6 +116,13 @@ embedding vector, semantic cohort endpoint는 제공하지 않는다. 초기 운
 현재 후보 중 하나를 선택하고, 이후에는 Judge 선택 label과 완료된 운영 결과를 바탕으로 local
 router가 먼저 선택한다.
 
+Runtime Judge의 `candidate_models`에는 provider 공식 문서에서 확인한
+`canonical_model_id`, `model_role`, `specialization_tags`,
+`evidence_type=provider_documentation`을 포함한다.
+공식 별칭과 정식 ID가 동시에 실행 가능하면 정식 ID 하나만 전달하고, 별칭만 실행 가능하면
+credential 조회가 가능한 별칭을 유지한다. 공급자 특화 태그는 약한 사전 정보이며
+`operational_run_count`가 충분한 후보의 계약 성공·fallback 성적보다 우선하지 않는다.
+
 ### Legacy Bootstrap Contract
 
 이 API는 기존 bootstrap 데이터를 조회하는 호환 경로다. 신규 자동 라우팅은 이 artifact를 읽거나
