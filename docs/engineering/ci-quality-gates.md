@@ -1,7 +1,7 @@
 # PR CI 품질 게이트
 
 Status: Draft
-Verified Against: feature/mba-328 @ 5a6d8a61
+Verified Against: feature/mba-328 @ 221886d7
 
 ## 목적
 
