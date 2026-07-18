@@ -4,6 +4,12 @@
 
 import { useParams } from 'next/navigation';
 import { useState, useEffect } from 'react';
+import { CitationList } from '@/app/features/workflow/components/execution/CitationList';
+import {
+  getDeploymentRunCitations,
+  getDeploymentRunFinalPreview,
+  type WorkflowCitation,
+} from '@/app/features/workflow/utils/deploymentRunResult';
 import './embed-reset.css';
 
 interface DeploymentInfo {
@@ -32,6 +38,7 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+  citations?: WorkflowCitation[];
 }
 
 export default function EmbedChatPage() {
@@ -161,55 +168,25 @@ export default function EmbedChatPage() {
 
       const data = await response.json();
 
-      // 응답에서 결과 추출
-      let assistantContent = '';
-
-      if (data.status === 'success' && data.results) {
-        // results 객체에서 AnswerNode의 answer 찾기
-        for (const nodeResult of Object.values(data.results)) {
-          if (
-            nodeResult &&
-            typeof nodeResult === 'object' &&
-            'answer' in nodeResult
-          ) {
-            assistantContent = (nodeResult as { answer: string }).answer;
-            break;
-          }
-        }
-
-        // answer를 찾지 못한 경우, 첫 번째 결과값 사용
-        if (!assistantContent) {
-          const firstResult = Object.values(data.results)[0];
-          if (typeof firstResult === 'string') {
-            assistantContent = firstResult;
-          } else if (firstResult && typeof firstResult === 'object') {
-            // 객체인 경우 첫 번째 값 추출 시도
-            const firstValue = Object.values(firstResult)[0];
-            assistantContent =
-              typeof firstValue === 'string'
-                ? firstValue
-                : '응답을 처리할 수 없습니다.';
-          } else {
-            assistantContent = '응답을 처리할 수 없습니다.';
-          }
-        }
-      } else {
-        assistantContent = data.message || '응답을 처리할 수 없습니다.';
-      }
+      const preview = getDeploymentRunFinalPreview(deploymentInfo, data);
+      const assistantContent =
+        data.status === 'success' && !preview.isEmpty
+          ? preview.text
+          : '응답을 처리할 수 없습니다.';
 
       const assistantMessage: Message = {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
         content: assistantContent,
         timestamp: new Date(),
+        citations: getDeploymentRunCitations(data),
       };
       setMessages((prev) => [...prev, assistantMessage]);
-    } catch (error: any) {
-      // 에러 메시지 표시
+    } catch {
       const errorMessage: Message = {
         id: `error-${Date.now()}`,
         role: 'assistant',
-        content: `오류가 발생했습니다: ${error.message || '알 수 없는 오류'}`,
+        content: '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.',
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, errorMessage]);
@@ -366,19 +343,28 @@ export default function EmbedChatPage() {
             <div
               style={{
                 maxWidth: '75%',
-                padding: '12px 16px',
-                borderRadius: '12px',
-                backgroundColor:
-                  message.role === 'user' ? '#4AAED9' : '#ffffff',
-                color: message.role === 'user' ? '#ffffff' : '#111827',
-                fontSize: '14px',
-                lineHeight: '1.5',
-                boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)',
-                wordWrap: 'break-word',
-                whiteSpace: 'pre-wrap',
+                width: message.role === 'assistant' ? '100%' : 'auto',
               }}
             >
-              {message.content}
+              <div
+                style={{
+                  padding: '12px 16px',
+                  borderRadius: '12px',
+                  backgroundColor:
+                    message.role === 'user' ? '#4AAED9' : '#ffffff',
+                  color: message.role === 'user' ? '#ffffff' : '#111827',
+                  fontSize: '14px',
+                  lineHeight: '1.5',
+                  boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)',
+                  wordWrap: 'break-word',
+                  whiteSpace: 'pre-wrap',
+                }}
+              >
+                {message.content}
+              </div>
+              {message.role === 'assistant' ? (
+                <CitationList items={message.citations ?? []} />
+              ) : null}
             </div>
             <span
               style={{

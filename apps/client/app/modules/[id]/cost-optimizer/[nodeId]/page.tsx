@@ -281,7 +281,7 @@ const formatKnowledgeSummary = (candidate: CandidateDraft) =>
         : `${candidate.retrievedContextMaxChars.toLocaleString('ko-KR')}자`
     }`,
     `검색 문서 압축 ${compressionLabelOf(candidate.retrievedContextCompression)}`,
-    `답변 근거 확인 ${groundingLabelOf(candidate.answerGroundingCheck)}`,
+    `답변·검색 문서 어휘 일치도 ${groundingLabelOf(candidate.answerGroundingCheck)}`,
   ].join('\n');
 
 const formatOutputFormatValue = (
@@ -2543,7 +2543,9 @@ function CostOptimizerPlaygroundContent({
                               </dd>
                             </div>
                             <div className="flex justify-between gap-3">
-                              <dt className="text-slate-500">답변 근거 확인</dt>
+                              <dt className="text-slate-500">
+                                답변·검색 문서 어휘 일치도
+                              </dt>
                               <dd className="font-semibold">
                                 {groundingLabelOf(
                                   candidate.answerGroundingCheck,

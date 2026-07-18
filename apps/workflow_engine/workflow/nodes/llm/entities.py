@@ -9,6 +9,7 @@ from apps.shared.domain.knowledge_runtime_candidates import (
 from apps.shared.domain.workflow_knowledge_references import (
     parse_llm_knowledge_references,
 )
+from apps.shared.schemas.workflow_citation import CitationDisplayMode
 from apps.workflow_engine.workflow.nodes.base.entities import BaseNodeData
 
 
@@ -21,7 +22,6 @@ class LLMVariable(BaseModel):
     value_selector: List[str] = Field(
         ..., description="값을 가져올 경로 [node_id, variable_key]"
     )
-
 
 
 class KnowledgeBaseRef(BaseModel):
@@ -111,7 +111,11 @@ class LLMNodeData(BaseNodeData):
     answerGroundingCheck: str = Field(
         default="basic",
         pattern="^(off|basic|strict)$",
-        description="답변 근거 확인 수준",
+        description="답변과 검색 문서의 어휘 일치도 metadata 기록 수준",
+    )
+    citationDisplayMode: CitationDisplayMode = Field(
+        default="hidden",
+        description="최종 사용자 응답의 권한 안전 Citation 표시 수준",
     )
     evidenceSufficiencyPolicy: EvidenceSufficiencyPolicy = Field(
         default="minimum_evidence",
@@ -135,7 +139,9 @@ class LLMNodeData(BaseNodeData):
     )
 
     def _active_routing_model_id(self) -> Optional[str]:
-        if not self.auto_model_routing or not isinstance(self.model_routing_policy, dict):
+        if not self.auto_model_routing or not isinstance(
+            self.model_routing_policy, dict
+        ):
             return None
 
         active_policy = self.model_routing_policy.get("active_policy")

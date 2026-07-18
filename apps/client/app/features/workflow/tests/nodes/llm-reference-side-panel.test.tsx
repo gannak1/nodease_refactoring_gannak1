@@ -161,4 +161,27 @@ describe('LLMReferenceSidePanel Knowledge selection', () => {
 
     await waitFor(() => expect(twentyFirst).toBeDisabled());
   });
+
+  it('legacy Citation 설정은 숨김으로 닫고 Grounding과 독립적으로 편집한다', async () => {
+    knowledgeApiMock.getLLMSelectableKnowledgeBases.mockResolvedValueOnce([]);
+    knowledgeApiMock.getLLMSelectableKnowledgeCollections.mockResolvedValueOnce({
+      collections: [],
+    });
+    const onDataChange = renderPanel(
+      baseData({ answerGroundingCheck: 'strict' }),
+    );
+
+    expect(await screen.findByLabelText('출처 표시')).toHaveValue('hidden');
+    expect(
+      screen.getByLabelText('답변·검색 문서 어휘 일치도'),
+    ).toHaveValue('strict');
+    expect(
+      screen.getByText(/출처 표시나 답변 차단 기능은 아닙니다/),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('출처 표시'), {
+      target: { value: 'basic' },
+    });
+    expect(onDataChange).toHaveBeenCalledWith({ citationDisplayMode: 'basic' });
+  });
 });

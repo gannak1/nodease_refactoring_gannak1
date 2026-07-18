@@ -321,6 +321,13 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
 - 내부 실행 페이지가 `401`을 받으면 path/query/hash를 safe `next`로 보존해 로그인 화면으로 이동한다.
 - 이메일/비밀번호 로그인 성공 후 same-origin `next`로 복귀하며, unsafe URL은 `/dashboard`로 닫는다. Google OAuth는 기존 dashboard 복귀 계약을 유지한다.
 
+### 6. LLM Citation 설정과 표시
+
+- LLM Reference side panel은 `답변·검색 문서 어휘 일치도`와 `출처 표시`를 별도 select로 제공한다.
+- `출처 표시` 옵션은 `숨김`, `기본`, `상세`이며, 상세 mode가 제한된 본문 미리보기를 포함할 수 있음을 helper text로 알린다.
+- Test sidebar와 인증 실행 화면은 최종 사용자 답변 아래에 공통 `CitationList`를 표시한다. Citation이 없거나 malformed이면 목록만 생략한다.
+- Citation 목록은 native disclosure를 사용하고 keyboard로 열 수 있어야 하며 긴 라벨·section·preview는 작은 viewport에서 줄바꿈되어야 한다.
+
 ## Accessibility
 
 ### 1. 실행 편의성

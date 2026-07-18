@@ -145,6 +145,7 @@ export function LLMReferenceSidePanel({
   const retrievedContextMaxChars = data.retrievedContextMaxChars ?? '';
   const retrievedContextCompression = data.retrievedContextCompression ?? 'off';
   const answerGroundingCheck = data.answerGroundingCheck ?? 'basic';
+  const citationDisplayMode = data.citationDisplayMode ?? 'hidden';
   const recommendedScoreRange: [number, number] = [0.3, 0.6];
   const recommendedTopKRange: [number, number] = [3, 8];
 
@@ -875,7 +876,7 @@ export function LLMReferenceSidePanel({
                 htmlFor={`${nodeId}-answer-grounding-check`}
                 className="text-xs font-medium text-gray-600"
               >
-                답변 근거 확인
+                답변·검색 문서 어휘 일치도
               </label>
               <select
                 id={`${nodeId}-answer-grounding-check`}
@@ -895,7 +896,42 @@ export function LLMReferenceSidePanel({
                 <option value="basic">기본</option>
                 <option value="strict">엄격</option>
               </select>
+              <p className="text-[11px] leading-4 text-gray-500">
+                답변과 검색 문서에서 겹치는 표현을 실행 metadata로
+                기록합니다. 출처 표시나 답변 차단 기능은 아닙니다.
+              </p>
             </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label
+              htmlFor={`${nodeId}-citation-display-mode`}
+              className="text-xs font-medium text-gray-600"
+            >
+              출처 표시
+            </label>
+            <select
+              id={`${nodeId}-citation-display-mode`}
+              value={citationDisplayMode}
+              disabled={readOnly}
+              onChange={(event) =>
+                applyNodeData({
+                  citationDisplayMode: event.target.value as
+                    | 'hidden'
+                    | 'basic'
+                    | 'detailed',
+                })
+              }
+              className="w-full rounded-md border border-gray-200 px-2 py-2 text-xs text-gray-800 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:bg-gray-100"
+            >
+              <option value="hidden">숨김</option>
+              <option value="basic">기본 정보</option>
+              <option value="detailed">상세 미리보기</option>
+            </select>
+            <p className="text-[11px] leading-4 text-gray-500">
+              실제 답변 생성에 사용된 권한 허용 문서만 안전한 표시명으로
+              보여줍니다.
+            </p>
           </div>
         </div>
 

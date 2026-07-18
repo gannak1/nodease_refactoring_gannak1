@@ -62,6 +62,12 @@ CBOT-REQ-004~007의 global `memory_mode`, client UUID와 execution-log memory는
 - 현재 인증 실행은 typed conversation control을 사용해 신규 내부 호출의 reserved-input collision을 제거한다. 공개 legacy route와 명시적 compatibility fallback은 Target Conversation Session migration 전까지 별도로 표시한다.
 - 현재 내부 실행 UI는 first-party configured CORS origin에서 JSON 요청만 보낸다. 브라우저의 unlisted-origin JSON 요청은 preflight에서 차단되고 simple cross-site content type은 `415`로 dispatch 전에 차단되지만, 별도 CSRF token과 exact-Origin 검사는 아직 Target이다.
 
+## User-visible Citations
+
+- 공개 Chatbot과 인증 내부 Chatbot은 Workflow final response의 safe Citation sidecar를 동일하게 표시한다.
+- Citation 표시는 LLM node의 `citationDisplayMode`를 따르며 공개 route에서는 anonymous public-only runtime gate를 통과한 evidence만 허용한다.
+- Citation을 만들 수 없거나 malformed sidecar를 받더라도 답변은 계속 표시하고 Citation 목록만 생략한다.
+
 ## Open Questions
 
 - 다중 입력 변수 챗봇 지원(현재는 사용자 메시지를 첫 입력 변수에 매핑).

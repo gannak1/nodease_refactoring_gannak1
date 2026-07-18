@@ -472,6 +472,14 @@ Blocking response:
 - OAuth Gmail credential의 Mail 조회와 acknowledgement는 `gmail.modify` 기반 고정 Gmail REST API를 사용한다. `gmail.compose`-only credential은 재인가 전 실행할 수 없고 OAuth credential에는 IMAP fallback이 없다.
 - Gmail REST message id는 durable source reference에 암호화 저장되며 `mailNode` output에는 포함되지 않는다.
 
+## Workflow Final Response Citation
+
+- 성공한 test/deployment/public Chatbot 실행의 최종 결과는 authorized prompt evidence가 있고 `citationDisplayMode != hidden`이면 `__nodease_citations` version 1 sidecar를 추가할 수 있다.
+- sidecar의 schema와 비노출 필드는 [Knowledge API Spec](../knowledge/api_spec.md)의 `Workflow User Citation Sidecar`를 따른다.
+- 기존 final output field와 output schema는 변경하지 않는다. Citation parser가 모르는 version이나 malformed item을 만나면 해당 Citation을 무시하되 최종 답변은 유지한다. TestSidebar는 현재 graph의 node id 집합도 전달하며 reserved key와 충돌하는 stream node-result를 서버 Citation으로 해석하지 않는다.
+- CodeNode의 `inputs[].source="node-id.variable"`가 Answer data lineage에 연결되면 해당 source LLM의 Citation도 함께 집계한다. Citation key가 legacy output 또는 stream node id와 충돌하면 기존 결과를 보존하고 Citation만 생략한다.
+- `__nodease_citations`는 사용자 응답 전용이다. Workflow Engine은 durable run output을 기록하기 전에 reserved sidecar를 제거한다.
+
 ## Slack Node 저장·실행 계약
 
 - `slackPostNode.data`는 `slackMode`, `channel`, `message`, `blocks`, `attachments`, `thread_ts`, `username`, `icon_emoji`, `referenced_variables`와 제한된 UI metadata를 canonical 설정으로 허용한다. 기존 `url`, `authConfig.token`, `method`, `headers`, `body`, `timeout`, `authType`은 명시된 legacy 읽기 호환 범위에서만 허용하며 endpoint/header/body/timeout의 실행 source로 사용하지 않는다.

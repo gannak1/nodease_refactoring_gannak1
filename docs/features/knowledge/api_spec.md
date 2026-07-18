@@ -856,6 +856,35 @@ Safe no-result/insufficient-evidence response는 `status`, `evidence_sufficient=
 
 현재 구현된 standalone single-KB `/api/v1/rag/agent/answer`와 `/api/v1/rag/agent/answer/stream` lifecycle, same-scope permission preflight blocked status, trace/usage correlation 경계는 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)을 따른다. Source-managed KB, auto collection, multi-KB mode의 target resource hiding 확장은 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 provisional baseline을 따른다. 이 기준은 ADR-0013의 현재 단일 KB 계약을 재정의하지 않는다.
 
+## Workflow User Citation Sidecar
+
+Workflow/Chatbot 최종 응답은 사용자 표시용 Citation이 있을 때만 아래의 additive reserved sidecar를 포함할 수 있다. 이 계약은 privileged lineage Citation과 별개이며 내부 resource identity를 제공하지 않는다.
+
+```json
+{
+  "__nodease_citations": {
+    "version": 1,
+    "items": [
+      {
+        "citation_id": "evidence-1",
+        "evidence_rank": 1,
+        "label": "공통 휴가 정책",
+        "page_number": 3,
+        "section": "연차 신청",
+        "content_preview": null
+      }
+    ]
+  }
+}
+```
+
+- item은 최대 8개이며 `citation_id`는 응답 내 전역 `evidence_rank`와 일치한다.
+- `content_preview`는 `detailed` mode에서만 최대 300자의 정제된 prompt evidence를 담는다. 공통 fail-closed redaction을 먼저 적용하므로 secret/PII 검출 또는 redaction 실패 시 preview를 생략한다.
+- `knowledge_base_id`, `collection_id`, `document_id`, `document_version_id`, `chunk_id`, raw filename/path/URL, score와 child-local rank는 금지한다.
+- sidecar는 서버가 만든 projection만 추가한다. legacy final output 또는 stream node-result map에 같은 key가 이미 있으면 기존 output을 덮어쓰거나 제거하지 않고 Citation sidecar만 생략한다.
+- Citation이 없거나 설정이 `hidden`이면 sidecar를 생략한다. sidecar 생성 실패는 답변 자체를 실패시키지 않는다.
+- 이 sidecar는 사용자 응답용이며 durable run output과 일반 audit/trace payload에는 저장하지 않는다.
+
 ## Trace And Audit
 
 - Multi-KB 또는 collection-routed answer는 `trace_payloads.rag_answer_run_id`나 `llm_usage_logs.rag_answer_run_id`를 추가하지 않는다.

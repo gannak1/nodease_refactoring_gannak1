@@ -17,6 +17,12 @@ from sqlalchemy.orm import Session
 
 from apps.shared.pubsub import publish_workflow_event  # [GEVENT] Use sync version
 from apps.shared.schemas.workflow import EdgeSchema, NodeSchema
+from apps.shared.schemas.workflow_citation import (
+    MAX_WORKFLOW_CITATIONS,
+    WORKFLOW_CITATION_RESULT_KEY,
+    WorkflowCitationEnvelope,
+    WorkflowCitationItem,
+)
 from apps.shared.db.session import SessionLocal
 from apps.shared.domain.workflow_execution_identity import (
     InvocationSegment,
@@ -564,7 +570,7 @@ class WorkflowEngine:
                 self._provider_output_source_ids(results)
             )
             if stream_mode:
-                final_context = dict(results)
+                final_context = self._with_user_citations(dict(results), results)
                 if not self.is_subworkflow:
                     self.logger.update_run_log_finish(
                         self._durable_run_outputs(
@@ -579,6 +585,7 @@ class WorkflowEngine:
                 yield {"type": "workflow_finish", "data": final_context}
             else:
                 final_result = self._get_answer_node_result(results)
+                final_result = self._with_user_citations(final_result, results)
                 if not self.is_subworkflow:
                     self.logger.update_run_log_finish(
                         self._durable_run_outputs(
@@ -1467,6 +1474,7 @@ class WorkflowEngine:
         all_results: Dict[str, Any],
         stream_mode: bool,
     ) -> Any:
+        outputs = self._without_user_citations(outputs)
         provider_node_ids = self._provider_output_source_ids(all_results)
         if not provider_node_ids:
             return outputs
@@ -1588,6 +1596,21 @@ class WorkflowEngine:
                     extract_from_value(item)
 
         extract_from_value(data_dict)
+
+        # CodeNode input은 selector 배열 대신 "node-id.variable" source를 사용한다.
+        # Citation lineage에도 실제 데이터 전달 경로를 포함해야 한다.
+        if getattr(schema, "type", None) == "codeNode":
+            inputs = data_dict.get("inputs")
+            if isinstance(inputs, list):
+                for input_item in inputs:
+                    if not isinstance(input_item, dict):
+                        continue
+                    source = input_item.get("source")
+                    if not isinstance(source, str):
+                        continue
+                    source_node_id, separator, _ = source.partition(".")
+                    if separator and source_node_id in self.node_schemas:
+                        referenced_nodes.add(source_node_id)
         return referenced_nodes
 
     def _get_context(self, node_id: str, results: Dict) -> Dict[str, Any]:
@@ -1599,11 +1622,113 @@ class WorkflowEngine:
 
     def _get_answer_node_result(self, results: Dict) -> Dict[str, Any]:
         """배포 모드에서 AnswerNode의 결과만 추출하여 반환합니다."""
-        answer_nodes = self.nodes_by_type.get("answerNode", [])
-
-        for node_id in answer_nodes:
+        for node_id in self.nodes_by_type.get("answerNode", []):
             if node_id in results:
                 return results[node_id]
+
+        return {}
+
+    def _with_user_citations(
+        self,
+        outputs: Any,
+        all_results: Dict[str, Any],
+    ) -> Any:
+        """Answer data lineage의 ephemeral Citation만 최종 응답에 투영한다."""
+        if not isinstance(outputs, dict):
+            return outputs
+
+        response = dict(outputs)
+        self._user_citations_attached = False
+        if self.is_subworkflow or self._has_user_citation_key_collision(response):
+            return response
+        envelope = self._collect_user_citations(all_results)
+        if envelope.items:
+            response[WORKFLOW_CITATION_RESULT_KEY] = envelope.model_dump(mode="json")
+            self._user_citations_attached = True
+        return response
+
+    def _collect_user_citations(
+        self,
+        all_results: Dict[str, Any],
+    ) -> WorkflowCitationEnvelope:
+        answer_node_id = next(
+            (
+                node_id
+                for node_id in self.nodes_by_type.get("answerNode", ())
+                if node_id in all_results
+            ),
+            None,
+        )
+        if answer_node_id is None:
+            return WorkflowCitationEnvelope()
+
+        ancestor_ids = self._data_ancestors(answer_node_id)
+        merged_items: list[WorkflowCitationItem] = []
+        seen: set[tuple[object, ...]] = set()
+        for node_id, schema in self.node_schemas.items():
+            if (
+                node_id not in ancestor_ids
+                or node_id not in all_results
+                or schema.type != "llmNode"
+            ):
+                continue
+            raw_envelope = getattr(
+                self.node_instances.get(node_id),
+                "_user_citations",
+                None,
+            )
+            try:
+                envelope = WorkflowCitationEnvelope.model_validate(raw_envelope)
+            except Exception:
+                continue
+            for item in envelope.items:
+                fingerprint = (
+                    item.label,
+                    item.page_number,
+                    item.section,
+                    item.content_preview,
+                )
+                if fingerprint in seen:
+                    continue
+                seen.add(fingerprint)
+                rank = len(merged_items) + 1
+                merged_items.append(
+                    item.model_copy(
+                        update={
+                            "citation_id": f"evidence-{rank}",
+                            "evidence_rank": rank,
+                        }
+                    )
+                )
+                if len(merged_items) >= MAX_WORKFLOW_CITATIONS:
+                    return WorkflowCitationEnvelope(items=merged_items)
+        return WorkflowCitationEnvelope(items=merged_items)
+
+    def _data_ancestors(self, node_id: str) -> set[str]:
+        pending = list(self.data_dependencies.get(node_id, ()))
+        ancestors: set[str] = set()
+        while pending:
+            ancestor_id = pending.pop()
+            if ancestor_id in ancestors:
+                continue
+            ancestors.add(ancestor_id)
+            pending.extend(self.data_dependencies.get(ancestor_id, ()))
+        return ancestors
+
+    @staticmethod
+    def _has_user_citation_key_collision(response: dict[str, Any]) -> bool:
+        return WORKFLOW_CITATION_RESULT_KEY in response
+
+    def _without_user_citations(self, outputs: Any) -> Any:
+        if (
+            not isinstance(outputs, dict)
+            or not getattr(self, "_user_citations_attached", False)
+            or WORKFLOW_CITATION_RESULT_KEY not in outputs
+        ):
+            return outputs
+        durable_outputs = dict(outputs)
+        durable_outputs.pop(WORKFLOW_CITATION_RESULT_KEY, None)
+        return durable_outputs
 
     def _extract_node_options(self, node_schema) -> Dict[str, Any]:
         """노드 설정을 process_data용 스냅샷으로 추출합니다."""

@@ -128,6 +128,7 @@ export const nodeRegistry: NodeDefinition[] = [
       retrievedContextMaxChars: undefined,
       retrievedContextCompression: 'off',
       answerGroundingCheck: 'basic',
+      citationDisplayMode: 'basic',
       parameters: {
         temperature: 0.7,
         top_p: 1.0,

@@ -186,6 +186,12 @@ Response: `{"status": "success", "results": { ... }}`.
 
 - 공개 실행과 current generic 인증 실행 모두 404 배포 없음/비활성, 429 예산 초과, 504 타임아웃, 500 엔진 실패를 반환할 수 있다. 엔진 실패 응답 detail은 provider 오류, credential, raw payload를 노출하지 않는 고정된 safe message여야 한다. Generic 인증 실행은 추가로 400 invalid/non-object input, invalid/conflicting conversation control, non-Chatbot conversation control, 401/403 인증·권한 오류와 415 non-JSON media type을 반환할 수 있다. Client는 문서화되지 않은 임의 `detail` string을 그대로 표시하지 않는다. Target authenticated internal Chatbot의 별도 permission/error contract는 해당 기능 구현 문서에서 확정한다.
 
+## Citation Response Projection
+
+- public/internal Chatbot run 성공 응답은 기존 결과 field와 함께 optional `__nodease_citations` version 1 sidecar를 포함할 수 있다.
+- 공개 Chatbot은 login cookie 존재 여부와 무관하게 anonymous public-only evidence만 Citation으로 투영한다. 내부 Chatbot은 canonical execution subject의 Knowledge 권한과 source ACL을 적용한다.
+- Citation sidecar는 conversation memory 원문이나 execution-log payload에 별도 복제하지 않는다.
+
 ## Permissions
 
 - 배포 생성은 workflow `deploy` 권한을 요구한다(기존과 동일).

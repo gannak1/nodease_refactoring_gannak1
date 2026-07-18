@@ -826,6 +826,19 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - worker가 받은 unresolved claim은 locked snapshot preflight 뒤 `configuration_preflight_blocked`로 한 번만 canceled 처리한다. `workflow_run_id`/`started_at`은 생성되지 않고 budget, `mark_running()`, Knowledge sync, engine/provider와 Celery retry는 호출되지 않는다.
 - 같은 claim 재전달은 terminal duplicate 결과로 억제되며 claim을 reopen하거나 다시 실행하지 않는다. resolved claim의 기존 성공·실패 경로는 회귀하지 않는다.
 
+### MBA-322 Workflow Citation Regression
+
+- 새 LLM node와 Agent Builder node는 `citationDisplayMode=basic`, legacy missing field는 `hidden`인지 검증한다.
+- Grounding lexical metadata 옵션과 Citation 표시 옵션을 서로 독립적으로 변경할 수 있는지 검증한다.
+- Answer data ancestry에 있는 LLM Citation만 최종 응답에 병합하고 control-only node와 subworkflow reserved key를 제외하는지 검증한다.
+- `LLM -> CodeNode inputs[].source -> Answer` data path도 Citation lineage에 포함되는지 검증한다.
+- 조건 분기로 이번 실행에서 skip된 LLM node가 이전 실행의 ephemeral Citation을 재사용하지 않는지 검증한다.
+- final response sidecar는 최대 8개, 전역 rank, stable dedupe를 적용하고 durable run output에서는 제거되는지 검증한다.
+- legacy output 또는 stream node id가 sidecar key와 충돌하면 기존 output·durable output을 보존하고 Citation만 생략하는지 검증한다.
+- detailed preview는 공통 fail-closed redaction을 거치며 redaction 실패 또는 PII/secret 검출 시 preview만 생략하고 답변은 유지하는지 검증한다. 표시명 lazy-load 실패도 generic label로 격리한다.
+- Client parser는 unknown version, extra/identity field, URL/file path/secret marker, rank mismatch와 현재 graph node id에 충돌하는 reserved key를 거부하면서 답변 렌더링은 유지하는지 검증한다.
+- Test sidebar와 인증 실행 화면이 같은 Citation component를 사용하고 keyboard/mobile-safe markup을 유지하는지 검증한다.
+
 ### MBA-283 Generic HTTP Egress Regression
 
 - URL userinfo, localhost, RFC1918, IPv6 ULA/loopback/link-local, carrier-grade NAT, reserved, unspecified, multicast와 metadata target은 TCP dial 전에 `invalid_prepared_request`로 차단되고 오류·trace에 query/header/body/resolved IP가 남지 않는다.

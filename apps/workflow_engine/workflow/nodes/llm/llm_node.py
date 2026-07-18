@@ -3,7 +3,7 @@ import logging
 import math
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from jinja2 import Environment
@@ -22,6 +22,9 @@ from apps.shared.domain.knowledge_runtime_candidates import (
 )
 from apps.shared.db.session import SessionLocal  # 임시 세션 생성용
 from apps.shared.schemas.rag import ChunkPreview
+from apps.shared.schemas.workflow_citation import (
+    WorkflowCitationEnvelope,
+)
 from apps.shared.services.permission_audit import (
     record_resource_permission_denied,
     record_system_resource_permission_denied,
@@ -56,6 +59,10 @@ from apps.workflow_engine.services.retrieval import RetrievalService
 from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
     KnowledgeRuntimeCandidateInfrastructureError,
     KnowledgeRuntimeCandidateResolver,
+)
+from apps.workflow_engine.adapters.knowledge_runtime_citations import (
+    PromptEvidence,
+    WorkflowCitationProjector,
 )
 from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
@@ -144,6 +151,9 @@ class WorkflowRAGSearchResult:
     should_invoke_llm: bool
     answer_override: Optional[str] = None
     trace_summary: Optional[Dict[str, Any]] = None
+    user_citations: WorkflowCitationEnvelope = field(
+        default_factory=WorkflowCitationEnvelope
+    )
 
 
 @dataclass(frozen=True)
@@ -227,7 +237,9 @@ class _UntrustedPromptValue:
             return
         if isinstance(self._value, (list, tuple)):
             for index, item in enumerate(self._value):
-                yield _UntrustedPromptValue(item, f"{self._path}[{index}]", self._collector)
+                yield _UntrustedPromptValue(
+                    item, f"{self._path}[{index}]", self._collector
+                )
             return
         return iter(())
 
@@ -420,25 +432,33 @@ class LLMNode(Node[LLMNodeData]):
                 # 저장 모델과 다른 과거 후보로 임의 라우팅될 수 있다.
                 policy = {}
         if not isinstance(policy, dict):
-            return selected_model_id, fallback_model_id, {
-                "enabled": True,
-                "decision_source": "stored_model",
-                "reason_code": "policy_unavailable",
-                "judge_called": False,
-                **preview_metadata,
-            }
+            return (
+                selected_model_id,
+                fallback_model_id,
+                {
+                    "enabled": True,
+                    "decision_source": "stored_model",
+                    "reason_code": "policy_unavailable",
+                    "judge_called": False,
+                    **preview_metadata,
+                },
+            )
 
         active_policy = policy.get("active_policy")
         if not isinstance(active_policy, dict):
-            return selected_model_id, fallback_model_id, {
-                "enabled": True,
-                "policy_id": policy.get("policy_id"),
-                "policy_version": policy.get("policy_version"),
-                "decision_source": "stored_model",
-                "reason_code": "active_policy_unavailable",
-                "judge_called": False,
-                **preview_metadata,
-            }
+            return (
+                selected_model_id,
+                fallback_model_id,
+                {
+                    "enabled": True,
+                    "policy_id": policy.get("policy_id"),
+                    "policy_version": policy.get("policy_version"),
+                    "decision_source": "stored_model",
+                    "reason_code": "active_policy_unavailable",
+                    "judge_called": False,
+                    **preview_metadata,
+                },
+            )
 
         try:
             available_model_ids = self._available_routing_model_ids(db_session)
@@ -578,6 +598,9 @@ class LLMNode(Node[LLMNodeData]):
         Returns:
             LLM 결과를 담은 dict (예: {"text": "...", "usage": {...}})"""
 
+        # 이전 실행의 ephemeral projection이 재사용되지 않도록 실행마다 초기화한다.
+        self._user_citations = WorkflowCitationEnvelope().model_dump(mode="json")
+
         # STEP 1. 필수값 검증 -------------------------------------------------
         self.data.validate()
 
@@ -675,9 +698,7 @@ class LLMNode(Node[LLMNodeData]):
                     selected_model_id = runtime_selection.model_id
                 except Exception as primary_client_error:
                     if (
-                        isinstance(
-                            primary_client_error, LLMCredentialNotAvailableError
-                        )
+                        isinstance(primary_client_error, LLMCredentialNotAvailableError)
                         and primary_client_error.reason == "organization_scope_missing"
                     ):
                         self._record_llm_runtime_permission_denied(
@@ -1001,18 +1022,15 @@ class LLMNode(Node[LLMNodeData]):
                     )
 
                     usage_user_id = self._resolve_credential_principal_user()
-                    workflow_run_id_str = self.execution_context.get(
-                        "workflow_run_id"
-                    )
+                    workflow_run_id_str = self.execution_context.get("workflow_run_id")
                     cost_optimizer_candidate_id = self.execution_context.get(
                         "cost_optimizer_candidate_id"
                     )
                     cost_optimizer_context = self.execution_context.get(
                         "cost_optimizer"
                     )
-                    if (
-                        not cost_optimizer_candidate_id
-                        and isinstance(cost_optimizer_context, dict)
+                    if not cost_optimizer_candidate_id and isinstance(
+                        cost_optimizer_context, dict
                     ):
                         cost_optimizer_candidate_id = cost_optimizer_context.get(
                             "candidate_id"
@@ -1093,6 +1111,11 @@ class LLMNode(Node[LLMNodeData]):
                         "fallback_from_model": routed_model_id,
                         "fallback_reason_code": fallback_reason_code,
                     }
+                )
+
+            if knowledge_result is not None:
+                self._user_citations = knowledge_result.user_citations.model_dump(
+                    mode="json"
                 )
 
             return {
@@ -1470,7 +1493,9 @@ class LLMNode(Node[LLMNodeData]):
         execution_subject_user_id = self._resolve_rag_execution_subject()
         credential_user_id = self._resolve_rag_actor_user()
         if credential_user_id is None:
-            raise PermissionError("RAG retrieval requires a valid credential user context.")
+            raise PermissionError(
+                "RAG retrieval requires a valid credential user context."
+            )
         organization_id = self.execution_context.get("organization_id")
         try:
             organization_uuid = uuid.UUID(str(organization_id))
@@ -1514,9 +1539,7 @@ class LLMNode(Node[LLMNodeData]):
         )
         fanout_kb_ids = kb_ids
         if precomputed_vectors:
-            fanout_kb_ids = [
-                kb_id for kb_id in kb_ids if kb_id in query_vectors_by_kb
-            ]
+            fanout_kb_ids = [kb_id for kb_id in kb_ids if kb_id in query_vectors_by_kb]
 
         fanout = self._run_rag_retrieval_fanout(
             query=search_query,
@@ -1667,8 +1690,15 @@ class LLMNode(Node[LLMNodeData]):
                 trace_summary=trace_summary,
             )
 
-        # 컨텍스트 조립
+        citation_projector = WorkflowCitationProjector(
+            db_session=db_session,
+            organization_id=organization_uuid,
+            resolution=resolution,
+        )
+
+        # 컨텍스트 조립과 Citation 투영은 동일한 실제 prompt evidence를 사용한다.
         context_parts = []
+        prompt_evidence: list[PromptEvidence] = []
         remaining_context_chars = self.data.retrievedContextMaxChars
 
         for kb_id, chunk in top_chunks:
@@ -1685,16 +1715,46 @@ class LLMNode(Node[LLMNodeData]):
             if not content:
                 continue
 
-            # 예: [파일명] 내용...
-            context_parts.append(f"[파일: {chunk.filename}]\n{content}")
+            safe_label = citation_projector.label_for(kb_id)
+            context_parts.append(f"[참조 문서: {safe_label}]\n{content}")
+            prompt_evidence.append(
+                PromptEvidence(
+                    knowledge_base_id=kb_id,
+                    chunk=chunk,
+                    prompt_content=content,
+                )
+            )
 
         combined_context = "\n\n".join(context_parts)
+        if not combined_context:
+            no_context_decision = RAGEvidenceDecision(
+                evidence_sufficient=False,
+                insufficiency_reason="no_evidence",
+                source_tier_used=evidence_decision.source_tier_used,
+                partial_result=evidence_decision.partial_result,
+                failed_candidate_count_bucket=(
+                    evidence_decision.failed_candidate_count_bucket
+                ),
+            )
+            return WorkflowRAGSearchResult(
+                context="",
+                metadata=metadata_list,
+                evidence_decision=no_context_decision,
+                should_invoke_llm=False,
+                answer_override=self._rag_safe_no_result_answer(no_context_decision),
+                trace_summary=trace_summary,
+            )
+
         return WorkflowRAGSearchResult(
             context=combined_context,
             metadata=metadata_list,
             evidence_decision=evidence_decision,
             should_invoke_llm=True,
             trace_summary=trace_summary,
+            user_citations=citation_projector.project(
+                prompt_evidence,
+                mode=self.data.citationDisplayMode,
+            ),
         )
 
     def _run_rag_retrieval_fanout(
@@ -2158,8 +2218,7 @@ class LLMNode(Node[LLMNodeData]):
             request = KnowledgeRuntimeCandidateRequest(
                 audience=audience,
                 direct_kb_ids=tuple(
-                    uuid.UUID(reference.id)
-                    for reference in self.data.knowledgeBases
+                    uuid.UUID(reference.id) for reference in self.data.knowledgeBases
                 ),
                 collection_ids=tuple(
                     uuid.UUID(reference.id)
@@ -2174,9 +2233,7 @@ class LLMNode(Node[LLMNodeData]):
             ) from None
 
         try:
-            result = self._get_knowledge_runtime_candidate_resolver().resolve(
-                request
-            )
+            result = self._get_knowledge_runtime_candidate_resolver().resolve(request)
         except KnowledgeRuntimeCandidateConfigurationError as exc:
             raise NonRetryableWorkflowError(exc.reason_code) from None
         except KnowledgeRuntimeCandidateInfrastructureError:
@@ -2258,16 +2315,11 @@ class LLMNode(Node[LLMNodeData]):
             or not isinstance(resolution.warning_codes, tuple)
             or any(
                 not isinstance(code, str)
-                or code
-                not in {"candidate_budget_limited", "candidate_scan_limited"}
+                or code not in {"candidate_budget_limited", "candidate_scan_limited"}
                 for code in resolution.warning_codes
             )
             or resolution.reason_code
-            != (
-                None
-                if candidates
-                else "knowledge_candidates.safe_no_result"
-            )
+            != (None if candidates else "knowledge_candidates.safe_no_result")
         ):
             raise NonRetryableWorkflowError(invalid_reason)
 
@@ -2306,9 +2358,7 @@ class LLMNode(Node[LLMNodeData]):
             "selected_candidate_count_bucket": (
                 resolution.selected_candidate_count_bucket
             ),
-            "policy_excluded_count_bucket": (
-                resolution.policy_excluded_count_bucket
-            ),
+            "policy_excluded_count_bucket": (resolution.policy_excluded_count_bucket),
             "candidate_budget_limited": resolution.budget_limited,
             "candidate_scan_limited": resolution.scan_limited,
             "candidate_warning_codes": list(resolution.warning_codes),
@@ -2325,7 +2375,9 @@ class LLMNode(Node[LLMNodeData]):
             subject_type = subject.get("subject_type") or subject.get("type") or "user"
             subject_id = subject.get("subject_id") or subject.get("id")
             if subject_type != "user":
-                raise PermissionError("RAG retrieval requires a user execution subject.")
+                raise PermissionError(
+                    "RAG retrieval requires a user execution subject."
+                )
             try:
                 return uuid.UUID(str(subject_id))
             except (TypeError, ValueError) as exc:
@@ -2514,7 +2566,7 @@ class LLMNode(Node[LLMNodeData]):
 
     @staticmethod
     def _dedupe_retrieved_chunks(
-        chunks: List[tuple[str, ChunkPreview]]
+        chunks: List[tuple[str, ChunkPreview]],
     ) -> List[tuple[str, ChunkPreview]]:
         """동일한 본문을 가진 검색 근거는 가장 높은 점수의 항목만 남긴다."""
         seen_contents = set()

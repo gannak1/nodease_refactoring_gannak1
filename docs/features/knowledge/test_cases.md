@@ -525,6 +525,16 @@ KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048]
 - Load test는 max candidate KB, max route collection, max retrieval KB, max chunks per KB, max total chunks, fanout timeout, aggregate interactive timeout, permission helper index, candidate cache, recovery scanner cadence, trace/audit payload size, partial operational failure behavior, query rewrite 추가 latency/cost budget을 포함한다.
 - Concurrent ingestion, concurrent DB-source sync, concurrent retention purge, cleanup outbox retry의 race 테스트를 포함한다.
 
+## Workflow User Citation Tests
+
+- `hidden`, `basic`, `detailed` mode와 legacy missing-value=`hidden`, new-node=`basic` 기본값을 검증한다.
+- 최종 prompt char cap과 압축 이후 실제 포함된 evidence만 Citation이 되는지 검증한다.
+- denied/revoked/source-deleted/archived 후보, no-evidence 결과와 control-only LLM node가 Citation을 만들지 않는지 검증한다.
+- Collection evidence에서 child KB/document/chunk id, raw filename/path/URL, child section과 child-local rank가 제거되고 전역 evidence rank만 남는지 검증한다.
+- source-managed 표시 정책이 unapproved/inactive이면 일반 라벨로 fail-closed하고 수동 `safe_label`로 우회하지 않는지 검증한다.
+- `detailed` preview 길이 제한과 정제, 최대 item 수, stable dedupe를 검증한다.
+- 사용자 sidecar가 durable WorkflowRun output과 일반 trace/audit에 저장되지 않는지 검증한다.
+
 ## Phase Acceptance Tests
 
 - Phase 1 acceptance에는 egress negative paths, content safety/parser isolation, protected source identity, basic sync, redaction, active version swap, transactional outbox insert, fencing token, recovery scanner smoke 테스트가 포함된다.

@@ -231,6 +231,15 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 
 MBA-105는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 합의 baseline을 구현 기준으로 삼되, Workflow RAG의 `execution_subject` 부재 처리는 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md)을 따른다. 구현자가 따라야 할 운영 기본값, permission helper contract, active version finalization, resource hiding/no-result/partial result matrix, egress/protocol adapter 기준, 테스트 phase는 [implementation_baseline.md](implementation_baseline.md)에 모은다.
 
+## Workflow User Citation Projection
+
+- Workflow와 Chatbot의 일반 사용자 화면에 표시하는 Citation은 privileged lineage 저장소의 원본 식별자가 아니라, 최종 LLM prompt에 실제 포함된 authorized evidence의 제한된 표시 projection이다.
+- `citationDisplayMode`는 `hidden`, `basic`, `detailed`를 지원한다. 기존 graph에서 값이 없으면 `hidden`, 새 수동 LLM node와 Agent Builder 생성 node는 `basic`을 기본으로 한다.
+- `basic`은 승인된 표시 라벨과 가능한 경우 page/section만 제공한다. `detailed`는 동일 정보와 길이가 제한되고 정제된 prompt evidence preview를 추가한다.
+- Collection 경유 evidence는 Collection의 승인된 표시 라벨 또는 일반 라벨만 사용하며 child KB/document/chunk 식별자와 child별 rank를 노출하지 않는다. 최종 응답에는 병합 후 전역 evidence rank만 사용한다.
+- 권한·source ACL·public exposure·final evidence gate를 통과하지 않았거나 최종 prompt에 들어가지 않은 후보는 Citation에 포함하지 않는다.
+- 사용자용 Citation은 최종 응답의 일시적인 projection이며 raw chunk, URL/path, credential, source principal, KB/Collection/document/chunk UUID를 포함하거나 durable WorkflowRun output에 중복 저장하지 않는다.
+
 ## Out Of Scope Until Separate Approval
 
 - Destructive production cutover/reset, production data split/backfill without G1 approval.

@@ -204,7 +204,7 @@ Knowledge/RAG 비용 최적화 옵션은 다음 4개를 우선 제공한다.
 - 중복 근거 제거: 검색된 문서 조각 중 내용이 거의 같은 근거를 한 번만 사용한다.
 - 참조 문서 길이 제한: Knowledge Base에서 가져온 문서 context의 최대 길이를 제한한다. 직접 작성한 prompt 3종은 이 제한 대상이 아니다.
 - 검색 문서 압축: 검색된 문서를 그대로 넣지 않고 질문과 관련된 핵심 내용만 줄여 전달한다.
-- 답변 근거 확인: 생성된 답변이 검색된 문서 내용으로 뒷받침되는지 확인한다.
+- 답변·검색 문서 어휘 일치도: 생성된 답변과 검색 문서의 lexical overlap metadata를 기록한다. Citation 표시나 답변 차단 기능은 아니다.
 
 B 실행 시 Knowledge/RAG를 사용하면 baseline의 과거 retrieval 결과를 재사용하지 않는다. B candidate의 현재 Knowledge Base 선택, `topK`, `scoreThreshold` 기준으로 retrieval을 새로 수행한다. 그래야 모델/prompt뿐 아니라 retrieval 설정 변경이 실제 후보 결과에 반영된다.
 
@@ -1184,6 +1184,12 @@ downstream 호환성은 기존 FR-007 contract validator를 재사용한다. `co
 - 가격 정보가 없는 모델은 자동 추천 후보에서 제외하고, 수동 비교 시에는 비용 비교 불가 상태를 명시한다.
 - 한쪽 variant 실행이 실패하면 성공한 variant의 부분 결과와 실패 원인을 구분해 표시하고, 절감률은 계산하지 않는다.
 - 더 저렴한 후보가 없으면 빈 리포트 대신 "절감 가능 없음"을 명시한다.
+
+## Grounding Option Terminology
+
+- 기존 `answerGroundingCheck` API/graph key와 `off|basic|strict` 값은 호환성을 위해 유지한다.
+- 사용자 화면에서는 이 옵션을 `답변·검색 문서 어휘 일치도`로 표시하며, Citation 표시 또는 evidence sufficiency 차단 기능으로 설명하지 않는다.
+- 사용자 Citation은 별도 `citationDisplayMode`가 소유하며 Cost Optimizer 후보 설정에서도 두 옵션을 독립적으로 보존한다.
 
 ## Open Questions
 
