@@ -7,6 +7,7 @@ import pytest
 from scripts.experiment_judge_first_economics_80 import (
     HIGH_MODEL,
     LOW_MODEL,
+    MID_MODEL,
     QUALITY_JUDGE_MODEL,
     ROUTING_JUDGE_MODEL,
     _write_run_config,
@@ -33,6 +34,7 @@ def test_economics_dataset_has_80_unique_diverse_cases():
 
 def test_economics_experiment_uses_distinct_high_low_and_judge_models():
     assert HIGH_MODEL != LOW_MODEL
+    assert MID_MODEL not in {HIGH_MODEL, LOW_MODEL}
     assert ROUTING_JUDGE_MODEL not in {"gpt-5.6-sol"}
     assert QUALITY_JUDGE_MODEL not in {"gpt-5.6-sol"}
 
@@ -71,6 +73,12 @@ def test_run_config_records_models_and_rejects_a_different_judge(monkeypatch):
             == ModelRoutingRuntimeJudge.MAX_OUTPUT_TOKENS
         )
         assert config["artifact_files"]["result"] == "result.json"
+        assert set(config["comparison_arms"]) == {
+            "automatic",
+            "mid_fixed",
+            "high_fixed",
+            "low_fixed",
+        }
 
         monkeypatch.setattr(
             "scripts.experiment_judge_first_economics_80.ROUTING_JUDGE_MODEL",

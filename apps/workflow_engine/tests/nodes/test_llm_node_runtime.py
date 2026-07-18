@@ -577,6 +577,11 @@ def test_llm_node_auto_model_routing_without_policy_uses_stored_model(monkeypatc
         "decision_source": "stored_model",
         "reason_code": "active_policy_unavailable",
         "judge_called": False,
+        "judge": {
+            "status": "not_called",
+            "attempted": False,
+            "not_called_reason": "active_policy_unavailable",
+        },
     }
 
     # 응답 파싱 검증
@@ -892,6 +897,26 @@ def test_llm_node_passes_json_response_format_to_client():
     node.execute({})
 
     assert dummy_client.calls[0]["kwargs"]["response_format"] == {"type": "json_object"}
+
+
+def test_llm_node_does_not_crash_when_jsonschema_is_unavailable():
+    """schema 검증 패키지가 없는 실행 환경에서도 provider 결과를 실패로 오염하지 않는다."""
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4o",
+        output_format={
+            "type": "json",
+            "schema": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+            },
+        },
+    )
+    node = LLMNode("llm-1", data)
+
+    assert node._schema_status('{"answer":"ok"}') == "not_evaluated"
 
 
 def test_llm_node_adds_json_schema_instruction_to_system_message():
@@ -3656,6 +3681,11 @@ def test_deployed_runtime_respects_disabled_persisted_routing_policy(monkeypatch
         "decision_source": "stored_model",
         "reason_code": "active_policy_unavailable",
         "judge_called": False,
+        "judge": {
+            "status": "not_called",
+            "attempted": False,
+            "not_called_reason": "active_policy_unavailable",
+        },
     }
 
 
@@ -4016,11 +4046,92 @@ def test_deployed_judge_bootstrap_uses_judge_and_queues_safe_learning_label(monk
     assert fallback == "gpt-5-mini"
     assert metadata["decision_source"] == "runtime_judge"
     assert metadata["judge_called"] is True
+    assert metadata["judge"]["status"] == "selected"
+    assert metadata["judge"]["attempted"] is True
     assert metadata["judge"]["reason_short"] == "단순 안내 요청"
     assert metadata["judge"]["candidate_model_count"] == 2
     assert metadata["judge"]["usage_log_error"] == "RuntimeError"
     assert captured["policy_id"] == str(policy_id)
     assert captured["selected_model_id"] == "gpt-4o-mini"
+
+
+def test_runtime_judge_failure_is_recorded_separately_from_judge_not_called(
+    monkeypatch,
+):
+    """Judge 호출 실패는 기본 모델 회귀와 함께 trace에 명확히 남겨야 한다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore, "get_runtime_policy", lambda *_args, **_kwargs: None
+    )
+    user_id = uuid.uuid4()
+    node = LLMNode(
+        "llm-judge-failure",
+        LLMNodeData(
+            title="judge failure trace",
+            model_id="gpt-5.4-mini",
+            fallback_model_id="gpt-4.1-mini",
+            auto_model_routing=True,
+            model_routing_policy={
+                "active_policy": {
+                    "strategy_id": "judge_bootstrap_incremental_v1",
+                    "default_model_id": "gpt-5.4-mini",
+                    "fallback_model_id": "gpt-4.1-mini",
+                    "judge_model_id": "gpt-5.4-mini",
+                    "candidate_model_ids": ["gpt-5.4-mini", "gpt-4.1-mini"],
+                    "learning": {"mode": "judge_first"},
+                },
+            },
+            user_prompt="{{ message }}",
+            referenced_variables=[],
+            parameters={},
+        ),
+    )
+    monkeypatch.setattr(
+        node,
+        "_available_routing_model_ids",
+        lambda _db: ["gpt-5.4-mini", "gpt-4.1-mini"],
+    )
+    monkeypatch.setattr(node, "_resolve_credential_principal_user", lambda: user_id)
+    monkeypatch.setattr(node, "_require_runtime_organization_id", lambda *_args: uuid.uuid4())
+    monkeypatch.setattr(node, "_routing_candidate_profiles", lambda *_args, **_kwargs: [])
+
+    class _FailingJudgeClient:
+        def invoke_sync(self, **_kwargs):
+            error = RuntimeError("response incomplete")
+            error.reason_code = "responses_incomplete"
+            raise error
+
+    monkeypatch.setattr(
+        LLMService,
+        "get_runtime_client_for_user",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            client=_FailingJudgeClient(),
+            credential_id=uuid.uuid4(),
+            model_id="gpt-5.4-mini",
+        ),
+    )
+
+    selected, fallback, metadata = node._resolve_model_routing_policy(
+        {"message": "복수 조건을 비교해 주세요"},
+        object(),
+        routing_feature_text="복수 조건 비교 요청",
+    )
+
+    assert selected == "gpt-5.4-mini"
+    assert fallback == "gpt-4.1-mini"
+    assert metadata["decision_source"] == "stored_model"
+    assert metadata["reason_code"] == "runtime_judge_unavailable"
+    assert metadata["judge_called"] is True
+    assert metadata["judge"] == {
+        "status": "failed",
+        "attempted": True,
+        "model": "gpt-5.4-mini",
+        "candidate_model_count": 2,
+        "error_code": "responses_incomplete",
+    }
 
 
 def test_test_execution_uses_matching_deployment_policy_and_judge_without_learning(
@@ -4229,6 +4340,11 @@ def test_deployed_auto_routing_without_persisted_policy_ignores_legacy_snapshot(
         "decision_source": "stored_model",
         "reason_code": "active_policy_unavailable",
         "judge_called": False,
+        "judge": {
+            "status": "not_called",
+            "attempted": False,
+            "not_called_reason": "active_policy_unavailable",
+        },
     }
 
 
