@@ -1,6 +1,14 @@
 from pathlib import Path
 from runpy import run_path
 
+from apps.shared.db.models.external_action_credential import ExternalActionCredential
+from apps.shared.db.models.team import (
+    TeamExternalActionCredentialPermission,
+    UserExternalActionCredentialPermission,
+)
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.schema import CreateIndex, CreateTable
+
 ROOT_DIR = Path(__file__).resolve().parents[4]
 MIGRATION = run_path(
     ROOT_DIR
@@ -86,3 +94,17 @@ def test_legacy_graph_scrub_preserves_existing_opaque_reference():
     assert result["data"] == {
         "credential_id": "00000000-0000-0000-0000-000000000001"
     }
+
+
+def test_external_action_permission_ddl_fits_postgresql_identifier_limit():
+    dialect = postgresql.dialect()
+    tables = (
+        ExternalActionCredential.__table__,
+        UserExternalActionCredentialPermission.__table__,
+        TeamExternalActionCredentialPermission.__table__,
+    )
+
+    for table in tables:
+        str(CreateTable(table).compile(dialect=dialect))
+        for index in table.indexes:
+            str(CreateIndex(index).compile(dialect=dialect))

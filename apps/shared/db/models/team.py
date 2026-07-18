@@ -436,9 +436,7 @@ class UserExternalActionCredentialPermission(UserResourcePermissionMixin, Base):
             "grantee_organization_id",
             "user_id",
             "external_action_credential_id",
-            name=(
-                "uq_user_external_action_credential_permissions_org_user_credential"
-            ),
+            name="uq_user_eac_perm_org_user_credential",
         ),
         ForeignKeyConstraint(
             ["external_action_credential_id", "grantee_organization_id"],
@@ -446,23 +444,41 @@ class UserExternalActionCredentialPermission(UserResourcePermissionMixin, Base):
                 "external_action_credentials.id",
                 "external_action_credentials.organization_id",
             ],
-            name="fk_user_external_action_credential_permissions_credential_org",
+            name="fk_user_eac_perm_credential_org",
         ),
         CheckConstraint(
             "auth_state IN ('none', 'viewer', 'operator', 'builder', 'manager')",
-            name="ck_user_external_action_credential_permissions_auth_state",
+            name="ck_user_eac_perm_auth_state",
         ),
         CheckConstraint(
             "flags >= 0",
-            name="ck_user_external_action_credential_permissions_flags_nonnegative",
+            name="ck_user_eac_perm_flags_nonnegative",
+        ),
+        Index("ix_user_eac_perm_grantee_organization_id", "grantee_organization_id"),
+        Index("ix_user_eac_perm_user_id", "user_id"),
+        Index("ix_user_eac_perm_assigned_by", "assigned_by"),
+        Index(
+            "ix_user_eac_perm_external_action_credential_id",
+            "external_action_credential_id",
         ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
     )
+    # The inherited default index names exceed PostgreSQL's 63-character limit
+    # for this table, so this class declares concise explicit indexes above.
+    grantee_organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization.id"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    assigned_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
     external_action_credential_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False, index=True
+        UUID(as_uuid=True), nullable=False
     )
     external_action_credential: Mapped["ExternalActionCredential"] = relationship(
         "ExternalActionCredential", overlaps="grantee_organization"
@@ -894,14 +910,12 @@ class TeamExternalActionCredentialPermission(TeamResourcePermissionMixin, Base):
             "grantee_organization_id",
             "external_action_credential_id",
             "team_id",
-            name=(
-                "uq_team_external_action_credential_permissions_org_credential_team"
-            ),
+            name="uq_team_eac_perm_org_credential_team",
         ),
         ForeignKeyConstraint(
             ["team_id", "grantee_organization_id"],
             ["teams.id", "teams.organization_id"],
-            name="fk_team_external_action_credential_permissions_team_org",
+            name="fk_team_eac_perm_team_org",
         ),
         ForeignKeyConstraint(
             ["external_action_credential_id", "grantee_organization_id"],
@@ -909,23 +923,41 @@ class TeamExternalActionCredentialPermission(TeamResourcePermissionMixin, Base):
                 "external_action_credentials.id",
                 "external_action_credentials.organization_id",
             ],
-            name="fk_team_external_action_credential_permissions_credential_org",
+            name="fk_team_eac_perm_credential_org",
         ),
         CheckConstraint(
             "auth_state IN ('none', 'viewer', 'operator', 'builder', 'manager')",
-            name="ck_team_external_action_credential_permissions_auth_state",
+            name="ck_team_eac_perm_auth_state",
         ),
         CheckConstraint(
             "flags >= 0",
-            name="ck_team_external_action_credential_permissions_flags_nonnegative",
+            name="ck_team_eac_perm_flags_nonnegative",
+        ),
+        Index("ix_team_eac_perm_grantee_organization_id", "grantee_organization_id"),
+        Index("ix_team_eac_perm_team_id", "team_id"),
+        Index("ix_team_eac_perm_assigned_by", "assigned_by"),
+        Index(
+            "ix_team_eac_perm_external_action_credential_id",
+            "external_action_credential_id",
         ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
     )
+    # The inherited default index names exceed PostgreSQL's 63-character limit
+    # for this table, so this class declares concise explicit indexes above.
+    grantee_organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization.id"), nullable=False
+    )
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False
+    )
+    assigned_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
     external_action_credential_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False, index=True
+        UUID(as_uuid=True), nullable=False
     )
     external_action_credential: Mapped["ExternalActionCredential"] = relationship(
         "ExternalActionCredential", overlaps="grantee_organization"

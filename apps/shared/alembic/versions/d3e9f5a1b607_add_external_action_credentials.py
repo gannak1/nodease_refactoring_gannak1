@@ -209,11 +209,11 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "auth_state IN ('none', 'viewer', 'operator', 'builder', 'manager')",
-            name="ck_user_external_action_credential_permissions_auth_state",
+            name="ck_user_eac_perm_auth_state",
         ),
         sa.CheckConstraint(
             "flags >= 0",
-            name="ck_user_external_action_credential_permissions_flags_nonnegative",
+            name="ck_user_eac_perm_flags_nonnegative",
         ),
         sa.ForeignKeyConstraint(
             ["grantee_organization_id"], ["organization.id"]
@@ -226,14 +226,14 @@ def upgrade() -> None:
                 "external_action_credentials.id",
                 "external_action_credentials.organization_id",
             ],
-            name="fk_user_external_action_credential_permissions_credential_org",
+            name="fk_user_eac_perm_credential_org",
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "grantee_organization_id",
             "user_id",
             "external_action_credential_id",
-            name="uq_user_external_action_credential_permissions_org_user_credential",
+            name="uq_user_eac_perm_org_user_credential",
         ),
     )
     for column in (
@@ -243,7 +243,7 @@ def upgrade() -> None:
         "external_action_credential_id",
     ):
         op.create_index(
-            f"ix_user_external_action_credential_permissions_{column}",
+            f"ix_user_eac_perm_{column}",
             "user_external_action_credential_permissions",
             [column],
             unique=False,
@@ -271,11 +271,11 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "auth_state IN ('none', 'viewer', 'operator', 'builder', 'manager')",
-            name="ck_team_external_action_credential_permissions_auth_state",
+            name="ck_team_eac_perm_auth_state",
         ),
         sa.CheckConstraint(
             "flags >= 0",
-            name="ck_team_external_action_credential_permissions_flags_nonnegative",
+            name="ck_team_eac_perm_flags_nonnegative",
         ),
         sa.ForeignKeyConstraint(
             ["grantee_organization_id"], ["organization.id"]
@@ -285,7 +285,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ["team_id", "grantee_organization_id"],
             ["teams.id", "teams.organization_id"],
-            name="fk_team_external_action_credential_permissions_team_org",
+            name="fk_team_eac_perm_team_org",
         ),
         sa.ForeignKeyConstraint(
             ["external_action_credential_id", "grantee_organization_id"],
@@ -293,14 +293,14 @@ def upgrade() -> None:
                 "external_action_credentials.id",
                 "external_action_credentials.organization_id",
             ],
-            name="fk_team_external_action_credential_permissions_credential_org",
+            name="fk_team_eac_perm_credential_org",
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "grantee_organization_id",
             "external_action_credential_id",
             "team_id",
-            name="uq_team_external_action_credential_permissions_org_credential_team",
+            name="uq_team_eac_perm_org_credential_team",
         ),
     )
     for column in (
@@ -310,7 +310,7 @@ def upgrade() -> None:
         "external_action_credential_id",
     ):
         op.create_index(
-            f"ix_team_external_action_credential_permissions_{column}",
+            f"ix_team_eac_perm_{column}",
             "team_external_action_credential_permissions",
             [column],
             unique=False,
