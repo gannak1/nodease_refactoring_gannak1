@@ -6,7 +6,6 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-
 from apps.shared.db.models.llm import (
     LLMDeploymentCredentialPolicy,
     ProviderExecutionCapabilityRecord,

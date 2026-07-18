@@ -4,7 +4,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from apps.shared.domain.provider_execution_capability import (
     CapabilityBindingError,
     CapabilityPurpose,

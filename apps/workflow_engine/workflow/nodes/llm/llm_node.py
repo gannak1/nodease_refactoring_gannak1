@@ -1535,9 +1535,7 @@ class LLMNode(Node[LLMNodeData]):
                         )
                         fallback_client = runtime_selection.client
                         selected_credential_id = runtime_selection.credential_id
-                        runtime_credential_principal_user_id = (
-                            runtime_selection.credential_principal_user_id
-                        )
+                        runtime_credential_principal_user_id = user_id
                     except Exception as exc:
                         logger.error(
                             "[LLMNode] Fallback client load failed: error_type=%s",

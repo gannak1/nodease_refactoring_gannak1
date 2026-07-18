@@ -15,8 +15,6 @@ from datetime import datetime, timedelta, timezone
 from decimal import ROUND_CEILING, Decimal
 from typing import Any
 
-from sqlalchemy.orm import Session
-
 from apps.shared.db.models.app import App
 from apps.shared.db.models.llm import (
     LLMCredential,
@@ -48,7 +46,7 @@ from apps.shared.services.permissions import (
     has_llm_credential_permission,
     has_organization_manager_permission,
 )
-
+from sqlalchemy.orm import Session
 
 CAPABILITY_TTL = timedelta(minutes=5)
 _LLM_NODE_TYPES = {"llmnode", "llm"}

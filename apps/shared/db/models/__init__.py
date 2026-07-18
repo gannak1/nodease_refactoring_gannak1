@@ -55,8 +55,8 @@ from apps.shared.db.models.knowledge import (
     SourcePolicyKBUseGrant,
 )
 from apps.shared.db.models.llm import (
-    LLMDeploymentCredentialPolicy,
     LLMCredential,
+    LLMDeploymentCredentialPolicy,
     LLMModel,
     LLMProvider,
     LLMRelCredentialModel,

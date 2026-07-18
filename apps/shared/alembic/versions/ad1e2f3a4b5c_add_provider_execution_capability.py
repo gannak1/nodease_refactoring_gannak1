@@ -1,7 +1,7 @@
 """Add server-owned LLM deployment policies and provider capabilities.
 
 Revision ID: ad1e2f3a4b5c
-Revises: c2e8f4a91d67
+Revises: f4a5b6c7d8e9
 """
 
 from collections.abc import Sequence
@@ -12,7 +12,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "ad1e2f3a4b5c"
-down_revision: str | Sequence[str] | None = "c2e8f4a91d67"
+down_revision: str | Sequence[str] | None = "f4a5b6c7d8e9"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
