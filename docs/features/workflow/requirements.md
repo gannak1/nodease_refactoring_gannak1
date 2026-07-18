@@ -345,3 +345,5 @@ Open Question 중요도는 다음 3단계로 나눈다.
 - Agent Builder 저장이 대기하거나 진행 중이면 test를 자동 실행하지 않고 저장 완료 후 사용자의 재시도를 요구해야 한다.
 - Editor가 clean이어도 server canonical graph와 local snapshot이 다르면 test를 차단해야 하며 최신 metadata를 오래된 local graph와 결합해서는 안 된다.
 - Node root의 `width`, `height`, `measured`, `dragging`, `resizing`, `selected`, `positionAbsolute`, node data의 실행 `status`, `observability`, `displayNumber`와 edge selection은 최상위와 중첩 `subGraph.nodes`, `features.noteNodes`의 영속 Workflow graph/hash, autosync dirty state와 Undo/Redo history를 변경해서는 안 된다. Client의 Agent Builder, autosync, version 복원, test 전 저장, Undo/Redo와 note 저장 및 Gateway 저장 경계는 같은 재귀 canonical projection을 적용해야 하며 node `position`과 business configuration은 보존해야 한다.
+- Server-derived node `configuration_state`는 Client save payload와 canonical 비교 projection에서 최상위 및 중첩 node 모두 제외한다. Server는 Catalog 기준으로 다시 계산해 저장 graph와 canonical response에 materialize해야 한다.
+- Version restore는 snapshot의 `features.noteNodes` field가 있으면 이를 권위로 사용하고 명시적 빈 배열을 전체 Note 삭제로 처리해야 한다. 해당 field가 없는 legacy snapshot은 `nodes`의 Note를 사용하며, 두 표현이 모두 없으면 현재 editor Note를 보존해야 한다.

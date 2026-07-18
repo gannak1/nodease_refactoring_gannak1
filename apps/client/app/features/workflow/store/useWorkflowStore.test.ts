@@ -2532,6 +2532,184 @@ describe('워크플로우 관리 테스트', () => {
     expect(state.features.nextNodeDisplayNumber).toBe(3);
   });
 
+  it('restoreVersion restores canonical feature notes into the saved draft and editor', async () => {
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      workflow_id: 'wf-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-13T00:00:00Z',
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({
+      status: 'success',
+      workflow_id: 'wf-1',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:01Z',
+    });
+    useWorkflowStore.setState({
+      activeWorkflowId: 'wf-1',
+      workflows: [
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [],
+          edges: [],
+          features: { nextNodeDisplayNumber: 1 },
+        },
+      ],
+      nodes: [],
+      features: { nextNodeDisplayNumber: 1 },
+    });
+    const canonicalNote = createMockNode('feature-note', 'note');
+
+    await useWorkflowStore.getState().restoreVersion({
+      id: 'deployment-feature-note',
+      app_id: 'app-1',
+      version: 2,
+      created_by: 'user-1',
+      created_at: '2026-07-01T00:00:00Z',
+      type: 'api',
+      is_active: false,
+      graph_snapshot: {
+        nodes: [createMockNode('restored', 'startNode')],
+        edges: [],
+        features: {
+          nextNodeDisplayNumber: 1,
+          noteNodes: [canonicalNote],
+        },
+      },
+    } as DeploymentResponse);
+
+    expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledWith(
+      'wf-1',
+      expect.objectContaining({
+        features: expect.objectContaining({
+          noteNodes: [expect.objectContaining({ id: 'feature-note' })],
+        }),
+      }),
+    );
+    expect(useWorkflowStore.getState().nodes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'feature-note' })]),
+    );
+  });
+
+  it('restoreVersion preserves current notes when a legacy snapshot has no note representation', async () => {
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      workflow_id: 'wf-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-13T00:00:00Z',
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({
+      status: 'success',
+      workflow_id: 'wf-1',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:01Z',
+    });
+    const currentNote = createMockNode('current-note', 'note');
+    useWorkflowStore.setState({
+      activeWorkflowId: 'wf-1',
+      workflows: [
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [currentNote],
+          edges: [],
+          features: { nextNodeDisplayNumber: 1 },
+        },
+      ],
+      nodes: [currentNote],
+      features: { nextNodeDisplayNumber: 1 },
+    });
+
+    await useWorkflowStore.getState().restoreVersion({
+      id: 'deployment-legacy-without-notes',
+      app_id: 'app-1',
+      version: 3,
+      created_by: 'user-1',
+      created_at: '2026-07-01T00:00:00Z',
+      type: 'api',
+      is_active: false,
+      graph_snapshot: {
+        nodes: [createMockNode('restored', 'startNode')],
+        edges: [],
+        features: null,
+      },
+    } as DeploymentResponse);
+
+    expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledWith(
+      'wf-1',
+      expect.objectContaining({
+        features: expect.objectContaining({
+          noteNodes: [expect.objectContaining({ id: 'current-note' })],
+        }),
+      }),
+    );
+    expect(useWorkflowStore.getState().nodes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'current-note' })]),
+    );
+  });
+
+  it('restoreVersion treats an explicit empty feature note list as authoritative', async () => {
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      workflow_id: 'wf-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-13T00:00:00Z',
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({
+      status: 'success',
+      workflow_id: 'wf-1',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:01Z',
+    });
+    const currentNote = createMockNode('current-note', 'note');
+    useWorkflowStore.setState({
+      activeWorkflowId: 'wf-1',
+      workflows: [
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [currentNote],
+          edges: [],
+          features: { nextNodeDisplayNumber: 1 },
+        },
+      ],
+      nodes: [currentNote],
+      features: { nextNodeDisplayNumber: 1 },
+    });
+
+    await useWorkflowStore.getState().restoreVersion({
+      id: 'deployment-explicit-no-notes',
+      app_id: 'app-1',
+      version: 4,
+      created_by: 'user-1',
+      created_at: '2026-07-01T00:00:00Z',
+      type: 'api',
+      is_active: false,
+      graph_snapshot: {
+        nodes: [createMockNode('restored', 'startNode')],
+        edges: [],
+        features: { nextNodeDisplayNumber: 1, noteNodes: [] },
+      },
+    } as DeploymentResponse);
+
+    expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledWith(
+      'wf-1',
+      expect.objectContaining({
+        features: expect.objectContaining({ noteNodes: [] }),
+      }),
+    );
+    expect(
+      useWorkflowStore.getState().nodes.filter((node) => node.type === 'note'),
+    ).toEqual([]);
+  });
+
   it('restoreVersion waits for an in-flight Agent Builder workflow save', async () => {
     const releaseAgentBuilderSave = tryAcquireWorkflowDraftSave(
       'wf-1',

@@ -28,6 +28,7 @@ Status: Draft
 - Autosync lock coalescing: test preflight 또는 Agent Builder가 lock을 보유한 동안 여러 autosync 회차가 발생해도 대기 작업은 하나이고, lock 해제 뒤 같은 active workflow의 최신 dirty graph만 한 번 저장하는지 검증한다. 대기 중 workflow가 바뀌면 이전 workflow와 새 workflow 모두에 저장하지 않는다.
 - Agent Builder workflow switch: Agent Builder가 save lock을 기다리거나 canonical draft를 조회하는 동안 active workflow가 바뀌면 mutation/save/acknowledgement/rollback을 수행하지 않고 새 workflow의 graph, metadata와 Undo/Redo history를 보존하는지 검증한다.
 - Version restore workflow switch: Agent Builder save lock을 기다리는 동안 active workflow가 바뀌면 version restore가 canonical draft GET/POST를 호출하지 않고 새 workflow의 graph, metadata와 Undo/Redo history를 보존하는지 검증한다.
+- Version restore Note precedence: modern `features.noteNodes`, 명시적 빈 배열, legacy `nodes` Note fallback과 Note 표현이 없는 legacy snapshot의 현재 Note 보존을 각각 검증한다.
 - Test save recovery: `409 stale_graph` 뒤 canonical graph가 editor snapshot과 같을 때만 metadata를 수용하고 재저장 없이 실행하며, 다르면 metadata 갱신, 실행과 overwrite를 모두 차단하는지 검증한다. `operation envelope not found`에서는 Agent Builder safe envelope와 canonical hash/`updated_at`으로 `applied|unapplied|pending|stale`을 판정한다. acknowledged hash만 같고 timestamp가 다르면 `applied`가 아니며, 두 값이 모두 같은 `applied`에서만 실행하고 typed operation을 재생하지 않는다.
 - Test save error UX: `401`, `403`, `409 stale_graph`, `409 operation envelope not found`, 일반 `4xx`, network/`5xx`가 구분되고 모든 실패에서 test stream이 열리지 않는지 검증한다.
 - Dirty test preflight stale protection: local edit base보다 앞선 canonical metadata를 dirty graph에 주입하지 않고 draft POST와 test stream을 모두 차단하는지 검증한다.
@@ -869,4 +870,5 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Clean local graph와 canonical server graph가 다르면 test와 save를 차단하고 비교 전에 최신 metadata를 stale local graph에 적용하지 않는지 검증한다.
 - `operation envelope not found`는 Agent Builder 결과를 `applied|unapplied|pending|stale`로 구분하고 권한 오류나 일반 저장 실패로 표시하지 않는지 검증한다.
 - Node root의 React Flow measurement/selection field와 node data의 실행 status, observability, editor-only `displayNumber` 갱신이 최상위, 중첩 `subGraph.nodes`와 `features.noteNodes`의 autosync, draft payload, canonical hash와 Workflow Undo/Redo history에 포함되지 않는지 검증한다. 모든 client save path와 Gateway save가 같은 projection을 사용하는지 함께 검증한다.
+- Server-derived node `configuration_state` 차이만으로 Client canonical 비교가 실패하지 않고, Client payload에서는 최상위 및 중첩 값이 제거된 뒤 Server가 재계산하는지 검증한다.
 - Test 전 save 중 발생한 별도 수동 편집은 dirty 상태와 history를 유지하는지 검증한다.

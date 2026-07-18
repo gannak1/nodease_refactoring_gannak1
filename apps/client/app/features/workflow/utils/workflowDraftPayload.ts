@@ -4,6 +4,7 @@ const PRESENTATION_DATA_FIELDS = new Set([
   'displayNumber',
   'status',
   'observability',
+  'configuration_state',
 ]);
 const PRESENTATION_NODE_FIELDS = new Set([
   'dragging',

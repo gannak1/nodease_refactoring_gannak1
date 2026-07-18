@@ -506,7 +506,14 @@ describe('Agent Builder editor adapter', () => {
     });
 
     const request = vi.mocked(workflowApi.syncDraftWorkflow).mock.calls[0]?.[1];
-    expect(request?.nodes).toEqual([llmNode]);
+    const expectedPersistedNode = {
+      ...llmNode,
+      data: { ...llmNode.data },
+    };
+    delete (expectedPersistedNode.data as Record<string, unknown>)
+      .configuration_state;
+    expect(request?.nodes).toEqual([expectedPersistedNode]);
+    expect(request?.nodes[0].data).not.toHaveProperty('configuration_state');
     expect(request?.nodes[0]).not.toHaveProperty('width');
     expect(request?.nodes[0]).not.toHaveProperty('height');
     expect(request?.nodes[0]).not.toHaveProperty('measured');

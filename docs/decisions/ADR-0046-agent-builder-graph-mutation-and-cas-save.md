@@ -96,6 +96,8 @@ Test preflight는 editor가 clean이라고 표시되어도 canonical server grap
 
 Workflow 실행 중 presentation field는 canonical graph, graph hash, draft payload, autosync dirty flag와 Workflow Undo/Redo history에 포함하지 않는다. Agent Builder 저장과 일반 저장의 graph 및 `features.noteNodes`, 일반 autosync, version 복원, test 전 저장, Undo/Redo와 note 저장은 같은 client canonical serializer를 사용하고 Gateway도 저장 직전에 같은 재귀 projection을 적용한다. Test 전 저장이 성공해도 저장 시작 이후 별도 editor 변경이 발생했다면 그 변경의 dirty 상태를 지우지 않는다.
 
+Node `configuration_state`는 server-derived 표시 상태이므로 Client canonical request와 local/canonical 비교 projection에서 최상위 및 중첩 node 모두 제거한다. Gateway는 제거된 Client 값을 요구하거나 신뢰하지 않고 Catalog로 다시 계산해 저장 graph와 canonical response에 materialize한다. Version restore는 snapshot에 `features.noteNodes` field가 있으면 그 배열을 권위로 사용하며 명시적 빈 배열은 Note 전체 삭제를 뜻한다. 해당 field가 없는 legacy snapshot은 `nodes`의 Note를 사용하고, 두 표현이 모두 없는 legacy snapshot은 현재 editor Note를 보존해 field 부재만으로 Note를 삭제하지 않는다.
+
 Workflow graph를 함께 바꾸는 Model Routing policy PATCH와 Cost Optimizer candidate/recommendation apply도 out-of-band 예외가 아니다. 이 API들은 현재 canonical `expected_graph_hash`와 `expected_updated_at`을 필수로 받고, 권한 확인 뒤 workflow row를 write lock으로 다시 조회한 상태에서 같은 CAS를 검증한다. Graph 변경과 policy/candidate 부가 상태 변경은 같은 transaction으로 확정하며 성공 응답의 `graph_hash`와 `updated_at`으로 frontend 공통 canonical metadata를 갱신한다.
 
 ### 5. Canonical Save Result

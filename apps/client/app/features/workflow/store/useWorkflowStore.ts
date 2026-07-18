@@ -1926,11 +1926,52 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       const activeWorkflowId = targetWorkflowId;
       // 1. 스냅샷 데이터로 현재 드래프트 업데이트 API 호출
       const snapshot = version.graph_snapshot;
+      const rawSnapshotFeatures =
+        'features' in snapshot ? snapshot.features : null;
       const snapshotFeatures =
-        'features' in snapshot ? (snapshot.features as Features) : {};
+        rawSnapshotFeatures &&
+        typeof rawSnapshotFeatures === 'object' &&
+        !Array.isArray(rawSnapshotFeatures)
+          ? (rawSnapshotFeatures as Features)
+          : {};
+      const snapshotNodes = (snapshot.nodes || []) as Node[];
+      const hasFeatureNoteNodes = Object.prototype.hasOwnProperty.call(
+        snapshotFeatures,
+        'noteNodes',
+      );
+      if (
+        hasFeatureNoteNodes &&
+        !Array.isArray(snapshotFeatures.noteNodes)
+      ) {
+        throw new Error('Version snapshot contains invalid note nodes.');
+      }
+      const legacyNoteNodes = snapshotNodes.filter(
+        (node) => node.type === 'note',
+      );
+      const currentNodeNotes = state.nodes.filter(
+        (node) => node.type === 'note',
+      );
+      const currentFeatureNotes = Array.isArray(state.features?.noteNodes)
+        ? (state.features.noteNodes as Node[])
+        : [];
+      const restoredNoteNodes = hasFeatureNoteNodes
+        ? (snapshotFeatures.noteNodes as Node[])
+        : legacyNoteNodes.length > 0
+          ? legacyNoteNodes
+          : currentNodeNotes.length > 0
+            ? currentNodeNotes
+            : currentFeatureNotes;
+      const restoredNodes = [
+        ...snapshotNodes.filter((node) => node.type !== 'note'),
+        ...restoredNoteNodes,
+      ];
+      const restoredFeatures = {
+        ...snapshotFeatures,
+        noteNodes: restoredNoteNodes,
+      };
       const normalized = assignMissingNodeDisplayNumbers(
-        (snapshot.nodes || []) as Node[],
-        snapshotFeatures || {},
+        restoredNodes,
+        restoredFeatures,
       );
 
       const canonical = await workflowApi.getDraftWorkflow(activeWorkflowId);
@@ -1946,7 +1987,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
           runtimeVariables: state.runtimeVariables,
         },
         restoredViewport,
-        { noteNodesSource: 'nodes' },
+        { noteNodesSource: 'features' },
       );
       const saveResponse = await workflowApi.syncDraftWorkflow(
         activeWorkflowId,

@@ -51,4 +51,39 @@ describe('TestSidebar canonical draft comparison', () => {
 
     expect(workflowDraftSnapshotsEqual(latest, saved)).toBe(false);
   });
+
+  it('ignores server-derived configuration state when comparing a canonical draft', () => {
+    const snapshot = {
+      nodes: [
+        {
+          id: 'llm-1',
+          type: 'llmNode',
+          position: { x: 0, y: 0 },
+          data: {
+            model_id: 'gpt-5.5',
+            configuration_state: 'unresolved',
+          },
+        },
+      ],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      features: {},
+      envVariables: [],
+      runtimeVariables: [],
+    } as unknown as WorkflowDraftRequest;
+    const canonical = {
+      ...snapshot,
+      nodes: [
+        {
+          ...snapshot.nodes[0],
+          data: {
+            ...snapshot.nodes[0].data,
+            configuration_state: 'resolved',
+          },
+        },
+      ],
+    };
+
+    expect(canonicalDraftMatchesSnapshot(canonical, snapshot)).toBe(true);
+  });
 });

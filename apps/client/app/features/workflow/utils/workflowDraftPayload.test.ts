@@ -14,6 +14,7 @@ describe('buildWorkflowDraftPayload', () => {
           data: {
             title: '코드 실행',
             code: 'return inputs',
+            configuration_state: 'resolved',
             status: 'success',
             observability: { latency_ms: 20 },
           },
@@ -34,6 +35,7 @@ describe('buildWorkflowDraftPayload', () => {
     });
     expect(payload.nodes[0].data).not.toHaveProperty('status');
     expect(payload.nodes[0].data).not.toHaveProperty('observability');
+    expect(payload.nodes[0].data).not.toHaveProperty('configuration_state');
   });
 
   it('removes editor-only fields recursively and preserves canonical note nodes', () => {
@@ -48,6 +50,7 @@ describe('buildWorkflowDraftPayload', () => {
       data: {
         text: 'server note',
         displayNumber: 9,
+        configuration_state: 'resolved',
         status: 'success',
       },
     };
@@ -64,6 +67,7 @@ describe('buildWorkflowDraftPayload', () => {
           data: {
             title: 'Loop',
             displayNumber: 1,
+            configuration_state: 'resolved',
             status: 'running',
             observability: { latency_ms: 10 },
             subGraph: {
@@ -79,6 +83,7 @@ describe('buildWorkflowDraftPayload', () => {
                   data: {
                     code: 'return inputs',
                     displayNumber: 2,
+                    configuration_state: 'unresolved',
                     status: 'success',
                     observability: { latency_ms: 5 },
                   },
@@ -111,6 +116,7 @@ describe('buildWorkflowDraftPayload', () => {
     const noteData = (payload.features?.noteNodes?.[0] as any).data;
 
     expect(loopData).not.toHaveProperty('displayNumber');
+    expect(loopData).not.toHaveProperty('configuration_state');
     expect(loopData).not.toHaveProperty('status');
     expect(loopData).not.toHaveProperty('observability');
     expect(nestedData).toEqual({ code: 'return inputs' });
