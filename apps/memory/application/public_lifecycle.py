@@ -28,7 +28,6 @@ from apps.memory.domain.errors import (
     MemoryAdapterUnavailableError,
     PurgeReceiptNotUsableError,
     SecretReplayExpiredError,
-    SessionNotActiveError,
 )
 from apps.memory.domain.public_access import (
     AccessGrantState,

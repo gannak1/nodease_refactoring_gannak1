@@ -241,30 +241,80 @@ def _seed_contract(session_factory):
                 accepted_at=datetime.now(timezone.utc),
             )
         )
-        app = App(
-            organization_id=organization.id,
-            name="Agent Builder Intent Usage",
-            url_slug=f"agent-builder-intent-usage-{uuid.uuid4().hex}",
-            auth_secret="",
-            created_by=actor.id,
+        app_id = uuid.uuid4()
+        app_now = datetime.now(timezone.utc)
+        db.execute(
+            text(
+                """
+                INSERT INTO apps (
+                    id,
+                    organization_id,
+                    name,
+                    url_slug,
+                    auth_secret,
+                    is_api_enabled,
+                    api_req_per_minute,
+                    api_req_per_hour,
+                    is_market,
+                    created_by,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :organization_id,
+                    :name,
+                    :url_slug,
+                    :auth_secret,
+                    :is_api_enabled,
+                    :api_req_per_minute,
+                    :api_req_per_hour,
+                    :is_market,
+                    :created_by,
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": app_id,
+                "organization_id": organization.id,
+                "name": "Agent Builder Intent Usage",
+                "url_slug": f"agent-builder-intent-usage-{uuid.uuid4().hex}",
+                "auth_secret": "",
+                "is_api_enabled": True,
+                "api_req_per_minute": 60,
+                "api_req_per_hour": 3600,
+                "is_market": False,
+                "created_by": actor.id,
+                "created_at": app_now,
+                "updated_at": app_now,
+            },
         )
-        db.add(app)
-        db.flush()
         workflow = Workflow(
             organization_id=organization.id,
-            app_id=app.id,
+            app_id=app_id,
             graph={"nodes": [], "edges": []},
             created_by=actor.id,
             updated_by=actor.id,
         )
         db.add(workflow)
         db.flush()
-        app.workflow_id = workflow.id
+        db.execute(
+            text(
+                "UPDATE apps SET workflow_id = :workflow_id, "
+                "updated_at = :updated_at WHERE id = :app_id"
+            ),
+            {
+                "workflow_id": workflow.id,
+                "updated_at": datetime.now(timezone.utc),
+                "app_id": app_id,
+            },
+        )
         session = AgentBuilderSession(
             organization_id=organization.id,
             user_id=actor.id,
             workflow_id=workflow.id,
-            app_id=app.id,
+            app_id=app_id,
             status="active",
             protocol_version="direct_edit_v1",
         )
@@ -321,7 +371,7 @@ def _seed_contract(session_factory):
         return SimpleNamespace(
             user_id=actor.id,
             organization_id=organization.id,
-            app_id=app.id,
+            app_id=app_id,
             workflow_id=workflow.id,
             session_id=session.id,
             request_id=request.id,

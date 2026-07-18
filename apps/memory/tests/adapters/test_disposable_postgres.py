@@ -21,6 +21,7 @@ from apps.memory.adapters.persistence.repository import (
     SqlAlchemyMemoryUnitOfWork,
 )
 from apps.memory.adapters.persistence.readiness import (
+    REQUIRED_MEMORY_SCHEMA,
     check_memory_schema_readiness,
 )
 from apps.memory.application.lifecycle import (
@@ -74,6 +75,13 @@ RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_memory"
 PARENT_REVISION = "aa0b1c2d3e4f"
 MEMORY_MERGE_REVISION = "ac2d3e4f5061"
+PUBLIC_CONVERSATION_PARENT_REVISION = "f4a5b6c7d8e9"
+PUBLIC_CONVERSATION_REPLAY_REVISION = "ac1d2e3f4a50"
+FOUNDATION_MEMORY_SCHEMA = {
+    table_name: columns
+    for table_name, columns in REQUIRED_MEMORY_SCHEMA.items()
+    if table_name != "conversation_secret_replays"
+}
 
 
 def _run_alembic(
@@ -370,7 +378,13 @@ def test_memory_migration_uow_and_concurrent_start_turn_contracts():
             # migration 때문에 Memory rollback과 무관하게 실패한다.
             _assert_legacy_execution_survives(engine, ids)
             with Session(engine) as db:
-                assert check_memory_schema_readiness(db).ready is True
+                assert (
+                    check_memory_schema_readiness(
+                        db,
+                        required_schema=FOUNDATION_MEMORY_SCHEMA,
+                    ).ready
+                    is True
+                )
 
             binding_session_id = uuid.uuid4()
             _create_session(engine, ids, binding_session_id)
@@ -569,6 +583,36 @@ def test_memory_migration_uow_and_concurrent_start_turn_contracts():
                 config=config,
             )
             _assert_legacy_execution_survives(engine, ids)
+
+            # Verify the MBA-317 additive revision against its actual current
+            # parent without forcing unrelated later revisions through the
+            # Memory foundation rollback boundary above.
+            _run_alembic(
+                PUBLIC_CONVERSATION_PARENT_REVISION,
+                operation="upgrade",
+                database=database,
+                config=config,
+            )
+            _run_alembic(
+                PUBLIC_CONVERSATION_REPLAY_REVISION,
+                operation="upgrade",
+                database=database,
+                config=config,
+            )
+            _assert_legacy_execution_survives(engine, ids)
+            with Session(engine) as db:
+                assert check_memory_schema_readiness(db).ready is True
+
+            _run_alembic(
+                PUBLIC_CONVERSATION_PARENT_REVISION,
+                operation="downgrade",
+                database=database,
+                config=config,
+            )
+            with Session(engine) as db:
+                readiness = check_memory_schema_readiness(db)
+                assert readiness.ready is False
+                assert "conversation_secret_replays" in readiness.missing_tables
         finally:
             engine.dispose()
     except OperationalError:
