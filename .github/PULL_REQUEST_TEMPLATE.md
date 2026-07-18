@@ -27,12 +27,13 @@ docs/engineering/protected-resource-feature-completion.md와 테스트 매트릭
 -->
 - 적용 여부: [ ] 적용 [ ] 비적용
 - 비적용 사유:
-- 완결성 매트릭스 또는 검증 증거:
+- 완결성 매트릭스의 계약·구현·검증 증거:
 - [ ] 저장·GraphMutation과 secret 비저장
 - [ ] 관리 API/UI와 user/team 권한 부여·회수
 - [ ] Deployment preflight와 runtime/background 재검증
-- [ ] Lifecycle·TOCTOU·idempotency/capability/lease·외부 adapter 미호출
-- [ ] Audit·resource hiding·secret/PII redaction
+- [ ] Lifecycle·TOCTOU·stable identity/deduplication·crash replay·capability/lease
+- [ ] Audit event 생성·canonical action/status·중복 방지·secret/PII redaction
+- [ ] 적용 동작 경계마다 구현 위치와 실행 가능한 테스트 증거 기록
 - 미완료 항목 또는 후속 이슈:
 
 ## 스크린샷 (UI 변경 시)
