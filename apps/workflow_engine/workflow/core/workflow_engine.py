@@ -1599,7 +1599,7 @@ class WorkflowEngine:
 
         # CodeNode input은 selector 배열 대신 "node-id.variable" source를 사용한다.
         # Citation lineage에도 실제 데이터 전달 경로를 포함해야 한다.
-        if schema.type == "codeNode":
+        if getattr(schema, "type", None) == "codeNode":
             inputs = data_dict.get("inputs")
             if isinstance(inputs, list):
                 for input_item in inputs:
