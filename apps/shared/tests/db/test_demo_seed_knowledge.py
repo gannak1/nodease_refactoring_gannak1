@@ -1407,7 +1407,7 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
         "ab1c2d3e4f50",
     }
     assert app_auth_secret_revision.down_revision == "ac2d3e4f5061"
-    assert routing_bootstrap_inputs_revision.down_revision == "b0c1d2e3f4a5"
+    assert routing_bootstrap_inputs_revision.down_revision == "c2e8f4a91d67"
     assert routing_performance_revision.down_revision == "ba6f5c4d3e2f"
     assert routing_bootstrap_artifacts_revision.down_revision == "bb7c8d9e0f13"
     assert routing_global_profiles_revision.down_revision == "bc8d9e0f1a24"
