@@ -1,7 +1,7 @@
 # PR CI 품질 게이트
 
 Status: Draft
-Verified Against: feature/mba-328 @ fdb7d283
+Verified Against: feature/mba-328 @ 64bc7912
 
 ## 목적
 
@@ -190,7 +190,7 @@ actionlint .github/workflows/pr-quality-gate.yml .github/workflows/pr-ci-control
 
 `deployment-config-validation`은 일반 배포 설정 변경에서는 변경된 종류만 검사한다. 품질 게이트 CI 제어 파일이 바뀌면 검증 명령 자체의 회귀를 놓치지 않도록 여섯 배포 검증기를 모두 실행한다.
 
-- GitHub Actions: 일반 변경에서는 추가·수정·이름 변경된 workflow를 검사하고, CI 제어 변경에서는 tracked workflow 전체를 고정 버전 actionlint로 검사
+- GitHub Actions: 일반 변경에서는 추가·수정·이름 변경된 workflow를 검사한다. CI 제어 변경에서는 기존 배포 workflow의 ShellCheck 부채와 분리된 안정적 smoke 대상으로 품질 게이트, 신뢰 가드와 네 PostgreSQL 계약 workflow를 고정 버전 actionlint로 검사한다.
 - Helm: dependency lock 기반 build, 기본/production values lint와 template render
 - Kubernetes: client-side manifest parse
 - Terraform: format, backend 없는 init, validate
