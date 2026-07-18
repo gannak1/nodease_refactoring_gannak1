@@ -358,12 +358,14 @@ export function LLMNodePanel({
       status === 'failed'
         ? '정책 오류'
         : status === 'refreshing'
-          ? '정책 갱신 중'
-          : activePolicy
-            ? '정책 적용 중'
-            : data.auto_model_routing
-              ? '정책 준비 중'
-              : '사용 안 함';
+          ? '운영 성적 재평가 중'
+          : activePolicy?.learning?.mode === 'local_first'
+            ? '로컬 선택 우선'
+              : activePolicy
+                ? 'Judge 선택 학습 중'
+                : data.auto_model_routing
+                  ? '첫 요청부터 Judge 선택'
+                  : '사용 안 함';
 
     return {
       statusLabel,
@@ -550,7 +552,7 @@ export function LLMNodePanel({
   const handleAutoModelRoutingChange = useCallback(
     (enabled: boolean) => {
       handleUpdateData('auto_model_routing', enabled);
-      // 켤 때는 저장된 정책을 사용하고, 끌 때만 정책을 비활성화한다.
+      // 켤 때는 배포 또는 첫 실행에서 Judge-first policy가 자동으로 준비된다.
       // 끌 때만 즉시 runtime policy를 off로 전환한다.
       if (!enabled) {
         void syncRoutingPolicy(false, routingPanelState.refreshEveryRuns);
