@@ -1,7 +1,7 @@
 # Deployment API Spec
 
 Status: Draft
-Verified Against: `feature/mba-254 @ 95e821ef`
+Verified Against: `feature/mba-247 @ 3b947bd5ac6c51ffcc028510344ee2e5a5066873`
 
 ## Endpoints
 

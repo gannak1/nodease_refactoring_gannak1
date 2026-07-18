@@ -13,7 +13,7 @@ Status: Draft
 
 ## 도메인별 테이블
 
-현재 코드의 SQLAlchemy `__tablename__` 기준 활성 테이블은 98개다. 아래 목록은 공통 model registry와 Alembic head `ab1c2d3e4f50`을 대조한 inventory다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 주석 처리된 호환 모델이므로 개수와 목록에서 제외한다. 테이블 추가·삭제 시 수동 개수만 바꾸지 말고 이 inventory와 해당 도메인 설명을 함께 갱신한다.
+현재 코드의 SQLAlchemy `__tablename__` 기준 활성 테이블은 98개다. 아래 목록은 공통 model registry와 Alembic head `b0c1d2e3f4a5`를 대조한 inventory다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 주석 처리된 호환 모델이므로 개수와 목록에서 제외한다. 테이블 추가·삭제 시 수동 개수만 바꾸지 말고 이 inventory와 해당 도메인 설명을 함께 갱신한다.
 
 | 도메인 | 테이블 |
 | --- | --- |
