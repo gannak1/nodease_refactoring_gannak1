@@ -86,6 +86,14 @@ describe('LogDetail', () => {
     llmNodeRun.outputs = {
       ...llmNodeRun.outputs,
       model: 'gpt-4.1',
+      metadata: {
+        model_routing: {
+          judge: {
+            reason_short: '복수 근거 종합',
+            candidate_model_count: 3,
+          },
+        },
+      },
     };
     llmNodeRun.trace_metadata = {
       llm: {
@@ -130,6 +138,8 @@ describe('LogDetail', () => {
     expect(routing.getByText(/Judge 모델: gpt-4.1-mini/)).toBeInTheDocument();
     expect(routing.getByText(/판단 확신도 84.0%/)).toBeInTheDocument();
     expect(routing.getByText(/Judge 비용 \$0.000130/)).toBeInTheDocument();
+    expect(routing.getByText('사유: 복수 근거 종합')).toBeInTheDocument();
+    expect(routing.getByText('검토 후보 모델 3개')).toBeInTheDocument();
     expect(
       routing.getByText(
         (_, element) =>

@@ -59,20 +59,37 @@ const routingRecordOf = (
   output: unknown,
   traceMetadata: unknown,
 ): Record<string, unknown> | null => {
-  if (isRecord(traceMetadata)) {
-    return isRecord(traceMetadata.llm) ? traceMetadata.llm : traceMetadata;
-  }
-  if (!isRecord(output)) return null;
-  const metadata = isRecord(output.metadata) ? output.metadata : null;
-  if (metadata && isRecord(metadata.model_routing)) {
-    return metadata.model_routing;
-  }
-  if (metadata && isRecord(metadata.llm)) {
-    return metadata.llm;
-  }
-  return metadata && isRecord(metadata.model_routing_metadata)
-    ? metadata.model_routing_metadata
+  const traceRouting = isRecord(traceMetadata)
+    ? isRecord(traceMetadata.llm)
+      ? traceMetadata.llm
+      : traceMetadata
     : null;
+  const metadata = isRecord(output) && isRecord(output.metadata)
+    ? output.metadata
+    : null;
+  const outputRouting = metadata && isRecord(metadata.model_routing)
+    ? metadata.model_routing
+    : metadata && isRecord(metadata.llm)
+      ? metadata.llm
+      : metadata && isRecord(metadata.model_routing_metadata)
+        ? metadata.model_routing_metadata
+        : null;
+
+  if (!traceRouting) return outputRouting;
+  if (!outputRouting) return traceRouting;
+
+  // Trace에는 안전한 Judge 요약만 남고, output metadata에는 UI용 짧은 사유와
+  // 후보 수가 추가된다. trace의 최신 실행값을 우선하되 누락된 Judge 필드만 보완한다.
+  const traceJudge = isRecord(traceRouting.judge) ? traceRouting.judge : {};
+  const outputJudge = isRecord(outputRouting.judge) ? outputRouting.judge : {};
+  return {
+    ...outputRouting,
+    ...traceRouting,
+    judge: {
+      ...outputJudge,
+      ...traceJudge,
+    },
+  };
 };
 
 const contextOf = (value: unknown): RoutingContext => {
