@@ -11,7 +11,9 @@ from apps.gateway.services.external_action_credential_service import (
     ExternalActionCredentialTargetNotFound,
     ExternalActionCredentialService,
 )
+from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.context import clear_current_metadata, set_current_metadata
+from apps.shared.db.models.audit_log import AuditLog, AuditStatus
 from apps.shared.schemas.external_action_credential import (
     ExternalActionCredentialPermissionGrant,
     ExternalActionCredentialUpdate,
@@ -78,6 +80,89 @@ def test_picker_uses_manager_override_without_per_credential_permission_queries(
 
     assert [item.id for item in result] == [credential.id]
     has_permission.assert_not_called()
+
+
+@patch(
+    "apps.gateway.services.external_action_credential_service."
+    "get_effective_external_action_credential_auth_states"
+)
+@patch(
+    "apps.gateway.services.external_action_credential_service."
+    "get_organization_auth_state",
+    return_value="member",
+)
+def test_picker_uses_bulk_auth_state_resolver_and_returns_use_permission_only(
+    _organization_auth_state,
+    effective_states,
+):
+    viewer = _credential(status="active")
+    operator = _credential(organization_id=viewer.organization_id, status="active")
+    effective_states.return_value = {
+        viewer.id: "viewer",
+        operator.id: "operator",
+    }
+    actor_id = uuid4()
+    db = MagicMock()
+    db.query.return_value.filter.return_value.order_by.return_value.all.return_value = [
+        viewer,
+        operator,
+    ]
+
+    result = ExternalActionCredentialService(db).list_available(
+        actor_id, viewer.organization_id
+    )
+
+    assert [item.id for item in result] == [operator.id]
+    effective_states.assert_called_once_with(
+        db,
+        actor_id,
+        [viewer.id, operator.id],
+        viewer.organization_id,
+    )
+
+
+@patch(
+    "apps.gateway.services.external_action_credential_service."
+    "get_effective_external_action_credential_auth_states",
+    create=True,
+)
+@patch(
+    "apps.gateway.services.external_action_credential_service."
+    "get_organization_auth_state",
+    return_value="member",
+)
+def test_management_catalog_includes_revoked_manageable_credential_only(
+    _organization_auth_state,
+    effective_states,
+):
+    active_use_only = _credential(status="active")
+    revoked_manageable = _credential(
+        organization_id=active_use_only.organization_id,
+        status="revoked",
+    )
+    effective_states.return_value = {
+        active_use_only.id: "operator",
+        revoked_manageable.id: "manager",
+    }
+    actor_id = uuid4()
+    db = MagicMock()
+    db.query.return_value.filter.return_value.order_by.return_value.all.return_value = [
+        active_use_only,
+        revoked_manageable,
+    ]
+
+    result = ExternalActionCredentialService(db).list_manageable(
+        actor_id, active_use_only.organization_id
+    )
+
+    assert [item.id for item in result] == [revoked_manageable.id]
+    effective_states.assert_called_once_with(
+        db,
+        actor_id,
+        [active_use_only.id, revoked_manageable.id],
+        active_use_only.organization_id,
+        include_revoked=True,
+    )
 
 
 @patch(
@@ -176,6 +261,56 @@ def test_revoked_credential_allows_existing_user_permission_revoke(has_permissio
     )
 
     assert has_permission.call_args.kwargs["include_revoked"] is True
+    db.commit.assert_called_once_with()
+
+
+@patch(
+    "apps.gateway.services.external_action_credential_service."
+    "register_manual_audit_ownership"
+)
+def test_revoke_writes_one_safe_lifecycle_audit_with_the_state_change(
+    _register_manual_audit_ownership,
+):
+    credential = _credential()
+    actor_id = uuid4()
+    db = MagicMock()
+    service = ExternalActionCredentialService(db)
+    service._get_scoped = MagicMock(return_value=credential)
+    service._require = MagicMock()
+    token = set_current_metadata(
+        {
+            "request_id": "request-safe",
+            "correlation_id": "correlation-safe",
+            "path": "/must-not-be-recorded",
+            "secret": "must-not-be-recorded",
+        }
+    )
+    try:
+        service.revoke(
+            actor_id,
+            credential.organization_id,
+            credential.id,
+            expected_revision=credential.revision,
+        )
+    finally:
+        clear_current_metadata(token)
+
+    audit_rows = [
+        call.args[0]
+        for call in db.add.call_args_list
+        if call.args and isinstance(call.args[0], AuditLog)
+    ]
+    assert len(audit_rows) == 1
+    audit = audit_rows[0]
+    assert audit.action == AuditAction.EXTERNAL_ACTION_CREDENTIAL_REVOKE
+    assert audit.status == AuditStatus.SUCCESS
+    assert audit.audit_metadata == {
+        "request_id": "request-safe",
+        "correlation_id": "correlation-safe",
+        "organization_id": str(credential.organization_id),
+        "provider": credential.provider,
+        "credential_revision": 2,
+    }
     db.commit.assert_called_once_with()
 
 

@@ -170,6 +170,60 @@ describe('ActorAccessDrawer', () => {
     );
   });
 
+  it('폐기된 External Action Credential을 신규 직접 권한 후보에서 제외한다', async () => {
+    mockedProfile.mockResolvedValue(profile);
+    mockedTeams.mockResolvedValue({ total: 0, items: [] });
+    mockedResources.mockResolvedValue({ total: 0, items: [] });
+    render(
+      <ActorAccessDrawer
+        organizationId="org-1"
+        userId="user-1"
+        teams={[]}
+        resources={[
+          {
+            id: 'external-active',
+            name: '운영 Slack Credential',
+            resourceType: 'external_action_credential',
+            grantable: true,
+          },
+          {
+            id: 'external-revoked',
+            name: '폐기된 GitHub Credential',
+            resourceType: 'external_action_credential',
+            grantable: false,
+          },
+        ]}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('김멤버 · member@example.com');
+    fireEvent.click(
+      screen.getByRole('tab', { name: 'External Action Credential' }),
+    );
+
+    await waitFor(() =>
+      expect(mockedResources).toHaveBeenCalledWith('org-1', 'user-1', {
+        resourceType: 'external_action_credential',
+        source: 'all',
+        page: 1,
+        limit: 20,
+      }),
+    );
+
+    const resourceSelect = screen.getByLabelText('직접 권한 resource');
+    expect(
+      within(resourceSelect).getByRole('option', {
+        name: '운영 Slack Credential',
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(resourceSelect).queryByRole('option', {
+        name: '폐기된 GitHub Credential',
+      }),
+    ).not.toBeInTheDocument();
+  });
+
   it('team/resource page와 source filter를 독립적으로 갱신한다', async () => {
     mockedProfile.mockResolvedValue(profile);
     mockedTeams.mockImplementation(

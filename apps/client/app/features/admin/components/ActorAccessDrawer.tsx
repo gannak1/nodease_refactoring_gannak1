@@ -429,7 +429,11 @@ export function ActorAccessDrawer({
   }, [teams]);
 
   const currentCatalog = useMemo(
-    () => resources.filter((item) => item.resourceType === resourceType),
+    () =>
+      resources.filter(
+        (item) =>
+          item.resourceType === resourceType && item.grantable !== false,
+      ),
     [resourceType, resources],
   );
   const teamTotalPages = Math.max(1, Math.ceil(teamTotal / PAGE_SIZE));

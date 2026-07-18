@@ -10,6 +10,7 @@ from apps.shared.audit.context import get_current_metadata
 from apps.shared.db.models.external_action_credential import (
     EXTERNAL_ACTION_CREDENTIAL_ACTIVE,
     EXTERNAL_ACTION_CREDENTIAL_PROVIDERS,
+    EXTERNAL_ACTION_CREDENTIAL_REVOKED,
     ExternalActionCredential,
 )
 from apps.shared.db.models.organization_membership import ORGANIZATION_AUTH_MEMBER
@@ -271,6 +272,8 @@ def get_effective_external_action_credential_auth_states(
     user_id: Any,
     credential_ids: Iterable[Any],
     organization_id: Any,
+    *,
+    include_revoked: bool = False,
 ) -> dict[uuid.UUID, str]:
     """Resolve external action credential auth states with a fixed query count."""
 
@@ -284,23 +287,33 @@ def get_effective_external_action_credential_auth_states(
     if user_uuid is None or organization_uuid is None or not requested_ids:
         return {}
 
+    lifecycle_filter = (
+        ExternalActionCredential.status.in_(
+            (
+                EXTERNAL_ACTION_CREDENTIAL_ACTIVE,
+                EXTERNAL_ACTION_CREDENTIAL_REVOKED,
+            )
+        )
+        if include_revoked
+        else ExternalActionCredential.status == EXTERNAL_ACTION_CREDENTIAL_ACTIVE
+    )
     scoped_rows = (
         db.query(ExternalActionCredential.id, ExternalActionCredential.status)
         .filter(
             ExternalActionCredential.id.in_(requested_ids),
             ExternalActionCredential.organization_id == organization_uuid,
-            ExternalActionCredential.status == EXTERNAL_ACTION_CREDENTIAL_ACTIVE,
+            lifecycle_filter,
         )
         .all()
     )
+    allowed_statuses = {EXTERNAL_ACTION_CREDENTIAL_ACTIVE}
+    if include_revoked:
+        allowed_statuses.add(EXTERNAL_ACTION_CREDENTIAL_REVOKED)
     scoped_ids: set[uuid.UUID] = set()
     for row in scoped_rows:
         credential_id, status = _external_action_credential_scope_values(row)
         credential_uuid = coerce_uuid(credential_id)
-        if (
-            credential_uuid is not None
-            and status == EXTERNAL_ACTION_CREDENTIAL_ACTIVE
-        ):
+        if credential_uuid is not None and status in allowed_statuses:
             scoped_ids.add(credential_uuid)
     if not scoped_ids:
         return {}

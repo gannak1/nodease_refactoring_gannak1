@@ -77,6 +77,13 @@ const RESOURCE_AUTH_STATES: ResourceAuthState[] = [
 const formatDateTime = (value?: string | null) =>
   value ? new Date(value).toLocaleString() : '-';
 
+const externalActionCredentialDisplayName = (
+  credential: ExternalActionCredentialOption,
+) =>
+  credential.status === 'revoked'
+    ? `${credential.credential_name} (폐기됨)`
+    : credential.credential_name;
+
 export function PermissionsTab({
   resourceType,
   workflowOptions,
@@ -145,6 +152,9 @@ export function PermissionsTab({
             ? selectedMailCredentialId
             : selectedExternalActionCredentialId;
   const resourceMissing = !selectedResourceId;
+  const selectedExternalActionCredential = externalActionCredentials.find(
+    (item) => item.id === selectedExternalActionCredentialId,
+  );
   const selectedResourceName =
     resourceType === 'workflow'
       ? workflowOptions.find((item) => item.workflow_id === selectedWorkflowId)
@@ -159,9 +169,11 @@ export function PermissionsTab({
             ? mailCredentials.find(
                 (item) => item.id === selectedMailCredentialId,
               )?.credential_name
-            : externalActionCredentials.find(
-                (item) => item.id === selectedExternalActionCredentialId,
-              )?.credential_name;
+            : selectedExternalActionCredential
+              ? externalActionCredentialDisplayName(
+                  selectedExternalActionCredential,
+                )
+              : undefined;
   const resourceFilterOptions =
     resourceFilterType === 'workflow'
       ? workflowOptions
@@ -181,7 +193,7 @@ export function PermissionsTab({
               }))
             : externalActionCredentials.map((item) => ({
                 id: item.id,
-                name: item.credential_name,
+                name: externalActionCredentialDisplayName(item),
               }));
   const visibleResourceFilterOptions = resourceFilterOptions.filter((item) =>
     item.name.toLowerCase().includes(resourceFilterQuery.trim().toLowerCase()),
@@ -261,6 +273,9 @@ export function PermissionsTab({
                     <option value="knowledge_base">Knowledge Base</option>
                     <option value="llm_credential">LLM Credential</option>
                     <option value="mail_credential">Mail Credential</option>
+                    <option value="external_action_credential">
+                      External Action Credential
+                    </option>
                   </select>
                 </label>
                 <label className="flex flex-col gap-1.5 text-xs font-medium text-slate-600">
@@ -462,10 +477,12 @@ function PermissionGrantModal({
                 id: item.id,
                 name: item.credential_name,
               }))
-            : externalActionCredentials.map((item) => ({
-                id: item.id,
-                name: item.credential_name,
-              }));
+            : externalActionCredentials
+                .filter((item) => item.status === 'active')
+                .map((item) => ({
+                  id: item.id,
+                  name: item.credential_name,
+                }));
   const resourceOptions = getResourceOptions(draftResourceType);
   const visibleResources = resourceOptions.filter((item) =>
     item.name.toLowerCase().includes(resourceQuery.trim().toLowerCase()),

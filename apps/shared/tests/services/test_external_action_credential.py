@@ -222,3 +222,29 @@ def test_bulk_auth_state_resolver_uses_manager_override_without_per_resource_que
 
     assert result == {credential.id: "manager"}
     assert db.query.call_count == 1
+
+
+@patch(
+    "apps.shared.services.external_action_credential."
+    "get_organization_auth_state",
+    return_value="manager",
+)
+def test_bulk_management_auth_state_resolver_includes_revoked_credential(
+    _organization_auth_state,
+):
+    credential = _credential(status="revoked")
+    query = MagicMock()
+    query.filter.return_value = query
+    query.all.return_value = [credential]
+    db = MagicMock()
+    db.query.return_value = query
+
+    result = get_effective_external_action_credential_auth_states(
+        db,
+        uuid4(),
+        [credential.id],
+        credential.organization_id,
+        include_revoked=True,
+    )
+
+    assert result == {credential.id: "manager"}

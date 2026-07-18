@@ -15,6 +15,7 @@ Status: Draft
 | --- | --- | --- | --- |
 | POST | `/api/v1/external-action-credentials/credentials` | Credential 등록 | Organization manager |
 | GET | `/api/v1/external-action-credentials/credentials` | 사용 가능한 safe picker option 목록 | `use` 이상 또는 manager |
+| GET | `/api/v1/external-action-credentials/credentials/management-options` | active/revoked safe 관리 option 목록 | `manage` 또는 manager |
 | GET | `/api/v1/external-action-credentials/credentials/{credential_id}` | Safe metadata 조회 | `read` 이상 또는 manager |
 | PATCH | `/api/v1/external-action-credentials/credentials/{credential_id}` | 이름 또는 secret 교체 | `manage` 또는 manager |
 | POST | `/api/v1/external-action-credentials/credentials/{credential_id}/revoke` | Credential revoke | `manage` 또는 manager |
@@ -50,7 +51,7 @@ Status: Draft
 }
 ```
 
-Picker option은 `id`, `credential_name`, `provider`, `revision`, `status`만 반환한다.
+Picker와 관리 option은 `id`, `credential_name`, `provider`, `revision`, `status`만 반환한다. Picker는 active이고 `use` 가능한 항목만 반환한다. 관리 option은 active 또는 revoked 중 `manage` 가능한 항목을 반환하되, revoked 항목은 기존 permission 조회·회수에만 사용한다.
 
 ## Update, Revoke And Permission
 
@@ -58,6 +59,7 @@ Picker option은 `id`, `credential_name`, `provider`, `revision`, `status`만 �
 - Revoke body는 `expected_revision`을 요구한다. hard delete 대신 active credential을 revoked로 전이한다.
 - Permission grant body의 `auth_state`는 `viewer`, `operator`, `builder`, `manager` 중 하나다. `operator` 이상이 runtime `use`를 가진다.
 - User grant 대상은 active organization membership과 active user여야 하며, Team은 동일 organization의 active Team이어야 한다.
+- Revoked credential은 관리 option과 기존 permission 목록에는 남지만 PUT 신규 grant는 `external_action_credential.revoked`로 거부하고 DELETE 회수만 허용한다.
 
 ## Management Error Contract
 

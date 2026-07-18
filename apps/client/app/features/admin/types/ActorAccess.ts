@@ -182,4 +182,5 @@ export type ActorAccessResourceCatalogItem = {
   id: string;
   name: string;
   resourceType: ActorResourceType;
+  grantable?: boolean;
 };

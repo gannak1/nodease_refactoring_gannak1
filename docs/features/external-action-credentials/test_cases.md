@@ -15,7 +15,8 @@ Status: Draft
 - EAC-TC-011: credential option/detail/mutation은 safe field만 반환하며 secret/ciphertext/key metadata가 없다.
 - EAC-TC-012: Cross-organization 및 same-organization unauthorized resource access는 existence를 노출하지 않는다.
 - EAC-TC-013: 빈 PATCH, unknown field, stale revision, revoked credential update/new grant는 safe validation/conflict로 거부한다.
-- EAC-TC-014: revoked credential은 option 및 effective permission 집계에서 제외되고 기존 grant revoke만 허용한다.
+- EAC-TC-014: revoked credential은 실행용 option 및 `use` 집계에서 제외된다. 관리 option에는 `manage` 가능한 revoked 항목이 safe 상태와 함께 포함되고, 기존 grant 조회·회수만 허용하며 신규 grant UI/API는 차단한다.
+- EAC-TC-015: lifecycle mutation은 상태 변경과 같은 transaction에 canonical audit를 정확히 한 번 추가하고 allowlist 밖 request metadata와 secret material을 저장하지 않는다.
 
 ## Graph, Builder And Client
 

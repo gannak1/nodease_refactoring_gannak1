@@ -55,7 +55,9 @@ vi.mock('@/app/features/workflow/api/mailCredentialApi', () => ({
 }));
 
 vi.mock('@/app/features/workflow/api/externalActionCredentialApi', () => ({
-  externalActionCredentialApi: { listAvailable: vi.fn().mockResolvedValue([]) },
+  externalActionCredentialApi: {
+    listManageable: vi.fn().mockResolvedValue([]),
+  },
 }));
 
 vi.mock('@/app/features/knowledge/api/knowledgeApi', () => ({
@@ -369,6 +371,90 @@ describe('PermissionsTab 표 기반 권한 부여', () => {
         authState: 'viewer',
       }),
     );
+  });
+
+  it('본문 필터에서 External Action Credential과 폐기 상태를 표시한다', () => {
+    const revokedCredential = {
+      id: 'external-credential-revoked',
+      credential_name: '폐기된 GitHub Credential',
+      provider: 'github',
+      status: 'revoked',
+      revision: 2,
+    };
+    const { onSelectResource } = renderPermissionsTab({
+      externalActionCredentials: [revokedCredential],
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '리소스 필터 변경' }));
+    fireEvent.change(screen.getByRole('combobox', { name: '리소스 유형' }), {
+      target: { value: 'external_action_credential' },
+    });
+    fireEvent.click(
+      screen.getByRole('option', {
+        name: '폐기된 GitHub Credential (폐기됨)',
+      }),
+    );
+
+    expect(onSelectResource).toHaveBeenCalledWith(
+      'external_action_credential',
+      revokedCredential.id,
+    );
+  });
+
+  it('폐기된 External Action Credential은 기존 권한 회수만 허용한다', () => {
+    renderPermissionsTab({
+      resourceType: 'external_action_credential',
+      externalActionCredentials: [
+        {
+          id: 'external-credential-active',
+          credential_name: '운영 Slack Credential',
+          provider: 'slack_api',
+          status: 'active',
+          revision: 1,
+        },
+        {
+          id: 'external-credential-revoked',
+          credential_name: '폐기된 GitHub Credential',
+          provider: 'github',
+          status: 'revoked',
+          revision: 2,
+        },
+      ],
+      selectedExternalActionCredentialId: 'external-credential-revoked',
+      permissionList: {
+        resource_type: 'external_action_credential',
+        resource_id: 'external-credential-revoked',
+        organization_id: 'org-1',
+        team_permissions: [
+          {
+            id: 'permission-1',
+            grantee_type: 'team',
+            grantee_id: 'team-1',
+            grantee_name: '개발팀',
+            auth_state: 'manager',
+            assigned_at: '2026-07-18T00:00:00Z',
+          },
+        ],
+        user_permissions: [],
+      },
+    });
+
+    expect(screen.getByText('폐기된 GitHub Credential (폐기됨)')).toBeVisible();
+    expect(screen.getByRole('button', { name: '회수' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: '권한 부여' }));
+    const resourceTable = screen.getByRole('table', {
+      name: '권한 대상 리소스',
+    });
+    expect(
+      within(resourceTable).getByText('운영 Slack Credential'),
+    ).toBeVisible();
+    expect(
+      within(resourceTable).queryByText('폐기된 GitHub Credential'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '선택한 권한 부여' }),
+    ).toBeDisabled();
   });
 
   it('권한 부여 버튼으로 표 선택 모달을 열고 저장한다', async () => {

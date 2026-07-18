@@ -582,7 +582,7 @@ export default function AdminConsolePage() {
           .then((response) => response.data)
           .catch(() => []),
         mailCredentialApi.listAvailable().catch(() => []),
-        externalActionCredentialApi.listAvailable().catch(() => []),
+        externalActionCredentialApi.listManageable().catch(() => []),
         apiClient
           .get<AppResponse[]>('/apps')
           .then((response) => response.data)
@@ -608,6 +608,8 @@ export default function AdminConsolePage() {
         selectedMailCredentialId || mailCredentialData[0]?.id || '';
       const firstExternalActionCredentialId =
         selectedExternalActionCredentialId ||
+        externalActionCredentialData.find((item) => item.status === 'active')
+          ?.id ||
         externalActionCredentialData[0]?.id ||
         '';
       setSelectedWorkflowId(firstWorkflowId);
@@ -718,7 +720,10 @@ export default function AdminConsolePage() {
       !selectedExternalActionCredentialId &&
       externalActionCredentials.length > 0
     ) {
-      setSelectedExternalActionCredentialId(externalActionCredentials[0].id);
+      setSelectedExternalActionCredentialId(
+        externalActionCredentials.find((item) => item.status === 'active')
+          ?.id || externalActionCredentials[0].id,
+      );
     }
   }, [externalActionCredentials, selectedExternalActionCredentialId]);
 
@@ -1451,6 +1456,7 @@ export default function AdminConsolePage() {
                   id: item.id,
                   name: item.credential_name,
                   resourceType: 'external_action_credential' as const,
+                  grantable: item.status === 'active',
                 })),
               ]}
               onActorAccessChanged={loadData}

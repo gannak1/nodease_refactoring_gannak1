@@ -20,4 +20,11 @@ export const externalActionCredentialApi = {
     );
     return response.data;
   },
+
+  async listManageable(): Promise<ExternalActionCredentialOption[]> {
+    const response = await apiClient.get<ExternalActionCredentialOption[]>(
+      '/external-action-credentials/credentials/management-options',
+    );
+    return response.data;
+  },
 };

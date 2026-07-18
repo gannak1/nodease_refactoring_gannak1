@@ -14,6 +14,7 @@ def test_external_action_credential_routes_and_safe_response_schema_are_register
     prefix = "/api/v1/external-action-credentials/credentials"
 
     assert {"get", "post"} <= set(paths[prefix])
+    assert {"get"} <= set(paths[f"{prefix}/management-options"])
     assert {"get", "patch"} <= set(paths[f"{prefix}/{{credential_id}}"])
     assert {"post"} <= set(paths[f"{prefix}/{{credential_id}}/revoke"])
     assert {"get"} <= set(paths[f"{prefix}/{{credential_id}}/permissions"])

@@ -75,6 +75,22 @@ def list_external_action_credentials(
 
 
 @router.get(
+    "/credentials/management-options",
+    response_model=list[ExternalActionCredentialOptionResponse],
+)
+def list_manageable_external_action_credentials(
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = _organization_id(db, request, x_organization_id, current_user)
+    return ExternalActionCredentialService(db).list_manageable(
+        current_user.id, organization_id
+    )
+
+
+@router.get(
     "/credentials/{credential_id}", response_model=ExternalActionCredentialResponse
 )
 def get_external_action_credential(

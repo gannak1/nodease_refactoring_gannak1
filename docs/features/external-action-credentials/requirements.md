@@ -24,6 +24,7 @@ External Action Credential은 GitHub PR 조회·댓글과 Slack API/Webhook 전�
 - EAC-REQ-013: Gateway와 Workflow Worker는 startup에서 동일한 external-action credential keyring과 active key version을 검증한다. keyring이 잘못되면 secret을 읽거나 외부 효과를 시작하기 전에 fail-fast한다.
 - EAC-REQ-014: Slack node output은 safe delivery 상태와 optional message reference만 제공한다. raw response headers/body selector는 legacy migration error로 차단한다.
 - EAC-REQ-015: Agent Builder는 credential을 자동 선택하거나 secret을 생성 결과에 넣지 않는다. Slack/GitHub node는 unresolved reference와 parameter task만 생성한다.
+- EAC-REQ-016: 실행용 picker는 active이고 `use` 가능한 credential만 반환한다. 권한 관리 화면은 active 또는 revoked 중 `manage` 가능한 safe option을 별도 조회하며, revoked credential은 기존 permission 조회·회수에만 사용하고 신규 grant 대상으로 노출하지 않는다.
 
 ## Out Of Scope
 
@@ -37,6 +38,6 @@ External Action Credential은 GitHub PR 조회·댓글과 Slack API/Webhook 전�
 - `use` 권한은 secret 조회 권한이 아니다. 어떤 role도 secret을 API로 읽을 수 없다.
 - `viewer`는 safe metadata를 읽을 수 있지만 workflow 실행에는 사용할 수 없다.
 - PATCH secret 교체와 revoke는 optimistic `expected_revision`을 요구한다.
-- Revoked credential은 수정·신규 grant 대상이 될 수 없고 기존 permission 회수만 가능하다.
+- Revoked credential은 수정·신규 grant 대상이 될 수 없고, 관리용 목록을 통한 기존 permission 조회·회수만 가능하다.
 - Resource hiding reason은 provider, credential name, target URL, channel, repository, raw exception을 포함하지 않는다.
 - Runtime revalidation은 provider I/O 직전에 짧은 DB session으로 수행하며 DB transaction 또는 row lock을 provider network call 동안 유지하지 않는다.

@@ -28,7 +28,6 @@ from apps.shared.db.models.organization_membership import (
 from apps.shared.db.models.team import (
     Team,
     TeamExternalActionCredentialPermission,
-    TeamMembership,
     UserExternalActionCredentialPermission,
 )
 from apps.shared.db.models.user import User
@@ -36,7 +35,6 @@ from apps.shared.permissions import (
     AUTH_STATE_MANAGER,
     AUTH_STATE_NONE,
     external_action_credential_auth_state_allows,
-    stronger_resource_auth_state,
 )
 from apps.shared.schemas.external_action_credential import (
     ExternalActionCredentialCreate,
@@ -53,6 +51,7 @@ from apps.shared.schemas.team import (
 from apps.shared.services.external_action_credential import (
     ExternalActionCredentialError,
     get_effective_external_action_credential_auth_state,
+    get_effective_external_action_credential_auth_states,
     get_external_action_credential_secret_service,
     has_external_action_credential_permission,
 )
@@ -170,50 +169,60 @@ class ExternalActionCredentialService:
         if organization_auth_state != ORGANIZATION_AUTH_MEMBER:
             return []
 
-        effective_states: dict[uuid.UUID, str] = {}
-        direct_rows = (
-            self.db.query(
-                UserExternalActionCredentialPermission.external_action_credential_id,
-                UserExternalActionCredentialPermission.auth_state,
-            )
-            .filter(
-                UserExternalActionCredentialPermission.grantee_organization_id
-                == organization_id,
-                UserExternalActionCredentialPermission.user_id == actor_id,
-            )
-            .all()
+        effective_states = get_effective_external_action_credential_auth_states(
+            self.db,
+            actor_id,
+            [credential.id for credential in credentials],
+            organization_id,
         )
-        team_rows = (
-            self.db.query(
-                TeamExternalActionCredentialPermission.external_action_credential_id,
-                TeamExternalActionCredentialPermission.auth_state,
-            )
-            .join(
-                TeamMembership,
-                TeamMembership.team_id
-                == TeamExternalActionCredentialPermission.team_id,
-            )
-            .join(Team, Team.id == TeamExternalActionCredentialPermission.team_id)
-            .filter(
-                TeamMembership.user_id == actor_id,
-                TeamMembership.grantee_organization_id == organization_id,
-                TeamExternalActionCredentialPermission.grantee_organization_id
-                == organization_id,
-                Team.organization_id == organization_id,
-                Team.is_active.is_(True),
-            )
-            .all()
-        )
-        for resource_id, auth_state in [*direct_rows, *team_rows]:
-            effective_states[resource_id] = stronger_resource_auth_state(
-                effective_states.get(resource_id, AUTH_STATE_NONE),
-                auth_state,
-            )
         return [
             self._option(credential)
             for credential in credentials
             if external_action_credential_auth_state_allows(
                 effective_states.get(credential.id, AUTH_STATE_NONE), "use"
+            )
+        ]
+
+    def list_manageable(
+        self, actor_id: uuid.UUID, organization_id: uuid.UUID
+    ) -> list[ExternalActionCredentialOptionResponse]:
+        credentials = (
+            self.db.query(ExternalActionCredential)
+            .filter(
+                ExternalActionCredential.organization_id == organization_id,
+                ExternalActionCredential.status.in_(
+                    (
+                        EXTERNAL_ACTION_CREDENTIAL_ACTIVE,
+                        EXTERNAL_ACTION_CREDENTIAL_REVOKED,
+                    )
+                ),
+            )
+            .order_by(
+                ExternalActionCredential.credential_name.asc(),
+                ExternalActionCredential.id.asc(),
+            )
+            .all()
+        )
+        organization_auth_state = get_organization_auth_state(
+            self.db, actor_id, organization_id
+        )
+        if organization_auth_state == AUTH_STATE_MANAGER:
+            return [self._option(credential) for credential in credentials]
+        if organization_auth_state != ORGANIZATION_AUTH_MEMBER:
+            return []
+
+        effective_states = get_effective_external_action_credential_auth_states(
+            self.db,
+            actor_id,
+            [credential.id for credential in credentials],
+            organization_id,
+            include_revoked=True,
+        )
+        return [
+            self._option(credential)
+            for credential in credentials
+            if external_action_credential_auth_state_allows(
+                effective_states.get(credential.id, AUTH_STATE_NONE), "manage"
             )
         ]
 
