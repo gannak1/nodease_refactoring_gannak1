@@ -1,7 +1,7 @@
 # PR CI 품질 게이트
 
 Status: Draft
-Verified Against: feature/mba-328 @ 184fc664
+Verified Against: feature/mba-328 @ 843c8d98
 
 ## 목적
 
@@ -190,12 +190,12 @@ actionlint .github/workflows/pr-quality-gate.yml .github/workflows/pr-ci-control
 
 `deployment-config-validation`은 일반 배포 설정 변경에서는 변경된 종류만 검사한다. 품질 게이트 CI 제어 파일이 바뀌면 검증 명령 자체의 회귀를 놓치지 않도록 여섯 배포 검증기를 모두 실행한다.
 
-- GitHub Actions: 일반 변경에서는 추가·수정·이름 변경된 workflow를 검사한다. CI 제어 변경에서는 기존 배포 workflow의 ShellCheck 부채와 분리된 안정적 smoke 대상으로 품질 게이트, 신뢰 가드와 네 PostgreSQL 계약 workflow를 고정 버전 actionlint로 검사한다.
-- Helm: dependency lock 기반 build, 기본/production values lint와 template render
+- GitHub Actions: 일반 변경에서는 추가·수정·이름 변경된 workflow를 검사한다. CI 제어 변경에서는 기존 배포 workflow의 ShellCheck 부채와 분리된 안정적 smoke 대상인 품질 게이트, 신뢰 가드와 네 PostgreSQL 계약 workflow에 PR에서 실제 변경한 workflow를 합치고 중복을 제거해 고정 버전 actionlint로 검사한다.
+- Helm: dependency build 전에 `Chart.lock`이 tracked regular file인지 확인하고 build 뒤 내용 불변을 검사한다. 이어서 기본/production values lint와 template render를 실행한다.
 - Kubernetes: 목표 EKS `1.31`과 CI Go 1.25 도구체인에 맞춘 `kubeconform v0.7.0` strict schema 검증을 실행하며 cluster API에 접속하지 않음
 - Terraform: 실제 Terraform 변경은 `infra/terraform`을 대상으로 format, backend 없는 init, validate를 실행한다. CI 제어만 변경된 경우에는 provider와 module lock 부채에 영향을 받지 않는 `tests/ci/fixtures/terraform-smoke`로 같은 명령 계약을 검증한다.
 - Docker Compose: Compose 변경 또는 CI 제어 변경 시 tracked Compose 구성을 모두 해석한다. `compose.<variant>.yml`과 `docker-compose.<variant>.yml`은 같은 디렉터리의 기본 Compose 파일과 합성하고 선언된 profile을 활성화해 검사한다.
-- Dockerfile: 실제 Dockerfile 변경에서는 변경된 파일에 BuildKit check를 실행한다. CI 제어만 변경된 경우에는 기존 Dockerfile의 lint 부채와 분리된 `tests/ci/fixtures/dockerfile-smoke/Dockerfile`로 같은 명령 계약을 검증한다.
+- Dockerfile: 실제 Dockerfile 변경에서는 rename을 delete+add로 해석해 이전 경로를 선택 근거로 보존하고, 현재 존재하는 변경 파일에 BuildKit check를 실행한다. 삭제 또는 비지원 이름으로의 rename은 검증 대상이 존재하지 않는 상태로 허용한다. CI 제어만 변경된 경우에는 기존 Dockerfile의 lint 부채와 분리된 `tests/ci/fixtures/dockerfile-smoke/Dockerfile`로 같은 명령 계약을 검증한다.
 
 CI 제어와 PostgreSQL workflow가 사용하는 공식 Action은 40자리 commit SHA로 고정한다. Action 내부 runtime은 Node 24 기반 공식 major를 사용한다. Client build의 Node 20은 현재 Docker runtime과 별도 제품 계약이므로 이 문서의 Action runtime 전환 대상이 아니다. AWS·Docker 배포 Action과 장기 credential 전환은 MBA-224/MBA-329가 소유한다.
 
