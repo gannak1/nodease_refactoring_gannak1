@@ -49,6 +49,7 @@ Public Client는 deployment-owned parent embedding policy가 확인된 surface�
 ## Citation List
 
 - 공개 embed Chatbot과 인증 내부 Chatbot은 assistant 답변 아래에 동일한 `CitationList`를 표시한다.
+- 인증 내부 Chatbot은 `CitationList`에 `appearance="chat"`을 전달해 라이트 전용 응답 영역에 `dark:` 변형을 렌더링하지 않는다. 공개 embed Chatbot과 일반 실행 화면은 기존 기본 appearance를 유지한다.
 - 기본 상태는 접힌 목록이고 summary에 출처 수를 표시한다. keyboard로 열고 닫을 수 있어야 한다.
 - `basic`은 라벨과 page/section, `detailed`는 추가로 정제된 preview를 표시한다. raw URL/path나 내부 식별자를 링크로 만들지 않는다.
 

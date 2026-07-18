@@ -195,6 +195,25 @@ describe('AuthenticatedDeploymentRunPage', () => {
   });
 
   it('내부 챗봇은 초록 강조와 최종 응답 바깥 카드를 제거하고 응답을 아이콘 시작선까지 넓힌다', async () => {
+    mockedWorkflowApi.runDeployment.mockResolvedValueOnce({
+      status: 'success',
+      results: {
+        final_answer: '개발팀 신입 연봉 기준은 사내 문서 기준을 따릅니다.',
+        __nodease_citations: {
+          version: 1,
+          items: [
+            {
+              citation_id: 'evidence-1',
+              evidence_rank: 1,
+              label: '개발팀 온보딩 문서',
+              page_number: 3,
+              section: '보상 기준',
+              content_preview: '신입 보상 기준은 직무 등급에 따라 결정합니다.',
+            },
+          ],
+        },
+      },
+    });
     render(<AuthenticatedDeploymentRunPage />);
     const questionInput = await screen.findByLabelText('질문');
 
@@ -210,6 +229,7 @@ describe('AuthenticatedDeploymentRunPage', () => {
     const finalResponseSection = screen
       .getByRole('heading', { name: '최종 응답' })
       .closest('section');
+    const assistantResponse = finalResponseSection?.parentElement;
     const greenClassNames = Array.from(
       screen.getByRole('main').querySelectorAll<HTMLElement>('[class]'),
     ).flatMap((element) =>
@@ -218,15 +238,15 @@ describe('AuthenticatedDeploymentRunPage', () => {
           className.includes('emerald-') || className.includes('green-'),
       ),
     );
-    const finalResponseElements = finalResponseSection
+    const assistantResponseElements = assistantResponse
       ? [
-          finalResponseSection,
+          assistantResponse,
           ...Array.from(
-            finalResponseSection.querySelectorAll<HTMLElement>('[class]'),
+            assistantResponse.querySelectorAll<HTMLElement>('[class]'),
           ),
         ]
       : [];
-    const darkClassNames = finalResponseElements.flatMap((element) =>
+    const darkClassNames = assistantResponseElements.flatMap((element) =>
       Array.from(element.classList).filter((className) =>
         className.startsWith('dark:'),
       ),
@@ -241,6 +261,8 @@ describe('AuthenticatedDeploymentRunPage', () => {
       expect(finalResponseSection).not.toHaveClass(removedCardClassName);
     }
     expect(responseContainer).toHaveClass('col-span-2');
+    expect(screen.getByText('참조 문서 (1)')).toBeVisible();
+    expect(screen.getByText('개발팀 온보딩 문서')).toBeInTheDocument();
     expect(greenClassNames).toEqual([]);
     expect(darkClassNames).toEqual([]);
   });
