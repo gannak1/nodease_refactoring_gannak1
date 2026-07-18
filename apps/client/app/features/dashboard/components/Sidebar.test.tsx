@@ -418,6 +418,18 @@ describe('Sidebar notifications', () => {
 });
 
 describe('Sidebar organization switcher', () => {
+  it('펼친 사이드바의 Nodease 옆에 장식 아이콘을 표시하지 않는다', async () => {
+    render(<Sidebar />);
+
+    const nodeaseButton = await screen.findByRole('button', {
+      name: 'Nodease',
+    });
+    const brandHeader = nodeaseButton.parentElement?.parentElement;
+
+    expect(brandHeader).not.toBeNull();
+    expect(brandHeader?.querySelector('svg')).not.toBeInTheDocument();
+  });
+
   it('organization manager는 워크플로우 운영 메뉴를 볼 수 있다', async () => {
     render(<Sidebar />);
 

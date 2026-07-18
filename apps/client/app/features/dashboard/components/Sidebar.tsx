@@ -414,10 +414,7 @@ export default function Sidebar() {
           <LayoutDashboard size={20} />
         </button>
       ) : (
-        <div className="mb-7 flex items-center gap-3">
-          <div className="grid h-10 w-10 place-items-center rounded-lg bg-slate-950 text-white">
-            <LayoutDashboard size={20} />
-          </div>
+        <div className="mb-7">
           <div className="min-w-0">
             <button
               onClick={() => router.push('/dashboard')}
