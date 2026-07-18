@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       ci_control_changed: ${{ steps.ci_control.outputs.changed }}
-      terraform_config_changed: ${{ steps.classify.outputs.terraform_validation }}
+      terraform_config_changed: ${{ steps.classify.outputs.terraform_config_changed }}
       docs_only: ${{ steps.scope_outputs.outputs.docs_only }}
       python_lint: ${{ steps.scope_outputs.outputs.python_lint }}
       client: ${{ steps.scope_outputs.outputs.client }}

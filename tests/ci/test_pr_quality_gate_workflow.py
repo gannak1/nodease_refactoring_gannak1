@@ -126,7 +126,8 @@ def test_ci_control_terraform_smoke_uses_fixture_without_hiding_real_changes():
 
     assert TERRAFORM_CI_FIXTURE_PATH.is_file()
     assert (
-        "terraform_config_changed: ${{ steps.classify.outputs.terraform_validation }}"
+        "terraform_config_changed: "
+        "${{ steps.classify.outputs.terraform_config_changed }}"
         in workflow
     )
     assert (

@@ -194,6 +194,7 @@ def test_ci_control_change_selects_smoke_jobs_and_postgres_contracts():
     assert scope.helm_validation is True
     assert scope.kubernetes_validation is True
     assert scope.terraform_validation is True
+    assert scope.terraform_config_changed is False
     assert scope.compose_validation is True
     assert scope.dockerfile_validation is True
 
@@ -241,6 +242,18 @@ def test_deployment_config_selects_only_its_static_validator(
     assert scope.client is False
     assert scope.gateway_tests is False
     assert scope.broad_python is False
+
+
+def test_terraform_change_is_distinct_from_ci_control_smoke_selection():
+    scope = classify_paths(
+        [
+            ".github/workflows/pr-quality-gate.yml",
+            "infra/terraform/eks.tf",
+        ]
+    )
+
+    assert scope.terraform_validation is True
+    assert scope.terraform_config_changed is True
 
 
 def test_unrelated_workflow_still_fails_closed_with_postgres_change():

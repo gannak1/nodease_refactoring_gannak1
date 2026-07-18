@@ -163,6 +163,7 @@ class ChangeScope:
     helm_validation: bool = False
     kubernetes_validation: bool = False
     terraform_validation: bool = False
+    terraform_config_changed: bool = False
     compose_validation: bool = False
     dockerfile_validation: bool = False
     broad_python: bool = False
@@ -298,6 +299,7 @@ def _select_deployment_validation(path: str, scope: ChangeScope) -> None:
         scope.kubernetes_validation = True
     if path.startswith("infra/terraform/"):
         scope.terraform_validation = True
+        scope.terraform_config_changed = True
     if _COMPOSE_FILE_NAME_PATTERN.fullmatch(PurePosixPath(path).name):
         scope.compose_validation = True
     if PurePosixPath(path).name == "Dockerfile" or path.endswith(".Dockerfile"):
