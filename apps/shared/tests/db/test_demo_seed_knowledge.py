@@ -1418,7 +1418,7 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     assert "ab1c2d3e4f50" in ancestry
     assert "b0c1d2e3f4a5" in ancestry
     assert retired_input_cohort_cleanup_revision.down_revision == "bd9e0f1a2b35"
-    assert script.get_heads() == ["c6f8a1b2d3e4"]
+    assert script.get_heads() == ["f4a5b6c7d8e9"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

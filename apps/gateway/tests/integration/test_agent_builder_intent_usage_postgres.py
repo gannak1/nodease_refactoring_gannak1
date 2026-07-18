@@ -14,8 +14,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from alembic.config import Config
-from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, delete, func, inspect, insert, select, text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -82,20 +80,11 @@ from apps.shared.tests.helpers.disposable_postgres import (
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_agent_builder_intent_usage"
+AGENT_BUILDER_USAGE_MERGE_REVISION = "ac2d3e4f5061"
 pytestmark = pytest.mark.skipif(
     os.getenv(RUN_ENV) != "1",
     reason=f"set {RUN_ENV}=1 to run disposable Agent Builder usage tests",
 )
-
-
-def _current_alembic_head() -> str:
-    config = Config(str(ROOT_DIR / "apps" / "shared" / "alembic.ini"))
-    config.set_main_option(
-        "script_location", str(ROOT_DIR / "apps" / "shared" / "alembic")
-    )
-    heads = ScriptDirectory.from_config(config).get_heads()
-    assert len(heads) == 1, f"multiple Alembic heads: {heads}"
-    return heads[0]
 
 
 def _run_alembic_result(
@@ -147,7 +136,11 @@ def _usage_history_reference_delete_actions(connection) -> dict[str, str | None]
 
 
 @contextmanager
-def _disposable_database(config: DisposablePostgresConfig):
+def _disposable_database(
+    config: DisposablePostgresConfig,
+    *,
+    target_revision: str = "heads",
+):
     database = f"{DB_PREFIX}_{uuid.uuid4().hex[:12]}"
     quoted_database = quote_disposable_database_name(database, prefix=DB_PREFIX)
     admin_engine = create_engine(
@@ -169,7 +162,7 @@ def _disposable_database(config: DisposablePostgresConfig):
                 connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         finally:
             extension_engine.dispose()
-        _run_alembic(database, config, "upgrade", "heads")
+        _run_alembic(database, config, "upgrade", target_revision)
         engine = create_engine(config.database_url(database))
         yield engine, database
     except OperationalError:
@@ -1779,9 +1772,10 @@ def test_migration_round_trip_on_empty_usage_history():
             pytrace=False,
         ) from None
 
-    expected_head = _current_alembic_head()
-
-    with _disposable_database(config) as (engine, database):
+    with _disposable_database(
+        config,
+        target_revision=AGENT_BUILDER_USAGE_MERGE_REVISION,
+    ) as (engine, database):
         engine.dispose()
         _run_alembic(database, config, "downgrade", "aa0b1c2d3e4f")
         downgraded_engine = create_engine(config.database_url(database))
@@ -1844,7 +1838,12 @@ def test_migration_round_trip_on_empty_usage_history():
         finally:
             downgraded_engine.dispose()
 
-        _run_alembic(database, config, "upgrade", "heads")
+        _run_alembic(
+            database,
+            config,
+            "upgrade",
+            AGENT_BUILDER_USAGE_MERGE_REVISION,
+        )
         upgraded_engine = create_engine(config.database_url(database))
         try:
             with upgraded_engine.connect() as connection:
@@ -1852,7 +1851,7 @@ def test_migration_round_trip_on_empty_usage_history():
                     connection.execute(
                         text("SELECT version_num FROM alembic_version")
                     ).scalar_one()
-                    == expected_head
+                    == AGENT_BUILDER_USAGE_MERGE_REVISION
                 )
                 assert _usage_history_reference_delete_actions(connection) == {
                     "credential_id": "SET NULL",
@@ -1871,9 +1870,10 @@ def test_migration_downgrade_rejects_agent_builder_usage_history():
             pytrace=False,
         ) from None
 
-    expected_head = _current_alembic_head()
-
-    with _disposable_database(config) as (engine, database):
+    with _disposable_database(
+        config,
+        target_revision=AGENT_BUILDER_USAGE_MERGE_REVISION,
+    ) as (engine, database):
         session_factory = sessionmaker(bind=engine, expire_on_commit=False)
         seed = _seed_contract(session_factory)
         service = AgentBuilderIntentUsageService(session_factory=session_factory)
@@ -1909,4 +1909,4 @@ def test_migration_downgrade_rejects_agent_builder_usage_history():
     if "Agent Builder usage rows exist" not in output:
         pytest.fail("downgrade rejection did not report the preserved usage reason")
     assert preserved_usage_count == 1
-    assert version == expected_head
+    assert version == AGENT_BUILDER_USAGE_MERGE_REVISION

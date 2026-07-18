@@ -106,6 +106,7 @@ def test_test_routing_policy_context_uses_only_nodes_matching_active_deployment(
         "routing_policy_deployment_id": str(deployment.id),
         "routing_policy_preview_node_ids": ["llm-matching"],
         "routing_policy_preview": True,
+        "routing_policy_execute_judge": True,
     }
 
 
