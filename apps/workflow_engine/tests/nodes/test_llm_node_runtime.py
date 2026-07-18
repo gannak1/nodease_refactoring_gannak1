@@ -3866,6 +3866,7 @@ def test_deployed_judge_bootstrap_uses_judge_and_queues_safe_learning_label(monk
             "strategy_id": "judge_bootstrap_incremental_v1",
             "default_model_id": "gpt-5-mini",
             "fallback_model_id": "gpt-4o-mini",
+            "candidate_model_ids": ["gpt-4o-mini", "gpt-5-mini"],
             "learning": {"mode": "judge_first", "local_router_artifact": {}},
         },
         refresh_every_runs=20,
@@ -3926,7 +3927,11 @@ def test_deployed_judge_bootstrap_uses_judge_and_queues_safe_learning_label(monk
             "organization_id": str(uuid.uuid4()),
         },
     )
-    monkeypatch.setattr(node, "_available_routing_model_ids", lambda _db: ["gpt-4o-mini", "gpt-5-mini"])
+    monkeypatch.setattr(
+        node,
+        "_available_routing_model_ids",
+        lambda _db: ["gpt-4o-mini", "gpt-5-mini", "gpt-4.1-mini"],
+    )
     monkeypatch.setattr(
         node,
         "_routing_candidate_profiles",
@@ -3969,6 +3974,7 @@ def test_deployed_judge_bootstrap_uses_judge_and_queues_safe_learning_label(monk
     assert metadata["judge"]["usage_log_error"] == "RuntimeError"
     assert captured["policy_id"] == str(policy_id)
     assert captured["selected_model_id"] == "gpt-4o-mini"
+    assert captured["candidate_model_ids"] == ["gpt-4o-mini", "gpt-5-mini"]
 
 
 def test_test_execution_uses_matching_deployment_policy_without_becoming_deployed(

@@ -17,6 +17,7 @@ from scripts.experiment_judge_first_economics_80 import (
     ROUTING_JUDGE_MODEL,
     _tradeoff_assessment,
     _write_run_config,
+    _automatic_policy_config,
     build_cases,
     configure_experiment_models,
     graph_for_arm,
@@ -119,6 +120,19 @@ def test_experiment_rejects_fixed_model_outside_automatic_candidates():
             low_model="gpt-5-mini",
             auto_candidates=["gpt-5-mini", "gpt-5.4"],
         )
+
+
+def test_automatic_policy_enforces_only_configured_candidate_models():
+    candidate_models = ["gpt-5-mini", "gpt-5.4-mini", "gpt-5.6-sol"]
+
+    active_policy = _automatic_policy_config(candidate_models)
+
+    assert active_policy["candidate_model_ids"] == candidate_models
+    assert [
+        item["model_id"]
+        for item in active_policy["global_profile_catalog"]["candidates"]
+    ] == candidate_models
+    assert active_policy["fallback_model_id"] in candidate_models
 
 
 def test_workflow_normalizes_each_input_structure_without_losing_the_request():

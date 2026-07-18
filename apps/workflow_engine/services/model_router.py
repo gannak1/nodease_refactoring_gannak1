@@ -244,6 +244,7 @@ class ModelRoutingPolicyDecision:
     strategy_id: str
     decision_factors: dict[str, Any] = field(default_factory=dict)
     requires_runtime_judge: bool = False
+    candidate_model_ids: tuple[str, ...] = ()
 
 
 class ModelRoutingUnavailableError(ValueError):
@@ -360,6 +361,7 @@ class ModelRouter:
                             "local_confidence_threshold": min_confidence,
                             "candidate_model_count": len(candidates),
                         },
+                        candidate_model_ids=tuple(candidates),
                     )
                 low_confidence = prediction.confidence
             except (RuntimeError, ValueError):
@@ -379,6 +381,7 @@ class ModelRouter:
                     "candidate_model_count": len(candidates),
                 },
                 requires_runtime_judge=True,
+                candidate_model_ids=tuple(candidates),
             )
 
         return ModelRoutingPolicyDecision(
@@ -395,6 +398,7 @@ class ModelRouter:
                 "judged_request_count": int(learning.get("judged_request_count") or 0),
             },
             requires_runtime_judge=True,
+            candidate_model_ids=tuple(candidates),
         )
 
     @classmethod

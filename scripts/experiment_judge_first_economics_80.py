@@ -712,6 +712,41 @@ def _ensure_runtime_models(db) -> list[str]:
     return selected
 
 
+def _automatic_policy_config(available_models: Iterable[str]) -> dict[str, Any]:
+    """Runtime Router가 실험 후보 밖의 계정 모델을 다시 포함하지 않게 한다."""
+
+    candidate_model_ids = list(
+        dict.fromkeys(
+            str(model_id).strip()
+            for model_id in available_models
+            if str(model_id).strip()
+        )
+    )
+    if not candidate_model_ids:
+        raise ValueError("자동 routing policy 후보가 비어 있습니다.")
+    fallback_model_id = (
+        "gpt-4.1" if "gpt-4.1" in candidate_model_ids else candidate_model_ids[0]
+    )
+    return {
+        "strategy_id": "judge_bootstrap_incremental_v1",
+        "default_model_id": ROUTING_JUDGE_MODEL,
+        "fallback_model_id": fallback_model_id,
+        "judge_model_id": ROUTING_JUDGE_MODEL,
+        "candidate_model_ids": candidate_model_ids,
+        "global_profile_catalog": {
+            "candidates": [
+                {"model_id": model_id} for model_id in candidate_model_ids
+            ]
+        },
+        "learning": {
+            "mode": "judge_first",
+            "judged_request_count": 0,
+            "selected_model_ids": [],
+            "local_confidence_threshold": LOCAL_CONFIDENCE_THRESHOLD,
+        },
+    }
+
+
 def _upsert_workflow_and_deployments(db, available_models: list[str]) -> None:
     auto_graph = graph_for_arm(AUTO_ARM)
     app = db.get(App, APP_ID)
@@ -793,21 +828,7 @@ def _upsert_workflow_and_deployments(db, available_models: list[str]) -> None:
         .filter(LLMNodeModelRoutingPolicy.node_id == NODE_ID)
         .first()
     )
-    active_policy = {
-        "strategy_id": "judge_bootstrap_incremental_v1",
-        "default_model_id": ROUTING_JUDGE_MODEL,
-        "fallback_model_id": "gpt-4.1",
-        "judge_model_id": ROUTING_JUDGE_MODEL,
-        "global_profile_catalog": {
-            "candidates": [{"model_id": model_id} for model_id in available_models]
-        },
-        "learning": {
-            "mode": "judge_first",
-            "judged_request_count": 0,
-            "selected_model_ids": [],
-            "local_confidence_threshold": LOCAL_CONFIDENCE_THRESHOLD,
-        },
-    }
+    active_policy = _automatic_policy_config(available_models)
     if policy is None:
         policy = LLMNodeModelRoutingPolicy(
             organization_id=ORG_ID,

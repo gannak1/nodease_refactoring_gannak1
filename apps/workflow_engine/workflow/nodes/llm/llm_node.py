@@ -584,7 +584,10 @@ class LLMNode(Node[LLMNodeData]):
                     model_id=judge_model_id,
                     organization_id=organization_id,
                 )
-                candidate_model_ids = list(available_model_ids or [])
+                # resolve_policy가 권한으로 검증하고 정책 후보와 교집합한 목록만
+                # Runtime Judge와 학습 label에 전달한다. 계정 전체 실행 가능 모델을
+                # 다시 넘기면 정책에서 제외한 모델이 선택될 수 있다.
+                candidate_model_ids = list(decision.candidate_model_ids)
                 judge_default_model_id = selected_model_id
                 candidate_profiles = self._routing_candidate_profiles(
                     db_session,
