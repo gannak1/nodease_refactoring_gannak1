@@ -545,7 +545,17 @@ jobs:
 
       - name: Validate GitHub Actions workflows
         if: needs.scope.outputs.actions_validation == 'true'
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+        run: |
+          mapfile -t workflow_files < <(
+            git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA" -- \
+              '.github/workflows/*.yml' \
+              '.github/workflows/*.yaml'
+          )
+          if (( ${#workflow_files[@]} == 0 )); then
+            echo "No changed workflow files to validate."
+            exit 0
+          fi
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 "${workflow_files[@]}"
 
       - name: Set up Helm
         if: needs.scope.outputs.helm_validation == 'true'

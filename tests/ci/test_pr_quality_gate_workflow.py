@@ -37,6 +37,15 @@ def test_deployment_validation_is_fail_closed_in_required_gate():
     ) in workflow
 
 
+def test_actionlint_validates_only_changed_workflow_files():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+
+    assert 'git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA"' in workflow
+    assert "'.github/workflows/*.yml'" in workflow
+    assert "'.github/workflows/*.yaml'" in workflow
+    assert 'actionlint@v1.7.12 "${workflow_files[@]}"' in workflow
+
+
 def test_knowledge_postgres_workflow_runs_durable_ingestion_contract():
     workflow = KNOWLEDGE_POSTGRES_PATH.read_text(encoding="utf-8")
 

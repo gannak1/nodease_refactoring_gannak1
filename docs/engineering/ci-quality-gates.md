@@ -183,7 +183,7 @@ actionlint .github/workflows/pr-quality-gate.yml .github/workflows/pr-ci-control
 
 `deployment-config-validation`은 변경된 설정 종류만 검사한다.
 
-- GitHub Actions와 CI control: 고정 버전 actionlint
+- GitHub Actions와 CI control: 추가·수정·이름 변경된 workflow 파일을 고정 버전 actionlint로 검사
 - Helm: dependency lock 기반 build, 기본/production values lint와 template render
 - Kubernetes: client-side manifest parse
 - Terraform: format, backend 없는 init, validate
