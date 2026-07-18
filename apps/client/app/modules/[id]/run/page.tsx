@@ -351,14 +351,14 @@ export default function AuthenticatedDeploymentRunPage() {
               <ArrowLeft className="h-4 w-4" />
               대시보드로 돌아가기
             </button>
-            <p className="text-xs font-semibold text-emerald-700">
+            <p className="text-xs font-semibold text-slate-500">
               내부 배포 실행
             </p>
             <h1 className="mt-2 truncate text-2xl font-bold text-slate-950">
               {title}
             </h1>
           </div>
-          <span className="inline-flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-700">
+          <span className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-slate-600">
             <ShieldCheck className="h-4 w-4" />
             <span className="flex flex-col leading-tight">
               {currentUserName && (
@@ -392,7 +392,7 @@ export default function AuthenticatedDeploymentRunPage() {
             >
               {conversationTurns.length === 0 && !pendingQuestion ? (
                 <div className="my-auto text-center">
-                  <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-50 text-emerald-700">
+                  <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-slate-100 text-slate-600">
                     <ShieldCheck className="h-5 w-5" />
                   </div>
                   <h2 className="mt-4 text-lg font-semibold text-slate-950">
@@ -412,6 +412,7 @@ export default function AuthenticatedDeploymentRunPage() {
                     </div>
                     <div className="max-w-[92%]">
                       <FinalResponseCard
+                        appearance="chat"
                         expandContent
                         renderMarkdown
                         preview={getDeploymentRunFinalPreview(
@@ -451,7 +452,7 @@ export default function AuthenticatedDeploymentRunPage() {
               )}
               <form
                 onSubmit={handleSubmit}
-                className="flex items-center gap-2 rounded-2xl border border-slate-300 bg-white p-2 shadow-sm focus-within:border-emerald-500 focus-within:ring-2 focus-within:ring-emerald-100"
+                className="flex items-center gap-2 rounded-2xl border border-slate-300 bg-white p-2 shadow-sm focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100"
               >
                 <label className="flex min-w-0 flex-1 items-center">
                   <span className="sr-only">
@@ -536,7 +537,7 @@ export default function AuthenticatedDeploymentRunPage() {
                               [variable.name]: event.target.checked,
                             }))
                           }
-                          className="mt-2 h-5 w-5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                          className="mt-2 h-5 w-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                         />
                       ) : variable.type === 'paragraph' ? (
                         <textarea
@@ -549,7 +550,7 @@ export default function AuthenticatedDeploymentRunPage() {
                           }
                           rows={5}
                           placeholder={placeholderFor(variable)}
-                          className="mt-2 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-100"
+                          className="mt-2 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
                         />
                       ) : (
                         <input
@@ -562,7 +563,7 @@ export default function AuthenticatedDeploymentRunPage() {
                               [variable.name]: event.target.value,
                             }))
                           }
-                          className="mt-2 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-100"
+                          className="mt-2 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
                         />
                       )}
                     </label>
