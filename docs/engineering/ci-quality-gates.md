@@ -1,7 +1,7 @@
 # PR CI 품질 게이트
 
 Status: Draft
-Verified Against: feature/mba-328 @ a3142b94
+Verified Against: feature/mba-328 @ fdb7d283
 
 ## 목적
 
@@ -49,7 +49,7 @@ PR 검증 진입점은 `.github/workflows/pr-quality-gate.yml`과 `.github/workf
 
 PR workspace의 selector 결과만으로 required gate를 결정하지 않는다.
 
-- 품질 게이트는 selector 실행 전에 `pr-quality-gate.yml`, `pr-ci-control-guard.yml`, `.github/actions/**`, `scripts/ci/**`, `tests/ci/**` 변경을 독립적으로 확인한다. 이 경로가 바뀌면 selector 출력과 무관하게 Client, Python service smoke, root, PostgreSQL 계약 검사를 모두 선택한다.
+- 품질 게이트는 selector 실행 전에 `pr-quality-gate.yml`, `pr-ci-control-guard.yml`, `.github/actions/**`, `scripts/ci/**`, `tests/ci/**` 변경을 독립적으로 확인한다. 이 경로가 바뀌면 selector 출력과 무관하게 Client, Python service smoke, root, PostgreSQL 계약 검사와 Actions·Helm·Kubernetes·Terraform·Compose·Dockerfile 정적 검증을 모두 선택한다.
 - 신뢰 가드는 base 브랜치에서 `.github/workflows/**`, `.github/actions/**`, `scripts/ci/**`, `tests/ci/**` 변경을 별도로 확인한다. rename은 이전 경로와 새 경로를 모두 검사하고, 변경 파일 전체를 열거하지 못하면 실패한다.
 - CI 제어 변경은 PR 작성자가 아닌 write 이상 권한 보유자가 현재 head commit에 남긴 `APPROVED` review가 있어야 통과한다. 이전 commit 승인은 재사용하지 않는다.
 - 승인 뒤 `/recheck-ci-control`을 PR conversation에 comment하면 base 브랜치 가드가 정책 status를 다시 계산한다.
@@ -74,7 +74,7 @@ PR workspace의 selector 결과만으로 required gate를 결정하지 않는다
 | Knowledge runtime 경로 | Knowledge PostgreSQL 계약 test |
 | schedule/external effect 경로 | Workflow PostgreSQL 계약 test |
 | Agent Builder DB/CAS 경로 | Agent Builder PostgreSQL 계약 test |
-| 품질 게이트 CI 제어 파일 | 각 서비스 smoke, Client smoke, PostgreSQL 계약 test와 최신 독립 승인 |
+| 품질 게이트 CI 제어 파일 | 각 서비스 smoke, Client smoke, PostgreSQL 계약 test, 전체 배포 정적 검증과 최신 독립 승인 |
 | 기타 GitHub Actions workflow | 기존 영향 범위 검사와 최신 독립 승인 |
 | 배포 workflow만 변경 | actionlint를 실행하고 runtime test는 선택하지 않음 |
 | Helm/Kubernetes/Terraform 변경 | 변경 종류에 맞는 lint, render, validate 실행 |
@@ -188,14 +188,14 @@ actionlint .github/workflows/pr-quality-gate.yml .github/workflows/pr-ci-control
 
 ## 배포 설정 검증
 
-`deployment-config-validation`은 변경된 설정 종류만 검사한다.
+`deployment-config-validation`은 일반 배포 설정 변경에서는 변경된 종류만 검사한다. 품질 게이트 CI 제어 파일이 바뀌면 검증 명령 자체의 회귀를 놓치지 않도록 여섯 배포 검증기를 모두 실행한다.
 
-- GitHub Actions와 CI control: 추가·수정·이름 변경된 workflow 파일을 고정 버전 actionlint로 검사
+- GitHub Actions: 일반 변경에서는 추가·수정·이름 변경된 workflow를 검사하고, CI 제어 변경에서는 tracked workflow 전체를 고정 버전 actionlint로 검사
 - Helm: dependency lock 기반 build, 기본/production values lint와 template render
 - Kubernetes: client-side manifest parse
 - Terraform: format, backend 없는 init, validate
-- Docker Compose: 변경된 Compose 파일의 config 해석
-- Dockerfile: 변경된 Dockerfile의 BuildKit check
+- Docker Compose: Compose 변경 또는 CI 제어 변경 시 tracked Compose 구성을 모두 해석한다. `compose.<variant>.yml`과 `docker-compose.<variant>.yml`은 같은 디렉터리의 기본 Compose 파일과 합성해 검사한다.
+- Dockerfile: 일반 변경에서는 변경된 Dockerfile을 검사하고, CI 제어 변경에서는 tracked Dockerfile 전체에 BuildKit check를 실행한다.
 
 CI 제어와 PostgreSQL workflow가 사용하는 공식 Action은 40자리 commit SHA로 고정한다. Action 내부 runtime은 Node 24 기반 공식 major를 사용한다. Client build의 Node 20은 현재 Docker runtime과 별도 제품 계약이므로 이 문서의 Action runtime 전환 대상이 아니다. AWS·Docker 배포 Action과 장기 credential 전환은 MBA-224/MBA-329가 소유한다.
 
