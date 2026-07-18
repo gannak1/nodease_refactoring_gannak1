@@ -217,7 +217,7 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 - FR-004: `구조만 생성` 결과의 unresolved 설정은 저장할 수 있으나 test, run과 deployment preflight에서 차단
 - FR-005: 생성 결과에 필요한 credential/권한 또는 외부 부수효과 확인이 남으면 빠른 생성을 자동 완료하지 않고 명시적 동의 뒤 단계별 생성으로 전환
 - FR-006: Knowledge Base-backed LLM node 설정을 포함한 사내 지식 통합 RAG workflow 생성
-- FR-007: Agent Builder의 최초 planner와 repair LLM 호출을 실제 사용자·조직·workflow·model·credential에 각각 귀속하고, token·cost를 기존 관리 비용, workflow 예산과 내 모듈 월 예상 비용 집계에 포함한다. 관리 페이지와 내 모듈은 기존 총비용을 유지하면서 workflow 실행 비용과 Agent Builder 비용을 함께 구분 표시한다. 원문 prompt/provider 응답과 credential secret은 저장하지 않는다 ([ADR-0055](decisions/ADR-0055-agent-builder-intent-usage-attribution.md)).
+- FR-007: Agent Builder의 최초 planner와 repair LLM 호출을 실제 사용자·조직·workflow·model·credential에 각각 귀속하고, token·cost를 기존 관리 비용, workflow 예산과 내 모듈 workflow별 월 예상 비용 집계에 포함한다. 관리 페이지는 조직 총비용을, 내 모듈은 workflow별 총비용을 유지하면서 workflow 실행 비용과 Agent Builder 비용을 함께 구분 표시한다. 내 모듈의 page-level 비용·추세·위험 요약은 표시하지 않는다. 원문 prompt/provider 응답과 credential secret은 저장하지 않는다 ([ADR-0055](decisions/ADR-0055-agent-builder-intent-usage-attribution.md), [ADR-0060](decisions/ADR-0060-my-module-cost-summary-presentation.md)).
 
 ### Admin 대시보드 — [features/admin-dashboard/](features/admin-dashboard/requirements.md)
 

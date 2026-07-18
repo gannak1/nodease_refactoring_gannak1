@@ -8,7 +8,7 @@ Related Features: Workflow Editor, Workflow Node Capability Catalog, Knowledge, 
 
 Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 변환하고, 생성된 node에 필요한 설정을 Node Capability Catalog 기준으로 안내한다. 사용자는 graph를 먼저 확인하면서 node별 parameter를 구조화된 control로 입력할 수 있어야 하며, Agent Builder가 만든 전체 graph 변경을 한 번의 Undo로 되돌릴 수 있어야 한다.
 
-이 문서는 Accepted ADR-0045의 Agent Builder direct-edit UX, Accepted ADR-0046의 GraphMutation/CDS 저장 경계와 Accepted ADR-0054의 생성 모드·전환 계약을 구현하기 위한 기능 계약을 정의한다. Model option과 generated LLM node 추천은 Accepted ADR-0040을, planner/repair 사용량 귀속은 Accepted ADR-0055를 따른다. ADR-0019는 Superseded Preview 기록이며 characterization 외 활성 fallback으로 사용하지 않는다. MBA-293 시점 코드에는 기존 두 mode만 있으므로 세 canonical mode와 빠른 생성은 후속 구현 목표다.
+이 문서는 Accepted ADR-0045의 Agent Builder direct-edit UX, Accepted ADR-0046의 GraphMutation/CDS 저장 경계와 Accepted ADR-0054의 생성 모드·전환 계약을 구현하기 위한 기능 계약을 정의한다. Model option과 generated LLM node 추천은 Accepted ADR-0040을, planner/repair 사용량 귀속은 Accepted ADR-0055를 따른다. 내 모듈의 비용 표시 범위는 Accepted ADR-0060을 따른다. ADR-0019는 Superseded Preview 기록이며 characterization 외 활성 fallback으로 사용하지 않는다. MBA-293 시점 코드에는 기존 두 mode만 있으므로 세 canonical mode와 빠른 생성은 후속 구현 목표다.
 
 ## 2. Design Principles
 
@@ -297,8 +297,8 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - Provider 응답을 받은 직후 schema/semantic validation 전에 token usage mapping만 raw 응답에서 분리해 latency와 함께 예약된 같은 행에 멱등 저장한다. Normalizer와 recorder에는 raw content/choices/provider 응답 전체를 전달하지 않는다. 응답을 받지 못했거나 검증 가능한 usage가 없으면 pending 행을 삭제하고 요청을 `INTENT_USAGE_RECORDING_FAILED`로 종료한다.
 - Provider 호출 중 App primary pointer, model 가격 또는 credential/model lifecycle이 바뀌어도 예약 당시 workflow와 가격으로 같은 행을 완료한다. 삭제로 model/credential FK가 NULL이 된 경우에도 나머지 보존 billing fact가 같으면 완료와 같은 예약의 저장 재시도를 허용한다.
 - 사용량 저장 성공을 확인할 수 없으면 pending 증거를 보존하고 `INTENT_USAGE_RECORDING_FAILED`로 요청을 안전하게 종료하며 provider를 다시 호출하지 않는다. 비용·token·호출 수·Top Model 집계는 success인 Agent Builder 행만 포함한다.
-- 모델이나 credential이 삭제돼도 과거 token/cost와 user/organization/workflow 귀속은 유지하며 기존 관리 비용, workflow 예산과 내 모듈 월 예상 비용 집계에 계속 포함한다.
-- Agent Builder 전용 endpoint 또는 대시보드는 추가하지 않는다. 기존 관리·내 모듈 비용 응답과 화면에는 workflow 실행 비용과 Agent Builder 비용 구분값을 additive하게 제공한다. 사용자 메시지, prompt/context, provider 응답 원문과 credential secret은 사용량 행, 로그와 오류에 저장하지 않는다.
+- 모델이나 credential이 삭제돼도 과거 token/cost와 user/organization/workflow 귀속은 유지하며 기존 관리 비용, workflow 예산과 내 모듈 workflow별 월 예상 비용 집계에 계속 포함한다.
+- Agent Builder 전용 endpoint 또는 대시보드는 추가하지 않는다. 기존 관리 비용 응답과 내 모듈 workflow별 비용 응답·화면에는 workflow 실행 비용과 Agent Builder 비용 구분값을 additive하게 제공한다. 내 모듈의 page-level 비용·추세·위험 요약은 표시하지 않는다. 사용자 메시지, prompt/context, provider 응답 원문과 credential secret은 사용량 행, 로그와 오류에 저장하지 않는다.
 
 ## 5. Non-Functional Requirements
 
