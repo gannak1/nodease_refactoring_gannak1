@@ -71,13 +71,16 @@ class OpenAIClient(BaseLLMClient):
     _LONG_TIMEOUT_PREFIXES = ("gpt-5", "o1", "o3", "o4")
     _RESPONSES_ENDPOINT_PREFIXES = ("gpt-5", "o1", "o3", "o4")
     _MINIMAL_REASONING_MODEL_PREFIX = "gpt-5"
-    # gpt-5.4 Responses API는 ``minimal``을 허용하지 않고 ``low``부터
-    # 허용한다. JSON 출력에서 추론 토큰이 답변 토큰을 모두 소비하는 문제는
-    # 피하되, 지원하지 않는 effort로 400을 내지 않도록 별도로 처리한다.
-    _LOWEST_REASONING_EFFORT_MODELS = {
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.4-nano",
+    # Responses API의 reasoning effort 지원 범위는 모델별로 다르다. 모델
+    # 이름 접두사만으로 추정하면 지원하지 않는 값을 보내 400이 날 수 있으므로,
+    # 확인된 모델에만 가장 낮은 허용 effort를 명시한다.
+    _REASONING_EFFORT_BY_MODEL = {
+        "gpt-5": "minimal",
+        "gpt-5-mini": "minimal",
+        "gpt-5-nano": "minimal",
+        "gpt-5.4": "low",
+        "gpt-5.4-mini": "low",
+        "gpt-5.4-nano": "low",
     }
     _MINIMAL_REASONING_OUTPUT_TOKEN_LIMIT = 1024
     _RESPONSES_UNSUPPORTED_GENERATION_PARAMS = (
@@ -192,14 +195,15 @@ class OpenAIClient(BaseLLMClient):
     ) -> str | None:
         """모델별 Responses API가 허용하는 가장 낮은 reasoning effort를 고른다."""
 
+        effort = self._REASONING_EFFORT_BY_MODEL.get(self._clean_model_id)
+        if effort is None:
+            return None
         if not self._uses_minimal_reasoning_default(
             response_format=response_format,
             max_output_tokens=max_output_tokens,
         ):
             return None
-        if self._clean_model_id in self._LOWEST_REASONING_EFFORT_MODELS:
-            return "low"
-        return "minimal"
+        return effort
 
     def _uses_strict_generation_params(self) -> bool:
         return (

@@ -18,3 +18,9 @@ def test_gpt_54_uses_low_reasoning_effort_not_unsupported_minimal():
 
 def test_gpt_5_mini_keeps_minimal_reasoning_effort():
     assert _payload_for("gpt-5-mini")["reasoning"] == {"effort": "minimal"}
+
+
+def test_gpt_51_omits_reasoning_effort_when_model_capability_is_unknown():
+    payload = _payload_for("gpt-5.1")
+
+    assert "reasoning" not in payload
