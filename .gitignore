@@ -102,6 +102,7 @@ tests/load/reports/
 
 # 로컬
 /local/
+docker/docker-compose.dev.yml
 
 # 임시
 /tmp
