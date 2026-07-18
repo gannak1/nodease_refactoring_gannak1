@@ -13,6 +13,7 @@ from apps.shared.services.node_config_fingerprint import llm_node_config_fingerp
 from apps.workflow_engine.services.llm_service import LLMService as WorkflowRuntimeLLMService
 from apps.workflow_engine.services.model_router import (
     ModelRouter,
+    ModelRoutingPromptRenderError,
     ModelRoutingUnavailableError,
 )
 from apps.workflow_engine.workflow.nodes.llm.entities import LLMNodeData
@@ -84,8 +85,8 @@ class ModelRoutingPreviewService:
             "policy_version": policy.policy_version,
             "active_policy": policy.active_policy,
         }
-        routing_feature_text = ModelRouter.routing_feature_text(inputs, node_data)
         try:
+            routing_feature_text = ModelRouter.routing_feature_text(inputs, node_data)
             decision = ModelRouter.resolve_policy(
                 policy_payload,
                 inputs=inputs,
@@ -93,6 +94,8 @@ class ModelRoutingPreviewService:
                 available_model_ids=available_model_ids,
                 routing_feature_text=routing_feature_text,
             )
+        except ModelRoutingPromptRenderError as exc:
+            raise ModelRoutingPreviewBlockedError(exc.args[0]) from exc
         except ModelRoutingUnavailableError as exc:
             raise ModelRoutingPreviewBlockedError(
                 "model_routing.no_available_model"

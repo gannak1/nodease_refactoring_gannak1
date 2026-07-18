@@ -173,7 +173,30 @@ class TestModelRoutingPreviewService:
                 "model_id": "gpt-4.1",
                 "auto_model_routing": True,
                 "model_routing_task_description": "회사 정책 근거를 비교해 답합니다.",
-                "user_prompt": "{{message}}",
+                "system_prompt": "{{department}} 정책만 검토합니다.",
+                "user_prompt": "질문: {{question}}",
+                "assistant_prompt": "응답 형식: {{format}}",
+                "referenced_variables": [
+                    {
+                        "name": "department",
+                        "value_selector": ["start", "department"],
+                    },
+                    {
+                        "name": "question",
+                        "value_selector": ["start", "question"],
+                    },
+                    {
+                        "name": "format",
+                        "value_selector": ["start", "format"],
+                    },
+                ],
+                "output_format": {
+                    "type": "json",
+                    "schema": {
+                        "type": "object",
+                        "properties": {"answer": {"type": "string"}},
+                    },
+                },
             }
         )
         workflow = SimpleNamespace(id=uuid4(), graph=deployment.graph_snapshot)
@@ -191,13 +214,25 @@ class TestModelRoutingPreviewService:
                 workflow=workflow,
                 deployment=deployment,
                 node_id="llm-triage",
-                inputs={"message": "휴가와 운영 규정을 비교해 주세요."},
+                inputs={
+                    "start": {
+                        "department": "개발팀",
+                        "question": "휴가와 운영 규정을 비교해 주세요.",
+                        "format": "요약",
+                    }
+                },
             )
 
         feature = resolve_policy.call_args.kwargs["routing_feature_text"]
         assert "CURRENT_REQUEST:" in feature
         assert "휴가와 운영 규정" in feature
         assert "TASK_DESCRIPTION:\n회사 정책 근거를 비교해 답합니다." in feature
+        assert "SYSTEM_PROMPT:\n개발팀 정책만 검토합니다." in feature
+        assert "USER_PROMPT:\n질문: 휴가와 운영 규정을 비교해 주세요." in feature
+        assert "ASSISTANT_PROMPT:\n응답 형식: 요약" in feature
+        assert "json schema:" in feature
+        assert '"answer"' in feature
+        assert "{{" not in feature
 
     def test_preview_uses_deployed_default_before_runtime_judge_runs(self):
         policy = _policy(
@@ -235,6 +270,39 @@ class TestModelRoutingPreviewService:
         assert result["selected_model_id"] == "gpt-4.1"
         assert result["decision_source"] == "default_model"
         assert result["matched_rule_id"] is None
+
+    def test_preview_blocks_invalid_prompt_template_instead_of_using_raw_source(self):
+        policy = _policy(
+            active_policy={
+                "strategy_id": "judge_bootstrap_incremental_v1",
+                "default_model_id": "gpt-4.1",
+                "candidate_model_ids": ["gpt-4.1"],
+                "learning": {"mode": "judge_first"},
+            }
+        )
+        db = _db_with_policy(policy)
+        deployment = _deployment(
+            node_data={
+                "model_id": "gpt-4.1",
+                "auto_model_routing": True,
+                "user_prompt": "{% if broken %}",
+            }
+        )
+        workflow = SimpleNamespace(id=uuid4(), graph=deployment.graph_snapshot)
+
+        with patch(
+            "apps.gateway.services.model_routing_preview_service.WorkflowRuntimeLLMService.get_runtime_available_model_ids_for_user",
+            return_value=["gpt-4.1"],
+        ), pytest.raises(ModelRoutingPreviewBlockedError) as exc_info:
+            ModelRoutingPreviewService.preview(
+                db,
+                workflow=workflow,
+                deployment=deployment,
+                node_id="llm-triage",
+                inputs={},
+            )
+
+        assert exc_info.value.code == "model_routing.prompt_render_failed"
 
     def test_preview_uses_fallback_when_default_model_is_not_available(self):
         policy = _policy(

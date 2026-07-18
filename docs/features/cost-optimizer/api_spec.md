@@ -231,10 +231,12 @@ selected_model_id, fallback_model_id, default_model_id, configured_fallback_mode
 matched_rule_id, reason_code, strategy_id, decision_factors, runtime_context을
 반환한다. Preview는 운영 요청이 아니므로 Judge를 호출·학습·과금하지 않는다. local artifact가
 충분히 확신하면 local 선택을, 그렇지 않으면 기본 또는 대체 모델을 예상값으로 반환한다.
-Preview와 runtime은 같은 `ModelRouter.routing_feature_text()` builder로 현재 입력, 노드 제목,
-작업 설명과 고정 prompt constraint를 구성한다. Preview는 실제 RAG retrieval 결과를 만들지 않으므로
+Preview와 runtime은 같은 `ModelRouter.routing_feature_text()` builder와 side-effect 없는 prompt renderer로 현재 입력, 노드 제목,
+작업 설명, 현재 입력으로 렌더링된 system/user/assistant prompt와 JSON output schema 지시를 구성한다. Preview는 실제 RAG retrieval 결과를 만들지 않으므로
 동적 RAG signal은 포함하지 않는다. 따라서 preview의 모델은 배포 실행에서 Judge가 고를 실제 모델을
 확정한 결과가 아니다.
+배포 prompt template을 렌더링할 수 없으면 저장된 원문으로 fallback하지 않고
+`409 model_routing.prompt_render_failed`로 fail-closed하며 raw template/input을 응답에 포함하지 않는다.
 
 실행 trace의 `llm.model_routing`에는 정책 ID/version, 선택·대체 모델, strategy ID,
 reason code, runtime context, `decision_source`, `judge_called`를 남긴다. Judge가 호출된
@@ -250,7 +252,9 @@ Judge가 선택한 실행은 처음에는 `learning_status=pending_contract`로 
 `rejected`와 `learning_outcome_reason`으로 갱신한다. 이 학습 상태는 정책 갱신 경로에서만
 사용하며, 노드 상세 패널의 policy 조회 응답에는 feature vector나 원문, 집계값을 반환하지 않는다.
 `schema_status=not_required`는 schema 검사가 실패한 것이 아니라 수행되지 않은 상태이므로 학습
-거절 사유나 schema 평가·통과 집계의 분모에 포함하지 않는다.
+거절 사유나 schema 평가·통과 집계의 분모에 포함하지 않는다. 반면 선언된 JSON schema가 유효하지 않아
+검사를 완료하지 못한 `schema_status=not_evaluated`는 `schema_failed` 학습 거절로 처리하고 schema 평가
+분모에는 포함하되 통과 건수에는 포함하지 않는다.
 
 ### Persistence Model
 

@@ -17,6 +17,10 @@ from apps.shared.db.models.llm import (
     LLMModel,
     LLMRelCredentialModel,
 )
+from apps.workflow_engine.services.llm_output_contract import (
+    build_json_output_schema_instruction,
+    response_format_requires_json_instruction,
+)
 from apps.workflow_engine.services.model_routing_judge_first_policy import (
     JUDGE_FIRST_STRATEGY_ID,
 )
@@ -87,6 +91,10 @@ BLOCKED_WORKFLOW_MODEL_TYPES = {
     "moderation",
 }
 VERSION_SUFFIX_PATTERN = re.compile(r"-(?:\d{4}-\d{2}-\d{2}|\d{8})$")
+
+
+class ModelRoutingPromptRenderError(ValueError):
+    """Routing feature용 prompt template을 안전하게 렌더링할 수 없다."""
 
 
 @dataclass(frozen=True)
@@ -413,14 +421,7 @@ class ModelRouter:
         """
 
         if rendered_prompt_parts is None:
-            rendered_prompt_parts = [
-                str(cls._node_data_value(node_data, field) or "")
-                for field in (
-                    "system_prompt",
-                    "user_prompt",
-                    "assistant_prompt",
-                )
-            ]
+            rendered_prompt_parts = cls.render_prompt_parts(inputs, node_data)
 
         prompt_values = list(rendered_prompt_parts)[:3]
         prompt_values.extend([""] * (3 - len(prompt_values)))
@@ -613,11 +614,13 @@ class ModelRouter:
         return None
 
     @classmethod
-    def _render_prompt_parts(
+    def render_prompt_parts(
         cls,
         inputs: dict[str, Any],
         node_data: Any,
     ) -> tuple[str, str, str]:
+        """Preview와 runtime routing이 공유하는 side-effect 없는 prompt renderer."""
+
         values: dict[str, Any] = {}
         referenced_variables = cls._node_data_value(
             node_data,
@@ -632,10 +635,30 @@ class ModelRouter:
             if not name or not isinstance(selector, list) or not selector:
                 continue
             source = inputs.get(str(selector[0]))
-            values[name] = cls._nested_value(source, selector[1:])
-        return tuple(
-            cls._render_template(cls._node_data_value(node_data, field, default=""), values)
-            for field in ("user_prompt", "system_prompt", "assistant_prompt")
+            value = cls._nested_value(source, selector[1:])
+            values[name] = value if value is not None else ""
+        rendered = {
+            field: cls._render_template(
+                cls._node_data_value(node_data, field, default=""), values
+            )
+            for field in ("system_prompt", "user_prompt", "assistant_prompt")
+        }
+        parameters = cls._node_data_value(node_data, "parameters", default={})
+        parameters = parameters if isinstance(parameters, Mapping) else {}
+        schema_instruction = build_json_output_schema_instruction(
+            cls._node_data_value(node_data, "output_format"),
+            force_json_object=response_format_requires_json_instruction(
+                parameters.get("response_format")
+            ),
+        )
+        if schema_instruction:
+            rendered["system_prompt"] = "\n\n".join(
+                part for part in (rendered["system_prompt"], schema_instruction) if part
+            )
+        return (
+            rendered["system_prompt"],
+            rendered["user_prompt"],
+            rendered["assistant_prompt"],
         )
 
     @staticmethod
@@ -660,8 +683,10 @@ class ModelRouter:
             return ""
         try:
             return _routing_jinja_env.from_string(source).render(**context)
-        except Exception:
-            return source
+        except Exception as exc:
+            raise ModelRoutingPromptRenderError(
+                "model_routing.prompt_render_failed"
+            ) from exc
 
     @classmethod
     def _flatten_text(cls, value: Any) -> str:

@@ -456,6 +456,10 @@ def test_llm_node_passes_rendered_prompt_and_request_to_judge_first_router(
     feature = captured["feature"] or ""
     assert "CURRENT_REQUEST:" in feature
     assert "세 가지 계약 조건이 충돌할 때 승인 여부를 판단해 주세요." in feature
+    assert (
+        "USER_PROMPT:\n고객 요청: 세 가지 계약 조건이 충돌할 때 승인 여부를 판단해 주세요."
+        in feature
+    )
     assert "RENDERED_PROMPT:" not in feature
     assert "STRUCTURAL_CONSTRAINTS:" not in feature
     assert SAFETY_SYSTEM_PROMPT not in feature

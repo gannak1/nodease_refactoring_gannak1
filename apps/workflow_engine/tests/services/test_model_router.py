@@ -210,6 +210,48 @@ def test_llm_node_data_preserves_bounded_model_routing_task_description():
         )
 
 
+def test_routing_feature_renders_variables_and_json_output_contract():
+    node_data = _node(
+        system_prompt="{{department}} 정책을 검토합니다.",
+        user_prompt="질문: {{question}}",
+        assistant_prompt="응답 형식: {{format}}",
+        referenced_variables=[
+            {"name": "department", "value_selector": ["start", "department"]},
+            {"name": "question", "value_selector": ["start", "question"]},
+            {"name": "format", "value_selector": ["start", "format"]},
+        ],
+        output_format={
+            "type": "json",
+            "schema": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+            },
+        },
+    )
+
+    feature = ModelRouter.routing_feature_text(
+        {
+            "start": {
+                "department": "개발팀",
+                "question": "휴가 규정을 알려 주세요.",
+                "format": "요약",
+            }
+        },
+        node_data,
+    )
+
+    assert "SYSTEM_PROMPT:\n개발팀 정책을 검토합니다." in feature
+    assert "USER_PROMPT:\n질문: 휴가 규정을 알려 주세요." in feature
+    assert "ASSISTANT_PROMPT:\n응답 형식: 요약" in feature
+    assert "json schema:" in feature
+    assert '"answer"' in feature
+    assert "{{" not in feature
+
+    missing_value_feature = ModelRouter.routing_feature_text({}, node_data)
+    assert "None" not in missing_value_feature
+    assert "{{" not in missing_value_feature
+
+
 def test_routing_feature_truncates_task_description_to_judge_budget():
     feature = ModelRouter.routing_feature_text(
         {"message": "요청"},

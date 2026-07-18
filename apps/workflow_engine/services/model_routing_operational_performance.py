@@ -36,10 +36,8 @@ class ModelRoutingOperationalPerformanceService:
     MIN_NEW_RUNS = 3
     QUALITY_CHANGE_THRESHOLD = 0.05
     EFFICIENCY_IMPROVEMENT_THRESHOLD = 0.10
-    _SCHEMA_NOT_EVALUATED_STATUSES = {
-        "",
+    _SCHEMA_NOT_REQUIRED_STATUSES = {
         "not_applicable",
-        "not_evaluated",
         "not_required",
     }
 
@@ -176,8 +174,10 @@ class ModelRoutingOperationalPerformanceService:
 
     @classmethod
     def _schema_evaluation(cls, value: Any) -> tuple[bool, bool]:
+        if value is None:
+            return False, False
         normalized = cls._status(value)
-        if normalized in cls._SCHEMA_NOT_EVALUATED_STATUSES:
+        if normalized in cls._SCHEMA_NOT_REQUIRED_STATUSES:
             return False, False
         return True, cls._passed(value)
 
