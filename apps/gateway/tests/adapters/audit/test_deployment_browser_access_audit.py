@@ -43,7 +43,6 @@ def test_revision_audit_is_transaction_bound_and_contains_only_bounded_policy_fa
         output_schema=None,
         description=None,
         url_slug="audit-chatbot",
-        auth_secret=None,
     )
     policy = {
         "contract_version": "deployment_browser_access.v1",
@@ -74,7 +73,6 @@ def test_revision_audit_is_transaction_bound_and_contains_only_bounded_policy_fa
         is_active=False,
         browser_access_policy=policy,
         url_slug=source.url_slug,
-        auth_secret=None,
     )
     db = _Db()
     recorder = SqlAlchemyDeploymentBrowserAccessAuditRecorder(

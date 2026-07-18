@@ -31,6 +31,7 @@ from apps.gateway.middleware.webhook_query_redaction import (
     WEBHOOK_QUERY_TOKEN_PRESENT_STATE_KEY,
     webhook_query_token_present,
 )
+from apps.gateway.services.app_auth_secret_service import AppAuthSecretService
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
@@ -41,6 +42,7 @@ from apps.shared.domain.deployment_runtime_policy import (
     DeploymentRuntimePolicy,
     is_deployment_type_allowed_for_surface,
 )
+from apps.shared.domain.app_auth_secret import APP_AUTH_SECRET_PREFIX
 from apps.shared.db.session import get_db
 from apps.shared.services.workflow_task_publisher import send_workflow_task
 
@@ -68,6 +70,9 @@ _SECRET_VALUE_PATTERNS = [
     re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(
+        rf"(?<![A-Za-z0-9_-]){re.escape(APP_AUTH_SECRET_PREFIX)}[A-Za-z0-9_-]{{32,}}(?![A-Za-z0-9_-])"
+    ),
     re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
     re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
 ]
@@ -374,7 +379,10 @@ async def receive_webhook(
         request_metadata = _webhook_request_metadata(request)
         ingress_policy.authenticate(
             request_metadata,
-            expected_secret=app.auth_secret,
+            credential_verifier=lambda candidate: AppAuthSecretService.authenticate(
+                app,
+                candidate,
+            ),
         )
         ingress_policy.validate_payload_metadata(request_metadata)
         payload = await _read_webhook_payload(request, ingress_policy)

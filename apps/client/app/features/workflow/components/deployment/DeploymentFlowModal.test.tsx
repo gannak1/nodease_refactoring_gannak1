@@ -1,7 +1,44 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DeploymentFlowModal } from './DeploymentFlowModal';
+
+vi.mock('@/app/features/app/components/AppAuthSecretControl', () => ({
+  AppAuthSecretControl: ({
+    appId,
+    issuedSecret,
+    onSecretAvailable,
+    onReadinessChange,
+  }: {
+    appId: string;
+    issuedSecret?: { value: string; version: number } | null;
+    onSecretAvailable?: (secret: { value: string; version: number } | null) => void;
+    onReadinessChange?: (readiness: 'ready') => void;
+  }) => (
+    <div>
+      <span>Secret 발급 준비: {appId}</span>
+      <span>현재 Secret: {issuedSecret?.value || '없음'}</span>
+      <button
+        type="button"
+        onClick={() => {
+          onSecretAvailable?.({ value: 'one-time-secret', version: 1 });
+          onReadinessChange?.('ready');
+        }}
+      >
+        Secret 발급
+      </button>
+      <button type="button" onClick={() => onReadinessChange?.('ready')}>
+        Secret 상태 확인
+      </button>
+    </div>
+  ),
+}));
 
 afterEach(cleanup);
 
@@ -13,6 +50,7 @@ describe('DeploymentFlowModal', () => {
       <DeploymentFlowModal
         isOpen
         onClose={vi.fn()}
+        appId="app-1"
         deploymentType="api"
         llmNodes={[{ id: 'llm-1', title: '티켓 분류' }]}
         onDeploy={onDeploy}
@@ -20,6 +58,9 @@ describe('DeploymentFlowModal', () => {
     );
 
     expect(screen.getByText('REST API 배포')).toBeVisible();
+    expect(screen.getByText('Secret 발급 준비: app-1')).toBeVisible();
+    expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Secret 발급' }));
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
 
     expect(screen.getByText('운영 비용 자동 최적화')).toBeVisible();
@@ -42,5 +83,42 @@ describe('DeploymentFlowModal', () => {
         monthly_validation_budget_usd: 4.5,
       }),
     );
+  });
+
+  it('preserves a one-time App secret through deployment steps in memory', async () => {
+    const onDeploy = vi.fn().mockResolvedValue({
+      success: true,
+      appId: 'app-1',
+      version: 1,
+      url_slug: 'demo-api',
+    });
+
+    const renderModal = (isOpen: boolean) => (
+      <DeploymentFlowModal
+        isOpen={isOpen}
+        onClose={vi.fn()}
+        appId="app-1"
+        deploymentType="api"
+        llmNodes={[]}
+        onDeploy={onDeploy}
+      />
+    );
+    const { rerender } = render(renderModal(true));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Secret 발급' }));
+    expect(screen.getByText('현재 Secret: one-time-secret')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: '다음' }));
+    fireEvent.click(screen.getByRole('button', { name: '배포하기' }));
+
+    expect(
+      await screen.findByText('현재 Secret: one-time-secret'),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Secret 상태 확인' }));
+    expect(screen.getByRole('button', { name: '테스트 실행' })).toBeEnabled();
+
+    rerender(renderModal(false));
+    rerender(renderModal(true));
+    expect(await screen.findByText('현재 Secret: 없음')).toBeVisible();
   });
 });

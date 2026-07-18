@@ -23,6 +23,10 @@ from fastapi import HTTPException
 from sqlalchemy.sql.operators import eq
 
 from apps.shared.audit.actions import AuditAction
+from apps.shared.domain.app_auth_secret import (
+    APP_AUTH_SECRET_VERIFIER_VERSION,
+    app_auth_secret_verifier,
+)
 from apps.shared.domain.deployment_runtime_policy import (
     DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
 )
@@ -318,7 +322,10 @@ def _deployed_app(
         id=uuid4(),
         name="예산 초과 앱",
         url_slug=f"blocked-{uuid4().hex[:8]}",
-        auth_secret="deploy-secret",
+        auth_secret=None,
+        auth_secret_verifier=app_auth_secret_verifier("deploy-secret"),
+        auth_secret_verifier_version=APP_AUTH_SECRET_VERIFIER_VERSION,
+        auth_secret_generation=1,
         workflow_id=workflow_id,
         organization_id=organization_id,
         active_deployment_id=deployment_id,

@@ -14,6 +14,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, delete, func, inspect, insert, select, text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -84,6 +86,16 @@ pytestmark = pytest.mark.skipif(
     os.getenv(RUN_ENV) != "1",
     reason=f"set {RUN_ENV}=1 to run disposable Agent Builder usage tests",
 )
+
+
+def _current_alembic_head() -> str:
+    config = Config(str(ROOT_DIR / "apps" / "shared" / "alembic.ini"))
+    config.set_main_option(
+        "script_location", str(ROOT_DIR / "apps" / "shared" / "alembic")
+    )
+    heads = ScriptDirectory.from_config(config).get_heads()
+    assert len(heads) == 1, f"multiple Alembic heads: {heads}"
+    return heads[0]
 
 
 def _run_alembic_result(
@@ -1767,6 +1779,8 @@ def test_migration_round_trip_on_empty_usage_history():
             pytrace=False,
         ) from None
 
+    expected_head = _current_alembic_head()
+
     with _disposable_database(config) as (engine, database):
         engine.dispose()
         _run_alembic(database, config, "downgrade", "aa0b1c2d3e4f")
@@ -1838,7 +1852,7 @@ def test_migration_round_trip_on_empty_usage_history():
                     connection.execute(
                         text("SELECT version_num FROM alembic_version")
                     ).scalar_one()
-                    == "ac2d3e4f5061"
+                    == expected_head
                 )
                 assert _usage_history_reference_delete_actions(connection) == {
                     "credential_id": "SET NULL",
@@ -1856,6 +1870,8 @@ def test_migration_downgrade_rejects_agent_builder_usage_history():
             "disposable PostgreSQL settings are not safely configured",
             pytrace=False,
         ) from None
+
+    expected_head = _current_alembic_head()
 
     with _disposable_database(config) as (engine, database):
         session_factory = sessionmaker(bind=engine, expire_on_commit=False)
@@ -1893,4 +1909,4 @@ def test_migration_downgrade_rejects_agent_builder_usage_history():
     if "Agent Builder usage rows exist" not in output:
         pytest.fail("downgrade rejection did not report the preserved usage reason")
     assert preserved_usage_count == 1
-    assert version == "ac2d3e4f5061"
+    assert version == expected_head

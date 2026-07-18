@@ -295,7 +295,7 @@ def _seed_catalog(session_factory) -> _Catalog:
                     organization_id=catalog.organization_id,
                     name=f"MBA-284 app {suffix}",
                     url_slug=f"mba284-app-{suffix}",
-                    auth_secret="redacted-test-placeholder",
+                    auth_secret=None,
                     created_by=catalog.actor_id,
                 ),
             ]

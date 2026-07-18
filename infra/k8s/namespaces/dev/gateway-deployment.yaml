@@ -48,6 +48,9 @@ spec:
             # Durable schedule dispatch (activate only after migration-first rollout)
             - name: SCHEDULE_DISPATCH_MODE
               value: "disabled"
+            # Activate only after verifier-aware Gateway convergence.
+            - name: APP_AUTH_SECRET_LIFECYCLE_MODE
+              value: "disabled"
             - name: SCHEDULE_DISPATCH_MODE_FINGERPRINT
               valueFrom:
                 fieldRef:

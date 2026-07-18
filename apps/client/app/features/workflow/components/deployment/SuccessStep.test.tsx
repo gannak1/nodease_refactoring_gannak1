@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SuccessStep } from './SuccessStep';
@@ -9,7 +15,18 @@ vi.mock('sonner', () => ({
   },
 }));
 
+vi.mock(
+  '@/app/features/app/components/AppAuthSecretControl',
+  () => ({
+    AppAuthSecretControl: () => <div>App Secret lifecycle</div>,
+  }),
+);
+
 const writeClipboard = vi.fn();
+const secretProps = {
+  issuedSecret: null,
+  onSecretAvailable: vi.fn(),
+};
 
 beforeEach(() => {
   Object.defineProperty(navigator, 'clipboard', {
@@ -20,6 +37,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
 
@@ -27,13 +45,14 @@ describe('SuccessStep', () => {
   it('keeps the webhook secret out of the URL and requires header authentication', () => {
     render(
       <SuccessStep
+        {...secretProps}
         deploymentType="webhook"
         onClose={vi.fn()}
         result={{
           success: true,
+          appId: 'app-1',
           version: 1,
           url_slug: 'incident-hook',
-          auth_secret: 'webhook-secret-value',
         }}
       />,
     );
@@ -41,9 +60,7 @@ describe('SuccessStep', () => {
     expect(
       screen.getByText('http://localhost:3000/api/v1/hooks/incident-hook'),
     ).toBeVisible();
-    expect(
-      screen.getByText('Authorization: Bearer <Secret Key>'),
-    ).toBeVisible();
+    expect(screen.getByText('App Secret lifecycle')).toBeVisible();
     expect(screen.queryByText(/\?token=/)).not.toBeInTheDocument();
     expect(screen.queryByText(/통합 URL/)).not.toBeInTheDocument();
 
@@ -51,16 +68,13 @@ describe('SuccessStep', () => {
     expect(writeClipboard).toHaveBeenCalledWith(
       'http://localhost:3000/api/v1/hooks/incident-hook',
     );
-
-    fireEvent.click(screen.getByTitle('Authorization 헤더 복사'));
-    expect(writeClipboard).toHaveBeenLastCalledWith(
-      'Authorization: Bearer webhook-secret-value',
-    );
+    expect(screen.queryByText('webhook-secret-value')).not.toBeInTheDocument();
   });
 
   it('shows a non-blocking preflight warning after a successful deployment', () => {
     render(
       <SuccessStep
+        {...secretProps}
         deploymentType="api"
         onClose={vi.fn()}
         result={{
@@ -80,9 +94,57 @@ describe('SuccessStep', () => {
     );
   });
 
+  it('uses an existing App secret only in component memory for REST testing', async () => {
+    const storageWrite = vi.spyOn(Storage.prototype, 'setItem');
+    const sessionSecret = `test-${Math.random().toString(36).slice(2)}`;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ status: 'ok' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <SuccessStep
+        {...secretProps}
+        deploymentType="api"
+        onClose={vi.fn()}
+        result={{
+          success: true,
+          appId: 'app-1',
+          version: 1,
+          url_slug: 'existing-app',
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByRole('button', { name: 'Secret 입력 후 테스트' }),
+    ).toBeDisabled();
+    fireEvent.change(
+      screen.getByLabelText('테스트용 기존 App secret'),
+      { target: { value: sessionSecret } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: '테스트 실행' }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/api/v1/run/existing-app', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionSecret}`,
+        },
+        credentials: 'include',
+        body: JSON.stringify({ inputs: {} }),
+      }),
+    );
+    expect(storageWrite).not.toHaveBeenCalled();
+    storageWrite.mockRestore();
+  });
+
   it('public chatbot shows only the anonymous public link', () => {
     render(
       <SuccessStep
+        {...secretProps}
         deploymentType="chatbot"
         onClose={vi.fn()}
         result={{
@@ -111,6 +173,7 @@ describe('SuccessStep', () => {
   it('shows iframe code and the authoritative parent origins only when enabled', () => {
     render(
       <SuccessStep
+        {...secretProps}
         deploymentType="chatbot"
         onClose={vi.fn()}
         result={{
@@ -140,6 +203,7 @@ describe('SuccessStep', () => {
   it('keeps a disabled widget limited to its direct link', () => {
     render(
       <SuccessStep
+        {...secretProps}
         deploymentType="widget"
         onClose={vi.fn()}
         result={{
@@ -161,6 +225,7 @@ describe('SuccessStep', () => {
   it('internal chatbot shows only the authenticated run link', () => {
     render(
       <SuccessStep
+        {...secretProps}
         deploymentType="internal_chatbot"
         onClose={vi.fn()}
         result={{

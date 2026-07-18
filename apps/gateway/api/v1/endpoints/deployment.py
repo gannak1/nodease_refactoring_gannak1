@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_workflow_permission
+from apps.gateway.core.config import settings
 from apps.gateway.application.deployment.browser_access_errors import (
     BrowserAccessPolicyError,
     BrowserAccessResourceHidden,
@@ -28,8 +29,12 @@ from apps.gateway.services.knowledge_deployment_preflight_service import (
     deployment_preflight_blocked_http_exception,
 )
 from apps.gateway.services.organization_context import resolve_active_organization_id
+from apps.gateway.utils.api_errors import raise_api_error
 from apps.gateway.utils.audit import audit
-from apps.gateway.services.deployment_service import DeploymentService
+from apps.gateway.services.deployment_service import (
+    DeploymentAuthSecretPreflightError,
+    DeploymentService,
+)
 from apps.gateway.services.deployment_parameter_optimization_service import (
     DeploymentParameterOptimizationConfigurationError,
     DeploymentParameterOptimizationService,
@@ -62,11 +67,37 @@ from apps.shared.schemas.deployment import (
 
 router = APIRouter()
 
+_AUTH_SECRET_PREFLIGHT_ERROR_STATUS = {
+    "app.auth_secret_lifecycle_unavailable": 503,
+    "deployment.app_auth_secret_required": 409,
+}
+
 
 def _request_id_from_request(request: Request) -> str | None:
     return getattr(
         getattr(request, "state", None), "request_id", None
     ) or request.headers.get("x-request-id")
+
+
+def _raise_deployment_auth_secret_preflight_error(
+    request: Request,
+    error: DeploymentAuthSecretPreflightError,
+) -> None:
+    status_code = _AUTH_SECRET_PREFLIGHT_ERROR_STATUS.get(error.code)
+    if status_code is None:
+        raise_api_error(
+            request,
+            500,
+            "deployment.auth_secret_preflight_failed",
+            "App authentication secret preflight failed.",
+        )
+    raise_api_error(
+        request,
+        status_code,
+        error.code,
+        error.message,
+        error.details,
+    )
 
 
 def _deployment_app_and_workflow_id(db: Session, deployment_id: str):
@@ -187,7 +218,6 @@ def _deployment_response_from_browser_revision(
         is_active=revision.is_active,
         browser_access_policy=revision.browser_access_policy,
         url_slug=revision.url_slug,
-        auth_secret=revision.auth_secret,
     )
 
 
@@ -195,6 +225,7 @@ def _deployment_response_from_browser_revision(
 @audit(AuditAction.WORKFLOW_DEPLOY)
 def create_deployment(
     deployment_in: DeploymentCreate,
+    request: Request,
     runtime_policy: Annotated[
         DeploymentRuntimePolicy,
         Depends(get_deployment_runtime_policy),
@@ -210,18 +241,25 @@ def create_deployment(
     if not app or not app.workflow_id:
         raise HTTPException(status_code=404, detail="App not found")
     ensure_workflow_permission(db, current_user, app.workflow_id, "deploy")
-    return DeploymentService.create_deployment(
-        db,
-        deployment_in,
-        current_user.id,
-        observed_workflow_id=app.workflow_id,
-        runtime_policy=runtime_policy,
-    )
+    try:
+        return DeploymentService.create_deployment(
+            db,
+            deployment_in,
+            current_user.id,
+            observed_workflow_id=app.workflow_id,
+            runtime_policy=runtime_policy,
+            auth_secret_lifecycle_mutations_enabled=(
+                settings.APP_AUTH_SECRET_LIFECYCLE_MODE == "active"
+            ),
+        )
+    except DeploymentAuthSecretPreflightError as error:
+        _raise_deployment_auth_secret_preflight_error(request, error)
 
 
 @router.post("/preflight", response_model=DeploymentPreflightResponse)
 def preview_deployment_preflight(
     preflight_in: DeploymentPreflightRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -241,15 +279,21 @@ def preview_deployment_preflight(
         app.workflow_id,
         preflight_in.graph_snapshot,
     )
-    result = DeploymentService.preview_knowledge_preflight(
-        db,
-        app=app,
-        deployment_type=preflight_in.type,
-        graph_snapshot=graph_snapshot,
-        audience_hint=preflight_in.audience,
-        is_active=preflight_in.is_active,
-        principal_id=current_user.id,
-    )
+    try:
+        result = DeploymentService.preview_knowledge_preflight(
+            db,
+            app=app,
+            deployment_type=preflight_in.type,
+            graph_snapshot=graph_snapshot,
+            audience_hint=preflight_in.audience,
+            is_active=preflight_in.is_active,
+            principal_id=current_user.id,
+            auth_secret_lifecycle_mutations_enabled=(
+                settings.APP_AUTH_SECRET_LIFECYCLE_MODE == "active"
+            ),
+        )
+    except DeploymentAuthSecretPreflightError as error:
+        _raise_deployment_auth_secret_preflight_error(request, error)
     result.normalized_browser_access_policy = (
         DeploymentBrowserAccessPolicy.model_validate(
             browser_access_policy.to_dict()
@@ -625,6 +669,7 @@ def get_deployment_info_public(
 @router.patch("/{deployment_id}/toggle", response_model=DeploymentResponse)
 def toggle_deployment(
     deployment_id: str,
+    request: Request,
     runtime_policy: Annotated[
         DeploymentRuntimePolicy,
         Depends(get_deployment_runtime_policy),
@@ -650,6 +695,9 @@ def toggle_deployment(
             scheduler,
             runtime_policy=runtime_policy,
             user_id=current_user.id,
+            auth_secret_lifecycle_mutations_enabled=(
+                settings.APP_AUTH_SECRET_LIFECYCLE_MODE == "active"
+            ),
         )
     except Exception as e:
         _record_deployment_toggle_audit(
@@ -659,6 +707,8 @@ def toggle_deployment(
             "failure",
             {"error": str(e)},
         )
+        if isinstance(e, DeploymentAuthSecretPreflightError):
+            _raise_deployment_auth_secret_preflight_error(request, e)
         raise
     else:
         _record_deployment_toggle_audit(

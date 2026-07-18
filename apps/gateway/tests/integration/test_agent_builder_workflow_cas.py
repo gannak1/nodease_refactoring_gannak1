@@ -170,7 +170,7 @@ def _fixture(db):
         organization_id=organization.id,
         name="CAS App",
         url_slug=f"cas-{suffix}",
-        auth_secret="test-placeholder",
+        auth_secret=None,
         created_by=user.id,
     )
     db.add(app)
@@ -320,7 +320,7 @@ def _seed_committed_cas_fixture(test_engine):
                 organization_id=ids["organization"],
                 name="CAS Race App",
                 url_slug=f"cas-race-{suffix}",
-                auth_secret="test-placeholder",
+                auth_secret=None,
                 created_by=ids["user"],
             )
         )

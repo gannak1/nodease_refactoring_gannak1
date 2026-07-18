@@ -51,6 +51,7 @@ Active 문서 일부는 권한 또는 정책으로 workflow 실행이 막힌 사
 | deployment 일반 활성/비활성 toggle | `deployment.toggle` | MVP 1 |
 | 다른 deployment가 active인 상태에서 이전 deployment 재활성화 | `deployment.activate_previous` | MVP 1 |
 | deployment 삭제 | `deployment.delete` | MVP 1 |
+| App 인증 secret 최초 발급 또는 rotation | `app.auth_secret.rotated` | MBA-247. `previous_version=0`이면 최초 발급이며 secret·verifier·candidate는 metadata에 저장하지 않음 |
 | schedule dispatch outcome unknown 운영 검토 완료 | `schedule_dispatch.outcome_reviewed` | MBA-187 목표. system actor와 exact claim target 사용 |
 | schedule WorkflowRun visibility grace 초과 감지 | `schedule_dispatch.workflow_run_missing` | MBA-187 목표. system actor와 exact claim target 사용, replay 없음 |
 | schedule claim이 canonical resource/runtime 상태 변경으로 취소됨 | `schedule_dispatch.canceled` | system actor, exact claim target, allowlisted safe reason |
@@ -75,6 +76,7 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 - Organization member invite/accept/update/remove 흐름은 `organization.invite`, `organization.member.accept`, `organization.member.update`, `organization.member.remove`를 기록한다. Member 제거에 따른 permission cleanup aggregate는 `permission.revoke`에 `reason='organization.member.remove'` metadata를 남긴다.
 - Workflow 실행 기록은 `workflow.execute`를 사용하고, 성공/실패는 `audit_logs.status`와 metadata로 표현한다.
 - Deployment 생성은 `workflow.deploy`, 일반 toggle은 `deployment.toggle`, 이전 deployment 재활성화는 `deployment.activate_previous`, 삭제는 `deployment.delete`를 사용한다.
+- App 인증 secret 최초 발급과 rotation은 `app.auth_secret.rotated`를 사용한다. 최초 발급은 별도 action을 만들지 않고 safe metadata의 `previous_version=0`으로 구분하며 secret 원문, verifier, candidate, header와 fingerprint는 저장하지 않는다.
 - 현재 코드의 `AuditAction` 상수에는 `llm.call`도 구현되어 있다.
 - MBA-43 runtime 차단 중 credential 후보 없음, credential `use` 권한 부족, verified credential-model relation 없음, inactive model, Workflow Engine runtime organization scope 누락/invalid는 `permission.denied`로 기록한다. 해당 차단은 `workflow.blocked`로 저장하지 않는다.
 - MBA-43은 application-level model restriction policy를 구현하지 않으므로 model restriction 차단에 `policy.block`을 기록하지 않는다. `policy.block`은 기존 canonical action으로 유지하며 document/model/trace policy enforcement가 실제로 연결되는 후속 구현에서 사용한다.

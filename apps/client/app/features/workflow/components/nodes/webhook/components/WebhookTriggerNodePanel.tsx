@@ -9,8 +9,6 @@ import {
   Plus,
   Copy,
   Trash2,
-  Eye,
-  EyeOff,
   HelpCircle,
   ArrowRight,
 } from 'lucide-react';
@@ -19,6 +17,7 @@ import { appApi } from '@/app/features/app/api/appApi';
 import { webhookApi } from '@/app/features/workflow/api/webhookApi';
 import { toast } from 'sonner';
 import { PayloadViewerModal } from './PayloadViewerModal';
+import { AppAuthSecretControl } from '@/app/features/app/components/AppAuthSecretControl';
 
 interface WebhookTriggerNodePanelProps {
   nodeId: string;
@@ -101,8 +100,6 @@ export function WebhookTriggerNodePanel({
 
   const [isCaptureMode, setIsCaptureMode] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState<string>('');
-  const [authSecret, setAuthSecret] = useState<string>('');
-  const [showSecret, setShowSecret] = useState(false);
   const [isLoadingUrl, setIsLoadingUrl] = useState(true);
   const [urlSlug, setUrlSlug] = useState<string>('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -140,7 +137,6 @@ export function WebhookTriggerNodePanel({
 
           const url = `${baseUrl}/api/v1/hooks/${app.url_slug}`;
           setWebhookUrl(url);
-          setAuthSecret(app.auth_secret || '');
         } else {
           setWebhookUrl('URL Slug가 없습니다');
         }
@@ -387,64 +383,7 @@ export function WebhookTriggerNodePanel({
               </div>
             </div>
 
-            <div className="flex flex-col gap-1">
-              <label className="text-xs font-medium text-gray-700">
-                Secret Key
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type={showSecret ? 'text' : 'password'}
-                  value={
-                    isLoadingUrl
-                      ? '로딩 중...'
-                      : authSecret || 'Secret Key가 없습니다'
-                  }
-                  readOnly
-                  className="flex-1 px-3 py-2 text-sm border rounded bg-gray-50 font-mono focus:outline-none"
-                />
-                <button
-                  onClick={() => setShowSecret(!showSecret)}
-                  disabled={isLoadingUrl || !authSecret}
-                  className="p-2 hover:bg-gray-100 rounded transition-colors disabled:opacity-50 border border-gray-200"
-                  title={showSecret ? 'Secret 숨기기' : 'Secret 보기'}
-                >
-                  {showSecret ? (
-                    <EyeOff className="w-4 h-4 text-gray-600" />
-                  ) : (
-                    <Eye className="w-4 h-4 text-gray-600" />
-                  )}
-                </button>
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(authSecret);
-                    toast.success('Secret Key가 복사되었습니다!');
-                  }}
-                  disabled={isLoadingUrl || !authSecret}
-                  className="p-2 hover:bg-gray-100 rounded transition-colors disabled:opacity-50 border border-gray-200"
-                  title="Secret 복사"
-                >
-                  <Copy className="w-4 h-4 text-gray-600" />
-                </button>
-              </div>
-              <div className="mt-1 flex items-center gap-2">
-                <code className="flex-1 break-all rounded border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-xs text-gray-700">
-                  Authorization: Bearer &lt;Secret Key&gt;
-                </code>
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(
-                      `Authorization: Bearer ${authSecret}`,
-                    );
-                    toast.success('Authorization 헤더가 복사되었습니다!');
-                  }}
-                  disabled={isLoadingUrl || !authSecret}
-                  className="rounded border border-gray-200 p-2 transition-colors hover:bg-gray-100 disabled:opacity-50"
-                  title="Authorization 헤더 복사"
-                >
-                  <Copy className="w-4 h-4 text-gray-600" />
-                </button>
-              </div>
-            </div>
+            {appId && <AppAuthSecretControl appId={appId} />}
 
             {/* 캡처 버튼 */}
             <div>

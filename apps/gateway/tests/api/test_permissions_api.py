@@ -4187,7 +4187,7 @@ class _Session:
                 name="Workflow App",
                 workflow_id=workflow.id,
                 url_slug=f"workflow-app-{workflow.app_id}",
-                auth_secret="test-placeholder",
+                auth_secret=None,
                 created_by=workflow.created_by,
             )
         self.app_query = _Query(first_result=app_row, apply_filters=True)

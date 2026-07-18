@@ -227,6 +227,10 @@ def test_preview_deployment_preflight_authorizes_deploy_and_returns_result(monke
             graph_snapshot=graph,
             audience="anonymous_public",
         ),
+        request=SimpleNamespace(
+            state=SimpleNamespace(request_id="request-1"),
+            headers={},
+        ),
         db=FakeModelDb({App: app}),
         current_user=current_user,
     )
@@ -244,6 +248,84 @@ def test_preview_deployment_preflight_authorizes_deploy_and_returns_result(monke
     assert captured["preview"]["graph_snapshot"] == graph
     assert captured["preview"]["audience_hint"] == "anonymous_public"
     assert captured["preview"]["is_active"] is True
+
+
+@pytest.mark.parametrize(
+    ("code", "status_code", "message", "details"),
+    [
+        (
+            "app.auth_secret_lifecycle_unavailable",
+            503,
+            "App authentication secret lifecycle is unavailable.",
+            {},
+        ),
+        (
+            "deployment.app_auth_secret_required",
+            409,
+            "Issue an App authentication secret before activation.",
+            {"required_actions": ["issue_app_auth_secret"]},
+        ),
+    ],
+)
+def test_auth_secret_preflight_error_uses_standard_error_envelope(
+    code,
+    status_code,
+    message,
+    details,
+):
+    request = SimpleNamespace(
+        state=SimpleNamespace(request_id="request-1"),
+        headers={},
+    )
+    error = deployment_endpoint.DeploymentAuthSecretPreflightError(
+        code=code,
+        message=message,
+        details=details,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        deployment_endpoint._raise_deployment_auth_secret_preflight_error(
+            request,
+            error,
+        )
+
+    assert exc_info.value.status_code == status_code
+    assert exc_info.value.detail == {
+        "error": {
+            "code": code,
+            "message": message,
+            "request_id": "request-1",
+            "details": details,
+        }
+    }
+
+
+def test_unknown_auth_secret_preflight_error_fails_closed():
+    request = SimpleNamespace(
+        state=SimpleNamespace(request_id="request-1"),
+        headers={},
+    )
+    error = deployment_endpoint.DeploymentAuthSecretPreflightError(
+        code="deployment.unknown_auth_secret_error",
+        message="Untrusted detail.",
+        details={"raw": "must-not-leak"},
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        deployment_endpoint._raise_deployment_auth_secret_preflight_error(
+            request,
+            error,
+        )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == {
+        "error": {
+            "code": "deployment.auth_secret_preflight_failed",
+            "message": "App authentication secret preflight failed.",
+            "request_id": "request-1",
+            "details": {},
+        }
+    }
 
 
 def test_authenticated_run_routes_are_registered_before_deployment_detail():

@@ -2,6 +2,12 @@
 
 import { Loader2 } from 'lucide-react';
 
+import {
+  AppAuthSecretControl,
+  type AppAuthSecretReadiness,
+  type IssuedAppAuthSecret,
+} from '@/app/features/app/components/AppAuthSecretControl';
+
 import type {
   DeploymentBrowserAccessPolicy,
   DeploymentType,
@@ -10,6 +16,11 @@ import { buildBrowserAccessPolicyDraft } from '../../utils/browserAccessPolicy';
 import { BrowserAccessPolicyEditor } from './BrowserAccessPolicyEditor';
 
 interface InputStepProps {
+  appId?: string;
+  issuedSecret: IssuedAppAuthSecret | null;
+  onSecretAvailable: (secret: IssuedAppAuthSecret | null) => void;
+  appAuthSecretReadiness: AppAuthSecretReadiness;
+  onAppAuthSecretReadinessChange: (readiness: AppAuthSecretReadiness) => void;
   deploymentType: DeploymentType;
   deploymentTypeLabel: string;
   description: string;
@@ -27,6 +38,11 @@ interface InputStepProps {
 }
 
 export function InputStep({
+  appId,
+  issuedSecret,
+  onSecretAvailable,
+  appAuthSecretReadiness,
+  onAppAuthSecretReadinessChange,
   deploymentType,
   deploymentTypeLabel,
   description,
@@ -45,6 +61,9 @@ export function InputStep({
   const supportsEmbeddingPolicy = ['chatbot', 'widget'].includes(
     deploymentType,
   );
+  const requiresAppAuthSecret = ['api', 'webhook'].includes(deploymentType);
+  const appAuthSecretBlocked =
+    requiresAppAuthSecret && (!appId || appAuthSecretReadiness !== 'ready');
   const policyResult = supportsEmbeddingPolicy
     ? buildBrowserAccessPolicyDraft(embeddingEnabled, parentOrigins)
     : null;
@@ -62,6 +81,21 @@ export function InputStep({
       </div>
 
       <div className="max-h-[65vh] space-y-6 overflow-y-auto p-6">
+        {requiresAppAuthSecret && appId && (
+          <AppAuthSecretControl
+            appId={appId}
+            issuedSecret={issuedSecret}
+            onSecretAvailable={onSecretAvailable}
+            onReadinessChange={onAppAuthSecretReadinessChange}
+          />
+        )}
+
+        {requiresAppAuthSecret && !appId && (
+          <p className="text-xs text-gray-500" role="status">
+            App 정보를 확인할 수 없어 Secret 준비를 진행할 수 없습니다.
+          </p>
+        )}
+
         <div>
           <label
             className="mb-2 block text-sm font-medium text-gray-700"
@@ -106,7 +140,9 @@ export function InputStep({
         <button
           type="button"
           onClick={() => onSubmit(policyResult?.policy || undefined)}
-          disabled={isDeploying || Boolean(validationError)}
+          disabled={
+            isDeploying || Boolean(validationError) || appAuthSecretBlocked
+          }
           className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
         >
           {isDeploying && <Loader2 className="h-4 w-4 animate-spin" />}

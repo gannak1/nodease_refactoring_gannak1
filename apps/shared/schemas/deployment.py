@@ -85,6 +85,8 @@ class DeploymentParameterOptimizationStatus(BaseModel):
 
 
 class DeploymentBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     type: DeploymentType = DeploymentType.API
     url_slug: Optional[str] = Field(
         None, max_length=255, pattern=r"^[a-z0-9-]+$"
@@ -101,7 +103,6 @@ class DeploymentCreate(DeploymentBase):
     # TODO: 프론트엔드에서 localStorage에 저장된 스냅샷을 보내주는 방식으로 변경
     # 현재는 백엔드에서 DB의 draft를 읽어서 저장함
     graph_snapshot: Optional[Dict[str, Any]] = None
-    auth_secret: Optional[str] = None  # 생성 시에만 입력 가능
 
 
 class DeploymentPreflightRequest(DeploymentBase):
@@ -151,15 +152,13 @@ class DeploymentResponse(DeploymentBase):
     id: UUID
     app_id: UUID
     version: int
-    auth_secret: Optional[str] = None  # 보안상 일부만 보여주거나 숨길 수 있음
     created_by: UUID
     created_at: datetime
     graph_snapshot: Dict[str, Any]
     input_schema: Optional[Dict[str, Any]] = None  # StartNode 입력 스키마
     output_schema: Optional[Dict[str, Any]] = None  # AnswerNode 출력 스키마
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
 
     @field_validator("browser_access_policy", mode="before")
     @classmethod

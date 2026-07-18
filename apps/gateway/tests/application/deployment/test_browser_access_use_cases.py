@@ -45,7 +45,6 @@ def _source(deployment_type: str = "chatbot") -> BrowserAccessSourceSnapshot:
         output_schema={"outputs": []},
         description="source",
         url_slug="source-chatbot",
-        auth_secret="masked-by-response-layer",
     )
 
 
@@ -80,7 +79,6 @@ class _Repository:
             is_active=is_active,
             browser_access_policy=policy.to_dict(),
             url_slug=source.url_slug,
-            auth_secret=source.auth_secret,
         )
 
     def get_active_by_slug(self, url_slug):

@@ -13,6 +13,9 @@
 
 from __future__ import annotations
 
+# Repository imports intentionally follow the sys.path bootstrap below.
+# ruff: noqa: E402
+
 import argparse
 import asyncio
 import json
@@ -47,6 +50,7 @@ from apps.workflow_engine.services.llm_service import (
     LLMService,
 )
 from apps.workflow_engine.services.model_router import ModelRouter, ModelRouterContext
+from scripts.managed_app_secret_fixture import configure_managed_app_secret_fixture
 
 
 DEFAULT_ORG_ID = uuid.UUID("10200000-0000-0000-0000-000000000100")
@@ -232,7 +236,6 @@ def _ensure_workflow(db, config: VerificationConfig) -> None:
             ),
             icon={"type": "emoji", "content": "🧪", "background_color": "#E0F2FE"},
             url_slug=f"model-router-actual-{config.execution_provider}",
-            auth_secret="sk-model-router-actual-verification",
             is_api_enabled=True,
             api_req_per_minute=60,
             api_req_per_hour=3600,
@@ -241,6 +244,7 @@ def _ensure_workflow(db, config: VerificationConfig) -> None:
         )
         db.add(app)
         db.flush()
+    configure_managed_app_secret_fixture(app)
 
     graph = {
         "nodes": [
@@ -756,7 +760,7 @@ def _provider_for_model(db, model_id: str) -> str | None:
         db.query(LLMModel)
         .filter(
             LLMModel.model_id_for_api_call == model_id,
-            LLMModel.is_active == True,
+            LLMModel.is_active.is_(True),
         )
         .first()
     )

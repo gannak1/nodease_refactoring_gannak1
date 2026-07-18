@@ -91,6 +91,11 @@ from apps.shared.db.models.workflow_run import (
     WorkflowNodeRun,
     WorkflowRun,
 )
+from apps.shared.domain.app_auth_secret import (
+    APP_AUTH_SECRET_VERIFIER_VERSION,
+    app_auth_secret_verifier,
+    app_auth_secret_verifier_state_is_valid,
+)
 from apps.shared.services.password_hashing import hash_password
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import or_, text
@@ -1825,6 +1830,66 @@ def _upsert_by_id(db: Session, model: type, row_id: uuid.UUID, values: dict[str,
     return row
 
 
+_MANAGED_APP_SECRET_STATE_FIELDS = (
+    "auth_secret_verifier",
+    "auth_secret_verifier_version",
+    "auth_secret_generation",
+    "auth_secret_previous_verifier",
+    "auth_secret_previous_verifier_version",
+    "auth_secret_previous_valid_until",
+    "auth_secret_rotated_at",
+)
+
+
+def _has_valid_managed_app_secret_state(app: App) -> bool:
+    generation = app.auth_secret_generation
+    if (
+        not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation <= 0
+        or not app_auth_secret_verifier_state_is_valid(
+            app.auth_secret_verifier,
+            app.auth_secret_verifier_version,
+        )
+        or not isinstance(app.auth_secret_rotated_at, datetime)
+        or app.auth_secret_rotated_at.tzinfo is None
+    ):
+        return False
+
+    previous_fields = (
+        app.auth_secret_previous_verifier,
+        app.auth_secret_previous_verifier_version,
+        app.auth_secret_previous_valid_until,
+    )
+    if all(value is None for value in previous_fields):
+        return True
+    return (
+        app_auth_secret_verifier_state_is_valid(
+            app.auth_secret_previous_verifier,
+            app.auth_secret_previous_verifier_version,
+        )
+        and isinstance(app.auth_secret_previous_valid_until, datetime)
+        and app.auth_secret_previous_valid_until.tzinfo is not None
+    )
+
+
+def _app_seed_values(
+    existing_app: App | None,
+    values: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep a user-rotated verifier state when a normal seed upsert reruns."""
+
+    if existing_app is None or not _has_valid_managed_app_secret_state(existing_app):
+        return values
+
+    preserved = values.copy()
+    for field in _MANAGED_APP_SECRET_STATE_FIELDS:
+        preserved.pop(field, None)
+    # A valid verifier is the authority. Clearing a leftover legacy raw value is safe.
+    preserved["auth_secret"] = None
+    return preserved
+
+
 def _icon(content: str, background_color: str = "#EFF6FF") -> dict[str, str]:
     return {
         "type": "emoji",
@@ -3431,30 +3496,39 @@ def _upsert_app_workflow(
     deployed: bool,
     deployment_type: DeploymentType = DeploymentType.API,
 ) -> Workflow:
+    app_secret = f"sk-demo-{key}"
+    app_values = {
+        "organization_id": ORG_ID,
+        "name": name,
+        "description": description,
+        "icon": _icon(
+            "🧭"
+            if key in {"ticket_ops", "model_router_ticket_ops"}
+            else "📘"
+        ),
+        "url_slug": f"demo-{key.replace('_', '-')}",
+        "auth_secret": None,
+        "auth_secret_verifier": app_auth_secret_verifier(app_secret),
+        "auth_secret_verifier_version": APP_AUTH_SECRET_VERIFIER_VERSION,
+        "auth_secret_generation": 1,
+        "auth_secret_previous_verifier": None,
+        "auth_secret_previous_verifier_version": None,
+        "auth_secret_previous_valid_until": None,
+        "auth_secret_rotated_at": _now(),
+        "is_api_enabled": True,
+        "api_req_per_minute": 60,
+        "api_req_per_hour": 3600,
+        "is_market": False,
+        "forked_from": None,
+        "created_by": USER_IDS[owner_key],
+        "workflow_id": None,
+        "active_deployment_id": None,
+    }
     app = _upsert_by_id(
         db,
         App,
         APP_IDS[key],
-        {
-            "organization_id": ORG_ID,
-            "name": name,
-            "description": description,
-            "icon": _icon(
-                "🧭"
-                if key in {"ticket_ops", "model_router_ticket_ops"}
-                else "📘"
-            ),
-            "url_slug": f"demo-{key.replace('_', '-')}",
-            "auth_secret": f"sk-demo-{key}",
-            "is_api_enabled": True,
-            "api_req_per_minute": 60,
-            "api_req_per_hour": 3600,
-            "is_market": False,
-            "forked_from": None,
-            "created_by": USER_IDS[owner_key],
-            "workflow_id": None,
-            "active_deployment_id": None,
-        },
+        _app_seed_values(db.get(App, APP_IDS[key]), app_values),
     )
     db.flush()
 
@@ -4419,26 +4493,35 @@ def seed_test_data(db: Session) -> None:
             membership_index += 1
 
     graph = _test_feature_graph()
+    test_app_secret = "sk-test-feature-workflow"
+    test_app_values = {
+        "organization_id": TEST_ORG_ID,
+        "name": "테스트용 기능 검증 워크플로우",
+        "description": "팀원이 기능 구현 중 자유롭게 변경해도 되는 테스트 workflow",
+        "icon": _icon("🧪"),
+        "url_slug": "test-feature-workflow",
+        "auth_secret": None,
+        "auth_secret_verifier": app_auth_secret_verifier(test_app_secret),
+        "auth_secret_verifier_version": APP_AUTH_SECRET_VERIFIER_VERSION,
+        "auth_secret_generation": 1,
+        "auth_secret_previous_verifier": None,
+        "auth_secret_previous_verifier_version": None,
+        "auth_secret_previous_valid_until": None,
+        "auth_secret_rotated_at": _now(),
+        "is_api_enabled": True,
+        "api_req_per_minute": 60,
+        "api_req_per_hour": 3600,
+        "is_market": False,
+        "forked_from": None,
+        "created_by": TEST_USER_IDS["builder"],
+        "workflow_id": None,
+        "active_deployment_id": None,
+    }
     app = _upsert_by_id(
         db,
         App,
         TEST_APP_ID,
-        {
-            "organization_id": TEST_ORG_ID,
-            "name": "테스트용 기능 검증 워크플로우",
-            "description": "팀원이 기능 구현 중 자유롭게 변경해도 되는 테스트 workflow",
-            "icon": _icon("🧪"),
-            "url_slug": "test-feature-workflow",
-            "auth_secret": "sk-test-feature-workflow",
-            "is_api_enabled": True,
-            "api_req_per_minute": 60,
-            "api_req_per_hour": 3600,
-            "is_market": False,
-            "forked_from": None,
-            "created_by": TEST_USER_IDS["builder"],
-            "workflow_id": None,
-            "active_deployment_id": None,
-        },
+        _app_seed_values(db.get(App, TEST_APP_ID), test_app_values),
     )
     db.flush()
     workflow = _upsert_by_id(

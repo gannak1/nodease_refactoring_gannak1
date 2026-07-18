@@ -28,7 +28,6 @@ def test_activation_guard_revalidates_mail_credentials_and_runtime_preflight(
         output_schema=None,
         description=None,
         url_slug="chatbot",
-        auth_secret=None,
     )
     actor_id = uuid.uuid4()
 
@@ -96,7 +95,6 @@ def test_composition_builds_activation_preflight_with_actor_and_candidate(
         output_schema=None,
         description=None,
         url_slug="chatbot",
-        auth_secret=None,
     )
     actor_id = uuid.uuid4()
     db = object()

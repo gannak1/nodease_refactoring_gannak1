@@ -1,11 +1,16 @@
 import gzip
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from apps.shared.db import demo_seed
+from apps.shared.domain.app_auth_secret import (
+    APP_AUTH_SECRET_VERIFIER_VERSION,
+    app_auth_secret_verifier,
+)
 from scripts import seed_demo as seed_demo_script
 
 
@@ -216,6 +221,88 @@ def test_legacy_demo_documents_have_distinct_knowledge_base_keys():
     assert mapping["hr_leave"] == "hr"
     assert mapping["hr_welfare"] == "hr_welfare"
     assert all(kb_key in demo_seed.KB_IDS for kb_key in mapping.values())
+
+
+def test_demo_upsert_preserves_valid_rotated_app_secret_state_without_reset():
+    now = datetime(2026, 7, 18, tzinfo=timezone.utc)
+    existing = SimpleNamespace(
+        auth_secret="legacy-raw-value",
+        auth_secret_verifier=app_auth_secret_verifier("current-value"),
+        auth_secret_verifier_version=APP_AUTH_SECRET_VERIFIER_VERSION,
+        auth_secret_generation=4,
+        auth_secret_previous_verifier=app_auth_secret_verifier("previous-value"),
+        auth_secret_previous_verifier_version=APP_AUTH_SECRET_VERIFIER_VERSION,
+        auth_secret_previous_valid_until=now + timedelta(minutes=5),
+        auth_secret_rotated_at=now,
+    )
+    seed_values = {
+        "name": "데모 App",
+        "auth_secret": None,
+        "auth_secret_verifier": app_auth_secret_verifier("seed-value"),
+        "auth_secret_verifier_version": APP_AUTH_SECRET_VERIFIER_VERSION,
+        "auth_secret_generation": 1,
+        "auth_secret_previous_verifier": None,
+        "auth_secret_previous_verifier_version": None,
+        "auth_secret_previous_valid_until": None,
+        "auth_secret_rotated_at": now,
+    }
+
+    values = demo_seed._app_seed_values(existing, seed_values)
+
+    assert values["name"] == "데모 App"
+    assert values["auth_secret"] is None
+    assert all(
+        field not in values for field in demo_seed._MANAGED_APP_SECRET_STATE_FIELDS
+    )
+    assert demo_seed._app_seed_values(None, seed_values) == seed_values
+
+
+def test_test_profile_seed_preserves_valid_rotated_app_secret_state_without_reset(
+    monkeypatch,
+):
+    now = datetime(2026, 7, 18, tzinfo=timezone.utc)
+    existing = SimpleNamespace(
+        auth_secret="legacy-raw-value",
+        auth_secret_verifier=app_auth_secret_verifier("current-value"),
+        auth_secret_verifier_version=APP_AUTH_SECRET_VERIFIER_VERSION,
+        auth_secret_generation=4,
+        auth_secret_previous_verifier=app_auth_secret_verifier("previous-value"),
+        auth_secret_previous_verifier_version=APP_AUTH_SECRET_VERIFIER_VERSION,
+        auth_secret_previous_valid_until=now + timedelta(minutes=5),
+        auth_secret_rotated_at=now,
+    )
+    captured_app_values = []
+
+    class FakeSession:
+        def get(self, model, row_id):
+            if model is demo_seed.App and row_id == demo_seed.TEST_APP_ID:
+                return existing
+            return None
+
+        def flush(self):
+            return None
+
+        def commit(self):
+            return None
+
+    def capture_upsert(_db, model, row_id, values):
+        if model is demo_seed.App and row_id == demo_seed.TEST_APP_ID:
+            captured_app_values.append(values)
+        return SimpleNamespace(id=row_id)
+
+    monkeypatch.setattr(demo_seed, "_adopt_existing_test_user_ids", lambda _db: None)
+    monkeypatch.setattr(demo_seed, "hash_password", lambda _value: "hashed")
+    monkeypatch.setattr(demo_seed, "_upsert_by_id", capture_upsert)
+
+    demo_seed.seed_test_data(FakeSession())
+
+    assert len(captured_app_values) == 1
+    values = captured_app_values[0]
+    assert values["name"] == "테스트용 기능 검증 워크플로우"
+    assert values["auth_secret"] is None
+    assert all(
+        field not in values for field in demo_seed._MANAGED_APP_SECRET_STATE_FIELDS
+    )
 
 
 def test_hr_policy_collection_references_precomputed_indexed_kbs():
@@ -1126,6 +1213,7 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     agent_builder_intent_usage_revision = script.get_revision("a8c9d0e1f2a3")
     conversation_memory_revision = script.get_revision("ab1c2d3e4f50")
     current_head_revision = script.get_revision("ac2d3e4f5061")
+    app_auth_secret_revision = script.get_revision("b0c1d2e3f4a5")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -1180,13 +1268,13 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
         "a8c9d0e1f2a3",
         "ab1c2d3e4f50",
     }
+    assert app_auth_secret_revision.down_revision == "ac2d3e4f5061"
     assert "2b6c7d8e9f02" in ancestry
     assert "a6f4d2c8e1b7" in ancestry
     assert "a9b0c1d2e3f4" in ancestry
     assert "aa0b1c2d3e4f" in ancestry
-    assert "a8c9d0e1f2a3" in ancestry
     assert "ab1c2d3e4f50" in ancestry
-    assert script.get_heads() == ["ac2d3e4f5061"]
+    assert "b0c1d2e3f4a5" in ancestry
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

@@ -17,6 +17,11 @@ from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.main import app
 from apps.shared.db.session import get_db
 from apps.shared.db.models.workflow_deployment import DeploymentType
+from apps.shared.domain.app_auth_secret import (
+    APP_AUTH_SECRET_PREFIX,
+    APP_AUTH_SECRET_VERIFIER_VERSION,
+    app_auth_secret_verifier,
+)
 from apps.shared.domain.deployment_runtime_policy import (
     DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
     SURFACE_WEBHOOK_RUN,
@@ -68,7 +73,11 @@ class TestWebhookApi(unittest.TestCase):
         mock_app = MagicMock()
         mock_app.id = uuid4()
         mock_app.url_slug = self.url_slug
-        mock_app.auth_secret = self.auth_secret
+        mock_app.auth_secret_verifier = app_auth_secret_verifier(self.auth_secret)
+        mock_app.auth_secret_verifier_version = APP_AUTH_SECRET_VERIFIER_VERSION
+        mock_app.auth_secret_previous_verifier = None
+        mock_app.auth_secret_previous_verifier_version = None
+        mock_app.auth_secret_previous_valid_until = None
         mock_app.workflow_id = self.workflow_id
         mock_app.active_deployment_id = uuid4() if active_deployment else None
         mock_app.created_by = uuid4()
@@ -319,6 +328,16 @@ class TestWebhookApi(unittest.TestCase):
             webhook_endpoint._redact_capture_payload("xoxb-" + "1" * 12),
             "[REDACTED: sensitive value]",
         )
+
+    def test_capture_preview_redacts_generated_app_secret_in_an_ordinary_field(self):
+        secret = f"{APP_AUTH_SECRET_PREFIX}{'a' * 42}-"
+
+        preview = webhook_endpoint._redact_capture_payload(
+            {"message": f"connector echoed {secret}"}
+        )
+
+        self.assertEqual(preview["message"], "connector echoed [REDACTED: sensitive value]")
+        self.assertNotIn(secret, str(preview))
 
     def test_capture_start_requires_login(self):
         start_signature = inspect.signature(webhook_endpoint.start_capture)

@@ -27,6 +27,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts.experiments.model_routing.secret_input import (  # noqa: E402
+    DEFAULT_WEBHOOK_SECRET_ENV,
+    read_required_secret,
+)
+
 WORKFLOW_ID = "91000000-0000-0000-0000-000000000002"
 DEPLOYMENT_ID = "91000000-0000-0000-0000-000000000003"
 ORGANIZATION_ID = "10200000-0000-0000-0000-000000000100"
@@ -891,23 +896,6 @@ def semantic_preflight(cases: Iterable[RoutingCase]) -> list[RoutingObservation]
         db.close()
 
 
-def _app_secret() -> str:
-    from sqlalchemy import text
-    from apps.shared.db.session import SessionLocal
-
-    db = SessionLocal()
-    try:
-        secret = db.execute(
-            text("SELECT auth_secret FROM apps WHERE url_slug=:slug"),
-            {"slug": APP_SLUG},
-        ).scalar_one_or_none()
-        if not secret:
-            raise RuntimeError("배포 webhook 인증 정보를 찾지 못했습니다.")
-        return str(secret)
-    finally:
-        db.close()
-
-
 def _latest_deployed_observation(
     case: RoutingCase,
     *,
@@ -1070,6 +1058,7 @@ def collect_replay_evidence(
     timeout_seconds: int,
     login_email: str,
     login_password: str,
+    webhook_secret: str,
 ) -> list[ReplayEvidenceObservation]:
     """독립 입력으로 실제 baseline과 Cost Optimizer Replay 증거를 생성한다."""
     import requests
@@ -1080,6 +1069,7 @@ def collect_replay_evidence(
         base_url=base_url,
         experiment_run_id=experiment_run_id,
         timeout_seconds=timeout_seconds,
+        webhook_secret=webhook_secret,
     )
     invalid = [
         row
@@ -1225,6 +1215,7 @@ def execute_deployed_cases(
     base_url: str,
     experiment_run_id: str,
     timeout_seconds: int,
+    webhook_secret: str,
 ) -> list[RoutingObservation]:
     import requests
     from apps.shared.db.session import SessionLocal
@@ -1243,13 +1234,12 @@ def execute_deployed_cases(
     }
     print(f"frozen_policy_version={frozen_policy_version}")
     print(f"expected_models={expected_models}")
-    secret = _app_secret()
     observations: list[RoutingObservation] = []
     for index, case in enumerate(cases, start=1):
         requested_after = datetime.now(timezone.utc)
         response = requests.post(
             f"{base_url.rstrip('/')}/api/v1/hooks/{APP_SLUG}",
-            headers={"X-Webhook-Secret": secret},
+            headers={"X-Webhook-Secret": webhook_secret},
             json={
                 "message": case.message,
                 "customerTier": case.customer_tier,
@@ -1369,6 +1359,11 @@ def main() -> int:
         help="Replay compare 로그인 비밀번호를 읽을 환경변수 이름입니다.",
     )
     parser.add_argument(
+        "--webhook-secret-env",
+        default=DEFAULT_WEBHOOK_SECRET_ENV,
+        help="실제 배포 webhook secret을 읽을 환경변수 이름입니다.",
+    )
+    parser.add_argument(
         "--dataset",
         choices=("calibration", "holdout", "final"),
         default="holdout",
@@ -1384,9 +1379,17 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    webhook_secret: str | None = None
+    if args.mode in {"execute", "collect-replay-evidence"}:
+        try:
+            webhook_secret = read_required_secret(args.webhook_secret_env)
+        except ValueError as error:
+            parser.error(str(error))
+
     if args.mode == "execute" and args.dataset != "final":
         parser.error("execute 최종 평가는 final dataset만 사용할 수 있습니다.")
     if args.mode == "collect-replay-evidence":
+        assert webhook_secret is not None
         password = os.getenv(args.password_env)
         if not password:
             parser.error(
@@ -1402,6 +1405,7 @@ def main() -> int:
             timeout_seconds=args.timeout_seconds,
             login_email=args.login_email,
             login_password=password,
+            webhook_secret=webhook_secret,
         )
         json_path, markdown_path = _write_evidence_reports(
             rows,
@@ -1423,11 +1427,13 @@ def main() -> int:
     if args.mode == "semantic-preflight":
         observations = semantic_preflight(cases)
     elif args.mode == "execute":
+        assert webhook_secret is not None
         observations = execute_deployed_cases(
             cases,
             base_url=args.base_url,
             experiment_run_id=experiment_run_id,
             timeout_seconds=args.timeout_seconds,
+            webhook_secret=webhook_secret,
         )
     else:
         from apps.shared.db.session import SessionLocal

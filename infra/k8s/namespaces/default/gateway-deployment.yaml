@@ -55,6 +55,10 @@ spec:
             # Durable schedule dispatch (activate only after migration-first rollout)
             - name: SCHEDULE_DISPATCH_MODE
               value: "disabled"
+            # Activate only in a follow-up rollout after every Gateway pod is
+            # running the verifier-aware App secret revision.
+            - name: APP_AUTH_SECRET_LIFECYCLE_MODE
+              value: "disabled"
             - name: SCHEDULE_DISPATCH_MODE_FINGERPRINT
               valueFrom:
                 fieldRef:

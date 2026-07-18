@@ -4,6 +4,7 @@ import { workflowApi } from '../../api/workflowApi';
 import { DeploymentResponse } from '../../types/Deployment';
 import { X, Settings, Key, Eye, EyeOff, Copy } from 'lucide-react';
 import { toast } from 'sonner';
+import { AppAuthSecretControl } from '@/app/features/app/components/AppAuthSecretControl';
 
 // 노드 타입별 자격 증명 필드 정의
 const CREDENTIAL_FIELDS: Record<
@@ -200,10 +201,8 @@ export function SettingsSidebar() {
                 // REST API
                 if (deploy.type === 'api') {
                   const url = `${origin}/api/v1/run/${deploy.url_slug}`;
-                  const secret = deploy.auth_secret || '••••••••';
-                  const isSecretVisible = visibleKeys[`secret-${deploy.id}`];
                   const curlCommand = `curl -X POST ${url} \\
-  -H "Authorization: Bearer ${secret}" \\
+  -H "Authorization: Bearer <APP_SECRET>" \\
   -H "Content-Type: application/json" \\
   -d '{"inputs": {}}'`;
 
@@ -239,50 +238,7 @@ export function SettingsSidebar() {
                         </div>
                       </div>
 
-                      {/* API Secret Key */}
-                      <div>
-                        <div className="text-xs font-semibold text-gray-700 mb-1">
-                          API Secret Key
-                        </div>
-                        <div className="relative">
-                          <input
-                            type={isSecretVisible ? 'text' : 'password'}
-                            value={deploy.auth_secret || ''}
-                            readOnly
-                            placeholder={
-                              deploy.auth_secret ? '' : 'Secret not available'
-                            }
-                            className="w-full text-xs font-mono bg-white border border-gray-300 rounded px-3 py-2 pr-16 focus:outline-none text-gray-600"
-                          />
-                          <div className="absolute right-1 top-1 flex items-center">
-                            <button
-                              onClick={() =>
-                                setVisibleKeys((prev) => ({
-                                  ...prev,
-                                  [`secret-${deploy.id}`]:
-                                    !prev[`secret-${deploy.id}`],
-                                }))
-                              }
-                              className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-200 rounded"
-                            >
-                              {isSecretVisible ? (
-                                <EyeOff className="w-3.5 h-3.5" />
-                              ) : (
-                                <Eye className="w-3.5 h-3.5" />
-                              )}
-                            </button>
-                            <button
-                              onClick={() =>
-                                copyToClipboard(deploy.auth_secret || '')
-                              }
-                              className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-200 rounded"
-                              disabled={!deploy.auth_secret}
-                            >
-                              <Copy className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
+                      <AppAuthSecretControl appId={deploy.app_id} />
 
                       {/* Test Command */}
                       <div>

@@ -87,4 +87,63 @@ describe('configuration preflight message', () => {
 
     expect(message).toBe('실행 준비 상태를 확인할 수 없습니다.');
   });
+
+  it('extracts safe actions from the standard API error envelope', () => {
+    const message = deploymentApiErrorMessage({
+      response: {
+        status: 409,
+        data: {
+          error: {
+            code: 'deployment.app_auth_secret_required',
+            message: 'Issue an App authentication secret before activation.',
+            details: {
+              required_actions: [
+                'issue_app_auth_secret',
+                'untrusted-action-detail',
+              ],
+            },
+          },
+        },
+      },
+    });
+
+    expect(message).toBe(
+      ['App Secret이 필요합니다.', '필요 조치: App Secret을 발급하세요'].join(
+        '\n',
+      ),
+    );
+    expect(message).not.toContain('untrusted-action-detail');
+  });
+
+  it('shows a safe wait state for lifecycle rollout errors', () => {
+    const message = deploymentApiErrorMessage({
+      response: {
+        status: 503,
+        data: {
+          error: {
+            code: 'app.auth_secret_lifecycle_unavailable',
+            message: 'internal rollout detail',
+            details: {},
+          },
+        },
+      },
+    });
+
+    expect(message).toBe('App Secret 기능을 현재 사용할 수 없습니다.');
+    expect(message).not.toContain('internal rollout detail');
+  });
+
+  it('keeps legacy nested API messages compatible', () => {
+    expect(
+      deploymentApiErrorMessage({
+        response: {
+          data: {
+            detail: {
+              error: { message: '기존 오류 메시지' },
+            },
+          },
+        },
+      }),
+    ).toBe('기존 오류 메시지');
+  });
 });

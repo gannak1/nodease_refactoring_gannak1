@@ -49,6 +49,18 @@ def assert_ingress_error(
     assert str(exc_info.value) == code
 
 
+def credential_verifier(expected_secret: str | None):
+    def verify(candidate: bytes) -> bool:
+        if not isinstance(expected_secret, str):
+            return False
+        try:
+            return candidate == expected_secret.encode("ascii", errors="strict")
+        except UnicodeEncodeError:
+            return False
+
+    return verify
+
+
 @pytest.mark.parametrize(
     ("authorization", "webhook_secret"),
     [
@@ -63,7 +75,7 @@ def test_authenticate_accepts_exactly_one_valid_header_source(
 ) -> None:
     DEFAULT_WEBHOOK_INGRESS_POLICY.authenticate(
         metadata(authorization=authorization, webhook_secret=webhook_secret),
-        expected_secret="secret",
+        credential_verifier=credential_verifier("secret"),
     )
 
 
@@ -73,7 +85,7 @@ def test_authenticate_accepts_credential_byte_boundaries(length: int) -> None:
 
     DEFAULT_WEBHOOK_INGRESS_POLICY.authenticate(
         metadata(authorization=(f"Bearer {secret}".encode("ascii"),)),
-        expected_secret=secret,
+        credential_verifier=credential_verifier(secret),
     )
 
 
@@ -93,7 +105,7 @@ def test_authenticate_rejects_query_token_before_header_authentication(
     with pytest.raises(WebhookIngressError) as exc_info:
         DEFAULT_WEBHOOK_INGRESS_POLICY.authenticate(
             request_metadata,
-            expected_secret="secret",
+            credential_verifier=credential_verifier("secret"),
         )
 
     assert_ingress_error(
@@ -122,7 +134,7 @@ def test_authenticate_rejects_ambiguous_credential_sources(
     with pytest.raises(WebhookIngressError) as exc_info:
         DEFAULT_WEBHOOK_INGRESS_POLICY.authenticate(
             request_metadata,
-            expected_secret="secret",
+            credential_verifier=credential_verifier("secret"),
         )
 
     assert_ingress_error(
@@ -154,7 +166,7 @@ def test_authenticate_uses_one_generic_failure_for_invalid_credentials(
     with pytest.raises(WebhookIngressError) as exc_info:
         DEFAULT_WEBHOOK_INGRESS_POLICY.authenticate(
             request_metadata,
-            expected_secret=expected_secret,
+            credential_verifier=credential_verifier(expected_secret),
         )
 
     assert_ingress_error(

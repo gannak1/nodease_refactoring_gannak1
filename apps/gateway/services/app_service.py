@@ -82,9 +82,8 @@ class AppService:
         if not organization_id:
             organization_id = ensure_user_default_organization(db, user_id)
 
-        # url_slug, auth_secret 생성
+        # Public endpoint slug만 생성한다. Secret은 lifecycle API에서 발급한다.
         url_slug = AppService._generate_url_slug(db, request.name)
-        auth_secret = f"sk-{secrets.token_hex(24)}"
 
         # 이름 중복 체크
         if (
@@ -103,7 +102,7 @@ class AppService:
             is_market=request.is_market,
             created_by=user_id,
             url_slug=url_slug,
-            auth_secret=auth_secret,
+            auth_secret=None,
         )
         db.add(app)
         db.flush()  # App ID 생성
@@ -316,6 +315,22 @@ class AppService:
         return app.organization_id is None and app.created_by == user_id
 
     @staticmethod
+    def can_deploy_app(db: Session, app: App, user_id) -> bool:
+        if app.organization_id and has_organization_manager_permission(
+            db, user_id, app.organization_id
+        ):
+            return True
+        if app.workflow_id and has_workflow_permission(
+            db,
+            user_id,
+            app.workflow_id,
+            "deploy",
+            organization_id=app.organization_id,
+        ):
+            return True
+        return app.organization_id is None and app.created_by == user_id
+
+    @staticmethod
     def can_access_app_scope(db: Session, app: App, user_id) -> bool:
         if app.organization_id:
             return has_organization_scope_access(db, user_id, app.organization_id)
@@ -328,6 +343,11 @@ class AppService:
                 return None
         elif action == "manage":
             if AppService.can_manage_app(db, app, user_id):
+                return None
+            if AppService.can_read_app(db, app, user_id):
+                return 403
+        elif action == "deploy":
+            if AppService.can_deploy_app(db, app, user_id):
                 return None
             if AppService.can_read_app(db, app, user_id):
                 return 403
@@ -1273,9 +1293,8 @@ class AppService:
         # 4. 앱 복제 (새로운 객체 생성)
         new_icon = copy.deepcopy(source_app.icon)
 
-        # 마켓플레이스에서 복제할 때 url_slug와 auth_secret 생성
+        # 복제본도 lifecycle API에서 별도 secret을 발급한다.
         new_slug = AppService._generate_url_slug(db, f"{source_app.name} (복사본)")
-        new_secret = secrets.token_urlsafe(32)
 
         if not organization_id:
             organization_id = ensure_user_default_organization(db, user_id)
@@ -1286,7 +1305,7 @@ class AppService:
             description=source_app.description,
             icon=new_icon,
             url_slug=new_slug,
-            auth_secret=new_secret,
+            auth_secret=None,
             forked_from=source_app_id,  # 원본 추적
             created_by=user_id,
             is_market=False,  # 복제된 앱은 기본적으로 비공개

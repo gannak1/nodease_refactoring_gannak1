@@ -7,6 +7,9 @@ observes how ModelRouter changes the active policy every 20 deployed runs.
 
 from __future__ import annotations
 
+# Repository imports intentionally follow the sys.path bootstrap below.
+# ruff: noqa: E402
+
 import argparse
 import copy
 import json
@@ -45,6 +48,7 @@ from apps.workflow_engine.services.model_routing_policy_refresh import (
     ModelRoutingPolicyRefreshService,
 )
 from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
+from scripts.managed_app_secret_fixture import configure_managed_app_secret_fixture
 from scripts.verify_model_router_demo import _ticket_ops_graph
 
 
@@ -140,7 +144,6 @@ def upsert_workflow(db, graph: dict[str, Any]) -> None:
             description="61개 입력으로 active policy 기반 모델 라우팅 변화를 관찰하는 실험 workflow",
             icon={"type": "emoji", "content": "🧭", "background_color": "#E0F2FE"},
             url_slug="model-router-61-run-experiment",
-            auth_secret="sk-model-router-61-run-experiment",
             is_api_enabled=True,
             api_req_per_minute=600,
             api_req_per_hour=3600,
@@ -149,6 +152,7 @@ def upsert_workflow(db, graph: dict[str, Any]) -> None:
         )
         db.add(app)
         db.flush()
+    configure_managed_app_secret_fixture(app)
     app.organization_id = ORG_ID
 
     workflow = db.get(Workflow, WORKFLOW_ID)

@@ -1013,7 +1013,7 @@ def _add_primary_workflow_scope(db, organization_id, workflow_id, actor_id):
         name="Budget primary scope",
         workflow_id=workflow_id,
         url_slug=f"budget-primary-{uuid4().hex}",
-        auth_secret="test-placeholder",
+        auth_secret=None,
         created_by=actor_id,
     )
     workflow = Workflow(

@@ -2,26 +2,40 @@
 
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { CheckCircle2, Copy, Eye, EyeOff, Clock, Globe } from 'lucide-react';
+import { CheckCircle2, Copy, Clock, Globe } from 'lucide-react';
 import type { DeploymentResult } from './types';
 import type { DeploymentType } from '../../types/Deployment';
 import { formatCronExpression } from './utils';
+import {
+  AppAuthSecretControl,
+  type AppAuthSecretReadiness,
+  type IssuedAppAuthSecret,
+} from '@/app/features/app/components/AppAuthSecretControl';
 
 interface SuccessStepProps {
   result: DeploymentResult;
   deploymentType: DeploymentType;
+  issuedSecret: IssuedAppAuthSecret | null;
+  onSecretAvailable: (secret: IssuedAppAuthSecret | null) => void;
   onClose: () => void;
 }
 
 export function SuccessStep({
   result,
   deploymentType,
+  issuedSecret,
+  onSecretAvailable,
   onClose,
 }: SuccessStepProps) {
-  const [inputValues, setInputValues] = useState<Record<string, any>>({});
+  const [inputValues, setInputValues] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [testResponse, setTestResponse] = useState<string | null>(null);
-  const [showSecret, setShowSecret] = useState(false);
+  const [sessionTestSecret, setSessionTestSecret] = useState('');
+  const [appAuthSecretReadiness, setAppAuthSecretReadiness] =
+    useState<AppAuthSecretReadiness>('checking');
+  const issuedSecretValue =
+    appAuthSecretReadiness === 'ready' ? issuedSecret?.value : null;
+  const testAuthSecret = issuedSecretValue ?? sessionTestSecret;
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -65,9 +79,7 @@ export function SuccessStep({
       .map((line, i) => (i === 0 ? line : `    ${line}`))
       .join('\n');
 
-    const authHeader = result.auth_secret
-      ? `  -H "Authorization: Bearer ${result.auth_secret.slice(0, 7)}${'\u2022'.repeat(result.auth_secret.length - 7)}" \\\n`
-      : '';
+    const authHeader = `  -H "Authorization: Bearer <APP_SECRET>" \\\n`;
 
     return `curl -X POST "${API_URL}" \\
   -H "Content-Type: application/json" \\
@@ -78,6 +90,7 @@ ${authHeader}  -d '{
 
   // Handle test execution
   const handleTestExecute = async () => {
+    if (!testAuthSecret) return;
     setIsLoading(true);
     setTestResponse(null);
 
@@ -85,9 +98,7 @@ ${authHeader}  -d '{
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
       };
-      if (result.auth_secret) {
-        headers['Authorization'] = `Bearer ${result.auth_secret}`;
-      }
+      headers['Authorization'] = `Bearer ${testAuthSecret}`;
 
       const response = await fetch(`/api/v1/run/${result.url_slug}`, {
         method: 'POST',
@@ -104,8 +115,9 @@ ${authHeader}  -d '{
       } else {
         toast.error('API 호출 오류', { duration: 1500 });
       }
-    } catch (error: any) {
-      setTestResponse(JSON.stringify({ error: error.message }, null, 2));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      setTestResponse(JSON.stringify({ error: message }, null, 2));
       toast.error('테스트 실행 실패', { duration: 1500 });
     } finally {
       setIsLoading(false);
@@ -333,62 +345,16 @@ ${authHeader}  -d '{
                 </div>
               </div>
 
-              <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-                <div className="mb-3">
-                  <label className="mb-1 block text-xs font-semibold text-gray-700">
-                    Secret Key
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type={showSecret ? 'text' : 'password'}
-                      value={result.auth_secret || ''}
-                      readOnly
-                      className="flex-1 rounded border bg-white px-2 py-1.5 font-mono text-xs"
-                    />
-                    <button
-                      onClick={() => setShowSecret(!showSecret)}
-                      disabled={!result.auth_secret}
-                      className="rounded border border-gray-200 p-1.5 text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50"
-                      title={showSecret ? 'Secret 숨기기' : 'Secret 보기'}
-                    >
-                      {showSecret ? (
-                        <EyeOff className="w-3.5 h-3.5" />
-                      ) : (
-                        <Eye className="w-3.5 h-3.5" />
-                      )}
-                    </button>
-                    <button
-                      onClick={() => handleCopy(result.auth_secret || '')}
-                      disabled={!result.auth_secret}
-                      className="rounded border border-gray-200 p-1.5 text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50"
-                      title="Secret 복사"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+              {result.appId && (
+                <div className="border-l-2 border-gray-200 pl-4">
+                  <AppAuthSecretControl
+                    appId={result.appId}
+                    issuedSecret={issuedSecret}
+                    onSecretAvailable={onSecretAvailable}
+                    onReadinessChange={setAppAuthSecretReadiness}
+                  />
                 </div>
-
-                <label className="mb-1 block text-xs font-semibold text-gray-700">
-                  요청 헤더
-                </label>
-                <div className="flex gap-2">
-                  <code className="flex-1 break-all rounded border border-gray-200 bg-white p-2 font-mono text-xs text-gray-700">
-                    Authorization: Bearer &lt;Secret Key&gt;
-                  </code>
-                  <button
-                    onClick={() =>
-                      handleCopy(
-                        `Authorization: Bearer ${result.auth_secret || ''}`,
-                      )
-                    }
-                    disabled={!result.auth_secret}
-                    className="rounded border border-gray-200 p-2 text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50"
-                    title="Authorization 헤더 복사"
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
+              )}
             </div>
 
             <div className="border-l border-gray-200 pl-6">
@@ -438,27 +404,16 @@ ${authHeader}  -d '{
                   </div>
                 </div>
 
-                {/* API Secret Key */}
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-1">
-                    API Secret Key
-                  </label>
-                  <div className="flex gap-2">
-                    <code className="flex-1 p-3 bg-gray-50 border border-gray-200 rounded text-xs text-gray-600 font-mono break-all leading-relaxed">
-                      {result.auth_secret
-                        ? `${result.auth_secret.slice(0, 7)}${'•'.repeat(result.auth_secret.length - 7)}`
-                        : 'N/A (Public)'}
-                    </code>
-                    {result.auth_secret && (
-                      <button
-                        onClick={() => handleCopy(result.auth_secret!)}
-                        className="px-3 py-2 text-sm font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded transition-colors whitespace-nowrap h-fit"
-                      >
-                        복사
-                      </button>
-                    )}
+                {result.appId && (
+                  <div className="border-l-2 border-gray-200 pl-4">
+                    <AppAuthSecretControl
+                      appId={result.appId}
+                      issuedSecret={issuedSecret}
+                      onSecretAvailable={onSecretAvailable}
+                      onReadinessChange={setAppAuthSecretReadiness}
+                    />
                   </div>
-                </div>
+                )}
 
                 {/* Input Variables Section */}
                 {result.input_schema &&
@@ -551,17 +506,43 @@ ${authHeader}  -d '{
                   </div>
                 </div>
 
+                {!issuedSecret && (
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">
+                      테스트용 기존 App secret
+                    </label>
+                    <input
+                      type="password"
+                      value={sessionTestSecret}
+                      onChange={(event) =>
+                        setSessionTestSecret(event.target.value)
+                      }
+                      autoComplete="off"
+                      aria-label="테스트용 기존 App secret"
+                      placeholder="이 화면에서만 사용"
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      입력값은 브라우저 저장소에 저장하지 않습니다.
+                    </p>
+                  </div>
+                )}
+
                 {/* Test Execution Button */}
                 <button
                   onClick={handleTestExecute}
-                  disabled={isLoading}
+                  disabled={isLoading || !testAuthSecret}
                   className={`w-full py-3 rounded-lg font-semibold text-white transition-colors ${
-                    isLoading
+                    isLoading || !testAuthSecret
                       ? 'bg-gray-400 cursor-not-allowed'
                       : 'bg-blue-600 hover:bg-blue-700'
                   }`}
                 >
-                  {isLoading ? '실행 중...' : '테스트 실행'}
+                  {isLoading
+                    ? '실행 중...'
+                    : testAuthSecret
+                      ? '테스트 실행'
+                      : 'Secret 입력 후 테스트'}
                 </button>
 
                 {/* Response Result */}

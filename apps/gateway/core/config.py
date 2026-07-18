@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -11,6 +11,10 @@ class Settings(BaseSettings):
 
     # RAG Ingestion Mode
     STORAGE_TYPE: str = "LOCAL"
+
+    # App auth secret lifecycle rollout gate. Keep disabled until every Gateway
+    # pod runs the verifier-aware revision.
+    APP_AUTH_SECRET_LIFECYCLE_MODE: Literal["disabled", "active"] = "disabled"
 
     # AWS Settings
     AWS_ACCESS_KEY_ID: Optional[str] = None

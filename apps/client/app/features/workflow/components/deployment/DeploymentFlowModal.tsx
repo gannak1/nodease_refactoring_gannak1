@@ -15,10 +15,15 @@ import { InputStep } from './InputStep';
 import { ParameterOptimizationStep } from './ParameterOptimizationStep';
 import { SuccessStep } from './SuccessStep';
 import { ErrorStep } from './ErrorStep';
+import type {
+  AppAuthSecretReadiness,
+  IssuedAppAuthSecret,
+} from '@/app/features/app/components/AppAuthSecretControl';
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
+  appId?: string;
   deploymentType: DeploymentType;
   llmNodes: DeploymentOptimizationNode[];
   onDeploy: (
@@ -33,6 +38,7 @@ interface Props {
 export function DeploymentFlowModal({
   isOpen,
   onClose,
+  appId,
   deploymentType,
   llmNodes,
   onDeploy,
@@ -41,6 +47,10 @@ export function DeploymentFlowModal({
   const [description, setDescription] = useState('');
   const [deploymentResult, setDeploymentResult] =
     useState<DeploymentResult | null>(null);
+  const [issuedSecret, setIssuedSecret] =
+    useState<IssuedAppAuthSecret | null>(null);
+  const [appAuthSecretReadiness, setAppAuthSecretReadiness] =
+    useState<AppAuthSecretReadiness>('checking');
   const [isDeploying, setIsDeploying] = useState(false);
   const [embeddingEnabled, setEmbeddingEnabled] = useState(false);
   const [parentOrigins, setParentOrigins] = useState<string[]>(['']);
@@ -53,6 +63,11 @@ export function DeploymentFlowModal({
     });
   const [browserAccessPolicy, setBrowserAccessPolicy] =
     useState<DeploymentBrowserAccessPolicy>();
+
+  useEffect(() => {
+    setIssuedSecret(null);
+    setAppAuthSecretReadiness('checking');
+  }, [appId, deploymentType, isOpen]);
 
   // Reset state when modal opens
   useEffect(() => {
@@ -110,10 +125,13 @@ export function DeploymentFlowModal({
       } else {
         setCurrentStep('error');
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       setDeploymentResult({
         success: false,
-        message: error.message || '알 수 없는 오류가 발생했습니다.',
+        message:
+          error instanceof Error
+            ? error.message
+            : '알 수 없는 오류가 발생했습니다.',
       });
       setCurrentStep('error');
     } finally {
@@ -194,9 +212,7 @@ export function DeploymentFlowModal({
                 <div
                   key={step}
                   className={`h-1.5 w-1.5 rounded-full ${
-                    index < stepNumber
-                      ? 'bg-blue-600'
-                      : 'bg-gray-300'
+                    index < stepNumber ? 'bg-blue-600' : 'bg-gray-300'
                   }`}
                 />
               ))}
@@ -208,6 +224,11 @@ export function DeploymentFlowModal({
         <div className="flex-1 transition-all duration-300">
           {currentStep === 'input' && (
             <InputStep
+              appId={appId}
+              issuedSecret={issuedSecret}
+              onSecretAvailable={setIssuedSecret}
+              appAuthSecretReadiness={appAuthSecretReadiness}
+              onAppAuthSecretReadinessChange={setAppAuthSecretReadiness}
               deploymentType={deploymentType}
               deploymentTypeLabel={getDeploymentTypeName()}
               description={description}
@@ -260,6 +281,8 @@ export function DeploymentFlowModal({
             <SuccessStep
               result={deploymentResult}
               deploymentType={deploymentType}
+              issuedSecret={issuedSecret}
+              onSecretAvailable={setIssuedSecret}
               onClose={onClose}
             />
           )}

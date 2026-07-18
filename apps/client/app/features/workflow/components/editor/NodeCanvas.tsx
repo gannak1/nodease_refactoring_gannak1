@@ -1438,6 +1438,7 @@ export default function NodeCanvas() {
       <DeploymentFlowModal
         isOpen={showDeployFlowModal}
         onClose={() => setShowDeployFlowModal(false)}
+        appId={currentAppId}
         deploymentType={deploymentType}
         llmNodes={nodes
           .filter((node) => node.type === 'llmNode')

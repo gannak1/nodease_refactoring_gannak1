@@ -1,4 +1,4 @@
-from typing import Annotated, Optional
+from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, Header, Response
 from sqlalchemy.orm import Session
@@ -19,8 +19,7 @@ async def run_workflow(
         Depends(get_deployment_runtime_policy),
     ],
     request_body: dict = Body(...),
-    authorization: Optional[str] = Header(None),
-    x_auth_secret: Optional[str] = Header(None),
+    authorization: list[str] | None = Header(None),
     db: Session = Depends(get_db),
 ):
     """
@@ -30,10 +29,10 @@ async def run_workflow(
     # 인증 토큰 추출
 
     auth_token = None
-    if authorization and authorization.startswith("Bearer "):
-        auth_token = authorization.split(" ")[1]
-    elif x_auth_secret:  # [DEV] 테스트용
-        auth_token = x_auth_secret
+    if authorization and len(authorization) == 1 and "," not in authorization[0]:
+        scheme, separator, candidate = authorization[0].partition(" ")
+        if separator and scheme.lower() == "bearer" and candidate:
+            auth_token = candidate
 
     # REST API: 인증 필요
     return await DeploymentService.run_deployment(
