@@ -2,8 +2,14 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
-
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 ExternalActionCredentialProvider = Literal["github", "slack_api", "slack_webhook"]
 ExternalActionCredentialStatus = Literal["active", "revoked"]

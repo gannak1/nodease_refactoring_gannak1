@@ -3,7 +3,6 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
-
 from apps.shared.services.credential_encryption import EncryptedSecretEnvelope
 from apps.shared.services.external_action_credential import (
     EXTERNAL_ACTION_CREDENTIAL_ALGORITHM,

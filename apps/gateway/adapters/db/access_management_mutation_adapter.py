@@ -31,6 +31,7 @@ from apps.gateway.services.workflow_permission_lock import (
     lock_workflow_permission_scope,
 )
 from apps.shared.audit.manual_ownership import register_manual_audit_ownership
+from apps.shared.db.models.external_action_credential import ExternalActionCredential
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
 from apps.shared.db.models.mail_credential import MailCredential
@@ -39,6 +40,7 @@ from apps.shared.db.models.organization_membership import (
 )
 from apps.shared.db.models.team import (
     Team,
+    TeamExternalActionCredentialPermission,
     TeamKnowledgePermission,
     TeamLLMPermission,
     TeamMailCredentialPermission,
@@ -525,6 +527,11 @@ class SqlAlchemyAccessManagementMutationAdapter:
                     MailCredential,
                     "mail_credential_id",
                 ),
+                (
+                    TeamExternalActionCredentialPermission,
+                    ExternalActionCredential,
+                    "external_action_credential_id",
+                ),
             )
         )
 
@@ -550,6 +557,8 @@ class SqlAlchemyAccessManagementMutationAdapter:
             query = query.filter(LLMCredential.is_valid.is_(True))
         if resource_model is MailCredential:
             query = query.filter(MailCredential.status == "active")
+        if resource_model is ExternalActionCredential:
+            query = query.filter(ExternalActionCredential.status == "active")
         return query.filter(
             permission_model.grantee_organization_id == organization_id,
             permission_model.team_id == team_id,
@@ -613,6 +622,7 @@ def _direct_audit_snapshot(
         "knowledge_base": "knowledge_base_id",
         "llm_credential": "llm_credential_id",
         "mail_credential": "mail_credential_id",
+        "external_action_credential": "external_action_credential_id",
     }[resource.resource_type]
     return {
         "grantee_organization_id": member.organization_id,
@@ -628,6 +638,7 @@ def _direct_target_type(resource_type: ResourceType) -> str:
         "knowledge_base": "user_knowledge_permission",
         "llm_credential": "user_llm_permission",
         "mail_credential": "user_mail_credential_permission",
+        "external_action_credential": "user_external_action_credential_permission",
     }[resource_type]
 
 

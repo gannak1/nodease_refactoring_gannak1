@@ -12,6 +12,7 @@ ResourceType = Literal[
     "knowledge_base",
     "llm_credential",
     "mail_credential",
+    "external_action_credential",
 ]
 ResourceAuthState = Literal["none", "viewer", "operator", "builder", "manager"]
 AccessActionStatus = Literal["applied", "unchanged"]
@@ -108,6 +109,7 @@ class InheritedResourceCounts:
     knowledge_base: int
     llm_credential: int
     mail_credential: int = 0
+    external_action_credential: int = 0
 
     @property
     def total(self) -> int:
@@ -116,6 +118,7 @@ class InheritedResourceCounts:
             + self.knowledge_base
             + self.llm_credential
             + self.mail_credential
+            + self.external_action_credential
         )
 
 

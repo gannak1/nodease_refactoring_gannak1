@@ -456,6 +456,7 @@ def get_member_resource_access(
             "knowledge_base",
             "llm_credential",
             "mail_credential",
+            "external_action_credential",
         ],
         Query(alias="resourceType"),
     ],

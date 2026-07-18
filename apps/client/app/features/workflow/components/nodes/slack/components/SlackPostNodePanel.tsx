@@ -200,8 +200,9 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
           value={data.credential_id || ''}
           onChange={(value) =>
             update({
-              credential_id: value || null,
-              configuration_state: value ? 'resolved' : 'unresolved',
+              credential_id: typeof value === 'string' && value ? value : null,
+              configuration_state:
+                typeof value === 'string' && value ? 'resolved' : 'unresolved',
             })
           }
           options={availableCredentials.map((credential) => ({

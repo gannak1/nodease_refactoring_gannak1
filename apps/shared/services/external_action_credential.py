@@ -6,25 +6,23 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy.orm import Session
-
+from apps.shared.audit.context import get_current_metadata
 from apps.shared.db.models.external_action_credential import (
     EXTERNAL_ACTION_CREDENTIAL_ACTIVE,
     EXTERNAL_ACTION_CREDENTIAL_PROVIDERS,
     ExternalActionCredential,
 )
+from apps.shared.db.models.organization_membership import ORGANIZATION_AUTH_MEMBER
 from apps.shared.db.models.team import (
     Team,
     TeamExternalActionCredentialPermission,
     TeamMembership,
     UserExternalActionCredentialPermission,
 )
-from apps.shared.audit.context import get_current_metadata
 from apps.shared.domain.slack_delivery import is_valid_commercial_slack_webhook_url
 from apps.shared.permissions import (
     AUTH_STATE_MANAGER,
     AUTH_STATE_NONE,
-    ORGANIZATION_AUTH_MEMBER,
     external_action_credential_auth_state_allows,
     stronger_resource_auth_state,
 )
@@ -37,7 +35,7 @@ from apps.shared.services.credential_encryption import (
 )
 from apps.shared.services.permission_audit import record_resource_permission_denied
 from apps.shared.services.permissions import coerce_uuid, get_organization_auth_state
-
+from sqlalchemy.orm import Session
 
 EXTERNAL_ACTION_CREDENTIAL_KEYRING_ENV = "EXTERNAL_ACTION_CREDENTIAL_ENCRYPTION_KEYS"
 EXTERNAL_ACTION_CREDENTIAL_ACTIVE_KEY_VERSION_ENV = (

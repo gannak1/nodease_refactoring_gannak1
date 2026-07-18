@@ -2,7 +2,6 @@ from copy import deepcopy
 from uuid import uuid4
 
 import pytest
-
 from apps.shared.domain.external_action_credential_graph import (
     EXTERNAL_ACTION_CREDENTIAL_LEGACY_SECRET_REQUIRES_MIGRATION,
     ExternalActionCredentialGraphBoundaryError,

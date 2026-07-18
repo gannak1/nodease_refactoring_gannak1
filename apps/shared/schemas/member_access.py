@@ -13,6 +13,7 @@ ResourceType = Literal[
     "knowledge_base",
     "llm_credential",
     "mail_credential",
+    "external_action_credential",
 ]
 ResourceAuthState = Literal["none", "viewer", "operator", "builder", "manager"]
 GrantAuthState = Literal["viewer", "operator", "builder", "manager"]
@@ -108,6 +109,7 @@ class InheritedResourceCounts(BaseModel):
     knowledge_base: int = Field(ge=0)
     llm_credential: int = Field(ge=0)
     mail_credential: int = Field(default=0, ge=0)
+    external_action_credential: int = Field(default=0, ge=0)
     total: int = Field(ge=0)
 
 

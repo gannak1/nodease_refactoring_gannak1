@@ -83,6 +83,7 @@ _DETAIL_RESOURCE_TYPES = {
     "knowledge_base",
     "llm_credential",
     "mail_credential",
+    "external_action_credential",
 }
 _DETAIL_POLICY_REASONS = {
     "access_management.self_control_forbidden",
@@ -104,6 +105,7 @@ SECRET_METADATA_KEYS = {
 }
 _UUID_FIELDS = {
     "grantee_organization_id",
+    "external_action_credential_id",
     "knowledge_base_id",
     "llm_credential_id",
     "mail_credential_id",

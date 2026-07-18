@@ -142,6 +142,7 @@ def test_team_page_uses_grouped_resource_queries_for_selected_teams():
         is_active=False,
     )
     mail_query = _Query(rows=[])
+    external_action_query = _Query(rows=[])
     session = _Session(
         [
             _Query(
@@ -164,6 +165,7 @@ def test_team_page_uses_grouped_resource_queries_for_selected_teams():
             ),
             _Query(rows=[]),
             mail_query,
+            external_action_query,
         ]
     )
 
@@ -178,7 +180,7 @@ def test_team_page_uses_grouped_resource_queries_for_selected_teams():
     assert result.total == 2
     assert result.items[0].inherited_resource_counts.total == 2
     assert result.items[1].inherited_resource_counts.total == 0
-    assert len(session.query_calls) == 5
+    assert len(session.query_calls) == 6
     assert "mail_credentials.status" in " ".join(
         str(item) for item in mail_query.filter_expressions
     )
@@ -189,16 +191,20 @@ def test_permission_counts_exclude_revoked_mail_credentials():
     user_id = uuid.uuid4()
     direct_mail_query = _Query(count=0)
     team_mail_query = _Query(rows=[])
+    direct_external_action_query = _Query(count=0)
+    team_external_action_query = _Query(rows=[])
     session = _Session(
         [
             _Query(count=0),
             _Query(count=0),
             _Query(count=0),
             direct_mail_query,
+            direct_external_action_query,
             _Query(rows=[]),
             _Query(rows=[]),
             _Query(rows=[]),
             team_mail_query,
+            team_external_action_query,
         ]
     )
     adapter = SqlAlchemyAccessManagementQueryAdapter(session)
@@ -212,6 +218,12 @@ def test_permission_counts_exclude_revoked_mail_credentials():
     team_filters = " ".join(str(item) for item in team_mail_query.filter_expressions)
     assert "mail_credentials.status" in direct_filters
     assert "mail_credentials.status" in team_filters
+    assert "external_action_credentials.status" in " ".join(
+        str(item) for item in direct_external_action_query.filter_expressions
+    )
+    assert "external_action_credentials.status" in " ".join(
+        str(item) for item in team_external_action_query.filter_expressions
+    )
 
 
 def test_mail_resource_page_uses_mail_table_and_excludes_revoked_credentials():
@@ -253,3 +265,44 @@ def test_mail_resource_page_uses_mail_table_and_excludes_revoked_credentials():
     assert "llm_credentials" not in resource_entities
     assert "mail_credentials.status" in resource_filters
     assert result.items[0].resource_name == "Operations Mail"
+
+
+def test_external_action_resource_page_uses_active_credential_table():
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    resource_query = _Query(
+        count=1,
+        rows=[
+            SimpleNamespace(
+                resource_id=credential_id,
+                resource_name="Production Slack",
+            )
+        ],
+    )
+    session = _Session(
+        [
+            _Query(),
+            _Query(),
+            resource_query,
+            _Query(rows=[]),
+            _Query(rows=[]),
+        ]
+    )
+
+    result = SqlAlchemyAccessManagementQueryAdapter(session).list_resource_access(
+        organization_id,
+        user_id,
+        resource_type="external_action_credential",
+        resource_id=None,
+        source="all",
+        page=1,
+        limit=20,
+    )
+
+    resource_entities = " ".join(str(item) for item in session.query_calls[2])
+    resource_filters = " ".join(str(item) for item in resource_query.filter_expressions)
+    assert "external_action_credentials" in resource_entities
+    assert "llm_credentials" not in resource_entities
+    assert "external_action_credentials.status" in resource_filters
+    assert result.items[0].resource_name == "Production Slack"

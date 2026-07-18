@@ -44,7 +44,11 @@ class ResourceAuthStateRequest(BaseModel):
 class ResourcePermissionGrantRequest(BaseModel):
     organization_id: UUID
     resource_type: Literal[
-        "workflow", "knowledge_base", "llm_credential", "mail_credential"
+        "workflow",
+        "knowledge_base",
+        "llm_credential",
+        "mail_credential",
+        "external_action_credential",
     ]
     resource_id: UUID
     grantee_type: Literal["team", "user"]
@@ -55,7 +59,11 @@ class ResourcePermissionGrantRequest(BaseModel):
 class ResourcePermissionRevokeRequest(BaseModel):
     organization_id: UUID
     resource_type: Literal[
-        "workflow", "knowledge_base", "llm_credential", "mail_credential"
+        "workflow",
+        "knowledge_base",
+        "llm_credential",
+        "mail_credential",
+        "external_action_credential",
     ]
     resource_id: UUID
     grantee_type: Literal["team", "user"]
@@ -96,7 +104,11 @@ class ResourcePermissionEntry(BaseModel):
 
 class ResourcePermissionListResponse(BaseModel):
     resource_type: Literal[
-          "workflow", "knowledge_base", "llm_credential", "mail_credential", "external_action_credential"
+        "workflow",
+        "knowledge_base",
+        "llm_credential",
+        "mail_credential",
+        "external_action_credential",
     ]
     resource_id: UUID
     organization_id: UUID

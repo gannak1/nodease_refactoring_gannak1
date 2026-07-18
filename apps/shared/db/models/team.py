@@ -20,6 +20,9 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column, relationship
 
 if TYPE_CHECKING:
+    from apps.shared.db.models.external_action_credential import (
+        ExternalActionCredential,
+    )
     from apps.shared.db.models.knowledge import KnowledgeBase, KnowledgeCollection
     from apps.shared.db.models.llm import LLMCredential
     from apps.shared.db.models.mail_credential import MailCredential

@@ -19,7 +19,6 @@ from apps.shared.tests.helpers.disposable_postgres import (
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import OperationalError
 
-
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_external_action_credential"

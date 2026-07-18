@@ -1,7 +1,6 @@
 from pathlib import Path
 from runpy import run_path
 
-
 ROOT_DIR = Path(__file__).resolve().parents[4]
 MIGRATION = run_path(
     ROOT_DIR

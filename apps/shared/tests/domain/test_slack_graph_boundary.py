@@ -1,6 +1,6 @@
-import pytest
 from uuid import uuid4
 
+import pytest
 from apps.shared.domain.slack_delivery import (
     SLACK_GRAPH_CONFIGURATION_INVALID,
     SLACK_LEGACY_CREDENTIAL_REQUIRES_MIGRATION,

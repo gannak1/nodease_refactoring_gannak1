@@ -421,6 +421,7 @@ def _direct_target_type(resource_type: str | None) -> str:
         "knowledge_base": "user_knowledge_permission",
         "llm_credential": "user_llm_permission",
         "mail_credential": "user_mail_credential_permission",
+        "external_action_credential": "user_external_action_credential_permission",
     }.get(resource_type)
     if target_type is None:
         raise InputValidationError("Unsupported resource type.")

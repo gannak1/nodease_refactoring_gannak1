@@ -19,6 +19,7 @@ from apps.gateway.application.access_management.models import (
 )
 from apps.gateway.services.resource_permission_registry import resource_permission_spec
 from apps.shared.db.models.app import App
+from apps.shared.db.models.external_action_credential import ExternalActionCredential
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
 from apps.shared.db.models.mail_credential import MailCredential
@@ -29,6 +30,7 @@ from apps.shared.db.models.organization_membership import (
 )
 from apps.shared.db.models.team import (
     Team,
+    TeamExternalActionCredentialPermission,
     TeamKnowledgePermission,
     TeamLLMPermission,
     TeamMailCredentialPermission,
@@ -37,6 +39,7 @@ from apps.shared.db.models.team import (
     UserKnowledgePermission,
     UserLLMPermission,
     UserMailCredentialPermission,
+    UserExternalActionCredentialPermission,
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
@@ -53,6 +56,11 @@ _DIRECT_MODELS_AND_RESOURCES = (
     (UserKnowledgePermission, KnowledgeBase, "knowledge_base_id"),
     (UserLLMPermission, LLMCredential, "llm_credential_id"),
     (UserMailCredentialPermission, MailCredential, "mail_credential_id"),
+    (
+        UserExternalActionCredentialPermission,
+        ExternalActionCredential,
+        "external_action_credential_id",
+    ),
 )
 _TEAM_MODELS_AND_COLUMNS = (
     ("workflow", TeamWorkflowPermission, "workflow_id", Workflow),
@@ -73,6 +81,12 @@ _TEAM_MODELS_AND_COLUMNS = (
         TeamMailCredentialPermission,
         "mail_credential_id",
         MailCredential,
+    ),
+    (
+        "external_action_credential",
+        TeamExternalActionCredentialPermission,
+        "external_action_credential_id",
+        ExternalActionCredential,
     ),
 )
 
@@ -420,6 +434,7 @@ class SqlAlchemyAccessManagementQueryAdapter:
                 "knowledge_base": set(),
                 "llm_credential": set(),
                 "mail_credential": set(),
+                "external_action_credential": set(),
             }
         )
         for (
@@ -447,6 +462,7 @@ class SqlAlchemyAccessManagementQueryAdapter:
                 knowledge_base=len(values["knowledge_base"]),
                 llm_credential=len(values["llm_credential"]),
                 mail_credential=len(values["mail_credential"]),
+                external_action_credential=len(values["external_action_credential"]),
             )
             for team_id, values in by_team.items()
         }
@@ -520,6 +536,21 @@ class SqlAlchemyAccessManagementQueryAdapter:
                     MailCredential.status == "active",
                 )
             )
+        if resource_type == "external_action_credential":
+            return (
+                self.db.query(
+                    ExternalActionCredential.id.label("resource_id"),
+                    ExternalActionCredential.credential_name.label("resource_name"),
+                )
+                .join(
+                    source_subquery,
+                    source_subquery.c.resource_id == ExternalActionCredential.id,
+                )
+                .filter(
+                    ExternalActionCredential.organization_id == organization_id,
+                    ExternalActionCredential.status == "active",
+                )
+            )
         return (
             self.db.query(
                 LLMCredential.id.label("resource_id"),
@@ -569,4 +600,6 @@ def _filter_operational_resource(query, resource_model):
         return query.filter(LLMCredential.is_valid.is_(True))
     if resource_model is MailCredential:
         return query.filter(MailCredential.status == "active")
+    if resource_model is ExternalActionCredential:
+        return query.filter(ExternalActionCredential.status == "active")
     return query

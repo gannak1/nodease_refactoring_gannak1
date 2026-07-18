@@ -12,7 +12,6 @@ import uuid
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-
 EXTERNAL_ACTION_CREDENTIAL_GRAPH_INVALID = (
     "external_action_credential.graph_configuration_invalid"
 )

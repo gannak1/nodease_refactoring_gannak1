@@ -18,9 +18,11 @@ from apps.gateway.services.app_lifecycle_lock import (
 from apps.gateway.services.resource_permission_registry import resource_permission_spec
 from apps.shared.audit.manual_ownership import is_manually_audited
 from apps.shared.db.models.app import App
+from apps.shared.db.models.external_action_credential import ExternalActionCredential
 from apps.shared.db.models.organization_membership import OrganizationMembership
 from apps.shared.db.models.team import (
     Team,
+    TeamExternalActionCredentialPermission,
     TeamMailCredentialPermission,
     UserWorkflowPermission,
 )
@@ -223,6 +225,39 @@ def test_mail_team_source_count_excludes_revoked_credentials():
     )
 
     assert "mail_credentials.status" in " ".join(str(item) for item in query.filters)
+
+
+def test_external_action_team_source_count_excludes_revoked_credentials():
+    class CountingQuery:
+        def __init__(self):
+            self.filters = []
+
+        def join(self, *args):
+            return self
+
+        def filter(self, *args):
+            self.filters.extend(args)
+            return self
+
+        def count(self):
+            return 0
+
+    query = CountingQuery()
+    session = _MutationSession()
+    session.query = lambda *_entities: query
+    adapter = SqlAlchemyAccessManagementMutationAdapter(session)
+
+    adapter._count_operational_team_permission(
+        uuid.uuid4(),
+        uuid.uuid4(),
+        TeamExternalActionCredentialPermission,
+        ExternalActionCredential,
+        "external_action_credential_id",
+    )
+
+    assert "external_action_credentials.status" in " ".join(
+        str(item) for item in query.filters
+    )
 
 
 def test_app_creation_descriptor_preserves_organization_provenance():
