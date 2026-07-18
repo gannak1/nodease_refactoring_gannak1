@@ -466,8 +466,8 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 
 #### 실행 시 모델 선택과 점진 전환
 
-- `judge_first`: local artifact가 준비되기 전에는 매 운영 요청에 Judge를 호출한다.
-- `local_first`: Judge 선택 label이 충분히 쌓이고 완료된 운영 품질 기준을 통과하면 로컬
+- `judge_first`: 계약을 통과한 성공 배포 실행 Judge label이 50건 미만이면 매 운영 요청에 Judge를 호출한다.
+- `local_first`: Judge 선택 label이 50건 이상 쌓이고 완료된 운영 품질 기준을 통과하면 로컬
   mDeBERTa 분류기가 전체 사용 가능 후보 중 하나를 먼저 선택한다.
 - `local_first` 상태에서 local prediction의 confidence가 기준 미만이거나 선택 모델이 현재
   실행 주체에게 허용되지 않으면 Judge를 호출한다. 별도 `hybrid` 상태값은 두지 않는다.
@@ -478,7 +478,7 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 
 #### 배포 후 재평가
 
-- Test Sidebar 실행은 활성 배포 정책과 같은 후보 목록으로 runtime Judge를 호출해 실제 실행 모델을 고른다. 다만 Judge usage는 해당 테스트 run에만 기록하고, Judge label·운영 성적·갱신 카운터에는 포함하지 않는다.
+- Test Sidebar 실행은 활성 배포 정책과 같은 후보 목록, 같은 Judge/local router 전환 기준으로 실제 실행 모델을 고른다. `judge_first` 또는 local router 저확신이면 Judge를 호출하며, 확신 있는 `local_first`면 Judge를 호출하지 않는다. Judge usage는 해당 테스트 run에만 기록하고, Judge label·운영 성적·갱신 카운터에는 포함하지 않는다.
 - 성공한 배포 후 운영 실행만 노드별 모델·입력 길이 profile별 성적에 반영한다.
 - 설정한 점검 주기에 도달하면 완료된 Judge 표본과 운영 성적을 다시 평가한다.
   최소 표본 수, 최소 두 개 이상의 선택 모델, schema/downstream 성공률, fallback 비율 기준을
