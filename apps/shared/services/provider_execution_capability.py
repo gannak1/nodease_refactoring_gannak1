@@ -24,6 +24,7 @@ from apps.shared.db.models.llm import (
     LLMRelCredentialModel,
     ProviderExecutionCapabilityRecord,
 )
+from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import OrganizationMembership
 from apps.shared.db.models.team import (
     Team,
@@ -31,6 +32,7 @@ from apps.shared.db.models.team import (
     TeamMembership,
     UserLLMPermission,
 )
+from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.domain.provider_execution_capability import (
@@ -213,18 +215,6 @@ class ProviderExecutionCapabilityService:
         ):
             raise ProviderExecutionPolicyError("permission_denied")
 
-        model, credential, _provider, _relation = cls._resolve_policy_selection(
-            db,
-            deployment=deployment,
-            app=app,
-            workflow=workflow,
-            organization_id=command.organization_id,
-            node_id=command.node_id,
-            model_id=command.model_id,
-            credential_id=command.credential_id,
-            credential_principal_user_id=actor_id,
-        )
-
         active_rows = (
             db.query(LLMDeploymentCredentialPolicy)
             .filter(
@@ -240,6 +230,23 @@ class ProviderExecutionCapabilityService:
         )
         if len(active_rows) > 1:
             raise ProviderExecutionPolicyError("selection_ambiguous")
+
+        model, credential, _provider, _relation = cls._resolve_policy_selection(
+            db,
+            deployment=deployment,
+            app=app,
+            workflow=workflow,
+            organization_id=command.organization_id,
+            node_id=command.node_id,
+            model_id=command.model_id,
+            credential_id=command.credential_id,
+            credential_principal_user_id=actor_id,
+            lock_authorization_rows=True,
+        )
+        if not has_organization_manager_permission(
+            db, actor_id, command.organization_id
+        ):
+            raise ProviderExecutionPolicyError("permission_denied")
 
         if active_rows:
             active_rows[0].is_active = False
@@ -752,6 +759,14 @@ class ProviderExecutionCapabilityService:
         relations = relation_query.all()
         if len(relations) != 1:
             raise ProviderExecutionPolicyError("relation_unavailable")
+        if lock_authorization_rows:
+            cls._permission_revision(
+                db,
+                organization_id=organization_id,
+                credential_id=credential.id,
+                credential_principal_user_id=credential_principal_user_id,
+                lock_rows=True,
+            )
         if not has_llm_credential_permission(
             db,
             credential_principal_user_id,
@@ -843,6 +858,16 @@ class ProviderExecutionCapabilityService:
         when a permitted principal's source changes but remains permissive.
         """
 
+        organization_query = db.query(Organization).filter(
+            Organization.id == organization_id
+        )
+        if lock_rows:
+            organization_query = organization_query.with_for_update()
+        organization = organization_query.one_or_none()
+        user_query = db.query(User).filter(User.id == credential_principal_user_id)
+        if lock_rows:
+            user_query = user_query.with_for_update()
+        user = user_query.one_or_none()
         membership_query = (
             db.query(OrganizationMembership)
             .filter(
@@ -891,6 +916,23 @@ class ProviderExecutionCapabilityService:
         return _revision_digest(
             {
                 "effective_state": effective_state,
+                "organization": None
+                if organization is None
+                else {
+                    "id": organization.id,
+                    "is_active": organization.is_active,
+                    "created_by": organization.created_by,
+                    "managed_by": organization.managed_by,
+                    "deactivated_at": organization.deactivated_at,
+                    "updated_at": organization.updated_at,
+                },
+                "user": None
+                if user is None
+                else {
+                    "id": user.id,
+                    "deactivated_at": user.deactivated_at,
+                    "updated_at": user.updated_at,
+                },
                 "membership": None
                 if membership is None
                 else {

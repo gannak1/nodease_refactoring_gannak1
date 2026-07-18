@@ -3239,8 +3239,11 @@ class LLMNode(Node[LLMNodeData]):
             raise ProviderExecutionCapabilityConfigurationError()
 
         try:
-            serialized_messages = json.dumps(
-                messages,
+            serialized_provider_input = json.dumps(
+                {
+                    "messages": messages,
+                    "parameters": llm_params,
+                },
                 ensure_ascii=False,
                 separators=(",", ":"),
                 allow_nan=False,
@@ -3248,9 +3251,11 @@ class LLMNode(Node[LLMNodeData]):
         except (TypeError, ValueError) as exc:
             raise ProviderExecutionCapabilityConfigurationError() from exc
 
-        # Every tokenizer token represents at least one encoded byte. The byte
-        # length is therefore a provider-independent, conservative upper bound.
-        input_tokens = len(serialized_messages)
+        # Tools, response schemas and other request parameters can be billed as
+        # provider input. Every tokenizer token represents at least one encoded
+        # byte, so the complete provider-visible structure is a conservative
+        # provider-independent upper bound.
+        input_tokens = len(serialized_provider_input)
         if input_tokens <= 0:
             raise ProviderExecutionCapabilityConfigurationError()
         return input_tokens, output_tokens

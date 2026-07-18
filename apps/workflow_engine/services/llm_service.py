@@ -798,7 +798,13 @@ class LLMService:
         try:
             cfg = load_llm_credential_config(lease.credential)
             api_key = cfg.get("apiKey")
-            base_url = cfg.get("baseUrl")
+            base_url = lease.provider.base_url
+            if (
+                not isinstance(base_url, str)
+                or not base_url
+                or base_url != base_url.strip()
+            ):
+                raise ValueError("invalid canonical provider route")
         except (LLMCredentialConfigError, TypeError, ValueError, AttributeError):
             raise LLMCredentialNotAvailableError(
                 "credential_config_invalid",

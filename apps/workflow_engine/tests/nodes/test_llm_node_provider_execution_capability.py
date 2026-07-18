@@ -404,6 +404,7 @@ def test_provider_runtime_uses_shared_config_and_commits_before_return(monkeypat
     )
     loaded: list[object] = []
     admitted: list[object] = []
+    client_arguments: list[dict] = []
 
     class _Db:
         commits = 0
@@ -422,7 +423,10 @@ def test_provider_runtime_uses_shared_config_and_commits_before_return(monkeypat
         admitted.append(kwargs["command"])
         return SimpleNamespace(
             credential=credential,
-            provider=SimpleNamespace(name="provider"),
+            provider=SimpleNamespace(
+                name="provider",
+                base_url="https://catalog.example.test/v1",
+            ),
             model=SimpleNamespace(model_id_for_api_call="gpt-safe"),
             capability=SimpleNamespace(
                 credential_principal=RuntimePrincipal.user(principal_id)
@@ -437,7 +441,10 @@ def test_provider_runtime_uses_shared_config_and_commits_before_return(monkeypat
 
     def load_config(row):
         loaded.append(row)
-        return {"apiKey": "[REDACTED]", "baseUrl": None}
+        return {
+            "apiKey": "[REDACTED]",
+            "baseUrl": "https://credential-snapshot.example.test/v1",
+        }
 
     monkeypatch.setattr(
         workflow_llm_service,
@@ -445,10 +452,15 @@ def test_provider_runtime_uses_shared_config_and_commits_before_return(monkeypat
         load_config,
     )
     provider_client = object()
+
+    def build_client(**kwargs):
+        client_arguments.append(kwargs)
+        return provider_client
+
     monkeypatch.setattr(
         workflow_llm_service,
         "get_llm_client",
-        lambda **_kwargs: provider_client,
+        build_client,
     )
 
     selection = LLMService.get_runtime_client_for_provider_execution(
@@ -463,6 +475,9 @@ def test_provider_runtime_uses_shared_config_and_commits_before_return(monkeypat
     assert admitted[0].requested_output_tokens == 12
     assert db.commits == 1
     assert selection.client is provider_client
+    assert client_arguments[0]["credentials"]["baseUrl"] == (
+        "https://catalog.example.test/v1"
+    )
     assert selection.capability_id == capability.id
     assert selection.credential_principal_user_id == principal_id
 
@@ -587,3 +602,43 @@ def test_capability_request_allows_explicit_single_completion():
 
     assert output_tokens == 5
     assert params["n"] == 1
+
+
+def test_capability_request_counts_provider_visible_parameters():
+    messages = [{"role": "user", "content": "safe"}]
+    base_input_tokens, _ = LLMNode._provider_execution_requested_usage(
+        messages=messages,
+        llm_params={"max_tokens": 5},
+        issue_command=SimpleNamespace(output_token_cap=10),
+    )
+    tool_input_tokens, _ = LLMNode._provider_execution_requested_usage(
+        messages=messages,
+        llm_params={
+            "max_tokens": 5,
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "description": "x" * 1024,
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"query": {"type": "string"}},
+                        },
+                    },
+                }
+            ],
+        },
+        issue_command=SimpleNamespace(output_token_cap=10),
+    )
+
+    assert tool_input_tokens > base_input_tokens + 1024
+
+
+def test_capability_request_rejects_unserializable_provider_parameter():
+    with pytest.raises(ProviderExecutionCapabilityConfigurationError):
+        LLMNode._provider_execution_requested_usage(
+            messages=[{"role": "user", "content": "safe"}],
+            llm_params={"max_tokens": 5, "tools": [object()]},
+            issue_command=SimpleNamespace(output_token_cap=10),
+        )

@@ -14,6 +14,7 @@ from apps.shared.db.models.llm import (
     LLMRelCredentialModel,
     ProviderExecutionCapabilityRecord,
 )
+from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import OrganizationMembership
 from apps.shared.db.models.team import (
     Team,
@@ -21,6 +22,7 @@ from apps.shared.db.models.team import (
     TeamMembership,
     UserLLMPermission,
 )
+from apps.shared.db.models.user import User
 from apps.shared.domain.provider_execution_capability import (
     CapabilityPurpose,
     ProviderExecutionBinding,
@@ -83,13 +85,15 @@ def test_policy_rejects_duplicate_or_wrong_node_without_disclosure():
 
 
 class _ReplacementQuery:
-    def __init__(self, rows):
+    def __init__(self, rows, lock_order):
         self.rows = rows
+        self.lock_order = lock_order
 
     def filter(self, *_args):
         return self
 
     def with_for_update(self):
+        self.lock_order.append("policy")
         return self
 
     def all(self):
@@ -101,9 +105,10 @@ class _ReplacementDb:
         self.active_rows = active_rows
         self.added = None
         self.flush_states: list[tuple[bool, bool]] = []
+        self.lock_order: list[str] = []
 
     def query(self, *_args):
-        return _ReplacementQuery(self.active_rows)
+        return _ReplacementQuery(self.active_rows, self.lock_order)
 
     def add(self, value):
         self.added = value
@@ -129,9 +134,12 @@ def test_policy_replacement_flushes_superseded_active_row_before_insert(monkeypa
     db = _ReplacementDb([old_policy])
 
     canonical_calls: list[dict] = []
+    manager_checks: list[uuid.UUID] = []
+    selection_lock_modes: list[bool | None] = []
 
     def canonical_deployment(*_args, **kwargs):
         canonical_calls.append(kwargs)
+        db.lock_order.append("deployment")
         return (
             SimpleNamespace(id=deployment_id, version=2),
             SimpleNamespace(id=uuid.uuid4()),
@@ -146,19 +154,25 @@ def test_policy_replacement_flushes_superseded_active_row_before_insert(monkeypa
     monkeypatch.setattr(
         capability_service,
         "has_organization_manager_permission",
-        lambda *_args, **_kwargs: True,
+        lambda _db, checked_actor_id, _organization_id: (
+            manager_checks.append(checked_actor_id) or True
+        ),
     )
+
+    def resolve_policy_selection(_cls, *_args, **kwargs):
+        db.lock_order.append("authorization")
+        selection_lock_modes.append(kwargs.get("lock_authorization_rows"))
+        return (
+            SimpleNamespace(id=model_id),
+            SimpleNamespace(id=credential_id),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+
     monkeypatch.setattr(
         ProviderExecutionCapabilityService,
         "_resolve_policy_selection",
-        classmethod(
-            lambda _cls, *_args, **_kwargs: (
-                SimpleNamespace(id=model_id),
-                SimpleNamespace(id=credential_id),
-                SimpleNamespace(),
-                SimpleNamespace(),
-            )
-        ),
+        classmethod(resolve_policy_selection),
     )
 
     policy = ProviderExecutionCapabilityService.replace_deployment_policy(
@@ -178,6 +192,9 @@ def test_policy_replacement_flushes_superseded_active_row_before_insert(monkeypa
     assert policy.policy_revision == 8
     assert policy.credential_id == credential_id
     assert canonical_calls[0]["lock"] is True
+    assert db.lock_order == ["deployment", "policy", "authorization"]
+    assert selection_lock_modes == [True]
+    assert manager_checks == [actor_id, actor_id]
 
 
 def test_active_policy_unique_index_is_scoped_to_deployment_node():
@@ -440,6 +457,7 @@ def test_policy_selection_locks_runtime_authorization_rows(monkeypatch):
         LLMRelCredentialModel: [relation],
     }
     locked: list[type] = []
+    permission_lock_modes: list[bool] = []
 
     class _Query:
         def __init__(self, entity):
@@ -473,6 +491,15 @@ def test_policy_selection_locks_runtime_authorization_rows(monkeypatch):
         "has_llm_credential_permission",
         lambda *_args, **_kwargs: True,
     )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_permission_revision",
+        staticmethod(
+            lambda *_args, **kwargs: (
+                permission_lock_modes.append(kwargs["lock_rows"]) or "a" * 64
+            )
+        ),
+    )
 
     selection = ProviderExecutionCapabilityService._resolve_policy_selection(
         _Db(),
@@ -493,6 +520,7 @@ def test_policy_selection_locks_runtime_authorization_rows(monkeypatch):
 
     assert selection == (model, credential, provider, relation)
     assert locked == [LLMModel, LLMProvider, LLMCredential, LLMRelCredentialModel]
+    assert permission_lock_modes == [True]
 
 
 def test_permission_revision_locks_every_existing_permission_source(monkeypatch):
@@ -538,10 +566,89 @@ def test_permission_revision_locks_every_existing_permission_source(monkeypatch)
 
     assert len(revision) == 64
     assert locked == [
+        (Organization,),
+        (User,),
         (OrganizationMembership,),
         (UserLLMPermission,),
         (TeamLLMPermission, TeamMembership, Team),
     ]
+
+
+def test_permission_revision_fingerprints_user_and_organization_state(monkeypatch):
+    organization_id = uuid.uuid4()
+    principal_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    created_at = datetime.now(timezone.utc)
+    organization = SimpleNamespace(
+        id=organization_id,
+        is_active=True,
+        created_by=principal_id,
+        managed_by=None,
+        deactivated_at=None,
+        updated_at=created_at,
+    )
+    user = SimpleNamespace(
+        id=principal_id,
+        deactivated_at=None,
+        updated_at=created_at,
+    )
+
+    class _Query:
+        def __init__(self, entities):
+            self.entities = entities
+
+        def filter(self, *_args):
+            return self
+
+        def join(self, *_args):
+            return self
+
+        def one_or_none(self):
+            if self.entities == (Organization,):
+                return organization
+            if self.entities == (User,):
+                return user
+            return None
+
+        def all(self):
+            return []
+
+    class _Db:
+        def query(self, *entities):
+            return _Query(entities)
+
+    monkeypatch.setattr(
+        capability_service,
+        "get_effective_llm_credential_auth_state",
+        lambda *_args, **_kwargs: "manager",
+    )
+
+    active_revision = ProviderExecutionCapabilityService._permission_revision(
+        _Db(),
+        organization_id=organization_id,
+        credential_id=credential_id,
+        credential_principal_user_id=principal_id,
+    )
+    organization.is_active = False
+    inactive_organization_revision = (
+        ProviderExecutionCapabilityService._permission_revision(
+            _Db(),
+            organization_id=organization_id,
+            credential_id=credential_id,
+            credential_principal_user_id=principal_id,
+        )
+    )
+    organization.is_active = True
+    user.deactivated_at = created_at
+    inactive_user_revision = ProviderExecutionCapabilityService._permission_revision(
+        _Db(),
+        organization_id=organization_id,
+        credential_id=credential_id,
+        credential_principal_user_id=principal_id,
+    )
+
+    assert inactive_organization_revision != active_revision
+    assert inactive_user_revision != active_revision
 
 
 def test_policy_and_capability_are_cascaded_with_deleted_deployment_control():
