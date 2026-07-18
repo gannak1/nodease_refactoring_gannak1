@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+
 from apps.shared.schemas.tracing import TraceDetailSchema, TraceSummarySchema
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.shared.services.tracing.query import TraceQueryService
@@ -39,6 +40,13 @@ def test_trace_summary_preserves_interactive_user_actor():
     )
 
     assert summary.user_id == user_id
+
+
+def test_purge_receipt_metadata_keys_are_always_sensitive():
+    assert TraceMetadataSanitizer.is_sensitive_metadata_key("purge_receipt")
+    assert TraceMetadataSanitizer.is_sensitive_metadata_key(
+        "public_purge_receipt_value"
+    )
 
 
 def test_span_metadata_allowlist_preserves_safe_response_summary_fields():

@@ -29,7 +29,6 @@ from apps.shared.db.models.conversation_memory import (
     MemoryTurnDispatchJobRecord,
 )
 
-
 ROOT = Path(__file__).resolve().parents[4]
 
 MODELS = {
@@ -307,6 +306,24 @@ def test_secret_replay_is_encrypted_and_bound_to_one_idempotency_result():
     )
 
 
+def test_idempotency_record_stores_only_typed_safe_response_snapshot_fields():
+    columns = ConversationIdempotencyRecord.__table__.c
+    assert {
+        "result_lifecycle",
+        "result_lifecycle_revision",
+        "result_memory_contract_version",
+        "result_expires_at",
+        "result_previous_lifecycle",
+        "result_previous_lifecycle_revision",
+    } <= set(columns.keys())
+    assert {
+        "access_token",
+        "purge_receipt",
+        "response_payload",
+        "raw_response",
+    }.isdisjoint(columns.keys())
+
+
 def test_entry_and_summary_dependencies_preserve_composite_tenant_scope():
     assert {
         ("entry_id", "session_id", "organization_id"),
@@ -436,6 +453,36 @@ def test_public_purge_scope_snapshot_migration_extends_the_replay_revision():
     assert "ck_conv_purge_scope_snapshot" in source
 
 
+def test_public_idempotency_result_snapshot_migration_is_additive_and_reversible():
+    migration = (
+        ROOT
+        / "apps"
+        / "shared"
+        / "alembic"
+        / "versions"
+        / "ae3f4a5b6c72_add_public_idempotency_result_snapshot.py"
+    )
+    source = migration.read_text(encoding="utf-8")
+
+    assert 'revision: str = "ae3f4a5b6c72"' in source
+    assert 'down_revision: str | Sequence[str] | None = "ad2e3f4a5b61"' in source
+    for column in (
+        "result_lifecycle",
+        "result_lifecycle_revision",
+        "result_memory_contract_version",
+        "result_expires_at",
+        "result_previous_lifecycle",
+        "result_previous_lifecycle_revision",
+    ):
+        assert f'sa.Column("{column}"' in source
+        assert (
+            f'op.drop_column("conversation_idempotency_records", "{column}")'
+            in source
+        )
+    assert "access_token" not in source
+    assert "purge_receipt" not in source
+
+
 class _Inspector:
     def __init__(self, schema: dict[str, set[str]]) -> None:
         self.schema = schema
@@ -465,3 +512,19 @@ def test_schema_readiness_requires_every_foundation_table_and_column():
     assert result.ready is False
     assert result.missing_tables == ["memory_context_leases"]
     assert result.reason is None
+
+
+def test_schema_readiness_requires_public_idempotency_result_snapshot_columns():
+    snapshot_columns = {
+        "result_lifecycle",
+        "result_lifecycle_revision",
+        "result_memory_contract_version",
+        "result_expires_at",
+        "result_previous_lifecycle",
+        "result_previous_lifecycle_revision",
+    }
+
+    assert snapshot_columns <= REQUIRED_MEMORY_SCHEMA[
+        "conversation_idempotency_records"
+    ]
+    assert snapshot_columns.isdisjoint(REQUIRED_MEMORY_SCHEMA["conversation_turns"])

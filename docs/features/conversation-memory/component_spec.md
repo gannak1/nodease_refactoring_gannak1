@@ -271,7 +271,7 @@ Public purge는 발급 후 7일 안에 completed/completed_with_hold/terminal_fa
 
 `completed`는 configured content-bearing live store/cache, conversation access-token replay와 backup/export retention contract가 삭제 또는 승인된 irreversible crypto-erasure marker를 모두 반환한 경우에만 허용한다. 위 표의 최소 purge-control tombstone, receipt verifier와 encrypted delete-response replay만 정해진 TTL/receipt expiry까지 예외로 남길 수 있으며 raw session content 접근에는 사용할 수 없다. Unknown/partial marker는 낙관적으로 완료 처리하지 않는다.
 
-MBA-317은 `conversation_secret_replays.expires_at` 기준의 Memory-owned periodic retention task를 제공한다. Gateway와 Log System runtime image는 이 업무 모듈을 import할 수 있도록 `apps/memory`를 포함한다. Helm의 기본 활성 singleton Beat는 shared Celery schedule을 발행하고 Log worker queue는 task 실행 host로 소비할 뿐, 정책 소유자는 Memory다. Task는 1분마다 최대 500개 row를 `FOR UPDATE SKIP LOCKED`로 claim해 같은 transaction에서 live-store ciphertext를 삭제한다. 이는 database backup의 즉시 crypto-erasure를 증명하지 않으므로 public lifecycle activation은 별도 승인된 external crypto-erasure 또는 database-backup 미사용 mode를 요구한다. Session/Turn/Summary를 지우고 purge terminal marker를 만드는 physical purge worker는 여전히 MBA-320 범위다.
+MBA-317은 `conversation_idempotency_records.retention_expires_at`과 `conversation_secret_replays.expires_at` 기준의 Memory-owned periodic retention task를 제공한다. Gateway와 Log System runtime image는 이 업무 모듈을 import할 수 있도록 `apps/memory`를 포함한다. Helm의 기본 활성 singleton Beat는 shared Celery schedule을 발행하고 Log worker queue는 task 실행 host로 소비할 뿐, 정책 소유자는 Memory다. Task는 1분마다 하나의 최대 500개 logical candidate budget을 사용한다. 먼저 만료 idempotency parent를 `FOR UPDATE SKIP LOCKED`로 삭제해 FK cascade로 종속 replay와 uniqueness claim을 함께 제거하고, 남은 budget으로 더 짧은 TTL이 끝난 replay child를 같은 transaction에서 삭제한다. 이는 database backup의 즉시 crypto-erasure를 증명하지 않으므로 public lifecycle activation은 별도 승인된 external crypto-erasure 또는 database-backup 미사용 mode를 요구한다. Session/Turn/Summary를 지우고 purge terminal marker를 만드는 physical purge worker는 여전히 MBA-320 범위다.
 
 ## Application Use Cases
 
@@ -355,7 +355,7 @@ Window-only path는 read-only다. Summary path는 generation job, budget reserva
 
 Public close는 session lifecycle에서 current grant의 사용 범위를 transcript-only로 제한하되 새 grant issue audit을 만들지 않는다. Transcript-only grant는 run/reset에는 사용할 수 없지만 privacy delete에는 사용할 수 있다. Reset은 old grant를 즉시 revoke하고 새 session/grant를 원자 발급하며, delete는 active 또는 transcript-only old grant를 즉시 revoke한다. 이는 grace rotation이 아니며 delete status는 별도 purge receipt가 소유한다.
 
-Close/reset/delete는 token verifier와 immutable deployment/grant/session scope를 먼저 확인한 뒤 exact idempotency reservation을 조회한다. 일치하는 completed record는 bounded response replay를 허용하므로 그 사이 grant/session이 temporal expiry를 지나도 기존 결과만 복구할 수 있다. 새 reservation은 current grant state와 session expiry를 통과한 뒤에만 admission과 mutation을 수행하며, 실패 시 pending record와 state 변경을 rollback한다.
+Close/reset/delete는 token verifier와 immutable deployment/grant/session scope를 먼저 확인한 뒤 exact idempotency reservation을 조회한다. 일치하는 completed record는 bounded response replay를 허용하므로 그 사이 grant/session이 temporal expiry를 지나도 기존 결과만 복구할 수 있다. 이때 mutable Session/Purge 상태를 response로 다시 투영하지 않고 최초 성공 시점의 lifecycle/revision, contract/expiry와 필요한 previous lifecycle/revision만 typed nullable column으로 저장한 content-free snapshot을 사용한다. Raw response와 capability는 snapshot에 포함하지 않으며 legacy/null/corrupt snapshot은 현재 상태로 추정하지 않고 fail-closed한다. 새 reservation은 current grant state와 session expiry를 통과한 뒤에만 admission과 mutation을 수행하며, 실패 시 pending record와 state 변경을 rollback한다.
 
 ## Ports And Adapters
 
@@ -386,12 +386,13 @@ Public grant/purge receipt 응답 유실 복구만 담당하는 bounded port다.
 - Access Grant token 최대 10분, Purge receipt 최대 24시간의 bounded TTL, read-on-replay와 irreversible delete
 - Stored associated-data digest가 현재 immutable idempotency identity에서 재계산한 digest와 같고 같은 scope/key/fingerprint인 경우에만 decrypt 가능
 - 일반 mutation idempotency record는 secret replay lifetime을 포괄하되 최대 24시간으로 제한하고 Purge Job/receipt의 최대 8일 lifecycle과 분리
+- 최초 성공 응답의 content-free typed lifecycle snapshot은 idempotency parent에 저장하고 raw response/capability는 별도 encrypted replay 외에는 저장하지 않음
 
 Access Grant/Purge Job table에는 verifier hash만 두고 ciphertext를 섞지 않는다. Memory application은 encryption algorithm이나 raw key를 직접 선택하지 않으며 replay store unavailable이면 새 secret을 중복 발급하지 않고 fail-closed 한다.
 
 Access Grant token replay TTL이 끝난 same-key request는 `memory.secret_replay_expired`로 닫는다. Replay store가 만료 secret을 대신해 새 grant/receipt를 발급하거나 rotation하지 않는다.
 
-Live database의 만료 row는 Memory-owned periodic retention use case가 bounded batch로 삭제한다. Backup에서의 복구 불가능성은 replay store가 임의로 추정하지 않고 deployment activation 시 승인된 external crypto-erasure/no-backup contract로 확인한다.
+Live database의 만료 idempotency parent와 replay child는 Memory-owned periodic retention use case가 하나의 bounded batch budget과 transaction으로 삭제한다. Parent 삭제는 종속 replay를 cascade하고 scope/key uniqueness claim을 해제한다. Backup에서의 복구 불가능성은 replay store가 임의로 추정하지 않고 deployment activation 시 승인된 external crypto-erasure/no-backup contract로 확인한다.
 
 ### Source Authorization
 

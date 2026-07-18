@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from apps.memory.domain.conversation import AudienceKind, _require_safe_version, _require_sha256
+from apps.memory.domain.conversation import (
+    AudienceKind,
+    SessionLifecycle,
+    _require_safe_version,
+    _require_sha256,
+)
 from apps.memory.domain.errors import AccessGrantNotUsableError, AccessGrantScopeError
 
 
@@ -160,6 +165,42 @@ class ConversationAccessGrant:
             self.state = AccessGrantState.EXPIRED
 
 
+@dataclass(frozen=True, slots=True)
+class IdempotencyResultSnapshot:
+    """Typed, content-free snapshot of the first successful public response."""
+
+    lifecycle: SessionLifecycle
+    lifecycle_revision: int
+    memory_contract_version: str | None
+    expires_at: datetime | None
+    previous_lifecycle: SessionLifecycle | None = None
+    previous_lifecycle_revision: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.lifecycle_revision < 1:
+            raise ValueError("result lifecycle revision must be positive")
+        if self.memory_contract_version is not None:
+            _require_safe_version(
+                self.memory_contract_version,
+                "result_memory_contract_version",
+            )
+        if (self.memory_contract_version is None) != (self.expires_at is None):
+            raise ValueError("result contract and expiry snapshot must be complete")
+        if self.expires_at is not None and (
+            self.expires_at.tzinfo is None or self.expires_at.utcoffset() is None
+        ):
+            raise ValueError("result expiry must be timezone-aware")
+        if (self.previous_lifecycle is None) != (
+            self.previous_lifecycle_revision is None
+        ):
+            raise ValueError("previous lifecycle snapshot must be complete")
+        if (
+            self.previous_lifecycle_revision is not None
+            and self.previous_lifecycle_revision < 1
+        ):
+            raise ValueError("previous lifecycle revision must be positive")
+
+
 @dataclass(slots=True)
 class ConversationIdempotency:
     id: uuid.UUID
@@ -175,6 +216,7 @@ class ConversationIdempotency:
     secret_replay_expires_at: datetime | None
     retention_expires_at: datetime
     safe_result_code: str | None
+    result_snapshot: IdempotencyResultSnapshot | None
     created_at: datetime
     updated_at: datetime
 
@@ -215,6 +257,7 @@ class ConversationIdempotency:
             secret_replay_expires_at=None,
             retention_expires_at=retention_expires_at,
             safe_result_code=None,
+            result_snapshot=None,
             created_at=now,
             updated_at=now,
         )
@@ -234,6 +277,7 @@ class ConversationIdempotency:
         replay_record_reference: str | None,
         secret_replay_expires_at: datetime | None,
         safe_result_code: str,
+        result_snapshot: IdempotencyResultSnapshot,
         now: datetime,
     ) -> None:
         if self.status is IdempotencyStatus.COMPLETED:
@@ -245,12 +289,15 @@ class ConversationIdempotency:
         _require_safe_version(safe_result_code, "safe_result_code")
         if secret_replay_expires_at is not None and secret_replay_expires_at <= now:
             raise ValueError("secret replay expiry must be future-dated")
+        if not isinstance(result_snapshot, IdempotencyResultSnapshot):
+            raise ValueError("completed idempotency result snapshot is required")
         self.status = IdempotencyStatus.COMPLETED
         self.resource_type = resource_type
         self.resource_reference = resource_reference
         self.replay_record_reference = replay_record_reference
         self.secret_replay_expires_at = secret_replay_expires_at
         self.safe_result_code = safe_result_code
+        self.result_snapshot = result_snapshot
         self.updated_at = now
 
 

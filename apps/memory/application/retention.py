@@ -9,6 +9,10 @@ from apps.memory.application.ports import MemoryUnitOfWorkPort
 
 
 class PublicSecretReplayRetentionRepositoryPort(Protocol):
+    def delete_expired_idempotency_records(
+        self, *, now: datetime, limit: int
+    ) -> int: ...
+
     def delete_expired_secret_replays(self, *, now: datetime, limit: int) -> int: ...
 
 
@@ -29,10 +33,16 @@ class PurgeExpiredPublicSecretReplaysUseCase:
             raise ValueError("retention batch limit must be between 1 and 1000")
         self.uow.begin()
         try:
-            deleted_count = self.repository.delete_expired_secret_replays(
+            deleted_count = self.repository.delete_expired_idempotency_records(
                 now=now,
                 limit=limit,
             )
+            remaining = limit - deleted_count
+            if remaining > 0:
+                deleted_count += self.repository.delete_expired_secret_replays(
+                    now=now,
+                    limit=remaining,
+                )
             self.uow.commit()
             return deleted_count
         except Exception:

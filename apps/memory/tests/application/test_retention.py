@@ -9,16 +9,29 @@ from apps.shared.celery_app import celery_app
 
 
 class _Repository:
-    def __init__(self, deleted_count: int = 0, error: Exception | None = None) -> None:
-        self.deleted_count = deleted_count
+    def __init__(
+        self,
+        *,
+        idempotency_deleted_count: int = 0,
+        secret_replay_deleted_count: int = 0,
+        error: Exception | None = None,
+    ) -> None:
+        self.idempotency_deleted_count = idempotency_deleted_count
+        self.secret_replay_deleted_count = secret_replay_deleted_count
         self.error = error
         self.calls = []
 
-    def delete_expired_secret_replays(self, *, now, limit):
-        self.calls.append((now, limit))
+    def delete_expired_idempotency_records(self, *, now, limit):
+        self.calls.append(("idempotency", now, limit))
         if self.error is not None:
             raise self.error
-        return self.deleted_count
+        return self.idempotency_deleted_count
+
+    def delete_expired_secret_replays(self, *, now, limit):
+        self.calls.append(("secret_replay", now, limit))
+        if self.error is not None:
+            raise self.error
+        return self.secret_replay_deleted_count
 
 
 class _UnitOfWork:
@@ -35,8 +48,11 @@ class _UnitOfWork:
         self.events.append("rollback")
 
 
-def test_secret_replay_retention_deletes_one_bounded_batch_transactionally():
-    repository = _Repository(deleted_count=3)
+def test_public_replay_retention_deletes_expired_parent_and_child_state_in_one_batch():
+    repository = _Repository(
+        idempotency_deleted_count=2,
+        secret_replay_deleted_count=3,
+    )
     uow = _UnitOfWork()
     now = datetime(2026, 7, 18, tzinfo=timezone.utc)
 
@@ -45,8 +61,11 @@ def test_secret_replay_retention_deletes_one_bounded_batch_transactionally():
         uow=uow,
     ).execute(now=now, limit=500)
 
-    assert deleted == 3
-    assert repository.calls == [(now, 500)]
+    assert deleted == 5
+    assert repository.calls == [
+        ("idempotency", now, 500),
+        ("secret_replay", now, 498),
+    ]
     assert uow.events == ["begin", "commit"]
 
 

@@ -94,7 +94,7 @@ Workflow와 Chatbot의 여러 turn에서 필요한 대화 맥락을 독립 Memor
 ### Public And Authenticated Boundary
 
 - MEM-REQ-040: Public conversation token은 server-issued opaque bearer capability여야 하며 raw token과 internal session ID를 분리해야 한다.
-- MEM-REQ-041: Public token 원문은 Access Grant source-of-truth에 저장하지 않고 verifier hash, session/deployment ID·version/audience binding, `active|transcript_only|revoked|expired` state와 expiry만 관리해야 한다. V1은 standalone rotation endpoint, rotated grant chain과 old/new grant grace window를 지원하지 않는다. 별도 idempotency response store의 application-encrypted replay record는 최대 10분 TTL 예외이며 Memory-owned bounded retention worker가 만료 row를 live store에서 물리 삭제해야 한다. Backup에서 즉시 복구 불가능하다는 보장은 승인된 외부 crypto-erasure 또는 database-backup 미사용 계약이 확인된 환경에 한정하며, 확인되지 않은 환경에서는 public lifecycle을 활성화하지 않아야 한다. TTL 뒤 same-key replay는 새 secret/grant를 만들지 않고 `memory.secret_replay_expired` conflict를 반환해야 한다.
+- MEM-REQ-041: Public token 원문은 Access Grant source-of-truth에 저장하지 않고 verifier hash, session/deployment ID·version/audience binding, `active|transcript_only|revoked|expired` state와 expiry만 관리해야 한다. V1은 standalone rotation endpoint, rotated grant chain과 old/new grant grace window를 지원하지 않는다. 별도 idempotency response store의 application-encrypted replay record는 최대 10분 TTL 예외이며 Memory-owned bounded retention worker가 만료 row를 live store에서 물리 삭제해야 한다. Worker는 일반 idempotency retention이 끝난 parent record도 같은 bounded batch budget 안에서 삭제하고 종속 replay row를 함께 제거해 scope/key uniqueness가 영구 잠기지 않게 해야 한다. Backup에서 즉시 복구 불가능하다는 보장은 승인된 외부 crypto-erasure 또는 database-backup 미사용 계약이 확인된 환경에 한정하며, 확인되지 않은 환경에서는 public lifecycle을 활성화하지 않아야 한다. TTL 뒤 same-key replay는 새 secret/grant를 만들지 않고 `memory.secret_replay_expired` conflict를 반환해야 한다.
 - MEM-REQ-042: Public token 원문을 URL/query, audit, trace, metric label과 application log에 남기지 않아야 한다.
 - MEM-REQ-043: Public session을 로그인 후 authenticated session으로 자동 승격·병합하지 않아야 한다.
 - MEM-REQ-044: Authenticated session은 current user execution subject, organization, workflow/deployment scope를 서버가 canonical하게 구성해야 한다. Credential principal, billing principal과 audit actor는 execution subject와 별도로 파생해야 한다.
@@ -124,7 +124,7 @@ Workflow와 Chatbot의 여러 turn에서 필요한 대화 맥락을 독립 Memor
 - MEM-REQ-062: Transcript에 보이는 turn이 current authorization, token budget 또는 summary policy로 Memory Context에서 제외될 수 있음을 UI가 오해 없이 처리해야 한다.
 - MEM-REQ-063: Reset/delete 후 visible transcript와 server session lifecycle이 일치해야 한다.
 - MEM-REQ-064: Redaction을 통과한 Memory content도 잠재적으로 민감한 데이터로 취급하고 최대 크기, encryption-at-rest, backup/export와 operator access policy를 적용해야 한다.
-- MEM-REQ-065: Raw secret, credential, unrestricted trace payload와 raw private source path/title은 Memory content, audit 또는 observability metadata가 될 수 없어야 한다.
+- MEM-REQ-065: Raw secret, credential, unrestricted trace payload와 raw private source path/title은 Memory content, audit 또는 observability metadata가 될 수 없어야 한다. Public purge receipt는 필드명뿐 아니라 versioned opaque value가 자유 텍스트에 포함된 경우에도 공통 tracing/redaction 경계에서 항상 secret으로 마스킹해야 한다.
 - MEM-REQ-066: Audit/Tracing은 safe session/entry reference, action, status, reason과 bucketed count만 기록하고 raw Memory content를 저장하지 않아야 한다. AuditLog는 `memory.session.*`/`memory.grant.*` 관리·보안 lifecycle에 제한하고 정상 turn/summary 상태는 operational trace/metric으로 기록해야 한다.
 - MEM-REQ-067: Memory content는 shared privacy classification/redaction capability를 사용해야 하며 Memory domain이 PII/secret 판별 규칙을 자체 복제하지 않아야 한다.
 - MEM-REQ-068: Close 후 transcript 허용 여부, reset 이후 이전 transcript 표시와 delete purge 상태는 runtime Memory Context 접근과 별도 정책으로 평가해야 한다.
@@ -175,7 +175,7 @@ Workflow와 Chatbot의 여러 turn에서 필요한 대화 맥락을 독립 Memor
 - MEM-NFR-005: Safe observability는 public/authenticated audience, decision reason, latency와 usage를 구분하되 raw content/token/source를 label로 사용하지 않아야 한다.
 - MEM-NFR-006: 별도 Memory service가 없는 초기 배포에서도 package import가 infrastructure startup side effect를 만들지 않아야 한다.
 - MEM-NFR-007: Public token, transcript와 lifecycle 응답은 `Cache-Control: no-store`를 사용하고 raw token을 browser history, URL, shared cache와 telemetry에 남기지 않아야 한다.
-- MEM-NFR-008: Idempotency record와 replayable secret response는 scope와 TTL이 bounded되어야 하며 평문 token을 장기 보관하지 않아야 한다.
+- MEM-NFR-008: Idempotency record와 replayable secret response는 scope와 TTL이 bounded되어야 하며 평문 token을 장기 보관하지 않아야 한다. Completed lifecycle replay는 최초 성공 응답의 content-free typed lifecycle/revision snapshot만 보존하고 mutable resource의 현재 상태나 raw response payload로 재구성하지 않아야 한다.
 - MEM-NFR-009: Public conversation page는 strict Content Security Policy, `Referrer-Policy: no-referrer`와 reviewed script/frame origin allowlist를 적용해 sessionStorage grant의 XSS·referrer 유출 표면을 줄여야 한다.
 
 ## Required Initial Policy Baseline
@@ -205,6 +205,7 @@ Network source는 신뢰 가능한 reverse proxy chain에서 canonicalized clien
 - Public/authenticated session은 finite idle expiry, absolute expiry, 최대 completed turn, entry bytes와 context token bound를 가진다.
 - Public create/run은 grant·deployment·network source 기준 rate/concurrency limit과 organization cost gate를 모두 통과해야 한다.
 - Public create/reset의 raw token 응답은 idempotency scope 동안 암호화된 단기 replay record로만 복구한다. Reset은 old grant를 즉시 revoke하고 새 session/grant를 원자 발급하는 replacement이며 rotation/grace가 아니다. Hash-only grant row만으로 token을 재구성하지 않는다.
+- Public lifecycle exact replay는 최초 성공 시점의 lifecycle, revision, contract/expiry와 필요한 previous lifecycle/revision만 typed nullable column으로 보존한다. Raw response, access token과 purge receipt는 이 snapshot에 넣지 않고 별도 bounded encrypted replay에서만 복구한다.
 - Secret replay record가 만료된 same-key retry는 `409 memory.secret_replay_expired`로 닫고 새 grant/receipt를 자동 생성하지 않는다. 새 conversation은 새 idempotency key로 명시적으로 생성한다.
 - Public reset/delete의 secret replay expiry는 stored scope/fingerprint, grant verifier relation과 high-entropy idempotency key가 모두 일치할 때만 노출하고 그 외에는 resource-hidden 404를 유지한다.
 - Public create idempotency key는 최소 128-bit random entropy를 사용하고 hash로 식별한다. Network source 변경은 정상 retry scope를 바꾸지 않으며 raw key를 durable log에 저장하지 않는다.

@@ -4,7 +4,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from apps.shared.db.base import Base
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
@@ -19,6 +18,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
+
+from apps.shared.db.base import Base
 
 
 def _utc_now() -> datetime:
@@ -1668,6 +1669,27 @@ class ConversationIdempotencyRecord(_TimestampMixin, Base):
             "AND length(request_fingerprint) = 64",
             name="ck_conv_idempotency_fields",
         ),
+        CheckConstraint(
+            "((result_lifecycle IS NULL "
+            "AND result_lifecycle_revision IS NULL "
+            "AND result_memory_contract_version IS NULL "
+            "AND result_expires_at IS NULL "
+            "AND result_previous_lifecycle IS NULL "
+            "AND result_previous_lifecycle_revision IS NULL) OR "
+            "(result_lifecycle IN "
+            "('active', 'closed', 'delete_pending', 'deleted', 'expired') "
+            "AND result_lifecycle_revision > 0 "
+            "AND ((result_memory_contract_version IS NULL "
+            "AND result_expires_at IS NULL) OR "
+            "(result_memory_contract_version IS NOT NULL "
+            "AND result_expires_at IS NOT NULL)) "
+            "AND ((result_previous_lifecycle IS NULL "
+            "AND result_previous_lifecycle_revision IS NULL) OR "
+            "(result_previous_lifecycle IN "
+            "('active', 'closed', 'delete_pending', 'deleted', 'expired') "
+            "AND result_previous_lifecycle_revision > 0))))",
+            name="ck_conv_idempotency_result_snapshot",
+        ),
         Index("ix_conv_idempotency_expiry", "retention_expires_at"),
     )
 
@@ -1711,6 +1733,27 @@ class ConversationIdempotencyRecord(_TimestampMixin, Base):
     )
     safe_result_code: Mapped[str | None] = mapped_column(
         String(64),
+        nullable=True,
+    )
+    result_lifecycle: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    result_lifecycle_revision: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    result_memory_contract_version: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    result_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    result_previous_lifecycle: Mapped[str | None] = mapped_column(
+        String(24),
+        nullable=True,
+    )
+    result_previous_lifecycle_revision: Mapped[int | None] = mapped_column(
+        Integer,
         nullable=True,
     )
 

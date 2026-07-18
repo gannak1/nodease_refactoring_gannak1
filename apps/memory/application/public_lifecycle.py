@@ -34,6 +34,7 @@ from apps.memory.domain.public_access import (
     ConversationAccessGrant,
     ConversationIdempotency,
     EncryptedSecretReplay,
+    IdempotencyResultSnapshot,
     IdempotencyStatus,
 )
 from apps.shared.audit.actions import AuditAction
@@ -547,6 +548,7 @@ class CreatePublicConversationUseCase(_TransactionalPublicUseCase):
                 replay_record_reference=str(replay.id),
                 secret_replay_expires_at=replay.expires_at,
                 safe_result_code="created",
+                result_snapshot=_session_result_snapshot(session),
                 now=command.now,
             )
             self.repository.add_session(session)
@@ -582,14 +584,13 @@ class CreatePublicConversationUseCase(_TransactionalPublicUseCase):
         record: ConversationIdempotency,
         now: datetime,
     ) -> PublicConversationResult:
-        session = _record_session(self.repository, record)
         access_token = self._replay_secret(
             record=record,
             purpose="access_grant",
             now=now,
         )
-        return _conversation_result(
-            session=session,
+        return _conversation_result_from_snapshot(
+            record=record,
             access_token=access_token,
             replayed=True,
         )
@@ -627,8 +628,7 @@ class ClosePublicConversationUseCase(_TransactionalPublicUseCase):
                 reservation.record.require_matching_fingerprint(
                     command.request_fingerprint
                 )
-                replay_session = _record_session(self.repository, reservation.record)
-                return _close_result(replay_session, replayed=True)
+                return _close_result_from_snapshot(reservation.record, replayed=True)
 
             grant.require_active(
                 deployment_id=binding.deployment_id,
@@ -654,6 +654,7 @@ class ClosePublicConversationUseCase(_TransactionalPublicUseCase):
                 replay_record_reference=None,
                 secret_replay_expires_at=None,
                 safe_result_code="closed",
+                result_snapshot=_session_result_snapshot(session),
                 now=command.now,
             )
             self.repository.save_session(session)
@@ -704,18 +705,15 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
                 reservation.record.require_matching_fingerprint(
                     command.request_fingerprint
                 )
-                new_session = _record_session(self.repository, reservation.record)
                 token = self._replay_secret(
                     record=reservation.record,
                     purpose="access_grant",
                     now=command.now,
                 )
-                return _conversation_result(
-                    session=new_session,
+                return _conversation_result_from_snapshot(
+                    record=reservation.record,
                     access_token=token,
                     replayed=True,
-                    previous_lifecycle=SessionLifecycle.CLOSED,
-                    previous_lifecycle_revision=old_session.lifecycle_revision,
                 )
 
             old_grant.require_active(
@@ -770,6 +768,11 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
                 replay_record_reference=str(replay.id),
                 secret_replay_expires_at=replay.expires_at,
                 safe_result_code="reset",
+                result_snapshot=_session_result_snapshot(
+                    new_session,
+                    previous_lifecycle=old_session.lifecycle,
+                    previous_lifecycle_revision=old_session.lifecycle_revision,
+                ),
                 now=command.now,
             )
             self.repository.save_session(old_session)
@@ -852,6 +855,10 @@ class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
                 reservation.record.require_matching_fingerprint(
                     command.request_fingerprint
                 )
+                result_snapshot = _record_result_snapshot(
+                    reservation.record,
+                    expected_resource_type="conversation_purge_job",
+                )
                 purge_job = _record_purge_job(self.repository, reservation.record)
                 receipt = self._replay_secret(
                     record=reservation.record,
@@ -859,8 +866,8 @@ class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
                     now=command.now,
                 )
                 return DeletePublicConversationResult(
-                    lifecycle=SessionLifecycle.DELETE_PENDING,
-                    lifecycle_revision=session.lifecycle_revision,
+                    lifecycle=result_snapshot.lifecycle,
+                    lifecycle_revision=result_snapshot.lifecycle_revision,
                     purge_job_id=purge_job.id,
                     purge_receipt=receipt,
                     replayed=True,
@@ -916,6 +923,12 @@ class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
                 replay_record_reference=str(replay.id),
                 secret_replay_expires_at=replay.expires_at,
                 safe_result_code="delete_requested",
+                result_snapshot=IdempotencyResultSnapshot(
+                    lifecycle=session.lifecycle,
+                    lifecycle_revision=session.lifecycle_revision,
+                    memory_contract_version=None,
+                    expires_at=None,
+                ),
                 now=command.now,
             )
             self.repository.save_session(session)
@@ -1114,23 +1127,23 @@ def _secret_replay_associated_data_digest(
     ).hexdigest()
 
 
-def _record_session(
-    repository: PublicConversationRepositoryPort,
+def _record_result_snapshot(
     record: ConversationIdempotency,
-) -> ConversationSession:
-    if record.resource_type != "conversation_session" or not record.resource_reference:
+    *,
+    expected_resource_type: str,
+) -> IdempotencyResultSnapshot:
+    if (
+        record.status is not IdempotencyStatus.COMPLETED
+        or record.resource_type != expected_resource_type
+        or not record.resource_reference
+        or record.result_snapshot is None
+    ):
         raise MemoryAdapterUnavailableError()
     try:
-        session_id = uuid.UUID(record.resource_reference)
+        uuid.UUID(record.resource_reference)
     except ValueError:
         raise MemoryAdapterUnavailableError() from None
-    session = repository.lock_session(
-        organization_id=record.organization_id,
-        session_id=session_id,
-    )
-    if session is None:
-        raise MemoryAdapterUnavailableError()
-    return session
+    return record.result_snapshot
 
 
 def _record_purge_job(
@@ -1174,6 +1187,46 @@ def _conversation_result(
     )
 
 
+def _session_result_snapshot(
+    session: ConversationSession,
+    *,
+    previous_lifecycle: SessionLifecycle | None = None,
+    previous_lifecycle_revision: int | None = None,
+) -> IdempotencyResultSnapshot:
+    return IdempotencyResultSnapshot(
+        lifecycle=session.lifecycle,
+        lifecycle_revision=session.lifecycle_revision,
+        memory_contract_version=session.memory_contract_version,
+        expires_at=session.absolute_expires_at,
+        previous_lifecycle=previous_lifecycle,
+        previous_lifecycle_revision=previous_lifecycle_revision,
+    )
+
+
+def _conversation_result_from_snapshot(
+    *,
+    record: ConversationIdempotency,
+    access_token: str,
+    replayed: bool,
+) -> PublicConversationResult:
+    snapshot = _record_result_snapshot(
+        record,
+        expected_resource_type="conversation_session",
+    )
+    if snapshot.memory_contract_version is None or snapshot.expires_at is None:
+        raise MemoryAdapterUnavailableError()
+    return PublicConversationResult(
+        lifecycle=snapshot.lifecycle,
+        lifecycle_revision=snapshot.lifecycle_revision,
+        memory_contract_version=snapshot.memory_contract_version,
+        expires_at=snapshot.expires_at,
+        access_token=access_token,
+        replayed=replayed,
+        previous_lifecycle=snapshot.previous_lifecycle,
+        previous_lifecycle_revision=snapshot.previous_lifecycle_revision,
+    )
+
+
 def _close_result(
     session: ConversationSession, *, replayed: bool
 ) -> ClosePublicConversationResult:
@@ -1182,6 +1235,26 @@ def _close_result(
         lifecycle_revision=session.lifecycle_revision,
         memory_contract_version=session.memory_contract_version,
         expires_at=session.absolute_expires_at,
+        replayed=replayed,
+    )
+
+
+def _close_result_from_snapshot(
+    record: ConversationIdempotency,
+    *,
+    replayed: bool,
+) -> ClosePublicConversationResult:
+    snapshot = _record_result_snapshot(
+        record,
+        expected_resource_type="conversation_session",
+    )
+    if snapshot.memory_contract_version is None or snapshot.expires_at is None:
+        raise MemoryAdapterUnavailableError()
+    return ClosePublicConversationResult(
+        lifecycle=snapshot.lifecycle,
+        lifecycle_revision=snapshot.lifecycle_revision,
+        memory_contract_version=snapshot.memory_contract_version,
+        expires_at=snapshot.expires_at,
         replayed=replayed,
     )
 

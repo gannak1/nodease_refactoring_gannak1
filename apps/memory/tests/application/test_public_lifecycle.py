@@ -331,6 +331,32 @@ def test_create_replays_the_same_bounded_access_token_without_storing_raw_value(
     assert record.retention_expires_at == _now() + timedelta(hours=24)
 
 
+def test_create_replay_restores_the_initial_response_after_the_session_closes():
+    components = _application()
+    create = _use_case(CreatePublicConversationUseCase, components)
+    close = _use_case(ClosePublicConversationUseCase, components)
+    command = _create_command()
+    first = create.execute(command)
+    close.execute(
+        _lifecycle_command(first.access_token, suffix="close-before-create-replay")
+    )
+
+    replay = create.execute(command)
+
+    assert replay.replayed is True
+    assert (
+        replay.lifecycle,
+        replay.lifecycle_revision,
+        replay.memory_contract_version,
+        replay.expires_at,
+    ) == (
+        first.lifecycle,
+        first.lifecycle_revision,
+        first.memory_contract_version,
+        first.expires_at,
+    )
+
+
 @pytest.mark.parametrize(
     ("field", "replacement_value"),
     (
@@ -425,6 +451,38 @@ def test_close_makes_grant_transcript_only_and_does_not_duplicate_audit_event():
     ]
 
 
+def test_close_replay_restores_the_closed_response_after_privacy_delete():
+    components = _application()
+    create = _use_case(CreatePublicConversationUseCase, components)
+    close = _use_case(ClosePublicConversationUseCase, components)
+    delete = _use_case(DeletePublicConversationUseCase, components)
+    first = create.execute(_create_command())
+    close_command = _lifecycle_command(first.access_token, suffix="close-snapshot")
+    closed = close.execute(close_command)
+    delete.execute(
+        _lifecycle_command(
+            first.access_token,
+            suffix="delete-after-close-snapshot",
+            expected_revision=closed.lifecycle_revision,
+        )
+    )
+
+    replay = close.execute(close_command)
+
+    assert replay.replayed is True
+    assert (
+        replay.lifecycle,
+        replay.lifecycle_revision,
+        replay.memory_contract_version,
+        replay.expires_at,
+    ) == (
+        closed.lifecycle,
+        closed.lifecycle_revision,
+        closed.memory_contract_version,
+        closed.expires_at,
+    )
+
+
 def test_same_lifecycle_key_with_a_different_precondition_fingerprint_conflicts():
     components = _application()
     create = _use_case(CreatePublicConversationUseCase, components)
@@ -478,6 +536,43 @@ def test_reset_revokes_old_grant_but_matching_retry_returns_one_replacement():
         "conversation_access_grant",
     ]
     assert components[4].events[2]["target_id"] != components[4].events[4]["target_id"]
+
+
+def test_reset_replay_restores_the_initial_replacement_response_after_close():
+    components = _application()
+    create = _use_case(CreatePublicConversationUseCase, components)
+    reset = _use_case(ResetPublicConversationUseCase, components)
+    close = _use_case(ClosePublicConversationUseCase, components)
+    first = create.execute(_create_command())
+    reset_command = _lifecycle_command(first.access_token, suffix="reset-snapshot")
+    replacement = reset.execute(reset_command)
+    close.execute(
+        _lifecycle_command(
+            replacement.access_token,
+            suffix="close-replacement",
+            expected_revision=replacement.lifecycle_revision,
+        )
+    )
+
+    replay = reset.execute(reset_command)
+
+    assert replay.replayed is True
+    assert replay.access_token == replacement.access_token
+    assert (
+        replay.lifecycle,
+        replay.lifecycle_revision,
+        replay.memory_contract_version,
+        replay.expires_at,
+        replay.previous_lifecycle,
+        replay.previous_lifecycle_revision,
+    ) == (
+        replacement.lifecycle,
+        replacement.lifecycle_revision,
+        replacement.memory_contract_version,
+        replacement.expires_at,
+        replacement.previous_lifecycle,
+        replacement.previous_lifecycle_revision,
+    )
 
 
 def test_close_replays_after_original_grant_and_session_expire_but_new_key_fails():
@@ -552,6 +647,29 @@ def test_delete_replays_receipt_after_original_scope_expires():
     replay = delete.execute(replace(command, now=_now() + timedelta(minutes=2)))
 
     assert replay.replayed is True
+    assert replay.purge_receipt == deleted.purge_receipt
+
+
+def test_delete_replay_restores_the_initial_revision_after_terminal_progress():
+    components = _application()
+    repository = components[0]
+    create = _use_case(CreatePublicConversationUseCase, components)
+    delete = _use_case(DeletePublicConversationUseCase, components)
+    first = create.execute(_create_command())
+    command = _lifecycle_command(first.access_token, suffix="delete-snapshot")
+    deleted = delete.execute(command)
+    session = next(iter(repository.sessions.values()))
+    session.mark_deleted(
+        expected_lifecycle_revision=deleted.lifecycle_revision,
+        now=_now() + timedelta(minutes=1),
+    )
+
+    replay = delete.execute(command)
+
+    assert replay.replayed is True
+    assert replay.lifecycle == deleted.lifecycle
+    assert replay.lifecycle_revision == deleted.lifecycle_revision
+    assert replay.purge_job_id == deleted.purge_job_id
     assert replay.purge_receipt == deleted.purge_receipt
 
 

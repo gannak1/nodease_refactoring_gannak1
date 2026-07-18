@@ -11,6 +11,10 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, SessionTransaction
 
+from apps.memory.application.public_lifecycle import (
+    IdempotencyReservation,
+    PublicDeploymentBinding,
+)
 from apps.memory.domain.conversation import (
     AudienceKind,
     ConversationMemoryEntry,
@@ -40,11 +44,8 @@ from apps.memory.domain.public_access import (
     ConversationAccessGrant,
     ConversationIdempotency,
     EncryptedSecretReplay,
+    IdempotencyResultSnapshot,
     IdempotencyStatus,
-)
-from apps.memory.application.public_lifecycle import (
-    IdempotencyReservation,
-    PublicDeploymentBinding,
 )
 from apps.shared.db.models.app import App
 from apps.shared.db.models.conversation_memory import (
@@ -327,6 +328,28 @@ class SqlAlchemyConversationMemoryRepository:
             .execution_options(synchronize_session=False),
         )
         return len(replay_ids)
+
+    def delete_expired_idempotency_records(self, *, now: datetime, limit: int) -> int:
+        statement = (
+            select(ConversationIdempotencyRecord.id)
+            .where(ConversationIdempotencyRecord.retention_expires_at <= now)
+            .order_by(
+                ConversationIdempotencyRecord.retention_expires_at,
+                ConversationIdempotencyRecord.id,
+            )
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        record_ids = list(_execute(self._session, statement).scalars().all())
+        if not record_ids:
+            return 0
+        _execute(
+            self._session,
+            delete(ConversationIdempotencyRecord)
+            .where(ConversationIdempotencyRecord.id.in_(record_ids))
+            .execution_options(synchronize_session=False),
+        )
+        return len(record_ids)
 
     def find_purge_job(
         self,
@@ -1067,6 +1090,7 @@ def _idempotency_values(record: ConversationIdempotency) -> dict[str, object]:
         "secret_replay_expires_at": record.secret_replay_expires_at,
         "retention_expires_at": record.retention_expires_at,
         "safe_result_code": record.safe_result_code,
+        **_idempotency_result_snapshot_values(record.result_snapshot),
         "created_at": record.created_at,
         "updated_at": record.updated_at,
     }
@@ -1089,6 +1113,7 @@ def _idempotency_domain(
         secret_replay_expires_at=record.secret_replay_expires_at,
         retention_expires_at=record.retention_expires_at,
         safe_result_code=record.safe_result_code,
+        result_snapshot=_idempotency_result_snapshot_domain(record),
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
@@ -1105,8 +1130,64 @@ def _idempotency_mutable_values(
         "secret_replay_expires_at": record.secret_replay_expires_at,
         "retention_expires_at": record.retention_expires_at,
         "safe_result_code": record.safe_result_code,
+        **_idempotency_result_snapshot_values(record.result_snapshot),
         "updated_at": record.updated_at,
     }
+
+
+def _idempotency_result_snapshot_values(
+    snapshot: IdempotencyResultSnapshot | None,
+) -> dict[str, object]:
+    return {
+        "result_lifecycle": snapshot.lifecycle.value if snapshot is not None else None,
+        "result_lifecycle_revision": (
+            snapshot.lifecycle_revision if snapshot is not None else None
+        ),
+        "result_memory_contract_version": (
+            snapshot.memory_contract_version if snapshot is not None else None
+        ),
+        "result_expires_at": snapshot.expires_at if snapshot is not None else None,
+        "result_previous_lifecycle": (
+            snapshot.previous_lifecycle.value
+            if snapshot is not None and snapshot.previous_lifecycle is not None
+            else None
+        ),
+        "result_previous_lifecycle_revision": (
+            snapshot.previous_lifecycle_revision if snapshot is not None else None
+        ),
+    }
+
+
+def _idempotency_result_snapshot_domain(
+    record: ConversationIdempotencyRecord,
+) -> IdempotencyResultSnapshot | None:
+    values = (
+        record.result_lifecycle,
+        record.result_lifecycle_revision,
+        record.result_memory_contract_version,
+        record.result_expires_at,
+        record.result_previous_lifecycle,
+        record.result_previous_lifecycle_revision,
+    )
+    if all(value is None for value in values):
+        return None
+    if record.result_lifecycle is None or record.result_lifecycle_revision is None:
+        raise MemoryAdapterUnavailableError()
+    try:
+        return IdempotencyResultSnapshot(
+            lifecycle=SessionLifecycle(record.result_lifecycle),
+            lifecycle_revision=record.result_lifecycle_revision,
+            memory_contract_version=record.result_memory_contract_version,
+            expires_at=record.result_expires_at,
+            previous_lifecycle=(
+                SessionLifecycle(record.result_previous_lifecycle)
+                if record.result_previous_lifecycle is not None
+                else None
+            ),
+            previous_lifecycle_revision=record.result_previous_lifecycle_revision,
+        )
+    except (TypeError, ValueError):
+        raise MemoryAdapterUnavailableError() from None
 
 
 def _secret_replay_record(

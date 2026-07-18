@@ -116,3 +116,24 @@ def test_expired_secret_replay_cleanup_uses_a_bounded_skip_locked_delete():
     assert "FOR UPDATE SKIP LOCKED" in select_sql
     assert "LIMIT" in select_sql
     assert "DELETE FROM conversation_secret_replays" in delete_sql
+
+
+def test_expired_idempotency_cleanup_uses_a_bounded_skip_locked_delete():
+    record_ids = [uuid.uuid4(), uuid.uuid4()]
+    selected = MagicMock()
+    selected.scalars.return_value.all.return_value = record_ids
+    db = MagicMock(spec=Session)
+    db.execute.side_effect = [selected, MagicMock()]
+    repository = SqlAlchemyConversationMemoryRepository(db)
+
+    deleted = repository.delete_expired_idempotency_records(now=_now(), limit=500)
+
+    assert deleted == 2
+    select_statement = db.execute.call_args_list[0].args[0]
+    delete_statement = db.execute.call_args_list[1].args[0]
+    select_sql = str(select_statement.compile(dialect=postgresql.dialect()))
+    delete_sql = str(delete_statement.compile(dialect=postgresql.dialect()))
+    assert "FOR UPDATE SKIP LOCKED" in select_sql
+    assert "LIMIT" in select_sql
+    assert "retention_expires_at" in select_sql
+    assert "DELETE FROM conversation_idempotency_records" in delete_sql

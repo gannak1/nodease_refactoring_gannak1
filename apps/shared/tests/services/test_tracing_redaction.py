@@ -1,3 +1,5 @@
+import secrets
+
 from apps.shared.domain.app_auth_secret import (
     APP_AUTH_SECRET_PREFIX,
     generate_app_auth_secret,
@@ -40,6 +42,21 @@ def test_secret_redaction_stays_enabled_when_policy_redaction_disabled():
     assert result.secret_detected is True
     assert result.redacted_payload["password"] == "[REDACTED]"
     assert result.redacted_payload["message"] == "person@example.com"
+
+
+def test_purge_receipt_key_and_free_text_value_are_always_redacted():
+    receipt = f"cpr_v1_{secrets.token_urlsafe(32)}"
+    result = TraceRedactionService.redact_payload(
+        {
+            "purge_receipt": receipt,
+            "note": f"purge status credential: {receipt}",
+        },
+        ResolvedRedactionPolicy(redaction_enabled=False, pii_detection_enabled=False),
+    )
+
+    assert result.secret_detected is True
+    assert result.redacted_payload["purge_receipt"] == "[REDACTED]"
+    assert receipt not in str(result.redacted_payload)
 
 
 def test_sensitive_json_path_redaction_records_metadata_without_values():
