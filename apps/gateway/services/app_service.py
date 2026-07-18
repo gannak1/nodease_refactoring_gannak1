@@ -1,6 +1,5 @@
 import copy
 import secrets
-import uuid
 from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
