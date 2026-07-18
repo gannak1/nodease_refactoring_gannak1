@@ -4,6 +4,9 @@ import re
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 QUALITY_GATE_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "pr-quality-gate.yml"
+HELM_CI_VALUES_PATH = (
+    REPOSITORY_ROOT / "tests" / "ci" / "fixtures" / "helm-values-ci.yaml"
+)
 KNOWLEDGE_POSTGRES_PATH = (
     REPOSITORY_ROOT
     / ".github"
@@ -57,6 +60,12 @@ def test_helm_validation_registers_chart_dependency_repositories():
     assert workflow.index("helm repo add bitnami") < workflow.index(
         "helm dependency build infra/helm/moduly"
     )
+
+
+def test_helm_static_render_fixture_uses_non_routable_database_host():
+    values = HELM_CI_VALUES_PATH.read_text(encoding="utf-8")
+
+    assert 'externalHost: "postgresql.ci.invalid"' in values
 
 
 def test_knowledge_postgres_workflow_runs_durable_ingestion_contract():
