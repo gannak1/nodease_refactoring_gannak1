@@ -41,7 +41,7 @@ const { moduleOperationsApi } = await import(
 const { apiClient } = await import('@/lib/apiClient');
 const { workflowApi } = await import('@/app/features/workflow/api/workflowApi');
 
-describe('FR-014 내 모듈 자동 최적화 관리', () => {
+describe('FR-014 워크플로우 화면 자동 최적화 관리', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(moduleOperationsApi.listModuleOperations).mockResolvedValue([

@@ -66,7 +66,7 @@ const operationRow = {
   },
 };
 
-describe('내 모듈 운영 현황 보기 전환', () => {
+describe('워크플로우 운영 현황 보기 전환', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.clear();
@@ -85,6 +85,12 @@ describe('내 모듈 운영 현황 보기 전환', () => {
   it('상단 비용 요약 카드를 표시하거나 전체 비용 요약 API를 호출하지 않는다', async () => {
     render(<MyModulePage />);
 
+    expect(
+      await screen.findByRole('heading', { level: 1, name: '워크플로우' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { level: 1, name: '내 모듈' }),
+    ).not.toBeInTheDocument();
     expect(
       await screen.findByRole('heading', {
         level: 3,

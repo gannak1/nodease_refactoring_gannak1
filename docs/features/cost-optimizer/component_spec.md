@@ -33,7 +33,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-011 | Bootstrap routing controls / decision trace | 자동 라우팅 ON/OFF, 작업 설명, 기본·fallback 모델, 초기 생성 예산, bootstrap 출처/표본과 난이도별 선택 모델 및 실제 선택 근거를 보여준다. |
 | FR-012 | Optimization recommendation modal | LLM 노드 상세 화면의 `최적화` 버튼으로 추천 모달을 열고, 추천 근거와 위험도를 확인한 뒤 직접 정책 적용 또는 A/B 후보 실험으로 연결한다. |
 | FR-013 | Recommendation verification / compare quality row | 추천 모달과 일반 결과 분석 화면에서 baseline 대비 candidate 비용·속도·token·품질 점수·schema·downstream 결과를 보여주고 적용 또는 이력 재조회로 연결한다. |
-| FR-014 | 배포별 자동 파라미터 최적화 | 배포 모달에서 운영 로그 수집·점검 주기·월간 검증 예산을 설정하고, 내 모듈 운영 현황에서는 비용 위험과 분리된 자동 최적화 상태를 관리한다. |
+| FR-014 | 배포별 자동 파라미터 최적화 | 배포 모달에서 운영 로그 수집·점검 주기·월간 검증 예산을 설정하고, 워크플로우 운영 현황에서는 비용 위험과 분리된 자동 최적화 상태를 관리한다. |
 | FR-015 | 제약·난이도/사전 지식 기반 라우터 실험 | 현재 UI와 운영 active policy를 바꾸지 않는다. fixed-fixture 보고서로 검증 전용 전략과 사전 지식 기반 전략을 함께 검토한다. |
 
 ## Implementation Tracking
@@ -77,7 +77,7 @@ safe 판단 근거를 표시한다.
 - `월간 검증 예산`: `$0.5~$10`, $0.5 단위 slider. 일반 workflow 운영 비용과 분리해 설명한다.
 - 안내 문구는 응답 길이/RAG context만 다루며 모델 라우팅, 모델 선택, prompt는 바꾸지 않는다는 점을 분명히 표시한다.
 
-### 내 모듈 운영 현황
+### 워크플로우 운영 현황
 
 기존 비용·추세·예산 사용률·비용 위험 신호는 변경하지 않는다. 기존 `최적화` 컬럼은 `자동 최적화` 컬럼으로 교체한다.
 

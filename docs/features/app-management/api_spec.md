@@ -7,7 +7,7 @@ Status: Draft
 | Method | Path | Description | Auth |
 | --- | --- | --- | --- |
 | GET | `/api/v1/apps` | 현재 사용자가 접근할 수 있는 App 목록 | authenticated organization member |
-| GET | `/api/v1/apps/operations` | 내 모듈 운영 현황 목록 | organization manager or workflow builder/manager |
+| GET | `/api/v1/apps/operations` | 워크플로우 운영 현황 목록 | organization manager or workflow builder/manager |
 | GET | `/api/v1/apps/operations/cost-summary` | 활성 배포 전체 예상 월 비용 요약 (호환 API) | organization manager or workflow builder/manager |
 
 ## Request And Response Models

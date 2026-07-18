@@ -520,7 +520,7 @@ export default function MyModulePage() {
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
         <DashboardPageHeader
           icon={Layers3}
-          title="내 모듈"
+          title="워크플로우"
           description="워크플로우 접근 권한, 배포 상태, 실행 흐름을 한 화면에서 확인합니다."
           meta={
             unavailableCount > 0 && (

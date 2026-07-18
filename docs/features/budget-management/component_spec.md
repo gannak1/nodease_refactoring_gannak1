@@ -23,7 +23,7 @@ Verified Against: feature/mba-147 @ e1a04e9
 
 ### `/dashboard/mymodule` — 내 워크플로우 운영 목록 (FR-052)
 
-기존 내 모듈 운영 목록(`apps/client/app/dashboard/mymodule/page.tsx`, 원천 `GET /apps/operations`)의 각 row를 확장한다.
+기존 워크플로우 운영 목록(`apps/client/app/dashboard/mymodule/page.tsx`, 원천 `GET /apps/operations`)의 각 row를 확장한다.
 
 - 데이터 원천: `GET /apps/operations`의 `row.app.budget_status`. `GET /apps`는 같은 shape를 제공하지만 `/dashboard/mymodule`의 표시 원천은 operations 응답이다.
 - 표시 대상: organization manager 또는 workflow `write` 이상 권한을 가진 작성자/운영자. 배포된 workflow를 실행만 하는 일반 사용자는 이 화면 대신 챗봇 링크 또는 내부 실행 링크를 사용한다.
