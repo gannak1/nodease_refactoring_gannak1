@@ -598,7 +598,7 @@ jobs:
       - name: Validate Kubernetes manifests
         if: needs.scope.outputs.kubernetes_validation == 'true'
         run: >-
-          go run github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0
+          go run github.com/yannh/kubeconform/cmd/kubeconform@v0.7.0
           -strict
           -summary
           -kubernetes-version 1.31.0

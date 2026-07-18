@@ -110,9 +110,10 @@ def test_kubernetes_validation_uses_cluster_independent_schema_check():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
 
     assert (
-        "go run github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0"
+        "go run github.com/yannh/kubeconform/cmd/kubeconform@v0.7.0"
         in workflow
     )
+    assert "kubeconform/cmd/kubeconform@v0.8.0" not in workflow
     assert "-kubernetes-version 1.31.0" in workflow
     assert "kubectl create --dry-run=client" not in workflow
 
