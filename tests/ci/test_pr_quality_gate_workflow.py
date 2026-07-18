@@ -105,7 +105,7 @@ def test_ci_control_smoke_uses_protected_actionlint_and_dockerfile_fixture():
     assert DOCKERFILE_CI_FIXTURE_PATH.is_file()
     assert (
         "dockerfile_config_changed: "
-        "${{ steps.classify.outputs.dockerfile_config_changed }}"
+        "${{ steps.ci_control.outputs.dockerfile_config_changed }}"
         in workflow
     )
     assert (
@@ -128,6 +128,50 @@ def test_ci_control_actionlint_smoke_also_validates_changed_workflows():
     assert 'workflow_files+=("${changed_workflow_files[@]}")' in actionlint_block
     assert "declare -A seen_workflow_files" in actionlint_block
     assert 'actionlint@v1.7.12 "${workflow_files[@]}"' in actionlint_block
+
+
+def test_trusted_diff_detects_real_terraform_and_dockerfile_changes():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+    trusted_diff_block = workflow.split(
+        "- name: Detect CI control changes outside the selector",
+        maxsplit=1,
+    )[1].split("- name: Classify changed paths", maxsplit=1)[0]
+
+    assert (
+        "terraform_config_changed: "
+        "${{ steps.ci_control.outputs.terraform_config_changed }}"
+        in workflow
+    )
+    assert (
+        "dockerfile_config_changed: "
+        "${{ steps.ci_control.outputs.dockerfile_config_changed }}"
+        in workflow
+    )
+    assert "terraform_config_changed=false" in trusted_diff_block
+    assert "dockerfile_config_changed=false" in trusted_diff_block
+    assert "infra/terraform/*)" in trusted_diff_block
+    assert "*/Dockerfile|Dockerfile|*.Dockerfile)" in trusted_diff_block
+    assert (
+        'echo "terraform_config_changed=$terraform_config_changed"'
+        in trusted_diff_block
+    )
+    assert (
+        'echo "dockerfile_config_changed=$dockerfile_config_changed"'
+        in trusted_diff_block
+    )
+    assert "break" not in trusted_diff_block
+
+
+def test_protected_postgres_workflows_are_detected_as_ci_control():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+    trusted_diff_block = workflow.split(
+        "- name: Detect CI control changes outside the selector",
+        maxsplit=1,
+    )[1].split("- name: Classify changed paths", maxsplit=1)[0]
+
+    for workflow_path in PROTECTED_CI_WORKFLOWS[2:]:
+        relative = workflow_path.relative_to(REPOSITORY_ROOT).as_posix()
+        assert relative in trusted_diff_block
 
 
 def test_compose_validation_combines_variant_with_base_file():
@@ -173,7 +217,7 @@ def test_ci_control_terraform_smoke_uses_fixture_without_hiding_real_changes():
     assert TERRAFORM_CI_FIXTURE_PATH.is_file()
     assert (
         "terraform_config_changed: "
-        "${{ steps.classify.outputs.terraform_config_changed }}"
+        "${{ steps.ci_control.outputs.terraform_config_changed }}"
         in workflow
     )
     assert (

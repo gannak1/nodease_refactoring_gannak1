@@ -211,6 +211,27 @@ def test_trusted_guard_change_is_treated_as_ci_control():
     assert scope.memory_postgres is True
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/workflows/test-knowledge-runtime-postgres.yml",
+        ".github/workflows/test-schedule-dispatch-postgres.yml",
+        ".github/workflows/test-agent-builder-postgres.yml",
+        ".github/workflows/test-memory-postgres.yml",
+    ],
+)
+def test_protected_postgres_workflow_change_is_treated_as_ci_control(path: str):
+    scope = classify_paths([path])
+
+    assert scope.root_tests is True
+    assert scope.broad_python is True
+    assert scope.actions_validation is True
+    assert scope.knowledge_postgres is True
+    assert scope.workflow_postgres is True
+    assert scope.agent_builder_postgres is True
+    assert scope.memory_postgres is True
+
+
 def test_deployment_workflow_selects_static_validation_without_runtime_tests():
     scope = classify_paths([".github/workflows/deploy-eks-gateway.yml"])
 

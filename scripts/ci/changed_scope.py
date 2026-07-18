@@ -137,6 +137,15 @@ _DEPLOYMENT_ONLY_WORKFLOWS = (
     ".github/workflows/publish-images.yml",
 )
 
+_PROTECTED_CI_WORKFLOW_PATHS = {
+    ".github/workflows/pr-ci-control-guard.yml",
+    ".github/workflows/pr-quality-gate.yml",
+    ".github/workflows/test-knowledge-runtime-postgres.yml",
+    ".github/workflows/test-schedule-dispatch-postgres.yml",
+    ".github/workflows/test-agent-builder-postgres.yml",
+    ".github/workflows/test-memory-postgres.yml",
+}
+
 _COMPOSE_FILE_NAME_PATTERN = re.compile(
     r"^(?:docker-)?compose(?:\.[A-Za-z0-9_-]+)*\.ya?ml$"
 )
@@ -280,11 +289,7 @@ def _is_deployment_only_path(path: str) -> bool:
 
 def _is_ci_control_path(path: str) -> bool:
     return (
-        path
-        in {
-            ".github/workflows/pr-ci-control-guard.yml",
-            ".github/workflows/pr-quality-gate.yml",
-        }
+        path in _PROTECTED_CI_WORKFLOW_PATHS
         or path.startswith(".github/actions/")
         or path.startswith("scripts/ci/")
         or path.startswith("tests/ci/")
@@ -424,15 +429,8 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
             continue
 
         if path.startswith(".github/workflows/"):
-            # Specialized PostgreSQL workflows are selected above. Other non-deploy
-            # workflow changes are treated as CI control changes.
-            if path in {
-                ".github/workflows/test-knowledge-runtime-postgres.yml",
-                ".github/workflows/test-schedule-dispatch-postgres.yml",
-                ".github/workflows/test-agent-builder-postgres.yml",
-                ".github/workflows/test-memory-postgres.yml",
-            }:
-                continue
+            # Protected workflows are handled as CI control above. Other non-deploy
+            # workflow changes keep broad runtime smoke coverage.
             scope.client = True
             scope.enable_python_smoke()
             continue
