@@ -1,4 +1,4 @@
-# ADR-0055: LLM credential 저장 암호화와 key rotation
+# ADR-0057: LLM credential 저장 암호화와 key rotation
 
 Status: Accepted
 
