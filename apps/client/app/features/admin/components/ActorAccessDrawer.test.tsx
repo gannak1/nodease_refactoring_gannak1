@@ -135,7 +135,9 @@ describe('ActorAccessDrawer', () => {
   it('profile 확인 후 team과 현재 resource tab을 bounded page로 조회한다', async () => {
     renderDrawer();
 
-    expect(await screen.findByText('김멤버 · member@example.com')).toBeInTheDocument();
+    expect(
+      await screen.findByText('김멤버 · member@example.com'),
+    ).toBeInTheDocument();
     expect(mockedProfile).toHaveBeenCalledWith('org-1', 'user-1');
     expect(mockedTeams).toHaveBeenCalledWith('org-1', 'user-1', {
       page: 1,
@@ -148,6 +150,24 @@ describe('ActorAccessDrawer', () => {
       page: 1,
       limit: 20,
     });
+  });
+
+  it('External Action Credential 직접 권한 탭을 조회한다', async () => {
+    renderDrawer();
+
+    await screen.findByText('김멤버 · member@example.com');
+    fireEvent.click(
+      screen.getByRole('tab', { name: 'External Action Credential' }),
+    );
+
+    await waitFor(() =>
+      expect(mockedResources).toHaveBeenCalledWith('org-1', 'user-1', {
+        resourceType: 'external_action_credential',
+        source: 'all',
+        page: 1,
+        limit: 20,
+      }),
+    );
   });
 
   it('team/resource page와 source filter를 독립적으로 갱신한다', async () => {
@@ -346,7 +366,9 @@ describe('ActorAccessDrawer', () => {
       target: { value: 'team-1' },
     });
     expect(
-      await screen.findByText('선택한 팀 소속의 최신 상태를 확인하지 못했습니다.'),
+      await screen.findByText(
+        '선택한 팀 소속의 최신 상태를 확인하지 못했습니다.',
+      ),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^추가:/ })).toBeDisabled();
 
@@ -390,7 +412,9 @@ describe('ActorAccessDrawer', () => {
         reason: '운영\n검토',
       }),
     );
-    expect(await screen.findByText('접근 설정을 변경했습니다.')).toBeInTheDocument();
+    expect(
+      await screen.findByText('접근 설정을 변경했습니다.'),
+    ).toBeInTheDocument();
   });
 
   it('역할 승격은 desired role과 common snapshot을 전송한다', async () => {
@@ -622,7 +646,9 @@ describe('ActorAccessDrawer', () => {
     ).toBeInTheDocument();
     expect(confirm).toBeInTheDocument();
     expect(mockedProfile).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText('접근 설정을 변경했습니다.')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('접근 설정을 변경했습니다.'),
+    ).not.toBeInTheDocument();
   });
 
   it('confirm은 초기 focus, Shift+Tab trap, ESC 취소와 trigger focus 복귀를 제공한다', async () => {
@@ -648,11 +674,16 @@ describe('ActorAccessDrawer', () => {
   });
 
   it('pending action은 중복 제출을 차단한다', async () => {
-    let resolveAction!: (value: Awaited<ReturnType<typeof organizationApi.executeMemberAccessAction>>) => void;
+    let resolveAction!: (
+      value: Awaited<
+        ReturnType<typeof organizationApi.executeMemberAccessAction>
+      >,
+    ) => void;
     mockedAction.mockImplementation(
-      () => new Promise((resolve) => {
-        resolveAction = resolve;
-      }),
+      () =>
+        new Promise((resolve) => {
+          resolveAction = resolve;
+        }),
     );
     renderDrawer();
 
@@ -698,7 +729,9 @@ describe('ActorAccessDrawer', () => {
     ).toBeInTheDocument();
     expect(mockedTeams).not.toHaveBeenCalled();
     expect(mockedResources).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: '다시 시도' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '다시 시도' }),
+    ).toBeInTheDocument();
   });
 
   it('server control이 막은 action은 disabled이며 confirm을 열지 않는다', async () => {

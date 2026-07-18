@@ -214,3 +214,42 @@ def test_revoked_or_rotated_credential_blocks_provider_call(mock_get, monkeypatc
         )._run(inputs={})
 
     mock_get.assert_not_called()
+
+
+@patch("requests.get")
+def test_credential_resolution_session_closes_before_github_provider_call(mock_get):
+    initial_session = MagicMock()
+    first_revalidation_session = MagicMock()
+    second_revalidation_session = MagicMock()
+    sessions = iter(
+        (initial_session, first_revalidation_session, second_revalidation_session)
+    )
+    pr_response = MagicMock()
+    pr_response.json.return_value = {
+        "title": "Add new feature",
+        "body": "",
+        "state": "open",
+        "number": 123,
+        "diff_url": "https://github.com/owner/repo/pull/123.diff",
+    }
+    files_response = MagicMock()
+    files_response.json.return_value = []
+    provider_responses = iter((pr_response, files_response))
+
+    def provider_get(*_args, **_kwargs):
+        initial_session.close.assert_called_once_with()
+        return next(provider_responses)
+
+    mock_get.side_effect = provider_get
+    node = _github_node(
+        action=GithubAction.GET_PR,
+        repo_owner="facebook",
+        repo_name="react",
+        pr_number="123",
+    )
+    node.execution_context["db_session_factory"] = lambda: next(sessions)
+
+    node._run(inputs={})
+
+    first_revalidation_session.close.assert_called_once_with()
+    second_revalidation_session.close.assert_called_once_with()

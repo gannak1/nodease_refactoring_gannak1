@@ -84,13 +84,17 @@ class SlackPostNode(Node[SlackPostNodeData]):
         )
         db, should_close = self._borrow_db_session()
         try:
-            credential = ExternalActionCredentialUseResolver.resolve(
-                db,
-                user_id=user_id,
-                organization_id=organization_id,
-                credential_id=credential_id,
-                expected_provider=expected_provider,
-            )
+            try:
+                credential = ExternalActionCredentialUseResolver.resolve(
+                    db,
+                    user_id=user_id,
+                    organization_id=organization_id,
+                    credential_id=credential_id,
+                    expected_provider=expected_provider,
+                )
+            finally:
+                if should_close:
+                    db.close()
             request = SlackEffectRequest(
                 mode=mode,
                 payload=self._build_payload(mode, context),
@@ -110,9 +114,6 @@ class SlackPostNode(Node[SlackPostNodeData]):
             return self._run_external_effect(adapter, request)
         except ExternalActionCredentialRuntimeError as exc:
             self._fail(exc.reason_code)
-        finally:
-            if should_close:
-                db.close()
 
     def _validate_legacy_compatibility(self, mode: SlackDeliveryMode) -> None:
         data = self.data

@@ -7,12 +7,14 @@ import pytest
 
 from apps.gateway.services.external_action_credential_service import (
     ExternalActionCredentialNotFound,
+    ExternalActionCredentialRevoked,
     ExternalActionCredentialTargetNotFound,
     ExternalActionCredentialService,
 )
 from apps.shared.audit.context import clear_current_metadata, set_current_metadata
 from apps.shared.schemas.external_action_credential import (
     ExternalActionCredentialPermissionGrant,
+    ExternalActionCredentialUpdate,
 )
 
 
@@ -124,6 +126,57 @@ def test_same_organization_denial_is_hidden_and_audit_metadata_is_allowlisted(
         "ip": "203.0.113.10",
         "user_agent": "test-agent",
     }
+
+
+@patch(
+    "apps.gateway.services.external_action_credential_service."
+    "has_external_action_credential_permission",
+    return_value=True,
+)
+def test_revoked_credential_allows_management_lookup_but_rejects_update(
+    has_permission,
+):
+    credential = _credential(status="revoked")
+    db = MagicMock()
+    service = ExternalActionCredentialService(db)
+    service._get_scoped = MagicMock(return_value=credential)
+
+    with pytest.raises(ExternalActionCredentialRevoked):
+        service.update(
+            uuid4(),
+            credential.organization_id,
+            credential.id,
+            ExternalActionCredentialUpdate(
+                expected_revision=credential.revision,
+                credential_name="교체 예정 Credential",
+            ),
+        )
+
+    assert has_permission.call_args.kwargs["include_revoked"] is True
+    db.commit.assert_not_called()
+
+
+@patch(
+    "apps.gateway.services.external_action_credential_service."
+    "has_external_action_credential_permission",
+    return_value=True,
+)
+def test_revoked_credential_allows_existing_user_permission_revoke(has_permission):
+    credential = _credential(status="revoked")
+    db = MagicMock()
+    db.query.return_value.filter.return_value.delete.return_value = 1
+    service = ExternalActionCredentialService(db)
+    service._get_scoped = MagicMock(return_value=credential)
+
+    service.revoke_user_permission(
+        uuid4(),
+        credential.organization_id,
+        credential.id,
+        uuid4(),
+    )
+
+    assert has_permission.call_args.kwargs["include_revoked"] is True
+    db.commit.assert_called_once_with()
 
 
 def test_grant_user_permission_locks_active_membership_and_rejects_deactivated_user():

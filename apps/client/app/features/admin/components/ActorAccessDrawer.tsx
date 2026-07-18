@@ -38,6 +38,7 @@ const RESOURCE_TYPES: Array<{
   { value: 'knowledge_base', label: 'Knowledge Base' },
   { value: 'llm_credential', label: 'LLM Credential' },
   { value: 'mail_credential', label: 'Mail Credential' },
+  { value: 'external_action_credential', label: 'External Action Credential' },
 ];
 const GRANT_STATES: ActorGrantAuthState[] = [
   'viewer',
@@ -94,6 +95,7 @@ export function ActorAccessDrawer({
     knowledge_base: [],
     llm_credential: [],
     mail_credential: [],
+    external_action_credential: [],
   });
   const [resourceType, setResourceType] =
     useState<ActorResourceType>('workflow');
@@ -104,10 +106,22 @@ export function ActorAccessDrawer({
   const [teamTotal, setTeamTotal] = useState(0);
   const [resourcePages, setResourcePages] = useState<
     Record<ActorResourceType, number>
-  >({ workflow: 1, knowledge_base: 1, llm_credential: 1, mail_credential: 1 });
+  >({
+    workflow: 1,
+    knowledge_base: 1,
+    llm_credential: 1,
+    mail_credential: 1,
+    external_action_credential: 1,
+  });
   const [resourceTotals, setResourceTotals] = useState<
     Record<ActorResourceType, number>
-  >({ workflow: 0, knowledge_base: 0, llm_credential: 0, mail_credential: 0 });
+  >({
+    workflow: 0,
+    knowledge_base: 0,
+    llm_credential: 0,
+    mail_credential: 0,
+    external_action_credential: 0,
+  });
   const [selectedTeamId, setSelectedTeamId] = useState('');
   const [selectedTeamMembership, setSelectedTeamMembership] =
     useState<MemberTeamMembership | null>(null);
@@ -288,19 +302,15 @@ export function ActorAccessDrawer({
     if (draft) reasonRef.current?.focus();
   }, [draft]);
 
-  const commonAction = useCallback(
-    () => {
-      if (!profile) throw new Error('profile is required');
-      return {
-        expected_membership_id: profile.member.membership_id,
-        expected_user_active: profile.member.user_active,
-        expected_membership_state: profile.member.membership_state,
-        expected_organization_auth_state:
-          profile.member.organization_auth_state,
-      };
-    },
-    [profile],
-  );
+  const commonAction = useCallback(() => {
+    if (!profile) throw new Error('profile is required');
+    return {
+      expected_membership_id: profile.member.membership_id,
+      expected_user_active: profile.member.user_active,
+      expected_membership_state: profile.member.membership_state,
+      expected_organization_auth_state: profile.member.organization_auth_state,
+    };
+  }, [profile]);
 
   const openAction = (nextDraft: ActionDraft) => {
     confirmTriggerRef.current = document.activeElement as HTMLElement | null;
@@ -371,15 +381,15 @@ export function ActorAccessDrawer({
       return;
     }
     if (event.key !== 'Tab' || !panelRef.current || draft) return;
-    const focusable = panelRef.current.querySelectorAll<HTMLElement>(
-      FOCUSABLE_SELECTOR,
-    );
+    const focusable =
+      panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR);
     if (focusable.length === 0) return;
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
     if (
       event.shiftKey &&
-      (document.activeElement === first || document.activeElement === panelRef.current)
+      (document.activeElement === first ||
+        document.activeElement === panelRef.current)
     ) {
       event.preventDefault();
       last.focus();
@@ -396,9 +406,8 @@ export function ActorAccessDrawer({
       return;
     }
     if (event.key !== 'Tab' || !confirmRef.current) return;
-    const focusable = confirmRef.current.querySelectorAll<HTMLElement>(
-      FOCUSABLE_SELECTOR,
-    );
+    const focusable =
+      confirmRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR);
     if (focusable.length === 0) return;
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
@@ -540,7 +549,9 @@ export function ActorAccessDrawer({
                 />
                 <Metric
                   label="유효 접근"
-                  value={profile.effective_access_enabled ? 'enabled' : 'disabled'}
+                  value={
+                    profile.effective_access_enabled ? 'enabled' : 'disabled'
+                  }
                 />
               </div>
               <p className="mt-3 text-xs text-slate-500">
@@ -567,7 +578,8 @@ export function ActorAccessDrawer({
                           },
                           {
                             label: '영향',
-                            value: '저장된 권한 source는 보존하고 유효 접근만 중지',
+                            value:
+                              '저장된 권한 source는 보존하고 유효 접근만 중지',
                           },
                         ],
                         payload: {
@@ -584,7 +596,8 @@ export function ActorAccessDrawer({
                     onClick={() =>
                       openAction({
                         title: '멤버십 재활성화',
-                        description: '보존된 접근 source를 다시 유효하게 합니다.',
+                        description:
+                          '보존된 접근 source를 다시 유효하게 합니다.',
                         details: [
                           {
                             label: '변경',
@@ -612,7 +625,8 @@ export function ActorAccessDrawer({
                     onClick={() =>
                       openAction({
                         title: '조직 관리자로 승격',
-                        description: '조직의 모든 operational resource에 manager override가 적용됩니다.',
+                        description:
+                          '조직의 모든 operational resource에 manager override가 적용됩니다.',
                         details: [
                           {
                             label: '변경',
@@ -635,11 +649,14 @@ export function ActorAccessDrawer({
                   <ActionButton
                     label="멤버로 강등"
                     tone="danger"
-                    control={profile.control.actions.organization_role_set.member}
+                    control={
+                      profile.control.actions.organization_role_set.member
+                    }
                     onClick={() =>
                       openAction({
                         title: '조직 멤버로 강등',
-                        description: 'manager override를 제거하고 저장된 source만 평가합니다.',
+                        description:
+                          'manager override를 제거하고 저장된 source만 평가합니다.',
                         tone: 'danger',
                         details: [
                           {
@@ -695,7 +712,8 @@ export function ActorAccessDrawer({
                           ...commonAction(),
                           action: 'app_creation.revoke',
                           expected_permission_id:
-                            profile.app_creation.direct_permission!.permission_id,
+                            profile.app_creation.direct_permission!
+                              .permission_id,
                         },
                       })
                     }
@@ -708,9 +726,7 @@ export function ActorAccessDrawer({
                       openAction({
                         title: 'App 생성 직접 권한 부여',
                         description: '행위자에게 App 생성 권한을 부여합니다.',
-                        details: [
-                          { label: '변경', value: 'none → direct' },
-                        ],
+                        details: [{ label: '변경', value: 'none → direct' }],
                         payload: {
                           ...commonAction(),
                           action: 'app_creation.grant',
@@ -765,7 +781,8 @@ export function ActorAccessDrawer({
                   onClick={() =>
                     openAction({
                       title: '팀 소속 추가',
-                      description: '선택한 팀의 resource permission source가 적용됩니다.',
+                      description:
+                        '선택한 팀의 resource permission source가 적용됩니다.',
                       details: [
                         {
                           label: '팀',
@@ -791,7 +808,8 @@ export function ActorAccessDrawer({
               </div>
               {selectedTeamMembership && (
                 <p className="mt-2 text-xs text-slate-500">
-                  이미 소속된 팀입니다. 아래 목록에서 해당 row를 제거할 수 있습니다.
+                  이미 소속된 팀입니다. 아래 목록에서 해당 row를 제거할 수
+                  있습니다.
                 </p>
               )}
               {selectedTeamError && (
@@ -822,8 +840,8 @@ export function ActorAccessDrawer({
                           {membership.name}
                         </p>
                         <p className="text-xs text-slate-500">
-                          {membership.is_active ? 'active' : 'inactive'} · source{' '}
-                          {membership.inherited_resource_counts.total}
+                          {membership.is_active ? 'active' : 'inactive'} ·
+                          source {membership.inherited_resource_counts.total}
                         </p>
                       </div>
                       <ActionButton
@@ -895,7 +913,10 @@ export function ActorAccessDrawer({
                   </button>
                 ))}
               </div>
-              <div className="mt-2 flex flex-wrap gap-1" aria-label="Resource source 필터">
+              <div
+                className="mt-2 flex flex-wrap gap-1"
+                aria-label="Resource source 필터"
+              >
                 {(['all', 'direct', 'team'] as const).map((source) => (
                   <button
                     key={source}
@@ -921,7 +942,9 @@ export function ActorAccessDrawer({
               <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_120px_auto]">
                 <select
                   value={selectedResourceId}
-                  onChange={(event) => setSelectedResourceId(event.target.value)}
+                  onChange={(event) =>
+                    setSelectedResourceId(event.target.value)
+                  }
                   aria-label="직접 권한 resource"
                   className="h-9 min-w-0 rounded-md border border-slate-300 px-2 text-sm"
                 >
@@ -949,9 +972,7 @@ export function ActorAccessDrawer({
                   ))}
                 </select>
                 <ActionButton
-                  label={
-                    selectedAccess?.direct_permission ? '변경' : '부여'
-                  }
+                  label={selectedAccess?.direct_permission ? '변경' : '부여'}
                   icon={Check}
                   control={
                     selectedResourceId &&
@@ -1233,10 +1254,14 @@ function ConfirmDetail({ label, value }: { label: string; value: string }) {
 function ActorPolicySummary({ profile }: { profile: MemberAccessProfile }) {
   const messages: string[] = [];
   if (!profile.member.user_active) {
-    messages.push('비활성 계정입니다. 회수와 강등 같은 정리 작업만 허용됩니다.');
+    messages.push(
+      '비활성 계정입니다. 회수와 강등 같은 정리 작업만 허용됩니다.',
+    );
   }
   if (profile.member.membership_state === 'suspended') {
-    messages.push('정지된 멤버십입니다. 저장된 source는 보존되지만 유효 접근은 없습니다.');
+    messages.push(
+      '정지된 멤버십입니다. 저장된 source는 보존되지만 유효 접근은 없습니다.',
+    );
   }
   if (profile.control.is_self) {
     messages.push('본인 계정은 직접 정지하거나 강등할 수 없습니다.');
@@ -1245,7 +1270,9 @@ function ActorPolicySummary({ profile }: { profile: MemberAccessProfile }) {
     messages.push('마지막 활성 관리자는 정지하거나 강등할 수 없습니다.');
   }
   if (profile.control.manager_override) {
-    messages.push('관리자 override가 활성화되어 source 변경 전에 멤버로 강등해야 합니다.');
+    messages.push(
+      '관리자 override가 활성화되어 source 변경 전에 멤버로 강등해야 합니다.',
+    );
   }
   if (messages.length === 0) return null;
   return (
@@ -1327,7 +1354,10 @@ function normalizeReason(value: string): {
       (codePoint >= 0x202a && codePoint <= 0x202e) ||
       (codePoint >= 0x2066 && codePoint <= 0x2069);
     if (forbidden) {
-      return { value: null, error: '사유에 허용되지 않는 제어 문자가 있습니다.' };
+      return {
+        value: null,
+        error: '사유에 허용되지 않는 제어 문자가 있습니다.',
+      };
     }
   }
   return { value: normalized, error: null };
@@ -1338,13 +1368,17 @@ function actionErrorMessage(code?: string, status?: number) {
     self_control_forbidden: '자기 자신의 정지 또는 강등은 허용되지 않습니다.',
     last_active_manager: '마지막 활성 관리자는 정지하거나 강등할 수 없습니다.',
     manager_override_active: '먼저 조직 관리자 역할을 멤버로 변경해야 합니다.',
-    member_state_not_manageable: '최신 멤버십 상태에서 이 작업을 수행할 수 없습니다.',
+    member_state_not_manageable:
+      '최신 멤버십 상태에서 이 작업을 수행할 수 없습니다.',
     target_user_inactive: '비활성 사용자에게 접근을 늘릴 수 없습니다.',
-    stale_state: '접근 상태가 변경되었습니다. 최신 상태를 확인해 다시 시도하세요.',
-    'audit.persistence_failed': '감사 기록을 저장하지 못해 변경을 적용하지 않았습니다.',
+    stale_state:
+      '접근 상태가 변경되었습니다. 최신 상태를 확인해 다시 시도하세요.',
+    'audit.persistence_failed':
+      '감사 기록을 저장하지 못해 변경을 적용하지 않았습니다.',
   };
   if (code && messages[code]) return messages[code];
-  if (status === 404) return '대상이 더 이상 현재 조직에서 관리 가능한 상태가 아닙니다.';
+  if (status === 404)
+    return '대상이 더 이상 현재 조직에서 관리 가능한 상태가 아닙니다.';
   if (status === 403) return '행위자 접근 관리 권한이 없습니다.';
   return '접근 설정을 변경하지 못했습니다.';
 }

@@ -72,6 +72,10 @@ import {
   mailCredentialApi,
   type MailCredentialOption,
 } from '@/app/features/workflow/api/mailCredentialApi';
+import {
+  externalActionCredentialApi,
+  type ExternalActionCredentialOption,
+} from '@/app/features/workflow/api/externalActionCredentialApi';
 
 type TeamMemberResponse = {
   id: string;
@@ -112,7 +116,9 @@ const getErrorMessage = (error: unknown, fallback: string) => {
     const data = error.response?.data as
       | { detail?: string; message?: string; error?: { message?: string } }
       | undefined;
-    return data?.detail || data?.message || data?.error?.message || error.message;
+    return (
+      data?.detail || data?.message || data?.error?.message || error.message
+    );
   }
   return error instanceof Error ? error.message : fallback;
 };
@@ -156,6 +162,9 @@ export default function AdminConsolePage() {
   const [mailCredentials, setMailCredentials] = useState<
     MailCredentialOption[]
   >([]);
+  const [externalActionCredentials, setExternalActionCredentials] = useState<
+    ExternalActionCredentialOption[]
+  >([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseResponse[]>(
     [],
   );
@@ -167,6 +176,10 @@ export default function AdminConsolePage() {
     useState<ResourcePermissionListResponse | null>(null);
   const [mailCredentialPermissions, setMailCredentialPermissions] =
     useState<ResourcePermissionListResponse | null>(null);
+  const [
+    externalActionCredentialPermissions,
+    setExternalActionCredentialPermissions,
+  ] = useState<ResourcePermissionListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -185,11 +198,7 @@ export default function AdminConsolePage() {
   const selectAdminTab = (tab: AdminTab) => {
     setActiveTab(tab);
     router.push(
-      buildAdminTabUrl(
-        pathname,
-        new URLSearchParams(searchParamsString),
-        tab,
-      ),
+      buildAdminTabUrl(pathname, new URLSearchParams(searchParamsString), tab),
       { scroll: false },
     );
   };
@@ -259,6 +268,10 @@ export default function AdminConsolePage() {
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState('');
   const [selectedCredentialId, setSelectedCredentialId] = useState('');
   const [selectedMailCredentialId, setSelectedMailCredentialId] = useState('');
+  const [
+    selectedExternalActionCredentialId,
+    setSelectedExternalActionCredentialId,
+  ] = useState('');
   const [permissionGranteeType, setPermissionGranteeType] =
     useState<GranteeType>('team');
   const [permissionGranteeId, setPermissionGranteeId] = useState('');
@@ -309,7 +322,9 @@ export default function AdminConsolePage() {
         ? knowledgePermissions
         : permissionResourceType === 'llm_credential'
           ? credentialPermissions
-          : mailCredentialPermissions;
+          : permissionResourceType === 'mail_credential'
+            ? mailCredentialPermissions
+            : externalActionCredentialPermissions;
 
   const activeManagerCount = useMemo(
     () =>
@@ -399,7 +414,8 @@ export default function AdminConsolePage() {
   );
 
   const selectedTeamMemberUserIds = useMemo(
-    () => (selectedTeamId ? teamMembers[selectedTeamId] || [] : []).map(
+    () =>
+      (selectedTeamId ? teamMembers[selectedTeamId] || [] : []).map(
         (member) => member.user_id,
       ),
     [selectedTeamId, teamMembers],
@@ -439,6 +455,7 @@ export default function AdminConsolePage() {
     knowledgeBaseId = selectedKnowledgeBaseId,
     credentialId = selectedCredentialId,
     mailCredentialId = selectedMailCredentialId,
+    externalActionCredentialId = selectedExternalActionCredentialId,
   ) => {
     try {
       if (resourceType === 'workflow' && workflowId) {
@@ -469,11 +486,23 @@ export default function AdminConsolePage() {
         setMailCredentialPermissions(response.data);
         return;
       }
+      if (
+        resourceType === 'external_action_credential' &&
+        externalActionCredentialId
+      ) {
+        const response = await apiClient.get<ResourcePermissionListResponse>(
+          `/external-action-credentials/credentials/${externalActionCredentialId}/permissions`,
+        );
+        setExternalActionCredentialPermissions(response.data);
+        return;
+      }
       if (resourceType === 'workflow') setWorkflowPermissions(null);
       if (resourceType === 'knowledge_base') setKnowledgePermissions(null);
       if (resourceType === 'llm_credential') setCredentialPermissions(null);
       if (resourceType === 'mail_credential')
         setMailCredentialPermissions(null);
+      if (resourceType === 'external_action_credential')
+        setExternalActionCredentialPermissions(null);
     } catch (err) {
       toast.error(getErrorMessage(err, '권한 목록을 불러오지 못했습니다.'));
       if (resourceType === 'workflow') setWorkflowPermissions(null);
@@ -481,13 +510,14 @@ export default function AdminConsolePage() {
       if (resourceType === 'llm_credential') setCredentialPermissions(null);
       if (resourceType === 'mail_credential')
         setMailCredentialPermissions(null);
+      if (resourceType === 'external_action_credential')
+        setExternalActionCredentialPermissions(null);
     }
   };
 
   const refreshCredentials = async () => {
-    const response = await apiClient.get<LLMCredentialResponse[]>(
-      '/llm/credentials',
-    );
+    const response =
+      await apiClient.get<LLMCredentialResponse[]>('/llm/credentials');
     setCredentials(response.data);
     return response.data;
   };
@@ -512,10 +542,12 @@ export default function AdminConsolePage() {
         setProviders([]);
         setCredentials([]);
         setMailCredentials([]);
+        setExternalActionCredentials([]);
         setWorkflowPermissions(null);
         setKnowledgePermissions(null);
         setCredentialPermissions(null);
         setMailCredentialPermissions(null);
+        setExternalActionCredentialPermissions(null);
         setKnowledgeBases([]);
         return;
       }
@@ -537,6 +569,7 @@ export default function AdminConsolePage() {
         providerData,
         credentialData,
         mailCredentialData,
+        externalActionCredentialData,
         appData,
         knowledgeData,
       ] = await Promise.all([
@@ -549,6 +582,7 @@ export default function AdminConsolePage() {
           .then((response) => response.data)
           .catch(() => []),
         mailCredentialApi.listAvailable().catch(() => []),
+        externalActionCredentialApi.listAvailable().catch(() => []),
         apiClient
           .get<AppResponse[]>('/apps')
           .then((response) => response.data)
@@ -559,6 +593,7 @@ export default function AdminConsolePage() {
       setProviders(providerData);
       setCredentials(credentialData);
       setMailCredentials(mailCredentialData);
+      setExternalActionCredentials(externalActionCredentialData);
       setApps(appData);
       setKnowledgeBases(knowledgeData);
       const firstWorkflowId =
@@ -571,10 +606,15 @@ export default function AdminConsolePage() {
         selectedCredentialId || credentialData[0]?.id || '';
       const firstMailCredentialId =
         selectedMailCredentialId || mailCredentialData[0]?.id || '';
+      const firstExternalActionCredentialId =
+        selectedExternalActionCredentialId ||
+        externalActionCredentialData[0]?.id ||
+        '';
       setSelectedWorkflowId(firstWorkflowId);
       setSelectedKnowledgeBaseId(firstKnowledgeBaseId);
       setSelectedCredentialId(firstCredentialId);
       setSelectedMailCredentialId(firstMailCredentialId);
+      setSelectedExternalActionCredentialId(firstExternalActionCredentialId);
       await Promise.all([
         loadPermissions(
           'workflow',
@@ -582,6 +622,7 @@ export default function AdminConsolePage() {
           firstKnowledgeBaseId,
           firstCredentialId,
           firstMailCredentialId,
+          firstExternalActionCredentialId,
         ),
         loadPermissions(
           'knowledge_base',
@@ -589,6 +630,7 @@ export default function AdminConsolePage() {
           firstKnowledgeBaseId,
           firstCredentialId,
           firstMailCredentialId,
+          firstExternalActionCredentialId,
         ),
         loadPermissions(
           'llm_credential',
@@ -596,6 +638,7 @@ export default function AdminConsolePage() {
           firstKnowledgeBaseId,
           firstCredentialId,
           firstMailCredentialId,
+          firstExternalActionCredentialId,
         ),
         loadPermissions(
           'mail_credential',
@@ -603,6 +646,15 @@ export default function AdminConsolePage() {
           firstKnowledgeBaseId,
           firstCredentialId,
           firstMailCredentialId,
+          firstExternalActionCredentialId,
+        ),
+        loadPermissions(
+          'external_action_credential',
+          firstWorkflowId,
+          firstKnowledgeBaseId,
+          firstCredentialId,
+          firstMailCredentialId,
+          firstExternalActionCredentialId,
         ),
       ]);
       await loadTeamMembers(teamData);
@@ -662,6 +714,15 @@ export default function AdminConsolePage() {
   }, [mailCredentials, selectedMailCredentialId]);
 
   useEffect(() => {
+    if (
+      !selectedExternalActionCredentialId &&
+      externalActionCredentials.length > 0
+    ) {
+      setSelectedExternalActionCredentialId(externalActionCredentials[0].id);
+    }
+  }, [externalActionCredentials, selectedExternalActionCredentialId]);
+
+  useEffect(() => {
     if (!credentialForm.providerId && providers.length > 0) {
       setCredentialForm((prev) => ({ ...prev, providerId: providers[0].id }));
     }
@@ -692,6 +753,7 @@ export default function AdminConsolePage() {
     selectedKnowledgeBaseId,
     selectedCredentialId,
     selectedMailCredentialId,
+    selectedExternalActionCredentialId,
   ]);
 
   const refreshMembers = async () => {
@@ -756,7 +818,11 @@ export default function AdminConsolePage() {
     successMessage: string,
   ) => {
     if (!organization) return;
-    await organizationApi.updateMember(organization.id, member.user_id, payload);
+    await organizationApi.updateMember(
+      organization.id,
+      member.user_id,
+      payload,
+    );
     toast.success(successMessage);
     await refreshMembers();
   };
@@ -836,7 +902,10 @@ export default function AdminConsolePage() {
     });
   };
 
-  const removeTeamMember = async (teamId: string, member: TeamMemberResponse) => {
+  const removeTeamMember = async (
+    teamId: string,
+    member: TeamMemberResponse,
+  ) => {
     await apiClient.delete(`/teams/${teamId}/members/${member.user_id}`);
     toast.success('팀 멤버를 제거했습니다.');
     await refreshTeamMember(teamId);
@@ -856,7 +925,9 @@ export default function AdminConsolePage() {
           ? selectedKnowledgeBaseId
           : resourceType === 'llm_credential'
             ? selectedCredentialId
-            : selectedMailCredentialId);
+            : resourceType === 'mail_credential'
+              ? selectedMailCredentialId
+              : selectedExternalActionCredentialId);
     const resourcePath =
       resourceType === 'workflow'
         ? `/permissions/workflows/${resourceId}`
@@ -864,7 +935,9 @@ export default function AdminConsolePage() {
           ? `/permissions/knowledge-bases/${resourceId}`
           : resourceType === 'llm_credential'
             ? `/permissions/llm-credentials/${resourceId}`
-            : `/mail/credentials/${resourceId}/permissions`;
+            : resourceType === 'mail_credential'
+              ? `/mail/credentials/${resourceId}/permissions`
+              : `/external-action-credentials/credentials/${resourceId}/permissions`;
     return `${resourcePath}/${granteeType}s/${granteeId}`;
   };
 
@@ -902,17 +975,23 @@ export default function AdminConsolePage() {
         selection.resourceType === 'mail_credential'
           ? selection.resourceId
           : selectedMailCredentialId;
+      const nextExternalActionCredentialId =
+        selection.resourceType === 'external_action_credential'
+          ? selection.resourceId
+          : selectedExternalActionCredentialId;
 
       setSelectedWorkflowId(nextWorkflowId);
       setSelectedKnowledgeBaseId(nextKnowledgeBaseId);
       setSelectedCredentialId(nextCredentialId);
       setSelectedMailCredentialId(nextMailCredentialId);
+      setSelectedExternalActionCredentialId(nextExternalActionCredentialId);
       await loadPermissions(
         selection.resourceType,
         nextWorkflowId,
         nextKnowledgeBaseId,
         nextCredentialId,
         nextMailCredentialId,
+        nextExternalActionCredentialId,
       );
     });
   };
@@ -923,9 +1002,14 @@ export default function AdminConsolePage() {
   ) => {
     setPermissionResourceType(resourceType);
     if (resourceType === 'workflow') setSelectedWorkflowId(resourceId);
-    if (resourceType === 'knowledge_base') setSelectedKnowledgeBaseId(resourceId);
+    if (resourceType === 'knowledge_base')
+      setSelectedKnowledgeBaseId(resourceId);
     if (resourceType === 'llm_credential') setSelectedCredentialId(resourceId);
-    if (resourceType === 'mail_credential') setSelectedMailCredentialId(resourceId);
+    if (resourceType === 'mail_credential')
+      setSelectedMailCredentialId(resourceId);
+    if (resourceType === 'external_action_credential') {
+      setSelectedExternalActionCredentialId(resourceId);
+    }
   };
 
   const revokePermission = async (
@@ -933,7 +1017,9 @@ export default function AdminConsolePage() {
     granteeType: GranteeType,
     granteeId: string,
   ) => {
-    await apiClient.delete(permissionPath(resourceType, granteeType, granteeId));
+    await apiClient.delete(
+      permissionPath(resourceType, granteeType, granteeId),
+    );
     toast.success('권한을 회수했습니다.');
     await loadPermissions(resourceType);
   };
@@ -1064,14 +1150,9 @@ export default function AdminConsolePage() {
 
           <div className="border-b border-slate-200">
             <nav className="-mb-px flex gap-5 overflow-x-auto">
-              {ADMIN_TAB_ITEMS
-                .filter((tab) =>
-                  isAdminTabVisible(
-                    tab.key,
-                    organization?.is_manager === true,
-                  ),
-                )
-                .map((tab) => (
+              {ADMIN_TAB_ITEMS.filter((tab) =>
+                isAdminTabVisible(tab.key, organization?.is_manager === true),
+              ).map((tab) => (
                 <button
                   key={tab.key}
                   onClick={() => selectAdminTab(tab.key)}
@@ -1083,7 +1164,7 @@ export default function AdminConsolePage() {
                 >
                   {tab.label}
                 </button>
-                ))}
+              ))}
             </nav>
           </div>
 
@@ -1098,89 +1179,89 @@ export default function AdminConsolePage() {
 
           {activeTab === 'organization-structure' &&
             organizationView === 'members' && (
-            <MembersTab
-              members={filteredMembers}
-              page={memberPage}
-              onPageChange={setMemberPage}
-              query={memberQuery}
-              onQueryChange={setMemberQuery}
-              stateFilter={memberStateFilter}
-              onStateFilterChange={setMemberStateFilter}
-              authFilter={memberAuthFilter}
-              onAuthFilterChange={setMemberAuthFilter}
-              onInvite={() => setInviteOpen(true)}
-              currentUserId={currentUserId}
-              activeManagerCount={activeManagerCount}
-              actionPending={actionPending}
-              onUpdateMember={(member, payload, message) =>
-                payload.organization_auth_state
-                  ? openConfirm({
-                      title:
-                        payload.organization_auth_state === 'manager'
-                          ? '관리자로 승격할까요?'
-                          : '멤버로 강등할까요?',
-                      description:
-                        payload.organization_auth_state === 'manager'
-                          ? '이 사용자는 조직 멤버와 팀, 권한 관리 화면에 접근할 수 있습니다.'
-                          : '이 사용자는 더 이상 조직 관리 화면에 접근할 수 없습니다.',
-                      confirmLabel:
-                        payload.organization_auth_state === 'manager'
-                          ? '승격'
-                          : '강등',
-                      details: [`${member.user_name} (${member.user_email})`],
-                      onConfirm: () => updateMember(member, payload, message),
-                    })
-                  : runAction(() => updateMember(member, payload, message))
-              }
-              onRemoveMember={(member) =>
-                openConfirm({
-                  title: '멤버를 제거할까요?',
-                  description:
-                    '멤버를 제거하면 팀 배정과 직접 권한이 함께 정리됩니다.',
-                  confirmLabel: '제거',
-                  tone: 'danger',
-                  details: [
-                    `${member.user_name} (${member.user_email})`,
-                    '팀 멤버십, workflow 직접 권한, LLM credential 직접 권한 cleanup이 실행됩니다.',
-                  ],
-                  onConfirm: () => removeMember(member),
-                })
-              }
-            />
+              <MembersTab
+                members={filteredMembers}
+                page={memberPage}
+                onPageChange={setMemberPage}
+                query={memberQuery}
+                onQueryChange={setMemberQuery}
+                stateFilter={memberStateFilter}
+                onStateFilterChange={setMemberStateFilter}
+                authFilter={memberAuthFilter}
+                onAuthFilterChange={setMemberAuthFilter}
+                onInvite={() => setInviteOpen(true)}
+                currentUserId={currentUserId}
+                activeManagerCount={activeManagerCount}
+                actionPending={actionPending}
+                onUpdateMember={(member, payload, message) =>
+                  payload.organization_auth_state
+                    ? openConfirm({
+                        title:
+                          payload.organization_auth_state === 'manager'
+                            ? '관리자로 승격할까요?'
+                            : '멤버로 강등할까요?',
+                        description:
+                          payload.organization_auth_state === 'manager'
+                            ? '이 사용자는 조직 멤버와 팀, 권한 관리 화면에 접근할 수 있습니다.'
+                            : '이 사용자는 더 이상 조직 관리 화면에 접근할 수 없습니다.',
+                        confirmLabel:
+                          payload.organization_auth_state === 'manager'
+                            ? '승격'
+                            : '강등',
+                        details: [`${member.user_name} (${member.user_email})`],
+                        onConfirm: () => updateMember(member, payload, message),
+                      })
+                    : runAction(() => updateMember(member, payload, message))
+                }
+                onRemoveMember={(member) =>
+                  openConfirm({
+                    title: '멤버를 제거할까요?',
+                    description:
+                      '멤버를 제거하면 팀 배정과 직접 권한이 함께 정리됩니다.',
+                    confirmLabel: '제거',
+                    tone: 'danger',
+                    details: [
+                      `${member.user_name} (${member.user_email})`,
+                      '팀 멤버십, workflow 직접 권한, LLM credential 직접 권한 cleanup이 실행됩니다.',
+                    ],
+                    onConfirm: () => removeMember(member),
+                  })
+                }
+              />
             )}
           {activeTab === 'organization-structure' &&
             organizationView === 'teams' && (
-            <TeamsTab
-              teams={filteredTeams}
-              page={teamPage}
-              onPageChange={setTeamPage}
-              query={teamQuery}
-              onQueryChange={setTeamQuery}
-              stateFilter={teamStateFilter}
-              onStateFilterChange={setTeamStateFilter}
-              memberFilter={teamMemberFilter}
-              onMemberFilterChange={setTeamMemberFilter}
-              teamMembers={teamMembers}
-              teamMemberLoadErrors={teamMemberLoadErrors}
-              isLimited={teams.length >= 100}
-              onCreateTeam={() => openTeamEditor({ mode: 'create' })}
-              onEditTeam={(team) => openTeamEditor({ mode: 'edit', team })}
-              onDeactivateTeam={(team) =>
-                openConfirm({
-                  title: '팀을 비활성화할까요?',
-                  description:
-                    '팀은 삭제되지 않고 비활성 상태가 됩니다. 비활성 팀에는 멤버 추가와 권한 부여를 하지 않습니다.',
-                  confirmLabel: '비활성화',
-                  tone: 'danger',
-                  details: [
-                    team.name,
-                    `현재 멤버 ${teamMembers[team.id]?.length || 0}명`,
-                  ],
-                  onConfirm: () => deactivateTeam(team),
-                })
-              }
-              onOpenTeam={setSelectedTeamId}
-            />
+              <TeamsTab
+                teams={filteredTeams}
+                page={teamPage}
+                onPageChange={setTeamPage}
+                query={teamQuery}
+                onQueryChange={setTeamQuery}
+                stateFilter={teamStateFilter}
+                onStateFilterChange={setTeamStateFilter}
+                memberFilter={teamMemberFilter}
+                onMemberFilterChange={setTeamMemberFilter}
+                teamMembers={teamMembers}
+                teamMemberLoadErrors={teamMemberLoadErrors}
+                isLimited={teams.length >= 100}
+                onCreateTeam={() => openTeamEditor({ mode: 'create' })}
+                onEditTeam={(team) => openTeamEditor({ mode: 'edit', team })}
+                onDeactivateTeam={(team) =>
+                  openConfirm({
+                    title: '팀을 비활성화할까요?',
+                    description:
+                      '팀은 삭제되지 않고 비활성 상태가 됩니다. 비활성 팀에는 멤버 추가와 권한 부여를 하지 않습니다.',
+                    confirmLabel: '비활성화',
+                    tone: 'danger',
+                    details: [
+                      team.name,
+                      `현재 멤버 ${teamMembers[team.id]?.length || 0}명`,
+                    ],
+                    onConfirm: () => deactivateTeam(team),
+                  })
+                }
+                onOpenTeam={setSelectedTeamId}
+              />
             )}
           {activeTab === 'permissions' && (
             <div className="flex flex-col gap-6">
@@ -1194,6 +1275,10 @@ export default function AdminConsolePage() {
                 selectedCredentialId={selectedCredentialId}
                 mailCredentials={mailCredentials}
                 selectedMailCredentialId={selectedMailCredentialId}
+                externalActionCredentials={externalActionCredentials}
+                selectedExternalActionCredentialId={
+                  selectedExternalActionCredentialId
+                }
                 activeTeams={activeTeams}
                 activeMembers={activeMembers}
                 granteeType={permissionGranteeType}
@@ -1290,6 +1375,11 @@ export default function AdminConsolePage() {
                     name: item.credential_name,
                     resourceType: 'mail_credential' as const,
                   })),
+                  ...externalActionCredentials.map((item) => ({
+                    id: item.id,
+                    name: item.credential_name,
+                    resourceType: 'external_action_credential' as const,
+                  })),
                 ]}
                 onSelectAlert={(alertId) => {
                   const nextSearchParams = new URLSearchParams(
@@ -1306,10 +1396,9 @@ export default function AdminConsolePage() {
                     searchParamsString,
                   );
                   nextSearchParams.delete('alertId');
-                  router.replace(
-                    `${pathname}?${nextSearchParams.toString()}`,
-                    { scroll: false },
-                  );
+                  router.replace(`${pathname}?${nextSearchParams.toString()}`, {
+                    scroll: false,
+                  });
                 }}
                 onAlertNotFound={() => {
                   setNotice('알림을 찾을 수 없습니다.');
@@ -1317,10 +1406,9 @@ export default function AdminConsolePage() {
                     searchParamsString,
                   );
                   nextSearchParams.delete('alertId');
-                  router.replace(
-                    `${pathname}?${nextSearchParams.toString()}`,
-                    { scroll: false },
-                  );
+                  router.replace(`${pathname}?${nextSearchParams.toString()}`, {
+                    scroll: false,
+                  });
                 }}
               />
             )}
@@ -1358,6 +1446,11 @@ export default function AdminConsolePage() {
                   id: item.id,
                   name: item.credential_name,
                   resourceType: 'mail_credential' as const,
+                })),
+                ...externalActionCredentials.map((item) => ({
+                  id: item.id,
+                  name: item.credential_name,
+                  resourceType: 'external_action_credential' as const,
                 })),
               ]}
               onActorAccessChanged={loadData}
@@ -1468,7 +1561,10 @@ export default function AdminConsolePage() {
       )}
 
       {selectedTeam && (
-        <SidePanel title={selectedTeam.name} onClose={() => setSelectedTeamId(null)}>
+        <SidePanel
+          title={selectedTeam.name}
+          onClose={() => setSelectedTeamId(null)}
+        >
           <div className="space-y-5">
             <div>
               <div className="flex items-center gap-2">
@@ -1778,7 +1874,9 @@ function MembersTab({
         <select
           value={authFilter}
           onChange={(event) =>
-            onAuthFilterChange(event.target.value as OrganizationAuthState | 'all')
+            onAuthFilterChange(
+              event.target.value as OrganizationAuthState | 'all',
+            )
           }
           className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
         >
@@ -1804,7 +1902,10 @@ function MembersTab({
           <tbody className="divide-y divide-slate-100">
             {pageItems.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-5 py-10 text-center text-slate-500">
+                <td
+                  colSpan={7}
+                  className="px-5 py-10 text-center text-slate-500"
+                >
                   조건에 맞는 멤버가 없습니다.
                 </td>
               </tr>
@@ -2050,8 +2151,7 @@ function TeamsTab({
           onClick={onCreateTeam}
           className="inline-flex h-9 items-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-semibold text-white hover:bg-slate-800"
         >
-          <Plus className="h-4 w-4" />
-          팀 생성
+          <Plus className="h-4 w-4" />팀 생성
         </button>
       }
     >
@@ -2064,7 +2164,9 @@ function TeamsTab({
         <select
           value={stateFilter}
           onChange={(event) =>
-            onStateFilterChange(event.target.value as 'all' | 'active' | 'inactive')
+            onStateFilterChange(
+              event.target.value as 'all' | 'active' | 'inactive',
+            )
           }
           className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
         >
@@ -2106,7 +2208,10 @@ function TeamsTab({
           <tbody className="divide-y divide-slate-100">
             {pageItems.length === 0 ? (
               <tr>
-                <td colSpan={4} className="px-5 py-10 text-center text-slate-500">
+                <td
+                  colSpan={4}
+                  className="px-5 py-10 text-center text-slate-500"
+                >
                   조건에 맞는 팀이 없습니다.
                 </td>
               </tr>
@@ -2117,7 +2222,9 @@ function TeamsTab({
                   <tr key={team.id} className="bg-white">
                     <td className="px-5 py-4">
                       <div className="min-w-0">
-                        <p className="font-semibold text-slate-950">{team.name}</p>
+                        <p className="font-semibold text-slate-950">
+                          {team.name}
+                        </p>
                         <p className="mt-1 text-xs text-slate-500">
                           {team.description || '설명 없음'}
                         </p>
@@ -2140,7 +2247,9 @@ function TeamsTab({
                           멤버를 불러오지 못함
                         </span>
                       ) : members.length === 0 ? (
-                        <span className="text-xs text-slate-400">멤버 없음</span>
+                        <span className="text-xs text-slate-400">
+                          멤버 없음
+                        </span>
                       ) : (
                         <div className="flex flex-wrap gap-1.5">
                           {members.slice(0, 3).map((member) => (
@@ -2200,7 +2309,6 @@ function TeamsTab({
     </DashboardPanel>
   );
 }
-
 
 function CredentialsTab({
   providers,
@@ -2323,7 +2431,6 @@ function CredentialsTab({
     </DashboardPanel>
   );
 }
-
 
 function KnowledgeTab({
   knowledgeBases,
@@ -2490,7 +2597,9 @@ function ConfirmDialog({
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/40 px-4">
       <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl">
-        <h2 className="text-base font-semibold text-slate-950">{state.title}</h2>
+        <h2 className="text-base font-semibold text-slate-950">
+          {state.title}
+        </h2>
         <p className="mt-2 text-sm leading-6 text-slate-600">
           {state.description}
         </p>

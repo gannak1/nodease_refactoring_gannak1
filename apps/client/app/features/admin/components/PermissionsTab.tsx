@@ -6,6 +6,7 @@ import { DashboardPanel } from '@/app/features/dashboard/components/DashboardSur
 import type { KnowledgeBaseResponse } from '@/app/features/knowledge/api/knowledgeApi';
 import type { OrganizationMember } from '@/app/features/organization/types/Organization';
 import type { MailCredentialOption } from '@/app/features/workflow/api/mailCredentialApi';
+import type { ExternalActionCredentialOption } from '@/app/features/workflow/api/externalActionCredentialApi';
 
 export type TeamResponse = {
   id: string;
@@ -36,7 +37,8 @@ export type ResourceType =
   | 'workflow'
   | 'knowledge_base'
   | 'llm_credential'
-  | 'mail_credential';
+  | 'mail_credential'
+  | 'external_action_credential';
 export type GranteeType = 'team' | 'user';
 export type ResourceAuthState = 'viewer' | 'operator' | 'builder' | 'manager';
 
@@ -85,6 +87,8 @@ export function PermissionsTab({
   selectedCredentialId,
   mailCredentials,
   selectedMailCredentialId,
+  externalActionCredentials,
+  selectedExternalActionCredentialId,
   activeTeams,
   activeMembers,
   granteeType,
@@ -105,6 +109,8 @@ export function PermissionsTab({
   selectedCredentialId: string;
   mailCredentials: MailCredentialOption[];
   selectedMailCredentialId: string;
+  externalActionCredentials: ExternalActionCredentialOption[];
+  selectedExternalActionCredentialId: string;
   activeTeams: TeamResponse[];
   activeMembers: OrganizationMember[];
   granteeType: GranteeType;
@@ -135,19 +141,27 @@ export function PermissionsTab({
         ? selectedKnowledgeBaseId
         : resourceType === 'llm_credential'
           ? selectedCredentialId
-          : selectedMailCredentialId;
+          : resourceType === 'mail_credential'
+            ? selectedMailCredentialId
+            : selectedExternalActionCredentialId;
   const resourceMissing = !selectedResourceId;
   const selectedResourceName =
     resourceType === 'workflow'
       ? workflowOptions.find((item) => item.workflow_id === selectedWorkflowId)
           ?.name
       : resourceType === 'knowledge_base'
-        ? knowledgeBases.find((item) => item.id === selectedKnowledgeBaseId)?.name
+        ? knowledgeBases.find((item) => item.id === selectedKnowledgeBaseId)
+            ?.name
         : resourceType === 'llm_credential'
           ? credentials.find((item) => item.id === selectedCredentialId)
               ?.credential_name
-          : mailCredentials.find((item) => item.id === selectedMailCredentialId)
-              ?.credential_name;
+          : resourceType === 'mail_credential'
+            ? mailCredentials.find(
+                (item) => item.id === selectedMailCredentialId,
+              )?.credential_name
+            : externalActionCredentials.find(
+                (item) => item.id === selectedExternalActionCredentialId,
+              )?.credential_name;
   const resourceFilterOptions =
     resourceFilterType === 'workflow'
       ? workflowOptions
@@ -160,14 +174,17 @@ export function PermissionsTab({
               id: item.id,
               name: item.credential_name,
             }))
-          : mailCredentials.map((item) => ({
-              id: item.id,
-              name: item.credential_name,
-            }));
+          : resourceFilterType === 'mail_credential'
+            ? mailCredentials.map((item) => ({
+                id: item.id,
+                name: item.credential_name,
+              }))
+            : externalActionCredentials.map((item) => ({
+                id: item.id,
+                name: item.credential_name,
+              }));
   const visibleResourceFilterOptions = resourceFilterOptions.filter((item) =>
-    item.name
-      .toLowerCase()
-      .includes(resourceFilterQuery.trim().toLowerCase()),
+    item.name.toLowerCase().includes(resourceFilterQuery.trim().toLowerCase()),
   );
   const visiblePermissionList =
     permissionList?.resource_type === resourceType &&
@@ -203,7 +220,9 @@ export function PermissionsTab({
                 </span>
                 <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700">
                   리소스:{' '}
-                  <span>{selectedResourceName || '선택 가능한 리소스 없음'}</span>
+                  <span>
+                    {selectedResourceName || '선택 가능한 리소스 없음'}
+                  </span>
                 </span>
               </div>
             </div>
@@ -247,12 +266,17 @@ export function PermissionsTab({
                 <label className="flex flex-col gap-1.5 text-xs font-medium text-slate-600">
                   리소스 이름
                   <span className="relative">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                    <Search
+                      className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                      aria-hidden="true"
+                    />
                     <input
                       type="search"
                       aria-label="조회 리소스 검색"
                       value={resourceFilterQuery}
-                      onChange={(event) => setResourceFilterQuery(event.target.value)}
+                      onChange={(event) =>
+                        setResourceFilterQuery(event.target.value)
+                      }
                       placeholder="이름으로 검색"
                       className="h-10 w-full rounded-md border border-slate-300 bg-white pl-9 pr-3 text-sm"
                     />
@@ -306,7 +330,7 @@ export function PermissionsTab({
         {resourceMissing ? (
           <PermissionPlaceholder
             title="선택 가능한 resource가 없습니다"
-            description="Workflow, Knowledge Base, LLM Credential이 생성되면 권한을 부여할 수 있습니다."
+            description="Workflow, Knowledge Base, Credential이 생성되면 권한을 부여할 수 있습니다."
           />
         ) : (
           <div className="grid gap-4 px-5 py-5 lg:grid-cols-2">
@@ -339,6 +363,10 @@ export function PermissionsTab({
           selectedCredentialId={selectedCredentialId}
           mailCredentials={mailCredentials}
           selectedMailCredentialId={selectedMailCredentialId}
+          externalActionCredentials={externalActionCredentials}
+          selectedExternalActionCredentialId={
+            selectedExternalActionCredentialId
+          }
           activeTeams={activeTeams}
           activeMembers={activeMembers}
           granteeType={granteeType}
@@ -363,6 +391,8 @@ function PermissionGrantModal({
   selectedCredentialId,
   mailCredentials,
   selectedMailCredentialId,
+  externalActionCredentials,
+  selectedExternalActionCredentialId,
   activeTeams,
   activeMembers,
   granteeType,
@@ -381,6 +411,8 @@ function PermissionGrantModal({
   selectedCredentialId: string;
   mailCredentials: MailCredentialOption[];
   selectedMailCredentialId: string;
+  externalActionCredentials: ExternalActionCredentialOption[];
+  selectedExternalActionCredentialId: string;
   activeTeams: TeamResponse[];
   activeMembers: OrganizationMember[];
   granteeType: GranteeType;
@@ -403,7 +435,9 @@ function PermissionGrantModal({
         ? selectedKnowledgeBaseId
         : resourceType === 'llm_credential'
           ? selectedCredentialId
-          : selectedMailCredentialId,
+          : resourceType === 'mail_credential'
+            ? selectedMailCredentialId
+            : selectedExternalActionCredentialId,
   );
   const [draftGranteeType, setDraftGranteeType] =
     useState<GranteeType>(granteeType);
@@ -423,10 +457,15 @@ function PermissionGrantModal({
               id: item.id,
               name: item.credential_name,
             }))
-          : mailCredentials.map((item) => ({
-              id: item.id,
-              name: item.credential_name,
-            }));
+          : type === 'mail_credential'
+            ? mailCredentials.map((item) => ({
+                id: item.id,
+                name: item.credential_name,
+              }))
+            : externalActionCredentials.map((item) => ({
+                id: item.id,
+                name: item.credential_name,
+              }));
   const resourceOptions = getResourceOptions(draftResourceType);
   const visibleResources = resourceOptions.filter((item) =>
     item.name.toLowerCase().includes(resourceQuery.trim().toLowerCase()),
@@ -455,9 +494,7 @@ function PermissionGrantModal({
     (item) => item.id === draftGranteeId,
   );
   const canSubmit =
-    !actionPending &&
-    hasVisibleResourceSelection &&
-    hasVisibleGranteeSelection;
+    !actionPending && hasVisibleResourceSelection && hasVisibleGranteeSelection;
 
   const submitGrant = async () => {
     if (!canSubmit) return;
@@ -532,7 +569,10 @@ function PermissionGrantModal({
               <label className="flex flex-col gap-1.5 text-xs font-medium text-slate-600">
                 리소스 검색
                 <span className="relative">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                  <Search
+                    className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                    aria-hidden="true"
+                  />
                   <input
                     type="search"
                     disabled={actionPending}
@@ -551,7 +591,9 @@ function PermissionGrantModal({
                   onChange={(event) => {
                     const nextType = event.target.value as ResourceType;
                     setDraftResourceType(nextType);
-                    setDraftResourceId(getResourceOptions(nextType)[0]?.id || '');
+                    setDraftResourceId(
+                      getResourceOptions(nextType)[0]?.id || '',
+                    );
                     setResourceQuery('');
                   }}
                   className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900"
@@ -560,6 +602,9 @@ function PermissionGrantModal({
                   <option value="knowledge_base">Knowledge Base</option>
                   <option value="llm_credential">LLM Credential</option>
                   <option value="mail_credential">Mail Credential</option>
+                  <option value="external_action_credential">
+                    External Action Credential
+                  </option>
                 </select>
               </label>
             </div>
@@ -569,20 +614,50 @@ function PermissionGrantModal({
               tabIndex={0}
               className="mt-3 max-h-[500px] overflow-auto rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <table className="w-full min-w-[620px] text-left text-sm" aria-label="권한 대상 리소스">
+              <table
+                className="w-full min-w-[620px] text-left text-sm"
+                aria-label="권한 대상 리소스"
+              >
                 <thead className="sticky top-0 z-10 border-y border-slate-200 bg-white text-xs text-slate-500">
-                  <tr><th className="w-12 px-3 py-2">선택</th><th className="px-3 py-2">리소스 이름</th><th className="px-3 py-2">유형</th><th className="px-3 py-2">설명</th></tr>
+                  <tr>
+                    <th className="w-12 px-3 py-2">선택</th>
+                    <th className="px-3 py-2">리소스 이름</th>
+                    <th className="px-3 py-2">유형</th>
+                    <th className="px-3 py-2">설명</th>
+                  </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {visibleResources.length === 0 ? (
-                    <tr><td colSpan={4} className="px-3 py-8 text-center text-slate-500">선택 가능한 리소스가 없습니다.</td></tr>
+                    <tr>
+                      <td
+                        colSpan={4}
+                        className="px-3 py-8 text-center text-slate-500"
+                      >
+                        선택 가능한 리소스가 없습니다.
+                      </td>
+                    </tr>
                   ) : (
                     visibleResources.map((item) => (
                       <tr key={item.id}>
-                        <td className="px-3 py-3"><input type="radio" name="permission-resource" disabled={actionPending} checked={draftResourceId === item.id} onChange={() => setDraftResourceId(item.id)} aria-label={`${item.name} 선택`} /></td>
-                        <td className="px-3 py-3 font-medium text-blue-700">{item.name}</td>
-                        <td className="px-3 py-3 text-slate-600">{resourceTypeLabel(draftResourceType)}</td>
-                        <td className="px-3 py-3 text-slate-500">현재 조직에서 사용할 수 있는 리소스</td>
+                        <td className="px-3 py-3">
+                          <input
+                            type="radio"
+                            name="permission-resource"
+                            disabled={actionPending}
+                            checked={draftResourceId === item.id}
+                            onChange={() => setDraftResourceId(item.id)}
+                            aria-label={`${item.name} 선택`}
+                          />
+                        </td>
+                        <td className="px-3 py-3 font-medium text-blue-700">
+                          {item.name}
+                        </td>
+                        <td className="px-3 py-3 text-slate-600">
+                          {resourceTypeLabel(draftResourceType)}
+                        </td>
+                        <td className="px-3 py-3 text-slate-500">
+                          현재 조직에서 사용할 수 있는 리소스
+                        </td>
                       </tr>
                     ))
                   )}
@@ -604,22 +679,37 @@ function PermissionGrantModal({
               <label className="flex flex-col gap-1.5 text-xs font-medium text-slate-600">
                 대상 검색
                 <span className="relative">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
-                  <input type="search" disabled={actionPending} value={granteeQuery} onChange={(event) => setGranteeQuery(event.target.value)} className="h-10 w-full rounded-md border border-slate-300 bg-white pl-9 pr-3 text-sm" placeholder="팀 또는 사용자 검색" />
+                  <Search
+                    className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+                    aria-hidden="true"
+                  />
+                  <input
+                    type="search"
+                    disabled={actionPending}
+                    value={granteeQuery}
+                    onChange={(event) => setGranteeQuery(event.target.value)}
+                    className="h-10 w-full rounded-md border border-slate-300 bg-white pl-9 pr-3 text-sm"
+                    placeholder="팀 또는 사용자 검색"
+                  />
                 </span>
               </label>
               <label className="flex flex-col gap-1.5 text-xs font-medium text-slate-600">
                 대상 유형
-                <select disabled={actionPending} value={draftGranteeType} onChange={(event) => {
-                  const nextType = event.target.value as GranteeType;
-                  setDraftGranteeType(nextType);
-                  setDraftGranteeId(
-                    nextType === 'team'
-                      ? activeTeams[0]?.id || ''
-                      : activeMembers[0]?.user_id || '',
-                  );
-                  setGranteeQuery('');
-                }} className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900">
+                <select
+                  disabled={actionPending}
+                  value={draftGranteeType}
+                  onChange={(event) => {
+                    const nextType = event.target.value as GranteeType;
+                    setDraftGranteeType(nextType);
+                    setDraftGranteeId(
+                      nextType === 'team'
+                        ? activeTeams[0]?.id || ''
+                        : activeMembers[0]?.user_id || '',
+                    );
+                    setGranteeQuery('');
+                  }}
+                  className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                >
                   <option value="team">Team</option>
                   <option value="user">User direct</option>
                 </select>
@@ -631,18 +721,50 @@ function PermissionGrantModal({
               tabIndex={0}
               className="mt-3 max-h-[500px] overflow-auto rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <table className="w-full min-w-[620px] text-left text-sm" aria-label="권한 부여 대상">
-                <thead className="sticky top-0 z-10 border-y border-slate-200 bg-white text-xs text-slate-500"><tr><th className="w-12 px-3 py-2">선택</th><th className="px-3 py-2">이름</th><th className="px-3 py-2">유형</th><th className="px-3 py-2">설명</th></tr></thead>
+              <table
+                className="w-full min-w-[620px] text-left text-sm"
+                aria-label="권한 부여 대상"
+              >
+                <thead className="sticky top-0 z-10 border-y border-slate-200 bg-white text-xs text-slate-500">
+                  <tr>
+                    <th className="w-12 px-3 py-2">선택</th>
+                    <th className="px-3 py-2">이름</th>
+                    <th className="px-3 py-2">유형</th>
+                    <th className="px-3 py-2">설명</th>
+                  </tr>
+                </thead>
                 <tbody className="divide-y divide-slate-100">
                   {visibleGrantees.length === 0 ? (
-                    <tr><td colSpan={4} className="px-3 py-8 text-center text-slate-500">선택 가능한 대상이 없습니다.</td></tr>
+                    <tr>
+                      <td
+                        colSpan={4}
+                        className="px-3 py-8 text-center text-slate-500"
+                      >
+                        선택 가능한 대상이 없습니다.
+                      </td>
+                    </tr>
                   ) : (
                     visibleGrantees.map((item) => (
                       <tr key={item.id}>
-                        <td className="px-3 py-3"><input type="radio" name="permission-grantee" disabled={actionPending} checked={draftGranteeId === item.id} onChange={() => setDraftGranteeId(item.id)} aria-label={`${item.name} 선택`} /></td>
-                        <td className="px-3 py-3 font-medium text-blue-700">{item.name}</td>
-                        <td className="px-3 py-3 text-slate-600">{draftGranteeType === 'team' ? 'Team' : 'User direct'}</td>
-                        <td className="px-3 py-3 text-slate-500">{item.detail}</td>
+                        <td className="px-3 py-3">
+                          <input
+                            type="radio"
+                            name="permission-grantee"
+                            disabled={actionPending}
+                            checked={draftGranteeId === item.id}
+                            onChange={() => setDraftGranteeId(item.id)}
+                            aria-label={`${item.name} 선택`}
+                          />
+                        </td>
+                        <td className="px-3 py-3 font-medium text-blue-700">
+                          {item.name}
+                        </td>
+                        <td className="px-3 py-3 text-slate-600">
+                          {draftGranteeType === 'team' ? 'Team' : 'User direct'}
+                        </td>
+                        <td className="px-3 py-3 text-slate-500">
+                          {item.detail}
+                        </td>
                       </tr>
                     ))
                   )}
@@ -652,12 +774,26 @@ function PermissionGrantModal({
           </section>
 
           <section className="mt-4 rounded-lg border border-slate-200 p-4">
-            <h3 className="text-sm font-semibold text-slate-950">3. 권한 선택</h3>
-            <p className="mt-1 text-xs text-slate-500">선택한 리소스와 대상에 적용할 권한입니다.</p>
+            <h3 className="text-sm font-semibold text-slate-950">
+              3. 권한 선택
+            </h3>
+            <p className="mt-1 text-xs text-slate-500">
+              선택한 리소스와 대상에 적용할 권한입니다.
+            </p>
             <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               {RESOURCE_AUTH_STATES.map((state) => (
-                <label key={state} className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-3 text-sm ${draftAuthState === state ? 'border-blue-600 bg-blue-50 text-blue-800' : 'border-slate-300 text-slate-700'}`}>
-                  <input type="radio" name="permission-auth-state" value={state} disabled={actionPending} checked={draftAuthState === state} onChange={() => setDraftAuthState(state)} />
+                <label
+                  key={state}
+                  className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-3 text-sm ${draftAuthState === state ? 'border-blue-600 bg-blue-50 text-blue-800' : 'border-slate-300 text-slate-700'}`}
+                >
+                  <input
+                    type="radio"
+                    name="permission-auth-state"
+                    value={state}
+                    disabled={actionPending}
+                    checked={draftAuthState === state}
+                    onChange={() => setDraftAuthState(state)}
+                  />
                   {resourcePermissionLabel(draftResourceType, state)}
                 </label>
               ))}
@@ -667,11 +803,27 @@ function PermissionGrantModal({
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white px-6 py-4">
           <p className="text-sm text-slate-600">
-            리소스 {hasVisibleResourceSelection ? 1 : 0}개 · 대상 {hasVisibleGranteeSelection ? 1 : 0}개 · {resourcePermissionLabel(draftResourceType, draftAuthState)}
+            리소스 {hasVisibleResourceSelection ? 1 : 0}개 · 대상{' '}
+            {hasVisibleGranteeSelection ? 1 : 0}개 ·{' '}
+            {resourcePermissionLabel(draftResourceType, draftAuthState)}
           </p>
           <div className="flex items-center gap-2">
-            <button type="button" onClick={requestClose} disabled={actionPending} className="h-10 rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">취소</button>
-            <button type="button" onClick={submitGrant} disabled={!canSubmit} className="h-10 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40">{actionPending ? '저장 중...' : '선택한 권한 부여'}</button>
+            <button
+              type="button"
+              onClick={requestClose}
+              disabled={actionPending}
+              className="h-10 rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              취소
+            </button>
+            <button
+              type="button"
+              onClick={submitGrant}
+              disabled={!canSubmit}
+              className="h-10 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {actionPending ? '저장 중...' : '선택한 권한 부여'}
+            </button>
           </div>
         </div>
       </div>
@@ -683,7 +835,11 @@ function resourcePermissionLabel(
   resourceType: ResourceType,
   state: ResourceAuthState,
 ) {
-  if (resourceType === 'llm_credential' || resourceType === 'mail_credential') {
+  if (
+    resourceType === 'llm_credential' ||
+    resourceType === 'mail_credential' ||
+    resourceType === 'external_action_credential'
+  ) {
     const labels: Record<ResourceAuthState, string> = {
       viewer: 'Credential 조회 가능',
       operator: 'Credential 사용 가능',
@@ -714,7 +870,8 @@ function resourceTypeLabel(resourceType: ResourceType) {
   if (resourceType === 'workflow') return 'Workflow';
   if (resourceType === 'knowledge_base') return 'Knowledge Base';
   if (resourceType === 'llm_credential') return 'LLM Credential';
-  return 'Mail Credential';
+  if (resourceType === 'mail_credential') return 'Mail Credential';
+  return 'External Action Credential';
 }
 
 function PermissionList({

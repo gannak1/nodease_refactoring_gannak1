@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -46,6 +52,10 @@ vi.mock('@/app/features/organization/api/organizationApi', () => ({
 
 vi.mock('@/app/features/workflow/api/mailCredentialApi', () => ({
   mailCredentialApi: { listAvailable: vi.fn().mockResolvedValue([]) },
+}));
+
+vi.mock('@/app/features/workflow/api/externalActionCredentialApi', () => ({
+  externalActionCredentialApi: { listAvailable: vi.fn().mockResolvedValue([]) },
 }));
 
 vi.mock('@/app/features/knowledge/api/knowledgeApi', () => ({
@@ -159,7 +169,9 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
     expect(screen.getByText('21개 중 page 2/2')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '팀 생성' })).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText('이름, email 검색')).not.toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText('이름, email 검색'),
+    ).not.toBeInTheDocument();
 
     navigationMock.searchParams = 'tab=organization-structure&view=members';
     rerender(<AdminConsolePage />);
@@ -263,7 +275,9 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
     const rows = within(screen.getByRole('table')).getAllByRole('row');
     expect(within(rows[1]).getByText('High cost')).toBeInTheDocument();
     expect(within(rows[1]).getByText('$5.00')).toBeInTheDocument();
-    expect(within(rows[1]).getByText('Agent Builder $3.00')).toBeInTheDocument();
+    expect(
+      within(rows[1]).getByText('Agent Builder $3.00'),
+    ).toBeInTheDocument();
     expect(within(rows[2]).getByText('Low cost')).toBeInTheDocument();
     expect(within(rows[2]).getByText('$1.25')).toBeInTheDocument();
   });
@@ -296,6 +310,8 @@ describe('PermissionsTab 표 기반 권한 부여', () => {
         selectedCredentialId=""
         mailCredentials={[]}
         selectedMailCredentialId=""
+        externalActionCredentials={[]}
+        selectedExternalActionCredentialId=""
         activeTeams={[team]}
         activeMembers={[]}
         granteeType="team"
@@ -319,13 +335,51 @@ describe('PermissionsTab 표 기반 권한 부여', () => {
     return { onGrant, onSelectResource };
   };
 
+  it('External Action Credential에 직접 권한을 부여할 수 있다', async () => {
+    const { onGrant } = renderPermissionsTab({
+      resourceType: 'external_action_credential',
+      externalActionCredentials: [
+        {
+          id: 'external-credential-1',
+          credential_name: 'GitHub 배포 Credential',
+          provider: 'github',
+          status: 'active',
+          revision: 1,
+        },
+      ],
+      selectedExternalActionCredentialId: 'external-credential-1',
+      permissionList: {
+        resource_type: 'external_action_credential',
+        resource_id: 'external-credential-1',
+        organization_id: 'org-1',
+        team_permissions: [],
+        user_permissions: [],
+      },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '권한 부여' }));
+    fireEvent.click(screen.getByRole('button', { name: '선택한 권한 부여' }));
+
+    await waitFor(() =>
+      expect(onGrant).toHaveBeenCalledWith({
+        resourceType: 'external_action_credential',
+        resourceId: 'external-credential-1',
+        granteeType: 'team',
+        granteeId: 'team-1',
+        authState: 'viewer',
+      }),
+    );
+  });
+
   it('권한 부여 버튼으로 표 선택 모달을 열고 저장한다', async () => {
     const { onGrant } = renderPermissionsTab();
 
     expect(
       screen.queryByRole('dialog', { name: '리소스 권한 부여' }),
     ).not.toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: '권한 부여' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: '권한 부여' })).toHaveLength(
+      1,
+    );
     expect(
       screen.queryByRole('button', { name: '리소스·권한 변경' }),
     ).not.toBeInTheDocument();
@@ -333,8 +387,12 @@ describe('PermissionsTab 표 기반 권한 부여', () => {
 
     const dialog = screen.getByRole('dialog', { name: '리소스 권한 부여' });
     expect(dialog).toBeInTheDocument();
-    expect(screen.getByRole('table', { name: '권한 대상 리소스' })).toBeInTheDocument();
-    expect(screen.getByRole('table', { name: '권한 부여 대상' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: '권한 대상 리소스' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('table', { name: '권한 부여 대상' }),
+    ).toBeInTheDocument();
     expect(screen.getByRole('region', { name: '리소스 목록' })).toHaveClass(
       'max-h-[500px]',
       'overflow-auto',
@@ -344,12 +402,14 @@ describe('PermissionsTab 표 기반 권한 부여', () => {
       'overflow-auto',
     );
     expect(
-      within(screen.getByRole('table', { name: '권한 대상 리소스' }))
-        .getAllByRole('rowgroup')[0],
+      within(
+        screen.getByRole('table', { name: '권한 대상 리소스' }),
+      ).getAllByRole('rowgroup')[0],
     ).toHaveClass('sticky');
     expect(
-      within(screen.getByRole('table', { name: '권한 부여 대상' }))
-        .getAllByRole('rowgroup')[0],
+      within(
+        screen.getByRole('table', { name: '권한 부여 대상' }),
+      ).getAllByRole('rowgroup')[0],
     ).toHaveClass('sticky');
 
     fireEvent.click(screen.getByRole('button', { name: '선택한 권한 부여' }));
@@ -434,7 +494,9 @@ describe('PermissionsTab 표 기반 권한 부여', () => {
     fireEvent.click(screen.getByRole('button', { name: '취소' }));
 
     expect(dialog).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '권한 부여 닫기' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: '권한 부여 닫기' }),
+    ).toBeDisabled();
     expect(screen.getByRole('button', { name: '취소' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '저장 중...' })).toBeDisabled();
     within(dialog)
@@ -485,7 +547,9 @@ describe('PermissionsTab 표 기반 권한 부여', () => {
       },
     });
 
-    expect(screen.queryByRole('button', { name: '회수' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: '회수' }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText('개발팀')).not.toBeInTheDocument();
   });
 });

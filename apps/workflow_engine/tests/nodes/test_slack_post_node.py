@@ -294,6 +294,26 @@ def test_revoked_or_rotated_credential_blocks_slack_effect(monkeypatch) -> None:
     assert adapter.invoke_count == 0
 
 
+def test_credential_resolution_session_closes_before_slack_provider_call() -> None:
+    initial_session = MagicMock()
+    revalidation_session = MagicMock()
+    sessions = iter((initial_session, revalidation_session))
+
+    class SessionCheckingAdapter(CapturingAdapter):
+        def invoke_effect(self, call):
+            initial_session.close.assert_called_once_with()
+            return super().invoke_effect(call)
+
+    node, _ = _node()
+    adapter = SessionCheckingAdapter(SlackDeliveryMode.API)
+    node.execution_context["db_session_factory"] = lambda: next(sessions)
+    node.execution_context["slack_effect_adapter_factory"] = lambda _mode: adapter
+
+    node.execute({})
+
+    revalidation_session.close.assert_called_once_with()
+
+
 def test_api_channel_rejects_surrounding_whitespace() -> None:
     node, adapter = _node(channel=" C123 ")
 

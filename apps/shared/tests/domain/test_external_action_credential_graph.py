@@ -28,6 +28,37 @@ def test_github_graph_accepts_opaque_credential_reference():
     validate_github_credential_graph_boundary([_github_node()], require_resolved=True)
 
 
+def test_github_graph_accepts_safe_editor_metadata():
+    validate_github_credential_graph_boundary(
+        [
+            _github_node(
+                {
+                    "displayNumber": 3,
+                    "visibleProperties": ["credential_id", "repo_owner"],
+                }
+            )
+        ],
+        require_resolved=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"displayNumber": 0},
+        {"displayNumber": True},
+        {"visibleProperties": [""]},
+        {"visibleProperties": [123]},
+    ],
+)
+def test_github_graph_rejects_invalid_editor_metadata(metadata):
+    with pytest.raises(ExternalActionCredentialGraphBoundaryError):
+        validate_github_credential_graph_boundary(
+            [_github_node(metadata)],
+            require_resolved=True,
+        )
+
+
 @pytest.mark.parametrize(
     "field",
     ["api_token", "token", "authConfig"],

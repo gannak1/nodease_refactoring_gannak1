@@ -1,4 +1,11 @@
+import pytest
+
 from apps.gateway.main import app
+from pydantic import ValidationError
+
+from apps.shared.schemas.external_action_credential import (
+    ExternalActionCredentialUpdate,
+)
 
 
 def test_external_action_credential_routes_and_safe_response_schema_are_registered():
@@ -47,3 +54,12 @@ def test_external_action_credential_routes_and_safe_response_schema_are_register
         if parameter["name"] == "resourceType"
     )
     assert "external_action_credential" in resource_type["schema"]["enum"]
+
+
+def test_external_action_credential_update_rejects_null_only_change_payload():
+    with pytest.raises(ValidationError, match="at least one field must be provided"):
+        ExternalActionCredentialUpdate(
+            expected_revision=1,
+            credential_name=None,
+            secret=None,
+        )

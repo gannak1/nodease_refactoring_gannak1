@@ -47,13 +47,17 @@ class GithubNode(Node[GithubNodeData]):
         credential_id = self._credential_id()
         db, should_close = self._borrow_db_session()
         try:
-            credential = ExternalActionCredentialUseResolver.resolve(
-                db,
-                user_id=user_id,
-                organization_id=organization_id,
-                credential_id=credential_id,
-                expected_provider="github",
-            )
+            try:
+                credential = ExternalActionCredentialUseResolver.resolve(
+                    db,
+                    user_id=user_id,
+                    organization_id=organization_id,
+                    credential_id=credential_id,
+                    expected_provider="github",
+                )
+            finally:
+                if should_close:
+                    db.close()
             secret = GithubSecretMaterial(credential.secret)
             repo_owner = self._render_template(data.repo_owner, inputs)
             repo_name = self._render_template(data.repo_name, inputs)
@@ -98,9 +102,6 @@ class GithubNode(Node[GithubNodeData]):
             # valid by retrying this workflow run.  Keep it out of Celery's
             # generic retry path just like the Slack node does.
             raise NonRetryableWorkflowError(exc.reason_code) from exc
-        finally:
-            if should_close:
-                db.close()
 
     def _get_pull_request(
         self,

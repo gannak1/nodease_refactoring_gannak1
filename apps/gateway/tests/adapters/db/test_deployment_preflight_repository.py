@@ -185,9 +185,11 @@ class _Session:
     def __init__(self, rows):
         self.rows = rows
         self.query_count = 0
+        self.query_args = []
 
     def query(self, *args):
         self.query_count += 1
+        self.query_args.append(args)
         return _Query(self.rows)
 
 
@@ -283,3 +285,11 @@ def test_external_action_snapshots_use_one_bulk_permission_decision(monkeypatch)
     assert result[credential_ids[0]].usable_by_principal is True
     assert result[credential_ids[1]].usable_by_principal is False
     assert result[credential_ids[1]].effective_auth_state == "viewer"
+    assert [getattr(column, "key", None) for column in session.query_args[0]] == [
+        "id",
+        "provider",
+    ]
+    assert all(
+        getattr(column, "key", None) != "encrypted_secret"
+        for column in session.query_args[0]
+    )

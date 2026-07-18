@@ -356,7 +356,10 @@ class SqlAlchemyDeploymentPreflightRepository:
         if not ids or organization_id is None:
             return {}
         rows = (
-            self.db.query(ExternalActionCredential)
+            self.db.query(
+                ExternalActionCredential.id,
+                ExternalActionCredential.provider,
+            )
             .filter(
                 ExternalActionCredential.id.in_(ids),
                 ExternalActionCredential.organization_id == organization_id,

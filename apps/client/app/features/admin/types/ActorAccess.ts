@@ -4,7 +4,8 @@ export type ActorResourceType =
   | 'workflow'
   | 'knowledge_base'
   | 'llm_credential'
-  | 'mail_credential';
+  | 'mail_credential'
+  | 'external_action_credential';
 export type ActorResourceAuthState =
   | 'none'
   | 'viewer'

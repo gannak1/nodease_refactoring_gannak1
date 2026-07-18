@@ -67,7 +67,10 @@ class ExternalActionCredentialUpdate(BaseModel):
 
     @model_validator(mode="after")
     def require_change(self) -> "ExternalActionCredentialUpdate":
-        if not ({"credential_name", "secret"} & self.model_fields_set):
+        if not any(
+            getattr(self, field_name) is not None
+            for field_name in ("credential_name", "secret")
+        ):
             raise ValueError("at least one field must be provided")
         return self
 

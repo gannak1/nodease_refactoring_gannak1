@@ -35,6 +35,8 @@ GITHUB_NODE_ALLOWED_FIELDS = frozenset(
         "pr_number",
         "comment_body",
         "referenced_variables",
+        "displayNumber",
+        "visibleProperties",
     }
 )
 
@@ -152,6 +154,22 @@ def _validate_github_data(data: Mapping[str, Any], *, require_resolved: bool) ->
     if data.get("parameters") not in (None, {}):
         raise ExternalActionCredentialGraphBoundaryError()
     if data.get("configuration_state") not in (None, "resolved", "unresolved"):
+        raise ExternalActionCredentialGraphBoundaryError()
+    display_number = data.get("displayNumber")
+    if display_number is not None and (
+        not isinstance(display_number, int)
+        or isinstance(display_number, bool)
+        or display_number < 1
+    ):
+        raise ExternalActionCredentialGraphBoundaryError()
+    visible_properties = data.get("visibleProperties")
+    if visible_properties is not None and (
+        not isinstance(visible_properties, list)
+        or any(
+            not isinstance(item, str) or not item.strip() or len(item) > 80
+            for item in visible_properties
+        )
+    ):
         raise ExternalActionCredentialGraphBoundaryError()
     credential_id = data.get("credential_id")
     if credential_id is not None:

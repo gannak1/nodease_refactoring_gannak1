@@ -586,6 +586,7 @@ class ExternalActionCredentialService:
             credential.id,
             action,
             organization_id=organization_id,
+            include_revoked=True,
         ):
             return
         record_resource_permission_denied(
@@ -598,6 +599,7 @@ class ExternalActionCredentialService:
                 actor_id,
                 credential.id,
                 organization_id=organization_id,
+                include_revoked=True,
             ),
             organization_id=organization_id,
             metadata=self._safe_request_metadata(),

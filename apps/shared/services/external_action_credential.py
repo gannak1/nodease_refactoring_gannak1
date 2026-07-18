@@ -197,6 +197,8 @@ def get_effective_external_action_credential_auth_state(
     user_id: Any,
     credential_id: Any,
     organization_id: Any = None,
+    *,
+    include_revoked: bool = False,
 ) -> str:
     user_uuid = coerce_uuid(user_id)
     credential_uuid = coerce_uuid(credential_id)
@@ -204,10 +206,12 @@ def get_effective_external_action_credential_auth_state(
     if user_uuid is None or credential_uuid is None:
         return AUTH_STATE_NONE
 
-    query = db.query(ExternalActionCredential).filter(
-        ExternalActionCredential.id == credential_uuid,
-        ExternalActionCredential.status == EXTERNAL_ACTION_CREDENTIAL_ACTIVE,
-    )
+    filters = [ExternalActionCredential.id == credential_uuid]
+    if not include_revoked:
+        filters.append(
+            ExternalActionCredential.status == EXTERNAL_ACTION_CREDENTIAL_ACTIVE
+        )
+    query = db.query(ExternalActionCredential).filter(*filters)
     if organization_uuid is not None:
         query = query.filter(ExternalActionCredential.organization_id == organization_uuid)
     credential = query.first()
@@ -402,10 +406,16 @@ def has_external_action_credential_permission(
     credential_id: Any,
     action: str,
     organization_id: Any = None,
+    *,
+    include_revoked: bool = False,
 ) -> bool:
     return external_action_credential_auth_state_allows(
         get_effective_external_action_credential_auth_state(
-            db, user_id, credential_id, organization_id
+            db,
+            user_id,
+            credential_id,
+            organization_id,
+            include_revoked=include_revoked,
         ),
         action,
     )

@@ -9,6 +9,7 @@ from apps.shared.services.external_action_credential import (
     ExternalActionCredentialRuntimeError,
     ExternalActionCredentialSecretService,
     ExternalActionCredentialUseResolver,
+    get_effective_external_action_credential_auth_state,
     get_effective_external_action_credential_auth_states,
 )
 
@@ -167,6 +168,34 @@ def test_resolver_hides_missing_or_cross_organization_credential():
             credential_id=uuid4(),
             expected_provider="github",
         )
+
+
+@patch(
+    "apps.shared.services.external_action_credential."
+    "get_organization_auth_state",
+    return_value="manager",
+)
+def test_management_auth_lookup_includes_revoked_credential(_organization_auth_state):
+    credential = _credential(status="revoked")
+    db = _db_returning(credential)
+
+    assert (
+        get_effective_external_action_credential_auth_state(
+            db,
+            uuid4(),
+            credential.id,
+            organization_id=credential.organization_id,
+            include_revoked=True,
+        )
+        == "manager"
+    )
+
+    predicates = [
+        predicate
+        for call in db.query.return_value.filter.call_args_list
+        for predicate in call.args
+    ]
+    assert not any("external_action_credentials.status" in str(item) for item in predicates)
 
 
 @patch(
