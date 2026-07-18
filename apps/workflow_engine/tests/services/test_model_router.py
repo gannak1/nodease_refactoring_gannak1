@@ -135,6 +135,24 @@ def test_routing_feature_contains_all_node_prompts_and_runtime_signals():
             "고정 사용자 프롬프트",
             "고정 어시스턴트 프롬프트",
         ],
+        # 작업 설명은 프롬프트 원문보다 먼저 이해되는 고정 계약이다.
+        rag_metadata={
+            "used": True,
+            "retrieved_chunk_count": 3,
+            "retrieved_context_chars": 920,
+            "source_count": 2,
+            "evidence_sufficient": True,
+            "knowledge_enabled": True,
+        },
+    )
+
+    feature_with_description = ModelRouter.routing_feature_text(
+        {"message": "세 문서를 비교해 승인 여부를 판단해 주세요."},
+        _node(
+            title="계약 검토",
+            model_routing_task_description="여러 근거를 비교해 조건 충돌을 설명하고 구조화된 결론을 작성합니다.",
+        ),
+        rendered_prompt_parts=["시스템", "사용자", "어시스턴트"],
         rag_metadata={
             "used": True,
             "retrieved_chunk_count": 3,
@@ -157,6 +175,9 @@ def test_routing_feature_contains_all_node_prompts_and_runtime_signals():
     assert "STRUCTURAL_CONSTRAINTS:" not in feature
     assert "schema_required" not in feature
     assert "knowledge_enabled" not in feature
+    assert "NODE_TITLE: 계약 검토" in feature_with_description
+    assert "TASK_DESCRIPTION:" in feature_with_description
+    assert "여러 근거를 비교" in feature_with_description
 
 
 def test_routing_feature_preserves_current_request_when_node_prompts_are_long():

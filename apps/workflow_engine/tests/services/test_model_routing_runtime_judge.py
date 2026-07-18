@@ -118,7 +118,7 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
     assert prompt_body["candidate_models"][0]["capability_tier"] == "economy"
     assert "작업 복잡도" in client.calls[0]["messages"][0]["content"]
     assert "CURRENT_REQUEST는 이번 실행에서 달라지는 난이도 판단의 주된 근거" in client.calls[0]["messages"][0]["content"]
-    assert "capability_tier가 economy인 후보는 세 축의 최고점이 1 이하일 때만 선택" in client.calls[0]["messages"][0]["content"]
+    assert "economy·balanced·advanced 중 하나를 기계적으로 먼저 고르지 마세요" in client.calls[0]["messages"][0]["content"]
     assert "결정 영향도" in client.calls[0]["messages"][0]["content"]
     assert "근거 종합 범위" in client.calls[0]["messages"][0]["content"]
     assert "특정 업무 분야의 단어만으로 고성능 모델을 고르면 안 됩니다" in client.calls[0]["messages"][0]["content"]

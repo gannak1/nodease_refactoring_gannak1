@@ -256,7 +256,8 @@ class ModelRouter:
     # Judge 입력에서 이번 요청은 매 실행 달라지는 핵심 신호다. 고정 노드 프롬프트가
     # 길어도 요청 원문이 잘리지 않도록 별도 예산을 둔다.
     _JUDGE_REQUEST_CHAR_BUDGET = 1_650
-    _JUDGE_PROMPT_SECTION_CHAR_BUDGET = 360
+    _JUDGE_TASK_DESCRIPTION_CHAR_BUDGET = 420
+    _JUDGE_PROMPT_SECTION_CHAR_BUDGET = 180
 
     @classmethod
     def resolve_policy(
@@ -432,6 +433,14 @@ class ModelRouter:
             f"{label}:\n{cls._judge_prompt_excerpt(value)}"
             for label, value in prompt_sections
         )
+        task_description = cls._judge_task_description(node_data)
+        node_title = str(cls._node_data_value(node_data, "title") or "").strip()
+        task_contract_parts = []
+        if node_title:
+            task_contract_parts.append(f"NODE_TITLE: {node_title[:120]}")
+        if task_description:
+            task_contract_parts.append(f"TASK_DESCRIPTION:\n{task_description}")
+        task_contract_parts.append(f"PROMPT_CONSTRAINTS:\n{prompt_feature}")
 
         request_text = cls._flatten_text(inputs)[: cls._JUDGE_REQUEST_CHAR_BUDGET]
         safe_rag_metadata = {
@@ -450,7 +459,7 @@ class ModelRouter:
         }
         parts = [
             f"CURRENT_REQUEST:\n{request_text}" if request_text else "",
-            f"NODE_TASK_CONTRACT:\n{prompt_feature}",
+            "NODE_TASK_CONTRACT:\n" + "\n\n".join(task_contract_parts),
         ]
         if safe_rag_metadata:
             parts.append(
@@ -465,6 +474,17 @@ class ModelRouter:
         if len(text) <= cls._JUDGE_PROMPT_SECTION_CHAR_BUDGET:
             return text
         return text[: cls._JUDGE_PROMPT_SECTION_CHAR_BUDGET - 1].rstrip() + "…"
+
+    @classmethod
+    def _judge_task_description(cls, node_data: Any) -> str:
+        """사용자가 적은 작업 설명을 고정 작업 계약의 중심 정보로 사용한다."""
+
+        value = str(
+            cls._node_data_value(node_data, "model_routing_task_description") or ""
+        ).strip()
+        if len(value) <= cls._JUDGE_TASK_DESCRIPTION_CHAR_BUDGET:
+            return value
+        return value[: cls._JUDGE_TASK_DESCRIPTION_CHAR_BUDGET - 1].rstrip() + "…"
 
     @classmethod
     def infer_runtime_context(
