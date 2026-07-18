@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      ci_control_changed: ${{ steps.ci_control.outputs.changed }}
       docs_only: ${{ steps.scope_outputs.outputs.docs_only }}
       python_lint: ${{ steps.scope_outputs.outputs.python_lint }}
       client: ${{ steps.scope_outputs.outputs.client }}
@@ -140,11 +141,11 @@ jobs:
             emit_boolean memory_postgres true
             emit_boolean deployment_validation true
             emit_boolean actions_validation true
-            emit_boolean helm_validation "$CLASSIFIED_HELM_VALIDATION"
-            emit_boolean kubernetes_validation "$CLASSIFIED_KUBERNETES_VALIDATION"
-            emit_boolean terraform_validation "$CLASSIFIED_TERRAFORM_VALIDATION"
-            emit_boolean compose_validation "$CLASSIFIED_COMPOSE_VALIDATION"
-            emit_boolean dockerfile_validation "$CLASSIFIED_DOCKERFILE_VALIDATION"
+            emit_boolean helm_validation true
+            emit_boolean kubernetes_validation true
+            emit_boolean terraform_validation true
+            emit_boolean compose_validation true
+            emit_boolean dockerfile_validation true
             emit_boolean broad_python true
             exit 0
           fi
@@ -545,12 +546,20 @@ jobs:
 
       - name: Validate GitHub Actions workflows
         if: needs.scope.outputs.actions_validation == 'true'
+        env:
+          CI_CONTROL_CHANGED: ${{ needs.scope.outputs.ci_control_changed }}
         run: |
-          mapfile -t workflow_files < <(
-            git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA" -- \
-              '.github/workflows/*.yml' \
-              '.github/workflows/*.yaml'
-          )
+          if [[ "$CI_CONTROL_CHANGED" == "true" ]]; then
+            mapfile -d '' workflow_files < <(
+              git ls-files -z -- '.github/workflows/*.yml' '.github/workflows/*.yaml'
+            )
+          else
+            mapfile -t workflow_files < <(
+              git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA" -- \
+                '.github/workflows/*.yml' \
+                '.github/workflows/*.yaml'
+            )
+          fi
           if (( ${#workflow_files[@]} == 0 )); then
             echo "No changed workflow files to validate."
             exit 0
@@ -603,45 +612,91 @@ jobs:
           terraform -chdir=infra/terraform init -backend=false -input=false
           terraform -chdir=infra/terraform validate
 
-      - name: Validate changed Docker Compose files
+      - name: Validate Docker Compose configurations
         if: needs.scope.outputs.compose_validation == 'true'
         shell: bash
         env:
           ENCRYPTION_KEY: ci-validation-placeholder
           MASTER_KEY: ci-validation-placeholder
         run: |
-          mapfile -d '' changed_paths < <(
-            git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" --
+          mapfile -d '' compose_paths < <(
+            git ls-files -z -- \
+              ':(glob)**/compose.yml' \
+              ':(glob)**/compose.yaml' \
+              ':(glob)**/compose.*.yml' \
+              ':(glob)**/compose.*.yaml' \
+              ':(glob)**/docker-compose.yml' \
+              ':(glob)**/docker-compose.yaml' \
+              ':(glob)**/docker-compose.*.yml' \
+              ':(glob)**/docker-compose.*.yaml'
           )
-          selected=0
-          validated=0
-          for path in "${changed_paths[@]}"; do
-            case "$(basename "$path")" in
-              compose.yml|compose.yaml|docker-compose.yml|docker-compose.yaml)
-                selected=$((selected + 1))
-                if [[ -f "$path" ]]; then
-                  docker compose --file "$path" config --quiet
-                  validated=$((validated + 1))
-                fi
-                ;;
-            esac
-          done
-          if (( selected == 0 )); then
-            echo "::error::Compose validation was selected without a changed Compose file."
+          if (( ${#compose_paths[@]} == 0 )); then
+            echo "::error::Compose validation was selected without a tracked Compose file."
             exit 1
           fi
-          echo "Validated $validated existing Compose file(s); deleted files: $((selected - validated))."
+
+          validated=0
+          for path in "${compose_paths[@]}"; do
+            directory="$(dirname "$path")"
+            file_name="$(basename "$path")"
+            base_path=""
+            is_variant=false
+
+            case "$file_name" in
+              compose.*.yml|compose.*.yaml)
+                is_variant=true
+                for candidate in "$directory/compose.yml" "$directory/compose.yaml"; do
+                  if [[ -f "$candidate" ]]; then
+                    base_path="$candidate"
+                    break
+                  fi
+                done
+                ;;
+              docker-compose.*.yml|docker-compose.*.yaml)
+                is_variant=true
+                for candidate in \
+                  "$directory/docker-compose.yml" \
+                  "$directory/docker-compose.yaml"; do
+                  if [[ -f "$candidate" ]]; then
+                    base_path="$candidate"
+                    break
+                  fi
+                done
+                ;;
+            esac
+
+            if [[ "$is_variant" == "true" && -z "$base_path" ]]; then
+              echo "::error::$path has no matching base Compose file."
+              exit 1
+            fi
+
+            if [[ -n "$base_path" ]]; then
+              docker compose --file "$base_path" --file "$path" config --quiet
+            else
+              docker compose --file "$path" config --quiet
+            fi
+            validated=$((validated + 1))
+          done
+          echo "Validated $validated tracked Compose configuration(s)."
 
       - name: Validate changed Dockerfiles
         if: needs.scope.outputs.dockerfile_validation == 'true'
         shell: bash
+        env:
+          CI_CONTROL_CHANGED: ${{ needs.scope.outputs.ci_control_changed }}
         run: |
-          mapfile -d '' changed_paths < <(
-            git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" --
-          )
+          if [[ "$CI_CONTROL_CHANGED" == "true" ]]; then
+            mapfile -d '' dockerfile_paths < <(
+              git ls-files -z -- ':(glob)**/Dockerfile' ':(glob)**/*.Dockerfile'
+            )
+          else
+            mapfile -d '' dockerfile_paths < <(
+              git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" --
+            )
+          fi
           selected=0
           validated=0
-          for path in "${changed_paths[@]}"; do
+          for path in "${dockerfile_paths[@]}"; do
             case "$(basename "$path")" in
               Dockerfile|*.Dockerfile)
                 selected=$((selected + 1))

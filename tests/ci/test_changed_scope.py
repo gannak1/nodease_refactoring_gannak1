@@ -191,6 +191,11 @@ def test_ci_control_change_selects_smoke_jobs_and_postgres_contracts():
     assert scope.memory_postgres is True
     assert scope.deployment_validation is True
     assert scope.actions_validation is True
+    assert scope.helm_validation is True
+    assert scope.kubernetes_validation is True
+    assert scope.terraform_validation is True
+    assert scope.compose_validation is True
+    assert scope.dockerfile_validation is True
 
 
 def test_trusted_guard_change_is_treated_as_ci_control():
@@ -221,6 +226,7 @@ def test_deployment_workflow_selects_static_validation_without_runtime_tests():
         ("infra/k8s/ingress.yaml", "kubernetes_validation"),
         ("infra/terraform/eks.tf", "terraform_validation"),
         ("docker/docker-compose.yml", "compose_validation"),
+        ("docker/docker-compose.connector-demo.yml", "compose_validation"),
         ("docker/gateway/Dockerfile", "dockerfile_validation"),
     ],
 )

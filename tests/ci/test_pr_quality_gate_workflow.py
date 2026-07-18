@@ -22,7 +22,7 @@ PROTECTED_CI_WORKFLOWS = (
     REPOSITORY_ROOT / ".github" / "workflows" / "test-memory-postgres.yml",
 )
 EXTERNAL_ACTION_PATTERN = re.compile(
-    r"^\s*uses:\s+(?P<action>[^@\s]+)@(?P<reference>[^\s#]+)"
+    r"^\s*(?:-\s*)?uses:\s+(?P<action>[^@\s]+)@(?P<reference>[^\s#]+)"
 )
 
 
@@ -47,6 +47,56 @@ def test_actionlint_validates_only_changed_workflow_files():
     assert "'.github/workflows/*.yml'" in workflow
     assert "'.github/workflows/*.yaml'" in workflow
     assert 'actionlint@v1.7.12 "${workflow_files[@]}"' in workflow
+
+
+def test_action_reference_matcher_supports_sequence_item_syntax():
+    mapping_match = EXTERNAL_ACTION_PATTERN.match(
+        "      uses: actions/checkout@v4"
+    )
+    sequence_match = EXTERNAL_ACTION_PATTERN.match(
+        "      - uses: actions/checkout@v4"
+    )
+
+    assert mapping_match is not None
+    assert sequence_match is not None
+    assert sequence_match.group("reference") == "v4"
+
+
+def test_ci_control_changes_force_all_deployment_validators():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+    ci_control_block = workflow.split(
+        'if [[ "$CI_CONTROL_CHANGED" == "true" ]]; then',
+        maxsplit=1,
+    )[1].split("exit 0", maxsplit=1)[0]
+
+    for validator in (
+        "actions_validation",
+        "helm_validation",
+        "kubernetes_validation",
+        "terraform_validation",
+        "compose_validation",
+        "dockerfile_validation",
+    ):
+        assert f"emit_boolean {validator} true" in ci_control_block
+
+
+def test_ci_control_smoke_expands_actionlint_and_dockerfile_targets():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+
+    assert "ci_control_changed: ${{ steps.ci_control.outputs.changed }}" in workflow
+    assert "CI_CONTROL_CHANGED: ${{ needs.scope.outputs.ci_control_changed }}" in workflow
+    assert "git ls-files -z -- '.github/workflows/*.yml'" in workflow
+    assert "git ls-files -z -- ':(glob)**/Dockerfile'" in workflow
+
+
+def test_compose_validation_combines_variant_with_base_file():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+
+    assert "docker-compose.*.yml|docker-compose.*.yaml" in workflow
+    assert (
+        'docker compose --file "$base_path" --file "$path" config --quiet'
+        in workflow
+    )
 
 
 def test_helm_validation_registers_chart_dependency_repositories():

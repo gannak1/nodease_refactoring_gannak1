@@ -137,12 +137,9 @@ _DEPLOYMENT_ONLY_WORKFLOWS = (
     ".github/workflows/publish-images.yml",
 )
 
-_COMPOSE_FILE_NAMES = {
-    "compose.yml",
-    "compose.yaml",
-    "docker-compose.yml",
-    "docker-compose.yaml",
-}
+_COMPOSE_FILE_NAME_PATTERN = re.compile(
+    r"^(?:docker-)?compose(?:\.[A-Za-z0-9_-]+)*\.ya?ml$"
+)
 
 
 @dataclass
@@ -179,6 +176,15 @@ class ChangeScope:
         self.root_tests = True
         self.memory_tests = True
         self.broad_python = True
+
+    def enable_deployment_smoke(self) -> None:
+        self.deployment_validation = True
+        self.actions_validation = True
+        self.helm_validation = True
+        self.kubernetes_validation = True
+        self.terraform_validation = True
+        self.compose_validation = True
+        self.dockerfile_validation = True
 
     def github_outputs(self) -> dict[str, str]:
         outputs = {
@@ -292,7 +298,7 @@ def _select_deployment_validation(path: str, scope: ChangeScope) -> None:
         scope.kubernetes_validation = True
     if path.startswith("infra/terraform/"):
         scope.terraform_validation = True
-    if PurePosixPath(path).name in _COMPOSE_FILE_NAMES:
+    if _COMPOSE_FILE_NAME_PATTERN.fullmatch(PurePosixPath(path).name):
         scope.compose_validation = True
     if PurePosixPath(path).name == "Dockerfile" or path.endswith(".Dockerfile"):
         scope.dockerfile_validation = True
@@ -344,8 +350,7 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
             continue
 
         if _is_ci_control_path(path):
-            scope.deployment_validation = True
-            scope.actions_validation = True
+            scope.enable_deployment_smoke()
             scope.client = True
             scope.enable_python_smoke()
             scope.knowledge_postgres = True
