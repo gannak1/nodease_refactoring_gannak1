@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from apps.shared.db.base import Base
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
@@ -18,8 +19,6 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
-
-from apps.shared.db.base import Base
 
 
 def _utc_now() -> datetime:

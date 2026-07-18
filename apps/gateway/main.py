@@ -195,14 +195,15 @@ app.add_middleware(
     https_only=os.getenv("NODE_ENV") == "production",  # 배포 환경에서는 Secure 쿠키
 )
 
-# Keep this transport sanitizer outermost so earlier middleware failures cannot
-# expose legacy webhook query credentials through the ASGI server access log.
-app.add_middleware(WebhookQueryRedactionMiddleware)
-
 # Must be outer than the legacy credentialed CORS middleware.  Public
 # Conversation lifecycle calls are iframe-document same-origin only; the
 # deployment parent allowlist remains a CSP frame-ancestors policy.
 app.add_middleware(PublicConversationCorsBoundaryMiddleware)
+
+# Added last so this transport sanitizer remains outermost and earlier
+# middleware failures cannot expose legacy webhook query credentials through
+# the ASGI server access log.
+app.add_middleware(WebhookQueryRedactionMiddleware)
 
 # 정적 파일 서빙 (widget.js) - 옵션
 STATIC_DIR = BASE_DIR / "static"

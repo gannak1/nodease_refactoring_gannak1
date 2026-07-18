@@ -79,13 +79,23 @@ MEMORY_MERGE_REVISION = "ac2d3e4f5061"
 PUBLIC_CONVERSATION_PARENT_REVISION = "f4a5b6c7d8e9"
 PUBLIC_CONVERSATION_REPLAY_REVISION = "ac1d2e3f4a50"
 PUBLIC_CONVERSATION_SCOPE_REVISION = "ad2e3f4a5b61"
+POST_FOUNDATION_COLUMNS = {
+    "conversation_purge_jobs": {
+        "deployment_id",
+        "deployment_version",
+        "audience_kind",
+    },
+    "conversation_idempotency_records": {
+        "result_lifecycle",
+        "result_lifecycle_revision",
+        "result_memory_contract_version",
+        "result_expires_at",
+        "result_previous_lifecycle",
+        "result_previous_lifecycle_revision",
+    },
+}
 FOUNDATION_MEMORY_SCHEMA = {
-    table_name: (
-        columns
-        - {"deployment_id", "deployment_version", "audience_kind"}
-        if table_name == "conversation_purge_jobs"
-        else columns
-    )
+    table_name: columns - POST_FOUNDATION_COLUMNS.get(table_name, set())
     for table_name, columns in REQUIRED_MEMORY_SCHEMA.items()
     if table_name != "conversation_secret_replays"
 }

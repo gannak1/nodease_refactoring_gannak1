@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-
 from apps.shared.schemas.tracing import TraceDetailSchema, TraceSummarySchema
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.shared.services.tracing.query import TraceQueryService
