@@ -55,6 +55,8 @@ export const WorkflowResultGroup = ({
   onPresentationHeadingFocused,
   onFocusNode,
   onOpenNodeSettings,
+  onSecretSubmit,
+  onSecretClear,
   onKnowledgeSubmit,
   onKnowledgeHierarchySubmit,
   onDecision,
@@ -72,6 +74,8 @@ export const WorkflowResultGroup = ({
   onPresentationHeadingFocused?: (taskId: string) => void;
   onFocusNode: (nodeId: string) => void;
   onOpenNodeSettings?: (nodeId: string, section?: 'routing') => void;
+  onSecretSubmit?: (task: AgentBuilderParameterTask, value: string) => void;
+  onSecretClear?: (task: AgentBuilderParameterTask) => void;
   onKnowledgeSubmit?: (selectionIds: string[]) => void;
   onKnowledgeHierarchySubmit?: (
     selection: KnowledgeHierarchySubmission,
@@ -469,13 +473,8 @@ export const WorkflowResultGroup = ({
               }
               onHeadingFocused={onPresentationHeadingFocused}
               onEditingChange={setEditingTaskId}
-              onOpenNodeSettings={(targetNodeId) => {
-                if (onOpenNodeSettings) {
-                  onOpenNodeSettings(targetNodeId);
-                } else {
-                  onFocusNode(targetNodeId);
-                }
-              }}
+              onSecretSubmit={onSecretSubmit}
+              onSecretClear={onSecretClear}
               expanded={
                 nodeId === activeNodeId ||
                 nodeId === editingNodeId ||

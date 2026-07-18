@@ -167,6 +167,76 @@ describe('WorkflowResultGroup model routing guidance', () => {
 
     expect(screen.getByText('JSON Schema')).toBeInTheDocument();
   });
+
+  it('shows only Slack parameters that apply to the selected delivery mode', () => {
+    const baseSlackTask: AgentBuilderParameterTask = {
+      ...routingTask,
+      group_id: 'slack-group',
+      step_id: 'step-slack',
+      node_id: 'generated-slack',
+      node_type: 'slackPostNode',
+      confirmation_required: false,
+      resolution_source: null,
+      status: 'pending',
+    };
+    const tokenTask: AgentBuilderParameterTask = {
+      ...baseSlackTask,
+      task_id: 'slack-token',
+      parameter_key: 'bot_token',
+      label: 'Bot Token',
+      input_type: 'secret',
+      status: 'active',
+      validation: {
+        visible_when: { parameter_key: 'slackMode', equals: 'api' },
+      },
+    };
+    const urlTask: AgentBuilderParameterTask = {
+      ...baseSlackTask,
+      task_id: 'slack-url',
+      parameter_key: 'url',
+      label: 'Webhook URL',
+      input_type: 'secret',
+      status: 'pending',
+      validation: {
+        visible_when: { parameter_key: 'slackMode', equals: 'webhook' },
+      },
+    };
+    const apiNode = {
+      ...nodes[3],
+      data: { ...nodes[3].data, slackMode: 'api' },
+    } as Node;
+    const { rerender } = render(
+      <WorkflowResultGroup
+        tasks={[tokenTask, urlTask]}
+        nodes={[apiNode]}
+        onFocusNode={vi.fn()}
+        onDecision={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Bot Token')).toBeInTheDocument();
+    expect(screen.queryByText('Webhook URL')).not.toBeInTheDocument();
+
+    rerender(
+      <WorkflowResultGroup
+        tasks={[
+          { ...tokenTask, status: 'skipped' },
+          { ...urlTask, status: 'active' },
+        ]}
+        nodes={[
+          {
+            ...apiNode,
+            data: { ...apiNode.data, slackMode: 'webhook' },
+          } as Node,
+        ]}
+        onFocusNode={vi.fn()}
+        onDecision={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText('Bot Token')).not.toBeInTheDocument();
+    expect(screen.getByText('Webhook URL')).toBeInTheDocument();
+  });
   it('이번 결과의 라우팅 미설정 LLM만 하나의 안내로 보여주고 Routing control 열기를 요청한다', () => {
     const onFocusNode = vi.fn();
     const onOpenNodeSettings = vi.fn();

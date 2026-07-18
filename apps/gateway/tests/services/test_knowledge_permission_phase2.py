@@ -201,6 +201,26 @@ class FakeResolver(KnowledgeCandidateResolver):
         return values if max_candidate_kbs is None else values[:max_candidate_kbs]
 
 
+def test_requested_collections_preserve_caller_order_before_limit():
+    collection_a = _collection()
+    collection_b = _collection()
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def all(self):
+            return [collection_a, collection_b]
+
+    resolver = KnowledgeCandidateResolver.__new__(KnowledgeCandidateResolver)
+    resolver.db = SimpleNamespace(query=lambda _model: Query())
+    resolver.organization_id = ORG_ID
+
+    result = resolver._collections([collection_b.id, collection_a.id], 1)
+
+    assert [collection.id for collection in result] == [collection_b.id]
+
+
 def test_collection_read_does_not_allow_route():
     collection = _collection(actions={"read"})
     helper = FakePermissionHelper(

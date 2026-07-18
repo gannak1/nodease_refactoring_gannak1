@@ -561,6 +561,30 @@ def test_preflight_blocks_selector_that_no_longer_exists_in_source_output_contra
     assert issues[0].missing_parameters == ("processing_ref_selector",)
 
 
+def test_preflight_accepts_file_extraction_named_selector_storage_shape():
+    graph = {
+        "nodes": [
+            {
+                "id": "start",
+                "type": "startNode",
+                "data": {"variables": [{"name": "file"}]},
+            },
+            {
+                "id": "extract",
+                "type": "fileExtractionNode",
+                "data": {
+                    "referenced_variables": [
+                        {"name": "file", "value_selector": ["start", "file"]}
+                    ]
+                },
+            },
+        ],
+        "edges": [{"id": "e1", "source": "start", "target": "extract"}],
+    }
+
+    assert workflow_configuration_issues(graph) == []
+
+
 def test_preflight_blocks_selector_list_with_missing_source_or_output():
     graph = {
         "nodes": [

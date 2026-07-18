@@ -48,6 +48,7 @@ from apps.shared.schemas.agent_builder import (
     GraphMutationCompletionContext,
     GraphMutationSafeEnvelope,
     ParameterCredentialValue,
+    ParameterSecretValue,
     ParameterVariableSelectorListValue,
     ParameterVariableSelectorValue,
 )
@@ -551,6 +552,8 @@ class ParameterTaskService:
                 continue
         if request_row is None or group is None:
             raise HTTPException(status_code=404, detail="resource_not_found")
+        if payload.action == "set" and isinstance(payload.value, ParameterSecretValue):
+            raise HTTPException(status_code=400, detail="secret_forbidden")
         decision_fingerprint = _decision_payload_fingerprint(task_id, payload)
         prior_local = self.repository.find_local_task_decision(
             request_row, payload.operation_id

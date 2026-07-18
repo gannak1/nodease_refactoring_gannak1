@@ -289,7 +289,18 @@ export const useParameterTasks = ({
           if (applied.session?.status) {
             onRequestStatusChange?.(applied.session.status);
           } else {
-            onRequestStatusChange?.('completion_confirming');
+            const acknowledgedGroup =
+              applied.acknowledgement.parameter_group ?? null;
+            const hasInteractiveTask =
+              acknowledgedGroup?.status === 'active' &&
+              acknowledgedGroup.tasks.some((candidate) =>
+                ['active', 'invalid'].includes(candidate.status),
+              );
+            onRequestStatusChange?.(
+              hasInteractiveTask
+                ? 'parameter_configuration'
+                : 'completion_confirming',
+            );
           }
         } else {
           const restored = await agentBuilderApi.getSession(sessionId);

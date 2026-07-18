@@ -27,6 +27,7 @@ import {
   type AgentBuilderMessageResponse,
   type AgentBuilderGraphMutation,
   type AgentBuilderParameterGroup,
+  type AgentBuilderParameterTask,
   type AgentBuilderSessionMessage,
 } from '../../api/agentBuilderApi';
 import { workflowApi } from '../../api/workflowApi';
@@ -78,6 +79,35 @@ const KNOWLEDGE_REASON_LABELS: Record<string, string> = {
     '\uBB38\uC11C \uBA54\uD0C0\uB370\uC774\uD130\uC640 \uC77C\uCE58',
   semantic_similarity: '\uB0B4\uC6A9 \uC720\uC0AC\uB3C4\uAC00 \uB192\uC74C',
   recent_usage: '\uCD5C\uADFC \uC0AC\uC6A9\uB41C Knowledge Base',
+};
+
+const secretParameterPatch = (
+  task: AgentBuilderParameterTask,
+  nodeData: Record<string, unknown>,
+  value: string | undefined,
+): Record<string, unknown> | null => {
+  if (task.node_type === 'slackPostNode' && task.parameter_key === 'bot_token') {
+    const currentAuthConfig =
+      nodeData.authConfig &&
+      typeof nodeData.authConfig === 'object' &&
+      !Array.isArray(nodeData.authConfig)
+        ? (nodeData.authConfig as Record<string, unknown>)
+        : {};
+    const authConfig = { ...currentAuthConfig };
+    if (value === undefined) {
+      delete authConfig.token;
+    } else {
+      authConfig.token = value;
+    }
+    return { authConfig };
+  }
+  if (task.node_type === 'slackPostNode' && task.parameter_key === 'url') {
+    return { url: value };
+  }
+  if (task.node_type === 'githubNode' && task.parameter_key === 'api_token') {
+    return { api_token: value };
+  }
+  return null;
 };
 
 export const isAgentBuilderSetupCompleted = (
@@ -575,6 +605,10 @@ export function AgentBuilderPanel({
     useState(false);
   const [secretConfigurationRetryVersion, setSecretConfigurationRetryVersion] =
     useState(0);
+  const pendingSecretSkipRef = useRef<{
+    taskId: string;
+    canonicalDraftVersion: string | null;
+  } | null>(null);
   const [knowledgeSelectionError, setKnowledgeSelectionError] = useState<
     string | null
   >(null);
@@ -626,6 +660,76 @@ export function AgentBuilderPanel({
     getViewport,
     onRequestStatusChange: setAuthoritativeRequestStatus,
   });
+
+  const updateSecretParameter = useCallback(
+    (task: AgentBuilderParameterTask, value: string | undefined) => {
+      const state = useWorkflowStore.getState();
+      const targetNode = state.nodes.find((node) => node.id === task.node_id);
+      const nodeData =
+        targetNode?.data && typeof targetNode.data === 'object'
+          ? (targetNode.data as Record<string, unknown>)
+          : null;
+      const patch = nodeData
+        ? secretParameterPatch(task, nodeData, value)
+        : null;
+      if (!patch) {
+        toast.error('보안 설정을 저장할 Workflow 노드를 찾지 못했습니다.');
+        return false;
+      }
+      state.updateNodeData(task.node_id, patch);
+      return true;
+    },
+    [],
+  );
+
+  const submitSecretParameter = useCallback(
+    (task: AgentBuilderParameterTask, value: string) => {
+      updateSecretParameter(task, value);
+    },
+    [updateSecretParameter],
+  );
+
+  const clearSecretParameter = useCallback(
+    (task: AgentBuilderParameterTask) => {
+      if (!updateSecretParameter(task, undefined)) return;
+      pendingSecretSkipRef.current = {
+        taskId: task.task_id,
+        canonicalDraftVersion,
+      };
+    },
+    [canonicalDraftVersion, updateSecretParameter],
+  );
+
+  useEffect(() => {
+    const pending = pendingSecretSkipRef.current;
+    if (
+      !pending ||
+      !canonicalDraftVersion ||
+      pending.canonicalDraftVersion === canonicalDraftVersion ||
+      isApplying ||
+      isPersistedMutationSaving
+    ) {
+      return;
+    }
+    const task = parameterGroup?.tasks.find(
+      (candidate) => candidate.task_id === pending.taskId,
+    );
+    if (!task || task.status === 'skipped') {
+      pendingSecretSkipRef.current = null;
+      return;
+    }
+    if (task.status !== 'active' || task.required || task.input_type !== 'secret') {
+      return;
+    }
+    pendingSecretSkipRef.current = null;
+    void decideParameter({ taskId: task.task_id, action: 'skip' });
+  }, [
+    canonicalDraftVersion,
+    decideParameter,
+    isApplying,
+    isPersistedMutationSaving,
+    parameterGroup,
+  ]);
 
   const synchronizeParameterGroup = useCallback(
     (
@@ -860,12 +964,31 @@ export function AgentBuilderPanel({
     ) => {
       const activeMutation = session.active_graph_mutation as
         Record<string, unknown> | null | undefined;
+      const activeOperationId =
+        typeof activeMutation?.operation_id === 'string'
+          ? activeMutation.operation_id
+          : null;
+      const isLocallyAcknowledged = Boolean(
+        activeOperationId &&
+          useWorkflowStore.getState().undoStack.some((snapshot) => {
+            const operationMatches =
+              snapshot.agentBuilderOperation?.operationId ===
+                activeOperationId ||
+              snapshot.agentBuilderHistory?.latestOperationId ===
+                activeOperationId;
+            return (
+              operationMatches &&
+              snapshot.agentBuilderHistory?.acknowledged === true
+            );
+          }),
+      );
       const isPendingAcknowledgement =
         activeMutation?.status === 'pending_ack' &&
-        typeof activeMutation.operation_id === 'string';
+        activeOperationId !== null;
       const isUnconfirmedAcknowledgement =
         activeMutation?.status === 'acknowledged' &&
-        typeof activeMutation.operation_id === 'string' &&
+        activeOperationId !== null &&
+        !isLocallyAcknowledged &&
         !options.acknowledgedBoundaryConfirmed;
       setSessionProtocolVersion(session.protocol_version ?? null);
       const restored = conversationItemsFromSessionMessages(session.messages);
@@ -2612,6 +2735,8 @@ export function AgentBuilderPanel({
                 onPresentationHeadingFocused={acknowledgePresentationFocus}
                 onFocusNode={focusParameterNode}
                 onOpenNodeSettings={openNodeSettings}
+                onSecretSubmit={submitSecretParameter}
+                onSecretClear={clearSecretParameter}
                 onKnowledgeSubmit={(selectionIds) => {
                   if (!activeKnowledgeClarification) return;
                   const selected = activeKnowledgeOptions

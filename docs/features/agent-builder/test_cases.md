@@ -6,6 +6,8 @@ Status: Draft
 
 MBA-228 direct-edit와 MBA-293 generation-mode target은 문서 작성만으로 구현 완료하지 않는다. 각 요구사항은 static, unit, integration, component, E2E 또는 manual smoke 중 하나 이상의 실행 가능한 검증에 연결한다. MBA-293 시점에 아직 구현되지 않은 quick mode case는 후속 구현 gate이며 현재 코드 통과로 표시하지 않는다.
 
+MBA-331 보호 리소스 소비 경계의 현재 계약, 구현 위치와 실행 증거는 [Agent Builder Protected Resource Completion Matrix](./protected-resource-completion.md)에 기록한다. 필수 경계의 증거가 없거나 실행 검증이 남아 있으면 해당 매트릭스를 완료로 표시하지 않는다.
+
 DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend component test는 병렬 실행할 수 있다. 필수 검증이 환경 문제로 실행되지 않으면 완료로 처리하지 않는다.
 
 과거 revision이나 다른 worktree의 결과는 현재 변경의 통과 근거로 재사용하지 않는다. Test Matrix의 `Passed`에는 검증한 commit, 정확한 command, test count와 environment를 함께 기록한다.
@@ -431,8 +433,8 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - `defer_policy=allow_unresolved` task에만 defer를 표시하고 누락/`forbidden` task에는 표시하지 않는다.
 - confirm/set/defer/skip/previous interaction, operation id/task version과 pending/invalid/completed/deferred/skipped 상태를 검증한다.
 - active task id가 바뀌면 text/boolean/selector/candidate/search/error local draft가 초기화된다.
-- `secret` input type은 password control로 렌더링하지 않고 기존 Node Detail 설정 이동 action만 표시한다. 기존 graph 값을 hydrate하거나 화면/API task payload에 다시 표시하지 않으며 raw `set`은 `secret_forbidden`으로 거부한다.
-- Mail/Gmail managed credential task는 Undo reentry와 구분되어 권한 검증된 후보만 표시하고, deferred presentation reentry는 기존 값과 상태를 안전하게 보여준다. Slack/GitHub managed credential task와 빈 picker는 direct-edit response/UI에 포함하지 않으며 Catalog의 일반 파라미터와 secret용 Node Detail 이동 action만 순차 확인한다.
+- `secret` input type은 Agent Builder card 안의 masked password control로 렌더링한다. 기존 graph 값은 raw 값 없이 configured presence로만 감지하고 화면/API task payload에 다시 표시하지 않으며 적용과 삭제는 기존 Workflow Editor secret save adapter와 workflow CAS를 호출한다. Optional 삭제는 canonical version 갱신 뒤 safe `skip`으로 닫고 Agent Builder ParameterDecision raw `set`은 fingerprint 계산 전 `secret_forbidden`으로 거부한다.
+- Mail/Gmail managed credential task는 Undo reentry와 구분되어 권한 검증된 후보만 표시하고, deferred presentation reentry는 기존 값과 상태를 안전하게 보여준다. Slack/GitHub managed credential task와 빈 picker는 direct-edit response/UI에 포함하지 않으며 Catalog의 일반 파라미터와 secret용 masked control을 순차 확인한다.
 
 ### DBP-TC-F005 Node Focus
 
@@ -558,7 +560,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 
 ### DBP-TC-E010 Direct-Edit Consistency Hardening
 
-1. Agent Builder가 발급한 managed `credential_ref` task가 자동 deferred가 아니라 active/pending인지 확인하고, policy-allowed explicit defer가 CDS save/acknowledgement 뒤에만 deferred가 되는지 확인한다. Mail처럼 resolver가 있는 provider는 권한과 node runtime compatibility를 통과한 후보만 반환하고 Gmail Draft 후보와 제출은 Gmail OAuth2만 허용하는지 확인한다. Slack/GitHub managed credential task, 후보와 credential defer는 direct-edit response/UI에 없고 Catalog의 일반 파라미터와 secret용 Node Detail 이동 action만 순차 확인하는지 검증한다.
+1. Agent Builder가 발급한 managed `credential_ref` task가 자동 deferred가 아니라 active/pending인지 확인하고, policy-allowed explicit defer가 CDS save/acknowledgement 뒤에만 deferred가 되는지 확인한다. Mail처럼 resolver가 있는 provider는 권한과 node runtime compatibility를 통과한 후보만 반환하고 Gmail Draft 후보와 제출은 Gmail OAuth2만 허용하는지 확인한다. Slack/GitHub managed credential task, 후보와 credential defer는 direct-edit response/UI에 없고 Catalog의 일반 파라미터와 secret용 masked control만 순차 확인하는지 검증한다.
 2. Direct response의 Knowledge 후보가 `knowledge_resolution.candidates`에만 있고 legacy clarification field 제출과 legacy/direct 교차 중복 제출이 거부되는지 확인한다.
 3. KB save 실패와 response loss에서 같은 card/selection을 유지하고 canonical recovery 뒤 중복 mutation이나 사용자 메시지가 없는지 확인한다.
 4. 같은 `confirm|set|defer|skip|cancel` operation/payload 재시도가 GraphMutation, task 전환, commit과 audit를 한 번만 만들고 같은 id의 다른 payload는 conflict인지 확인한다.
@@ -576,7 +578,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 16. 제3 canonical graph가 반환되는 ambiguous save에서 Workflow history boundary, redo memory와 pending context가 보존되는지 확인한다.
 16-a. Initial/parameter/Knowledge save response loss에서 `pending_ack|acknowledged` session envelope만으로 적용 성공을 추측하지 않는지 확인한다. Canonical graph hash가 expected result이고 DB `updated_at`이 envelope의 saved metadata와 모두 같을 때만 applied로 복구하며, base graph면 unapplied로 rollback하고 제3 graph면 editor graph, history와 기존 canonical metadata를 유지한다.
 16-b. Undo/Redo response loss는 canonical graph를 desired, opposite, third로 먼저 분류한다. Desired/opposite에서만 canonical metadata를 수용하고 third graph에서는 editor graph, Undo/Redo memory와 pending context를 덮어쓰지 않는지 확인한다.
-17. direct-edit response와 legacy session 정규화 뒤 Slack/GitHub managed credential task, 빈 picker와 credential defer가 없고 Catalog의 일반 파라미터 및 secret용 Node Detail 이동 action만 남는지 확인한다.
+17. direct-edit response와 legacy session 정규화 뒤 Slack/GitHub managed credential task, 빈 picker와 credential defer가 없고 Catalog의 일반 파라미터 및 secret용 masked control만 남는지 확인한다.
 
 ## 7. Non-Functional Verification
 
@@ -663,8 +665,8 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Collection/KB handle 배열의 중복과 순서 차이를 canonical set으로 처리해 같은 집합 재시도는 멱등이고 실제 집합 변경만 conflict인지 확인한다.
 - Collection과 고유 KB 화면 후보가 각각 20개를 넘지 않고, 약 3개 행 높이의 내부 스크롤을 유지하는지 확인한다.
 - Canonical graph recovery after acknowledgement loss, persisted Undo, persisted Redo, and ambiguous save assigns editor-only edge display numbers without changing the serialized workflow graph or graph hash.
-- A Slack/GitHub direct-edit plan exposes every Catalog-declared normal parameter and renders existing node graph token/URL secret fields only as Node Detail navigation actions. It exposes no password input, `credential_ref` task, credential candidate, empty picker, or credential defer control. Mail/Gmail still expose only permitted managed credential candidates.
-- Slack mode와 parameter 설명은 Catalog의 한국어 문구를 유지한다. `message`는 `{{result}}`와 이전 node output 연결 방법을 설명한다. 값이 없는 Optional Blocks/Attachments의 빈 `적용`은 `skip`으로 완료되고, 기존 optional text/JSON/select 값을 편집 중 비운 `적용`은 `clear` GraphMutation과 CAS/acknowledgement 뒤 graph 값을 제거하고 task를 `skipped`로 만든다.
+- A Slack/GitHub direct-edit plan exposes every Catalog-declared normal parameter and renders existing node graph token/URL secret fields as masked password inputs in the Agent Builder card. It exposes no `credential_ref` task, credential candidate, empty picker, or credential defer control and does not require Node Detail navigation. Mail/Gmail still expose only permitted managed credential candidates.
+- Slack mode와 parameter 설명은 Catalog의 한국어 문구를 유지한다. API mode는 Bot Token/channel만, Incoming Webhook mode는 URL만 표시하고 반대 mode task는 `skipped`다. Mode 변경은 반대 mode의 기존 token/channel 또는 URL을 canonical node data에서 제거하며, 이전 session에서 잘못 active였던 반대 mode task를 닫고 현재 mode의 다음 유효한 task를 활성화한다. `message`는 `{{result}}`와 이전 node output 연결 방법을 설명한다. 값이 없는 Optional Blocks/Attachments의 빈 `적용`은 `skip`으로 완료되고, 기존 optional text/JSON/select 값을 편집 중 비운 `적용`은 `clear` GraphMutation과 CAS/acknowledgement 뒤 graph 값을 제거하고 task를 `skipped`로 만든다.
 - GitHub PR 번호 `15`를 typed integer decision으로 제출하면 graph에는 runtime canonical 값인 문자열 `"15"`가 저장되고, browser JSON round-trip graph의 canonical hash가 같으며 Workflow Engine `GithubNodeData` validation을 통과하는지 검증한다.
 - Agent Builder allowlist의 모든 node type과 모든 user-configurable Catalog parameter에 대표 typed 값을 적용한 뒤 실제 Workflow Engine NodeData schema validation을 통과하는 contract test를 실행한다. File Extraction selector와 Slack Blocks/Attachments의 runtime 저장 형식을 이 검증에 포함한다.
 - A Mail terminal acknowledgement task renders all required upstream effect selectors in one typed `variable_selector_list`; an empty or duplicate selection is rejected.
@@ -705,7 +707,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 
 ### MBA-275 Direct-Edit Consistency Cases
 
-- direct `set`의 secret-like 값과 detector 오류는 fail-closed하며 일반 control은 `400 invalid_decision`, `input_type=secret`은 `400 secret_forbidden`으로 반환한다. 어느 경우에도 GraphMutation을 발급하지 않고 graph/session/task/audit/trace/log/응답에 원문이 남지 않는다. 일반 Catalog validation issue는 HTTP 오류가 아니라 `status=invalid`, `reason=catalog_validation_failed` task 결과로 저장·반환된다.
+- 일반 ParameterDecision `set`의 secret-like 값과 detector 오류는 fail-closed하며 일반 control은 `400 invalid_decision`, 조작된 `input_type=secret` decision은 `400 secret_forbidden`으로 반환한다. Dedicated masked secret control은 ParameterDecision/GraphMutation을 사용하지 않고 기존 Workflow Editor secret save adapter로 canonical graph에 저장한다. 어느 경로에서도 session/task/audit/trace/log/응답에 원문이 남지 않는다. 일반 Catalog validation issue는 HTTP 오류가 아니라 `status=invalid`, `reason=catalog_validation_failed` task 결과로 저장·반환된다.
 - `credential_ref`/`resource_ref`의 raw config와 미검증 id는 거부하고, 서버가 검증한 canonical reference만 저장한다.
 - WorkflowNode는 유효한 `appId`만으로 실행 admission을 통과하고 빈 `workflowId`는 오탐 차단하지 않는다. `appId`를 직접 교체할 때 stale 또는 legacy `workflowId`는 선택된 App의 canonical Workflow로 정규화된다. `workflowId`를 직접 교체한 mismatch와 숨김 resource·권한 부족은 safe 4xx로 끝나며 부분 mutation을 남기지 않는다.
 - PostgreSQL 두 session 경쟁에서 stale identity-map을 가진 CAS 요청은 locked 최신 row를 기준으로 `409 stale_graph`가 되고, 선행 commit의 graph/hash/updated_at을 보존한다.
@@ -753,7 +755,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Cancel 전에 시작된 provider attempt의 검증 가능한 usage는 정확히 한 번 완료되지만 늦은 planner 결과는 저장되지 않고 semantic repair attempt 2도 예약·호출되지 않는다. Schema-invalid attempt도 usage 기록 여부와 무관하게 repair하지 않는다. Usage 저장 실패는 terminal `failed`와 safe issue code를 사용하고 별도 RequestStatus를 만들지 않는다.
 - Cancel과 CDS save가 경쟁하는 PostgreSQL test는 request/workflow lock 뒤 저장 전 operation이면 graph를 쓰지 않고 blocked/canceled로, 저장이 먼저 확정됐으면 persisted graph를 유지한 canceled request로 결정론적으로 수렴한다.
 - Quick GraphMutation도 기존 CDS row lock, permission, graph hash, `updated_at`, Catalog validation과 acknowledgement를 통과한 뒤에만 completed가 된다. 발급 뒤 저장 전에 workflow write, Catalog `resource_ref`, managed `credential_ref`, Knowledge/Collection 또는 WorkflowNode App/Workflow 권한·lifecycle·relation을 회수/삭제/변경하는 fixture는 final candidate graph에서 reference를 다시 추출해 전체 save/audit를 rollback한다. Unknown field와 managed resolver 누락도 fail-closed한다.
-- Resolver 미구현 기존 Slack/GitHub Editor connection이 base graph와 candidate에서 canonical field 값 및 connection-relevant node data가 같으면 다른 node의 Agent Builder mutation 저장을 허용한다. 같은 legacy field의 추가·교체·삭제, 새 node 복제 또는 connection-relevant data 변경은 전체 save/audit를 rollback한다. Carry-forward 뒤에도 test/run/deployment/runtime의 기존 연결 검증을 통과하지 않으면 외부 호출은 차단된다.
+- Resolver 미구현 기존 Slack/GitHub Editor connection이 base graph와 candidate에서 canonical field 값 및 connection-relevant node data가 같으면 다른 node의 Agent Builder mutation 저장을 허용한다. Agent Builder GraphMutation이 같은 legacy field를 추가·교체·삭제하거나 새 node로 복제하면 전체 save/audit를 rollback한다. 단, Agent Builder card의 dedicated secret control은 기존 Workflow Editor secret save adapter와 일반 workflow CAS로 해당 field를 저장할 수 있고 Agent Builder operation envelope에는 값을 남기지 않는다. 어느 경로든 test/run/deployment/runtime의 기존 연결 검증을 통과하지 않으면 외부 호출은 차단된다.
 - Quick response가 save 전에 유실되면 safe envelope에서 operations를 복원하지 않고 `operation_payload_unavailable`로 닫는다. 기존 request가 여전히 `graph_mutation_ready`일 때 새 message는 `request_in_progress`로 거부되며, Client가 request cancel의 terminal 결과를 확인한 뒤에만 새 operation id로 재제출할 수 있다. Save 뒤 acknowledgement 유실은 기존 canonical reconciliation만 사용한다.
 - Remaining quick proposal은 acknowledged graph와 completed task를 보존하고, canonical graph 값과 fingerprint가 일치하는 no-change confirm만 포함한다. 값이 없거나 graph 변경이 필요한 task는 guided 상태로 남긴다.
 - Remaining proposal 생성은 `Workflow -> AgentBuilderRequest` lock에서 expected graph hash/`updated_at`, request/task version을 비교하고 request와 각 confirm 대상 task version을 정확히 한 번 증가시켜 fenced id/version/fingerprint와 graph revision만 저장한다. Persisted proposal/idempotency metadata에 실제 parameter 값, node data나 graph fragment가 없음을 검사한다. 같은 operation 재시도는 어떤 version도 다시 증가시키지 않는다. Proposal 이전 version의 늦은 `set`과 pending proposal target에 대한 최신-version decision도 `task_conflict`이며 remaining guided task는 계속 진행할 수 있다.
@@ -780,7 +782,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Quick review UI는 Legacy Preview component/import/route를 사용하지 않고 `Preview Mode` 또는 legacy `적용 및 저장` control을 렌더링하지 않는다.
 - Guided result의 `남은 설정 빠르게 완료`는 현재 result에만 표시하고 proposal review 중에도 완료된 card/value를 유지한다.
 - Pending remaining proposal의 confirm 대상 task card는 편집을 잠그고 cancel/stale/acknowledge 뒤 canonical task version을 다시 읽는다. 다른 tab의 `task_conflict` 결과를 자동 재적용하지 않는다.
-- 기존 `parameter_configuration` result가 하나 이상 열려 있어도 composer와 Send control은 활성이다. 새 request를 제출한 뒤 과거 card는 request별 result group에 남고, foreground request 또는 CAS 저장 중에만 composer를 잠근다. Reload 뒤에도 `messages`의 request id/contract/task 상태로 각 open card를 복구한다.
+- 기존 `parameter_configuration` result가 하나 이상 열려 있어도 composer와 Send control은 활성이다. 새 request를 제출한 뒤 과거 card는 request별 result group에 남고, foreground request 또는 CAS 저장 중에만 composer를 잠근다. Parameter update acknowledgement가 다음 `active` task를 반환하면 session projection이 응답에 없더라도 `completion_confirming`으로 잠그지 않고 다음 card를 조작할 수 있어야 한다. Reload 뒤에도 `messages`의 request id/contract/task 상태로 각 open card를 복구한다.
 - Remaining quick conflict는 기존 active task와 input draft를 유지하고 자동 재요청·자동 apply하지 않는다.
 - Remaining quick review 취소는 guided result를 닫지 않고 proposal만 제거하며, initial quick review와 mode-transition 대기 취소는 기존 request cancel을 사용한다.
 
@@ -824,10 +826,10 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 
 ## Test preflight 및 secret 회귀 검증
 
-- Slack Bot Token, Slack Webhook URL과 GitHub API Token task가 password control 대신 기존 Node Detail 설정 이동 action을 표시하고 Agent Builder `set`을 호출하지 않는지 검증한다.
-- 조작된 raw secret `set` 요청은 `secret_forbidden`으로 거부되고 GraphMutation, graph write와 audit이 발생하지 않으며 응답/task/session/log에 원문을 포함하지 않는지 검증한다.
-- Node Detail에서 secret 설정이 canonical graph에 저장된 뒤 session read가 값이나 값에서 파생한 fingerprint 없이 해당 task를 completed로 전환하고, 설정 제거 뒤에는 task를 다시 pending/active로 여는지 검증한다.
-- Node Detail 저장 뒤 첫 session 조회가 실패하면 기존 card를 유지한 채 1/2/4초 최대 세 번만 재시도하고, 성공하면 canonical task 상태를 반영하며 반복 실패 뒤에는 수동 `다시 확인`만 제공하는지 검증한다. Panel unmount 또는 session 전환 뒤 도착한 응답은 무시한다.
+- Slack Bot Token, Slack Webhook URL과 GitHub API Token task가 Agent Builder card 안의 masked password control을 표시하고 기존 Workflow Editor secret save adapter를 호출하며 Node Detail 이동이나 Agent Builder ParameterDecision `set`을 요구하지 않는지 검증한다.
+- 조작된 raw secret ParameterDecision `set` 요청은 `secret_forbidden`으로 거부되고 GraphMutation, graph write와 audit이 발생하지 않으며 응답/task/session/log에 원문을 포함하지 않는지 검증한다. Dedicated secret control의 정상 save는 canonical workflow graph만 갱신하고 응답과 Agent Builder 상태에 값을 남기지 않는지 함께 검증한다.
+- Agent Builder secret control에서 canonical graph 저장이 성공한 뒤 session read가 값이나 값에서 파생한 fingerprint 없이 해당 task를 completed로 전환하고, 설정 제거 뒤에는 task를 다시 pending/active로 여는지 검증한다. 기존 secret은 control에 hydrate하지 않고 새 입력이 기존 값을 교체해야 한다.
+- Secret save 뒤 첫 session 조회가 실패하면 기존 card와 component-memory 입력을 유지한 채 1/2/4초 최대 세 번만 재시도하고, 성공하면 canonical task 상태를 반영하며 반복 실패 뒤에는 수동 `다시 확인`만 제공하는지 검증한다. 성공·닫기·panel unmount 또는 session/workflow 전환 시 입력을 폐기하고 늦게 도착한 응답을 무시한다.
 - 일반 text/JSON control과 자연어 message의 secret-like 값은 계속 거부되는지 검증한다.
 - Test preflight owner를 보유한 동안 Agent Builder save가 대기하거나 persisted history boundary의 `acknowledged=false`가 남아 있으면 execution stream과 draft save를 호출하지 않고 사용자의 명시적 재실행을 요구하는지 검증한다.
 - 완료된 Knowledge 요약이 Collection/KB 수를 구분하고, session 복구가 현재 계층에 보이는 safe label만 노출하는지 검증한다.
@@ -845,3 +847,11 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Card 선택과 Node Detail 선택이 동일한 CAS save/acknowledgement 경계를 사용하며 처리 중 교차 제출이 차단되는지 검증한다.
 - Agent Builder가 없는 일반 LLM Node Detail의 Knowledge 선택은 기존 editor 동작을 유지하는지 검증한다.
 - 취소 terminal response의 persisted payload에 full typed operations와 raw graph/parameter/Knowledge/secret이 없는지 검증한다.
+## Secret card와 이전 task action 회귀
+
+- Slack Bot Token, Slack Incoming Webhook URL과 GitHub API Token task가 masked input으로 표시되고 secret 전용 `노드 설정 열기` 버튼이 표시되지 않는지 검증한다.
+- Secret 입력이 Agent Builder ParameterDecision API가 아니라 기존 Workflow Editor secret save adapter와 workflow CAS를 사용하며, API 응답·task/session·audit·trace·log에 원문 또는 값 파생 fingerprint가 남지 않는지 검증한다.
+- `이전 항목`으로 값 없는 optional task를 표시하면 canonical active task ID가 달라도 `건너뛰기`가 유지되고 `skip`이 호출되는지 검증한다.
+- `이전 항목`으로 기존 값이 있는 optional task를 표시하면 `값 지우고 건너뛰기`가 보이고 `clear -> CAS save -> acknowledgement` 뒤 graph 값이 제거되는지 검증한다.
+- Required task와 `confirmation_required=true` task에는 이전 화면에서도 skip/clear action이 표시되지 않는지 검증한다.
+- Previous 이동만으로 graph, task status/version, 다음 active task와 Workflow history가 바뀌지 않으며 저장 실패 시 form 값과 presentation 위치가 유지되는지 검증한다.

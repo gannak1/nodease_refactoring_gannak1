@@ -279,6 +279,70 @@ describe('useParameterTasks response-loss recovery', () => {
     );
   });
 
+  it('keeps parameter configuration interactive when acknowledgement activates the next task', async () => {
+    const nextTask = {
+      ...activeTask,
+      task_id: 'task-2',
+      status: 'active',
+      task_version: 1,
+    } as AgentBuilderParameterTask;
+    const acknowledgedGroup = {
+      ...activeGroup,
+      tasks: [
+        { ...activeTask, status: 'completed', task_version: 2 },
+        nextTask,
+      ],
+    } as AgentBuilderParameterGroup;
+    const onRequestStatusChange = vi.fn();
+    vi.mocked(agentBuilderApi.decideParameterTask).mockResolvedValue({
+      task: acknowledgedGroup.tasks[0],
+      graph_mutation: {
+        operation_id: 'operation-next-task',
+        kind: 'parameter_update',
+        base_graph_hash: 'a'.repeat(64),
+        expected_workflow_updated_at: '2026-07-18T00:00:00Z',
+        operations: [],
+      },
+      next_task_id: nextTask.task_id,
+      group_status: 'active',
+      awaiting_persistence_ack: true,
+    });
+    vi.mocked(applyAndSaveAgentBuilderMutation).mockResolvedValue({
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-18T00:00:01Z',
+      acknowledgement: {
+        operation_id: 'operation-next-task',
+        operation_status: 'acknowledged',
+        graph_hash: 'b'.repeat(64),
+        updated_at: '2026-07-18T00:00:01Z',
+        parameter_group: acknowledgedGroup,
+      },
+      session: null,
+    });
+    const { result } = renderHook(() =>
+      useParameterTasks({
+        sessionId: 'session-1',
+        workflowId: 'workflow-1',
+        getViewport: () => ({ x: 0, y: 0, zoom: 1 }),
+        onRequestStatusChange,
+      }),
+    );
+    act(() => result.current.setParameterGroup(activeGroup));
+
+    await act(async () => {
+      await result.current.decideParameter({
+        taskId: activeTask.task_id,
+        action: 'set',
+        value: 'manual value',
+      });
+    });
+
+    expect(result.current.parameterGroup).toEqual(acknowledgedGroup);
+    expect(onRequestStatusChange).toHaveBeenLastCalledWith(
+      'parameter_configuration',
+    );
+  });
+
   it('세션 recovery도 실패하면 동일 decision 재시도에 operation id를 재사용한다', async () => {
     vi.mocked(agentBuilderApi.decideParameterTask).mockRejectedValue(
       new Error('network unavailable'),

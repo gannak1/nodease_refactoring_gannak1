@@ -77,6 +77,41 @@ const matchesRecommendedValue = (
   return JSON.stringify(currentValue) === JSON.stringify(submittedValue);
 };
 
+const parameterTaskIsVisible = (
+  task: AgentBuilderParameterTask,
+  nodeData?: Record<string, unknown> | null,
+) => {
+  const visibleWhen = task.validation?.visible_when;
+  if (!visibleWhen && task.parameter_key === 'output_json_schema') {
+    const outputFormat = nodeData?.output_format;
+    return (
+      outputFormat !== null &&
+      typeof outputFormat === 'object' &&
+      (outputFormat as Record<string, unknown>).type === 'json'
+    );
+  }
+  if (
+    !visibleWhen ||
+    typeof visibleWhen !== 'object' ||
+    Array.isArray(visibleWhen)
+  ) {
+    return true;
+  }
+  const condition = visibleWhen as Record<string, unknown>;
+  const parameterKey = condition.parameter_key;
+  if (typeof parameterKey !== 'string' || !parameterKey) return true;
+
+  if (parameterKey === 'output_format_type') {
+    const outputFormat = nodeData?.output_format;
+    const currentValue =
+      outputFormat && typeof outputFormat === 'object'
+        ? (outputFormat as Record<string, unknown>).type
+        : undefined;
+    return currentValue === condition.equals;
+  }
+  return nodeData?.[parameterKey] === condition.equals;
+};
+
 export const NodeParameterCard = ({
   nodeId,
   tasks,
@@ -87,7 +122,8 @@ export const NodeParameterCard = ({
   focusHeading = false,
   onHeadingFocused,
   onEditingChange,
-  onOpenNodeSettings,
+  onSecretSubmit,
+  onSecretClear,
   onDecision,
   hasPrevious = false,
   expanded = true,
@@ -103,7 +139,8 @@ export const NodeParameterCard = ({
   focusHeading?: boolean;
   onHeadingFocused?: (taskId: string) => void;
   onEditingChange?: (taskId: string | null) => void;
-  onOpenNodeSettings?: (nodeId: string) => void;
+  onSecretSubmit?: (task: AgentBuilderParameterTask, value: string) => void;
+  onSecretClear?: (task: AgentBuilderParameterTask) => void;
   onDecision: (decision: ParameterDecisionInput) => void;
   hasPrevious?: boolean;
   expanded?: boolean;
@@ -114,14 +151,8 @@ export const NodeParameterCard = ({
   const editingStartedVersionRef = useRef<number | null>(null);
   const cardRef = useRef<HTMLElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const outputFormat = nodeData?.output_format;
-  const outputFormatType =
-    outputFormat && typeof outputFormat === 'object'
-      ? (outputFormat as Record<string, unknown>).type
-      : undefined;
-  const visibleTasks = tasks.filter(
-    (task) =>
-      task.parameter_key !== 'output_json_schema' || outputFormatType === 'json',
+  const visibleTasks = tasks.filter((task) =>
+    parameterTaskIsVisible(task, nodeData),
   );
   const activeTask = visibleTasks.find((task) =>
     ['active', 'invalid'].includes(task.status),
@@ -163,6 +194,18 @@ export const NodeParameterCard = ({
   const recommendationSourceLabel = currentTask?.resolution_source
     ? RECOMMENDATION_SOURCE_LABEL[currentTask.resolution_source]
     : null;
+  const canSkipOrClearCurrentTask = Boolean(
+    !editingTask &&
+      currentTask &&
+      !currentTask.required &&
+      !currentTask.confirmation_required,
+  );
+  const skipOrClearAction =
+    hydration.state !== 'empty'
+      ? ('clear' as const)
+      : ('skip' as const);
+  const skipOrClearLabel =
+    skipOrClearAction === 'clear' ? '값 지우고 건너뛰기' : '건너뛰기';
   const closeEditing = useCallback(() => {
     setEditingTaskId(null);
     editingStartedVersionRef.current = null;
@@ -333,9 +376,7 @@ export const NodeParameterCard = ({
             task={currentTask}
             hydration={hydration}
             disabled={disabled}
-            onOpenNodeSettings={
-              onOpenNodeSettings ? () => onOpenNodeSettings(nodeId) : undefined
-            }
+            onSecretSubmit={onSecretSubmit}
             onSubmit={(value) => {
               const action =
                 isRecommendationReview &&
@@ -360,11 +401,16 @@ export const NodeParameterCard = ({
             }
             onClear={
               !currentTask.required && !currentTask.confirmation_required
-                ? () =>
+                ? () => {
+                    if (currentTask.input_type === 'secret' && onSecretClear) {
+                      onSecretClear(currentTask);
+                      return;
+                    }
                     onDecision({
                       taskId: currentTask.task_id,
                       action: 'clear',
-                    })
+                    });
+                  }
                 : undefined
             }
           />
@@ -396,21 +442,29 @@ export const NodeParameterCard = ({
                 이전 항목
               </button>
             ) : null}
-            {!editingTask &&
-            activeTask?.task_id === currentTask.task_id &&
-            !currentTask.required &&
-            !currentTask.confirmation_required ? (
+            {canSkipOrClearCurrentTask && currentTask ? (
               <button
                 type="button"
-                aria-label="건너뛰기"
+                aria-label={skipOrClearLabel}
                 disabled={disabled}
-                onClick={() =>
-                  onDecision({ taskId: currentTask.task_id, action: 'skip' })
-                }
+                onClick={() => {
+                  if (
+                    skipOrClearAction === 'clear' &&
+                    currentTask.input_type === 'secret' &&
+                    onSecretClear
+                  ) {
+                    onSecretClear(currentTask);
+                    return;
+                  }
+                  onDecision({
+                    taskId: currentTask.task_id,
+                    action: skipOrClearAction,
+                  });
+                }}
                 className="inline-flex items-center gap-1 rounded-md border border-neutral-300 px-2 py-1.5 text-xs disabled:opacity-60 dark:border-neutral-700"
               >
                 <SkipForward className="h-3.5 w-3.5" aria-hidden="true" />
-                건너뛰기
+                {skipOrClearLabel}
               </button>
             ) : null}
             {!editingTask &&

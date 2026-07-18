@@ -515,6 +515,18 @@ def apply_node_parameter_value(
     value: Any,
 ) -> dict[str, Any]:
     data = copy.deepcopy(node_data)
+    if node_type == "slackPostNode" and parameter_key == "slackMode":
+        data[parameter_key] = copy.deepcopy(value)
+        if value == "webhook":
+            data = remove_node_parameter_value(
+                node_type,
+                "bot_token",
+                data,
+            )
+            data = remove_node_parameter_value(node_type, "channel", data)
+        elif value == "api":
+            data = remove_node_parameter_value(node_type, "url", data)
+        return data
     if node_type == "llmNode" and parameter_key in _LLM_BASIC_PARAMETER_PATHS:
         path = _LLM_BASIC_PARAMETER_PATHS[parameter_key]
         target = data
@@ -691,6 +703,15 @@ def _stored_parameter_value_for_validation(
     ):
         return value[0].get("value_selector")
     return value
+
+
+def stored_parameter_value_for_validation(
+    node_type: str,
+    parameter_key: str,
+    node_data: dict[str, Any] | None,
+) -> Any:
+    data = node_data if isinstance(node_data, dict) else {}
+    return _stored_parameter_value_for_validation(node_type, parameter_key, data)
 
 
 def validate_node_parameter_update(

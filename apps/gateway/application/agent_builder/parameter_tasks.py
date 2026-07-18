@@ -93,6 +93,28 @@ def _canonical_node_parameter_value(
     return node_parameter_value(node_type, parameter_key, node_data)
 
 
+def _parameter_is_visible(
+    node_type: str,
+    parameter: dict[str, Any],
+    node_data: dict[str, Any],
+) -> bool:
+    validation = parameter.get("validation")
+    if not isinstance(validation, dict):
+        return True
+    visible_when = validation.get("visible_when")
+    if not isinstance(visible_when, dict):
+        return True
+    controlling_key = visible_when.get("parameter_key")
+    if not isinstance(controlling_key, str) or not controlling_key:
+        return True
+    found, current_value = _canonical_node_parameter_value(
+        node_type,
+        controlling_key,
+        node_data,
+    )
+    return found and current_value == visible_when.get("equals")
+
+
 def recommendation_matches_canonical_graph(
     task: AgentBuilderParameterTask,
     graph: dict[str, Any] | None,
@@ -302,6 +324,11 @@ class ParameterTaskPlanner:
                 identity = (step_id, parameter_key)
                 if identity in externally_managed_parameters:
                     continue
+                parameter_is_visible = _parameter_is_visible(
+                    node_type,
+                    parameter,
+                    data,
+                )
                 source = None
                 if identity in explicit_values and _explicit_value_is_allowed(
                     node_type,
@@ -415,6 +442,11 @@ class ParameterTaskPlanner:
                     status = (
                         "pending" if requires_explicit_confirmation else "completed"
                     )
+                if not parameter_is_visible:
+                    status = "skipped"
+                    source = None
+                    recommendation_fingerprint = None
+                    requires_explicit_confirmation = False
                 task = AgentBuilderParameterTask(
                     task_id=uuid5(
                         NAMESPACE_URL,
@@ -628,6 +660,13 @@ def reconcile_parameter_group_catalog_tasks(
             )
             continue
         status = existing.status
+        mode_visibility_changed = (
+            planned.status == "skipped" and existing.status != "skipped"
+        ) or (
+            planned.status in {"pending", "active"}
+            and existing.status == "skipped"
+            and isinstance(planned.validation.get("visible_when"), dict)
+        )
         legacy_unconfirmed_disabled_routing = (
             existing.node_type == "llmNode"
             and existing.parameter_key == "auto_model_routing"
@@ -655,7 +694,9 @@ def reconcile_parameter_group_catalog_tasks(
             and planned.status != "completed"
             and existing.status == "completed"
         )
-        if legacy_unconfirmed_disabled_routing:
+        if mode_visibility_changed:
+            status = planned.status
+        elif legacy_unconfirmed_disabled_routing:
             status = "pending"
         elif secret_configuration_completed:
             status = "completed"

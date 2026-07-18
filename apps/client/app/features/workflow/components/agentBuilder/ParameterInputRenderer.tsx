@@ -14,7 +14,7 @@ export const ParameterInputRenderer = ({
   onSubmit,
   onSkip,
   onClear,
-  onOpenNodeSettings,
+  onSecretSubmit,
   disabled = false,
 }: {
   task: AgentBuilderParameterTask;
@@ -22,7 +22,7 @@ export const ParameterInputRenderer = ({
   onSubmit: (value: unknown) => void;
   onSkip?: () => void;
   onClear?: () => void;
-  onOpenNodeSettings?: () => void;
+  onSecretSubmit?: (task: AgentBuilderParameterTask, value: string) => void;
   disabled?: boolean;
 }) => {
   const hydratedValue =
@@ -136,10 +136,19 @@ export const ParameterInputRenderer = ({
         );
         return suggestion ? [suggestion] : [];
       });
-      if (
-        selections.length === 0 ||
-        selections.length !== suggestionIds.length
-      ) {
+      if (selections.length === 0) {
+        if (!task.required && hydration.state === 'empty' && onSkip) {
+          onSkip();
+          return;
+        }
+        if (!task.required && hydration.state !== 'empty' && onClear) {
+          onClear();
+          return;
+        }
+        setError('연결할 이전 노드 출력을 하나 이상 선택하세요.');
+        return;
+      }
+      if (selections.length !== suggestionIds.length) {
         setError('연결할 이전 노드 출력을 하나 이상 선택하세요.');
         return;
       }
@@ -208,16 +217,49 @@ export const ParameterInputRenderer = ({
         onKeyDown={(event) => event.stopPropagation()}
       >
         <p className="text-xs text-amber-700 dark:text-amber-300">
-          민감한 값은 Agent Builder 채팅에서 입력하지 않습니다. 기존 노드 설정에서
-          안전하게 연결해주세요.
+          기존 값은 표시하지 않습니다. 새 값을 입력하면 기존 설정을 교체합니다.
         </p>
+        <input
+          aria-label={task.label}
+          type="password"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          disabled={disabled}
+          autoComplete="off"
+          className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+        />
+        {error ? (
+          <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+            {error}
+          </p>
+        ) : null}
         <button
           type="button"
-          onClick={onOpenNodeSettings}
-          disabled={disabled || !onOpenNodeSettings}
-          className="rounded-md border border-neutral-300 px-3 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-60 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-900"
+          onClick={() => {
+            setError(null);
+            const trimmed = value.trim();
+            if (!trimmed) {
+              if (!task.required && hydration.state !== 'empty' && onClear) {
+                onClear();
+                return;
+              }
+              if (!task.required && onSkip) {
+                onSkip();
+                return;
+              }
+              setError('값을 입력하세요.');
+              return;
+            }
+            if (!onSecretSubmit) {
+              setError('보안 저장 경로를 사용할 수 없습니다.');
+              return;
+            }
+            onSecretSubmit(task, trimmed);
+          }}
+          disabled={disabled}
+          className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
         >
-          노드 설정 열기
+          적용
         </button>
       </div>
     );

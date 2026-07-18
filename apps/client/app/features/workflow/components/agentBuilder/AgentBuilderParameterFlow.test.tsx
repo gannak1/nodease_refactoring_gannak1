@@ -414,6 +414,58 @@ describe('Agent Builder parameter cards', () => {
     expect(scrollIntoView).toHaveBeenCalled();
   });
 
+  it('previous로 표시한 값 없는 optional task에서도 건너뛰기를 유지한다', () => {
+    const onDecision = vi.fn();
+    render(
+      <WorkflowResultGroup
+        tasks={[
+          { ...tasks[1], status: 'skipped' },
+          { ...tasks[2], status: 'active', resolution_source: null },
+        ]}
+        presentationTaskId="task-kb"
+        onFocusNode={vi.fn()}
+        onDecision={onDecision}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '건너뛰기' }));
+    expect(onDecision).toHaveBeenCalledWith({
+      taskId: 'task-kb',
+      action: 'skip',
+    });
+  });
+
+  it('previous로 표시한 기존 optional 값은 값 지우고 건너뛰기로 clear한다', () => {
+    const onDecision = vi.fn();
+    render(
+      <WorkflowResultGroup
+        tasks={[
+          { ...tasks[1], status: 'completed' },
+          { ...tasks[2], status: 'active', resolution_source: null },
+        ]}
+        nodes={[
+          {
+            id: 'llm',
+            type: 'llmNode',
+            position: { x: 0, y: 0 },
+            data: { title: 'LLM', knowledgeBases: ['kb-1'] },
+          } as unknown as Node,
+        ]}
+        presentationTaskId="task-kb"
+        onFocusNode={vi.fn()}
+        onDecision={onDecision}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '값 지우고 건너뛰기' }),
+    );
+    expect(onDecision).toHaveBeenCalledWith({
+      taskId: 'task-kb',
+      action: 'clear',
+    });
+  });
+
   it('canonical workflow node data에서 typed text/boolean/json 현재값을 hydrate한다', () => {
     const canonicalNode = {
       id: 'llm',

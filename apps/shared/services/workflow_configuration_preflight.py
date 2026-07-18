@@ -13,6 +13,7 @@ from apps.shared.services.workflow_node_catalog import (
     node_output_keys,
     node_parameter_definitions,
     node_parameter_is_configured,
+    stored_parameter_value_for_validation,
     validate_node_parameter_value,
 )
 
@@ -203,6 +204,11 @@ def workflow_configuration_issues(
                 missing_items: list[str] = []
                 for key in definition.get("required_configuration") or []:
                     parameter_key = str(key)
+                    validation_value = stored_parameter_value_for_validation(
+                        node_type,
+                        parameter_key,
+                        data,
+                    )
                     invalid = (
                         parameter_key in deferred
                         or not node_parameter_is_configured(
@@ -214,7 +220,7 @@ def workflow_configuration_issues(
                                 validate_node_parameter_value(
                                     node_type,
                                     parameter_key,
-                                    data.get(parameter_key),
+                                    validation_value,
                                 )
                             )
                         )
@@ -231,7 +237,7 @@ def workflow_configuration_issues(
                         "variable_selector",
                         "variable_selector_list",
                     }:
-                        selectors = parameter_selectors(data.get(parameter_key))
+                        selectors = parameter_selectors(validation_value)
                         invalid = invalid or not selectors or not all(
                             selector_valid(
                                 selector,

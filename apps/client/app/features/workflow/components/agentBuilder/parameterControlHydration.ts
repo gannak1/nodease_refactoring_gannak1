@@ -25,6 +25,11 @@ const LLM_PARAMETER_PATHS: Record<string, string[]> = {
   ],
   model_routing_max_cohorts: ['model_routing_policy', 'max_cohorts'],
 };
+const NODE_PARAMETER_PATHS: Record<string, Record<string, string[]>> = {
+  slackPostNode: {
+    bot_token: ['authConfig', 'token'],
+  },
+};
 
 const hasValue = (value: unknown) =>
   value !== undefined && value !== null && value !== '';
@@ -42,7 +47,7 @@ const nestedParameterValue = (
   const path =
     task.node_type === 'llmNode'
       ? LLM_PARAMETER_PATHS[task.parameter_key]
-      : undefined;
+      : NODE_PARAMETER_PATHS[task.node_type]?.[task.parameter_key];
   if (!path) return { found: false };
   let value: unknown = nodeData;
   for (const key of path) {

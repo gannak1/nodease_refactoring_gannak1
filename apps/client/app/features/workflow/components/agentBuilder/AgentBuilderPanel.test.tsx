@@ -555,13 +555,57 @@ describe('AgentBuilderPanel', () => {
       'agent-builder:workflow:workflow-1',
       'session-secret-refresh',
     );
+    const acknowledgedMutation = {
+      operation_id: 'operation-secret-refresh',
+      status: 'acknowledged',
+      result_graph_hash: 'b'.repeat(64),
+      saved_workflow_updated_at: '2026-07-16T00:00:00Z',
+    };
+    const messages = [
+      {
+        kind: 'assistant' as const,
+        request_id: 'request-secret-refresh',
+        response: {
+          request_id: 'request-secret-refresh',
+          status: 'parameter_configuration' as const,
+          clarification_questions: [],
+          clarification_options: [],
+          warnings: [],
+        },
+      },
+    ];
+    useWorkflowStore.setState({
+      activeWorkflowId: 'workflow-1',
+      undoStack: [
+        {
+          nodes: [],
+          edges: [],
+          agentBuilderOperation: {
+            operationId: 'operation-secret-refresh',
+            resultGraphHash: 'b'.repeat(64),
+            workflowUpdatedAt: '2026-07-16T00:00:00Z',
+            sessionId: 'session-secret-refresh',
+          },
+          agentBuilderHistory: {
+            sessionId: 'session-secret-refresh',
+            latestOperationId: 'operation-secret-refresh',
+            acknowledged: true,
+            completionEligible: false,
+            parameterGroup: activeSecretGroup,
+            lastManuallyConfiguredTaskId: null,
+            presentation: 'none',
+          },
+        },
+      ],
+    });
     vi.mocked(agentBuilderApi.getSession)
       .mockResolvedValueOnce({
         session_id: 'session-secret-refresh',
         workflow_id: 'workflow-1',
         protocol_version: 'direct_edit_v1',
         status: 'parameter_configuration',
-        messages: [],
+        messages,
+        active_graph_mutation: acknowledgedMutation,
         parameter_group: activeSecretGroup,
       })
       .mockResolvedValue({
@@ -569,9 +613,14 @@ describe('AgentBuilderPanel', () => {
         workflow_id: 'workflow-1',
         protocol_version: 'direct_edit_v1',
         status: 'parameter_configuration',
-        messages: [],
+        messages,
+        active_graph_mutation: acknowledgedMutation,
         parameter_group: refreshedSecretGroup,
       });
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
 
     render(
       <AgentBuilderPanel
@@ -600,7 +649,215 @@ describe('AgentBuilderPanel', () => {
     });
 
     await waitFor(() => {
-      expect(agentBuilderApi.getSession).toHaveBeenCalledTimes(2);
+      expect(
+        vi.mocked(agentBuilderApi.getSession).mock.calls.length,
+      ).toBeGreaterThanOrEqual(2);
+    });
+    expect(screen.getByLabelText('Slack channel')).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: '적용' })).not.toBeDisabled();
+  });
+
+  it('sends Agent Builder secret input through the workflow editor bridge', async () => {
+    const secretGroup: AgentBuilderParameterGroup = {
+      group_id: 'group-secret-bridge',
+      status: 'active',
+      tasks: [
+        {
+          task_id: 'task-secret-bridge',
+          group_id: 'group-secret-bridge',
+          step_id: 'step-slack',
+          node_id: 'slack',
+          node_type: 'slackPostNode',
+          parameter_key: 'bot_token',
+          label: 'Bot Token',
+          input_type: 'secret',
+          required: false,
+          defer_policy: 'forbidden',
+          status: 'active',
+          task_version: 1,
+          stable_order: 0,
+          resolution_source: null,
+          sensitivity: 'secret_forbidden',
+          reason: 'Slack API 연결에 사용할 token입니다.',
+          input_guidance: '새 값을 입력하면 기존 값을 교체합니다.',
+        },
+      ],
+    };
+    const slackNode = {
+      ...node('slack', 'slackPostNode'),
+      data: { title: 'Slack', authConfig: {} },
+    } as Node;
+    window.localStorage.setItem(
+      'agent-builder:workflow:workflow-1',
+      'session-secret-bridge',
+    );
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: 'session-secret-bridge',
+      workflow_id: 'workflow-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'parameter_configuration',
+      messages: [
+        {
+          kind: 'assistant',
+          request_id: 'request-secret-bridge',
+          response: {
+            request_id: 'request-secret-bridge',
+            status: 'graph_mutation_ready',
+            clarification_questions: [],
+            clarification_options: [],
+            warnings: [],
+          },
+        },
+      ],
+      parameter_group: secretGroup,
+    });
+    useWorkflowStore.setState({
+      activeWorkflowId: 'workflow-1',
+      nodes: [slackNode],
+      edges: [],
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-1"
+        appId="app-1"
+        nodes={[slackNode]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+
+    const input = await screen.findByLabelText('Bot Token');
+    fireEvent.change(input, { target: { value: 'not-a-secret-fixture' } });
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+
+    await waitFor(() => {
+      const stored = useWorkflowStore.getState().nodes[0]?.data as {
+        authConfig?: { token?: string };
+      };
+      expect(stored.authConfig?.token).toBe('not-a-secret-fixture');
+    });
+    expect(agentBuilderApi.decideParameterTask).not.toHaveBeenCalled();
+  });
+
+  it('removes an optional secret through editor state before issuing safe skip', async () => {
+    const activeSecretTask: AgentBuilderParameterGroup['tasks'][number] = {
+      task_id: 'task-secret-clear',
+      group_id: 'group-secret-clear',
+      step_id: 'step-slack',
+      node_id: 'slack',
+      node_type: 'slackPostNode',
+      parameter_key: 'bot_token',
+      label: 'Bot Token',
+      input_type: 'secret',
+      required: false,
+      defer_policy: 'forbidden',
+      status: 'active',
+      task_version: 1,
+      stable_order: 0,
+      resolution_source: null,
+      sensitivity: 'secret_forbidden',
+      reason: 'Slack API 연결에 사용할 token입니다.',
+      input_guidance: '기존 값을 지우고 건너뛸 수 있습니다.',
+    };
+    const activeGroup: AgentBuilderParameterGroup = {
+      group_id: 'group-secret-clear',
+      status: 'active',
+      tasks: [activeSecretTask],
+    };
+    const session = {
+      session_id: 'session-secret-clear',
+      workflow_id: 'workflow-1',
+      protocol_version: 'direct_edit_v1' as const,
+      status: 'parameter_configuration',
+      messages: [
+        {
+          kind: 'assistant' as const,
+          request_id: 'request-secret-clear',
+          response: {
+            request_id: 'request-secret-clear',
+            status: 'graph_mutation_ready' as const,
+            clarification_questions: [],
+            clarification_options: [],
+            warnings: [],
+          },
+        },
+      ],
+      parameter_group: activeGroup,
+    };
+    const slackNode = {
+      ...node('slack', 'slackPostNode'),
+      data: {
+        title: 'Slack',
+        authConfig: { token: 'configured-value' },
+      },
+    } as Node;
+    window.localStorage.setItem(
+      'agent-builder:workflow:workflow-1',
+      'session-secret-clear',
+    );
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue(session);
+    vi.mocked(agentBuilderApi.decideParameterTask).mockResolvedValue({
+      task: { ...activeSecretTask, status: 'skipped', task_version: 2 },
+      graph_mutation: null,
+      next_task_id: null,
+      group_status: 'completed',
+      awaiting_persistence_ack: false,
+    });
+    useWorkflowStore.setState({
+      activeWorkflowId: 'workflow-1',
+      nodes: [slackNode],
+      edges: [],
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-1"
+        appId="app-1"
+        nodes={[slackNode]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.click(
+      await screen.findByRole('button', { name: '값 지우고 건너뛰기' }),
+    );
+
+    expect(
+      (useWorkflowStore.getState().nodes[0]?.data.authConfig as {
+        token?: string;
+      }).token,
+    ).toBeUndefined();
+    expect(agentBuilderApi.decideParameterTask).not.toHaveBeenCalled();
+
+    act(() => {
+      useWorkflowStore.setState({
+        canonicalDraftMetadata: {
+          'workflow-1': {
+            workflowId: 'workflow-1',
+            graphHash: 'd'.repeat(64),
+            updatedAt: '2026-07-18T23:00:00Z',
+          },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(agentBuilderApi.decideParameterTask).toHaveBeenCalledWith(
+        'session-secret-clear',
+        'task-secret-clear',
+        expect.objectContaining({ action: 'skip', value: undefined }),
+      );
     });
   });
 

@@ -40,9 +40,9 @@ const branchTask: AgentBuilderParameterTask = {
 };
 
 describe('ParameterInputRenderer condition branch target', () => {
-  it('routes secret parameters to Node Detail without collecting a raw value', () => {
+  it('collects supported node secrets in a masked control without routing to Node Detail', () => {
     const onSubmit = vi.fn();
-    const onOpenNodeSettings = vi.fn();
+    const onSecretSubmit = vi.fn();
     const secretTask: AgentBuilderParameterTask = {
       ...branchTask,
       task_id: 'task-slack-token',
@@ -60,15 +60,160 @@ describe('ParameterInputRenderer condition branch target', () => {
         task={secretTask}
         hydration={{ state: 'unavailable' }}
         onSubmit={onSubmit}
-        onOpenNodeSettings={onOpenNodeSettings}
+        onSecretSubmit={onSecretSubmit}
       />,
     );
 
-    expect(screen.queryByLabelText('Bot Token')).not.toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole('button', { name: '노드 설정 열기' }),
+    const input = screen.getByLabelText('Bot Token');
+    expect(input).toHaveAttribute('type', 'password');
+    expect(
+      screen.queryByRole('button', { name: '노드 설정 열기' }),
+    ).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: 'test-only-secret' } });
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+    expect(onSecretSubmit).toHaveBeenCalledWith(
+      secretTask,
+      'test-only-secret',
     );
-    expect(onOpenNodeSettings).toHaveBeenCalledTimes(1);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the workflow secret save bridge is unavailable', () => {
+    const onSubmit = vi.fn();
+    const secretTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-slack-token-without-bridge',
+      node_id: 'slack',
+      node_type: 'slackPostNode',
+      parameter_key: 'bot_token',
+      label: 'Bot Token',
+      input_type: 'secret',
+      required: false,
+      sensitivity: 'secret_forbidden',
+    };
+
+    render(
+      <ParameterInputRenderer task={secretTask} onSubmit={onSubmit} />,
+    );
+
+    fireEvent.change(screen.getByLabelText('Bot Token'), {
+      target: { value: 'not-a-secret-fixture' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      '보안 저장 경로를 사용할 수 없습니다.',
+    );
+  });
+
+  it('detects an existing nested Slack token without hydrating its raw value', () => {
+    const onClear = vi.fn();
+    const onSkip = vi.fn();
+    const secretTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-existing-slack-token',
+      node_id: 'slack',
+      node_type: 'slackPostNode',
+      parameter_key: 'bot_token',
+      label: 'Bot Token',
+      input_type: 'secret',
+      required: false,
+      sensitivity: 'secret_forbidden',
+    };
+    const hydration = deriveParameterControlHydration(secretTask, {
+      authConfig: { token: 'configured-value' },
+    });
+
+    expect(hydration).toEqual({ state: 'unavailable' });
+    render(
+      <ParameterInputRenderer
+        task={secretTask}
+        hydration={hydration}
+        onSubmit={vi.fn()}
+        onClear={onClear}
+        onSkip={onSkip}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+    expect(onClear).toHaveBeenCalledTimes(1);
+    expect(onSkip).not.toHaveBeenCalled();
+  });
+
+  it('clears all existing optional selector-list values', () => {
+    const onSubmit = vi.fn();
+    const onClear = vi.fn();
+    const selectorTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-llm-references',
+      node_id: 'llm',
+      node_type: 'llmNode',
+      parameter_key: 'referenced_variables',
+      label: '이전 node 출력 연결',
+      input_type: 'variable_selector_list',
+      required: false,
+      suggestions: [
+        {
+          suggestion_id: 'selector-start-query',
+          kind: 'variable_selector',
+          label: '입력 query',
+          description: '이전 node output',
+          source_node_id: 'start',
+          output_key: 'query',
+          value_type: 'text',
+          value_selector: ['start', 'query'],
+          json_path: '$.query',
+        },
+      ],
+    };
+
+    render(
+      <ParameterInputRenderer
+        task={selectorTask}
+        hydration={{ state: 'available', value: ['selector-start-query'] }}
+        onSubmit={onSubmit}
+        onClear={onClear}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /입력 query/ }));
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+
+    expect(onClear).toHaveBeenCalledTimes(1);
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('skips a new empty optional selector list without issuing a clear', () => {
+    const onSubmit = vi.fn();
+    const onSkip = vi.fn();
+    const onClear = vi.fn();
+    const selectorTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-new-optional-references',
+      node_id: 'llm',
+      node_type: 'llmNode',
+      parameter_key: 'referenced_variables',
+      label: '이전 node 출력 연결',
+      input_type: 'variable_selector_list',
+      required: false,
+      suggestions: [],
+    };
+
+    render(
+      <ParameterInputRenderer
+        task={selectorTask}
+        hydration={{ state: 'empty' }}
+        onSubmit={onSubmit}
+        onSkip={onSkip}
+        onClear={onClear}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+
+    expect(onSkip).toHaveBeenCalledTimes(1);
+    expect(onClear).not.toHaveBeenCalled();
     expect(onSubmit).not.toHaveBeenCalled();
   });
 

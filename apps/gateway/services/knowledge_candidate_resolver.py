@@ -2,7 +2,7 @@ import uuid
 from collections import Counter
 from collections.abc import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, joinedload
 
 from apps.shared.db.models.knowledge import (
@@ -406,6 +406,14 @@ class KnowledgeCandidateResolver:
             if not requested_ids:
                 return []
             query = query.filter(KnowledgeCollection.id.in_(requested_ids))
+            rows = query.all()
+            rows_by_id = {row.id: row for row in rows}
+            ordered = [
+                rows_by_id[collection_id]
+                for collection_id in requested_ids
+                if collection_id in rows_by_id
+            ]
+            return ordered if max_collections is None else ordered[:max_collections]
         query = query.order_by(
             KnowledgeCollection.name.asc(),
             KnowledgeCollection.id.asc(),
@@ -422,17 +430,53 @@ class KnowledgeCandidateResolver:
         collection_id_list = self._dedupe_ids(collection_ids)
         if not collection_id_list:
             return []
+        collection_position = case(
+            {
+                collection_id: position
+                for position, collection_id in enumerate(collection_id_list)
+            },
+            value=KnowledgeCollectionItem.collection_id,
+            else_=len(collection_id_list),
+        )
         selected_kb_ids = None
         if max_candidate_kbs is not None:
-            selected_kb_ids = (
-                self.db.query(KnowledgeCollectionItem.knowledge_base_id)
+            ranked_items = (
+                self.db.query(
+                    KnowledgeCollectionItem.knowledge_base_id.label(
+                        "knowledge_base_id"
+                    ),
+                    collection_position.label("collection_position"),
+                    KnowledgeCollectionItem.rank.label("item_rank"),
+                    func.row_number()
+                    .over(
+                        partition_by=KnowledgeCollectionItem.knowledge_base_id,
+                        order_by=(
+                            collection_position.asc(),
+                            KnowledgeCollectionItem.rank.asc(),
+                            KnowledgeCollectionItem.knowledge_base_id.asc(),
+                        ),
+                    )
+                    .label("kb_occurrence"),
+                )
                 .filter(
                     KnowledgeCollectionItem.organization_id
                     == self.organization_id,
                     KnowledgeCollectionItem.collection_id.in_(collection_id_list),
                 )
-                .distinct()
-                .order_by(KnowledgeCollectionItem.knowledge_base_id.asc())
+                .subquery()
+            )
+            selected_kb_ids = (
+                select(
+                    ranked_items.c.knowledge_base_id,
+                    ranked_items.c.collection_position,
+                    ranked_items.c.item_rank,
+                )
+                .where(ranked_items.c.kb_occurrence == 1)
+                .order_by(
+                    ranked_items.c.collection_position.asc(),
+                    ranked_items.c.item_rank.asc(),
+                    ranked_items.c.knowledge_base_id.asc(),
+                )
                 .limit(max_candidate_kbs)
                 .subquery()
             )
@@ -443,7 +487,7 @@ class KnowledgeCandidateResolver:
                 KnowledgeCollectionItem.collection_id.in_(collection_id_list),
             )
             .order_by(
-                KnowledgeCollectionItem.collection_id.asc(),
+                collection_position.asc(),
                 KnowledgeCollectionItem.rank.asc(),
                 KnowledgeCollectionItem.knowledge_base_id.asc(),
             )
