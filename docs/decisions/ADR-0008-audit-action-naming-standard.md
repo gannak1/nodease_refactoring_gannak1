@@ -39,6 +39,20 @@ Active 문서 일부는 권한 또는 정책으로 workflow 실행이 막힌 사
 | workflow 실행 시도와 결과 | `workflow.execute` | MVP 1 |
 | LLM 호출 | `llm.call` | MVP 1 현재 구현 |
 | RAG retrieval 성공 | `rag.retrieve` | MVP 2 목표 |
+| Knowledge taxonomy draft 생성/수정 | `knowledge.taxonomy_draft.created`, `knowledge.taxonomy_draft.updated` | MBA-305 목표. normalized no-op은 action을 만들지 않음 |
+| Knowledge taxonomy publish | `knowledge.taxonomy.published` | MBA-305 목표. impact acknowledgement와 identity ledger를 같은 transaction에 기록 |
+| Knowledge classification manual assignment 생성/수정 | `knowledge.classification_assignment.created`, `knowledge.classification_assignment.updated` | MBA-305 목표. server-derived `manual_assignment` 또는 `manual_takeover` reason만 기록 |
+| Knowledge classification axis lock/unlock | `knowledge.classification_assignment.locked`, `knowledge.classification_assignment.unlocked` | MBA-305 목표 |
+| Knowledge classification current-validation 성공 | `knowledge.classification.revalidated` | MBA-305 목표 |
+| Knowledge classification suggestion 수락/거절 | `knowledge.classification_suggestion.accepted`, `knowledge.classification_suggestion.rejected` | MBA-305 목표 |
+| Organization processing profile draft 생성/수정 | `knowledge.processing_profile_draft.created`, `knowledge.processing_profile_draft.updated` | MBA-305 목표. normalized no-op은 action을 만들지 않음 |
+| Organization processing profile publish/deprecate | `knowledge.processing_profile.published`, `knowledge.processing_profile.deprecated` | MBA-305 목표 |
+| Organization processing profile-policy draft 생성/수정 | `knowledge.processing_profile_policy_draft.created`, `knowledge.processing_profile_policy_draft.updated` | MBA-305 목표. normalized no-op은 action을 만들지 않음 |
+| Organization processing profile-policy publish | `knowledge.processing_profile_policy.published` | MBA-305 목표. impact acknowledgement를 같은 transaction에 기록 |
+| Platform default processing profile pointer 변경 | `knowledge.processing_profile_default.changed` | MBA-305 목표. Platform registry owner/system actor, safe before/after revision과 catalog revision만 기록 |
+| KB processing profile override set/clear | `knowledge.processing_profile_override.set`, `knowledge.processing_profile_override.clear` | MBA-305 목표 |
+| Knowledge processing reindex admission 결과 확정 | `knowledge.processing_reindex.admitted` | MBA-305 목표. `status='success'`, safe `result_status`로 결과 구분 |
+| Knowledge processing artifact 물리 purge 완료 | `knowledge.processing_artifact.purged` | MBA-305 목표. Physical deletion 확인 뒤 tombstone과 같은 completion transaction에서만 기록 |
 | RAG Agent answer 요청 | `rag.answer.requested` | RAG 확장 3단계 목표 |
 | RAG Agent answer 완료 | `rag.answer.completed` | RAG 확장 3단계 목표 |
 | RAG Agent answer 실패 | `rag.answer.failed` | RAG 확장 3단계 목표 |
@@ -78,6 +92,12 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 - Deployment 생성은 `workflow.deploy`, 일반 toggle은 `deployment.toggle`, 이전 deployment 재활성화는 `deployment.activate_previous`, 삭제는 `deployment.delete`를 사용한다.
 - App 인증 secret 최초 발급과 rotation은 `app.auth_secret.rotated`를 사용한다. 최초 발급은 별도 action을 만들지 않고 safe metadata의 `previous_version=0`으로 구분하며 secret 원문, verifier, candidate, header와 fingerprint는 저장하지 않는다.
 - 현재 코드의 `AuditAction` 상수에는 `llm.call`도 구현되어 있다.
+- MBA-305가 명시적으로 확정한 current-validation, suggestion reject, Organization profile publish/deprecate,
+  Platform default profile pointer change와 KB profile override set/clear action은 위 canonical 문자열을
+  `AuditAction`, audit 검색/UI filter와 계약 테스트에 함께 등록한다. Default change는 platform registry
+  owner/system actor, safe before/after profile revision과 catalog revision만 기록하고 raw profile config를 넣지
+  않는다. 각 mutation과 audit row는 같은 Unit of Work에서 확정하고 audit 저장 실패 시 mutation을 rollback한다.
+- MBA-305 목표 reindex admission은 최초 `unchanged`, `satisfied_existing`, `job_created`, `job_reused` 결과를 `knowledge.processing_reindex.admitted`, `status='success'`, `audit_metadata.result_status=<result>`로 기록한다. Result receipt, 결과별 pointer/job mutation과 audit row는 같은 Unit of Work에서 확정하며 audit 저장 실패 시 모두 rollback한다. 같은 actor/operation/request의 exact authorized receipt replay는 read-only이고 audit row를 추가하지 않는다. Source-hidden 또는 idempotency conflict는 이 success action을 사용하지 않으며 ADR-0017의 target/source 비노출 request-scoped security audit는 별도 action 경계다. Idempotency key, token digest, source capability와 내부 fingerprint는 audit metadata에 저장하지 않는다.
 - MBA-43 runtime 차단 중 credential 후보 없음, credential `use` 권한 부족, verified credential-model relation 없음, inactive model, Workflow Engine runtime organization scope 누락/invalid는 `permission.denied`로 기록한다. 해당 차단은 `workflow.blocked`로 저장하지 않는다.
 - MBA-43은 application-level model restriction policy를 구현하지 않으므로 model restriction 차단에 `policy.block`을 기록하지 않는다. `policy.block`은 기존 canonical action으로 유지하며 document/model/trace policy enforcement가 실제로 연결되는 후속 구현에서 사용한다.
 - `policy.warn`, `policy.block`, `rag.retrieve`는 이 ADR에서 MVP 2 목표 action으로 확정한다. MBA-78 1차 구현은 해당 `AuditAction` 상수와 테스트를 먼저 추가하며, `rag.retrieve`는 RAG retrieval 성공 감사에 사용한다. `policy.warn`/`policy.block`의 실제 document metadata policy enforcement 연결은 후속 구현 범위다.
