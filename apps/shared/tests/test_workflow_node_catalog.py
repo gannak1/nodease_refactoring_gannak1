@@ -11,6 +11,7 @@ from apps.shared.services.workflow_node_catalog import (
     load_workflow_node_catalog,
     node_parameter_definitions,
     node_parameter_is_configured,
+    node_parameter_value,
     remove_node_parameter_value,
     validate_node_parameter_update,
     validate_node_parameter_value,
@@ -529,6 +530,24 @@ def test_slack_json_parameters_use_the_editor_string_shape():
     )
     assert data["attachments"] == '[{"color": "#4A154B", "text": "alert"}]'
 
+    assert node_parameter_value("slackPostNode", "blocks", data) == (
+        True,
+        blocks,
+    )
+    assert node_parameter_value("slackPostNode", "attachments", data) == (
+        True,
+        attachments,
+    )
+
+
+def test_invalid_stored_slack_json_is_not_hydrated_as_a_parameter_value():
+    assert node_parameter_value(
+        "slackPostNode", "blocks", {"blocks": "{invalid"}
+    ) == (False, None)
+    assert node_parameter_value(
+        "slackPostNode", "blocks", {"blocks": '{"type":"section"}'}
+    ) == (False, None)
+
 
 def test_removing_optional_parameter_preserves_unrelated_nested_node_data():
     slack = remove_node_parameter_value(
@@ -643,6 +662,27 @@ def test_external_node_configuration_uses_catalog_safe_parameter_fields():
     assert validate_node_parameter_value(
         "githubNode", "pr_number", 1.5
     ) == ["integer_required"]
+    assert derive_node_configuration_state(
+        "githubNode",
+        {
+            "action": "comment_pr",
+            "repo_owner": "octo",
+            "repo_name": "repo",
+            "pr_number": "1",
+            "api_token": "configured",
+        },
+    ) == "unresolved"
+    assert derive_node_configuration_state(
+        "githubNode",
+        {
+            "action": "comment_pr",
+            "repo_owner": "octo",
+            "repo_name": "repo",
+            "pr_number": "1",
+            "api_token": "configured",
+            "comment_body": "Review result: {{review}}",
+        },
+    ) == "resolved"
 
 
 def test_workflow_node_catalog_declares_connection_policy_for_every_node():

@@ -133,7 +133,7 @@ Revert와 Redo는 같은 boundary operation id, action, candidate graph hash와 
 
 Acknowledgement 응답 유실 뒤 session recovery에서 같은 operation이 이미 `acknowledged`이고 canonical graph hash/`updated_at`이 일치하면 client history boundary도 acknowledged로 reconcile한다. Acknowledgement와 audit를 중복 생성하지 않으며 hash 또는 timestamp가 다르면 완료로 추측하지 않고 stale/conflict로 닫는다.
 
-Acknowledgement가 성공한 뒤 즉시 session read만 실패하면 client는 acknowledgement를 반복하거나 boundary를 미완료로 영구 고정하지 않는다. `completion_confirming` presentation과 pending history를 유지하고 canonical session을 제한적으로 재조회해 terminal 상태를 확인한다. Save/session 결과가 불명확할 때 canonical graph를 다시 표시하더라도 일반 workflow load로 Undo/Redo와 pending context를 초기화하지 않으며 `applied|unapplied|stale` 판정 전까지 비파괴적으로 보존한다. Canonical graph가 operation의 base hash와 expected result hash 어느 쪽에도 일치하지 않는 제3 상태여도 destructive workflow load를 호출하지 않고 history boundary, redo memory, pending revert와 apply snapshot을 유지한다.
+Acknowledgement가 성공한 뒤 즉시 session read만 실패하면 client는 acknowledgement를 반복하거나 boundary를 미완료로 영구 고정하지 않는다. `completion_confirming` presentation과 pending history를 유지하고 canonical session을 제한적으로 재조회해 terminal 상태를 확인한다. Save/session 결과가 불명확할 때 canonical graph를 다시 표시하더라도 `applied|unapplied|stale` 판정 전에는 일반 workflow load로 Undo/Redo와 pending context를 초기화하지 않는다. 제한된 재조회 뒤 canonical graph가 operation의 base hash와 expected result hash 어느 쪽에도 일치하지 않는 제3 상태로 확정되면 server canonical graph와 graph hash/`updated_at`을 editor에 반영하고, 해당 workflow의 Agent Builder pending revert/apply context와 in-memory Undo/Redo history를 폐기한다. 이 경로는 typed operation, ParameterTask 또는 Knowledge flow를 재생하지 않고 server graph를 자동 병합하거나 덮어쓰지 않으며 editor를 clean 상태로 닫고 명시적인 stale 복구 안내를 표시한다.
 
 ### 8. Recovery And Protocol Migration
 
@@ -202,3 +202,9 @@ ADR-0054의 remaining quick-completion proposal도 같은 동시성 경계를 �
 - Direct-edit request가 취소되어 terminal response를 저장할 때도 일반 성공·실패 응답과 같은 safe operation envelope serializer를 사용한다.
 - 취소 응답에는 full typed `operations`, raw graph snapshot, parameter 원문, raw Knowledge metadata, credential 또는 secret을 저장하지 않는다.
 - 취소 여부와 관계없이 persisted request/session payload만으로 GraphMutation을 재생할 수 없어야 한다.
+
+## 2026-07-19 Correction: Terminal Third-Graph Reconciliation
+
+- Undo/Redo 저장 결과가 두 번 불명확하고 canonical graph가 요청 graph와 반대 graph 모두 아닌 것으로 확인되면 더 이상 이전 history boundary를 재시도하지 않는다.
+- Client는 canonical graph와 graph hash/`updated_at`을 같은 workflow editor state에 반영하고 `pendingAgentBuilderRevert`, pending Redo memory, Agent Builder apply snapshot과 해당 workflow의 Undo/Redo stack을 비운다.
+- 이 reconciliation은 server graph를 권위로 수용하는 fail-safe 종료이며 typed mutation 재생, task 재활성화, 자동 merge 또는 추가 workflow save를 수행하지 않는다.

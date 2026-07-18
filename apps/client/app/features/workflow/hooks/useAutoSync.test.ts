@@ -994,7 +994,7 @@ describe('useAutoSync Hook', () => {
     );
   });
 
-  it('ambiguous Agent Builder recovery의 canonical read는 history와 pending context를 지우지 않는다', async () => {
+  it('ambiguous Agent Builder recovery의 third canonical graph로 editor와 history를 재동기화한다', async () => {
     vi.mocked(workflowApi.getDraftWorkflow)
       .mockResolvedValueOnce({
         nodes: [{ id: 'loaded', data: {} } as any],
@@ -1042,7 +1042,7 @@ describe('useAutoSync Hook', () => {
       },
     };
     useWorkflowStore.getState().setCanonicalDraftMetadata({
-      workflowId: 'workflow-1',
+      workflowId: 'test-workflow-id',
       graphHash: 'a'.repeat(64),
       updatedAt: '2026-07-13T00:00:00Z',
     });
@@ -1078,21 +1078,20 @@ describe('useAutoSync Hook', () => {
     });
 
     expect(useWorkflowStore.getState().nodes).toEqual([
-      expect.objectContaining({ id: 'desired-revert' }),
+      expect.objectContaining({ id: 'canonical-other' }),
     ]);
-    expect(useWorkflowStore.getState().undoStack).toEqual([undoSnapshot]);
-    expect(useWorkflowStore.getState().redoStack).toHaveLength(1);
-    expect(useWorkflowStore.getState().pendingAgentBuilderRevert).toEqual(
-      expect.objectContaining({ operationId: 'operation-1' }),
-    );
+    expect(useWorkflowStore.getState().undoStack).toEqual([]);
+    expect(useWorkflowStore.getState().redoStack).toEqual([]);
+    expect(useWorkflowStore.getState().pendingAgentBuilderRevert).toBeNull();
+    expect(useWorkflowStore.getState().hasUnsavedChanges).toBe(false);
     expect(
       useWorkflowStore
         .getState()
-        .getCanonicalDraftMetadata('workflow-1'),
+        .getCanonicalDraftMetadata('test-workflow-id'),
     ).toEqual({
-      workflowId: 'workflow-1',
-      graphHash: 'a'.repeat(64),
-      updatedAt: '2026-07-13T00:00:00Z',
+      workflowId: 'test-workflow-id',
+      graphHash: 'z'.repeat(64),
+      updatedAt: '2026-07-13T00:00:09Z',
     });
   });
 });

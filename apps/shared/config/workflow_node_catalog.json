@@ -282,7 +282,8 @@
         "api_token": "GitHub API Token",
         "repo_owner": "Repository owner",
         "repo_name": "Repository name",
-        "pr_number": "PR 번호"
+        "pr_number": "PR 번호",
+        "comment_body": "댓글 내용"
       },
       "parameters": [
         {"key": "action", "label": "GitHub 작업", "input_type": "select", "required": true, "defer_policy": "forbidden", "default": "get_pr", "validation": {"options": ["get_pr", "comment_pr"], "option_labels": {"get_pr": "PR 조회", "comment_pr": "PR 댓글 등록"}}},
@@ -290,7 +291,7 @@
         {"key": "repo_owner", "label": "Repository owner", "input_type": "text", "required": true, "defer_policy": "allow_unresolved"},
         {"key": "repo_name", "label": "Repository name", "input_type": "text", "required": true, "defer_policy": "allow_unresolved"},
         {"key": "pr_number", "label": "PR 번호", "input_type": "number", "required": true, "defer_policy": "allow_unresolved", "reason": "조회하거나 댓글을 등록할 Pull Request 번호를 설정합니다.", "input_guidance": "PR 번호를 1 이상의 정수로 입력하세요.", "validation": {"min": 1, "integer": true}},
-        {"key": "comment_body", "label": "댓글 내용", "input_type": "textarea", "required": false, "defer_policy": "forbidden", "validation": {"max_length": 65536}}
+        {"key": "comment_body", "label": "댓글 내용", "input_type": "textarea", "required": false, "defer_policy": "forbidden", "validation": {"min_length": 1, "max_length": 65536, "visible_when": {"parameter_key": "action", "equals": "comment_pr"}, "required_when": {"parameter_key": "action", "equals": "comment_pr"}}}
       ]
     },
     {

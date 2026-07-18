@@ -172,6 +172,19 @@ def validate_workflow_node_catalog(catalog: dict[str, Any]) -> None:
             validation = parameter.get("validation", {})
             if not isinstance(validation, dict):
                 raise RuntimeError("Workflow node catalog parameter validation is invalid")
+            for condition_key in ("visible_when", "required_when"):
+                condition = validation.get(condition_key)
+                if condition is None:
+                    continue
+                if (
+                    not isinstance(condition, dict)
+                    or str(condition.get("parameter_key") or "")
+                    not in parameter_keys
+                    or "equals" not in condition
+                ):
+                    raise RuntimeError(
+                        "Workflow node catalog parameter condition is invalid"
+                    )
         outputs = node.get("outputs")
         if not isinstance(outputs, list):
             raise RuntimeError("Workflow node catalog is missing output contracts")
@@ -295,6 +308,42 @@ def parameter_definition(node_type: str, parameter_key: str) -> dict[str, Any] |
     )
 
 
+def _parameter_condition_matches(
+    node_type: str,
+    condition: Any,
+    node_data: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(condition, dict):
+        return False
+    controlling_key = condition.get("parameter_key")
+    if not isinstance(controlling_key, str) or not controlling_key:
+        return False
+    found, current_value = node_parameter_value(
+        node_type,
+        controlling_key,
+        node_data,
+    )
+    return found and current_value == condition.get("equals")
+
+
+def node_parameter_is_required(
+    node_type: str,
+    parameter_key: str,
+    node_data: dict[str, Any] | None,
+) -> bool:
+    parameter = parameter_definition(node_type, parameter_key)
+    if parameter is None:
+        return False
+    if parameter.get("required") is True:
+        return True
+    validation = parameter.get("validation")
+    return isinstance(validation, dict) and _parameter_condition_matches(
+        node_type,
+        validation.get("required_when"),
+        node_data,
+    )
+
+
 def validate_node_parameter_value(
     node_type: str,
     parameter_key: str,
@@ -313,6 +362,12 @@ def validate_node_parameter_value(
         and not isinstance(value, dict)
     ):
         return ["json_object_required"]
+    if (
+        node_type == "slackPostNode"
+        and parameter_key in {"blocks", "attachments"}
+        and not isinstance(value, list)
+    ):
+        return ["json_array_required"]
     if input_type in {"text", "textarea", "code", "secret"}:
         if not isinstance(value, str):
             return ["invalid_type"]
@@ -474,6 +529,16 @@ def node_parameter_value(
                 return False, None
             selectors.append(copy.deepcopy(item["value_selector"]))
         return True, selectors
+    if node_type == "slackPostNode" and parameter_key in {"blocks", "attachments"}:
+        if parameter_key not in data:
+            return False, None
+        value = data.get(parameter_key)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError):
+                return False, None
+        return (True, value) if isinstance(value, list) else (False, None)
     if parameter_key in data:
         return True, data.get(parameter_key)
     if node_type == "llmNode" and parameter_key in _LLM_ROUTING_PARAMETER_PATHS:
@@ -777,7 +842,18 @@ def missing_required_configuration(
         if isinstance(key, str)
     }
     missing: list[str] = []
-    for key in definition.get("required_configuration") or []:
+    required_keys = [
+        str(key) for key in definition.get("required_configuration") or []
+    ]
+    for parameter in node_parameter_definitions(node_type):
+        parameter_key = str(parameter.get("key") or "")
+        if (
+            parameter_key
+            and parameter_key not in required_keys
+            and node_parameter_is_required(node_type, parameter_key, data)
+        ):
+            required_keys.append(parameter_key)
+    for key in required_keys:
         validation_value = _stored_parameter_value_for_validation(
             node_type,
             str(key),

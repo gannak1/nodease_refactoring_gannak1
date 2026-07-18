@@ -639,7 +639,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 - Slack/GitHub는 후보 resolver가 필요한 managed credential picker를 열지 않는다. 기존 node graph secret이 미설정이거나 재편집 대상이면 Agent Builder card에 빈 masked password input을 표시하고 값을 Agent Builder persisted state로 가져오지 않는다. 적용은 기존 Workflow Editor secret save adapter를 사용하며 Node Detail 이동을 강제하지 않는다.
 - completed task 편집은 WorkflowResultGroup의 explicit editing state다. 이 상태에서는 생성 완료 표시를 숨기고 `설정 수정 중`을 표시하며, active task가 없어도 취소/닫기를 제공한다. 저장 실패 시 form 값을 보존하고 acknowledgement 성공 뒤 완료 상태로 돌아간다.
 - 완료 boundary의 첫 Undo는 sensitivity나 node type과 무관하게 최대 `stable_order`의 `completed|skipped|deferred` task를 표시한다. Raw secret과 권한 없는 reference는 hydration하지 않는다.
-- Canonical graph/session 복구는 workflow history boundary, pending operation과 redo memory를 지우지 않는 non-destructive sync를 사용한다. Acknowledgement 뒤 session 조회가 실패하면 `완료 확인 중`을 표시하고 `1초 -> 2초 -> 4초` 간격으로 최대 세 번 재조회하며 terminal 상태 전에는 완료 표시와 완료 Undo를 활성화하지 않는다. 세 번 모두 실패하면 `결과 확인 필요`와 `다시 확인` control을 표시하며, control은 같은 canonical session 조회만 재개한다.
+- Canonical graph/session 복구는 결과를 판정하는 동안 workflow history boundary, pending operation과 redo memory를 지우지 않는 non-destructive sync를 사용한다. Acknowledgement 뒤 session 조회가 실패하면 `완료 확인 중`을 표시하고 `1초 -> 2초 -> 4초` 간격으로 최대 세 번 재조회하며 terminal 상태 전에는 완료 표시와 완료 Undo를 활성화하지 않는다. 세 번 모두 실패하면 `결과 확인 필요`와 `다시 확인` control을 표시한다. Undo/Redo 저장도 불명확하고 최종 canonical graph가 요청 graph와 반대 graph 모두 아닌 제3 상태로 확인되면 canonical graph/metadata를 editor에 반영하고 해당 workflow의 Agent Builder pending context와 Undo/Redo memory를 비운 뒤 clean stale 복구 안내로 종료한다.
 - Pending request 조회가 성공하지만 같은 request가 계속 processing이면 60초까지 정상 planning 안내와 5초 간격 조회를 유지한다. 60초 이후에는 `평소보다 오래 걸리고 있습니다`를 표시하고 10초 간격으로 전환한다. Terminal 응답 수신 시 같은 request의 planning card를 교체하고 설정 상태를 failed 또는 후속 상태로 전환한다. 조회 중 transport/5xx가 발생하면 자동 조회를 중단하고 `결과 확인 필요`를 표시한다. 이 상태에서는 planning conversation card와 진행 banner를 숨기고 Workflow 결과 상태를 `서버 확인 대기`로 표시해 무한 처리 중처럼 보이지 않게 하며, 수동 `다시 확인`이 성공하면 canonical 상태 표시를 재개한다.
 - Gateway가 4분 processing 기한을 넘긴 request를 terminal `failed`로 반환하면 client는 같은 `request_id`의 `planning` 대화와 `Workflow 계획 중` 상태를 실패 결과로 교체하고 입력을 다시 사용할 수 있게 한다. 자연어 요청을 자동 재제출하지 않는다.
 - Parameter group 취소와 task decision은 결과가 확정될 때까지 같은 operation id를 유지한다. 동일 operation/payload retry는 사용자에게 중복 card/message를 만들지 않는다.
@@ -688,8 +688,8 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 
 ## Hierarchical Knowledge Control
 
-- `direct_edit_v1`은 계층형 제출 callback이 활성화된 상태로 렌더링한다. `collections`와 `ungrouped_kbs`가 모두 비었지만 flat candidate가 남아 있으면 구형 flat 목록을 표시하지 않고 계층 응답 오류를 안내한다.
-- Legacy session만 flat candidate 선택 UI를 유지한다. Session의 `protocol_version`을 렌더링 경계로 사용한다.
+- `direct_edit_v1`은 실제 `collections` 또는 `ungrouped_kbs`가 있으면 계층형 UI와 제출 callback을 사용한다. 계층 데이터가 없고 flat candidate만 남은 기존/복구 응답은 flat 목록을 fallback으로 표시하고 같은 전용 Knowledge selection endpoint로 제출한다. 두 형식이 함께 있으면 계층형 UI만 표시한다.
+- Legacy session은 기존 flat candidate 선택 UI를 유지한다. Direct-edit flat fallback은 legacy message 선택 필드를 사용하거나 planner를 다시 호출하지 않는다.
 - `planning`은 같은 `request_id`의 terminal 응답으로 교체한다. 60초 이후 장기 처리 안내를 표시하고, transport 오류가 없다면 server의 4분 processing deadline까지 polling한다.
 
 - 목록 상단에 추천 점수 내림차순임을 표시한다.

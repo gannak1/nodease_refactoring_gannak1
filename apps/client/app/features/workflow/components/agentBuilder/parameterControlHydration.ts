@@ -201,6 +201,19 @@ export const deriveParameterControlHydration = (
       : { state: 'unavailable' };
   }
   if (task.input_type === 'json') {
+    if (
+      task.node_type === 'slackPostNode' &&
+      ['blocks', 'attachments'].includes(task.parameter_key)
+    ) {
+      try {
+        const parsed = typeof current === 'string' ? JSON.parse(current) : current;
+        return Array.isArray(parsed)
+          ? { state: 'available', value: parsed }
+          : { state: 'unavailable' };
+      } catch {
+        return { state: 'unavailable' };
+      }
+    }
     try {
       JSON.stringify(current);
       return { state: 'available', value: current };

@@ -119,12 +119,9 @@ export const KnowledgeSelectionControl = ({
     [allHierarchyKbs, initialSelectedKbHandles],
   );
   const [selectedKbKeys, setSelectedKbKeys] = useState<string[]>(initialKbKeys);
-  const hierarchyMode = typeof onSubmitHierarchy === 'function';
-  const hierarchyDataMissing =
-    hierarchyMode &&
-    visibleCollections.length === 0 &&
-    visibleUngroupedKbs.length === 0 &&
-    visibleCandidates.length > 0;
+  const hierarchyMode =
+    typeof onSubmitHierarchy === 'function' &&
+    (visibleCollections.length > 0 || visibleUngroupedKbs.length > 0);
 
   const selectionScope = JSON.stringify({
     timing,
@@ -305,14 +302,6 @@ export const KnowledgeSelectionControl = ({
       <div className="max-h-[156px] overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-800">
         {hierarchyMode ? (
           <>
-            {hierarchyDataMissing ? (
-              <p
-                role="alert"
-                className="px-3 py-3 text-xs leading-5 text-amber-700 dark:text-amber-300"
-              >
-                계층형 Knowledge 후보를 불러오지 못했습니다. 다시 시도해주세요.
-              </p>
-            ) : null}
             {visibleCollections.map((collection) => (
               <div key={collection.collection_handle}>
                 {(() => {

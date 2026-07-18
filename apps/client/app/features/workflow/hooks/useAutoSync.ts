@@ -20,6 +20,7 @@ import {
   acquireWorkflowDraftSave,
   tryAcquireWorkflowDraftSave,
 } from '../utils/workflowDraftSaveCoordinator';
+import { assignMissingNodeDisplayNumbers } from '../utils/nodeNumbering';
 
 type CanonicalDraftMetadata = {
   graphHash: string;
@@ -550,8 +551,51 @@ export const useAutoSync = () => {
                     !isEqual(canonicalGraph, desiredGraph) &&
                     (!oppositeGraph || !isEqual(canonicalGraph, oppositeGraph))
                   ) {
+                    const state = useWorkflowStore.getState();
+                    const canonicalMetadata = canonicalDraftMetadataFrom(canonical);
+                    const normalized = assignMissingNodeDisplayNumbers(
+                      canonical.nodes as typeof nodes,
+                      canonical.features ?? state.features,
+                    );
+                    const canonicalNodes = normalized.nodes;
+                    const canonicalEdges = canonical.edges as typeof edges;
+                    useWorkflowStore.setState({
+                      nodes: canonicalNodes,
+                      edges: canonicalEdges,
+                      features: normalized.features,
+                      workflows: state.workflows.map((workflow) =>
+                        workflow.id === state.activeWorkflowId
+                          ? {
+                              ...workflow,
+                              nodes: canonicalNodes,
+                              edges: canonicalEdges,
+                              features: normalized.features,
+                            }
+                          : workflow,
+                      ),
+                      undoStack: [],
+                      redoStack: [],
+                      pendingAgentBuilderRevert: null,
+                      recoveredAgentBuilderParameterGroup: null,
+                      agentBuilderHistoryNotice: null,
+                      pendingAgentBuilderApplySnapshot: null,
+                      pendingAgentBuilderApplyCreatedBoundary: false,
+                      hasUnsavedChanges: false,
+                      ...(canonicalMetadata
+                        ? {
+                            canonicalDraftMetadata: {
+                              ...state.canonicalDraftMetadata,
+                              [workflowId]: {
+                                workflowId,
+                                ...canonicalMetadata,
+                              },
+                            },
+                          }
+                        : {}),
+                    });
+                    pendingRedoRef.current = null;
                     toast.error(
-                      'Workflow가 다른 변경으로 갱신되어 Agent Builder history 요청이 stale 상태가 됐습니다.',
+                      'Workflow가 다른 변경으로 갱신되어 서버의 최신 상태로 재동기화했습니다. 이전 Undo/Redo 기록은 사용할 수 없습니다.',
                     );
                     return;
                   } else {

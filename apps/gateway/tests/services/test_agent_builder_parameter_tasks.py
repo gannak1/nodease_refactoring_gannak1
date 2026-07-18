@@ -2512,6 +2512,39 @@ def test_github_pr_number_parameter_matches_runtime_schema_across_json_round_tri
     assert canonical_graph_hash(graph) == canonical_graph_hash(browser_round_trip)
 
 
+def test_github_comment_body_is_required_only_for_comment_action():
+    planner = ParameterTaskPlanner()
+    comment_plan = planner.plan(
+        graph={
+            "nodes": [_node("github", "githubNode")],
+            "edges": [],
+        },
+        step_node_ids={"step_github": "github"},
+        explicit_values={("step_github", "action"): "comment_pr"},
+        upstream_candidates={},
+        guidance_hints=[],
+    )
+    read_plan = planner.plan(
+        graph={
+            "nodes": [_node("github", "githubNode")],
+            "edges": [],
+        },
+        step_node_ids={"step_github": "github"},
+        explicit_values={("step_github", "action"): "get_pr"},
+        upstream_candidates={},
+        guidance_hints=[],
+    )
+
+    comment_task = next(
+        task for task in comment_plan.tasks if task.parameter_key == "comment_body"
+    )
+    read_task = next(
+        task for task in read_plan.tasks if task.parameter_key == "comment_body"
+    )
+    assert (comment_task.required, comment_task.status) == (True, "pending")
+    assert (read_task.required, read_task.status) == (False, "skipped")
+
+
 def test_file_extraction_selector_parameter_matches_runtime_schema():
     data = apply_parameter_value_to_node_data(
         "fileExtractionNode",

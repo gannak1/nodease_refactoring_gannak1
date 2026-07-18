@@ -2922,8 +2922,11 @@ describe('AgentBuilderPanel', () => {
         {
           resolutionId: 'resolve-kb-empty-direct',
           selectedCandidates: [],
-          selectedCollectionHandles: [],
-          selectedKbHandles: [],
+          selectedCollectionHandles: undefined,
+          selectedKbHandles: undefined,
+          selectedKnowledgeBaseIds: undefined,
+          selectedKnowledgeCollectionIds: undefined,
+          editorTargetNodeId: undefined,
         },
       );
     });

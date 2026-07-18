@@ -140,6 +140,67 @@ describe('ParameterInputRenderer condition branch target', () => {
     expect(onSkip).not.toHaveBeenCalled();
   });
 
+  it('parses a stored Slack JSON string before reapplying the typed array', () => {
+    const onSubmit = vi.fn();
+    const blocksTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-existing-slack-blocks',
+      node_id: 'slack',
+      node_type: 'slackPostNode',
+      parameter_key: 'blocks',
+      label: 'Blocks',
+      input_type: 'json',
+      required: false,
+    };
+    const hydration = deriveParameterControlHydration(blocksTask, {
+      blocks: '[{"type":"section","text":{"type":"plain_text","text":"hello"}}]',
+    });
+
+    expect(hydration).toEqual({
+      state: 'available',
+      value: [
+        {
+          type: 'section',
+          text: { type: 'plain_text', text: 'hello' },
+        },
+      ],
+    });
+    render(
+      <ParameterInputRenderer
+        task={blocksTask}
+        hydration={hydration}
+        onSubmit={onSubmit}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+    expect(onSubmit).toHaveBeenCalledWith([
+      {
+        type: 'section',
+        text: { type: 'plain_text', text: 'hello' },
+      },
+    ]);
+  });
+
+  it('does not hydrate invalid or non-array Slack JSON strings', () => {
+    const blocksTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-invalid-slack-blocks',
+      node_id: 'slack',
+      node_type: 'slackPostNode',
+      parameter_key: 'blocks',
+      label: 'Blocks',
+      input_type: 'json',
+      required: false,
+    };
+
+    expect(
+      deriveParameterControlHydration(blocksTask, { blocks: '{invalid' }),
+    ).toEqual({ state: 'unavailable' });
+    expect(
+      deriveParameterControlHydration(blocksTask, { blocks: '{"type":"section"}' }),
+    ).toEqual({ state: 'unavailable' });
+  });
+
   it('clears all existing optional selector-list values', () => {
     const onSubmit = vi.fn();
     const onClear = vi.fn();

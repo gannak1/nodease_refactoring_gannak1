@@ -10,29 +10,48 @@ const candidates = Array.from({ length: 25 }, (_, index) => ({
 }));
 
 describe('KnowledgeSelectionControl', () => {
-  it('does not fall back to flat KB candidates when direct hierarchy data is missing', () => {
+  it('falls back to flat KB candidates when a recovered direct response has no hierarchy data', () => {
+    const onSubmit = vi.fn();
     const onSubmitHierarchy = vi.fn();
     render(
       <KnowledgeSelectionControl
         candidates={candidates.slice(0, 3)}
         collections={[]}
         ungroupedKbs={[]}
-        onSubmit={vi.fn()}
+        onSubmit={onSubmit}
         onSubmitHierarchy={onSubmitHierarchy}
       />,
     );
 
-    expect(screen.queryByLabelText('Knowledge 1')).toBeNull();
-    expect(screen.getByRole('alert')).toHaveTextContent(
-      '계층형 Knowledge 후보를 불러오지 못했습니다',
-    );
+    fireEvent.click(screen.getByLabelText('Knowledge 1'));
     fireEvent.click(
-      screen.getByRole('button', { name: 'Knowledge Base 없이 생성' }),
+      screen.getByRole('button', {
+        name: '선택한 Knowledge Base로 생성',
+      }),
     );
-    expect(onSubmitHierarchy).toHaveBeenCalledWith({
-      collectionHandles: [],
-      kbHandles: [],
-    });
+    expect(onSubmit).toHaveBeenCalledWith(['candidate-1']);
+    expect(onSubmitHierarchy).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('prefers hierarchy data when hierarchy and flat candidates are both present', () => {
+    render(
+      <KnowledgeSelectionControl
+        candidates={candidates.slice(0, 1)}
+        collections={[
+          {
+            collection_handle: 'collection-a',
+            safe_label: '사내 문서 Collection',
+            children: [],
+          },
+        ]}
+        onSubmit={vi.fn()}
+        onSubmitHierarchy={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText('사내 문서 Collection')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Knowledge 1')).toBeNull();
   });
 
   it('selects every child with a Collection and becomes partial when one child is cleared', () => {
