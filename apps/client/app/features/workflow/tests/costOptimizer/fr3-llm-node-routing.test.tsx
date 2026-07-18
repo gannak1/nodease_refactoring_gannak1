@@ -271,7 +271,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     expect(screen.queryByLabelText('작업 유형')).not.toBeInTheDocument();
   });
 
-  it('자동 모델 라우팅이 켜져 있으면 Judge-first 설정만 보여준다', async () => {
+  it('자동 모델 라우팅이 켜져 있으면 필요한 정책 설정만 보여준다', async () => {
     const node = createLlmNode({ auto_model_routing: true });
 
     render(<NodeInlinePanel node={node} />);
@@ -280,10 +280,12 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       await screen.findByRole('checkbox', { name: /자동 모델 라우팅/ }),
     ).toBeChecked();
     expect(screen.getByText('자동 라우팅 사용 중')).toBeInTheDocument();
-    expect(screen.getByText('Judge 모델')).toBeInTheDocument();
+    expect(screen.getByText('기본 모델 (규칙 미일치 시)')).toBeInTheDocument();
     expect(screen.getByText('실행 실패 대체 모델')).toBeInTheDocument();
     expect(screen.getByText('최근 실행 선택')).toBeInTheDocument();
     expect(screen.getByText('여러 조건 종합')).toBeInTheDocument();
+    expect(screen.queryByText('Judge-first')).not.toBeInTheDocument();
+    expect(screen.queryByText('Judge 선택 학습 중')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '자동 선택 기준 만들기' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('자동 라우팅 작업 설명')).not.toBeInTheDocument();
     expect(screen.queryByText('router-policy-v5')).not.toBeInTheDocument();
@@ -292,7 +294,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     expect(screen.queryByText('월간 모델 검증 한도')).not.toBeInTheDocument();
 
     fireEvent.change(
-      screen.getByRole('combobox', { name: 'Judge 모델을 선택하세요' }),
+      screen.getByRole('combobox', { name: '기본 모델을 선택하세요' }),
       { target: { value: 'gpt-4.1-mini' } },
     );
     await waitFor(() => {

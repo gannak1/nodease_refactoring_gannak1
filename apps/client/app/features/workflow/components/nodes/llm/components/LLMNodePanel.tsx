@@ -358,14 +358,12 @@ export function LLMNodePanel({
       status === 'failed'
         ? '정책 오류'
         : status === 'refreshing'
-          ? '운영 성적 재평가 중'
-          : activePolicy?.learning?.mode === 'local_first'
-            ? '로컬 선택 우선'
-              : activePolicy
-                ? 'Judge 선택 학습 중'
-                : data.auto_model_routing
-                  ? '첫 요청부터 Judge 선택'
-                  : '사용 안 함';
+          ? '정책 갱신 중'
+          : activePolicy
+            ? '정책 적용 중'
+            : data.auto_model_routing
+              ? '정책 준비 중'
+              : '사용 안 함';
 
     return {
       statusLabel,
@@ -552,7 +550,7 @@ export function LLMNodePanel({
   const handleAutoModelRoutingChange = useCallback(
     (enabled: boolean) => {
       handleUpdateData('auto_model_routing', enabled);
-      // 켤 때는 배포 또는 첫 실행에서 Judge-first policy가 자동으로 준비된다.
+      // 켤 때는 저장된 정책을 사용하고, 끌 때만 정책을 비활성화한다.
       // 끌 때만 즉시 runtime policy를 off로 전환한다.
       if (!enabled) {
         void syncRoutingPolicy(false, routingPanelState.refreshEveryRuns);
@@ -904,8 +902,7 @@ export function LLMNodePanel({
                     자동 모델 라우팅
                   </span>
                   <span className="mt-0.5 block text-[11px] leading-relaxed text-emerald-700">
-                    켜면 첫 운영 요청은 Judge가 후보 모델을 고르고, 계약을 통과한
-                    선택이 충분히 쌓이면 로컬 라우터가 먼저 고릅니다.
+                    저장된 라우팅 정책이 요청에 맞는 모델을 선택합니다.
                   </span>
                 </span>
               </label>
@@ -918,8 +915,7 @@ export function LLMNodePanel({
                         자동 라우팅 사용 중
                       </div>
                       <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
-                        테스트와 배포에서 요청에 맞는 모델을 선택합니다. 정상 실행
-                        결과가 쌓이면 로컬 라우터가 먼저 판단합니다.
+                        규칙이 맞지 않거나 판단이 불확실하면 기본 모델을 사용합니다.
                       </p>
                     </div>
                     <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
@@ -929,14 +925,14 @@ export function LLMNodePanel({
                   <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="rounded border border-slate-100 bg-slate-50 p-2">
                       <label className="block text-[11px] font-semibold text-slate-600">
-                        Judge 모델
+                        기본 모델 (규칙 미일치 시)
                       </label>
                       <ModelSelectDropdown
                         value={data.model_id || ''}
                         onChange={handleRoutingDefaultModelChange}
                         models={chatModelOptions}
                         groupedModels={groupedModelOptions}
-                        placeholder="Judge 모델을 선택하세요"
+                        placeholder="기본 모델을 선택하세요"
                       />
                     </div>
                     <div className="rounded border border-slate-100 bg-slate-50 p-2">
