@@ -3,7 +3,6 @@ import Link from 'next/link';
 import type { LucideIcon } from 'lucide-react';
 
 type DashboardPageHeaderProps = {
-  icon: LucideIcon;
   title: string;
   description: string;
   meta?: ReactNode;
@@ -12,7 +11,6 @@ type DashboardPageHeaderProps = {
 };
 
 export function DashboardPageHeader({
-  icon: Icon,
   title,
   description,
   meta,
@@ -22,20 +20,15 @@ export function DashboardPageHeader({
   return (
     <header className="border-b border-slate-200 pb-5">
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex min-w-0 items-center gap-4">
-          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-slate-950 text-white">
-            <Icon className="h-5 w-5" />
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-bold text-slate-950">{title}</h1>
+            {badge}
           </div>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-xl font-bold text-slate-950">{title}</h1>
-              {badge}
-            </div>
-            <p className="mt-1 text-sm font-medium text-slate-700">
-              {description}
-            </p>
-            {meta && <div className="mt-2">{meta}</div>}
-          </div>
+          <p className="mt-1 text-sm font-medium text-slate-700">
+            {description}
+          </p>
+          {meta && <div className="mt-2">{meta}</div>}
         </div>
         {action}
       </div>

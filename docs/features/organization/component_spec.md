@@ -18,6 +18,9 @@ Verified Against: feature/mba-127 @ 258b26a9
   - `ActiveOrganizationGate`
   - `Sidebar`
   - dashboard child route content
+- 시각 표면:
+  - `/dashboard`, `/dashboard/mymodule`, `/dashboard/explore`, `/dashboard/statistics`, `/dashboard/knowledge`, `/dashboard/admin`, `/dashboard/settings`의 페이지 배경은 `rgb(255, 255, 255)`를 사용한다.
+  - 최상위 페이지 제목은 `text-2xl`(24px)로 통일하고 장식 아이콘 없이 텍스트로 표시한다. 카드, 패널, 버튼처럼 의미를 전달하는 아이콘은 유지한다.
 
 ### DashboardHomePage
 
@@ -57,6 +60,7 @@ Verified Against: feature/mba-127 @ 258b26a9
 - 책임: 현재 organization 이름과 organization auth badge를 표시한다. Access-management tab을 노출하는 경우 AdminConsolePage와 같은 workflow/KB/LLM permission semantics를 사용해야 한다.
 - 현재 동작:
   - organization manager에게 `Access`, `LLM Credentials` tab을 노출하고 일반 member에게 `LLM Credentials` tab만 노출한다.
+  - organization auth badge는 `설정` 제목 바로 옆에 표시해 관리 화면의 page header와 위치를 맞춘다.
   - 감사 조회는 AdminConsolePage의 감사 로그 tab이 소유하며 SettingsPage는 Activity tab 또는 본인 audit-log 요청을 제공하지 않는다.
   - Settings access-management는 KB direct grant/revoke와 `none` 거부, DELETE revoke, active member prerequisite를 AdminConsolePage와 동일하게 구현한다.
 
@@ -100,9 +104,13 @@ Verified Against: feature/mba-127 @ 258b26a9
   - dropdown item은 organization 이름, `내 조직`/`멤버 조직` badge, 현재 선택됨 상태를 표시한다.
   - 다른 organization item을 클릭하면 active organization을 저장하고 `/dashboard`로 이동한다.
   - organization이 1개뿐이면 switcher는 정보 표시만 하고 dropdown을 열지 않는다.
+  - 펼친 sidebar의 `Nodease` brand header에는 장식 아이콘을 표시하지 않는다. 접힌 sidebar의 대시보드 홈 아이콘은 navigation affordance로 유지한다.
   - collapsed sidebar에서는 organization switcher를 표시하지 않는다.
+  - `워크플로우` navigation item은 노드 연결 흐름을 나타내는 `Workflow` 아이콘을 사용한다.
   - `isOrganizationManager`가 true일 때만 `관리` navigation item을 표시한다.
   - 사용자 프로필 드롭다운에는 `알림`, `로그아웃` action을 표시한다.
+  - 조직 초대가 하나 이상 있거나 manager에게 열린 Security Alert가 하나 이상 있으면, 펼침 여부와 무관하게 프로필 원형 아이콘 우상단에 빨간 점을 표시한다. 시각적 점은 `aria-hidden`으로 숨기고 프로필 button 안의 `sr-only` 텍스트 `확인할 알림 있음`으로 상태를 전달한다. 두 source가 모두 비어 있으면 점과 텍스트를 숨긴다.
+  - 같은 조직의 Security Alert summary를 background refresh할 때는 마지막 성공값을 유지한다. 성공 응답으로만 교체하며, 조직 전환 또는 권한 상실을 뜻하는 `403`에서 기존 값을 지운다.
   - `알림` 클릭 시 페이지 이동 없이 notification overlay를 연다.
 - 데이터:
   - `authApi.me()`

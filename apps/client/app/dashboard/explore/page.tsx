@@ -75,7 +75,7 @@ export default function ExplorePage() {
   }
 
   return (
-    <div className="min-h-full bg-slate-50 px-8 py-8">
+    <div className="min-h-full bg-white px-8 py-8">
       {/* Page Title */}
       <div className="mb-6 flex items-end justify-between gap-4">
         <div>
