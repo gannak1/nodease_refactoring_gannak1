@@ -17,6 +17,7 @@ This directory is the active documentation root for Nodease. When active docs co
 | Shared terminology | [glossary.md](glossary.md) |
 | Design decisions | [decisions/](decisions/) |
 | Feature requirements, API, components, tests | [features/](features/) |
+| Protected resource feature completion and test matrix | [engineering/protected-resource-feature-completion.md](engineering/protected-resource-feature-completion.md) |
 | Engineering practices and CI quality gates | [engineering/ci-quality-gates.md](engineering/ci-quality-gates.md) |
 | Local demo/test DB seed guide | [demo/](demo/) |
 

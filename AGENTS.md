@@ -104,6 +104,20 @@ mbased는 기존 Moduly 코드를 리팩토링해 Nodease라는 기업 내부 AI
 
 ## 개발 규칙
 
+### 보호 리소스 기능 완결성
+
+다음 중 하나에 해당하는 기능은 `docs/engineering/protected-resource-feature-completion.md`를 적용한다.
+
+- 보호 리소스 ID 또는 credential reference를 graph, 설정, deployment 등 durable data에 저장한다.
+- user/team 권한, organization scope, owner 또는 `use`/`manage` 권한을 판정한다.
+- `active`, `revoked`, `deleted`, `rotated` 같은 상태 전이가 실행 가능 여부에 영향을 준다.
+- preflight와 runtime/background 실행이 같은 리소스를 서로 다른 시점에 사용한다.
+- secret, PII, 외부 provider 호출 또는 외부 부수효과를 다룬다.
+
+적용 대상 작업은 저장·관리 API/UI·preflight·runtime/background·lifecycle·audit/redaction·테스트 경계를 하나의 기능 단위로 검토한다. 각 경계는 `완료`, `해당 없음` 또는 `후속 이슈`로 기록하고 코드, 테스트, 문서 또는 이슈를 증거로 연결한다. 권한 우회, secret 노출, 외부 I/O 이전 fail-closed 실패 또는 기존 관리 경로 단절을 만드는 필수 경계는 후속 이슈로 미룬 채 병합하지 않는다.
+
+단순 문서 교정, 무상태 내부 helper 또는 해당 경계에 영향을 주지 않는 변경은 비적용 사유만 기록한다. 모든 테스트를 반복 실행하는 것이 목적이 아니며, 실제 소비 경계와 상태 전이를 검증하는 최소 테스트를 선택한다.
+
 ### 반드시 지켜야 할 것
 
 - 새 기능 구현 전 관련 `docs/features/<feature-name>/test_cases.md`를 확인하고, 필요한 테스트를 먼저 추가하거나 갱신한다.
