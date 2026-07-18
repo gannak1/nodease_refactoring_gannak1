@@ -1,7 +1,6 @@
 # Workflow Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-286 @ 1d7a2e12`
 
 ## Test File Mapping
 
@@ -24,6 +23,16 @@ Verified Against: `feature/mba-286 @ 1d7a2e12`
 - MBA-285 child lifecycle: `apps/workflow_engine/tests/services/test_child_execution_lifecycle.py`, `apps/workflow_engine/tests/nodes/test_loop_graph_entry.py`, `apps/workflow_engine/tests/nodes/test_workflow_node.py`, `apps/workflow_engine/tests/domain/test_external_effect_identity_runtime.py`
 - 동시성 처리: `apps/gateway/tests/integration/test_agent_builder_workflow_cas.py`에서 독립 PostgreSQL session/transaction으로 autosync 대 autosync 및 autosync 대 Agent Builder 저장 경쟁을 실행하고 한 요청만 성공하며 다른 요청이 `409 stale_graph`인지 검증한다.
 - 테스트 실행 전 저장: `TestSidebar` component test에서 canonical draft GET의 `graph_hash`/`updated_at`이 save request에 전달되고 성공 응답 metadata가 shared Workflow store에 반영되며 stale save는 실행을 시작하지 않는지 검증한다.
+- Agent Builder 저장 중 test preflight: 같은 workflow의 Agent Builder save/acknowledgement 중에는 TestSidebar 저장과 실행 API가 호출되지 않고, 확정 뒤 버튼이 다시 활성화되는지 검증한다.
+- Workflow save coordinator: test preflight, Agent Builder와 autosync가 같은 workflow에서 동시에 draft POST를 시작하지 않고 다른 workflow 저장은 독립적인지 검증한다.
+- Autosync lock coalescing: test preflight 또는 Agent Builder가 lock을 보유한 동안 여러 autosync 회차가 발생해도 대기 작업은 하나이고, lock 해제 뒤 같은 active workflow의 최신 dirty graph만 한 번 저장하는지 검증한다. 대기 중 workflow가 바뀌면 이전 workflow와 새 workflow 모두에 저장하지 않는다.
+- Agent Builder workflow switch: Agent Builder가 save lock을 기다리거나 canonical draft를 조회하는 동안 active workflow가 바뀌면 mutation/save/acknowledgement/rollback을 수행하지 않고 새 workflow의 graph, metadata와 Undo/Redo history를 보존하는지 검증한다.
+- Version restore workflow switch: Agent Builder save lock을 기다리는 동안 active workflow가 바뀌면 version restore가 canonical draft GET/POST를 호출하지 않고 새 workflow의 graph, metadata와 Undo/Redo history를 보존하는지 검증한다.
+- Test save recovery: `409 stale_graph` 뒤 canonical graph가 editor snapshot과 같을 때만 metadata를 수용하고 재저장 없이 실행하며, 다르면 metadata 갱신, 실행과 overwrite를 모두 차단하는지 검증한다. `operation envelope not found`에서는 Agent Builder safe envelope와 canonical hash/`updated_at`으로 `applied|unapplied|pending|stale`을 판정한다. acknowledged hash만 같고 timestamp가 다르면 `applied`가 아니며, 두 값이 모두 같은 `applied`에서만 실행하고 typed operation을 재생하지 않는다.
+- Test save error UX: `401`, `403`, `409 stale_graph`, `409 operation envelope not found`, 일반 `4xx`, network/`5xx`가 구분되고 모든 실패에서 test stream이 열리지 않는지 검증한다.
+- Dirty test preflight stale protection: local edit base보다 앞선 canonical metadata를 dirty graph에 주입하지 않고 draft POST와 test stream을 모두 차단하는지 검증한다.
+- Locked save permission recheck: endpoint permission 통과 뒤 write 권한을 회수한 경쟁 상황에서 row lock 이후 일반 save와 Agent Builder save가 모두 `403`이고 graph/features/audit이 불변인지 검증한다.
+- Recursive feature projection: Agent Builder와 일반 save가 최상위/중첩 edge selection 및 note presentation field를 같은 결과로 제거하고, malformed `features.noteNodes`를 safe `422`로 닫는지 검증한다.
 - 빈 canonical draft 조회: `apps/gateway/tests/services/test_workflow_draft_read.py`에서 DB graph가 `null` 또는 빈 object인 신규 workflow도 빈 `nodes`/`edges`, 기본 viewport와 canonical metadata를 반환하는지 검증한다.
 
 `*.todo.test.ts`의 `it.todo` 항목은 아직 대응 구현 또는 API 계약이 없는 테스트 케이스다. 구현 시 같은 파일에서 실제 assertion 테스트로 전환한다.
@@ -254,8 +263,8 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 
 | Todo | 미완료 단계 | 이유 | 대응 파일 |
 | --- | --- | --- | --- |
-| 같은 workflow draft를 두 탭에서 동시에 편집하면 뒤늦은 저장이 최신 변경을 조용히 덮어쓰지 않는다 | API/UX policy | draft version, updated_at, ETag 등 충돌 감지 기준이 문서/API에 확정되어 있지 않다. | TBD |
-| 자동 저장 요청이 연속 발생할 때 오래된 응답이 최신 로컬 상태를 되돌리지 않는다 | UI implementation/test | auto-sync request ordering 또는 stale response guard 정책을 테스트로 고정해야 한다. | TBD |
+| 같은 workflow draft를 두 탭에서 동시에 편집하면 뒤늦은 저장이 최신 변경을 조용히 덮어쓰지 않는다 | PostgreSQL integration/E2E | 충돌 감지 기준은 `graph_hash + updated_at` CAS로 확정됐다. 남은 작업은 독립 PostgreSQL transaction과 브라우저 UX에서 `409 stale_graph` 안내·재조회 경로를 검증하는 것이다. | `apps/gateway/tests/integration/test_agent_builder_workflow_cas.py` |
+| 자동 저장 요청이 연속 발생할 때 오래된 응답이 최신 로컬 상태를 되돌리지 않는다 | UI implementation/test | canonical metadata는 successful GET/POST 결과로만 갱신한다. 남은 작업은 빠른 연속 autosync와 response ordering이 dirty editor 상태를 지우지 않는지 component/E2E로 고정하는 것이다. | `apps/client/app/features/workflow/hooks/useAutoSync.test.ts` |
 | 테스트 실행 중 사용자가 workflow graph를 수정해도 실행 요청은 시작 시점 draft snapshot 기준으로 처리된다 | UI/API contract | 실행 snapshot 생성 시점과 이후 편집 상태의 분리 기준을 API/UI 테스트로 고정해야 한다. | TBD |
 | 동시에 두 번 테스트 실행을 눌러도 중복 stream이 열리거나 결과가 섞이지 않는다 | UI implementation/test | 실행 버튼 disable, in-flight guard, stream cleanup 테스트가 필요하다. | TBD |
 | 배포 요청과 draft 저장 요청이 겹쳐도 배포 snapshot은 의도한 버전의 graph를 사용한다 | API/UX policy | 배포 시 draft revision 고정 정책이 문서/API에 확정되어 있지 않다. | TBD |
@@ -352,8 +361,8 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 
 ### 5. 동시성 처리
 
-- draft 저장 API는 클라이언트가 보낸 revision 또는 updated_at이 서버 최신 값보다 오래되면 충돌 응답을 반환한다.
-- 동일 workflow에 대해 동시 저장 요청 2개가 도착하면 서버는 최신 revision 기준으로 하나만 성공시키거나 명시적 충돌을 반환한다.
+- draft 저장 API는 클라이언트가 보낸 `expected_graph_hash` 또는 `expected_updated_at`이 서버 최신 canonical graph와 다르면 `409 stale_graph`를 반환한다.
+- 동일 workflow에 대해 동시 저장 요청 2개가 같은 base `graph_hash + updated_at`으로 도착하면 서버는 row lock 뒤 하나만 성공시키고 다른 요청은 `409 stale_graph`로 닫는다.
 - 배포 API는 요청 시점에 지정한 draft revision 또는 snapshot id를 기준으로 배포한다.
 - 실행 로그 목록 API는 새 run이 조회 중 생성되어도 cursor pagination에서 중복 row를 반환하지 않는다.
 
@@ -408,7 +417,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - 같은 base graph hash와 workflow `updated_at`으로 두 Agent Builder GraphMutation 저장을 순차 제출하면 첫 저장만 성공하고 두 번째는 `409 stale_graph`이며 첫 저장 graph를 덮어쓰지 않는다.
 - Agent Builder mutation 저장은 workflow row lock 안에서 expected graph hash와 `updated_at`을 모두 비교한다.
 - mutation request graph hash가 persisted safe operation envelope의 `expected_result_graph_hash`와 다르면 저장하지 않는다. Full typed operations를 DB에서 읽거나 재생하지 않는다.
-- Graph write와 같은 SQLAlchemy session에서 `add_action_audit` insert가 실패하면 graph, workflow `updated_at`과 operation 상태를 모두 rollback하고 성공을 반환하지 않는다.
+- Agent Builder GraphMutation graph write와 같은 SQLAlchemy session에서 `add_action_audit` insert가 실패하면 graph, workflow `updated_at`과 operation 상태를 모두 rollback하고 성공을 반환하지 않는다. 일반 editor autosync는 신규 audit event 없이 공통 CAS와 canonical projection을 통과한다.
 - Acknowledged operation의 `action=revert` 저장은 current graph가 원 result hash이고 candidate가 원 base hash일 때만 성공하며 graph와 audit를 원자적으로 저장하고 operation을 `reverted`로 전환한다.
 - Revert 전 다른 editor 저장이 있으면 `409 stale_graph`로 닫고 해당 변경을 덮어쓰지 않는다.
 - Persisted Undo는 최초 `initial_graph`/`graph_edit`/`replace_workflow`의 단일 Agent Builder history boundary로 동작한다. 후속 `parameter_update`/`knowledge_binding`은 새 Workflow history entry를 만들지 않고 final graph metadata만 전진한다. 완료 상태 첫 Undo는 graph/value와 persisted task 상태를 유지한 채 `completed|skipped|deferred` 중 최대 stable order ParameterTask UI를 다시 열고, 그 상태의 다음 Undo 또는 task가 없는 경우 첫 Undo는 `action=revert` CAS로 실행 전 graph 전체를 복구하며 모든 ParameterTask/Knowledge 흐름을 `canceled`로 닫는다. `parameter_update`/`knowledge_binding` 개별 revert는 거부한다. Reload 전 `action=redo` CAS는 final graph만 복구하고 canceled 흐름은 재실행하지 않으며, 그 뒤 Undo는 parameter 재진입 없이 즉시 boundary revert한다. 동일 revert/redo response-loss 재시도는 canonical 결과와 audit를 중복 생성하지 않고, reload 뒤에는 Redo stack과 parameter 재진입 상태가 복구되지 않는다.
@@ -810,6 +819,10 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 
 ## Workflow Draft CAS Regression
 
+- 서로 다른 workflow의 Agent Builder 저장이 겹쳐도 먼저 끝난 작업이 전역 저장 차단을 해제하지 않고 마지막 작업 뒤에만 test/autosync/Undo를 허용하는지 검증한다.
+- transport/`5xx` 결과 유실만 같은 mutation context로 한 번 재시도하고 명시적인 `401|403|409|422`는 두 번째 draft POST 없이 실패하는지 검증한다.
+- Mutation acknowledgement도 transport/`5xx`처럼 결과가 불명확한 경우에만 같은 payload로 한 번 재시도하고, 명시적인 `401|403|409|422`는 즉시 원래 오류를 반환하는지 검증한다.
+
 - Canonical draft GET과 successful draft POST가 실제 persisted `workflow_id`, server-calculated `graph_hash`, DB `updated_at`을 반환하고 synthetic revision을 반환하지 않는지 확인한다. Agent Builder 저장, version 복원 또는 test 전 저장 뒤 수동 편집 autosync가 직전 POST metadata를 사용하며 stale metadata로 409에 빠지지 않는지 확인한다.
 - 일반 autosync 두 개가 같은 expected hash/timestamp로 경쟁하면 row lock 뒤 하나만 성공하고 다른 요청은 `409 stale_graph`인지 확인한다.
 - 일반 autosync와 Agent Builder mutation save가 같은 base에서 경쟁해도 공통 CAS가 silent overwrite를 막고 Agent Builder의 expected-result validation은 추가로 유지되는지 확인한다.
@@ -849,3 +862,11 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Connect 전에 전송이 없다고 증명되는 일시 실패만 retry-before-effect가 될 수 있다. Write/read timeout, response loss와 전송 뒤 검증 실패를 안전한 재시도로 바꾸지 않는다.
 - `HttpRequestNode`와 Generic HTTP provider는 `httpx.Client`를 직접 생성하지 않고 application outbound port를 사용한다. Production import/architecture contract가 직접 client 회귀를 탐지한다.
 - Helm render와 활성 EKS manifest의 Worker egress NetworkPolicy는 cluster DNS, PostgreSQL 5432, Redis 6379, Sandbox 8194, public 80/443과 Mail 143/993만 허용한다. Public 허용에서 private·metadata CIDR가 제외되고 외부 dependency CIDR은 해당 service port에만 적용되며 public catch-all CIDR을 허용하지 않아야 한다.
+
+## Test preflight와 실행 presentation state
+
+- Test preflight 중 Agent Builder save가 대기하면 stream을 호출하지 않고 coordinator를 해제한 뒤 Agent Builder save가 진행되는지 검증한다.
+- Clean local graph와 canonical server graph가 다르면 test와 save를 차단하고 비교 전에 최신 metadata를 stale local graph에 적용하지 않는지 검증한다.
+- `operation envelope not found`는 Agent Builder 결과를 `applied|unapplied|pending|stale`로 구분하고 권한 오류나 일반 저장 실패로 표시하지 않는지 검증한다.
+- Node root의 React Flow measurement/selection field와 node data의 실행 status, observability, editor-only `displayNumber` 갱신이 최상위, 중첩 `subGraph.nodes`와 `features.noteNodes`의 autosync, draft payload, canonical hash와 Workflow Undo/Redo history에 포함되지 않는지 검증한다. 모든 client save path와 Gateway save가 같은 projection을 사용하는지 함께 검증한다.
+- Test 전 save 중 발생한 별도 수동 편집은 dirty 상태와 history를 유지하는지 검증한다.

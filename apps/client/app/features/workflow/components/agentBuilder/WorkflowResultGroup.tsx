@@ -450,6 +450,13 @@ export const WorkflowResultGroup = ({
               }
               onHeadingFocused={onPresentationHeadingFocused}
               onEditingChange={setEditingTaskId}
+              onOpenNodeSettings={(targetNodeId) => {
+                if (onOpenNodeSettings) {
+                  onOpenNodeSettings(targetNodeId);
+                } else {
+                  onFocusNode(targetNodeId);
+                }
+              }}
               expanded={
                 nodeId === activeNodeId ||
                 nodeId === editingNodeId ||

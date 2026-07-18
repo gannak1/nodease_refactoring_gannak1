@@ -40,6 +40,7 @@ export type AgentBuilderParameterTask = {
     | 'variable_selector'
     | 'variable_selector_list';
   required: boolean;
+  confirmation_required?: boolean;
   defer_policy: 'forbidden' | 'allow_unresolved';
   status:
     | 'completed'
@@ -263,6 +264,7 @@ export type AgentBuilderKnowledgeSelectedOption = {
 export type AgentBuilderKnowledgeResolution = {
   resolution_id?: string | null;
   requirement_id?: string | null;
+  target_node_id?: string | null;
   timing: 'before_graph' | 'after_graph';
   required: boolean;
   candidates: AgentBuilderKnowledgeCandidateOption[];
@@ -456,6 +458,9 @@ export const agentBuilderApi = {
       selectedCandidates?: AgentBuilderKnowledgeCandidateSelection[];
       selectedCollectionHandles?: string[];
       selectedKbHandles?: string[];
+      editorTargetNodeId?: string;
+      selectedKnowledgeBaseIds?: string[];
+      selectedKnowledgeCollectionIds?: string[];
     },
   ): Promise<AgentBuilderKnowledgeSelectionResponse> {
     const response = await apiClient.post(
@@ -465,6 +470,10 @@ export const agentBuilderApi = {
         selected_candidates: input.selectedCandidates ?? [],
         selected_collection_handles: input.selectedCollectionHandles ?? [],
         selected_kb_handles: input.selectedKbHandles ?? [],
+        editor_target_node_id: input.editorTargetNodeId,
+        selected_knowledge_base_ids: input.selectedKnowledgeBaseIds ?? [],
+        selected_knowledge_collection_ids:
+          input.selectedKnowledgeCollectionIds ?? [],
       },
     );
     return response.data;

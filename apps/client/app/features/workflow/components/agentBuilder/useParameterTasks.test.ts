@@ -88,6 +88,28 @@ describe('toParameterDecisionValue', () => {
 });
 
 describe('parameterDecisionErrorMessage', () => {
+  it('maps a client-detected stale graph code to the same safe message', () => {
+    expect(
+      parameterDecisionErrorMessage(
+        Object.assign(new Error('stale_graph'), { code: 'stale_graph' }),
+      ),
+    ).toBe(
+      'Workflow가 서버에서 변경되어 설정을 저장하지 못했습니다. 최신 상태를 확인한 뒤 다시 시도해주세요.',
+    );
+  });
+
+  it('maps a workflow switch without exposing the abandoned operation', () => {
+    expect(
+      parameterDecisionErrorMessage(
+        Object.assign(new Error('workflow_context_changed'), {
+          code: 'workflow_context_changed',
+        }),
+      ),
+    ).toBe(
+      'Workflow가 전환되어 이전 Agent Builder 설정을 적용하지 않았습니다.',
+    );
+  });
+
   it.each([
     [
       'stale_graph',

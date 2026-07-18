@@ -44,12 +44,19 @@ _OPERATION_ORDER = {
 }
 _EDITOR_RUNTIME_NODE_FIELDS = {
     "dragging",
+    "height",
     "measured",
     "positionAbsolute",
     "resizing",
     "selected",
+    "width",
 }
 _EDITOR_RUNTIME_EDGE_FIELDS = {"selected"}
+_EDITOR_PRESENTATION_DATA_FIELDS = {
+    "displayNumber",
+    "observability",
+    "status",
+}
 
 
 def build_insert_operations(
@@ -248,22 +255,32 @@ def apply_graph_operations(
     return graph
 
 
-def materialize_candidate_graph(graph: dict[str, Any]) -> dict[str, Any]:
-    materialized = copy.deepcopy(graph)
-    nodes: list[dict[str, Any]] = []
-    for raw_node in graph.get("nodes") or []:
-        node = NodeSchema.model_validate(raw_node).model_dump(mode="python")
-        for field in _EDITOR_RUNTIME_NODE_FIELDS:
-            node.pop(field, None)
-        data = dict(node.get("data") or {})
-        # React Flow display numbers are local presentation metadata. They are
-        # intentionally excluded from persisted graph state and CAS hashes.
-        data.pop("displayNumber", None)
+def _materialize_candidate_node(
+    raw_node: dict[str, Any], *, derive_configuration: bool
+) -> dict[str, Any]:
+    node = NodeSchema.model_validate(raw_node).model_dump(mode="python")
+    for field in _EDITOR_RUNTIME_NODE_FIELDS:
+        node.pop(field, None)
+    data = dict(node.get("data") or {})
+    for field in _EDITOR_PRESENTATION_DATA_FIELDS:
+        data.pop(field, None)
+    subgraph = data.get("subGraph")
+    if isinstance(subgraph, dict):
+        data["subGraph"] = materialize_candidate_graph(subgraph)
+    if derive_configuration:
         data["configuration_state"] = derive_node_configuration_state(
             str(node.get("type") or ""), data
         )
-        node["data"] = data
-        nodes.append(node)
+    node["data"] = data
+    return node
+
+
+def materialize_candidate_graph(graph: dict[str, Any]) -> dict[str, Any]:
+    materialized = copy.deepcopy(graph)
+    nodes = [
+        _materialize_candidate_node(raw_node, derive_configuration=True)
+        for raw_node in graph.get("nodes") or []
+    ]
     materialized["nodes"] = nodes
     edges: list[dict[str, Any]] = []
     for raw_edge in graph.get("edges") or []:
@@ -272,6 +289,28 @@ def materialize_candidate_graph(graph: dict[str, Any]) -> dict[str, Any]:
             edge.pop(field, None)
         edges.append(edge)
     materialized["edges"] = edges
+    return materialized
+
+
+def materialize_candidate_features(features: dict[str, Any] | None) -> dict[str, Any]:
+    materialized = copy.deepcopy(features or {})
+    note_nodes = materialized.get("noteNodes")
+    if note_nodes is None:
+        return materialized
+    if not isinstance(note_nodes, list):
+        raise GraphMutationValidationError("workflow.features_invalid")
+    if any(
+        not isinstance(node, dict) or node.get("type") != "note"
+        for node in note_nodes
+    ):
+        raise GraphMutationValidationError("workflow.features_invalid")
+    try:
+        materialized["noteNodes"] = [
+            _materialize_candidate_node(node, derive_configuration=False)
+            for node in note_nodes
+        ]
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise GraphMutationValidationError("workflow.features_invalid") from exc
     return materialized
 
 

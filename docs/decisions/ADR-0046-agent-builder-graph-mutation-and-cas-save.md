@@ -86,11 +86,23 @@ CAS 저장은 workflow write 권한만 다시 확인하는 경계가 아니다. 
 
 Agent Builder CAS save와 request cancel이 경쟁할 때는 모두 `Workflow` row, parent `AgentBuilderRequest` row 순서로 lock을 얻고 현재 request/operation/save metadata를 다시 읽는다. Session-scoped cancel만 이 순서 앞에 `AgentBuilderSession` row lock을 추가한다. Save가 먼저 확정되면 cancel은 persisted graph를 유지하고 request와 모든 비종료 child state를 닫으며, cancel이 먼저 확정되면 뒤 save는 canceled/version mismatch로 graph를 쓰지 않는다. Request가 terminal로 전환될 때 pending quick-completion proposal, 남은 task/Knowledge resolution과 저장 전 safe envelope도 같은 transaction에서 닫고 변경되는 proposal/task version을 증가시킨다. 서로 다른 lock 순서를 사용하거나 Client의 local 상태로 승자를 추론하지 않는다.
 
-일반 editor save도 현재 canonical graph hash와 workflow `updated_at`을 optimistic concurrency 입력으로 전달한다. Server는 모든 editor save에서 workflow row를 write lock으로 조회하고 두 기대값이 일치할 때만 저장하며 뒤늦은 autosync는 `409 stale_graph`로 닫는다. Frontend는 Agent Builder 저장, 일반 autosync, version 복원, test 전 저장과 Undo/Redo가 공유하는 canonical metadata 상태 하나를 사용하고 성공한 canonical GET/POST마다 이를 갱신한다. Out-of-band 저장 뒤 오래된 metadata로 autosync를 계속하거나 stale 오류를 조용히 무시하지 않는다. `mutation_context`는 Agent Builder safe operation envelope와 candidate hash를 추가 검증하는 additive 경계이며 일반 저장도 silent overwrite 예외가 아니다.
+일반 editor save도 현재 canonical graph hash와 workflow `updated_at`을 optimistic concurrency 입력으로 전달한다. Server는 mutation context 유무와 관계없이 모든 editor save에서 workflow row를 write lock으로 조회한 뒤 active organization 범위의 write 권한을 다시 확인하고 두 기대값이 일치할 때만 저장하며 뒤늦은 autosync는 `409 stale_graph`로 닫는다. Endpoint 진입 권한 검사는 빠른 차단일 뿐 최종 권위 판단이 아니며, lock 뒤 권한이 회수됐으면 graph, features, parameter 상태와 audit을 변경하지 않고 `403`으로 종료한다. Frontend는 Agent Builder 저장, 일반 autosync, version 복원, test 전 저장과 Undo/Redo가 공유하는 canonical metadata 상태 하나를 사용하고 성공한 canonical GET/POST마다 이를 갱신한다. Out-of-band 저장 뒤 오래된 metadata로 autosync를 계속하거나 stale 오류를 조용히 무시하지 않는다. `mutation_context`는 Agent Builder safe operation envelope와 candidate hash를 추가 검증하는 additive 경계이며 일반 저장도 silent overwrite 예외가 아니다.
+
+같은 browser editor에서 Agent Builder save/acknowledgement, test preflight save, autosync와 Undo/Redo는 workflow별 save coordinator를 공유한다. Agent Builder 저장 또는 결과 확인 중에는 test 실행을 시작하지 않고 사용자가 저장 확정 뒤 다시 실행하도록 한다. Test preflight가 이미 점유한 경우 Agent Builder 저장은 앞선 저장 해제 뒤 진행하고, lock 획득 직후와 canonical draft 조회 직후 active workflow id를 다시 확인한다. 어느 확인에서든 시작 workflow와 다르면 graph mutation, draft save, acknowledgement와 local rollback을 수행하지 않고 새 workflow의 graph, canonical metadata와 history를 보존한 채 안전한 workflow 전환 오류로 종료한다. 일반 autosync가 lock 때문에 현재 회차를 건너뛰면 unsaved 상태를 보존하고 workflow별 대기 작업 하나로 합친다. Lock 해제 뒤 active workflow와 dirty 상태를 다시 확인하고 최신 editor snapshot만 정확히 한 번 저장하며, 이전 snapshot을 순서대로 재생하거나 다른 workflow에 저장하지 않는다. `409 stale_graph` 뒤 canonical graph가 test 대상 editor snapshot과 동일한 경우에만 이미 적용된 저장으로 인정할 수 있으며, 비교가 끝나기 전에 canonical metadata를 local store에 주입해서는 안 된다. 다르면 자동 overwrite·merge·metadata 갱신·test 실행을 모두 금지한다. `operation envelope not found` 복구는 해당 Agent Builder session의 safe operation envelope와 canonical draft를 함께 조회해 `applied|unapplied|pending|stale`을 판정하며 test surface가 typed operation을 재생하지 않는다. `applied`는 acknowledged envelope의 result graph hash와 saved workflow `updated_at`이 canonical draft의 두 값과 모두 같은 경우에만 성립한다. Hash만 같거나 timestamp가 다르면 applied로 추측하지 않고 stale로 닫는다. Base hash가 같고 operation이 terminal failure/revert이면 `unapplied`, operation이 save/ack 처리 중이면 `pending`, 어느 쪽에도 해당하지 않으면 `stale`이다.
+
+Test preflight의 canonical 확인부터 execution stream 요청 시작까지는 하나의 직렬화 경계다. Test가 coordinator를 소유한 동안 Agent Builder 저장이 대기 상태가 되면 test는 stream을 열지 않고 coordinator를 해제하며, Agent Builder 저장이 끝난 뒤 사용자가 명시적으로 다시 실행한다. Test는 coordinator를 해제한 뒤 Agent Builder 상태를 확인하지 않은 채 실행을 시작할 수 없다. 자동 test 재실행, operation 재생과 graph 강제 덮어쓰기는 허용하지 않는다.
+
+Test preflight는 editor가 clean이라고 표시되어도 canonical server graph와 캡처한 local graph를 공통 canonical projection으로 비교한다. Dirty editor는 편집이 시작된 기존 canonical hash와 `updated_at`을 save 기준으로 유지하고, preflight GET에서 더 최신 metadata를 받았다는 이유로 이를 local graph에 주입하지 않는다. Server metadata가 local edit base보다 앞서 있거나 canonical graph와 local snapshot이 다르면 저장과 test를 모두 차단한다. Projection은 node root의 `width`, `height`, `measured`, `dragging`, `resizing`, `selected`, `positionAbsolute`, node data의 `displayNumber`, 실행 `status`, `observability`와 edge의 presentation selection을 제거한다. 같은 규칙을 모든 중첩 `subGraph.nodes`, `subGraph.edges`와 `features.noteNodes`에 재귀 적용하되 node `position`과 business configuration은 보존하고 canonical `features.noteNodes`를 빈 editor note 목록으로 덮어쓰지 않는다. `features.noteNodes`가 배열이 아니거나 유효한 note node가 아닌 항목을 포함하면 Gateway는 DB를 변경하지 않고 safe `422` validation failure로 닫는다. 두 graph가 같을 때만 canonical hash와 `updated_at`을 local metadata로 수용한다. 다르면 최신 metadata를 오래된 local graph와 결합하지 않고 test와 저장을 차단한다. `operation envelope not found`는 현재 Agent Builder session과 canonical draft로 결과를 확인하는 recoverable 상태이며, acknowledged result가 확인된 `applied`에서만 test를 계속한다. `pending`은 제한된 canonical 조회만 수행하고 `unapplied|stale` 또는 session 부재는 명시적인 오류로 닫는다.
+
+Workflow 실행 중 presentation field는 canonical graph, graph hash, draft payload, autosync dirty flag와 Workflow Undo/Redo history에 포함하지 않는다. Agent Builder 저장과 일반 저장의 graph 및 `features.noteNodes`, 일반 autosync, version 복원, test 전 저장, Undo/Redo와 note 저장은 같은 client canonical serializer를 사용하고 Gateway도 저장 직전에 같은 재귀 projection을 적용한다. Test 전 저장이 성공해도 저장 시작 이후 별도 editor 변경이 발생했다면 그 변경의 dirty 상태를 지우지 않는다.
 
 Workflow graph를 함께 바꾸는 Model Routing policy PATCH와 Cost Optimizer candidate/recommendation apply도 out-of-band 예외가 아니다. 이 API들은 현재 canonical `expected_graph_hash`와 `expected_updated_at`을 필수로 받고, 권한 확인 뒤 workflow row를 write lock으로 다시 조회한 상태에서 같은 CAS를 검증한다. Graph 변경과 policy/candidate 부가 상태 변경은 같은 transaction으로 확정하며 성공 응답의 `graph_hash`와 `updated_at`으로 frontend 공통 canonical metadata를 갱신한다.
 
 ### 5. Canonical Save Result
+
+같은 브라우저에서 서로 다른 workflow를 포함한 save/acknowledgement 작업이 겹칠 수 있으므로 전역 실행 차단 상태는 단순 boolean 덮어쓰기가 아니라 진행 중인 작업 수를 기준으로 계산한다. 먼저 끝난 작업이 상태를 해제해도 다른 Agent Builder 저장이 남아 있으면 test, autosync와 Workflow Undo/Redo 차단을 유지하고, 모든 작업이 끝난 뒤에만 해제한다.
+
+CDS save 자동 재시도는 transport 단절 또는 `5xx`처럼 서버 적용 여부를 확인할 수 없는 결과에만 같은 mutation context로 한 번 허용한다. `401`, `403`, `409`, `422`처럼 서버가 명시적으로 거부한 결과는 적용되지 않은 확정 실패이므로 같은 POST를 반복하지 않고 local mutation을 복구한 뒤 원래 오류를 반환한다.
 
 저장 성공 응답은 최소 다음 값을 반환한다.
 
@@ -141,7 +153,7 @@ Mutation 발급, CAS 저장 결과, stale/permission/validation 차단, acknowle
 
 Canonical graph를 client가 non-destructive recovery로 다시 적용할 때는 server graph에 없는 editor-only presentation metadata를 복구할 수 있다. `displayNumber` 같은 metadata는 local node rendering에만 쓰고 canonical graph hash, CAS candidate, acknowledgement 또는 server 저장 graph에 포함하지 않는다. recovery는 Workflow history boundary, pending operation, redo memory를 초기화하거나 삭제하지 않는다.
 
-Workflow graph CAS save와 persisted revert save는 기존 transaction-bound `add_action_audit`를 같은 SQLAlchemy session으로 호출한다. Graph write와 canonical audit insert 중 하나라도 실패하면 같은 transaction을 rollback하고 저장 성공을 반환하지 않는다. MBA-228에서는 이 경계에 신규 durable outbox, worker 또는 audit table을 추가하지 않는다.
+Agent Builder GraphMutation CAS save와 persisted revert/redo save는 기존 transaction-bound `add_action_audit`를 같은 SQLAlchemy session으로 호출한다. Graph write와 이 Agent Builder audit insert 중 하나라도 실패하면 같은 transaction을 rollback하고 저장 성공을 반환하지 않는다. 일반 editor autosync는 공통 CAS와 canonical projection을 사용하지만 이 ADR에서 autosync마다 신규 audit event를 추가하지 않는다. 일반 editor 저장 감사 확대는 별도 후속 정책으로 다룬다. MBA-228에서는 신규 durable outbox, worker 또는 audit table을 추가하지 않는다.
 
 GraphMutation 생성, local 적용, 저장과 acknowledgement 중 workflow 실행, Knowledge retrieval, 외부 action 호출 또는 credential 사용은 발생하지 않는다.
 
@@ -184,3 +196,9 @@ ADR-0054의 remaining quick-completion proposal도 같은 동시성 경계를 �
 - 새 node 위치는 `add_node.node.position`에, 기존 node가 이동한 위치는 `replace_node_position` typed operation에 포함한다.
 - client는 server가 발급한 위치 operation만 적용하고 저장 후 viewport를 맞출 수는 있어도 별도의 client layout 저장을 수행하지 않는다.
 - mutation 적용 전 client는 canonical draft graph를 base로 사용한다. 화면에 남은 stale node는 server operation의 base가 될 수 없다. 동일 node의 display number는 화면 전용 값으로만 보존한다.
+
+## 2026-07-18 Correction: Cancellation Safe Envelope
+
+- Direct-edit request가 취소되어 terminal response를 저장할 때도 일반 성공·실패 응답과 같은 safe operation envelope serializer를 사용한다.
+- 취소 응답에는 full typed `operations`, raw graph snapshot, parameter 원문, raw Knowledge metadata, credential 또는 secret을 저장하지 않는다.
+- 취소 여부와 관계없이 persisted request/session payload만으로 GraphMutation을 재생할 수 없어야 한다.

@@ -87,6 +87,7 @@ export const NodeParameterCard = ({
   focusHeading = false,
   onHeadingFocused,
   onEditingChange,
+  onOpenNodeSettings,
   onDecision,
   hasPrevious = false,
   expanded = true,
@@ -102,6 +103,7 @@ export const NodeParameterCard = ({
   focusHeading?: boolean;
   onHeadingFocused?: (taskId: string) => void;
   onEditingChange?: (taskId: string | null) => void;
+  onOpenNodeSettings?: (nodeId: string) => void;
   onDecision: (decision: ParameterDecisionInput) => void;
   hasPrevious?: boolean;
   expanded?: boolean;
@@ -112,13 +114,22 @@ export const NodeParameterCard = ({
   const editingStartedVersionRef = useRef<number | null>(null);
   const cardRef = useRef<HTMLElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const activeTask = tasks.find((task) =>
+  const outputFormat = nodeData?.output_format;
+  const outputFormatType =
+    outputFormat && typeof outputFormat === 'object'
+      ? (outputFormat as Record<string, unknown>).type
+      : undefined;
+  const visibleTasks = tasks.filter(
+    (task) =>
+      task.parameter_key !== 'output_json_schema' || outputFormatType === 'json',
+  );
+  const activeTask = visibleTasks.find((task) =>
     ['active', 'invalid'].includes(task.status),
   );
-  const presentationTask = tasks.find(
+  const presentationTask = visibleTasks.find(
     (task) => task.task_id === presentationTaskId,
   );
-  const editingTask = tasks.find((task) => task.task_id === editingTaskId);
+  const editingTask = visibleTasks.find((task) => task.task_id === editingTaskId);
   const currentTask = editingTask ?? presentationTask ?? activeTask;
   const hydration = useMemo(
     () =>
@@ -133,14 +144,22 @@ export const NodeParameterCard = ({
       currentTask?.status === 'active' &&
       currentTask.resolution_source,
   );
-  const terminalTasks = tasks.filter((task) =>
+  const terminalTasks = visibleTasks.filter((task) =>
     TERMINAL_STATUSES.includes(
       task.status as (typeof TERMINAL_STATUSES)[number],
     ),
   );
-  const nodeLabel = tasks[0]?.node_label || nodeId;
-  const nodePurpose = tasks[0]?.node_purpose;
-  const configurationState = tasks[0]?.configuration_state ?? 'unresolved';
+  const nodeLabel = visibleTasks[0]?.node_label || nodeId;
+  const nodePurpose = visibleTasks[0]?.node_purpose;
+  const configurationState = visibleTasks[0]?.configuration_state ?? 'unresolved';
+  const hasInProgressTask = visibleTasks.some((task) =>
+    ['pending', 'active', 'invalid'].includes(task.status),
+  );
+  const configurationLabel = hasInProgressTask
+    ? '설정 진행 중'
+    : configurationState === 'resolved'
+      ? '설정 완료'
+      : '설정 필요';
   const recommendationSourceLabel = currentTask?.resolution_source
     ? RECOMMENDATION_SOURCE_LABEL[currentTask.resolution_source]
     : null;
@@ -208,16 +227,16 @@ export const NodeParameterCard = ({
         <div className="flex shrink-0 items-start gap-2 text-right text-xs text-neutral-500">
           <div>
             <div>
-              {terminalTasks.length}/{tasks.length}
+              {terminalTasks.length}/{visibleTasks.length}
             </div>
             <div
               className={
-                configurationState === 'resolved'
+                !hasInProgressTask && configurationState === 'resolved'
                   ? 'text-emerald-600'
                   : 'text-amber-600'
               }
             >
-              {configurationState === 'resolved' ? '설정 완료' : '설정 필요'}
+              {configurationLabel}
             </div>
           </div>
           {onToggle ? (
@@ -314,6 +333,9 @@ export const NodeParameterCard = ({
             task={currentTask}
             hydration={hydration}
             disabled={disabled}
+            onOpenNodeSettings={
+              onOpenNodeSettings ? () => onOpenNodeSettings(nodeId) : undefined
+            }
             onSubmit={(value) => {
               const action =
                 isRecommendationReview &&
@@ -328,7 +350,7 @@ export const NodeParameterCard = ({
               });
             }}
             onSkip={
-              !currentTask.required
+              !currentTask.required && !currentTask.confirmation_required
                 ? () =>
                     onDecision({
                       taskId: currentTask.task_id,
@@ -367,7 +389,8 @@ export const NodeParameterCard = ({
             ) : null}
             {!editingTask &&
             activeTask?.task_id === currentTask.task_id &&
-            !currentTask.required ? (
+            !currentTask.required &&
+            !currentTask.confirmation_required ? (
               <button
                 type="button"
                 aria-label="건너뛰기"
@@ -401,7 +424,7 @@ export const NodeParameterCard = ({
       ) : expanded ? (
         <div className="mt-2 flex items-center gap-1 text-xs text-neutral-500">
           <Check className="h-3.5 w-3.5" aria-hidden="true" />
-          {tasks.some((task) => task.status === 'pending')
+          {visibleTasks.some((task) => task.status === 'pending')
             ? '설정 대기'
             : '설정 항목 확인 완료'}
         </div>

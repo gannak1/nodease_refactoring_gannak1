@@ -124,6 +124,12 @@ PARAMETER_SAMPLES = {
     "cron_expression": "0 9 * * *",
     "timezone": "Asia/Seoul",
     "model_id": "model-2",
+    "output_format_type": "json",
+    "output_json_schema": {"type": "object"},
+    "system_prompt": "Answer safely.",
+    "user_prompt": "Summarize the input.",
+    "assistant_prompt": "Use a concise format.",
+    "citationDisplayMode": "basic",
     "auto_model_routing": True,
     "fallback_model_id": "model-fallback",
     "model_routing_refresh_every_runs": 25,
@@ -190,7 +196,11 @@ def test_every_agent_builder_parameter_matches_runtime_node_schema(node_type):
         if node_type == "llmNode" and parameter_key == "knowledgeBases":
             # Direct-edit Knowledge selection owns this graph binding.
             continue
-        sample = PARAMETER_SAMPLES[parameter_key]
+        sample = (
+            [["source", "text"]]
+            if node_type == "llmNode" and parameter_key == "referenced_variables"
+            else PARAMETER_SAMPLES[parameter_key]
+        )
         updated = apply_node_parameter_value(
             node_type,
             parameter_key,

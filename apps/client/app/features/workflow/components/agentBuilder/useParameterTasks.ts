@@ -16,6 +16,13 @@ const SAFE_PARAMETER_ERROR_CODE = /^[a-z][a-z0-9_]{0,79}$/;
 
 const parameterDecisionErrorCode = (error: unknown): string | null => {
   if (!error || typeof error !== 'object') return null;
+  const clientCode = (error as { code?: unknown }).code;
+  if (
+    typeof clientCode === 'string' &&
+    SAFE_PARAMETER_ERROR_CODE.test(clientCode)
+  ) {
+    return clientCode;
+  }
   const data = (error as { response?: { data?: unknown } }).response?.data;
   if (!data || typeof data !== 'object') return null;
   const detail = (data as { detail?: unknown }).detail;
@@ -34,6 +41,8 @@ export const parameterDecisionErrorMessage = (error: unknown): string => {
     case 'stale_graph':
     case 'stale_workflow_updated_at':
       return 'Workflow가 서버에서 변경되어 설정을 저장하지 못했습니다. 최신 상태를 확인한 뒤 다시 시도해주세요.';
+    case 'workflow_context_changed':
+      return 'Workflow가 전환되어 이전 Agent Builder 설정을 적용하지 않았습니다.';
     case 'result_graph_hash_mismatch':
       return '설정 결과가 서버 검증 결과와 일치하지 않아 저장하지 않았습니다.';
     case 'invalid_decision':

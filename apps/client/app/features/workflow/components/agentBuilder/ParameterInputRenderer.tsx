@@ -13,12 +13,14 @@ export const ParameterInputRenderer = ({
   hydration = { state: 'empty' },
   onSubmit,
   onSkip,
+  onOpenNodeSettings,
   disabled = false,
 }: {
   task: AgentBuilderParameterTask;
   hydration?: ParameterControlHydration;
   onSubmit: (value: unknown) => void;
   onSkip?: () => void;
+  onOpenNodeSettings?: () => void;
   disabled?: boolean;
 }) => {
   const hydratedValue =
@@ -40,9 +42,7 @@ export const ParameterInputRenderer = ({
   );
   const [suggestionIds, setSuggestionIds] = useState<string[]>(
     task.input_type === 'variable_selector_list' && Array.isArray(hydratedValue)
-      ? hydratedValue.filter(
-          (item): item is string => typeof item === 'string',
-        )
+      ? hydratedValue.filter((item): item is string => typeof item === 'string')
       : [],
   );
   const [candidateId, setCandidateId] = useState(
@@ -131,7 +131,10 @@ export const ParameterInputRenderer = ({
         );
         return suggestion ? [suggestion] : [];
       });
-      if (selections.length === 0 || selections.length !== suggestionIds.length) {
+      if (
+        selections.length === 0 ||
+        selections.length !== suggestionIds.length
+      ) {
         setError('연결할 이전 노드 출력을 하나 이상 선택하세요.');
         return;
       }
@@ -157,9 +160,13 @@ export const ParameterInputRenderer = ({
             `${numberMinimum} \uC774\uC0C1 ${numberMaximum} \uC774\uD558\uC758 \uAC12\uC744 \uC785\uB825\uD558\uC138\uC694.`,
           );
         } else if (numberMinimum !== undefined) {
-          setError(`${numberMinimum} \uC774\uC0C1\uC758 \uAC12\uC744 \uC785\uB825\uD558\uC138\uC694.`);
+          setError(
+            `${numberMinimum} \uC774\uC0C1\uC758 \uAC12\uC744 \uC785\uB825\uD558\uC138\uC694.`,
+          );
         } else {
-          setError(`${numberMaximum} \uC774\uD558\uC758 \uAC12\uC744 \uC785\uB825\uD558\uC138\uC694.`);
+          setError(
+            `${numberMaximum} \uC774\uD558\uC758 \uAC12\uC744 \uC785\uB825\uD558\uC138\uC694.`,
+          );
         }
         return;
       }
@@ -168,7 +175,18 @@ export const ParameterInputRenderer = ({
     }
     if (task.input_type === 'json') {
       try {
-        onSubmit(JSON.parse(value));
+        const parsed = JSON.parse(value);
+        if (
+          task.node_type === 'llmNode' &&
+          task.parameter_key === 'output_json_schema' &&
+          (parsed === null ||
+            Array.isArray(parsed) ||
+            typeof parsed !== 'object')
+        ) {
+          setError('JSON 객체를 입력하세요.');
+          return;
+        }
+        onSubmit(parsed);
       } catch {
         setError('유효한 JSON을 입력하세요.');
       }
@@ -178,10 +196,30 @@ export const ParameterInputRenderer = ({
   };
 
   const multiline = ['json', 'textarea', 'code'].includes(task.input_type);
+  if (task.input_type === 'secret') {
+    return (
+      <div
+        className="space-y-2"
+        onKeyDown={(event) => event.stopPropagation()}
+      >
+        <p className="text-xs text-amber-700 dark:text-amber-300">
+          민감한 값은 Agent Builder 채팅에서 입력하지 않습니다. 기존 노드 설정에서
+          안전하게 연결해주세요.
+        </p>
+        <button
+          type="button"
+          onClick={onOpenNodeSettings}
+          disabled={disabled || !onOpenNodeSettings}
+          className="rounded-md border border-neutral-300 px-3 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-60 dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-900"
+        >
+          노드 설정 열기
+        </button>
+      </div>
+    );
+  }
   if (
     hydration.state === 'unavailable' &&
-    task.sensitivity === 'secret_forbidden' &&
-    task.input_type !== 'secret'
+    task.sensitivity === 'secret_forbidden'
   ) {
     return (
       <p className="text-xs text-amber-700 dark:text-amber-300">
@@ -191,7 +229,7 @@ export const ParameterInputRenderer = ({
   }
   return (
     <div className="space-y-2" onKeyDown={(event) => event.stopPropagation()}>
-      {hydration.state === 'unavailable' && task.input_type !== 'secret' ? (
+      {hydration.state === 'unavailable' ? (
         <p className="text-xs text-amber-700 dark:text-amber-300">
           사용할 수 없는 기존 설정입니다.
         </p>
@@ -314,11 +352,7 @@ export const ParameterInputRenderer = ({
         <input
           aria-label={task.label}
           type={
-            task.input_type === 'number'
-              ? 'number'
-              : task.input_type === 'secret'
-                ? 'password'
-                : 'text'
+            task.input_type === 'number' ? 'number' : 'text'
           }
           value={value}
           step={
@@ -333,11 +367,6 @@ export const ParameterInputRenderer = ({
           className="w-full rounded-md border border-neutral-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-blue-500 disabled:opacity-60 dark:border-neutral-700"
         />
       )}
-      {task.input_type === 'secret' ? (
-        <p className="text-xs text-neutral-500">
-          기존 비밀값은 표시하지 않습니다. 새 값을 입력하면 교체됩니다.
-        </p>
-      ) : null}
       {error ? (
         <p role="alert" className="text-xs text-red-600">
           {error}

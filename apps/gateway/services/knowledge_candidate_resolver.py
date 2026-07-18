@@ -2,6 +2,7 @@ import uuid
 from collections import Counter
 from collections.abc import Iterable
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from apps.shared.db.models.knowledge import (
@@ -246,6 +247,8 @@ class KnowledgeCandidateResolver:
         max_candidate_kbs: int = DEFAULT_MAX_CANDIDATE_KBS,
         allow_unready_candidates: bool = False,
         apply_collection_limit: bool = True,
+        apply_candidate_limit: bool = True,
+        enforce_internal_candidate_limit: bool = True,
     ) -> KnowledgeCandidateHierarchyResolution:
         """Return route-authorized Collections with independently authorized KBs."""
 
@@ -265,34 +268,28 @@ class KnowledgeCandidateResolver:
         if apply_collection_limit:
             visible_collections = visible_collections[:max_collections]
         visible_collection_ids = [collection.id for collection in visible_collections]
-        items = self._collection_items(visible_collection_ids, None)
-
-        direct_pairs, unavailable_count, hidden_count = self._direct_authorized_kb_pairs(
-            max_candidate_kbs,
-            allow_unready_candidates=allow_unready_candidates,
+        internal_candidate_limit = (
+            max_candidate_kbs if enforce_internal_candidate_limit else None
         )
+        items = self._collection_items(
+            visible_collection_ids,
+            internal_candidate_limit,
+        )
+
         candidates_by_id: dict[uuid.UUID, KnowledgeCandidate] = {}
-        runtime_decisions = self._bulk_runtime_kb_decisions(
-            [kb for kb, _decision in direct_pairs]
-        )
-        for kb, decision in direct_pairs:
-            candidates_by_id[kb.id] = self._kb_candidate(
-                kb,
-                decision,
-                runtime_decision=runtime_decisions.get(kb.id),
-            )
-
         item_kb_ids = self._dedupe_ids(item.knowledge_base_id for item in items)
-        missing_ids = [kb_id for kb_id in item_kb_ids if kb_id not in candidates_by_id]
-        if missing_ids:
-            linked_kbs = self._knowledge_bases_by_id(missing_ids)
+        unavailable_count = 0
+        hidden_count = 0
+        if item_kb_ids:
+            linked_kbs = self._knowledge_bases_by_id(item_kb_ids)
             linked_decisions = self.permission_helper.bulk_evaluate_kb_use(
                 linked_kbs.values()
             )
             linked_runtime = self._bulk_runtime_kb_decisions(list(linked_kbs.values()))
-            for kb_id in missing_ids:
+            for kb_id in item_kb_ids:
                 kb = linked_kbs.get(kb_id)
                 if kb is None:
+                    hidden_count += 1
                     continue
                 if self._kb_candidate_exclusion_reason(
                     kb,
@@ -312,6 +309,32 @@ class KnowledgeCandidateResolver:
                     decision,
                     runtime_decision=linked_runtime.get(kb.id),
                 )
+
+        remaining_direct_limit = (
+            max(0, max_candidate_kbs - len(item_kb_ids))
+            if enforce_internal_candidate_limit
+            else None
+        )
+        direct_pairs: list[tuple[KnowledgeBase, KnowledgePermissionDecision]] = []
+        if remaining_direct_limit is None or remaining_direct_limit > 0:
+            direct_pairs, direct_unavailable, direct_hidden = (
+                self._direct_authorized_kb_pairs(
+                    remaining_direct_limit,
+                    allow_unready_candidates=allow_unready_candidates,
+                    excluded_kb_ids=set(item_kb_ids),
+                )
+            )
+            unavailable_count += direct_unavailable
+            hidden_count += direct_hidden
+        runtime_decisions = self._bulk_runtime_kb_decisions(
+            [kb for kb, _decision in direct_pairs]
+        )
+        for kb, decision in direct_pairs:
+            candidates_by_id[kb.id] = self._kb_candidate(
+                kb,
+                decision,
+                runtime_decision=runtime_decisions.get(kb.id),
+            )
 
         item_ids_by_collection: dict[uuid.UUID, list[uuid.UUID]] = {}
         for item in items:
@@ -358,7 +381,9 @@ class KnowledgeCandidateResolver:
             candidate
             for candidate_id, candidate in candidates_by_id.items()
             if candidate_id not in grouped_kb_ids
-        ][:max_candidate_kbs]
+        ]
+        if apply_candidate_limit:
+            ungrouped = ungrouped[:max_candidate_kbs]
         return KnowledgeCandidateHierarchyResolution(
             collections=groups,
             ungrouped_candidates=ungrouped,
@@ -397,6 +422,20 @@ class KnowledgeCandidateResolver:
         collection_id_list = self._dedupe_ids(collection_ids)
         if not collection_id_list:
             return []
+        selected_kb_ids = None
+        if max_candidate_kbs is not None:
+            selected_kb_ids = (
+                self.db.query(KnowledgeCollectionItem.knowledge_base_id)
+                .filter(
+                    KnowledgeCollectionItem.organization_id
+                    == self.organization_id,
+                    KnowledgeCollectionItem.collection_id.in_(collection_id_list),
+                )
+                .distinct()
+                .order_by(KnowledgeCollectionItem.knowledge_base_id.asc())
+                .limit(max_candidate_kbs)
+                .subquery()
+            )
         query = (
             self.db.query(KnowledgeCollectionItem)
             .filter(
@@ -409,8 +448,12 @@ class KnowledgeCandidateResolver:
                 KnowledgeCollectionItem.knowledge_base_id.asc(),
             )
         )
-        if max_candidate_kbs is not None:
-            query = query.limit(max_candidate_kbs)
+        if selected_kb_ids is not None:
+            query = query.filter(
+                KnowledgeCollectionItem.knowledge_base_id.in_(
+                    select(selected_kb_ids.c.knowledge_base_id)
+                )
+            )
         return query.all()
 
     def _knowledge_bases_by_id(
@@ -437,11 +480,13 @@ class KnowledgeCandidateResolver:
 
     def _direct_knowledge_bases(
         self,
-        max_candidate_kbs: int,
+        max_candidate_kbs: int | None,
+        *,
+        excluded_kb_ids: set[uuid.UUID] | None = None,
     ) -> list[KnowledgeBase]:
         if self.db is None:
             return []
-        return (
+        query = (
             self.db.query(KnowledgeBase)
             .options(
                 joinedload(KnowledgeBase.source_identity),
@@ -452,17 +497,24 @@ class KnowledgeCandidateResolver:
                 KnowledgeBase.lifecycle_state == "active",
             )
             .order_by(KnowledgeBase.created_at.desc(), KnowledgeBase.id.asc())
-            .limit(max_candidate_kbs)
-            .all()
         )
+        if excluded_kb_ids:
+            query = query.filter(KnowledgeBase.id.notin_(excluded_kb_ids))
+        if max_candidate_kbs is not None:
+            query = query.limit(max_candidate_kbs)
+        return query.all()
 
     def _direct_authorized_kb_pairs(
         self,
-        max_candidate_kbs: int,
+        max_candidate_kbs: int | None,
         *,
         allow_unready_candidates: bool = False,
+        excluded_kb_ids: set[uuid.UUID] | None = None,
     ) -> tuple[list[tuple[KnowledgeBase, KnowledgePermissionDecision]], int, int]:
-        kbs = self._direct_knowledge_bases(max_candidate_kbs)
+        kbs = self._direct_knowledge_bases(
+            max_candidate_kbs,
+            excluded_kb_ids=excluded_kb_ids,
+        )
         if not kbs:
             return [], 0, 0
 
@@ -484,7 +536,9 @@ class KnowledgeCandidateResolver:
                 hidden_count += 1
             else:
                 unavailable_count += 1
-        return allowed_pairs[:max_candidate_kbs], unavailable_count, hidden_count
+        if max_candidate_kbs is not None:
+            allowed_pairs = allowed_pairs[:max_candidate_kbs]
+        return allowed_pairs, unavailable_count, hidden_count
 
     def _kb_candidate(
         self,

@@ -37,6 +37,13 @@ class ParameterTaskSafetyError(ValueError):
     pass
 
 
+_LLM_PROMPT_PARAMETER_KEYS = (
+    "system_prompt",
+    "user_prompt",
+    "assistant_prompt",
+)
+
+
 @dataclass(frozen=True)
 class ParameterTaskPlan:
     group_id: UUID
@@ -160,6 +167,15 @@ def validate_direct_set_value(
         and task_input_type not in {"credential_ref", "resource_ref"}
     ):
         raise ParameterTaskSafetyError("reference-only parameter mismatch")
+    if (
+        node_type == "llmNode"
+        and parameter_key == "output_json_schema"
+        and value is None
+    ):
+        return ["json_object_required"]
+
+    if task_input_type == "secret":
+        raise ParameterTaskSafetyError("secret_forbidden")
 
     redaction = TraceRedactionService.redact_payload(
         value,
@@ -244,6 +260,7 @@ class ParameterTaskPlanner:
         group_id: UUID | None = None,
         externally_managed_parameters: set[tuple[str, str]] | None = None,
         base_node_ids: set[str] | None = None,
+        affected_node_ids: set[str] | None = None,
     ) -> ParameterTaskPlan:
         materialized = copy.deepcopy(graph)
         node_by_id = {
@@ -269,6 +286,12 @@ class ParameterTaskPlanner:
             if node is None:
                 raise ParameterTaskConflict("step node is missing")
             node_type = str(node.get("type") or "")
+            if (
+                affected_node_ids is not None
+                and node_type == "llmNode"
+                and str(node_id) not in affected_node_ids
+            ):
+                continue
             data = node.setdefault("data", {})
             if not isinstance(data, dict):
                 raise ParameterTaskConflict("node data is invalid")
@@ -349,7 +372,13 @@ class ParameterTaskPlanner:
                         # Generated templates are safe catalog-owned recommendations.
                         # Preserve their topology-specific value and require confirmation.
                         source = "catalog_default"
-                    elif "default" in parameter:
+                    elif (
+                        "default" in parameter
+                        and (
+                            str(node_id) not in base_node_ids
+                            or parameter.get("apply_default_to_existing", True)
+                        )
+                    ):
                         node["data"] = apply_node_parameter_value(
                             node_type,
                             parameter_key,
@@ -362,6 +391,7 @@ class ParameterTaskPlanner:
                 label = str(parameter["label"])
                 status = "pending"
                 recommendation_fingerprint = None
+                requires_explicit_confirmation = False
                 if source is not None:
                     found, recommendation_value = _canonical_node_parameter_value(
                         node_type,
@@ -372,10 +402,19 @@ class ParameterTaskPlanner:
                         raise ParameterTaskConflict(
                             "automatic parameter value is missing"
                         )
-                    recommendation_fingerprint = (
-                        canonical_parameter_value_fingerprint(recommendation_value)
+                    if parameter.get("input_type") != "secret":
+                        recommendation_fingerprint = (
+                            canonical_parameter_value_fingerprint(recommendation_value)
+                        )
+                    requires_explicit_confirmation = (
+                        node_type == "llmNode"
+                        and parameter_key == "auto_model_routing"
+                        and source == "catalog_default"
+                        and recommendation_value is False
                     )
-                    status = "completed"
+                    status = (
+                        "pending" if requires_explicit_confirmation else "completed"
+                    )
                 task = AgentBuilderParameterTask(
                     task_id=uuid5(
                         NAMESPACE_URL,
@@ -394,6 +433,7 @@ class ParameterTaskPlanner:
                     label=label,
                     input_type=str(parameter["input_type"]),
                     required=bool(parameter["required"]),
+                    confirmation_required=requires_explicit_confirmation,
                     defer_policy=str(parameter.get("defer_policy") or "forbidden"),
                     status=status,
                     task_version=1,
@@ -423,6 +463,35 @@ class ParameterTaskPlanner:
                 if task.status == "pending":
                     actionable_indexes.append(len(tasks) - 1)
 
+        for node_id, node in node_by_id.items():
+            if str(node.get("type") or "") != "llmNode":
+                continue
+            data = node.get("data") if isinstance(node.get("data"), dict) else {}
+            if any(
+                node_parameter_is_configured("llmNode", parameter_key, data)
+                for parameter_key in _LLM_PROMPT_PARAMETER_KEYS
+            ):
+                continue
+            prompt_indexes = [
+                index
+                for index, task in enumerate(tasks)
+                if task.node_id == node_id
+                and task.parameter_key in _LLM_PROMPT_PARAMETER_KEYS
+            ]
+            if not prompt_indexes:
+                continue
+            for prompt_index in prompt_indexes:
+                tasks[prompt_index] = tasks[prompt_index].model_copy(
+                    update={
+                        "status": "pending",
+                        "resolution_source": None,
+                        "recommendation_fingerprint": None,
+                    }
+                )
+                if prompt_index not in actionable_indexes:
+                    actionable_indexes.append(prompt_index)
+
+        actionable_indexes.sort()
         if actionable_indexes:
             first = actionable_indexes[0]
             tasks[first] = tasks[first].model_copy(update={"status": "active"})
@@ -479,6 +548,65 @@ def reconcile_parameter_group_catalog_tasks(
     if group.status in {"pending_save", "pending_ack", "blocked", "canceled"}:
         return group
 
+    if group.status == "completed":
+        planned_by_identity = {
+            (task.node_id, task.parameter_key): task for task in catalog_tasks
+        }
+        tasks = list(group.tasks)
+        reopened = False
+        for index, existing in enumerate(tasks):
+            planned = planned_by_identity.get(
+                (existing.node_id, existing.parameter_key)
+            )
+            secret_configuration_removed = (
+                existing.input_type == "secret"
+                and existing.status in {"completed", "skipped", "deferred"}
+                and planned is not None
+                and planned.status != "completed"
+            )
+            if secret_configuration_removed:
+                tasks[index] = planned.model_copy(
+                    update={
+                        "task_id": existing.task_id,
+                        "group_id": group.group_id,
+                        "status": "active",
+                        "task_version": existing.task_version,
+                        "stable_order": existing.stable_order,
+                        "resolution_source": None,
+                        "recommendation_fingerprint": None,
+                        "candidates": existing.candidates,
+                    }
+                )
+                reopened = True
+                break
+            legacy_unconfirmed_disabled_routing = (
+                existing.node_type == "llmNode"
+                and existing.parameter_key == "auto_model_routing"
+                and existing.status == "completed"
+                and existing.task_version == 1
+                and existing.resolution_source == "catalog_default"
+                and existing.recommendation_fingerprint
+                == canonical_parameter_value_fingerprint(False)
+            )
+            if not legacy_unconfirmed_disabled_routing:
+                continue
+            tasks[index] = existing.model_copy(
+                update={
+                    "status": "active",
+                    "confirmation_required": True,
+                    "validation": (
+                        planned.validation if planned is not None else existing.validation
+                    ),
+                }
+            )
+            reopened = True
+            break
+        return (
+            group.model_copy(update={"status": "active", "tasks": tasks})
+            if reopened
+            else group
+        )
+
     existing_by_identity = {
         (task.node_id, task.parameter_key): task for task in group.tasks
     }
@@ -500,6 +628,15 @@ def reconcile_parameter_group_catalog_tasks(
             )
             continue
         status = existing.status
+        legacy_unconfirmed_disabled_routing = (
+            existing.node_type == "llmNode"
+            and existing.parameter_key == "auto_model_routing"
+            and existing.status == "completed"
+            and existing.task_version == 1
+            and existing.resolution_source == "catalog_default"
+            and existing.recommendation_fingerprint
+            == canonical_parameter_value_fingerprint(False)
+        )
         matching_recommendation = (
             planned.status == "completed"
             and existing.status in {"pending", "active"}
@@ -508,8 +645,34 @@ def reconcile_parameter_group_catalog_tasks(
             and existing.recommendation_fingerprint
             == planned.recommendation_fingerprint
         )
-        if matching_recommendation:
+        secret_configuration_completed = (
+            planned.input_type == "secret"
+            and planned.status == "completed"
+            and existing.status in {"pending", "active", "invalid"}
+        )
+        secret_configuration_removed = (
+            planned.input_type == "secret"
+            and planned.status != "completed"
+            and existing.status in {"completed", "skipped", "deferred"}
+        )
+        if legacy_unconfirmed_disabled_routing:
+            status = "pending"
+        elif secret_configuration_completed:
             status = "completed"
+        elif secret_configuration_removed:
+            status = "pending"
+        elif matching_recommendation:
+            status = "completed"
+        resolution_source = (
+            planned.resolution_source
+            if secret_configuration_completed or secret_configuration_removed
+            else existing.resolution_source
+        )
+        recommendation_fingerprint = (
+            None
+            if planned.input_type == "secret"
+            else existing.recommendation_fingerprint
+        )
         merged.append(
             planned.model_copy(
                 update={
@@ -518,10 +681,8 @@ def reconcile_parameter_group_catalog_tasks(
                     "status": status,
                     "task_version": existing.task_version,
                     "stable_order": len(merged),
-                    "resolution_source": existing.resolution_source,
-                    "recommendation_fingerprint": (
-                        existing.recommendation_fingerprint
-                    ),
+                    "resolution_source": resolution_source,
+                    "recommendation_fingerprint": recommendation_fingerprint,
                     "suggestions": planned.suggestions or existing.suggestions,
                     "candidates": existing.candidates,
                 }
@@ -701,7 +862,13 @@ def refresh_parameter_group_suggestions(
         updated = task.model_copy(update={"suggestions": suggestions})
         node = node_by_id.get(task.node_id)
         data = node.get("data") if isinstance(node, dict) else {}
-        selected = data.get(task.parameter_key) if isinstance(data, dict) else None
+        found, selected = node_parameter_value(
+            task.node_type,
+            task.parameter_key,
+            data if isinstance(data, dict) else {},
+        )
+        if not found:
+            selected = None
         valid_selectors = [item.value_selector for item in suggestions]
         selection_is_valid = (
             selected in valid_selectors
@@ -810,8 +977,35 @@ def prepare_task_decision(
             graph_data_patch={"_deferred_parameter": task.parameter_key},
         )
     if action == "skip":
+        if task.confirmation_required:
+            raise ParameterTaskConflict("confirmation is required")
         if task.required:
             raise ParameterTaskConflict("required task cannot be skipped")
+        if (
+            task.node_type == "llmNode"
+            and task.parameter_key in _LLM_PROMPT_PARAMETER_KEYS
+        ):
+            other_prompts = [
+                item
+                for item in tasks
+                if item.node_id == task.node_id
+                and item.task_id != task.task_id
+                and item.parameter_key in _LLM_PROMPT_PARAMETER_KEYS
+            ]
+            empty_fingerprint = canonical_parameter_value_fingerprint("")
+            has_configured_prompt = any(
+                item.status == "completed"
+                and (
+                    item.resolution_source == "user_request"
+                    or item.recommendation_fingerprint not in {None, empty_fingerprint}
+                )
+                for item in other_prompts
+            )
+            has_remaining_prompt = any(
+                item.status in {"active", "pending"} for item in other_prompts
+            )
+            if not has_configured_prompt and not has_remaining_prompt:
+                raise ParameterTaskConflict("one prompt is required")
         return PreparedParameterDecision(
             operation_id=operation_id,
             task_id=task_id,
@@ -821,6 +1015,33 @@ def prepare_task_decision(
             graph_data_patch=None,
         )
     raise ParameterTaskConflict("invalid decision")
+
+
+def recovery_affected_node_ids(
+    *,
+    graph: dict[str, Any],
+    envelopes: list[dict[str, Any]],
+    parameter_task_node_ids: list[str],
+) -> set[str]:
+    """Collect recoverable task nodes without widening beyond the canonical graph."""
+    canonical_node_ids = {
+        str(node.get("id"))
+        for node in graph.get("nodes") or []
+        if isinstance(node, dict) and node.get("id")
+    }
+    affected_node_ids = {
+        str(node_id)
+        for envelope in envelopes
+        if isinstance(envelope, dict)
+        and envelope.get("catalog_version") == 3
+        and envelope.get("status") != "reverted"
+        for node_id in envelope.get("affected_node_ids") or []
+        if node_id
+    }
+    affected_node_ids.update(
+        str(node_id) for node_id in parameter_task_node_ids if node_id
+    )
+    return affected_node_ids & canonical_node_ids
 
 
 def _activate_next(

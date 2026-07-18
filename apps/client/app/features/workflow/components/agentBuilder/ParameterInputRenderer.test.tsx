@@ -40,8 +40,9 @@ const branchTask: AgentBuilderParameterTask = {
 };
 
 describe('ParameterInputRenderer condition branch target', () => {
-  it('renders secret parameters as an empty password control', () => {
+  it('routes secret parameters to Node Detail without collecting a raw value', () => {
     const onSubmit = vi.fn();
+    const onOpenNodeSettings = vi.fn();
     const secretTask: AgentBuilderParameterTask = {
       ...branchTask,
       task_id: 'task-slack-token',
@@ -59,15 +60,16 @@ describe('ParameterInputRenderer condition branch target', () => {
         task={secretTask}
         hydration={{ state: 'unavailable' }}
         onSubmit={onSubmit}
+        onOpenNodeSettings={onOpenNodeSettings}
       />,
     );
 
-    const input = screen.getByLabelText('Bot Token');
-    expect(input).toHaveAttribute('type', 'password');
-    expect(input).toHaveValue('');
-    fireEvent.change(input, { target: { value: 'secret-value' } });
-    fireEvent.click(screen.getByRole('button', { name: '적용' }));
-    expect(onSubmit).toHaveBeenCalledWith('secret-value');
+    expect(screen.queryByLabelText('Bot Token')).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('button', { name: '노드 설정 열기' }),
+    );
+    expect(onOpenNodeSettings).toHaveBeenCalledTimes(1);
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it('treats an empty optional JSON apply as an explicit skip', () => {
@@ -98,6 +100,38 @@ describe('ParameterInputRenderer condition branch target', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
+  it('keeps an invalid LLM JSON schema and accepts only JSON objects', () => {
+    const onSubmit = vi.fn();
+    const schemaTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-llm-output-schema',
+      node_id: 'llm',
+      node_type: 'llmNode',
+      parameter_key: 'output_json_schema',
+      label: 'JSON Schema',
+      input_type: 'json',
+      required: false,
+    };
+
+    render(<ParameterInputRenderer task={schemaTask} onSubmit={onSubmit} />);
+    const input = screen.getByLabelText('JSON Schema');
+    fireEvent.change(input, { target: { value: '["not-an-object"]' } });
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'JSON 객체를 입력하세요.',
+    );
+    expect(input).toHaveValue('["not-an-object"]');
+
+    fireEvent.change(input, {
+      target: { value: '{"type":"object"}' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+
+    expect(onSubmit).toHaveBeenCalledWith({ type: 'object' });
+  });
+
   it('shows safe option labels while submitting the canonical target id', () => {
     const onSubmit = vi.fn();
     render(<ParameterInputRenderer task={branchTask} onSubmit={onSubmit} />);
@@ -125,7 +159,10 @@ describe('ParameterInputRenderer condition branch target', () => {
       _agent_builder_condition_branch_targets: { default: null },
     });
 
-    expect(targetHydration).toEqual({ state: 'available', value: 'answer-node' });
+    expect(targetHydration).toEqual({
+      state: 'available',
+      value: 'answer-node',
+    });
     expect(parameterControlDisplayValue(branchTask, targetHydration)).toBe(
       '응답 노드',
     );
@@ -337,9 +374,7 @@ describe('ParameterInputRenderer condition branch target', () => {
       validation: { min: 5, max: 100, integer: true },
     };
 
-    render(
-      <ParameterInputRenderer task={routingTask} onSubmit={onSubmit} />,
-    );
+    render(<ParameterInputRenderer task={routingTask} onSubmit={onSubmit} />);
 
     const input = screen.getByLabelText('Routing refresh interval');
     expect(input).toHaveAttribute('min', '5');
@@ -381,5 +416,51 @@ describe('ParameterInputRenderer condition branch target', () => {
         fallback_model_id: 'provider-fallback-model',
       }),
     ).toEqual({ state: 'available', value: 'candidate-fallback' });
+  });
+
+  it('hydrates LLM output format and referenced variables from runtime graph shape', () => {
+    const formatTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      node_id: 'llm',
+      node_type: 'llmNode',
+      parameter_key: 'output_format_type',
+      label: '출력 형식',
+      input_type: 'select',
+      required: false,
+      validation: { options: ['text', 'json'] },
+    };
+    const selectorTask: AgentBuilderParameterTask = {
+      ...formatTask,
+      task_id: 'task-llm-selector',
+      parameter_key: 'referenced_variables',
+      label: '이전 node 출력 연결',
+      input_type: 'variable_selector_list',
+      suggestions: [
+        {
+          suggestion_id: 'selector-start-query',
+          kind: 'variable_selector',
+          label: '입력 query',
+          description: '이전 node output',
+          source_node_id: 'start',
+          output_key: 'query',
+          value_type: 'text',
+          value_selector: ['start', 'query'],
+          json_path: '$.query',
+        },
+      ],
+    };
+
+    expect(
+      deriveParameterControlHydration(formatTask, {
+        output_format: { type: 'json', schema: {} },
+      }),
+    ).toEqual({ state: 'available', value: 'json' });
+    expect(
+      deriveParameterControlHydration(selectorTask, {
+        referenced_variables: [
+          { name: 'query', value_selector: ['start', 'query'] },
+        ],
+      }),
+    ).toEqual({ state: 'available', value: ['selector-start-query'] });
   });
 });

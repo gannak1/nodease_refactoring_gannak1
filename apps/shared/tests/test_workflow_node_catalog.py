@@ -133,10 +133,17 @@ def test_catalog_exposes_start_and_answer_schema_as_configurable_tasks():
     ]
 
 
-def test_llm_catalog_limits_agent_builder_routing_to_the_toggle_and_keeps_runtime_shape():
+def test_llm_catalog_exposes_basic_agent_builder_settings_and_keeps_advanced_routing_runtime_shape():
     parameters = node_parameter_definitions("llmNode")
     assert [parameter["key"] for parameter in parameters] == [
         "model_id",
+        "output_format_type",
+        "output_json_schema",
+        "system_prompt",
+        "user_prompt",
+        "assistant_prompt",
+        "referenced_variables",
+        "citationDisplayMode",
         "auto_model_routing",
         "fallback_model_id",
         "model_routing_refresh_every_runs",
@@ -200,6 +207,86 @@ def test_llm_catalog_limits_agent_builder_routing_to_the_toggle_and_keeps_runtim
     assert validate_node_parameter_update(
         "llmNode", "fallback_model_id", data, "default-model"
     ) == ["fallback_must_differ"]
+
+    for citation_mode in ("hidden", "basic", "detailed"):
+        data = apply_node_parameter_value(
+            "llmNode", "citationDisplayMode", data, citation_mode
+        )
+        assert data["citationDisplayMode"] == citation_mode
+        assert validate_node_parameter_update(
+            "llmNode", "citationDisplayMode", data, citation_mode
+        ) == []
+
+    assert validate_node_parameter_update(
+        "llmNode", "citationDisplayMode", data, "unsupported"
+    ) == ["option_not_allowed"]
+
+
+def test_llm_catalog_maps_basic_output_and_selector_values_to_runtime_shape():
+    data = {
+        "model_id": "default-model",
+        "output_format": {"type": "text"},
+        "system_prompt": "Answer safely.",
+        "referenced_variables": [
+            {
+                "name": "customer_query",
+                "value_selector": ["start", "query"],
+            }
+        ],
+    }
+
+    data = apply_node_parameter_value(
+        "llmNode", "output_format_type", data, "json"
+    )
+    data = apply_node_parameter_value(
+        "llmNode", "output_json_schema", data, {"type": "object"}
+    )
+    data = apply_node_parameter_value(
+        "llmNode", "referenced_variables", data, [["start", "query"]]
+    )
+
+    assert data["output_format"] == {
+        "type": "json",
+        "schema": {"type": "object"},
+    }
+    assert data["referenced_variables"] == [
+        {"name": "customer_query", "value_selector": ["start", "query"]}
+    ]
+    assert node_parameter_is_configured(
+        "llmNode", "referenced_variables", data
+    )
+
+
+def test_llm_referenced_variables_reject_duplicate_runtime_names():
+    assert validate_node_parameter_update(
+        "llmNode",
+        "referenced_variables",
+        {"referenced_variables": []},
+        [["start", "result"], ["extract", "result"]],
+    ) == ["duplicate_variable_name"]
+
+
+def test_llm_output_json_schema_accepts_only_json_objects():
+    assert validate_node_parameter_update(
+        "llmNode", "output_json_schema", {}, {"type": "object"}
+    ) == []
+    for invalid in (["not", "an", "object"], "text", 1):
+        assert validate_node_parameter_update(
+            "llmNode", "output_json_schema", {}, invalid
+        ) == ["json_object_required"]
+    assert validate_node_parameter_update(
+        "llmNode", "output_json_schema", {}, None
+    ) == []
+
+
+def test_llm_configuration_requires_model_and_any_one_prompt():
+    assert derive_node_configuration_state(
+        "llmNode", {"model_id": "default-model"}
+    ) == "unresolved"
+    assert derive_node_configuration_state(
+        "llmNode",
+        {"model_id": "default-model", "assistant_prompt": "Answer."},
+    ) == "resolved"
 
 
 def test_mail_catalog_declares_every_user_configurable_search_parameter():
@@ -437,6 +524,7 @@ def test_every_agent_builder_parameter_round_trips_through_catalog_application()
         ("slackPostNode", "url"): "https://hooks.slack.com/services/T/B/S",
         ("mailNode", "start_date"): "2026-07-01",
         ("mailNode", "end_date"): "2026-07-16",
+        ("llmNode", "output_json_schema"): {"type": "object"},
     }
 
     for node in catalog["nodes"]:

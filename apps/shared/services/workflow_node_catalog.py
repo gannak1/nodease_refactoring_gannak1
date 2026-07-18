@@ -126,6 +126,25 @@ def validate_workflow_node_catalog(catalog: dict[str, Any]) -> None:
             raise RuntimeError(
                 "Workflow node catalog required configuration has no parameter"
             )
+        required_any_configuration = node.get("required_any_configuration") or []
+        if not isinstance(required_any_configuration, list):
+            raise RuntimeError(
+                "Workflow node catalog required any configuration is invalid"
+            )
+        for group in required_any_configuration:
+            if not isinstance(group, dict) or not str(group.get("key") or ""):
+                raise RuntimeError(
+                    "Workflow node catalog required any configuration is invalid"
+                )
+            group_parameters = group.get("parameters")
+            if (
+                not isinstance(group_parameters, list)
+                or not group_parameters
+                or not set(map(str, group_parameters)).issubset(set(parameter_keys))
+            ):
+                raise RuntimeError(
+                    "Workflow node catalog required any configuration has no parameter"
+                )
         for parameter in parameters:
             if parameter.get("input_type") not in _PARAMETER_INPUT_TYPES:
                 raise RuntimeError("Workflow node catalog has an invalid input type")
@@ -288,6 +307,12 @@ def validate_node_parameter_value(
     validation = dict(parameter.get("validation") or {})
     if value is None:
         return ["required"] if parameter.get("required") else []
+    if (
+        node_type == "llmNode"
+        and parameter_key == "output_json_schema"
+        and not isinstance(value, dict)
+    ):
+        return ["json_object_required"]
     if input_type in {"text", "textarea", "code", "secret"}:
         if not isinstance(value, str):
             return ["invalid_type"]
@@ -405,6 +430,11 @@ _LLM_ROUTING_PARAMETER_PATHS = {
     "model_routing_max_cohorts": ("max_cohorts",),
 }
 
+_LLM_BASIC_PARAMETER_PATHS = {
+    "output_format_type": ("output_format", "type"),
+    "output_json_schema": ("output_format", "schema"),
+}
+
 LLM_ROUTING_GRAPH_PARAMETER_KEYS = (
     "model_id",
     "auto_model_routing",
@@ -425,6 +455,25 @@ def node_parameter_value(
     node_data: dict[str, Any] | None,
 ) -> tuple[bool, Any]:
     data = node_data if isinstance(node_data, dict) else {}
+    if node_type == "llmNode" and parameter_key in _LLM_BASIC_PARAMETER_PATHS:
+        value: Any = data
+        for path_key in _LLM_BASIC_PARAMETER_PATHS[parameter_key]:
+            if not isinstance(value, dict) or path_key not in value:
+                return False, None
+            value = value[path_key]
+        return True, value
+    if node_type == "llmNode" and parameter_key == "referenced_variables":
+        values = data.get("referenced_variables")
+        if not isinstance(values, list):
+            return False, None
+        selectors = []
+        for item in values:
+            if not isinstance(item, dict) or not isinstance(
+                item.get("value_selector"), list
+            ):
+                return False, None
+            selectors.append(copy.deepcopy(item["value_selector"]))
+        return True, selectors
     if parameter_key in data:
         return True, data.get(parameter_key)
     if node_type == "llmNode" and parameter_key in _LLM_ROUTING_PARAMETER_PATHS:
@@ -466,6 +515,36 @@ def apply_node_parameter_value(
     value: Any,
 ) -> dict[str, Any]:
     data = copy.deepcopy(node_data)
+    if node_type == "llmNode" and parameter_key in _LLM_BASIC_PARAMETER_PATHS:
+        path = _LLM_BASIC_PARAMETER_PATHS[parameter_key]
+        target = data
+        for path_key in path[:-1]:
+            child = target.get(path_key)
+            if not isinstance(child, dict):
+                child = {}
+            child = copy.deepcopy(child)
+            target[path_key] = child
+            target = child
+        target[path[-1]] = copy.deepcopy(value)
+        data.pop(parameter_key, None)
+        return data
+    if node_type == "llmNode" and parameter_key == "referenced_variables":
+        selectors = copy.deepcopy(value)
+        existing_names = {
+            tuple(item["value_selector"]): str(item["name"])
+            for item in data.get(parameter_key) or []
+            if isinstance(item, dict)
+            and item.get("name")
+            and isinstance(item.get("value_selector"), list)
+        }
+        data[parameter_key] = [
+            {
+                "name": existing_names.get(tuple(selector), str(selector[-1])),
+                "value_selector": selector,
+            }
+            for selector in selectors
+        ]
+        return data
     if node_type == "llmNode" and parameter_key in _LLM_ROUTING_PARAMETER_PATHS:
         policy = data.get("model_routing_policy")
         if not isinstance(policy, dict):
@@ -552,6 +631,21 @@ def validate_node_parameter_update(
     issues = validate_node_parameter_value(node_type, parameter_key, value)
     if issues:
         return issues
+    if node_type == "llmNode" and parameter_key == "referenced_variables":
+        updated_data = apply_node_parameter_value(
+            node_type,
+            parameter_key,
+            node_data if isinstance(node_data, dict) else {},
+            value,
+        )
+        names = [
+            str(item.get("name") or "")
+            for item in updated_data.get("referenced_variables") or []
+            if isinstance(item, dict)
+        ]
+        if len(names) != len(set(names)):
+            return ["duplicate_variable_name"]
+        return []
     if node_type != "llmNode" or parameter_key not in {
         "model_id",
         "fallback_model_id",
@@ -618,6 +712,29 @@ def missing_required_configuration(
             )
         ):
             missing.append(str(key))
+    for group in definition.get("required_any_configuration") or []:
+        group_key = str(group.get("key") or "")
+        configured = False
+        for key in group.get("parameters") or []:
+            parameter_key = str(key)
+            if parameter_key in deferred:
+                continue
+            validation_value = _stored_parameter_value_for_validation(
+                node_type,
+                parameter_key,
+                data,
+            )
+            if node_parameter_is_configured(
+                node_type, parameter_key, data
+            ) and not validate_node_parameter_value(
+                node_type,
+                parameter_key,
+                validation_value,
+            ):
+                configured = True
+                break
+        if not configured and group_key:
+            missing.append(group_key)
     if node_type == "slackPostNode":
         mode = str(data.get("slackMode") or "api")
         mode_required = ["url"] if mode == "webhook" else ["bot_token", "channel"]

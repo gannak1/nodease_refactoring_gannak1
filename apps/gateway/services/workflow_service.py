@@ -53,7 +53,10 @@ from apps.gateway.application.agent_builder.workflow_cas import (
     WorkflowMutationConflict,
 )
 from apps.gateway.application.agent_builder.graph_mutation_builder import (
+    GraphMutationValidationError,
     canonical_graph_hash,
+    materialize_candidate_features,
+    materialize_candidate_graph,
 )
 from apps.gateway.application.agent_builder.parameter_tasks import (
     refresh_parameter_group_configuration,
@@ -189,6 +192,32 @@ class WorkflowService:
                 detail="Workflow not found",  # 상세 메시지
             )
 
+        try:
+            user_uuid = uuid.UUID(str(user_id))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=403, detail="Forbidden") from exc
+        if not has_workflow_permission(
+            db,
+            user_uuid,
+            workflow.id,
+            "write",
+            organization_id=workflow.organization_id,
+        ):
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+        raw_features = (
+            request.features
+            if isinstance(request, WorkflowDraftRequest)
+            else request.get("features")
+        )
+        try:
+            canonical_features = materialize_candidate_features(raw_features)
+        except GraphMutationValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="workflow.features_invalid",
+            ) from exc
+
         WorkflowService.validate_knowledge_references(
             db,
             request,
@@ -198,18 +227,6 @@ class WorkflowService:
         )
 
         if mutation_context is not None:
-            try:
-                user_uuid = uuid.UUID(str(user_id))
-            except (TypeError, ValueError) as exc:
-                raise HTTPException(status_code=403, detail="Forbidden") from exc
-            if not has_workflow_permission(
-                db,
-                user_uuid,
-                workflow.id,
-                "write",
-                organization_id=workflow.organization_id,
-            ):
-                raise HTTPException(status_code=403, detail="Forbidden")
             repository = AgentBuilderRepository()
             saved_retry = False
             boundary = None
@@ -364,7 +381,7 @@ class WorkflowService:
                 organization_id=workflow.organization_id,
             )
             workflow.graph = validated.graph
-            workflow.features = request.features if request.features else {}
+            workflow.features = canonical_features
             workflow.env_variables = (
                 [value.model_dump() for value in request.env_variables]
                 if request.env_variables
@@ -479,13 +496,13 @@ class WorkflowService:
         )
 
         # Graph 데이터 저장 (JSONB 형식)
-        workflow.graph = {
+        workflow.graph = materialize_candidate_graph({
             "nodes": [node.model_dump() for node in request.nodes],
             "edges": [edge.model_dump() for edge in request.edges],
             "viewport": request.viewport.model_dump() if request.viewport else None,
-        }
+        })
 
-        workflow.features = request.features if request.features else {}
+        workflow.features = canonical_features
 
         # 환경 변수 처리: 요청에 환경 변수가 있으면 딕셔너리 형태로 변환하여 저장, 없으면 빈 리스트 저장
         workflow.env_variables = (
@@ -499,7 +516,7 @@ class WorkflowService:
             if request.runtime_variables
             else []
         )
-        workflow.updated_by = user_id
+        workflow.updated_by = user_uuid
 
         # DB에 커밋
         db.commit()

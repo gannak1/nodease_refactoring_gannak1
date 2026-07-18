@@ -184,7 +184,10 @@ def _upstream_candidates(
     for step_id, node_id in step_node_ids.items():
         node = node_by_id[node_id]
         for parameter in node_parameter_definitions(str(node.get("type") or "")):
-            if parameter.get("input_type") != "variable_selector":
+            if parameter.get("input_type") not in {
+                "variable_selector",
+                "variable_selector_list",
+            }:
                 continue
             suggestions = resolver.resolve(
                 graph=graph,
@@ -218,6 +221,7 @@ def plan_parameter_tasks_for_existing_graph(
     graph: dict[str, Any],
     step_node_ids: dict[str, str],
     group_id,
+    affected_node_ids: set[str] | None = None,
 ):
     """Rebuild current Catalog task definitions without rerunning the planner LLM."""
     existing_node_ids = {
@@ -229,6 +233,7 @@ def plan_parameter_tasks_for_existing_graph(
         str(step_id): str(node_id)
         for step_id, node_id in step_node_ids.items()
         if str(node_id) in existing_node_ids
+        and (affected_node_ids is None or str(node_id) in affected_node_ids)
     }
     if not current_step_node_ids:
         return []
@@ -244,6 +249,7 @@ def plan_parameter_tasks_for_existing_graph(
             current_step_node_ids,
         ),
         base_node_ids=existing_node_ids,
+        affected_node_ids=affected_node_ids,
     )
     candidate_graph, tasks = add_condition_branch_tasks(
         graph=task_plan.graph,
@@ -260,7 +266,7 @@ def plan_parameter_tasks_for_existing_graph(
                     target_node_id=task.node_id,
                     parameter_key=task.parameter_key,
                 )
-                if task.input_type == "variable_selector"
+                if task.input_type in {"variable_selector", "variable_selector_list"}
                 else []
             }
         )
@@ -342,7 +348,10 @@ class DirectEditOrchestrator:
                             target_node_id=task.node_id,
                             parameter_key=task.parameter_key,
                         )
-                        if task.input_type == "variable_selector"
+                        if task.input_type in {
+                            "variable_selector",
+                            "variable_selector_list",
+                        }
                         else []
                     }
                 )

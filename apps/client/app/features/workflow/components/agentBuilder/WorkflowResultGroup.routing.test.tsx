@@ -53,6 +53,7 @@ describe('WorkflowResultGroup model routing guidance', () => {
     label: '자동 모델 라우팅',
     input_type: 'boolean',
     required: false,
+    confirmation_required: true,
     defer_policy: 'forbidden',
     status: 'active',
     task_version: 1,
@@ -81,6 +82,91 @@ describe('WorkflowResultGroup model routing guidance', () => {
     status: 'completed',
     stable_order: stableOrder,
   }));
+
+  it('keeps a false routing recommendation active until the user confirms it', () => {
+    const onDecision = vi.fn();
+
+    render(
+      <WorkflowResultGroup
+        tasks={[routingTask]}
+        nodes={[nodes[0]]}
+        routingNodeIds={['generated-llm']}
+        onFocusNode={vi.fn()}
+        onDecision={onDecision}
+      />,
+    );
+
+    expect(screen.getByRole('status')).toHaveTextContent('추천값 확인 필요');
+    expect(screen.getByRole('checkbox')).not.toBeChecked();
+    expect(
+      screen.queryByText('Workflow 생성 완료'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: '건너뛰기' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText('설정 진행 중')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+
+    expect(onDecision).toHaveBeenCalledWith({
+      taskId: routingTask.task_id,
+      action: 'confirm',
+    });
+  });
+
+  it('shows optional JSON Schema only when the LLM output format is JSON', () => {
+    const schemaTask: AgentBuilderParameterTask = {
+      ...routingTask,
+      task_id: 'schema-task',
+      parameter_key: 'output_json_schema',
+      label: 'JSON Schema',
+      input_type: 'json',
+      confirmation_required: false,
+      resolution_source: null,
+      status: 'active',
+    };
+    const formatTask: AgentBuilderParameterTask = {
+      ...routingTask,
+      task_id: 'format-task',
+      parameter_key: 'output_format_type',
+      label: '출력 형식',
+      input_type: 'select',
+      confirmation_required: false,
+      resolution_source: 'catalog_default',
+      status: 'completed',
+      validation: { options: ['text', 'json'] },
+    };
+    const textNode = {
+      ...nodes[0],
+      data: { ...nodes[0].data, output_format: { type: 'text' } },
+    } as Node;
+    const { rerender } = render(
+      <WorkflowResultGroup
+        tasks={[formatTask, schemaTask]}
+        nodes={[textNode]}
+        onFocusNode={vi.fn()}
+        onDecision={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText('JSON Schema')).not.toBeInTheDocument();
+
+    rerender(
+      <WorkflowResultGroup
+        tasks={[formatTask, schemaTask]}
+        nodes={[
+          {
+            ...textNode,
+            data: { ...textNode.data, output_format: { type: 'json' } },
+          } as Node,
+        ]}
+        onFocusNode={vi.fn()}
+        onDecision={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('JSON Schema')).toBeInTheDocument();
+  });
   it('이번 결과의 라우팅 미설정 LLM만 하나의 안내로 보여주고 Routing control 열기를 요청한다', () => {
     const onFocusNode = vi.fn();
     const onOpenNodeSettings = vi.fn();

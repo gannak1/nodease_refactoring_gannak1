@@ -23,6 +23,7 @@ from apps.gateway.application.agent_builder.knowledge_timing import (
     materialize_before_graph_plan,
 )
 from apps.gateway.application.agent_builder.parameter_tasks import (
+    recovery_affected_node_ids,
     reconcile_parameter_group_catalog_tasks,
     remove_direct_edit_external_credential_tasks,
     remove_direct_edit_knowledge_parameter_tasks,
@@ -1075,7 +1076,13 @@ class AgentBuilderService:
         ):
             raise HTTPException(
                 status_code=422,
-                detail="legacy_knowledge_selection_not_supported",
+                detail={
+                    "code": "invalid_request",
+                    "message": (
+                        "현재 Agent Builder에서는 대화 메시지로 Knowledge Base 선택을 "
+                        "제출할 수 없습니다. 표시된 Knowledge Base 선택 화면에서 선택해주세요."
+                    ),
+                },
             )
         session = self._lock_session_for_request(session)
         self._reject_if_pending(session)
@@ -5621,6 +5628,13 @@ class AgentBuilderService:
                 if recovery_workflow is not None:
                     workflow_graph = getattr(recovery_workflow, "graph", None)
             if needs_catalog_recovery and isinstance(workflow_graph, dict):
+                recoverable_node_ids = recovery_affected_node_ids(
+                    graph=workflow_graph,
+                    envelopes=envelopes,
+                    parameter_task_node_ids=[
+                        task.node_id for task in normalized_parameter_group.tasks
+                    ],
+                )
                 planned_tasks = plan_parameter_tasks_for_existing_graph(
                     graph=workflow_graph,
                     step_node_ids={
@@ -5628,6 +5642,7 @@ class AgentBuilderService:
                         for step_id, node_id in safe_step_node_ids.items()
                     },
                     group_id=normalized_parameter_group.group_id,
+                    affected_node_ids=recoverable_node_ids,
                 )
                 normalized_parameter_group = reconcile_parameter_group_catalog_tasks(
                     normalized_parameter_group,
@@ -6119,6 +6134,46 @@ class AgentBuilderService:
         *,
         direct_edit: bool = False,
     ) -> bool | None:
+        def preserve_terminal_response() -> bool:
+            stored_payload = getattr(request_row, "response_payload", None)
+            if isinstance(stored_payload, dict) and stored_payload:
+                try:
+                    stored_response = AgentBuilderMessageResponse.model_validate(
+                        stored_payload
+                    )
+                except Exception:
+                    stored_response = None
+                if stored_response is not None:
+                    for field_name in type(response).model_fields:
+                        setattr(
+                            response,
+                            field_name,
+                            copy.deepcopy(getattr(stored_response, field_name)),
+                        )
+                    return False
+
+            terminal_status = getattr(request_row, "status", None)
+            response.status = (
+                terminal_status
+                if terminal_status in {"failed", "canceled"}
+                else "failed"
+            )
+            response.draft_preview = None
+            response.preview_prompt = None
+            response.clarification_questions = []
+            response.warnings = (
+                ["Agent Builder request processing ended before this result was saved."]
+                if response.status == "failed"
+                else ["요청이 취소되었습니다."]
+            )
+            if terminal_status == "canceled":
+                request_row.response_payload = self._stored_response_payload(
+                    response,
+                    direct_edit=direct_edit,
+                )
+                request_row.completed_at = request_row.completed_at or _now()
+            return False
+
         payload = self._stored_response_payload(response, direct_edit=direct_edit)
         structured_request = (
             response.structured_request.model_dump(mode="json")
@@ -6144,11 +6199,10 @@ class AgentBuilderService:
                 )
             )
             if updated != 1:
-                response.status = "canceled"
-                response.draft_preview = None
-                response.preview_prompt = None
-                response.clarification_questions = []
-                response.warnings = ["요청이 취소되었습니다."]
+                try:
+                    self.db.refresh(request_row)
+                except Exception:
+                    pass
                 try:
                     (
                         self.db.query(AgentBuilderDraft)
@@ -6157,9 +6211,7 @@ class AgentBuilderService:
                     )
                 except Exception:
                     pass
-                request_row.response_payload = response.model_dump(mode="json")
-                request_row.completed_at = request_row.completed_at or completed_at
-                return False
+                return preserve_terminal_response()
             request_row.status = response.status
             request_row.response_payload = payload
             request_row.structured_request = structured_request
@@ -6169,23 +6221,17 @@ class AgentBuilderService:
             self.db.refresh(request_row)
         except Exception:
             pass
-        if request_row.status == "canceled":
-            response.status = "canceled"
-            response.draft_preview = None
-            response.preview_prompt = None
-            response.clarification_questions = []
-            response.warnings = ["요청이 취소되었습니다."]
-            try:
-                (
-                    self.db.query(AgentBuilderDraft)
-                    .filter(AgentBuilderDraft.request_id == request_row.id)
-                    .update({"status": "canceled"}, synchronize_session=False)
-                )
-            except Exception:
-                pass
-            request_row.response_payload = response.model_dump(mode="json")
-            request_row.completed_at = request_row.completed_at or _now()
-            return
+        if request_row.status != "processing":
+            if request_row.status == "canceled":
+                try:
+                    (
+                        self.db.query(AgentBuilderDraft)
+                        .filter(AgentBuilderDraft.request_id == request_row.id)
+                        .update({"status": "canceled"}, synchronize_session=False)
+                    )
+                except Exception:
+                    pass
+            return preserve_terminal_response()
         request_row.status = response.status
         request_row.response_payload = self._stored_response_payload(
             response,

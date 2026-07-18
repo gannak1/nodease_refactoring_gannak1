@@ -11,10 +11,19 @@ const CONDITION_BRANCH_PREFIX = 'condition_branch:';
 const CONDITION_BRANCH_TARGETS_KEY =
   '_agent_builder_condition_branch_targets';
 const CONDITION_BRANCH_NO_CONNECTION = '__agent_builder_no_connection__';
-const LLM_ROUTING_PARAMETER_PATHS: Record<string, string[]> = {
-  model_routing_refresh_every_runs: ['refresh', 'refresh_every_runs'],
-  model_routing_validation_budget_usd: ['validation_budget_usd'],
-  model_routing_max_cohorts: ['max_cohorts'],
+const LLM_PARAMETER_PATHS: Record<string, string[]> = {
+  output_format_type: ['output_format', 'type'],
+  output_json_schema: ['output_format', 'schema'],
+  model_routing_refresh_every_runs: [
+    'model_routing_policy',
+    'refresh',
+    'refresh_every_runs',
+  ],
+  model_routing_validation_budget_usd: [
+    'model_routing_policy',
+    'validation_budget_usd',
+  ],
+  model_routing_max_cohorts: ['model_routing_policy', 'max_cohorts'],
 };
 
 const hasValue = (value: unknown) =>
@@ -32,10 +41,10 @@ const nestedParameterValue = (
 ): { found: boolean; value?: unknown } => {
   const path =
     task.node_type === 'llmNode'
-      ? LLM_ROUTING_PARAMETER_PATHS[task.parameter_key]
+      ? LLM_PARAMETER_PATHS[task.parameter_key]
       : undefined;
   if (!path) return { found: false };
-  let value: unknown = nodeData.model_routing_policy;
+  let value: unknown = nodeData;
   for (const key of path) {
     if (
       value === null ||
@@ -148,7 +157,16 @@ export const deriveParameterControlHydration = (
     if (!Array.isArray(current) || current.length === 0) {
       return { state: 'empty' };
     }
-    const suggestionIds = current.map((selector) =>
+    const selectors =
+      task.node_type === 'llmNode' &&
+      task.parameter_key === 'referenced_variables'
+        ? current.map((item) =>
+            item && typeof item === 'object' && !Array.isArray(item)
+              ? (item as Record<string, unknown>).value_selector
+              : item,
+          )
+        : current;
+    const suggestionIds = selectors.map((selector) =>
       task.suggestions?.find((item) => sameSelector(item.value_selector, selector))
         ?.suggestion_id,
     );

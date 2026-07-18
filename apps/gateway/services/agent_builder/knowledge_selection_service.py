@@ -14,6 +14,10 @@ from apps.gateway.application.agent_builder.knowledge_timing import (
     KnowledgeTimingResolver,
 )
 from apps.gateway.services.audit_records import add_action_audit
+from apps.gateway.services.knowledge_rag_recommendation_service import (
+    knowledge_base_recommendation_handle,
+    knowledge_collection_selection_handle,
+)
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.agent_builder import AgentBuilderRequest, AgentBuilderSession
 from apps.shared.db.models.workflow import Workflow
@@ -38,6 +42,8 @@ class KnowledgeSelectionService:
         no_knowledge_candidate_id: str,
         before_graph_builder: Callable[..., dict[str, Any]] | None = None,
         repository: AgentBuilderRepository | None = None,
+        knowledge_base_handle_resolver: Callable[[UUID], str] | None = None,
+        knowledge_collection_handle_resolver: Callable[[UUID], str] | None = None,
     ) -> None:
         self.db = db
         self.user_id = user_id
@@ -46,6 +52,24 @@ class KnowledgeSelectionService:
         self.before_graph_builder = before_graph_builder
         self.no_knowledge_candidate_id = no_knowledge_candidate_id
         self.repository = repository or AgentBuilderRepository()
+        self.knowledge_base_handle_resolver = (
+            knowledge_base_handle_resolver
+            or (
+                lambda resource_id: knowledge_base_recommendation_handle(
+                    self.organization_id,
+                    resource_id,
+                )
+            )
+        )
+        self.knowledge_collection_handle_resolver = (
+            knowledge_collection_handle_resolver
+            or (
+                lambda resource_id: knowledge_collection_selection_handle(
+                    self.organization_id,
+                    resource_id,
+                )
+            )
+        )
 
     @staticmethod
     def _target_node_id(
@@ -337,12 +361,42 @@ class KnowledgeSelectionService:
             if candidate.resolution_id not in {None, selection.resolution_id}:
                 raise HTTPException(status_code=422, detail="catalog_validation_failed")
 
-        selected_collection_handles = sorted(
-            set(selection.selected_collection_handles)
-        )
+        if selection.editor_target_node_id is not None:
+            if placement.timing != "after_graph":
+                raise HTTPException(
+                    status_code=422,
+                    detail="catalog_validation_failed",
+                )
+            canonical_target_node_id = self._target_node_id(
+                payload=payload,
+                request_row=request_row,
+                workflow=workflow,
+                target_step_id=placement.target_step_id,
+            )
+            if selection.editor_target_node_id != canonical_target_node_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="catalog_validation_failed",
+                )
+
+        hierarchy_collection_handles = {
+            *selection.selected_collection_handles,
+            *(
+                self.knowledge_collection_handle_resolver(resource_id)
+                for resource_id in selection.selected_knowledge_collection_ids
+            ),
+        }
+        hierarchy_kb_handles = {
+            *selection.selected_kb_handles,
+            *(
+                self.knowledge_base_handle_resolver(resource_id)
+                for resource_id in selection.selected_knowledge_base_ids
+            ),
+        }
+        selected_collection_handles = sorted(hierarchy_collection_handles)
         selected_kb_handles = sorted(
             {
-                *selection.selected_kb_handles,
+                *hierarchy_kb_handles,
                 *(candidate.candidate_id for candidate in selection.selected_candidates),
             }
         )
@@ -351,10 +405,10 @@ class KnowledgeSelectionService:
         )
         if any(
             handle not in allowed_collection_handles
-            for handle in selected_collection_handles
+            for handle in hierarchy_collection_handles
         ) or any(
             handle not in allowed_kb_handles
-            for handle in selection.selected_kb_handles
+            for handle in hierarchy_kb_handles
         ):
             raise HTTPException(status_code=422, detail="catalog_validation_failed")
 

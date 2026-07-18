@@ -1,7 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useReactFlow } from '@xyflow/react';
+import { isEqual } from 'lodash';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import { workflowApi } from '../../api/workflowApi';
+import {
+  agentBuilderApi,
+  type AgentBuilderSessionResponse,
+} from '../../api/agentBuilderApi';
 import { knowledgeApi } from '@/app/features/knowledge/api/knowledgeApi';
 import {
   BUDGET_EXCEEDED_MESSAGE,
@@ -59,6 +64,11 @@ import {
   TEST_RUN_QUERY_KEY,
 } from '../../utils/testExecutionLocation';
 import { ExecutionComparisonPanel } from './ExecutionComparisonPanel';
+import {
+  getWorkflowDraftSaveOwner,
+  startWorkflowExecutionFromPreflight,
+  tryAcquireWorkflowDraftSave,
+} from '../../utils/workflowDraftSaveCoordinator';
 
 export { ModelRoutingDecisionDetails } from '../modelRouting/ModelRoutingDecisionDetails';
 
@@ -117,6 +127,153 @@ const getHttpStatus = (error: unknown) => {
   return undefined;
 };
 
+const getHttpDetail = (error: unknown) => {
+  if (typeof error !== 'object' || error === null || !('response' in error)) {
+    return undefined;
+  }
+  const response = (error as { response?: { data?: { detail?: unknown } } })
+    .response;
+  return typeof response?.data?.detail === 'string'
+    ? response.data.detail
+    : undefined;
+};
+
+const testPreflightSaveErrorMessage = (error: unknown) => {
+  const status = getHttpStatus(error);
+  const detail = getHttpDetail(error);
+  if (status === 401) {
+    return '로그인이 만료되었습니다. 다시 로그인한 뒤 시도해주세요.';
+  }
+  if (status === 403) {
+    return '이 Workflow를 저장하거나 테스트할 권한이 없습니다.';
+  }
+  if (status === 409 && detail === 'operation envelope not found') {
+    return 'Agent Builder 저장 상태를 다시 확인하고 있습니다. 확인이 끝난 뒤 다시 시도해주세요.';
+  }
+  if (status === 409) {
+    return '다른 변경사항이 먼저 저장되었습니다. 서버 상태를 확인한 뒤 다시 시도해주세요.';
+  }
+  if (typeof status === 'number' && status >= 400 && status < 500) {
+    return 'Workflow 저장 요청을 검증하지 못했습니다. 설정을 확인한 뒤 다시 시도해주세요.';
+  }
+  return 'Workflow 저장 중 오류가 발생했습니다. 서버 상태를 확인한 뒤 다시 시도해주세요.';
+};
+
+const canonicalDraftMatchesSnapshot = (
+  canonical: unknown,
+  snapshot: WorkflowDraftRequest,
+) => {
+  if (
+    typeof canonical !== 'object' ||
+    canonical === null ||
+    !Array.isArray((canonical as WorkflowDraftRequest).nodes) ||
+    !Array.isArray((canonical as WorkflowDraftRequest).edges)
+  ) {
+    return false;
+  }
+  const canonicalDraft = canonical as WorkflowDraftRequest;
+  return isEqual(
+    buildWorkflowDraftPayload(canonicalDraft, canonicalDraft.viewport, {
+      noteNodesSource: 'features',
+    }),
+    buildWorkflowDraftPayload(snapshot, snapshot.viewport),
+  );
+};
+
+type OperationRecoveryClassification =
+  | 'applied'
+  | 'unapplied'
+  | 'pending'
+  | 'stale';
+
+const operationRecoveryClassification = (
+  session: AgentBuilderSessionResponse,
+  canonical: unknown,
+): OperationRecoveryClassification => {
+  const envelope = session.active_graph_mutation;
+  const canonicalHash =
+    canonical && typeof canonical === 'object'
+      ? (canonical as { graph_hash?: unknown }).graph_hash
+      : undefined;
+  const envelopeStatus =
+    envelope && typeof envelope.status === 'string' ? envelope.status : null;
+  const resultGraphHash =
+    envelope && typeof envelope.result_graph_hash === 'string'
+      ? envelope.result_graph_hash
+      : null;
+  const savedWorkflowUpdatedAt =
+    envelope && typeof envelope.saved_workflow_updated_at === 'string'
+      ? envelope.saved_workflow_updated_at
+      : null;
+  const canonicalUpdatedAt =
+    canonical && typeof canonical === 'object'
+      ? (canonical as { updated_at?: unknown }).updated_at
+      : undefined;
+  const baseGraphHash =
+    envelope && typeof envelope.base_graph_hash === 'string'
+      ? envelope.base_graph_hash
+      : null;
+
+  if (
+    envelopeStatus === 'acknowledged' &&
+    typeof canonicalHash === 'string' &&
+    canonicalHash === resultGraphHash &&
+    typeof canonicalUpdatedAt === 'string' &&
+    canonicalUpdatedAt === savedWorkflowUpdatedAt
+  ) {
+    return 'applied';
+  }
+  if (
+    ['pending_apply', 'pending_save', 'pending_ack'].includes(
+      envelopeStatus ?? '',
+    ) ||
+    ['planning', 'processing', 'saving', 'pending_ack'].includes(session.status)
+  ) {
+    return 'pending';
+  }
+  if (
+    ['blocked', 'failed', 'reverted'].includes(envelopeStatus ?? '') &&
+    typeof canonicalHash === 'string' &&
+    canonicalHash === baseGraphHash
+  ) {
+    return 'unapplied';
+  }
+  return 'stale';
+};
+
+const operationRecoveryFailureMessage = (
+  classification: Exclude<OperationRecoveryClassification, 'applied'> | null,
+) => {
+  if (classification === 'pending') {
+    return 'Agent Builder 저장을 확인하는 중입니다. 완료된 뒤 테스트를 다시 실행해주세요.';
+  }
+  if (classification === 'unapplied') {
+    return 'Agent Builder 변경이 서버 Workflow에 적용되지 않았습니다. 현재 설정을 확인한 뒤 다시 시도해주세요.';
+  }
+  if (classification === 'stale') {
+    return 'Agent Builder 저장 상태를 확인했습니다. 최신 Workflow 상태에서 테스트를 다시 실행해주세요.';
+  }
+  return '이전 Agent Builder 작업 정보를 확인할 수 없습니다. Workflow를 새로고침한 뒤 다시 시도해주세요.';
+};
+
+const latestAgentBuilderSessionId = () => {
+  const state = useWorkflowStore.getState() as ReturnType<
+    typeof useWorkflowStore.getState
+  > & {
+    undoStack?: Array<{
+      agentBuilderHistory?: { sessionId?: string };
+      agentBuilderOperation?: { sessionId?: string };
+    }>;
+  };
+  for (const snapshot of [...(state.undoStack ?? [])].reverse()) {
+    const sessionId =
+      snapshot.agentBuilderHistory?.sessionId ??
+      snapshot.agentBuilderOperation?.sessionId;
+    if (sessionId) return sessionId;
+  }
+  return null;
+};
+
 const waitForTestRunRestore = (durationMs: number) =>
   new Promise((resolve) => setTimeout(resolve, durationMs));
 
@@ -170,9 +327,7 @@ const replaceTestExecutionLocation = (
     setSearchParam(
       url.searchParams,
       TEST_COMPARISON_QUERY_KEY,
-      comparisonUpdate.comparisonMode
-        ? TEST_COMPARISON_ENABLED_VALUE
-        : null,
+      comparisonUpdate.comparisonMode ? TEST_COMPARISON_ENABLED_VALUE : null,
     );
   }
   if ('baselineRunId' in comparisonUpdate) {
@@ -199,13 +354,14 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     openTestPanel,
     nodes,
     activeWorkflowId,
-    setNodes,
-    updateNodeData,
+    updateNodeExecutionData,
+    resetNodeExecutionData,
     workflowAccess,
     edges,
     features,
     envVariables,
     runtimeVariables,
+    isAgentBuilderMutationSaving,
     testExecutionStatus,
     testExecutionRunId,
     testSelectedNodeId,
@@ -278,6 +434,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   };
   const isPreparing =
     preflightStatus === 'validating' || preflightStatus === 'saving';
+  const isAgentBuilderSaveBlocking = isAgentBuilderMutationSaving;
   const executionResult = testExecutionResult;
   const hasExecutionResult =
     executionResult !== null && executionResult !== undefined;
@@ -287,7 +444,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const isExecuteActionDisabled = isTestExecutionActionDisabled({
     isExecuting,
     isUploading: isTestUploading,
-    isPreparing,
+    isPreparing: isPreparing || isAgentBuilderSaveBlocking,
     canExecute,
   });
 
@@ -420,7 +577,8 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
           restoreTestExecution(restored);
 
           const selectedNodeId =
-            nodeId && restored.nodeResults.some((result) => result.nodeId === nodeId)
+            nodeId &&
+            restored.nodeResults.some((result) => result.nodeId === nodeId)
               ? nodeId
               : null;
           setLocalSelectedTestNodeId(selectedNodeId);
@@ -996,6 +1154,13 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       failTestExecution('현재 권한으로는 실행할 수 없습니다.');
       return;
     }
+    if (
+      isAgentBuilderSaveBlocking ||
+      getWorkflowDraftSaveOwner(activeWorkflowId) === 'agent_builder'
+    ) {
+      toast.info('Agent Builder 변경사항 저장을 확인하는 중입니다.');
+      return;
+    }
 
     selectExecutionNode(null);
     restoredRunRef.current = null;
@@ -1003,6 +1168,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     replaceTestExecutionLocation(null, null);
     setValidationErrors([]);
     setPreflightStatus('validating');
+    let releaseTestPreflightSave: (() => void) | null = null;
 
     try {
       const hasFiles = Object.values(files).some((file) => file !== null);
@@ -1043,36 +1209,160 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
 
       setPreflightStatus('saving');
 
-      try {
-        const canonical = await workflowApi.getDraftWorkflow(activeWorkflowId);
-        useWorkflowStore
-          .getState()
-          .ingestCanonicalDraftMetadata(canonical, activeWorkflowId);
-        const saveResponse = await workflowApi.syncDraftWorkflow(
-          activeWorkflowId,
-          {
-            ...buildWorkflowDraftPayload(graphSnapshot, graphSnapshot.viewport),
-            expected_graph_hash: canonical.graph_hash,
-            expected_updated_at: canonical.updated_at,
-          },
+      releaseTestPreflightSave = tryAcquireWorkflowDraftSave(
+        activeWorkflowId,
+        'test_preflight',
+      );
+      if (!releaseTestPreflightSave) {
+        toast.info(
+          '다른 Workflow 저장이 진행 중입니다. 완료 후 다시 시도해주세요.',
         );
-        useWorkflowStore
-          .getState()
-          .ingestCanonicalDraftMetadata(saveResponse, activeWorkflowId);
-      } catch (saveError) {
-        const status = getHttpStatus(saveError);
-        const message =
-          status === 401
-            ? '로그인이 만료되어 현재 워크플로우를 저장하지 못했습니다.'
-            : '현재 워크플로우 저장에 실패해서 테스트를 실행하지 않았습니다.';
-        failTestExecution(message);
-        toast.error('저장 실패');
         setPreflightStatus('idle');
         return;
       }
 
+      try {
+        const canonical = await workflowApi.getDraftWorkflow(activeWorkflowId);
+        const currentState = useWorkflowStore.getState();
+        if (currentState.isAgentBuilderMutationSaving) {
+          const message =
+            'Agent Builder 저장이 시작되어 테스트 실행을 중단했습니다. 저장 완료 후 다시 시도해주세요.';
+          failTestExecution(message);
+          toast.info(message);
+          return;
+        }
+
+        const shouldSave = currentState.hasUnsavedChanges;
+        if (!shouldSave) {
+          if (!canonicalDraftMatchesSnapshot(canonical, graphSnapshot)) {
+            const message =
+              '서버의 Workflow가 현재 화면과 다릅니다. 최신 상태를 불러온 뒤 다시 시도해주세요.';
+            failTestExecution(message);
+            toast.error(message);
+            return;
+          }
+          currentState.ingestCanonicalDraftMetadata(
+            canonical,
+            activeWorkflowId,
+          );
+        } else {
+          const localBase = currentState.getCanonicalDraftMetadata(
+            activeWorkflowId,
+          );
+          if (
+            !localBase ||
+            canonical.graph_hash !== localBase.graphHash ||
+            canonical.updated_at !== localBase.updatedAt
+          ) {
+            const message =
+              '서버의 Workflow가 현재 편집 기준보다 앞서 있습니다. 최신 상태를 불러온 뒤 다시 시도해주세요.';
+            failTestExecution(message);
+            toast.error(message);
+            return;
+          }
+          const saveResponse = await workflowApi.syncDraftWorkflow(
+            activeWorkflowId,
+            {
+              ...buildWorkflowDraftPayload(
+                graphSnapshot,
+                graphSnapshot.viewport,
+              ),
+              expected_graph_hash: localBase.graphHash,
+              expected_updated_at: localBase.updatedAt,
+            },
+          );
+          useWorkflowStore
+            .getState()
+            .ingestCanonicalDraftMetadata(saveResponse, activeWorkflowId);
+
+          const latestState = useWorkflowStore.getState();
+          const latestSnapshot = cloneDraft({
+            nodes: latestState.nodes,
+            edges: latestState.edges,
+            viewport: graphSnapshot.viewport,
+            features: latestState.features,
+            envVariables: latestState.envVariables,
+            runtimeVariables: latestState.runtimeVariables,
+          });
+          if (canonicalDraftMatchesSnapshot(latestSnapshot, graphSnapshot)) {
+            latestState.setHasUnsavedChanges(false);
+          }
+        }
+
+        if (useWorkflowStore.getState().isAgentBuilderMutationSaving) {
+          const message =
+            'Agent Builder 저장이 시작되어 테스트 실행을 중단했습니다. 저장 완료 후 다시 시도해주세요.';
+          failTestExecution(message);
+          toast.info(message);
+          return;
+        }
+      } catch (saveError) {
+        const isOperationEnvelopeMissing =
+          getHttpStatus(saveError) === 409 &&
+          getHttpDetail(saveError) === 'operation envelope not found';
+        if (isOperationEnvelopeMissing) {
+          const sessionId = latestAgentBuilderSessionId();
+          let classification: OperationRecoveryClassification | null = null;
+          let recoveredAppliedSave = false;
+          try {
+            if (!sessionId) throw new Error('agent builder session unavailable');
+            const session = await agentBuilderApi.getSession(sessionId);
+            const canonical =
+              await workflowApi.getDraftWorkflow(activeWorkflowId);
+            classification = operationRecoveryClassification(session, canonical);
+            recoveredAppliedSave =
+              classification === 'applied' &&
+              canonicalDraftMatchesSnapshot(canonical, graphSnapshot);
+            if (recoveredAppliedSave) {
+              useWorkflowStore
+                .getState()
+                .ingestCanonicalDraftMetadata(canonical, activeWorkflowId);
+            }
+          } catch {
+            classification = null;
+          }
+          if (!recoveredAppliedSave) {
+            const message = operationRecoveryFailureMessage(
+              classification === 'applied' ? 'stale' : classification,
+            );
+            failTestExecution(message);
+            toast.error(message);
+            setPreflightStatus('idle');
+            return;
+          }
+        } else {
+          const isStaleGraph =
+            getHttpStatus(saveError) === 409 &&
+            getHttpDetail(saveError) === 'stale_graph';
+          let recoveredAppliedSave = false;
+          if (isStaleGraph) {
+            try {
+              const canonical =
+                await workflowApi.getDraftWorkflow(activeWorkflowId);
+              recoveredAppliedSave = canonicalDraftMatchesSnapshot(
+                canonical,
+                graphSnapshot,
+              );
+              if (recoveredAppliedSave) {
+                useWorkflowStore
+                  .getState()
+                  .ingestCanonicalDraftMetadata(canonical, activeWorkflowId);
+              }
+            } catch {
+              recoveredAppliedSave = false;
+            }
+          }
+          if (!recoveredAppliedSave) {
+            const message = testPreflightSaveErrorMessage(saveError);
+            failTestExecution(message);
+            toast.error(message);
+            setPreflightStatus('idle');
+            return;
+          }
+        }
+      }
+
       setPreflightStatus('idle');
-      beginTestExecution();
 
       // 파일 업로드 처리
       if (hasFiles) {
@@ -1103,12 +1393,8 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
         setTestUploading(false);
       }
 
-      // 1. 초기화: 모든 노드 상태 초기화
-      const initialNodes = nodes.map((node) => ({
-        ...node,
-        data: { ...node.data, status: 'idle', observability: undefined },
-      })) as unknown as any[];
-      setNodes(initialNodes);
+      // 1. 실행 표시만 초기화하고 저장 대상 graph는 변경하지 않는다.
+      resetNodeExecutionData();
 
       let finalResult: any = null;
 
@@ -1129,10 +1415,19 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
 
       try {
         resetStreamIdleTimeout();
-        await workflowApi.executeWorkflowStream(
+        const releaseForStart = releaseTestPreflightSave;
+        if (!releaseForStart) {
+          throw new Error('테스트 실행 준비 잠금을 확인할 수 없습니다.');
+        }
+        const executionStart = startWorkflowExecutionFromPreflight(
           activeWorkflowId,
-          inputsWithMemory as Record<string, any>,
-          async (event) => {
+          releaseForStart,
+          () => {
+            beginTestExecution();
+            return workflowApi.executeWorkflowStream(
+              activeWorkflowId,
+              inputsWithMemory as Record<string, any>,
+              async (event) => {
             resetStreamIdleTimeout();
             const { type, data } = event;
 
@@ -1147,7 +1442,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               await new Promise((resolve) => setTimeout(resolve, 500));
               nodeStartedAtRef.current[data.node_id] = performance.now();
               setCurrentExecutingNode(data.node_id);
-              updateNodeData(data.node_id, {
+              updateNodeExecutionData(data.node_id, {
                 status: 'running',
                 observability: buildObservability(null, 'running'),
               });
@@ -1177,7 +1472,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 data,
                 fallbackLatencyMs,
               );
-              updateNodeData(data.node_id, {
+              updateNodeExecutionData(data.node_id, {
                 status: 'success',
                 observability: buildObservability(
                   data.output,
@@ -1211,7 +1506,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 const latencyMs = startedAt
                   ? Math.round(performance.now() - startedAt)
                   : undefined;
-                updateNodeData(data.node_id, {
+                updateNodeExecutionData(data.node_id, {
                   status: 'failure',
                   observability: buildObservability(null, 'failure', latencyMs),
                 });
@@ -1227,15 +1522,26 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               toast.error(`모듈 실행 실패: ${data.message}`);
               throw new Error(data.message);
             }
-          },
-          {
-            signal: abortController.signal,
-            graphSnapshot,
-            // 테스트 결과는 운영 정책 학습에 포함하지 않지만, 현재 draft와
-            // 같은 활성 배포 정책은 실제 실행처럼 평가해 확인한다.
-            useActiveDeploymentRoutingPolicy: true,
+              },
+              {
+                signal: abortController.signal,
+                graphSnapshot,
+                // 테스트 결과는 운영 정책 학습에 포함하지 않지만, 현재 draft와
+                // 같은 활성 배포 정책은 실제 실행처럼 평가해 확인한다.
+                useActiveDeploymentRoutingPolicy: true,
+              },
+            );
           },
         );
+        releaseTestPreflightSave = null;
+        if (!executionStart.started) {
+          const message =
+            'Agent Builder 저장이 시작되어 테스트 실행을 중단했습니다. 저장 완료 후 다시 시도해주세요.';
+          failTestExecution(message);
+          toast.info(message);
+          return;
+        }
+        await executionStart.value;
       } catch (streamError) {
         if (streamTimedOut) {
           throw new Error(
@@ -1265,6 +1571,8 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       failTestExecution(message);
       toast.error(message);
     } finally {
+      releaseTestPreflightSave?.();
+      releaseTestPreflightSave = null;
       setTestUploading(false);
       setPreflightStatus('idle');
     }
@@ -1444,13 +1752,15 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
         ) : !hasExecutionResult && !error ? (
           /* Input Form */
           <div className="space-y-6">
-            {isPreparing && (
+            {(isPreparing || isAgentBuilderSaveBlocking) && (
               <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-700">
                 <div className="flex items-center gap-2 font-medium">
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  {preflightStatus === 'validating'
-                    ? '워크플로우 연결을 검증하는 중입니다.'
-                    : '현재 워크플로우를 저장하는 중입니다.'}
+                  {isAgentBuilderSaveBlocking
+                    ? 'Agent Builder 변경사항 저장을 확인하는 중입니다.'
+                    : preflightStatus === 'validating'
+                      ? '워크플로우 연결을 검증하는 중입니다.'
+                      : '현재 워크플로우를 저장하는 중입니다.'}
                 </div>
               </div>
             )}
@@ -1687,16 +1997,21 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               disabled={isExecuteActionDisabled}
               className="px-3 py-2 text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center justify-center gap-2 text-sm font-medium"
             >
-              {isExecuting || isTestUploading || isPreparing ? (
+              {isExecuting ||
+              isTestUploading ||
+              isPreparing ||
+              isAgentBuilderSaveBlocking ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  {isTestUploading
-                    ? '파일 업로드 중...'
-                    : preflightStatus === 'validating'
-                      ? '검증 중...'
-                      : preflightStatus === 'saving'
-                        ? '저장 중...'
-                        : '테스트 실행 중...'}
+                  {isAgentBuilderSaveBlocking
+                    ? 'Agent Builder 저장 확인 중...'
+                    : isTestUploading
+                      ? '파일 업로드 중...'
+                      : preflightStatus === 'validating'
+                        ? '검증 중...'
+                        : preflightStatus === 'saving'
+                          ? '저장 중...'
+                          : '테스트 실행 중...'}
                 </>
               ) : (
                 <>

@@ -359,7 +359,13 @@ def test_direct_session_rejects_legacy_selected_knowledge_before_request_row(
         )
 
     assert exc.value.status_code == 422
-    assert exc.value.detail == "legacy_knowledge_selection_not_supported"
+    assert exc.value.detail == {
+        "code": "invalid_request",
+        "message": (
+            "현재 Agent Builder에서는 대화 메시지로 Knowledge Base 선택을 "
+            "제출할 수 없습니다. 표시된 Knowledge Base 선택 화면에서 선택해주세요."
+        ),
+    }
     assert db.added == []
 
 

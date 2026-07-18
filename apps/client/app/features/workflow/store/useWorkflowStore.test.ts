@@ -19,6 +19,10 @@ import type { AnswerNode, CodeNode, Node, StartNode } from '../types/Workflow';
 import type { Edge, Connection } from '@xyflow/react';
 import { DEFAULT_NODES } from '../constants';
 import type { AgentBuilderParameterGroup } from '../api/agentBuilderApi';
+import {
+  clearWorkflowDraftSaveCoordinatorForTests,
+  tryAcquireWorkflowDraftSave,
+} from '../utils/workflowDraftSaveCoordinator';
 
 // API 모킹
 vi.mock('../api/workflowApi', () => ({
@@ -34,6 +38,7 @@ vi.mock('../api/workflowApi', () => ({
 const initialState = useWorkflowStore.getState();
 const resetStore = () => {
   vi.clearAllMocks();
+  clearWorkflowDraftSaveCoordinatorForTests();
   useWorkflowStore.setState(initialState, true);
 };
 
@@ -485,6 +490,24 @@ describe('Agent Builder GraphMutation transaction', () => {
     });
   });
 
+  it('keeps the global save guard active until every overlapping save finishes', () => {
+    const store = useWorkflowStore.getState();
+
+    store.setAgentBuilderMutationSaving(true);
+    store.setAgentBuilderMutationSaving(true);
+    store.setAgentBuilderMutationSaving(false);
+
+    expect(useWorkflowStore.getState().isAgentBuilderMutationSaving).toBe(
+      true,
+    );
+
+    store.setAgentBuilderMutationSaving(false);
+
+    expect(useWorkflowStore.getState().isAgentBuilderMutationSaving).toBe(
+      false,
+    );
+  });
+
   it('assigns display numbers to Agent Builder nodes so edge handles remain visible', () => {
     useWorkflowStore.getState().applyAgentBuilderGraphMutation({
       operation_id: 'operation-display-numbers',
@@ -508,9 +531,7 @@ describe('Agent Builder GraphMutation transaction', () => {
     });
 
     expect(
-      useWorkflowStore
-        .getState()
-        .nodes.map((node) => node.data.displayNumber),
+      useWorkflowStore.getState().nodes.map((node) => node.data.displayNumber),
     ).toEqual([1, 2, 3]);
   });
 
@@ -1394,6 +1415,62 @@ describe('canonical draft metadata', () => {
       updatedAt: '2026-07-13T00:00:01Z',
     });
   });
+
+  it('keeps the local workflow viewport equal to the saved version restore payload', async () => {
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      nodes: [],
+      edges: [],
+      viewport: { x: 320, y: -180, zoom: 1.75 },
+      workflow_id: 'wf-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-13T00:00:00Z',
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({
+      status: 'success',
+      workflow_id: 'wf-1',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:01Z',
+    });
+    useWorkflowStore.setState((state) => ({
+      workflows: state.workflows.map((workflow) =>
+        workflow.id === 'wf-1'
+          ? {
+              ...workflow,
+              viewport: { x: 320, y: -180, zoom: 1.75 },
+            }
+          : workflow,
+      ),
+      hasUnsavedChanges: true,
+    }));
+
+    await useWorkflowStore.getState().restoreVersion({
+      id: 'deployment-viewport',
+      app_id: 'app-1',
+      version: 1,
+      created_by: 'user-1',
+      created_at: '2026-07-01T00:00:00Z',
+      type: 'api',
+      is_active: false,
+      graph_snapshot: {
+        nodes: [createMockNode('restored', 'startNode')],
+        edges: [],
+        features: { nextNodeDisplayNumber: 1 },
+      },
+    } as DeploymentResponse);
+
+    expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledWith(
+      'wf-1',
+      expect.objectContaining({
+        viewport: { x: 0, y: 0, zoom: 1 },
+      }),
+    );
+    expect(
+      useWorkflowStore
+        .getState()
+        .workflows.find((workflow) => workflow.id === 'wf-1')?.viewport,
+    ).toEqual({ x: 0, y: 0, zoom: 1 });
+    expect(useWorkflowStore.getState().hasUnsavedChanges).toBe(false);
+  });
 });
 
 // ============================================================================
@@ -1857,15 +1934,17 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
     expect(useWorkflowStore.getState().hasUnsavedChanges).toBe(true);
   });
 
-  it('테스트 실행 결과를 node data에 반영해도 기존 편집 설정값은 유지된다', () => {
+  it('테스트 실행 presentation은 설정값을 유지하고 dirty/history를 변경하지 않는다', () => {
     const node = createCodeNode('code-1', {
       title: '코드 실행',
       code: 'def main(inputs):\n    return {"ok": True}',
       timeout: 30,
     });
     useWorkflowStore.getState().setNodes([node]);
+    useWorkflowStore.getState().setHasUnsavedChanges(false);
+    const undoCount = useWorkflowStore.getState().undoStack.length;
 
-    useWorkflowStore.getState().updateNodeData('code-1', {
+    useWorkflowStore.getState().updateNodeExecutionData('code-1', {
       status: 'success',
       observability: {
         status: 'success',
@@ -1875,7 +1954,8 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
       },
     });
 
-    const updated = useWorkflowStore.getState().nodes[0];
+    const state = useWorkflowStore.getState();
+    const updated = state.nodes[0];
     expect(updated.data).toMatchObject({
       title: '코드 실행',
       code: 'def main(inputs):\n    return {"ok": True}',
@@ -1888,6 +1968,16 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
         total_cost: 0.001964,
       },
     });
+    expect(state.hasUnsavedChanges).toBe(false);
+    expect(state.undoStack).toHaveLength(undoCount);
+
+    useWorkflowStore.getState().resetNodeExecutionData();
+    expect(useWorkflowStore.getState().nodes[0].data).not.toHaveProperty(
+      'status',
+    );
+    expect(useWorkflowStore.getState().nodes[0].data).not.toHaveProperty(
+      'observability',
+    );
   });
 
   it('setWorkflowData로 전체 워크플로우 데이터를 설정할 수 있다', () => {
@@ -2083,7 +2173,9 @@ describe('워크플로우 관리 테스트', () => {
     const state = useWorkflowStore.getState();
     expect(state.isTestPanelOpen).toBe(true);
     expect(state.testExecutionStatus).toBe('success');
-    expect(state.testExecutionResult).toEqual({ answer: 'previous test result' });
+    expect(state.testExecutionResult).toEqual({
+      answer: 'previous test result',
+    });
     expect(state.testNodeResults).toEqual([
       { nodeId: 'n1', nodeType: 'llmNode', output: { text: 'done' } },
     ]);
@@ -2406,20 +2498,28 @@ describe('워크플로우 관리 테스트', () => {
         nodes: expect.arrayContaining([
           expect.objectContaining({
             id: 'n1',
-            data: expect.objectContaining({ displayNumber: 1 }),
+            data: expect.not.objectContaining({
+              displayNumber: expect.any(Number),
+            }),
           }),
           expect.objectContaining({
             id: 'n2',
-            data: expect.objectContaining({ displayNumber: 2 }),
-          }),
-          expect.objectContaining({
-            id: 'note-1',
             data: expect.not.objectContaining({
               displayNumber: expect.any(Number),
             }),
           }),
         ]),
-        features: expect.objectContaining({ nextNodeDisplayNumber: 3 }),
+        features: expect.objectContaining({
+          nextNodeDisplayNumber: 3,
+          noteNodes: expect.arrayContaining([
+            expect.objectContaining({
+              id: 'note-1',
+              data: expect.not.objectContaining({
+                displayNumber: expect.any(Number),
+              }),
+            }),
+          ]),
+        }),
       }),
     );
 
@@ -2430,6 +2530,129 @@ describe('워크플로우 관리 테스트', () => {
       undefined,
     ]);
     expect(state.features.nextNodeDisplayNumber).toBe(3);
+  });
+
+  it('restoreVersion waits for an in-flight Agent Builder workflow save', async () => {
+    const releaseAgentBuilderSave = tryAcquireWorkflowDraftSave(
+      'wf-1',
+      'agent_builder',
+    );
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      workflow_id: 'wf-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-13T00:00:00Z',
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({
+      status: 'success',
+      workflow_id: 'wf-1',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:01Z',
+    });
+    useWorkflowStore.setState({
+      activeWorkflowId: 'wf-1',
+      workflows: [
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [],
+          edges: [],
+          features: {},
+        },
+      ],
+    });
+
+    const version = {
+      id: 'deployment-restore-wait',
+      app_id: 'app-1',
+      version: 1,
+      created_by: 'user-1',
+      created_at: '2026-06-25T00:00:00Z',
+      type: 'api',
+      is_active: false,
+      graph_snapshot: {
+        nodes: [createMockNode('n1', 'startNode')],
+        edges: [],
+        features: {},
+      },
+    } as DeploymentResponse;
+
+    const restoring = useWorkflowStore.getState().restoreVersion(version);
+    await Promise.resolve();
+    expect(workflowApi.getDraftWorkflow).not.toHaveBeenCalled();
+    expect(workflowApi.syncDraftWorkflow).not.toHaveBeenCalled();
+
+    releaseAgentBuilderSave?.();
+    await restoring;
+
+    expect(workflowApi.getDraftWorkflow).toHaveBeenCalledWith('wf-1');
+    expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledTimes(1);
+  });
+
+  it('restoreVersion aborts without mutation when the active workflow changes while waiting for the save lock', async () => {
+    const releaseAgentBuilderSave = tryAcquireWorkflowDraftSave(
+      'wf-1',
+      'agent_builder',
+    );
+    useWorkflowStore.setState({
+      activeWorkflowId: 'wf-1',
+      workflows: [
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [],
+          edges: [],
+          features: {},
+        },
+        {
+          id: 'wf-2',
+          appId: 'app-1',
+          nodes: [createMockNode('wf-2-node', 'startNode')],
+          edges: [],
+          features: {},
+        },
+      ],
+      nodes: [],
+      edges: [],
+      undoStack: [],
+      redoStack: [],
+      hasUnsavedChanges: false,
+    });
+    const version = {
+      id: 'deployment-aborted-after-switch',
+      app_id: 'app-1',
+      version: 1,
+      created_by: 'user-1',
+      created_at: '2026-06-25T00:00:00Z',
+      type: 'api',
+      is_active: false,
+      graph_snapshot: {
+        nodes: [createMockNode('restored-wf-1', 'answerNode')],
+        edges: [],
+        features: {},
+      },
+    } as DeploymentResponse;
+
+    const restoring = useWorkflowStore.getState().restoreVersion(version);
+    await Promise.resolve();
+    useWorkflowStore.setState({
+      activeWorkflowId: 'wf-2',
+      nodes: [createMockNode('wf-2-node', 'startNode')],
+      edges: [],
+    });
+    releaseAgentBuilderSave?.();
+    await restoring;
+
+    expect(workflowApi.getDraftWorkflow).not.toHaveBeenCalled();
+    expect(workflowApi.syncDraftWorkflow).not.toHaveBeenCalled();
+    expect(useWorkflowStore.getState().activeWorkflowId).toBe('wf-2');
+    expect(useWorkflowStore.getState().nodes).toEqual([
+      expect.objectContaining({ id: 'wf-2-node' }),
+    ]);
+    expect(useWorkflowStore.getState().undoStack).toEqual([]);
+    expect(useWorkflowStore.getState().redoStack).toEqual([]);
   });
 });
 

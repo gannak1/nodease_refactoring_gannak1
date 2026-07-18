@@ -696,7 +696,12 @@ class ParameterTaskService:
                     )
                 except ParameterTaskSafetyError as exc:
                     raise HTTPException(
-                        status_code=400, detail="invalid_decision"
+                        status_code=400,
+                        detail=(
+                            "secret_forbidden"
+                            if str(exc) == "secret_forbidden"
+                            else "invalid_decision"
+                        ),
                     ) from exc
                 if not validation_issues:
                     validation_issues = validate_node_parameter_update(

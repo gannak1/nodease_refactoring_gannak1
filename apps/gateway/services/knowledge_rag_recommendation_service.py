@@ -52,6 +52,32 @@ _AVAILABILITY_ORDER = {
     "unavailable": 0,
 }
 _FRESH_SYNC_STATES = {"synced", "fresh", "ready"}
+
+
+def knowledge_base_recommendation_handle(
+    organization_id: uuid.UUID,
+    knowledge_base_id: uuid.UUID,
+) -> str:
+    stable_id = uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        (
+            f"{RECOMMENDATION_HANDLE_NAMESPACE}:"
+            f"{organization_id}:"
+            f"{knowledge_base_id}"
+        ),
+    )
+    return f"rec-{stable_id}"
+
+
+def knowledge_collection_selection_handle(
+    organization_id: uuid.UUID,
+    collection_id: uuid.UUID,
+) -> str:
+    stable_id = uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"knowledge-collection-selection:{organization_id}:{collection_id}",
+    )
+    return f"col-{stable_id}"
 _SAFE_QUERY_STOP_TERMS = frozenset(
     {
         "kb",
@@ -134,6 +160,7 @@ class KnowledgeRAGRecommendationService:
                     ),
                     allow_unready_candidates=allow_unready_candidates,
                     apply_collection_limit=False,
+                    apply_candidate_limit=False,
                 )
                 unique_candidates: dict[uuid.UUID, KnowledgeCandidate] = {}
                 for group in hierarchy.collections:
@@ -314,6 +341,8 @@ class KnowledgeRAGRecommendationService:
                     max_candidate_kbs=DEFAULT_MAX_CANDIDATE_KBS,
                     allow_unready_candidates=True,
                     apply_collection_limit=False,
+                    apply_candidate_limit=False,
+                    enforce_internal_candidate_limit=False,
                 )
                 candidates_by_id = {
                     candidate.candidate_id: candidate
@@ -369,6 +398,8 @@ class KnowledgeRAGRecommendationService:
                 max_candidate_kbs=DEFAULT_MAX_CANDIDATE_KBS,
                 allow_unready_candidates=True,
                 apply_collection_limit=False,
+                apply_candidate_limit=False,
+                enforce_internal_candidate_limit=False,
             )
         except Exception:
             return []
@@ -582,22 +613,16 @@ class KnowledgeRAGRecommendationService:
         # UUID remains available only in materialized_knowledge_bases.
         # Keep the handle namespace stable so existing preview drafts can still
         # materialize after ranking strategy changes.
-        stable_id = uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            (
-                f"{RECOMMENDATION_HANDLE_NAMESPACE}:"
-                f"{self.organization_id}:"
-                f"{candidate.candidate_id}"
-            ),
+        return knowledge_base_recommendation_handle(
+            self.organization_id,
+            candidate.candidate_id,
         )
-        return f"rec-{stable_id}"
 
     def _collection_handle(self, collection_id: uuid.UUID) -> str:
-        stable_id = uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"knowledge-collection-selection:{self.organization_id}:{collection_id}",
+        return knowledge_collection_selection_handle(
+            self.organization_id,
+            collection_id,
         )
-        return f"col-{stable_id}"
 
     def _selection_key(self, candidate: KnowledgeCandidate) -> str:
         stable_id = uuid.uuid5(

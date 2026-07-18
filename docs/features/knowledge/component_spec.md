@@ -110,7 +110,7 @@ Builder는 고정 KB와 Knowledge Collection을 별도 selector group으로 표�
 사용자가 제거하거나 권한이 복구되기 전 새 저장을 차단한다. Builder 안에서
 Collection 생성/삭제/permission/membership을 관리하지 않는다.
 
-Agent Builder는 ADR-0049에 따라 route-authorized Collection과 use-authorized 하위 KB를
+Agent Builder는 [ADR-0061](../../decisions/ADR-0061-agent-builder-hierarchical-knowledge-selection.md)에 따라 route-authorized Collection과 use-authorized 하위 KB를
 계층 후보로 표시한다. Collection 선택은 runtime 동적 routing, 하위 KB 선택은 직접
 binding이며 둘은 독립 상태다. 동일 KB는 모든 Collection 위치에서 같은 selection state를
 공유한다. Runtime은 direct KB와 Collection child를 KB ID 합집합으로 중복 제거하고

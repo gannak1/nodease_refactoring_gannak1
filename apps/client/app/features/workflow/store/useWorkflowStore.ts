@@ -41,6 +41,8 @@ import {
   type AgentBuilderGraphMutation,
 } from '../components/agentBuilder/agentBuilderGraphMutation';
 import type { AgentBuilderParameterGroup } from '../api/agentBuilderApi';
+import { buildWorkflowDraftPayload } from '../utils/workflowDraftPayload';
+import { acquireWorkflowDraftSave } from '../utils/workflowDraftSaveCoordinator';
 
 export type { SnapGridSize } from '../utils/gridSnap';
 
@@ -179,6 +181,7 @@ type WorkflowState = {
   runtimeVariables: RuntimeVariable[]; // 런타임 변수
   hasUnsavedChanges: boolean;
   isAgentBuilderMutationSaving: boolean;
+  agentBuilderMutationSaveCount: number;
   pendingAgentBuilderRevert: PersistedAgentBuilderOperation | null;
   recoveredAgentBuilderParameterGroup: {
     sessionId: string;
@@ -256,10 +259,7 @@ type WorkflowState = {
 
   // === 시작노드 검증 핼퍼 ===
   getStartNodeType: () =>
-    | 'startNode'
-    | 'webhookTrigger'
-    | 'scheduleTrigger'
-    | null;
+    'startNode' | 'webhookTrigger' | 'scheduleTrigger' | null;
   getStartNodeCount: () => number;
   canPublish: () => boolean;
 
@@ -312,6 +312,11 @@ type WorkflowState = {
   ) => void;
   clearAgentBuilderHistoryNotice: () => void;
   updateNodeData: (nodeId: string, newData: Record<string, unknown>) => void;
+  updateNodeExecutionData: (
+    nodeId: string,
+    newData: Record<string, unknown>,
+  ) => void;
+  resetNodeExecutionData: () => void;
   setWorkflowData: (
     data: {
       nodes: Node[];
@@ -458,9 +463,7 @@ const latestReenterableParameterTaskId = (
   parameterGroup?.tasks.reduce<
     AgentBuilderParameterGroup['tasks'][number] | null
   >((latest, task) => {
-    if (
-      !REENTERABLE_PARAMETER_STATUSES.has(task.status)
-    ) {
+    if (!REENTERABLE_PARAMETER_STATUSES.has(task.status)) {
       return latest;
     }
     if (!latest || task.stable_order > latest.stable_order) return task;
@@ -829,6 +832,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   runtimeVariables: [],
   hasUnsavedChanges: false,
   isAgentBuilderMutationSaving: false,
+  agentBuilderMutationSaveCount: 0,
   pendingAgentBuilderRevert: null,
   recoveredAgentBuilderParameterGroup: null,
   agentBuilderHistoryNotice: null,
@@ -1103,7 +1107,10 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       // Agent Builder operations come from the canonical server graph, which
       // deliberately excludes editor-only display numbers. Restore them only
       // in the canvas state so every generated node retains visible handles.
-      const numbered = assignMissingNodeDisplayNumbers(next.nodes, state.features);
+      const numbered = assignMissingNodeDisplayNumbers(
+        next.nodes,
+        state.features,
+      );
       const existingBoundaryIndex = STRUCTURAL_AGENT_BUILDER_MUTATIONS.has(
         mutation.kind,
       )
@@ -1177,7 +1184,15 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     }),
 
   setAgentBuilderMutationSaving: (saving) =>
-    set({ isAgentBuilderMutationSaving: saving }),
+    set((state) => {
+      const agentBuilderMutationSaveCount = saving
+        ? state.agentBuilderMutationSaveCount + 1
+        : Math.max(0, state.agentBuilderMutationSaveCount - 1);
+      return {
+        agentBuilderMutationSaveCount,
+        isAgentBuilderMutationSaving: agentBuilderMutationSaveCount > 0,
+      };
+    }),
 
   markLatestAgentBuilderMutationPersisted: (operation) =>
     set((state) => {
@@ -1768,7 +1783,9 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   addTestNodeResult: (result) =>
     set((state) => ({
       testNodeResults: [
-        ...state.testNodeResults.filter((item) => item.nodeId !== result.nodeId),
+        ...state.testNodeResults.filter(
+          (item) => item.nodeId !== result.nodeId,
+        ),
         result,
       ],
     })),
@@ -1897,10 +1914,16 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   notifyDeploymentComplete: () => set({ lastDeployedAt: new Date() }),
 
   restoreVersion: async (version) => {
-    const state = get();
-    const { activeWorkflowId } = state;
+    const targetWorkflowId = get().activeWorkflowId;
+    const releaseWorkflowSave = await acquireWorkflowDraftSave(
+      targetWorkflowId,
+      'version_restore',
+    );
 
     try {
+      const state = get();
+      if (state.activeWorkflowId !== targetWorkflowId) return;
+      const activeWorkflowId = targetWorkflowId;
       // 1. 스냅샷 데이터로 현재 드래프트 업데이트 API 호출
       const snapshot = version.graph_snapshot;
       const snapshotFeatures =
@@ -1912,14 +1935,27 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
 
       const canonical = await workflowApi.getDraftWorkflow(activeWorkflowId);
       get().ingestCanonicalDraftMetadata(canonical, activeWorkflowId);
-      const saveResponse = await workflowApi.syncDraftWorkflow(activeWorkflowId, {
-        nodes: normalized.nodes,
-        edges: snapshot.edges || [],
-        viewport: { x: 0, y: 0, zoom: 1 }, // 뷰포트는 초기화하거나 스냅샷에서 가져옴
-        features: normalized.features,
-        expected_graph_hash: canonical.graph_hash,
-        expected_updated_at: canonical.updated_at,
-      });
+      const restoredViewport = { x: 0, y: 0, zoom: 1 };
+      const canonicalPayload = buildWorkflowDraftPayload(
+        {
+          nodes: normalized.nodes,
+          edges: snapshot.edges || [],
+          viewport: restoredViewport,
+          features: normalized.features,
+          envVariables: state.envVariables,
+          runtimeVariables: state.runtimeVariables,
+        },
+        restoredViewport,
+        { noteNodesSource: 'nodes' },
+      );
+      const saveResponse = await workflowApi.syncDraftWorkflow(
+        activeWorkflowId,
+        {
+          ...canonicalPayload,
+          expected_graph_hash: canonical.graph_hash,
+          expected_updated_at: canonical.updated_at,
+        },
+      );
       get().ingestCanonicalDraftMetadata(saveResponse, activeWorkflowId);
 
       // 2. Store, local state 업데이트
@@ -1931,6 +1967,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
               nodes: normalized.nodes,
               edges: snapshot.edges || [],
               features: normalized.features,
+              viewport: restoredViewport,
             }
           : w,
       );
@@ -1946,6 +1983,8 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     } catch (error) {
       console.error('Failed to restore version:', error);
       throw error;
+    } finally {
+      releaseWorkflowSave();
     }
   },
 
@@ -2177,7 +2216,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   },
   getCanonicalDraftMetadata: (workflowId) => {
     const targetId = workflowId || get().activeWorkflowId;
-    return targetId ? get().canonicalDraftMetadata[targetId] ?? null : null;
+    return targetId ? (get().canonicalDraftMetadata[targetId] ?? null) : null;
   },
   clearCanonicalDraftMetadata: (workflowId) =>
     set((state) => {
@@ -2201,6 +2240,30 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         return node;
       }),
     });
+  },
+
+  updateNodeExecutionData: (nodeId, newData) => {
+    set((state) => ({
+      nodes: state.nodes.map((node) =>
+        node.id === nodeId
+          ? ({
+              ...node,
+              data: { ...node.data, ...newData },
+            } as Node)
+          : node,
+      ),
+    }));
+  },
+
+  resetNodeExecutionData: () => {
+    set((state) => ({
+      nodes: state.nodes.map((node) => {
+        const data = { ...node.data } as Record<string, unknown>;
+        delete data.status;
+        delete data.observability;
+        return { ...node, data } as Node;
+      }),
+    }));
   },
 
   // === Inner Node Selection Methods ===

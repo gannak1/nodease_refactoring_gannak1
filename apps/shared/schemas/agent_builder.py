@@ -223,6 +223,28 @@ class AgentBuilderKnowledgeSelectionRequest(BaseModel):
     )
     selected_collection_handles: list[str] = Field(default_factory=list, max_length=20)
     selected_kb_handles: list[str] = Field(default_factory=list, max_length=20)
+    editor_target_node_id: str | None = Field(default=None, max_length=255)
+    selected_knowledge_base_ids: list[UUID] = Field(default_factory=list, max_length=20)
+    selected_knowledge_collection_ids: list[UUID] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+
+    @model_validator(mode="after")
+    def validate_selection_source(self):
+        editor_ids_present = bool(
+            self.selected_knowledge_base_ids
+            or self.selected_knowledge_collection_ids
+        )
+        if editor_ids_present and self.editor_target_node_id is None:
+            raise ValueError("editor_target_node_id is required for editor selections")
+        if self.editor_target_node_id is not None and (
+            self.selected_candidates
+            or self.selected_collection_handles
+            or self.selected_kb_handles
+        ):
+            raise ValueError("editor and Agent Builder selections cannot be mixed")
+        return self
 
 
 class AgentBuilderKnowledgeSelectionResponse(BaseModel):
@@ -335,6 +357,7 @@ class AgentBuilderParameterTask(BaseModel):
     label: str
     input_type: str
     required: bool
+    confirmation_required: bool = False
     defer_policy: Literal["forbidden", "allow_unresolved"] = "forbidden"
     status: ParameterTaskStatus
     task_version: int = Field(ge=1)
@@ -743,6 +766,7 @@ class AgentBuilderKnowledgeResolution(BaseModel):
 
     resolution_id: str | None = None
     requirement_id: str | None = None
+    target_node_id: str | None = None
     timing: Literal["before_graph", "after_graph"] = "after_graph"
     required: bool = False
     candidates: list[AgentBuilderKnowledgeCandidateOption] = Field(
@@ -806,8 +830,15 @@ class AgentBuilderDirectMessageResponse(BaseModel):
             )
         knowledge_resolution = None
         if placements or requirements or options or response.knowledge_selection:
+            target_step_id = placements[0].target_step_id if placements else None
+            target_node_id = (
+                response.safe_step_node_ids.get(target_step_id)
+                if target_step_id is not None
+                else None
+            )
             knowledge_resolution = {
                 "resolution_id": resolution_id,
+                "target_node_id": target_node_id,
                 "timing": placements[0].timing if placements else "after_graph",
                 "required": bool(requirements),
                 "candidates": options,

@@ -30,6 +30,7 @@ from apps.shared.schemas.agent_builder import (
     AgentBuilderParameterTask,
     AgentBuilderPlannedStep,
     AgentBuilderStructuredRequest,
+    GraphMutation,
 )
 from apps.shared.schemas.knowledge import (
     KnowledgeSelection,
@@ -498,6 +499,104 @@ def test_finish_request_does_not_overwrite_canceled_request():
     assert response.preview_prompt is None
     assert request_row.response_payload["status"] == "canceled"
     assert request_row.completed_at is not None
+
+
+def test_finish_request_does_not_overwrite_processing_timeout_terminal_payload():
+    request_id = uuid.uuid4()
+    completed_at = datetime.now(timezone.utc)
+    timeout_payload = {
+        "request_id": str(request_id),
+        "status": "failed",
+        "warnings": ["processing timeout"],
+        "validation_result": {
+            "valid": False,
+            "issues": [
+                {
+                    "code": "REQUEST_PROCESSING_TIMEOUT",
+                    "message": "request processing timed out",
+                }
+            ],
+        },
+    }
+    request_row = SimpleNamespace(
+        id=request_id,
+        status="failed",
+        response_payload=copy.deepcopy(timeout_payload),
+        completed_at=completed_at,
+    )
+    late_response = AgentBuilderMessageResponse(
+        request_id=request_id,
+        status="graph_mutation_ready",
+        warnings=["late result"],
+    )
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    svc._finish_request(request_row, late_response, direct_edit=True)  # noqa: SLF001
+
+    assert request_row.status == "failed"
+    assert request_row.response_payload == timeout_payload
+    assert request_row.completed_at == completed_at
+    assert late_response.status == "failed"
+    assert late_response.warnings == ["processing timeout"]
+    assert late_response.validation_result is not None
+    assert late_response.validation_result.issues[0].code == "REQUEST_PROCESSING_TIMEOUT"
+
+
+def test_finish_request_cancellation_persists_only_safe_mutation_envelope():
+    request_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    request_row = SimpleNamespace(
+        id=request_id,
+        status="canceled",
+        response_payload={},
+        completed_at=None,
+    )
+    mutation = GraphMutation.model_validate(
+        {
+            "operation_id": uuid.uuid4(),
+            "kind": "initial_graph",
+            "generation_mode": "structure_only",
+            "workflow_id": workflow_id,
+            "base_graph_hash": "a" * 64,
+            "expected_workflow_updated_at": datetime.now(timezone.utc),
+            "expected_result_graph_hash": "b" * 64,
+            "catalog_version": 3,
+            "operations": [
+                {
+                    "op": "add_node",
+                    "node": {
+                        "id": "start",
+                        "type": "startNode",
+                        "position": {"x": 0, "y": 0},
+                        "data": {},
+                    },
+                }
+            ],
+        }
+    )
+    response = AgentBuilderMessageResponse(
+        request_id=request_id,
+        status="graph_mutation_ready",
+        graph_mutation=mutation,
+    )
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    svc._finish_request(request_row, response, direct_edit=True)  # noqa: SLF001
+
+    assert response.status == "canceled"
+    assert "graph_mutation" not in request_row.response_payload
+    assert request_row.response_payload["operation_envelopes"][0][
+        "operation_id"
+    ] == str(mutation.operation_id)
+    assert "operations" not in request_row.response_payload["operation_envelopes"][0]
 
 
 def test_safe_summary_redacts_secret_values_urls_and_paths():

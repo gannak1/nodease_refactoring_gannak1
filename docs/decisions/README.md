@@ -81,6 +81,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0058](ADR-0058-bootstrap-difficulty-routing-policy.md) | Superseded | Bootstrap 난이도 라우팅 정책 | ADR-0059의 Judge bootstrap과 점진 학습 구조로 대체됐다. |
 | [ADR-0059](ADR-0059-judge-bootstrap-incremental-routing.md) | Accepted | Judge Bootstrap과 점진 학습 로컬 라우팅 | 초기 운영 요청은 Judge가 실행 주체가 쓸 수 있는 후보 중 모델을 선택하고, Judge label과 실제 운영 성과가 충분히 쌓이면 로컬 mDeBERTa 분류기가 우선 선택한다. 낮은 신뢰도는 Judge로 되돌아가며, Judge 실패는 기본/대체 모델로 닫는다. |
 | [ADR-0060](ADR-0060-my-module-cost-summary-presentation.md) | Accepted | 내 모듈 비용 요약 표시 경계 | 현재 워크플로우 화면은 page-level 비용·추세·위험 요약과 `cost-summary` 호출을 제거하고 workflow별 총비용과 실행/Agent Builder 구분값을 유지한다. `cost-summary` API와 Admin 조직 비용 요약은 호환성과 관리 용도로 유지한다. |
+| [ADR-0061](ADR-0061-agent-builder-hierarchical-knowledge-selection.md) | Accepted | Agent Builder 계층형 Knowledge 선택 | Collection 동적 routing과 직접 KB binding을 분리하고 opaque handle, 권한 필터, 안정 점수 정렬, 중복 KB 선택 동기화와 runtime 합집합 중복 제거를 정의한다. |
 
 ## 참고 보고서
 

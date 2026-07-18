@@ -782,8 +782,10 @@ def test_knowledge_selection_reads_direct_resolution_candidates_without_legacy_o
     assert db.commits == 1
 
 
+@pytest.mark.parametrize("selection_source", ["agent_builder", "node_editor"])
 def test_hierarchical_knowledge_selection_rejects_stale_handles_and_materializes_separately(
     monkeypatch,
+    selection_source,
 ):
     user_id = uuid4()
     organization_id = uuid4()
@@ -937,6 +939,12 @@ def test_hierarchical_knowledge_selection_rejects_stale_handles_and_materializes
         organization_id=organization_id,
         binding_materializer=_materializer,
         no_knowledge_candidate_id="no-kb",
+        knowledge_base_handle_resolver=lambda resource_id: (
+            "rec-safe-1" if resource_id == knowledge_base_id else "rec-stale"
+        ),
+        knowledge_collection_handle_resolver=lambda resource_id: (
+            "col-safe-1" if resource_id == collection_id else "col-stale"
+        ),
     )
 
     with pytest.raises(HTTPException) as stale:
@@ -950,14 +958,21 @@ def test_hierarchical_knowledge_selection_rejects_stale_handles_and_materializes
     assert stale.value.status_code == 422
     assert materializer_calls == []
 
-    response = service.select(
-        session.id,
+    request = (
         AgentBuilderKnowledgeSelectionRequest(
+            resolution_id="res-hierarchy-1",
+            editor_target_node_id="llm-1",
+            selected_knowledge_collection_ids=[collection_id],
+            selected_knowledge_base_ids=[knowledge_base_id],
+        )
+        if selection_source == "node_editor"
+        else AgentBuilderKnowledgeSelectionRequest(
             resolution_id="res-hierarchy-1",
             selected_collection_handles=["col-safe-1", "col-safe-1"],
             selected_kb_handles=["rec-safe-1", "rec-safe-1"],
-        ),
+        )
     )
+    response = service.select(session.id, request)
 
     assert response.selected_collection_handles == ["col-safe-1"]
     assert response.selected_kb_handles == ["rec-safe-1"]

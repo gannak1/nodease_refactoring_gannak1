@@ -18,6 +18,7 @@ from apps.gateway.application.agent_builder.parameter_tasks import (
     canonical_parameter_value_fingerprint,
     cancel_parameter_group,
     recommendation_matches_canonical_graph,
+    recovery_affected_node_ids,
     prepare_task_decision,
     previous_reopenable_task_id,
     refresh_parameter_group_configuration,
@@ -673,7 +674,123 @@ def test_slack_and_github_use_secret_tasks_instead_of_managed_credential_tasks()
     assert all(task.label not in {"Slack credential", "GitHub credential"} for task in plan.tasks)
 
 
-def test_llm_parameter_plan_exposes_only_the_routing_toggle():
+def test_llm_parameter_plan_exposes_basic_settings_and_only_the_routing_toggle():
+    plan = ParameterTaskPlanner().plan(
+        graph={
+            "nodes": [
+                _node(
+                    "llm",
+                    "llmNode",
+                    {
+                        "model_id": "default-model",
+                        "system_prompt": "Answer safely.",
+                        "citationDisplayMode": "basic",
+                        "knowledgeBases": [],
+                    },
+                )
+            ],
+            "edges": [],
+        },
+        step_node_ids={"step_llm": "llm"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+        base_node_ids=set(),
+    )
+
+    tasks = {task.parameter_key: task for task in plan.tasks}
+    assert {
+        "model_id",
+        "output_format_type",
+        "output_json_schema",
+        "system_prompt",
+        "user_prompt",
+        "assistant_prompt",
+        "referenced_variables",
+        "citationDisplayMode",
+        "auto_model_routing",
+        "knowledgeBases",
+    }.issubset(tasks)
+    assert {
+        "fallback_model_id",
+        "model_routing_refresh_every_runs",
+        "model_routing_validation_budget_usd",
+        "model_routing_max_cohorts",
+    }.isdisjoint(tasks)
+    assert tasks["auto_model_routing"].resolution_source == "catalog_default"
+    assert tasks["auto_model_routing"].status == "active"
+    assert tasks["auto_model_routing"].confirmation_required is True
+    assert tasks["auto_model_routing"].task_group == "model_routing"
+    assert tasks["model_id"].status == "completed"
+    assert tasks["model_id"].task_group is None
+    assert tasks["citationDisplayMode"].resolution_source == "catalog_default"
+    assert tasks["citationDisplayMode"].status == "completed"
+    assert tasks["citationDisplayMode"].validation["options"] == [
+        "hidden",
+        "basic",
+        "detailed",
+    ]
+    assert plan.graph["nodes"][0]["data"]["citationDisplayMode"] == "basic"
+    assert tasks["knowledgeBases"].status == "pending"
+    assert plan.graph["nodes"][0]["data"]["auto_model_routing"] is False
+    assert "model_routing_policy" not in plan.graph["nodes"][0]["data"]
+
+    with pytest.raises(ParameterTaskConflict, match="confirmation is required"):
+        prepare_task_decision(
+            tasks=plan.tasks,
+            task_id=tasks["auto_model_routing"].task_id,
+            operation_id=uuid4(),
+            expected_task_version=tasks["auto_model_routing"].task_version,
+            action="skip",
+            value=None,
+        )
+
+    decision = prepare_task_decision(
+        tasks=plan.tasks,
+        task_id=tasks["auto_model_routing"].task_id,
+        operation_id=uuid4(),
+        expected_task_version=tasks["auto_model_routing"].task_version,
+        action="confirm",
+        value=None,
+    )
+    confirmed = apply_local_task_decision(plan.tasks, decision)
+    confirmed_by_key = {task.parameter_key: task for task in confirmed}
+    assert decision.awaiting_persistence_ack is False
+    assert confirmed_by_key["auto_model_routing"].status == "completed"
+    assert confirmed_by_key["auto_model_routing"].task_version == 2
+    assert confirmed_by_key["knowledgeBases"].status == "active"
+
+
+def test_llm_parameter_plan_does_not_enable_citations_for_legacy_existing_node():
+    plan = ParameterTaskPlanner().plan(
+        graph={
+            "nodes": [
+                _node(
+                    "llm",
+                    "llmNode",
+                    {
+                        "model_id": "default-model",
+                        "system_prompt": "Answer safely.",
+                    },
+                )
+            ],
+            "edges": [],
+        },
+        step_node_ids={"step_llm": "llm"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+        base_node_ids={"llm"},
+    )
+
+    citation_task = next(
+        task for task in plan.tasks if task.parameter_key == "citationDisplayMode"
+    )
+    assert citation_task.status == "active"
+    assert "citationDisplayMode" not in plan.graph["nodes"][0]["data"]
+
+
+def test_llm_parameter_plan_requires_one_prompt_when_all_prompts_are_empty():
     plan = ParameterTaskPlanner().plan(
         graph={
             "nodes": [
@@ -693,21 +810,306 @@ def test_llm_parameter_plan_exposes_only_the_routing_toggle():
     )
 
     tasks = {task.parameter_key: task for task in plan.tasks}
-    assert {"model_id", "auto_model_routing", "knowledgeBases"}.issubset(tasks)
-    assert {
-        "fallback_model_id",
-        "model_routing_refresh_every_runs",
-        "model_routing_validation_budget_usd",
-        "model_routing_max_cohorts",
-    }.isdisjoint(tasks)
-    assert tasks["auto_model_routing"].resolution_source == "catalog_default"
-    assert tasks["auto_model_routing"].status == "completed"
-    assert tasks["auto_model_routing"].task_group == "model_routing"
-    assert tasks["model_id"].status == "completed"
-    assert tasks["model_id"].task_group is None
-    assert tasks["knowledgeBases"].status == "active"
-    assert plan.graph["nodes"][0]["data"]["auto_model_routing"] is False
-    assert "model_routing_policy" not in plan.graph["nodes"][0]["data"]
+    assert tasks["system_prompt"].status == "active"
+    assert tasks["system_prompt"].resolution_source is None
+    assert tasks["system_prompt"].recommendation_fingerprint is None
+    assert tasks["user_prompt"].status == "pending"
+    assert tasks["assistant_prompt"].status == "pending"
+    assert tasks["auto_model_routing"].status == "pending"
+    assert tasks["system_prompt"].configuration_state == "unresolved"
+
+    current_tasks = plan.tasks
+    for parameter_key in ("system_prompt", "user_prompt"):
+        task = next(
+            item for item in current_tasks if item.parameter_key == parameter_key
+        )
+        decision = prepare_task_decision(
+            tasks=current_tasks,
+            task_id=task.task_id,
+            operation_id=uuid4(),
+            expected_task_version=task.task_version,
+            action="skip",
+            value=None,
+        )
+        current_tasks = apply_local_task_decision(current_tasks, decision)
+
+    final_prompt = next(
+        item for item in current_tasks if item.parameter_key == "assistant_prompt"
+    )
+    with pytest.raises(ParameterTaskConflict, match="one prompt is required"):
+        prepare_task_decision(
+            tasks=current_tasks,
+            task_id=final_prompt.task_id,
+            operation_id=uuid4(),
+            expected_task_version=final_prompt.task_version,
+            action="skip",
+            value=None,
+        )
+
+
+def test_recovery_affected_nodes_union_all_valid_envelopes_and_existing_tasks():
+    graph = {
+        "nodes": [
+            _node("llm-a", "llmNode"),
+            _node("llm-b", "llmNode"),
+            _node("llm-c", "llmNode"),
+        ],
+        "edges": [],
+    }
+
+    assert recovery_affected_node_ids(
+        graph=graph,
+        envelopes=[
+            {
+                "catalog_version": 3,
+                "status": "applied",
+                "affected_node_ids": ["llm-a", "missing"],
+            },
+            {
+                "catalog_version": 3,
+                "status": "pending_ack",
+                "affected_node_ids": ["llm-b"],
+            },
+            {
+                "catalog_version": 3,
+                "status": "reverted",
+                "affected_node_ids": ["llm-c"],
+            },
+            {
+                "catalog_version": 2,
+                "status": "applied",
+                "affected_node_ids": ["llm-c"],
+            },
+        ],
+        parameter_task_node_ids=["llm-c", "removed-task-node"],
+    ) == {"llm-a", "llm-b", "llm-c"}
+
+
+def test_parameter_planner_excludes_unaffected_existing_llm_nodes():
+    plan = ParameterTaskPlanner().plan(
+        graph={
+            "nodes": [
+                _node(
+                    "affected",
+                    "llmNode",
+                    {"model_id": "model-a", "system_prompt": "A"},
+                ),
+                _node(
+                    "unrelated",
+                    "llmNode",
+                    {"model_id": "model-b", "system_prompt": "B"},
+                ),
+            ],
+            "edges": [],
+        },
+        step_node_ids={"step_a": "affected", "step_b": "unrelated"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+        base_node_ids={"affected", "unrelated"},
+        affected_node_ids={"affected"},
+    )
+
+    assert {task.node_id for task in plan.tasks} == {"affected"}
+
+
+def test_reconcile_reopens_only_unconfirmed_legacy_disabled_routing_recommendation():
+    plan = ParameterTaskPlanner().plan(
+        graph={
+            "nodes": [
+                _node(
+                    "llm",
+                    "llmNode",
+                    {"model_id": "default-model", "knowledgeBases": []},
+                )
+            ],
+            "edges": [],
+        },
+        step_node_ids={"step_llm": "llm"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+        base_node_ids=set(),
+    )
+    routing_task = next(
+        task for task in plan.tasks if task.parameter_key == "auto_model_routing"
+    )
+    legacy_group = AgentBuilderParameterGroup(
+        group_id=plan.group_id,
+        status="completed",
+        tasks=[routing_task.model_copy(update={"status": "completed"})],
+    )
+
+    reopened = reconcile_parameter_group_catalog_tasks(legacy_group, plan.tasks)
+
+    assert reopened.status == "active"
+    reopened_routing = next(
+        task
+        for task in reopened.tasks
+        if task.parameter_key == "auto_model_routing"
+    )
+    assert reopened_routing.status == "active"
+    confirmed_group = reopened.model_copy(
+        update={
+            "status": "active",
+            "tasks": [
+                task.model_copy(update={"status": "completed", "task_version": 2})
+                if task.parameter_key == "auto_model_routing"
+                else task
+                for task in reopened.tasks
+            ],
+        }
+    )
+    recovered_again = reconcile_parameter_group_catalog_tasks(
+        confirmed_group, plan.tasks
+    )
+    recovered_routing = next(
+        task
+        for task in recovered_again.tasks
+        if task.parameter_key == "auto_model_routing"
+    )
+    assert recovered_routing.status == "completed"
+    assert recovered_routing.task_version == 2
+
+
+def test_reconcile_does_not_add_new_catalog_tasks_to_completed_group():
+    plan = ParameterTaskPlanner().plan(
+        graph={
+            "nodes": [
+                _node(
+                    "llm",
+                    "llmNode",
+                    {
+                        "model_id": "default-model",
+                        "system_prompt": "Answer safely.",
+                        "auto_model_routing": True,
+                    },
+                )
+            ],
+            "edges": [],
+        },
+        step_node_ids={"step_llm": "llm"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+        base_node_ids={"llm"},
+    )
+    model_task = next(task for task in plan.tasks if task.parameter_key == "model_id")
+    completed_group = AgentBuilderParameterGroup(
+        group_id=plan.group_id,
+        status="completed",
+        tasks=[model_task.model_copy(update={"status": "completed"})],
+    )
+
+    recovered = reconcile_parameter_group_catalog_tasks(completed_group, plan.tasks)
+
+    assert recovered == completed_group
+
+
+def test_reconcile_completes_secret_task_from_canonical_node_configuration_without_fingerprint():
+    initial_plan = ParameterTaskPlanner().plan(
+        graph={
+            "nodes": [_node("slack", "slackPostNode")],
+            "edges": [],
+        },
+        step_node_ids={"step_slack": "slack"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+        base_node_ids=set(),
+    )
+    initial_secret = next(
+        task for task in initial_plan.tasks if task.parameter_key == "bot_token"
+    )
+    assert initial_secret.status == "active"
+
+    configured_plan = ParameterTaskPlanner().plan(
+        graph={
+            "nodes": [
+                _node(
+                    "slack",
+                    "slackPostNode",
+                    {"bot_token": "configured-outside-agent-builder"},
+                )
+            ],
+            "edges": [],
+        },
+        step_node_ids={"step_slack": "slack"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+        base_node_ids={"slack"},
+    )
+    configured_secret = next(
+        task for task in configured_plan.tasks if task.parameter_key == "bot_token"
+    )
+    assert configured_secret.status == "completed"
+    assert configured_secret.resolution_source == "existing_graph"
+    assert configured_secret.recommendation_fingerprint is None
+
+    recovered = reconcile_parameter_group_catalog_tasks(
+        AgentBuilderParameterGroup(
+            group_id=initial_plan.group_id,
+            status="active",
+            tasks=initial_plan.tasks,
+        ),
+        configured_plan.tasks,
+    )
+    recovered_secret = next(
+        task for task in recovered.tasks if task.parameter_key == "bot_token"
+    )
+    assert recovered_secret.status == "completed"
+    assert recovered_secret.resolution_source == "existing_graph"
+    assert recovered_secret.recommendation_fingerprint is None
+    assert [task.parameter_key for task in recovered.tasks if task.status == "active"] == [
+        "url"
+    ]
+
+
+def test_reconcile_reopens_completed_secret_task_when_node_configuration_is_removed():
+    configured_plan = ParameterTaskPlanner().plan(
+        graph={
+            "nodes": [
+                _node(
+                    "slack",
+                    "slackPostNode",
+                    {"bot_token": "configured-outside-agent-builder"},
+                )
+            ],
+            "edges": [],
+        },
+        step_node_ids={"step_slack": "slack"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+        base_node_ids={"slack"},
+    )
+    configured_secret = next(
+        task for task in configured_plan.tasks if task.parameter_key == "bot_token"
+    )
+    completed_group = AgentBuilderParameterGroup(
+        group_id=configured_plan.group_id,
+        status="completed",
+        tasks=[configured_secret],
+    )
+    missing_plan = ParameterTaskPlanner().plan(
+        graph={"nodes": [_node("slack", "slackPostNode")], "edges": []},
+        step_node_ids={"step_slack": "slack"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+        base_node_ids={"slack"},
+    )
+
+    recovered = reconcile_parameter_group_catalog_tasks(
+        completed_group,
+        missing_plan.tasks,
+    )
+
+    assert recovered.status == "active"
+    assert recovered.tasks[0].status == "active"
+    assert recovered.tasks[0].resolution_source is None
+    assert recovered.tasks[0].recommendation_fingerprint is None
 
 
 def test_reconcile_removes_agent_builder_hidden_routing_tasks_without_mutating_graph():
@@ -873,24 +1275,57 @@ def test_reference_value_candidate_keeps_runtime_graph_reference_available():
 
 def test_optional_skip_is_local_and_reopenable_without_graph_mutation():
     result = ParameterTaskPlanner().plan(
-        graph={"nodes": [_node("llm", "llmNode", {"model_id": "model"})], "edges": []},
+        graph={
+            "nodes": [
+                _node(
+                    "llm",
+                    "llmNode",
+                    {
+                        "model_id": "model",
+                        "system_prompt": "Answer safely.",
+                        "citationDisplayMode": "basic",
+                    },
+                )
+            ],
+            "edges": [],
+        },
         step_node_ids={"step_llm": "llm"},
         explicit_values={},
         upstream_candidates={},
         guidance_hints=[],
     )
-    task = next(task for task in result.tasks if task.parameter_key == "knowledgeBases")
+    routing_task = next(
+        task
+        for task in result.tasks
+        if task.parameter_key == "auto_model_routing"
+    )
+    routing_confirmation = prepare_task_decision(
+        tasks=result.tasks,
+        task_id=routing_task.task_id,
+        operation_id=uuid4(),
+        expected_task_version=routing_task.task_version,
+        action="confirm",
+        value=None,
+    )
+    tasks_after_routing = apply_local_task_decision(
+        result.tasks, routing_confirmation
+    )
+    task = next(
+        task
+        for task in tasks_after_routing
+        if task.parameter_key == "knowledgeBases"
+    )
     assert task.status == "active"
 
     decision = prepare_task_decision(
-        tasks=result.tasks,
+        tasks=tasks_after_routing,
         task_id=task.task_id,
         operation_id=uuid4(),
         expected_task_version=task.task_version,
         action="skip",
         value=None,
     )
-    updated = apply_local_task_decision(result.tasks, decision)
+    updated = apply_local_task_decision(tasks_after_routing, decision)
 
     skipped = next(item for item in updated if item.task_id == task.task_id)
     assert decision.awaiting_persistence_ack is False
@@ -1132,7 +1567,19 @@ def test_set_remains_blocked_for_non_reeditable_statuses(status):
 
 def test_defer_requires_catalog_policy_and_only_advances_after_acknowledgement():
     result = ParameterTaskPlanner().plan(
-        graph={"nodes": [_node("llm", "llmNode")], "edges": []},
+        graph={
+            "nodes": [
+                _node(
+                    "llm",
+                    "llmNode",
+                    {
+                        "system_prompt": "Answer safely.",
+                        "citationDisplayMode": "basic",
+                    },
+                )
+            ],
+            "edges": [],
+        },
         step_node_ids={"step_llm": "llm"},
         explicit_values={},
         upstream_candidates={},
@@ -1151,9 +1598,10 @@ def test_defer_requires_catalog_policy_and_only_advances_after_acknowledgement()
     assert decision.awaiting_persistence_ack is True
     assert model_task.status == "active"
     acknowledged = acknowledge_task_decision(result.tasks, decision)
-    assert acknowledged[0].status == "deferred"
-    assert acknowledged[1].status == "completed"
-    assert acknowledged[2].status == "active"
+    acknowledged_by_key = {task.parameter_key: task for task in acknowledged}
+    assert acknowledged_by_key["model_id"].status == "deferred"
+    assert acknowledged_by_key["auto_model_routing"].status == "active"
+    assert acknowledged_by_key["knowledgeBases"].status == "pending"
 
     schedule = ParameterTaskPlanner().plan(
         graph={"nodes": [_node("schedule", "scheduleTrigger")], "edges": []},
@@ -1230,9 +1678,13 @@ def test_parameter_group_configuration_is_refreshed_from_persisted_graph():
         {
             "nodes": [
                 _node(
-                    "llm",
-                    "llmNode",
-                    {"model_id": "gpt-safe", "knowledgeBases": []},
+                        "llm",
+                        "llmNode",
+                        {
+                            "model_id": "gpt-safe",
+                            "system_prompt": "Answer safely.",
+                            "knowledgeBases": [],
+                        },
                 )
             ],
             "edges": [],
@@ -1377,6 +1829,41 @@ def test_direct_set_value_rejects_secret_like_text_with_real_detector():
             task_input_type="text",
             value=secret_like_url,
         )
+
+
+@pytest.mark.parametrize(
+    ("node_type", "parameter_key", "value"),
+    [
+        ("slackPostNode", "bot_token", "xoxb-user-supplied-value"),
+        (
+            "slackPostNode",
+            "url",
+            "https://hooks.slack.com/services/T000/B000/user-supplied",
+        ),
+        ("githubNode", "api_token", "github_pat_user_supplied_value"),
+    ],
+)
+def test_direct_set_value_rejects_user_submitted_catalog_secret_control(
+    node_type,
+    parameter_key,
+    value,
+):
+    with pytest.raises(ParameterTaskSafetyError, match="secret_forbidden"):
+        validate_direct_set_value(
+            node_type=node_type,
+            parameter_key=parameter_key,
+            task_input_type="secret",
+            value=value,
+        )
+
+
+def test_direct_set_value_rejects_null_llm_json_schema():
+    assert validate_direct_set_value(
+        node_type="llmNode",
+        parameter_key="output_json_schema",
+        task_input_type="json",
+        value=None,
+    ) == ["json_object_required"]
 
 
 @pytest.mark.parametrize(

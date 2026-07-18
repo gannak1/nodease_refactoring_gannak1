@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from apps.gateway.services.knowledge_candidate_resolver import (
+    DEFAULT_MAX_CANDIDATE_KBS,
     KnowledgeCandidateResolver,
     bucket_count,
 )
@@ -153,6 +154,7 @@ class FakeResolver(KnowledgeCandidateResolver):
         self._fake_items = list(items or [])
         self._fake_kbs = {kb.id: kb for kb in (kbs or [])}
         self.requested_item_collection_ids = None
+        self.requested_item_limit = None
 
     def _collections(self, collection_ids, max_collections):
         if collection_ids is None:
@@ -167,11 +169,22 @@ class FakeResolver(KnowledgeCandidateResolver):
     def _collection_items(self, collection_ids, max_candidate_kbs):
         allowed_collection_ids = set(collection_ids)
         self.requested_item_collection_ids = allowed_collection_ids
-        return [
+        self.requested_item_limit = max_candidate_kbs
+        items = [
             item
             for item in self._fake_items
             if item.collection_id in allowed_collection_ids
-        ][:max_candidate_kbs]
+        ]
+        if max_candidate_kbs is None:
+            return items
+        selected_kb_ids = set()
+        for item in items:
+            if len(selected_kb_ids) >= max_candidate_kbs:
+                break
+            selected_kb_ids.add(item.knowledge_base_id)
+        return [
+            item for item in items if item.knowledge_base_id in selected_kb_ids
+        ]
 
     def _knowledge_bases_by_id(self, knowledge_base_ids):
         return {
@@ -180,8 +193,12 @@ class FakeResolver(KnowledgeCandidateResolver):
             if kb_id in self._fake_kbs
         }
 
-    def _direct_knowledge_bases(self, max_candidate_kbs):
-        return list(self._fake_kbs.values())[:max_candidate_kbs]
+    def _direct_knowledge_bases(self, max_candidate_kbs, *, excluded_kb_ids=None):
+        excluded = excluded_kb_ids or set()
+        values = [
+            kb for kb in self._fake_kbs.values() if kb.id not in excluded
+        ]
+        return values if max_candidate_kbs is None else values[:max_candidate_kbs]
 
 
 def test_collection_read_does_not_allow_route():
@@ -639,6 +656,125 @@ def test_builder_hierarchy_can_defer_collection_limit_until_after_scoring():
         collection_a.id,
         collection_b.id,
     }
+
+
+def test_builder_hierarchy_defers_display_limit_but_keeps_internal_candidate_cap():
+    kbs = [_kb() for _ in range(DEFAULT_MAX_CANDIDATE_KBS + 1)]
+    resolver = FakeResolver(
+        helper=FakePermissionHelper(),
+        kbs=kbs,
+    )
+
+    result = resolver.resolve_builder_hierarchy(
+        max_candidate_kbs=DEFAULT_MAX_CANDIDATE_KBS,
+        apply_candidate_limit=False,
+    )
+
+    assert len(result.ungrouped_candidates) == DEFAULT_MAX_CANDIDATE_KBS
+
+
+def test_builder_hierarchy_keeps_internal_cap_for_collection_items():
+    collection = _collection()
+    kb = _kb()
+    resolver = FakeResolver(
+        helper=FakePermissionHelper(
+            collection_actions={collection.id: {"route"}},
+        ),
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=kb.id,
+            )
+        ],
+        kbs=[kb],
+    )
+
+    resolver.resolve_builder_hierarchy(
+        max_candidate_kbs=DEFAULT_MAX_CANDIDATE_KBS,
+        apply_candidate_limit=False,
+    )
+
+    assert resolver.requested_item_limit == DEFAULT_MAX_CANDIDATE_KBS
+
+
+def test_builder_hierarchy_internal_cap_counts_unique_kbs_not_membership_rows():
+    collection_a = _collection()
+    collection_b = _collection()
+    shared_kb = _kb()
+    second_kb = _kb()
+    resolver = FakeResolver(
+        helper=FakePermissionHelper(
+            collection_actions={
+                collection_a.id: {"route"},
+                collection_b.id: {"route"},
+            },
+        ),
+        collections=[collection_a, collection_b],
+        items=[
+            SimpleNamespace(
+                collection_id=collection_a.id,
+                knowledge_base_id=shared_kb.id,
+            ),
+            SimpleNamespace(
+                collection_id=collection_b.id,
+                knowledge_base_id=shared_kb.id,
+            ),
+            SimpleNamespace(
+                collection_id=collection_b.id,
+                knowledge_base_id=second_kb.id,
+            ),
+        ],
+        kbs=[shared_kb, second_kb],
+    )
+
+    result = resolver.resolve_builder_hierarchy(
+        max_candidate_kbs=2,
+        apply_candidate_limit=False,
+    )
+
+    children_by_collection = {
+        group.collection_id: {
+            candidate.candidate_id for candidate in group.candidates
+        }
+        for group in result.collections
+    }
+    assert children_by_collection == {
+        collection_a.id: {shared_kb.id},
+        collection_b.id: {shared_kb.id, second_kb.id},
+    }
+
+
+def test_builder_hierarchy_internal_cap_applies_to_linked_and_direct_kb_union():
+    collection = _collection()
+    direct_a = _kb()
+    direct_b = _kb()
+    linked_kb = _kb()
+    helper = FakePermissionHelper(
+        collection_actions={collection.id: {"route"}},
+    )
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=linked_kb.id,
+            )
+        ],
+        kbs=[direct_a, direct_b, linked_kb],
+    )
+
+    result = resolver.resolve_builder_hierarchy(
+        max_candidate_kbs=2,
+        apply_candidate_limit=False,
+    )
+
+    evaluated_kb_ids = {
+        kb_id for call in helper.bulk_kb_calls for kb_id in call
+    }
+    assert len(evaluated_kb_ids) <= 2
+    assert result.collections[0].candidates[0].candidate_id == linked_kb.id
 
 
 def test_auto_collection_mode_buckets_missing_requested_collection():
