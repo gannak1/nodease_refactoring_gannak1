@@ -59,11 +59,14 @@ const routingRecordOf = (
   output: unknown,
   traceMetadata: unknown,
 ): Record<string, unknown> | null => {
-  const traceRouting = isRecord(traceMetadata)
-    ? isRecord(traceMetadata.llm)
-      ? traceMetadata.llm
-      : traceMetadata
-    : null;
+  const traceRoot = isRecord(traceMetadata) ? traceMetadata : null;
+  const traceLlm = traceRoot && isRecord(traceRoot.llm) ? traceRoot.llm : null;
+  const traceRouting =
+    traceLlm && isRecord(traceLlm.model_routing)
+      ? traceLlm.model_routing
+      : traceRoot && isRecord(traceRoot.model_routing)
+        ? traceRoot.model_routing
+        : traceLlm || traceRoot;
   const metadata = isRecord(output) && isRecord(output.metadata)
     ? output.metadata
     : null;
@@ -167,7 +170,8 @@ const lengthBucketLabel = (bucket?: string): string => {
   return '입력 길이 정보 없음';
 };
 
-const reasonText = (reasonCode?: string): string => {
+const reasonText = (reasonCode?: string, reasonShort?: string): string => {
+  if (reasonShort) return reasonShort;
   switch (reasonCode) {
     case 'judge_bootstrap_required':
       return '학습 초기 단계라 Judge가 현재 요청과 후보 모델을 비교해 선택했습니다.';
@@ -182,6 +186,12 @@ const reasonText = (reasonCode?: string): string => {
     case 'active_policy_unavailable':
     case 'policy_unavailable':
       return 'Judge-first 활성 정책이 없어 저장된 기본 모델을 사용했습니다.';
+    case 'structured_reasoning_required':
+      return '구조적인 추론이 필요해 선택했습니다.';
+    case 'multi_constraint':
+      return '여러 조건을 함께 판단해야 해 선택했습니다.';
+    case 'simple_response':
+      return '간단한 응답으로 처리할 수 있어 선택했습니다.';
     default:
       return 'Judge-first 정책의 모델 선택 결과입니다.';
   }
@@ -262,7 +272,7 @@ export function ModelRoutingDecisionDetails({
       <div className="sm:col-span-2">
         <dt className="text-gray-500">선택 이유</dt>
         <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-          {reasonText(summary.reasonCode)}
+          {reasonText(summary.reasonCode, summary.judge?.reasonShort)}
         </dd>
       </div>
 
@@ -300,7 +310,10 @@ export function ModelRoutingDecisionDetails({
           </dd>
           <dd className="mt-2 grid gap-2 sm:grid-cols-2">
             <span className="rounded border border-violet-200 bg-white px-2 py-1">
-              사유: {summary.judge.reasonShort || '-'}
+              사유: {reasonText(
+                summary.judge.reasonCode,
+                summary.judge.reasonShort,
+              )}
             </span>
             <span className="rounded border border-violet-200 bg-white px-2 py-1">
               검토 후보 모델 {summary.judge.candidateModelCount ?? '-'}개

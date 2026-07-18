@@ -90,6 +90,32 @@ describe('FR-011 Judge-first model routing trace', () => {
     ).toBeVisible();
   });
 
+  it('중첩된 실행 trace의 model_routing과 Judge 사유를 읽는다', () => {
+    render(
+      <ModelRoutingDecisionDetails
+        traceMetadata={{
+          llm: {
+            model_routing: {
+              strategy_id: 'judge_bootstrap_incremental_v1',
+              selected_model: 'gpt-5.4-mini',
+              decision_source: 'runtime_judge',
+              reason_code: 'structured_reasoning_required',
+              judge: {
+                model: 'gpt-4.1-mini',
+                reason_code: 'structured_reasoning_required',
+              },
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('선택 모델')).toBeVisible();
+    expect(screen.getByText('gpt-5.4-mini')).toBeVisible();
+    expect(screen.getByText('사유: 구조적인 추론이 필요해 선택했습니다.')).toBeVisible();
+    expect(screen.queryByText('사유: -')).not.toBeInTheDocument();
+  });
+
   it('로컬 라우터가 충분히 확신하면 Judge를 호출하지 않은 근거를 표시한다', () => {
     render(
       <ModelRoutingDecisionDetails
