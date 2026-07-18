@@ -48,7 +48,7 @@ fi
 # 정리 함수 (Ctrl+C 시 모든 프로세스 종료)
 cleanup() {
     local exit_code="${1:-0}"
-    trap - SIGINT SIGTERM
+    trap - EXIT SIGINT SIGTERM
     echo -e "\n${YELLOW}🔥 모든 서비스 종료 중...${NC}"
     
     # 모든 백그라운드 프로세스 종료
@@ -78,6 +78,23 @@ cleanup() {
     exit "$exit_code"
 }
 
+wait_for_first_service_exit() {
+    local watched_pid
+    local running_pids
+
+    while true; do
+        running_pids="$(jobs -pr)"
+        for watched_pid in "$@"; do
+            if ! printf '%s\n' "$running_pids" | grep -qx "$watched_pid"; then
+                wait "$watched_pid"
+                return $?
+            fi
+        done
+        sleep 1
+    done
+}
+
+trap 'cleanup $?' EXIT
 trap 'cleanup 130' SIGINT
 trap 'cleanup 143' SIGTERM
 
@@ -236,7 +253,7 @@ if [ -n "${CLIENT_PID:-}" ]; then
 fi
 
 set +e
-wait -n "${SERVICE_PIDS[@]}"
+wait_for_first_service_exit "${SERVICE_PIDS[@]}"
 service_exit_code=$?
 set -e
 

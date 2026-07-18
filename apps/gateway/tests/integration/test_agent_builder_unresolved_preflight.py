@@ -41,6 +41,24 @@ def test_unresolved_external_action_is_blocked_for_test_run_and_deployment():
         assert exc.value.issues[0].node_type == "slackPostNode"
 
 
+def test_llm_without_any_prompt_is_blocked_by_catalog_required_any_configuration():
+    graph = {
+        "nodes": [
+            {
+                "id": "llm",
+                "type": "llmNode",
+                "data": {"model_id": "model-reference"},
+            }
+        ],
+        "edges": [],
+    }
+
+    issues = workflow_configuration_issues(graph)
+
+    assert len(issues) == 1
+    assert issues[0].missing_parameters == ("prompt",)
+
+
 def test_local_execution_preflight_ignores_client_configuration_state():
     graph = {
         "nodes": [

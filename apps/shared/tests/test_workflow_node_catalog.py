@@ -257,13 +257,27 @@ def test_llm_catalog_maps_basic_output_and_selector_values_to_runtime_shape():
     )
 
 
-def test_llm_referenced_variables_reject_duplicate_runtime_names():
-    assert validate_node_parameter_update(
+def test_llm_referenced_variables_generate_unique_runtime_names_for_duplicate_keys():
+    data = apply_node_parameter_value(
         "llmNode",
         "referenced_variables",
         {"referenced_variables": []},
         [["start", "result"], ["extract", "result"]],
-    ) == ["duplicate_variable_name"]
+    )
+
+    assert [item["name"] for item in data["referenced_variables"]] == [
+        "result",
+        "result_extract",
+    ]
+    assert (
+        validate_node_parameter_update(
+            "llmNode",
+            "referenced_variables",
+            {"referenced_variables": []},
+            [["start", "result"], ["extract", "result"]],
+        )
+        == []
+    )
 
 
 def test_llm_output_json_schema_accepts_only_json_objects():

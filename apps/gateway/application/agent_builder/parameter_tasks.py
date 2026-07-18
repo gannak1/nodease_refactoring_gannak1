@@ -560,7 +560,7 @@ def reconcile_parameter_group_catalog_tasks(
             )
             secret_configuration_removed = (
                 existing.input_type == "secret"
-                and existing.status in {"completed", "skipped", "deferred"}
+                and existing.status == "completed"
                 and planned is not None
                 and planned.status != "completed"
             )
@@ -653,7 +653,7 @@ def reconcile_parameter_group_catalog_tasks(
         secret_configuration_removed = (
             planned.input_type == "secret"
             and planned.status != "completed"
-            and existing.status in {"completed", "skipped", "deferred"}
+            and existing.status == "completed"
         )
         if legacy_unconfirmed_disabled_routing:
             status = "pending"

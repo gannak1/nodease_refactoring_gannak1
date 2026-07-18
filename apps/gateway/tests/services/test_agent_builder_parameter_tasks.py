@@ -1112,6 +1112,38 @@ def test_reconcile_reopens_completed_secret_task_when_node_configuration_is_remo
     assert recovered.tasks[0].recommendation_fingerprint is None
 
 
+@pytest.mark.parametrize("preserved_status", ["skipped", "deferred"])
+def test_reconcile_preserves_explicitly_closed_optional_secret_task(preserved_status):
+    plan = ParameterTaskPlanner().plan(
+        graph={
+            "nodes": [
+                _node(
+                    "slack",
+                    "slackPostNode",
+                    {"slackMode": "api"},
+                )
+            ],
+            "edges": [],
+        },
+        step_node_ids={"step_slack": "slack"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+        base_node_ids={"slack"},
+    )
+    url_task = next(task for task in plan.tasks if task.parameter_key == "url")
+    completed_group = AgentBuilderParameterGroup(
+        group_id=plan.group_id,
+        status="completed",
+        tasks=[url_task.model_copy(update={"status": preserved_status})],
+    )
+
+    recovered = reconcile_parameter_group_catalog_tasks(completed_group, plan.tasks)
+
+    assert recovered.status == "completed"
+    assert recovered.tasks[0].status == preserved_status
+
+
 def test_reconcile_removes_agent_builder_hidden_routing_tasks_without_mutating_graph():
     plan = ParameterTaskPlanner().plan(
         graph={

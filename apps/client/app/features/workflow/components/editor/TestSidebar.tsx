@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useReactFlow } from '@xyflow/react';
-import { isEqual } from 'lodash';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import { workflowApi } from '../../api/workflowApi';
 import {
@@ -35,6 +34,7 @@ import {
   validateWorkflowGraph,
 } from '../../utils/validateWorkflowGraph';
 import { buildWorkflowDraftPayload } from '../../utils/workflowDraftPayload';
+import { canonicalDraftMatchesSnapshot } from '../../utils/workflowDraftComparison';
 import {
   formatCost,
   formatLatency,
@@ -157,27 +157,6 @@ const testPreflightSaveErrorMessage = (error: unknown) => {
     return 'Workflow 저장 요청을 검증하지 못했습니다. 설정을 확인한 뒤 다시 시도해주세요.';
   }
   return 'Workflow 저장 중 오류가 발생했습니다. 서버 상태를 확인한 뒤 다시 시도해주세요.';
-};
-
-const canonicalDraftMatchesSnapshot = (
-  canonical: unknown,
-  snapshot: WorkflowDraftRequest,
-) => {
-  if (
-    typeof canonical !== 'object' ||
-    canonical === null ||
-    !Array.isArray((canonical as WorkflowDraftRequest).nodes) ||
-    !Array.isArray((canonical as WorkflowDraftRequest).edges)
-  ) {
-    return false;
-  }
-  const canonicalDraft = canonical as WorkflowDraftRequest;
-  return isEqual(
-    buildWorkflowDraftPayload(canonicalDraft, canonicalDraft.viewport, {
-      noteNodesSource: 'features',
-    }),
-    buildWorkflowDraftPayload(snapshot, snapshot.viewport),
-  );
 };
 
 type OperationRecoveryClassification =

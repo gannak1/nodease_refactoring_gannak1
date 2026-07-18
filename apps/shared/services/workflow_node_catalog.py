@@ -537,13 +537,32 @@ def apply_node_parameter_value(
             and item.get("name")
             and isinstance(item.get("value_selector"), list)
         }
-        data[parameter_key] = [
-            {
-                "name": existing_names.get(tuple(selector), str(selector[-1])),
-                "value_selector": selector,
-            }
-            for selector in selectors
-        ]
+        referenced_variables = []
+        used_names: set[str] = set()
+        for selector in selectors:
+            selector_tuple = tuple(selector)
+            base_name = existing_names.get(selector_tuple, str(selector[-1]))
+            name = base_name
+            if name in used_names:
+                source_suffix = "_".join(
+                    part
+                    for part in (
+                        re.sub(r"[^A-Za-z0-9_]+", "_", str(value)).strip("_")
+                        for value in selector[:-1]
+                    )
+                    if part
+                )
+                source_suffix = source_suffix or "source"
+                name = f"{base_name}_{source_suffix}"
+                ordinal = 2
+                while name in used_names:
+                    name = f"{base_name}_{source_suffix}_{ordinal}"
+                    ordinal += 1
+            used_names.add(name)
+            referenced_variables.append(
+                {"name": name, "value_selector": selector}
+            )
+        data[parameter_key] = referenced_variables
         return data
     if node_type == "llmNode" and parameter_key in _LLM_ROUTING_PARAMETER_PATHS:
         policy = data.get("model_routing_policy")
