@@ -48,6 +48,7 @@ import {
   ModelRoutingBootstrapPreview,
   ModelRoutingBootstrapRequest,
   ModelRoutingBootstrapResponse,
+  ModelRoutingBootstrapWriteResponse,
   WorkflowPermissionResponse,
   LLMTraceListResponse,
   WorkflowResponse,
@@ -501,7 +502,7 @@ export const workflowApi = {
     workflowId: string,
     nodeId: string,
     data: ModelRoutingBootstrapRequest,
-  ): Promise<ModelRoutingBootstrapResponse> => {
+  ): Promise<ModelRoutingBootstrapWriteResponse> => {
     const response = await api.post(
       `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/bootstrap`,
       data,

@@ -3607,6 +3607,51 @@ def test_schedule_credential_denial_uses_system_audit_actor(monkeypatch):
     assert system_audits[0]["metadata"]["reason"] == "credential_use_denied"
 
 
+def test_deployed_runtime_respects_disabled_persisted_routing_policy(monkeypatch):
+    """배포 snapshot이 켜져 있어도 비활성 DB policy는 저장 모델로 닫는다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore,
+        "get_runtime_policy",
+        lambda *_args, **_kwargs: SimpleNamespace(enabled=False),
+    )
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="stored model",
+            model_id="gpt-4.1",
+            fallback_model_id="gpt-4.1-mini",
+            auto_model_routing=True,
+            model_routing_policy={
+                "active_policy": {
+                    "strategy_id": "judge_bootstrap_incremental_v1",
+                    "default_model_id": "gpt-4o-mini",
+                }
+            },
+        ),
+        execution_context={
+            "workflow_id": str(uuid.uuid4()),
+            "deployment_id": str(uuid.uuid4()),
+        },
+    )
+
+    selected, fallback, metadata = node._resolve_model_routing_policy({}, object())
+
+    assert selected == "gpt-4.1"
+    assert fallback == "gpt-4.1-mini"
+    assert metadata == {
+        "enabled": True,
+        "policy_id": None,
+        "policy_version": None,
+        "decision_source": "stored_model",
+        "reason_code": "active_policy_unavailable",
+        "judge_called": False,
+    }
+
+
 def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
     """자동 라우팅 ON이면 실행 시점 judge 호출 없이 active policy 모델을 사용합니다."""
     user_id = uuid.uuid4()

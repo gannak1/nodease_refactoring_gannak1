@@ -447,7 +447,7 @@ class TraceMetadataSanitizer:
 
     @classmethod
     def _sanitize_model_routing_judge(cls, value: Any) -> dict[str, Any]:
-        """Judge 호출 결과 중 정책 설명에 필요한 수치만 trace에 남긴다."""
+        """Judge 호출 결과 중 정책 설명에 필요한 제한된 값만 trace에 남긴다."""
         safe_value = cls.sanitize_json_safe(value)
         if not isinstance(safe_value, dict):
             return {}
@@ -462,6 +462,16 @@ class TraceMetadataSanitizer:
                 "learning_error",
             },
         )
+        reason_short = safe_value.get("reason_short")
+        if isinstance(reason_short, str):
+            reason_short = reason_short.strip()
+            if (
+                reason_short
+                and len(reason_short) <= 14
+                and any("가" <= char <= "힣" for char in reason_short)
+                and not any(ord(char) < 32 or ord(char) == 127 for char in reason_short)
+            ):
+                sanitized["reason_short"] = reason_short
         confidence = safe_value.get("confidence")
         if (
             not isinstance(confidence, bool)

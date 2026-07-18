@@ -70,6 +70,32 @@ def test_failed_operational_sample_is_kept_as_negative_quality_evidence():
     assert sample.downstream_success_count == 1
 
 
+def test_schema_not_required_is_neutral_for_learning_and_metrics():
+    workflow_run = SimpleNamespace(status="success")
+    node_run = _node_run(schema_status="not_required")
+
+    assert ModelRoutingOperationalPerformanceService.learning_contract_outcome(
+        workflow_run=workflow_run,
+        node_run=node_run,
+    ) == (True, "contract_passed")
+
+    sample = ModelRoutingOperationalPerformanceService.sample_from_run(
+        workflow_run=workflow_run,
+        node_run=node_run,
+        usage_log=SimpleNamespace(
+            status="success",
+            total_cost=0,
+            prompt_tokens=1,
+            completion_tokens=1,
+            latency_ms=10,
+        ),
+        usage_model_id="gpt-4.1-mini",
+    )
+
+    assert sample.schema_eval_count == 0
+    assert sample.schema_pass_count == 0
+
+
 def test_operational_sample_normalizes_provider_model_prefix():
     """Google 계열 model id도 catalog와 같은 canonical id로 누적한다."""
     sample = ModelRoutingOperationalPerformanceService.sample_from_run(

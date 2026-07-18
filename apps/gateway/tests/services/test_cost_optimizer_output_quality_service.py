@@ -688,3 +688,33 @@ def test_quality_judge_does_not_reward_unsupported_specific_instructions():
     assert payload["variant_left"]["authoritative_evidence_available"] is False
     assert payload["variant_right"]["authoritative_evidence_available"] is False
     assert "authoritative evidence" in messages[0]["content"]
+
+
+@pytest.mark.parametrize(
+    ("rag_summary", "expected"),
+    [
+        (
+            {"retrieved_chunk_count": 2, "evidence_sufficient": True},
+            True,
+        ),
+        ({"retrieved_chunk_count": 0, "evidence_sufficient": True}, False),
+        ({"retrieved_chunk_count": 2, "evidence_sufficient": False}, False),
+        ({"retrieved_chunk_count": "2", "evidence_sufficient": True}, False),
+        ({"retrieved_chunk_count": True, "evidence_sufficient": True}, False),
+        ({"evidence_sufficient": True}, False),
+        ("malformed", False),
+    ],
+)
+def test_quality_judge_requires_sufficient_positive_rag_evidence(
+    rag_summary,
+    expected,
+):
+    variant = CostOptimizerOutputQualityService._variant_from_result(
+        {
+            "input": {"message": "정책을 알려 주세요."},
+            "output": {"text": "답변"},
+            "trace": {"rag_summary": rag_summary},
+        }
+    )
+
+    assert variant["authoritative_evidence_available"] is expected

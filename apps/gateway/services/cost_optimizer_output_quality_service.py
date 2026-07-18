@@ -331,7 +331,11 @@ class CostOptimizerOutputQualityService:
         trace = result.get("trace") if isinstance(result, dict) else None
         if not isinstance(trace, dict):
             return False
-        return bool(trace.get("rag_summary"))
+        return bool(
+            CostOptimizerOutputQualityService._safe_rag_summary(
+                trace.get("rag_summary")
+            )
+        )
 
     @classmethod
     def _variant_from_result(cls, result: dict[str, Any]) -> dict[str, Any]:
@@ -339,15 +343,17 @@ class CostOptimizerOutputQualityService:
         output = output if isinstance(output, dict) else {"text": output}
         trace = result.get("trace") if isinstance(result, dict) else {}
         trace = trace if isinstance(trace, dict) else {}
-        rag_summary = trace.get("rag_summary")
+        rag_summary = cls._safe_rag_summary(trace.get("rag_summary"))
         return {
             "input": cls._judge_visible_value(
                 result.get("input") if isinstance(result, dict) else None
             ),
             "output": cls._judge_visible_value(output),
             "rag_enabled": bool(rag_summary),
-            "authoritative_evidence_available": bool(rag_summary),
-            "rag_summary": cls._safe_rag_summary(rag_summary),
+            "authoritative_evidence_available": cls._authoritative_evidence_available(
+                rag_summary
+            ),
+            "rag_summary": rag_summary,
         }
 
     @classmethod
@@ -428,6 +434,18 @@ class CostOptimizerOutputQualityService:
             return None
         allowed = ("retrieved_chunk_count", "context_token_estimate", "evidence_sufficient")
         return {key: value.get(key) for key in allowed if key in value}
+
+    @staticmethod
+    def _authoritative_evidence_available(value: Any) -> bool:
+        if not isinstance(value, dict) or value.get("evidence_sufficient") is not True:
+            return False
+        count = value.get("retrieved_chunk_count")
+        return (
+            not isinstance(count, bool)
+            and isinstance(count, (int, float))
+            and math.isfinite(float(count))
+            and float(count) > 0
+        )
 
     @staticmethod
     def _pair_order(baseline: dict[str, Any], candidate_result: dict[str, Any]) -> str:

@@ -9,6 +9,7 @@ from apps.workflow_engine.services.model_router import (
 from apps.workflow_engine.services.model_routing_judge_first_policy import (
     build_judge_first_active_policy,
 )
+from apps.workflow_engine.workflow.nodes.llm.entities import LLMNodeData
 
 
 def _node(**overrides):
@@ -178,6 +179,48 @@ def test_routing_feature_contains_all_node_prompts_and_runtime_signals():
     assert "NODE_TITLE: 계약 검토" in feature_with_description
     assert "TASK_DESCRIPTION:" in feature_with_description
     assert "여러 근거를 비교" in feature_with_description
+
+
+def test_llm_node_data_preserves_bounded_model_routing_task_description():
+    description = "여러 근거를 비교해 조건 충돌을 설명합니다."
+    node_data = LLMNodeData.model_validate(
+        {
+            "title": "계약 검토",
+            "model_id": "gpt-4.1-mini",
+            "model_routing_task_description": description,
+        }
+    )
+
+    dumped = node_data.model_dump()
+    feature = ModelRouter.routing_feature_text(
+        {"message": "휴가 규정과 운영 규정을 비교해 주세요."},
+        node_data,
+    )
+
+    assert dumped["model_routing_task_description"] == description
+    assert f"TASK_DESCRIPTION:\n{description}" in feature
+
+    with pytest.raises(ValueError):
+        LLMNodeData.model_validate(
+            {
+                "title": "계약 검토",
+                "model_id": "gpt-4.1-mini",
+                "model_routing_task_description": "가" * 4001,
+            }
+        )
+
+
+def test_routing_feature_truncates_task_description_to_judge_budget():
+    feature = ModelRouter.routing_feature_text(
+        {"message": "요청"},
+        _node(model_routing_task_description="가" * 4000),
+    )
+
+    description = feature.split("TASK_DESCRIPTION:\n", 1)[1].split(
+        "\n\nPROMPT_CONSTRAINTS:", 1
+    )[0]
+    assert len(description) == 420
+    assert description.endswith("…")
 
 
 def test_routing_feature_preserves_current_request_when_node_prompts_are_long():

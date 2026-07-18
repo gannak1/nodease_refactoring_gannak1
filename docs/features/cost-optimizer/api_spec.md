@@ -133,15 +133,19 @@ POST bootstrap request:
 {
   "task_description": "고객 문의를 JSON으로 분류하고 문서 근거가 없으면 안전하게 답변합니다.",
   "default_model_id": "gpt-4.1-mini",
-  "fallback_model_id": "gpt-4.1"
+  "fallback_model_id": "gpt-4.1",
+  "expected_graph_hash": "sha256",
+  "expected_updated_at": "ISO-8601"
 }
 ~~~
 
 task_description은 10~4,000자다. 기본/대체 모델은
-현재 편집자가 실제로 사용할 수 있는 chat model이어야 하며 서로 같을 수 없다.
+현재 편집자가 실제로 사용할 수 있는 chat model이어야 하며 서로 같을 수 없다. 두 expected
+필드는 canonical draft read/write 응답에서 받은 최신 값이어야 한다. Stale 값이면 artifact나
+graph를 쓰지 않고 `409 stale_graph`로 닫는다.
 
 Bootstrap response는 id, status, source, task_fingerprint, default_model_id,
-fallback_model_id, generation_summary, stale_reason을 반환한다. `generation_summary`에는
+fallback_model_id, generation_summary, stale_reason과 canonical `graph_hash`, `updated_at`을 반환한다. `generation_summary`에는
 strategy ID, 후보 모델 ID, 참고용 동일 작업 운영 로그 수, `planner_called=false`가 포함된다.
 원문 prompt, 입력, 검색 문서 원문, embedding vector는 반환하지 않는다.
 
@@ -227,11 +231,15 @@ selected_model_id, fallback_model_id, default_model_id, configured_fallback_mode
 matched_rule_id, reason_code, strategy_id, decision_factors, runtime_context을
 반환한다. Preview는 운영 요청이 아니므로 Judge를 호출·학습·과금하지 않는다. local artifact가
 충분히 확신하면 local 선택을, 그렇지 않으면 기본 또는 대체 모델을 예상값으로 반환한다.
-따라서 preview의 모델은 배포 실행에서 Judge가 고를 실제 모델을 확정한 결과가 아니다.
+Preview와 runtime은 같은 `ModelRouter.routing_feature_text()` builder로 현재 입력, 노드 제목,
+작업 설명과 고정 prompt constraint를 구성한다. Preview는 실제 RAG retrieval 결과를 만들지 않으므로
+동적 RAG signal은 포함하지 않는다. 따라서 preview의 모델은 배포 실행에서 Judge가 고를 실제 모델을
+확정한 결과가 아니다.
 
 실행 trace의 `llm.model_routing`에는 정책 ID/version, 선택·대체 모델, strategy ID,
 reason code, runtime context, `decision_source`, `judge_called`를 남긴다. Judge가 호출된
-경우에만 `judge`에 Judge 모델, confidence, reason code, 토큰 usage와 비용의 안전 요약을
+경우에만 `judge`에 Judge 모델, confidence, reason code, 14자 이하이며 한글을 포함하고 제어문자가 없는
+`reason_short`, 토큰 usage와 비용의 안전 요약을
 남긴다. 로컬 라우터가 선택한 경우 `decision_factors`에는 learning mode, confidence,
 후보 확률의 요약만 남긴다. 원문 prompt/입력, 검색 문서 원문, embedding vector는
 반환하거나 저장하지 않는다.
@@ -240,6 +248,8 @@ Judge가 선택한 실행은 처음에는 `learning_status=pending_contract`로 
 완료 후 node 성공, schema/downstream 계약, fallback 여부를 확인해 `accepted` 또는
 `rejected`와 `learning_outcome_reason`으로 갱신한다. 이 학습 상태는 정책 갱신 경로에서만
 사용하며, 노드 상세 패널의 policy 조회 응답에는 feature vector나 원문, 집계값을 반환하지 않는다.
+`schema_status=not_required`는 schema 검사가 실패한 것이 아니라 수행되지 않은 상태이므로 학습
+거절 사유나 schema 평가·통과 집계의 분모에 포함하지 않는다.
 
 ### Persistence Model
 

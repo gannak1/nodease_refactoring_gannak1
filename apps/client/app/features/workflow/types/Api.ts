@@ -313,7 +313,8 @@ export interface ModelRoutingPolicyPatchRequest extends WorkflowGraphCASExpectat
   fallback_model_id?: string | null;
 }
 
-export interface ModelRoutingBootstrapRequest {
+export interface ModelRoutingBootstrapRequest
+  extends WorkflowGraphCASExpectation {
   task_description: string;
   default_model_id: string;
   fallback_model_id?: string | null;
@@ -330,6 +331,12 @@ export interface ModelRoutingBootstrapResponse {
   generation_summary: Record<string, unknown>;
   stale_reason?: string | null;
   created_at?: string | null;
+}
+
+export interface ModelRoutingBootstrapWriteResponse
+  extends ModelRoutingBootstrapResponse {
+  graph_hash: string;
+  updated_at: string;
 }
 
 export interface ModelRoutingBootstrapPreview {

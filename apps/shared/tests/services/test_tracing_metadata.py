@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+
 from apps.shared.schemas.tracing import TraceDetailSchema, TraceSummarySchema
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.shared.services.tracing.query import TraceQueryService
@@ -193,6 +194,7 @@ def test_llm_span_metadata_preserves_safe_runtime_judge_summary_only():
                     "model": "gpt-5-mini",
                     "selected_model": "gpt-4o-mini",
                     "confidence": 0.87,
+                    "reason_short": "여러 조건 종합",
                     "reason_code": "simple_request",
                     "cost": 0.00012,
                     "usage": {
@@ -216,6 +218,7 @@ def test_llm_span_metadata_preserves_safe_runtime_judge_summary_only():
         "model": "gpt-5-mini",
         "selected_model": "gpt-4o-mini",
         "confidence": 0.87,
+        "reason_short": "여러 조건 종합",
         "reason_code": "simple_request",
         "cost": 0.00012,
         "usage": {"prompt_tokens": 120, "completion_tokens": 30},
@@ -225,6 +228,23 @@ def test_llm_span_metadata_preserves_safe_runtime_judge_summary_only():
         "judged_request_count": 7,
         "local_confidence": 0.42,
     }
+
+
+@pytest.mark.parametrize(
+    "reason_short",
+    [
+        "english only",
+        "한글 이유가 너무 길어서 허용된 열네 글자를 초과합니다",
+        "한글 이유\n원문",
+    ],
+)
+def test_llm_span_metadata_drops_invalid_runtime_judge_reason_short(reason_short):
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {"llm": {"judge": {"reason_code": "safe_code", "reason_short": reason_short}}},
+    )
+
+    assert metadata["llm"]["judge"] == {"reason_code": "safe_code"}
 
 
 def test_llm_span_metadata_preserves_safe_provider_fallback_diagnostics_only():

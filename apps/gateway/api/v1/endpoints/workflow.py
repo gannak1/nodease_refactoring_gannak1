@@ -327,6 +327,8 @@ class ModelRoutingBootstrapRequest(BaseModel):
     task_description: str = Field(min_length=10, max_length=4000)
     default_model_id: str = Field(min_length=1, max_length=255)
     fallback_model_id: str | None = Field(default=None, max_length=255)
+    expected_graph_hash: str = Field(min_length=64, max_length=64)
+    expected_updated_at: datetime
 
 
 class ModelRoutingPolicyRefreshRequest(BaseModel):
@@ -3850,7 +3852,16 @@ def create_model_routing_bootstrap_endpoint(
     """Planner 호출 없이 초안 단계의 Judge-first 정책을 준비한다."""
     # 초기 기준 생성은 초안 편집 단계의 작업이다. 실제 배포 권한은 이후 배포 API에서
     # 별도로 검사하므로, 여기서는 workflow 수정 권한만 요구한다.
-    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    authorized_workflow = ensure_workflow_permission(
+        db, current_user, workflow_id, "write"
+    )
+    workflow = _lock_workflow_for_cas_graph_write(
+        db,
+        current_user,
+        workflow_id,
+        request_body,
+        authorized_workflow,
+    )
     next_graph = copy.deepcopy(workflow.graph or {})
     node = _ensure_cost_optimizer_llm_node(
         SimpleNamespace(id=workflow.id, graph=next_graph), node_id
@@ -3911,10 +3922,11 @@ def create_model_routing_bootstrap_endpoint(
     )
     node["data"] = node_data
     workflow.graph = next_graph
-    db.commit()
-    return PersistedModelRoutingBootstrapStore.public_summary(
+    summary = PersistedModelRoutingBootstrapStore.public_summary(
         bootstrap, include_samples=True, db=db
     )
+    graph_metadata = _commit_graph_write_with_canonical_metadata(db, workflow)
+    return {**(summary or {}), **graph_metadata}
 
 
 @router.get("/{workflow_id}/llm-nodes/{node_id}/model-routing/policy")

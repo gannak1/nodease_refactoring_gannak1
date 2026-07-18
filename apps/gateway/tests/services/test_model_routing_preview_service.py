@@ -8,6 +8,7 @@ from apps.gateway.services.model_routing_preview_service import (
     ModelRoutingPreviewBlockedError,
     ModelRoutingPreviewService,
 )
+from apps.workflow_engine.services.model_router import ModelRouter
 
 
 def _deployment(*, node_data):
@@ -156,6 +157,47 @@ class TestModelRoutingPreviewService:
         db.add.assert_not_called()
         db.commit.assert_not_called()
         db.flush.assert_not_called()
+
+    def test_preview_passes_shared_routing_feature_text_to_policy_resolver(self):
+        policy = _policy(
+            active_policy={
+                "strategy_id": "judge_bootstrap_incremental_v1",
+                "default_model_id": "gpt-4.1",
+                "candidate_model_ids": ["gpt-4.1"],
+                "learning": {"mode": "judge_first"},
+            }
+        )
+        db = _db_with_policy(policy)
+        deployment = _deployment(
+            node_data={
+                "model_id": "gpt-4.1",
+                "auto_model_routing": True,
+                "model_routing_task_description": "회사 정책 근거를 비교해 답합니다.",
+                "user_prompt": "{{message}}",
+            }
+        )
+        workflow = SimpleNamespace(id=uuid4(), graph=deployment.graph_snapshot)
+
+        with patch(
+            "apps.gateway.services.model_routing_preview_service.WorkflowRuntimeLLMService.get_runtime_available_model_ids_for_user",
+            return_value=["gpt-4.1"],
+        ), patch.object(
+            ModelRouter,
+            "resolve_policy",
+            wraps=ModelRouter.resolve_policy,
+        ) as resolve_policy:
+            ModelRoutingPreviewService.preview(
+                db,
+                workflow=workflow,
+                deployment=deployment,
+                node_id="llm-triage",
+                inputs={"message": "휴가와 운영 규정을 비교해 주세요."},
+            )
+
+        feature = resolve_policy.call_args.kwargs["routing_feature_text"]
+        assert "CURRENT_REQUEST:" in feature
+        assert "휴가와 운영 규정" in feature
+        assert "TASK_DESCRIPTION:\n회사 정책 근거를 비교해 답합니다." in feature
 
     def test_preview_uses_deployed_default_before_runtime_judge_runs(self):
         policy = _policy(

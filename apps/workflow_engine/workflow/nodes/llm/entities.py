@@ -69,6 +69,11 @@ class LLMNodeData(BaseNodeData):
         default=None,
         description="도메인 키워드 없이 런타임 라우팅 rule 평가에 사용할 명시적 노드 분류 힌트",
     )
+    model_routing_task_description: Optional[str] = Field(
+        default=None,
+        max_length=4000,
+        description="Judge-first 자동 라우팅에 사용하는 사용자 정의 노드 작업 설명",
+    )
     task_type: str = Field(default="generate", description="LLM 노드 작업 유형")
     system_prompt: Optional[str] = None
     user_prompt: Optional[str] = None

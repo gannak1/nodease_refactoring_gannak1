@@ -84,12 +84,14 @@ class ModelRoutingPreviewService:
             "policy_version": policy.policy_version,
             "active_policy": policy.active_policy,
         }
+        routing_feature_text = ModelRouter.routing_feature_text(inputs, node_data)
         try:
             decision = ModelRouter.resolve_policy(
                 policy_payload,
                 inputs=inputs,
                 node_data=node_data,
                 available_model_ids=available_model_ids,
+                routing_feature_text=routing_feature_text,
             )
         except ModelRoutingUnavailableError as exc:
             raise ModelRoutingPreviewBlockedError(
