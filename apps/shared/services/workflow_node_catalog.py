@@ -341,24 +341,11 @@ def node_parameter_is_configured(
 ) -> bool:
     data = node_data if isinstance(node_data, dict) else {}
     if node_type == "githubNode" and parameter_key == "credential":
-        return _configuration_value_is_present(data.get("api_token"))
+        return _configuration_value_is_present(data.get("credential_id"))
     if node_type == "slackPostNode" and parameter_key == "credential":
-        auth_config = data.get("authConfig")
-        return (
-            data.get("authType") == "bearer"
-            and isinstance(auth_config, dict)
-            and _configuration_value_is_present(auth_config.get("token"))
-        )
+        return _configuration_value_is_present(data.get("credential_id"))
     if node_type == "slackPostNode" and parameter_key == "channel":
-        body = data.get("body")
-        if isinstance(body, str):
-            try:
-                body = json.loads(body)
-            except (TypeError, ValueError):
-                body = None
-        return isinstance(body, dict) and _configuration_value_is_present(
-            body.get("channel")
-        )
+        return _configuration_value_is_present(data.get("channel"))
     return _configuration_value_is_present(data.get(parameter_key))
 
 
@@ -369,18 +356,14 @@ def apply_node_parameter_value(
     value: Any,
 ) -> dict[str, Any]:
     data = copy.deepcopy(node_data)
+    if node_type in {"githubNode", "slackPostNode"} and parameter_key == "credential":
+        data.pop("api_token", None)
+        data.pop("authConfig", None)
+        data.pop("url", None)
+        data["credential_id"] = copy.deepcopy(value)
+        data["configuration_state"] = "resolved" if value else "unresolved"
+        return data
     data[parameter_key] = copy.deepcopy(value)
-    if node_type == "slackPostNode" and parameter_key == "channel":
-        body = data.get("body")
-        if isinstance(body, str):
-            try:
-                body = json.loads(body)
-            except (TypeError, ValueError):
-                body = {}
-        if not isinstance(body, dict):
-            body = {}
-        body["channel"] = value
-        data["body"] = json.dumps(body, ensure_ascii=False)
     return data
 
 

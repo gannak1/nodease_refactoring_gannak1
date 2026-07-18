@@ -424,6 +424,48 @@ class UserMailCredentialPermission(UserResourcePermissionMixin, Base):
     )
 
 
+class UserExternalActionCredentialPermission(UserResourcePermissionMixin, Base):
+    """Direct additive user permission for an external action credential."""
+
+    __tablename__ = "user_external_action_credential_permissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "grantee_organization_id",
+            "user_id",
+            "external_action_credential_id",
+            name=(
+                "uq_user_external_action_credential_permissions_org_user_credential"
+            ),
+        ),
+        ForeignKeyConstraint(
+            ["external_action_credential_id", "grantee_organization_id"],
+            [
+                "external_action_credentials.id",
+                "external_action_credentials.organization_id",
+            ],
+            name="fk_user_external_action_credential_permissions_credential_org",
+        ),
+        CheckConstraint(
+            "auth_state IN ('none', 'viewer', 'operator', 'builder', 'manager')",
+            name="ck_user_external_action_credential_permissions_auth_state",
+        ),
+        CheckConstraint(
+            "flags >= 0",
+            name="ck_user_external_action_credential_permissions_flags_nonnegative",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
+    )
+    external_action_credential_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    external_action_credential: Mapped["ExternalActionCredential"] = relationship(
+        "ExternalActionCredential", overlaps="grantee_organization"
+    )
+
+
 class UserKnowledgePermission(UserResourcePermissionMixin, Base):
     """Direct additive user permission for a knowledge base resource."""
 
@@ -837,6 +879,53 @@ class TeamMailCredentialPermission(TeamResourcePermissionMixin, Base):
     )
     mail_credential: Mapped["MailCredential"] = relationship(
         "MailCredential", overlaps="grantee_organization"
+    )
+
+
+class TeamExternalActionCredentialPermission(TeamResourcePermissionMixin, Base):
+    """Team permission for an external action credential resource."""
+
+    __tablename__ = "team_external_action_credential_permissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "grantee_organization_id",
+            "external_action_credential_id",
+            "team_id",
+            name=(
+                "uq_team_external_action_credential_permissions_org_credential_team"
+            ),
+        ),
+        ForeignKeyConstraint(
+            ["team_id", "grantee_organization_id"],
+            ["teams.id", "teams.organization_id"],
+            name="fk_team_external_action_credential_permissions_team_org",
+        ),
+        ForeignKeyConstraint(
+            ["external_action_credential_id", "grantee_organization_id"],
+            [
+                "external_action_credentials.id",
+                "external_action_credentials.organization_id",
+            ],
+            name="fk_team_external_action_credential_permissions_credential_org",
+        ),
+        CheckConstraint(
+            "auth_state IN ('none', 'viewer', 'operator', 'builder', 'manager')",
+            name="ck_team_external_action_credential_permissions_auth_state",
+        ),
+        CheckConstraint(
+            "flags >= 0",
+            name="ck_team_external_action_credential_permissions_flags_nonnegative",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
+    )
+    external_action_credential_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    external_action_credential: Mapped["ExternalActionCredential"] = relationship(
+        "ExternalActionCredential", overlaps="grantee_organization"
     )
 
 

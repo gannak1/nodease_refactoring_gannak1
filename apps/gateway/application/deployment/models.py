@@ -36,6 +36,13 @@ class MailCredentialSnapshot:
 
 
 @dataclass(frozen=True)
+class ExternalActionCredentialSnapshot:
+    provider: str
+    usable_by_principal: bool
+    effective_auth_state: str
+
+
+@dataclass(frozen=True)
 class NodeCatalogSnapshot:
     side_effect: str
     implemented: bool

@@ -226,12 +226,14 @@ class DeploymentService:
                 require_resolved=False,
             )
         except HTTPException as exc:
-            if exc.status_code == 403:
-                raise
             reason_code = (
                 "mail_credential_unavailable"
                 if exc.detail == "resource.not_found"
-                else "node_configuration_invalid"
+                else (
+                    "external_action_credential_unavailable"
+                    if exc.detail == "external_action_credential.unavailable"
+                    else "node_configuration_invalid"
+                )
             )
             raise DeploymentService.workflow_configuration_validation_blocked(
                 graph_snapshot,
@@ -1511,12 +1513,14 @@ class DeploymentService:
                     require_resolved=False,
                 )
             except HTTPException as exc:
-                if exc.status_code == 403:
-                    raise
                 reason_code = (
                     "mail_credential_unavailable"
                     if exc.detail == "resource.not_found"
-                    else "node_configuration_invalid"
+                    else (
+                        "external_action_credential_unavailable"
+                        if exc.detail == "external_action_credential.unavailable"
+                        else "node_configuration_invalid"
+                    )
                 )
                 raise DeploymentService.workflow_configuration_validation_blocked(
                     deployment.graph_snapshot,

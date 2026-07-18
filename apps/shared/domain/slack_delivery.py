@@ -10,6 +10,9 @@ from urllib.parse import urlsplit
 
 SLACK_GRAPH_CONFIGURATION_INVALID = "slack.graph_configuration_invalid"
 SLACK_LEGACY_SELECTOR_REQUIRES_MIGRATION = "slack.legacy_selector_requires_migration"
+SLACK_LEGACY_CREDENTIAL_REQUIRES_MIGRATION = (
+    "slack.legacy_credential_requires_migration"
+)
 _SLACK_WEBHOOK_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _SLACK_TEMPLATE_TOKEN_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]{0,127})\s*\}\}")
 _SLACK_UNSAFE_TEMPLATE_MARKERS = ("{{", "{%", "%}", "{#", "#}")
@@ -27,6 +30,7 @@ _SLACK_ALLOWED_FIELDS = frozenset(
         "username",
         "icon_emoji",
         "referenced_variables",
+        "credential_id",
         # Legacy compatibility fields. They are not request sources.
         "url",
         "authConfig",
@@ -146,6 +150,8 @@ def _validate_slack_data(data: Mapping[str, Any], *, require_resolved: bool) -> 
         raise SlackGraphBoundaryError()
     if data.get("configuration_state") not in (None, "resolved", "unresolved"):
         raise SlackGraphBoundaryError()
+    if require_resolved and data.get("configuration_state") == "unresolved":
+        raise SlackGraphBoundaryError()
     if data.get("channel_resolution_state") not in (None, "resolved", "unresolved"):
         raise SlackGraphBoundaryError()
     display_number = data.get("displayNumber")
@@ -175,9 +181,18 @@ def _validate_slack_data(data: Mapping[str, Any], *, require_resolved: bool) -> 
     auth_config = data.get("authConfig", {})
     if not isinstance(auth_config, Mapping) or set(auth_config) - {"token"}:
         raise SlackGraphBoundaryError()
-    token = auth_config.get("token")
-    if token is not None and not isinstance(token, str):
-        raise SlackGraphBoundaryError()
+    if "token" in auth_config:
+        raise SlackGraphBoundaryError(SLACK_LEGACY_CREDENTIAL_REQUIRES_MIGRATION)
+    credential_id = data.get("credential_id")
+    if credential_id is not None:
+        if not isinstance(credential_id, str) or not credential_id.strip():
+            raise SlackGraphBoundaryError()
+        try:
+            import uuid
+
+            uuid.UUID(credential_id)
+        except (TypeError, ValueError) as exc:
+            raise SlackGraphBoundaryError() from exc
     if data.get("method") not in (None, "POST") or data.get("timeout") not in (
         None,
         5000,
@@ -223,17 +238,16 @@ def _validate_slack_data(data: Mapping[str, Any], *, require_resolved: bool) -> 
         ):
             raise SlackGraphBoundaryError()
         if require_resolved and (
-            not _valid_secret_value(token, max_bytes=4096)
-            or not _valid_channel_template(data.get("channel"))
+            credential_id is None or not _valid_channel_template(data.get("channel"))
         ):
             raise SlackGraphBoundaryError()
     else:
-        if token not in (None, "") or data.get("authType") not in (None, "", "none"):
+        if data.get("authType") not in (None, "", "none"):
             raise SlackGraphBoundaryError()
         url = data.get("url")
-        if require_resolved and (
-            not url or not is_valid_commercial_slack_webhook_url(url)
-        ):
+        if url not in (None, ""):
+            raise SlackGraphBoundaryError(SLACK_LEGACY_CREDENTIAL_REQUIRES_MIGRATION)
+        if require_resolved and credential_id is None:
             raise SlackGraphBoundaryError()
     if require_resolved and not _has_delivery_payload(data):
         raise SlackGraphBoundaryError()
@@ -247,16 +261,6 @@ def _valid_reference(value: Any) -> bool:
         isinstance(selector, list)
         and len(selector) >= 2
         and all(isinstance(item, str) and item.strip() for item in selector)
-    )
-
-
-def _valid_secret_value(value: Any, *, max_bytes: int) -> bool:
-    return (
-        isinstance(value, str)
-        and bool(value)
-        and value == value.strip()
-        and len(value.encode("utf-8")) <= max_bytes
-        and not any(char in value for char in "\r\n\x00")
     )
 
 

@@ -32,7 +32,9 @@ class GithubNodeData(BaseNodeData):
     action: GithubAction = Field(
         GithubAction.GET_PR, description="수행할 액션 (get_pr, comment_pr)"
     )
-    api_token: str = Field(..., description="GitHub Personal Access Token")
+    credential_id: str | None = Field(
+        None, description="Opaque GitHub credential reference"
+    )
     repo_owner: str = Field(..., description="저장소 소유자 (예: facebook)")
     repo_name: str = Field(..., description="저장소 이름 (예: react)")
     pr_number: str = Field(..., description="Pull Request 번호")

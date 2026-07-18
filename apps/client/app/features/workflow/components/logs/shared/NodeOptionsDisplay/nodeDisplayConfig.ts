@@ -242,13 +242,13 @@ export const nodeDisplayConfigs: Record<string, NodeDisplayConfig> = {
 
   // ========================
   // GitHub Node
-  // 패널 순서: 작업 → 인증 → 입력변수 → 저장소 정보 → 코멘트
+  // 패널 순서: 작업 → credential → 입력변수 → 저장소 정보 → 코멘트
   // ========================
   githubNode: {
     label: 'GitHub 노드 설정',
     rows: [
       [{ key: 'action', label: '작업' }],
-      [{ key: 'api_token', label: 'GitHub 토큰' }],
+      [{ key: 'credential_id', label: 'GitHub Credential', type: 'connection-status' }],
       [
         {
           key: 'referenced_variables',
@@ -292,14 +292,13 @@ export const nodeDisplayConfigs: Record<string, NodeDisplayConfig> = {
 
   // ========================
   // Slack Post Node (신규)
-  // 패널 순서: 전송 방식 → URL → 인증 → 채널 → 헤더/타임아웃 → 입력변수 → 메시지 → 블록
+  // 패널 순서: 전송 방식 → credential → 채널 → 입력변수 → 메시지 → 블록
   // ========================
   slackPostNode: {
     label: 'Slack 메시지 전송 설정',
     rows: [
       [{ key: 'slackMode', label: '전송 방식' }],
-      [{ key: 'url', label: 'URL' }],
-      [{ key: 'authConfig', label: '인증', type: 'json' }],
+      [{ key: 'credential_id', label: 'Slack Credential', type: 'connection-status' }],
       [{ key: 'channel', label: '채널' }],
       [
         {
@@ -310,7 +309,6 @@ export const nodeDisplayConfigs: Record<string, NodeDisplayConfig> = {
       ],
       [{ key: 'message', label: '메시지', type: 'text' }],
       [{ key: 'blocks', label: '블록 (JSON)', type: 'json' }],
-      [{ key: 'timeout', label: '타임아웃 (ms)' }],
     ],
   },
 

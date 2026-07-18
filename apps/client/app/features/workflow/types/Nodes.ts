@@ -90,6 +90,8 @@ export interface HttpRequestNodeData extends BaseNodeData {
 // ======================== [Slack Post Node] ================================
 export interface SlackPostNodeData extends BaseNodeData {
   slackMode?: 'webhook' | 'api';
+  credential_id?: string | null;
+  configuration_state?: 'resolved' | 'unresolved';
   channel?: string;
   message?: string;
   username?: string;
@@ -334,7 +336,14 @@ export interface GithubVariable {
 
 export interface GithubNodeData extends BaseNodeData {
   action: GithubAction;
-  api_token: string;
+  credential_id?: string | null;
+  configuration_state?: 'resolved' | 'unresolved';
+  /** @deprecated Legacy direct-secret graphs are rejected by the Gateway. */
+  api_token?: string;
+  /** @deprecated Legacy direct-secret graphs are rejected by the Gateway. */
+  token?: string;
+  /** @deprecated Legacy direct-secret graphs are rejected by the Gateway. */
+  authConfig?: { token?: string };
   repo_owner: string;
   repo_name: string;
   pr_number: string;

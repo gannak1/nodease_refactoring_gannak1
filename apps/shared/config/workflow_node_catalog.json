@@ -193,7 +193,7 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
       "capabilities": ["slack_send"],
-      "outputs": [{"capability": "slack_send", "mode": "static", "keys": ["status", "headers", "data"], "value_type": "unknown"}],
+      "outputs": [{"capability": "slack_send", "mode": "static", "keys": ["status", "delivery_status", "delivery_mode", "message_ref"], "value_type": "unknown"}],
       "side_effect": "external_write",
       "required_configuration": ["credential", "channel"],
       "configuration_labels": {

@@ -12,6 +12,7 @@ class SlackReferencedVariable(BaseModel):
 
 class SlackPostNodeData(BaseNodeData):
     slackMode: str = "api"
+    credential_id: str | None = None
     channel: str | None = None
     message: str = ""
     blocks: Any = None

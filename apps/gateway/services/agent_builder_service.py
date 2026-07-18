@@ -61,6 +61,9 @@ from apps.shared.db.models.agent_builder import (
 from apps.shared.db.models.app import App
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
+from apps.shared.domain.external_action_credential_graph import (
+    redact_external_action_credential_graph,
+)
 from apps.shared.schemas.agent_builder import (
     AgentBuilderApplyRequest,
     AgentBuilderApplyResponse,
@@ -1436,6 +1439,9 @@ class AgentBuilderService:
             raise
         except Exception:
             return self._fail_processing_request(request_row)
+        # Draft previews are durable and can be replayed by later session
+        # recovery. Do not rely only on the data migration for old graphs.
+        preview_graph = redact_external_action_credential_graph(preview_graph)
         uses_existing_workflow_base = (
             workflow is not None and structured.draft_mode == "modify_workflow"
         )
@@ -4543,7 +4549,7 @@ class AgentBuilderService:
         elif capability == "slack_send":
             data = {
                 "title": "Slack 전송",
-                "authConfig": {},
+                "credential_id": None,
                 "referenced_variables": (
                     [{"name": "result", "value_selector": source_selector}]
                     if source_selector
@@ -4576,7 +4582,7 @@ class AgentBuilderService:
                 if capability == "github_pr_read"
                 else "GitHub PR 댓글 등록",
                 "action": "get_pr" if capability == "github_pr_read" else "comment_pr",
-                "api_token": "",
+                "credential_id": None,
                 **target_config,
                 "comment_body": None,
                 "referenced_variables": referenced_variables,
@@ -5731,9 +5737,12 @@ class AgentBuilderService:
             and (draft.validation_result or {}).get("valid", False)
             and not (draft.expires_at and draft.expires_at < _now())
         ):
+            preview_graph = redact_external_action_credential_graph(
+                draft.preview_graph
+            )
             return AgentBuilderDraftPreview(
                 draft_id=draft.id,
-                preview_graph=draft.preview_graph,
+                preview_graph=preview_graph,
                 base_graph_hash=draft.base_graph_hash,
                 base_workflow_updated_at=draft.base_workflow_updated_at,
                 draft_mode=draft.draft_mode,
@@ -5743,7 +5752,7 @@ class AgentBuilderService:
                 ),
                 safety_notices=self._safety_notices_for_draft(draft),
                 configuration_issues=self._node_configuration_issues(
-                    draft.preview_graph
+                    preview_graph
                 ),
             ).model_dump(mode="json")
         return {
@@ -5767,9 +5776,12 @@ class AgentBuilderService:
             and (draft.validation_result or {}).get("valid", False)
             and not (draft.expires_at and draft.expires_at < _now())
         ):
+            preview_graph = redact_external_action_credential_graph(
+                draft.preview_graph
+            )
             payload["draft_preview"] = AgentBuilderDraftPreview(
                 draft_id=draft.id,
-                preview_graph=draft.preview_graph,
+                preview_graph=preview_graph,
                 base_graph_hash=draft.base_graph_hash,
                 base_workflow_updated_at=draft.base_workflow_updated_at,
                 draft_mode=draft.draft_mode,
@@ -5779,7 +5791,7 @@ class AgentBuilderService:
                 ),
                 safety_notices=self._safety_notices_for_draft(draft),
                 configuration_issues=self._node_configuration_issues(
-                    draft.preview_graph
+                    preview_graph
                 ),
             ).model_dump(mode="json")
         return payload

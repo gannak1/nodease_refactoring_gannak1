@@ -289,6 +289,14 @@ FR-048 기존 실행 계약 보존: Draft/test·Compare·stream publisher는 DB 
 - OAuth Gmail Mail node와 terminal acknowledgement는 `gmail.modify` 기반 고정 Gmail REST adapter를 사용한다. OAuth credential을 IMAP XOAUTH2로 연결하지 않으며 app password/password credential만 제한된 IMAP 경로를 사용한다.
 - Gmail REST provider message id는 암호화된 processing source reference에만 저장하고 node output, API, audit, trace, log에는 노출하지 않는다.
 - Mail body/subject/recipient와 생성 답장 본문은 runtime graph 데이터로만 전달한다. Durable node trace는 Mail result와 Gmail effect input을 node-aware safe summary로 치환한 뒤 일반 trace redaction/retention 정책을 적용한다.
+
+### External Action Credential Reference
+
+- Slack/GitHub node graph는 organization-scoped External Action Credential의 opaque `credential_id`만 저장한다. Slack `authConfig.token`/Webhook URL과 GitHub `api_token`/`token`/`authConfig`는 최상위와 모든 `subGraph.nodes`에서 저장·실행하지 않는다.
+- Workflow graph 저장은 active organization, active lifecycle, expected provider와 저장 요청자의 `use`를 공통 resolver로 검증한다. 없거나 revoke됐거나 다른 organization/provider이거나 권한이 없는 reference는 safe unavailable로 숨긴다.
+- Agent Builder draft는 `credential_id=null`, `configuration_state=unresolved`를 보존할 수 있지만 authenticated execution, active deployment와 schedule dispatch는 유효한 explicit user execution subject와 credential reference를 요구한다.
+- Workflow Engine은 provider request 바로 전에 fresh DB session으로 credential `revision`, lifecycle, provider와 `use`를 다시 확인한다. 그 사이 revoke, permission 회수 또는 secret rotation이 발생하면 adapter를 호출하지 않고 fail-closed한다.
+- Slack node는 delivery status와 optional message reference만 downstream output으로 허용한다. raw response headers/body selector와 legacy secret graph는 migration error로 중지한다.
 - RAG를 포함한 workflow 비교 실행이나 A/B 실행도 로그인 interactive 실행이면 동일한 execution subject와 Knowledge permission/source ACL gate를 사용하고, subject가 없으면 anonymous public-only gate를 사용한다.
 - 배포 preflight에서 client-supplied audience hint는 preview UI용이며, create/activation 경로는 deployment type과 실행 endpoint에서 audience를 서버가 다시 파생한다.
 - Private KB를 자동 실행에서 사용하려면 별도 service account 또는 assigned operator 정책이 필요하다. 이 정책이 없으면 workflow owner, deployment owner, app creator 권한으로 fallback하지 않는다.

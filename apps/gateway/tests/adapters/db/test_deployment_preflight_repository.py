@@ -238,3 +238,48 @@ def test_mail_snapshots_use_one_bulk_permission_decision(monkeypatch):
     assert result[credential_ids[0]].usable_by_principal is True
     assert result[credential_ids[1]].usable_by_principal is False
     assert result[credential_ids[1]].effective_auth_state == "viewer"
+
+
+def test_external_action_snapshots_use_one_bulk_permission_decision(monkeypatch):
+    organization_id = uuid.uuid4()
+    principal_id = uuid.uuid4()
+    credential_ids = [uuid.uuid4(), uuid.uuid4()]
+    rows = [
+        SimpleNamespace(id=credential_id, provider="github")
+        for credential_id in credential_ids
+    ]
+    session = _Session(rows)
+    calls = []
+
+    def _bulk(db, user_id, ids, scoped_organization_id):
+        materialized_ids = tuple(ids)
+        calls.append((db, user_id, materialized_ids, scoped_organization_id))
+        return {
+            credential_ids[0]: "operator",
+            credential_ids[1]: "viewer",
+        }
+
+    monkeypatch.setattr(
+        repository_module,
+        "get_effective_external_action_credential_auth_states",
+        _bulk,
+    )
+
+    result = SqlAlchemyDeploymentPreflightRepository(
+        session
+    ).get_external_action_credential_snapshots(
+        credential_ids,
+        organization_id,
+        principal_id,
+    )
+
+    assert session.query_count == 1
+    assert len(calls) == 1
+    assert calls[0][1:] == (
+        principal_id,
+        tuple(credential_ids),
+        organization_id,
+    )
+    assert result[credential_ids[0]].usable_by_principal is True
+    assert result[credential_ids[1]].usable_by_principal is False
+    assert result[credential_ids[1]].effective_auth_state == "viewer"

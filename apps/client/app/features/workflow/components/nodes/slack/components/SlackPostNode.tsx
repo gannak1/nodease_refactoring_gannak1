@@ -10,22 +10,19 @@ import {
   collectSlackTemplateVariables,
   isNonEmptySlackJsonArrayTemplate,
   isValidSlackJsonArrayTemplate,
-  isValidCommercialSlackWebhookUrl,
 } from '../../../../utils/slackDelivery';
 
 export const SlackPostNode = memo(
   ({ id, data, selected }: NodeProps<Node<SlackPostNodeData>>) => {
     const mode = data.slackMode || 'api';
-    const urlPreview =
-      mode === 'api'
-        ? 'slack.com / chat.postMessage'
-        : data.url || 'https://hooks.slack.com/services/...';
+    const credentialPreview = data.credential_id
+      ? 'Credential 연결됨'
+      : 'Credential 필요';
     const modeClass =
       mode === 'api'
         ? 'bg-blue-100 text-blue-700 border-blue-200'
         : 'bg-purple-100 text-purple-700 border-purple-200';
     const modeLabel = mode === 'api' ? 'API' : 'Web Hook';
-    const trimmedUrl = (data.url || '').trim();
     const blocksText = (data.blocks || '').trim();
     const attachmentsText = (data.attachments || '').trim();
 
@@ -66,30 +63,27 @@ export const SlackPostNode = memo(
       return !isValidSlackJsonArrayTemplate(attachmentsText);
     }, [attachmentsText]);
 
-    const isWebhookUrlValid =
-      mode !== 'webhook' || isValidCommercialSlackWebhookUrl(data.url);
-
     const hasMessage = !!data.message?.trim();
     const hasValidBlocks = isNonEmptySlackJsonArrayTemplate(blocksText);
     const hasValidAttachments =
       isNonEmptySlackJsonArrayTemplate(attachmentsText);
+    const hasLegacyCredentialConfiguration =
+      Boolean(data.authConfig && Object.keys(data.authConfig).length > 0) ||
+      (mode === 'webhook' && Boolean(data.url?.trim())) ||
+      (mode === 'api' &&
+        data.url !== undefined &&
+        data.url !== '' &&
+        data.url !== 'https://slack.com/api/chat.postMessage');
 
     const hasValidationIssue =
-      mode === 'webhook'
-        ? !trimmedUrl ||
-          !isWebhookUrlValid ||
-          (!hasMessage && !hasValidBlocks && !hasValidAttachments) ||
-          blocksJsonError ||
-          attachmentsJsonError ||
-          missingVariables.length > 0 ||
-          hasIncompleteVariables(data.referenced_variables)
-        : !data.authConfig?.token?.trim() ||
-          !data.channel?.trim() ||
-          (!hasMessage && !hasValidBlocks && !hasValidAttachments) ||
-          blocksJsonError ||
-          attachmentsJsonError ||
-          missingVariables.length > 0 ||
-          hasIncompleteVariables(data.referenced_variables);
+      !data.credential_id ||
+      hasLegacyCredentialConfiguration ||
+      (mode === 'api' && !data.channel?.trim()) ||
+      (!hasMessage && !hasValidBlocks && !hasValidAttachments) ||
+      blocksJsonError ||
+      attachmentsJsonError ||
+      missingVariables.length > 0 ||
+      hasIncompleteVariables(data.referenced_variables);
 
     return (
       <BaseNode
@@ -108,7 +102,7 @@ export const SlackPostNode = memo(
               {modeLabel}
             </span>
             <span className="flex-1 truncate font-mono text-[10px] text-gray-500 max-w-[200px]">
-              {urlPreview}
+              {credentialPreview}
             </span>
           </div>
 

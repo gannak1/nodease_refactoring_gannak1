@@ -40,6 +40,7 @@ from apps.shared.services.workflow_configuration_preflight import (
     enforce_workflow_configuration_preflight,
 )
 from apps.workflow_engine import mail_credential_startup  # noqa: F401
+from apps.workflow_engine import external_action_credential_startup  # noqa: F401
 from apps.workflow_engine import llm_credential_startup  # noqa: F401
 from apps.workflow_engine.runtime_policy import get_deployment_runtime_policy
 from apps.workflow_engine.schedule_dispatch_settings import (

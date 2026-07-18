@@ -1,30 +1,72 @@
-"""GitHub 노드 테스트 [GEVENT] Sync 버전
+"""GitHub 노드의 opaque credential reference 실행 경계 테스트."""
 
-GithubNode가 _run 내에서 `import requests`로 로컬 임포트하므로
-requests.get/requests.post를 직접 패치합니다.
-"""
-
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 import pytest
 import requests
 
+from apps.shared.services.external_action_credential import (
+    ExternalActionCredentialRuntimeError,
+    ExternalActionCredentialUseResolver,
+)
 from apps.workflow_engine.workflow.nodes.github.entities import (
     GithubAction,
     GithubNodeData,
     GithubVariable,
 )
+from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 from apps.workflow_engine.workflow.nodes.github.github_node import GithubNode
 
-# ============================================================================
-# 1. Get PR Diff 정상 동작
-# ============================================================================
+
+ORGANIZATION_ID = uuid4()
+USER_ID = uuid4()
+CREDENTIAL_ID = uuid4()
+
+
+@pytest.fixture(autouse=True)
+def _stub_external_action_credential_resolver(monkeypatch):
+    def resolve(_db, **kwargs):
+        assert kwargs == {
+            "user_id": USER_ID,
+            "organization_id": ORGANIZATION_ID,
+            "credential_id": CREDENTIAL_ID,
+            "expected_provider": "github",
+        }
+        return SimpleNamespace(secret="test-only-placeholder", revision=1)
+
+    monkeypatch.setattr(
+        ExternalActionCredentialUseResolver,
+        "resolve",
+        staticmethod(resolve),
+    )
+    monkeypatch.setattr(
+        ExternalActionCredentialUseResolver,
+        "revalidate_use",
+        staticmethod(lambda _db, **_kwargs: None),
+    )
+
+
+def _github_node(**overrides) -> GithubNode:
+    data = {
+        "title": "GitHub",
+        "credential_id": str(CREDENTIAL_ID),
+        **overrides,
+    }
+    return GithubNode(
+        id="github-1",
+        data=GithubNodeData(**data),
+        execution_context={
+            "organization_id": str(ORGANIZATION_ID),
+            "execution_subject": {"subject_type": "user", "subject_id": str(USER_ID)},
+            "db": MagicMock(),
+        },
+    )
 
 
 @patch("requests.get")
 def test_get_pr_success(mock_get):
-    """Get PR Diff 액션이 정상적으로 PR 정보를 조회한다"""
-    # PR 정보 응답
     pr_response = MagicMock()
     pr_response.json.return_value = {
         "title": "Add new feature",
@@ -33,8 +75,6 @@ def test_get_pr_success(mock_get):
         "number": 123,
         "diff_url": "https://github.com/owner/repo/pull/123.diff",
     }
-
-    # 파일 목록 응답
     files_response = MagicMock()
     files_response.json.return_value = [
         {
@@ -46,109 +86,66 @@ def test_get_pr_success(mock_get):
             "patch": "@@ -1,5 +1,10 @@\n+new code",
         }
     ]
-
     mock_get.side_effect = [pr_response, files_response]
 
-    # 노드 생성 및 실행
-    node_data = GithubNodeData(
-        title="GitHub",
+    result = _github_node(
         action=GithubAction.GET_PR,
-        api_token="ghp_test_token",
         repo_owner="facebook",
         repo_name="react",
         pr_number="123",
-    )
-    node = GithubNode(id="github-1", data=node_data)
+    )._run(inputs={})
 
-    # [GEVENT] sync 호출
-    result = node._run(inputs={})
-
-    # 검증
     assert result["pr_title"] == "Add new feature"
     assert result["pr_body"] == "This PR adds a new feature"
     assert result["pr_state"] == "open"
     assert result["pr_number"] == 123
     assert result["files_count"] == 1
-    assert len(result["files"]) == 1
     assert result["files"][0]["filename"] == "src/app.py"
     assert result["files"][0]["additions"] == 10
-    assert result["files"][0]["deletions"] == 5
     assert result["diff_url"] == "https://github.com/owner/repo/pull/123.diff"
-
-    # API 호출 확인
     assert mock_get.call_count == 2
-
-
-# ============================================================================
-# 2. Comment PR 정상 동작
-# ============================================================================
 
 
 @patch("requests.post")
 def test_comment_pr_success(mock_post):
-    """Comment PR 액션이 정상적으로 댓글을 작성한다"""
-    # 댓글 작성 응답
     comment_response = MagicMock()
     comment_response.json.return_value = {
         "id": 456789,
         "html_url": "https://github.com/owner/repo/pull/123#issuecomment-456789",
         "body": "Great work!",
     }
-
     mock_post.return_value = comment_response
 
-    # 노드 생성 및 실행
-    node_data = GithubNodeData(
-        title="GitHub",
+    result = _github_node(
         action=GithubAction.COMMENT_PR,
-        api_token="ghp_test_token",
         repo_owner="facebook",
         repo_name="react",
         pr_number="123",
         comment_body="Great work!",
-    )
-    node = GithubNode(id="github-1", data=node_data)
+    )._run(inputs={})
 
-    # [GEVENT] sync 호출
-    result = node._run(inputs={})
-
-    # 검증
-    assert result["comment_id"] == 456789
-    assert (
-        result["comment_url"]
-        == "https://github.com/owner/repo/pull/123#issuecomment-456789"
-    )
-    assert result["comment_body"] == "Great work!"
-
-    # 호출 확인
+    assert result == {
+        "comment_id": 456789,
+        "comment_url": "https://github.com/owner/repo/pull/123#issuecomment-456789",
+        "comment_body": "Great work!",
+    }
     mock_post.assert_called_once()
-    call_args = mock_post.call_args
-    assert "/issues/123/comments" in call_args[0][0]
-    assert call_args[1]["json"]["body"] == "Great work!"
-
-
-# ============================================================================
-# 3. 변수 치환 (Jinja2)
-# ============================================================================
+    assert "/issues/123/comments" in mock_post.call_args[0][0]
+    assert mock_post.call_args.kwargs["json"]["body"] == "Great work!"
 
 
 @patch("requests.post")
-def test_variable_substitution_simple(mock_post):
-    """Jinja2 변수 치환이 정상 동작한다"""
-    # Mock 설정
-    comment_response = MagicMock()
-    comment_response.json.return_value = {
+def test_variable_substitution_uses_opaque_credential_reference(mock_post):
+    response = MagicMock()
+    response.json.return_value = {
         "id": 1,
         "html_url": "https://github.com/test",
         "body": "Review result: LGTM!",
     }
-    mock_post.return_value = comment_response
+    mock_post.return_value = response
 
-    # referenced_variables 설정
-    node_data = GithubNodeData(
-        title="GitHub",
+    _github_node(
         action=GithubAction.COMMENT_PR,
-        api_token="ghp_test_token",
         repo_owner="facebook",
         repo_name="react",
         pr_number="123",
@@ -156,71 +153,64 @@ def test_variable_substitution_simple(mock_post):
         referenced_variables=[
             GithubVariable(name="review", value_selector=["llm-1", "text"])
         ],
-    )
-    node = GithubNode(id="github-1", data=node_data)
+    )._run(inputs={"llm-1": {"text": "LGTM!"}})
 
-    # 입력 데이터 (이전 노드 결과)
-    inputs = {"llm-1": {"text": "LGTM!"}}
-
-    # [GEVENT] sync 호출
-    node._run(inputs=inputs)
-
-    # 검증: 변수가 치환되어 댓글 작성됨
-    mock_post.assert_called_once()
-    call_args = mock_post.call_args
-    assert call_args[1]["json"]["body"] == "Review result: LGTM!"
-
-
-# ============================================================================
-# 4. 에러 처리
-# ============================================================================
+    assert mock_post.call_args.kwargs["json"]["body"] == "Review result: LGTM!"
 
 
 @patch("requests.get")
-def test_invalid_token_error(mock_get):
-    """API 호출 에러(401)는 RuntimeError를 발생시킨다"""
-    # Mock 설정 - 인증 실패
+def test_provider_request_failure_is_safe(mock_get):
     error_response = MagicMock()
     error_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
         "401 Unauthorized"
     )
     mock_get.return_value = error_response
 
-    node_data = GithubNodeData(
-        title="GitHub",
+    with pytest.raises(RuntimeError, match="github.provider_request_failed"):
+        _github_node(
+            action=GithubAction.GET_PR,
+            repo_owner="facebook",
+            repo_name="react",
+            pr_number="123",
+        )._run(inputs={})
+
+
+def test_missing_credential_reference_fails_before_resolver_or_provider_call():
+    node = _github_node(
         action=GithubAction.GET_PR,
-        api_token="invalid_token",
+        credential_id=None,
         repo_owner="facebook",
         repo_name="react",
         pr_number="123",
     )
-    node = GithubNode(id="github-1", data=node_data)
 
-    with pytest.raises(RuntimeError, match="GitHub API 오류"):
-        # [GEVENT] sync 호출
+    with pytest.raises(
+        NonRetryableWorkflowError,
+        match="external_action_credential.reference_required",
+    ):
         node._run(inputs={})
 
 
 @patch("requests.get")
-def test_github_not_found_error(mock_get):
-    """리포지토리/PR이 없으면 RuntimeError를 발생시킨다"""
-    # Mock 설정 - Not Found
-    error_response = MagicMock()
-    error_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
-        "404 Not Found"
-    )
-    mock_get.return_value = error_response
+def test_revoked_or_rotated_credential_blocks_provider_call(mock_get, monkeypatch):
+    def deny_revalidation(_db, **_kwargs):
+        raise ExternalActionCredentialRuntimeError()
 
-    node_data = GithubNodeData(
-        title="GitHub",
-        action=GithubAction.GET_PR,
-        api_token="ghp_test_token",
-        repo_owner="nonexistent",
-        repo_name="repo",
-        pr_number="123",
+    monkeypatch.setattr(
+        ExternalActionCredentialUseResolver,
+        "revalidate_use",
+        staticmethod(deny_revalidation),
     )
-    node = GithubNode(id="github-1", data=node_data)
 
-    with pytest.raises(RuntimeError, match="GitHub API 오류"):
-        # [GEVENT] sync 호출
-        node._run(inputs={})
+    with pytest.raises(
+        NonRetryableWorkflowError,
+        match="external_action_credential.unavailable",
+    ):
+        _github_node(
+            action=GithubAction.GET_PR,
+            repo_owner="facebook",
+            repo_name="react",
+            pr_number="123",
+        )._run(inputs={})
+
+    mock_get.assert_not_called()

@@ -1,9 +1,14 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
+import {
+  externalActionCredentialApi,
+  ExternalActionCredentialOption,
+} from '@/app/features/workflow/api/externalActionCredentialApi';
 import { SlackPostNodeData } from '../../../../types/Nodes';
 import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
+import { RoundedSelect } from '../../../ui/RoundedSelect';
 import {
   DraggedOutputVariable,
   getDroppedOutputReferenceName,
@@ -17,7 +22,6 @@ import {
   collectSlackTemplateVariables,
   isNonEmptySlackJsonArrayTemplate,
   isValidSlackJsonArrayTemplate,
-  isValidCommercialSlackWebhookUrl,
 } from '../../../../utils/slackDelivery';
 
 interface SlackPostNodePanelProps {
@@ -27,7 +31,13 @@ interface SlackPostNodePanelProps {
 
 export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
   const { updateNodeData, nodes, edges } = useWorkflowStore();
+  const [credentials, setCredentials] = useState<ExternalActionCredentialOption[]>(
+    [],
+  );
+  const [credentialsLoading, setCredentialsLoading] = useState(true);
+  const [credentialsError, setCredentialsError] = useState(false);
   const mode = data.slackMode || 'api';
+  const provider = mode === 'api' ? 'slack_api' : 'slack_webhook';
   const upstreamNodes = useMemo(
     () => getUpstreamNodes(nodeId, nodes, edges),
     [nodeId, nodes, edges],
@@ -36,6 +46,26 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
     () => getTokenLabelMap(data.referenced_variables || [], upstreamNodes),
     [data.referenced_variables, upstreamNodes],
   );
+
+  useEffect(() => {
+    let active = true;
+    setCredentialsLoading(true);
+    setCredentialsError(false);
+    externalActionCredentialApi
+      .listAvailable()
+      .then((options) => {
+        if (active) setCredentials(options);
+      })
+      .catch(() => {
+        if (active) setCredentialsError(true);
+      })
+      .finally(() => {
+        if (active) setCredentialsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const update = useCallback(
     (next: Partial<SlackPostNodeData>) => updateNodeData(nodeId, next),
@@ -85,20 +115,15 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
     data.username,
     mode,
   ]);
-  const hasLegacyAuthType =
-    mode === 'api'
-      ? data.authType !== undefined && data.authType !== 'bearer'
-      : data.authType !== undefined && data.authType !== 'none';
   const hasLegacyHttpConfiguration =
+    Boolean(data.authConfig && Object.keys(data.authConfig).length > 0) ||
+    Boolean(data.url?.trim()) ||
     (data.method !== undefined && data.method !== 'POST') ||
     (data.headers?.length || 0) > 0 ||
     Boolean(data.body?.trim()) ||
     (data.timeout !== undefined && data.timeout !== 5000) ||
-    hasLegacyAuthType ||
-    (mode === 'api' &&
-      data.url !== undefined &&
-      data.url !== '' &&
-      data.url !== 'https://slack.com/api/chat.postMessage');
+    (mode === 'api' && data.authType !== undefined && data.authType !== 'bearer') ||
+    (mode === 'webhook' && data.authType !== undefined && data.authType !== 'none');
   const blocksInvalid =
     Boolean(data.blocks?.trim()) &&
     !isValidSlackJsonArrayTemplate(data.blocks || '');
@@ -109,6 +134,13 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
     Boolean(data.message?.trim()) ||
     isNonEmptySlackJsonArrayTemplate(data.blocks || '') ||
     isNonEmptySlackJsonArrayTemplate(data.attachments || '');
+  const availableCredentials = credentials.filter(
+    (credential) => credential.provider === provider,
+  );
+  const credentialUnavailable =
+    Boolean(data.credential_id) &&
+    !credentialsLoading &&
+    !availableCredentials.some((credential) => credential.id === data.credential_id);
 
   return (
     <div className="flex flex-col gap-4 p-4 text-foreground">
@@ -126,12 +158,10 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
               update({
                 slackMode: candidate,
                 channel: candidate === 'api' ? data.channel || '' : '',
-                url:
-                  candidate === 'webhook' &&
-                  isValidCommercialSlackWebhookUrl(data.url)
-                    ? data.url
-                    : undefined,
-                authConfig: candidate === 'api' ? data.authConfig || {} : {},
+                credential_id: null,
+                configuration_state: 'unresolved',
+                url: undefined,
+                authConfig: undefined,
                 authType: candidate === 'webhook' ? 'none' : undefined,
               })
             }
@@ -143,7 +173,7 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
 
       {hasLegacyHttpConfiguration ? (
         <div className="rounded border border-amber-500/50 bg-amber-500/10 p-3 text-xs text-foreground">
-          <p>기존 HTTP 설정은 Slack 전송에 사용되지 않습니다.</p>
+          <p>기존 직접 인증 설정은 사용할 수 없습니다.</p>
           <button
             type="button"
             className="mt-2 rounded border border-amber-500 px-2 py-1 font-medium"
@@ -154,28 +184,52 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
                 body: undefined,
                 timeout: undefined,
                 authType: mode === 'webhook' ? 'none' : undefined,
-                url: mode === 'api' ? undefined : data.url,
+                url: undefined,
+                authConfig: undefined,
+                configuration_state: data.credential_id ? 'resolved' : 'unresolved',
               })
             }
           >
-            기존 HTTP 설정 제거
+            기존 직접 인증 설정 제거
           </button>
         </div>
       ) : null}
 
+      <CollapsibleSection title="Slack Credential" defaultOpen showDivider>
+        <RoundedSelect
+          value={data.credential_id || ''}
+          onChange={(value) =>
+            update({
+              credential_id: value || null,
+              configuration_state: value ? 'resolved' : 'unresolved',
+            })
+          }
+          options={availableCredentials.map((credential) => ({
+            value: credential.id,
+            label: credential.credential_name,
+          }))}
+          placeholder={
+            credentialsLoading
+              ? '불러오는 중'
+              : mode === 'api'
+                ? 'Slack API credential 선택'
+                : 'Slack Webhook credential 선택'
+          }
+        />
+        {!data.credential_id && !credentialsLoading ? (
+          <ValidationAlert message="Slack credential을 선택해주세요." />
+        ) : null}
+        {credentialUnavailable ? (
+          <ValidationAlert message="선택한 Slack credential을 사용할 수 없습니다." />
+        ) : null}
+        {credentialsError ? (
+          <ValidationAlert message="Slack credential 목록을 불러오지 못했습니다." />
+        ) : null}
+      </CollapsibleSection>
+
       {mode === 'api' ? (
         <CollapsibleSection title="Slack API 설정" defaultOpen showDivider>
           <div className="flex flex-col gap-2">
-            <label className="text-xs font-medium">봇 토큰</label>
-            <input
-              type="password"
-              className="h-9 rounded border border-border bg-background px-3 text-sm text-foreground"
-              value={data.authConfig?.token || ''}
-              onChange={(event) =>
-                update({ authConfig: { token: event.target.value } })
-              }
-              autoComplete="off"
-            />
             <label className="text-xs font-medium">채널 ID</label>
             <input
               className="h-9 rounded border border-border bg-background px-3 text-sm text-foreground"
@@ -185,25 +239,7 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
             />
           </div>
         </CollapsibleSection>
-      ) : (
-        <CollapsibleSection
-          title="Incoming Webhook 설정"
-          defaultOpen
-          showDivider
-        >
-          <label className="text-xs font-medium">Webhook URL</label>
-          <input
-            type="password"
-            className="mt-1 h-9 w-full rounded border border-border bg-background px-3 text-sm text-foreground"
-            value={data.url || ''}
-            onChange={(event) => update({ url: event.target.value })}
-            autoComplete="off"
-          />
-          <p className="mt-1 text-xs text-muted-foreground">
-            `https://hooks.slack.com/services/` 형식만 허용됩니다.
-          </p>
-        </CollapsibleSection>
-      )}
+      ) : null}
 
       <CollapsibleSection title="메시지" defaultOpen showDivider>
         <VariableTokenEditor
@@ -248,9 +284,7 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
       {!hasDeliveryPayload ? (
         <ValidationAlert message="메시지, 블록 또는 첨부 중 하나가 필요합니다." />
       ) : null}
-
-      {(mode === 'api' && (!data.authConfig?.token || !data.channel)) ||
-      (mode === 'webhook' && !isValidCommercialSlackWebhookUrl(data.url)) ? (
+      {(!data.credential_id || (mode === 'api' && !data.channel)) ? (
         <ValidationAlert message="Slack 전달 설정을 완료해야 실행할 수 있습니다." />
       ) : null}
     </div>

@@ -296,6 +296,8 @@ secrets:
   encryptionKey: ""
   mailCredentialEncryptionKeys: ""
   mailCredentialActiveKeyVersion: "v1"
+  externalActionCredentialEncryptionKeys: ""
+  externalActionCredentialActiveKeyVersion: "v1"
   llmCredentialEncryptionKeys: ""
   llmCredentialActiveKeyVersion: "v1"
   authLoginFingerprintKeys: ""  # Override with external secret

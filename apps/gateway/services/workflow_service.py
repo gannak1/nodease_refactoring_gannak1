@@ -32,7 +32,15 @@ from apps.shared.domain.slack_delivery import (
     SlackGraphBoundaryError,
     validate_slack_graph_boundary,
 )
+from apps.shared.domain.external_action_credential_graph import (
+    ExternalActionCredentialGraphBoundaryError,
+    validate_github_credential_graph_boundary,
+)
 from apps.shared.schemas.workflow import WorkflowCreateRequest, WorkflowDraftRequest
+from apps.shared.services.external_action_credential import (
+    ExternalActionCredentialRuntimeError,
+    ExternalActionCredentialUseResolver,
+)
 from apps.shared.services.permission_audit import record_resource_permission_denied
 from apps.shared.services.permissions import (
     get_effective_mail_credential_auth_state,
@@ -604,6 +612,13 @@ class WorkflowService:
         )
         if not isinstance(nodes, list):
             return
+        WorkflowService.validate_external_action_credential_references(
+            db,
+            nodes,
+            user_id=user_id,
+            organization_id=organization_id,
+            require_resolved=require_resolved,
+        )
         mail_nodes = [
             node
             for node in WorkflowService._iter_workflow_nodes(nodes)
@@ -693,6 +708,85 @@ class WorkflowService:
             )
 
     @staticmethod
+    def validate_external_action_credential_references(
+        db: Session,
+        nodes: list[Any],
+        *,
+        user_id: str,
+        organization_id: UUID,
+        require_resolved: bool = False,
+    ) -> None:
+        """Validate opaque Slack/GitHub references at every graph persistence gate."""
+
+        try:
+            user_uuid = uuid.UUID(str(user_id))
+            organization_uuid = uuid.UUID(str(organization_id))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="external_action_credential.context_invalid",
+            ) from exc
+
+        for node in WorkflowService._iter_workflow_nodes(nodes):
+            node_type = (
+                node.get("type")
+                if isinstance(node, dict)
+                else getattr(node, "type", None)
+            )
+            if node_type not in {"slackPostNode", "githubNode"}:
+                continue
+            data = (
+                node.get("data")
+                if isinstance(node, dict)
+                else getattr(node, "data", None)
+            )
+            if not isinstance(data, Mapping):
+                raise HTTPException(
+                    status_code=422,
+                    detail="external_action_credential.graph_configuration_invalid",
+                )
+            credential_value = data.get("credential_id")
+            if credential_value is None:
+                if require_resolved:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="external_action_credential.reference_required",
+                    )
+                continue
+            try:
+                credential_id = uuid.UUID(str(credential_value))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail="external_action_credential.reference_invalid",
+                ) from exc
+
+            expected_provider = (
+                "github"
+                if node_type == "githubNode"
+                else (
+                    "slack_webhook"
+                    if data.get("slackMode") == "webhook"
+                    else "slack_api"
+                )
+            )
+            try:
+                ExternalActionCredentialUseResolver.revalidate_use(
+                    db,
+                    user_id=user_uuid,
+                    organization_id=organization_uuid,
+                    credential_id=credential_id,
+                    expected_provider=expected_provider,
+                )
+            except ExternalActionCredentialRuntimeError as exc:
+                # Missing, revoked, cross-organization, provider mismatch, and
+                # denied references intentionally share one resource-hiding code.
+                raise HTTPException(
+                    status_code=404,
+                    detail="external_action_credential.unavailable",
+                ) from exc
+
+    @staticmethod
     def validate_external_node_storage_boundaries(
         request: WorkflowDraftRequest | Mapping[str, Any],
         *,
@@ -713,6 +807,16 @@ class WorkflowService:
             raise HTTPException(
                 status_code=422,
                 detail="slack.graph_configuration_invalid",
+            ) from exc
+        try:
+            validate_github_credential_graph_boundary(
+                nodes,
+                require_resolved=require_resolved,
+            )
+        except ExternalActionCredentialGraphBoundaryError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="external_action_credential.graph_configuration_invalid",
             ) from exc
 
         graph = (
@@ -785,8 +889,13 @@ class WorkflowService:
         from apps.shared.domain.workflow_node_binding import (
             strip_workflow_node_bindings,
         )
+        from apps.shared.domain.external_action_credential_graph import (
+            redact_external_action_credential_graph,
+        )
 
-        data = strip_workflow_node_bindings(workflow.graph)
+        data = redact_external_action_credential_graph(
+            strip_workflow_node_bindings(workflow.graph)
+        )
 
         if workflow.features:
             data["features"] = workflow.features

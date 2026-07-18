@@ -12,6 +12,7 @@ from apps.gateway.api.v1.endpoints import (
     knowledge,
     llm,
     mail_credentials,
+    external_action_credentials,
     notification,
     organization,
     permission_request,
@@ -66,6 +67,11 @@ api_router.include_router(
 api_router.include_router(llm.router, prefix="/llm", tags=["llm"])
 api_router.include_router(
     mail_credentials.router, prefix="/mail", tags=["mail-credentials"]
+)
+api_router.include_router(
+    external_action_credentials.router,
+    prefix="/external-action-credentials",
+    tags=["external-action-credentials"],
 )
 api_router.include_router(
     prompt_wizard.router, prefix="/prompt-wizard", tags=["prompt-wizard"]

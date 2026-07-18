@@ -119,6 +119,15 @@ spec:
         - name: MAIL_CREDENTIAL_ACTIVE_KEY_VERSION
           value: {{ .Values.secrets.mailCredentialActiveKeyVersion | default "v1" | quote }}
         {{- end }}
+        {{- if .Values.secrets.externalActionCredentialEncryptionKeys }}
+        - name: EXTERNAL_ACTION_CREDENTIAL_ENCRYPTION_KEYS
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "moduly.secretName" . }}
+              key: EXTERNAL_ACTION_CREDENTIAL_ENCRYPTION_KEYS
+        - name: EXTERNAL_ACTION_CREDENTIAL_ACTIVE_KEY_VERSION
+          value: {{ .Values.secrets.externalActionCredentialActiveKeyVersion | default "v1" | quote }}
+        {{- end }}
         {{- if .Values.secrets.llmCredentialEncryptionKeys }}
         - name: LLM_CREDENTIAL_ENCRYPTION_KEYS
           valueFrom:

@@ -16,18 +16,22 @@ from sqlalchemy.orm import Session
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
 from apps.shared.db.models.mail_credential import MailCredential
+from apps.shared.db.models.external_action_credential import ExternalActionCredential
 from apps.shared.db.models.team import (
+    TeamExternalActionCredentialPermission,
     TeamKnowledgePermission,
     TeamLLMPermission,
     TeamMailCredentialPermission,
     TeamWorkflowPermission,
     UserKnowledgePermission,
+    UserExternalActionCredentialPermission,
     UserLLMPermission,
     UserMailCredentialPermission,
     UserWorkflowPermission,
 )
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.permissions import (
+    external_action_credential_auth_state_allows,
     knowledge_base_auth_state_allows,
     llm_credential_auth_state_allows,
     mail_credential_auth_state_allows,
@@ -38,6 +42,9 @@ from apps.shared.services.permissions import (
     get_effective_llm_credential_auth_state,
     get_effective_mail_credential_auth_state,
     get_effective_workflow_auth_state,
+)
+from apps.shared.services.external_action_credential import (
+    get_effective_external_action_credential_auth_state,
 )
 
 
@@ -198,6 +205,33 @@ RESOURCE_PERMISSION_REGISTRY: Mapping[str, ResourcePermissionSpec] = MappingProx
             ),
             auth_state_allows=lambda auth_state, action: (
                 mail_credential_auth_state_allows(auth_state, action)
+            ),
+            active_filter=lambda model: model.status == "active",
+        ),
+        "external_action_credential": ResourcePermissionSpec(
+            resource_type="external_action_credential",
+            target_model=ExternalActionCredential,
+            not_found_detail="External action credential not found",
+            team_route=PermissionRoute(
+                model=TeamExternalActionCredentialPermission,
+                resource_column="external_action_credential_id",
+                grantee_column="team_id",
+            ),
+            user_route=PermissionRoute(
+                model=UserExternalActionCredentialPermission,
+                resource_column="external_action_credential_id",
+                grantee_column="user_id",
+            ),
+            auth_state_resolver=lambda db, user_id, resource_id, *, organization_id: (
+                get_effective_external_action_credential_auth_state(
+                    db,
+                    user_id,
+                    resource_id,
+                    organization_id=organization_id,
+                )
+            ),
+            auth_state_allows=lambda auth_state, action: (
+                external_action_credential_auth_state_allows(auth_state, action)
             ),
             active_filter=lambda model: model.status == "active",
         ),

@@ -1,6 +1,9 @@
 import pytest
+from uuid import uuid4
+
 from apps.shared.domain.slack_delivery import (
     SLACK_GRAPH_CONFIGURATION_INVALID,
+    SLACK_LEGACY_CREDENTIAL_REQUIRES_MIGRATION,
     SLACK_LEGACY_SELECTOR_REQUIRES_MIGRATION,
     SlackGraphBoundaryError,
     is_valid_commercial_slack_webhook_url,
@@ -15,9 +18,9 @@ def _slack_node(data=None):
         "data": {
             "title": "Slack",
             "slackMode": "api",
+            "credential_id": str(uuid4()),
             "channel": "C123",
             "message": "hello",
-            "authConfig": {"token": "static-token"},
             "referenced_variables": [],
             **(data or {}),
         },
@@ -97,8 +100,6 @@ def test_slack_graph_boundary_rejects_webhook_message_ref_selector_only():
         {
             "slackMode": "webhook",
             "channel": "legacy-channel",
-            "authConfig": {},
-            "url": "https://hooks.slack.com/services/a/b/c",
         }
     )
     consumer = {
@@ -152,7 +153,6 @@ def test_slack_graph_boundary_rejects_noncanonical_webhook_before_deployment(url
         {
             "slackMode": "webhook",
             "channel": "",
-            "authConfig": {},
             "url": url,
         }
     )
@@ -160,7 +160,7 @@ def test_slack_graph_boundary_rejects_noncanonical_webhook_before_deployment(url
     with pytest.raises(SlackGraphBoundaryError) as error:
         validate_slack_graph_boundary([node], require_resolved=True)
 
-    assert error.value.reason_code == SLACK_GRAPH_CONFIGURATION_INVALID
+    assert error.value.reason_code == SLACK_LEGACY_CREDENTIAL_REQUIRES_MIGRATION
 
 
 def test_commercial_slack_webhook_validator_accepts_exact_shape():
@@ -176,8 +176,6 @@ def test_slack_graph_boundary_ignores_legacy_channel_in_webhook_mode():
                 {
                     "slackMode": "webhook",
                     "channel": "legacy-channel",
-                    "authConfig": {},
-                    "url": "https://hooks.slack.com/services/a/b/c",
                 }
             )
         ],
@@ -194,7 +192,7 @@ def test_slack_graph_boundary_ignores_legacy_channel_in_webhook_mode():
         ("authConfig", {"token": " token-with-space "}),
     ],
 )
-def test_resolved_api_rejects_noncanonical_token_or_channel(field, value):
+def test_resolved_api_rejects_noncanonical_channel_or_legacy_token(field, value):
     with pytest.raises(SlackGraphBoundaryError):
         validate_slack_graph_boundary(
             [_slack_node({field: value})],

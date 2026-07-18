@@ -96,7 +96,7 @@ class ResourcePermissionEntry(BaseModel):
 
 class ResourcePermissionListResponse(BaseModel):
     resource_type: Literal[
-        "workflow", "knowledge_base", "llm_credential", "mail_credential"
+          "workflow", "knowledge_base", "llm_credential", "mail_credential", "external_action_credential"
     ]
     resource_id: UUID
     organization_id: UUID

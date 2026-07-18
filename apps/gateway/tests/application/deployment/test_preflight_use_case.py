@@ -4,6 +4,7 @@ import pytest
 
 from apps.gateway.application.deployment.errors import DeploymentPreflightBlocked
 from apps.gateway.application.deployment.models import (
+    ExternalActionCredentialSnapshot,
     KnowledgeBaseSnapshot,
     KnowledgeCollectionPreflightSnapshot,
     MailCredentialSnapshot,
@@ -28,6 +29,9 @@ class _Repository:
             tuple[uuid.UUID, uuid.UUID], WorkflowNodeTargetSnapshot
         ] = {}
         self.mail_credentials: dict[uuid.UUID, MailCredentialSnapshot] = {}
+        self.external_action_credentials: dict[
+            uuid.UUID, ExternalActionCredentialSnapshot
+        ] = {}
         self.calls: list[tuple[str, uuid.UUID | None]] = []
 
     def get_active_knowledge_bases(self, ids, organization_id):
@@ -80,12 +84,28 @@ class _Repository:
             if item_id in self.mail_credentials
         }
 
+    def get_external_action_credential_snapshots(
+        self,
+        ids,
+        organization_id,
+        principal_id,
+    ):
+        self.calls.append(("external_action", organization_id))
+        return {
+            item_id: self.external_action_credentials[item_id]
+            for item_id in ids
+            if item_id in self.external_action_credentials
+        }
+
 
 class _PermissionDenialAudit:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
     def record_mail_credential_use_denied(self, **kwargs) -> None:
+        self.calls.append(kwargs)
+
+    def record_external_action_credential_use_denied(self, **kwargs) -> None:
         self.calls.append(kwargs)
 
 
@@ -96,6 +116,100 @@ def test_mail_credential_snapshot_contains_only_safe_decision_fields():
         "usable_by_principal",
         "effective_auth_state",
     }
+
+
+def test_external_action_credential_snapshot_contains_only_safe_decision_fields():
+    assert set(ExternalActionCredentialSnapshot.__dataclass_fields__) == {
+        "provider",
+        "usable_by_principal",
+        "effective_auth_state",
+    }
+
+
+def test_external_action_credential_provider_or_permission_failure_is_safe():
+    organization_id = uuid.uuid4()
+    principal_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    repository = _Repository()
+    repository.external_action_credentials[credential_id] = (
+        ExternalActionCredentialSnapshot(
+            provider="github",
+            usable_by_principal=False,
+            effective_auth_state="viewer",
+        )
+    )
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=organization_id,
+        principal_id=principal_id,
+        node_catalog_by_type=_catalog(slackPostNode=("external_write", True)),
+    )
+
+    result = use_case.preview(
+        deployment_type="workflow_node",
+        graph_snapshot=_slack_graph(
+            {
+                "title": "Slack",
+                "slackMode": "api",
+                "credential_id": str(credential_id),
+                "channel": "C123",
+                "message": "hello",
+                "configuration_state": "resolved",
+            }
+        ),
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "external_action_credential_unavailable"
+    assert repository.calls == [("external_action", organization_id)]
+
+
+def test_enforcement_audits_denied_external_action_credential_once():
+    organization_id = uuid.uuid4()
+    principal_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    repository = _Repository()
+    repository.external_action_credentials[credential_id] = (
+        ExternalActionCredentialSnapshot(
+            provider="slack_api",
+            usable_by_principal=False,
+            effective_auth_state="viewer",
+        )
+    )
+    audit = _PermissionDenialAudit()
+    graph = _slack_graph(
+        {
+            "title": "Slack",
+            "slackMode": "api",
+            "credential_id": str(credential_id),
+            "channel": "C123",
+            "message": "hello",
+            "configuration_state": "resolved",
+        }
+    )
+    graph["nodes"].append(
+        _node("slack-2", "slackPostNode", dict(graph["nodes"][1]["data"]))
+    )
+    graph["edges"].append(_edge("start", "slack-2", "start-slack-2"))
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=organization_id,
+        principal_id=principal_id,
+        node_catalog_by_type=_catalog(slackPostNode=("external_write", True)),
+        permission_denial_audit=audit,
+    )
+
+    with pytest.raises(DeploymentPreflightBlocked):
+        use_case.enforce_authenticated_run(graph_snapshot=graph)
+
+    assert audit.calls == [
+        {
+            "principal_id": principal_id,
+            "organization_id": organization_id,
+            "credential_id": credential_id,
+            "effective_auth_state": "viewer",
+        }
+    ]
 
 
 def test_internal_chatbot_private_kb_uses_authenticated_audience():
@@ -599,7 +713,6 @@ def test_inactive_preview_treats_empty_slack_payload_as_unresolved(payload):
             {
                 "title": "Slack",
                 "slackMode": "api",
-                "authConfig": {"token": "configuration-ready"},
                 "channel": "C123",
                 "configuration_state": "unresolved",
                 **payload,
@@ -660,7 +773,7 @@ def test_inactive_preview_preserves_slack_invalid_issue_with_unresolved_node():
             {
                 "title": "Slack legacy selector",
                 "slackMode": "api",
-                "authConfig": {"token": "configuration-ready"},
+                "authConfig": {},
                 "channel": "C123",
                 "message": "{{legacy}}",
                 "referenced_variables": [

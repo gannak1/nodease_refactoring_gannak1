@@ -39,13 +39,13 @@ const props = (
 });
 
 describe('SlackPostNode validation summary', () => {
-  it('API mode는 URL 없이 token과 channel만으로 configured 상태다', () => {
+  it('API mode는 credential reference와 channel이 있으면 configured 상태다', () => {
     render(
       <SlackPostNode
         {...props({
           slackMode: 'api',
           channel: 'C123',
-          authConfig: { token: 'fixture-token' },
+          credential_id: 'credential-1',
         })}
       />,
     );
@@ -58,8 +58,8 @@ describe('SlackPostNode validation summary', () => {
       <SlackPostNode
         {...props({
           slackMode: 'webhook',
+          credential_id: 'credential-1',
           url: 'https://slack.com/api/chat.postMessage',
-          authConfig: {},
         })}
       />,
     );
@@ -73,8 +73,7 @@ describe('SlackPostNode validation summary', () => {
         {...props({
           slackMode: 'webhook',
           channel: '{{legacy_channel}}',
-          url: 'https://hooks.slack.com/services/T/B/secret',
-          authConfig: {},
+          credential_id: 'credential-1',
         })}
       />,
     );
@@ -88,7 +87,7 @@ describe('SlackPostNode validation summary', () => {
         {...props({
           slackMode: 'api',
           channel: 'C123',
-          authConfig: { token: 'fixture-token' },
+          credential_id: 'credential-1',
           message: '',
           blocks: '[]',
           attachments: '[{"text":"alert"}]',

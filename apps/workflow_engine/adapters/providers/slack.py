@@ -135,6 +135,7 @@ class SlackEffectRequest:
     mode: SlackDeliveryMode
     payload: Mapping[str, Any]
     secret: SlackSecretMaterial
+    authorization_guard: Callable[[], None] | None = None
 
     def __repr__(self) -> str:
         return f"SlackEffectRequest(mode={self.mode.value!r}, payload=<redacted>)"
@@ -146,6 +147,7 @@ class PreparedSlackRequest:
     payload: dict[str, Any]
     canonical_payload: bytes
     secret: SlackSecretMaterial
+    authorization_guard: Callable[[], None] | None = None
 
     def __repr__(self) -> str:
         return f"PreparedSlackRequest(mode={self.mode.value!r}, payload=<redacted>)"
@@ -271,6 +273,10 @@ class SlackEffectAdapter:
             raise ValueError("invalid Slack effect request")
         if not isinstance(payload.secret, SlackSecretMaterial):
             raise ValueError("invalid Slack secret material")
+        if payload.authorization_guard is not None and not callable(
+            payload.authorization_guard
+        ):
+            raise ValueError("invalid Slack authorization guard")
         if not isinstance(payload.payload, Mapping):
             raise ValueError("invalid Slack payload")
         canonical_payload = json.dumps(
@@ -297,6 +303,7 @@ class SlackEffectAdapter:
             payload=json.loads(canonical_payload.decode("utf-8")),
             canonical_payload=canonical_payload,
             secret=payload.secret,
+            authorization_guard=payload.authorization_guard,
         )
         self._set_trace(
             delivery_status="prepared",
@@ -378,6 +385,21 @@ class SlackEffectAdapter:
                 trust_env=False,
                 verify=True,
             ) as client:
+                if request.authorization_guard is not None:
+                    try:
+                        request.authorization_guard()
+                    except Exception:
+                        self._set_trace(
+                            delivery_status="failed_before_effect",
+                            provider_reason="credential_unavailable",
+                            latency_ms=self._latency_ms(started),
+                            request_size=len(request.canonical_payload),
+                        )
+                        raise EffectInvocationFailure(
+                            outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
+                            error_code="credential_unavailable",
+                            retry_before_effect=False,
+                        ) from None
                 request_started = True
                 with client.stream(
                     "POST", url, headers=headers, json=request.payload

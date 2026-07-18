@@ -82,6 +82,10 @@ class AuditAction:
     MAIL_CREDENTIAL_UPDATE = "mail_credential.update"
     MAIL_CREDENTIAL_REVOKE = "mail_credential.revoke"
 
+    EXTERNAL_ACTION_CREDENTIAL_CREATE = "external_action_credential.create"
+    EXTERNAL_ACTION_CREDENTIAL_UPDATE = "external_action_credential.update"
+    EXTERNAL_ACTION_CREDENTIAL_REVOKE = "external_action_credential.revoke"
+
     MODEL_PRICING_UPDATE = "model.pricing_update"
     LLM_CALL = "llm.call"
 

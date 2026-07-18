@@ -310,7 +310,8 @@ export const nodeRegistry: NodeDefinition[] = [
     description: 'Slack으로 메시지를 전송합니다.',
     defaultData: () => ({
       title: 'slack',
-      authConfig: {},
+      credential_id: null,
+      configuration_state: 'unresolved',
       referenced_variables: [],
       message: '',
       channel: '',
@@ -345,7 +346,8 @@ export const nodeRegistry: NodeDefinition[] = [
     defaultData: () => ({
       title: 'github',
       action: 'get_pr',
-      api_token: '',
+      credential_id: null,
+      configuration_state: 'unresolved',
       repo_owner: '',
       repo_name: '',
       pr_number: 0,

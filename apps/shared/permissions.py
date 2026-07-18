@@ -65,6 +65,13 @@ MAIL_CREDENTIAL_ACTION_MINIMUM_AUTH_STATE = {
     "manage": AUTH_STATE_MANAGER,
 }
 
+EXTERNAL_ACTION_CREDENTIAL_ACTION_MINIMUM_AUTH_STATE = {
+    "read": AUTH_STATE_VIEWER,
+    "use": AUTH_STATE_OPERATOR,
+    "write": AUTH_STATE_MANAGER,
+    "manage": AUTH_STATE_MANAGER,
+}
+
 KNOWLEDGE_BASE_ACTION_MINIMUM_AUTH_STATE = {
     "read": AUTH_STATE_VIEWER,
     "use": AUTH_STATE_OPERATOR,
@@ -140,6 +147,15 @@ def llm_credential_auth_state_allows(auth_state: Any, action: str) -> bool:
 
 def mail_credential_auth_state_allows(auth_state: Any, action: str) -> bool:
     minimum = MAIL_CREDENTIAL_ACTION_MINIMUM_AUTH_STATE.get(action)
+    if minimum is None:
+        return False
+    return auth_state_at_least(normalize_resource_auth_state(auth_state), minimum)
+
+
+def external_action_credential_auth_state_allows(
+    auth_state: Any, action: str
+) -> bool:
+    minimum = EXTERNAL_ACTION_CREDENTIAL_ACTION_MINIMUM_AUTH_STATE.get(action)
     if minimum is None:
         return False
     return auth_state_at_least(normalize_resource_auth_state(auth_state), minimum)

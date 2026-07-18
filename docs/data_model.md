@@ -13,12 +13,12 @@ Status: Draft
 
 ## 도메인별 테이블
 
-현재 코드의 SQLAlchemy `__tablename__` 기준 활성 테이블은 98개다. 아래 목록은 공통 model registry와 Alembic head `c2e8f4a91d67`를 대조한 inventory다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 주석 처리된 호환 모델이므로 개수와 목록에서 제외한다. 테이블 추가·삭제 시 수동 개수만 바꾸지 말고 이 inventory와 해당 도메인 설명을 함께 갱신한다.
+현재 코드의 SQLAlchemy `__tablename__` 기준 활성 테이블은 101개다. 아래 목록은 공통 model registry와 Alembic head에 반영될 external action credential migration을 포함한 inventory다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 주석 처리된 호환 모델이므로 개수와 목록에서 제외한다. 테이블 추가·삭제 시 수동 개수만 바꾸지 말고 이 inventory와 해당 도메인 설명을 함께 갱신한다.
 
 | 도메인 | 테이블 |
 | --- | --- |
 | 사용자/조직 | `users`, `organization`, `organization_memberships`, `teams`, `team_memberships` |
-| 권한 | `team_workflow_permissions`, `team_knowledge_permissions`, `team_knowledge_collection_permissions`, `team_knowledge_domain_permissions`, `team_llm_permissions`, `team_mail_credential_permissions`, `team_audit_permissions`, `user_workflow_permissions`, `user_knowledge_permissions`, `user_knowledge_collection_permissions`, `user_knowledge_domain_permissions`, `user_llm_permissions`, `user_mail_credential_permissions`, `permission_requests`, `user_app_creation_permissions` |
+| 권한 | `team_workflow_permissions`, `team_knowledge_permissions`, `team_knowledge_collection_permissions`, `team_knowledge_domain_permissions`, `team_llm_permissions`, `team_mail_credential_permissions`, `team_external_action_credential_permissions`, `team_audit_permissions`, `user_workflow_permissions`, `user_knowledge_permissions`, `user_knowledge_collection_permissions`, `user_knowledge_domain_permissions`, `user_llm_permissions`, `user_mail_credential_permissions`, `user_external_action_credential_permissions`, `permission_requests`, `user_app_creation_permissions` |
 | 앱/워크플로우 | `apps`, `workflows`, `workflow_budgets`, `workflow_deployments`, `schedules`, `schedule_dispatch_claims`, `workflow_runs`, `workflow_node_runs`, `workflow_node_effect_attempts`, `llm_node_versions`, `deployment_parameter_optimization_plans` |
 | Agent Builder | `agent_builder_sessions`, `agent_builder_requests`, `agent_builder_drafts` |
 | Conversation Memory | `conversation_sessions`, `conversation_access_grants`, `conversation_turns`, `conversation_memory_entries`, `conversation_memory_summaries`, `memory_data_dependencies`, `memory_entry_dependencies`, `memory_summary_dependencies`, `memory_turn_dispatch_jobs`, `memory_summary_generation_jobs`, `memory_context_plans`, `memory_context_leases`, `memory_context_provider_attempts`, `conversation_purge_jobs`, `conversation_idempotency_records` |
@@ -27,7 +27,7 @@ Status: Draft
 | Knowledge/RAG | `knowledge_bases`, `documents`, `document_versions`, `document_chunks`, `rag_answer_runs`, `knowledge_collections`, `knowledge_collection_items`, `knowledge_collection_sync_jobs`, `knowledge_collection_sync_job_items`, `knowledge_ingestion_outbox`, `knowledge_document_ingestion_jobs`, `knowledge_source_identities`, `source_authorization_provenance`, `source_policy_kb_use_grants` |
 | LLM | `llm_providers`, `llm_models`, `llm_credentials`, `llm_rel_credential_models`, `llm_usage_logs` |
 | LLM routing/비용 | `llm_node_model_routing_cohort_examples`, `llm_node_model_routing_cohorts`, `llm_node_model_routing_model_evidence`, `llm_node_model_routing_observations`, `llm_node_model_routing_policies`, `llm_node_model_routing_policy_run_events`, `llm_node_model_routing_policy_updates`, `llm_node_model_routing_validation_batches`, `llm_node_model_routing_validation_budget_months`, `llm_node_model_routing_validation_cost_events`, `llm_node_model_routing_validation_items`, `cost_optimizer_candidates`, `cost_optimizer_experiments`, `cost_optimizer_recommendation_verifications` |
-| 외부 연동 | `connections`, `mail_credentials`, `mail_draft_effects`, `mail_message_processings` |
+| 외부 연동 | `connections`, `mail_credentials`, `external_action_credentials`, `mail_draft_effects`, `mail_message_processings` |
 
 ## 엔티티 관계
 
@@ -40,6 +40,7 @@ erDiagram
   organization ||--o{ knowledge_bases : scopes
   organization ||--o{ llm_credentials : scopes
   organization ||--o{ mail_credentials : scopes
+  organization ||--o{ external_action_credentials : scopes
   organization ||--o{ rag_answer_runs : scopes
   users ||--o{ team_memberships : joins
   teams ||--o{ team_memberships : has_members
@@ -49,10 +50,12 @@ erDiagram
   teams ||--o{ team_llm_permissions : grants
   teams ||--o{ team_audit_permissions : grants
   teams ||--o{ team_mail_credential_permissions : grants
+  teams ||--o{ team_external_action_credential_permissions : grants
   users ||--o{ user_workflow_permissions : direct_grant
   users ||--o{ user_knowledge_permissions : direct_grant
   users ||--o{ user_llm_permissions : direct_grant
   users ||--o{ user_mail_credential_permissions : direct_grant
+  users ||--o{ user_external_action_credential_permissions : direct_grant
 
   apps ||--o{ workflows : has
   apps ||--o{ workflow_deployments : deploys
@@ -80,6 +83,8 @@ erDiagram
 
   mail_credentials ||--o{ team_mail_credential_permissions : grants
   mail_credentials ||--o{ user_mail_credential_permissions : direct_grant
+  external_action_credentials ||--o{ team_external_action_credential_permissions : grants
+  external_action_credentials ||--o{ user_external_action_credential_permissions : direct_grant
 
   users ||--o{ audit_logs : acts
   users ||--o{ connections : owns
@@ -211,7 +216,7 @@ user와 organization의 직접 소속. organization scope와 manager 판정의 �
 
 #### Team permission 공통 구조
 
-`team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_mail_credential_permissions`, `team_audit_permissions`는 대상 리소스 컬럼만 다르고 구조가 같다.
+`team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_mail_credential_permissions`, `team_external_action_credential_permissions`, `team_audit_permissions`는 대상 리소스 컬럼만 다르고 구조가 같다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
@@ -232,11 +237,12 @@ user와 organization의 직접 소속. organization scope와 manager 판정의 �
 | `team_knowledge_permissions` | knowledge_base_id | knowledge_bases.id | (grantee_organization_id, knowledge_base_id, team_id) |
 | `team_llm_permissions` | llm_credential_id | llm_credentials.id | (grantee_organization_id, llm_credential_id, team_id) |
 | `team_mail_credential_permissions` | mail_credential_id | (mail_credential_id, grantee_organization_id) → mail_credentials(id, organization_id) | (grantee_organization_id, mail_credential_id, team_id) |
+| `team_external_action_credential_permissions` | external_action_credential_id | (external_action_credential_id, grantee_organization_id) → external_action_credentials(id, organization_id) | (grantee_organization_id, external_action_credential_id, team_id) |
 | `team_audit_permissions` | target_organization_id | organization.id | (grantee_organization_id, target_organization_id, team_id) |
 
 #### User direct permission 공통 구조
 
-`user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions`, `user_mail_credential_permissions`. additive allow 전용이다.
+`user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions`, `user_mail_credential_permissions`, `user_external_action_credential_permissions`. additive allow 전용이다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
@@ -255,6 +261,7 @@ user와 organization의 직접 소속. organization scope와 manager 판정의 �
 | `user_knowledge_permissions` | knowledge_base_id | (knowledge_base_id, grantee_organization_id) → knowledge_bases(id, organization_id) | (grantee_organization_id, user_id, knowledge_base_id) |
 | `user_llm_permissions` | llm_credential_id | (llm_credential_id, grantee_organization_id) → llm_credentials(id, organization_id) | (grantee_organization_id, user_id, llm_credential_id) |
 | `user_mail_credential_permissions` | mail_credential_id | (mail_credential_id, grantee_organization_id) → mail_credentials(id, organization_id) | (grantee_organization_id, user_id, mail_credential_id) |
+| `user_external_action_credential_permissions` | external_action_credential_id | (external_action_credential_id, grantee_organization_id) → external_action_credentials(id, organization_id) | (grantee_organization_id, user_id, external_action_credential_id) |
 
 - `user_workflow_permissions`의 organization 단독 조건은 UNIQUE 인덱스의 왼쪽 접두어를 사용한다. 별도 `grantee_organization_id` 단일 인덱스는 유지하지 않는다.
 
@@ -1167,6 +1174,25 @@ Mailbox identity, provider/auth type과 IMAP endpoint/TLS mode는 생성 후 불
 `team_mail_credential_permissions`와 `user_mail_credential_permissions`는 Mail credential의 `read/use/manage`를 기존 auth state 계층으로 표현한다. Organization manager는 resource override를 가지며 runtime은 실행 직전에 동일 organization, active 상태와 `use` 권한을 다시 검사한다.
 
 `auth_type=oauth2`인 Gmail credential은 `encrypted_secret` envelope 안에 `gmail.modify` scope를 포함한 versioned OAuth secret payload를 저장한다. Refresh/access token 원문은 별도 column, workflow graph, API response, audit 또는 trace에 저장하지 않는다. OAuth row는 Gmail REST API를 사용하고 IMAP app password/password row만 제한된 IMAP egress 경로를 사용하지만 동일 resource permission/lifecycle을 공유한다.
+
+#### `external_action_credentials`
+
+GitHub와 Slack action에 사용하는 organization-scoped encrypted credential resource다. Workflow graph에는 opaque `credential_id`만 저장한다. `encrypted_secret`과 encryption metadata는 API response, graph, deployment snapshot, audit, trace, log에 포함하지 않는다.
+
+| 컬럼 | 타입 | 제약 |
+| --- | --- | --- |
+| id | UUID | PK, organization과 UNIQUE `(id, organization_id)` |
+| organization_id | UUID | NOT NULL, FK→organization.id |
+| credential_name | VARCHAR(255) | NOT NULL |
+| provider | VARCHAR(32) | NOT NULL, `github/slack_api/slack_webhook` CHECK |
+| encrypted_secret | TEXT | NOT NULL, 응답·로그 노출 금지 |
+| encryption_key_version / encryption_algorithm | VARCHAR | NOT NULL, versioned envelope metadata |
+| revision | INTEGER | NOT NULL, `> 0`, optimistic update 및 runtime revalidation 기준 |
+| status | VARCHAR(32) | NOT NULL, `active` 또는 `revoked` |
+| created_by | UUID | NOT NULL, FK→users.id |
+| created_at / updated_at / revoked_at | DATETIME | lifecycle timestamps |
+
+`team_external_action_credential_permissions`와 `user_external_action_credential_permissions`는 same-organization composite FK로 credential scope를 강제한다. Runtime은 provider call 직전에 same organization, active status, provider 일치, execution subject `use`와 `revision`을 다시 검사한다. Legacy graph secret은 migration에서 삭제되며 rollback은 삭제된 secret을 복구하지 않는다.
 
 #### `mail_message_processings`
 

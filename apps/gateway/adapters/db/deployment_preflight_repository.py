@@ -7,12 +7,17 @@ from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
 from apps.gateway.application.deployment.models import (
+    ExternalActionCredentialSnapshot,
     KnowledgeBaseSnapshot,
     KnowledgeCollectionPreflightSnapshot,
     MailCredentialSnapshot,
     WorkflowNodeTargetSnapshot,
 )
 from apps.shared.db.models.app import App
+from apps.shared.db.models.external_action_credential import (
+    EXTERNAL_ACTION_CREDENTIAL_ACTIVE,
+    ExternalActionCredential,
+)
 from apps.shared.db.models.knowledge import (
     KnowledgeBase,
     KnowledgeCollection,
@@ -33,7 +38,13 @@ from apps.shared.services.knowledge_resource_eligibility import (
     knowledge_collection_operational_predicates,
     retrieval_visible_chunk_exists,
 )
-from apps.shared.permissions import mail_credential_auth_state_allows
+from apps.shared.permissions import (
+    external_action_credential_auth_state_allows,
+    mail_credential_auth_state_allows,
+)
+from apps.shared.services.external_action_credential import (
+    get_effective_external_action_credential_auth_states,
+)
 from apps.shared.services.permissions import (
     get_effective_mail_credential_auth_states,
 )
@@ -334,6 +345,47 @@ class SqlAlchemyDeploymentPreflightRepository:
             )
             for row in rows
         }
+
+    def get_external_action_credential_snapshots(
+        self,
+        credential_ids: Iterable[uuid.UUID],
+        organization_id: uuid.UUID | None,
+        principal_id: uuid.UUID | None,
+    ) -> dict[uuid.UUID, ExternalActionCredentialSnapshot]:
+        ids = _dedupe_ids(credential_ids)
+        if not ids or organization_id is None:
+            return {}
+        rows = (
+            self.db.query(ExternalActionCredential)
+            .filter(
+                ExternalActionCredential.id.in_(ids),
+                ExternalActionCredential.organization_id == organization_id,
+                ExternalActionCredential.status == EXTERNAL_ACTION_CREDENTIAL_ACTIVE,
+            )
+            .all()
+        )
+        auth_states = (
+            get_effective_external_action_credential_auth_states(
+                self.db,
+                principal_id,
+                (row.id for row in rows),
+                organization_id,
+            )
+            if principal_id is not None
+            else {}
+        )
+        result: dict[uuid.UUID, ExternalActionCredentialSnapshot] = {}
+        for row in rows:
+            effective_auth_state = auth_states.get(row.id, "none")
+            result[row.id] = ExternalActionCredentialSnapshot(
+                provider=row.provider,
+                usable_by_principal=external_action_credential_auth_state_allows(
+                    effective_auth_state,
+                    "use",
+                ),
+                effective_auth_state=effective_auth_state,
+            )
+        return result
 
 
 def _dedupe_ids(values: Iterable[uuid.UUID]) -> list[uuid.UUID]:

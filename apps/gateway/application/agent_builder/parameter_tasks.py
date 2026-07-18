@@ -85,20 +85,11 @@ def _canonical_node_parameter_value(
     if parameter_key in node_data:
         return True, node_data[parameter_key]
     if node_type == "githubNode" and parameter_key == "credential":
-        return ("api_token" in node_data), node_data.get("api_token")
+        return ("credential_id" in node_data), node_data.get("credential_id")
     if node_type == "slackPostNode" and parameter_key == "credential":
-        auth_config = node_data.get("authConfig")
-        if node_data.get("authType") == "bearer" and isinstance(auth_config, dict):
-            return ("token" in auth_config), auth_config.get("token")
+        return ("credential_id" in node_data), node_data.get("credential_id")
     if node_type == "slackPostNode" and parameter_key == "channel":
-        body = node_data.get("body")
-        if isinstance(body, str):
-            try:
-                body = json.loads(body)
-            except (TypeError, ValueError):
-                body = None
-        if isinstance(body, dict):
-            return ("channel" in body), body.get("channel")
+        return ("channel" in node_data), node_data.get("channel")
     return False, None
 
 

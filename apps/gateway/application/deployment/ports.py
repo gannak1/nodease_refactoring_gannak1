@@ -5,6 +5,7 @@ from collections.abc import Iterable, Mapping
 from typing import Protocol
 
 from .models import (
+    ExternalActionCredentialSnapshot,
     KnowledgeBaseSnapshot,
     KnowledgeCollectionPreflightSnapshot,
     MailCredentialSnapshot,
@@ -51,9 +52,25 @@ class DeploymentPreflightRepository(Protocol):
         principal_id: uuid.UUID | None,
     ) -> Mapping[uuid.UUID, MailCredentialSnapshot]: ...
 
+    def get_external_action_credential_snapshots(
+        self,
+        credential_ids: Iterable[uuid.UUID],
+        organization_id: uuid.UUID | None,
+        principal_id: uuid.UUID | None,
+    ) -> Mapping[uuid.UUID, ExternalActionCredentialSnapshot]: ...
+
 
 class PermissionDenialAuditPort(Protocol):
     def record_mail_credential_use_denied(
+        self,
+        *,
+        principal_id: uuid.UUID,
+        organization_id: uuid.UUID,
+        credential_id: uuid.UUID,
+        effective_auth_state: str,
+    ) -> None: ...
+
+    def record_external_action_credential_use_denied(
         self,
         *,
         principal_id: uuid.UUID,

@@ -2,24 +2,21 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import { workflowApi } from '../../api/workflowApi';
 import { DeploymentResponse } from '../../types/Deployment';
-import { X, Settings, Key, Eye, EyeOff, Copy } from 'lucide-react';
+import { X, Settings, Key, Copy } from 'lucide-react';
 import { toast } from 'sonner';
 import { AppAuthSecretControl } from '@/app/features/app/components/AppAuthSecretControl';
 
-// 노드 타입별 자격 증명 필드 정의
-const CREDENTIAL_FIELDS: Record<
+const CREDENTIAL_REFERENCE_FIELDS: Record<
   string,
-  { service: string; keyField: string; name: string }
+  { service: string; name: string }
 > = {
   slackPostNode: {
     service: 'Slack',
-    keyField: 'authConfig.token',
-    name: 'Bot Token',
+    name: 'Slack Credential',
   },
   githubNode: {
     service: 'GitHub',
-    keyField: 'api_token',
-    name: 'Personal Access Token',
+    name: 'GitHub Credential',
   },
 };
 
@@ -35,7 +32,6 @@ export function SettingsSidebar() {
   const [activeTab, setActiveTab] = useState<'deploy' | 'keys'>('deploy');
   const [deployments, setDeployments] = useState<DeploymentResponse[]>([]);
   const [loading, setLoading] = useState(false);
-  const [visibleKeys, setVisibleKeys] = useState<Record<string, boolean>>({});
 
   // 배포 이력 가져오기
   const fetchDeployments = async () => {
@@ -71,55 +67,24 @@ export function SettingsSidebar() {
     return Object.values(latestTypes);
   }, [deployments]);
 
-  // 외부 연동 키 집계
+  // 외부 연동 credential reference 집계. 원문 secret은 client state에 노출하지 않는다.
   const credentials = useMemo(() => {
     const creds: {
       id: string;
       service: string;
       name: string;
-      value: string;
     }[] = [];
 
     nodes.forEach((node) => {
-      // 1. 일반 노드 크리덴셜
-      const config = CREDENTIAL_FIELDS[node.type || ''];
+      const config = CREDENTIAL_REFERENCE_FIELDS[node.type || ''];
       if (config) {
-        // 중첩 객체 접근 (authConfig.token 등)
-        const keys = config.keyField.split('.');
-        let value = node.data as any;
-        for (const k of keys) {
-          value = value?.[k];
-        }
-
-        if (value && typeof value === 'string') {
+        const credentialId = (node.data as { credential_id?: unknown })
+          .credential_id;
+        if (typeof credentialId === 'string' && credentialId) {
           creds.push({
             id: node.id,
             service: config.service,
             name: config.name,
-            value: value,
-          });
-        }
-      }
-
-      // 2. HTTP 노드 (Authorization 헤더 체크)
-      if (node.type === 'httpRequestNode') {
-        const headers = (node.data as any).headers as Array<{
-          key: string;
-          value: string;
-        }>;
-        const authHeader = headers?.find(
-          (h) => h.key.toLowerCase() === 'authorization',
-        );
-        if (authHeader?.value) {
-          // Bearer 제거하고 값만 추출 시도, 혹은 전체 표시
-          const val = authHeader.value.startsWith('Bearer ')
-            ? authHeader.value.slice(7)
-            : authHeader.value;
-          creds.push({
-            id: node.id,
-            service: 'HTTP Request',
-            name: 'Bearer Token',
-            value: val,
           });
         }
       }
@@ -131,10 +96,6 @@ export function SettingsSidebar() {
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
     toast.success('복사되었습니다.');
-  };
-
-  const toggleKeyVisibility = (id: string) => {
-    setVisibleKeys((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
   if (!isSettingsOpen) return null;
@@ -175,7 +136,7 @@ export function SettingsSidebar() {
           }`}
           onClick={() => setActiveTab('keys')}
         >
-          외부 연동 키
+          외부 연동
         </button>
       </div>
 
@@ -403,11 +364,11 @@ export function SettingsSidebar() {
         {activeTab === 'keys' && (
           <div className="space-y-4">
             <p className="text-xs text-gray-500 mb-4">
-              현재 워크플로우 노드에 저장된 외부 서비스 연동 키입니다.
+              현재 워크플로우 노드에 연결된 외부 credential입니다.
             </p>
             {credentials.length === 0 ? (
               <div className="text-center py-10 text-gray-400 text-sm border border-dashed rounded-lg">
-                설정된 연동 키가 없습니다.
+                연결된 external credential이 없습니다.
               </div>
             ) : (
               credentials.map((cred, idx) => (
@@ -427,31 +388,8 @@ export function SettingsSidebar() {
                     </div>
                   </div>
 
-                  <div className="relative">
-                    <input
-                      type={visibleKeys[cred.id] ? 'text' : 'password'}
-                      value={cred.value}
-                      readOnly
-                      className="w-full text-xs font-mono bg-gray-50 border border-gray-200 rounded px-3 py-2 pr-16 focus:outline-none text-gray-600"
-                    />
-                    <div className="absolute right-1 top-1 flex items-center">
-                      <button
-                        onClick={() => toggleKeyVisibility(cred.id)}
-                        className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-200 rounded"
-                      >
-                        {visibleKeys[cred.id] ? (
-                          <EyeOff className="w-3.5 h-3.5" />
-                        ) : (
-                          <Eye className="w-3.5 h-3.5" />
-                        )}
-                      </button>
-                      <button
-                        onClick={() => copyToClipboard(cred.value)}
-                        className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-200 rounded"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
+                  <div className="rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                    Credential 연결됨
                   </div>
                 </div>
               ))

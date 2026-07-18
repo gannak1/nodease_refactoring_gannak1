@@ -86,6 +86,14 @@ PUBLIC_REQUIRED_ACTIONS = {
         action="select_available_mail_credential",
         label="사용 가능한 Mail credential을 선택하세요",
     ),
+    "external_action_credential_unavailable": PreflightRequiredAction(
+        action="select_available_external_action_credential",
+        label="사용 가능한 외부 연동 credential을 선택하세요",
+    ),
+    "external_action_credential_execution_subject_required": PreflightRequiredAction(
+        action="use_authenticated_execution_surface",
+        label="사용자 실행 주체가 있는 인증 실행 경로를 사용하세요",
+    ),
     "mail_execution_subject_required": PreflightRequiredAction(
         action="use_authenticated_execution_surface",
         label="사용자 실행 주체가 있는 인증 실행 경로를 사용하세요",
@@ -113,6 +121,10 @@ WARNING_REQUIRED_ACTIONS = {
         action="verify_parent_execution_subject",
         label="상위 워크플로우 실행 주체가 Mail 권한을 제공하는지 확인하세요",
     ),
+    "external_action_credential_execution_subject_inherited": PreflightRequiredAction(
+        action="verify_parent_execution_subject",
+        label="상위 워크플로우 실행 주체가 외부 연동 credential 권한을 제공하는지 확인하세요",
+    ),
 }
 
 NON_DOWNGRADABLE_REASON_CODES = {
@@ -124,6 +136,7 @@ NON_DOWNGRADABLE_REASON_CODES = {
     "node_configuration_invalid",
     "workflow_graph_invalid",
     "mail_credential_unavailable",
+    "external_action_credential_unavailable",
 }
 
 ANONYMOUS_PUBLIC_TYPES = {
@@ -460,23 +473,36 @@ class DeploymentPreflightUseCase:
             or self.organization_id is None
         ):
             return
-        recorded_ids: set[uuid.UUID] = set()
+        recorded_keys: set[tuple[str, uuid.UUID]] = set()
         for issue in issues:
             credential_id = issue.permission_resource_id
             effective_auth_state = issue.permission_effective_auth_state
             if (
                 credential_id is None
                 or effective_auth_state is None
-                or credential_id in recorded_ids
+                or issue.reason_code
+                not in {
+                    "mail_credential_unavailable",
+                    "external_action_credential_unavailable",
+                }
+                or (issue.reason_code, credential_id) in recorded_keys
             ):
                 continue
-            recorded_ids.add(credential_id)
-            self.permission_denial_audit.record_mail_credential_use_denied(
-                principal_id=self.principal_id,
-                organization_id=self.organization_id,
-                credential_id=credential_id,
-                effective_auth_state=effective_auth_state,
-            )
+            recorded_keys.add((issue.reason_code, credential_id))
+            if issue.reason_code == "mail_credential_unavailable":
+                self.permission_denial_audit.record_mail_credential_use_denied(
+                    principal_id=self.principal_id,
+                    organization_id=self.organization_id,
+                    credential_id=credential_id,
+                    effective_auth_state=effective_auth_state,
+                )
+            else:
+                self.permission_denial_audit.record_external_action_credential_use_denied(
+                    principal_id=self.principal_id,
+                    organization_id=self.organization_id,
+                    credential_id=credential_id,
+                    effective_auth_state=effective_auth_state,
+                )
 
     def _evaluate_kb_references(
         self,

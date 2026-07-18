@@ -110,6 +110,18 @@ spec:
                   name: app-secrets
                   key: MAIL_CREDENTIAL_ACTIVE_KEY_VERSION
                   optional: true
+            - name: EXTERNAL_ACTION_CREDENTIAL_ENCRYPTION_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: EXTERNAL_ACTION_CREDENTIAL_ENCRYPTION_KEYS
+                  optional: true
+            - name: EXTERNAL_ACTION_CREDENTIAL_ACTIVE_KEY_VERSION
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: EXTERNAL_ACTION_CREDENTIAL_ACTIVE_KEY_VERSION
+                  optional: true
             - name: LLM_CREDENTIAL_ENCRYPTION_KEYS
               valueFrom:
                 secretKeyRef:

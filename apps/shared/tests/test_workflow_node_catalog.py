@@ -238,11 +238,18 @@ def test_external_node_configuration_uses_runtime_fields_not_virtual_task_keys()
     assert derive_node_configuration_state(
         "slackPostNode",
         {
-            "authType": "bearer",
-            "authConfig": {"token": "test-only-placeholder"},
-            "body": '{"channel":"C123","text":"hello"}',
+            "credential_id": "credential-id",
+            "channel": "C123",
         },
     ) == "resolved"
+    assert derive_node_configuration_state(
+        "slackPostNode",
+        {
+            "authType": "bearer",
+            "authConfig": {"token": "test-only-placeholder"},
+            "channel": "C123",
+        },
+    ) == "unresolved"
     assert derive_node_configuration_state(
         "githubNode",
         {
@@ -255,12 +262,36 @@ def test_external_node_configuration_uses_runtime_fields_not_virtual_task_keys()
     assert derive_node_configuration_state(
         "githubNode",
         {
-            "api_token": "test-only-placeholder",
+            "credential_id": "credential-id",
             "repo_owner": "octo",
             "repo_name": "repo",
             "pr_number": 1,
         },
     ) == "resolved"
+    assert derive_node_configuration_state(
+        "githubNode",
+        {
+            "api_token": "test-only-placeholder",
+            "repo_owner": "octo",
+            "repo_name": "repo",
+            "pr_number": 1,
+        },
+    ) == "unresolved"
+
+
+def test_slack_catalog_exposes_only_safe_delivery_outputs():
+    catalog_by_type = {
+        node["node_type"]: node for node in load_workflow_node_catalog()["nodes"]
+    }
+
+    output = catalog_by_type["slackPostNode"]["outputs"][0]
+
+    assert output["keys"] == [
+        "status",
+        "delivery_status",
+        "delivery_mode",
+        "message_ref",
+    ]
 
 
 def test_workflow_node_catalog_declares_connection_policy_for_every_node():

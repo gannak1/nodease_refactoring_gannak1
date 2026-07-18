@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,13 +22,43 @@ from apps.workflow_engine.domain.external_effect import (
 )
 
 
+class GithubSecretMaterial:
+    """Opaque adapter-only GitHub credential material."""
+
+    __slots__ = ("__value",)
+
+    def __init__(self, value: str) -> None:
+        self.__value = value
+
+    def reveal_for_adapter(self) -> str:
+        return self.__value
+
+    def __repr__(self) -> str:
+        return "GithubSecretMaterial(<redacted>)"
+
+    __str__ = __repr__
+
+    def __reduce__(self):  # pragma: no cover - defensive protocol guard
+        raise TypeError("GitHub secret material is not serializable")
+
+    def __copy__(self):  # pragma: no cover - defensive protocol guard
+        raise TypeError("GitHub secret material is not copyable")
+
+    def __deepcopy__(self, memo):  # pragma: no cover - defensive protocol guard
+        raise TypeError("GitHub secret material is not copyable")
+
+
 @dataclass(frozen=True)
 class GithubCommentRequest:
-    token: str
+    secret: GithubSecretMaterial
     repo_owner: str
     repo_name: str
     pr_number: int
     comment_body: str
+    authorization_guard: Callable[[], None] | None = None
+
+    def __repr__(self) -> str:
+        return "GithubCommentRequest(secret=<redacted>, comment_body=<redacted>)"
 
 
 class GithubCommentEffectAdapter:
@@ -107,9 +137,16 @@ class GithubCommentEffectAdapter:
             raise ValueError("unsupported GitHub request semantics")
         if not isinstance(payload, GithubCommentRequest) or not payload.comment_body:
             raise ValueError("invalid GitHub comment request")
+        if not isinstance(payload.secret, GithubSecretMaterial):
+            raise ValueError("invalid GitHub secret material")
+        if payload.authorization_guard is not None and not callable(
+            payload.authorization_guard
+        ):
+            raise ValueError("invalid GitHub authorization guard")
+        secret = payload.secret.reveal_for_adapter()
         canonical = json.dumps(
             {
-                "token": payload.token,
+                "secret": secret,
                 "repo_owner": payload.repo_owner,
                 "repo_name": payload.repo_name,
                 "pr_number": payload.pr_number,
@@ -159,11 +196,21 @@ class GithubCommentEffectAdapter:
             f"{request.repo_owner}/{request.repo_name}/issues/{request.pr_number}/comments"
         )
         headers = {
-            "Authorization": f"token {request.token}",
+            "Authorization": f"token {request.secret.reveal_for_adapter()}",
             "Accept": "application/vnd.github.v3+json",
             "User-Agent": "moduly",
         }
         started = time.perf_counter()
+        if request.authorization_guard is not None:
+            try:
+                request.authorization_guard()
+            except Exception:
+                self._set_trace(request, None, started)
+                raise EffectInvocationFailure(
+                    outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
+                    error_code="credential_unavailable",
+                    retry_before_effect=False,
+                ) from None
         try:
             response = requests.post(
                 url,

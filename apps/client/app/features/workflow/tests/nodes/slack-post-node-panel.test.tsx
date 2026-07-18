@@ -6,6 +6,7 @@ import { SlackPostNodePanel } from '../../components/nodes/slack/components/Slac
 import type { SlackPostNodeData } from '../../types/Nodes';
 
 const updateNodeDataMock = vi.hoisted(() => vi.fn());
+const listAvailableMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@/app/features/workflow/store/useWorkflowStore', () => ({
   useWorkflowStore: () => ({
@@ -21,20 +22,37 @@ vi.mock('../../components/nodes/ui/VariableTokenEditor', () => ({
   ),
 }));
 
+vi.mock('../../api/externalActionCredentialApi', () => ({
+  externalActionCredentialApi: {
+    listAvailable: listAvailableMock,
+  },
+}));
+
 const data = (
   overrides: Partial<SlackPostNodeData> = {},
 ): SlackPostNodeData => ({
   title: 'Slack',
   slackMode: 'api',
+  credential_id: 'credential-1',
   channel: 'C123',
   message: 'hello',
-  authConfig: { token: 'fixture-token' },
   referenced_variables: [],
   ...overrides,
 });
 
 describe('SlackPostNodePanel', () => {
-  beforeEach(() => updateNodeDataMock.mockReset());
+  beforeEach(() => {
+    updateNodeDataMock.mockReset();
+    listAvailableMock.mockResolvedValue([
+      {
+        id: 'credential-1',
+        credential_name: 'Slack 운영 알림',
+        provider: 'slack_api',
+        revision: 1,
+        status: 'active',
+      },
+    ]);
+  });
 
   it('API endpoint를 webhook credential로 잘못 보존하지 않는다', () => {
     render(
@@ -49,8 +67,10 @@ describe('SlackPostNodePanel', () => {
     expect(updateNodeDataMock).toHaveBeenCalledWith('slack-1', {
       slackMode: 'webhook',
       channel: '',
+      credential_id: null,
+      configuration_state: 'unresolved',
       url: undefined,
-      authConfig: {},
+      authConfig: undefined,
       authType: 'none',
     });
   });
@@ -81,7 +101,7 @@ describe('SlackPostNodePanel', () => {
     );
 
     expect(
-      screen.getByText('기존 HTTP 설정은 Slack 전송에 사용되지 않습니다.'),
+      screen.getByText('기존 직접 인증 설정은 사용할 수 없습니다.'),
     ).toBeInTheDocument();
   });
 

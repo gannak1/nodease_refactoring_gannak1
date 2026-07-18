@@ -31,6 +31,7 @@ from apps.shared.db.models.organization_membership import (
 )
 from apps.shared.db.models.team import (
     TeamMembership,
+    UserExternalActionCredentialPermission,
     UserKnowledgePermission,
     UserLLMPermission,
     UserMailCredentialPermission,
@@ -529,6 +530,9 @@ def _cleanup_counts(
         "user_workflow_permissions": revoked_user_permissions.workflow,
         "user_llm_permissions": revoked_user_permissions.llm_credential,
         "user_mail_credential_permissions": revoked_user_permissions.mail_credential,
+        "user_external_action_credential_permissions": (
+            revoked_user_permissions.external_action_credential
+        ),
         "user_app_creation_permissions": revoked_user_permissions.app_creation,
         "user_knowledge_permissions": revoked_user_permissions.knowledge_base,
         "user_audit_permissions": revoked_user_permissions.audit,
@@ -963,6 +967,15 @@ class OrganizationMemberService:
             )
             .delete(synchronize_session=False)
         )
+        revoked_external_action_credential_permissions = (
+            db.query(UserExternalActionCredentialPermission)
+            .filter(
+                UserExternalActionCredentialPermission.grantee_organization_id
+                == organization_id,
+                UserExternalActionCredentialPermission.user_id == user_id,
+            )
+            .delete(synchronize_session=False)
+        )
         revoked_knowledge_permissions = (
             db.query(UserKnowledgePermission)
             .filter(
@@ -986,6 +999,7 @@ class OrganizationMemberService:
             workflow=revoked_workflow_permissions,
             llm_credential=revoked_llm_permissions,
             mail_credential=revoked_mail_permissions,
+            external_action_credential=revoked_external_action_credential_permissions,
             app_creation=revoked_app_creation_permissions,
             knowledge_base=revoked_knowledge_permissions,
             audit=0,

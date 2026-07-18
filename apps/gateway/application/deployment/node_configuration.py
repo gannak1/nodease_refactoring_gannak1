@@ -12,6 +12,10 @@ from apps.shared.domain.mail_credential import (
     validate_mail_processing_graph_contract,
     validate_mail_processing_node_boundary,
 )
+from apps.shared.domain.external_action_credential_graph import (
+    ExternalActionCredentialGraphBoundaryError,
+    validate_github_credential_graph_boundary,
+)
 from apps.shared.domain.slack_delivery import (
     SlackGraphBoundaryError,
     validate_slack_graph_boundary,
@@ -25,10 +29,16 @@ from .models import NodeCatalogSnapshot, PreflightAudience, PreflightStatus
 from .ports import DeploymentPreflightRepository
 
 MANAGED_NODE_TYPES = frozenset(
-    {"mailNode", "gmailDraftNode", "mailAcknowledgeNode", "slackPostNode"}
+    {
+        "mailNode",
+        "gmailDraftNode",
+        "mailAcknowledgeNode",
+        "slackPostNode",
+        "githubNode",
+    }
 )
 RUNTIME_AUTHORITATIVE_NODE_TYPES = frozenset(
-    {"llmNode", "httpRequestNode", "githubNode"}
+    {"llmNode", "httpRequestNode"}
 )
 EXTERNAL_SIDE_EFFECTS = frozenset({"external_read", "external_write"})
 AUXILIARY_NODE_TYPES = frozenset({"note"})
@@ -96,7 +106,34 @@ class NodeConfigurationEvaluator:
                 for node in mail_nodes
             )
 
-        issues.extend(self._slack_issues(graph_snapshot, nodes))
+        external_action_nodes = [
+            node
+            for node in nodes
+            if str(node.get("type") or "") in {"slackPostNode", "githubNode"}
+        ]
+        if audience == "anonymous_public":
+            issues.extend(
+                self._issue(
+                    node,
+                    "external_action_credential_execution_subject_required",
+                )
+                for node in external_action_nodes
+            )
+        issues.extend(
+            self._external_action_credential_issues(
+                graph_snapshot,
+                external_action_nodes,
+            )
+        )
+        if audience == "workflow_node_inherited":
+            issues.extend(
+                self._issue(
+                    node,
+                    "external_action_credential_execution_subject_inherited",
+                    severity="warning",
+                )
+                for node in external_action_nodes
+            )
         return self._dedupe(issues)
 
     def _catalog_issues(
@@ -245,29 +282,93 @@ class NodeConfigurationEvaluator:
                 issues.append(self._issue(target, reason))
         return issues
 
-    def _slack_issues(
+    def _external_action_credential_issues(
         self,
         graph_snapshot: dict,
-        nodes: list[Mapping[str, Any]],
+        external_action_nodes: list[Mapping[str, Any]],
     ) -> list[NodeConfigurationIssue]:
-        slack_nodes = [node for node in nodes if node.get("type") == "slackPostNode"]
         issues: list[NodeConfigurationIssue] = []
-        for node in slack_nodes:
+        credential_ids: set[uuid.UUID] = set()
+        parsed_credentials: dict[int, tuple[uuid.UUID, str]] = {}
+
+        for node in external_action_nodes:
+            node_type = str(node.get("type") or "")
+            data = node.get("data")
+            if not isinstance(data, Mapping):
+                issues.append(self._issue(node, "node_configuration_invalid"))
+                continue
             try:
-                validate_slack_graph_boundary(
-                    [node],
-                    require_resolved=True,
-                    allow_legacy_selectors=True,
-                )
-            except SlackGraphBoundaryError:
-                data = node.get("data")
+                if node_type == "slackPostNode":
+                    validate_slack_graph_boundary(
+                        [node],
+                        require_resolved=True,
+                        allow_legacy_selectors=True,
+                    )
+                else:
+                    validate_github_credential_graph_boundary(
+                        [node],
+                        require_resolved=True,
+                    )
+            except (
+                ExternalActionCredentialGraphBoundaryError,
+                SlackGraphBoundaryError,
+            ):
                 reason = (
                     "node_configuration_unresolved"
-                    if isinstance(data, Mapping)
-                    and self._slack_node_is_unresolved(data)
+                    if self._external_action_credential_node_is_unresolved(
+                        node_type,
+                        data,
+                    )
                     else "node_configuration_invalid"
                 )
                 issues.append(self._issue(node, reason))
+                continue
+
+            credential_id = self._uuid_or_none(data.get("credential_id"))
+            if credential_id is None:
+                issues.append(self._issue(node, "node_configuration_invalid"))
+                continue
+            expected_provider = (
+                "github"
+                if node_type == "githubNode"
+                else (
+                    "slack_api"
+                    if data.get("slackMode", "api") == "api"
+                    else "slack_webhook"
+                )
+            )
+            parsed_credentials[id(node)] = (credential_id, expected_provider)
+            credential_ids.add(credential_id)
+
+        snapshots = (
+            self.repository.get_external_action_credential_snapshots(
+                credential_ids,
+                self.organization_id,
+                self.principal_id,
+            )
+            if credential_ids
+            else {}
+        )
+        for node in external_action_nodes:
+            parsed = parsed_credentials.get(id(node))
+            if parsed is None:
+                continue
+            credential_id, expected_provider = parsed
+            snapshot = snapshots.get(credential_id)
+            if snapshot is None or snapshot.provider != expected_provider:
+                issues.append(
+                    self._issue(node, "external_action_credential_unavailable")
+                )
+                continue
+            if self.principal_id is not None and not snapshot.usable_by_principal:
+                issues.append(
+                    self._issue(
+                        node,
+                        "external_action_credential_unavailable",
+                        permission_resource_id=credential_id,
+                        permission_effective_auth_state=snapshot.effective_auth_state,
+                    )
+                )
 
         try:
             validate_slack_graph_boundary(
@@ -276,10 +377,30 @@ class NodeConfigurationEvaluator:
                 allow_legacy_selectors=False,
             )
         except SlackGraphBoundaryError:
+            slack_nodes = [
+                node
+                for node in external_action_nodes
+                if node.get("type") == "slackPostNode"
+            ]
             if slack_nodes and not any(
                 issue.reason_code == "node_configuration_invalid" for issue in issues
             ):
                 issues.append(self._issue(slack_nodes[0], "node_configuration_invalid"))
+        try:
+            validate_github_credential_graph_boundary(
+                graph_snapshot.get("nodes", []),
+                require_resolved=False,
+            )
+        except ExternalActionCredentialGraphBoundaryError:
+            github_nodes = [
+                node
+                for node in external_action_nodes
+                if node.get("type") == "githubNode"
+            ]
+            if github_nodes and not any(
+                issue.reason_code == "node_configuration_invalid" for issue in issues
+            ):
+                issues.append(self._issue(github_nodes[0], "node_configuration_invalid"))
         return issues
 
     def _flatten_nodes(
@@ -373,56 +494,48 @@ class NodeConfigurationEvaluator:
         return True
 
     @staticmethod
-    def _slack_node_is_unresolved(data: Mapping[str, Any]) -> bool:
-        mode = data.get("slackMode", "api")
+    def _external_action_credential_node_is_unresolved(
+        node_type: str,
+        data: Mapping[str, Any],
+    ) -> bool:
         completed = dict(data)
-        has_missing_field = False
-        if completed.get("configuration_state") == "unresolved":
-            completed["configuration_state"] = "resolved"
+        if completed.get("configuration_state") not in (None, "unresolved"):
+            return False
+        if completed.get("credential_id") is not None and (
+            completed.get("configuration_state") is None
+        ):
+            return False
+        completed["configuration_state"] = "resolved"
+        completed["credential_id"] = str(uuid.UUID(int=0))
+
+        if node_type == "githubNode":
+            try:
+                validate_github_credential_graph_boundary(
+                    [{"id": "github", "type": "githubNode", "data": completed}],
+                    require_resolved=True,
+                )
+            except ExternalActionCredentialGraphBoundaryError:
+                return False
+            return True
+
+        if node_type != "slackPostNode":
+            return False
         if completed.get("channel_resolution_state") == "unresolved":
             completed["channel_resolution_state"] = "resolved"
-        if mode == "api":
-            auth_config = data.get("authConfig")
-            token = (
-                auth_config.get("token") if isinstance(auth_config, Mapping) else None
-            )
-            if not token and isinstance(auth_config, Mapping):
-                completed["authConfig"] = {
-                    **auth_config,
-                    "token": "configuration-ready",
-                }
-                has_missing_field = True
-            if not data.get("channel"):
-                completed["channel"] = "configuration-ready"
-                has_missing_field = True
-        elif mode == "webhook":
-            if not data.get("url"):
-                completed["url"] = (
-                    "https://hooks.slack.com/services/T00000000/B00000000/"
-                    "configuration-ready"
-                )
-                has_missing_field = True
-        else:
-            return False
-
-        candidates = [(completed, has_missing_field)]
+        if completed.get("slackMode", "api") == "api" and not completed.get("channel"):
+            completed["channel"] = "configuration-ready"
         message = completed.get("message")
         if message is None or (isinstance(message, str) and not message.strip()):
-            with_payload = dict(completed)
-            with_payload["message"] = "configuration-ready"
-            candidates.append((with_payload, True))
-
-        for candidate, candidate_has_missing_field in candidates:
-            try:
-                validate_slack_graph_boundary(
-                    [{"id": "slack", "type": "slackPostNode", "data": candidate}],
-                    require_resolved=True,
-                    allow_legacy_selectors=True,
-                )
-            except SlackGraphBoundaryError:
-                continue
-            return candidate_has_missing_field
-        return False
+            completed["message"] = "configuration-ready"
+        try:
+            validate_slack_graph_boundary(
+                [{"id": "slack", "type": "slackPostNode", "data": completed}],
+                require_resolved=True,
+                allow_legacy_selectors=True,
+            )
+        except SlackGraphBoundaryError:
+            return False
+        return True
 
     @staticmethod
     def _issue(

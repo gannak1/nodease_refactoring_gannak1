@@ -1,7 +1,15 @@
 import hashlib
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+from uuid import uuid4
+
 import pytest
 
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
+from apps.shared.services.external_action_credential import (
+    ExternalActionCredentialRuntimeError,
+    ExternalActionCredentialUseResolver,
+)
 from apps.workflow_engine.adapters.providers.slack import (
     SlackDeliveryMode,
     SlackEffectRequest,
@@ -20,6 +28,32 @@ from apps.workflow_engine.workflow.errors import (
 from apps.workflow_engine.workflow.nodes.slack import SlackPostNode, SlackPostNodeData
 
 
+ORGANIZATION_ID = uuid4()
+USER_ID = uuid4()
+CREDENTIAL_ID = uuid4()
+
+
+@pytest.fixture(autouse=True)
+def _stub_external_action_credential_resolver(monkeypatch):
+    def resolve(_db, **kwargs):
+        assert kwargs["user_id"] == USER_ID
+        assert kwargs["organization_id"] == ORGANIZATION_ID
+        assert kwargs["credential_id"] == CREDENTIAL_ID
+        assert kwargs["expected_provider"] in {"slack_api", "slack_webhook"}
+        return SimpleNamespace(secret="test-only-placeholder", revision=1)
+
+    monkeypatch.setattr(
+        ExternalActionCredentialUseResolver,
+        "resolve",
+        staticmethod(resolve),
+    )
+    monkeypatch.setattr(
+        ExternalActionCredentialUseResolver,
+        "revalidate_use",
+        staticmethod(lambda _db, **_kwargs: None),
+    )
+
+
 class CapturingAdapter:
     def __init__(self, mode: SlackDeliveryMode) -> None:
         self.mode = mode
@@ -30,6 +64,7 @@ class CapturingAdapter:
         )
         self._profile = provider_contract_registry().active("slack", operation)
         self.request: SlackEffectRequest | None = None
+        self.invoke_count = 0
         self.trace_metadata = {
             "slack": {
                 "delivery_mode": mode.value,
@@ -55,6 +90,9 @@ class CapturingAdapter:
         return PreparedProviderCall(prepared.request, None, prepared.profile)
 
     def invoke_effect(self, call):
+        if call.request.authorization_guard is not None:
+            call.request.authorization_guard()
+        self.invoke_count += 1
         output = {
             "status": 200,
             "delivery_status": "delivered",
@@ -79,20 +117,23 @@ def _node(
     data = {
         "title": "Slack",
         "slackMode": mode,
+        "credential_id": str(CREDENTIAL_ID),
         "channel": "C123",
         "message": "hello",
-        "authConfig": {"token": "test-token"},
         "referenced_variables": referenced_variables or [],
     }
     if mode == "webhook":
-        data["url"] = "https://hooks.slack.com/services/a/b/c"
-        data["authConfig"] = {}
         data["authType"] = "none"
     data.update(overrides)
     node = SlackPostNode(
         "slack-1",
         SlackPostNodeData(**data),
-        {"slack_effect_adapter_factory": lambda actual_mode: adapter},
+        {
+            "organization_id": str(ORGANIZATION_ID),
+            "execution_subject": {"subject_type": "user", "subject_id": str(USER_ID)},
+            "db": MagicMock(),
+            "slack_effect_adapter_factory": lambda actual_mode: adapter,
+        },
     )
     return node, adapter
 
@@ -118,7 +159,7 @@ def test_node_uses_dedicated_output_and_resolves_only_referenced_template_values
     }
     assert adapter.request is not None
     assert adapter.request.payload == {"text": "hello world", "channel": "C123"}
-    assert "test-token" not in repr(adapter.request)
+    assert "test-only-placeholder" not in repr(adapter.request)
 
 
 def test_json_template_escapes_upstream_value_without_changing_structure() -> None:
@@ -233,6 +274,26 @@ def test_webhook_ignores_hidden_legacy_channel_and_has_no_message_reference() ->
     assert "channel" not in adapter.request.payload
 
 
+def test_revoked_or_rotated_credential_blocks_slack_effect(monkeypatch) -> None:
+    def deny_revalidation(_db, **_kwargs):
+        raise ExternalActionCredentialRuntimeError()
+
+    monkeypatch.setattr(
+        ExternalActionCredentialUseResolver,
+        "revalidate_use",
+        staticmethod(deny_revalidation),
+    )
+    node, adapter = _node()
+
+    with pytest.raises(
+        NonRetryableWorkflowError,
+        match="external_action_credential.unavailable",
+    ):
+        node.execute({})
+
+    assert adapter.invoke_count == 0
+
+
 def test_api_channel_rejects_surrounding_whitespace() -> None:
     node, adapter = _node(channel=" C123 ")
 
@@ -292,9 +353,9 @@ def test_runtime_fails_fast_for_removed_output_selector() -> None:
                 "data": {
                     "title": "Slack",
                     "slackMode": "api",
+                    "credential_id": str(CREDENTIAL_ID),
                     "channel": "C123",
                     "message": "message",
-                    "authConfig": {"token": "test-token"},
                     "referenced_variables": [],
                 },
             },
@@ -329,9 +390,9 @@ def test_runtime_reports_invalid_slack_configuration_without_provider_call() -> 
                 "data": {
                     "title": "Slack",
                     "slackMode": "api",
+                    "credential_id": str(CREDENTIAL_ID),
                     "channel": "C123",
                     "message": "message",
-                    "authConfig": {"token": "test-token"},
                     "method": "PUT",
                     "referenced_variables": [],
                 },

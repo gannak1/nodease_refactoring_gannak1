@@ -5,10 +5,15 @@ from __future__ import annotations
 import json
 import math
 import re
+import uuid
 from collections.abc import Mapping
 from typing import Any, NoReturn
 
-from apps.shared.domain.slack_delivery import is_valid_commercial_slack_webhook_url
+from apps.shared.db.session import SessionLocal
+from apps.shared.services.external_action_credential import (
+    ExternalActionCredentialRuntimeError,
+    ExternalActionCredentialUseResolver,
+)
 from apps.workflow_engine.adapters.providers.slack import (
     SlackDeliveryMode,
     SlackEffectRequest,
@@ -71,16 +76,43 @@ class SlackPostNode(Node[SlackPostNodeData]):
         self._validate_legacy_compatibility(mode)
         used_names = self._used_template_names(mode)
         context = self._template_context(inputs, used_names)
-        request = SlackEffectRequest(
-            mode=mode,
-            payload=self._build_payload(mode, context),
-            secret=self._resolve_secret(mode),
+        organization_id = self._required_context_uuid("organization_id")
+        user_id = self._required_execution_subject_uuid()
+        credential_id = self._credential_id()
+        expected_provider = (
+            "slack_api" if mode is SlackDeliveryMode.API else "slack_webhook"
         )
-        factory = self.execution_context.get("slack_effect_adapter_factory")
-        adapter = (
-            factory(mode) if callable(factory) else build_slack_effect_adapter(mode)
-        )
-        return self._run_external_effect(adapter, request)
+        db, should_close = self._borrow_db_session()
+        try:
+            credential = ExternalActionCredentialUseResolver.resolve(
+                db,
+                user_id=user_id,
+                organization_id=organization_id,
+                credential_id=credential_id,
+                expected_provider=expected_provider,
+            )
+            request = SlackEffectRequest(
+                mode=mode,
+                payload=self._build_payload(mode, context),
+                secret=SlackSecretMaterial(credential.secret),
+                authorization_guard=lambda: self._revalidate_credential_use(
+                    user_id=user_id,
+                    organization_id=organization_id,
+                    credential_id=credential_id,
+                    expected_provider=expected_provider,
+                    expected_revision=credential.revision,
+                ),
+            )
+            factory = self.execution_context.get("slack_effect_adapter_factory")
+            adapter = (
+                factory(mode) if callable(factory) else build_slack_effect_adapter(mode)
+            )
+            return self._run_external_effect(adapter, request)
+        except ExternalActionCredentialRuntimeError as exc:
+            self._fail(exc.reason_code)
+        finally:
+            if should_close:
+                db.close()
 
     def _validate_legacy_compatibility(self, mode: SlackDeliveryMode) -> None:
         data = self.data
@@ -116,8 +148,10 @@ class SlackPostNode(Node[SlackPostNodeData]):
             self._fail("slack.legacy_configuration_invalid")
         if mode is SlackDeliveryMode.API and data.url not in (None, "", _API_URL):
             self._fail("slack.legacy_configuration_invalid")
-        if mode is SlackDeliveryMode.WEBHOOK and data.authConfig.get("token"):
-            self._fail("slack.configuration_invalid")
+        if data.authConfig:
+            self._fail("slack.credential_reference_required")
+        if mode is SlackDeliveryMode.WEBHOOK and data.url not in (None, ""):
+            self._fail("slack.credential_reference_required")
 
     def _used_template_names(self, mode: SlackDeliveryMode) -> set[str]:
         values: list[Any] = [
@@ -368,26 +402,72 @@ class SlackPostNode(Node[SlackPostNodeData]):
             self._fail("slack.payload_too_large")
         return payload
 
-    def _resolve_secret(self, mode: SlackDeliveryMode) -> SlackSecretMaterial:
-        value = (
-            self.data.authConfig.get("token")
-            if mode is SlackDeliveryMode.API
-            else self.data.url
-        )
-        limit = 4096 if mode is SlackDeliveryMode.API else 2048
-        if (
-            not isinstance(value, str)
-            or not value
-            or value != value.strip()
-            or len(value.encode("utf-8")) > limit
-            or any(char in value for char in "\r\n\x00")
-        ):
-            self._fail("slack.credential_invalid")
-        if mode is SlackDeliveryMode.WEBHOOK and not (
-            is_valid_commercial_slack_webhook_url(value)
-        ):
-            self._fail("slack.credential_invalid")
-        return SlackSecretMaterial(value)
+    def _credential_id(self) -> uuid.UUID:
+        try:
+            return uuid.UUID(str(self.data.credential_id))
+        except (TypeError, ValueError) as exc:
+            raise NonRetryableWorkflowError(
+                "external_action_credential.reference_required"
+            ) from exc
+
+    def _required_context_uuid(self, key: str) -> uuid.UUID:
+        try:
+            return uuid.UUID(str(self.execution_context.get(key)))
+        except (TypeError, ValueError) as exc:
+            raise NonRetryableWorkflowError(
+                "external_action_credential.context_invalid"
+            ) from exc
+
+    def _required_execution_subject_uuid(self) -> uuid.UUID:
+        subject = self.execution_context.get("execution_subject")
+        if not isinstance(subject, dict):
+            raise NonRetryableWorkflowError(
+                "external_action_credential.execution_subject_required"
+            )
+        subject_type = subject.get("subject_type") or subject.get("type") or "user"
+        subject_id = subject.get("subject_id") or subject.get("id")
+        if subject_type != "user":
+            raise NonRetryableWorkflowError(
+                "external_action_credential.execution_subject_required"
+            )
+        try:
+            return uuid.UUID(str(subject_id))
+        except (TypeError, ValueError) as exc:
+            raise NonRetryableWorkflowError(
+                "external_action_credential.execution_subject_required"
+            ) from exc
+
+    def _borrow_db_session(self):
+        factory = self.execution_context.get("db_session_factory")
+        if callable(factory):
+            return factory(), True
+        legacy_session = self.execution_context.get("db")
+        if legacy_session is not None:
+            return legacy_session, False
+        return SessionLocal(), True
+
+    def _revalidate_credential_use(
+        self,
+        *,
+        user_id: uuid.UUID,
+        organization_id: uuid.UUID,
+        credential_id: uuid.UUID,
+        expected_provider: str,
+        expected_revision: int,
+    ) -> None:
+        db, should_close = self._borrow_db_session()
+        try:
+            ExternalActionCredentialUseResolver.revalidate_use(
+                db,
+                user_id=user_id,
+                organization_id=organization_id,
+                credential_id=credential_id,
+                expected_provider=expected_provider,
+                expected_revision=expected_revision,
+            )
+        finally:
+            if should_close:
+                db.close()
 
     @staticmethod
     def _fail(reason_code: str) -> NoReturn:

@@ -27,23 +27,31 @@ export const GithubNode = memo(
     const actionName = actionNames[action] || action;
 
     const hasValidationIssue = useMemo(() => {
-      const tokenMissing = !data.api_token?.trim();
+      const credentialMissing = !data.credential_id;
       const ownerMissing = !data.repo_owner?.trim();
       const repoMissing = !data.repo_name?.trim();
       const prMissing = !data.pr_number;
+      const hasLegacyCredentialConfiguration =
+        data.api_token !== undefined ||
+        data.token !== undefined ||
+        data.authConfig !== undefined;
       return (
-        tokenMissing ||
+        credentialMissing ||
         ownerMissing ||
         repoMissing ||
         prMissing ||
+        hasLegacyCredentialConfiguration ||
         hasIncompleteVariables(data.referenced_variables)
       );
     }, [
-      data.api_token,
+      data.credential_id,
       data.repo_owner,
       data.repo_name,
       data.pr_number,
       data.referenced_variables,
+      data.api_token,
+      data.token,
+      data.authConfig,
     ]);
 
     return (

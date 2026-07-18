@@ -61,6 +61,11 @@ from apps.shared.db.models.llm import (
     LLMUsageLog,
 )
 from apps.shared.db.models.llm_node_version import LLMNodeVersion
+from apps.shared.db.models.external_action_credential import (
+    EXTERNAL_ACTION_CREDENTIAL_ACTIVE,
+    EXTERNAL_ACTION_CREDENTIAL_REVOKED,
+    ExternalActionCredential,
+)
 from apps.shared.db.models.mail_credential import (
     MAIL_CREDENTIAL_ACTIVE,
     MAIL_CREDENTIAL_REVOKED,
@@ -114,6 +119,7 @@ from apps.shared.db.models.team import (
     TeamKnowledgeDomainPermission,
     TeamKnowledgePermission,
     TeamLLMPermission,
+    TeamExternalActionCredentialPermission,
     TeamMailCredentialPermission,
     TeamMembership,
     TeamResourcePermissionMixin,
@@ -122,6 +128,7 @@ from apps.shared.db.models.team import (
     UserKnowledgeDomainPermission,
     UserKnowledgePermission,
     UserLLMPermission,
+    UserExternalActionCredentialPermission,
     UserMailCredentialPermission,
     UserResourcePermissionMixin,
     UserWorkflowPermission,
@@ -190,6 +197,9 @@ __all__ = [
     "LLMProvider",
     "LLMRelCredentialModel",
     "LLMUsageLog",
+    "ExternalActionCredential",
+    "EXTERNAL_ACTION_CREDENTIAL_ACTIVE",
+    "EXTERNAL_ACTION_CREDENTIAL_REVOKED",
     "MailCredential",
     "MAIL_CREDENTIAL_ACTIVE",
     "MAIL_CREDENTIAL_REVOKED",
@@ -228,11 +238,13 @@ __all__ = [
     "TeamKnowledgeCollectionPermission",
     "TeamKnowledgeDomainPermission",
     "TeamLLMPermission",
+    "TeamExternalActionCredentialPermission",
     "TeamMailCredentialPermission",
     "TeamAuditPermission",
     "TeamWorkflowPermission",
     "UserWorkflowPermission",
     "UserLLMPermission",
+    "UserExternalActionCredentialPermission",
     "UserMailCredentialPermission",
     "UserKnowledgePermission",
     "UserKnowledgeCollectionPermission",

@@ -94,6 +94,41 @@ def test_agent_builder_summary_redacts_known_provider_credentials():
     assert secret not in summary
 
 
+def test_draft_summary_redacts_legacy_github_credential_material(monkeypatch):
+    service = _service(_Db())
+    draft = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="ready",
+        validation_result={"valid": True, "issues": []},
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        preview_graph={
+            "nodes": [
+                {
+                    "id": "github",
+                    "type": "githubNode",
+                    "data": {
+                        "title": "GitHub",
+                        "api_token": "test-only-placeholder",
+                    },
+                }
+            ],
+            "edges": [],
+        },
+        base_graph_hash="safe-hash",
+        base_workflow_updated_at=None,
+        draft_mode="new_workflow",
+        node_detail_previews=[],
+    )
+    monkeypatch.setattr(service, "_safety_notices_for_draft", lambda _draft: [])
+    monkeypatch.setattr(service, "_node_configuration_issues", lambda _graph: [])
+
+    summary = service._draft_summary(draft)  # noqa: SLF001
+    node_data = summary["preview_graph"]["nodes"][0]["data"]
+
+    assert "api_token" not in node_data
+    assert node_data["configuration_state"] == "unresolved"
+
+
 def test_new_session_records_direct_edit_protocol(monkeypatch):
     db = _Db()
     service = _service(db)

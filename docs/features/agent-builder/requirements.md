@@ -239,6 +239,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - 최신 dev의 Mail capability인 `mail_search`, `gmail_reply_draft_create`, `mail_terminal_acknowledgement`를 direct-edit catalog와 GraphMutation에서 보존한다.
 - Gmail 답장 초안 workflow는 durable Mail 검색, LLM, Gmail Draft, Mail terminal acknowledgement 순서를 유지한다. Mail terminal acknowledgement를 단독 생성하거나 Gmail Draft 앞에 배치하지 않는다.
 - Mail credential은 자동 선택하거나 원문으로 graph에 넣지 않고 unresolved credential reference로 남긴다. Email send, reply-all, attachment 요청은 지원하지 않으며 HTTP node로 대체하지 않는다.
+- Slack/GitHub action credential도 자동 선택하거나 원문으로 graph에 넣지 않고 unresolved `credential_id` parameter task로 남긴다. Builder는 token, Webhook URL, GitHub authorization header를 생성·저장·표시하지 않는다.
 - Mail graph 생성과 parameter 설정 중 OAuth refresh, mailbox 조회, Gmail draft 생성, 읽음 처리 또는 전송을 수행하지 않는다.
 
 ### DBP-FR-012 Session Recovery
