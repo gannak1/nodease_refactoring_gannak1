@@ -166,6 +166,7 @@ class ChangeScope:
     terraform_config_changed: bool = False
     compose_validation: bool = False
     dockerfile_validation: bool = False
+    dockerfile_config_changed: bool = False
     broad_python: bool = False
 
     def enable_python_smoke(self) -> None:
@@ -304,6 +305,7 @@ def _select_deployment_validation(path: str, scope: ChangeScope) -> None:
         scope.compose_validation = True
     if PurePosixPath(path).name == "Dockerfile" or path.endswith(".Dockerfile"):
         scope.dockerfile_validation = True
+        scope.dockerfile_config_changed = True
 
     scope.deployment_validation = any(
         (

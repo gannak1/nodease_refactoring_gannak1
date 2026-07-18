@@ -197,6 +197,7 @@ def test_ci_control_change_selects_smoke_jobs_and_postgres_contracts():
     assert scope.terraform_config_changed is False
     assert scope.compose_validation is True
     assert scope.dockerfile_validation is True
+    assert scope.dockerfile_config_changed is False
 
 
 def test_trusted_guard_change_is_treated_as_ci_control():
@@ -254,6 +255,18 @@ def test_terraform_change_is_distinct_from_ci_control_smoke_selection():
 
     assert scope.terraform_validation is True
     assert scope.terraform_config_changed is True
+
+
+def test_dockerfile_change_is_distinct_from_ci_control_smoke_selection():
+    scope = classify_paths(
+        [
+            ".github/workflows/pr-quality-gate.yml",
+            "docker/gateway/Dockerfile",
+        ]
+    )
+
+    assert scope.dockerfile_validation is True
+    assert scope.dockerfile_config_changed is True
 
 
 def test_unrelated_workflow_still_fails_closed_with_postgres_change():

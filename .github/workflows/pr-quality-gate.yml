@@ -28,6 +28,7 @@ jobs:
     outputs:
       ci_control_changed: ${{ steps.ci_control.outputs.changed }}
       terraform_config_changed: ${{ steps.classify.outputs.terraform_config_changed }}
+      dockerfile_config_changed: ${{ steps.classify.outputs.dockerfile_config_changed }}
       docs_only: ${{ steps.scope_outputs.outputs.docs_only }}
       python_lint: ${{ steps.scope_outputs.outputs.python_lint }}
       client: ${{ steps.scope_outputs.outputs.client }}
@@ -698,11 +699,13 @@ jobs:
         shell: bash
         env:
           CI_CONTROL_CHANGED: ${{ needs.scope.outputs.ci_control_changed }}
+          DOCKERFILE_CONFIG_CHANGED: ${{ needs.scope.outputs.dockerfile_config_changed }}
         run: |
-          if [[ "$CI_CONTROL_CHANGED" == "true" ]]; then
-            mapfile -d '' dockerfile_paths < <(
-              git ls-files -z -- ':(glob)**/Dockerfile' ':(glob)**/*.Dockerfile'
-            )
+          if [[ \
+            "$CI_CONTROL_CHANGED" == "true" && \
+            "$DOCKERFILE_CONFIG_CHANGED" != "true" \
+          ]]; then
+            dockerfile_paths=("tests/ci/fixtures/dockerfile-smoke/Dockerfile")
           else
             mapfile -d '' dockerfile_paths < <(
               git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" --

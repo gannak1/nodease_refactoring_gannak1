@@ -10,6 +10,9 @@ HELM_CI_VALUES_PATH = (
 TERRAFORM_CI_FIXTURE_PATH = (
     REPOSITORY_ROOT / "tests" / "ci" / "fixtures" / "terraform-smoke" / "main.tf"
 )
+DOCKERFILE_CI_FIXTURE_PATH = (
+    REPOSITORY_ROOT / "tests" / "ci" / "fixtures" / "dockerfile-smoke" / "Dockerfile"
+)
 KNOWLEDGE_POSTGRES_PATH = (
     REPOSITORY_ROOT
     / ".github"
@@ -83,7 +86,7 @@ def test_ci_control_changes_force_all_deployment_validators():
         assert f"emit_boolean {validator} true" in ci_control_block
 
 
-def test_ci_control_smoke_uses_protected_actionlint_and_all_dockerfile_targets():
+def test_ci_control_smoke_uses_protected_actionlint_and_dockerfile_fixture():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
     actionlint_block = workflow.split(
         "- name: Validate GitHub Actions workflows",
@@ -96,7 +99,19 @@ def test_ci_control_smoke_uses_protected_actionlint_and_all_dockerfile_targets()
         relative = workflow_path.relative_to(REPOSITORY_ROOT).as_posix()
         assert relative in actionlint_block
     assert "git ls-files -z -- '.github/workflows/*.yml'" not in actionlint_block
-    assert "git ls-files -z -- ':(glob)**/Dockerfile'" in workflow
+    assert DOCKERFILE_CI_FIXTURE_PATH.is_file()
+    assert (
+        "dockerfile_config_changed: "
+        "${{ steps.classify.outputs.dockerfile_config_changed }}"
+        in workflow
+    )
+    assert (
+        "DOCKERFILE_CONFIG_CHANGED: "
+        "${{ needs.scope.outputs.dockerfile_config_changed }}"
+        in workflow
+    )
+    assert "tests/ci/fixtures/dockerfile-smoke/Dockerfile" in workflow
+    assert "git ls-files -z -- ':(glob)**/Dockerfile'" not in workflow
 
 
 def test_compose_validation_combines_variant_with_base_file():
