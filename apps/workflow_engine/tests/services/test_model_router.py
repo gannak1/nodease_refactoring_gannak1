@@ -243,6 +243,8 @@ def test_routing_feature_renders_variables_and_json_output_contract():
     assert "SYSTEM_PROMPT:\n개발팀 정책을 검토합니다." in feature
     assert "USER_PROMPT:\n질문: 휴가 규정을 알려 주세요." in feature
     assert "ASSISTANT_PROMPT:\n응답 형식: 요약" in feature
+    assert "OUTPUT_CONTRACT:\nOUTPUT_MODE: json_object" in feature
+    assert "TOP_LEVEL_PROPERTY_COUNT: 1" in feature
     assert "json schema:" in feature
     assert '"answer"' in feature
     assert "{{" not in feature
@@ -279,3 +281,31 @@ def test_routing_feature_preserves_current_request_when_node_prompts_are_long():
     assert "NODE_TASK_CONTRACT:" in feature
     assert len(feature) < 3_000
     assert feature.count("…") == 3
+
+
+def test_routing_feature_preserves_json_contract_when_system_prompt_is_long():
+    feature = ModelRouter.routing_feature_text(
+        {"message": "판정 결과를 구조화해 주세요."},
+        _node(
+            system_prompt="긴 시스템 제약 " * 1_000,
+            output_format={
+                "type": "json",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "decision": {"type": "string"},
+                        "confidence": {"type": "number"},
+                    },
+                    "required": ["decision", "confidence"],
+                },
+            },
+        ),
+    )
+
+    prompt_contract, output_contract = feature.split("\n\nOUTPUT_CONTRACT:\n", 1)
+    assert prompt_contract.count("…") == 1
+    assert '"decision"' not in prompt_contract
+    assert "OUTPUT_MODE: json_object" in output_contract
+    assert "TOP_LEVEL_PROPERTY_COUNT: 2" in output_contract
+    assert "REQUIRED_PROPERTY_COUNT: 2" in output_contract
+    assert '"decision"' in output_contract

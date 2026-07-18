@@ -232,7 +232,8 @@ matched_rule_id, reason_code, strategy_id, decision_factors, runtime_context을
 반환한다. Preview는 운영 요청이 아니므로 Judge를 호출·학습·과금하지 않는다. local artifact가
 충분히 확신하면 local 선택을, 그렇지 않으면 기본 또는 대체 모델을 예상값으로 반환한다.
 Preview와 runtime은 같은 `ModelRouter.routing_feature_text()` builder와 side-effect 없는 prompt renderer로 현재 입력, 노드 제목,
-작업 설명, 현재 입력으로 렌더링된 system/user/assistant prompt와 JSON output schema 지시를 구성한다. Preview는 실제 RAG retrieval 결과를 만들지 않으므로
+작업 설명, 현재 입력으로 렌더링된 system/user/assistant prompt를 구성한다. JSON output schema 지시는 긴 prompt에 밀려나지 않도록
+구조 요약과 함께 별도 `OUTPUT_CONTRACT` 섹션 및 독립 길이 예산으로 구성한다. Preview는 실제 RAG retrieval 결과를 만들지 않으므로
 동적 RAG signal은 포함하지 않는다. 따라서 preview의 모델은 배포 실행에서 Judge가 고를 실제 모델을
 확정한 결과가 아니다.
 배포 prompt template을 렌더링할 수 없으면 저장된 원문으로 fallback하지 않고
