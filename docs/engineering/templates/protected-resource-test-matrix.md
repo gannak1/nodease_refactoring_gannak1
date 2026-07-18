@@ -26,6 +26,8 @@ Status: Active
 | Deployment preflight |  |  |  |
 | Runtime/background 재검증 또는 capability validity |  |  |  |
 | Transaction·session·TOCTOU |  |  |  |
+| Retry·idempotency·terminal acknowledgement |  |  |  |
+| Background lease·claim·fencing |  |  |  |
 | Revoke/delete/expire/rotation lifecycle |  |  |  |
 | 오류·resource hiding·reason code |  |  |  |
 | Audit·trace·secret/PII redaction |  |  |  |
@@ -47,6 +49,11 @@ Status: Active
 | RUNTIME-02 | worker 또는 processor service를 endpoint 없이 직접 호출한다. | 같은 resolver와 정책이 적용된다. | worker/runtime |  |
 | RUNTIME-03 | runtime 권한 검증이 실패한다. | provider/DB/storage adapter가 호출되지 않는다. | unit/runtime |  |
 | TX-01 | resolver session 또는 lock의 수명을 관찰한다. | 외부 I/O 전에 transaction/session이 종료된다. | unit/PostgreSQL |  |
+| CONN-01 | Connection 삭제·소유권 변경 또는 사용 권한 회수 뒤 background ingestion을 실행한다. | 외부 DB dial 전에 fail-closed하고 연결 상세를 노출하지 않는다. | worker/runtime |  |
+| KNOW-01 | 검색 후보 선택 뒤 source ACL 또는 evidence 권한이 바뀐다. | 최종 근거 경계에서 제외되고 prompt, citation과 trace에 유입되지 않는다. | retrieval/runtime |  |
+| EFFECT-01 | 같은 논리 외부 효과를 timeout·retry·late response로 반복 실행한다. | provider 부수효과가 중복되지 않고 하나의 terminal acknowledgement로 수렴한다. | runtime/PostgreSQL |  |
+| LEASE-01 | 이전 worker의 lease가 만료되고 새 worker가 claim한 뒤 이전 worker가 finalize한다. | fencing·소유권 검증으로 stale finalize가 거부된다. | worker/PostgreSQL |  |
+| CAP-01 | expired, replayed 또는 stale revision capability를 제출한다. | provider 호출 전에 거부되고 안전한 reason code만 남는다. | service/runtime |  |
 | LIFE-01 | revoked resource를 실행에 사용한다. | safe error로 거부된다. | API/runtime |  |
 | LIFE-02 | authorized manager가 revoked resource를 조회·정리하거나 grant를 회수한다. | 계약된 관리 경로는 유지된다. | service/API/component |  |
 | LIFE-03 | secret rotation 중 구키·신키 또는 revision 경계를 검증한다. | stale revision 사용과 평문 fallback이 차단된다. | service/PostgreSQL |  |

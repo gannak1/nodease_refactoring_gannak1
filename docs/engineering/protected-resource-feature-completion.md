@@ -51,6 +51,8 @@ Status: Active
 | Deployment preflight | reference 존재, scope, provider/type, 상태와 사용 권한을 배포 전에 검증하는가? secret column을 불필요하게 projection하지 않는가? | preflight test, query projection test |
 | Runtime/background | 실제 provider 또는 외부 adapter 호출 전에 권위 resolver를 다시 평가하거나 Accepted ADR이 정의한 유효 capability를 검증하는가? background 직접 호출도 endpoint 검증을 우회하지 못하는가? | runtime/service test, adapter-not-called assertion |
 | Transaction·TOCTOU | DB session이나 row lock을 외부 I/O 동안 유지하지 않는가? stale snapshot 또는 capability가 공식 validity·revision 계약을 넘어 사용되지 않는가? | state-transition test, PostgreSQL contract test |
+| Retry·idempotency | 같은 논리 작업의 retry, timeout과 late response가 외부 부수효과를 중복 생성하지 않는가? effect identity와 terminal acknowledgement가 안정적인가? | idempotency test, provider-call count assertion |
+| Background coordination | lease, claim 또는 fencing을 사용한다면 stale worker가 heartbeat·finalize하지 못하는가? cancellation과 late completion의 소유권이 정의됐는가? | worker test, PostgreSQL concurrency test |
 | Lifecycle | active, revoked, deleted, expired, rotated 상태의 읽기·관리·실행 결과와 오류가 정의됐는가? revoke가 grant 회수나 감사 확인까지 막지 않는가? | lifecycle table, API/runtime test |
 | 오류·resource hiding | malformed, missing, 타 조직, 권한 없음이 계약에 맞는 safe error와 reason code를 사용하는가? 존재 여부나 provider 상세를 노출하지 않는가? | negative API/runtime test |
 | Audit·redaction | 허용·거부·상태 변경을 필요한 범위에서 감사하는가? metadata에 secret, PII, raw provider payload 또는 숨겨진 resource detail이 없는가? | audit test, response/log assertion |
@@ -75,16 +77,19 @@ Status: Active
 | 문서 계약 추적성 | 정책이 actor, command/query, 오류, audit와 test로 이어지는가 | clear command, history query, safe 404 누락 |
 | 실행 경계 완결성 | 같은 정책이 저장, UI, preflight, runtime과 상태 전이에서 끝까지 적용되는가 | UI catalog 누락, stale runtime 권한, revoked 관리 불가 |
 
-## Credential reference 예시
+## 적용 예시
 
-credential reference를 graph에 도입하는 경우 최소한 다음 연결이 필요하다.
+이 기준은 특정 이슈나 credential 종류에 한정되지 않는다. 다음은 대표적인 적용 유형이며, 실제 기능은 위 기능 완결성 매트릭스에서 해당하는 경계를 선택한다.
 
-1. manager가 credential을 등록하고 user/team에 `use`를 부여·회수한다.
-2. client picker는 허용된 opaque ID만 graph에 저장하며 secret 입력을 제공하지 않는다.
-3. backend schema와 allowlist는 client가 실제 저장하는 metadata를 함께 검증한다.
-4. deployment preflight는 존재·조직·provider·상태·권한을 검사한다.
-5. runtime은 provider 호출 전에 권위 resolver 또는 공식 capability 계약을 검사하고 실패하면 adapter를 호출하지 않는다.
-6. 즉시 회수가 계약인 revoke·권한 회수·rotation 뒤에는 기존 deployment도 stale 권한으로 실행하지 않는다.
-7. 감사와 오류에는 credential 이름, secret, 암호문 또는 숨겨진 resource detail을 남기지 않는다.
+| 기능 유형 | 대표 상태·참조 | 반드시 이어서 확인할 경계 |
+| --- | --- | --- |
+| Credential resource | graph 또는 deployment의 opaque credential ID, active/revoked/rotated revision | manager 등록·권한 부여/회수, picker·schema, preflight, provider 호출 전 resolver/capability, secret redaction |
+| Connection·connector | owner 또는 organization-scoped Connection ID, 삭제·소유권 변경 | 설정 저장 권한, background ingestion 재검증, outbound egress, 외부 DB 연결 전 session 종료, 연결 상세 비노출 |
+| Knowledge ingestion·retrieval | Knowledge/Collection/source reference, source ACL, document version, ingestion lease | 관리 권한, source ACL과 retrieval gate, worker claim·fencing, final evidence 재검증, citation·trace redaction |
+| 외부 부수효과 node | logical effect ID, attempt, provider acknowledgement, terminal state | deployment 준비 상태, runtime 권한, retry·timeout 중복 방지, terminal acknowledgement, safe provider 오류·audit |
+| Provider execution capability | policy/revision, capability expiry·nonce, credential/billing principal | 발급 권한, admission limit, replay·expiry·revision 검증, provider 호출 전 validity, usage·audit 귀속 |
+| 일반 stateful 보호 리소스 | active/revoked/deleted/expired 상태와 user/team grant | command/query 대칭성, resource hiding, authorized cleanup, 상태 변경 뒤 실행 차단, 감사·보존 계약 |
 
-이 중 하나라도 빠지면 resource model이 존재하더라도 기능은 완료된 것으로 보지 않는다.
+예를 들어 credential 기능에서는 secret 비저장과 rotation이 중심이고, Knowledge 기능에서는 source ACL·final evidence와 background fencing이 중심이며, 외부 부수효과 기능에서는 idempotency와 terminal acknowledgement가 중심이다. 특정 유형에 해당하지 않는 경계는 이유를 적어 `해당 없음`으로 표시한다.
+
+하나의 모델·endpoint 또는 worker가 구현됐다는 사실만으로 기능이 완료되는 것은 아니다. 해당 리소스가 저장·관리·배포·실행·실패·상태 변경 과정에서 실제로 소비되는 경계가 모두 연결돼야 한다.

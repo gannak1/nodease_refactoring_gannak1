@@ -31,7 +31,7 @@ docs/engineering/protected-resource-feature-completion.md와 테스트 매트릭
 - [ ] 저장·GraphMutation과 secret 비저장
 - [ ] 관리 API/UI와 user/team 권한 부여·회수
 - [ ] Deployment preflight와 runtime/background 재검증
-- [ ] Revoke/delete/rotation·TOCTOU·외부 adapter 미호출
+- [ ] Lifecycle·TOCTOU·idempotency/capability/lease·외부 adapter 미호출
 - [ ] Audit·resource hiding·secret/PII redaction
 - 미완료 항목 또는 후속 이슈:
 
