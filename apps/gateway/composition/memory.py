@@ -221,6 +221,34 @@ def public_conversation_admission_policy_from_environment(
             1,
             100_000,
         ),
+        create_window_seconds=_integer(
+            environ,
+            "MEMORY_PUBLIC_CREATE_WINDOW_SECONDS",
+            600,
+            1,
+            3600,
+        ),
+        create_deployment_rate_limit=_integer(
+            environ,
+            "MEMORY_PUBLIC_CREATE_DEPLOYMENT_RATE_LIMIT",
+            200,
+            1,
+            100_000,
+        ),
+        create_organization_rate_limit=_integer(
+            environ,
+            "MEMORY_PUBLIC_CREATE_ORGANIZATION_RATE_LIMIT",
+            1_000,
+            1,
+            100_000,
+        ),
+        create_deployment_network_rate_limit=_integer(
+            environ,
+            "MEMORY_PUBLIC_CREATE_DEPLOYMENT_NETWORK_RATE_LIMIT",
+            10,
+            1,
+            100_000,
+        ),
     )
 
 

@@ -271,7 +271,7 @@ Public purge는 발급 후 7일 안에 completed/completed_with_hold/terminal_fa
 
 `completed`는 configured content-bearing live store/cache, conversation access-token replay와 backup/export retention contract가 삭제 또는 승인된 irreversible crypto-erasure marker를 모두 반환한 경우에만 허용한다. 위 표의 최소 purge-control tombstone, receipt verifier와 encrypted delete-response replay만 정해진 TTL/receipt expiry까지 예외로 남길 수 있으며 raw session content 접근에는 사용할 수 없다. Unknown/partial marker는 낙관적으로 완료 처리하지 않는다.
 
-MBA-317은 `conversation_secret_replays.expires_at` 기준의 Memory-owned periodic retention task를 제공한다. Log worker queue는 실행 host일 뿐 정책 소유자는 Memory이며, task는 1분마다 최대 500개 row를 `FOR UPDATE SKIP LOCKED`로 claim해 같은 transaction에서 live-store ciphertext를 삭제한다. 이는 database backup의 즉시 crypto-erasure를 증명하지 않으므로 public lifecycle activation은 별도 승인된 external crypto-erasure 또는 database-backup 미사용 mode를 요구한다. Session/Turn/Summary를 지우고 purge terminal marker를 만드는 physical purge worker는 여전히 MBA-320 범위다.
+MBA-317은 `conversation_secret_replays.expires_at` 기준의 Memory-owned periodic retention task를 제공한다. Gateway와 Log System runtime image는 이 업무 모듈을 import할 수 있도록 `apps/memory`를 포함한다. Helm의 기본 활성 singleton Beat는 shared Celery schedule을 발행하고 Log worker queue는 task 실행 host로 소비할 뿐, 정책 소유자는 Memory다. Task는 1분마다 최대 500개 row를 `FOR UPDATE SKIP LOCKED`로 claim해 같은 transaction에서 live-store ciphertext를 삭제한다. 이는 database backup의 즉시 crypto-erasure를 증명하지 않으므로 public lifecycle activation은 별도 승인된 external crypto-erasure 또는 database-backup 미사용 mode를 요구한다. Session/Turn/Summary를 지우고 purge terminal marker를 만드는 physical purge worker는 여전히 MBA-320 범위다.
 
 ## Application Use Cases
 
@@ -379,10 +379,10 @@ Repository adapter는 commit/rollback을 소유하지 않는다. Mutation use ca
 
 Public grant/purge receipt 응답 유실 복구만 담당하는 bounded port다.
 
-- Scope/idempotency fingerprint를 associated data로 사용하는 application-level envelope encryption
+- Idempotency record ID, organization, operation, scope digest, idempotency-key hash, request fingerprint와 replay purpose를 associated data로 사용하는 application-level envelope encryption
 - 승인된 key-management capability와 key version
 - Access Grant token 최대 10분, Purge receipt 최대 24시간의 bounded TTL, read-on-replay와 irreversible delete
-- Same scope/fingerprint만 decrypt 가능
+- Stored associated-data digest가 현재 immutable idempotency identity에서 재계산한 digest와 같고 같은 scope/key/fingerprint인 경우에만 decrypt 가능
 
 Access Grant/Purge Job table에는 verifier hash만 두고 ciphertext를 섞지 않는다. Memory application은 encryption algorithm이나 raw key를 직접 선택하지 않으며 replay store unavailable이면 새 secret을 중복 발급하지 않고 fail-closed 한다.
 

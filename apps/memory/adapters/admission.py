@@ -13,7 +13,6 @@ from apps.memory.domain.errors import (
     PublicConversationRateLimitedError,
 )
 
-
 _KEY_NAMESPACE_PATTERN = re.compile(
     r"[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?"
 )
@@ -47,18 +46,25 @@ class PublicConversationAdmissionPolicy:
     organization_rate_limit: int = 240
     network_rate_limit: int = 60
     grant_rate_limit: int = 30
+    create_window_seconds: int = 600
+    create_deployment_rate_limit: int = 200
+    create_organization_rate_limit: int = 1_000
+    create_deployment_network_rate_limit: int = 10
 
     def __post_init__(self) -> None:
-        values = (
-            self.window_seconds,
+        windows = (self.window_seconds, self.create_window_seconds)
+        rate_limits = (
             self.deployment_rate_limit,
             self.organization_rate_limit,
             self.network_rate_limit,
             self.grant_rate_limit,
+            self.create_deployment_rate_limit,
+            self.create_organization_rate_limit,
+            self.create_deployment_network_rate_limit,
         )
-        if any(value < 1 for value in values):
+        if any(value < 1 for value in (*windows, *rate_limits)):
             raise ValueError("public conversation admission policy is invalid")
-        if self.window_seconds > 3600 or max(values[1:]) > 100_000:
+        if max(windows) > 3600 or max(rate_limits) > 100_000:
             raise ValueError("public conversation admission policy is unbounded")
 
 
@@ -92,32 +98,45 @@ class RedisPublicConversationAdmission:
     ) -> None:
         if not network_address or len(network_address) > 255:
             raise MemoryAdapterUnavailableError()
-        dimensions = [
-            (
-                "deployment",
-                str(binding.deployment_id),
-                self._policy.deployment_rate_limit,
-            ),
-            (
-                "organization",
-                str(binding.organization_id),
-                self._policy.organization_rate_limit,
-            ),
-            ("network", network_address, self._policy.network_rate_limit),
-        ]
         if operation == "conversation.create":
             if grant_id is not None:
                 raise MemoryAdapterUnavailableError()
+            window_seconds = self._policy.create_window_seconds
+            dimensions = [
+                (
+                    "deployment",
+                    str(binding.deployment_id),
+                    self._policy.create_deployment_rate_limit,
+                ),
+                (
+                    "organization",
+                    str(binding.organization_id),
+                    self._policy.create_organization_rate_limit,
+                ),
+                (
+                    "deployment_network",
+                    f"{binding.deployment_id}:{network_address}",
+                    self._policy.create_deployment_network_rate_limit,
+                ),
+            ]
         else:
             if grant_id is None:
                 raise MemoryAdapterUnavailableError()
-            dimensions.append(
+            window_seconds = self._policy.window_seconds
+            dimensions = [
                 (
-                    "grant",
-                    str(grant_id),
-                    self._policy.grant_rate_limit,
-                )
-            )
+                    "deployment",
+                    str(binding.deployment_id),
+                    self._policy.deployment_rate_limit,
+                ),
+                (
+                    "organization",
+                    str(binding.organization_id),
+                    self._policy.organization_rate_limit,
+                ),
+                ("network", network_address, self._policy.network_rate_limit),
+                ("grant", str(grant_id), self._policy.grant_rate_limit),
+            ]
         keys = tuple(
             f"{self._key_prefix}:{operation}:{dimension}:{self._digest(dimension, value)}"
             for dimension, value, _limit in dimensions
@@ -128,7 +147,7 @@ class RedisPublicConversationAdmission:
                 _ADMIT_SCRIPT,
                 len(keys),
                 *keys,
-                self._policy.window_seconds,
+                window_seconds,
                 *limits,
             )
         except Exception as exc:

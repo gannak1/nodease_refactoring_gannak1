@@ -25,6 +25,7 @@ from apps.memory.application.public_lifecycle import (
     PublicDeploymentBinding,
     ResetPublicConversationUseCase,
     SecretCiphertext,
+    _secret_replay_associated_data_digest,
 )
 from apps.memory.domain.conversation import ConversationPurgeJob, ConversationSession
 from apps.memory.domain.errors import (
@@ -326,6 +327,73 @@ def test_create_replays_the_same_bounded_access_token_without_storing_raw_value(
     assert replay.access_token == first.access_token
     assert all("token" not in grant.__dataclass_fields__ for grant in repository.grants.values())
     assert all(first.access_token.encode("utf-8") not in value.ciphertext for value in repository.replays.values())
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement_value"),
+    (
+        ("scope_digest", "d" * 64),
+        ("idempotency_key_hash", "e" * 64),
+        ("request_fingerprint", "f" * 64),
+    ),
+)
+def test_secret_replay_ciphertext_is_bound_to_immutable_idempotency_identity(
+    field: str,
+    replacement_value: str,
+):
+    now = _now()
+    record = ConversationIdempotency.pending(
+        record_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        operation="conversation.create",
+        scope_digest=_hash("scope"),
+        idempotency_key_hash=_hash("idempotency-key"),
+        request_fingerprint=_hash("request"),
+        retention_expires_at=now + timedelta(days=1),
+        now=now,
+    )
+    cipher = _Cipher()
+    purpose = "access-grant"
+    associated_data_digest = _secret_replay_associated_data_digest(
+        record=record,
+        purpose=purpose,
+    )
+    encrypted = cipher.encrypt(
+        "bounded-secret",
+        associated_data_digest=associated_data_digest,
+    )
+    retargeted_record = replace(record, **{field: replacement_value})
+
+    assert (
+        cipher.decrypt(
+            encrypted.ciphertext,
+            key_version=encrypted.key_version,
+            associated_data_digest=_secret_replay_associated_data_digest(
+                record=retargeted_record,
+                purpose=purpose,
+            ),
+        )
+        is None
+    )
+
+
+def test_secret_replay_rejects_a_stored_associated_data_digest_mismatch():
+    components = _application()
+    repository = components[0]
+    use_case = _use_case(CreatePublicConversationUseCase, components)
+    command = _create_command()
+    use_case.execute(command)
+    replay = next(iter(repository.replays.values()))
+    tampered_digest = "f" * 64
+    if replay.associated_data_digest == tampered_digest:
+        tampered_digest = "e" * 64
+    repository.replays[replay.id] = replace(
+        replay,
+        associated_data_digest=tampered_digest,
+    )
+
+    with pytest.raises(MemoryAdapterUnavailableError):
+        use_case.execute(command)
 
 
 def test_close_makes_grant_transcript_only_and_does_not_duplicate_audit_event():

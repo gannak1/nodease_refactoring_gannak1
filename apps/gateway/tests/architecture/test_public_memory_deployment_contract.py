@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[4]
 SECURITY_KEYS = (
     "MEMORY_PUBLIC_CAPABILITY_HMAC_KEY",
@@ -50,3 +49,17 @@ def test_enabled_helm_and_compose_paths_wire_three_independent_secret_names():
         assert f"secrets.{value_name} is required" in secret_template
     assert "MEMORY_PUBLIC_REPLAY_BACKUP_ERASURE_MODE" in compose
     assert "MEMORY_PUBLIC_REPLAY_BACKUP_ERASURE_MODE" in gateway_template
+
+
+def test_runtime_images_include_memory_and_helm_schedules_replay_retention():
+    gateway_dockerfile = _read("docker/gateway/Dockerfile")
+    logger_dockerfile = _read("docker/log_system/Dockerfile")
+    values = _read("infra/helm/moduly/values.yaml")
+    beat_template = _read("infra/helm/moduly/templates/beat-deployment.yaml")
+
+    assert "COPY apps/memory /app/apps/memory" in gateway_dockerfile
+    assert "COPY apps/memory /app/apps/memory" in logger_dockerfile
+    assert "beat:\n  enabled: true" in values
+    assert "default .Values.worker.image.repository" in beat_template
+    assert "- apps.shared.celery_app:celery_app" in beat_template
+    assert "- beat" in beat_template

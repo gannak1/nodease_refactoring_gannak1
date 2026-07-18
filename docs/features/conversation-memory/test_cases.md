@@ -192,7 +192,7 @@ Status: Draft
 - MEM-TC-DB-015: Concurrent dispatcher claim은 하나의 current claim generation만 획득한다.
 - MEM-TC-DB-016: Expired owner의 publish/ack와 새 owner claim 경합에서 fencing generation이 stale write를 거부한다.
 - MEM-TC-DB-017: Public token replay payload는 application encryption과 TTL을 적용하고 만료 후 raw token을 복구할 수 없다.
-- MEM-TC-DB-017A: Replay ciphertext는 scope/fingerprint associated data와 key version에 binding되고 다른 tenant/key replay, key unavailable과 decrypt failure에서 raw fallback 없이 fail-closed 한다.
+- MEM-TC-DB-017A: Replay ciphertext는 idempotency record/organization/operation/purpose와 scope digest, idempotency-key hash, request fingerprint associated data 및 key version에 binding된다. Stored digest 불일치나 각 immutable binding field 변조, 다른 tenant/key replay, key unavailable과 decrypt failure는 raw fallback 없이 fail-closed 한다.
 - MEM-TC-DB-018: Reset의 old close/new session/grant 중 하나가 실패하면 전체 lifecycle UoW가 rollback된다.
 - MEM-TC-DB-019: Delete의 tombstone/grant revoke/purge job/outbox 중 하나가 실패하면 접근 차단 상태가 부분 commit되지 않는다.
 - MEM-TC-DB-020: Purge batch retry/cursor/claim fencing이 같은 entry를 재노출하거나 다른 session을 삭제하지 않는다.

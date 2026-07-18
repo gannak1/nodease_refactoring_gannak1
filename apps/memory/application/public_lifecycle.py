@@ -441,13 +441,19 @@ class _TransactionalPublicUseCase:
             or now >= replay.expires_at
         ):
             raise SecretReplayExpiredError()
+        expected_associated_data_digest = _secret_replay_associated_data_digest(
+            record=record,
+            purpose=purpose,
+        )
+        if not hmac.compare_digest(
+            replay.associated_data_digest,
+            expected_associated_data_digest,
+        ):
+            raise MemoryAdapterUnavailableError()
         raw_secret = self.replay_cipher.decrypt(
             replay.ciphertext,
             key_version=replay.key_version,
-            associated_data_digest=_secret_replay_associated_data_digest(
-                record=record,
-                purpose=purpose,
-            ),
+            associated_data_digest=expected_associated_data_digest,
         )
         if raw_secret is None:
             raise MemoryAdapterUnavailableError()
@@ -1058,6 +1064,9 @@ def _secret_replay_associated_data_digest(
         "idempotency_record_id": str(record.id),
         "organization_id": str(record.organization_id),
         "operation": record.operation,
+        "scope_digest": record.scope_digest,
+        "idempotency_key_hash": record.idempotency_key_hash,
+        "request_fingerprint": record.request_fingerprint,
         "purpose": purpose,
     }
     return hashlib.sha256(

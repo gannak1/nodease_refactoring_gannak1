@@ -52,6 +52,10 @@ def _admission(redis: _Redis) -> RedisPublicConversationAdmission:
             organization_rate_limit=3,
             network_rate_limit=4,
             grant_rate_limit=5,
+            create_window_seconds=600,
+            create_deployment_rate_limit=6,
+            create_organization_rate_limit=7,
+            create_deployment_network_rate_limit=8,
         ),
     )
 
@@ -76,7 +80,7 @@ def test_admission_uses_hashed_dimensions_not_network_or_grant_values_in_redis_k
     assert call[-5:] == (60, 2, 3, 4, 5)
 
 
-def test_create_omits_global_grant_bucket_and_preserves_tenant_dimensions():
+def test_create_uses_deployment_network_bucket_without_a_global_grant_bucket():
     redis = _Redis()
     admission = _admission(redis)
     first = _binding()
@@ -95,9 +99,9 @@ def test_create_omits_global_grant_bucket_and_preserves_tenant_dimensions():
     first_keys = set(first_call[2:5])
     second_keys = set(second_call[2:5])
     assert len(first_keys) == len(second_keys) == 3
-    assert len(first_keys & second_keys) == 1  # shared abuse-source network only
-    assert first_call[-4:] == (60, 2, 3, 4)
-    assert second_call[-4:] == (60, 2, 3, 4)
+    assert not first_keys & second_keys
+    assert first_call[-4:] == (600, 6, 7, 8)
+    assert second_call[-4:] == (600, 6, 7, 8)
 
 
 def test_admission_returns_bounded_retry_after_when_any_scope_is_limited():
