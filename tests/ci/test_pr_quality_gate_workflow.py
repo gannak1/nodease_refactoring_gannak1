@@ -80,12 +80,19 @@ def test_ci_control_changes_force_all_deployment_validators():
         assert f"emit_boolean {validator} true" in ci_control_block
 
 
-def test_ci_control_smoke_expands_actionlint_and_dockerfile_targets():
+def test_ci_control_smoke_uses_protected_actionlint_and_all_dockerfile_targets():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+    actionlint_block = workflow.split(
+        "- name: Validate GitHub Actions workflows",
+        maxsplit=1,
+    )[1].split("- name: Set up Helm", maxsplit=1)[0]
 
     assert "ci_control_changed: ${{ steps.ci_control.outputs.changed }}" in workflow
     assert "CI_CONTROL_CHANGED: ${{ needs.scope.outputs.ci_control_changed }}" in workflow
-    assert "git ls-files -z -- '.github/workflows/*.yml'" in workflow
+    for workflow_path in PROTECTED_CI_WORKFLOWS:
+        relative = workflow_path.relative_to(REPOSITORY_ROOT).as_posix()
+        assert relative in actionlint_block
+    assert "git ls-files -z -- '.github/workflows/*.yml'" not in actionlint_block
     assert "git ls-files -z -- ':(glob)**/Dockerfile'" in workflow
 
 

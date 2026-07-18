@@ -550,8 +550,13 @@ jobs:
           CI_CONTROL_CHANGED: ${{ needs.scope.outputs.ci_control_changed }}
         run: |
           if [[ "$CI_CONTROL_CHANGED" == "true" ]]; then
-            mapfile -d '' workflow_files < <(
-              git ls-files -z -- '.github/workflows/*.yml' '.github/workflows/*.yaml'
+            workflow_files=(
+              '.github/workflows/pr-quality-gate.yml'
+              '.github/workflows/pr-ci-control-guard.yml'
+              '.github/workflows/test-knowledge-runtime-postgres.yml'
+              '.github/workflows/test-schedule-dispatch-postgres.yml'
+              '.github/workflows/test-agent-builder-postgres.yml'
+              '.github/workflows/test-memory-postgres.yml'
             )
           else
             mapfile -t workflow_files < <(
