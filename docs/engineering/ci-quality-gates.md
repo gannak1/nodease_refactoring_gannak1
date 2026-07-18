@@ -1,7 +1,7 @@
 # PR CI 품질 게이트
 
 Status: Draft
-Verified Against: feature/mba-328 @ 118cce75
+Verified Against: feature/mba-328 @ a3142b94
 
 ## 목적
 
@@ -226,7 +226,7 @@ CI 제어와 PostgreSQL workflow가 사용하는 공식 Action은 40자리 commi
 
 ## GitHub ruleset 적용
 
-MBA-328 workflow가 `dev`에 병합되고 MBA-326의 기존 red 상태가 해소된 뒤 probe PR에서 실제 context를 확인한다. 확인 전에는 ruleset을 먼저 활성화하지 않는다.
+MBA-326의 기존 red 상태는 PR #546으로 해소되었고, MBA-328은 해당 변경이 포함된 `dev @ 29a2bcf8` 위로 rebase했다. MBA-328 workflow가 `dev`에 병합된 뒤 probe PR에서 실제 context를 확인한다. 확인 전에는 ruleset을 먼저 활성화하지 않는다.
 
 1. `dev`와 `main` 모두 `PR Quality Gate / ci-required`를 required status check로 등록한다.
 2. CI control 변경의 `trusted-ci-control/base-policy`가 non-control PR에서도 안정적인 success context를 만드는지 probe로 확인한 뒤 required 등록 방식을 확정한다.
