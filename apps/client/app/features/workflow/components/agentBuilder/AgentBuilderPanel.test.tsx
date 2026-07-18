@@ -2630,7 +2630,9 @@ describe('AgentBuilderPanel', () => {
       screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
     );
 
-    expect(await screen.findByRole('status')).toHaveTextContent('Workflow 확인 중');
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent('Workflow 확인 중'),
+    );
     expect(screen.getByRole('checkbox', { name: '휴가 정책' })).toBeDisabled();
     expect(
       screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),

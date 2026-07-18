@@ -329,6 +329,66 @@ def _seed_contract(session_factory):
         )
 
 
+def _seed_historical_agent_builder_usage(engine) -> None:
+    """해당 migration revision에 실제로 존재하는 컬럼만 사용한다."""
+
+    user_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, email, name, social_provider, created_at, updated_at
+                ) VALUES (
+                    :id, :email, :name, :social_provider, :created_at, :updated_at
+                )
+                """
+            ),
+            {
+                "id": user_id,
+                "email": f"historical-agent-builder-{user_id}@example.invalid",
+                "name": "Historical Agent Builder Usage",
+                "social_provider": "local",
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO llm_usage_logs (
+                    id, user_id, credential_id, model_id,
+                    prompt_tokens, completion_tokens, total_cost,
+                    latency_ms, status, created_at,
+                    runtime_surface, runtime_session_id,
+                    runtime_request_id, runtime_attempt
+                ) VALUES (
+                    :id, :user_id, NULL, NULL,
+                    :prompt_tokens, :completion_tokens, :total_cost,
+                    :latency_ms, :status, :created_at,
+                    :runtime_surface, :runtime_session_id,
+                    :runtime_request_id, :runtime_attempt
+                )
+                """
+            ),
+            {
+                "id": uuid.uuid4(),
+                "user_id": user_id,
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_cost": Decimal("0.000001"),
+                "latency_ms": 1,
+                "status": "success",
+                "created_at": now,
+                "runtime_surface": "agent_builder_intent",
+                "runtime_session_id": uuid.uuid4(),
+                "runtime_request_id": uuid.uuid4(),
+                "runtime_attempt": 1,
+            },
+        )
+
+
 def _context(seed) -> AgentBuilderIntentUsageContext:
     return AgentBuilderIntentUsageContext(
         user_id=seed.user_id,
@@ -1874,10 +1934,7 @@ def test_migration_downgrade_rejects_agent_builder_usage_history():
         config,
         target_revision=AGENT_BUILDER_USAGE_MERGE_REVISION,
     ) as (engine, database):
-        session_factory = sessionmaker(bind=engine, expire_on_commit=False)
-        seed = _seed_contract(session_factory)
-        service = AgentBuilderIntentUsageService(session_factory=session_factory)
-        _record(service, seed)
+        _seed_historical_agent_builder_usage(engine)
         engine.dispose()
 
         result = _run_alembic_result(
