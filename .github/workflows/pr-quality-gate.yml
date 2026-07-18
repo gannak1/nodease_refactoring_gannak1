@@ -41,15 +41,22 @@ jobs:
       workflow_postgres: ${{ steps.scope_outputs.outputs.workflow_postgres }}
       agent_builder_postgres: ${{ steps.scope_outputs.outputs.agent_builder_postgres }}
       memory_postgres: ${{ steps.scope_outputs.outputs.memory_postgres }}
+      deployment_validation: ${{ steps.scope_outputs.outputs.deployment_validation }}
+      actions_validation: ${{ steps.scope_outputs.outputs.actions_validation }}
+      helm_validation: ${{ steps.scope_outputs.outputs.helm_validation }}
+      kubernetes_validation: ${{ steps.scope_outputs.outputs.kubernetes_validation }}
+      terraform_validation: ${{ steps.scope_outputs.outputs.terraform_validation }}
+      compose_validation: ${{ steps.scope_outputs.outputs.compose_validation }}
+      dockerfile_validation: ${{ steps.scope_outputs.outputs.dockerfile_validation }}
       broad_python: ${{ steps.scope_outputs.outputs.broad_python }}
     steps:
       - name: Checkout pull request merge
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -96,6 +103,13 @@ jobs:
           CLASSIFIED_WORKFLOW_POSTGRES: ${{ steps.classify.outputs.workflow_postgres }}
           CLASSIFIED_AGENT_BUILDER_POSTGRES: ${{ steps.classify.outputs.agent_builder_postgres }}
           CLASSIFIED_MEMORY_POSTGRES: ${{ steps.classify.outputs.memory_postgres }}
+          CLASSIFIED_DEPLOYMENT_VALIDATION: ${{ steps.classify.outputs.deployment_validation }}
+          CLASSIFIED_ACTIONS_VALIDATION: ${{ steps.classify.outputs.actions_validation }}
+          CLASSIFIED_HELM_VALIDATION: ${{ steps.classify.outputs.helm_validation }}
+          CLASSIFIED_KUBERNETES_VALIDATION: ${{ steps.classify.outputs.kubernetes_validation }}
+          CLASSIFIED_TERRAFORM_VALIDATION: ${{ steps.classify.outputs.terraform_validation }}
+          CLASSIFIED_COMPOSE_VALIDATION: ${{ steps.classify.outputs.compose_validation }}
+          CLASSIFIED_DOCKERFILE_VALIDATION: ${{ steps.classify.outputs.dockerfile_validation }}
           CLASSIFIED_BROAD_PYTHON: ${{ steps.classify.outputs.broad_python }}
         run: |
           emit_boolean() {
@@ -124,6 +138,13 @@ jobs:
             emit_boolean workflow_postgres true
             emit_boolean agent_builder_postgres true
             emit_boolean memory_postgres true
+            emit_boolean deployment_validation true
+            emit_boolean actions_validation true
+            emit_boolean helm_validation "$CLASSIFIED_HELM_VALIDATION"
+            emit_boolean kubernetes_validation "$CLASSIFIED_KUBERNETES_VALIDATION"
+            emit_boolean terraform_validation "$CLASSIFIED_TERRAFORM_VALIDATION"
+            emit_boolean compose_validation "$CLASSIFIED_COMPOSE_VALIDATION"
+            emit_boolean dockerfile_validation "$CLASSIFIED_DOCKERFILE_VALIDATION"
             emit_boolean broad_python true
             exit 0
           fi
@@ -143,6 +164,13 @@ jobs:
           emit_boolean workflow_postgres "$CLASSIFIED_WORKFLOW_POSTGRES"
           emit_boolean agent_builder_postgres "$CLASSIFIED_AGENT_BUILDER_POSTGRES"
           emit_boolean memory_postgres "$CLASSIFIED_MEMORY_POSTGRES"
+          emit_boolean deployment_validation "$CLASSIFIED_DEPLOYMENT_VALIDATION"
+          emit_boolean actions_validation "$CLASSIFIED_ACTIONS_VALIDATION"
+          emit_boolean helm_validation "$CLASSIFIED_HELM_VALIDATION"
+          emit_boolean kubernetes_validation "$CLASSIFIED_KUBERNETES_VALIDATION"
+          emit_boolean terraform_validation "$CLASSIFIED_TERRAFORM_VALIDATION"
+          emit_boolean compose_validation "$CLASSIFIED_COMPOSE_VALIDATION"
+          emit_boolean dockerfile_validation "$CLASSIFIED_DOCKERFILE_VALIDATION"
           emit_boolean broad_python "$CLASSIFIED_BROAD_PYTHON"
 
   alembic_graph:
@@ -151,10 +179,10 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout pull request merge
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -169,17 +197,17 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout pull request merge
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
 
@@ -209,12 +237,12 @@ jobs:
         working-directory: apps/client
     steps:
       - name: Checkout pull request merge
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "20"
           cache: npm
@@ -249,17 +277,17 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}
     steps:
       - name: Checkout pull request merge
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: |
@@ -303,17 +331,17 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}
     steps:
       - name: Checkout pull request merge
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
 
@@ -343,17 +371,17 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}
     steps:
       - name: Checkout pull request merge
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: apps/shared/pyproject.toml
@@ -385,17 +413,17 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}
     steps:
       - name: Checkout pull request merge
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: apps/shared/pyproject.toml
@@ -426,17 +454,17 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}
     steps:
       - name: Checkout pull request merge
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
 
@@ -466,17 +494,17 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}
     steps:
       - name: Checkout pull request merge
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: apps/sandbox/pyproject.toml
@@ -495,6 +523,128 @@ jobs:
           --head "$HEAD_SHA"
           --broad "${{ needs.scope.outputs.broad_python }}"
           --run-with .venv-ci-sandbox/bin/python
+
+  deployment_validation:
+    name: deployment-config-validation
+    needs: scope
+    if: needs.scope.outputs.deployment_validation == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout pull request merge
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go for actionlint
+        if: needs.scope.outputs.actions_validation == 'true'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Validate GitHub Actions workflows
+        if: needs.scope.outputs.actions_validation == 'true'
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+      - name: Set up Helm
+        if: needs.scope.outputs.helm_validation == 'true'
+        uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
+
+      - name: Validate Helm chart
+        if: needs.scope.outputs.helm_validation == 'true'
+        run: |
+          helm dependency build infra/helm/moduly
+          git diff --exit-code -- infra/helm/moduly/Chart.lock
+          helm lint infra/helm/moduly \
+            -f tests/ci/fixtures/helm-values-ci.yaml
+          helm lint infra/helm/moduly \
+            -f infra/helm/moduly/values-production.yaml \
+            -f tests/ci/fixtures/helm-values-ci.yaml
+          helm template nodease-ci infra/helm/moduly \
+            -f tests/ci/fixtures/helm-values-ci.yaml > /dev/null
+          helm template nodease-ci infra/helm/moduly \
+            -f infra/helm/moduly/values-production.yaml \
+            -f tests/ci/fixtures/helm-values-ci.yaml > /dev/null
+
+      - name: Set up kubectl
+        if: needs.scope.outputs.kubernetes_validation == 'true'
+        uses: azure/setup-kubectl@c0c8b32d33a5244f1e5947304550403b63930415 # v4
+
+      - name: Validate Kubernetes manifests
+        if: needs.scope.outputs.kubernetes_validation == 'true'
+        run: >-
+          kubectl create
+          --dry-run=client
+          --validate=false
+          --recursive
+          --filename infra/k8s
+
+      - name: Set up Terraform
+        if: needs.scope.outputs.terraform_validation == 'true'
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
+
+      - name: Validate Terraform configuration
+        if: needs.scope.outputs.terraform_validation == 'true'
+        run: |
+          terraform -chdir=infra/terraform fmt -check -recursive
+          terraform -chdir=infra/terraform init -backend=false -input=false
+          terraform -chdir=infra/terraform validate
+
+      - name: Validate changed Docker Compose files
+        if: needs.scope.outputs.compose_validation == 'true'
+        shell: bash
+        env:
+          ENCRYPTION_KEY: ci-validation-placeholder
+          MASTER_KEY: ci-validation-placeholder
+        run: |
+          mapfile -d '' changed_paths < <(
+            git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" --
+          )
+          selected=0
+          validated=0
+          for path in "${changed_paths[@]}"; do
+            case "$(basename "$path")" in
+              compose.yml|compose.yaml|docker-compose.yml|docker-compose.yaml)
+                selected=$((selected + 1))
+                if [[ -f "$path" ]]; then
+                  docker compose --file "$path" config --quiet
+                  validated=$((validated + 1))
+                fi
+                ;;
+            esac
+          done
+          if (( selected == 0 )); then
+            echo "::error::Compose validation was selected without a changed Compose file."
+            exit 1
+          fi
+          echo "Validated $validated existing Compose file(s); deleted files: $((selected - validated))."
+
+      - name: Validate changed Dockerfiles
+        if: needs.scope.outputs.dockerfile_validation == 'true'
+        shell: bash
+        run: |
+          mapfile -d '' changed_paths < <(
+            git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" --
+          )
+          selected=0
+          validated=0
+          for path in "${changed_paths[@]}"; do
+            case "$(basename "$path")" in
+              Dockerfile|*.Dockerfile)
+                selected=$((selected + 1))
+                if [[ -f "$path" ]]; then
+                  docker build --check --file "$path" .
+                  validated=$((validated + 1))
+                fi
+                ;;
+            esac
+          done
+          if (( selected == 0 )); then
+            echo "::error::Dockerfile validation was selected without a changed Dockerfile."
+            exit 1
+          fi
+          echo "Validated $validated existing Dockerfile(s); deleted files: $((selected - validated))."
 
   knowledge_postgres:
     name: knowledge-postgres-contracts
@@ -534,6 +684,7 @@ jobs:
       - memory_tests
       - log_tests
       - sandbox_tests
+      - deployment_validation
       - knowledge_postgres
       - workflow_postgres
       - agent_builder_postgres
@@ -542,10 +693,10 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout pull request merge
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -562,6 +713,7 @@ jobs:
           --conditional "memory=${{ needs.scope.outputs.memory_tests }}=${{ needs.memory_tests.result }}"
           --conditional "log-system=${{ needs.scope.outputs.log_tests }}=${{ needs.log_tests.result }}"
           --conditional "sandbox=${{ needs.scope.outputs.sandbox_tests }}=${{ needs.sandbox_tests.result }}"
+          --conditional "deployment-validation=${{ needs.scope.outputs.deployment_validation }}=${{ needs.deployment_validation.result }}"
           --conditional "knowledge-postgres=${{ needs.scope.outputs.knowledge_postgres }}=${{ needs.knowledge_postgres.result }}"
           --conditional "workflow-postgres=${{ needs.scope.outputs.workflow_postgres }}=${{ needs.workflow_postgres.result }}"
           --conditional "agent-builder-postgres=${{ needs.scope.outputs.agent_builder_postgres }}=${{ needs.agent_builder_postgres.result }}"

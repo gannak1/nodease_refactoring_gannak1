@@ -13,6 +13,8 @@ from scripts.ci.changed_scope import changed_paths_from_git, normalize_repo_path
 
 _EXCLUDED_TEST_PARTS = {"e2e", "evaluation", "load", "manual"}
 _POSTGRES_ONLY_TESTS = {
+    "apps/gateway/tests/adapters/db/test_knowledge_document_ingestion_repository_postgres.py",
+    "apps/gateway/tests/integration/test_agent_builder_intent_usage_postgres.py",
     "apps/gateway/tests/integration/test_agent_builder_model_selection_db.py",
     "apps/gateway/tests/integration/test_agent_builder_primary_workflow_db.py",
     "apps/gateway/tests/integration/test_agent_builder_workflow_cas.py",

@@ -132,6 +132,24 @@ def test_knowledge_runtime_change_selects_knowledge_postgres():
     assert scope.workflow_postgres is False
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "apps/gateway/adapters/db/knowledge_document_ingestion_repository.py",
+        "apps/gateway/application/knowledge_document_ingestion/worker.py",
+        "apps/gateway/services/ingestion/job_runner.py",
+        "apps/shared/db/models/knowledge.py",
+        "apps/shared/domain/knowledge_document_ingestion.py",
+        "apps/shared/services/knowledge_document_ingestion_projection.py",
+        "apps/gateway/tests/adapters/db/test_knowledge_document_ingestion_repository_postgres.py",
+    ],
+)
+def test_knowledge_ingestion_change_selects_knowledge_postgres(path: str):
+    scope = classify_paths([path])
+
+    assert scope.knowledge_postgres is True
+
+
 def test_schedule_change_selects_workflow_postgres():
     scope = classify_paths(["apps/shared/domain/schedule_dispatch.py"])
 
@@ -171,6 +189,8 @@ def test_ci_control_change_selects_smoke_jobs_and_postgres_contracts():
     assert scope.agent_builder_postgres is True
     assert scope.memory_tests is True
     assert scope.memory_postgres is True
+    assert scope.deployment_validation is True
+    assert scope.actions_validation is True
 
 
 def test_trusted_guard_change_is_treated_as_ci_control():
@@ -184,9 +204,34 @@ def test_trusted_guard_change_is_treated_as_ci_control():
     assert scope.memory_postgres is True
 
 
-def test_deployment_workflow_does_not_pull_runtime_tests_into_pr_gate():
+def test_deployment_workflow_selects_static_validation_without_runtime_tests():
     scope = classify_paths([".github/workflows/deploy-eks-gateway.yml"])
 
+    assert scope.deployment_validation is True
+    assert scope.actions_validation is True
+    assert scope.client is False
+    assert scope.gateway_tests is False
+    assert scope.broad_python is False
+
+
+@pytest.mark.parametrize(
+    ("path", "selected_output"),
+    [
+        ("infra/helm/moduly/values-production.yaml", "helm_validation"),
+        ("infra/k8s/ingress.yaml", "kubernetes_validation"),
+        ("infra/terraform/eks.tf", "terraform_validation"),
+        ("docker/docker-compose.yml", "compose_validation"),
+        ("docker/gateway/Dockerfile", "dockerfile_validation"),
+    ],
+)
+def test_deployment_config_selects_only_its_static_validator(
+    path: str,
+    selected_output: str,
+):
+    scope = classify_paths([path])
+
+    assert scope.deployment_validation is True
+    assert getattr(scope, selected_output) is True
     assert scope.client is False
     assert scope.gateway_tests is False
     assert scope.broad_python is False

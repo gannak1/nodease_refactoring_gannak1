@@ -14,7 +14,18 @@ from typing import Iterable
 _SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
 _KNOWLEDGE_POSTGRES_PATTERNS = (
+    "apps/gateway/adapters/db/knowledge_document_ingestion_repository.py",
+    "apps/gateway/adapters/db/sqlalchemy_unit_of_work.py",
+    "apps/gateway/application/knowledge_document_ingestion/**",
+    "apps/gateway/composition/knowledge_document_ingestion*.py",
+    "apps/gateway/knowledge_ingestion_tasks.py",
+    "apps/gateway/services/ingestion/job_runner.py",
+    "apps/gateway/tests/adapters/db/test_knowledge_document_ingestion_repository_postgres.py",
+    "apps/shared/alembic/**",
+    "apps/shared/db/models/knowledge.py",
+    "apps/shared/domain/knowledge_document_ingestion.py",
     "apps/shared/domain/knowledge_runtime_candidates.py",
+    "apps/shared/services/knowledge_document_ingestion_*.py",
     "apps/shared/services/knowledge_permission_service.py",
     "apps/shared/tests/db/test_knowledge_runtime_snapshot_disposable_postgres.py",
     "apps/shared/tests/domain/test_knowledge_runtime_candidates.py",
@@ -126,6 +137,13 @@ _DEPLOYMENT_ONLY_WORKFLOWS = (
     ".github/workflows/publish-images.yml",
 )
 
+_COMPOSE_FILE_NAMES = {
+    "compose.yml",
+    "compose.yaml",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+}
+
 
 @dataclass
 class ChangeScope:
@@ -143,6 +161,13 @@ class ChangeScope:
     workflow_postgres: bool = False
     agent_builder_postgres: bool = False
     memory_postgres: bool = False
+    deployment_validation: bool = False
+    actions_validation: bool = False
+    helm_validation: bool = False
+    kubernetes_validation: bool = False
+    terraform_validation: bool = False
+    compose_validation: bool = False
+    dockerfile_validation: bool = False
     broad_python: bool = False
 
     def enable_python_smoke(self) -> None:
@@ -258,6 +283,32 @@ def _is_ci_control_path(path: str) -> bool:
     )
 
 
+def _select_deployment_validation(path: str, scope: ChangeScope) -> None:
+    if path.startswith((".github/workflows/", ".github/actions/")):
+        scope.actions_validation = True
+    if path.startswith("infra/helm/") or path == "tests/ci/fixtures/helm-values-ci.yaml":
+        scope.helm_validation = True
+    if path.startswith("infra/k8s/"):
+        scope.kubernetes_validation = True
+    if path.startswith("infra/terraform/"):
+        scope.terraform_validation = True
+    if PurePosixPath(path).name in _COMPOSE_FILE_NAMES:
+        scope.compose_validation = True
+    if PurePosixPath(path).name == "Dockerfile" or path.endswith(".Dockerfile"):
+        scope.dockerfile_validation = True
+
+    scope.deployment_validation = any(
+        (
+            scope.actions_validation,
+            scope.helm_validation,
+            scope.kubernetes_validation,
+            scope.terraform_validation,
+            scope.compose_validation,
+            scope.dockerfile_validation,
+        )
+    )
+
+
 def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
     paths = list(dict.fromkeys(normalize_repo_path(path) for path in raw_paths))
     scope = ChangeScope(
@@ -274,6 +325,8 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
         return scope
 
     for path in paths:
+        _select_deployment_validation(path, scope)
+
         if _matches_any(path, _KNOWLEDGE_POSTGRES_PATTERNS):
             scope.knowledge_postgres = True
         if _matches_any(path, _WORKFLOW_POSTGRES_PATTERNS):
@@ -291,6 +344,8 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
             continue
 
         if _is_ci_control_path(path):
+            scope.deployment_validation = True
+            scope.actions_validation = True
             scope.client = True
             scope.enable_python_smoke()
             scope.knowledge_postgres = True
