@@ -1537,7 +1537,7 @@ def test_github_pr_review_request_builds_read_review_and_comment_nodes(monkeypat
         "get_pr",
         "comment_pr",
     ]
-    assert all(node["data"]["api_token"] == "" for node in github_nodes)
+    assert all("api_token" not in node["data"] for node in github_nodes)
     assert all(
         node["data"]["configuration_state"] == "unresolved" for node in github_nodes
     )
@@ -4693,7 +4693,7 @@ def test_agent_builder_preview_generates_valid_slack_node_when_requested(monkeyp
     assert "slackPostNode" in nodes_by_type
     slack_node = nodes_by_type["slackPostNode"]
     assert slack_node["data"]["channel"] == ""
-    assert slack_node["data"]["authConfig"] == {}
+    assert "authConfig" not in slack_node["data"]
     assert "body" not in slack_node["data"]
     assert "headers" not in slack_node["data"]
     assert "timeout" not in slack_node["data"]

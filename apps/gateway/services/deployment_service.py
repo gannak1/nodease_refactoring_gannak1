@@ -228,7 +228,8 @@ class DeploymentService:
         except HTTPException as exc:
             reason_code = (
                 "mail_credential_unavailable"
-                if exc.detail == "resource.not_found"
+                if exc.detail
+                in ("resource.not_found", "mail.credential_permission_denied")
                 else (
                     "external_action_credential_unavailable"
                     if exc.detail == "external_action_credential.unavailable"
@@ -1515,7 +1516,8 @@ class DeploymentService:
             except HTTPException as exc:
                 reason_code = (
                     "mail_credential_unavailable"
-                    if exc.detail == "resource.not_found"
+                    if exc.detail
+                    in ("resource.not_found", "mail.credential_permission_denied")
                     else (
                         "external_action_credential_unavailable"
                         if exc.detail == "external_action_credential.unavailable"

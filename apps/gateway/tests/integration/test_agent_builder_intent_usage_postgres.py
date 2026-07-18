@@ -81,6 +81,7 @@ ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_agent_builder_intent_usage"
 AGENT_BUILDER_USAGE_MERGE_REVISION = "ac2d3e4f5061"
+APP_AUTH_SECRET_VERIFIER_REVISION = "b0c1d2e3f4a5"
 pytestmark = pytest.mark.skipif(
     os.getenv(RUN_ENV) != "1",
     reason=f"set {RUN_ENV}=1 to run disposable Agent Builder usage tests",
@@ -1834,7 +1835,9 @@ def test_migration_round_trip_on_empty_usage_history():
 
     with _disposable_database(
         config,
-        target_revision=AGENT_BUILDER_USAGE_MERGE_REVISION,
+        # _seed_contract uses the current App ORM, whose verifier fields were
+        # introduced immediately after the Agent Builder usage merge.
+        target_revision=APP_AUTH_SECRET_VERIFIER_REVISION,
     ) as (engine, database):
         engine.dispose()
         _run_alembic(database, config, "downgrade", "aa0b1c2d3e4f")

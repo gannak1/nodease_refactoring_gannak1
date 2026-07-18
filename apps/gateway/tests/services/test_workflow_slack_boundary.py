@@ -1,5 +1,4 @@
 import uuid
-from unittest.mock import MagicMock
 
 import pytest
 from fastapi import HTTPException
@@ -18,7 +17,7 @@ def _graph(data, *, selector=None):
                 "slackMode": "api",
                 "channel": "C123",
                 "message": "message",
-                "authConfig": {"token": "fixture-token"},
+                "credential_id": str(uuid.uuid4()),
                 "referenced_variables": [],
                 **data,
             },
@@ -41,11 +40,8 @@ def _graph(data, *, selector=None):
 
 
 def _validate(graph, *, require_resolved=False):
-    return WorkflowService.validate_mail_credential_references(
-        MagicMock(),
+    return WorkflowService.validate_external_node_storage_boundaries(
         graph,
-        user_id=str(uuid.uuid4()),
-        organization_id=uuid.uuid4(),
         require_resolved=require_resolved,
     )
 
@@ -72,13 +68,12 @@ def test_draft_rejects_alternate_slack_request_source_without_echoing_value():
     assert raw_value not in str(exc.value)
 
 
-def test_draft_preserves_incomplete_webhook_but_deployment_requires_canonical_url():
+def test_draft_preserves_unresolved_webhook_but_deployment_requires_credential():
     graph = _graph(
         {
             "slackMode": "webhook",
             "channel": "",
-            "authConfig": {},
-            "url": "https://slack.com/api/chat.postMessage",
+            "credential_id": None,
         }
     )
 
@@ -95,8 +90,6 @@ def test_deployment_rejects_webhook_message_ref_selector_but_draft_preserves_it(
         {
             "slackMode": "webhook",
             "channel": "legacy-channel",
-            "authConfig": {},
-            "url": "https://hooks.slack.com/services/a/b/c",
         },
         selector=["slack-1", "message_ref"],
     )
@@ -109,13 +102,10 @@ def test_deployment_rejects_webhook_message_ref_selector_but_draft_preserves_it(
     assert exc.value.detail == "slack.graph_configuration_invalid"
 
 
-def test_deployment_accepts_webhook_with_legacy_hidden_channel():
+def test_deployment_accepts_webhook_with_credential_reference():
     graph = _graph(
         {
             "slackMode": "webhook",
-            "channel": "legacy-channel",
-            "authConfig": {},
-            "url": "https://hooks.slack.com/services/a/b/c",
         }
     )
 

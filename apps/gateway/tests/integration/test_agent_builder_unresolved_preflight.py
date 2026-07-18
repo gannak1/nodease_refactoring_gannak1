@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 
 from apps.shared.services.workflow_configuration_preflight import (
@@ -508,9 +510,10 @@ def test_resolved_external_action_passes_without_external_calls():
     enforce_workflow_configuration_preflight(
         _graph(
             {
-                "authType": "bearer",
-                "authConfig": {"token": "test-only-placeholder"},
-                "body": '{"channel":"C123","text":"hello"}',
+                "slackMode": "api",
+                "credential_id": str(uuid.uuid4()),
+                "channel": "C123",
+                "message": "hello",
             }
         ),
         surface="run",

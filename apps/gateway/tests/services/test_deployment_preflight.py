@@ -1309,7 +1309,7 @@ def test_inactive_create_rejects_unavailable_mail_reference(
     assert db.rows_for(WorkflowDeployment) == []
 
 
-def test_create_preserves_mail_credential_permission_denial(monkeypatch):
+def test_create_normalizes_mail_credential_permission_denial(monkeypatch):
     app_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
     organization_id = uuid.uuid4()
@@ -1343,6 +1343,16 @@ def test_create_preserves_mail_credential_permission_denial(monkeypatch):
         lambda _db, graph, **_kwargs: graph,
     )
     monkeypatch.setattr(
+        deployment_module,
+        "enforce_workflow_configuration_preflight",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        DeploymentService,
+        "_enforce_deployment_configuration_preflight",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
         deployment_module.WorkflowService,
         "validate_mail_credential_references",
         lambda *args, **kwargs: (_ for _ in ()).throw(
@@ -1363,8 +1373,11 @@ def test_create_preserves_mail_credential_permission_denial(monkeypatch):
             runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         )
 
-    assert exc_info.value.status_code == 403
-    assert exc_info.value.detail == "mail.credential_permission_denied"
+    assert exc_info.value.status_code == 409
+    assert (
+        exc_info.value.detail["error"]["reason_code"] == "mail_credential_unavailable"
+    )
+    assert db.rows_for(WorkflowDeployment) == []
 
 
 def test_inactive_create_rejects_malformed_graph(monkeypatch):
@@ -1808,6 +1821,11 @@ def test_workflow_node_toggle_removes_legacy_schedule_surface(monkeypatch):
     monkeypatch.setattr(
         DeploymentService,
         "_enforce_knowledge_preflight",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        deployment_module,
+        "enforce_workflow_configuration_preflight",
         lambda *a, **k: None,
     )
 

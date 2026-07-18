@@ -61,7 +61,13 @@ def _node(node_id, node_type, data=None):
 
 def test_planner_omits_slack_credential_task_without_copying_values_into_tasks():
     graph = {
-        "nodes": [_node("slack", "slackPostNode", {"credential": "cred-existing"})],
+        "nodes": [
+            _node(
+                "slack",
+                "slackPostNode",
+                {"credential_id": str(uuid4()), "message": "{{result}}"},
+            )
+        ],
         "edges": [],
     }
     planner = ParameterTaskPlanner()
@@ -99,11 +105,12 @@ def test_planner_omits_slack_credential_task_without_copying_values_into_tasks()
         ensure_ascii=False,
     )
     assert result.graph["nodes"][0]["data"]["channel"] == "C123"
-    assert '"channel": "C123"' in result.graph["nodes"][0]["data"]["body"]
+    assert result.graph["nodes"][0]["data"]["message"] == "{{result}}"
+    assert "body" not in result.graph["nodes"][0]["data"]
     assert result.tasks[0].reason == "메시지 목적지가 필요합니다."
     assert result.tasks[0].node_label == "slack"
     assert result.tasks[0].node_purpose == "Slack으로 메시지를 전송합니다."
-    assert result.tasks[0].configuration_state == "unresolved"
+    assert result.tasks[0].configuration_state == "resolved"
     assert result.tasks[0].sensitivity == "safe"
 
 
@@ -1302,9 +1309,9 @@ def test_unregistered_credential_decision_cannot_bypass_reference_resolver():
     assert exc.value.detail == "invalid_decision"
 
 
-def test_slack_channel_parameter_updates_runtime_request_body():
+def test_slack_channel_parameter_updates_safe_node_configuration():
     data = {
-        "body": '{"text":"{{result}}"}',
+        "message": "{{result}}",
         "channel": "",
         "configuration_state": "unresolved",
     }
@@ -1317,7 +1324,8 @@ def test_slack_channel_parameter_updates_runtime_request_body():
     )
 
     assert updated["channel"] == "C123"
-    assert '"channel": "C123"' in updated["body"]
+    assert updated["message"] == "{{result}}"
+    assert "body" not in updated
 
 
 def test_downstream_selector_is_recomputed_and_reactivated_when_source_output_changes():

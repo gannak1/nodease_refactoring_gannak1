@@ -798,6 +798,7 @@ def test_inactive_preview_preserves_slack_invalid_issue_with_unresolved_node():
     }
     assert result.status == "blocked"
     assert reason_codes == {
+        "external_action_credential_execution_subject_inherited",
         "node_configuration_invalid",
         "node_configuration_unresolved",
     }

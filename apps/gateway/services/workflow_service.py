@@ -718,6 +718,19 @@ class WorkflowService:
     ) -> None:
         """Validate opaque Slack/GitHub references at every graph persistence gate."""
 
+        external_action_nodes = [
+            node
+            for node in WorkflowService._iter_workflow_nodes(nodes)
+            if (
+                node.get("type")
+                if isinstance(node, dict)
+                else getattr(node, "type", None)
+            )
+            in {"slackPostNode", "githubNode"}
+        ]
+        if not external_action_nodes:
+            return
+
         try:
             user_uuid = uuid.UUID(str(user_id))
             organization_uuid = uuid.UUID(str(organization_id))
@@ -727,14 +740,12 @@ class WorkflowService:
                 detail="external_action_credential.context_invalid",
             ) from exc
 
-        for node in WorkflowService._iter_workflow_nodes(nodes):
+        for node in external_action_nodes:
             node_type = (
                 node.get("type")
                 if isinstance(node, dict)
                 else getattr(node, "type", None)
             )
-            if node_type not in {"slackPostNode", "githubNode"}:
-                continue
             data = (
                 node.get("data")
                 if isinstance(node, dict)
