@@ -159,6 +159,7 @@ def test_trusted_diff_detects_real_terraform_and_dockerfile_changes():
         'echo "dockerfile_config_changed=$dockerfile_config_changed"'
         in trusted_diff_block
     )
+    assert trusted_diff_block.count('>> "$GITHUB_OUTPUT"') == 1
     assert "break" not in trusted_diff_block
 
 

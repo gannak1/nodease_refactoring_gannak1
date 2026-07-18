@@ -105,9 +105,11 @@ jobs:
                 ;;
             esac
           done < <(git diff --name-only --no-renames -z "$BASE_SHA" "$HEAD_SHA" --)
-          echo "changed=$changed" >> "$GITHUB_OUTPUT"
-          echo "terraform_config_changed=$terraform_config_changed" >> "$GITHUB_OUTPUT"
-          echo "dockerfile_config_changed=$dockerfile_config_changed" >> "$GITHUB_OUTPUT"
+          {
+            echo "changed=$changed"
+            echo "terraform_config_changed=$terraform_config_changed"
+            echo "dockerfile_config_changed=$dockerfile_config_changed"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Classify changed paths
         id: classify
