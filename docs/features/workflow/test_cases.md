@@ -364,6 +364,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 
 - draft 저장 API는 클라이언트가 보낸 `expected_graph_hash` 또는 `expected_updated_at`이 서버 최신 canonical graph와 다르면 `409 stale_graph`를 반환한다.
 - 동일 workflow에 대해 동시 저장 요청 2개가 같은 base `graph_hash + updated_at`으로 도착하면 서버는 row lock 뒤 하나만 성공시키고 다른 요청은 `409 stale_graph`로 닫는다.
+- 최상위 request schema를 통과한 Loop `subGraph`에서 position/data가 누락된 node 또는 source/target이 누락된 edge가 있으면 일반 draft save와 metadata draft read는 raw validation detail 없이 `422 workflow.graph_invalid`를 반환하고 DB commit/audit을 수행하지 않는다.
 - 배포 API는 요청 시점에 지정한 draft revision 또는 snapshot id를 기준으로 배포한다.
 - 실행 로그 목록 API는 새 run이 조회 중 생성되어도 cursor pagination에서 중복 row를 반환하지 않는다.
 

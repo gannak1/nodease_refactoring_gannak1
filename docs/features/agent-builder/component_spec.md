@@ -726,3 +726,4 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 - `WorkflowResultGroup`의 presentation task가 `이전 항목`으로 바뀌면 `NodeParameterCard`는 canonical active task ID가 아니라 presentation task의 required/confirmation 상태와 canonical graph hydration 결과로 action을 계산한다.
 - Optional presentation task에 값이 없으면 `건너뛰기`, 값이 있으면 `값 지우고 건너뛰기`를 표시한다. 전자는 `skip`, 후자는 `clear`를 호출한다. Required 또는 confirmation-required task에는 표시하지 않는다.
 - Previous 이동, secret save 실패 또는 clear acknowledgement 실패 시 card와 입력값을 유지한다. 성공한 secret save는 canonical metadata를 반영한 뒤 configured/unconfigured session reconciliation만 수행한다.
+- 일반 Node Detail이 deferred parameter의 실제 값을 변경해 저장하면 해당 key의 deferred marker만 해제한다. 관련 없는 field 편집, 동일 값 재전송, 빈 값·invalid 값, viewport 변경은 marker를 유지하며 Loop 내부 Node Detail에도 같은 동작을 적용한다.

@@ -15,6 +15,7 @@ from apps.gateway.application.agent_builder.graph_mutation_builder import (
     GraphMutationBuilder,
     apply_graph_operations,
     materialize_candidate_features,
+    materialize_candidate_graph,
 )
 from apps.gateway.application.agent_builder.workflow_cas import (
     WorkflowDraftCASService,
@@ -405,6 +406,117 @@ def test_draft_save_rejects_invalid_note_features_with_safe_422(monkeypatch):
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == "workflow.features_invalid"
     db.commit.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "subgraph",
+    [
+        {
+            "nodes": [
+                {
+                    "id": "nested-1",
+                    "type": "codeNode",
+                    "data": {"code": "return inputs"},
+                }
+            ],
+            "edges": [],
+        },
+        {
+            "nodes": [
+                {
+                    "id": "nested-1",
+                    "type": "codeNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {"code": "return inputs"},
+                }
+            ],
+            "edges": [{"id": "nested-edge", "source": "nested-1"}],
+        },
+    ],
+)
+def test_draft_save_rejects_invalid_nested_graph_with_safe_422(
+    monkeypatch,
+    subgraph,
+):
+    now = datetime.now(timezone.utc)
+    workflow = SimpleNamespace(
+        id=uuid4(),
+        organization_id=uuid4(),
+        graph={"nodes": [], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 1}},
+        features={},
+        env_variables=[],
+        runtime_variables=[],
+        updated_at=now,
+    )
+    request = WorkflowDraftRequest.model_validate(
+        {
+            "nodes": [
+                {
+                    "id": "loop-1",
+                    "type": "loopNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {"subGraph": subgraph},
+                }
+            ],
+            "edges": [],
+            "viewport": {"x": 0, "y": 0, "zoom": 1},
+            "expected_graph_hash": "0" * 64,
+            "expected_updated_at": now,
+        }
+    )
+    query = Mock()
+    query.filter.return_value = query
+    query.populate_existing.return_value = query
+    query.with_for_update.return_value = query
+    query.first.return_value = workflow
+    db = Mock()
+    db.query.return_value = query
+    monkeypatch.setattr(WorkflowService, "validate_knowledge_references", Mock())
+    monkeypatch.setattr(
+        "apps.gateway.services.workflow_service.WorkflowDraftCASService.validate_expected_draft_state",
+        Mock(),
+    )
+    monkeypatch.setattr(WorkflowService, "validate_mail_credential_references", Mock())
+
+    with pytest.raises(HTTPException) as exc_info:
+        WorkflowService.save_draft(
+            db,
+            str(workflow.id),
+            request,
+            user_id=str(uuid4()),
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "workflow.graph_invalid"
+    db.commit.assert_not_called()
+
+
+def test_graph_materializer_wraps_nested_schema_errors():
+    graph = {
+        "nodes": [
+            {
+                "id": "loop-1",
+                "type": "loopNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "subGraph": {
+                        "nodes": [
+                            {
+                                "id": "nested-1",
+                                "type": "codeNode",
+                                "data": {},
+                            }
+                        ],
+                        "edges": [],
+                    }
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    with pytest.raises(GraphMutationValidationError, match="workflow.graph_invalid"):
+        materialize_candidate_graph(graph)
 
 
 def test_agent_builder_draft_save_materializes_note_features(monkeypatch):

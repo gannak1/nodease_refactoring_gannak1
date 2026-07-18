@@ -410,6 +410,36 @@ const canonicalDraftMetadataFrom = (
     : null;
 };
 
+const isConfiguredDeferredValue = (value: unknown): boolean => {
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value === 'boolean') return true;
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === 'object') return Object.keys(value).length > 0;
+  return value !== null && value !== undefined;
+};
+
+const mergeNodeDataForExplicitEdit = (
+  currentData: Record<string, unknown>,
+  newData: Record<string, unknown>,
+): Record<string, unknown> => {
+  const merged = { ...currentData, ...newData };
+  if (Object.prototype.hasOwnProperty.call(newData, '_deferred_parameters')) {
+    return merged;
+  }
+
+  const deferred = currentData._deferred_parameters;
+  if (!Array.isArray(deferred)) return merged;
+
+  merged._deferred_parameters = deferred.filter((parameterKey) => {
+    if (typeof parameterKey !== 'string') return true;
+    if (!Object.prototype.hasOwnProperty.call(newData, parameterKey)) return true;
+    if (Object.is(currentData[parameterKey], newData[parameterKey])) return true;
+    return !isConfiguredDeferredValue(newData[parameterKey]);
+  });
+  return merged;
+};
+
 const STRUCTURAL_AGENT_BUILDER_MUTATIONS = new Set<
   AgentBuilderGraphMutation['kind']
 >(['initial_graph', 'graph_edit', 'replace_workflow']);
@@ -2275,7 +2305,10 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         if (node.id === nodeId) {
           return {
             ...node,
-            data: { ...node.data, ...newData },
+            data: mergeNodeDataForExplicitEdit(
+              node.data as Record<string, unknown>,
+              newData,
+            ),
           } as Node;
         }
         return node;
@@ -2323,7 +2356,13 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
           if (subGraph && subGraph.nodes) {
             const updatedSubNodes = subGraph.nodes.map((subNode: any) =>
               subNode.id === nodeId
-                ? { ...subNode, data: { ...subNode.data, ...newData } }
+                ? {
+                    ...subNode,
+                    data: mergeNodeDataForExplicitEdit(
+                      subNode.data as Record<string, unknown>,
+                      newData,
+                    ),
+                  }
                 : subNode,
             );
             return {

@@ -40,3 +40,19 @@ def test_dev_script_separates_log_stream_from_required_docker_health() -> None:
     assert "pg_isready" in script
     assert "redis-cli ping" in script
     assert "http://localhost:8194/health" in script
+
+
+def test_dev_script_waits_for_sandbox_readiness_before_watchdog() -> None:
+    script = (ROOT_DIR / "scripts" / "dev.sh").read_text(encoding="utf-8")
+
+    wait_function_index = script.find("wait_for_sandbox_ready()")
+    wait_call_index = script.find("wait_for_sandbox_ready", wait_function_index + 1)
+    watchdog_start_index = script.find("monitor_docker_services &")
+
+    assert 'SANDBOX_STARTUP_TIMEOUT_SECONDS="${SANDBOX_STARTUP_TIMEOUT_SECONDS:-180}"' in script
+    assert wait_function_index >= 0
+    assert wait_call_index > wait_function_index
+    assert wait_call_index < watchdog_start_index
+    assert "curl -fsS http://localhost:8194/health" in script
+    assert "Sandbox startup timed out" in script
+    assert "background" not in script.lower()

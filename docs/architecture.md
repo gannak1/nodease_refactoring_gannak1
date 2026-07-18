@@ -357,6 +357,7 @@ Critical policy ownership:
 
 - `dev/docker-compose.yml`로 PostgreSQL, Redis, pgAdmin, Sandbox만 컨테이너로 띄우고 Gateway, worker, Client는 host process로 실행한다.
 - 접속: Gateway `:8000`, Client `:3000`, Sandbox `:8194`, pgAdmin `:5050`. Workflow Engine worker는 gevent 기반 runtime과 맞춰 `-P gevent`로 실행하고, Log System worker는 로컬 안정성을 위해 `-P solo`를 사용할 수 있다. Windows 로컬 실행은 Python 로그 인코딩 오류를 피하기 위해 `PYTHONUTF8=1`, `PYTHONIOENCODING=utf-8`을 사용한다.
+- `scripts/dev.sh`는 Sandbox container가 running 상태이고 `/health`가 성공할 때까지 `SANDBOX_STARTUP_TIMEOUT_SECONDS`(기본 180초) 안에서 기다린 뒤 Gateway, workers와 Docker health watchdog을 시작한다. 준비 전 container 종료 또는 timeout은 전체 startup을 실패·정리하고, 최초 readiness 이후에는 PostgreSQL, Redis, Sandbox의 5초 간격 3회 연속 health 실패를 fatal로 처리한다. Docker log follower는 health 소유자가 아니다.
 
 ### 통합 컨테이너 — `docker/docker-compose.yml`
 

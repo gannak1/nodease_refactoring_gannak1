@@ -496,11 +496,17 @@ class WorkflowService:
         )
 
         # Graph 데이터 저장 (JSONB 형식)
-        workflow.graph = materialize_candidate_graph({
-            "nodes": [node.model_dump() for node in request.nodes],
-            "edges": [edge.model_dump() for edge in request.edges],
-            "viewport": request.viewport.model_dump() if request.viewport else None,
-        })
+        try:
+            workflow.graph = materialize_candidate_graph({
+                "nodes": [node.model_dump() for node in request.nodes],
+                "edges": [edge.model_dump() for edge in request.edges],
+                "viewport": request.viewport.model_dump() if request.viewport else None,
+            })
+        except GraphMutationValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="workflow.graph_invalid",
+            ) from exc
 
         workflow.features = canonical_features
 
@@ -813,7 +819,13 @@ class WorkflowService:
             data.setdefault("edges", [])
             data.setdefault("viewport", {"x": 0, "y": 0, "zoom": 1})
             data["workflow_id"] = str(workflow.id)
-            data["graph_hash"] = canonical_graph_hash(workflow.graph)
+            try:
+                data["graph_hash"] = canonical_graph_hash(workflow.graph)
+            except GraphMutationValidationError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail="workflow.graph_invalid",
+                ) from exc
             data["updated_at"] = workflow.updated_at.isoformat()
 
         return data

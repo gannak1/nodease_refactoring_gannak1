@@ -276,20 +276,25 @@ def _materialize_candidate_node(
 
 
 def materialize_candidate_graph(graph: dict[str, Any]) -> dict[str, Any]:
-    materialized = copy.deepcopy(graph)
-    nodes = [
-        _materialize_candidate_node(raw_node, derive_configuration=True)
-        for raw_node in graph.get("nodes") or []
-    ]
-    materialized["nodes"] = nodes
-    edges: list[dict[str, Any]] = []
-    for raw_edge in graph.get("edges") or []:
-        edge = EdgeSchema.model_validate(raw_edge).model_dump(mode="python")
-        for field in _EDITOR_RUNTIME_EDGE_FIELDS:
-            edge.pop(field, None)
-        edges.append(edge)
-    materialized["edges"] = edges
-    return materialized
+    try:
+        materialized = copy.deepcopy(graph)
+        nodes = [
+            _materialize_candidate_node(raw_node, derive_configuration=True)
+            for raw_node in graph.get("nodes") or []
+        ]
+        materialized["nodes"] = nodes
+        edges: list[dict[str, Any]] = []
+        for raw_edge in graph.get("edges") or []:
+            edge = EdgeSchema.model_validate(raw_edge).model_dump(mode="python")
+            for field in _EDITOR_RUNTIME_EDGE_FIELDS:
+                edge.pop(field, None)
+            edges.append(edge)
+        materialized["edges"] = edges
+        return materialized
+    except GraphMutationValidationError:
+        raise
+    except (AttributeError, TypeError, ValueError, ValidationError) as exc:
+        raise GraphMutationValidationError("workflow.graph_invalid") from exc
 
 
 def materialize_candidate_features(features: dict[str, Any] | None) -> dict[str, Any]:

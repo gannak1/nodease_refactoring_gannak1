@@ -1922,6 +1922,74 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
     expect(state.nodes[0].data.newField).toBe('newValue');
   });
 
+  it('clears only the explicitly resolved deferred parameter on node detail edit', () => {
+    const node = createMockNode('slack-1', 'slackPostNode');
+    node.data = {
+      ...node.data,
+      channel: 'old-channel',
+      message: 'hello',
+      _deferred_parameters: ['channel', 'message'],
+    } as Node['data'];
+    useWorkflowStore.getState().setNodes([node]);
+
+    useWorkflowStore.getState().updateNodeData('slack-1', {
+      channel: 'new-channel',
+    });
+
+    expect(useWorkflowStore.getState().nodes[0].data).toMatchObject({
+      channel: 'new-channel',
+      _deferred_parameters: ['message'],
+    });
+  });
+
+  it('keeps deferred markers for unrelated or empty node detail edits', () => {
+    const node = createMockNode('slack-1', 'slackPostNode');
+    node.data = {
+      ...node.data,
+      channel: 'old-channel',
+      _deferred_parameters: ['channel'],
+    } as Node['data'];
+    useWorkflowStore.getState().setNodes([node]);
+
+    useWorkflowStore.getState().updateNodeData('slack-1', {
+      title: 'Slack updated',
+    });
+    useWorkflowStore.getState().updateNodeData('slack-1', { channel: '   ' });
+
+    expect(
+      useWorkflowStore.getState().nodes[0].data._deferred_parameters,
+    ).toEqual(['channel']);
+  });
+
+  it('clears a resolved deferred parameter inside a nested subgraph', () => {
+    const nestedNode = createMockNode('mail-1', 'mailNode');
+    nestedNode.data = {
+      ...nestedNode.data,
+      credential_id: null,
+      _deferred_parameters: ['credential_id', 'query'],
+    } as Node['data'];
+    const parentNode = createMockNode('loop-1', 'loopNode');
+    parentNode.data = {
+      ...parentNode.data,
+      subGraph: { nodes: [nestedNode], edges: [] },
+    } as Node['data'];
+    useWorkflowStore.getState().setNodes([parentNode]);
+
+    useWorkflowStore
+      .getState()
+      .updateInnerNodeData('loop-1', 'mail-1', {
+        credential_id: 'credential-1',
+      });
+
+    const nestedData = (useWorkflowStore.getState().nodes[0].data.subGraph as {
+      nodes: Node[];
+    }).nodes[0].data;
+    expect(nestedData).toMatchObject({
+      credential_id: 'credential-1',
+      _deferred_parameters: ['query'],
+    });
+  });
+
   it('노드 데이터를 수정하면 저장되지 않은 변경 상태로 표시한다', () => {
     const node = createMockNode('node-1');
     useWorkflowStore.getState().setNodes([node]);

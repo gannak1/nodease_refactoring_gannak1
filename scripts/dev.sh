@@ -13,6 +13,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
+SANDBOX_STARTUP_TIMEOUT_SECONDS="${SANDBOX_STARTUP_TIMEOUT_SECONDS:-180}"
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
@@ -118,6 +119,27 @@ monitor_docker_services() {
     done
 }
 
+wait_for_sandbox_ready() {
+    local elapsed=0
+
+    echo "Waiting for Sandbox readiness..."
+    while [ "$elapsed" -lt "$SANDBOX_STARTUP_TIMEOUT_SECONDS" ]; do
+        if curl -fsS http://localhost:8194/health > /dev/null 2>&1; then
+            echo -e "${GREEN}Sandbox is ready.${NC}"
+            return 0
+        fi
+        if ! docker compose -f dev/docker-compose.yml ps --status running -q sandbox | grep -q .; then
+            echo -e "${RED}Sandbox container exited before becoming ready.${NC}"
+            return 1
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    echo -e "${RED}Sandbox startup timed out after ${SANDBOX_STARTUP_TIMEOUT_SECONDS}s.${NC}"
+    return 1
+}
+
 trap 'cleanup $?' EXIT
 trap 'cleanup 130' SIGINT
 trap 'cleanup 143' SIGTERM
@@ -156,18 +178,9 @@ for i in {1..10}; do
     sleep 1
 done
 
-# Sandbox가 준비될 때까지 대기 (최대 60초 - 빌드 포함)
-echo "⏳ Sandbox 준비 대기 중..."
-for i in {1..60}; do
-    if curl -s http://localhost:8194/health > /dev/null 2>&1; then
-        echo -e "${GREEN}✓ Sandbox 준비 완료${NC}"
-        break
-    fi
-    if [ $i -eq 60 ]; then
-        echo -e "${YELLOW}⚠️ Sandbox 시작 지연 - 백그라운드에서 계속 시작됩니다${NC}"
-    fi
-    sleep 1
-done
+if ! wait_for_sandbox_ready; then
+    exit 1
+fi
 
 # Docker Compose 로그를 백그라운드에서 표시
 docker compose -f dev/docker-compose.yml logs -f postgres redis sandbox &
