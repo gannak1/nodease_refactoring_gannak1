@@ -186,10 +186,12 @@ describe('FR-014 내 모듈 자동 최적화 관리', () => {
 
     const card = await screen.findByText('예상 월 비용');
     const container = card.parentElement?.parentElement;
-    expect(container).toHaveTextContent('$303.000');
-    expect(container).toHaveTextContent('101개 배포 workflow');
-    expect(container).toHaveTextContent('워크플로 실행 $202.000');
-    expect(container).toHaveTextContent('Agent Builder $101.000');
+    await waitFor(() => {
+      expect(container).toHaveTextContent('$303.000');
+      expect(container).toHaveTextContent('101개 배포 workflow');
+      expect(container).toHaveTextContent('워크플로 실행 $202.000');
+      expect(container).toHaveTextContent('Agent Builder $101.000');
+    });
   });
 
   it('전체 활성 workflow 요약을 불러오지 못하면 목록 페이지 비용으로 대체하지 않는다', async () => {
