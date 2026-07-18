@@ -105,6 +105,7 @@ Verified Against: feature/mba-127 @ 258b26a9
   - 다른 organization item을 클릭하면 active organization을 저장하고 `/dashboard`로 이동한다.
   - organization이 1개뿐이면 switcher는 정보 표시만 하고 dropdown을 열지 않는다.
   - collapsed sidebar에서는 organization switcher를 표시하지 않는다.
+  - `워크플로우` navigation item은 노드 연결 흐름을 나타내는 `Workflow` 아이콘을 사용한다.
   - `isOrganizationManager`가 true일 때만 `관리` navigation item을 표시한다.
   - 사용자 프로필 드롭다운에는 `알림`, `로그아웃` action을 표시한다.
   - `알림` 클릭 시 페이지 이동 없이 notification overlay를 연다.

@@ -12,7 +12,7 @@ import {
   Settings,
   BookOpen,
   BarChart3,
-  Puzzle,
+  Workflow,
   Home,
   LogOut,
   Menu,
@@ -47,7 +47,7 @@ const navigationItems = [
   {
     name: '워크플로우',
     href: '/dashboard/mymodule',
-    icon: Puzzle,
+    icon: Workflow,
     operationsOnly: true,
   },
   {

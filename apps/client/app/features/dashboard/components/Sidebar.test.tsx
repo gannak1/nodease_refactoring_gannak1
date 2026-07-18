@@ -421,9 +421,12 @@ describe('Sidebar organization switcher', () => {
   it('organization manager는 워크플로우 운영 메뉴를 볼 수 있다', async () => {
     render(<Sidebar />);
 
-    expect(
-      await screen.findByRole('link', { name: '워크플로우' }),
-    ).toHaveAttribute('href', '/dashboard/mymodule');
+    const workflowLink = await screen.findByRole('link', {
+      name: '워크플로우',
+    });
+
+    expect(workflowLink).toHaveAttribute('href', '/dashboard/mymodule');
+    expect(workflowLink.querySelector('svg')).toHaveClass('lucide-workflow');
   });
 
   it('운영 가능한 row가 없는 일반 멤버에게 워크플로우 운영 메뉴를 숨긴다', async () => {
