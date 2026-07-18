@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import type { ReactNode } from 'react';
-import Image from 'next/image';
 import Link from 'next/link';
 
 import {
@@ -17,7 +16,6 @@ import {
   Clock,
   ChevronRight,
   DollarSign,
-  Github,
   GitFork,
   Globe,
   Layout,
@@ -680,16 +678,11 @@ export default function LandingPage() {
       {/* ------------------- Navbar ------------------- */}
       <nav className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-200/60 lg:px-8 px-4 h-16 flex items-center justify-between transition-all duration-300">
         <div className="flex items-center gap-8">
-          {/* Logo */}
-          <Link href="/" className="flex items-center gap-2 group">
-            <div className="relative w-36 h-24">
-              <Image
-                src="/logo.png"
-                alt="nodease"
-                fill
-                className="object-cover object-left"
-              />
-            </div>
+          <Link
+            href="/"
+            className="text-xl font-black tracking-tight text-slate-950 transition-colors hover:text-blue-600"
+          >
+            Nodease
           </Link>
 
           {/* Nav Links */}
@@ -697,14 +690,6 @@ export default function LandingPage() {
 
         {/* CTA Buttons */}
         <div className="flex items-center gap-3">
-          <a
-            href="https://github.com/jungle-scope/moduly"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-slate-900 px-3 py-2 transition-colors mr-2"
-          >
-            <Github className="w-5 h-5" />
-          </a>
           <Link
             href="/auth/login"
             className="hidden sm:inline-flex text-sm font-medium text-slate-600 hover:text-slate-900 px-3 py-2 transition-colors"
