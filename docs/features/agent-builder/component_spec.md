@@ -690,8 +690,8 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 
 ## Hierarchical Knowledge Control
 
-- `direct_edit_v1`은 실제 `collections` 또는 `ungrouped_kbs`가 있으면 계층형 UI와 제출 callback을 사용한다. 계층 데이터가 없고 flat candidate만 남은 기존/복구 응답은 flat 목록을 fallback으로 표시하고 같은 전용 Knowledge selection endpoint로 제출한다. 두 형식이 함께 있으면 계층형 UI만 표시한다.
-- Legacy session은 기존 flat candidate 선택 UI를 유지한다. Direct-edit flat fallback은 legacy message 선택 필드를 사용하거나 planner를 다시 호출하지 않는다.
+- `direct_edit_v1` 제품 화면은 `collections`와 `ungrouped_kbs`를 사용하는 계층형 UI와 전용 제출 callback만 사용한다. 계층 데이터 없이 flat candidate만 남은 기존/복구 응답은 대화 복구용 안전 데이터로만 유지하고 별도 flat 선택 UI를 렌더링하지 않는다. 이 경우 계층 정보를 다시 확인해야 한다는 오류를 표시하고 empty/selection 제출을 모두 차단한다. 두 형식이 함께 있으면 계층형 UI만 표시한다.
+- Legacy Preview session은 `stale_protocol` 읽기 전용 대화 복구 경계를 따르며 flat candidate를 다시 선택하거나 legacy message 선택 필드로 제출하지 않는다. 이 복구에서 planner를 다시 호출하지 않는다.
 - `planning`은 같은 `request_id`의 terminal 응답으로 교체한다. 60초 이후 장기 처리 안내를 표시하고, transport 오류가 없다면 server의 4분 processing deadline까지 polling한다.
 
 - 목록 상단에 추천 점수 내림차순임을 표시한다.

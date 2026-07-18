@@ -119,9 +119,16 @@ export const KnowledgeSelectionControl = ({
     [allHierarchyKbs, initialSelectedKbHandles],
   );
   const [selectedKbKeys, setSelectedKbKeys] = useState<string[]>(initialKbKeys);
-  const hierarchyMode =
-    typeof onSubmitHierarchy === 'function' &&
-    (visibleCollections.length > 0 || visibleUngroupedKbs.length > 0);
+  const hierarchyMode = typeof onSubmitHierarchy === 'function';
+  const hasHierarchyData =
+    visibleCollections.length > 0 || visibleUngroupedKbs.length > 0;
+  const flatOnlyHierarchyError =
+    hierarchyMode && !hasHierarchyData && visibleCandidates.length > 0;
+  const effectiveErrorMessage =
+    errorMessage ??
+    (flatOnlyHierarchyError
+      ? 'Knowledge 계층 정보를 불러오지 못했습니다. 최신 후보를 다시 확인해주세요.'
+      : null);
 
   const selectionScope = JSON.stringify({
     timing,
@@ -398,12 +405,12 @@ export const KnowledgeSelectionControl = ({
           ))
         )}
       </div>
-      {errorMessage ? (
+      {effectiveErrorMessage ? (
         <p
           role="alert"
           className="text-xs leading-5 text-amber-700 dark:text-amber-300"
         >
-          {errorMessage}
+          {effectiveErrorMessage}
         </p>
       ) : null}
       {hierarchyMode && onSubmitHierarchy ? (
@@ -413,7 +420,7 @@ export const KnowledgeSelectionControl = ({
             onClick={() =>
               onSubmitHierarchy({ collectionHandles: [], kbHandles: [] })
             }
-            disabled={disabled}
+            disabled={disabled || flatOnlyHierarchyError}
             className="rounded-md border border-neutral-300 px-3 py-2 text-sm font-medium hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
           >
             {timing === 'after_graph'
@@ -423,7 +430,9 @@ export const KnowledgeSelectionControl = ({
           <button
             type="button"
             onClick={submit}
-            disabled={disabled || selectedCount === 0}
+            disabled={
+              disabled || flatOnlyHierarchyError || selectedCount === 0
+            }
             className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
             {timing === 'after_graph' ? '선택 적용' : '선택한 Knowledge로 생성'}

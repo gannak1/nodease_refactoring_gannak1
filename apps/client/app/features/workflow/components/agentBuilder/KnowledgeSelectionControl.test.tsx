@@ -10,7 +10,7 @@ const candidates = Array.from({ length: 25 }, (_, index) => ({
 }));
 
 describe('KnowledgeSelectionControl', () => {
-  it('falls back to flat KB candidates when a recovered direct response has no hierarchy data', () => {
+  it('blocks flat-only direct responses instead of rendering a second KB UI', () => {
     const onSubmit = vi.fn();
     const onSubmitHierarchy = vi.fn();
     render(
@@ -23,15 +23,15 @@ describe('KnowledgeSelectionControl', () => {
       />,
     );
 
-    fireEvent.click(screen.getByLabelText('Knowledge 1'));
-    fireEvent.click(
-      screen.getByRole('button', {
-        name: '선택한 Knowledge Base로 생성',
-      }),
+    expect(screen.queryByLabelText('Knowledge 1')).toBeNull();
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Knowledge 계층 정보를 불러오지 못했습니다.',
     );
-    expect(onSubmit).toHaveBeenCalledWith(['candidate-1']);
+    expect(
+      screen.getByRole('button', { name: 'Knowledge Base 없이 생성' }),
+    ).toBeDisabled();
+    expect(onSubmit).not.toHaveBeenCalled();
     expect(onSubmitHierarchy).not.toHaveBeenCalled();
-    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('prefers hierarchy data when hierarchy and flat candidates are both present', () => {

@@ -33,6 +33,7 @@ from apps.shared.services.knowledge_safe_text import (
 
 DEFAULT_MAX_COLLECTIONS = 20
 DEFAULT_MAX_CANDIDATE_KBS = 5000
+DEFAULT_DIRECT_KB_CANDIDATE_RESERVE = 20
 
 
 def bucket_count(value: int) -> str:
@@ -296,15 +297,44 @@ class KnowledgeCandidateResolver:
         internal_candidate_limit = (
             max_candidate_kbs if enforce_internal_candidate_limit else None
         )
+        direct_candidate_limit = None
+        if internal_candidate_limit is not None:
+            if visible_collection_ids and internal_candidate_limit > 0:
+                direct_candidate_limit = min(
+                    DEFAULT_DIRECT_KB_CANDIDATE_RESERVE,
+                    max(1, internal_candidate_limit // 2),
+                )
+            else:
+                direct_candidate_limit = internal_candidate_limit
+
+        direct_pairs: list[tuple[KnowledgeBase, KnowledgePermissionDecision]] = []
+        direct_unavailable = 0
+        direct_hidden = 0
+        if direct_candidate_limit is None or direct_candidate_limit > 0:
+            direct_pairs, direct_unavailable, direct_hidden = (
+                self._direct_authorized_kb_pairs(
+                    direct_candidate_limit,
+                    allow_unready_candidates=allow_unready_candidates,
+                    excluded_collection_ids=set(visible_collection_ids),
+                )
+            )
+        direct_evaluated_count = (
+            len(direct_pairs) + direct_unavailable + direct_hidden
+        )
+        linked_candidate_limit = (
+            max(0, internal_candidate_limit - direct_evaluated_count)
+            if internal_candidate_limit is not None
+            else None
+        )
         items = self._collection_items(
             visible_collection_ids,
-            internal_candidate_limit,
+            linked_candidate_limit,
         )
 
         candidates_by_id: dict[uuid.UUID, KnowledgeCandidate] = {}
         item_kb_ids = self._dedupe_ids(item.knowledge_base_id for item in items)
-        unavailable_count = 0
-        hidden_count = 0
+        unavailable_count = direct_unavailable
+        hidden_count = direct_hidden
         if item_kb_ids:
             linked_kbs = self._knowledge_bases_by_id(item_kb_ids)
             linked_decisions = self.permission_helper.bulk_evaluate_kb_use(
@@ -335,22 +365,6 @@ class KnowledgeCandidateResolver:
                     runtime_decision=linked_runtime.get(kb.id),
                 )
 
-        remaining_direct_limit = (
-            max(0, max_candidate_kbs - len(item_kb_ids))
-            if enforce_internal_candidate_limit
-            else None
-        )
-        direct_pairs: list[tuple[KnowledgeBase, KnowledgePermissionDecision]] = []
-        if remaining_direct_limit is None or remaining_direct_limit > 0:
-            direct_pairs, direct_unavailable, direct_hidden = (
-                self._direct_authorized_kb_pairs(
-                    remaining_direct_limit,
-                    allow_unready_candidates=allow_unready_candidates,
-                    excluded_kb_ids=set(item_kb_ids),
-                )
-            )
-            unavailable_count += direct_unavailable
-            hidden_count += direct_hidden
         runtime_decisions = self._bulk_runtime_kb_decisions(
             [kb for kb, _decision in direct_pairs]
         )
@@ -552,6 +566,7 @@ class KnowledgeCandidateResolver:
         max_candidate_kbs: int | None,
         *,
         excluded_kb_ids: set[uuid.UUID] | None = None,
+        excluded_collection_ids: set[uuid.UUID] | None = None,
     ) -> list[KnowledgeBase]:
         if self.db is None:
             return []
@@ -569,6 +584,20 @@ class KnowledgeCandidateResolver:
         )
         if excluded_kb_ids:
             query = query.filter(KnowledgeBase.id.notin_(excluded_kb_ids))
+        if excluded_collection_ids:
+            linked_membership = (
+                select(KnowledgeCollectionItem.id)
+                .where(
+                    KnowledgeCollectionItem.organization_id
+                    == self.organization_id,
+                    KnowledgeCollectionItem.collection_id.in_(
+                        excluded_collection_ids
+                    ),
+                    KnowledgeCollectionItem.knowledge_base_id == KnowledgeBase.id,
+                )
+                .exists()
+            )
+            query = query.filter(~linked_membership)
         if max_candidate_kbs is not None:
             query = query.limit(max_candidate_kbs)
         return query.all()
@@ -579,10 +608,12 @@ class KnowledgeCandidateResolver:
         *,
         allow_unready_candidates: bool = False,
         excluded_kb_ids: set[uuid.UUID] | None = None,
+        excluded_collection_ids: set[uuid.UUID] | None = None,
     ) -> tuple[list[tuple[KnowledgeBase, KnowledgePermissionDecision]], int, int]:
         kbs = self._direct_knowledge_bases(
             max_candidate_kbs,
             excluded_kb_ids=excluded_kb_ids,
+            excluded_collection_ids=excluded_collection_ids,
         )
         if not kbs:
             return [], 0, 0

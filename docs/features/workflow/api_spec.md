@@ -131,13 +131,18 @@ Gateway는 모든 save에서 workflow row를 write lock으로 조회하고 activ
   "operation_id": "uuid",
   "graph_hash": "sha256",
   "updated_at": "ISO-8601",
-  "canonical_deferred_parameters": {
-    "node-id": ["parameter_key"]
-  }
+  "canonical_deferred_parameters": [
+    {
+      "node_path": ["loop-node-id", "nested-node-id"],
+      "parameter_keys": ["parameter_key"]
+    }
+  ]
 }
 ```
 
-`canonical_deferred_parameters`는 저장된 전체 graph와 중첩 `subGraph`에서 서버 Catalog 검증 뒤 남은 deferred key를 node id별로 반환한다. Client는 일반 Node Detail 편집값이 비어 있지 않다는 이유만으로 marker를 제거하지 않고, 이 projection을 저장 응답의 canonical 결과로 반영한다. 빈 배열은 해당 node의 기존 marker를 제거한다.
+`canonical_deferred_parameters`는 저장된 전체 graph와 중첩 `subGraph`에서 서버 Catalog 검증 뒤 남은 deferred key를 graph root부터의 `node_path`별로 반환한다. 같은 node id가 서로 다른 subgraph scope에 있어도 path가 다르면 별도 node로 취급한다. Client는 일반 Node Detail 편집값이 비어 있지 않다는 이유만으로 marker를 제거하지 않고, 이 projection을 저장 응답의 canonical 결과로 반영한다. 특정 entry의 빈 `parameter_keys`는 해당 path node의 기존 marker를 제거한다.
+
+Client는 저장 응답의 `workflow_id`가 현재 active Workflow와 같을 때만 projection, dirty 상태와 live editor history를 현재 화면에 반영한다. 저장 도중 다른 Workflow로 전환되면 늦게 도착한 응답은 해당 Workflow의 canonical metadata와 cache에만 반영하고 새 active Workflow의 node, marker, dirty/history를 변경하지 않는다.
 
 Canonical graph hash는 persisted nodes/edges를 stable id와 object key 순으로 정렬한 JSON의 SHA-256이며 node position/data는 포함하고 viewport는 제외한다. 현재 Workflow model에 없는 version/revision 값을 응답에 추가하지 않는다. Expected hash 또는 `updated_at`이 다르면 graph를 쓰지 않고 `409 stale_graph`를 반환한다. Silent overwrite, 자동 merge와 강제 덮어쓰기는 허용하지 않는다. Mutation context 없는 일반 editor save도 같은 CAS를 통과하고 canonical metadata를 반환하지만 Agent Builder acknowledgement 대상은 아니다.
 

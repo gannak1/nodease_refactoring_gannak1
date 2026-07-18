@@ -421,6 +421,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - Runtime은 direct KB와 Collection child KB를 합집합으로 만들고 동일 KB를 한 번만 검색해야 한다.
 - Collection/KB 후보 상한은 권한/lifecycle 필터, 전체 후보 점수 계산과 안정 정렬 뒤에 적용해야 한다.
 - 화면 응답은 Collection 최대 20개와 고유 KB 최대 20개로 제한하며 내부 후보 탐색과 권한·점수 계산 범위는 이 표시 상한으로 먼저 자르지 않는다. 내부 고유 KB 안전 상한은 5,000개이며 표시 상한 적용을 미루는 경로에서도 무제한 조회로 바뀌면 안 된다.
+- Collection-linked 후보와 Collection에 속하지 않은 direct KB 후보는 같은 5,000개 내부 안전 예산을 사용해야 한다. 표시 가능한 Collection이 있으면 direct KB 탐색에 최대 20개이자 작은 예산에서는 절반 이하인 bounded slot을 먼저 배정하고, 실제 탐색한 direct 후보 수를 제외한 나머지만 Collection-linked 후보에 사용한다. Direct 조회는 표시 가능한 Collection membership을 제외하며 권한·lifecycle·readiness·점수 계산에 투입되는 고유 KB 합계는 5,000개를 넘지 않아야 한다.
 - 동일 점수는 safe label 오름차순(없는 label은 마지막), opaque handle 오름차순으로 정렬하며 source tier/availability를 별도 tie-break로 중복 적용하지 않는다.
 
 ## Test 실행 및 secret 경계 정합성
@@ -445,7 +446,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - `direct_edit_v1` message request의 구형 Knowledge 선택 필드는 `HTTP 422`와 `invalid_request`로 거부하고 전용 Knowledge 선택 화면을 사용하도록 안내해야 한다.
 - 활성 `after_graph` resolution의 target LLM에서 사용자가 Knowledge를 직접 변경하면 Agent Builder 전용 selection endpoint, 권한 재확인, CAS 저장과 acknowledgement를 사용해야 한다.
 - 직접 node 설정의 target은 canonical Knowledge placement와 일치해야 한다. 선택 resource는 추천 Top-K 포함 여부가 아니라 현재 organization, 권한, lifecycle과 operational 상태를 기준으로 materialize해야 한다.
-- Direct-edit Knowledge 응답에 `collections` 또는 `ungrouped_kbs`가 있으면 계층 UI를 사용한다. 계층 데이터가 없고 권한 확인된 legacy/recovery `candidates`만 있으면 같은 전용 Knowledge selection endpoint를 사용하는 flat fallback을 표시한다. 계층과 flat 데이터가 함께 있으면 계층 UI만 표시해 후보를 중복 노출하지 않는다.
+- `direct_edit_v1` Knowledge 제품 UI는 `collections`와 `ungrouped_kbs` 계층 계약만 사용한다. Flat `candidates`는 과거 session의 안전한 읽기 호환 데이터로만 보존하며 별도 선택 목록으로 렌더링하거나 제출하지 않는다. 계층 데이터 없이 flat candidate만 도착하면 안전한 오류를 표시하고 Knowledge 선택 제출을 차단한다. 계층과 flat 데이터가 함께 있으면 계층 UI만 표시해 후보를 중복 노출하지 않는다.
 - Agent Builder provider timeout option은 외부 provider payload에서 제거하되 실제 transport timeout에 적용한다. Gemini intent 요청은 전달된 90초 제한을 사용하고 값이 없는 일반 Gemini chat 요청은 기존 60초 기본값을 유지한다.
 - Agent Builder 저장 또는 acknowledgement 확인 중에는 card와 node 설정 양쪽의 Knowledge 제출을 모두 차단해야 한다.
 - request 취소 payload에도 full typed operations, raw graph, parameter 원문, raw Knowledge metadata와 secret을 저장해서는 안 된다.

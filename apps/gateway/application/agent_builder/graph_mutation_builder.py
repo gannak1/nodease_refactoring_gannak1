@@ -302,24 +302,35 @@ def materialize_candidate_graph(graph: dict[str, Any]) -> dict[str, Any]:
         raise GraphMutationValidationError("workflow.graph_invalid") from exc
 
 
-def deferred_parameter_projection(graph: dict[str, Any]) -> dict[str, list[str]]:
-    projection: dict[str, list[str]] = {}
-    pending = list(graph.get("nodes") or [])
-    while pending:
-        node = pending.pop()
-        if not isinstance(node, dict):
-            continue
-        node_id = node.get("id")
-        data = node.get("data")
-        if isinstance(node_id, str) and isinstance(data, dict):
-            projection[node_id] = [
-                key
-                for key in data.get("_deferred_parameters") or []
-                if isinstance(key, str)
-            ]
+def deferred_parameter_projection(graph: dict[str, Any]) -> list[dict[str, Any]]:
+    projection: list[dict[str, Any]] = []
+
+    def append_nodes(nodes: Any, parent_path: list[str]) -> None:
+        if not isinstance(nodes, list):
+            return
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            node_id = node.get("id")
+            data = node.get("data")
+            if not isinstance(node_id, str) or not isinstance(data, dict):
+                continue
+            node_path = [*parent_path, node_id]
+            projection.append(
+                {
+                    "node_path": node_path,
+                    "parameter_keys": [
+                        key
+                        for key in data.get("_deferred_parameters") or []
+                        if isinstance(key, str)
+                    ],
+                }
+            )
             subgraph = data.get("subGraph")
             if isinstance(subgraph, dict):
-                pending.extend(subgraph.get("nodes") or [])
+                append_nodes(subgraph.get("nodes"), node_path)
+
+    append_nodes(graph.get("nodes"), [])
     return projection
 
 

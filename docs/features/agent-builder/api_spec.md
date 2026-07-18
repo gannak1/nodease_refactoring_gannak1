@@ -792,13 +792,18 @@ Success response:
   "operation_id": "uuid",
   "graph_hash": "sha256",
   "updated_at": "ISO-8601",
-  "canonical_deferred_parameters": {
-    "node-id": ["parameter_key"]
-  }
+  "canonical_deferred_parameters": [
+    {
+      "node_path": ["loop-node-id", "nested-node-id"],
+      "parameter_keys": ["parameter_key"]
+    }
+  ]
 }
 ```
 
-일반 editor와 Agent Builder save는 같은 `canonical_deferred_parameters` projection을 반환한다. Gateway는 Catalog의 stored-value 정규화와 validation을 통과한 key만 `_deferred_parameters`에서 제거하고, Client는 응답 projection을 top-level 및 중첩 node에 반영한다. 이 projection은 ParameterTask 상태/version이나 decision audit을 변경하지 않는다.
+일반 editor와 Agent Builder save는 같은 path-scoped `canonical_deferred_parameters` projection을 반환한다. Gateway는 Catalog의 stored-value 정규화와 validation을 통과한 key만 `_deferred_parameters`에서 제거하고, Client는 `node_path`가 정확히 일치하는 top-level 또는 중첩 node에만 응답 projection을 반영한다. 같은 node id가 다른 subgraph scope에 존재해도 서로 덮어쓰지 않는다. 이 projection은 ParameterTask 상태/version이나 decision audit을 변경하지 않는다.
+
+Client는 응답 `workflow_id`와 active Workflow identity를 응답 도착 시점에 다시 비교한다. 다른 Workflow의 늦은 저장 응답은 해당 Workflow metadata/cache에만 반영하고 현재 live graph, deferred marker, dirty 상태와 Agent Builder history를 변경하지 않는다.
 
 `workflow_version`, `revision`처럼 현재 Workflow model에 존재하지 않는 값을 응답에 추가하지 않는다. 같은 workflow에서 두 사용자가 같은 base로 저장하면 첫 요청만 성공하고 두 번째 요청은 stale conflict다.
 

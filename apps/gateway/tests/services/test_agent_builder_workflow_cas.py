@@ -14,6 +14,7 @@ from apps.gateway.application.agent_builder.graph_mutation_builder import (
     GraphMutationValidationError,
     GraphMutationBuilder,
     apply_graph_operations,
+    deferred_parameter_projection,
     materialize_candidate_features,
     materialize_candidate_graph,
 )
@@ -171,7 +172,44 @@ def test_draft_save_refreshes_identity_map_before_row_lock(monkeypatch):
 
     query.populate_existing.assert_called_once_with()
     query.with_for_update.assert_called_once_with()
-    assert result["canonical_deferred_parameters"] == {}
+    assert result["canonical_deferred_parameters"] == []
+
+
+def test_deferred_parameter_projection_uses_scoped_node_paths():
+    graph = {
+        "nodes": [
+            {
+                **_node("shared-1", "githubNode"),
+                "data": {"_deferred_parameters": ["repo_owner"]},
+            },
+            {
+                **_node("loop-1", "loopNode"),
+                "data": {
+                    "subGraph": {
+                        "nodes": [
+                            {
+                                **_node("shared-1", "mailNode"),
+                                "data": {
+                                    "_deferred_parameters": ["credential_id"]
+                                },
+                            }
+                        ],
+                        "edges": [],
+                    }
+                },
+            },
+        ],
+        "edges": [],
+    }
+
+    assert deferred_parameter_projection(graph) == [
+        {"node_path": ["shared-1"], "parameter_keys": ["repo_owner"]},
+        {"node_path": ["loop-1"], "parameter_keys": []},
+        {
+            "node_path": ["loop-1", "shared-1"],
+            "parameter_keys": ["credential_id"],
+        },
+    ]
 
 
 def test_draft_save_rechecks_write_permission_after_row_lock(monkeypatch):

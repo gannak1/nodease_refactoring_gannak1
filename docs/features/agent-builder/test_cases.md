@@ -659,7 +659,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - 권한과 lifecycle을 통과한 Collection 전체를 점수 계산한 뒤 표시 상한을 적용해, 이름순 상한 밖의 최고 점수 Collection이 응답에 포함되는지 확인한다.
 - 화면 Top-K 적용을 점수 계산 뒤로 미루더라도 KB 후보와 Collection membership 내부 탐색이 5,000개 안전 상한을 넘지 않는지 확인한다.
 - 동일 KB가 여러 Collection에 연결된 membership 행은 내부 5,000개 상한을 중복 소비하지 않으며, 상한 안에 포함된 KB의 허용된 Collection 위치가 모두 유지되는지 확인한다.
-- Collection-linked KB와 ungrouped direct KB를 함께 탐색해도 권한·lifecycle·점수 계산에 투입되는 고유 KB 합계가 내부 5,000개 상한을 넘지 않고, direct 조회는 linked 후보가 사용한 예산을 제외한 나머지만 사용한다.
+- Collection-linked KB와 ungrouped direct KB를 함께 탐색해도 권한·lifecycle·점수 계산에 투입되는 고유 KB 합계가 내부 5,000개 상한을 넘지 않는지 확인한다. 표시 가능한 Collection이 있어도 bounded direct slot을 먼저 사용해 권한 있는 비소속 KB가 완전히 배제되지 않고, direct 실제 탐색 수를 제외한 예산만 linked 후보에 사용하는지 검증한다.
 - 이미 발급된 KB/Collection handle이 이후 추천 탐색 상한이나 표시 Top-K 밖으로 이동해도, 권한과 lifecycle이 유효하면 적용 재검증을 통과하는지 확인한다.
 - 같은 점수의 KB/Collection은 safe label 오름차순(없는 label은 마지막), opaque handle 오름차순으로 안정 정렬되고 source tier/availability가 별도 tie-break로 재적용되지 않는지 확인한다.
 - `before_graph` placement가 여러 LLM 중 target step 하나에만 Collection/KB binding을 적용하고 target이 없거나 모호하면 validation failure로 닫는지 확인한다.
@@ -809,7 +809,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 ## Hierarchical Knowledge Selection
 
 - `direct_edit_v1`이 flat candidate만 반환하면 계층 목록으로 위장하지 않고 오류를 표시하며 선택 제출을 차단하는지 검증한다.
-- Legacy session의 flat candidate UI는 유지되는지 검증한다.
+- Legacy/stale session의 flat candidate는 안전한 대화 복구 데이터로만 유지되고 선택 UI나 legacy 제출 action을 다시 활성화하지 않는지 검증한다.
 - Intent planner가 provider client에 90초 request 상한을 전달하고 해당 내부 옵션이 provider payload로 유출되지 않는지 검증한다.
 - 같은 request의 `planning`이 terminal 응답으로 교체되고, 4분을 넘긴 server processing request가 `REQUEST_PROCESSING_TIMEOUT`으로 종료되는지 검증한다.
 - Processing 기한으로 이미 terminal `failed`가 된 request에 늦은 planner worker 결과가 도착해도 기존 timeout payload와 `completed_at`을 덮어쓰지 않는지 검증한다.
@@ -864,7 +864,9 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Slack legacy `body.text|body.channel`만 있는 node는 payload와 channel 미설정으로 configuration/preflight에서 차단되고, 실제 channel과 `message|blocks|attachments` 중 하나가 있을 때만 통과하는지 검증한다.
 - `action`이 없는 기존 GitHub graph는 Catalog hydration과 preflight에서 `get_pr`로 호환되지만 명시적인 invalid action은 차단되고 graph save를 유발하지 않는지 검증한다.
 - Undo/Redo 저장 결과가 두 번 불명확하고 canonical graph가 requested/opposite 어느 쪽도 아니면 canonical graph와 metadata를 적용하고 해당 workflow의 pending Agent Builder context 및 Undo/Redo stack을 비운다. Typed operation이나 ParameterTask를 재생하지 않고 editor는 clean 상태가 된다.
-- Direct-edit 응답에 hierarchy data가 없고 flat `candidates`만 있으면 flat 후보를 표시해 전용 Knowledge selection endpoint로 제출한다. Hierarchy와 flat 후보가 함께 있으면 hierarchy만 표시한다.
+- Direct-edit 응답에 hierarchy data가 없고 flat `candidates`만 있으면 flat 후보를 렌더링하지 않고 안전 오류를 표시하며 empty/selection 제출을 차단한다. Hierarchy와 flat 후보가 함께 있으면 hierarchy만 표시한다.
+- 일반 editor/Agent Builder 저장 응답의 `canonical_deferred_parameters`는 root부터의 `node_path`로 top-level 및 중첩 node를 구분한다. 서로 다른 subgraph scope에 같은 node id가 있어도 marker가 교차 적용되지 않는지 검증한다.
+- Workflow A autosync가 진행 중일 때 Workflow B로 전환한 뒤 A 저장 응답이 도착하면 B의 live graph, deferred marker, dirty/history가 변하지 않고 A의 cache/metadata만 갱신되는지 검증한다.
 - Gemini chat client는 internal `request_timeout_seconds`를 provider payload에서 제외하면서 실제 HTTP timeout으로 사용한다. 미지정 호출은 60초, Agent Builder intent 호출은 전달된 90초를 사용한다.
 - GitHub `get_pr` task/preflight에는 `comment_body`가 나타나지 않으며 `comment_pr`에서는 표시되고 required다. 빈 본문은 unresolved preflight로 외부 GitHub 호출 전에 차단된다.
 - Slack API mode의 channel과 mode별 payload는 Agent Builder task로 제공하되 Bot Token과 Webhook URL은 `agent_builder_task=false`로 제외한다. Channel의 명시적 defer와 미설정 인증값은 unresolved 저장 뒤 test/run/deploy를 차단한다.

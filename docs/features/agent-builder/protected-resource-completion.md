@@ -4,6 +4,8 @@ Status: Verification Blocked
 
 이 문서는 MBA-331의 보호 리소스 기능 완결성 기준을 Agent Builder direct-edit 변경에 적용한 PR-visible 증거다. 상세 실행 이력은 로컬 작업 기록과 분리하며, 아래 행은 현재 계약·구현·검증 증거만 유지한다.
 
+현재 검증 기준은 `feature/mba-277 @ 637cfa3f420d5c9a6cc61149afd7ef592a4e6e7a`와 이 문서를 포함한 현재 working tree다. 아래에서 역사적이라고 표시한 수치는 현재 working tree 완료 증거로 사용하지 않는다.
+
 ## 대상
 
 | 항목 | 내용 |
@@ -21,10 +23,10 @@ Status: Verification Blocked
 | --- | --- | --- | --- | --- | --- |
 | 정책·식별자·organization scope | 완료 | ADR-0045 Knowledge/credential/secret 경계, ADR-0061 opaque handle 계약 | `KnowledgeSelectionService`, `KnowledgeCandidateResolver`, workflow permission helpers | `test_agent_builder_knowledge_selection.py`, `test_knowledge_permission_phase2.py` |  |
 | 관리 API command/query | 해당 없음 | Agent Builder는 Knowledge/credential을 생성·수정·삭제하지 않고 기존 use-permitted resource만 선택함 | 기존 Knowledge/Mail credential 관리 API를 재사용 | Agent Builder service tests에서 후보 권한과 lifecycle 재검증 | 관리 API 정책 자체는 이 변경의 소유 범위가 아님 |
-| 관리 UI·catalog·picker | 완료 | ADR-0045 typed ParameterTask와 통합 Knowledge card | `KnowledgeSelectionControl`, `ParameterInputRenderer`, `NodeParameterCard`, `AgentBuilderPanel` | Current revision focused frontend 1 file / 59 passed; TypeScript와 lint 통과 | 인증된 실제 browser smoke는 미실행 |
+| 관리 UI·catalog·picker | 완료 | ADR-0045 typed ParameterTask와 ADR-0061 hierarchy-only Knowledge card | `KnowledgeSelectionControl`, `ParameterInputRenderer`, `NodeParameterCard`, `AgentBuilderPanel` | Current working tree frontend 3 files / 122 passed; TypeScript와 targeted lint 통과 | 인증된 실제 browser smoke는 미실행 |
 | 저장 schema·GraphMutation·redaction | 완료 | ADR-0045/0046 safe envelope, secret 비복제, typed mutation | `workflow_node_catalog.py`, `parameter_task_service.py`, `ParameterInputRenderer.tsx` | `test_workflow_node_catalog.py`, `test_agent_builder_parameter_tasks.py`, focused frontend tests | Slack/GitHub secret은 `agent_builder_task=false`이며 Agent Builder API/task/card/save 경계를 통과하지 않음 |
-| Deployment/test preflight | 완료 | Catalog 전체 required configuration과 selector validity를 같은 의미로 검사 | `workflow_configuration_preflight.py`, `workflow_node_catalog.py` | Current revision backend/shared/runtime related suite 517 passed |  |
-| Runtime/background 재검증 또는 capability validity | 완료 | Catalog/runtime parameter parity와 unresolved 실행 차단 | `test_agent_builder_parameter_runtime_contract.py`, Workflow Engine node schemas | Current revision backend/shared/runtime related suite 517 passed | Agent Builder 생성 단계는 runtime/provider를 호출하지 않음 |
+| Deployment/test preflight | 완료 | Catalog 전체 required configuration과 selector validity를 같은 의미로 검사 | `workflow_configuration_preflight.py`, `workflow_node_catalog.py` | 이번 correction은 preflight 계약을 변경하지 않음; 517 passed는 이전 변경의 역사적 결과로만 유지 |  |
+| Runtime/background 재검증 또는 capability validity | 완료 | Catalog/runtime parameter parity와 unresolved 실행 차단 | `test_agent_builder_parameter_runtime_contract.py`, Workflow Engine node schemas | 이번 correction은 runtime 계약을 변경하지 않음; 517 passed는 이전 변경의 역사적 결과로만 유지 | Agent Builder 생성 단계는 runtime/provider를 호출하지 않음 |
 | Transaction·session·TOCTOU | Verification Blocked | ADR-0046 graph hash와 `updated_at` CAS, Knowledge handle 제출 시 권한·lifecycle 재검증 | workflow draft save service, `KnowledgeSelectionService` | Handle cap unit/service 회귀 통과; 이전 revision의 disposable PostgreSQL 증거는 현재 revision 완료 근거로 재사용하지 않음 | Current revision disposable PostgreSQL 미실행 |
 | Retry·idempotency·terminal acknowledgement | Verification Blocked | ADR-0046 operation id, task version, canonical acknowledgement/reconciliation | parameter decision service, mutation lifecycle, frontend save coordinator | ParameterTask reconciliation/service 회귀 통과 | Current revision acknowledgement 재계획 PostgreSQL 미실행 |
 | Background lease·claim·fencing | 해당 없음 | Agent Builder direct-edit 요청은 background lease/claim을 도입하지 않음 | 해당 없음 | 해당 없음 | Workflow runtime worker lease 정책은 변경하지 않음 |
@@ -45,18 +47,24 @@ Status: Verification Blocked
 | Slack/GitHub secret | Catalog `secret` + `agent_builder_task=false` | Agent Builder 저장 정규화 대상에서 제외 | task/card/input/save bridge 미제공 | Agent Builder decision/GraphMutation에는 raw value 없음 | 미설정 node를 preflight/runtime에서 fail-closed | frontend legacy-task fail-closed test, planner omission과 backend `secret_forbidden` tests |
 | Workflow save coordination | canonical hash와 `updated_at` | 모든 save owner를 workflow별 직렬화 | pending/confirming 상태 보존 | CAS/acknowledgement 후에만 완료 | test 실행은 저장 완료 전 차단 | Frontend focused test 통과; current revision PostgreSQL CAS blocked |
 | Server-derived readiness와 version Note | `configuration_state`는 Catalog 파생 상태 | Client save/compare projection에서 제거하고 Server가 재계산 | version restore의 modern/legacy Note 출처를 구분 | 복원 payload와 editor Note 집합을 동일하게 유지 | canonical comparison에서 파생 상태 차이를 제외 | Mail Acknowledge materialize/runtime contract와 frontend focused test 통과 |
+| Scoped deferred projection | `node_path[] + parameter_keys[]` | Gateway가 root 기준 path projection을 저장 응답에 계산 | active Workflow와 path가 일치하는 node에만 marker 반영 | 일반/Agent Builder save가 같은 projection 사용 | ParameterTask/audit 상태는 변경하지 않음 | store 88 tests와 CAS service tests 통과 |
+| 늦은 저장 응답 격리 | 응답 `workflow_id` | 비활성 Workflow metadata/cache만 갱신 | 현재 live graph, marker, dirty/history 보존 | 응답 도착 뒤 active identity 재검사 | 다른 Workflow의 autosync를 유발하지 않음 | deferred-promise autosync race regression 통과 |
+| Knowledge hierarchy-only UI | `collections + ungrouped_kbs` | flat candidate는 읽기 호환 데이터로만 유지 | flat-only direct 응답은 오류와 제출 차단 | 전용 Knowledge endpoint만 유지 | planner/runtime 변경 없음 | component 회귀와 Knowledge service 회귀 통과 |
+| Knowledge 후보 공유 예산 | ADR-0061 고유 KB 5,000 상한 | direct 비소속 후보 bounded 탐색 뒤 남은 예산만 linked 후보에 사용 | 표시 상한 20은 scoring 뒤 적용 | 발급 handle 적용 계약은 변경 없음 | 권한·lifecycle·readiness 평가 합계가 상한 이내 | permission/recommendation/selection service 121 tests 통과 |
 
 ## 실행 결과
 
 | 범위 | 명령 | 결과 |
 | --- | --- | --- |
-| Frontend focused | `npm run test -- app/features/workflow/components/agentBuilder/AgentBuilderPanel.test.tsx` | 1 file / 59 passed |
-| Backend/shared/runtime related | `.ignore/codex-py311-venv/Scripts/python.exe -m pytest apps/shared/tests/test_workflow_node_catalog.py apps/gateway/tests/integration/test_agent_builder_unresolved_preflight.py apps/gateway/tests/services/test_agent_builder_parameter_runtime_contract.py apps/gateway/tests/services/test_knowledge_rag_recommendation_service.py apps/gateway/tests/services/test_knowledge_permission_phase2.py apps/gateway/tests/services/test_agent_builder_parameter_tasks.py apps/gateway/tests/services/test_agent_builder_knowledge_selection.py apps/gateway/tests/api/test_agent_builder_direct_edit_api.py apps/workflow_engine/tests/nodes/test_mail_processing_nodes.py apps/gateway/tests/api/test_workflow_execution_graph_validation.py apps/gateway/tests/application/deployment/test_preflight_use_case.py apps/gateway/tests/services/test_agent_builder_service.py apps/gateway/tests/services/test_workflow_mail_credentials.py -q` | 517 passed; 7 existing Pydantic warnings only |
+| Historical frontend focused | `npm run test -- app/features/workflow/components/agentBuilder/AgentBuilderPanel.test.tsx` | 이전 변경 1 file / 59 passed; 현재 working tree 증거로 사용하지 않음 |
+| Historical backend/shared/runtime related | `.ignore/codex-py311-venv/Scripts/python.exe -m pytest <previous 13-file suite> -q` | 이전 변경 517 passed; 현재 working tree 증거로 사용하지 않음 |
+| Current frontend focused | `npm test -- --run app/features/workflow/store/useWorkflowStore.test.ts app/features/workflow/hooks/useAutoSync.test.ts app/features/workflow/components/agentBuilder/KnowledgeSelectionControl.test.tsx` | 3 files / 122 passed |
+| Current backend Knowledge/CAS related | `.ignore/codex-py311-venv/Scripts/python.exe -m pytest apps/gateway/tests/services/test_agent_builder_workflow_cas.py apps/gateway/tests/services/test_knowledge_permission_phase2.py apps/gateway/tests/services/test_knowledge_rag_recommendation_service.py apps/gateway/tests/services/test_agent_builder_knowledge_selection.py -q -p no:cacheprovider` | 121 passed; 3 existing Pydantic deprecation warnings only |
 | Collection cap PostgreSQL | current revision disposable DB | 미실행; explicit disposable DB environment가 없음 |
 | Workflow CAS PostgreSQL | current revision disposable DB | 미실행; explicit disposable DB environment가 없음 |
-| Python lint | `uvx --from ruff==0.15.20 ruff check -- <10 changed Python files>` | passed |
-| Python/import and catalog schema | `.ignore/codex-py311-venv/Scripts/python.exe -c <changed imports, JSON parse, Catalog load>` | passed; catalog version 3 |
-| Client static | `npm run typecheck`; `npm run lint` | passed; lint 0 errors / existing 248 warnings; production build는 이번 backend/shared 중심 correction에서 재실행하지 않음 |
+| Python lint | `uvx --from ruff==0.15.20 ruff check apps/gateway/application/agent_builder/graph_mutation_builder.py apps/gateway/services/knowledge_candidate_resolver.py apps/gateway/tests/services/test_agent_builder_workflow_cas.py apps/gateway/tests/services/test_knowledge_permission_phase2.py` | passed |
+| Python/import and schema | `.ignore/codex-py311-venv/Scripts/python.exe -c <projection-and-resolver-import-check>` | passed; path projection empty graph and 5,000 cap assertions passed |
+| Client static | `npm run typecheck`; targeted `npx eslint <7 changed TS/TSX files>` | typecheck passed; lint 0 errors / 54 existing warnings; production build는 실행 중 dev server와 `.next`를 공유하지 않기 위해 미실행 |
 | Git static | `git diff --check`; `git diff --name-status --diff-filter=D` | passed; whitespace errors 0, deleted files 0 |
 | Authenticated browser | Agent Builder secret set/delete, Knowledge selection, save/acknowledgement recovery | 미실행; 인증 organization fixture 필요 |
 

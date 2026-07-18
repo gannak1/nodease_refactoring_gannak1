@@ -193,10 +193,24 @@ class FakeResolver(KnowledgeCandidateResolver):
             if kb_id in self._fake_kbs
         }
 
-    def _direct_knowledge_bases(self, max_candidate_kbs, *, excluded_kb_ids=None):
+    def _direct_knowledge_bases(
+        self,
+        max_candidate_kbs,
+        *,
+        excluded_kb_ids=None,
+        excluded_collection_ids=None,
+    ):
         excluded = excluded_kb_ids or set()
+        excluded_collections = excluded_collection_ids or set()
+        collection_member_ids = {
+            item.knowledge_base_id
+            for item in self._fake_items
+            if item.collection_id in excluded_collections
+        }
         values = [
-            kb for kb in self._fake_kbs.values() if kb.id not in excluded
+            kb
+            for kb in self._fake_kbs.values()
+            if kb.id not in excluded and kb.id not in collection_member_ids
         ]
         return values if max_candidate_kbs is None else values[:max_candidate_kbs]
 
@@ -815,6 +829,49 @@ def test_builder_hierarchy_internal_cap_applies_to_linked_and_direct_kb_union():
     }
     assert len(evaluated_kb_ids) <= 2
     assert result.collections[0].candidates[0].candidate_id == linked_kb.id
+
+
+def test_builder_hierarchy_reserves_bounded_space_for_direct_kbs():
+    collection = _collection()
+    denied_linked_a = _kb()
+    denied_linked_b = _kb()
+    allowed_direct = _kb()
+
+    class PerKbPermissionHelper(FakePermissionHelper):
+        def _manual_kb_auth_state(self, kb):
+            return AUTH_STATE_OPERATOR if kb.id == allowed_direct.id else "none"
+
+    helper = PerKbPermissionHelper(
+        collection_actions={collection.id: {"route"}},
+    )
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=denied_linked_a.id,
+            ),
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=denied_linked_b.id,
+            ),
+        ],
+        kbs=[denied_linked_a, denied_linked_b, allowed_direct],
+    )
+
+    result = resolver.resolve_builder_hierarchy(
+        max_candidate_kbs=2,
+        apply_candidate_limit=False,
+    )
+
+    evaluated_kb_ids = {
+        kb_id for call in helper.bulk_kb_calls for kb_id in call
+    }
+    assert len(evaluated_kb_ids) <= 2
+    assert [
+        candidate.candidate_id for candidate in result.ungrouped_candidates
+    ] == [allowed_direct.id]
 
 
 def test_auto_collection_mode_buckets_missing_requested_collection():

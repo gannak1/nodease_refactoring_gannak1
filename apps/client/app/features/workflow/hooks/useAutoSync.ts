@@ -607,6 +607,16 @@ export const useAutoSync = () => {
                   if (!saveResponse) throw retryError;
                 }
               }
+              const responseWorkflowId =
+                typeof saveResponse?.workflow_id === 'string'
+                  ? saveResponse.workflow_id
+                  : workflowId;
+              if (responseWorkflowId !== workflowId) {
+                useWorkflowStore
+                  .getState()
+                  .ingestCanonicalDraftMetadata(saveResponse, workflowId);
+                return;
+              }
               if (
                 typeof saveResponse?.graph_hash === 'string' &&
                 typeof saveResponse?.updated_at === 'string'
@@ -614,6 +624,15 @@ export const useAutoSync = () => {
                 useWorkflowStore
                   .getState()
                   .ingestCanonicalDraftMetadata(saveResponse, workflowId);
+                const activeWorkflowId =
+                  useWorkflowStore.getState().activeWorkflowId;
+                if (
+                  activeWorkflowId &&
+                  activeWorkflowId !== 'default' &&
+                  activeWorkflowId !== workflowId
+                ) {
+                  return;
+                }
                 useWorkflowStore
                   .getState()
                   .refreshNextAgentBuilderRevertBoundary({

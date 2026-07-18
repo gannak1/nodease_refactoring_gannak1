@@ -417,48 +417,63 @@ const mergeNodeDataForExplicitEdit = (
 
 const canonicalDeferredParametersFrom = (
   value: unknown,
-): Record<string, string[]> | null => {
+): Array<{ nodePath: string[]; parameterKeys: string[] }> | null => {
   if (!value || typeof value !== 'object') return null;
   const raw = (
     value as { canonical_deferred_parameters?: unknown }
   ).canonical_deferred_parameters;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  return Object.fromEntries(
-    Object.entries(raw).flatMap(([nodeId, parameterKeys]) =>
+  if (!Array.isArray(raw)) return null;
+  const projection = raw.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const nodePath = (entry as { node_path?: unknown }).node_path;
+    const parameterKeys = (entry as { parameter_keys?: unknown })
+      .parameter_keys;
+    return Array.isArray(nodePath) &&
+      nodePath.length > 0 &&
+      nodePath.every((nodeId) => typeof nodeId === 'string') &&
       Array.isArray(parameterKeys) &&
       parameterKeys.every((key) => typeof key === 'string')
-        ? [[nodeId, parameterKeys]]
-        : [],
-    ),
-  );
+      ? [{ nodePath, parameterKeys }]
+      : [];
+  });
+  return projection.length === raw.length ? projection : null;
 };
 
 const reconcileCanonicalDeferredParameters = (
   nodes: Node[],
-  projection: Record<string, string[]>,
-): Node[] =>
-  nodes.map((node) => {
-    const data = { ...(node.data as Record<string, unknown>) };
-    const subGraph = data.subGraph;
-    if (subGraph && typeof subGraph === 'object' && !Array.isArray(subGraph)) {
-      const nestedNodes = (subGraph as { nodes?: unknown }).nodes;
-      if (Array.isArray(nestedNodes)) {
-        data.subGraph = {
-          ...subGraph,
-          nodes: reconcileCanonicalDeferredParameters(
-            nestedNodes as Node[],
-            projection,
-          ),
-        };
+  projection: Array<{ nodePath: string[]; parameterKeys: string[] }>,
+  parentPath: string[] = [],
+): Node[] => {
+  const projectionByPath = new Map(
+    projection.map((entry) => [
+      JSON.stringify(entry.nodePath),
+      entry.parameterKeys,
+    ]),
+  );
+  const reconcile = (currentNodes: Node[], currentParentPath: string[]) =>
+    currentNodes.map((node) => {
+      const nodePath = [...currentParentPath, node.id];
+      const data = { ...(node.data as Record<string, unknown>) };
+      const subGraph = data.subGraph;
+      if (subGraph && typeof subGraph === 'object' && !Array.isArray(subGraph)) {
+        const nestedNodes = (subGraph as { nodes?: unknown }).nodes;
+        if (Array.isArray(nestedNodes)) {
+          data.subGraph = {
+            ...subGraph,
+            nodes: reconcile(nestedNodes as Node[], nodePath),
+          };
+        }
       }
-    }
-    if (Object.prototype.hasOwnProperty.call(projection, node.id)) {
-      const deferred = projection[node.id];
-      if (deferred.length > 0) data._deferred_parameters = [...deferred];
-      else delete data._deferred_parameters;
-    }
-    return { ...node, data } as Node;
-  });
+      const deferred = projectionByPath.get(JSON.stringify(nodePath));
+      if (deferred) {
+        if (deferred.length > 0) data._deferred_parameters = [...deferred];
+        else delete data._deferred_parameters;
+      }
+      return { ...node, data } as Node;
+    });
+
+  return reconcile(nodes, parentPath);
+};
 
 const STRUCTURAL_AGENT_BUILDER_MUTATIONS = new Set<
   AgentBuilderGraphMutation['kind']
@@ -2303,13 +2318,17 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     if (metadata) {
       const projection = canonicalDeferredParametersFrom(value);
       set((state) => {
-        const nodes = projection
+        const isActiveWorkflow =
+          !state.activeWorkflowId ||
+          state.activeWorkflowId === 'default' ||
+          state.activeWorkflowId === metadata.workflowId;
+        const nodes = projection && isActiveWorkflow
           ? reconcileCanonicalDeferredParameters(state.nodes, projection)
           : state.nodes;
         return {
           nodes,
-          workflows:
-            projection && state.activeWorkflowId
+          workflows: projection
+            ? isActiveWorkflow && state.activeWorkflowId
               ? syncActiveWorkflow(
                   state.workflows,
                   state.activeWorkflowId,
@@ -2317,7 +2336,18 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
                   state.edges,
                   state.features,
                 )
-              : state.workflows,
+              : state.workflows.map((workflow) =>
+                  workflow.id === metadata.workflowId
+                    ? {
+                        ...workflow,
+                        nodes: reconcileCanonicalDeferredParameters(
+                          workflow.nodes,
+                          projection,
+                        ),
+                      }
+                    : workflow,
+                )
+            : state.workflows,
           canonicalDraftMetadata: {
             ...state.canonicalDraftMetadata,
             [metadata.workflowId]: metadata,

@@ -194,6 +194,90 @@ describe('useAutoSync Hook', () => {
     expect(nestedData).toEqual({ code: 'return inputs' });
   });
 
+  it('does not apply a late save response to the newly active workflow', async () => {
+    let resolveSave!: (value: ReturnType<typeof canonicalSave>) => void;
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue(canonicalDraft());
+    vi.mocked(workflowApi.syncDraftWorkflow).mockReturnValue(
+      new Promise((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+    renderHook(() => useAutoSync());
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const workflowANode = {
+      id: 'shared-1',
+      type: 'slackPostNode',
+      position: { x: 0, y: 0 },
+      data: { _deferred_parameters: ['channel'] },
+    } as unknown as Node;
+    const workflowBNode = {
+      id: 'shared-1',
+      type: 'githubNode',
+      position: { x: 0, y: 0 },
+      data: { _deferred_parameters: ['repo_name'] },
+    } as unknown as Node;
+
+    act(() => {
+      useWorkflowStore.setState({
+        activeWorkflowId: 'test-workflow-id',
+        nodes: [workflowANode],
+        workflows: [
+          {
+            id: 'test-workflow-id',
+            appId: 'app-1',
+            nodes: [workflowANode],
+            edges: [],
+            features: {},
+            viewport: { x: 0, y: 0, zoom: 1 },
+          },
+          {
+            id: 'workflow-b',
+            appId: 'app-1',
+            nodes: [workflowBNode],
+            edges: [],
+            features: {},
+            viewport: { x: 0, y: 0, zoom: 1 },
+          },
+        ],
+        hasUnsavedChanges: true,
+      });
+    });
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      useWorkflowStore.setState({
+        activeWorkflowId: 'workflow-b',
+        nodes: [workflowBNode],
+        hasUnsavedChanges: true,
+      });
+    });
+    await act(async () => {
+      resolveSave(
+        canonicalSave({
+          canonical_deferred_parameters: [
+            { node_path: ['shared-1'], parameter_keys: [] },
+          ],
+        }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const state = useWorkflowStore.getState();
+    expect(state.activeWorkflowId).toBe('workflow-b');
+    expect(state.nodes[0].data._deferred_parameters).toEqual(['repo_name']);
+    expect(state.hasUnsavedChanges).toBe(true);
+  });
+
   it('Agent Builder 저장 완료 플래그만 해제되면 같은 graph를 다시 저장하지 않는다', async () => {
     (workflowApi.getDraftWorkflow as any).mockResolvedValue({
       nodes: [{ id: 'persisted', data: {} } as any],
