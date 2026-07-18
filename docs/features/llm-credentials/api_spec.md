@@ -43,6 +43,8 @@ Secret physical purge 또는 crypto-shred는 이 endpoint의 현재 계약이 �
 - `model_id`: LLM catalog UUID
 - `credential_id`: active organization의 LLM credential UUID
 
+Path의 `node_id`는 policy/capability 영속 컬럼과 동일하게 1~255자로 제한한다. 이를 초과하거나 immutable graph에서 정확히 하나의 node와 일치하지 않으면 row를 쓰기 전에 `422 configuration_required`로 거부한다.
+
 `credential_principal_user_id`, credential config, API key, provider request option은 request에 포함할 수 없다. Server는 policy write actor가 organization manager인지 확인하고, 그 actor를 credential principal으로 server-side 파생한다. 이어서 대상 deployment의 immutable `graph_snapshot`에서 정확히 하나의 `llmNode`와 graph-owned `model_id`를 확인하며, selected model/provider, credential valid state, same-organization scope, verified credential-model relation, credential `use`를 검증한다.
 
 Capability-required policy는 direct `credential_id`/`credentialId` graph field, `fallback_model_id`, `auto_model_routing`을 허용하지 않는다. 이들은 현재 target policy의 명시 model/credential binding을 흐리므로 `422 configuration_required`로 fail-closed한다.
@@ -102,7 +104,7 @@ Memory summary 초기 정책은 `inherit_node`만 허용한다. Main node의 app
 
 현재 구현에서 capability issue/admission은 public HTTP endpoint가 아니라 `provider_execution_capability_required=true`인 server-owned runtime context만 사용할 수 있는 internal application port다. 이 mode는 trusted Workflow Engine execution control, canonical deployment/version/node invocation, explicit user/anonymous-public/system execution identity, organization billing principal, bounded token/cost cap을 요구한다. Capability path에서는 legacy `user_id`, `credential_principal`, App/deployment owner, fallback model, name/order/default candidate를 credential selection에 사용하지 않는다. 이 커밋에서는 Gateway/deployed task composition이 flag를 주입하지 않으므로 policy API 설정만으로 live provider selection이 전환되지 않는다. Existing legacy runtime의 activation/migration은 durable usage ledger 이후 별도 범위(MBA-320)다.
 
-Admission은 messages와 tools·response schema를 포함한 provider-visible parameter 구조 전체의 UTF-8 byte 길이를 provider-independent input token upper bound로 사용하고, provider request의 generic `max_tokens`를 output 요청량으로 사용한다. `max_tokens`가 없으면 server cap을 request limit으로 적용한다. Canonical model input/output price로 최대 비용을 micro-USD 올림 계산하며 missing pricing, provider-specific output-limit alias, 직렬화 불가 값, 음수·boolean·상한 초과 요청은 provider client 생성 전에 `capability_stale|configuration_required`로 닫는다. Capability와 admission row는 Shared config 복호화와 provider client materialization이 성공한 뒤 network 호출 전에 commit한다.
+Admission은 messages와 tools·response schema를 포함한 provider-visible parameter 구조 전체의 UTF-8 byte 길이를 provider-independent input token upper bound로 사용하고, provider request의 generic `max_tokens`를 output 요청량으로 사용한다. `max_tokens`가 없으면 server cap을 request limit으로 적용한다. Canonical model input/output price로 최대 비용을 micro-USD 올림 계산하며 missing pricing, provider-specific output-limit alias, 직렬화 불가 값, 음수·boolean·상한 초과 요청은 provider client 생성 전에 `capability_stale|configuration_required`로 닫는다. Admission이 확정한 canonical model UUID는 provider 호출 뒤 비용 계산과 usage 기록까지 그대로 전달하며, provider API model identifier의 전역 첫 row를 다시 선택하지 않는다. Capability와 admission row는 Shared config 복호화와 provider client materialization이 성공한 뒤 network 호출 전에 commit한다.
 
 `egress_revision`은 현재 provider catalog routing field의 변경 fingerprint이며 capability client의 실제 base URL도 admission에서 잠근 provider catalog 값을 사용한다. Credential config의 과거 base URL snapshot은 이 목적지를 덮어쓰지 않는다. 이 revision은 URL 허용이나 중앙 outbound authorization capability가 아니며, credential config 변경은 relation revision으로 stale 처리하고 authoritative LLM egress policy/guard 연결은 별도 egress 범위가 소유한다.
 

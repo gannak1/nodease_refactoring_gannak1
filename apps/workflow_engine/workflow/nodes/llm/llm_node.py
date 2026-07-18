@@ -1062,6 +1062,7 @@ class LLMNode(Node[LLMNodeData]):
         client_override = getattr(self, "_client_override", None)
         capability_required = self._provider_execution_capability_required()
         selected_credential_id = None
+        capability_model_db_id = None
         runtime_credential_principal_user_id = None
         knowledge_enabled = bool(
             self.data.knowledgeBases or self.data.knowledgeCollections
@@ -1398,7 +1399,10 @@ class LLMNode(Node[LLMNodeData]):
                     )
                 finally:
                     provider_db_session.close()
-                if runtime_selection.model_id != selected_model_id:
+                if (
+                    runtime_selection.model_id != selected_model_id
+                    or runtime_selection.model_db_id is None
+                ):
                     raise LLMCredentialNotAvailableError(
                         "provider_capability_model_mismatch",
                         "Provider execution capability is not available.",
@@ -1406,6 +1410,7 @@ class LLMNode(Node[LLMNodeData]):
                     )
                 client = runtime_selection.client
                 selected_credential_id = runtime_selection.credential_id
+                capability_model_db_id = runtime_selection.model_db_id
                 runtime_credential_principal_user_id = (
                     runtime_selection.credential_principal_user_id
                 )
@@ -1593,6 +1598,11 @@ class LLMNode(Node[LLMNodeData]):
                         prompt_tokens,
                         completion_tokens,
                         usage=usage_for_log,
+                        model_db_id=(
+                            capability_model_db_id
+                            if capability_required
+                            else None
+                        ),
                     )
 
                     usage_user_id = (
@@ -1646,6 +1656,11 @@ class LLMNode(Node[LLMNodeData]):
                                 node_id=self.id,
                                 credential_id=selected_credential_id,
                                 cost_optimizer_candidate_id=candidate_uuid,
+                                model_db_id=(
+                                    capability_model_db_id
+                                    if capability_required
+                                    else None
+                                ),
                             )
                         except Exception as log_err:
                             logger.error(

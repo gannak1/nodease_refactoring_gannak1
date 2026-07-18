@@ -51,6 +51,7 @@ from apps.shared.services.permissions import (
 from sqlalchemy.orm import Session
 
 CAPABILITY_TTL = timedelta(minutes=5)
+_MAX_POLICY_NODE_ID_LENGTH = 255
 _LLM_NODE_TYPES = {"llmnode", "llm"}
 _DIRECT_CREDENTIAL_FIELDS = {
     "credential_id",
@@ -133,7 +134,12 @@ def deployment_llm_node_model_id(graph_snapshot: Any, node_id: str) -> str:
     external provider can be reached.
     """
 
-    if not isinstance(graph_snapshot, dict) or not node_id:
+    if (
+        not isinstance(graph_snapshot, dict)
+        or not isinstance(node_id, str)
+        or not node_id
+        or len(node_id) > _MAX_POLICY_NODE_ID_LENGTH
+    ):
         raise ProviderExecutionPolicyError("configuration_required")
     nodes = graph_snapshot.get("nodes")
     if not isinstance(nodes, list):

@@ -56,6 +56,21 @@ def test_policy_reads_only_the_model_identifier_from_an_llm_graph_node():
     assert deployment_llm_node_model_id(_graph(), "llm-1") == "gpt-safe"
 
 
+def test_policy_rejects_node_id_that_cannot_be_persisted():
+    maximum_node_id = "n" * 255
+    graph = _graph()
+    graph["nodes"][0]["id"] = maximum_node_id
+
+    assert deployment_llm_node_model_id(graph, maximum_node_id) == "gpt-safe"
+
+    oversized_node_id = maximum_node_id + "n"
+    graph["nodes"][0]["id"] = oversized_node_id
+    with pytest.raises(ProviderExecutionPolicyError) as exc_info:
+        deployment_llm_node_model_id(graph, oversized_node_id)
+
+    assert exc_info.value.code == "configuration_required"
+
+
 @pytest.mark.parametrize(
     "data",
     [

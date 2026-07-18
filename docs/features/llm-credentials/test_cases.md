@@ -18,12 +18,13 @@ Status: Draft
 - Encryption metadata가 모두 null인 legacy row만 평문 read를 허용한다. Metadata 일부 누락, unsupported algorithm, unknown key version, 손상 ciphertext 또는 invalid config는 평문 fallback 없이 실패한다.
 - Gateway와 Workflow Engine의 신규 credential 등록은 raw config와 다른 ciphertext, active key version과 algorithm을 저장한다.
 - Gateway·Workflow Engine·RAG answer·embedding·LlamaParse의 decrypt 실패 테스트는 provider/client mock 호출이 0회임을 검증한다.
-- Deployment policy resolver는 immutable deployment graph의 exact `llmNode.model_id`만 읽고 `credential_id`/`credentialId`, fallback model, auto-routing이 있는 capability-required node를 거부한다.
+- Deployment policy resolver는 immutable deployment graph의 exact `llmNode.model_id`만 읽고 `credential_id`/`credentialId`, fallback model, auto-routing이 있는 capability-required node를 거부한다. `node_id`는 255자까지 허용하고 256자 이상은 policy/capability row를 쓰기 전에 거부한다.
 - 같은 deployment version/node에 model UUID가 다른 두 active policy를 만들 수 없고, concurrent 최초 policy write는 canonical deployment와 active policy를 순서대로 lock한 뒤 authorization 근거를 잠가 하나의 active revision으로 수렴하거나 safe `409`로 종료한다.
 - Deployment policy write는 manager actor를 server-derived credential principal으로만 사용하고, request의 credential config/principal override를 받지 않는다. Same organization, active credential/provider, verified single relation, credential `use`를 만족하지 않으면 policy row를 만들지 않는다.
 - Capability-required LLM node는 trusted node invocation control과 explicit token/cost cap이 없으면 provider client를 만들지 않으며, legacy user/app owner/default/name/order/fallback selection을 호출하지 않는다.
 - Capability-required LLM node는 messages와 tools·response schema 등 provider-visible parameter 구조 전체의 UTF-8 byte upper bound, `max_tokens`와 canonical pricing 최대 비용 중 하나라도 cap을 넘으면 provider client/SDK를 호출하지 않는다. Output limit이 없으면 server cap을 적용하고 직렬화 불가 parameter, provider-specific output-limit alias와 missing pricing은 fail-closed한다.
 - Capability-required LLM node는 request parameters의 `model`을 항상 거부하고 `n`은 boolean/string을 포함해 정수 `1`이 아니면 provider client/SDK 호출 전에 거부한다.
+- 서로 다른 provider의 model row가 같은 API model identifier를 사용해도 capability admission이 고른 canonical model UUID가 비용 계산과 `llm_usage_logs.model_id`에 유지된다.
 - Capability config는 encrypted/legacy row 모두 Shared `LLMCredentialConfigService`만 읽는다. Client는 credential config의 과거 base URL snapshot이 아니라 admission에서 잠근 provider catalog URL을 사용한다. Config/client materialization 성공 뒤 전용 capability transaction을 provider SDK 호출 전에 commit하며 Workflow legacy/shared session은 전달·commit하지 않고 provider 실패 뒤에도 발급 row가 rollback되지 않는다.
 - User/anonymous-public/system execution subject는 각각 동일 user/public/system audit actor와만 결합되고 organization billing principal은 capability organization과 일치해야 한다.
 - Capability-required LLM node가 legacy `memory_mode`를 만나면 inline summary helper를 skip하고 history query 또는 legacy `get_client_for_user` provider call을 만들지 않는다. Main capability를 summary purpose로 재사용하지 않으며, dedicated Conversation Memory summarizer가 없는 상태에서 summary provider 호출을 추가하지 않는다.

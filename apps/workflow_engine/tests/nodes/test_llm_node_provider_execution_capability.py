@@ -78,7 +78,9 @@ def test_capability_required_llm_node_uses_policy_runtime_and_not_legacy_fallbac
     deployment_id = uuid.uuid4()
     execution_subject_id = uuid.uuid4()
     policy_principal_id = uuid.uuid4()
+    policy_model_db_id = uuid.uuid4()
     captured: dict = {}
+    cost_calls: list[dict] = []
     usage_calls: list[dict] = []
     client = _Client()
     class _ProviderDb:
@@ -124,6 +126,7 @@ def test_capability_required_llm_node_uses_policy_runtime_and_not_legacy_fallbac
             client=client,
             credential_id=uuid.uuid4(),
             model_id="gpt-safe",
+            model_db_id=policy_model_db_id,
             organization_id=organization_id,
             capability_id=uuid.uuid4(),
             capability_revision=1,
@@ -140,7 +143,11 @@ def test_capability_required_llm_node_uses_policy_runtime_and_not_legacy_fallbac
         "get_runtime_client_for_user",
         lambda *_args, **_kwargs: pytest.fail("legacy selection must not run"),
     )
-    monkeypatch.setattr(LLMService, "calculate_cost", lambda *_args, **_kwargs: 0.0)
+    monkeypatch.setattr(
+        LLMService,
+        "calculate_cost",
+        lambda *_args, **kwargs: cost_calls.append(kwargs) or 0.0,
+    )
     monkeypatch.setattr(
         LLMService,
         "log_usage",
@@ -172,6 +179,8 @@ def test_capability_required_llm_node_uses_policy_runtime_and_not_legacy_fallbac
     assert client.calls[0]["kwargs"]["max_tokens"] == command.output_token_cap
     assert result["text"] == "safe capability result"
     assert result["metadata"]["model_routing"]["provider_execution_capability"] == "required"
+    assert cost_calls[0]["model_db_id"] == policy_model_db_id
+    assert usage_calls[0]["model_db_id"] == policy_model_db_id
     assert usage_calls[0]["user_id"] == policy_principal_id
     assert workflow_db.closes == 1
     assert provider_db.closes == 1
@@ -292,6 +301,7 @@ def test_capability_required_legacy_memory_summary_is_skipped_without_fallback(
             client=client,
             credential_id=uuid.uuid4(),
             model_id="gpt-safe",
+            model_db_id=uuid.uuid4(),
             organization_id=organization_id,
             capability_id=uuid.uuid4(),
             capability_revision=1,
@@ -379,6 +389,7 @@ def test_provider_runtime_does_not_materialize_client_after_admission_failure(
 def test_provider_runtime_uses_shared_config_and_commits_before_return(monkeypatch):
     organization_id = uuid.uuid4()
     principal_id = uuid.uuid4()
+    model_db_id = uuid.uuid4()
     credential = SimpleNamespace(id=uuid.uuid4(), encrypted_config="not-json")
     capability = SimpleNamespace(id=uuid.uuid4(), revision=3)
     binding = ProviderExecutionBinding(
@@ -427,7 +438,10 @@ def test_provider_runtime_uses_shared_config_and_commits_before_return(monkeypat
                 name="provider",
                 base_url="https://catalog.example.test/v1",
             ),
-            model=SimpleNamespace(model_id_for_api_call="gpt-safe"),
+            model=SimpleNamespace(
+                id=model_db_id,
+                model_id_for_api_call="gpt-safe",
+            ),
             capability=SimpleNamespace(
                 credential_principal=RuntimePrincipal.user(principal_id)
             ),
@@ -475,11 +489,105 @@ def test_provider_runtime_uses_shared_config_and_commits_before_return(monkeypat
     assert admitted[0].requested_output_tokens == 12
     assert db.commits == 1
     assert selection.client is provider_client
+    assert selection.model_db_id == model_db_id
     assert client_arguments[0]["credentials"]["baseUrl"] == (
         "https://catalog.example.test/v1"
     )
     assert selection.capability_id == capability.id
     assert selection.credential_principal_user_id == principal_id
+
+
+def test_capability_cost_uses_exact_model_uuid():
+    model_db_id = uuid.uuid4()
+    criteria: list[object] = []
+    model = SimpleNamespace(
+        id=model_db_id,
+        input_price_1k=1.0,
+        output_price_1k=2.0,
+    )
+
+    class _Query:
+        def filter(self, *values):
+            criteria.extend(values)
+            return self
+
+        def first(self):
+            return model
+
+    class _Db:
+        def query(self, *_entities):
+            return _Query()
+
+    cost = LLMService.calculate_cost(
+        _Db(),
+        "duplicate-api-id",
+        1_000,
+        1_000,
+        model_db_id=model_db_id,
+    )
+
+    assert criteria[0].left.name == "id"
+    assert criteria[0].right.value == model_db_id
+    assert cost == 3.0
+
+
+def test_capability_usage_log_uses_exact_model_uuid(monkeypatch):
+    model_db_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    criteria: list[object] = []
+    added: list[object] = []
+    model = SimpleNamespace(id=model_db_id)
+
+    class _Query:
+        def filter(self, *values):
+            criteria.extend(values)
+            return self
+
+        def first(self):
+            return model
+
+    class _Db:
+        def query(self, *_entities):
+            return _Query()
+
+        def add(self, value):
+            added.append(value)
+
+        def commit(self):
+            return None
+
+        def refresh(self, _value):
+            return None
+
+    monkeypatch.setattr(
+        workflow_llm_service,
+        "resolve_llm_usage_context",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            workflow_run_id=None,
+        ),
+    )
+
+    log = LLMService.log_usage(
+        db=_Db(),
+        user_id=user_id,
+        model_id="duplicate-api-id",
+        model_db_id=model_db_id,
+        usage={"prompt_tokens": 1, "completion_tokens": 1},
+        cost=0.1,
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+        credential_id=credential_id,
+    )
+
+    assert criteria[0].left.name == "id"
+    assert criteria[0].right.value == model_db_id
+    assert log is added[0]
+    assert log.model_id == model_db_id
 
 
 def test_provider_runtime_hides_config_failure_and_does_not_commit(monkeypatch):
