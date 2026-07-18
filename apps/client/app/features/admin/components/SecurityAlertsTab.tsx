@@ -110,7 +110,10 @@ export function SecurityAlertsTab({
   const [refreshToken, setRefreshToken] = useState(0);
   const listRequestContext = `${organizationId}:${applied.page}:${JSON.stringify(applied.filters)}`;
   const currentListRequestContextRef = useRef(listRequestContext);
-  currentListRequestContextRef.current = listRequestContext;
+
+  useEffect(() => {
+    currentListRequestContextRef.current = listRequestContext;
+  }, [listRequestContext]);
 
   useEffect(() => {
     onCloseAlertRef.current = onCloseAlert;

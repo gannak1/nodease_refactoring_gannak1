@@ -14,6 +14,9 @@
 실험은 반드시 ``--execute``를 붙여야 한다.
 """
 
+# 이 스크립트는 repo root를 sys.path에 추가한 뒤 애플리케이션 모듈을 import한다.
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
@@ -25,7 +28,7 @@ import statistics
 import sys
 import time
 import uuid
-from collections import Counter, defaultdict
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -42,7 +45,7 @@ from apps.log_system import tasks as log_tasks
 from apps.shared.celery_app import celery_app
 from apps.shared.db.demo_seed import _ticket_ops_graph
 from apps.shared.db.models.app import App
-from apps.shared.db.models.llm import LLMModel, LLMUsageLog
+from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.model_routing_policy import (
     LLMNodeModelRoutingPerformance,
     LLMNodeModelRoutingPolicy,
@@ -54,7 +57,6 @@ from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDe
 from apps.shared.db.models.workflow_run import WorkflowNodeRun, WorkflowRun
 from apps.shared.db.session import SessionLocal
 from apps.workflow_engine.services.llm_service import (
-    LLMCredentialNotAvailableError,
     LLMService,
 )
 from apps.workflow_engine.services.model_routing_policy_store import (

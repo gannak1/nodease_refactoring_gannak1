@@ -11,7 +11,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from typing import Any
 
 import pytest
 

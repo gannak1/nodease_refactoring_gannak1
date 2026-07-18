@@ -12,8 +12,8 @@ embeddings, replay batches, and their capacity setting are no longer read.
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
 
+from alembic import op
 
 revision: str = "c6f8a1b2d3e4"
 down_revision: Union[str, Sequence[str], None] = "bd9e0f1a2b35"

@@ -101,7 +101,10 @@ export function SecurityAlertDetailDrawer({
   const [resolveOpen, setResolveOpen] = useState(false);
   const evidenceRequestContext = `${alertId}:${evidencePage}:${refreshToken}`;
   const currentEvidenceRequestContextRef = useRef(evidenceRequestContext);
-  currentEvidenceRequestContextRef.current = evidenceRequestContext;
+
+  useEffect(() => {
+    currentEvidenceRequestContextRef.current = evidenceRequestContext;
+  }, [evidenceRequestContext]);
 
   useEffect(() => {
     onNotFoundRef.current = onNotFound;

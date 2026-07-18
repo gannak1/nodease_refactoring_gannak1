@@ -4,7 +4,6 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-
 from apps.log_system import tasks as log_tasks
 from apps.shared.db.models.workflow_run import RunStatus
 

@@ -7,9 +7,9 @@ Revises: ba6f5c4d3e2f
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
 
+from alembic import op
 
 revision: str = "bb7c8d9e0f13"
 down_revision: Union[str, Sequence[str], None] = "ba6f5c4d3e2f"

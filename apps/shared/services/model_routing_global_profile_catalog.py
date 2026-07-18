@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Iterable
 
-
 CATALOG_SOURCE = "official_provider_catalog"
 CATALOG_PROFILE_VERSION = "official-provider-catalog-v1"
 

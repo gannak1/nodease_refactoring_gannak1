@@ -125,7 +125,10 @@ export default function DocumentSettingsPage() {
   const activeProcessingScope = useRef<string | null>(null);
   const currentDocumentScope = `${activeOrganizationId ?? 'no-organization'}:${kbId}:${documentId}`;
   const documentScopeRef = useRef(currentDocumentScope);
-  documentScopeRef.current = currentDocumentScope;
+
+  useEffect(() => {
+    documentScopeRef.current = currentDocumentScope;
+  }, [currentDocumentScope]);
   const canEditCurrentDocument =
     canEditDocument && permissionScope === currentDocumentScope;
   const isCurrentEditConfigReady =

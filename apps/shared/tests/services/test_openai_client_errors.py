@@ -1,6 +1,5 @@
 import httpx
 import pytest
-
 from apps.shared.services.llm_client.base import ProviderInvocationError
 from apps.shared.services.llm_client.openai_client import OpenAIClient
 

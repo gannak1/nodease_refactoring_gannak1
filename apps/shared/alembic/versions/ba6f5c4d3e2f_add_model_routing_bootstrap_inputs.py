@@ -7,8 +7,8 @@ Revises: b0c1d2e3f4a5
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
 
+from alembic import op
 
 revision: str = "ba6f5c4d3e2f"
 down_revision: Union[str, Sequence[str], None] = "b0c1d2e3f4a5"

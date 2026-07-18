@@ -8,10 +8,12 @@ Judge 또는 JSON/RAG 계약이 실패하면 즉시 중단한다.
 ``--execute``가 필요하다.
 """
 
+# 이 스크립트는 repo root를 sys.path에 추가한 뒤 애플리케이션 모듈을 import한다.
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import pathlib
 import sys
@@ -42,7 +44,6 @@ from apps.shared.db.models.workflow_run import WorkflowNodeRun, WorkflowRun
 from apps.shared.db.session import SessionLocal
 from apps.workflow_engine.services.llm_service import LLMService
 from apps.workflow_engine.services.model_routing_judge_first_policy import (
-    JUDGE_FIRST_STRATEGY_ID,
     build_judge_first_active_policy,
 )
 from apps.workflow_engine.services.model_routing_policy_store import ModelRoutingPolicyStore
@@ -579,12 +580,10 @@ def _run_case(case: ExperimentCase) -> RunResult:
     node_id = RAG_NODE_ID if case.requires_rag else DIRECT_NODE_ID
     db = SessionLocal()
     try:
-        workflow_run = None
         node_run = None
         task_usage = None
         for _ in range(30):
             db.expire_all()
-            workflow_run = db.query(WorkflowRun).filter(WorkflowRun.id == run_id).first()
             node_run = (
                 db.query(WorkflowNodeRun)
                 .filter(WorkflowNodeRun.workflow_run_id == run_id)

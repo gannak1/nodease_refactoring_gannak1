@@ -10,7 +10,6 @@ from apps.shared.services.model_routing_model_filter import (
     normalize_model_routing_model_id,
 )
 
-
 LLM_RUNTIME_RELEVANT_KEYS = (
     "model_id",
     "fallback_model_id",

@@ -4,6 +4,9 @@
 현재 조직의 실행 가능 모델과 credential을 사용해 Judge를 호출한다.
 """
 
+# 이 스크립트는 repo root를 sys.path에 추가한 뒤 애플리케이션 모듈을 import한다.
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse

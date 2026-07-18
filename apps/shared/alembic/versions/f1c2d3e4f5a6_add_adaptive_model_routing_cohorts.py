@@ -13,9 +13,9 @@ cleanup migration removes the tables again.
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
 
+from alembic import op
 
 revision: str = "f1c2d3e4f5a6"
 down_revision: Union[str, Sequence[str], None] = "0f4a5b6c7d89"
