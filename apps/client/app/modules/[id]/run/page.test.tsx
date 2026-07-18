@@ -194,6 +194,57 @@ describe('AuthenticatedDeploymentRunPage', () => {
     expect(screen.getByText('재무팀 첫 주 일정')).toBeVisible();
   });
 
+  it('내부 챗봇은 초록 강조와 최종 응답 바깥 카드를 제거하고 응답을 아이콘 시작선까지 넓힌다', async () => {
+    render(<AuthenticatedDeploymentRunPage />);
+    const questionInput = await screen.findByLabelText('질문');
+
+    fireEvent.change(questionInput, {
+      target: { value: '개발팀 신입 연봉 기준을 알려줘' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '전송' }));
+
+    const responseText = await screen.findByText(
+      '개발팀 신입 연봉 기준은 사내 문서 기준을 따릅니다.',
+    );
+    const responseContainer = responseText.closest('div');
+    const finalResponseSection = screen
+      .getByRole('heading', { name: '최종 응답' })
+      .closest('section');
+    const greenClassNames = Array.from(
+      screen.getByRole('main').querySelectorAll<HTMLElement>('[class]'),
+    ).flatMap((element) =>
+      Array.from(element.classList).filter(
+        (className) =>
+          className.includes('emerald-') || className.includes('green-'),
+      ),
+    );
+    const finalResponseElements = finalResponseSection
+      ? [
+          finalResponseSection,
+          ...Array.from(
+            finalResponseSection.querySelectorAll<HTMLElement>('[class]'),
+          ),
+        ]
+      : [];
+    const darkClassNames = finalResponseElements.flatMap((element) =>
+      Array.from(element.classList).filter((className) =>
+        className.startsWith('dark:'),
+      ),
+    );
+
+    for (const removedCardClassName of [
+      'rounded-lg',
+      'border',
+      'bg-emerald-50',
+      'p-4',
+    ]) {
+      expect(finalResponseSection).not.toHaveClass(removedCardClassName);
+    }
+    expect(responseContainer).toHaveClass('col-span-2');
+    expect(greenClassNames).toEqual([]);
+    expect(darkClassNames).toEqual([]);
+  });
+
   it('Enter는 질문을 전송하고 Shift+Enter는 줄바꿈을 위해 전송하지 않는다', async () => {
     render(<AuthenticatedDeploymentRunPage />);
     const questionInput = await screen.findByLabelText('질문');

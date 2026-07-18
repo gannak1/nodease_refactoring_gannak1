@@ -519,6 +519,14 @@ describe('Sidebar notifications', () => {
 });
 
 describe('Sidebar organization switcher', () => {
+  it('펼친 사이드바는 232px 너비를 사용한다', async () => {
+    render(<Sidebar />);
+
+    await screen.findByRole('button', { name: 'Nodease' });
+
+    expect(screen.getByRole('complementary')).toHaveClass('w-[232px]');
+  });
+
   it('펼친 사이드바의 Nodease 옆에 장식 아이콘을 표시하지 않는다', async () => {
     render(<Sidebar />);
 

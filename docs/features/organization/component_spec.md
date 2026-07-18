@@ -97,6 +97,7 @@ Verified Against: feature/mba-127 @ 258b26a9
 - 출처: `apps/client/app/features/dashboard/components/Sidebar.tsx`
 - 책임: 현재 organization 이름과 manager 여부를 표시하고, manager-only navigation item을 제어한다.
 - 렌더링:
+  - 펼친 sidebar는 `232px`, 접힌 sidebar는 `80px` 너비를 사용한다.
   - organization 이름이 있으면 sidebar 하단에 organization switcher를 표시한다.
   - switcher는 현재 organization 이름과 `내 조직`/`멤버 조직` badge를 표시한다.
   - `내 조직`은 현재 MVP에서 `is_manager === true` 기준이다.
