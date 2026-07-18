@@ -1377,12 +1377,27 @@ class LLMNode(Node[LLMNodeData]):
                 issue_command = self._provider_execution_issue_command(
                     selected_model_id=selected_model_id,
                 )
-                runtime_selection = (
-                    LLMService.get_runtime_client_for_provider_execution(
-                        db_session,
+                requested_input_tokens, requested_output_tokens = (
+                    self._provider_execution_requested_usage(
+                        messages=messages,
+                        llm_params=llm_params,
                         issue_command=issue_command,
                     )
                 )
+                provider_db_session = self._borrow_provider_execution_db_session(
+                    db_session
+                )
+                try:
+                    runtime_selection = (
+                        LLMService.get_runtime_client_for_provider_execution(
+                            provider_db_session,
+                            issue_command=issue_command,
+                            requested_input_tokens=requested_input_tokens,
+                            requested_output_tokens=requested_output_tokens,
+                        )
+                    )
+                finally:
+                    provider_db_session.close()
                 if runtime_selection.model_id != selected_model_id:
                     raise LLMCredentialNotAvailableError(
                         "provider_capability_model_mismatch",
@@ -2037,6 +2052,20 @@ class LLMNode(Node[LLMNodeData]):
         if legacy_session is not None:
             return legacy_session, False
         return SessionLocal(), True
+
+    def _borrow_provider_execution_db_session(self, workflow_db_session):
+        """Open an isolated UoW for the pre-provider capability commit."""
+
+        session_factory = self.execution_context.get("db_session_factory")
+        if callable(session_factory):
+            provider_db_session = session_factory()
+        else:
+            # Never reuse execution_context["db"] here. Committing that legacy
+            # session could persist unrelated runtime work with the capability.
+            provider_db_session = SessionLocal()
+        if provider_db_session is workflow_db_session:
+            raise ProviderExecutionCapabilityConfigurationError()
+        return provider_db_session
 
     def _shorten(self, payload: Any, limit: int = 360) -> str:
         """LLM 히스토리 문자열을 과하지 않게 자르는 헬퍼 (한국어 포함)"""
@@ -3173,6 +3202,49 @@ class LLMNode(Node[LLMNodeData]):
             output_token_cap=output_token_cap,
             cost_cap_microusd=cost_cap_microusd,
         )
+
+    @staticmethod
+    def _provider_execution_requested_usage(
+        *,
+        messages: list[dict[str, Any]],
+        llm_params: dict[str, Any],
+        issue_command: ProviderExecutionCapabilityIssueCommand,
+    ) -> tuple[int, int]:
+        """Build conservative request bounds before capability admission."""
+
+        provider_output_aliases = {"max_completion_tokens", "max_output_tokens"}
+        if provider_output_aliases.intersection(llm_params):
+            raise ProviderExecutionCapabilityConfigurationError()
+
+        output_tokens = llm_params.get("max_tokens")
+        if output_tokens is None:
+            output_tokens = issue_command.output_token_cap
+            if output_tokens <= 0:
+                raise ProviderExecutionCapabilityConfigurationError()
+            llm_params["max_tokens"] = output_tokens
+        if (
+            isinstance(output_tokens, bool)
+            or not isinstance(output_tokens, int)
+            or output_tokens <= 0
+        ):
+            raise ProviderExecutionCapabilityConfigurationError()
+
+        try:
+            serialized_messages = json.dumps(
+                messages,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise ProviderExecutionCapabilityConfigurationError() from exc
+
+        # Every tokenizer token represents at least one encoded byte. The byte
+        # length is therefore a provider-independent, conservative upper bound.
+        input_tokens = len(serialized_messages)
+        if input_tokens <= 0:
+            raise ProviderExecutionCapabilityConfigurationError()
+        return input_tokens, output_tokens
 
     def _provider_execution_identities(
         self,

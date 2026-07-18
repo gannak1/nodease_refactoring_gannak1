@@ -265,7 +265,7 @@ class LLMRelCredentialModel(Base):
 
 
 class LLMDeploymentCredentialPolicy(Base):
-    """Server-owned credential selection for one deployed LLM node/model pair.
+    """Server-owned credential selection for one deployed LLM node.
 
     The workflow graph intentionally never stores ``credential_id``.  This
     policy is separately versioned and is the only source an execution
@@ -289,7 +289,6 @@ class LLMDeploymentCredentialPolicy(Base):
             "deployment_id",
             "deployment_version",
             "node_id",
-            "model_id",
             unique=True,
             postgresql_where=text("is_active"),
         ),
@@ -418,6 +417,23 @@ class ProviderExecutionCapabilityRecord(Base):
             "(audit_actor_kind = 'user' AND audit_actor_id IS NOT NULL) "
             "OR (audit_actor_kind IN ('public', 'system') AND audit_actor_id IS NULL)",
             name="ck_provider_execution_capability_audit_actor",
+        ),
+        CheckConstraint(
+            "billing_principal_id = organization_id",
+            name="ck_provider_execution_capability_billing_scope",
+        ),
+        CheckConstraint(
+            "(execution_subject_kind = 'user' AND audit_actor_kind = 'user' "
+            "AND execution_subject_id = audit_actor_id) "
+            "OR (execution_subject_kind = 'anonymous_public' "
+            "AND audit_actor_kind = 'public') "
+            "OR (execution_subject_kind = 'system' AND audit_actor_kind = 'system')",
+            name="ck_provider_execution_capability_identity_alignment",
+        ),
+        CheckConstraint(
+            "(state = 'active' AND revoked_at IS NULL) "
+            "OR (state = 'revoked' AND revoked_at IS NOT NULL)",
+            name="ck_provider_execution_capability_revocation_state",
         ),
         Index(
             "ix_provider_execution_capability_expiry",

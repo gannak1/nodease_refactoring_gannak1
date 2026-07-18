@@ -116,3 +116,25 @@ def test_public_execution_identity_does_not_promote_owner_to_another_principal()
     assert identity.billing_principal.reference_id == organization_id
     assert identity.execution_subject != identity.credential_principal
     assert identity.audit_actor != identity.credential_principal
+
+
+@pytest.mark.parametrize(
+    ("execution_subject", "audit_actor"),
+    [
+        (RuntimePrincipal.organization(uuid.uuid4()), RuntimePrincipal.system_actor()),
+        (RuntimePrincipal.anonymous_public(), RuntimePrincipal.system_actor()),
+        (RuntimePrincipal.system_actor(), RuntimePrincipal.public_actor()),
+        (RuntimePrincipal.user(uuid.uuid4()), RuntimePrincipal.user(uuid.uuid4())),
+    ],
+)
+def test_runtime_identity_rejects_subject_audit_misattribution(
+    execution_subject,
+    audit_actor,
+):
+    with pytest.raises(ValueError):
+        RuntimeIdentityContext(
+            execution_subject=execution_subject,
+            credential_principal=RuntimePrincipal.user(uuid.uuid4()),
+            billing_principal=RuntimePrincipal.organization(uuid.uuid4()),
+            audit_actor=audit_actor,
+        )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -80,12 +81,22 @@ def test_capability_required_llm_node_uses_policy_runtime_and_not_legacy_fallbac
     captured: dict = {}
     usage_calls: list[dict] = []
     client = _Client()
+    class _ProviderDb:
+        def __init__(self):
+            self.closes = 0
+
+        def close(self):
+            self.closes += 1
+
+    workflow_db = _ProviderDb()
+    provider_db = _ProviderDb()
+    sessions = iter((workflow_db, provider_db))
     node = _node(
         context={
-            "db": object(),
+            "db_session_factory": lambda: next(sessions),
             "provider_execution_capability_required": True,
             "provider_execution_capability_limits": {
-                "input_token_cap": 1000,
+                "input_token_cap": 10_000,
                 "output_token_cap": 100,
                 "cost_cap_microusd": 50_000,
             },
@@ -97,8 +108,18 @@ def test_capability_required_llm_node_uses_policy_runtime_and_not_legacy_fallbac
         }
     )
 
-    def capability_client(_db, *, issue_command):
+    def capability_client(
+        _db,
+        *,
+        issue_command,
+        requested_input_tokens,
+        requested_output_tokens,
+    ):
+        assert _db is provider_db
+        assert _db is not workflow_db
         captured["command"] = issue_command
+        captured["requested_input_tokens"] = requested_input_tokens
+        captured["requested_output_tokens"] = requested_output_tokens
         return LLMRuntimeSelection(
             client=client,
             credential_id=uuid.uuid4(),
@@ -143,12 +164,17 @@ def test_capability_required_llm_node_uses_policy_runtime_and_not_legacy_fallbac
     assert command.binding.purpose is CapabilityPurpose.MAIN_GENERATION
     assert command.execution_subject.reference_id == execution_subject_id
     assert command.billing_principal.reference_id == organization_id
-    assert command.input_token_cap == 1000
+    assert command.input_token_cap == 10_000
     assert command.output_token_cap == 100
     assert command.cost_cap_microusd == 50_000
+    assert 0 < captured["requested_input_tokens"] <= command.input_token_cap
+    assert captured["requested_output_tokens"] == command.output_token_cap
+    assert client.calls[0]["kwargs"]["max_tokens"] == command.output_token_cap
     assert result["text"] == "safe capability result"
     assert result["metadata"]["model_routing"]["provider_execution_capability"] == "required"
     assert usage_calls[0]["user_id"] == policy_principal_id
+    assert workflow_db.closes == 1
+    assert provider_db.closes == 1
 
 
 def test_capability_required_llm_node_fails_before_client_when_trusted_control_missing(
@@ -159,7 +185,7 @@ def test_capability_required_llm_node_fails_before_client_when_trusted_control_m
             "db": object(),
             "provider_execution_capability_required": True,
             "provider_execution_capability_limits": {
-                "input_token_cap": 1000,
+                "input_token_cap": 10_000,
                 "output_token_cap": 100,
                 "cost_cap_microusd": 50_000,
             },
@@ -180,6 +206,14 @@ def test_capability_required_llm_node_fails_before_client_when_trusted_control_m
         node.execute({})
 
 
+def test_capability_control_session_rejects_shared_workflow_session():
+    workflow_db = object()
+    node = _node(context={"db_session_factory": lambda: workflow_db})
+
+    with pytest.raises(ProviderExecutionCapabilityConfigurationError):
+        node._borrow_provider_execution_db_session(workflow_db)
+
+
 def test_capability_required_llm_node_rejects_provider_fallback_before_sdk_call(
     monkeypatch,
 ):
@@ -190,7 +224,7 @@ def test_capability_required_llm_node_rejects_provider_fallback_before_sdk_call(
             "db": object(),
             "provider_execution_capability_required": True,
             "provider_execution_capability_limits": {
-                "input_token_cap": 1000,
+                "input_token_cap": 10_000,
                 "output_token_cap": 100,
                 "cost_cap_microusd": 50_000,
             },
@@ -230,7 +264,7 @@ def test_capability_required_legacy_memory_summary_is_skipped_without_fallback(
             "db": object(),
             "provider_execution_capability_required": True,
             "provider_execution_capability_limits": {
-                "input_token_cap": 1000,
+                "input_token_cap": 10_000,
                 "output_token_cap": 100,
                 "cost_cap_microusd": 50_000,
             },
@@ -244,8 +278,16 @@ def test_capability_required_legacy_memory_summary_is_skipped_without_fallback(
         }
     )
 
-    def capability_client(_db, *, issue_command):
+    def capability_client(
+        _db,
+        *,
+        issue_command,
+        requested_input_tokens,
+        requested_output_tokens,
+    ):
         captured_purposes.append(issue_command.binding.purpose)
+        assert requested_input_tokens > 0
+        assert requested_output_tokens == issue_command.output_token_cap
         return LLMRuntimeSelection(
             client=client,
             credential_id=uuid.uuid4(),
@@ -327,6 +369,189 @@ def test_provider_runtime_does_not_materialize_client_after_admission_failure(
         LLMService.get_runtime_client_for_provider_execution(
             object(),
             issue_command=issue_command,
+            requested_input_tokens=10,
+            requested_output_tokens=5,
         )
 
     assert exc_info.value.reason == "provider_capability_capability_stale"
+
+
+def test_provider_runtime_uses_shared_config_and_commits_before_return(monkeypatch):
+    organization_id = uuid.uuid4()
+    principal_id = uuid.uuid4()
+    credential = SimpleNamespace(id=uuid.uuid4(), encrypted_config="not-json")
+    capability = SimpleNamespace(id=uuid.uuid4(), revision=3)
+    binding = ProviderExecutionBinding(
+        organization_id=organization_id,
+        workflow_id=uuid.uuid4(),
+        deployment_id=uuid.uuid4(),
+        deployment_version=1,
+        node_id="llm-1",
+        node_invocation_id=uuid.uuid4(),
+        execution_admission_id=uuid.uuid4(),
+        provider_attempt_id=uuid.uuid4(),
+        purpose=CapabilityPurpose.MAIN_GENERATION,
+    )
+    execution_user_id = uuid.uuid4()
+    issue_command = workflow_llm_service.ProviderExecutionCapabilityIssueCommand(
+        binding=binding,
+        execution_subject=RuntimePrincipal.user(execution_user_id),
+        billing_principal=RuntimePrincipal.organization(organization_id),
+        audit_actor=RuntimePrincipal.user(execution_user_id),
+        input_token_cap=200,
+        output_token_cap=20,
+        cost_cap_microusd=2_000,
+    )
+    loaded: list[object] = []
+    admitted: list[object] = []
+
+    class _Db:
+        commits = 0
+
+        def commit(self):
+            self.commits += 1
+
+    db = _Db()
+    monkeypatch.setattr(
+        workflow_llm_service.ProviderExecutionCapabilityService,
+        "issue_capability",
+        lambda *_args, **_kwargs: capability,
+    )
+
+    def admit(*_args, **kwargs):
+        admitted.append(kwargs["command"])
+        return SimpleNamespace(
+            credential=credential,
+            provider=SimpleNamespace(name="provider"),
+            model=SimpleNamespace(model_id_for_api_call="gpt-safe"),
+            capability=SimpleNamespace(
+                credential_principal=RuntimePrincipal.user(principal_id)
+            ),
+        )
+
+    monkeypatch.setattr(
+        workflow_llm_service.ProviderExecutionCapabilityService,
+        "admit_capability",
+        admit,
+    )
+
+    def load_config(row):
+        loaded.append(row)
+        return {"apiKey": "[REDACTED]", "baseUrl": None}
+
+    monkeypatch.setattr(
+        workflow_llm_service,
+        "load_llm_credential_config",
+        load_config,
+    )
+    provider_client = object()
+    monkeypatch.setattr(
+        workflow_llm_service,
+        "get_llm_client",
+        lambda **_kwargs: provider_client,
+    )
+
+    selection = LLMService.get_runtime_client_for_provider_execution(
+        db,
+        issue_command=issue_command,
+        requested_input_tokens=120,
+        requested_output_tokens=12,
+    )
+
+    assert loaded == [credential]
+    assert admitted[0].requested_input_tokens == 120
+    assert admitted[0].requested_output_tokens == 12
+    assert db.commits == 1
+    assert selection.client is provider_client
+    assert selection.capability_id == capability.id
+    assert selection.credential_principal_user_id == principal_id
+
+
+def test_provider_runtime_hides_config_failure_and_does_not_commit(monkeypatch):
+    organization_id = uuid.uuid4()
+    binding = ProviderExecutionBinding(
+        organization_id=organization_id,
+        workflow_id=uuid.uuid4(),
+        deployment_id=uuid.uuid4(),
+        deployment_version=1,
+        node_id="llm-1",
+        node_invocation_id=uuid.uuid4(),
+        execution_admission_id=uuid.uuid4(),
+        provider_attempt_id=uuid.uuid4(),
+        purpose=CapabilityPurpose.MAIN_GENERATION,
+    )
+    issue_command = workflow_llm_service.ProviderExecutionCapabilityIssueCommand(
+        binding=binding,
+        execution_subject=RuntimePrincipal.anonymous_public(),
+        billing_principal=RuntimePrincipal.organization(organization_id),
+        audit_actor=RuntimePrincipal.public_actor(),
+        input_token_cap=100,
+        output_token_cap=10,
+        cost_cap_microusd=1_000,
+    )
+    capability = SimpleNamespace(id=uuid.uuid4(), revision=1)
+    lease = SimpleNamespace(credential=SimpleNamespace(id=uuid.uuid4()))
+
+    class _Db:
+        commits = 0
+
+        def commit(self):
+            self.commits += 1
+
+    db = _Db()
+    monkeypatch.setattr(
+        workflow_llm_service.ProviderExecutionCapabilityService,
+        "issue_capability",
+        lambda *_args, **_kwargs: capability,
+    )
+    monkeypatch.setattr(
+        workflow_llm_service.ProviderExecutionCapabilityService,
+        "admit_capability",
+        lambda *_args, **_kwargs: lease,
+    )
+    monkeypatch.setattr(
+        workflow_llm_service,
+        "load_llm_credential_config",
+        lambda _row: (_ for _ in ()).throw(ValueError("internal")),
+    )
+    monkeypatch.setattr(
+        workflow_llm_service,
+        "get_llm_client",
+        lambda **_kwargs: pytest.fail("client must not be materialized"),
+    )
+
+    with pytest.raises(LLMCredentialNotAvailableError) as exc_info:
+        LLMService.get_runtime_client_for_provider_execution(
+            db,
+            issue_command=issue_command,
+            requested_input_tokens=10,
+            requested_output_tokens=5,
+        )
+
+    assert exc_info.value.reason == "credential_config_invalid"
+    assert exc_info.value.__cause__ is None
+    assert db.commits == 0
+
+
+@pytest.mark.parametrize(
+    ("parameters", "output_cap"),
+    [
+        ({"max_tokens": 0}, 10),
+        ({"max_tokens": True}, 10),
+        ({"max_completion_tokens": 5}, 10),
+        ({"max_output_tokens": 5}, 10),
+        ({}, 0),
+    ],
+)
+def test_capability_request_rejects_ambiguous_or_invalid_output_limit(
+    parameters,
+    output_cap,
+):
+    issue_command = SimpleNamespace(output_token_cap=output_cap)
+
+    with pytest.raises(ProviderExecutionCapabilityConfigurationError):
+        LLMNode._provider_execution_requested_usage(
+            messages=[{"role": "user", "content": "safe"}],
+            llm_params=dict(parameters),
+            issue_command=issue_command,
+        )

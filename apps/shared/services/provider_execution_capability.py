@@ -12,7 +12,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -95,7 +95,6 @@ class ProviderExecutionCapabilityAdmissionCommand:
     binding: ProviderExecutionBinding
     requested_input_tokens: int
     requested_output_tokens: int
-    requested_cost_microusd: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +208,7 @@ class ProviderExecutionCapabilityService:
             db,
             organization_id=command.organization_id,
             deployment_id=command.deployment_id,
+            lock=True,
         )
         if not has_organization_manager_permission(
             db, actor_id, command.organization_id
@@ -235,7 +235,6 @@ class ProviderExecutionCapabilityService:
                 LLMDeploymentCredentialPolicy.deployment_id == deployment.id,
                 LLMDeploymentCredentialPolicy.deployment_version == deployment.version,
                 LLMDeploymentCredentialPolicy.node_id == command.node_id,
-                LLMDeploymentCredentialPolicy.model_id == model.id,
                 LLMDeploymentCredentialPolicy.is_active.is_(True),
             )
             .with_for_update()
@@ -300,7 +299,6 @@ class ProviderExecutionCapabilityService:
         )
         return [cls._policy_view(row) for row in rows]
 
-
     @classmethod
     def issue_capability(
         cls,
@@ -310,7 +308,11 @@ class ProviderExecutionCapabilityService:
         now: datetime | None = None,
     ) -> ProviderExecutionCapability:
         now = now or _utc_now()
-        cls._validate_issue_principals(command)
+        cls._validate_nonnegative_caps(
+            command.input_token_cap,
+            command.output_token_cap,
+            command.cost_cap_microusd,
+        )
         binding = command.binding
         deployment, app, workflow = cls._canonical_deployment(
             db,
@@ -323,6 +325,10 @@ class ProviderExecutionCapabilityService:
             workflow=workflow,
         )
         policy = cls._active_policy_for_binding(db, binding)
+        cls._validate_issue_principals(
+            command,
+            credential_principal_user_id=policy.credential_principal_user_id,
+        )
         model, credential, provider, relation = cls._resolve_policy_selection(
             db,
             deployment=deployment,
@@ -372,6 +378,8 @@ class ProviderExecutionCapabilityService:
                 or existing.cost_cap_microusd != command.cost_cap_microusd
             ):
                 raise ProviderExecutionPolicyError("capability_attempt_reused")
+            if not cls._record_matches_issue_identity(existing, command):
+                raise ProviderExecutionPolicyError("capability_attempt_reused")
             if (
                 existing.policy_id != policy.id
                 or existing.policy_revision != policy.policy_revision
@@ -388,11 +396,6 @@ class ProviderExecutionCapabilityService:
                 raise ProviderExecutionPolicyError("capability_stale")
             return existing_capability
 
-        cls._validate_nonnegative_caps(
-            command.input_token_cap,
-            command.output_token_cap,
-            command.cost_cap_microusd,
-        )
         record = ProviderExecutionCapabilityRecord(
             organization_id=binding.organization_id,
             policy_id=policy.id,
@@ -430,7 +433,6 @@ class ProviderExecutionCapabilityService:
         db.flush()
         return cls._domain_capability(record)
 
-
     @classmethod
     def admit_capability(
         cls,
@@ -443,8 +445,18 @@ class ProviderExecutionCapabilityService:
         cls._validate_nonnegative_caps(
             command.requested_input_tokens,
             command.requested_output_tokens,
-            command.requested_cost_microusd,
         )
+        deployment, app, workflow = cls._canonical_deployment(
+            db,
+            organization_id=command.binding.organization_id,
+            deployment_id=command.binding.deployment_id,
+        )
+        cls._assert_binding_matches_deployment(
+            command.binding,
+            deployment=deployment,
+            workflow=workflow,
+        )
+        policy = cls._active_policy_for_binding(db, command.binding)
         record = (
             db.query(ProviderExecutionCapabilityRecord)
             .filter(ProviderExecutionCapabilityRecord.id == command.capability_id)
@@ -465,21 +477,8 @@ class ProviderExecutionCapabilityService:
         if (
             command.requested_input_tokens > capability.input_token_cap
             or command.requested_output_tokens > capability.output_token_cap
-            or command.requested_cost_microusd > capability.cost_cap_microusd
         ):
             raise ProviderExecutionPolicyError("capability_stale")
-
-        deployment, app, workflow = cls._canonical_deployment(
-            db,
-            organization_id=command.binding.organization_id,
-            deployment_id=command.binding.deployment_id,
-        )
-        cls._assert_binding_matches_deployment(
-            command.binding,
-            deployment=deployment,
-            workflow=workflow,
-        )
-        policy = cls._active_policy_for_binding(db, command.binding)
         if (
             policy.id != record.policy_id
             or policy.policy_revision != record.policy_revision
@@ -518,13 +517,19 @@ class ProviderExecutionCapabilityService:
             for name, revision in revisions.items()
         ):
             raise ProviderExecutionPolicyError("capability_stale")
+        requested_cost_microusd = cls._request_cost_microusd(
+            model,
+            input_tokens=command.requested_input_tokens,
+            output_tokens=command.requested_output_tokens,
+        )
+        if requested_cost_microusd > capability.cost_cap_microusd:
+            raise ProviderExecutionPolicyError("capability_stale")
         return ProviderExecutionCredentialLease(
             capability=capability,
             credential=credential,
             model=model,
             provider=provider,
         )
-
 
     @staticmethod
     def _policy_view(
@@ -543,28 +548,74 @@ class ProviderExecutionCapabilityService:
             updated_at=policy.updated_at,
         )
 
-
     @staticmethod
     def _validate_nonnegative_caps(*caps: int) -> None:
-        if any(not isinstance(cap, int) or cap < 0 for cap in caps):
+        if any(
+            isinstance(cap, bool) or not isinstance(cap, int) or cap < 0
+            for cap in caps
+        ):
             raise ProviderExecutionPolicyError("configuration_required")
 
+    @staticmethod
+    def _request_cost_microusd(
+        model: LLMModel,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> int:
+        if model.input_price_1k is None or model.output_price_1k is None:
+            raise ProviderExecutionPolicyError("configuration_required")
+        try:
+            input_price = Decimal(str(model.input_price_1k))
+            output_price = Decimal(str(model.output_price_1k))
+        except Exception as exc:
+            raise ProviderExecutionPolicyError("configuration_required") from exc
+        if input_price < 0 or output_price < 0:
+            raise ProviderExecutionPolicyError("configuration_required")
+        microusd = (
+            (Decimal(input_tokens) * input_price)
+            + (Decimal(output_tokens) * output_price)
+        ) * Decimal(1_000_000) / Decimal(1_000)
+        return int(microusd.to_integral_value(rounding=ROUND_CEILING))
 
     @staticmethod
     def _validate_issue_principals(
         command: ProviderExecutionCapabilityIssueCommand,
+        *,
+        credential_principal_user_id: uuid.UUID,
     ) -> None:
         try:
             RuntimeIdentityContext(
                 execution_subject=command.execution_subject,
-                credential_principal=RuntimePrincipal.user(uuid.uuid4()),
+                credential_principal=RuntimePrincipal.user(
+                    credential_principal_user_id
+                ),
                 billing_principal=command.billing_principal,
                 audit_actor=command.audit_actor,
             )
         except ValueError as exc:
             raise ProviderExecutionPolicyError("permission_denied") from exc
-        if command.billing_principal.reference_id != command.binding.organization_id:
+        if (
+            command.billing_principal.reference_id
+            != command.binding.organization_id
+        ):
             raise ProviderExecutionPolicyError("permission_denied")
+
+    @staticmethod
+    def _record_matches_issue_identity(
+        record: ProviderExecutionCapabilityRecord,
+        command: ProviderExecutionCapabilityIssueCommand,
+    ) -> bool:
+        return (
+            record.execution_subject_kind
+            == command.execution_subject.kind.value
+            and record.execution_subject_id == command.execution_subject.reference_id
+            and record.billing_principal_kind
+            == command.billing_principal.kind.value
+            and record.billing_principal_id == command.billing_principal.reference_id
+            and record.audit_actor_kind == command.audit_actor.kind.value
+            and record.audit_actor_id == command.audit_actor.reference_id
+        )
 
     @staticmethod
     def _canonical_deployment(
@@ -572,12 +623,14 @@ class ProviderExecutionCapabilityService:
         *,
         organization_id: uuid.UUID,
         deployment_id: uuid.UUID,
+        lock: bool = False,
     ) -> tuple[WorkflowDeployment, App, Workflow]:
-        deployment = (
-            db.query(WorkflowDeployment)
-            .filter(WorkflowDeployment.id == deployment_id)
-            .one_or_none()
+        deployment_query = db.query(WorkflowDeployment).filter(
+            WorkflowDeployment.id == deployment_id
         )
+        if lock:
+            deployment_query = deployment_query.with_for_update()
+        deployment = deployment_query.one_or_none()
         if deployment is None:
             raise ProviderExecutionPolicyError("resource_not_found")
         app = db.query(App).filter(App.id == deployment.app_id).one_or_none()

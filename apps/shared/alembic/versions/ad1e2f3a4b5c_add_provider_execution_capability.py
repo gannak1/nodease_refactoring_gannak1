@@ -1,7 +1,7 @@
 """Add server-owned LLM deployment policies and provider capabilities.
 
 Revision ID: ad1e2f3a4b5c
-Revises: ab1c2d3e4f50
+Revises: c2e8f4a91d67
 """
 
 from collections.abc import Sequence
@@ -12,7 +12,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "ad1e2f3a4b5c"
-down_revision: str | Sequence[str] | None = "ab1c2d3e4f50"
+down_revision: str | Sequence[str] | None = "c2e8f4a91d67"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -112,7 +112,7 @@ def upgrade() -> None:
     op.create_index(
         "uq_llm_deploy_credential_policy_active",
         "llm_deployment_credential_policies",
-        ["organization_id", "deployment_id", "deployment_version", "node_id", "model_id"],
+        ["organization_id", "deployment_id", "deployment_version", "node_id"],
         unique=True,
         postgresql_where=sa.text("is_active"),
     )
@@ -266,6 +266,23 @@ def upgrade() -> None:
             "(audit_actor_kind = 'user' AND audit_actor_id IS NOT NULL) "
             "OR (audit_actor_kind IN ('public', 'system') AND audit_actor_id IS NULL)",
             name="ck_provider_execution_capability_audit_actor",
+        ),
+        sa.CheckConstraint(
+            "billing_principal_id = organization_id",
+            name="ck_provider_execution_capability_billing_scope",
+        ),
+        sa.CheckConstraint(
+            "(execution_subject_kind = 'user' AND audit_actor_kind = 'user' "
+            "AND execution_subject_id = audit_actor_id) "
+            "OR (execution_subject_kind = 'anonymous_public' "
+            "AND audit_actor_kind = 'public') "
+            "OR (execution_subject_kind = 'system' AND audit_actor_kind = 'system')",
+            name="ck_provider_execution_capability_identity_alignment",
+        ),
+        sa.CheckConstraint(
+            "(state = 'active' AND revoked_at IS NULL) "
+            "OR (state = 'revoked' AND revoked_at IS NOT NULL)",
+            name="ck_provider_execution_capability_revocation_state",
         ),
     )
     op.create_index(

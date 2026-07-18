@@ -759,9 +759,13 @@ class LLMService:
         db: Session,
         *,
         issue_command: ProviderExecutionCapabilityIssueCommand,
+        requested_input_tokens: int,
+        requested_output_tokens: int,
     ) -> LLMRuntimeSelection:
         """Materialize a client only after capability issue and admission.
 
+        The caller must provide an isolated unit-of-work because this method
+        commits the capability control fact before any provider network I/O.
         This target-only path never accepts a credential principal or
         credential selection from its caller.  The shared LLM Credentials
         service derives both from the canonical deployment policy and repeats
@@ -779,9 +783,8 @@ class LLMService:
                     capability_id=capability.id,
                     capability_revision=capability.revision,
                     binding=issue_command.binding,
-                    requested_input_tokens=issue_command.input_token_cap,
-                    requested_output_tokens=issue_command.output_token_cap,
-                    requested_cost_microusd=issue_command.cost_cap_microusd,
+                    requested_input_tokens=requested_input_tokens,
+                    requested_output_tokens=requested_output_tokens,
                 ),
             )
         except ProviderExecutionPolicyError as exc:
@@ -793,22 +796,29 @@ class LLMService:
             ) from exc
 
         try:
-            cfg = json.loads(lease.credential.encrypted_config)
+            cfg = load_llm_credential_config(lease.credential)
             api_key = cfg.get("apiKey")
             base_url = cfg.get("baseUrl")
-        except (TypeError, ValueError, AttributeError) as exc:
+        except (LLMCredentialConfigError, TypeError, ValueError, AttributeError):
             raise LLMCredentialNotAvailableError(
                 "credential_config_invalid",
                 "Provider execution capability is not available.",
                 organization_id=issue_command.binding.organization_id,
-            ) from exc
+            ) from None
 
-        client = get_llm_client(
-            provider=lease.provider.name,
-            model_id=lease.model.model_id_for_api_call,
-            credentials={"apiKey": api_key, "baseUrl": base_url},
-        )
-        return LLMRuntimeSelection(
+        try:
+            client = get_llm_client(
+                provider=lease.provider.name,
+                model_id=lease.model.model_id_for_api_call,
+                credentials={"apiKey": api_key, "baseUrl": base_url},
+            )
+        except Exception:
+            raise LLMCredentialNotAvailableError(
+                "provider_client_initialization_failed",
+                "Provider execution capability is not available.",
+                organization_id=issue_command.binding.organization_id,
+            ) from None
+        selection = LLMRuntimeSelection(
             client=client,
             credential_id=lease.credential.id,
             model_id=lease.model.model_id_for_api_call,
@@ -819,6 +829,10 @@ class LLMService:
                 lease.capability.credential_principal.reference_id
             ),
         )
+        # Capability admission is a durable control fact and must survive a
+        # provider failure. No provider network I/O has occurred at this point.
+        db.commit()
+        return selection
 
     @staticmethod
     def get_runtime_available_model_ids_for_user(

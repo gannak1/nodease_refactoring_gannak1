@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -10,9 +11,16 @@ from apps.shared.db.models.llm import (
     LLMDeploymentCredentialPolicy,
     ProviderExecutionCapabilityRecord,
 )
+from apps.shared.domain.provider_execution_capability import (
+    CapabilityPurpose,
+    ProviderExecutionBinding,
+    RuntimePrincipal,
+)
 from apps.shared.services import provider_execution_capability as capability_service
 from apps.shared.services.provider_execution_capability import (
     DeploymentCredentialPolicyCommand,
+    ProviderExecutionCapabilityAdmissionCommand,
+    ProviderExecutionCapabilityIssueCommand,
     ProviderExecutionCapabilityService,
     ProviderExecutionPolicyError,
     deployment_llm_node_model_id,
@@ -110,16 +118,20 @@ def test_policy_replacement_flushes_superseded_active_row_before_insert(monkeypa
     old_policy = SimpleNamespace(is_active=True, policy_revision=7)
     db = _ReplacementDb([old_policy])
 
+    canonical_calls: list[dict] = []
+
+    def canonical_deployment(*_args, **kwargs):
+        canonical_calls.append(kwargs)
+        return (
+            SimpleNamespace(id=deployment_id, version=2),
+            SimpleNamespace(id=uuid.uuid4()),
+            SimpleNamespace(id=workflow_id),
+        )
+
     monkeypatch.setattr(
         ProviderExecutionCapabilityService,
         "_canonical_deployment",
-        staticmethod(
-            lambda *_args, **_kwargs: (
-                SimpleNamespace(id=deployment_id, version=2),
-                SimpleNamespace(id=uuid.uuid4()),
-                SimpleNamespace(id=workflow_id),
-            )
-        ),
+        staticmethod(canonical_deployment),
     )
     monkeypatch.setattr(
         capability_service,
@@ -155,6 +167,227 @@ def test_policy_replacement_flushes_superseded_active_row_before_insert(monkeypa
     assert db.flush_states == [(False, False), (False, True)]
     assert policy.policy_revision == 8
     assert policy.credential_id == credential_id
+    assert canonical_calls[0]["lock"] is True
+
+
+def test_active_policy_unique_index_is_scoped_to_deployment_node():
+    index = next(
+        index
+        for index in LLMDeploymentCredentialPolicy.__table__.indexes
+        if index.name == "uq_llm_deploy_credential_policy_active"
+    )
+
+    assert [column.name for column in index.columns] == [
+        "organization_id",
+        "deployment_id",
+        "deployment_version",
+        "node_id",
+    ]
+
+
+def test_request_cost_uses_canonical_pricing_and_rounds_up():
+    model = SimpleNamespace(
+        input_price_1k=Decimal("0.001001"),
+        output_price_1k=Decimal("0.002001"),
+    )
+
+    assert ProviderExecutionCapabilityService._request_cost_microusd(
+        model,
+        input_tokens=1,
+        output_tokens=1,
+    ) == 4
+
+
+def test_request_cost_fails_closed_without_complete_pricing():
+    model = SimpleNamespace(input_price_1k=None, output_price_1k=Decimal("0.1"))
+
+    with pytest.raises(ProviderExecutionPolicyError) as exc_info:
+        ProviderExecutionCapabilityService._request_cost_microusd(
+            model,
+            input_tokens=1,
+            output_tokens=1,
+        )
+
+    assert exc_info.value.code == "configuration_required"
+
+
+def test_existing_attempt_cannot_replace_runtime_principals():
+    organization_id = uuid.uuid4()
+    stored_user_id = uuid.uuid4()
+    binding = ProviderExecutionBinding(
+        organization_id=organization_id,
+        workflow_id=uuid.uuid4(),
+        deployment_id=uuid.uuid4(),
+        deployment_version=1,
+        node_id="llm-1",
+        node_invocation_id=uuid.uuid4(),
+        execution_admission_id=uuid.uuid4(),
+        provider_attempt_id=uuid.uuid4(),
+        purpose=CapabilityPurpose.MAIN_GENERATION,
+    )
+    record = SimpleNamespace(
+        execution_subject_kind="user",
+        execution_subject_id=stored_user_id,
+        billing_principal_kind="organization",
+        billing_principal_id=organization_id,
+        audit_actor_kind="user",
+        audit_actor_id=stored_user_id,
+    )
+    command = ProviderExecutionCapabilityIssueCommand(
+        binding=binding,
+        execution_subject=RuntimePrincipal.system_actor(),
+        billing_principal=RuntimePrincipal.organization(organization_id),
+        audit_actor=RuntimePrincipal.system_actor(),
+        input_token_cap=100,
+        output_token_cap=10,
+        cost_cap_microusd=1_000,
+    )
+
+    assert not ProviderExecutionCapabilityService._record_matches_issue_identity(
+        record,
+        command,
+    )
+
+
+def test_admission_locks_policy_before_capability_record(monkeypatch):
+    organization_id = uuid.uuid4()
+    model_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    provider_id = uuid.uuid4()
+    principal_id = uuid.uuid4()
+    policy_id = uuid.uuid4()
+    capability_id = uuid.uuid4()
+    binding = ProviderExecutionBinding(
+        organization_id=organization_id,
+        workflow_id=uuid.uuid4(),
+        deployment_id=uuid.uuid4(),
+        deployment_version=1,
+        node_id="llm-1",
+        node_invocation_id=uuid.uuid4(),
+        execution_admission_id=uuid.uuid4(),
+        provider_attempt_id=uuid.uuid4(),
+        purpose=CapabilityPurpose.MAIN_GENERATION,
+    )
+    order: list[str] = []
+    policy = SimpleNamespace(
+        id=policy_id,
+        policy_revision=2,
+        model_id=model_id,
+        credential_id=credential_id,
+        credential_principal_user_id=principal_id,
+    )
+    record = SimpleNamespace(
+        policy_id=policy_id,
+        policy_revision=2,
+        model_id=model_id,
+        credential_id=credential_id,
+        provider_id=provider_id,
+        credential_principal_user_id=principal_id,
+        permission_revision="a" * 64,
+        relation_revision="b" * 64,
+        egress_revision="c" * 64,
+        pricing_revision="d" * 64,
+    )
+    capability = SimpleNamespace(
+        input_token_cap=100,
+        output_token_cap=10,
+        cost_cap_microusd=10_000,
+        require_usable=lambda **_kwargs: None,
+    )
+    model = SimpleNamespace(
+        id=model_id,
+        input_price_1k=Decimal("0.001"),
+        output_price_1k=Decimal("0.002"),
+    )
+    credential = SimpleNamespace(id=credential_id)
+    provider = SimpleNamespace(id=provider_id)
+    relation = SimpleNamespace()
+
+    class _CapabilityQuery:
+        def filter(self, *_args):
+            return self
+
+        def with_for_update(self):
+            order.append("capability")
+            return self
+
+        def one_or_none(self):
+            return record
+
+    class _Db:
+        def query(self, *_args):
+            return _CapabilityQuery()
+
+    def canonical(*_args, **_kwargs):
+        order.append("deployment")
+        return (
+            SimpleNamespace(id=binding.deployment_id, version=1),
+            SimpleNamespace(id=uuid.uuid4()),
+            SimpleNamespace(id=binding.workflow_id),
+        )
+
+    def active_policy(*_args, **_kwargs):
+        order.append("policy")
+        return policy
+
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_canonical_deployment",
+        staticmethod(canonical),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_assert_binding_matches_deployment",
+        staticmethod(lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_active_policy_for_binding",
+        classmethod(lambda _cls, *_args, **kwargs: active_policy(**kwargs)),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_domain_capability",
+        staticmethod(lambda _record: capability),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_resolve_policy_selection",
+        classmethod(
+            lambda _cls, *_args, **_kwargs: (
+                model,
+                credential,
+                provider,
+                relation,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_current_revisions",
+        classmethod(
+            lambda _cls, *_args, **_kwargs: {
+                "permission": record.permission_revision,
+                "relation": record.relation_revision,
+                "egress": record.egress_revision,
+                "pricing": record.pricing_revision,
+            }
+        ),
+    )
+
+    lease = ProviderExecutionCapabilityService.admit_capability(
+        _Db(),
+        command=ProviderExecutionCapabilityAdmissionCommand(
+            capability_id=capability_id,
+            capability_revision=1,
+            binding=binding,
+            requested_input_tokens=10,
+            requested_output_tokens=5,
+        ),
+    )
+
+    assert order == ["deployment", "policy", "capability"]
+    assert lease.credential is credential
 
 
 def test_policy_and_capability_are_cascaded_with_deleted_deployment_control():

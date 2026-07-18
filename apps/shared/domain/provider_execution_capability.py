@@ -79,15 +79,29 @@ class RuntimeIdentityContext:
     audit_actor: RuntimePrincipal
 
     def __post_init__(self) -> None:
+        allowed_execution_subjects = {
+            PrincipalKind.USER,
+            PrincipalKind.ANONYMOUS_PUBLIC,
+            PrincipalKind.SYSTEM,
+        }
+        if self.execution_subject.kind not in allowed_execution_subjects:
+            raise ValueError("execution subject kind is not supported")
         if self.credential_principal.kind is not PrincipalKind.USER:
             raise ValueError("credential principal must be a server-derived user")
         if self.billing_principal.kind is not PrincipalKind.ORGANIZATION:
             raise ValueError("billing principal must be an organization")
-        if self.execution_subject.kind is PrincipalKind.ANONYMOUS_PUBLIC:
-            if self.audit_actor.kind is not PrincipalKind.PUBLIC:
-                raise ValueError("anonymous public execution requires public audit actor")
-        elif self.audit_actor.kind is PrincipalKind.PUBLIC:
-            raise ValueError("public audit actor requires anonymous public execution")
+        expected_audit_actor = {
+            PrincipalKind.USER: PrincipalKind.USER,
+            PrincipalKind.ANONYMOUS_PUBLIC: PrincipalKind.PUBLIC,
+            PrincipalKind.SYSTEM: PrincipalKind.SYSTEM,
+        }[self.execution_subject.kind]
+        if self.audit_actor.kind is not expected_audit_actor:
+            raise ValueError("audit actor does not match execution subject")
+        if (
+            self.execution_subject.kind is PrincipalKind.USER
+            and self.audit_actor.reference_id != self.execution_subject.reference_id
+        ):
+            raise ValueError("user audit actor must match execution subject")
 
 
 @dataclass(frozen=True, slots=True)
