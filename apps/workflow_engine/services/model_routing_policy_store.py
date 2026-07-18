@@ -39,6 +39,7 @@ from apps.workflow_engine.services.model_routing_incremental_learning import (
 from apps.workflow_engine.services.llm_service import LLMService
 from apps.shared.services.model_routing_model_filter import (
     filter_model_routing_available_model_ids,
+    filter_supported_model_routing_candidates,
     normalize_model_routing_model_id,
 )
 
@@ -571,13 +572,15 @@ class ModelRoutingPolicyStore:
             return None
         if organization_id is None or execution_subject_user_id is None:
             return None
-        available_model_ids = filter_model_routing_available_model_ids(
-            LLMService.get_runtime_available_model_ids_for_user(
-                db,
-                user_id=execution_subject_user_id,
-                organization_id=organization_id,
-            ),
-            node_data=node_data,
+        available_model_ids = filter_supported_model_routing_candidates(
+            filter_model_routing_available_model_ids(
+                LLMService.get_runtime_available_model_ids_for_user(
+                    db,
+                    user_id=execution_subject_user_id,
+                    organization_id=organization_id,
+                ),
+                node_data=node_data,
+            )
         )
         available_by_normalized_id = {
             normalize_model_routing_model_id(model_id): model_id

@@ -33,3 +33,15 @@ def filter_model_routing_available_model_ids(
         for model_id in model_ids
         if normalize_model_routing_model_id(model_id) not in excluded_model_ids
     ]
+
+
+def filter_supported_model_routing_candidates(
+    model_ids: list[str] | set[str] | tuple[str, ...],
+) -> list[str]:
+    """자동 라우팅용으로 검증된 명시적 catalog 후보군만 남긴다."""
+
+    from apps.shared.services.model_routing_global_profile_catalog import (
+        supported_model_routing_ids,
+    )
+
+    return supported_model_routing_ids(model_ids)

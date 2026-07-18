@@ -98,6 +98,7 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
             "id": "gpt-4o-mini",
             "input_price_per_1k": 0.00015,
             "output_price_per_1k": 0.0006,
+            "capability_tier": "economy",
             "quality_for_complex_reasoning": 0.62,
             "fallback_rate": 0.04,
         },
@@ -105,6 +106,7 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
             "id": "gpt-5-mini",
             "input_price_per_1k": 0.00025,
             "output_price_per_1k": 0.002,
+            "capability_tier": "balanced",
             "quality_for_complex_reasoning": 0.86,
             "fallback_rate": 0.01,
         },
@@ -113,8 +115,12 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
     assert "fallback_model_id" not in rendered_prompt
     assert "node_contract" not in rendered_prompt
     assert "candidate_profiles" not in prompt_body
-    assert "tier" not in rendered_prompt
-    assert "요청의 유형과 필요한 추론 수준에" in client.calls[0]["messages"][0]["content"]
+    assert prompt_body["candidate_models"][0]["capability_tier"] == "economy"
+    assert "작업 복잡도" in client.calls[0]["messages"][0]["content"]
+    assert "결정 영향도" in client.calls[0]["messages"][0]["content"]
+    assert "근거 종합 범위" in client.calls[0]["messages"][0]["content"]
+    assert "특정 업무 분야의 단어만으로 고성능 모델을 고르면 안 됩니다" in client.calls[0]["messages"][0]["content"]
+    assert "권한·개인정보·금전·보상" not in client.calls[0]["messages"][0]["content"]
     assert "가장 낮은 모델을 선택하세요" not in client.calls[0]["messages"][0]["content"]
     assert "cost" not in prompt_body["candidate_models"][0]
     assert "quality" not in prompt_body["candidate_models"][0]

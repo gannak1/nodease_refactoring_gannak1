@@ -149,7 +149,7 @@ strategy ID, 후보 모델 ID, 참고용 동일 작업 운영 로그 수, `plann
 
 | Endpoint | 권한 | 설명 |
 | --- | --- | --- |
-| GET /workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy | read | 현재 배포 policy 상태와 성적 요약을 조회한다. |
+| GET /workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy | read | 현재 배포 policy 상태와 최근 운영 실행의 안전한 라우팅 결과를 조회한다. |
 | POST /workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/preview | execute | active deployment policy가 현재 입력에 대해 고를 모델을 실행 없이 계산한다. |
 | PATCH /workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy | deploy | 자동 라우팅 ON/OFF, 점검 주기, 기본/대체 모델을 변경한다. |
 | POST /workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy/refresh | deploy | 현재 active policy의 재평가 task를 요청한다. |
@@ -195,6 +195,15 @@ Policy response는 다음 구조를 사용한다.
     "eligible_runs_since_last_refresh": 7,
     "next_refresh_after_runs": 13
   },
+  "last_decision": {
+    "selected_model_id": "gpt-4.1-mini",
+    "fallback_model_id": "gpt-4.1",
+    "fallback_used": false,
+    "decision_source": "runtime_judge",
+    "reason_code": "multi_constraint",
+    "reason_label": "여러 조건 종합",
+    "created_at": "2026-07-18T09:30:00+00:00"
+  },
   "performance": {
     "total_runs": 42,
     "model_count": 5,
@@ -208,6 +217,11 @@ Policy response는 다음 구조를 사용한다.
   }
 }
 ~~~
+
+`last_decision`은 현재 active deployment에서 해당 LLM 노드가 마지막으로 완료한
+실행의 선택 결과다. 패널에서 실제 선택 모델과 판단 사유를 보여주기 위한 값이며,
+입력 원문, 프롬프트, RAG 검색 문서 원문은 포함하지 않는다. 실행 이력이 없거나
+라우팅 metadata가 없는 경우 `null`이다.
 
 ### Routing Preview And Trace Contract
 
@@ -249,7 +263,7 @@ Judge가 선택한 실행은 처음에는 `learning_status=pending_contract`로 
 | llm_node_model_routing_policy_run_events | 배포 후 운영 실행의 중복 없는 점검 카운터 |
 | llm_node_model_routing_performances | 배포/node/model/입력 길이 profile별 운영 성적 |
 | llm_node_model_routing_learning_labels | Judge 선택의 안전한 vector와 완료 후 계약 기반 학습 확정 상태. 원문 prompt/input은 저장하지 않는다. |
-| llm_model_routing_global_profiles | 과거 전략 호환 table. 신규 Judge-first runtime은 참조하지 않는다. |
+| llm_model_routing_global_profiles | Judge-first runtime이 후보 모델의 초기 품질·지연·fallback 사전 정보를 읽는 전역 catalog profile. 실행 주체가 사용할 수 있으면서 명시적 catalog에 등록된 모델만 후보가 된다. |
 
 Test Sidebar 실행은 활성 배포 정책을 대상으로 runtime Judge를 호출할 수 있지만, Judge label·운영 정책 카운터·성적에는 포함하지 않는다. Cost Optimizer candidate 비교 실행도 운영 정책 카운터와 성적에 포함하지 않는다.
 ## LLM Parameter Recommendation Contract

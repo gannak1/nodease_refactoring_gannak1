@@ -4780,6 +4780,11 @@ def seed_demo_data(db: Session) -> None:
     _seed_teams_and_memberships(db)
     _seed_knowledge(db)
     provider, models = _ensure_openai_provider_and_models(db)
+    from apps.shared.services.model_routing_global_profile_catalog import (
+        seed_model_routing_global_profiles,
+    )
+
+    seed_model_routing_global_profiles(db)
     _seed_apps_and_workflows(db)
     db.flush()
     _seed_permissions(db)

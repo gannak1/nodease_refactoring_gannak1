@@ -172,13 +172,16 @@ class ModelRoutingRuntimeJudge:
         instruction = (
             "당신은 워크플로우 LLM 모델 선택 Judge입니다. 현재 요청과 실제 RAG 검색량을 보고 "
             "candidate_models 중 정확히 하나를 selected_model_id로 고르세요. 기본 모델과 fallback 모델은 고려하지 않습니다. "
-            "먼저 이 요청의 내용과 실제 RAG 검색량을 바탕으로 필요한 능력 수준을 내부적으로 판단하세요. 요청의 유형과 필요한 추론 수준에 "
-            "가장 합리적으로 맞는 후보를 선택하세요. 단순 안내·정해진 변환·짧은 분류, 여러 조건을 종합하는 업무, 고위험 또는 다단계 판단을 "
-            "구분해 선택해야 합니다. 문장이 짧거나 JSON 출력이라는 이유만으로 저성능 모델을 선택하면 안 됩니다. "
+            "먼저 이 요청의 내용과 실제 RAG 검색량을 바탕으로 필요한 능력 수준을 내부적으로 판단하세요. 반드시 다음 세 축을 서로 독립적으로 평가한 뒤, "
+            "가장 높은 필요 수준에 맞는 후보를 선택하세요. 첫째, 작업 복잡도는 지시·조건·예외가 몇 개이며 서로 의존하는지, 여러 단계를 거쳐 결론을 내야 하는지를 봅니다. "
+            "둘째, 결정 영향도는 모델 출력이 실제 승인·거절·변경·약속·집행처럼 되돌리기 어려운 행동 또는 중요한 판단을 직접 결정하는지를 봅니다. "
+            "셋째, 근거 종합 범위는 긴 검색 근거, 여러 출처, 서로 충돌하는 정보, 누락된 정보를 비교·해석해야 하는지를 봅니다. "
+            "특정 업무 분야의 단어만으로 고성능 모델을 고르면 안 됩니다. 같은 주제라도 정해진 절차를 안내하거나 값을 추출·분류하는 요청은 낮은 능력으로 충분할 수 있고, "
+            "반대로 짧은 요청이라도 여러 제약을 풀거나 실제 결정을 내려야 하면 높은 능력이 필요할 수 있습니다. 문장이 짧거나 JSON 출력이라는 이유만으로 저성능 모델을 선택해서도 안 됩니다. "
+            "고성능 모델은 충돌·누락된 근거를 해석해야 하거나, 여러 조건과 예외를 단계적으로 해결해야 하거나, 출력이 중요한 결정을 직접 좌우하는 경우에 선택하세요. "
             "가격·지연·실패율은 비슷한 능력의 후보 사이에서 선택하는 보조 기준으로만 사용하세요. "
-            "고성능 모델은 충돌하는 근거의 판단, 금전·권한·보안처럼 되돌리기 어려운 결정, 여러 조건을 단계적으로 풀어야 하는 요청, "
-            "또는 긴 검색 근거를 종합해야 하는 경우에 선택하세요. "
-            "candidate_models의 quality_for_*는 해당 작업 복잡도에서의 사전 품질 추정치이고, latency_ms_for_*는 입력 길이별 예상 지연 시간입니다. "
+            "candidate_models의 capability_tier와 official_position은 provider가 공개한 역할 구분을 구조화한 약한 사전 정보이며, 측정된 품질·지연·실패율이 아닙니다. "
+            "quality_for_*와 latency_ms_for_*가 있는 경우에만 Nodease가 별도로 보유한 사전 측정치입니다. "
             "candidate_models의 operational_*은 실제 배포 실행에서 나온 workflow 계약 성적입니다. "
             "operational_run_count가 5건 이상이면, schema·후속 노드 성공률이 낮거나 fallback 비율이 높은 후보를 "
             "카탈로그 사전 품질값이 높더라도 우선 선택하지 마세요. 표본이 5건 미만이면 실제 성적은 참고만 하고 카탈로그를 약한 사전 정보로 사용하세요. "
@@ -339,6 +342,15 @@ class ModelRoutingRuntimeJudge:
             context_window = raw.get("context_window")
             if isinstance(context_window, int) and context_window > 0:
                 safe["context_window"] = context_window
+            capability_tier = raw.get("capability_tier")
+            if capability_tier in {"economy", "balanced", "advanced"}:
+                safe["capability_tier"] = capability_tier
+            official_position = raw.get("official_position")
+            if isinstance(official_position, str) and official_position:
+                safe["official_position"] = official_position[:80]
+            catalog_lifecycle = raw.get("catalog_lifecycle")
+            if catalog_lifecycle in {"listed", "preview"}:
+                safe["catalog_lifecycle"] = catalog_lifecycle
             quality_by_difficulty = raw.get("quality_by_difficulty")
             if isinstance(quality_by_difficulty, dict):
                 safe_quality = {
@@ -392,6 +404,10 @@ class ModelRoutingRuntimeJudge:
                 row["input_price_per_1k"] = input_price
             if isinstance(output_price, (int, float)):
                 row["output_price_per_1k"] = output_price
+            for key in ("capability_tier", "official_position", "catalog_lifecycle"):
+                value = profile.get(key)
+                if isinstance(value, str) and value:
+                    row[key] = value
             quality = profile.get("quality_by_difficulty")
             if isinstance(quality, dict):
                 for source_key, output_key in (

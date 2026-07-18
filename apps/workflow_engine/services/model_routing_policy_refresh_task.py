@@ -15,6 +15,7 @@ from apps.shared.db.models.model_routing_policy import (
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.services.model_routing_model_filter import (
     filter_model_routing_available_model_ids,
+    filter_supported_model_routing_candidates,
 )
 from apps.workflow_engine.services.llm_service import LLMService
 from apps.workflow_engine.services.model_routing_operational_performance import (
@@ -230,9 +231,11 @@ class PersistedModelRoutingPolicyRefreshService:
                 organization_id=policy.organization_id,
             )
         )
-        available_model_ids = filter_model_routing_available_model_ids(
-            available_model_ids,
-            node_data=node_data,
+        available_model_ids = filter_supported_model_routing_candidates(
+            filter_model_routing_available_model_ids(
+                available_model_ids,
+                node_data=node_data,
+            )
         )
         if not available_model_ids:
             raise ValueError("model routing candidate is unavailable")

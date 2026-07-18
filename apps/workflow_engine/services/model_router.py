@@ -400,16 +400,33 @@ class ModelRouter:
         rendered_prompt_parts: Iterable[str] | None = None,
         rag_metadata: dict[str, Any] | None = None,
     ) -> str:
-        """Judge/local router에 요청마다 바뀌는 feature만 전달한다.
+        """Judge/local router에 노드 작업 계약과 이번 요청의 feature를 전달한다.
 
-        노드의 프롬프트, 출력 형식, JSON schema, KB 연결 여부는 같은 노드 실행마다
-        동일하다. 이 값들을 요청 feature에 반복해 넣으면 요청별 난이도 차이를 흐리고
-        Judge 입력 비용만 늘린다. 고정 계약은 bootstrap/policy의 작업 지문에서 다룬다.
+        세 프롬프트는 노드가 어떤 업무를 수행하는지 알려주는 최소 작업 계약이다.
+        현재 요청과 RAG runtime 신호는 같은 노드 안에서도 매 실행 달라지는 판단 재료다.
         """
 
-        # 기존 호출 시그니처를 유지한다. 아래 두 값은 bootstrap 경로와 달리
-        # runtime request feature에는 의도적으로 포함하지 않는다.
-        del node_data, rendered_prompt_parts
+        if rendered_prompt_parts is None:
+            rendered_prompt_parts = [
+                str(cls._node_data_value(node_data, field) or "")
+                for field in (
+                    "system_prompt",
+                    "user_prompt",
+                    "assistant_prompt",
+                )
+            ]
+
+        prompt_values = list(rendered_prompt_parts)[:3]
+        prompt_values.extend([""] * (3 - len(prompt_values)))
+        prompt_sections = (
+            ("SYSTEM_PROMPT", prompt_values[0]),
+            ("USER_PROMPT", prompt_values[1]),
+            ("ASSISTANT_PROMPT", prompt_values[2]),
+        )
+        prompt_feature = "\n\n".join(
+            f"{label}:\n{str(value or '').strip()}"
+            for label, value in prompt_sections
+        )
 
         request_text = cls._flatten_text(inputs)
         safe_rag_metadata = {
@@ -427,6 +444,7 @@ class ModelRouter:
             and isinstance(value, (bool, int, float, str))
         }
         parts = [
+            f"NODE_PROMPTS:\n{prompt_feature}",
             f"CURRENT_REQUEST:\n{request_text}" if request_text else "",
         ]
         if safe_rag_metadata:

@@ -31,6 +31,11 @@ from apps.shared.services.permission_audit import (
     record_resource_permission_denied,
     record_system_resource_permission_denied,
 )
+from apps.shared.services.model_routing_global_profile_catalog import (
+    OFFICIAL_PROVIDER_CATALOG,
+    catalog_metadata_for_model_id,
+    normalize_model_id,
+)
 from apps.shared.services.rag_evidence_policy import (
     RAGEvidenceDecision,
     RAGEvidencePolicy,
@@ -793,17 +798,28 @@ class LLMNode(Node[LLMNodeData]):
                 and row.context_window > 0
             ):
                 profile["context_window"] = row.context_window
+            catalog_entry = OFFICIAL_PROVIDER_CATALOG.get(normalize_model_id(model_id))
+            if catalog_entry is not None:
+                profile["capability_tier"] = catalog_entry.capability_tier
+                catalog_metadata = catalog_metadata_for_model_id(model_id)
+                profile["official_position"] = catalog_metadata["official_position"]
+                profile["catalog_lifecycle"] = catalog_metadata["lifecycle"]
+
             global_profile = profile_by_llm_model_id.get(row.id) if row is not None else None
             if global_profile is not None:
-                if isinstance(global_profile.quality_by_difficulty, dict):
+                profile["capability_tier"] = global_profile.capability_tier
+                prior_strength = float(global_profile.prior_strength or 0)
+                if prior_strength > 0 and isinstance(global_profile.quality_by_difficulty, dict):
                     profile["quality_by_difficulty"] = dict(
                         global_profile.quality_by_difficulty
                     )
-                if isinstance(global_profile.expected_latency_ms_by_input_profile, dict):
+                if prior_strength > 0 and isinstance(
+                    global_profile.expected_latency_ms_by_input_profile, dict
+                ):
                     profile["expected_latency_ms_by_input_profile"] = dict(
                         global_profile.expected_latency_ms_by_input_profile
                     )
-                if global_profile.fallback_rate is not None:
+                if prior_strength > 0 and global_profile.fallback_rate is not None:
                     profile["fallback_rate"] = float(global_profile.fallback_rate)
             operational_evidence = operational_evidence_by_model.get(
                 model_id.lower()
@@ -831,6 +847,7 @@ class LLMNode(Node[LLMNodeData]):
         )
         from apps.shared.services.model_routing_model_filter import (
             filter_model_routing_available_model_ids,
+            filter_supported_model_routing_candidates,
         )
 
         node_data = (
@@ -838,10 +855,10 @@ class LLMNode(Node[LLMNodeData]):
             if callable(getattr(self.data, "model_dump", None))
             else vars(self.data)
         )
-        return filter_model_routing_available_model_ids(
-            available_model_ids,
-            node_data=node_data,
+        allowed_model_ids = filter_model_routing_available_model_ids(
+            available_model_ids, node_data=node_data
         )
+        return filter_supported_model_routing_candidates(allowed_model_ids)
 
     def _run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -1118,6 +1135,11 @@ class LLMNode(Node[LLMNodeData]):
             routing_feature_text = ModelRouter.routing_feature_text(
                 inputs,
                 self.data,
+                rendered_prompt_parts=[
+                    system_content,
+                    rendered_user_prompt,
+                    rendered_assistant_prompt,
+                ],
                 rag_metadata=routing_rag_context,
             )
             selected_model_id, fallback_model_id, model_routing_metadata = (

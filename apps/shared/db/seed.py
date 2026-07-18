@@ -208,17 +208,35 @@ def seed_default_llm_models(db: Session) -> None:
         if not model:
             continue
 
-    if models_seeded_count > 0 or models_updated_count > 0:
+    db.flush()
+    from apps.shared.services.model_routing_global_profile_catalog import (
+        seed_model_routing_global_profiles,
+    )
+
+    profile_result = seed_model_routing_global_profiles(db)
+    if (
+        models_seeded_count > 0
+        or models_updated_count > 0
+        or profile_result["created"] > 0
+        or profile_result["updated"] > 0
+    ):
         if models_seeded_count > 0:
             logger.info(f"🌱 Seeded {models_seeded_count} new LLM models.")
         if models_updated_count > 0:
             logger.info(
                 f"💰 Updated pricing for {models_updated_count} existing models."
             )
+        if profile_result["created"] or profile_result["updated"]:
+            logger.info(
+                "🧭 Synced %s model routing catalog profiles (%s created, %s updated).",
+                profile_result["created"] + profile_result["updated"],
+                profile_result["created"],
+                profile_result["updated"],
+            )
         db.commit()
         logger.info("✅ LLM models sync complete!")
     else:
-        logger.warning("ℹ️ LLM models up to date.")
+        logger.warning("ℹ️ LLM models and routing catalog profiles up to date.")
 
 
 def _node(
