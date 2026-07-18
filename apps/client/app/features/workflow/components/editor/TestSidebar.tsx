@@ -34,7 +34,10 @@ import {
   validateWorkflowGraph,
 } from '../../utils/validateWorkflowGraph';
 import { buildWorkflowDraftPayload } from '../../utils/workflowDraftPayload';
-import { canonicalDraftMatchesSnapshot } from '../../utils/workflowDraftComparison';
+import {
+  canonicalDraftMatchesSnapshot,
+  workflowDraftSnapshotsEqual,
+} from '../../utils/workflowDraftComparison';
 import {
   formatCost,
   formatLatency,
@@ -258,9 +261,9 @@ const hasPendingAgentBuilderAcknowledgement = (
   undoStack: Array<{
     agentBuilderHistory?: { acknowledged?: boolean };
     agentBuilderOperation?: { operationId?: string };
-  }>,
+  }> | undefined,
 ) => {
-  for (const snapshot of [...undoStack].reverse()) {
+  for (const snapshot of [...(undoStack ?? [])].reverse()) {
     if (!snapshot.agentBuilderOperation) continue;
     return snapshot.agentBuilderHistory?.acknowledged !== true;
   }
@@ -1304,7 +1307,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             envVariables: latestState.envVariables,
             runtimeVariables: latestState.runtimeVariables,
           });
-          if (canonicalDraftMatchesSnapshot(latestSnapshot, graphSnapshot)) {
+          if (workflowDraftSnapshotsEqual(latestSnapshot, graphSnapshot)) {
             latestState.setHasUnsavedChanges(false);
           }
         }

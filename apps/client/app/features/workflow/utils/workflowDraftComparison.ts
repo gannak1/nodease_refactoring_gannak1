@@ -15,6 +15,11 @@ const buildComparableDraftPayload = (
   return payload;
 };
 
+const buildFullDraftPayload = (
+  draft: WorkflowDraftRequest,
+  noteNodesSource?: 'nodes' | 'features',
+) => buildWorkflowDraftPayload(draft, draft.viewport, { noteNodesSource });
+
 export const canonicalDraftMatchesSnapshot = (
   canonical: unknown,
   snapshot: WorkflowDraftRequest,
@@ -33,3 +38,12 @@ export const canonicalDraftMatchesSnapshot = (
     buildComparableDraftPayload(snapshot),
   );
 };
+
+export const workflowDraftSnapshotsEqual = (
+  latest: WorkflowDraftRequest,
+  saved: WorkflowDraftRequest,
+) =>
+  isEqual(
+    buildFullDraftPayload(latest, 'features'),
+    buildFullDraftPayload(saved),
+  );

@@ -59,6 +59,10 @@ afterEach(() => {
 });
 
 describe('TestSidebar resize', () => {
+  it('undoStack이 없는 이전 store shape도 빈 history로 처리한다', () => {
+    expect(() => render(<TestSidebar />)).not.toThrow();
+  });
+
   it('기본 너비를 기존보다 넓은 480px로 표시한다', () => {
     render(<TestSidebar />);
 
