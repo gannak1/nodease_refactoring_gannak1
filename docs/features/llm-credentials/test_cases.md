@@ -23,6 +23,7 @@ Status: Draft
 - Deployment policy write는 manager actor를 server-derived credential principal으로만 사용하고, request의 credential config/principal override를 받지 않는다. Same organization, active credential/provider, verified single relation, credential `use`를 만족하지 않으면 policy row를 만들지 않는다.
 - Capability-required LLM node는 trusted node invocation control과 explicit token/cost cap이 없으면 provider client를 만들지 않으며, legacy user/app owner/default/name/order/fallback selection을 호출하지 않는다.
 - Capability-required LLM node는 실제 prompt UTF-8 byte upper bound, `max_tokens`와 canonical pricing 최대 비용 중 하나라도 cap을 넘으면 provider client/SDK를 호출하지 않는다. Output limit이 없으면 server cap을 적용하고 provider-specific output-limit alias와 missing pricing은 fail-closed한다.
+- Capability-required LLM node는 request parameters의 `model`을 항상 거부하고 `n`은 boolean/string을 포함해 정수 `1`이 아니면 provider client/SDK 호출 전에 거부한다.
 - Capability config는 encrypted/legacy row 모두 Shared `LLMCredentialConfigService`만 읽는다. Config/client materialization 성공 뒤 전용 capability transaction을 provider SDK 호출 전에 commit하며 Workflow legacy/shared session은 전달·commit하지 않고 provider 실패 뒤에도 발급 row가 rollback되지 않는다.
 - User/anonymous-public/system execution subject는 각각 동일 user/public/system audit actor와만 결합되고 organization billing principal은 capability organization과 일치해야 한다.
 - Capability-required LLM node가 legacy `memory_mode`를 만나면 inline summary helper를 skip하고 history query 또는 legacy `get_client_for_user` provider call을 만들지 않는다. Main capability를 summary purpose로 재사용하지 않으며, dedicated Conversation Memory summarizer가 없는 상태에서 summary provider 호출을 추가하지 않는다.
@@ -52,6 +53,7 @@ Status: Draft
 - Credential read/list 권한만 있고 credential `use` 권한이 없는 사용자는 해당 credential로 Agent answer generation을 실행할 수 없다.
 - 사용 가능한 credential이라도 요청 model과 verified relation이 없으면 Agent answer generation을 실행할 수 없다.
 - Credential revoke/permission decision revision 변경/model relation 또는 provider-routing fingerprint 변경 뒤 stale capability는 새 Memory context claim, budget reservation, provider attempt admission과 provider 호출에 사용할 수 없다. 실제 egress policy 변경 검증은 authoritative LLM outbound guard가 연결된 뒤 해당 revision으로 대체한다.
+- Final admission은 credential, verified relation과 현재 `use` 판정의 organization membership/direct/team permission 근거 row를 잠근 상태에서 revision을 다시 검증한다. Concurrent revoke 또는 권한 회수가 먼저 commit되면 provider materialization이 0회이고, admission이 먼저 commit되면 해당 provider attempt만 변경보다 앞선 유효 실행으로 직렬화된다.
 - Credential principal, billing principal, execution subject와 audit actor가 서로 다른 fixture에서도 credential owner가 private KB subject/public actor로 승격되지 않는다.
 
 ## Edge Case

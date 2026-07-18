@@ -492,6 +492,7 @@ class ProviderExecutionCapabilityService:
             model_id=policy.model_id,
             credential_id=policy.credential_id,
             credential_principal_user_id=policy.credential_principal_user_id,
+            lock_authorization_rows=True,
         )
         if (
             record.model_id != model.id
@@ -509,6 +510,7 @@ class ProviderExecutionCapabilityService:
             relation=relation,
             model=model,
             provider=provider,
+            lock_permission_rows=True,
         )
         if any(
             getattr(record, f"{name}_revision") != revision
@@ -694,6 +696,7 @@ class ProviderExecutionCapabilityService:
         model_id: uuid.UUID,
         credential_id: uuid.UUID,
         credential_principal_user_id: uuid.UUID,
+        lock_authorization_rows: bool = False,
     ) -> tuple[LLMModel, LLMCredential, LLMProvider, LLMRelCredentialModel]:
         if (
             app.organization_id != organization_id
@@ -706,17 +709,23 @@ class ProviderExecutionCapabilityService:
             deployment.graph_snapshot,
             node_id,
         )
-        model = db.query(LLMModel).filter(LLMModel.id == model_id).one_or_none()
+        model_query = db.query(LLMModel).filter(LLMModel.id == model_id)
+        if lock_authorization_rows:
+            model_query = model_query.with_for_update()
+        model = model_query.one_or_none()
         if (
             model is None
             or not model.is_active
             or model.model_id_for_api_call != graph_model_id
         ):
             raise ProviderExecutionPolicyError("configuration_required")
-        provider = (
-            db.query(LLMProvider).filter(LLMProvider.id == model.provider_id).one_or_none()
+        provider_query = db.query(LLMProvider).filter(
+            LLMProvider.id == model.provider_id
         )
-        credential = (
+        if lock_authorization_rows:
+            provider_query = provider_query.with_for_update()
+        provider = provider_query.one_or_none()
+        credential_query = (
             db.query(LLMCredential)
             .filter(
                 LLMCredential.id == credential_id,
@@ -724,19 +733,23 @@ class ProviderExecutionCapabilityService:
                 LLMCredential.is_valid.is_(True),
                 LLMCredential.provider_id == model.provider_id,
             )
-            .one_or_none()
         )
+        if lock_authorization_rows:
+            credential_query = credential_query.with_for_update()
+        credential = credential_query.one_or_none()
         if provider is None or credential is None:
             raise ProviderExecutionPolicyError("configuration_required")
-        relations = (
+        relation_query = (
             db.query(LLMRelCredentialModel)
             .filter(
                 LLMRelCredentialModel.credential_id == credential.id,
                 LLMRelCredentialModel.model_id == model.id,
                 LLMRelCredentialModel.is_verified.is_(True),
             )
-            .all()
         )
+        if lock_authorization_rows:
+            relation_query = relation_query.with_for_update()
+        relations = relation_query.all()
         if len(relations) != 1:
             raise ProviderExecutionPolicyError("relation_unavailable")
         if not has_llm_credential_permission(
@@ -760,6 +773,7 @@ class ProviderExecutionCapabilityService:
         relation: LLMRelCredentialModel,
         model: LLMModel,
         provider: LLMProvider,
+        lock_permission_rows: bool = False,
     ) -> dict[str, str]:
         return {
             "permission": cls._permission_revision(
@@ -767,6 +781,7 @@ class ProviderExecutionCapabilityService:
                 organization_id=organization_id,
                 credential_id=credential.id,
                 credential_principal_user_id=credential_principal_user_id,
+                lock_rows=lock_permission_rows,
             ),
             "relation": _revision_digest(
                 {
@@ -819,6 +834,7 @@ class ProviderExecutionCapabilityService:
         organization_id: uuid.UUID,
         credential_id: uuid.UUID,
         credential_principal_user_id: uuid.UUID,
+        lock_rows: bool = False,
     ) -> str:
         """Fingerprint all rows that can affect a credential-use decision.
 
@@ -827,24 +843,28 @@ class ProviderExecutionCapabilityService:
         when a permitted principal's source changes but remains permissive.
         """
 
-        membership = (
+        membership_query = (
             db.query(OrganizationMembership)
             .filter(
                 OrganizationMembership.organization_id == organization_id,
                 OrganizationMembership.user_id == credential_principal_user_id,
             )
-            .one_or_none()
         )
-        direct_rows = (
+        if lock_rows:
+            membership_query = membership_query.with_for_update()
+        membership = membership_query.one_or_none()
+        direct_query = (
             db.query(UserLLMPermission)
             .filter(
                 UserLLMPermission.grantee_organization_id == organization_id,
                 UserLLMPermission.user_id == credential_principal_user_id,
                 UserLLMPermission.llm_credential_id == credential_id,
             )
-            .all()
         )
-        team_rows = (
+        if lock_rows:
+            direct_query = direct_query.with_for_update()
+        direct_rows = direct_query.all()
+        team_query = (
             db.query(TeamLLMPermission, TeamMembership, Team)
             .join(
                 TeamMembership,
@@ -858,8 +878,10 @@ class ProviderExecutionCapabilityService:
                 TeamMembership.user_id == credential_principal_user_id,
                 Team.organization_id == organization_id,
             )
-            .all()
         )
+        if lock_rows:
+            team_query = team_query.with_for_update()
+        team_rows = team_query.all()
         effective_state = get_effective_llm_credential_auth_state(
             db,
             credential_principal_user_id,

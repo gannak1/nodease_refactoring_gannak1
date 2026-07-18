@@ -555,3 +555,35 @@ def test_capability_request_rejects_ambiguous_or_invalid_output_limit(
             llm_params=dict(parameters),
             issue_command=issue_command,
         )
+
+
+def test_capability_request_rejects_request_owned_model_selection():
+    with pytest.raises(ProviderExecutionCapabilityConfigurationError):
+        LLMNode._provider_execution_requested_usage(
+            messages=[{"role": "user", "content": "safe"}],
+            llm_params={"model": "unapproved-model", "max_tokens": 5},
+            issue_command=SimpleNamespace(output_token_cap=10),
+        )
+
+
+@pytest.mark.parametrize("completion_count", [0, 2, 100, True, "1"])
+def test_capability_request_rejects_non_single_completion_count(completion_count):
+    with pytest.raises(ProviderExecutionCapabilityConfigurationError):
+        LLMNode._provider_execution_requested_usage(
+            messages=[{"role": "user", "content": "safe"}],
+            llm_params={"n": completion_count, "max_tokens": 5},
+            issue_command=SimpleNamespace(output_token_cap=10),
+        )
+
+
+def test_capability_request_allows_explicit_single_completion():
+    params = {"n": 1, "max_tokens": 5}
+
+    _, output_tokens = LLMNode._provider_execution_requested_usage(
+        messages=[{"role": "user", "content": "safe"}],
+        llm_params=params,
+        issue_command=SimpleNamespace(output_token_cap=10),
+    )
+
+    assert output_tokens == 5
+    assert params["n"] == 1

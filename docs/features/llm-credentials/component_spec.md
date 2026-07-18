@@ -41,7 +41,8 @@ Status: Draft
 - 신규 credential write는 active encryption version만 사용한다. Legacy read는 encryption metadata 두 값이 모두 null인 row에만 허용하며 metadata pair 불일치 또는 encrypted row decrypt 실패에는 평문 fallback을 하지 않는다.
 - Rotation은 신·구키 동시 배포, active version 전환, batch 재암호화, 구키 참조 0 확인, 구키 제거 순서로 수행한다. Alembic migration은 key를 읽거나 row를 암호화하지 않는다.
 - Capability-required LLM node path는 trusted Workflow Engine control과 explicit bounded cap을 가진 server runtime에서만 활성화한다. 이 path는 client override, `fallback_model_id`, automatic model routing, legacy `user_id`/owner credential selection을 사용하지 않는다. Policy가 고른 safe credential reference는 내부 client materialization에만 사용하고 component response, trace, audit에는 raw config를 전달하지 않는다.
-- Capability runtime adapter는 prompt UTF-8 byte upper bound와 generic `max_tokens`를 admission 요청량으로 전달하고 canonical pricing으로 최대 비용을 검증한다. Credential materialization은 `LLMCredentialConfigService`를 통과한 뒤 전용 capability transaction을 commit하고, provider network I/O는 그 transaction 밖에서 수행한다. Legacy/shared Workflow session은 이 commit 경계에 전달하지 않는다.
+- Capability runtime adapter는 prompt UTF-8 byte upper bound와 generic `max_tokens`를 admission 요청량으로 전달하고 canonical pricing으로 최대 비용을 검증한다. Request-owned `model`은 거부하고 completion count `n`은 정수 `1`만 허용해 승인된 model과 token/cost upper bound를 provider payload가 덮어쓰지 못하게 한다. Credential materialization은 `LLMCredentialConfigService`를 통과한 뒤 전용 capability transaction을 commit하고, provider network I/O는 그 transaction 밖에서 수행한다. Legacy/shared Workflow session은 이 commit 경계에 전달하지 않는다.
+- Final capability admission은 policy와 capability row를 잠근 뒤 선택된 model, provider, credential, verified relation과 현재 credential `use` 판정의 membership/direct/team 근거 row를 같은 control transaction commit까지 잠근다. 먼저 commit된 admission만 이후 revoke·relation/permission 변경보다 앞선 유효 실행으로 취급하며, 변경이 먼저 commit되면 revision 검증에서 provider materialization 전에 거부한다.
 
 ## 접근성
 

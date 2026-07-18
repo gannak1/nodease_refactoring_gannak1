@@ -7,8 +7,19 @@ from types import SimpleNamespace
 
 import pytest
 from apps.shared.db.models.llm import (
+    LLMCredential,
     LLMDeploymentCredentialPolicy,
+    LLMModel,
+    LLMProvider,
+    LLMRelCredentialModel,
     ProviderExecutionCapabilityRecord,
+)
+from apps.shared.db.models.organization_membership import OrganizationMembership
+from apps.shared.db.models.team import (
+    Team,
+    TeamLLMPermission,
+    TeamMembership,
+    UserLLMPermission,
 )
 from apps.shared.domain.provider_execution_capability import (
     CapabilityPurpose,
@@ -268,6 +279,7 @@ def test_admission_locks_policy_before_capability_record(monkeypatch):
         purpose=CapabilityPurpose.MAIN_GENERATION,
     )
     order: list[str] = []
+    lock_modes: dict[str, bool | None] = {}
     policy = SimpleNamespace(
         id=policy_id,
         policy_revision=2,
@@ -353,11 +365,11 @@ def test_admission_locks_policy_before_capability_record(monkeypatch):
         ProviderExecutionCapabilityService,
         "_resolve_policy_selection",
         classmethod(
-            lambda _cls, *_args, **_kwargs: (
-                model,
-                credential,
-                provider,
-                relation,
+            lambda _cls, *_args, **kwargs: (
+                lock_modes.update(
+                    selection=kwargs.get("lock_authorization_rows")
+                )
+                or (model, credential, provider, relation)
             )
         ),
     )
@@ -365,12 +377,17 @@ def test_admission_locks_policy_before_capability_record(monkeypatch):
         ProviderExecutionCapabilityService,
         "_current_revisions",
         classmethod(
-            lambda _cls, *_args, **_kwargs: {
-                "permission": record.permission_revision,
-                "relation": record.relation_revision,
-                "egress": record.egress_revision,
-                "pricing": record.pricing_revision,
-            }
+            lambda _cls, *_args, **kwargs: (
+                lock_modes.update(
+                    permission=kwargs.get("lock_permission_rows")
+                )
+                or {
+                    "permission": record.permission_revision,
+                    "relation": record.relation_revision,
+                    "egress": record.egress_revision,
+                    "pricing": record.pricing_revision,
+                }
+            )
         ),
     )
 
@@ -386,7 +403,145 @@ def test_admission_locks_policy_before_capability_record(monkeypatch):
     )
 
     assert order == ["deployment", "policy", "capability"]
+    assert lock_modes == {"selection": True, "permission": True}
     assert lease.credential is credential
+
+
+def test_policy_selection_locks_runtime_authorization_rows(monkeypatch):
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    provider_id = uuid.uuid4()
+    model_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    principal_id = uuid.uuid4()
+    model = SimpleNamespace(
+        id=model_id,
+        provider_id=provider_id,
+        model_id_for_api_call="gpt-safe",
+        is_active=True,
+    )
+    provider = SimpleNamespace(id=provider_id)
+    credential = SimpleNamespace(
+        id=credential_id,
+        organization_id=organization_id,
+        provider_id=provider_id,
+        is_valid=True,
+    )
+    relation = SimpleNamespace(
+        credential_id=credential_id,
+        model_id=model_id,
+        is_verified=True,
+    )
+    rows = {
+        LLMModel: [model],
+        LLMProvider: [provider],
+        LLMCredential: [credential],
+        LLMRelCredentialModel: [relation],
+    }
+    locked: list[type] = []
+
+    class _Query:
+        def __init__(self, entity):
+            self.entity = entity
+
+        def filter(self, *_args):
+            return self
+
+        def with_for_update(self):
+            locked.append(self.entity)
+            return self
+
+        def one_or_none(self):
+            values = rows[self.entity]
+            return values[0] if values else None
+
+        def all(self):
+            return rows[self.entity]
+
+    class _Db:
+        def query(self, entity):
+            return _Query(entity)
+
+    monkeypatch.setattr(
+        capability_service,
+        "deployment_llm_node_model_id",
+        lambda *_args, **_kwargs: "gpt-safe",
+    )
+    monkeypatch.setattr(
+        capability_service,
+        "has_llm_credential_permission",
+        lambda *_args, **_kwargs: True,
+    )
+
+    selection = ProviderExecutionCapabilityService._resolve_policy_selection(
+        _Db(),
+        deployment=SimpleNamespace(app_id=app_id, graph_snapshot={}),
+        app=SimpleNamespace(
+            id=app_id,
+            workflow_id=workflow_id,
+            organization_id=organization_id,
+        ),
+        workflow=SimpleNamespace(id=workflow_id, organization_id=organization_id),
+        organization_id=organization_id,
+        node_id="llm-1",
+        model_id=model_id,
+        credential_id=credential_id,
+        credential_principal_user_id=principal_id,
+        lock_authorization_rows=True,
+    )
+
+    assert selection == (model, credential, provider, relation)
+    assert locked == [LLMModel, LLMProvider, LLMCredential, LLMRelCredentialModel]
+
+
+def test_permission_revision_locks_every_existing_permission_source(monkeypatch):
+    locked: list[tuple[type, ...]] = []
+
+    class _Query:
+        def __init__(self, entities):
+            self.entities = entities
+
+        def filter(self, *_args):
+            return self
+
+        def join(self, *_args):
+            return self
+
+        def with_for_update(self):
+            locked.append(self.entities)
+            return self
+
+        def one_or_none(self):
+            return None
+
+        def all(self):
+            return []
+
+    class _Db:
+        def query(self, *entities):
+            return _Query(entities)
+
+    monkeypatch.setattr(
+        capability_service,
+        "get_effective_llm_credential_auth_state",
+        lambda *_args, **_kwargs: "none",
+    )
+
+    revision = ProviderExecutionCapabilityService._permission_revision(
+        _Db(),
+        organization_id=uuid.uuid4(),
+        credential_id=uuid.uuid4(),
+        credential_principal_user_id=uuid.uuid4(),
+        lock_rows=True,
+    )
+
+    assert len(revision) == 64
+    assert locked == [
+        (OrganizationMembership,),
+        (UserLLMPermission,),
+        (TeamLLMPermission, TeamMembership, Team),
+    ]
 
 
 def test_policy_and_capability_are_cascaded_with_deleted_deployment_control():

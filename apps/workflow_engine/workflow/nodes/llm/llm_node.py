@@ -3210,6 +3210,17 @@ class LLMNode(Node[LLMNodeData]):
     ) -> tuple[int, int]:
         """Build conservative request bounds before capability admission."""
 
+        if "model" in llm_params:
+            raise ProviderExecutionCapabilityConfigurationError()
+
+        completion_count = llm_params.get("n", 1)
+        if (
+            isinstance(completion_count, bool)
+            or not isinstance(completion_count, int)
+            or completion_count != 1
+        ):
+            raise ProviderExecutionCapabilityConfigurationError()
+
         provider_output_aliases = {"max_completion_tokens", "max_output_tokens"}
         if provider_output_aliases.intersection(llm_params):
             raise ProviderExecutionCapabilityConfigurationError()
