@@ -104,7 +104,8 @@ def test_compose_validation_combines_variant_with_base_file():
 
     assert "docker-compose.*.yml|docker-compose.*.yaml" in workflow
     assert (
-        'docker compose --file "$base_path" --file "$path" config --quiet'
+        'docker compose --profile "*" --file "$base_path" --file "$path" '
+        "config --quiet"
         in workflow
     )
 
