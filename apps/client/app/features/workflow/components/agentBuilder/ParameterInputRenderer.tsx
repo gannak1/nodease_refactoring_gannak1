@@ -13,6 +13,7 @@ export const ParameterInputRenderer = ({
   hydration = { state: 'empty' },
   onSubmit,
   onSkip,
+  onClear,
   onOpenNodeSettings,
   disabled = false,
 }: {
@@ -20,6 +21,7 @@ export const ParameterInputRenderer = ({
   hydration?: ParameterControlHydration;
   onSubmit: (value: unknown) => void;
   onSkip?: () => void;
+  onClear?: () => void;
   onOpenNodeSettings?: () => void;
   disabled?: boolean;
 }) => {
@@ -92,13 +94,16 @@ export const ParameterInputRenderer = ({
     setError(null);
     if (
       !task.required &&
-      onSkip &&
       ['code', 'json', 'secret', 'select', 'text', 'textarea'].includes(
         task.input_type,
       ) &&
       value.trim() === ''
     ) {
-      onSkip();
+      if (hydration.state === 'available' && onClear) {
+        onClear();
+      } else if (onSkip) {
+        onSkip();
+      }
       return;
     }
     if (isReference) {

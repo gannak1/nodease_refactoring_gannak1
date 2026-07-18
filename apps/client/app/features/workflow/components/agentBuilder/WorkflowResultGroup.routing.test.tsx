@@ -303,4 +303,45 @@ describe('WorkflowResultGroup model routing guidance', () => {
     ).not.toBeInTheDocument();
     expect(screen.getAllByText('자동 모델 라우팅').length).toBeGreaterThan(0);
   });
+
+  it('summarizes completed Collection and Knowledge Base selections separately', () => {
+    const { rerender } = render(
+      <WorkflowResultGroup
+        tasks={[]}
+        nodes={[]}
+        knowledgeStep={{
+          status: 'completed',
+          timing: 'after_graph',
+          candidates: [],
+          selectedCollectionHandles: ['collection-a'],
+          selectedKbHandles: [],
+        }}
+        onFocusNode={vi.fn()}
+        onDecision={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Collection 1개 선택')).toBeInTheDocument();
+    expect(screen.queryByText('Knowledge Base 없이 진행')).toBeNull();
+
+    rerender(
+      <WorkflowResultGroup
+        tasks={[]}
+        nodes={[]}
+        knowledgeStep={{
+          status: 'completed',
+          timing: 'after_graph',
+          candidates: [],
+          selectedCollectionHandles: ['collection-a'],
+          selectedKbHandles: ['kb-a', 'kb-b'],
+        }}
+        onFocusNode={vi.fn()}
+        onDecision={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText('Collection 1개 · Knowledge Base 2개 선택'),
+    ).toBeInTheDocument();
+  });
 });

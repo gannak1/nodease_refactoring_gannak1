@@ -44,6 +44,10 @@ class KnowledgeSelectionService:
         repository: AgentBuilderRepository | None = None,
         knowledge_base_handle_resolver: Callable[[UUID], str] | None = None,
         knowledge_collection_handle_resolver: Callable[[UUID], str] | None = None,
+        knowledge_selection_refresher: Callable[
+            [AgentBuilderStructuredRequest], dict[str, Any]
+        ]
+        | None = None,
     ) -> None:
         self.db = db
         self.user_id = user_id
@@ -52,6 +56,7 @@ class KnowledgeSelectionService:
         self.before_graph_builder = before_graph_builder
         self.no_knowledge_candidate_id = no_knowledge_candidate_id
         self.repository = repository or AgentBuilderRepository()
+        self.knowledge_selection_refresher = knowledge_selection_refresher
         self.knowledge_base_handle_resolver = (
             knowledge_base_handle_resolver
             or (
@@ -70,6 +75,84 @@ class KnowledgeSelectionService:
                 )
             )
         )
+
+    def _refresh_knowledge_resolution(
+        self,
+        *,
+        request_row: AgentBuilderRequest,
+        structured: AgentBuilderStructuredRequest,
+        resolution_id: str,
+    ) -> bool:
+        if self.knowledge_selection_refresher is None:
+            return False
+        try:
+            refreshed = self.knowledge_selection_refresher(structured)
+        except Exception:
+            return False
+        knowledge_selection = refreshed.get("knowledge_selection")
+        if not isinstance(knowledge_selection, dict):
+            return False
+        payload = dict(request_row.response_payload or {})
+        current = payload.get("knowledge_resolution")
+        if not isinstance(current, dict):
+            return False
+        if str(current.get("resolution_id") or "") != resolution_id:
+            return False
+        updated_resolution = dict(current)
+        updated_resolution.update(
+            {
+                "candidates": [],
+                "collections": list(knowledge_selection.get("collections") or []),
+                "ungrouped_kbs": list(
+                    knowledge_selection.get("ungrouped_kbs") or []
+                ),
+                "selected": [],
+                "selected_collection_handles": [],
+                "selected_kb_handles": [],
+                "selection_status": None,
+            }
+        )
+        payload["knowledge_resolution"] = updated_resolution
+        stored_resolutions = []
+        for item in payload.get("knowledge_resolutions") or []:
+            if (
+                isinstance(item, dict)
+                and str(item.get("resolution_id") or "") == resolution_id
+                and item.get("status") == "unapplied"
+            ):
+                stored_resolutions.append(
+                    {
+                        **item,
+                        "selected_candidate_ids": [],
+                        "selected_collection_handles": [],
+                        "selected_kb_handles": [],
+                        "selection_invalidated": True,
+                    }
+                )
+            else:
+                stored_resolutions.append(item)
+        payload["knowledge_resolutions"] = stored_resolutions
+        request_row.response_payload = payload
+        self.db.commit()
+        return True
+
+    def _raise_stale_knowledge_selection(
+        self,
+        *,
+        request_row: AgentBuilderRequest,
+        structured: AgentBuilderStructuredRequest,
+        resolution_id: str,
+    ) -> None:
+        if self._refresh_knowledge_resolution(
+            request_row=request_row,
+            structured=structured,
+            resolution_id=resolution_id,
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "knowledge_selection_stale"},
+            )
+        raise HTTPException(status_code=422, detail="catalog_validation_failed")
 
     @staticmethod
     def _target_node_id(
@@ -403,19 +486,35 @@ class KnowledgeSelectionService:
         selected_candidate_ids = sorted(
             {*selected_collection_handles, *selected_kb_handles}
         )
-        if any(
-            handle not in allowed_collection_handles
-            for handle in hierarchy_collection_handles
-        ) or any(
-            handle not in allowed_kb_handles
-            for handle in hierarchy_kb_handles
-        ):
-            raise HTTPException(status_code=422, detail="catalog_validation_failed")
-
+        is_editor_selection = selection.editor_target_node_id is not None
         existing_resolution = self.repository.find_knowledge_resolution(
             request_row,
             selection.resolution_id,
         )
+        if (
+            existing_resolution is not None
+            and existing_resolution.get("status") != "unapplied"
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="knowledge_resolution_already_submitted",
+            )
+        if not is_editor_selection and (
+            any(
+                handle not in allowed_collection_handles
+                for handle in hierarchy_collection_handles
+            )
+            or any(
+                handle not in allowed_kb_handles
+                for handle in hierarchy_kb_handles
+            )
+        ):
+            self._raise_stale_knowledge_selection(
+                request_row=request_row,
+                structured=structured,
+                resolution_id=selection.resolution_id,
+            )
+
         if existing_resolution is not None:
             stored_collection_handles = existing_resolution.get(
                 "selected_collection_handles"
@@ -430,13 +529,10 @@ class KnowledgeSelectionService:
                 else existing_resolution.get("selected_candidate_ids")
                 != selected_candidate_ids
             )
-            if selection_differs:
+            if selection_differs and not existing_resolution.get(
+                "selection_invalidated"
+            ):
                 raise HTTPException(status_code=409, detail="task_conflict")
-            if existing_resolution.get("status") != "unapplied":
-                raise HTTPException(
-                    status_code=409,
-                    detail="knowledge_resolution_already_submitted",
-                )
 
         candidate_handles = set(selected_kb_handles)
         if not candidate_handles and not selected_collection_handles:
@@ -460,6 +556,12 @@ class KnowledgeSelectionService:
                 selected_collection_handles=set(selected_collection_handles),
             )
         if recommendation.get("status") != "ready":
+            if not is_editor_selection:
+                self._raise_stale_knowledge_selection(
+                    request_row=request_row,
+                    structured=structured,
+                    resolution_id=selection.resolution_id,
+                )
             raise HTTPException(status_code=422, detail="catalog_validation_failed")
         knowledge_base_refs = [
             {

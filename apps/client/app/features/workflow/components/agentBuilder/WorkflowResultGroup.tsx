@@ -39,6 +39,7 @@ export type WorkflowKnowledgeStep = {
   selectedCollectionHandles?: string[];
   selectedKbHandles?: string[];
   selectedLabels?: string[];
+  resetVersion?: number;
   errorMessage?: string | null;
 };
 
@@ -403,6 +404,7 @@ export const WorkflowResultGroup = ({
                   knowledgeStep.selectedCollectionHandles
                 }
                 initialSelectedKbHandles={knowledgeStep.selectedKbHandles}
+                resetVersion={knowledgeStep.resetVersion}
                 timing={knowledgeStep.timing}
                 errorMessage={knowledgeStep.errorMessage}
                 onSubmit={(selectionIds) => onKnowledgeSubmit?.(selectionIds)}
@@ -419,9 +421,26 @@ export const WorkflowResultGroup = ({
           <div className="rounded-md border border-neutral-200 px-3 py-2 text-xs text-neutral-600 dark:border-neutral-800 dark:text-neutral-300">
             <span className="font-medium">Knowledge 설정 완료</span>
             <span className="ml-2">
-              {(knowledgeStep.selectedLabels ?? []).length > 0
-                ? `${knowledgeStep.selectedLabels?.length}개 Knowledge Base 선택`
-                : 'Knowledge Base 없이 진행'}
+              {(() => {
+                const collectionCount = new Set(
+                  knowledgeStep.selectedCollectionHandles ?? [],
+                ).size;
+                const kbCount = new Set(knowledgeStep.selectedKbHandles ?? [])
+                  .size;
+                if (collectionCount > 0 && kbCount > 0) {
+                  return `Collection ${collectionCount}개 · Knowledge Base ${kbCount}개 선택`;
+                }
+                if (collectionCount > 0) {
+                  return `Collection ${collectionCount}개 선택`;
+                }
+                if (kbCount > 0) {
+                  return `Knowledge Base ${kbCount}개 선택`;
+                }
+                const legacyCount = (knowledgeStep.selectedLabels ?? []).length;
+                return legacyCount > 0
+                  ? `Knowledge Base ${legacyCount}개 선택`
+                  : 'Knowledge Base 없이 진행';
+              })()}
             </span>
           </div>
         )

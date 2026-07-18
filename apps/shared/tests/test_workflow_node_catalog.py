@@ -11,6 +11,7 @@ from apps.shared.services.workflow_node_catalog import (
     load_workflow_node_catalog,
     node_parameter_definitions,
     node_parameter_is_configured,
+    remove_node_parameter_value,
     validate_node_parameter_update,
     validate_node_parameter_value,
     validate_workflow_graph_connections,
@@ -257,7 +258,7 @@ def test_llm_catalog_maps_basic_output_and_selector_values_to_runtime_shape():
     )
 
 
-def test_llm_referenced_variables_generate_unique_runtime_names_for_duplicate_keys():
+def test_llm_referenced_variables_preserve_output_names_and_reject_duplicates():
     data = apply_node_parameter_value(
         "llmNode",
         "referenced_variables",
@@ -267,7 +268,7 @@ def test_llm_referenced_variables_generate_unique_runtime_names_for_duplicate_ke
 
     assert [item["name"] for item in data["referenced_variables"]] == [
         "result",
-        "result_extract",
+        "result",
     ]
     assert (
         validate_node_parameter_update(
@@ -276,7 +277,7 @@ def test_llm_referenced_variables_generate_unique_runtime_names_for_duplicate_ke
             {"referenced_variables": []},
             [["start", "result"], ["extract", "result"]],
         )
-        == []
+        == ["duplicate_variable_name"]
     )
 
 
@@ -527,6 +528,38 @@ def test_slack_json_parameters_use_the_editor_string_shape():
         '[{"type": "section", "text": {"type": "mrkdwn", "text": "hello"}}]'
     )
     assert data["attachments"] == '[{"color": "#4A154B", "text": "alert"}]'
+
+
+def test_removing_optional_parameter_preserves_unrelated_nested_node_data():
+    slack = remove_node_parameter_value(
+        "slackPostNode",
+        "channel",
+        {
+            "channel": "C123",
+            "body": '{"channel": "C123", "text": "hello"}',
+            "message": "hello",
+        },
+    )
+    llm = remove_node_parameter_value(
+        "llmNode",
+        "output_json_schema",
+        {
+            "output_format": {
+                "type": "json",
+                "schema": {"type": "object"},
+            },
+            "model_id": "model-1",
+        },
+    )
+
+    assert slack == {
+        "body": '{"text": "hello"}',
+        "message": "hello",
+    }
+    assert llm == {
+        "output_format": {"type": "json"},
+        "model_id": "model-1",
+    }
 
 
 def test_every_agent_builder_parameter_round_trips_through_catalog_application():

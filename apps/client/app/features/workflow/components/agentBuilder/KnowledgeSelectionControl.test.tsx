@@ -105,6 +105,53 @@ describe('KnowledgeSelectionControl', () => {
     });
   });
 
+  it('toggles a partially selected Collection between all children and none', () => {
+    render(
+      <KnowledgeSelectionControl
+        candidates={[]}
+        collections={[
+          {
+            collection_handle: 'collection-a',
+            safe_label: 'Internal documents',
+            children: [
+              {
+                kb_handle: 'kb-1',
+                selection_key: 'kb-1',
+                safe_label: 'HR KB',
+              },
+              {
+                kb_handle: 'kb-2',
+                selection_key: 'kb-2',
+                safe_label: 'Benefits KB',
+              },
+            ],
+          },
+        ]}
+        onSubmitHierarchy={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    const collection = screen.getByLabelText('Internal documents');
+    const hrKb = screen.getByLabelText('HR KB');
+    const benefitsKb = screen.getByLabelText('Benefits KB');
+
+    fireEvent.click(hrKb);
+    expect(collection).not.toBeChecked();
+    expect((collection as HTMLInputElement).indeterminate).toBe(true);
+
+    fireEvent.click(collection);
+    expect(collection).toBeChecked();
+    expect(hrKb).toBeChecked();
+    expect(benefitsKb).toBeChecked();
+
+    fireEvent.click(collection);
+    expect(collection).not.toBeChecked();
+    expect((collection as HTMLInputElement).indeterminate).toBe(false);
+    expect(hrKb).not.toBeChecked();
+    expect(benefitsKb).not.toBeChecked();
+  });
+
   it('submits the Collection and every permission-visible child when fully selected', () => {
     const onSubmit = vi.fn();
     render(
@@ -322,6 +369,56 @@ describe('KnowledgeSelectionControl', () => {
     expect(
       screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
     ).toBeEnabled();
+  });
+
+  it('clears local hierarchy checks after an explicit stale refresh even when handles are unchanged', () => {
+    const hierarchy = [
+      {
+        collection_handle: 'collection-a',
+        safe_label: '사내 문서',
+        children: [
+          {
+            kb_handle: 'kb-a',
+            selection_key: 'kb-a',
+            safe_label: '인사 KB',
+          },
+        ],
+      },
+    ];
+    const { rerender } = render(
+      <KnowledgeSelectionControl
+        candidates={[]}
+        collections={hierarchy}
+        resetVersion={0}
+        onSubmit={vi.fn()}
+        onSubmitHierarchy={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('사내 문서'));
+    expect(screen.getByLabelText('사내 문서')).toBeChecked();
+    expect(screen.getByLabelText('인사 KB')).toBeChecked();
+
+    rerender(
+      <KnowledgeSelectionControl
+        candidates={[]}
+        collections={[
+          {
+            ...hierarchy[0],
+            safe_label: '사내 문서 최신',
+            children: [
+              { ...hierarchy[0].children[0], safe_label: '인사 KB 최신' },
+            ],
+          },
+        ]}
+        resetVersion={1}
+        onSubmit={vi.fn()}
+        onSubmitHierarchy={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText('사내 문서 최신')).not.toBeChecked();
+    expect(screen.getByLabelText('인사 KB 최신')).not.toBeChecked();
   });
 
   it('shows the four timing-specific CTA labels', () => {

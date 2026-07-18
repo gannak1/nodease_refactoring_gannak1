@@ -34,6 +34,29 @@ def test_parameter_task_decision_rejects_value_for_confirm():
         )
 
 
+def test_parameter_task_decision_accepts_clear_without_value():
+    payload = AgentBuilderParameterTaskDecisionRequest.model_validate(
+        {
+            "operation_id": str(uuid4()),
+            "expected_task_version": 2,
+            "action": "clear",
+        }
+    )
+
+    assert payload.action == "clear"
+    assert payload.value is None
+
+    with pytest.raises(ValidationError, match="only set accepts a value"):
+        AgentBuilderParameterTaskDecisionRequest.model_validate(
+            {
+                "operation_id": str(uuid4()),
+                "expected_task_version": 2,
+                "action": "clear",
+                "value": {"kind": "text", "value": "not-accepted"},
+            }
+        )
+
+
 def test_parameter_select_decision_uses_value_and_rejects_option_id():
     payload = AgentBuilderParameterTaskDecisionRequest.model_validate(
         {

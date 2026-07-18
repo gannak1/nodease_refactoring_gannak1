@@ -56,6 +56,7 @@ from apps.shared.services.permissions import has_mail_credential_permission
 from apps.shared.services.workflow_node_catalog import validate_node_parameter_update
 from apps.shared.services.workflow_node_catalog import derive_node_configuration_state
 from apps.shared.services.workflow_node_catalog import apply_node_parameter_value
+from apps.shared.services.workflow_node_catalog import remove_node_parameter_value
 from apps.gateway.application.agent_builder.parameter_suggestions import (
     ParameterSuggestionError,
     ParameterSuggestionResolver,
@@ -877,6 +878,17 @@ class ParameterTaskService:
                     task.parameter_key,
                     data,
                     decision.graph_data_patch[task.parameter_key],
+                )
+                data["_deferred_parameters"] = [
+                    key
+                    for key in data.get("_deferred_parameters", [])
+                    if key != task.parameter_key
+                ]
+            elif decision.action == "clear":
+                data = remove_node_parameter_value(
+                    task.node_type,
+                    task.parameter_key,
+                    data,
                 )
                 data["_deferred_parameters"] = [
                     key

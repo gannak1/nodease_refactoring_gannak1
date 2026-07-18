@@ -2786,6 +2786,106 @@ describe('AgentBuilderPanel', () => {
     ).toBeEnabled();
   });
 
+  it('refreshes the same Knowledge card when the submitted hierarchy is stale', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-kb-stale-refresh',
+      workflow_id: 'workflow-old',
+      app_id: 'app-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'active',
+      messages: [],
+      pending_request: null,
+    });
+    const response: AgentBuilderMessageResponse = {
+      request_id: 'request-kb-stale-refresh',
+      status: 'clarification_required',
+      structured_plan: null,
+      knowledge_resolution: {
+        resolution_id: 'resolve-kb-stale-refresh',
+        timing: 'before_graph',
+        required: true,
+        candidates: [],
+        collections: [],
+        ungrouped_kbs: [hierarchyKb('safe-rec-stale', '이전 휴가 정책')],
+        selected: [],
+      },
+      clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
+      clarification_options: [],
+      validation_result: null,
+      warnings: [],
+    };
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue(response);
+    vi.mocked(agentBuilderApi.selectKnowledge).mockRejectedValue({
+      isAxiosError: true,
+      response: {
+        status: 409,
+        data: { detail: { code: 'knowledge_selection_stale' } },
+      },
+    });
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: 'session-kb-stale-refresh',
+      workflow_id: 'workflow-old',
+      protocol_version: 'direct_edit_v1',
+      status: 'clarification_required',
+      messages: [
+        {
+          kind: 'assistant',
+          request_id: response.request_id,
+          response: {
+            ...response,
+            knowledge_resolution: {
+              ...response.knowledge_resolution!,
+              ungrouped_kbs: [
+                hierarchyKb('safe-rec-refreshed', '최신 휴가 정책'),
+              ],
+              selected: [],
+            },
+          },
+        },
+      ],
+      pending_request: null,
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '휴가 정책으로 답변하는 workflow를 만들어줘' },
+    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+
+    fireEvent.click(
+      await screen.findByRole('checkbox', { name: '이전 휴가 정책' }),
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: '선택한 Knowledge로 생성' }),
+    );
+
+    await waitFor(() => {
+      expect(agentBuilderApi.getSession).toHaveBeenCalledWith(
+        'session-kb-stale-refresh',
+      );
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Knowledge 후보가 변경되어 최신 목록으로 갱신했습니다. 다시 선택해주세요.',
+    );
+    expect(
+      screen.queryByRole('checkbox', { name: '이전 휴가 정책' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('checkbox', { name: '최신 휴가 정책' }),
+    ).not.toBeChecked();
+    expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('ambiguous Knowledge selection reconciles completed canonical session and closes the stale card', async () => {
     vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
       session_id: 'session-kb-completed-reconcile',
@@ -3364,6 +3464,82 @@ describe('AgentBuilderPanel', () => {
     await waitFor(() =>
       expect(agentBuilderApi.getSession).toHaveBeenCalledTimes(1),
     );
+    expect(agentBuilderApi.acknowledgeMutation).not.toHaveBeenCalled();
+  });
+
+  it('later canonical session reconciliation completes the persisted local history boundary', async () => {
+    window.localStorage.setItem(
+      'agent-builder:workflow:workflow-old',
+      'session-acknowledged-recovery',
+    );
+    useWorkflowStore.setState({
+      activeWorkflowId: 'workflow-old',
+      undoStack: [
+        {
+          nodes: [],
+          edges: [],
+          agentBuilderOperation: {
+            operationId: 'operation-acknowledged-recovery',
+            resultGraphHash: 'f'.repeat(64),
+            workflowUpdatedAt: '2026-07-15T00:00:03Z',
+            sessionId: 'session-acknowledged-recovery',
+          },
+          agentBuilderHistory: {
+            sessionId: 'session-acknowledged-recovery',
+            latestOperationId: 'operation-acknowledged-recovery',
+            acknowledged: false,
+            completionEligible: false,
+            parameterGroup: null,
+            lastManuallyConfiguredTaskId: null,
+            presentation: 'none',
+          },
+        },
+      ],
+    });
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      workflow_id: 'workflow-old',
+      graph_hash: 'f'.repeat(64),
+      updated_at: '2026-07-15T00:00:03Z',
+    });
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: 'session-acknowledged-recovery',
+      workflow_id: 'workflow-old',
+      protocol_version: 'direct_edit_v1',
+      status: 'completed',
+      messages: [],
+      active_graph_mutation: {
+        operation_id: 'operation-acknowledged-recovery',
+        status: 'acknowledged',
+        result_graph_hash: 'f'.repeat(64),
+        saved_workflow_updated_at: '2026-07-15T00:00:03Z',
+      },
+      parameter_group: {
+        group_id: 'group-acknowledged-recovery',
+        status: 'completed',
+        tasks: [],
+      },
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+
+    await waitFor(() => {
+      const boundary = useWorkflowStore.getState().undoStack.at(-1);
+      expect(boundary?.agentBuilderHistory?.acknowledged).toBe(true);
+      expect(boundary?.agentBuilderHistory?.completionEligible).toBe(true);
+    });
+    expect(workflowApi.getDraftWorkflow).toHaveBeenCalledWith('workflow-old');
     expect(agentBuilderApi.acknowledgeMutation).not.toHaveBeenCalled();
   });
 

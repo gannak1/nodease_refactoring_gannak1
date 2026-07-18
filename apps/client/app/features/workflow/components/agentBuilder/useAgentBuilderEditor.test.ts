@@ -150,6 +150,41 @@ describe('Agent Builder editor adapter', () => {
     );
   });
 
+  it('accepts equivalent UTC timestamp encodings from mutation and canonical draft responses', async () => {
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      workflow_id: 'workflow-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-12T00:00:00+00:00',
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue(saveResponse());
+    vi.mocked(agentBuilderApi.acknowledgeMutation).mockResolvedValue({
+      operation_id: 'operation-equivalent-timestamp',
+      operation_status: 'acknowledged',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:00Z',
+    });
+
+    await applyAndSaveAgentBuilderMutation({
+      sessionId: 'session-1',
+      workflowId: 'workflow-1',
+      viewport: { x: 0, y: 0, zoom: 1 },
+      mutation: {
+        operation_id: 'operation-equivalent-timestamp',
+        kind: 'initial_graph',
+        base_graph_hash: 'a'.repeat(64),
+        expected_workflow_updated_at: '2026-07-12T00:00:00Z',
+        expected_result_graph_hash: 'b'.repeat(64),
+        operations: [{ op: 'add_node', node: startNode }],
+      },
+    });
+
+    expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledTimes(1);
+    expect(agentBuilderApi.acknowledgeMutation).toHaveBeenCalledTimes(1);
+  });
+
   it('테스트 preflight 저장이 끝날 때까지 Agent Builder 저장을 시작하지 않는다', async () => {
     const releaseTestSave = tryAcquireWorkflowDraftSave(
       'workflow-1',

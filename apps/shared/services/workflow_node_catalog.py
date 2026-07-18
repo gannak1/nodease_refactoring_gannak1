@@ -537,32 +537,15 @@ def apply_node_parameter_value(
             and item.get("name")
             and isinstance(item.get("value_selector"), list)
         }
-        referenced_variables = []
-        used_names: set[str] = set()
-        for selector in selectors:
-            selector_tuple = tuple(selector)
-            base_name = existing_names.get(selector_tuple, str(selector[-1]))
-            name = base_name
-            if name in used_names:
-                source_suffix = "_".join(
-                    part
-                    for part in (
-                        re.sub(r"[^A-Za-z0-9_]+", "_", str(value)).strip("_")
-                        for value in selector[:-1]
-                    )
-                    if part
-                )
-                source_suffix = source_suffix or "source"
-                name = f"{base_name}_{source_suffix}"
-                ordinal = 2
-                while name in used_names:
-                    name = f"{base_name}_{source_suffix}_{ordinal}"
-                    ordinal += 1
-            used_names.add(name)
-            referenced_variables.append(
-                {"name": name, "value_selector": selector}
-            )
-        data[parameter_key] = referenced_variables
+        data[parameter_key] = [
+            {
+                "name": existing_names.get(
+                    tuple(selector), str(selector[-1])
+                ),
+                "value_selector": selector,
+            }
+            for selector in selectors
+        ]
         return data
     if node_type == "llmNode" and parameter_key in _LLM_ROUTING_PARAMETER_PATHS:
         policy = data.get("model_routing_policy")
@@ -618,6 +601,75 @@ def apply_node_parameter_value(
             body = {}
         body["channel"] = value
         data["body"] = json.dumps(body, ensure_ascii=False)
+    return data
+
+
+def remove_node_parameter_value(
+    node_type: str,
+    parameter_key: str,
+    node_data: dict[str, Any],
+) -> dict[str, Any]:
+    data = copy.deepcopy(node_data)
+
+    def remove_nested_value(target: dict[str, Any], path: tuple[str, ...]) -> None:
+        parents: list[tuple[dict[str, Any], str]] = []
+        current = target
+        for path_key in path[:-1]:
+            child = current.get(path_key)
+            if not isinstance(child, dict):
+                return
+            parents.append((current, path_key))
+            current = child
+        current.pop(path[-1], None)
+        for parent, path_key in reversed(parents):
+            child = parent.get(path_key)
+            if isinstance(child, dict) and not child:
+                parent.pop(path_key, None)
+
+    if node_type == "llmNode" and parameter_key in _LLM_BASIC_PARAMETER_PATHS:
+        remove_nested_value(data, _LLM_BASIC_PARAMETER_PATHS[parameter_key])
+        data.pop(parameter_key, None)
+        return data
+    if node_type == "llmNode" and parameter_key in _LLM_ROUTING_PARAMETER_PATHS:
+        policy = data.get("model_routing_policy")
+        if isinstance(policy, dict):
+            policy = copy.deepcopy(policy)
+            remove_nested_value(policy, _LLM_ROUTING_PARAMETER_PATHS[parameter_key])
+            if policy:
+                data["model_routing_policy"] = policy
+            else:
+                data.pop("model_routing_policy", None)
+        data.pop(parameter_key, None)
+        return data
+    if node_type == "slackPostNode" and parameter_key == "bot_token":
+        auth_config = data.get("authConfig")
+        if isinstance(auth_config, dict):
+            auth_config = copy.deepcopy(auth_config)
+            auth_config.pop("token", None)
+            if auth_config:
+                data["authConfig"] = auth_config
+            else:
+                data.pop("authConfig", None)
+        data.pop("bot_token", None)
+        return data
+    if node_type == "slackPostNode" and parameter_key == "channel":
+        data.pop("channel", None)
+        body = data.get("body")
+        parsed_body = body
+        if isinstance(body, str):
+            try:
+                parsed_body = json.loads(body)
+            except (TypeError, ValueError):
+                parsed_body = None
+        if isinstance(parsed_body, dict):
+            parsed_body = copy.deepcopy(parsed_body)
+            parsed_body.pop("channel", None)
+            if parsed_body:
+                data["body"] = json.dumps(parsed_body, ensure_ascii=False)
+            else:
+                data.pop("body", None)
+        return data
+    data.pop(parameter_key, None)
     return data
 
 

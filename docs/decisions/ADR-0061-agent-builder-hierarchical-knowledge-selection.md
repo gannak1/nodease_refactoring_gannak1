@@ -11,6 +11,7 @@ Agent Builder의 평면 Knowledge Base 후보 목록은 Collection 자동 라우
 ## Decision
 
 - 이 결정은 ADR-0039의 "Agent Builder recommendation은 direct KB만 materialize" 및 이를 후속 이슈로 미룬 조항을 대체한다. ADR-0039의 additive graph, save authorization, runtime 재검증, observability 비노출 경계는 그대로 유지한다.
+- 계층형 Collection/KB 선택과 ranking 정책의 기능 소유 이슈는 MBA-294다. 현재 구현은 MBA-277 안정화 PR에서 함께 전달하되, 문서와 테스트는 MBA-294의 구현·미구현 상태를 별도로 추적한다. 이 통합 전달은 두 변경이 독립적으로 merge 또는 rollback되었다는 의미가 아니다.
 
 - Agent Builder는 route 권한이 있고 operational 상태인 Collection과, 별도로 `use` 권한 및 operational 상태를 통과한 하위 KB만 계층 응답으로 제공한다.
 - Collection route 권한은 하위 KB identity 열람 권한을 포함하지 않는다. 권한 없는 하위 KB의 ID, 이름, 개수는 응답하지 않는다.
@@ -27,6 +28,8 @@ Agent Builder의 평면 Knowledge Base 후보 목록은 Collection 자동 라우
 - 화면에 반환하는 Collection은 최대 20개, 고유 KB 후보는 최대 20개다. UI는 약 3개 행 높이를 유지하고 나머지는 스크롤로 탐색한다. 내부 후보 탐색과 권한·점수 계산에 사용하는 고유 KB 안전 상한은 5,000개이며 화면 표시 상한과 분리한다. 표시 상한 적용을 점수 계산 뒤로 미루더라도 이 내부 안전 상한은 해제하지 않는다.
 - 점수는 DB와 graph에 저장하지 않는다. 점수 내림차순, safe label 오름차순(없는 label은 마지막), opaque handle 오름차순으로 안정 정렬한다. source tier와 availability는 이미 KB 점수에 포함되므로 별도 tie-break로 다시 적용하지 않는다.
 - 발급된 후보 handle의 적용은 새 추천 또는 현재 Top-K에 의존하지 않는다. 서버는 해당 resolution에 발급된 handle을 보존하고 적용 시 active organization, 권한, lifecycle과 runtime eligibility만 다시 검증한다.
+- 발급 뒤 card handle이 stale이면 저장된 structured request로 Knowledge hierarchy만 다시 계산해 같은 `unapplied` resolution을 갱신하고 이전 Collection/KB 선택을 비운 뒤 사용자가 다시 선택하게 한다. 이미 `pending_ack|completed`인 resolution은 갱신하거나 재제출하지 않고 `knowledge_resolution_already_submitted`로 닫는다. 이 처리는 planner, 원래 자연어 요청, GraphMutation, workflow save와 acknowledgement를 실행하지 않는다.
+- 활성 `after_graph` target의 Node Detail에서 선택한 real KB/Collection은 추천 response Top-K에 포함되지 않았어도 된다. 서버가 active organization의 opaque handle로 변환하고 권한, lifecycle과 runtime eligibility를 독립적으로 검증한다.
 - 5,000개 내부 후보 상한은 추천 탐색과 점수 계산 경계다. 이미 발급되어 사용자가 제출한 최대 20개 handle을 적용할 때는 이 추천 상한으로 다시 자르지 않고 발급 범위 전체에서 재검증한다.
 - Collection/KB 선택 배열은 순서가 없는 집합이다. 서버는 중복 제거 후 handle 오름차순으로 canonicalize하며, 같은 집합의 순서만 바꾼 재시도는 같은 결정으로 처리하고 실제 집합이 달라진 재시도만 conflict로 닫는다.
 - `before_graph` Knowledge placement는 `target_step_id`로 해석되는 정확히 하나의 Knowledge-capable LLM node만 변경한다. target이 없거나 둘 이상이면 다른 LLM 전체에 복제하지 않고 validation failure로 닫는다.

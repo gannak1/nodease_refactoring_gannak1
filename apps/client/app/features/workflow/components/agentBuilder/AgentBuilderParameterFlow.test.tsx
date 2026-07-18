@@ -218,6 +218,42 @@ describe('Agent Builder parameter cards', () => {
     });
   });
 
+  it('clears an existing optional graph value instead of only skipping the task', () => {
+    const onDecision = vi.fn();
+    const messageTask: AgentBuilderParameterTask = {
+      ...tasks[0],
+      task_id: 'task-slack-message',
+      node_id: 'slack',
+      node_type: 'slackPostNode',
+      parameter_key: 'message',
+      label: 'Slack message',
+      input_type: 'textarea',
+      required: false,
+      defer_policy: 'forbidden',
+      status: 'active',
+      node_label: 'Slack',
+    };
+
+    render(
+      <WorkflowResultGroup
+        tasks={[messageTask]}
+        nodes={[{ id: 'slack', data: { message: 'existing' } } as Node]}
+        onFocusNode={vi.fn()}
+        onDecision={onDecision}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('Slack message'), {
+      target: { value: '' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+
+    expect(onDecision).toHaveBeenCalledWith({
+      taskId: 'task-slack-message',
+      action: 'clear',
+    });
+  });
+
   it('resource reference는 검색 가능한 권한 후보에서만 선택한다', () => {
     const onDecision = vi.fn();
     render(

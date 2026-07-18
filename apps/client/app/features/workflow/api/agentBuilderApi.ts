@@ -429,7 +429,7 @@ export const agentBuilderApi = {
     input: {
       operationId: string;
       expectedTaskVersion: number;
-      action: 'confirm' | 'set' | 'defer' | 'skip' | 'previous';
+      action: 'confirm' | 'set' | 'clear' | 'defer' | 'skip' | 'previous';
       value?: Record<string, unknown>;
     },
   ): Promise<{

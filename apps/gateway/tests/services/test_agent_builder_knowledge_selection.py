@@ -1,3 +1,4 @@
+from copy import deepcopy
 from types import SimpleNamespace
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -169,6 +170,66 @@ def test_knowledge_resolution_treats_reordered_handles_as_the_same_selection():
     assert stored["selected_kb_handles"] == ["rec-a", "rec-b"]
 
 
+def test_persisted_hierarchical_selection_restores_only_visible_safe_labels():
+    hydrated = AgentBuilderService._hydrate_persisted_knowledge_selection(
+        {
+            "knowledge_resolution": {
+                "resolution_id": "res-hydrate",
+                "timing": "after_graph",
+                "required": True,
+                "candidates": [],
+                "collections": [
+                    {
+                        "collection_handle": "collection-visible",
+                        "safe_label": "사내 문서",
+                        "children": [
+                            {
+                                "kb_handle": "kb-visible",
+                                "selection_key": "kb-visible",
+                                "safe_label": "인사 KB",
+                            }
+                        ],
+                    }
+                ],
+                "ungrouped_kbs": [],
+                "selected": [],
+            },
+            "knowledge_resolutions": [
+                {
+                    "resolution_id": "res-hydrate",
+                    "operation_id": str(uuid4()),
+                    "timing": "after_graph",
+                    "selected_candidate_ids": [
+                        "collection-visible",
+                        "kb-visible",
+                        "kb-hidden",
+                    ],
+                    "selected_collection_handles": ["collection-visible"],
+                    "selected_kb_handles": ["kb-visible", "kb-hidden"],
+                    "status": "completed",
+                }
+            ],
+        }
+    )
+
+    assert hydrated is not None
+    assert hydrated["selected_collection_handles"] == ["collection-visible"]
+    assert hydrated["selected_kb_handles"] == ["kb-visible", "kb-hidden"]
+    assert hydrated["selected"] == [
+        {
+            "selection_type": "collection",
+            "collection_handle": "collection-visible",
+            "safe_label": "사내 문서",
+        },
+        {
+            "selection_type": "knowledge_base",
+            "kb_handle": "kb-visible",
+            "candidate_id": "kb-visible",
+            "safe_label": "인사 KB",
+        },
+    ]
+
+
 def test_knowledge_resolution_cannot_issue_a_second_operation_once_submitted():
     repository = AgentBuilderRepository()
     request_row = SimpleNamespace(response_payload={})
@@ -313,8 +374,10 @@ def test_before_graph_payload_loss_unapplies_resolution_and_allows_new_operation
     assert str(first_operation_id) not in boundary["member_operation_ids"]
 
 
-def test_duplicate_knowledge_selection_is_rejected_before_any_resolver_rerun(
+@pytest.mark.parametrize("terminal_status", ["pending_ack", "completed"])
+def test_terminal_knowledge_selection_rejects_stale_handles_without_refresh(
     monkeypatch,
+    terminal_status,
 ):
     user_id = uuid4()
     organization_id = uuid4()
@@ -402,7 +465,9 @@ def test_duplicate_knowledge_selection_is_rejected_before_any_resolver_rerun(
                     "operation_id": str(uuid4()),
                     "timing": "after_graph",
                     "selected_candidate_ids": ["rec-safe-1"],
-                    "status": "pending_ack",
+                    "selected_collection_handles": [],
+                    "selected_kb_handles": ["rec-safe-1"],
+                    "status": terminal_status,
                 }
             ],
         },
@@ -429,6 +494,9 @@ def test_duplicate_knowledge_selection_is_rejected_before_any_resolver_rerun(
             return list(self._rows)
 
     class _Db:
+        def __init__(self):
+            self.commits = 0
+
         def query(self, model):
             if model is selection_module.AgentBuilderSession:
                 return _Query(first=session)
@@ -438,33 +506,42 @@ def test_duplicate_knowledge_selection_is_rejected_before_any_resolver_rerun(
                 return _Query(rows=[request_row])
             raise AssertionError(f"unexpected model: {model}")
 
+        def commit(self):
+            self.commits += 1
+
     resolver_calls = []
+    refresh_calls = []
     monkeypatch.setattr(
         selection_module,
         "has_workflow_permission",
         lambda *_args, **_kwargs: True,
     )
+    db = _Db()
     service = KnowledgeSelectionService(
-        _Db(),
+        db,
         user_id=user_id,
         organization_id=organization_id,
         binding_materializer=lambda *_args, **_kwargs: resolver_calls.append(
             (_args, _kwargs)
+        ),
+        knowledge_selection_refresher=lambda structured_request: (
+            refresh_calls.append(structured_request)
+            or {
+                "knowledge_selection": {
+                    "collections": [],
+                    "ungrouped_kbs": [],
+                }
+            }
         ),
         no_knowledge_candidate_id="no-kb",
     )
     selection = AgentBuilderKnowledgeSelectionRequest.model_validate(
         {
             "resolution_id": "res-kb-1",
-            "selected_candidates": [
-                {
-                    "candidate_id": "rec-safe-1",
-                    "resolution_id": "res-kb-1",
-                    "requirement_id": "kr-1",
-                }
-            ],
+            "selected_kb_handles": ["rec-stale"],
         }
     )
+    original_payload = deepcopy(request_row.response_payload)
 
     with pytest.raises(HTTPException) as exc:
         service.select(session.id, selection)
@@ -472,6 +549,9 @@ def test_duplicate_knowledge_selection_is_rejected_before_any_resolver_rerun(
     assert exc.value.status_code == 409
     assert exc.value.detail == "knowledge_resolution_already_submitted"
     assert resolver_calls == []
+    assert refresh_calls == []
+    assert db.commits == 0
+    assert request_row.response_payload == original_payload
 
 
 def test_direct_selection_rejects_legacy_only_knowledge_candidate(
@@ -866,6 +946,17 @@ def test_hierarchical_knowledge_selection_rejects_stale_handles_and_materializes
             "operation_envelopes": [
                 {"kind": "initial_graph", "status": "acknowledged"}
             ],
+            "knowledge_resolutions": [
+                {
+                    "resolution_id": "res-hierarchy-1",
+                    "operation_id": str(uuid4()),
+                    "timing": "after_graph",
+                    "selected_candidate_ids": ["col-stale", "rec-stale"],
+                    "selected_collection_handles": ["col-stale"],
+                    "selected_kb_handles": ["rec-stale"],
+                    "status": "unapplied",
+                }
+            ],
         },
     )
 
@@ -903,28 +994,65 @@ def test_hierarchical_knowledge_selection_rejects_stale_handles_and_materializes
             return None
 
     materializer_calls = []
+    refresh_calls = []
     knowledge_base_id = uuid4()
     collection_id = uuid4()
+    editor_kb_handle = "rec-editor-outside-top-k"
+    editor_collection_handle = "col-editor-outside-top-k"
 
     def _materializer(*args, **kwargs):
         materializer_calls.append((args, kwargs))
+        requested_kb_handles = kwargs.get("selected_kb_handles") or {
+            "rec-safe-1"
+        }
+        requested_collection_handles = kwargs.get(
+            "selected_collection_handles"
+        ) or {"col-safe-1"}
+        selected_kb_handle = sorted(requested_kb_handles)[0]
+        selected_collection_handle = sorted(requested_collection_handles)[0]
         return {
             "status": "ready",
             "bindings": [
                 {
-                    "safe_handle": "rec-safe-1",
+                    "safe_handle": selected_kb_handle,
                     "knowledge_base_id": str(knowledge_base_id),
                     "name": "휴가 정책",
                 }
             ],
             "collections": [
                 {
-                    "safe_handle": "col-safe-1",
+                    "safe_handle": selected_collection_handle,
                     "knowledge_collection_id": str(collection_id),
                     "name": "사내 문서",
                 }
             ],
             "warnings": [],
+        }
+
+    def _refresh_hierarchy(structured_request):
+        refresh_calls.append(structured_request)
+        return {
+            "status": "clarification_required",
+            "options": [],
+            "knowledge_selection": {
+                "collections": [
+                    {
+                        "collection_handle": "col-safe-1",
+                        "safe_label": "사내 문서 최신",
+                        "score": 0.8,
+                        "children": [
+                            {
+                                "kb_handle": "rec-safe-1",
+                                "selection_key": "kbsel-safe-1",
+                                "safe_label": "휴가 정책 최신",
+                                "score": 0.9,
+                                "shared_collection_count": 1,
+                            }
+                        ],
+                    }
+                ],
+                "ungrouped_kbs": [],
+            },
         }
 
     monkeypatch.setattr(
@@ -938,12 +1066,15 @@ def test_hierarchical_knowledge_selection_rejects_stale_handles_and_materializes
         user_id=user_id,
         organization_id=organization_id,
         binding_materializer=_materializer,
+        knowledge_selection_refresher=_refresh_hierarchy,
         no_knowledge_candidate_id="no-kb",
         knowledge_base_handle_resolver=lambda resource_id: (
-            "rec-safe-1" if resource_id == knowledge_base_id else "rec-stale"
+            editor_kb_handle if resource_id == knowledge_base_id else "rec-stale"
         ),
         knowledge_collection_handle_resolver=lambda resource_id: (
-            "col-safe-1" if resource_id == collection_id else "col-stale"
+            editor_collection_handle
+            if resource_id == collection_id
+            else "col-stale"
         ),
     )
 
@@ -955,8 +1086,16 @@ def test_hierarchical_knowledge_selection_rejects_stale_handles_and_materializes
                 selected_collection_handles=["col-stale"],
             ),
         )
-    assert stale.value.status_code == 422
+    assert stale.value.status_code == 409
+    assert stale.value.detail == {"code": "knowledge_selection_stale"}
     assert materializer_calls == []
+    assert refresh_calls == [structured]
+    assert request_row.response_payload["knowledge_resolution"]["collections"][0][
+        "safe_label"
+    ] == "사내 문서 최신"
+    assert request_row.response_payload["knowledge_resolutions"][0][
+        "selected_candidate_ids"
+    ] == []
 
     request = (
         AgentBuilderKnowledgeSelectionRequest(
@@ -974,11 +1113,17 @@ def test_hierarchical_knowledge_selection_rejects_stale_handles_and_materializes
     )
     response = service.select(session.id, request)
 
-    assert response.selected_collection_handles == ["col-safe-1"]
-    assert response.selected_kb_handles == ["rec-safe-1"]
+    expected_collection_handle = (
+        editor_collection_handle if selection_source == "node_editor" else "col-safe-1"
+    )
+    expected_kb_handle = (
+        editor_kb_handle if selection_source == "node_editor" else "rec-safe-1"
+    )
+    assert response.selected_collection_handles == [expected_collection_handle]
+    assert response.selected_kb_handles == [expected_kb_handle]
     assert materializer_calls[0][1] == {
-        "selected_kb_handles": {"rec-safe-1"},
-        "selected_collection_handles": {"col-safe-1"},
+        "selected_kb_handles": {expected_kb_handle},
+        "selected_collection_handles": {expected_collection_handle},
     }
     operation = response.graph_mutation.operations[0]
     assert operation.data["knowledgeBases"] == [
@@ -989,13 +1134,13 @@ def test_hierarchical_knowledge_selection_rejects_stale_handles_and_materializes
     ]
     assert request_row.response_payload["knowledge_resolutions"][0][
         "selected_candidate_ids"
-    ] == ["col-safe-1", "rec-safe-1"]
+    ] == sorted([expected_collection_handle, expected_kb_handle])
     assert request_row.response_payload["knowledge_resolutions"][0][
         "selected_collection_handles"
-    ] == ["col-safe-1"]
+    ] == [expected_collection_handle]
     assert request_row.response_payload["knowledge_resolutions"][0][
         "selected_kb_handles"
-    ] == ["rec-safe-1"]
+    ] == [expected_kb_handle]
 
 
 def test_before_graph_empty_direct_resolution_uses_dedicated_empty_selection(

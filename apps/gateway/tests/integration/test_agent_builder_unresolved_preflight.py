@@ -559,3 +559,45 @@ def test_preflight_blocks_selector_that_no_longer_exists_in_source_output_contra
     issues = workflow_configuration_issues(graph)
 
     assert issues[0].missing_parameters == ("processing_ref_selector",)
+
+
+def test_preflight_blocks_selector_list_with_missing_source_or_output():
+    graph = {
+        "nodes": [
+            {
+                "id": "mail",
+                "type": "mailNode",
+                "data": {"credential_id": "credential-reference"},
+            },
+            {
+                "id": "draft",
+                "type": "gmailDraftNode",
+                "data": {
+                    "credential_id": "credential-reference",
+                    "processing_ref_selector": ["mail", "processing_ref"],
+                    "reply_body_selector": ["mail", "emails"],
+                },
+            },
+            {
+                "id": "ack",
+                "type": "mailAcknowledgeNode",
+                "data": {
+                    "processing_ref_selector": ["mail", "processing_ref"],
+                    "required_effect_ref_selectors": [
+                        ["draft", "draft_ref"],
+                        ["deleted-node", "draft_ref"],
+                    ],
+                },
+            },
+        ],
+        "edges": [
+            {"id": "mail-draft", "source": "mail", "target": "draft"},
+            {"id": "draft-ack", "source": "draft", "target": "ack"},
+        ],
+    }
+
+    issues = workflow_configuration_issues(graph)
+
+    assert [(issue.node_id, issue.missing_parameters) for issue in issues] == [
+        ("ack", ("required_effect_ref_selectors",))
+    ]

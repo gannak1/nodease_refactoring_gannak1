@@ -227,10 +227,10 @@ def workflow_configuration_issues(
                         ),
                         None,
                     )
-                    if (
-                        parameter
-                        and parameter.get("input_type") == "variable_selector"
-                    ):
+                    if parameter and parameter.get("input_type") in {
+                        "variable_selector",
+                        "variable_selector_list",
+                    }:
                         selectors = parameter_selectors(data.get(parameter_key))
                         invalid = invalid or not selectors or not all(
                             selector_valid(

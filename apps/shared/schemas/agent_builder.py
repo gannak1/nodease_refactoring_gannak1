@@ -496,7 +496,7 @@ class AgentBuilderParameterTaskDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     operation_id: UUID
     expected_task_version: int = Field(ge=1)
-    action: Literal["set", "confirm", "defer", "skip", "previous"]
+    action: Literal["set", "clear", "confirm", "defer", "skip", "previous"]
     value: ParameterDecisionValue | None = None
 
     @model_validator(mode="after")

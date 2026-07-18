@@ -1074,13 +1074,16 @@ class AgentBuilderRepository:
                 return item
             if item.get("status") == "unapplied":
                 if (
-                    item.get("timing") != timing
-                    or list(item.get("selected_candidate_ids") or [])
-                    != serialized["selected_candidate_ids"]
-                    or list(item.get("selected_collection_handles") or [])
-                    != serialized["selected_collection_handles"]
-                    or list(item.get("selected_kb_handles") or [])
-                    != serialized["selected_kb_handles"]
+                    not item.get("selection_invalidated")
+                    and (
+                        item.get("timing") != timing
+                        or list(item.get("selected_candidate_ids") or [])
+                        != serialized["selected_candidate_ids"]
+                        or list(item.get("selected_collection_handles") or [])
+                        != serialized["selected_collection_handles"]
+                        or list(item.get("selected_kb_handles") or [])
+                        != serialized["selected_kb_handles"]
+                    )
                 ):
                     raise AgentBuilderRepositoryError(
                         "knowledge resolution retry payload differs"

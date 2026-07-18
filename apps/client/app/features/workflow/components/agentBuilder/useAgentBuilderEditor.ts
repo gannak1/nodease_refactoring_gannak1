@@ -14,6 +14,7 @@ import {
 } from './agentBuilderGraphMutation';
 import { acquireWorkflowDraftSave } from '../../utils/workflowDraftSaveCoordinator';
 import { buildWorkflowDraftPayload } from '../../utils/workflowDraftPayload';
+import { workflowDraftTimestampsEqual } from '../../utils/workflowDraftCAS';
 
 const payloadMatchesCurrentEditor = (
   expectedPayload: WorkflowDraftRequest,
@@ -87,7 +88,10 @@ export const applyAndSaveAgentBuilderMutation = async (input: {
     }
     if (
       canonical.graph_hash !== input.mutation.base_graph_hash ||
-      canonical.updated_at !== input.mutation.expected_workflow_updated_at
+      !workflowDraftTimestampsEqual(
+        canonical.updated_at,
+        input.mutation.expected_workflow_updated_at,
+      )
     ) {
       throw Object.assign(new Error('stale_graph'), { code: 'stale_graph' });
     }
@@ -185,11 +189,16 @@ export const applyAndSaveAgentBuilderMutation = async (input: {
         const canonicalMatchesExpectedResult =
           envelopeMatchesExpectedResult &&
           recoveryDraft?.graph_hash === expectedResultGraphHash &&
-          recoveryDraft.updated_at === savedWorkflowUpdatedAt;
+          workflowDraftTimestampsEqual(
+            recoveryDraft.updated_at,
+            savedWorkflowUpdatedAt,
+          );
         const canonicalMatchesBase =
           recoveryDraft?.graph_hash === input.mutation.base_graph_hash &&
-          recoveryDraft.updated_at ===
-            input.mutation.expected_workflow_updated_at;
+          workflowDraftTimestampsEqual(
+            recoveryDraft.updated_at,
+            input.mutation.expected_workflow_updated_at,
+          );
 
         if (canonicalMatchesExpectedResult && recoveryDraft) {
           useWorkflowStore
@@ -277,9 +286,15 @@ export const applyAndSaveAgentBuilderMutation = async (input: {
           active?.operation_id === input.mutation.operation_id &&
           active?.status === 'acknowledged' &&
           active?.result_graph_hash === saveResult.graph_hash &&
-          active?.saved_workflow_updated_at === saveResult.updated_at &&
+          workflowDraftTimestampsEqual(
+            active?.saved_workflow_updated_at,
+            saveResult.updated_at,
+          ) &&
           canonical.graph_hash === saveResult.graph_hash &&
-          canonical.updated_at === saveResult.updated_at;
+          workflowDraftTimestampsEqual(
+            canonical.updated_at,
+            saveResult.updated_at,
+          );
         if (!acknowledged) throw retryError;
         useWorkflowStore
           .getState()

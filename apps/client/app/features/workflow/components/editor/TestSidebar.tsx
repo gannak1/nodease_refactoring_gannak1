@@ -69,6 +69,7 @@ import {
   startWorkflowExecutionFromPreflight,
   tryAcquireWorkflowDraftSave,
 } from '../../utils/workflowDraftSaveCoordinator';
+import { workflowDraftTimestampsEqual } from '../../utils/workflowDraftCAS';
 
 export { ModelRoutingDecisionDetails } from '../modelRouting/ModelRoutingDecisionDetails';
 
@@ -253,6 +254,22 @@ const latestAgentBuilderSessionId = () => {
   return null;
 };
 
+const hasPendingAgentBuilderAcknowledgement = (
+  undoStack: Array<{
+    agentBuilderHistory?: { acknowledged?: boolean };
+    agentBuilderOperation?: { operationId?: string };
+  }>,
+) => {
+  for (const snapshot of [...undoStack].reverse()) {
+    if (!snapshot.agentBuilderOperation) continue;
+    return snapshot.agentBuilderHistory?.acknowledged !== true;
+  }
+  return false;
+};
+
+const AGENT_BUILDER_ACKNOWLEDGEMENT_PENDING_MESSAGE =
+  'Agent Builder 저장 결과를 확인 중입니다. 확인이 끝난 뒤 다시 실행해주세요.';
+
 const waitForTestRunRestore = (durationMs: number) =>
   new Promise((resolve) => setTimeout(resolve, durationMs));
 
@@ -341,6 +358,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     envVariables,
     runtimeVariables,
     isAgentBuilderMutationSaving,
+    undoStack,
     testExecutionStatus,
     testExecutionRunId,
     testSelectedNodeId,
@@ -413,7 +431,14 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   };
   const isPreparing =
     preflightStatus === 'validating' || preflightStatus === 'saving';
-  const isAgentBuilderSaveBlocking = isAgentBuilderMutationSaving;
+  const isAgentBuilderAcknowledgementBlocking =
+    hasPendingAgentBuilderAcknowledgement(undoStack);
+  const isAgentBuilderSaveBlocking =
+    isAgentBuilderMutationSaving || isAgentBuilderAcknowledgementBlocking;
+  const agentBuilderSaveBlockingMessage =
+    isAgentBuilderAcknowledgementBlocking
+      ? AGENT_BUILDER_ACKNOWLEDGEMENT_PENDING_MESSAGE
+      : 'Agent Builder 변경사항 저장을 확인하는 중입니다.';
   const executionResult = testExecutionResult;
   const hasExecutionResult =
     executionResult !== null && executionResult !== undefined;
@@ -1133,11 +1158,21 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       failTestExecution('현재 권한으로는 실행할 수 없습니다.');
       return;
     }
+    const currentWorkflowState = useWorkflowStore.getState();
     if (
-      isAgentBuilderSaveBlocking ||
+      currentWorkflowState.isAgentBuilderMutationSaving ||
+      hasPendingAgentBuilderAcknowledgement(
+        currentWorkflowState.undoStack,
+      ) ||
       getWorkflowDraftSaveOwner(activeWorkflowId) === 'agent_builder'
     ) {
-      toast.info('Agent Builder 변경사항 저장을 확인하는 중입니다.');
+      toast.info(
+        hasPendingAgentBuilderAcknowledgement(
+          currentWorkflowState.undoStack,
+        )
+          ? AGENT_BUILDER_ACKNOWLEDGEMENT_PENDING_MESSAGE
+          : 'Agent Builder 변경사항 저장을 확인하는 중입니다.',
+      );
       return;
     }
 
@@ -1203,7 +1238,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       try {
         const canonical = await workflowApi.getDraftWorkflow(activeWorkflowId);
         const currentState = useWorkflowStore.getState();
-        if (currentState.isAgentBuilderMutationSaving) {
+        if (
+          currentState.isAgentBuilderMutationSaving ||
+          hasPendingAgentBuilderAcknowledgement(currentState.undoStack)
+        ) {
           const message =
             'Agent Builder 저장이 시작되어 테스트 실행을 중단했습니다. 저장 완료 후 다시 시도해주세요.';
           failTestExecution(message);
@@ -1231,7 +1269,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
           if (
             !localBase ||
             canonical.graph_hash !== localBase.graphHash ||
-            canonical.updated_at !== localBase.updatedAt
+            !workflowDraftTimestampsEqual(
+              canonical.updated_at,
+              localBase.updatedAt,
+            )
           ) {
             const message =
               '서버의 Workflow가 현재 편집 기준보다 앞서 있습니다. 최신 상태를 불러온 뒤 다시 시도해주세요.';
@@ -1268,7 +1309,13 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
           }
         }
 
-        if (useWorkflowStore.getState().isAgentBuilderMutationSaving) {
+        const latestWorkflowState = useWorkflowStore.getState();
+        if (
+          latestWorkflowState.isAgentBuilderMutationSaving ||
+          hasPendingAgentBuilderAcknowledgement(
+            latestWorkflowState.undoStack,
+          )
+        ) {
           const message =
             'Agent Builder 저장이 시작되어 테스트 실행을 중단했습니다. 저장 완료 후 다시 시도해주세요.';
           failTestExecution(message);
@@ -1736,7 +1783,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 <div className="flex items-center gap-2 font-medium">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   {isAgentBuilderSaveBlocking
-                    ? 'Agent Builder 변경사항 저장을 확인하는 중입니다.'
+                    ? agentBuilderSaveBlockingMessage
                     : preflightStatus === 'validating'
                       ? '워크플로우 연결을 검증하는 중입니다.'
                       : '현재 워크플로우를 저장하는 중입니다.'}
@@ -1983,7 +2030,9 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
                   {isAgentBuilderSaveBlocking
-                    ? 'Agent Builder 저장 확인 중...'
+                    ? isAgentBuilderAcknowledgementBlocking
+                      ? 'Agent Builder 저장 결과 확인 중...'
+                      : 'Agent Builder 저장 확인 중...'
                     : isTestUploading
                       ? '파일 업로드 중...'
                       : preflightStatus === 'validating'

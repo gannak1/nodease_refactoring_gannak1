@@ -130,6 +130,20 @@ beforeEach(() => {
   vi.clearAllMocks();
   useWorkflowStore.getState().hasUnsavedChanges = true;
   useWorkflowStore.getState().isAgentBuilderMutationSaving = false;
+  useWorkflowStore.getState().undoStack = [
+    {
+      nodes: [],
+      edges: [],
+      agentBuilderHistory: {
+        sessionId: 'session-1',
+        acknowledged: true,
+        completionEligible: false,
+        parameterGroup: null,
+        lastManuallyConfiguredTaskId: null,
+        presentation: 'none',
+      },
+    },
+  ];
   vi.mocked(
     useWorkflowStore.getState().getCanonicalDraftMetadata,
   ).mockReturnValue({
@@ -152,6 +166,66 @@ describe('TestSidebar final response card', () => {
     expect(executeButton).toBeDisabled();
     expect(
       screen.getByText('Agent Builder 변경사항 저장을 확인하는 중입니다.'),
+    ).toBeInTheDocument();
+    expect(workflowApi.getDraftWorkflow).not.toHaveBeenCalled();
+    expect(workflowApi.syncDraftWorkflow).not.toHaveBeenCalled();
+    expect(workflowApi.executeWorkflowStream).not.toHaveBeenCalled();
+  });
+
+  it('Agent Builder graph가 저장됐지만 acknowledgement 전이면 테스트 실행을 차단한다', () => {
+    const store = useWorkflowStore.getState() as ReturnType<
+      typeof useWorkflowStore.getState
+    > & {
+      undoStack: Array<{
+        nodes: unknown[];
+        edges: unknown[];
+        agentBuilderOperation?: {
+          operationId: string;
+          resultGraphHash: string;
+          workflowUpdatedAt: string;
+          sessionId: string;
+        };
+        agentBuilderHistory?: {
+          sessionId?: string;
+          latestOperationId?: string;
+          acknowledged?: boolean;
+        };
+      }>;
+    };
+    store.isAgentBuilderMutationSaving = false;
+    store.undoStack = [
+      {
+        nodes: [],
+        edges: [],
+        agentBuilderOperation: {
+          operationId: 'operation-persisted-unacknowledged',
+          resultGraphHash: 'b'.repeat(64),
+          workflowUpdatedAt: '2026-07-14T00:00:01Z',
+          sessionId: 'session-1',
+        },
+        agentBuilderHistory: {
+          sessionId: 'session-1',
+          latestOperationId: 'operation-persisted-unacknowledged',
+          acknowledged: false,
+          completionEligible: false,
+          parameterGroup: null,
+          lastManuallyConfiguredTaskId: null,
+          presentation: 'none',
+        },
+      },
+    ];
+
+    render(<TestSidebar />);
+
+    expect(
+      screen.getByRole('button', {
+        name: /Agent Builder 저장 결과 확인 중/,
+      }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText(
+        'Agent Builder 저장 결과를 확인 중입니다. 확인이 끝난 뒤 다시 실행해주세요.',
+      ),
     ).toBeInTheDocument();
     expect(workflowApi.getDraftWorkflow).not.toHaveBeenCalled();
     expect(workflowApi.syncDraftWorkflow).not.toHaveBeenCalled();

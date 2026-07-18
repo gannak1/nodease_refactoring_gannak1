@@ -55,7 +55,7 @@ class ParameterTaskPlan:
 class PreparedParameterDecision:
     operation_id: UUID
     task_id: UUID
-    action: Literal["set", "confirm", "defer", "skip", "previous"]
+    action: Literal["set", "clear", "confirm", "defer", "skip", "previous"]
     expected_task_version: int
     awaiting_persistence_ack: bool
     graph_data_patch: dict[str, Any] | None
@@ -920,7 +920,7 @@ def prepare_task_decision(
     task_id: UUID,
     operation_id: UUID,
     expected_task_version: int,
-    action: Literal["set", "confirm", "defer", "skip", "previous"],
+    action: Literal["set", "clear", "confirm", "defer", "skip", "previous"],
     value: Any,
 ) -> PreparedParameterDecision:
     index = _task_index(tasks, task_id)
@@ -939,6 +939,51 @@ def prepare_task_decision(
             expected_task_version=expected_task_version,
             awaiting_persistence_ack=True,
             graph_data_patch={task.parameter_key: copy.deepcopy(value)},
+        )
+    if action == "clear":
+        if task.status not in {
+            "active",
+            "completed",
+            "skipped",
+            "deferred",
+            "invalid",
+        }:
+            raise ParameterTaskConflict("task is not clearable")
+        if task.required:
+            raise ParameterTaskConflict("required task cannot be cleared")
+        if (
+            task.node_type == "llmNode"
+            and task.parameter_key in _LLM_PROMPT_PARAMETER_KEYS
+        ):
+            other_prompts = [
+                item
+                for item in tasks
+                if item.node_id == task.node_id
+                and item.task_id != task.task_id
+                and item.parameter_key in _LLM_PROMPT_PARAMETER_KEYS
+            ]
+            empty_fingerprint = canonical_parameter_value_fingerprint("")
+            has_configured_prompt = any(
+                item.status == "completed"
+                and (
+                    item.resolution_source == "user_request"
+                    or item.recommendation_fingerprint
+                    not in {None, empty_fingerprint}
+                )
+                for item in other_prompts
+            )
+            has_remaining_prompt = any(
+                item.status in {"active", "pending"} for item in other_prompts
+            )
+            if not has_configured_prompt and not has_remaining_prompt:
+                raise ParameterTaskConflict("one prompt is required")
+        return PreparedParameterDecision(
+            operation_id=operation_id,
+            task_id=task_id,
+            action=action,
+            expected_task_version=expected_task_version,
+            awaiting_persistence_ack=True,
+            graph_data_patch={"_clear_parameter": task.parameter_key},
         )
     if action == "previous":
         if task.status not in {"active", "completed", "skipped", "deferred"}:
@@ -1154,10 +1199,18 @@ def acknowledge_task_decision(
     task = updated[index]
     if task.task_version != decision.expected_task_version:
         raise ParameterTaskConflict("task version conflict")
-    status = "deferred" if decision.action == "defer" else "completed"
+    status = (
+        "deferred"
+        if decision.action == "defer"
+        else "skipped"
+        if decision.action == "clear"
+        else "completed"
+    )
     resolution_source = task.resolution_source
     if decision.action == "set":
         resolution_source = "user_request"
+    elif decision.action == "clear":
+        resolution_source = None
     updated[index] = task.model_copy(
         update={
             "status": status,
@@ -1165,7 +1218,7 @@ def acknowledge_task_decision(
             "resolution_source": resolution_source,
             "recommendation_fingerprint": (
                 None
-                if decision.action == "set"
+                if decision.action in {"set", "clear"}
                 else task.recommendation_fingerprint
             ),
         }

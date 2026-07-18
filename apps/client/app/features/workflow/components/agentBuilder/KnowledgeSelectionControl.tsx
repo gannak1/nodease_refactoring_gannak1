@@ -45,6 +45,7 @@ export const KnowledgeSelectionControl = ({
   initialSelectedIds = [],
   initialSelectedCollectionHandles = [],
   initialSelectedKbHandles = [],
+  resetVersion = 0,
   errorMessage = null,
 }: {
   candidates: KnowledgeSelectionCandidate[];
@@ -57,6 +58,7 @@ export const KnowledgeSelectionControl = ({
   initialSelectedIds?: string[];
   initialSelectedCollectionHandles?: string[];
   initialSelectedKbHandles?: string[];
+  resetVersion?: number;
   errorMessage?: string | null;
 }) => {
   const selectionId = (candidate: KnowledgeSelectionCandidate) =>
@@ -132,6 +134,7 @@ export const KnowledgeSelectionControl = ({
     initialSelection,
     initialSelectedCollectionHandles,
     initialKbKeys,
+    resetVersion,
   });
   const previousSelectionScopeRef = useRef(selectionScope);
   useEffect(() => {
@@ -183,11 +186,19 @@ export const KnowledgeSelectionControl = ({
 
   const toggleCollection = (collection: KnowledgeSelectionCollection) => {
     const handle = collection.collection_handle;
-    setSelectedCollectionHandles((current) =>
-      current.includes(handle)
-        ? current.filter((item) => item !== handle)
-        : [...current, handle],
+    const childKeys = new Set(
+      collection.children.map((child) => child.selection_key),
     );
+    if (selectedCollectionHandles.includes(handle)) {
+      setSelectedCollectionHandles((current) =>
+        current.filter((item) => item !== handle),
+      );
+      setSelectedKbKeys((selected) =>
+        selected.filter((selectionKey) => !childKeys.has(selectionKey)),
+      );
+      return;
+    }
+    setSelectedCollectionHandles((current) => [...current, handle]);
   };
 
   const toggleHierarchyKb = (selectionKey: string) => {

@@ -335,7 +335,7 @@ class GraphMutationLifecycleService:
                     operation_id=operation_id,
                     task_id=UUID(str(parameter_task_id)),
                     action=cast(
-                        Literal["set", "defer", "skip", "previous"],
+                        Literal["set", "clear", "defer", "skip", "previous"],
                         str(pending["action"]),
                     ),
                     expected_task_version=int(pending["expected_task_version"]),

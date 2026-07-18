@@ -29,8 +29,10 @@ import {
   type AgentBuilderParameterGroup,
   type AgentBuilderSessionMessage,
 } from '../../api/agentBuilderApi';
+import { workflowApi } from '../../api/workflowApi';
 import type { Node } from '../../types/Workflow';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
+import { workflowDraftTimestampsEqual } from '../../utils/workflowDraftCAS';
 import {
   WorkflowResultGroup,
   type WorkflowKnowledgeStep,
@@ -177,6 +179,9 @@ const agentBuilderErrorMessage = (error: unknown): string => {
 
 const knowledgeSelectionErrorMessage = (error: unknown): string => {
   const code = agentBuilderErrorCode(error);
+  if (code === 'knowledge_selection_stale') {
+    return 'Knowledge 후보가 변경되어 최신 목록으로 갱신했습니다. 다시 선택해주세요.';
+  }
   if (code === 'workflow_context_changed') {
     return 'Workflow가 전환되어 이전 Knowledge 선택을 적용하지 않았습니다.';
   }
@@ -573,6 +578,8 @@ export function AgentBuilderPanel({
   const [knowledgeSelectionError, setKnowledgeSelectionError] = useState<
     string | null
   >(null);
+  const [knowledgeSelectionResetVersion, setKnowledgeSelectionResetVersion] =
+    useState(0);
   const [lastSubmittedMessage, setLastSubmittedMessage] = useState('');
   const [generationMode, setGenerationMode] = useState<
     'configure_and_generate' | 'structure_only'
@@ -782,13 +789,84 @@ export function AgentBuilderPanel({
     setAuthoritativeRequestStatus('completion_confirming');
   }, []);
 
+  const confirmAcknowledgedHistoryBoundary = useCallback(
+    async (
+      session: Awaited<ReturnType<typeof agentBuilderApi.getSession>>,
+    ): Promise<boolean> => {
+      const activeMutation = session.active_graph_mutation as
+        | Record<string, unknown>
+        | null
+        | undefined;
+      const operationId = activeMutation?.operation_id;
+      const resultGraphHash = activeMutation?.result_graph_hash;
+      const savedWorkflowUpdatedAt =
+        activeMutation?.saved_workflow_updated_at;
+      if (
+        activeMutation?.status !== 'acknowledged' ||
+        typeof operationId !== 'string' ||
+        typeof resultGraphHash !== 'string' ||
+        typeof savedWorkflowUpdatedAt !== 'string'
+      ) {
+        return false;
+      }
+
+      const state = useWorkflowStore.getState();
+      const boundary = [...state.undoStack]
+        .reverse()
+        .find(
+          (snapshot) =>
+            snapshot.agentBuilderOperation?.operationId === operationId ||
+            snapshot.agentBuilderHistory?.latestOperationId === operationId,
+        );
+      const persistedOperation = boundary?.agentBuilderOperation;
+      if (
+        !persistedOperation ||
+        persistedOperation.sessionId !== session.session_id ||
+        persistedOperation.resultGraphHash !== resultGraphHash ||
+        !workflowDraftTimestampsEqual(
+          persistedOperation.workflowUpdatedAt,
+          savedWorkflowUpdatedAt,
+        )
+      ) {
+        return false;
+      }
+
+      const canonical = await workflowApi.getDraftWorkflow(workflowId);
+      if (
+        (canonical.workflow_id && canonical.workflow_id !== workflowId) ||
+        canonical.graph_hash !== resultGraphHash ||
+        !workflowDraftTimestampsEqual(
+          canonical.updated_at,
+          savedWorkflowUpdatedAt,
+        )
+      ) {
+        return false;
+      }
+
+      state.ingestCanonicalDraftMetadata(canonical, workflowId);
+      state.markLatestAgentBuilderMutationAcknowledged(
+        operationId,
+        session.status === 'completed',
+      );
+      return true;
+    },
+    [workflowId],
+  );
+
   const reconcileCanonicalSession = useCallback(
-    (session: Awaited<ReturnType<typeof agentBuilderApi.getSession>>) => {
+    (
+      session: Awaited<ReturnType<typeof agentBuilderApi.getSession>>,
+      options: { acknowledgedBoundaryConfirmed?: boolean } = {},
+    ) => {
       const activeMutation = session.active_graph_mutation as
         Record<string, unknown> | null | undefined;
       const isPendingAcknowledgement =
         activeMutation?.status === 'pending_ack' &&
         typeof activeMutation.operation_id === 'string';
+      const isUnconfirmedAcknowledgement =
+        activeMutation?.status === 'acknowledged' &&
+        typeof activeMutation.operation_id === 'string' &&
+        !options.acknowledgedBoundaryConfirmed;
       setSessionProtocolVersion(session.protocol_version ?? null);
       const restored = conversationItemsFromSessionMessages(session.messages);
       const requestId = latestResponseRequestId(restored.responses);
@@ -813,7 +891,7 @@ export function AgentBuilderPanel({
       );
       setSessionRecoveryRequired(null);
       setSecretConfigurationRecoveryRequired(false);
-      if (isPendingAcknowledgement) {
+      if (isPendingAcknowledgement || isUnconfirmedAcknowledgement) {
         beginSessionReconciliation(session.session_id);
       } else {
         pendingSessionReconciliationRef.current = null;
@@ -895,6 +973,7 @@ export function AgentBuilderPanel({
     setSessionRecoveryRetryVersion(0);
     setSecretConfigurationRecoveryRequired(false);
     setSecretConfigurationRetryVersion(0);
+    setKnowledgeSelectionResetVersion(0);
     setLastSubmittedMessage('');
     setGenerationMode('configure_and_generate');
     pendingSessionReconciliationRef.current = null;
@@ -972,12 +1051,16 @@ export function AgentBuilderPanel({
         );
         const restoredParameterGroup = session.parameter_group ?? null;
         if (
-          (
-            canonicalSession.active_graph_mutation as Record<
-              string,
-              unknown
-            > | null
-          )?.status === 'pending_ack'
+          ['pending_ack', 'acknowledged'].includes(
+            String(
+              (
+                canonicalSession.active_graph_mutation as Record<
+                  string,
+                  unknown
+                > | null
+              )?.status ?? '',
+            ),
+          )
         ) {
           beginSessionReconciliation(canonicalSession.session_id);
         } else {
@@ -1186,11 +1269,14 @@ export function AgentBuilderPanel({
         setSessionRecoveryRequired('acknowledgement');
         return;
       }
-      const delay = SESSION_RECOVERY_DELAYS_MS[reconciliationAttempt];
-      reconciliationAttempt += 1;
+      const delay =
+        SESSION_RECOVERY_DELAYS_MS[
+          Math.max(0, reconciliationAttempt - 1)
+        ];
       timeoutId = window.setTimeout(reconcile, delay);
     };
     const reconcile = async () => {
+      reconciliationAttempt += 1;
       try {
         const session = await agentBuilderApi.getSession(
           reconciliationSessionId,
@@ -1203,13 +1289,28 @@ export function AgentBuilderPanel({
           scheduleReconciliation();
           return;
         }
+        if (activeMutation?.status === 'acknowledged') {
+          const boundaryConfirmed =
+            await confirmAcknowledgedHistoryBoundary(session);
+          if (isCanceled) return;
+          if (!boundaryConfirmed) {
+            reconcileCanonicalSession(session);
+            scheduleReconciliation();
+            return;
+          }
+          setSessionRecoveryRequired(null);
+          reconcileCanonicalSession(session, {
+            acknowledgedBoundaryConfirmed: true,
+          });
+          return;
+        }
         setSessionRecoveryRequired(null);
         reconcileCanonicalSession(session);
       } catch {
         scheduleReconciliation();
       }
     };
-    scheduleReconciliation();
+    void reconcile();
     return () => {
       isCanceled = true;
       if (timeoutId !== null) {
@@ -1218,6 +1319,7 @@ export function AgentBuilderPanel({
     };
   }, [
     authoritativeRequestStatus,
+    confirmAcknowledgedHistoryBoundary,
     isOpen,
     reconcileCanonicalSession,
     sessionRecoveryRetryVersion,
@@ -1631,6 +1733,9 @@ export function AgentBuilderPanel({
         return;
       }
       const message = knowledgeSelectionErrorMessage(error);
+      if (agentBuilderErrorCode(error) === 'knowledge_selection_stale') {
+        setKnowledgeSelectionResetVersion((version) => version + 1);
+      }
       setKnowledgeSelectionError(message);
       toast.error(message);
     } finally {
@@ -1938,6 +2043,7 @@ export function AgentBuilderPanel({
             activeKnowledgeClarification.knowledge_resolution?.selected
               .map((selection) => selection.kb_handle ?? selection.candidate_id)
               .filter((handle): handle is string => typeof handle === 'string'),
+          resetVersion: knowledgeSelectionResetVersion,
           errorMessage: knowledgeSelectionError,
         }
       : null;
@@ -1995,6 +2101,12 @@ export function AgentBuilderPanel({
           status: 'completed',
           timing: latestAssistantResponse.knowledge_resolution.timing,
           candidates: [],
+          selectedCollectionHandles:
+            latestAssistantResponse.knowledge_resolution
+              .selected_collection_handles ?? [],
+          selectedKbHandles:
+            latestAssistantResponse.knowledge_resolution.selected_kb_handles ??
+            [],
           selectedLabels: latestAssistantResponse.knowledge_resolution.selected
             .map((selection) => {
               const safeLabel = selection.safe_label ?? selection.label;

@@ -4072,6 +4072,16 @@ class AgentBuilderService:
             selected_candidate_handles=selected_candidate_handles,
         )
 
+    def refresh_knowledge_selection_candidates(
+        self,
+        structured: AgentBuilderStructuredRequest,
+    ) -> dict[str, Any]:
+        """Refresh permission-filtered candidates without invoking the planner."""
+        return self._resolve_knowledge_requirements(
+            structured,
+            require_hierarchical_selection=True,
+        )
+
     def materialize_knowledge_selection(
         self,
         structured: AgentBuilderStructuredRequest,
@@ -5846,7 +5856,7 @@ class AgentBuilderService:
             return resolution
         candidates = resolution.get("candidates")
         if not isinstance(candidates, list):
-            return resolution
+            candidates = []
         candidates_by_id = {
             candidate.get("candidate_id"): candidate
             for candidate in candidates
@@ -5873,6 +5883,46 @@ class AgentBuilderService:
                 for item in persisted_resolution.get("selected_kb_handles", [])
                 if isinstance(item, str) and item
             )
+        )
+        collections_by_handle: dict[str, dict[str, Any]] = {}
+        kbs_by_handle: dict[str, dict[str, Any]] = {}
+        for collection in resolution.get("collections") or []:
+            if not isinstance(collection, dict):
+                continue
+            collection_handle = collection.get("collection_handle")
+            if isinstance(collection_handle, str) and collection_handle:
+                collections_by_handle[collection_handle] = collection
+            for child in collection.get("children") or []:
+                if not isinstance(child, dict):
+                    continue
+                kb_handle = child.get("kb_handle")
+                if isinstance(kb_handle, str) and kb_handle:
+                    kbs_by_handle[kb_handle] = child
+        for candidate in resolution.get("ungrouped_kbs") or []:
+            if not isinstance(candidate, dict):
+                continue
+            kb_handle = candidate.get("kb_handle")
+            if isinstance(kb_handle, str) and kb_handle:
+                kbs_by_handle[kb_handle] = candidate
+
+        selected.extend(
+            {
+                "selection_type": "collection",
+                "collection_handle": handle,
+                "safe_label": collections_by_handle[handle].get("safe_label"),
+            }
+            for handle in selected_collection_handles
+            if handle in collections_by_handle
+        )
+        selected.extend(
+            {
+                "selection_type": "knowledge_base",
+                "kb_handle": handle,
+                "candidate_id": handle,
+                "safe_label": kbs_by_handle[handle].get("safe_label"),
+            }
+            for handle in selected_kb_handles
+            if handle in kbs_by_handle and handle not in candidates_by_id
         )
         return {
             **resolution,

@@ -6,6 +6,22 @@ export type WorkflowDraftCASExpectation = {
   expected_updated_at: string;
 };
 
+export const workflowDraftTimestampsEqual = (
+  left: unknown,
+  right: unknown,
+): boolean => {
+  if (typeof left !== 'string' || typeof right !== 'string') return false;
+  if (left === right) return true;
+
+  const leftTimestamp = Date.parse(left);
+  const rightTimestamp = Date.parse(right);
+  return (
+    Number.isFinite(leftTimestamp) &&
+    Number.isFinite(rightTimestamp) &&
+    leftTimestamp === rightTimestamp
+  );
+};
+
 export const resolveWorkflowDraftCASExpectation = async (
   workflowId: string,
   options: { refresh?: boolean } = {},

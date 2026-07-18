@@ -100,6 +100,41 @@ describe('ParameterInputRenderer condition branch target', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
+  it('clears an existing optional value instead of marking it skipped', () => {
+    const onSubmit = vi.fn();
+    const onSkip = vi.fn();
+    const onClear = vi.fn();
+    const messageTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-slack-message',
+      node_id: 'slack',
+      node_type: 'slackPostNode',
+      parameter_key: 'message',
+      label: 'Message',
+      input_type: 'textarea',
+      required: false,
+      status: 'completed',
+    };
+
+    render(
+      <ParameterInputRenderer
+        task={messageTask}
+        hydration={{ state: 'available', value: 'existing message' }}
+        onSubmit={onSubmit}
+        onSkip={onSkip}
+        onClear={onClear}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText('Message'), {
+      target: { value: '' },
+    });
+    fireEvent.click(screen.getByRole('button'));
+
+    expect(onClear).toHaveBeenCalledTimes(1);
+    expect(onSkip).not.toHaveBeenCalled();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('keeps an invalid LLM JSON schema and accepts only JSON objects', () => {
     const onSubmit = vi.fn();
     const schemaTask: AgentBuilderParameterTask = {

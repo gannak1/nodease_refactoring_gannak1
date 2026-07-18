@@ -653,7 +653,7 @@ Response:
 - 값이 없거나 graph 변경이 필요한 task, Credential, 권한 resource, 외부 부수효과, Condition branch와 복수 후보 task는 `remaining_guided_task_ids`에 남긴다.
 - Client는 proposal을 별도 검토안으로 표시하고 자동 적용하지 않는다. 이 V1 endpoint는 GraphMutation 또는 workflow save를 반환·호출하지 않는다.
 - Proposal 생성은 `Workflow -> AgentBuilderRequest` 순서로 row lock을 얻고 request의 workflow relation, expected graph hash/`updated_at`, request version과 대상 task current version을 확인한다. 성공 transaction은 request version과 각 confirm 대상 task version을 정확히 한 번 증가시키고 증가된 task id/version, recommendation fingerprint, canonical graph hash와 workflow `updated_at`만 pending proposal에 저장한다. 실제 parameter 값, node data 또는 graph fragment는 저장하지 않는다. 같은 operation/payload 재시도는 같은 proposal/request/task version을 반환하고 다시 증가시키지 않는다.
-- Pending proposal은 `confirmable_tasks`를 예약한다. 해당 task의 `confirm|set|defer|skip|previous`는 proposal이 `acknowledged|canceled|stale` 중 하나가 되기 전까지 `409 task_conflict`로 거부한다. `remaining_guided_task_ids`에만 속한 task는 기존 decision 계약으로 계속 진행할 수 있다.
+- Pending proposal은 `confirmable_tasks`를 예약한다. 해당 task의 `confirm|set|clear|defer|skip|previous`는 proposal이 `acknowledged|canceled|stale` 중 하나가 되기 전까지 `409 task_conflict`로 거부한다. `remaining_guided_task_ids`에만 속한 task는 기존 decision 계약으로 계속 진행할 수 있다.
 
 #### POST `/requests/{request_id}/quick-completion-proposals/{proposal_id}/acknowledge`
 
@@ -968,6 +968,7 @@ Request:
 지원 action:
 
 - `set`: typed value를 적용
+- `clear`: 기존 graph에 있는 optional parameter 값을 제거
 - `confirm`: 기존 session의 active 자동 추천값을 변경 없이 확인하는 호환 action
 - `defer`: Catalog가 `allow_unresolved`로 허용한 parameter만 unresolved로 남김
 - `skip`: optional parameter만 건너뜀
@@ -980,7 +981,7 @@ Rules:
 - `credential_ref`가 비어 있어도 task를 자동 `deferred`로 만들지 않는다. 모든 configurable credential task는 `pending|active`에서 사용자 결정을 기다리고, 명시적 `defer`가 policy-allowed인 경우에만 mutation save와 acknowledgement 뒤 `deferred`가 된다.
 - `variable_selector`는 server가 발급한 `suggestion_id`와 canonical selector 배열이 일치해야 한다. 임의 JSON path 문자열 또는 current graph에서 도달할 수 없는 selector는 거부한다.
 - Condition branch `select`는 발급된 `validation.options` 안의 기존 node 또는 `연결 안 함`만 허용한다. 자기 자신, incoming forbidden node와 새 cycle을 만드는 target은 거부한다. Branch `set` acknowledgement 전에는 다음 branch task를 활성화하거나 Condition을 resolved로 계산하지 않는다.
-- Frontend는 optional task에만 `skip`을 제공하고 required task의 `skip`은 disabled/hidden 처리한다. Backend는 UI 상태와 무관하게 required `skip`을 거부한다.
+- Frontend는 값이 없는 optional task에 `skip`, 기존 값이 있는 optional task 편집에 `clear`를 제공하고 required task의 `skip|clear`는 disabled/hidden 처리한다. Backend는 UI 상태와 무관하게 required `skip|clear`를 거부한다.
 - `confirmation_required=true`인 optional task에도 `skip`을 제공하지 않는다. Backend는 해당 task의 skip을 거부하고 `confirm` 또는 `set`만 허용한다. 현재 이 정책은 Catalog 기본 추천 `auto_model_routing=false`에 적용한다.
 - Required/optional 여부와 무관하게 `defer_policy=forbidden`이면 defer control을 표시하지 않고 backend도 `invalid_decision`으로 거부한다.
 - `defer_policy=allow_unresolved`인 defer는 해당 required configuration을 deferred로 표시하는 `parameter_update` GraphMutation을 반환한다. CDS 저장과 acknowledgement 뒤에만 task를 `deferred`로 전환하며 backend가 node 전체 required configuration에서 `configuration_state`를 다시 계산한다.
@@ -988,9 +989,9 @@ Rules:
 - parameter 설정마다 planner LLM을 호출하지 않는다.
 - task status/version과 operations를 제외한 safe operation/acknowledgement metadata는 기존 `AgentBuilderRequest.response_payload`에 저장한다. Repository는 current payload를 복사해 새 전체 객체로 재할당하며 nested dict를 제자리 변경하지 않는다.
 - 실제 parameter value는 request/session payload에 저장하지 않고 workflow graph만 source of truth로 사용한다. 재진입 input은 canonical graph와 Catalog mapping에서 현재 safe 값을 hydrate하며 raw secret은 복구하지 않는다.
-- Optional `skip`은 workflow graph나 GraphMutation을 만들지 않고 operation id/task version 검증 뒤 task를 명시적 `skipped` 상태로 전환해 다음 task를 활성화한다. `confirm`도 graph와 recommendation context가 발급 시점과 같으면 GraphMutation과 workflow save 없이 active task를 `completed`로 전환한다. `previous`는 graph save/acknowledgement, task status/version과 Workflow history를 변경하지 않고 `next_task_id`만 반환한다. Graph 값을 바꾸는 `set`, completed/skipped/deferred/invalid task 수정과 `allow_unresolved` defer는 GraphMutation acknowledgement를 요구한다.
-- Backend는 parent `AgentBuilderRequest` row를 write lock으로 조회하고 target task id, `expected_task_version`과 action별 허용 status를 비교한다. `confirm`은 active 자동 추천 task에만 허용한다. 값 설정 `set`은 `active|completed|skipped|deferred|invalid`에 허용하며 `pending|canceled`에는 허용하지 않는다. `previous`는 current presentation task의 canonical status가 `active|completed|skipped|deferred`일 때 stable order상 이전 재편집 가능 task를 찾는다. 같은 `operation_id` 재시도는 상태 전이, GraphMutation과 next task를 반복하지 않고, 먼저 처리된 다른 decision 때문에 version이 바뀌면 `409 task_conflict`로 닫는다.
-- 동일 operation id와 동일 canonical payload의 `confirm|skip|cancel|previous` 재시도와 Catalog validation으로 `invalid`가 된 `set`은 저장된 safe 최초 결과를 반환하고 task activation, DB commit과 audit를 반복하지 않는다. Full operations를 발급한 `set|defer` 응답이 CDS 저장 전에 유실되면 같은 operation 재시도는 최초 operations 대신 `409 operation_payload_unavailable`을 반환하며, recovery가 task를 같은 version으로 다시 연 뒤 새 operation id로 재입력한다. 동일 id의 payload fingerprint가 다르면 `409 task_conflict`다.
+- Optional `skip`은 workflow graph나 GraphMutation을 만들지 않고 operation id/task version 검증 뒤 task를 명시적 `skipped` 상태로 전환해 다음 task를 활성화한다. 기존 optional 값의 `clear`는 해당 parameter만 제거하는 `parameter_update` GraphMutation을 반환하고 CDS 저장과 acknowledgement 뒤에만 task를 `skipped`로 전환한다. `confirm`은 graph와 recommendation context가 발급 시점과 같으면 GraphMutation과 workflow save 없이 active task를 `completed`로 전환한다. `previous`는 graph save/acknowledgement, task status/version과 Workflow history를 변경하지 않고 `next_task_id`만 반환한다. Graph 값을 바꾸는 `set|clear`, completed/skipped/deferred/invalid task 수정과 `allow_unresolved` defer는 GraphMutation acknowledgement를 요구한다.
+- Backend는 parent `AgentBuilderRequest` row를 write lock으로 조회하고 target task id, `expected_task_version`과 action별 허용 status를 비교한다. `confirm`은 active 자동 추천 task에만 허용한다. 값 설정 `set`과 optional 값 제거 `clear`는 `active|completed|skipped|deferred|invalid`에 허용하며 `pending|canceled`에는 허용하지 않는다. `previous`는 current presentation task의 canonical status가 `active|completed|skipped|deferred`일 때 stable order상 이전 재편집 가능 task를 찾는다. 같은 `operation_id` 재시도는 상태 전이, GraphMutation과 next task를 반복하지 않고, 먼저 처리된 다른 decision 때문에 version이 바뀌면 `409 task_conflict`로 닫는다.
+- 동일 operation id와 동일 canonical payload의 `confirm|skip|cancel|previous` 재시도와 Catalog validation으로 `invalid`가 된 `set`은 저장된 safe 최초 결과를 반환하고 task activation, DB commit과 audit를 반복하지 않는다. Full operations를 발급한 `set|clear|defer` 응답이 CDS 저장 전에 유실되면 같은 operation 재시도는 최초 operations 대신 `409 operation_payload_unavailable`을 반환하며, recovery가 task를 같은 version으로 다시 연 뒤 새 operation id로 재입력한다. 동일 id의 payload fingerprint가 다르면 `409 task_conflict`다.
 - `configuration_state`는 client decision field가 아니다. Backend는 최초 graph, set/defer/skip, persisted Undo, session recovery와 workflow test/run·deployment preflight마다 Catalog required configuration 전체를 검사한다. 하나라도 missing/deferred/invalid이면 `unresolved`, 모두 유효할 때만 `resolved`다. Optional skipped parameter는 Catalog required가 아닌 한 상태를 막지 않는다.
 - LLM은 `model_id`와 세 prompt 중 하나 이상을 runtime required configuration으로 검사한다. Agent Builder의 기본 LLM task는 모델, 출력 형식, 세 prompt, 이전 node 출력 연결과 자동 routing toggle로 제한한다. JSON Schema는 JSON 출력에서만 표시하는 optional JSON object이며 array, scalar와 null의 `set`은 `json_object_required`로 거부한다. 세 prompt가 모두 비어 있으면 각 prompt를 순차 task로 만들고 마지막 빈 prompt의 `skip`은 `task_conflict`로 거부한다.
 - Session read reconciliation은 현재 request의 모든 유효하고 `reverted`가 아닌 v3 operation envelope의 `affected_node_ids`와 기존 ParameterTask node id를 합친 뒤 canonical graph에 존재하는 node만 사용해 미완료 LLM task를 복구한다. 최신 envelope 하나만 사용하거나 관계없는 기존 LLM으로 넓히지 않는다. 이 read 경로는 planner, Knowledge ranking, mutation, save와 acknowledgement를 호출하지 않는다.
@@ -1035,6 +1036,10 @@ task를 `skipped`로 반환하고 다음 task를 활성화한다. Skipped task�
 일반 parameter update 응답과 CDS save/acknowledgement를 거쳐 `completed`가 된다. Required
 task의 skip은 graph와 task를 변경하지 않고 `invalid_decision`으로 거부한다.
 
+Optional `clear` response는 해당 parameter 제거 operation을 포함한 `graph_mutation`과
+`awaiting_persistence_ack=true`를 반환한다. Acknowledgement 전에는 기존 task 상태와 다음
+task를 유지하며, acknowledgement 뒤 현재 task를 `skipped`로 바꾸고 다음 task를 활성화한다.
+
 유효한 `confirm` response도 `graph_mutation=null`, `awaiting_persistence_ack=false`이며 현재
 task를 `completed`로 반환하고 다음 task를 활성화한다. 같은 operation id 재시도는 task version,
 다음 task, graph write와 audit를 반복하지 않는다. Canonical graph 값이나 recommendation context가
@@ -1077,6 +1082,7 @@ Collection parent를 전체 선택하면 client는 해당 Collection handle과 �
 - `after_graph` binding은 CDS workflow save와 canonical graph hash/`updated_at` acknowledgement 이후에만 선택 완료로 기록한다.
 - 선택되지 않은 후보는 유지 가능한 UI 후보이며 선택 상태와 후보 목록은 별개다.
 - 선택 요청 처리 중에는 candidate와 selected state를 canonical response에 유지하고 control만 잠근다. 저장 전 실패는 같은 resolution/card에서 재시도할 수 있다. 결과가 불명확하면 canonical session의 안전한 `messages`, `knowledge_resolution`, envelope와 graph metadata로 `pending_ack|completed|unapplied`를 판정한다. Client는 canonical message의 같은 request/resolution을 기존 대화 항목에 upsert해 stale selection card를 남기지 않는다. Typed operations, 자연어 요청과 planner는 재생하지 않는다.
+- Card가 제출한 opaque handle이 현재 권한/lifecycle 후보와 달라졌으면 server는 저장된 structured request로 Knowledge hierarchy만 다시 계산해 같은 `unapplied` `knowledge_resolution`을 갱신하고 `409`와 `code=knowledge_selection_stale`을 반환한다. 이 갱신은 이전 Collection/KB 선택을 비우고 candidate 표시 상태만 저장하며 GraphMutation, workflow save, acknowledgement, planner와 원래 자연어 요청을 실행하지 않는다. Client는 canonical session을 다시 읽어 기존 card를 최신 후보로 교체하고 local checkbox state를 초기화한 뒤 사용자가 다시 선택하게 한다. 이미 `pending_ack|completed`인 resolution은 refresh 전에 `409 knowledge_resolution_already_submitted`로 거부한다.
 - CTA는 `before_graph` 선택 시 `선택한 Knowledge로 생성`, 빈 선택 시 `Knowledge Base 없이 생성`, `after_graph` 선택 시 `선택 적용`, 빈 선택 시 `Knowledge Base 없이 계속`이다.
 
 `after_graph` response:
@@ -1105,7 +1111,9 @@ Collection parent를 전체 선택하면 client는 해당 Collection handle과 �
 
 ### 8.7 Selected Knowledge Candidate Materialization
 
-Knowledge selection endpoint는 client가 이미 받은 opaque candidate handle을 새 recommendation 또는 Top-K ranking으로 다시 계산하지 않는다. Backend는 resolution에 발급된 후보 집합에서 handle을 찾고 active organization 범위, Collection `route` 또는 KB `use` 권한, lifecycle 및 runtime eligibility만 다시 검증해 runtime binding으로 materialize한다. 현재 표시 Top-K에 없다는 이유만으로 거부하지 않는다. 이 검증이 실패하면 `422 catalog_validation_failed`로 종료하며 GraphMutation 또는 workflow 저장을 수행하지 않는다.
+Knowledge card 제출은 client가 현재 resolution에서 받은 opaque candidate handle을 사용한다. Backend는 발급된 후보 집합에서 handle을 찾고 active organization 범위, Collection `route` 또는 KB `use` 권한, lifecycle 및 runtime eligibility를 다시 검증해 runtime binding으로 materialize한다. 발급 뒤 handle이 stale이면 8절의 `knowledge_selection_stale` 갱신으로 닫는다.
+
+Node Detail 직접 선택은 추천 response의 Top-K allowlist를 사용하지 않는다. Backend는 제출된 real KB/Collection ID를 active organization의 opaque handle로 변환한 뒤 같은 permission, lifecycle 및 runtime eligibility materializer를 적용한다. 따라서 권한 있는 resource가 추천 상위 목록에 없었다는 이유만으로 거부하지 않으며, 현재 검증에 실패하면 `422 catalog_validation_failed`로 종료한다. 두 경로 모두 검증 실패 시 GraphMutation 또는 workflow 저장을 수행하지 않는다.
 
 `before_graph` request는 placement의 `target_step_id`로 정확히 하나의 Knowledge-capable LLM node를 해석한다. 0개 또는 2개 이상이면 `validation_failed`이며 다른 LLM node에 binding을 복제하지 않는다.
 
@@ -1205,12 +1213,12 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 
 - `direct_edit_v1` response does not include a Slack or GitHub `credential_ref` ParameterTask, credential candidate, defer control, or Agent Builder raw-secret input. Catalog-declared `secret` tasks expose only a Node Detail navigation action. Mail/Gmail managed credential tasks remain permission-filtered.
 - A `secret` set request is rejected with `secret_forbidden` before GraphMutation or persistence. After Node Detail saves canonical node configuration, session read reconciles only configured/unconfigured presence and never returns the value or a value-derived fingerprint. This does not add or change Slack/GitHub runtime authentication infrastructure.
-- Optional JSON parameter with an empty client control is submitted as `skip`, not as `set` with invalid JSON. GitHub integer parameters retain their integer representation through typed request, GraphMutation and canonical graph hashing.
+- A new optional JSON parameter with an empty client control is submitted as `skip`, not as `set` with invalid JSON. Clearing an existing optional JSON/text/select value submits `clear` so the canonical graph value is removed through CAS/acknowledgement. GitHub integer parameters retain their integer representation through typed request, GraphMutation and canonical graph hashing.
 - Planner structured output includes `requested_capabilities`. Each item is a canonical capability ID selected from Catalog-provided multilingual aliases. When the planner returns `unsupported`, the backend may request one semantic repair only if exactly one requested capability is supported and its Catalog `standalone_creation` policy is `allowed`. `requires_context`, `forbidden`, unknown, or multiple capabilities are not promoted by backend heuristics.
 - The backend does not select capabilities with a regular expression and does not overwrite planner output with a hard-coded node type. Catalog validation remains the authority after LLM structuring.
 - Canonical draft GET/POST and acknowledgement recovery use the same `graph_hash` and `updated_at`. Editor-only edge handle `displayNumber` is excluded from all graph payloads, hashes, CAS checks, and server persistence.
 - A `resource_ref` or managed `credential_ref` candidate may provide both opaque `candidate_id` and graph `reference_value`. The client hydrates either representation; an unmatched value remains unavailable rather than being inferred as complete.
-- Knowledge selection failure handling distinguishes permission, stale graph, task conflict, validation, pending acknowledgement, and unapplied retry states while preserving the same selection card and selected values.
+- Knowledge selection failure handling distinguishes permission, stale graph, task conflict, validation, pending acknowledgement, and unapplied retry states. Permission/validation/transport 오류는 같은 card와 선택값을 유지하지만 `knowledge_selection_stale`은 같은 card의 최신 후보를 표시하면서 기존 Collection/KB 선택값을 초기화한다.
 
 ## 2026-07-14 Graph Operation Addition
 
@@ -1272,7 +1280,7 @@ Knowledge 후보 응답은 use 권한을 통과한 active KB를 포함한다. �
 }
 ```
 
-`POST /agent-builder/sessions/{session_id}/knowledge-selection`은 `selected_collection_handles`와 `selected_kb_handles`를 별도 배열로 받는다. 서버는 handle을 현재 organization, 권한, lifecycle 기준으로 다시 materialize하고 stale 또는 권한이 사라진 handle을 `422 catalog_validation_failed`로 거부한다.
+`POST /agent-builder/sessions/{session_id}/knowledge-selection`은 `selected_collection_handles`와 `selected_kb_handles`를 별도 배열로 받는다. 서버는 handle을 현재 organization, 권한, lifecycle 기준으로 다시 materialize한다. Card의 stale handle은 최신 계층 후보를 같은 resolution에 반영한 뒤 `409 knowledge_selection_stale`로 다시 선택을 요구하고, Node Detail 직접 선택의 권한/lifecycle 실패는 `422 catalog_validation_failed`로 거부한다.
 
 저장 graph의 LLM node에는 Collection이 `knowledgeCollections: [{id, safeLabel}]`, 직접 KB가 `knowledgeBases: [{id, name}]`로 별도 저장된다. 추천 점수와 opaque handle은 graph에 저장하지 않는다.
 
@@ -1284,6 +1292,6 @@ Knowledge 후보 응답은 use 권한을 통과한 active KB를 포함한다. �
 - `selected_knowledge_base_ids`
 - `selected_knowledge_collection_ids`
 
-이 필드는 handle 기반 Agent Builder card 입력과 한 요청에서 혼합할 수 없다. Server는 target node를 canonical placement와 비교하고 UUID를 현재 organization에 발급된 handle로 변환한 뒤 기존 allowlist, permission, lifecycle, CAS와 acknowledgement 계약을 적용한다. Target 불일치, stale/권한 상실 또는 issued handle에 없는 resource는 `422 catalog_validation_failed`다.
+이 필드는 handle 기반 Agent Builder card 입력과 한 요청에서 혼합할 수 없다. Server는 target node를 canonical placement와 비교하고 UUID를 현재 organization의 opaque handle로 변환한 뒤 permission, lifecycle, runtime eligibility, CAS와 acknowledgement 계약을 적용한다. 추천 Top-K에 없었다는 이유로 거부하지 않는다. Target 불일치, stale 또는 권한 상실 resource는 `422 catalog_validation_failed`다.
 
 `direct_edit_v1` message endpoint에 `selected_knowledge_candidate` 또는 `selected_knowledge_candidates`를 보내면 `HTTP 422`와 `code=invalid_request`를 반환한다. 이 오류는 전용 Knowledge selection endpoint의 정상 동작을 변경하지 않는다.

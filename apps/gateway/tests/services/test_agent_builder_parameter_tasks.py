@@ -1597,6 +1597,43 @@ def test_set_remains_blocked_for_non_reeditable_statuses(status):
         )
 
 
+def test_clear_optional_completed_task_requires_ack_and_finishes_as_skipped():
+    group_id = uuid4()
+    task = AgentBuilderParameterTask(
+        task_id=uuid4(),
+        group_id=group_id,
+        step_id="step-slack",
+        node_id="slack",
+        node_type="slackPostNode",
+        parameter_key="message",
+        label="Message",
+        input_type="textarea",
+        required=False,
+        status="completed",
+        task_version=3,
+        stable_order=0,
+        resolution_source="user_request",
+        reason="safe reason",
+        input_guidance="safe guidance",
+    )
+
+    decision = prepare_task_decision(
+        tasks=[task],
+        task_id=task.task_id,
+        operation_id=uuid4(),
+        expected_task_version=task.task_version,
+        action="clear",
+        value=None,
+    )
+
+    assert decision.awaiting_persistence_ack is True
+    assert decision.graph_data_patch == {"_clear_parameter": "message"}
+    assert task.status == "completed"
+    acknowledged = acknowledge_task_decision([task], decision)
+    assert acknowledged[0].status == "skipped"
+    assert acknowledged[0].task_version == 4
+
+
 def test_defer_requires_catalog_policy_and_only_advances_after_acknowledgement():
     result = ParameterTaskPlanner().plan(
         graph={

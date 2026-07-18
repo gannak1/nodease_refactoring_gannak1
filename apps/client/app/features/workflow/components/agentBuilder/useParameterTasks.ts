@@ -227,7 +227,7 @@ export const useParameterTasks = ({
   const decideParameter = useCallback(
     async (input: {
       taskId: string;
-      action: 'confirm' | 'set' | 'defer' | 'skip' | 'previous';
+      action: 'confirm' | 'set' | 'clear' | 'defer' | 'skip' | 'previous';
       value?: unknown;
     }) => {
       if (!sessionId || !parameterGroup || isApplying) return;

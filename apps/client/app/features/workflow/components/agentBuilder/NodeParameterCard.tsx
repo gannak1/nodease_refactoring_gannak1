@@ -19,7 +19,7 @@ import {
 
 export type ParameterDecisionInput = {
   taskId: string;
-  action: 'confirm' | 'set' | 'defer' | 'skip' | 'previous';
+  action: 'confirm' | 'set' | 'clear' | 'defer' | 'skip' | 'previous';
   value?: unknown;
 };
 
@@ -355,6 +355,15 @@ export const NodeParameterCard = ({
                     onDecision({
                       taskId: currentTask.task_id,
                       action: 'skip',
+                    })
+                : undefined
+            }
+            onClear={
+              !currentTask.required && !currentTask.confirmation_required
+                ? () =>
+                    onDecision({
+                      taskId: currentTask.task_id,
+                      action: 'clear',
                     })
                 : undefined
             }
