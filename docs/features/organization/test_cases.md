@@ -167,6 +167,8 @@ Status: Draft
 | ORG-TC-E038 | member/team 보기 전환은 두 목록을 동시에 렌더링하거나 각 보기의 목록 상태를 초기화하지 않아야 한다. | 좌우/상하로 두 목록이 동시에 보이거나 전환 후 검색/filter/page가 초기화된다. | 선택한 목록 하나만 전체 너비로 표시하고 보기별 상태 유지. |
 | ORG-TC-E039 | 조직 구성 전환 control은 작은 화면에서도 overflow 없이 compact하게 표시되고 keyboard focus와 선택 상태를 제공해야 한다. | control이 화면 전체를 불필요하게 늘리거나 잘리며, button focus 또는 `aria-pressed` 상태가 없다. | 내용 너비의 동일 column button, native keyboard focus, 선택 button의 `aria-pressed=true`. |
 | ORG-TC-E040 | Admin 상위 tab에서 제거된 `조직 설정`과 기존 deep link를 안전하게 처리해야 한다. | tab bar에 `조직 설정`이 남거나 `tab=organization` 접근 시 빈 화면 또는 제거된 panel이 표시된다. | `조직 설정` tab은 표시하지 않고 `tab=organization-structure&view=members`로 정규화해 조직 구성 화면을 표시. |
+| ORG-TC-E041 | Sidebar 프로필 아이콘은 조직 초대 또는 권한 있는 열린 Security Alert가 있으면 알림 점을 표시하고 그 상태를 접근 가능하게 전달해야 한다. | 알림 source가 있는데 점이 없거나, 두 source가 비었는데 점이 남거나, 일반 member가 Security Alert source만으로 점을 보거나, 일반 `span`의 금지된 `aria-label`에 접근성 이름을 의존한다. | 프로필 우상단에 `aria-hidden` 빨간 점을 표시하고 프로필 button 이름에 `sr-only` 텍스트 `확인할 알림 있음`을 포함, source 0개면 둘 다 숨김. |
+| ORG-TC-E042 | 같은 조직의 Security Alert summary background refresh는 마지막 성공 상태를 유지해야 한다. | 재조회 시작 또는 일시적 실패만으로 기존 알림 점이 사라진다. | 조회 중과 non-403 실패에는 기존 summary 유지, 성공 시 교체, 조직 전환 또는 403에서 제거. |
 
 ## Permission Tests
 

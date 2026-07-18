@@ -109,6 +109,8 @@ Verified Against: feature/mba-127 @ 258b26a9
   - `워크플로우` navigation item은 노드 연결 흐름을 나타내는 `Workflow` 아이콘을 사용한다.
   - `isOrganizationManager`가 true일 때만 `관리` navigation item을 표시한다.
   - 사용자 프로필 드롭다운에는 `알림`, `로그아웃` action을 표시한다.
+  - 조직 초대가 하나 이상 있거나 manager에게 열린 Security Alert가 하나 이상 있으면, 펼침 여부와 무관하게 프로필 원형 아이콘 우상단에 빨간 점을 표시한다. 시각적 점은 `aria-hidden`으로 숨기고 프로필 button 안의 `sr-only` 텍스트 `확인할 알림 있음`으로 상태를 전달한다. 두 source가 모두 비어 있으면 점과 텍스트를 숨긴다.
+  - 같은 조직의 Security Alert summary를 background refresh할 때는 마지막 성공값을 유지한다. 성공 응답으로만 교체하며, 조직 전환 또는 권한 상실을 뜻하는 `403`에서 기존 값을 지운다.
   - `알림` 클릭 시 페이지 이동 없이 notification overlay를 연다.
 - 데이터:
   - `authApi.me()`

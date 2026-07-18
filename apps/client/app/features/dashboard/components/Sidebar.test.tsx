@@ -205,6 +205,107 @@ describe('Sidebar notifications', () => {
     expect(screen.getByRole('dialog', { name: '알림' })).toBeInTheDocument();
   });
 
+  it('열린 보안 알림이 있으면 프로필 아이콘에 빨간 점을 표시한다', async () => {
+    render(<Sidebar />);
+
+    const notificationText = await screen.findByText('확인할 알림 있음');
+    const profileButton = notificationText.closest('button');
+    const visualDot = notificationText.previousElementSibling;
+
+    expect(profileButton).toHaveAccessibleName(/확인할 알림 있음/);
+    expect(notificationText).toHaveClass('sr-only');
+    expect(visualDot).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.queryByRole('dialog', { name: '알림' })).not.toBeInTheDocument();
+  });
+
+  it('일반 member에게 조직 초대가 있으면 프로필 아이콘에 빨간 점을 표시한다', async () => {
+    mockSidebarDefaults({ currentOrganization: memberOrganization });
+    vi.mocked(notificationsApi.listNotifications).mockResolvedValue({
+      items: [
+        {
+          id: 'invitation-1',
+          type: 'organization.invitation',
+          organization_id: 'org-invited',
+          organization_name: '초대 조직',
+          organization_auth_state: 'member',
+          created_at: '2026-07-18T12:00:00Z',
+        },
+      ],
+    });
+
+    render(<Sidebar />);
+
+    expect(
+      await screen.findByRole('button', { name: /확인할 알림 있음/ }),
+    ).toBeInTheDocument();
+    expect(adminApi.getSecurityAlertSummary).not.toHaveBeenCalled();
+  });
+
+  it('조직 초대와 열린 보안 알림이 모두 없으면 빨간 점을 숨긴다', async () => {
+    mockSidebarDefaults({ currentOrganization: memberOrganization });
+
+    render(<Sidebar />);
+
+    await waitFor(() =>
+      expect(notificationsApi.listNotifications).toHaveBeenCalledTimes(1),
+    );
+    expect(
+      screen.queryByRole('button', { name: /확인할 알림 있음/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('같은 조직의 보안 알림 재조회가 진행 중이거나 실패해도 기존 알림 점을 유지한다', async () => {
+    const listeners = new Map<string, EventListener>();
+    let rejectRefresh: ((reason?: unknown) => void) | undefined;
+    const refreshRequest = new Promise<
+      Awaited<ReturnType<typeof adminApi.getSecurityAlertSummary>>
+    >((_, reject) => {
+      rejectRefresh = reject;
+    });
+    vi.mocked(notificationsApi.createEventSource).mockReturnValue({
+      addEventListener: vi.fn((event: string, callback: EventListener) => {
+        listeners.set(event, callback);
+      }),
+      close: vi.fn(),
+    } as unknown as EventSource);
+    vi.mocked(adminApi.getSecurityAlertSummary)
+      .mockResolvedValueOnce({
+        open_count: 2,
+        high_open_count: 1,
+        recent_items: [],
+      })
+      .mockReturnValueOnce(refreshRequest);
+
+    render(<Sidebar />);
+
+    expect(
+      await screen.findByRole('button', { name: /확인할 알림 있음/ }),
+    ).toBeInTheDocument();
+    const notificationsChangedListener = await waitForEventListener(
+      listeners,
+      'notifications.changed',
+    );
+    act(() => {
+      notificationsChangedListener(new Event('notifications.changed'));
+    });
+    await waitFor(() =>
+      expect(adminApi.getSecurityAlertSummary).toHaveBeenCalledTimes(2),
+    );
+
+    expect(
+      screen.getByRole('button', { name: /확인할 알림 있음/ }),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      rejectRefresh?.(new Error('temporary failure'));
+      await refreshRequest.catch(() => undefined);
+    });
+
+    expect(
+      screen.getByRole('button', { name: /확인할 알림 있음/ }),
+    ).toBeInTheDocument();
+  });
+
   it('SSE notifications.changed 이벤트를 받으면 초대와 Security Alert summary를 재조회한다', async () => {
     const listeners = new Map<string, EventListener>();
     const source = {

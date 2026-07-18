@@ -147,7 +147,6 @@ export default function Sidebar() {
 
   const loadSecurityAlertSummary = useCallback(async (notify = false) => {
     const sequence = ++securityAlertLoadSequenceRef.current;
-    setSecurityAlertSummary(null);
     setSecurityAlertsLoading(true);
     setSecurityAlertsError(null);
     try {
@@ -191,9 +190,9 @@ export default function Sidebar() {
       }
     } catch (loadError) {
       if (sequence === securityAlertLoadSequenceRef.current) {
-        setSecurityAlertSummary(null);
         setSecurityAlertsError('보안 알림을 불러오지 못했습니다.');
         if (isAxiosError(loadError) && loadError.response?.status === 403) {
+          setSecurityAlertSummary(null);
           securityAlertSnapshotRef.current = new Map();
           securityAlertSnapshotInitializedRef.current = false;
           securityAlertToastAtRef.current = new Map();
@@ -385,6 +384,9 @@ export default function Sidebar() {
 
   const canSwitchOrganization = organizations.length > 1;
   const organizationTypeLabel = isOrganizationManager ? '내 조직' : '멤버 조직';
+  const hasNotifications =
+    notifications.length > 0 ||
+    (isOrganizationManager && (securityAlertSummary?.open_count ?? 0) > 0);
 
   return (
     <aside
@@ -557,8 +559,17 @@ export default function Sidebar() {
             isCollapsed ? 'justify-center p-0' : 'p-2',
           )}
         >
-          <div className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-full bg-slate-200 text-xs font-black text-slate-700">
+          <div className="relative grid h-8 w-8 flex-shrink-0 place-items-center rounded-full bg-slate-200 text-xs font-black text-slate-700">
             {userName.charAt(0).toUpperCase()}
+            {hasNotifications && (
+              <>
+                <span
+                  aria-hidden="true"
+                  className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-white bg-red-600"
+                />
+                <span className="sr-only">확인할 알림 있음</span>
+              </>
+            )}
           </div>
           {!isCollapsed && (
             <div className="flex-1 min-w-0">
