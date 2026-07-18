@@ -253,6 +253,11 @@ class ModelRoutingUnavailableError(ValueError):
 class ModelRouter:
     """Judge-first와 충분히 학습된 local-first 사이만 조정한다."""
 
+    # Judge 입력에서 이번 요청은 매 실행 달라지는 핵심 신호다. 고정 노드 프롬프트가
+    # 길어도 요청 원문이 잘리지 않도록 별도 예산을 둔다.
+    _JUDGE_REQUEST_CHAR_BUDGET = 1_650
+    _JUDGE_PROMPT_SECTION_CHAR_BUDGET = 360
+
     @classmethod
     def resolve_policy(
         cls,
@@ -424,11 +429,11 @@ class ModelRouter:
             ("ASSISTANT_PROMPT", prompt_values[2]),
         )
         prompt_feature = "\n\n".join(
-            f"{label}:\n{str(value or '').strip()}"
+            f"{label}:\n{cls._judge_prompt_excerpt(value)}"
             for label, value in prompt_sections
         )
 
-        request_text = cls._flatten_text(inputs)
+        request_text = cls._flatten_text(inputs)[: cls._JUDGE_REQUEST_CHAR_BUDGET]
         safe_rag_metadata = {
             key: value
             for key, value in (rag_metadata or {}).items()
@@ -444,8 +449,8 @@ class ModelRouter:
             and isinstance(value, (bool, int, float, str))
         }
         parts = [
-            f"NODE_PROMPTS:\n{prompt_feature}",
             f"CURRENT_REQUEST:\n{request_text}" if request_text else "",
+            f"NODE_TASK_CONTRACT:\n{prompt_feature}",
         ]
         if safe_rag_metadata:
             parts.append(
@@ -453,6 +458,13 @@ class ModelRouter:
                 + json.dumps(safe_rag_metadata, ensure_ascii=False, sort_keys=True)
             )
         return "\n\n".join(part for part in parts if part)
+
+    @classmethod
+    def _judge_prompt_excerpt(cls, value: Any) -> str:
+        text = str(value or "").strip()
+        if len(text) <= cls._JUDGE_PROMPT_SECTION_CHAR_BUDGET:
+            return text
+        return text[: cls._JUDGE_PROMPT_SECTION_CHAR_BUDGET - 1].rstrip() + "…"
 
     @classmethod
     def infer_runtime_context(

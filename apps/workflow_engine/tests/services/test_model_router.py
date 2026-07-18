@@ -145,15 +145,31 @@ def test_routing_feature_contains_all_node_prompts_and_runtime_signals():
         },
     )
 
-    assert "CURRENT_REQUEST:" in feature
+    assert feature.startswith("CURRENT_REQUEST:")
     assert "세 문서를 비교" in feature
     assert "RAG_RUNTIME_SIGNALS:" in feature
     assert '"retrieved_chunk_count": 3' in feature
     assert '"evidence_sufficient": true' in feature
-    assert "NODE_PROMPTS:" in feature
+    assert "NODE_TASK_CONTRACT:" in feature
     assert "SYSTEM_PROMPT:\n고정 시스템 프롬프트" in feature
     assert "USER_PROMPT:\n고정 사용자 프롬프트" in feature
     assert "ASSISTANT_PROMPT:\n고정 어시스턴트 프롬프트" in feature
     assert "STRUCTURAL_CONSTRAINTS:" not in feature
     assert "schema_required" not in feature
     assert "knowledge_enabled" not in feature
+
+
+def test_routing_feature_preserves_current_request_when_node_prompts_are_long():
+    long_prompt = "고정 작업 계약 " * 1_000
+    request = "짧지만 여러 예외 조건을 함께 검토해 승인 여부를 결정해 주세요."
+
+    feature = ModelRouter.routing_feature_text(
+        {"message": request},
+        _node(),
+        rendered_prompt_parts=[long_prompt, long_prompt, long_prompt],
+    )
+
+    assert feature.startswith(f"CURRENT_REQUEST:\nmessage: {request}")
+    assert "NODE_TASK_CONTRACT:" in feature
+    assert len(feature) < 3_000
+    assert feature.count("…") == 3
