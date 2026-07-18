@@ -122,8 +122,6 @@ export const NodeParameterCard = ({
   focusHeading = false,
   onHeadingFocused,
   onEditingChange,
-  onSecretSubmit,
-  onSecretClear,
   onDecision,
   hasPrevious = false,
   expanded = true,
@@ -139,8 +137,6 @@ export const NodeParameterCard = ({
   focusHeading?: boolean;
   onHeadingFocused?: (taskId: string) => void;
   onEditingChange?: (taskId: string | null) => void;
-  onSecretSubmit?: (task: AgentBuilderParameterTask, value: string) => void;
-  onSecretClear?: (task: AgentBuilderParameterTask) => void;
   onDecision: (decision: ParameterDecisionInput) => void;
   hasPrevious?: boolean;
   expanded?: boolean;
@@ -376,7 +372,6 @@ export const NodeParameterCard = ({
             task={currentTask}
             hydration={hydration}
             disabled={disabled}
-            onSecretSubmit={onSecretSubmit}
             onSubmit={(value) => {
               const action =
                 isRecommendationReview &&
@@ -402,10 +397,6 @@ export const NodeParameterCard = ({
             onClear={
               !currentTask.required && !currentTask.confirmation_required
                 ? () => {
-                    if (currentTask.input_type === 'secret' && onSecretClear) {
-                      onSecretClear(currentTask);
-                      return;
-                    }
                     onDecision({
                       taskId: currentTask.task_id,
                       action: 'clear',
@@ -448,14 +439,6 @@ export const NodeParameterCard = ({
                 aria-label={skipOrClearLabel}
                 disabled={disabled}
                 onClick={() => {
-                  if (
-                    skipOrClearAction === 'clear' &&
-                    currentTask.input_type === 'secret' &&
-                    onSecretClear
-                  ) {
-                    onSecretClear(currentTask);
-                    return;
-                  }
                   onDecision({
                     taskId: currentTask.task_id,
                     action: skipOrClearAction,

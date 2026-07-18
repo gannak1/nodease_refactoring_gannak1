@@ -25,3 +25,18 @@ def test_dev_script_cleans_up_when_startup_fails() -> None:
 
     assert exit_trap_index >= 0, "dev.sh must clean up on every startup failure"
     assert exit_trap_index < gateway_failure_index
+
+
+def test_dev_script_separates_log_stream_from_required_docker_health() -> None:
+    script = (ROOT_DIR / "scripts" / "dev.sh").read_text(encoding="utf-8")
+
+    service_array = script.split("SERVICE_PIDS=(", 1)[1].split(")", 1)[0]
+
+    assert 'DOCKER_LOG_PID=$!' in script
+    assert '"$DOCKER_LOG_PID"' not in service_array
+    assert 'DOCKER_WATCHDOG_PID=$!' in script
+    assert '"$DOCKER_WATCHDOG_PID"' in service_array
+    assert "monitor_docker_services()" in script
+    assert "pg_isready" in script
+    assert "redis-cli ping" in script
+    assert "http://localhost:8194/health" in script

@@ -52,8 +52,11 @@ cleanup() {
     echo -e "\n${YELLOW}🔥 모든 서비스 종료 중...${NC}"
     
     # 모든 백그라운드 프로세스 종료
-    if [ ! -z "$DOCKER_PID" ]; then
-        kill $DOCKER_PID 2>/dev/null || true
+    if [ ! -z "$DOCKER_LOG_PID" ]; then
+        kill $DOCKER_LOG_PID 2>/dev/null || true
+    fi
+    if [ ! -z "$DOCKER_WATCHDOG_PID" ]; then
+        kill $DOCKER_WATCHDOG_PID 2>/dev/null || true
     fi
     if [ ! -z "$LOG_CELERY_PID" ]; then
         kill $LOG_CELERY_PID 2>/dev/null || true
@@ -91,6 +94,27 @@ wait_for_first_service_exit() {
             fi
         done
         sleep 1
+    done
+}
+
+monitor_docker_services() {
+    local consecutive_failures=0
+
+    while true; do
+        if docker compose -f dev/docker-compose.yml exec -T postgres \
+                pg_isready -U admin -d moduly_local > /dev/null 2>&1 && \
+           docker compose -f dev/docker-compose.yml exec -T redis \
+                redis-cli ping > /dev/null 2>&1 && \
+           curl -fsS http://localhost:8194/health > /dev/null 2>&1; then
+            consecutive_failures=0
+        else
+            consecutive_failures=$((consecutive_failures + 1))
+            if [ "$consecutive_failures" -ge 3 ]; then
+                echo -e "${RED}A required Docker service failed its health check.${NC}"
+                return 1
+            fi
+        fi
+        sleep 5
     done
 }
 
@@ -147,7 +171,10 @@ done
 
 # Docker Compose 로그를 백그라운드에서 표시
 docker compose -f dev/docker-compose.yml logs -f postgres redis sandbox &
-DOCKER_PID=$!
+DOCKER_LOG_PID=$!
+
+monitor_docker_services &
+DOCKER_WATCHDOG_PID=$!
 
 if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]] || [[ "$OSTYPE" == "cygwin" ]]; then
     LOG_SYSTEM_PYTHON="apps/log_system/.venv/Scripts/python"
@@ -242,7 +269,7 @@ echo ""
 # Stop the local environment when the first required service exits. A plain
 # wait hides a dead Gateway while unrelated workers continue running.
 SERVICE_PIDS=(
-    "$DOCKER_PID"
+    "$DOCKER_WATCHDOG_PID"
     "$LOG_CELERY_PID"
     "$LOG_CELERY_BEAT_PID"
     "$WORKFLOW_CELERY_PID"
