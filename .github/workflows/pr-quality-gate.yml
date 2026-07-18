@@ -537,8 +537,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Go for actionlint
-        if: needs.scope.outputs.actions_validation == 'true'
+      - name: Set up Go for deployment validators
+        if: >-
+          needs.scope.outputs.actions_validation == 'true' ||
+          needs.scope.outputs.kubernetes_validation == 'true'
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.25.x"
@@ -593,18 +595,14 @@ jobs:
             -f infra/helm/moduly/values-production.yaml \
             -f tests/ci/fixtures/helm-values-ci.yaml > /dev/null
 
-      - name: Set up kubectl
-        if: needs.scope.outputs.kubernetes_validation == 'true'
-        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
-
       - name: Validate Kubernetes manifests
         if: needs.scope.outputs.kubernetes_validation == 'true'
         run: >-
-          kubectl create
-          --dry-run=client
-          --validate=false
-          --recursive
-          --filename infra/k8s
+          go run github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0
+          -strict
+          -summary
+          -kubernetes-version 1.31.0
+          infra/k8s
 
       - name: Set up Terraform
         if: needs.scope.outputs.terraform_validation == 'true'

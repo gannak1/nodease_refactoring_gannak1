@@ -106,6 +106,17 @@ def test_compose_validation_combines_variant_with_base_file():
     )
 
 
+def test_kubernetes_validation_uses_cluster_independent_schema_check():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+
+    assert (
+        "go run github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0"
+        in workflow
+    )
+    assert "-kubernetes-version 1.31.0" in workflow
+    assert "kubectl create --dry-run=client" not in workflow
+
+
 def test_helm_validation_registers_chart_dependency_repositories():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
 
