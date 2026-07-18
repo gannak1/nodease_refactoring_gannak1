@@ -64,6 +64,11 @@ class ModelRoutingRuntimeJudge:
         "high_risk_reasoning": "고위험 판단 필요",
         "ambiguous_request": "모호한 요청 해석",
         "long_context": "긴 문맥 종합",
+        "economy_fit": "단순 응답 처리",
+        "balanced_quality": "여러 조건 종합",
+        "advanced_quality": "고위험 판단 필요",
+        "contract_reliability": "실제 성적 우선",
+        "judge_selected": "요청 난이도 판단",
     }
 
     @classmethod
@@ -122,15 +127,11 @@ class ModelRoutingRuntimeJudge:
 
         selected_model_id = str(payload.get("selected_model_id") or "").strip() or None
         reason_code = str(payload.get("reason_code") or "judge_selected").strip()[:80]
-        reason_short = str(payload.get("reason_short") or "").strip() or None
-        if reason_short is None:
-            reason_short = cls._REASON_SHORT_BY_CODE.get(reason_code)
+        reason_short = cls._safe_reason_short(payload.get("reason_short"), reason_code)
         if not selected_model_id:
             raise RuntimeJudgeResponseError("selected model is missing")
         if selected_model_id not in candidates:
             raise RuntimeJudgeResponseError("unavailable model selected by judge")
-        if not reason_short or len(reason_short) > 14 or not any("가" <= char <= "힣" for char in reason_short):
-            raise RuntimeJudgeResponseError("invalid short reason")
         try:
             confidence = float(payload.get("confidence"))
         except (TypeError, ValueError) as exc:
@@ -155,6 +156,19 @@ class ModelRoutingRuntimeJudge:
             usage=cls._safe_usage(response.get("usage") if isinstance(response, dict) else None),
             decision_detail=decision_detail,
         )
+
+    @classmethod
+    def _safe_reason_short(cls, value: Any, reason_code: str) -> str:
+        """표시용 이유가 계약 밖이어도 유효한 모델 선택은 버리지 않는다."""
+
+        reason_short = str(value or "").strip()
+        if (
+            reason_short
+            and len(reason_short) <= 14
+            and any("가" <= char <= "힣" for char in reason_short)
+        ):
+            return reason_short
+        return cls._REASON_SHORT_BY_CODE.get(reason_code, "요청 난이도 판단")
 
     @classmethod
     def _messages(

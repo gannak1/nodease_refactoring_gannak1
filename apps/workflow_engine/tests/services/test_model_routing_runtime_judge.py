@@ -281,18 +281,21 @@ def test_runtime_judge_rejects_response_without_a_selected_candidate():
         )
 
 
-def test_runtime_judge_rejects_long_or_non_korean_reason():
+def test_runtime_judge_normalizes_long_or_non_korean_reason_without_discarding_selection():
     client = _JudgeClient(
         '{"selected_model_id":"gpt-4o-mini","confidence":0.70,'
         '"reason_short":"this reason is too long","reason_code":"balanced_quality"}'
     )
 
-    with pytest.raises(RuntimeJudgeResponseError, match="reason"):
-        ModelRoutingRuntimeJudge.decide(
-            client=client,
-            candidate_model_ids=["gpt-4o-mini"],
-            routing_feature_text="조건을 확인해 주세요",
-        )
+    decision = ModelRoutingRuntimeJudge.decide(
+        client=client,
+        candidate_model_ids=["gpt-4o-mini"],
+        routing_feature_text="조건을 확인해 주세요",
+    )
+
+    assert decision.selected_model_id == "gpt-4o-mini"
+    assert decision.reason_short == "여러 조건 종합"
+    assert "this reason" not in str(decision.safe_metadata())
 
 
 def test_runtime_judge_does_not_persist_raw_feature_text_in_decision():
