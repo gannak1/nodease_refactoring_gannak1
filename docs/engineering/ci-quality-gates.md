@@ -136,9 +136,16 @@ DB 관련 변경에서는 graph 검사에 더해 disposable PostgreSQL upgrade�
 
 ## 검증 및 실패 재현
 
-정상 개발 절차에서는 CI가 수행하는 lint, typecheck, build, 선택형 pytest, Alembic과 PostgreSQL 계약 검사를 로컬에서 선행 반복하지 않는다. PR CI 결과를 기준으로 판단하고, 실패가 발생한 경우에만 해당 job과 도메인을 최소 범위로 재현한다.
+정상 개발 절차에서는 push 전에 변경 범위의 빠른 검사를 로컬에서 먼저 실행한다.
 
-selector 또는 CI 제어 코드 자체를 수정하거나 실패 원인을 진단할 때만 다음 명령을 사용한다.
+- Python: 변경 파일 lint와 직접 관련된 pytest
+- Client: 변경 범위 lint, typecheck와 직접 관련된 Vitest
+- CI·배포 설정: 변경된 workflow의 actionlint와 사용 가능한 로컬 정적 검사
+- Migration: Alembic revision graph 검사
+
+disposable PostgreSQL 계약, E2E, 전체 build처럼 시간이 오래 걸리거나 실행 환경에 의존하는 검사는 원격 CI를 판정 기준으로 사용한다. 로컬 검사가 통과해도 required CI를 생략하거나 우회하지 않는다. 변경과 무관한 도메인의 전체 회귀는 로컬에서 반복하지 않는다.
+
+selector 또는 CI 제어 코드를 수정할 때는 다음 빠른 검사를 push 전에 실행한다. CI에서 추가 실패가 발생하면 해당 job과 도메인만 최소 범위로 재현한다.
 
 먼저 비교할 commit SHA를 준비한다.
 
@@ -169,7 +176,7 @@ python -m scripts.ci.select_pytest_targets `
   --broad false
 ```
 
-CI helper 실패는 다음 범위로 재현한다.
+CI helper 변경은 다음 범위로 검증한다.
 
 ```powershell
 python -m pytest tests/ci -q
@@ -177,7 +184,7 @@ python -m ruff check scripts/ci tests/ci
 actionlint .github/workflows/pr-quality-gate.yml .github/workflows/pr-ci-control-guard.yml
 ```
 
-각 서비스 test 실행 명령은 repository `AGENTS.md`를 따른다. 전체 `scripts/test.sh`는 일반 PR의 기본 required check가 아니며, CI 실패와 무관한 전체 회귀를 반복 실행하지 않는다.
+각 서비스 test 실행 명령은 repository `AGENTS.md`를 따른다. 전체 `scripts/test.sh`와 disposable PostgreSQL 계약은 일반적인 로컬 선행 검사가 아니며, 원격 CI 실패와 무관한 전체 회귀를 반복 실행하지 않는다.
 
 ## 배포 설정 검증
 
