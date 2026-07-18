@@ -126,6 +126,7 @@ Verified Against: `origin/dev @ 32fb602f`
 ## Citation Tests
 
 - public/internal Chatbot 성공 응답의 safe Citation sidecar가 assistant message 아래에 표시되는지 검증한다.
+- 내부 Chatbot의 citation 포함 assistant 영역은 `dark:` class를 렌더링하지 않고 라이트 전용 텍스트와 테두리를 유지하는지 검증한다.
 - public Chatbot에서 private/denied Collection child evidence가 답변과 Citation에 나타나지 않는지 검증한다.
 - unknown version, malformed item, 내부 identity, URL/path 또는 secret marker가 있는 Citation은 숨기되 assistant 답변은 유지하는지 검증한다.
 - Citation이 없는 no-evidence/legacy 응답과 mobile viewport에서 빈 공간·overflow 없이 렌더링되는지 검증한다.

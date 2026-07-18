@@ -421,6 +421,7 @@ export default function AuthenticatedDeploymentRunPage() {
                         )}
                       />
                       <CitationList
+                        appearance="chat"
                         items={getDeploymentRunCitations(turn.response)}
                       />
                     </div>
