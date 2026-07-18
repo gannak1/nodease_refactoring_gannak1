@@ -392,7 +392,7 @@ export default function Sidebar() {
     <aside
       className={cn(
         'relative flex h-full flex-col justify-between border-r border-slate-200 bg-white px-4 py-5 transition-all duration-300',
-        isCollapsed ? 'w-[80px]' : 'w-[248px]',
+        isCollapsed ? 'w-[80px]' : 'w-[232px]',
       )}
     >
       {/* Toggle Button */}

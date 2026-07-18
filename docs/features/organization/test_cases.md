@@ -169,6 +169,7 @@ Status: Draft
 | ORG-TC-E040 | Admin 상위 tab에서 제거된 `조직 설정`과 기존 deep link를 안전하게 처리해야 한다. | tab bar에 `조직 설정`이 남거나 `tab=organization` 접근 시 빈 화면 또는 제거된 panel이 표시된다. | `조직 설정` tab은 표시하지 않고 `tab=organization-structure&view=members`로 정규화해 조직 구성 화면을 표시. |
 | ORG-TC-E041 | Sidebar 프로필 아이콘은 조직 초대 또는 권한 있는 열린 Security Alert가 있으면 알림 점을 표시하고 그 상태를 접근 가능하게 전달해야 한다. | 알림 source가 있는데 점이 없거나, 두 source가 비었는데 점이 남거나, 일반 member가 Security Alert source만으로 점을 보거나, 일반 `span`의 금지된 `aria-label`에 접근성 이름을 의존한다. | 프로필 우상단에 `aria-hidden` 빨간 점을 표시하고 프로필 button 이름에 `sr-only` 텍스트 `확인할 알림 있음`을 포함, source 0개면 둘 다 숨김. |
 | ORG-TC-E042 | 같은 조직의 Security Alert summary background refresh는 마지막 성공 상태를 유지해야 한다. | 재조회 시작 또는 일시적 실패만으로 기존 알림 점이 사라진다. | 조회 중과 non-403 실패에는 기존 summary 유지, 성공 시 교체, 조직 전환 또는 403에서 제거. |
+| ORG-TC-E043 | 펼친 Sidebar는 dashboard 본문 공간을 과도하게 차지하지 않아야 한다. | 펼친 상태의 너비가 `232px`가 아니거나 메뉴 문구가 잘린다. | 펼침 `232px`, 접힘 `80px` 유지, 모든 navigation 문구 표시. |
 
 ## Permission Tests
 
