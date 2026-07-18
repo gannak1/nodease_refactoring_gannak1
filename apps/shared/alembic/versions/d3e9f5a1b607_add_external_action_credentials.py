@@ -27,6 +27,8 @@ _GITHUB_NODE_ALLOWED_DATA_FIELDS = frozenset(
         "action",
         "credential_id",
         "configuration_state",
+        "displayNumber",
+        "visibleProperties",
         "repo_owner",
         "repo_name",
         "pr_number",

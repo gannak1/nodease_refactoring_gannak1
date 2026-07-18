@@ -22,7 +22,7 @@ Status: Draft
 
 - EAC-TC-020: Slack/GitHub node 저장 payload와 Agent Builder GraphMutation은 `credential_id`만 포함한다.
 - EAC-TC-021: Slack `authConfig.token`, raw Webhook URL과 GitHub `api_token`/`token`/`authConfig`는 최상위와 nested subgraph 모두에서 거부된다. GitHub의 `authorization`, `headers`, `secret`처럼 allowlist 밖의 durable data도 같은 저장 경계에서 거부된다.
-- EAC-TC-022: legacy persisted graph는 response/copy/migration에서 direct field와 GitHub allowlist 밖 field를 제거하고 unresolved로 표시한다. Slack의 legacy HTTP `headers`/`body`/auth configuration도 보존하지 않는다. rollback은 secret을 복원하지 않는다.
+- EAC-TC-022: legacy persisted graph는 response/copy/migration에서 direct field와 GitHub allowlist 밖 field를 제거하고 unresolved로 표시한다. `displayNumber`와 `visibleProperties` 같은 검증된 편집기 metadata는 migration에서도 보존한다. Slack의 legacy HTTP `headers`/`body`/auth configuration도 보존하지 않는다. rollback은 secret을 복원하지 않는다.
 - EAC-TC-023: picker는 active organization에서 `use` 가능한 safe option만 표시하고 direct token input을 렌더링하지 않는다.
 - EAC-TC-024: Slack catalog는 safe delivery output만 광고하며 raw headers/body selector는 migration error로 차단한다.
 

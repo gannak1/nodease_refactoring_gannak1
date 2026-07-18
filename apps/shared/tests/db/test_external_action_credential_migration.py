@@ -86,13 +86,17 @@ def test_legacy_graph_scrub_preserves_existing_opaque_reference():
             "type": "githubNode",
             "data": {
                 "credential_id": "00000000-0000-0000-0000-000000000001",
+                "displayNumber": 3,
+                "visibleProperties": ["credential_id", "repo_owner"],
                 "api_token": "test-only-placeholder",
             },
         }
     )
 
     assert result["data"] == {
-        "credential_id": "00000000-0000-0000-0000-000000000001"
+        "credential_id": "00000000-0000-0000-0000-000000000001",
+        "displayNumber": 3,
+        "visibleProperties": ["credential_id", "repo_owner"],
     }
 
 
