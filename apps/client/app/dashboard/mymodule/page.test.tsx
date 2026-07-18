@@ -73,14 +73,6 @@ describe('내 모듈 운영 현황 보기 전환', () => {
     vi.mocked(moduleOperationsApi.listModuleOperations).mockResolvedValue([
       operationRow,
     ] as never);
-    vi.mocked(
-      moduleOperationsApi.getModuleOperationsCostSummary,
-    ).mockResolvedValue({
-      active_workflow_count: 1,
-      projected_month_cost: 2,
-      projected_month_workflow_execution_cost: 2,
-      projected_month_agent_builder_cost: 0,
-    } as never);
     vi.mocked(apiClient.get).mockResolvedValue({
       data: { id: 'org-1', name: '데모 조직', is_manager: true },
     } as never);
@@ -88,6 +80,24 @@ describe('내 모듈 운영 현황 보기 전환', () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  it('상단 비용 요약 카드를 표시하거나 전체 비용 요약 API를 호출하지 않는다', async () => {
+    render(<MyModulePage />);
+
+    expect(
+      await screen.findByRole('heading', {
+        level: 3,
+        name: '신입사원 온보딩',
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('예상 월 비용')).not.toBeInTheDocument();
+    expect(screen.queryByText('평균 증가 추세')).not.toBeInTheDocument();
+    expect(screen.queryByText('예산 위험')).not.toBeInTheDocument();
+    expect(screen.queryByText('비용 위험 신호')).not.toBeInTheDocument();
+    expect(
+      moduleOperationsApi.getModuleOperationsCostSummary,
+    ).not.toHaveBeenCalled();
   });
 
   it('기본 그리드에서 리스트로 전환하고 선택을 저장한다', async () => {
