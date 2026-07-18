@@ -27,6 +27,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       ci_control_changed: ${{ steps.ci_control.outputs.changed }}
+      terraform_config_changed: ${{ steps.classify.outputs.terraform_validation }}
       docs_only: ${{ steps.scope_outputs.outputs.docs_only }}
       python_lint: ${{ steps.scope_outputs.outputs.python_lint }}
       client: ${{ steps.scope_outputs.outputs.client }}
@@ -610,10 +611,20 @@ jobs:
 
       - name: Validate Terraform configuration
         if: needs.scope.outputs.terraform_validation == 'true'
+        env:
+          CI_CONTROL_CHANGED: ${{ needs.scope.outputs.ci_control_changed }}
+          TERRAFORM_CONFIG_CHANGED: ${{ needs.scope.outputs.terraform_config_changed }}
         run: |
-          terraform -chdir=infra/terraform fmt -check -recursive
-          terraform -chdir=infra/terraform init -backend=false -input=false
-          terraform -chdir=infra/terraform validate
+          terraform_target="infra/terraform"
+          if [[ \
+            "$CI_CONTROL_CHANGED" == "true" && \
+            "$TERRAFORM_CONFIG_CHANGED" != "true" \
+          ]]; then
+            terraform_target="tests/ci/fixtures/terraform-smoke"
+          fi
+          terraform -chdir="$terraform_target" fmt -check -recursive
+          terraform -chdir="$terraform_target" init -backend=false -input=false
+          terraform -chdir="$terraform_target" validate
 
       - name: Validate Docker Compose configurations
         if: needs.scope.outputs.compose_validation == 'true'

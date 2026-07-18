@@ -7,6 +7,9 @@ QUALITY_GATE_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "pr-quality-gate
 HELM_CI_VALUES_PATH = (
     REPOSITORY_ROOT / "tests" / "ci" / "fixtures" / "helm-values-ci.yaml"
 )
+TERRAFORM_CI_FIXTURE_PATH = (
+    REPOSITORY_ROOT / "tests" / "ci" / "fixtures" / "terraform-smoke" / "main.tf"
+)
 KNOWLEDGE_POSTGRES_PATH = (
     REPOSITORY_ROOT
     / ".github"
@@ -116,6 +119,23 @@ def test_kubernetes_validation_uses_cluster_independent_schema_check():
     assert "kubeconform/cmd/kubeconform@v0.8.0" not in workflow
     assert "-kubernetes-version 1.31.0" in workflow
     assert "kubectl create --dry-run=client" not in workflow
+
+
+def test_ci_control_terraform_smoke_uses_fixture_without_hiding_real_changes():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+
+    assert TERRAFORM_CI_FIXTURE_PATH.is_file()
+    assert (
+        "terraform_config_changed: ${{ steps.classify.outputs.terraform_validation }}"
+        in workflow
+    )
+    assert (
+        "TERRAFORM_CONFIG_CHANGED: "
+        "${{ needs.scope.outputs.terraform_config_changed }}"
+        in workflow
+    )
+    assert 'terraform_target="infra/terraform"' in workflow
+    assert 'terraform_target="tests/ci/fixtures/terraform-smoke"' in workflow
 
 
 def test_helm_validation_registers_chart_dependency_repositories():
