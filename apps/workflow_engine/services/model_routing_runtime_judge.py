@@ -54,6 +54,8 @@ class ModelRoutingRuntimeJudge:
     MAX_FEATURE_CHARS = 3_000
     # Judge가 후보 비교와 짧은 선택 근거를 함께 끝낼 수 있도록 둔 상한이다.
     MAX_OUTPUT_TOKENS = 512
+    # 진단은 후보별 제외 근거까지 반환하므로 운영 경로와 별도 예산을 사용한다.
+    DIAGNOSTIC_MAX_OUTPUT_TOKENS = 2_000
     _RETRY_FEATURE_CHARS = 1_200
     _RETRYABLE_PROVIDER_REASON_CODES = {"responses_incomplete"}
     _REASON_SHORT_BY_CODE = {
@@ -83,7 +85,11 @@ class ModelRoutingRuntimeJudge:
 
         request_kwargs = {
             "temperature": 0,
-            "max_tokens": 1024 if diagnostic_mode else cls.MAX_OUTPUT_TOKENS,
+            "max_tokens": (
+                cls.DIAGNOSTIC_MAX_OUTPUT_TOKENS
+                if diagnostic_mode
+                else cls.MAX_OUTPUT_TOKENS
+            ),
             "response_format": {"type": "json_object"},
         }
         try:
@@ -202,6 +208,10 @@ class ModelRoutingRuntimeJudge:
                 '{"selected_model_id":"candidate id","confidence":0.0,'
                 '"reason_short":"여러 조건 종합","reason_code":"balanced_quality",'
                 '"decision_detail":{"task_assessment":"한 문장 판단",'
+                '"difficulty_analysis":{"overall_level":"low|medium|high",'
+                '"task_complexity":0,"decision_impact":0,"evidence_synthesis":0,'
+                '"reason":"난이도 판단 근거"},'
+                '"selection_explanation":"선택 모델이 다른 후보보다 적합한 구체적 이유",'
                 '"candidate_comparison":[{"model_id":"candidate id",'
                 '"decision":"selected|not_selected","reason":"짧은 이유"}]}}.'
             )
@@ -236,8 +246,9 @@ class ModelRoutingRuntimeJudge:
         )
         if diagnostic_mode:
             instruction += (
-                " decision_detail도 포함하세요: task_assessment 한 문장과 모든 후보의 "
-                "model_id, decision(selected|not_selected), reason."
+                " decision_detail도 포함하세요: task_assessment 한 문장, "
+                "difficulty_analysis(overall_level, task_complexity, decision_impact, evidence_synthesis, reason), "
+                "selection_explanation, 모든 후보의 model_id, decision(selected|not_selected), reason."
             )
         body = {
             "request_feature": str(routing_feature_text or "")[: cls._RETRY_FEATURE_CHARS],
@@ -261,9 +272,28 @@ class ModelRoutingRuntimeJudge:
         if not isinstance(value, dict):
             raise RuntimeJudgeResponseError("diagnostic decision detail is missing")
         task_assessment = str(value.get("task_assessment") or "").strip()
+        difficulty_analysis = value.get("difficulty_analysis")
+        selection_explanation = str(value.get("selection_explanation") or "").strip()
         comparisons = value.get("candidate_comparison")
         if not task_assessment or len(task_assessment) > 240:
             raise RuntimeJudgeResponseError("invalid diagnostic task assessment")
+        if not isinstance(difficulty_analysis, dict):
+            raise RuntimeJudgeResponseError("diagnostic difficulty analysis is missing")
+        overall_level = str(difficulty_analysis.get("overall_level") or "").strip()
+        if overall_level not in {"low", "medium", "high"}:
+            raise RuntimeJudgeResponseError("invalid diagnostic difficulty level")
+        safe_difficulty: dict[str, Any] = {"overall_level": overall_level}
+        for key in ("task_complexity", "decision_impact", "evidence_synthesis"):
+            value = difficulty_analysis.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 3:
+                raise RuntimeJudgeResponseError("invalid diagnostic difficulty score")
+            safe_difficulty[key] = value
+        difficulty_reason = str(difficulty_analysis.get("reason") or "").strip()
+        if not difficulty_reason or len(difficulty_reason) > 240:
+            raise RuntimeJudgeResponseError("invalid diagnostic difficulty reason")
+        safe_difficulty["reason"] = difficulty_reason
+        if not selection_explanation or len(selection_explanation) > 240:
+            raise RuntimeJudgeResponseError("invalid diagnostic selection explanation")
         if not isinstance(comparisons, list) or not comparisons:
             raise RuntimeJudgeResponseError("diagnostic candidate comparison is missing")
 
@@ -296,6 +326,8 @@ class ModelRoutingRuntimeJudge:
             raise RuntimeJudgeResponseError("diagnostic selection does not match selected model")
         return {
             "task_assessment": task_assessment,
+            "difficulty_analysis": safe_difficulty,
+            "selection_explanation": selection_explanation,
             "candidate_comparison": safe_comparisons,
         }
 

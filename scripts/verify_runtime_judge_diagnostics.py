@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime
 import json
 import pathlib
+import re
 import sys
 import uuid
 from typing import Any
@@ -32,23 +34,27 @@ from apps.workflow_engine.workflow.nodes.llm.llm_node import LLMNode
 
 DEFAULT_ORGANIZATION_ID = uuid.UUID("10200000-0000-0000-0000-000000000100")
 DEFAULT_USER_ID = uuid.UUID("10200000-0000-0000-0000-000000000001")
-PREFERRED_CANDIDATES = [
-    "gpt-4o-mini",
-    "gpt-4.1-mini",
-    "gpt-4.1",
-    "gpt-5-mini",
-    "gpt-5.4-mini",
-    "gpt-5.4",
-]
+OPENAI_ROUTING_MODEL_PATTERN = re.compile(
+    r"^(?:gpt-(?:4\.1|4o|5(?:\.\d+)?)(?:-[a-z0-9.-]+)?|o3(?:-pro)?)$",
+    re.IGNORECASE,
+)
 
-MODEL_BANDS = {
-    "gpt-4o-mini": "low",
-    "gpt-4.1-mini": "low",
-    "gpt-5-mini": "mid",
-    "gpt-4.1": "mid",
-    "gpt-5.4-mini": "high",
-    "gpt-5.4": "high",
-}
+
+def _diagnostic_candidates(available_model_ids: list[str]) -> list[str]:
+    """현재 credential으로 실행 가능한 GPT-4.1~5.x 및 O3 후보를 모두 진단한다."""
+
+    return sorted(
+        {
+            model_id.strip()
+            for model_id in available_model_ids
+            if OPENAI_ROUTING_MODEL_PATTERN.match(model_id.strip())
+        }
+    )
+
+
+def _default_output_path() -> pathlib.Path:
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return ROOT / "reports" / "model-routing" / "runtime-judge-diagnostics" / f"{timestamp}.json"
 
 
 def _cases() -> list[dict[str, Any]]:
@@ -88,6 +94,33 @@ def _cases() -> list[dict[str, Any]]:
             "rag_context": {"used": False},
         },
         {
+            "id": "mid-structured-plan",
+            "expected_band": "mid",
+            "request_feature": (
+                "신규 협력사 계정을 읽기 전용으로 만들고 계약 종료일에 자동 회수해야 합니다. "
+                "담당자 확인, 권한 범위, 예외 처리 순서를 JSON 체크리스트로 작성합니다."
+            ),
+            "rag_context": {"used": False},
+        },
+        {
+            "id": "high-short-irreversible-decision",
+            "expected_band": "high",
+            "request_feature": (
+                "한 문장 요청이지만 지금 고객 계정을 즉시 정지할지 유지할지 결정해야 합니다. "
+                "오판하면 서비스 중단 또는 보안 사고가 발생할 수 있습니다."
+            ),
+            "rag_context": {"used": False},
+        },
+        {
+            "id": "high-ambiguous-finance-decision",
+            "expected_band": "high",
+            "request_feature": (
+                "두 비용센터의 결산 수치가 다르고 계약 변경 승인 여부가 불분명합니다. "
+                "누락 정보를 구분하고 승인 보류 또는 진행 판단의 근거를 정리해야 합니다."
+            ),
+            "rag_context": {"used": False},
+        },
+        {
             "id": "high-risk-rag-conflict",
             "expected_band": "high",
             "request_feature": (
@@ -101,6 +134,28 @@ def _cases() -> list[dict[str, Any]]:
                 "source_count": 3,
             },
         },
+        {
+            "id": "high-rag-multi-document-synthesis",
+            "expected_band": "high",
+            "request_feature": (
+                "검색된 보안 운영 규정, 장애 대응 절차, 고객 공지 기준을 함께 읽고 "
+                "현재 상황에 맞는 조치 순서와 외부 공지 가능 여부를 판단합니다."
+            ),
+            "rag_context": {
+                "used": True,
+                "retrieved_context_token_estimate": 6800,
+                "retrieved_context_chars": 23800,
+                "source_count": 5,
+            },
+        },
+        {
+            "id": "low-formatting-rewrite",
+            "expected_band": "low",
+            "request_feature": (
+                "이미 작성된 한 문단을 존댓말 세 문장으로만 다듬고 의미를 추가하지 않습니다."
+            ),
+            "rag_context": {"used": False},
+        },
     ]
 
 
@@ -110,6 +165,10 @@ def main() -> None:
     parser.add_argument("--organization-id", default=str(DEFAULT_ORGANIZATION_ID))
     parser.add_argument("--user-id", default=str(DEFAULT_USER_ID))
     parser.add_argument("--judge-model", default="gpt-5.4-mini")
+    parser.add_argument(
+        "--output",
+        help="진단 결과 JSON 저장 경로입니다. 기본값은 reports/model-routing 아래 UTC 파일명입니다.",
+    )
     args = parser.parse_args()
 
     if not args.execute:
@@ -125,7 +184,7 @@ def main() -> None:
             user_id=user_id,
             organization_id=organization_id,
         )
-        candidates = [model_id for model_id in PREFERRED_CANDIDATES if model_id in available]
+        candidates = _diagnostic_candidates(available)
         if len(candidates) < 2:
             raise RuntimeError(f"비교 가능한 후보 모델이 부족합니다: {candidates}")
         if args.judge_model not in available:
@@ -153,10 +212,6 @@ def main() -> None:
                     "case_id": case["id"],
                     "expected_band": case["expected_band"],
                     "selected_model_id": decision.selected_model_id,
-                    "selected_band": MODEL_BANDS.get(
-                        decision.selected_model_id,
-                        "unknown",
-                    ),
                     "confidence": decision.confidence,
                     "reason_short": decision.reason_short,
                     "reason_code": decision.reason_code,
@@ -164,22 +219,20 @@ def main() -> None:
                     "usage": decision.usage,
                 }
             )
-        print(
-            json.dumps(
-                {
-                    "judge_model": args.judge_model,
-                    "candidates": candidates,
-                    "results": results,
-                    "band_match_count": sum(
-                        result["expected_band"] == result["selected_band"]
-                        for result in results
-                    ),
-                    "case_count": len(results),
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
+        report = {
+            "diagnostic_max_output_tokens": ModelRoutingRuntimeJudge.DIAGNOSTIC_MAX_OUTPUT_TOKENS,
+            "judge_model": args.judge_model,
+            "candidates": candidates,
+            "results": results,
+            "case_count": len(results),
+        }
+        output_path = pathlib.Path(args.output) if args.output else _default_output_path()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
+        print(json.dumps({"output_path": str(output_path), **report}, ensure_ascii=False, indent=2))
     finally:
         db.close()
 

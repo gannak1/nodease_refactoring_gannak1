@@ -197,6 +197,10 @@ def test_runtime_judge_diagnostic_mode_requests_and_keeps_candidate_comparison()
         '{"selected_model_id":"gpt-5.4","confidence":0.91,'
         '"reason_short":"복수 근거 종합","reason_code":"evidence_synthesis",'
         '"decision_detail":{"task_assessment":"충돌하는 정책 근거를 비교해야 합니다.",'
+        '"difficulty_analysis":{"overall_level":"high","task_complexity":3,'
+        '"decision_impact":2,"evidence_synthesis":3,'
+        '"reason":"복수 규정의 충돌과 예외를 함께 해석해야 합니다."},'
+        '"selection_explanation":"gpt-5.4가 필요한 근거 종합 능력을 가장 안정적으로 제공합니다.",'
         '"candidate_comparison":['
         '{"model_id":"gpt-4o-mini","decision":"not_selected",'
         '"reason":"복수 근거 충돌 판단에 보수적입니다."},'
@@ -213,6 +217,14 @@ def test_runtime_judge_diagnostic_mode_requests_and_keeps_candidate_comparison()
 
     assert decision.decision_detail == {
         "task_assessment": "충돌하는 정책 근거를 비교해야 합니다.",
+        "difficulty_analysis": {
+            "overall_level": "high",
+            "task_complexity": 3,
+            "decision_impact": 2,
+            "evidence_synthesis": 3,
+            "reason": "복수 규정의 충돌과 예외를 함께 해석해야 합니다.",
+        },
+        "selection_explanation": "gpt-5.4가 필요한 근거 종합 능력을 가장 안정적으로 제공합니다.",
         "candidate_comparison": [
             {
                 "model_id": "gpt-4o-mini",
@@ -229,7 +241,9 @@ def test_runtime_judge_diagnostic_mode_requests_and_keeps_candidate_comparison()
     instruction = client.calls[0]["messages"][0]["content"]
     assert "decision_detail" in instruction
     assert "candidate_comparison" in instruction
-    assert client.calls[0]["kwargs"]["max_tokens"] == 1024
+    assert "difficulty_analysis" in instruction
+    assert "selection_explanation" in instruction
+    assert client.calls[0]["kwargs"]["max_tokens"] == 2000
 
 
 def test_runtime_judge_retries_incomplete_response_with_compact_contract():
