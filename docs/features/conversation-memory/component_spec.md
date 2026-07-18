@@ -117,7 +117,7 @@ Public session bearer capability의 server-side hash와 lifecycle을 관리한�
 
 Authenticated session은 Access Grant가 아니라 current authentication/authorization과 session subject binding으로 접근한다.
 
-Public lifecycle composition은 명시적 feature activation boundary다. 기본 배포는 비활성이고, 활성화 시 capability verifier, replay encryption, admission HMAC의 독립 key 세 개와 승인된 backup erasure/no-backup mode를 startup에서 함께 검증한다. 누락된 설정을 요청 시점의 임시 adapter 오류로 늦추지 않는다.
+Public lifecycle composition은 명시적 feature activation boundary다. 기본 배포는 비활성이고, 활성화 시 capability verifier, replay encryption, admission HMAC의 독립 key 세 개와 승인된 backup erasure/no-backup mode를 startup에서 함께 검증한다. 누락된 설정을 요청 시점의 임시 adapter 오류로 늦추지 않는다. Network admission은 Password Login·Connector와 같은 trusted-proxy resolver를 사용한다. 설정된 trusted proxy peer에서만 forwarded chain을 해석하고 direct/untrusted peer는 transport address를 canonical network로 정규화하며 unknown identity는 mutation 전에 fail-closed한다.
 
 ### ConversationTurn
 
@@ -355,6 +355,8 @@ Window-only path는 read-only다. Summary path는 generation job, budget reserva
 
 Public close는 session lifecycle에서 current grant의 사용 범위를 transcript-only로 제한하되 새 grant issue audit을 만들지 않는다. Transcript-only grant는 run/reset에는 사용할 수 없지만 privacy delete에는 사용할 수 있다. Reset은 old grant를 즉시 revoke하고 새 session/grant를 원자 발급하며, delete는 active 또는 transcript-only old grant를 즉시 revoke한다. 이는 grace rotation이 아니며 delete status는 별도 purge receipt가 소유한다.
 
+Close/reset/delete는 token verifier와 immutable deployment/grant/session scope를 먼저 확인한 뒤 exact idempotency reservation을 조회한다. 일치하는 completed record는 bounded response replay를 허용하므로 그 사이 grant/session이 temporal expiry를 지나도 기존 결과만 복구할 수 있다. 새 reservation은 current grant state와 session expiry를 통과한 뒤에만 admission과 mutation을 수행하며, 실패 시 pending record와 state 변경을 rollback한다.
+
 ## Ports And Adapters
 
 ### Repository And UnitOfWork
@@ -383,6 +385,7 @@ Public grant/purge receipt 응답 유실 복구만 담당하는 bounded port다.
 - 승인된 key-management capability와 key version
 - Access Grant token 최대 10분, Purge receipt 최대 24시간의 bounded TTL, read-on-replay와 irreversible delete
 - Stored associated-data digest가 현재 immutable idempotency identity에서 재계산한 digest와 같고 같은 scope/key/fingerprint인 경우에만 decrypt 가능
+- 일반 mutation idempotency record는 secret replay lifetime을 포괄하되 최대 24시간으로 제한하고 Purge Job/receipt의 최대 8일 lifecycle과 분리
 
 Access Grant/Purge Job table에는 verifier hash만 두고 ciphertext를 섞지 않는다. Memory application은 encryption algorithm이나 raw key를 직접 선택하지 않으며 replay store unavailable이면 새 secret을 중복 발급하지 않고 fail-closed 한다.
 

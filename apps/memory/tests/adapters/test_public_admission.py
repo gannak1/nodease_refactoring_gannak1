@@ -104,12 +104,24 @@ def test_create_uses_deployment_network_bucket_without_a_global_grant_bucket():
     assert second_call[-4:] == (600, 6, 7, 8)
 
 
-def test_admission_returns_bounded_retry_after_when_any_scope_is_limited():
+def test_create_admission_preserves_retry_after_within_the_create_window():
     with pytest.raises(PublicConversationRateLimitedError) as error:
         _admission(_Redis(result=(0, b"120"))).admit(
             operation="conversation.create",
             binding=_binding(),
             grant_id=None,
+            network_address="203.0.113.7",
+        )
+
+    assert error.value.retry_after_seconds == 120
+
+
+def test_lifecycle_admission_caps_retry_after_to_its_shorter_window():
+    with pytest.raises(PublicConversationRateLimitedError) as error:
+        _admission(_Redis(result=(0, b"120"))).admit(
+            operation="conversation.close",
+            binding=_binding(),
+            grant_id=uuid.uuid4(),
             network_address="203.0.113.7",
         )
 

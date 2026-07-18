@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from datetime import timedelta
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 from apps.gateway.composition.memory import (
     build_public_conversation_application,
     public_conversation_admission_policy_from_environment,
+    public_conversation_policy_from_environment,
     validate_public_conversation_security_configuration,
 )
 from apps.memory.adapters.admission import RedisPublicConversationAdmission
@@ -92,3 +94,9 @@ def test_composition_uses_documented_safe_defaults_for_public_session_create():
     assert policy.create_deployment_network_rate_limit == 10
     assert policy.create_deployment_rate_limit == 200
     assert policy.create_organization_rate_limit == 1_000
+
+
+def test_composition_limits_general_idempotency_retention_to_twenty_four_hours():
+    policy = public_conversation_policy_from_environment({})
+
+    assert policy.idempotency_retention == timedelta(hours=24)

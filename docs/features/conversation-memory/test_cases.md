@@ -257,14 +257,14 @@ MBA-317의 자동 검증은 public capability domain/application, encrypted repl
 - MEM-TC-API-013: New/close/reset/delete authorization과 idempotency를 검증한다.
 - MEM-TC-API-013A: Close/reset의 `If-Match`와 `Idempotency-Key` 누락·malformed·stale 값을 거부하고 lifecycle revision을 body와 중복 요구하지 않는다. 같은 key/body라도 `If-Match` revision이 다르면 bounded request fingerprint가 달라져 prior response를 replay하지 않고 duplicate-request conflict로 닫힌다.
 - MEM-TC-API-013B: Delete의 `If-Match`/`Idempotency-Key` 누락·malformed·stale 값을 거부하고 같은 key retry는 같은 purge request를 반환한다.
-- MEM-TC-API-013C: Session response ETag와 lifecycle revision이 일치하고 reset response는 새 session ETag와 old terminal revision을 혼동하지 않는다.
+- MEM-TC-API-013C: Session response ETag와 lifecycle revision이 일치하고 reset response는 새 session ETag와 old terminal `previous.lifecycle_revision`을 혼동하지 않는다.
 - MEM-TC-API-014: Raw token/Memory content/source/provider error가 response, audit와 log에 없다.
 - MEM-TC-API-015: Public token이 URL, Referer, browser history와 access log에 없다.
 - MEM-TC-API-016: Schedule/webhook/API secret가 임의 conversation subject/session을 주입하지 못한다.
 - MEM-TC-API-017: Transcript pagination/cursor가 tenant/session을 벗어나지 않는다.
 - MEM-TC-API-018: Create는 201, pending run/delete는 202, completed run/lifecycle read는 200 계약을 지킨다.
-- MEM-TC-API-019: 같은 idempotency key의 pending/completed/failed replay는 새 task/provider 호출 없이 같은 safe 상태/결과를 반환한다.
-- MEM-TC-API-020: Public create/reset 응답 유실 뒤 같은 key retry는 최초 응답의 동일 grant만 유지하고 bounded replay record에서 같은 raw token을 반환한다. Reset replay는 old grant를 다시 활성화하거나 replacement grant를 추가 발급하지 않는다.
+- MEM-TC-API-019: 같은 idempotency key의 pending/completed/failed replay는 새 task/provider 호출 없이 같은 safe 상태/결과를 반환한다. Completed close/reset/delete의 exact replay는 원 grant/session이 temporal expiry를 지난 뒤에도 각 bounded replay/idempotency TTL 안에서 기존 결과만 복구한다.
+- MEM-TC-API-020: Public create/reset 응답 유실 뒤 같은 key retry는 최초 응답의 동일 grant만 유지하고 bounded replay record에서 같은 raw token을 반환한다. Reset replay는 old grant를 다시 활성화하거나 replacement grant를 추가 발급하지 않는다. Expired scope의 새 key/fingerprint mutation은 replay로 승격하지 않고 resource-hiding하며 admission budget도 소비하지 않는다.
 - MEM-TC-API-020A: Public create idempotency key는 최소 128-bit entropy를 요구하고 raw key를 durable log에 남기지 않으며 정상 network 변경 뒤에도 같은 canonical deployment retry를 복구한다. Parent Origin은 idempotency scope를 바꾸지 않는다.
 - MEM-TC-API-021: Access Grant replay 10분 TTL 만료 뒤 same-key create/reset은 `409 memory.secret_replay_expired`를 반환하고 새 grant를 만들지 않는다.
 - MEM-TC-API-021A: `memory.secret_replay_expired` 뒤 새 idempotency key의 explicit create는 새 session/grant를 만들며 접근 불가능한 기존 session은 idle expiry/retention cleanup 대상이다.
@@ -280,10 +280,10 @@ MBA-317의 자동 검증은 public capability domain/application, encrypted repl
 - MEM-TC-API-025D: 새 탭/브라우저는 기존 session용 grant를 재발급받지 못하며 새 idempotency key로 별도 conversation을 생성한다.
 - MEM-TC-API-026: Token/transcript/status 응답은 no-store/private/Vary header 계약을 지킨다.
 - MEM-TC-API-026A: Public conversation page는 no-referrer/CSP를 반환하고 미허용 third-party script/frame origin과 inline token telemetry를 허용하지 않는다.
-- MEM-TC-API-027: Grant/deployment/network/organization rate 또는 concurrency limit 초과는 provider/dispatch 전에 429와 safe Retry-After를 반환한다.
+- MEM-TC-API-027: Grant/deployment/network/organization rate 또는 concurrency limit 초과는 provider/dispatch 전에 429와 해당 operation window의 실제 남은 시간 범위로 제한한 safe Retry-After를 반환한다.
 - MEM-TC-API-028: Public token은 최소 128-bit entropy/version prefix를 가지며 verifier hash/constant-time comparison contract를 검증한다.
 - MEM-TC-API-029: Public purge receipt는 URL에 노출되지 않고 revoke된 conversation grant와 별도 scope로 status만 조회한다.
-- MEM-TC-API-029A: Public delete 응답 유실 뒤 24시간 replay TTL 안의 same-key replay는 추가 receipt를 만들지 않고 encrypted response record에서 같은 receipt를 복구한다.
+- MEM-TC-API-029A: Public delete 응답 유실 뒤 24시간 replay TTL 안의 same-key replay는 원 grant/session의 temporal expiry 뒤에도 추가 receipt를 만들지 않고 encrypted response record에서 같은 receipt를 복구한다.
 - MEM-TC-API-029B: Purge receipt는 terminal 후 최소 24시간과 발급 후 최대 8일 경계를 지키며 Session/Grant 물리 삭제에 의존하지 않는 durable scope snapshot으로 만료 전 terminal 상태를 조회할 수 있다.
 - MEM-TC-API-029C: Purge job은 발급 후 7일 안에 completed/completed_with_hold/terminal_failure로 닫고 남은 retryable failure는 dead-letter/alert와 terminal failure로 승격한다.
 - MEM-TC-API-029D: Purge receipt replay ciphertext 만료 뒤 same-key delete는 `memory.secret_replay_expired`이고 새 receipt를 자동 재발급하지 않는다.
@@ -291,9 +291,9 @@ MBA-317의 자동 검증은 public capability domain/application, encrypted repl
 - MEM-TC-API-031: Public completed turn 100개까지 허용하고 101번째는 dispatch/provider 전에 bounded limit으로 거부한다.
 - MEM-TC-API-032: Entry 16 KiB는 UTF-8 byte 기준으로 검증해 multi-byte Unicode가 문자 수 우회로 overflow하지 않는다.
 - MEM-TC-API-033: Context 4,096 token server upper bound를 client/node config가 늘릴 수 없다.
-- MEM-TC-API-034: Public create/run rate window의 마지막 허용 요청과 첫 초과 요청, window rollover와 concurrent burst를 검증한다. 두 tenant의 create는 deployment/organization bucket을 공유하지 않고 network abuse bucket만 의도적으로 공유하며 global synthetic grant bucket은 만들지 않는다.
-- MEM-TC-API-034A: Forged forwarding header가 network rate scope를 바꾸지 못하고 limiter unavailable은 public create/run을 fail-closed 한다.
-- MEM-TC-API-035: Raw token replay 10분 경계 직전은 동일 secret을 반환하고 경계 시각부터 `memory.secret_replay_expired`다. Memory-owned periodic cleanup은 만료 ciphertext를 bounded `SKIP LOCKED` batch로 live store에서 삭제하며 일반 non-secret idempotency retention과 혼동하지 않는다. Backup erasure contract가 확인되지 않은 환경은 public lifecycle activation을 거부한다.
+- MEM-TC-API-034: Public create/run rate window의 마지막 허용 요청과 첫 초과 요청, window rollover와 concurrent burst를 검증한다. 두 tenant의 create는 deployment, organization과 deployment+network bucket을 공유하지 않으며 global network 또는 synthetic grant bucket을 만들지 않는다.
+- MEM-TC-API-034A: Configured trusted proxy chain은 오른쪽부터 canonical client network를 복원하고 untrusted peer의 forged forwarding header는 network rate scope를 바꾸지 못한다. Unknown identity와 limiter unavailable은 public create/run을 fail-closed 한다.
+- MEM-TC-API-035: Raw token replay 10분 경계 직전은 동일 secret을 반환하고 경계 시각부터 `memory.secret_replay_expired`다. Memory-owned periodic cleanup은 만료 ciphertext를 bounded `SKIP LOCKED` batch로 live store에서 삭제하며 최대 24시간인 일반 non-secret idempotency retention 및 최대 8일인 purge receipt lifecycle과 혼동하지 않는다. Backup erasure contract가 확인되지 않은 환경은 public lifecycle activation을 거부한다.
 - MEM-TC-API-036: Public route에 valid login cookie/authorization을 함께 보내도 execution principal은 anonymous public audience이며 private Knowledge/Memory가 허용되지 않는다.
 - MEM-TC-API-037: Authenticated internal Chatbot route는 별도 surface/권한/CSRF/CORS/session namespace를 요구하고 public Access Grant로 호출할 수 없다.
 - MEM-TC-API-038: 일반 deployment, schedule, webhook과 API batch는 target Conversation Session을 암묵적으로 생성하지 않는다.

@@ -55,7 +55,7 @@ Public conversation page는 `Referrer-Policy: no-referrer`와 strict Content Sec
 
 Public lifecycle/transcript endpoint는 `Authorization: Conversation ...` header를 요구한다. Invalid, expired, revoked 또는 다른 slug/deployment에 binding된 grant는 resource-hiding response를 반환한다.
 
-Public create/close/reset/delete body는 현재 빈 JSON object만 허용한다. unknown field, client-supplied organization/subject/session/storage generation과 body request ID는 거부한다. `Idempotency-Key`는 URL-safe 22~256자(최소 128-bit random entropy)이고 server는 hash만 저장한다. close/reset/delete는 정확한 `If-Match: "lifecycle-revision-N"`가 없거나 malformed면 `428`로 거부하며, canonical request fingerprint는 body와 expected lifecycle revision을 함께 포함한다. Gateway는 socket peer만 network admission input으로 사용하며 `X-Forwarded-For`, `Origin`, `Referer`, `Host` 또는 client hint로 scope를 바꾸지 않는다.
+Public create/close/reset/delete body는 현재 빈 JSON object만 허용한다. unknown field, client-supplied organization/subject/session/storage generation과 body request ID는 거부한다. `Idempotency-Key`는 URL-safe 22~256자(최소 128-bit random entropy)이고 server는 hash만 저장한다. close/reset/delete는 정확한 `If-Match: "lifecycle-revision-N"`가 없거나 malformed면 `428`로 거부하며, canonical request fingerprint는 body와 expected lifecycle revision을 함께 포함한다. Gateway는 공통 trusted-proxy resolver로 canonical client network를 구성한다. Immediate peer가 설정된 trusted proxy CIDR일 때만 forwarded chain을 해석하고, untrusted peer의 forwarding header는 무시하며 identity를 해석할 수 없으면 fail-closed한다. `Origin`, `Referer`, `Host` 또는 client hint는 admission scope를 바꾸지 않는다.
 
 ### Authenticated Conversation
 
@@ -241,7 +241,7 @@ Turn status는 `pending_dispatch | queued | running | completed | failed | cance
 
 Close/reset/delete는 stale client가 최신 session을 변경하지 못하도록 lifecycle revision을 body와 중복하지 않고 `If-Match` header로만 전달한다. Mutation idempotency는 별도 header를 사용하며 parsed lifecycle revision은 canonical idempotency fingerprint의 precondition 필드다.
 
-Create/run/transcript/turn/close/reset response는 현재 session의 `ETag: "lifecycle-revision-N"`을 반환한다. Reset은 새 session ETag를 response header에 두고 old terminal revision은 body의 previous conversation summary에 포함한다.
+Create/run/transcript/turn/close/reset response는 현재 session의 `ETag: "lifecycle-revision-N"`을 반환한다. Reset은 새 session ETag를 response header에 두고 old terminal revision은 body의 `previous.lifecycle_revision`에 포함한다.
 
 ```http
 If-Match: "lifecycle-revision-1"
@@ -249,6 +249,23 @@ Idempotency-Key: req_lifecycle_unique_value
 ```
 
 Reset success는 새 session 또는 새 public access token과 기존 session의 terminal 상태를 함께 반환한다. Delete는 접근 차단이 durable하게 기록된 뒤 성공해야 하며 물리 purge 완료를 거짓으로 동기 응답하지 않는다.
+
+완료된 close/reset/delete의 exact scope, idempotency key와 fingerprint가 일치하면 grant/session의 temporal expiry보다 먼저 bounded replay를 판별한다. 이는 응답 유실 복구만 허용하며, 새 idempotency key나 다른 fingerprint는 current grant/session usability를 다시 검증해 expired/revoked scope를 resource-hiding으로 거부한다. 일반 mutation idempotency record는 최대 24시간이고 purge receipt 자체의 최대 8일 수명과 분리한다.
+
+Reset response의 새 session revision과 이전 terminal revision은 다음처럼 분리한다.
+
+```json
+{
+  "conversation": {
+    "access_token": "opaque-secret",
+    "lifecycle_revision": 1
+  },
+  "previous": {
+    "lifecycle": "closed",
+    "lifecycle_revision": 2
+  }
+}
+```
 
 ```json
 {
@@ -457,7 +474,7 @@ Application/domain error는 FastAPI `HTTPException`에 의존하지 않는다. I
 | `memory.budget_denied` | 429 또는 node failure policy | Summary reservation 거부 |
 | `budget.price_unavailable` | node failure policy | Summary 예상 가격 불명확. Provider 미호출, window/fail policy 적용 |
 | `memory.adapter_unavailable` | 503/504 또는 failure policy | Store/provider adapter 장애 |
-| `memory.rate_limited` | 429 | Grant/deployment/network/organization limit 초과. Safe `Retry-After` 제공 |
+| `memory.rate_limited` | 429 | Grant/deployment/network/organization limit 초과. 해당 admission window의 실제 남은 시간 범위로 제한한 `Retry-After` 제공 |
 | `memory.csrf_rejected` | 403 | Authenticated mutation의 CSRF/Origin/Fetch Metadata 검증 실패 |
 | `memory.worker_incompatible` | 503 | Worker가 task contract/storage generation을 side effect 전에 거부 |
 | `memory.deployment_version_changed` | 409 authenticated only | Session이 고정된 deployment/mapping/policy version과 요청 version이 다름. Public route는 404 hiding |

@@ -60,7 +60,7 @@ class PublicConversationPolicy:
     access_secret_replay_lifetime: timedelta = timedelta(minutes=10)
     purge_receipt_lifetime: timedelta = timedelta(days=7)
     purge_secret_replay_lifetime: timedelta = timedelta(hours=24)
-    idempotency_retention: timedelta = timedelta(days=8)
+    idempotency_retention: timedelta = timedelta(hours=24)
     purge_max_attempts: int = 8
 
     def __post_init__(self) -> None:
@@ -79,6 +79,13 @@ class PublicConversationPolicy:
             raise ValueError("absolute lifetime must exceed idle lifetime")
         if self.purge_receipt_lifetime > timedelta(days=8):
             raise ValueError("purge receipt lifetime must not exceed eight days")
+        if self.idempotency_retention > timedelta(hours=24):
+            raise ValueError("idempotency retention must not exceed twenty-four hours")
+        if self.idempotency_retention < max(
+            self.access_secret_replay_lifetime,
+            self.purge_secret_replay_lifetime,
+        ):
+            raise ValueError("idempotency retention must cover secret replay lifetimes")
         if self.purge_max_attempts < 1:
             raise ValueError("purge_max_attempts must be positive")
 
@@ -209,6 +216,7 @@ class PublicConversationResult:
     access_token: str
     replayed: bool
     previous_lifecycle: SessionLifecycle | None = None
+    previous_lifecycle_revision: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,6 +304,7 @@ class _TransactionalPublicUseCase:
         binding: PublicDeploymentBinding,
         raw_access_token: str,
         now: datetime,
+        allow_expired_for_replay: bool = False,
     ) -> ConversationAccessGrant:
         verifier = self.secrets.access_grant_verifier(raw_access_token)
         if verifier is None:
@@ -317,7 +326,9 @@ class _TransactionalPublicUseCase:
             or grant.audience_kind is not AudienceKind.PUBLIC_CHATBOT
         ):
             raise AccessGrantNotUsableError()
-        if grant.state is AccessGrantState.EXPIRED or now >= grant.expires_at:
+        if not allow_expired_for_replay and (
+            grant.state is AccessGrantState.EXPIRED or now >= grant.expires_at
+        ):
             raise AccessGrantNotUsableError()
         return grant
 
@@ -326,6 +337,7 @@ class _TransactionalPublicUseCase:
         grant: ConversationAccessGrant,
         *,
         now: datetime,
+        allow_expired_for_replay: bool = False,
     ) -> ConversationSession:
         session = self.repository.lock_session(
             organization_id=grant.organization_id,
@@ -339,9 +351,20 @@ class _TransactionalPublicUseCase:
             or session.audience_kind is not AudienceKind.PUBLIC_CHATBOT
         ):
             raise AccessGrantNotUsableError()
-        if now >= session.idle_expires_at or now >= session.absolute_expires_at:
+        if not allow_expired_for_replay and (
+            now >= session.idle_expires_at or now >= session.absolute_expires_at
+        ):
             raise AccessGrantNotUsableError()
         return session
+
+    @staticmethod
+    def _require_unexpired_session(
+        session: ConversationSession,
+        *,
+        now: datetime,
+    ) -> None:
+        if now >= session.idle_expires_at or now >= session.absolute_expires_at:
+            raise AccessGrantNotUsableError()
 
     def _reserve(
         self,
@@ -580,8 +603,13 @@ class ClosePublicConversationUseCase(_TransactionalPublicUseCase):
                 binding=binding,
                 raw_access_token=command.access_token,
                 now=command.now,
+                allow_expired_for_replay=True,
             )
-            session = self._session_for_grant(grant, now=command.now)
+            session = self._session_for_grant(
+                grant,
+                now=command.now,
+                allow_expired_for_replay=True,
+            )
             reservation = self._reserve(
                 organization_id=binding.organization_id,
                 operation="conversation.close",
@@ -602,18 +630,18 @@ class ClosePublicConversationUseCase(_TransactionalPublicUseCase):
                 replay_session = _record_session(self.repository, reservation.record)
                 return _close_result(replay_session, replayed=True)
 
-            self._admit(
-                operation="conversation.close",
-                binding=binding,
-                grant_id=grant.id,
-                network_address=command.network_address,
-            )
-
             grant.require_active(
                 deployment_id=binding.deployment_id,
                 deployment_version=binding.deployment_version,
                 audience_kind=AudienceKind.PUBLIC_CHATBOT,
                 now=command.now,
+            )
+            self._require_unexpired_session(session, now=command.now)
+            self._admit(
+                operation="conversation.close",
+                binding=binding,
+                grant_id=grant.id,
+                network_address=command.network_address,
             )
             session.close(
                 expected_lifecycle_revision=command.expected_lifecycle_revision,
@@ -652,8 +680,13 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
                 binding=binding,
                 raw_access_token=command.access_token,
                 now=command.now,
+                allow_expired_for_replay=True,
             )
-            old_session = self._session_for_grant(old_grant, now=command.now)
+            old_session = self._session_for_grant(
+                old_grant,
+                now=command.now,
+                allow_expired_for_replay=True,
+            )
             reservation = self._reserve(
                 organization_id=binding.organization_id,
                 operation="conversation.reset",
@@ -682,20 +715,21 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
                     access_token=token,
                     replayed=True,
                     previous_lifecycle=SessionLifecycle.CLOSED,
+                    previous_lifecycle_revision=old_session.lifecycle_revision,
                 )
-
-            self._admit(
-                operation="conversation.reset",
-                binding=binding,
-                grant_id=old_grant.id,
-                network_address=command.network_address,
-            )
 
             old_grant.require_active(
                 deployment_id=binding.deployment_id,
                 deployment_version=binding.deployment_version,
                 audience_kind=AudienceKind.PUBLIC_CHATBOT,
                 now=command.now,
+            )
+            self._require_unexpired_session(old_session, now=command.now)
+            self._admit(
+                operation="conversation.reset",
+                binding=binding,
+                grant_id=old_grant.id,
+                network_address=command.network_address,
             )
             old_session.close(
                 expected_lifecycle_revision=command.expected_lifecycle_revision,
@@ -780,6 +814,7 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
                 access_token=issued.raw_value,
                 replayed=False,
                 previous_lifecycle=old_session.lifecycle,
+                previous_lifecycle_revision=old_session.lifecycle_revision,
             )
 
         return self._execute(operation)
@@ -793,8 +828,13 @@ class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
                 binding=binding,
                 raw_access_token=command.access_token,
                 now=command.now,
+                allow_expired_for_replay=True,
             )
-            session = self._session_for_grant(grant, now=command.now)
+            session = self._session_for_grant(
+                grant,
+                now=command.now,
+                allow_expired_for_replay=True,
+            )
             reservation = self._reserve(
                 organization_id=binding.organization_id,
                 operation="conversation.delete",
@@ -826,18 +866,18 @@ class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
                     replayed=True,
                 )
 
-            self._admit(
-                operation="conversation.delete",
-                binding=binding,
-                grant_id=grant.id,
-                network_address=command.network_address,
-            )
-
             grant.require_transcript(
                 deployment_id=binding.deployment_id,
                 deployment_version=binding.deployment_version,
                 audience_kind=AudienceKind.PUBLIC_CHATBOT,
                 now=command.now,
+            )
+            self._require_unexpired_session(session, now=command.now)
+            self._admit(
+                operation="conversation.delete",
+                binding=binding,
+                grant_id=grant.id,
+                network_address=command.network_address,
             )
             issued = self.secrets.issue_purge_receipt()
             purge_job = ConversationPurgeJob.pending(
@@ -1120,6 +1160,7 @@ def _conversation_result(
     access_token: str,
     replayed: bool,
     previous_lifecycle: SessionLifecycle | None = None,
+    previous_lifecycle_revision: int | None = None,
 ) -> PublicConversationResult:
     return PublicConversationResult(
         lifecycle=session.lifecycle,
@@ -1129,6 +1170,7 @@ def _conversation_result(
         access_token=access_token,
         replayed=replayed,
         previous_lifecycle=previous_lifecycle,
+        previous_lifecycle_revision=previous_lifecycle_revision,
     )
 
 

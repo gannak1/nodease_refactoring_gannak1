@@ -63,3 +63,14 @@ def test_runtime_images_include_memory_and_helm_schedules_replay_retention():
     assert "default .Values.worker.image.repository" in beat_template
     assert "- apps.shared.celery_app:celery_app" in beat_template
     assert "- beat" in beat_template
+
+
+def test_standard_proxy_paths_preserve_client_network_for_public_admission():
+    compose = _read("docker/docker-compose.yml")
+    nginx = _read("docker/nginx/nginx.conf")
+    helm_helpers = _read("infra/helm/moduly/templates/_helpers.tpl")
+
+    assert "AUTH_LOGIN_TRUSTED_PROXY_CIDRS:-172.16.0.0/12" in compose
+    assert "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for" in nginx
+    assert "validateLoginTrustedProxy" in helm_helpers
+    assert "AUTH_LOGIN_TRUSTED_PROXY_CIDRS is required" in helm_helpers

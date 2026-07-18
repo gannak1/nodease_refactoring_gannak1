@@ -168,9 +168,9 @@ def public_conversation_policy_from_environment(
         idempotency_retention=_seconds(
             environ,
             "MEMORY_PUBLIC_IDEMPOTENCY_RETENTION_SECONDS",
-            691_200,
             86_400,
-            1_209_600,
+            60,
+            86_400,
         ),
         purge_max_attempts=_integer(
             environ,

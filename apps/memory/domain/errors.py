@@ -84,5 +84,5 @@ class PublicConversationRateLimitedError(MemoryDomainError):
     code = "memory.rate_limited"
 
     def __init__(self, retry_after_seconds: int = 1) -> None:
-        self.retry_after_seconds = max(1, min(60, int(retry_after_seconds)))
+        self.retry_after_seconds = max(1, min(3600, int(retry_after_seconds)))
         super().__init__()

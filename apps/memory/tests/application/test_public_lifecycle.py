@@ -327,6 +327,8 @@ def test_create_replays_the_same_bounded_access_token_without_storing_raw_value(
     assert replay.access_token == first.access_token
     assert all("token" not in grant.__dataclass_fields__ for grant in repository.grants.values())
     assert all(first.access_token.encode("utf-8") not in value.ciphertext for value in repository.replays.values())
+    record = next(iter(repository.idempotency.values()))
+    assert record.retention_expires_at == _now() + timedelta(hours=24)
 
 
 @pytest.mark.parametrize(
@@ -453,8 +455,10 @@ def test_reset_revokes_old_grant_but_matching_retry_returns_one_replacement():
     replay = reset.execute(command)
 
     assert replacement.access_token != first.access_token
+    assert replacement.previous_lifecycle_revision == 2
     assert replay.replayed is True
     assert replay.access_token == replacement.access_token
+    assert replay.previous_lifecycle_revision == 2
     with pytest.raises(AccessGrantNotUsableError):
         reset.execute(_lifecycle_command(first.access_token, suffix="other"))
     assert [event["action"] for event in components[4].events] == [
@@ -474,6 +478,81 @@ def test_reset_revokes_old_grant_but_matching_retry_returns_one_replacement():
         "conversation_access_grant",
     ]
     assert components[4].events[2]["target_id"] != components[4].events[4]["target_id"]
+
+
+def test_close_replays_after_original_grant_and_session_expire_but_new_key_fails():
+    policy = replace(
+        PublicConversationPolicy(),
+        idle_lifetime=timedelta(minutes=1),
+        access_grant_lifetime=timedelta(minutes=1),
+    )
+    components = _application(policy=policy)
+    repository = components[0]
+    admission = _Admission()
+    create = _use_case(CreatePublicConversationUseCase, components)
+    close = _use_case(
+        ClosePublicConversationUseCase,
+        components,
+        admission=admission,
+    )
+    first = create.execute(_create_command())
+    command = _lifecycle_command(first.access_token)
+    closed = close.execute(command)
+
+    replay = close.execute(replace(command, now=_now() + timedelta(minutes=2)))
+
+    assert replay.replayed is True
+    assert replay.lifecycle_revision == closed.lifecycle_revision
+    record_count = len(repository.idempotency)
+    with pytest.raises(AccessGrantNotUsableError):
+        close.execute(
+            _lifecycle_command(
+                first.access_token,
+                now=_now() + timedelta(minutes=2),
+                suffix="new-after-expiry",
+                expected_revision=2,
+            )
+        )
+    assert len(repository.idempotency) == record_count
+    assert len(admission.calls) == 1
+
+
+def test_reset_replays_replacement_secret_after_original_scope_expires():
+    policy = replace(
+        PublicConversationPolicy(),
+        idle_lifetime=timedelta(minutes=1),
+        access_grant_lifetime=timedelta(minutes=1),
+    )
+    components = _application(policy=policy)
+    create = _use_case(CreatePublicConversationUseCase, components)
+    reset = _use_case(ResetPublicConversationUseCase, components)
+    first = create.execute(_create_command())
+    command = _lifecycle_command(first.access_token)
+    replacement = reset.execute(command)
+
+    replay = reset.execute(replace(command, now=_now() + timedelta(minutes=2)))
+
+    assert replay.replayed is True
+    assert replay.access_token == replacement.access_token
+
+
+def test_delete_replays_receipt_after_original_scope_expires():
+    policy = replace(
+        PublicConversationPolicy(),
+        idle_lifetime=timedelta(minutes=1),
+        access_grant_lifetime=timedelta(minutes=1),
+    )
+    components = _application(policy=policy)
+    create = _use_case(CreatePublicConversationUseCase, components)
+    delete = _use_case(DeletePublicConversationUseCase, components)
+    first = create.execute(_create_command())
+    command = _lifecycle_command(first.access_token)
+    deleted = delete.execute(command)
+
+    replay = delete.execute(replace(command, now=_now() + timedelta(minutes=2)))
+
+    assert replay.replayed is True
+    assert replay.purge_receipt == deleted.purge_receipt
 
 
 def test_delete_revokes_conversation_grant_and_replays_receipt_only_until_ttl():

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_db, require_json_content_type
+from apps.gateway.composition.authentication import login_network_resolver
 from apps.gateway.composition.memory import build_public_conversation_application
 from apps.memory.application.public_lifecycle import (
     CreatePublicConversationCommand,
@@ -27,7 +28,6 @@ from apps.memory.domain.errors import (
     SessionNotActiveError,
     StaleLifecycleRevisionError,
 )
-
 
 router = APIRouter()
 
@@ -62,6 +62,13 @@ def _request_fingerprint(
         request_model.model_dump(mode="json"),
         expected_lifecycle_revision=expected_lifecycle_revision,
     )
+
+
+def _network_address(request: Request) -> str:
+    network_address = login_network_resolver().resolve(request)
+    if network_address == "unknown":
+        raise MemoryAdapterUnavailableError()
+    return network_address
 
 
 def _expected_lifecycle_revision(if_match: str | None) -> int:
@@ -195,9 +202,7 @@ def create_public_conversation(
                 idempotency_key_hash=_idempotency_key_hash(idempotency_key),
                 request_fingerprint=_request_fingerprint(body),
                 now=_now(),
-                # Do not trust X-Forwarded-For; proxy integration must provide
-                # the canonical socket peer before a future policy expands it.
-                network_address=request.client.host if request.client else "",
+                network_address=_network_address(request),
             )
         )
     except Exception as error:
@@ -285,7 +290,10 @@ def reset_public_conversation(
             "memory_contract_version": result.memory_contract_version,
             "expires_at": result.expires_at,
         },
-        "previous": {"lifecycle": result.previous_lifecycle.value},
+        "previous": {
+            "lifecycle": result.previous_lifecycle.value,
+            "lifecycle_revision": result.previous_lifecycle_revision,
+        },
     }
 
 
@@ -415,7 +423,7 @@ def _lifecycle_command(
         ),
         expected_lifecycle_revision=expected_lifecycle_revision,
         now=_now(),
-        network_address=request.client.host if request.client else "",
+        network_address=_network_address(request),
     )
 
 

@@ -101,7 +101,7 @@ Workflow와 Chatbot의 여러 turn에서 필요한 대화 맥락을 독립 Memor
 - MEM-REQ-045: Public bearer capability 또는 public route의 optional authentication header가 private Memory와 private Knowledge 권한을 부여해서는 안 된다. `public_chatbot`과 `authenticated_internal_chatbot`은 시각 컴포넌트를 재사용할 수 있어도 backend route, 인증/CORS/Origin, deployment access policy와 session namespace를 분리해야 한다.
 - MEM-REQ-046: 로그아웃 후 authenticated session을 public endpoint에서 이어갈 수 없어야 한다.
 - MEM-REQ-047: Public token은 CSPRNG로 생성한 최소 128-bit entropy의 versioned opaque token이어야 하며 server-side verifier는 HMAC 같은 keyed one-way verifier 또는 승인된 memory-hard password hash와 constant-time comparison을 사용해야 한다.
-- MEM-REQ-048: Public session 생성은 deployment, organization과 network source별 finite rate limit을 적용하고 아직 존재하지 않는 grant의 전역 placeholder bucket을 만들지 않아야 한다. Grant 발급 이후 lifecycle/run은 deployment, organization, network source와 실제 grant별 finite rate, concurrency, turn/content와 비용 한도를 가져야 하며 운영 설정이 누락되어도 무제한으로 완화되지 않아야 한다.
+- MEM-REQ-048: Public session 생성은 deployment, organization과 deployment+network source별 finite rate limit을 적용하고 아직 존재하지 않는 grant의 전역 placeholder bucket을 만들지 않아야 한다. Grant 발급 이후 lifecycle/run은 deployment, organization, network source와 실제 grant별 finite rate, concurrency, turn/content와 비용 한도를 가져야 하며 운영 설정이 누락되어도 무제한으로 완화되지 않아야 한다.
 - MEM-REQ-049: Cookie 기반 authenticated mutation은 CSRF token, exact allowed Origin과 Fetch Metadata를 검증하고, CORS grant를 제공하지 않는 public same-origin iframe API 경계와 분리해야 한다.
 
 ### Context, Summary And Cost

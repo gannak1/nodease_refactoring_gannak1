@@ -152,7 +152,10 @@ class RedisPublicConversationAdmission:
             )
         except Exception as exc:
             raise MemoryAdapterUnavailableError() from exc
-        allowed, retry_after = self._parse_result(result)
+        allowed, retry_after = self._parse_result(
+            result,
+            max_retry_after_seconds=window_seconds,
+        )
         if not allowed:
             raise PublicConversationRateLimitedError(retry_after)
 
@@ -161,7 +164,11 @@ class RedisPublicConversationAdmission:
         return hmac.new(self._hmac_key, payload, hashlib.sha256).hexdigest()
 
     @staticmethod
-    def _parse_result(result: Any) -> tuple[bool, int]:
+    def _parse_result(
+        result: Any,
+        *,
+        max_retry_after_seconds: int,
+    ) -> tuple[bool, int]:
         if not isinstance(result, (list, tuple)) or len(result) != 2:
             raise MemoryAdapterUnavailableError()
         try:
@@ -174,7 +181,7 @@ class RedisPublicConversationAdmission:
             raise MemoryAdapterUnavailableError() from exc
         if allowed not in {0, 1} or retry_after < 0:
             raise MemoryAdapterUnavailableError()
-        return bool(allowed), max(1, min(60, retry_after))
+        return bool(allowed), max(1, min(max_retry_after_seconds, retry_after))
 
 
 __all__ = [
