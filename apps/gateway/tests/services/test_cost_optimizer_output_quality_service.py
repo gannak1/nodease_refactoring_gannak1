@@ -700,6 +700,8 @@ def test_quality_judge_does_not_reward_unsupported_specific_instructions():
         ({"retrieved_chunk_count": 0, "evidence_sufficient": True}, False),
         ({"retrieved_chunk_count": 2, "evidence_sufficient": False}, False),
         ({"retrieved_chunk_count": "2", "evidence_sufficient": True}, False),
+        ({"retrieved_chunk_count": 0.5, "evidence_sufficient": True}, False),
+        ({"retrieved_chunk_count": 1.0, "evidence_sufficient": True}, False),
         ({"retrieved_chunk_count": True, "evidence_sufficient": True}, False),
         ({"evidence_sufficient": True}, False),
         ("malformed", False),

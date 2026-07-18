@@ -217,7 +217,7 @@ def test_llm_span_metadata_preserves_safe_runtime_judge_summary_only():
         "model": "gpt-5-mini",
         "selected_model": "gpt-4o-mini",
         "confidence": 0.87,
-        "reason_short": "여러 조건 종합",
+        "reason_short": "단순 요청 적합",
         "reason_code": "simple_request",
         "cost": 0.00012,
         "usage": {"prompt_tokens": 120, "completion_tokens": 30},
@@ -235,15 +235,38 @@ def test_llm_span_metadata_preserves_safe_runtime_judge_summary_only():
         "english only",
         "한글 이유가 너무 길어서 허용된 열네 글자를 초과합니다",
         "한글 이유\n원문",
+        "키sk-abc123",
     ],
 )
-def test_llm_span_metadata_drops_invalid_runtime_judge_reason_short(reason_short):
+def test_llm_span_metadata_drops_untrusted_runtime_judge_reason_short(reason_short):
     metadata = TraceMetadataSanitizer.sanitize_span_metadata(
         "llmNode",
         {"llm": {"judge": {"reason_code": "safe_code", "reason_short": reason_short}}},
     )
 
-    assert metadata["llm"]["judge"] == {"reason_code": "safe_code"}
+    assert metadata["llm"]["judge"] == {
+        "reason_code": "judge_reason_unrecognized"
+    }
+
+
+def test_llm_span_metadata_uses_canonical_reason_instead_of_judge_text():
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "llm": {
+                "judge": {
+                    "reason_code": "evidence_synthesis",
+                    "reason_short": "키sk-abc123",
+                }
+            }
+        },
+    )
+
+    assert metadata["llm"]["judge"] == {
+        "reason_code": "evidence_synthesis",
+        "reason_short": "근거 종합 판단",
+    }
+    assert "sk-abc123" not in str(metadata)
 
 
 def test_llm_span_metadata_preserves_safe_provider_fallback_diagnostics_only():

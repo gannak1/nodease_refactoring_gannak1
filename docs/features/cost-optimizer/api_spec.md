@@ -238,11 +238,12 @@ Preview와 runtime은 같은 `ModelRouter.routing_feature_text()` builder로 현
 
 실행 trace의 `llm.model_routing`에는 정책 ID/version, 선택·대체 모델, strategy ID,
 reason code, runtime context, `decision_source`, `judge_called`를 남긴다. Judge가 호출된
-경우에만 `judge`에 Judge 모델, confidence, reason code, 14자 이하이며 한글을 포함하고 제어문자가 없는
+경우에만 `judge`에 Judge 모델, confidence, allowlisted reason code, reason code에서 파생한 고정 한국어
 `reason_short`, 토큰 usage와 비용의 안전 요약을
 남긴다. 로컬 라우터가 선택한 경우 `decision_factors`에는 learning mode, confidence,
 후보 확률의 요약만 남긴다. 원문 prompt/입력, 검색 문서 원문, embedding vector는
-반환하거나 저장하지 않는다.
+반환하거나 저장하지 않는다. Judge가 생성한 자유형 `reason_short`는 durable trace에 저장하지 않으며,
+알 수 없는 reason code는 `judge_reason_unrecognized`로 일반화한다.
 
 Judge가 선택한 실행은 처음에는 `learning_status=pending_contract`로 기록한다. workflow
 완료 후 node 성공, schema/downstream 계약, fallback 여부를 확인해 `accepted` 또는

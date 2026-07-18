@@ -618,7 +618,7 @@ A baseline 비용은 과거 실행에서 이미 발생한 참고 비용이므로
 - baseline과 candidate를 같은 input, target node prompt 목적, output contract에서 독립적으로 평가한다.
 - judge에는 A/B 순서를 무작위로 가린 pairwise payload를 전달해 위치 편향을 줄인다.
 - `instruction_fulfillment`, `relevance_completeness`, `clarity_consistency`, RAG 사용 시 `groundedness`를 평가해 0~100 점수와 confidence를 반환한다.
-- Judge에 전달하는 `authoritative_evidence_available`은 redaction-safe RAG summary가 `evidence_sufficient=true`이고 `retrieved_chunk_count`가 양수인 경우에만 true다. 빈 summary, 0건, 불충분 또는 malformed count는 fail-closed로 false다.
+- Judge에 전달하는 `authoritative_evidence_available`은 redaction-safe RAG summary가 `evidence_sufficient=true`이고 `retrieved_chunk_count`가 양의 정수인 경우에만 true다. 빈 summary, 0건, 불충분, boolean/string/소수 또는 그 밖의 malformed count는 fail-closed로 false다.
 - JSON schema 통과 여부와 downstream 호환성은 semantic 품질 점수에 섞지 않고 별도 deterministic gate로 표시한다.
 - judge가 실패하거나 실행 가능한 credential/model이 없으면 품질 점수만 `평가 불가`로 표시하고 비용·속도·schema·downstream 결과는 유지한다.
 - 품질 점수는 추천 근거이며 단독 hard block으로 사용하지 않는다. 낮은 점수 또는 낮은 confidence에서는 적용 전 경고와 명시적 확인을 요구한다.

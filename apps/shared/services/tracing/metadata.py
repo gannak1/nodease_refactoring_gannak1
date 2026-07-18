@@ -312,6 +312,25 @@ RAG_RESULT_FIELDS = {
     "token_count",
 }
 
+_MODEL_ROUTING_REASON_SHORT_BY_CODE = {
+    "advanced_quality": "고급 품질 판단",
+    "ambiguous_request": "모호한 요청 해석",
+    "balanced_quality": "균형 품질 판단",
+    "contract_reliability": "운영 성적 반영",
+    "economy_fit": "경제형 모델 적합",
+    "evidence_synthesis": "근거 종합 판단",
+    "high_risk_reasoning": "고위험 판단 필요",
+    "judge_selected": "모델 적합 판단",
+    "long_context": "긴 문맥 종합",
+    "multi_constraint": "여러 조건 종합",
+    "request_capability_match": "요청 역량 적합",
+    "short_answer": "짧은 응답 적합",
+    "simple_request": "단순 요청 적합",
+    "simple_response": "단순 응답 처리",
+    "structured_precision": "정확한 형식 필요",
+}
+_UNRECOGNIZED_MODEL_ROUTING_REASON_CODE = "judge_reason_unrecognized"
+
 
 class TraceMetadataSanitizer:
     """Tracing metadata를 scope별 allowlist로 제한하는 공용 경계."""
@@ -456,21 +475,19 @@ class TraceMetadataSanitizer:
             {
                 "model",
                 "selected_model",
-                "reason_code",
                 "error_code",
                 "usage_log_error",
                 "learning_error",
             },
         )
-        reason_short = safe_value.get("reason_short")
-        if isinstance(reason_short, str):
-            reason_short = reason_short.strip()
-            if (
-                reason_short
-                and len(reason_short) <= 14
-                and any("가" <= char <= "힣" for char in reason_short)
-                and not any(ord(char) < 32 or ord(char) == 127 for char in reason_short)
-            ):
+        raw_reason_code = safe_value.get("reason_code")
+        reason_code = raw_reason_code.strip() if isinstance(raw_reason_code, str) else ""
+        if reason_code:
+            reason_short = _MODEL_ROUTING_REASON_SHORT_BY_CODE.get(reason_code)
+            if reason_short is None:
+                sanitized["reason_code"] = _UNRECOGNIZED_MODEL_ROUTING_REASON_CODE
+            else:
+                sanitized["reason_code"] = reason_code
                 sanitized["reason_short"] = reason_short
         confidence = safe_value.get("confidence")
         if (

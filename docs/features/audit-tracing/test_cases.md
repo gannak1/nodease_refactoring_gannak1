@@ -35,7 +35,7 @@ Status: Draft
 
 - Raw/compliance access audit은 content 반환 전에 성공해야 하며, audit metadata에는 raw content, raw source id/url/path/title, raw principal, object storage key를 저장하지 않는다.
 - Policy block, permission denied, requester source authorization denied, source ACL stale/unmapped/ambiguous/unverified/revoked, connector/egress failure는 raw exception 없이 sanitized reason code로 기록된다.
-- Model Routing Judge trace는 14자 이하의 한글 포함 `reason_short`만 보존하고 영문 전용, 과도한 길이, CR/LF 및 제어문자 값은 제거한다. Raw prompt/input과 Judge 자유형 설명은 durable trace에 남지 않는다.
+- Model Routing Judge trace는 Judge가 반환한 자유형 `reason_short`를 저장하지 않고 allowlisted `reason_code`별 고정 한국어 문구만 파생한다. 알 수 없는 code는 `judge_reason_unrecognized`로 일반화하고 짧은 사유를 생략한다. Secret 유사 문자열, raw prompt/input과 Judge 자유형 설명은 durable trace에 남지 않는다.
 - Permission grant/update/revoke endpoint는 manual audit과 ORM listener audit이 중복되어 같은 mutation을 두 번 기록하지 않는다. Core upsert 또는 bulk delete를 쓰는 endpoint 경로도 permission row별 canonical action을 정확히 한 번 남긴다.
 - Workflow/LLM credential의 team/user permission PUT·DELETE는 permission row와 canonical `team_workflow_permission.*`/`user_workflow_permission.*`/`team_llm_permission.*`/`user_llm_permission.*` AuditLog를 같은 UnitOfWork에서 commit한다. Audit add/flush/commit 실패 시 permission create/update/delete도 rollback하고, 동일 값 PUT과 concurrent retry는 row 및 audit cardinality를 늘리지 않으며 concurrent delete는 applied mutation 한 건만 deleted audit을 남긴다.
 - KB permission grant/revoke endpoint는 `team_knowledge_permission.*`/`user_knowledge_permission.*` data-change audit row를 권한 row mutation과 같은 DB transaction에 추가하며, 비동기 audit 발행 실패가 권한 변경 성공 뒤 audit 누락으로 이어지지 않는다.

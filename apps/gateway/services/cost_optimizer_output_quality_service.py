@@ -440,12 +440,7 @@ class CostOptimizerOutputQualityService:
         if not isinstance(value, dict) or value.get("evidence_sufficient") is not True:
             return False
         count = value.get("retrieved_chunk_count")
-        return (
-            not isinstance(count, bool)
-            and isinstance(count, (int, float))
-            and math.isfinite(float(count))
-            and float(count) > 0
-        )
+        return not isinstance(count, bool) and isinstance(count, int) and count > 0
 
     @staticmethod
     def _pair_order(baseline: dict[str, Any], candidate_result: dict[str, Any]) -> str:
