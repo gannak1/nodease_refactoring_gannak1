@@ -32,11 +32,7 @@ import { VariableTokenEditor } from '../../ui/VariableTokenEditor';
 import { PropertyVisibilityToggle } from '../../ui/PropertyVisibilityToggle';
 import { CostOptimizerEntryAction } from '../../../costOptimizer/CostOptimizerEntryAction';
 import { workflowApi } from '@/app/features/workflow/api/workflowApi';
-import type {
-  ModelRoutingBootstrapPreview,
-  ModelRoutingBootstrapResponse,
-  ModelRoutingPolicyResponse,
-} from '@/app/features/workflow/types/Api';
+import type { ModelRoutingPolicyResponse } from '@/app/features/workflow/types/Api';
 
 // LLMModelResponse와 일치하는 백엔드 응답 타입
 type ModelOption = {
@@ -277,15 +273,6 @@ export function LLMNodePanel({
   const [persistedRoutingPolicy, setPersistedRoutingPolicy] =
     useState<ModelRoutingPolicyResponse | null>(null);
   const [routingPolicyError, setRoutingPolicyError] = useState<string | null>(null);
-  const [routingBootstrapPreview, setRoutingBootstrapPreview] =
-    useState<ModelRoutingBootstrapPreview | null>(null);
-  const [routingBootstrap, setRoutingBootstrap] =
-    useState<ModelRoutingBootstrapResponse | null>(null);
-  const [routingTaskDescription, setRoutingTaskDescription] = useState(
-    data.model_routing_task_description || '',
-  );
-  const [isCreatingRoutingBootstrap, setIsCreatingRoutingBootstrap] =
-    useState(false);
 
   // 모델 상태 로드
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
@@ -378,11 +365,11 @@ export function LLMNodePanel({
           ? '운영 성적 재평가 중'
           : activePolicy?.learning?.mode === 'local_first'
             ? '로컬 선택 우선'
-            : activePolicy
-              ? 'Judge 선택 학습 중'
-              : data.auto_model_routing
-                ? '기준 생성 필요'
-                : '사용 안 함';
+              : activePolicy
+                ? 'Judge 선택 학습 중'
+                : data.auto_model_routing
+                  ? '첫 요청부터 Judge 선택'
+                  : '사용 안 함';
 
     return {
       status,
@@ -393,7 +380,7 @@ export function LLMNodePanel({
         ? activePolicy.learning?.mode === 'local_first'
             ? '운영 요청에서 Judge가 고른 결과와 실행 품질을 바탕으로, 로컬 라우터가 먼저 모델을 선택합니다. 확신이 낮으면 Judge에게 다시 판단을 맡깁니다.'
             : '초기 운영 요청은 Judge가 현재 실행 주체가 사용할 수 있는 후보 중 모델을 선택합니다. 선택 결과가 충분히 쌓이고 품질이 안정되면 로컬 라우터가 먼저 선택합니다.'
-        : '정책 대기 중',
+        : '정책 행이 아직 없어도 테스트와 배포에서 Judge가 즉시 모델을 선택합니다.',
       runsSinceLastRefresh,
       refreshEveryRuns,
       lastUpdate: policy?.last_update ?? null,
@@ -560,20 +547,6 @@ export function LLMNodePanel({
     }
   }, [activeWorkflowId, nodeId]);
 
-  const loadRoutingBootstrapPreview = useCallback(async () => {
-    if (!activeWorkflowId) return;
-    try {
-      const preview = await workflowApi.getModelRoutingBootstrapPreview(
-        activeWorkflowId,
-        nodeId,
-      );
-      setRoutingBootstrapPreview(preview);
-      setRoutingBootstrap(preview.bootstrap);
-    } catch {
-      setRoutingBootstrapPreview(null);
-    }
-  }, [activeWorkflowId, nodeId]);
-
   const syncRoutingPolicy = useCallback(
     async (
       enabled: boolean,
@@ -610,9 +583,8 @@ export function LLMNodePanel({
   const handleAutoModelRoutingChange = useCallback(
     (enabled: boolean) => {
       handleUpdateData('auto_model_routing', enabled);
-      // 켜는 순간에는 아직 Planner artifact가 없을 수 있다. PATCH로 빈 정책을
-      // 먼저 저장하지 않고, 사용자가 작업 설명을 확인한 뒤 생성 버튼으로 한 번에
-      // 저장한다. 끌 때만 즉시 runtime policy를 off로 전환한다.
+      // 켤 때는 배포 또는 첫 실행에서 Judge-first policy가 자동으로 준비된다.
+      // 끌 때만 즉시 runtime policy를 off로 전환한다.
       if (!enabled) {
         void syncRoutingPolicy(false, routingPolicySummary.refreshEveryRuns);
       }
@@ -623,54 +595,6 @@ export function LLMNodePanel({
       syncRoutingPolicy,
     ],
   );
-
-  const handleCreateRoutingBootstrap = useCallback(async () => {
-    if (!activeWorkflowId || isCreatingRoutingBootstrap) return;
-    if (!routingTaskDescription.trim()) {
-      setRoutingPolicyError('이 노드가 처리하는 작업을 한 문장 이상 설명하세요.');
-      return;
-    }
-    if (!data.model_id) {
-      setRoutingPolicyError('규칙이 맞지 않을 때 사용할 기본 모델을 선택하세요.');
-      return;
-    }
-    try {
-      setIsCreatingRoutingBootstrap(true);
-      const bootstrap = await workflowApi.createModelRoutingBootstrap(
-        activeWorkflowId,
-        nodeId,
-        {
-          task_description: routingTaskDescription.trim(),
-          default_model_id: data.model_id,
-          fallback_model_id: data.fallback_model_id || null,
-        },
-      );
-      setRoutingBootstrap(bootstrap);
-      updateNodeData(nodeId, {
-        auto_model_routing: true,
-        model_routing_bootstrap_id: bootstrap.id,
-        model_routing_bootstrap_fingerprint: bootstrap.task_fingerprint,
-        model_routing_task_description: bootstrap.task_description,
-        model_routing_strategy: 'judge_bootstrap_incremental_v1',
-      });
-      setRoutingPolicyError(null);
-      await Promise.all([loadRoutingBootstrapPreview(), loadRoutingPolicy()]);
-    } catch {
-      setRoutingPolicyError('자동 선택 기준을 만들지 못했습니다. 모델 권한과 작업 설명을 확인하세요.');
-    } finally {
-      setIsCreatingRoutingBootstrap(false);
-    }
-  }, [
-    activeWorkflowId,
-    data.fallback_model_id,
-    data.model_id,
-    isCreatingRoutingBootstrap,
-    loadRoutingBootstrapPreview,
-    loadRoutingPolicy,
-    nodeId,
-    routingTaskDescription,
-    updateNodeData,
-  ]);
 
   // Claude 계열 여부 판별 (모델 옵션 우선, 실패 시 이름 프리픽스 판단)
   const isAnthropicModelId = useCallback(
@@ -919,12 +843,7 @@ export function LLMNodePanel({
       return;
     }
     void loadRoutingPolicy();
-    void loadRoutingBootstrapPreview();
-  }, [data.auto_model_routing, loadRoutingBootstrapPreview, loadRoutingPolicy]);
-
-  useEffect(() => {
-    setRoutingTaskDescription(data.model_routing_task_description || '');
-  }, [data.model_routing_task_description, nodeId]);
+  }, [data.auto_model_routing, loadRoutingPolicy]);
 
   useEffect(() => {
     if (!activeHelp) return;
@@ -1027,30 +946,30 @@ export function LLMNodePanel({
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="text-xs font-semibold text-slate-800">
-                        자동 선택 사용 중
+                        자동 라우팅 사용 중
                       </div>
                       <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
-                        요청마다 적합한 모델을 자동 선택합니다. 판단이 불확실하거나
-                        자동 선택을 사용할 수 없을 때는 기본 모델로 실행합니다.
+                        테스트와 배포 모두 요청마다 Judge가 사용할 모델을 고릅니다.
+                        정상 실행 결과가 쌓이면 로컬 라우터가 먼저 판단합니다.
                       </p>
                     </div>
                   </div>
                   <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="rounded border border-slate-100 bg-slate-50 p-2">
                       <label className="block text-[11px] font-semibold text-slate-600">
-                        기본 모델 (규칙 미일치 시)
+                        Judge 판단 모델
                       </label>
                       <ModelSelectDropdown
                         value={data.model_id || ''}
                         onChange={handleRoutingDefaultModelChange}
                         models={chatModelOptions}
                         groupedModels={groupedModelOptions}
-                        placeholder="기본 모델을 선택하세요"
+                        placeholder="Judge 판단 모델을 선택하세요"
                       />
                     </div>
                     <div className="rounded border border-slate-100 bg-slate-50 p-2">
                       <label className="block text-[11px] font-semibold text-slate-600">
-                        기본 대체 모델
+                        실행 실패 대체 모델
                       </label>
                       <ModelSelectDropdown
                         value={data.fallback_model_id || ''}
@@ -1061,75 +980,18 @@ export function LLMNodePanel({
                         placeholder={
                           fallbackDisabled
                             ? '먼저 기본 모델을 선택하세요'
-                            : '기본 대체 모델을 선택하세요'
+                            : '실행 실패 대체 모델을 선택하세요'
                         }
                       />
                     </div>
                   </div>
-                  <div className="mt-3 rounded-md border border-violet-200 bg-violet-50/50 p-3">
-                      <div className="flex items-start gap-1.5">
-                        <div className="text-xs font-semibold text-violet-950">
-                          자동 선택 기준 만들기
-                      </div>
-                      <HelpPopover
-                        id="system"
-                        activeHelp={activeHelp}
-                        onToggle={toggleHelp}
-                        widthClassName="w-72"
-                      >
-                        이 노드의 작업 설명과 실행 가능한 모델 목록을 준비합니다.
-                        초기에는 Judge가 모델을 고르고, 충분한 정상 실행 결과가
-                        쌓이면 로컬 라우터가 먼저 판단합니다.
-                      </HelpPopover>
-                    </div>
-                    <p className="mt-1 text-[11px] leading-relaxed text-violet-800">
-                      운영 요청에서 확인된 정상 선택 결과를 모아 자동 선택을 점차
-                      빠르게 만듭니다. 요청 원문은 저장하지 않습니다.
+                  <div className="mt-3 rounded-md border border-sky-200 bg-sky-50 p-3 text-[11px] text-sky-900">
+                    <div className="font-semibold">현재 동작 방식</div>
+                    <p className="mt-1 leading-relaxed">
+                      저장된 정책이 아직 없어도 기본 모델로 돌아가지 않습니다. 현재
+                      실행 주체가 사용할 수 있는 후보 중 Judge가 즉시 모델을 고르고,
+                      계약을 통과한 실행 결과만 이후 로컬 학습에 반영합니다.
                     </p>
-                    <label className="mt-3 block text-[11px] font-semibold text-slate-700">
-                      이 노드가 하는 작업
-                      <textarea
-                        className="nodrag mt-1 min-h-20 w-full resize-y rounded border border-slate-300 bg-white px-2 py-1.5 text-xs font-normal text-slate-800 outline-none focus:border-violet-500"
-                        value={routingTaskDescription}
-                        onChange={(event) => setRoutingTaskDescription(event.target.value)}
-                        placeholder="예: 고객 문의를 JSON으로 분류하고, 보상·SLA·개인정보 위험은 더 신중하게 판단합니다."
-                        aria-label="자동 라우팅 작업 설명"
-                      />
-                    </label>
-                    <div className="mt-3 rounded border border-violet-100 bg-white px-2 py-1.5 text-[11px] text-violet-900">
-                      <div className="font-semibold">점진 학습 상태</div>
-                      <p className="mt-1">
-                        {routingBootstrapPreview
-                          ? `동일 작업의 성공 운영 로그 ${routingBootstrapPreview.available_history_count}건을 확인했습니다. 과거 로그는 현황 표시에만 참고합니다.`
-                          : '운영 로그 확인 중'}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      className="nodrag mt-3 inline-flex items-center gap-1.5 rounded-md bg-violet-600 px-3 py-2 text-xs font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
-                      onClick={handleCreateRoutingBootstrap}
-                      disabled={isCreatingRoutingBootstrap || !activeWorkflowId}
-                    >
-                      <Wand2 className="h-3.5 w-3.5" />
-                      {isCreatingRoutingBootstrap
-                        ? '기준 생성 중...'
-                        : routingBootstrap
-                          ? '자동 선택 기준 다시 만들기'
-                          : '자동 선택 기준 만들기'}
-                    </button>
-                    {routingBootstrap ? (
-                      <div className="mt-3 rounded border border-violet-100 bg-white p-2 text-[11px] text-slate-700">
-                        <div className="font-semibold text-violet-900">
-                          자동 선택 기준 준비 완료
-                        </div>
-                        <p className="mt-1">
-                          후보 모델{' '}
-                          {Number(routingBootstrap.generation_summary.candidate_model_count || 0)}개를
-                          자동 선택에 사용합니다. 첫 실행부터 Judge가 모델을 고르며,
-                          합성 예문 생성 비용은 없습니다.
-                        </p>
-                      </div>
-                    ) : null}
                   </div>
                   {routingPolicyError ? (
                     <p className="mt-2 text-[11px] text-rose-600">

@@ -6,15 +6,15 @@ Verified Against: feature/mba-270 @ d2d416b9
 ## Purpose
 
 이 문서는 `requirements.md`의 FR-001부터 FR-014까지를 API 계약 관점에서 정리한다.
-FR-011은 `judge_bootstrap_incremental_v1` 정책으로 다룬다. 초기 운영 요청은 runtime Judge가
+FR-011은 `judge_bootstrap_incremental_v1` strategy의 무수동-bootstrap 정책으로 다룬다. 초기 운영 요청은 runtime Judge가
 실행 주체가 사용할 수 있는 후보 중 모델을 선택하고, Judge 선택 label과 완료된 운영 결과가
 쌓이면 로컬 mDeBERTa 모델 선택 분류기가 Judge를 대체한다. local prediction이 불확실하거나
 권한 모델이 바뀐 경우에는 Judge로 돌아간다. 원문 prompt/input/KB 내용은 API 응답, policy
 artifact, 학습 이력에 저장하지 않는다.
 
-bootstrap API는 작업 설명과 기본/대체 모델을 받고 외부 LLM 호출 없이 Judge-first artifact를
-동기 생성한다. 응답에는 작업 지문, 후보 모델 safe summary와 준비 상태만 포함한다. 이전 전략의
-정적 rule이나 semantic cohort는 신규 runtime의 source of truth가 아니다.
+bootstrap API는 과거 draft 데이터 조회 호환용이다. 신규 UI와 배포 preflight는 bootstrap 생성을
+요구하지 않으며, policy 행이 없는 runtime도 일회성 Judge-first policy를 구성해 실행한다.
+이전 전략의 정적 rule이나 semantic cohort는 신규 runtime의 source of truth가 아니다.
 
 Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baseline 실행 로그를 선택하고, 같은 입력으로 B 후보 설정을 실행한 뒤, 선택한 후보를 현재 draft에 적용하는 흐름을 지원한다.
 
@@ -111,16 +111,15 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 
 ## Model Routing Policy Contract
 
-현재 자동 모델 라우팅은 `judge_bootstrap_incremental_v1` 전략을 사용한다. 입력군, 대표 예문,
+현재 자동 모델 라우팅은 `judge_bootstrap_incremental_v1` strategy의 무수동-bootstrap 경로를 사용한다. 입력군, 대표 예문,
 embedding vector, semantic cohort endpoint는 제공하지 않는다. 초기 운영 요청은 runtime Judge가
 현재 후보 중 하나를 선택하고, 이후에는 Judge 선택 label과 완료된 운영 결과를 바탕으로 local
 router가 먼저 선택한다.
 
-### Bootstrap Contract
+### Legacy Bootstrap Contract
 
-초안 단계에서도 bootstrap을 만들 수 있다. bootstrap은 작업 지문을 안전하게 요약하고,
-Judge가 판단할 노드 계약과 비어 있는 local router 학습 상태를 저장한다. bootstrap 자체는
-후보 모델을 실행하거나 특정 모델을 검증하지 않는다.
+이 API는 기존 bootstrap 데이터를 조회하는 호환 경로다. 신규 자동 라우팅은 이 artifact를 읽거나
+생성을 요구하지 않는다.
 
 | Endpoint | 권한 | 설명 |
 | --- | --- | --- |
@@ -252,7 +251,7 @@ Judge가 선택한 실행은 처음에는 `learning_status=pending_contract`로 
 | llm_node_model_routing_learning_labels | Judge 선택의 안전한 vector와 완료 후 계약 기반 학습 확정 상태. 원문 prompt/input은 저장하지 않는다. |
 | llm_model_routing_global_profiles | 과거 전략 호환 table. 신규 Judge-first runtime은 참조하지 않는다. |
 
-테스트 실행과 Cost Optimizer candidate 비교 실행은 운영 정책 카운터와 성적에 포함하지 않는다.
+Test Sidebar 실행은 활성 배포 정책을 대상으로 runtime Judge를 호출할 수 있지만, Judge label·운영 정책 카운터·성적에는 포함하지 않는다. Cost Optimizer candidate 비교 실행도 운영 정책 카운터와 성적에 포함하지 않는다.
 ## LLM Parameter Recommendation Contract
 
 관련 FR: FR-012

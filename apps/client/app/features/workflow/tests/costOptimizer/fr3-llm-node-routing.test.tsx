@@ -305,7 +305,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     expect(screen.queryByLabelText('작업 유형')).not.toBeInTheDocument();
   });
 
-  it('자동 모델 라우팅이 켜져 있으면 자동 선택 설정만 보여준다', async () => {
+  it('자동 모델 라우팅이 켜져 있으면 Judge-first 설정만 보여준다', async () => {
     const node = createLlmNode({ auto_model_routing: true });
 
     render(<NodeInlinePanel node={node} />);
@@ -313,18 +313,20 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     expect(
       await screen.findByRole('checkbox', { name: /자동 모델 라우팅/ }),
     ).toBeChecked();
-    expect(screen.getByText('자동 선택 사용 중')).toBeInTheDocument();
-    expect(
-      await screen.findByRole('button', { name: '자동 선택 기준 만들기' }),
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText('자동 라우팅 작업 설명')).toBeInTheDocument();
+    expect(screen.getByText('자동 라우팅 사용 중')).toBeInTheDocument();
+    expect(screen.getByText('Judge 판단 모델')).toBeInTheDocument();
+    expect(screen.getByText('실행 실패 대체 모델')).toBeInTheDocument();
+    expect(screen.getByText('현재 동작 방식')).toBeInTheDocument();
+    expect(screen.getByText(/저장된 정책이 아직 없어도 기본 모델로 돌아가지 않습니다/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '자동 선택 기준 만들기' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('자동 라우팅 작업 설명')).not.toBeInTheDocument();
     expect(screen.queryByText('router-policy-v5')).not.toBeInTheDocument();
     expect(screen.queryByTestId('routing-judge-first-policy')).not.toBeInTheDocument();
     expect(screen.queryByText('입력군 관리')).not.toBeInTheDocument();
     expect(screen.queryByText('월간 모델 검증 한도')).not.toBeInTheDocument();
 
     fireEvent.change(
-      screen.getByRole('combobox', { name: '기본 모델을 선택하세요' }),
+      screen.getByRole('combobox', { name: 'Judge 판단 모델을 선택하세요' }),
       { target: { value: 'gpt-4.1-mini' } },
     );
     await waitFor(() => {
@@ -350,20 +352,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     });
   });
 
-  it('운영 성적과 내부 학습 통계는 자동 선택 설정 패널에 숨긴다', async () => {
-    const node = createLlmNode({ auto_model_routing: true });
-    render(<NodeInlinePanel node={node} />);
-
-    await screen.findByRole('button', { name: '자동 선택 기준 만들기' });
-    expect(screen.queryByText('운영 성적 자동 반영')).not.toBeInTheDocument();
-    expect(screen.queryByText('정책 교체 보호 기준')).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('slider', { name: '자동 정책 점검 주기' }),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText('계약 확인 학습 상태')).not.toBeInTheDocument();
-    expect(screen.queryByText(/학습 반영 18건/)).not.toBeInTheDocument();
-  });
-  it('자동 모델 라우팅 토글은 기준 생성 전에는 빈 정책을 저장하지 않는다', async () => {
+  it('자동 모델 라우팅 토글은 수동 bootstrap 생성을 요구하지 않는다', async () => {
     const node = useWorkflowStore.getState().nodes[0] as AppNode;
 
     render(<NodeInlinePanel node={node} />);
@@ -377,137 +366,6 @@ describe('FR-003 LLM node model routing optimization entry', () => {
         .auto_model_routing,
     ).toBe(true);
     expect(workflowApiMock.patchModelRoutingPolicy).not.toHaveBeenCalled();
-  });
-
-  it('작업 설명으로 초안 단계의 Judge-first 자동 선택 기준을 생성한다', async () => {
-    const node = createLlmNode({ auto_model_routing: true });
-    useWorkflowStore.setState(
-      { ...useWorkflowStore.getState(), nodes: [node] },
-      true,
-    );
-    render(<NodeInlinePanel node={node} />);
-
-    fireEvent.change(await screen.findByLabelText('자동 라우팅 작업 설명'), {
-      target: { value: '고객 문의를 JSON으로 분류하고 위험 문의는 신중하게 판단합니다.' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: '자동 선택 기준 만들기' }));
-
-    await waitFor(() => {
-      expect(workflowApiMock.createModelRoutingBootstrap).toHaveBeenCalledWith(
-        'workflow-1',
-        'llm-1',
-        expect.objectContaining({
-          task_description: '고객 문의를 JSON으로 분류하고 위험 문의는 신중하게 판단합니다.',
-          default_model_id: 'gpt-4.1',
-        }),
-      );
-    });
-    expect(
-      (useWorkflowStore.getState().nodes[0].data as LLMNodeData)
-        .model_routing_bootstrap_id,
-    ).toBe('bootstrap-1');
-  });
-
-  it('자동 선택 기준에는 사용자 설정만 보여주고 내부 정책 상태는 숨긴다', async () => {
-    workflowApiMock.getModelRoutingPolicy.mockResolvedValueOnce({
-      enabled: true,
-      status: 'active',
-      policy_id: 'policy-bootstrap',
-      policy_version: 'bootstrap-12345678',
-      active_policy: {
-        strategy_id: 'judge_bootstrap_incremental_v1',
-        default_model_id: 'gpt-4.1-mini',
-        fallback_model_id: 'gpt-4.1',
-        rules: [],
-        judge_provider: 'openai',
-        judge_model_id: 'gpt-4.1-mini',
-        minimum_local_samples: 24,
-        local_confidence_threshold: 0.78,
-        learning: {
-          mode: 'judge_first',
-          judged_request_count: 0,
-          distinct_model_count: 0,
-        },
-      },
-      pending_policy: null,
-      refresh: {
-        refresh_every_runs: 20,
-        eligible_runs_since_last_refresh: 0,
-        next_refresh_after_runs: 20,
-        last_refresh_result: 'applied',
-        last_refresh_at: null,
-      },
-      last_update: null,
-    });
-    const node = createLlmNode({
-      auto_model_routing: true,
-      model_routing_strategy: 'judge_bootstrap_incremental_v1',
-    });
-    useWorkflowStore.setState(
-      { ...useWorkflowStore.getState(), nodes: [node] },
-      true,
-    );
-
-    render(<NodeInlinePanel node={node} />);
-
-    expect(
-      await screen.findByRole('button', { name: '자동 선택 기준 만들기' }),
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText('자동 라우팅 작업 설명')).toBeInTheDocument();
-    expect(screen.getByText('기본 모델 (규칙 미일치 시)')).toBeInTheDocument();
-    expect(screen.getByText('기본 대체 모델')).toBeInTheDocument();
-    expect(screen.queryByTestId('routing-judge-first-policy')).not.toBeInTheDocument();
-    expect(screen.queryByText('정책 버전')).not.toBeInTheDocument();
-    expect(screen.queryByText('운영 성적 자동 반영')).not.toBeInTheDocument();
-    expect(screen.queryByText('계약 확인 학습 상태')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '정책 다시 평가' })).not.toBeInTheDocument();
-  });
-
-  it('배포 전 draft에서는 내부 정책 상태 대신 자동 선택 기준 생성만 안내한다', async () => {
-    workflowApiMock.getModelRoutingPolicy.mockResolvedValueOnce({
-      enabled: true,
-      status: 'collecting',
-      policy_id: null,
-      policy_version: null,
-      active_policy: null,
-      pending_policy: null,
-      refresh: {
-        refresh_every_runs: 20,
-        eligible_runs_since_last_refresh: 0,
-        next_refresh_after_runs: 20,
-        last_refresh_result: null,
-        last_refresh_at: null,
-      },
-      last_update: null,
-    });
-    const node = createLlmNode({ auto_model_routing: true });
-    useWorkflowStore.setState(
-      { ...useWorkflowStore.getState(), nodes: [node] },
-      true,
-    );
-
-    render(<NodeInlinePanel node={node} />);
-
-    expect(
-      await screen.findByRole('button', { name: '자동 선택 기준 만들기' }),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/배포할 때 첫 실행용 정책/)).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /정책 다시 평가/ })).not.toBeInTheDocument();
-  });
-
-  it('운영 표본과 내부 평가 결과를 자동 선택 설정 패널에 노출하지 않는다', async () => {
-    const node = createLlmNode({ auto_model_routing: true });
-    useWorkflowStore.setState(
-      { ...useWorkflowStore.getState(), nodes: [node] },
-      true,
-    );
-
-    render(<NodeInlinePanel node={node} />);
-
-    await screen.findByRole('button', { name: '자동 선택 기준 만들기' });
-    expect(screen.queryByText(/최근 정책 점검/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/운영 성적 변화 · 반영됨/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/운영 표본 20회 · 제외 2회/)).not.toBeInTheDocument();
   });
 
   it('비교 분석 테스트만 상단 액션으로 보여준다', async () => {

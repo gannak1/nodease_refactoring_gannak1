@@ -10,21 +10,17 @@ Cost Optimizer는 workflow 안의 LLM 노드 비용을 줄이기 위한 기능�
 
 ## Current Routing Decision
 
-FR-011의 현재 제품 계약은 `judge_bootstrap_incremental_v1`다. 이 계약은
-[ADR-0059](../../decisions/ADR-0059-judge-bootstrap-incremental-routing.md)를 따른다.
-새 workflow가 "검증된 후보가 없어서 routing을 시작할 수 없는" 상태에 머물지 않게,
-초기 운영 요청은 Judge LLM이 현재 요청에 맞는 모델을 선택하고, 그 선택과 실제 실행
-결과가 쌓일수록 로컬 라우터가 Judge를 대신한다.
+FR-011의 현재 제품 계약은
+[ADR-0059](../../decisions/ADR-0059-judge-bootstrap-incremental-routing.md)를 따르는
+`judge_bootstrap_incremental_v1`의 무수동-bootstrap 경로다. 새 workflow가
+"정책이 없어서 routing을 시작할 수 없는" 상태에 머물지 않게, 자동 라우팅을 켠 테스트와
+배포 실행은 첫 요청부터 runtime Judge가 현재 요청에 맞는 모델을 선택한다. 정상 실행 결과가
+쌓일수록 로컬 라우터가 Judge를 대신한다.
 
-작업 지문은 prompt, 입력 매핑, 출력 schema, RAG/retrieval 설정, downstream 계약을 포함한다.
-수동 모델, fallback 모델, 자동 라우팅 ON/OFF 값은 포함하지 않는다. 따라서 수동 모델만
-바뀐 경우에는 bootstrap을 재사용할 수 있지만, 실제 작업을 바꾸는 prompt/RAG/schema/downstream
-변경은 bootstrap을 오래됨 상태로 만들고 다시 생성을 요구한다.
-
-초기 생성은 외부 Planner나 후보 모델을 호출하지 않는다. 작업 지문, 사용 가능한 후보 모델,
-사용자가 고른 기본·대체 모델, 비어 있는 local learning 상태를 하나의 Judge-first artifact로
-동기 저장한다. 같은 작업 지문의 성공 운영 로그 수는 UI 참고 정보로만 집계하며 초기 모델
-선택 label로 재사용하지 않는다.
+배포 시에는 실행 주체가 사용할 수 있는 후보 모델로 Judge-first policy를 저장한다. 정책 행이
+아직 없거나 삭제된 예외 상황에서도 runtime은 같은 후보 모델로 일회성 Judge-first policy를
+구성해 요청을 처리한다. 따라서 `기본 모델`은 Judge 자체를 호출할 판단 모델이며, 정책 부재의
+fallback이 아니다. `실행 실패 대체 모델`은 선택된 모델 호출이 실패했을 때만 사용한다.
 
 일반 실행은 현재 문의의 주제 키워드나 문장 유사도를 저장·검색하지 않는다. 초기 단계에서는
 **변수 치환이 끝난 prompt와 들어온 입력**을 Judge에 일시적으로 전달해, 실행 주체가 쓸 수
@@ -37,7 +33,7 @@ Judge 선택은 즉시 학습하지 않는다. 실행 중에는 원문 없는 �
 schema/downstream 성공률, fallback 비율 기준을 통과하면 로컬
 분류기가 먼저 모델을 선택한다. 로컬 신뢰도가 낮거나 선택 모델의 credential 권한이 바뀐
 경우에만 Judge를 다시 호출한다. prompt, 출력 schema, RAG, downstream 계약이 바뀌면
-bootstrap과 local artifact를 오래됨으로 표시하고 Judge-first로 다시 시작한다.
+기존 local artifact를 오래됨으로 표시하고 Judge-first로 다시 시작한다.
 
 문장 품질을 평가하기 위한 별도 LLM Judge는 자동 모델 라우팅의 운영 성적에 사용하지 않는다.
 대신 완료된 배포 실행의 schema 통과, 후속 노드 성공, provider fallback, 실행 성공 신호를
@@ -482,7 +478,7 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 
 #### 배포 후 재평가
 
-- Test Sidebar 실행은 정책 학습·운영 성적·갱신 카운터에 포함하지 않는다.
+- Test Sidebar 실행은 활성 배포 정책과 같은 후보 목록으로 runtime Judge를 호출해 실제 실행 모델을 고른다. 다만 Judge usage는 해당 테스트 run에만 기록하고, Judge label·운영 성적·갱신 카운터에는 포함하지 않는다.
 - 성공한 배포 후 운영 실행만 노드별 모델·입력 길이 profile별 성적에 반영한다.
 - 설정한 점검 주기에 도달하면 완료된 Judge 표본과 운영 성적을 다시 평가한다.
   최소 표본 수, 최소 두 개 이상의 선택 모델, schema/downstream 성공률, fallback 비율 기준을

@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 
 from apps.shared.db.models.model_routing_policy import (
     LLMNodeModelRoutingPolicy,
-    LLMNodeModelRoutingBootstrap,
     LLMNodeModelRoutingLearningLabel,
     LLMNodeModelRoutingPolicyRunEvent,
     LLMNodeModelRoutingPolicyUpdate,
@@ -27,13 +26,9 @@ from apps.shared.db.models.workflow_run import (
 from apps.workflow_engine.services.model_routing_policy_lifecycle import (
     ModelRoutingPolicyLifecycleService,
 )
-from apps.workflow_engine.services.model_routing_bootstrap import (
-    PersistedModelRoutingBootstrapStore,
-)
 from apps.workflow_engine.services.model_routing_judge_first_policy import (
     JUDGE_FIRST_STRATEGY_ID,
     build_judge_first_active_policy,
-    normalize_judge_first_active_policy,
 )
 from apps.workflow_engine.services.model_routing_operational_performance import (
     ModelRoutingOperationalPerformanceService,
@@ -599,62 +594,18 @@ class ModelRoutingPolicyStore:
         fallback_model_id = available_by_normalized_id.get(
             normalize_model_routing_model_id(node_data.get("fallback_model_id"))
         )
-        bootstrap_id = node_data.get("model_routing_bootstrap_id")
-        bootstrap = None
-        if bootstrap_id:
-            try:
-                bootstrap = db.get(
-                    LLMNodeModelRoutingBootstrap, uuid.UUID(str(bootstrap_id))
-                )
-            except (TypeError, ValueError):
-                bootstrap = None
-
-        if (
-            bootstrap is not None
-            and bootstrap.workflow_id == workflow_id
-            and bootstrap.node_id == node_id
-            and bootstrap.status == "ready"
-            and bootstrap.task_fingerprint
-            == str(node_data.get("model_routing_bootstrap_fingerprint") or "")
-        ):
-            source_policy = (
-                PersistedModelRoutingBootstrapStore.active_policy_for_bootstrap(
-                    bootstrap
-                )
-            )
-            policy_version = str(source_policy["policy_version"])
-            bootstrap_active_policy = normalize_judge_first_active_policy(
-                source_policy,
-                policy_version=policy_version,
-                default_model_id=configured_model_id,
-                fallback_model_id=fallback_model_id,
-                candidate_model_ids=available_model_ids,
-            )
-            bootstrap_active_policy.update(
-                {
-                    "bootstrap_id": str(bootstrap.id),
-                    "task_fingerprint": bootstrap.task_fingerprint,
-                    "judge_model_id": configured_model_id,
-                }
-            )
-            update_summary = {
-                "bootstrap_id": str(bootstrap.id),
-                "bootstrap_source": bootstrap.source,
-                "task_fingerprint": bootstrap.task_fingerprint,
-            }
-        else:
-            policy_version = "deployment-judge-first-v1"
-            bootstrap_active_policy = build_judge_first_active_policy(
-                policy_version=policy_version,
-                default_model_id=configured_model_id,
-                fallback_model_id=fallback_model_id,
-                candidate_model_ids=available_model_ids,
-            )
-            bootstrap_active_policy["judge_model_id"] = configured_model_id
-            update_summary = {
-                "strategy_id": JUDGE_FIRST_STRATEGY_ID,
-                "bootstrap_source": "deployment_default",
-            }
+        policy_version = "deployment-judge-first-v2"
+        bootstrap_active_policy = build_judge_first_active_policy(
+            policy_version=policy_version,
+            default_model_id=configured_model_id,
+            fallback_model_id=fallback_model_id,
+            candidate_model_ids=available_model_ids,
+        )
+        bootstrap_active_policy["judge_model_id"] = configured_model_id
+        update_summary = {
+            "strategy_id": JUDGE_FIRST_STRATEGY_ID,
+            "policy_source": "deployment_runtime",
+        }
 
         policy = LLMNodeModelRoutingPolicy(
             id=policy_id,
@@ -666,7 +617,7 @@ class ModelRoutingPolicyStore:
             status="active",
             policy_version=policy_version,
             active_policy=bootstrap_active_policy,
-            bootstrap_id=bootstrap.id if bootstrap is not None and bootstrap.status == "ready" else None,
+            bootstrap_id=None,
             performance_checkpoint={},
             refresh_every_runs=refresh_every_runs,
             judge_user_id=execution_subject_user_id,

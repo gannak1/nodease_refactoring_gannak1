@@ -2255,7 +2255,7 @@ def _team_onboarding_access_control_graph() -> dict[str, Any]:
 
 
 def _team_onboarding_adaptive_routing_graph() -> dict[str, Any]:
-    """??? RAG workflow? ?? ?? ?? ??? ??? ????."""
+    """RAG 기반 팀 온보딩 안내 workflow에 자동 모델 라우팅을 설정한다."""
     graph = copy.deepcopy(_team_onboarding_access_control_graph())
     llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-answer")
     data = llm_node["data"]
@@ -2486,15 +2486,15 @@ def _ticket_ops_graph() -> dict[str, Any]:
 
 
 def _model_router_ticket_ops_graph() -> dict[str, Any]:
-    """?? ?? workflow? ?? ??? ?? ?? ??? ??? ????."""
+    """고객 티켓 처리 workflow에 자동 모델 라우팅을 설정한다."""
     graph = _ticket_ops_graph()
     for node in graph["nodes"]:
         if node["id"] != "llm-triage":
             continue
         node["data"].update(
             {
-                "title": "??/SLA ?? ??",
-                "description": "?? ??, SLA, ?? ?? ??? ????? ?????.",
+                "title": "보상/SLA 위험 판단",
+                "description": "고객 문의, SLA, 보상 위험을 분류하고 처리 방향을 판단합니다.",
                 "model_id": DEMO_MODEL_ROUTER_FALLBACK_MODEL,
                 "fallback_model_id": DEMO_MODEL_ROUTER_BALANCED_MODEL,
                 "auto_model_routing": True,

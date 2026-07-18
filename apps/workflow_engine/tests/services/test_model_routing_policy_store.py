@@ -749,7 +749,7 @@ def test_bootstrap_policy_ignores_legacy_active_policy_and_preserves_node_models
     ]
     assert policy.active_policy["learning"]["mode"] == "judge_first"
     assert "rules" not in policy.active_policy
-    assert policy.policy_version == "deployment-judge-first-v1"
+    assert policy.policy_version == "deployment-judge-first-v2"
     assert policy.status == "active"
     assert policy.refresh_every_runs == 35
     available_models.assert_called_once_with(
@@ -844,7 +844,7 @@ def test_deployment_creates_judge_first_policy_before_first_run():
         )
 
     assert policy.status == "active"
-    assert policy.policy_version == "deployment-judge-first-v1"
+    assert policy.policy_version == "deployment-judge-first-v2"
     assert policy.active_policy["strategy_id"] == "judge_bootstrap_incremental_v1"
     assert policy.active_policy["default_model_id"] == "gpt-4.1"
     assert policy.active_policy["candidate_model_ids"] == [

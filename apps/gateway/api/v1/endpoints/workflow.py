@@ -1003,6 +1003,9 @@ def _test_routing_policy_context(
         "routing_policy_deployment_id": str(deployment.id),
         "routing_policy_preview_node_ids": matching_node_ids,
         "routing_policy_preview": True,
+        # Test Sidebar는 실제 workflow를 실행하므로 배포 runtime과 같은 Judge 선택을
+        # 수행한다. read-only routing preview API는 이 flag를 전달하지 않는다.
+        "routing_policy_execute_judge": True,
     }
 
 

@@ -17,9 +17,6 @@ from apps.shared.db.models.knowledge import (
     KnowledgeCollectionItem,
 )
 from apps.shared.db.models.mail_credential import MailCredential
-from apps.shared.db.models.model_routing_policy import (
-    LLMNodeModelRoutingBootstrap,
-)
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
@@ -30,10 +27,6 @@ from apps.shared.schemas.deployment import DeploymentCreate
 from apps.shared.services.workflow_configuration_preflight import (
     WorkflowConfigurationIssue,
     WorkflowConfigurationPreflightError,
-)
-from apps.workflow_engine.services.model_routing_bootstrap import (
-    downstream_contract_from_graph,
-    task_fingerprint,
 )
 
 
@@ -1668,7 +1661,9 @@ def test_workflow_node_create_does_not_create_schedule_surface(monkeypatch):
     assert scheduler.added == []
 
 
-def test_active_redeployment_creates_fresh_model_routing_policy(monkeypatch):
+def test_active_redeployment_creates_fresh_model_routing_policy_without_bootstrap(
+    monkeypatch,
+):
     app_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
     previous_deployment_id = uuid.uuid4()
@@ -1707,36 +1702,12 @@ def test_active_redeployment_creates_fresh_model_routing_policy(monkeypatch):
         ],
         "edges": [_edge("trigger", "llm-triage", "trigger-llm")],
     }
-    llm_node = graph_snapshot["nodes"][1]
-    fingerprint = task_fingerprint(
-        llm_node["data"],
-        downstream_contract=downstream_contract_from_graph(
-            graph_snapshot,
-            "llm-triage",
-        ),
-    )
-    bootstrap_id = uuid.uuid4()
-    llm_node["data"].update(
-        {
-            "model_routing_bootstrap_id": str(bootstrap_id),
-            "model_routing_bootstrap_fingerprint": fingerprint,
-        }
-    )
     db = _Db(
         {
             App: [app],
             Workflow: [workflow],
             WorkflowDeployment: [previous_deployment],
             Schedule: [],
-            LLMNodeModelRoutingBootstrap: [
-                _row(
-                    id=bootstrap_id,
-                    workflow_id=workflow_id,
-                    node_id="llm-triage",
-                    status="ready",
-                    task_fingerprint=fingerprint,
-                )
-            ],
         },
         max_deployment_version=1,
     )
