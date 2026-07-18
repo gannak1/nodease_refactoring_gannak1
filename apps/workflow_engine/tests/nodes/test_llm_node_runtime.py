@@ -4023,10 +4023,10 @@ def test_deployed_judge_bootstrap_uses_judge_and_queues_safe_learning_label(monk
     assert captured["selected_model_id"] == "gpt-4o-mini"
 
 
-def test_test_execution_uses_matching_deployment_policy_without_becoming_deployed(
+def test_test_execution_uses_matching_deployment_policy_and_judge_without_learning(
     monkeypatch,
 ):
-    """테스트는 배포 정책을 읽지만 운영 run/학습 실행으로 표시하지 않는다."""
+    """테스트도 배포와 같은 Judge 선택을 하되 운영 학습에는 포함하지 않는다."""
     from apps.workflow_engine.services.model_routing_policy_store import (
         ModelRoutingPolicyStore,
     )
@@ -4067,12 +4067,57 @@ def test_test_execution_uses_matching_deployment_policy_without_becoming_deploye
             "routing_policy_deployment_id": str(uuid.uuid4()),
             "routing_policy_preview": True,
             "routing_policy_preview_node_ids": ["llm-1"],
+            "routing_policy_execute_judge": True,
         },
     )
     monkeypatch.setattr(
         node,
         "_available_routing_model_ids",
         lambda _db: ["gpt-4.1-mini", "gpt-4.1"],
+    )
+    user_id = uuid.uuid4()
+
+    class _JudgeClient:
+        def invoke_sync(self, *, messages, **kwargs):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"selected_model_id":"gpt-4.1-mini",'
+                                '"confidence":0.91,"reason_short":"단순 안내 처리",'
+                                '"reason_code":"simple_response"}'
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 9, "completion_tokens": 4},
+            }
+
+    monkeypatch.setattr(
+        LLMService,
+        "get_runtime_client_for_user",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            client=_JudgeClient(), credential_id=uuid.uuid4(), model_id="gpt-4.1"
+        ),
+    )
+    monkeypatch.setattr(LLMService, "calculate_cost", lambda *_args, **_kwargs: 0.0001)
+    monkeypatch.setattr(LLMService, "log_usage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(node, "_resolve_credential_principal_user", lambda: user_id)
+    monkeypatch.setattr(node, "_require_runtime_organization_id", lambda *_args: uuid.uuid4())
+    monkeypatch.setattr(
+        node,
+        "_routing_candidate_profiles",
+        lambda *_args, **_kwargs: [
+            {"model_id": "gpt-4.1-mini"},
+            {"model_id": "gpt-4.1"},
+        ],
+    )
+    learning_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore,
+        "queue_runtime_judge_label",
+        lambda *_args, **kwargs: learning_calls.append(kwargs) or {"learning_queued": True},
     )
 
     selected, fallback, metadata = node._resolve_model_routing_policy({}, object())
@@ -4084,8 +4129,11 @@ def test_test_execution_uses_matching_deployment_policy_without_becoming_deploye
         == node.execution_context["routing_policy_deployment_id"]
     )
     assert metadata["decision_source"] == "test_policy_preview"
+    assert metadata["judge_called"] is True
+    assert metadata["judge"]["reason_short"] == "단순 안내 처리"
     assert metadata["policy_source"] == "active_deployment"
     assert metadata["included_in_policy_learning"] is False
+    assert learning_calls == []
 
 
 def test_llm_node_blocks_policy_when_no_model_is_usable_by_execution_subject(

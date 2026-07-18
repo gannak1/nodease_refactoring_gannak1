@@ -56,7 +56,7 @@ def test_learning_mode_stays_judge_first_until_outcomes_are_diverse_and_healthy(
     ) == "judge_first"
 
     assert learning_mode_for(
-        judged_request_count=24,
+        judged_request_count=50,
         distinct_selected_model_count=1,
         success_rate=1.0,
         schema_pass_rate=1.0,
@@ -65,7 +65,7 @@ def test_learning_mode_stays_judge_first_until_outcomes_are_diverse_and_healthy(
     ) == "judge_first"
 
     assert learning_mode_for(
-        judged_request_count=24,
+        judged_request_count=50,
         distinct_selected_model_count=2,
         success_rate=0.98,
         schema_pass_rate=0.99,
@@ -74,7 +74,7 @@ def test_learning_mode_stays_judge_first_until_outcomes_are_diverse_and_healthy(
     ) == "local_first"
 
     assert learning_mode_for(
-        judged_request_count=24,
+        judged_request_count=50,
         distinct_selected_model_count=2,
         success_rate=0.98,
         schema_pass_rate=0.80,

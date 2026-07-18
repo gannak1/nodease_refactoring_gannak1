@@ -30,7 +30,7 @@ def _policy(*, strategy_id: str = "judge_bootstrap_incremental_v1"):
             "fallback_model_id": "gpt-4.1-mini",
             "learning": {
                 "mode": "judge_first",
-                "judged_request_count": 24,
+                "judged_request_count": 50,
                 "selected_model_ids": ["gpt-4.1", "gpt-4.1-mini"],
                 "local_router_artifact": {"version": 1},
             },

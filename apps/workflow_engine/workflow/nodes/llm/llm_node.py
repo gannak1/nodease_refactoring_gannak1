@@ -523,7 +523,13 @@ class LLMNode(Node[LLMNodeData]):
 
         judge_metadata: dict[str, Any] = {}
         decision_source = decision.decision_source
-        if decision.requires_runtime_judge and not is_policy_preview_node:
+        execute_judge_for_preview = bool(
+            self.execution_context.get("routing_policy_execute_judge")
+        )
+        should_execute_runtime_judge = decision.requires_runtime_judge and (
+            not is_policy_preview_node or execute_judge_for_preview
+        )
+        if should_execute_runtime_judge:
             try:
                 from apps.workflow_engine.services.model_routing_runtime_judge import (
                     ModelRoutingRuntimeJudge,
@@ -633,7 +639,9 @@ class LLMNode(Node[LLMNodeData]):
                         judge_metadata["usage_log_error"] = type(exc).__name__
 
                 policy_id = policy.get("policy_id")
-                if policy_id:
+                # Editor test runs must show the same model selection as a deployed
+                # run, but they must never become deployed learning samples.
+                if policy_id and not is_policy_preview_node:
                     try:
                         workflow_run_id = self.execution_context.get("workflow_run_id")
                         if workflow_run_id:

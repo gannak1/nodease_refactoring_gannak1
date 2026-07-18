@@ -105,7 +105,7 @@ def test_judge_labels_gradually_enable_confident_local_routing(monkeypatch):
         )
 
     mode = learning_mode_for(
-        judged_request_count=24,
+        judged_request_count=50,
         distinct_selected_model_count=len(selected_models),
         success_rate=1.0,
         schema_pass_rate=1.0,
@@ -121,7 +121,7 @@ def test_judge_labels_gradually_enable_confident_local_routing(monkeypatch):
     )
     active_policy["learning"] = {
         "mode": mode,
-        "judged_request_count": 24,
+        "judged_request_count": 50,
         "selected_model_ids": sorted(selected_models),
         "local_confidence_threshold": 0.78,
         "local_router_artifact": artifact,
