@@ -20,6 +20,7 @@ from apps.shared.services.workflow_node_catalog import (
     parameter_definition,
     node_parameter_value,
     node_parameter_definitions,
+    required_any_configuration_groups,
     validate_node_parameter_value,
 )
 from apps.shared.services.tracing.policy import TracePolicyService
@@ -585,70 +586,12 @@ def reconcile_parameter_group_catalog_tasks(
     if group.status in {"pending_save", "pending_ack", "blocked", "canceled"}:
         return group
 
-    if group.status == "completed":
-        planned_by_identity = {
-            (task.node_id, task.parameter_key): task for task in catalog_tasks
-        }
-        tasks = list(group.tasks)
-        reopened = False
-        for index, existing in enumerate(tasks):
-            planned = planned_by_identity.get(
-                (existing.node_id, existing.parameter_key)
-            )
-            secret_configuration_removed = (
-                existing.input_type == "secret"
-                and existing.status == "completed"
-                and planned is not None
-                and planned.status != "completed"
-            )
-            if secret_configuration_removed:
-                tasks[index] = planned.model_copy(
-                    update={
-                        "task_id": existing.task_id,
-                        "group_id": group.group_id,
-                        "status": "active",
-                        "task_version": existing.task_version,
-                        "stable_order": existing.stable_order,
-                        "resolution_source": None,
-                        "recommendation_fingerprint": None,
-                        "candidates": existing.candidates,
-                    }
-                )
-                reopened = True
-                break
-            legacy_unconfirmed_disabled_routing = (
-                existing.node_type == "llmNode"
-                and existing.parameter_key == "auto_model_routing"
-                and existing.status == "completed"
-                and existing.task_version == 1
-                and existing.resolution_source == "catalog_default"
-                and existing.recommendation_fingerprint
-                == canonical_parameter_value_fingerprint(False)
-            )
-            if not legacy_unconfirmed_disabled_routing:
-                continue
-            tasks[index] = existing.model_copy(
-                update={
-                    "status": "active",
-                    "confirmation_required": True,
-                    "validation": (
-                        planned.validation if planned is not None else existing.validation
-                    ),
-                }
-            )
-            reopened = True
-            break
-        return (
-            group.model_copy(update={"status": "active", "tasks": tasks})
-            if reopened
-            else group
-        )
-
     existing_by_identity = {
         (task.node_id, task.parameter_key): task for task in group.tasks
     }
     planned_identities: set[tuple[str, str]] = set()
     merged: list[AgentBuilderParameterTask] = []
+    priority_reopen_identity: tuple[str, str] | None = None
 
     for planned in sorted(catalog_tasks, key=lambda task: task.stable_order):
         identity = (planned.node_id, planned.parameter_key)
@@ -703,10 +646,14 @@ def reconcile_parameter_group_catalog_tasks(
             status = planned.status
         elif legacy_unconfirmed_disabled_routing:
             status = "pending"
+            if priority_reopen_identity is None:
+                priority_reopen_identity = identity
         elif secret_configuration_completed:
             status = "completed"
         elif secret_configuration_removed:
             status = "pending"
+            if priority_reopen_identity is None:
+                priority_reopen_identity = identity
         elif matching_recommendation:
             status = "completed"
         resolution_source = (
@@ -748,6 +695,15 @@ def reconcile_parameter_group_catalog_tasks(
 
     if not merged:
         return group.model_copy(update={"status": "completed", "tasks": []})
+    if priority_reopen_identity is not None:
+        merged = [
+            task.model_copy(update={"status": "active"})
+            if (task.node_id, task.parameter_key) == priority_reopen_identity
+            else task.model_copy(update={"status": "pending"})
+            if task.status == "active"
+            else task
+            for task in merged
+        ]
     active_indexes = [
         index for index, task in enumerate(merged) if task.status == "active"
     ]
@@ -960,6 +916,30 @@ def _task_index(tasks: list[AgentBuilderParameterTask], task_id: UUID) -> int:
     raise ParameterTaskConflict("task is missing")
 
 
+def _ensure_required_any_configuration_remains(
+    tasks: list[AgentBuilderParameterTask],
+    task: AgentBuilderParameterTask,
+) -> None:
+    for group_key, parameter_keys in required_any_configuration_groups(
+        task.node_type
+    ):
+        if task.parameter_key not in parameter_keys:
+            continue
+        siblings = [
+            item
+            for item in tasks
+            if item.node_id == task.node_id
+            and item.task_id != task.task_id
+            and item.parameter_key in parameter_keys
+        ]
+        has_configured = any(item.status == "completed" for item in siblings)
+        has_remaining = any(
+            item.status in {"active", "pending", "invalid"} for item in siblings
+        )
+        if not has_configured and not has_remaining:
+            raise ParameterTaskConflict(f"one {group_key} is required")
+
+
 def prepare_task_decision(
     *,
     tasks: list[AgentBuilderParameterTask],
@@ -1023,6 +1003,7 @@ def prepare_task_decision(
             )
             if not has_configured_prompt and not has_remaining_prompt:
                 raise ParameterTaskConflict("one prompt is required")
+        _ensure_required_any_configuration_remains(tasks, task)
         return PreparedParameterDecision(
             operation_id=operation_id,
             task_id=task_id,
@@ -1097,6 +1078,7 @@ def prepare_task_decision(
             )
             if not has_configured_prompt and not has_remaining_prompt:
                 raise ParameterTaskConflict("one prompt is required")
+        _ensure_required_any_configuration_remains(tasks, task)
         return PreparedParameterDecision(
             operation_id=operation_id,
             task_id=task_id,

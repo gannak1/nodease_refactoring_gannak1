@@ -28,7 +28,39 @@ def test_preflight_ignores_client_configuration_state_and_reports_missing_fields
 
     assert len(issues) == 1
     assert issues[0].node_id == "slack"
-    assert issues[0].missing_parameters == ("bot_token", "channel")
+    assert issues[0].missing_parameters == ("payload", "bot_token", "channel")
+
+
+def test_preflight_reports_deferred_slack_channel_despite_retained_value():
+    issues = workflow_configuration_issues(
+        _graph(
+            {
+                "slackMode": "api",
+                "authConfig": {"token": "configured-value"},
+                "channel": "C123",
+                "message": "hello",
+                "_deferred_parameters": ["channel"],
+            }
+        )
+    )
+
+    assert len(issues) == 1
+    assert issues[0].missing_parameters == ("channel",)
+
+
+def test_preflight_reports_only_payload_when_slack_delivery_is_configured():
+    issues = workflow_configuration_issues(
+        _graph(
+            {
+                "slackMode": "api",
+                "authConfig": {"token": "configured-value"},
+                "channel": "C123",
+            }
+        )
+    )
+
+    assert len(issues) == 1
+    assert issues[0].missing_parameters == ("payload",)
 
 
 def test_unresolved_external_action_is_blocked_for_test_run_and_deployment():

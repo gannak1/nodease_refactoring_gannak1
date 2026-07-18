@@ -2297,8 +2297,9 @@ def test_session_message_payload_rehydrates_ready_draft_preview():
             "node_id": "slack-1",
             "node_type": "slackPostNode",
             "node_label": "Slack 전송",
-            "capability": "slack_send",
+                "capability": "slack_send",
                 "missing_parameters": [
+                    {"key": "payload", "label": "Slack message payload"},
                     {"key": "bot_token", "label": "Bot Token"},
                     {"key": "channel", "label": "Slack channel"},
             ],

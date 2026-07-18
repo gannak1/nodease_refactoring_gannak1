@@ -856,6 +856,9 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Required task와 `confirmation_required=true` task에는 이전 화면에서도 skip/clear action이 표시되지 않는지 검증한다.
 - Previous 이동만으로 graph, task status/version, 다음 active task와 Workflow history가 바뀌지 않으며 저장 실패 시 form 값과 presentation 위치가 유지되는지 검증한다.
 - Slack `blocks`/`attachments`의 기존 runtime JSON 문자열을 다시 열면 array control 값으로 hydrate되고 그대로 적용해도 graph에 정확히 한 번 문자열화된다. 파싱 불가 또는 non-array 기존 값은 unavailable이며 자동 덮어쓰지 않는다.
+- 기존 Slack channel 값이 graph에 남아 있어도 `_deferred_parameters`에 channel이 있으면 unresolved이며 test/run/deploy preflight가 차단한다. Required, required-any와 mode별 필수 검사가 모두 deferred를 우선한다.
+- Slack `message|blocks|attachments`가 모두 공백 또는 빈 array이면 configuration 완료와 preflight를 차단하고, 하나라도 유효하면 payload 요구사항을 충족한다.
+- completed persisted group에 현재 Catalog의 신규 task가 없으면 identity 기준으로 한 번만 추가하고 첫 신규 입력 task를 active로 열며 기존 task 상태/version은 유지한다. 반복 session read는 중복 task를 만들지 않는다.
 - Undo/Redo 저장 결과가 두 번 불명확하고 canonical graph가 requested/opposite 어느 쪽도 아니면 canonical graph와 metadata를 적용하고 해당 workflow의 pending Agent Builder context 및 Undo/Redo stack을 비운다. Typed operation이나 ParameterTask를 재생하지 않고 editor는 clean 상태가 된다.
 - Direct-edit 응답에 hierarchy data가 없고 flat `candidates`만 있으면 flat 후보를 표시해 전용 Knowledge selection endpoint로 제출한다. Hierarchy와 flat 후보가 함께 있으면 hierarchy만 표시한다.
 - Gemini chat client는 internal `request_timeout_seconds`를 provider payload에서 제외하면서 실제 HTTP timeout으로 사용한다. 미지정 호출은 60초, Agent Builder intent 호출은 전달된 90초를 사용한다.

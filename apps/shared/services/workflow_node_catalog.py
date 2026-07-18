@@ -561,6 +561,15 @@ def node_parameter_value(
                 body = None
         if isinstance(body, dict):
             return ("channel" in body), body.get("channel")
+    if node_type == "slackPostNode" and parameter_key == "message":
+        body = data.get("body")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except (TypeError, ValueError):
+                body = None
+        if isinstance(body, dict):
+            return ("text" in body), body.get("text")
     return False, None
 
 
@@ -779,6 +788,45 @@ def stored_parameter_value_for_validation(
     return _stored_parameter_value_for_validation(node_type, parameter_key, data)
 
 
+def required_any_configuration_groups(
+    node_type: str,
+) -> list[tuple[str, tuple[str, ...]]]:
+    definition = node_definition(node_type)
+    if definition is None:
+        return []
+    groups: list[tuple[str, tuple[str, ...]]] = []
+    for group in definition.get("required_any_configuration") or []:
+        group_key = str(group.get("key") or "")
+        parameters = tuple(str(key) for key in group.get("parameters") or [])
+        if group_key and parameters:
+            groups.append((group_key, parameters))
+    return groups
+
+
+def _parameter_satisfies_configuration(
+    node_type: str,
+    parameter_key: str,
+    node_data: dict[str, Any],
+    deferred: set[str],
+) -> bool:
+    if parameter_key in deferred:
+        return False
+    validation_value = _stored_parameter_value_for_validation(
+        node_type,
+        parameter_key,
+        node_data,
+    )
+    return node_parameter_is_configured(
+        node_type,
+        parameter_key,
+        node_data,
+    ) and not validate_node_parameter_value(
+        node_type,
+        parameter_key,
+        validation_value,
+    )
+
+
 def validate_node_parameter_update(
     node_type: str,
     parameter_key: str,
@@ -880,48 +928,27 @@ def missing_required_configuration(
             )
         ):
             missing.append(str(key))
-    for group in definition.get("required_any_configuration") or []:
-        group_key = str(group.get("key") or "")
-        configured = False
-        for key in group.get("parameters") or []:
-            parameter_key = str(key)
-            if parameter_key in deferred:
-                continue
-            validation_value = _stored_parameter_value_for_validation(
+    for group_key, parameter_keys in required_any_configuration_groups(node_type):
+        configured = any(
+            _parameter_satisfies_configuration(
                 node_type,
                 parameter_key,
                 data,
+                deferred,
             )
-            if node_parameter_is_configured(
-                node_type, parameter_key, data
-            ) and not validate_node_parameter_value(
-                node_type,
-                parameter_key,
-                validation_value,
-            ):
-                configured = True
-                break
+            for parameter_key in parameter_keys
+        )
         if not configured and group_key:
             missing.append(group_key)
     if node_type == "slackPostNode":
         mode = str(data.get("slackMode") or "api")
         mode_required = ["url"] if mode == "webhook" else ["bot_token", "channel"]
         for key in mode_required:
-            validation_value = data.get(key)
-            if key == "bot_token":
-                auth_config = data.get("authConfig")
-                validation_value = (
-                    auth_config.get("token")
-                    if isinstance(auth_config, dict)
-                    else None
-                )
-            if (
-                not node_parameter_is_configured(node_type, key, data)
-                or validate_node_parameter_value(
-                    node_type,
-                    key,
-                    validation_value,
-                )
+            if not _parameter_satisfies_configuration(
+                node_type,
+                key,
+                data,
+                deferred,
             ):
                 missing.append(key)
     return missing

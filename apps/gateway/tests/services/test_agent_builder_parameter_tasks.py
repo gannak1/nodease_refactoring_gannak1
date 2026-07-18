@@ -1099,7 +1099,7 @@ def test_reconcile_reopens_only_unconfirmed_legacy_disabled_routing_recommendati
     assert recovered_routing.task_version == 2
 
 
-def test_reconcile_does_not_add_new_catalog_tasks_to_completed_group():
+def test_reconcile_adds_new_catalog_tasks_to_completed_group_once():
     plan = ParameterTaskPlanner().plan(
         graph={
             "nodes": [
@@ -1122,15 +1122,83 @@ def test_reconcile_does_not_add_new_catalog_tasks_to_completed_group():
         base_node_ids={"llm"},
     )
     model_task = next(task for task in plan.tasks if task.parameter_key == "model_id")
+    existing_model_task = model_task.model_copy(
+        update={"status": "completed", "task_version": 4}
+    )
     completed_group = AgentBuilderParameterGroup(
         group_id=plan.group_id,
         status="completed",
-        tasks=[model_task.model_copy(update={"status": "completed"})],
+        tasks=[existing_model_task],
     )
 
     recovered = reconcile_parameter_group_catalog_tasks(completed_group, plan.tasks)
 
-    assert recovered == completed_group
+    assert recovered.status == "active"
+    assert {
+        (task.node_id, task.parameter_key) for task in recovered.tasks
+    } == {(task.node_id, task.parameter_key) for task in plan.tasks}
+    recovered_model = next(
+        task for task in recovered.tasks if task.parameter_key == "model_id"
+    )
+    assert recovered_model.task_id == existing_model_task.task_id
+    assert recovered_model.task_version == 4
+    assert recovered_model.status == "completed"
+    assert sum(task.status == "active" for task in recovered.tasks) == 1
+    assert reconcile_parameter_group_catalog_tasks(recovered, plan.tasks) == recovered
+
+
+def test_slack_parameter_flow_cannot_skip_every_payload_format():
+    plan = ParameterTaskPlanner().plan(
+        graph={
+            "nodes": [
+                _node(
+                    "slack",
+                    "slackPostNode",
+                    {
+                        "slackMode": "api",
+                        "authConfig": {"token": "configured-value"},
+                        "channel": "C123",
+                    },
+                )
+            ],
+            "edges": [],
+        },
+        step_node_ids={"step_slack": "slack"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+        base_node_ids=set(),
+    )
+
+    current_tasks = plan.tasks
+    for parameter_key in ("message", "blocks"):
+        task = next(
+            item for item in current_tasks if item.parameter_key == parameter_key
+        )
+        assert task.status == "active"
+        decision = prepare_task_decision(
+            tasks=current_tasks,
+            task_id=task.task_id,
+            operation_id=uuid4(),
+            expected_task_version=task.task_version,
+            action="skip",
+            value=None,
+        )
+        current_tasks = apply_local_task_decision(current_tasks, decision)
+
+    final_payload = next(
+        item for item in current_tasks if item.parameter_key == "attachments"
+    )
+    assert final_payload.status == "active"
+    with pytest.raises(ParameterTaskConflict, match="one payload is required"):
+        prepare_task_decision(
+            tasks=current_tasks,
+            task_id=final_payload.task_id,
+            operation_id=uuid4(),
+            expected_task_version=final_payload.task_version,
+            action="skip",
+            value=None,
+        )
 
 
 def test_reconcile_completes_secret_task_from_canonical_node_configuration_without_fingerprint():
@@ -1234,13 +1302,16 @@ def test_reconcile_reopens_completed_secret_task_when_node_configuration_is_remo
     )
 
     assert recovered.status == "active"
-    assert recovered.tasks[0].status == "active"
-    assert recovered.tasks[0].resolution_source is None
-    assert recovered.tasks[0].recommendation_fingerprint is None
+    recovered_secret = next(
+        task for task in recovered.tasks if task.parameter_key == "bot_token"
+    )
+    assert recovered_secret.status == "active"
+    assert recovered_secret.resolution_source is None
+    assert recovered_secret.recommendation_fingerprint is None
 
 
-@pytest.mark.parametrize("preserved_status", ["skipped", "deferred"])
-def test_reconcile_preserves_explicitly_closed_optional_secret_task(preserved_status):
+@pytest.mark.parametrize("existing_status", ["skipped", "deferred"])
+def test_reconcile_normalizes_hidden_optional_secret_task_to_skipped(existing_status):
     plan = ParameterTaskPlanner().plan(
         graph={
             "nodes": [
@@ -1262,13 +1333,18 @@ def test_reconcile_preserves_explicitly_closed_optional_secret_task(preserved_st
     completed_group = AgentBuilderParameterGroup(
         group_id=plan.group_id,
         status="completed",
-        tasks=[url_task.model_copy(update={"status": preserved_status})],
+        tasks=[url_task.model_copy(update={"status": existing_status})],
     )
 
     recovered = reconcile_parameter_group_catalog_tasks(completed_group, plan.tasks)
 
-    assert recovered.status == "completed"
-    assert recovered.tasks[0].status == preserved_status
+    assert recovered.status == "active"
+    recovered_url = next(
+        task for task in recovered.tasks if task.parameter_key == "url"
+    )
+    assert recovered_url.task_id == url_task.task_id
+    assert recovered_url.status == "skipped"
+    assert len(recovered.tasks) == len(plan.tasks)
 
 
 def test_reconcile_removes_agent_builder_hidden_routing_tasks_without_mutating_graph():
@@ -1743,9 +1819,21 @@ def test_clear_optional_completed_task_requires_ack_and_finishes_as_skipped():
         reason="safe reason",
         input_guidance="safe guidance",
     )
+    remaining_payload = task.model_copy(
+        update={
+            "task_id": uuid4(),
+            "parameter_key": "blocks",
+            "label": "Blocks",
+            "input_type": "json",
+            "status": "pending",
+            "task_version": 1,
+            "stable_order": 1,
+            "resolution_source": None,
+        }
+    )
 
     decision = prepare_task_decision(
-        tasks=[task],
+        tasks=[task, remaining_payload],
         task_id=task.task_id,
         operation_id=uuid4(),
         expected_task_version=task.task_version,
@@ -1756,9 +1844,42 @@ def test_clear_optional_completed_task_requires_ack_and_finishes_as_skipped():
     assert decision.awaiting_persistence_ack is True
     assert decision.graph_data_patch == {"_clear_parameter": "message"}
     assert task.status == "completed"
-    acknowledged = acknowledge_task_decision([task], decision)
-    assert acknowledged[0].status == "skipped"
-    assert acknowledged[0].task_version == 4
+    acknowledged = acknowledge_task_decision([task, remaining_payload], decision)
+    acknowledged_message = next(
+        item for item in acknowledged if item.parameter_key == "message"
+    )
+    assert acknowledged_message.status == "skipped"
+    assert acknowledged_message.task_version == 4
+
+
+def test_clear_last_slack_payload_is_rejected():
+    group_id = uuid4()
+    task = AgentBuilderParameterTask(
+        task_id=uuid4(),
+        group_id=group_id,
+        step_id="step-slack",
+        node_id="slack",
+        node_type="slackPostNode",
+        parameter_key="message",
+        label="Message",
+        input_type="textarea",
+        required=False,
+        status="completed",
+        task_version=1,
+        stable_order=0,
+        reason="safe reason",
+        input_guidance="safe guidance",
+    )
+
+    with pytest.raises(ParameterTaskConflict, match="one payload is required"):
+        prepare_task_decision(
+            tasks=[task],
+            task_id=task.task_id,
+            operation_id=uuid4(),
+            expected_task_version=task.task_version,
+            action="clear",
+            value=None,
+        )
 
 
 def test_defer_requires_catalog_policy_and_only_advances_after_acknowledgement():

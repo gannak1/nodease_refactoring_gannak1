@@ -484,6 +484,7 @@ def test_node_configuration_state_is_derived_from_all_required_parameters():
             "slackMode": "api",
             "authConfig": {"token": "secret-value"},
             "channel": "C123",
+            "message": "hello",
             "configuration_state": "resolved",
         },
     ) == "resolved"
@@ -493,13 +494,65 @@ def test_node_configuration_state_is_derived_from_all_required_parameters():
             "slackMode": "api",
             "authConfig": {"token": "secret-value"},
             "channel": "",
+            "message": "hello",
             "configuration_state": "resolved",
         },
     ) == "unresolved"
     assert derive_node_configuration_state(
         "slackPostNode",
-        {"slackMode": "webhook", "url": "https://hooks.slack.test/1"},
+        {
+            "slackMode": "webhook",
+            "url": "https://hooks.slack.test/1",
+            "message": "hello",
+        },
     ) == "resolved"
+
+
+def test_slack_deferred_mode_requirement_overrides_retained_graph_value():
+    assert derive_node_configuration_state(
+        "slackPostNode",
+        {
+            "slackMode": "api",
+            "authConfig": {"token": "secret-value"},
+            "channel": "C123",
+            "message": "hello",
+            "_deferred_parameters": ["channel"],
+        },
+    ) == "unresolved"
+
+
+def test_slack_requires_one_non_empty_payload_configuration():
+    base = {
+        "slackMode": "api",
+        "authConfig": {"token": "secret-value"},
+        "channel": "C123",
+    }
+
+    assert derive_node_configuration_state("slackPostNode", base) == "unresolved"
+    assert derive_node_configuration_state(
+        "slackPostNode",
+        {**base, "message": "   ", "blocks": "[]", "attachments": "[]"},
+    ) == "unresolved"
+    assert derive_node_configuration_state(
+        "slackPostNode", {**base, "blocks": "{invalid"}
+    ) == "unresolved"
+    assert derive_node_configuration_state(
+        "slackPostNode", {**base, "message": "hello"}
+    ) == "resolved"
+    assert derive_node_configuration_state(
+        "slackPostNode", {**base, "blocks": '[{"type":"section"}]'}
+    ) == "resolved"
+    assert derive_node_configuration_state(
+        "slackPostNode", {**base, "attachments": '[{"text":"alert"}]'}
+    ) == "resolved"
+    assert derive_node_configuration_state(
+        "slackPostNode",
+        {
+            **base,
+            "message": "hello",
+            "_deferred_parameters": ["message"],
+        },
+    ) == "unresolved"
 
 
 def test_slack_and_github_secret_parameters_map_to_existing_node_fields():

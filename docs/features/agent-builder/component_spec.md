@@ -452,6 +452,7 @@ Condition branch `select`는 `validation.option_labels`의 안전한 node label�
 - parameter update GraphMutation을 editor adapter에 전달
 - GraphMutation의 CAS workflow save/acknowledgement가 끝날 때까지 현재 task를 유지하고 control을 중복 제출할 수 없게 함
 - acknowledgement 성공 뒤 완료 task와 next task를 reconcile
+- completed group 복구에서도 현재 Catalog와 `node_id + parameter_key`를 병합하고, 기존 task 상태/version을 보존한 채 신규 입력 task만 순차 활성화
 - `409 task_conflict`에서 server current task를 다시 읽고 제출값을 자동 재적용하지 않음
 - Pending quick-completion proposal이 예약한 task는 편집 control을 잠그고 proposal acknowledge/cancel/stale 뒤 canonical task version을 다시 읽음. 다른 tab의 예약 task decision conflict도 자동 재적용하지 않음
 
@@ -588,6 +589,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 | persisted Undo 상태 | backend/workflow draft | 원 operation의 `reverted` 상태와 canonical graph |
 | parameter task status/version/resolution source/reconfirmation flag | backend | 기존 `AgentBuilderRequest.response_payload`; `skipped` 포함, 실제 parameter 값은 제외 |
 | test/run/deploy readiness | backend preflight | 저장 graph와 Catalog에서 missing/deferred/invalid configuration을 매번 재계산; ParameterTask 상태는 비권위 |
+| Slack payload readiness | backend Catalog/preflight | `message|blocks|attachments` 중 유효한 값 하나 이상을 요구하고 deferred/공백/빈 array/invalid JSON은 미설정으로 판정 |
 | input draft before submit | frontend card | client memory |
 | credential secret | Agent Builder가 소유하지 않음 | 기존 credential 경계 |
 | viewport/focus | React Flow | client memory |

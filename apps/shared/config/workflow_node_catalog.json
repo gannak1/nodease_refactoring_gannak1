@@ -233,10 +233,14 @@
       "outputs": [{"capability": "slack_send", "mode": "static", "keys": ["status", "headers", "data"], "value_type": "unknown"}],
       "side_effect": "external_write",
       "required_configuration": [],
+      "required_any_configuration": [
+        {"key": "payload", "parameters": ["message", "blocks", "attachments"]}
+      ],
       "configuration_labels": {
         "bot_token": "Bot Token",
         "url": "Webhook URL",
-        "channel": "Slack channel"
+        "channel": "Slack channel",
+        "payload": "Slack message payload"
       },
       "parameters": [
         {"key": "slackMode", "label": "Slack 전송 방식", "input_type": "select", "required": false, "defer_policy": "forbidden", "default": "api", "reason": "Slack 메시지를 보낼 방식을 선택합니다.", "input_guidance": "Bot Token으로 전송하려면 Slack API, Incoming Webhook URL로 전송하려면 Incoming Webhook을 선택하세요.", "validation": {"options": ["api", "webhook"], "option_labels": {"api": "Slack API", "webhook": "Incoming Webhook"}}},
