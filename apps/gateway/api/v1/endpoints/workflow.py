@@ -1015,8 +1015,16 @@ def _model_routing_policy_response(
     enabled: bool,
     db: Session | None = None,
     latest_update: LLMNodeModelRoutingPolicyUpdate | None = None,
+    decision_deployment_id: UUID | None = None,
+    decision_node_id: str | None = None,
 ) -> dict[str, Any]:
     last_update = _model_routing_policy_update_summary(latest_update)
+    last_decision = _model_routing_latest_decision_summary(
+        db,
+        policy,
+        deployment_id=decision_deployment_id,
+        node_id=decision_node_id,
+    )
     if policy is None:
         return {
             "enabled": enabled,
@@ -1034,6 +1042,7 @@ def _model_routing_policy_response(
                 "last_refresh_at": None,
             },
             "last_update": last_update,
+            "last_decision": last_decision,
             "performance": {
                 "total_runs": 0,
                 "model_count": 0,
@@ -1070,6 +1079,7 @@ def _model_routing_policy_response(
             else None,
         },
         "last_update": last_update,
+        "last_decision": last_decision,
         "performance": (
             ModelRoutingOperationalPerformanceService.response_summary(
                 db,
@@ -1094,6 +1104,79 @@ def _model_routing_policy_response(
             }
         ),
         "change_policy": _model_routing_change_policy_summary(),
+    }
+
+
+_MODEL_ROUTING_REASON_LABELS = {
+    "simple_response": "간단한 응답 처리",
+    "multi_constraint": "여러 조건 종합",
+    "evidence_synthesis": "근거 종합 필요",
+    "structured_precision": "정확한 형식 필요",
+    "high_risk_reasoning": "고위험 판단 필요",
+    "ambiguous_request": "모호한 요청 판단",
+    "long_context": "긴 문맥 종합",
+    "local_router_confident": "학습된 선택 기준",
+    "local_router_uncertain": "확신 부족 기본 선택",
+    "runtime_judge_unavailable": "Judge를 사용할 수 없음",
+}
+
+
+def _model_routing_latest_decision_summary(
+    db: Session | None,
+    policy: LLMNodeModelRoutingPolicy | None,
+    *,
+    deployment_id: UUID | None = None,
+    node_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Return the latest safe routing decision without exposing request payloads."""
+
+    if db is None:
+        return None
+    deployment_id = deployment_id or getattr(policy, "deployment_id", None)
+    node_id = str(node_id or getattr(policy, "node_id", "") or "").strip()
+    if deployment_id is None or not node_id:
+        return None
+
+    try:
+        node_run = (
+            db.query(WorkflowNodeRun)
+            .join(WorkflowRun, WorkflowNodeRun.workflow_run_id == WorkflowRun.id)
+            .filter(WorkflowNodeRun.node_id == node_id)
+            .filter(WorkflowRun.deployment_id == deployment_id)
+            .order_by(
+                WorkflowNodeRun.finished_at.desc(),
+                WorkflowNodeRun.started_at.desc(),
+            )
+            .first()
+        )
+    except Exception:
+        return None
+
+    outputs = getattr(node_run, "outputs", None)
+    metadata = outputs.get("metadata") if isinstance(outputs, dict) else None
+    routing = metadata.get("model_routing") if isinstance(metadata, dict) else None
+    if not isinstance(routing, dict):
+        return None
+
+    selected_model_id = str(routing.get("selected_model") or "").strip()
+    if not selected_model_id:
+        return None
+    judge = routing.get("judge") if isinstance(routing.get("judge"), dict) else {}
+    reason_code = str(routing.get("reason_code") or "").strip() or None
+    reason_short = str(judge.get("reason_short") or "").strip() or None
+    return {
+        "selected_model_id": selected_model_id,
+        "fallback_model_id": str(routing.get("fallback_model") or "").strip()
+        or None,
+        "fallback_used": bool(routing.get("fallback_used")),
+        "decision_source": str(routing.get("decision_source") or "").strip()
+        or None,
+        "reason_code": reason_code,
+        "reason_label": reason_short
+        or _MODEL_ROUTING_REASON_LABELS.get(reason_code or "", "선택 근거 기록 없음"),
+        "created_at": node_run.finished_at.isoformat()
+        if getattr(node_run, "finished_at", None)
+        else None,
     }
 
 
@@ -3958,11 +4041,14 @@ def get_model_routing_policy_endpoint(
     node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
     policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
     latest_update = _get_latest_model_routing_policy_update(db, policy)
+    deployment = _active_deployment_for_workflow(db, workflow)
     return _model_routing_policy_response(
         policy,
         enabled=bool(node_data.get("auto_model_routing")),
         db=db,
         latest_update=latest_update,
+        decision_deployment_id=deployment.id if deployment else None,
+        decision_node_id=node_id,
     )
 
 

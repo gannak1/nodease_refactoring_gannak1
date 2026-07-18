@@ -435,6 +435,75 @@ class TestModelRoutingPolicyApi:
             "created_at": "2026-07-10T00:00:00+00:00",
         }
 
+    def test_fr11_latest_decision_summary_returns_safe_routing_reason(self):
+        """최근 실행의 라우팅 결과만 반환하고 입력 원문은 반환하지 않는다."""
+        deployment_id = uuid4()
+        policy = SimpleNamespace(deployment_id=deployment_id, node_id="llm-triage")
+        node_run = SimpleNamespace(
+            finished_at=datetime(2026, 7, 18, 9, 30, tzinfo=timezone.utc),
+            outputs={
+                "input": {"message": "이 값은 API 응답에 포함되면 안 됩니다."},
+                "metadata": {
+                    "model_routing": {
+                        "selected_model": "gpt-4.1-mini",
+                        "fallback_model": "gpt-4.1",
+                        "fallback_used": False,
+                        "decision_source": "runtime_judge",
+                        "reason_code": "multi_constraint",
+                        "judge": {"reason_short": "여러 조건 종합"},
+                    }
+                },
+            },
+        )
+        db = MagicMock()
+        (
+            db.query.return_value.join.return_value.filter.return_value.filter.return_value.order_by.return_value.first.return_value
+        ) = node_run
+
+        summary = workflow_endpoint._model_routing_latest_decision_summary(db, policy)
+
+        assert summary == {
+            "selected_model_id": "gpt-4.1-mini",
+            "fallback_model_id": "gpt-4.1",
+            "fallback_used": False,
+            "decision_source": "runtime_judge",
+            "reason_code": "multi_constraint",
+            "reason_label": "여러 조건 종합",
+            "created_at": "2026-07-18T09:30:00+00:00",
+        }
+
+    def test_fr11_latest_decision_summary_supports_first_judge_routed_run(self):
+        """정책 행이 없더라도 첫 Judge 실행의 선택 사유를 조회한다."""
+        deployment_id = uuid4()
+        node_run = SimpleNamespace(
+            finished_at=datetime(2026, 7, 18, 9, 31, tzinfo=timezone.utc),
+            outputs={
+                "metadata": {
+                    "model_routing": {
+                        "selected_model": "gpt-4o-mini",
+                        "fallback_used": False,
+                        "decision_source": "runtime_judge",
+                        "reason_code": "simple_response",
+                    }
+                }
+            },
+        )
+        db = MagicMock()
+        (
+            db.query.return_value.join.return_value.filter.return_value.filter.return_value.order_by.return_value.first.return_value
+        ) = node_run
+
+        summary = workflow_endpoint._model_routing_latest_decision_summary(
+            db,
+            None,
+            deployment_id=deployment_id,
+            node_id="llm-triage",
+        )
+
+        assert summary is not None
+        assert summary["selected_model_id"] == "gpt-4o-mini"
+        assert summary["reason_label"] == "간단한 응답 처리"
+
     def test_fr11_policy_patch_updates_default_and_fallback_models(self):
         """규칙에 맞지 않는 요청의 기본 모델은 draft와 persisted policy에 함께 저장한다."""
         workflow_id = uuid4()

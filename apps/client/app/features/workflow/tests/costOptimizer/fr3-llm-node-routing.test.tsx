@@ -192,6 +192,15 @@ describe('FR-003 LLM node model routing optimization entry', () => {
         judge_cost: 0.0012,
         created_at: '2026-07-10T00:00:00+00:00',
       },
+      last_decision: {
+        selected_model_id: 'gpt-4.1-mini',
+        fallback_model_id: 'gpt-4.1',
+        fallback_used: false,
+        decision_source: 'runtime_judge',
+        reason_code: 'multi_constraint',
+        reason_label: '여러 조건 종합',
+        created_at: '2026-07-10T00:00:00+00:00',
+      },
     });
     workflowApiMock.patchModelRoutingPolicy.mockResolvedValue({
       enabled: true,
@@ -314,10 +323,10 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       await screen.findByRole('checkbox', { name: /자동 모델 라우팅/ }),
     ).toBeChecked();
     expect(screen.getByText('자동 라우팅 사용 중')).toBeInTheDocument();
-    expect(screen.getByText('Judge 판단 모델')).toBeInTheDocument();
+    expect(screen.getByText('Judge 모델')).toBeInTheDocument();
     expect(screen.getByText('실행 실패 대체 모델')).toBeInTheDocument();
-    expect(screen.getByText('현재 동작 방식')).toBeInTheDocument();
-    expect(screen.getByText(/저장된 정책이 아직 없어도 기본 모델로 돌아가지 않습니다/)).toBeInTheDocument();
+    expect(screen.getByText('최근 실행 선택')).toBeInTheDocument();
+    expect(screen.getByText('여러 조건 종합')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '자동 선택 기준 만들기' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('자동 라우팅 작업 설명')).not.toBeInTheDocument();
     expect(screen.queryByText('router-policy-v5')).not.toBeInTheDocument();
@@ -326,7 +335,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     expect(screen.queryByText('월간 모델 검증 한도')).not.toBeInTheDocument();
 
     fireEvent.change(
-      screen.getByRole('combobox', { name: 'Judge 판단 모델을 선택하세요' }),
+      screen.getByRole('combobox', { name: 'Judge 모델을 선택하세요' }),
       { target: { value: 'gpt-4.1-mini' } },
     );
     await waitFor(() => {

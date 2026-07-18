@@ -301,6 +301,15 @@ export interface ModelRoutingPolicyResponse {
     judge_cost: number | null;
     created_at: string | null;
   } | null;
+  last_decision: {
+    selected_model_id: string;
+    fallback_model_id: string | null;
+    fallback_used: boolean;
+    decision_source: string | null;
+    reason_code: string | null;
+    reason_label: string;
+    created_at: string | null;
+  } | null;
   performance?: {
     total_runs: number;
     model_count: number;

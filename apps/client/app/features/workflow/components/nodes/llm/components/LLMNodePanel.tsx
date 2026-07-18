@@ -342,14 +342,10 @@ export function LLMNodePanel({
     });
   }, [fallbackCandidates, data.model_id, selectedModel]);
   const fallbackDisabled = !data.model_id?.trim();
-  const routingPolicySummary = useMemo(() => {
+  const routingPanelState = useMemo(() => {
     const policy = persistedRoutingPolicy;
     const legacyPolicy = data.model_routing_policy;
     const activePolicy = policy?.active_policy ?? legacyPolicy?.active_policy;
-    const runsSinceLastRefresh =
-      policy?.refresh?.eligible_runs_since_last_refresh ??
-      legacyPolicy?.refresh?.runs_since_last_refresh ??
-      0;
     const refreshEveryRuns =
       legacyPolicy?.refresh?.refresh_every_runs ??
       policy?.refresh?.refresh_every_runs ??
@@ -372,36 +368,9 @@ export function LLMNodePanel({
                   : '사용 안 함';
 
     return {
-      status,
       statusLabel,
-      policyVersion:
-        policy?.policy_version || legacyPolicy?.policy_version || '정책 없음',
-      reasonCode: activePolicy
-        ? activePolicy.learning?.mode === 'local_first'
-            ? '운영 요청에서 Judge가 고른 결과와 실행 품질을 바탕으로, 로컬 라우터가 먼저 모델을 선택합니다. 확신이 낮으면 Judge에게 다시 판단을 맡깁니다.'
-            : '초기 운영 요청은 Judge가 현재 실행 주체가 사용할 수 있는 후보 중 모델을 선택합니다. 선택 결과가 충분히 쌓이고 품질이 안정되면 로컬 라우터가 먼저 선택합니다.'
-        : '정책 행이 아직 없어도 테스트와 배포에서 Judge가 즉시 모델을 선택합니다.',
-      runsSinceLastRefresh,
       refreshEveryRuns,
-      lastUpdate: policy?.last_update ?? null,
-      performance: policy?.performance ?? {
-        total_runs: 0,
-        model_count: 0,
-        last_recorded_at: null,
-        models: [],
-      },
-      learningSummary: policy?.learning_summary ?? {
-        pending_count: 0,
-        accepted_count: 0,
-        rejected_count: 0,
-        last_outcome_reason: null,
-      },
-      changePolicy: policy?.change_policy ?? {
-        mode: 'event_driven' as const,
-        minimum_new_runs: 3,
-        quality_change_threshold: 0.05,
-        efficiency_improvement_threshold: 0.1,
-      },
+      lastDecision: policy?.last_decision ?? null,
     };
   }, [
     data.auto_model_routing,
@@ -586,12 +555,12 @@ export function LLMNodePanel({
       // 켤 때는 배포 또는 첫 실행에서 Judge-first policy가 자동으로 준비된다.
       // 끌 때만 즉시 runtime policy를 off로 전환한다.
       if (!enabled) {
-        void syncRoutingPolicy(false, routingPolicySummary.refreshEveryRuns);
+        void syncRoutingPolicy(false, routingPanelState.refreshEveryRuns);
       }
     },
     [
       handleUpdateData,
-      routingPolicySummary.refreshEveryRuns,
+      routingPanelState.refreshEveryRuns,
       syncRoutingPolicy,
     ],
   );
@@ -655,7 +624,7 @@ export function LLMNodePanel({
       handleModelChange(nextModelId);
       void syncRoutingPolicy(
         true,
-        routingPolicySummary.refreshEveryRuns,
+        routingPanelState.refreshEveryRuns,
         nextModelId,
         nextFallbackModelId,
       );
@@ -663,7 +632,7 @@ export function LLMNodePanel({
     [
       data.fallback_model_id,
       handleModelChange,
-      routingPolicySummary.refreshEveryRuns,
+      routingPanelState.refreshEveryRuns,
       syncRoutingPolicy,
     ],
   );
@@ -673,7 +642,7 @@ export function LLMNodePanel({
       handleUpdateData('fallback_model_id', nextFallbackModelId);
       void syncRoutingPolicy(
         true,
-        routingPolicySummary.refreshEveryRuns,
+        routingPanelState.refreshEveryRuns,
         data.model_id || '',
         nextFallbackModelId || null,
       );
@@ -681,7 +650,7 @@ export function LLMNodePanel({
     [
       data.model_id,
       handleUpdateData,
-      routingPolicySummary.refreshEveryRuns,
+      routingPanelState.refreshEveryRuns,
       syncRoutingPolicy,
     ],
   );
@@ -949,22 +918,25 @@ export function LLMNodePanel({
                         자동 라우팅 사용 중
                       </div>
                       <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
-                        테스트와 배포 모두 요청마다 Judge가 사용할 모델을 고릅니다.
-                        정상 실행 결과가 쌓이면 로컬 라우터가 먼저 판단합니다.
+                        테스트와 배포에서 요청에 맞는 모델을 선택합니다. 정상 실행
+                        결과가 쌓이면 로컬 라우터가 먼저 판단합니다.
                       </p>
                     </div>
+                    <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+                      {routingPanelState.statusLabel}
+                    </span>
                   </div>
                   <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="rounded border border-slate-100 bg-slate-50 p-2">
                       <label className="block text-[11px] font-semibold text-slate-600">
-                        Judge 판단 모델
+                        Judge 모델
                       </label>
                       <ModelSelectDropdown
                         value={data.model_id || ''}
                         onChange={handleRoutingDefaultModelChange}
                         models={chatModelOptions}
                         groupedModels={groupedModelOptions}
-                        placeholder="Judge 판단 모델을 선택하세요"
+                        placeholder="Judge 모델을 선택하세요"
                       />
                     </div>
                     <div className="rounded border border-slate-100 bg-slate-50 p-2">
@@ -985,14 +957,37 @@ export function LLMNodePanel({
                       />
                     </div>
                   </div>
-                  <div className="mt-3 rounded-md border border-sky-200 bg-sky-50 p-3 text-[11px] text-sky-900">
-                    <div className="font-semibold">현재 동작 방식</div>
-                    <p className="mt-1 leading-relaxed">
-                      저장된 정책이 아직 없어도 기본 모델로 돌아가지 않습니다. 현재
-                      실행 주체가 사용할 수 있는 후보 중 Judge가 즉시 모델을 고르고,
-                      계약을 통과한 실행 결과만 이후 로컬 학습에 반영합니다.
+                  {routingPanelState.lastDecision ? (
+                    <div className="mt-3 rounded-md border border-sky-200 bg-sky-50 p-3 text-[11px] text-sky-900">
+                      <div className="font-semibold">최근 실행 선택</div>
+                      <dl className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                        <div>
+                          <dt className="text-sky-700">선택 모델</dt>
+                          <dd className="mt-0.5 font-semibold text-slate-900">
+                            {routingPanelState.lastDecision.selected_model_id}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-sky-700">판단 사유</dt>
+                          <dd className="mt-0.5 font-semibold text-slate-900">
+                            {routingPanelState.lastDecision.reason_label}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-sky-700">실행 결과</dt>
+                          <dd className="mt-0.5 font-semibold text-slate-900">
+                            {routingPanelState.lastDecision.fallback_used
+                              ? `대체 모델 ${routingPanelState.lastDecision.fallback_model_id || '사용'}`
+                              : '선택 모델로 완료'}
+                          </dd>
+                        </div>
+                      </dl>
+                    </div>
+                  ) : (
+                    <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
+                      아직 배포 실행 이력이 없습니다. 첫 실행 뒤 선택 모델과 판단 사유가 여기에 표시됩니다.
                     </p>
-                  </div>
+                  )}
                   {routingPolicyError ? (
                     <p className="mt-2 text-[11px] text-rose-600">
                       {routingPolicyError}
