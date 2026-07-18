@@ -42,6 +42,7 @@ class FakeResolver:
     def __init__(self, resolution: KnowledgeCandidateResolution):
         self.resolution = resolution
         self.explicit_calls = []
+        self.explicit_collection_calls = []
         self.auto_calls = []
 
     def resolve_explicit_kbs(self, knowledge_base_ids, *, allow_unready_candidates=False):
@@ -79,6 +80,19 @@ class FakeResolver:
                 ),
             ),
         )
+
+    def resolve_explicit_collections(self, collection_ids):
+        self.explicit_collection_calls.append(list(collection_ids))
+        requested_ids = set(collection_ids)
+        return [
+            group
+            for group in getattr(
+                self,
+                "hierarchy",
+                KnowledgeCandidateHierarchyResolution(),
+            ).collections
+            if group.collection_id in requested_ids
+        ]
 
 
 class FailingResolver:
@@ -162,6 +176,15 @@ def test_hierarchical_selection_deduplicates_children_and_uses_stable_handles():
     assert len({row.selection_key for row in shared_rows}) == 1
     assert {row.shared_collection_count for row in shared_rows} == {2}
     assert all(not row.kb_handle.endswith(str(shared_kb.candidate_id)) for row in shared_rows)
+    assert result._issued_kb_resource_ids[shared_rows[0].kb_handle] == (
+        shared_kb.candidate_id
+    )
+    assert result._issued_collection_resource_ids[
+        internal.collection_handle
+    ] == collection_a
+    serialized = str(result.model_dump(mode="json"))
+    assert str(shared_kb.candidate_id) not in serialized
+    assert str(collection_a) not in serialized
     query_terms, _source = service._ranking_terms(  # noqa: SLF001
         [shared_kb, other_kb], request
     )
@@ -294,9 +317,9 @@ def test_equal_score_candidates_sort_by_safe_label_before_opaque_handle():
     assert [item[0].safe_label for item in ranked] == ["Alpha", "Zulu"]
 
 
-def test_handle_materialization_ignores_display_collection_limit():
+def test_issued_handle_materialization_revalidates_only_bound_kb():
     candidate = _candidate(safe_label="Previously issued KB")
-    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[]))
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[candidate]))
     resolver.hierarchy = KnowledgeCandidateHierarchyResolution(
         collections=[
             KnowledgeCandidateCollectionGroup(
@@ -318,11 +341,33 @@ def test_handle_materialization_ignores_display_collection_limit():
     materialized = service.materialize_candidate_handles_for_builder(
         request,
         {handle},
+        issued_resource_ids={handle: candidate.candidate_id},
     )
 
     assert materialized[0]["safe_handle"] == handle
-    assert resolver.auto_calls[-1]["apply_collection_limit"] is False
-    assert resolver.auto_calls[-1]["enforce_internal_candidate_limit"] is True
+    assert resolver.explicit_calls == [[candidate.candidate_id]]
+    assert resolver.auto_calls == []
+
+
+def test_issued_handle_materialization_rejects_mismatched_resource_binding():
+    candidate = _candidate(safe_label="Issued KB")
+    resolver = FakeResolver(
+        KnowledgeCandidateResolution(candidates=[candidate])
+    )
+    service = _service(resolver)
+    handle = service._recommendation_id(candidate)  # noqa: SLF001
+
+    materialized = service.materialize_candidate_handles_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="selection apply",
+            mode="auto",
+        ),
+        {handle},
+        issued_resource_ids={handle: uuid.uuid4()},
+    )
+
+    assert materialized == []
+    assert resolver.explicit_calls == []
 
 
 def test_route_authorized_collection_remains_selectable_without_visible_children():
@@ -371,7 +416,7 @@ def test_hierarchical_response_does_not_expose_hidden_kb_count_bucket():
     assert result.summary.hidden_or_unavailable_count_bucket == "0"
 
 
-def test_collection_handle_materialization_revalidates_current_visibility():
+def test_issued_collection_handle_revalidates_only_bound_collection():
     kb = _candidate(safe_label="인사 KB", runtime_availability="available")
     collection_id = uuid.uuid4()
     resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[]))
@@ -391,19 +436,29 @@ def test_collection_handle_materialization_revalidates_current_visibility():
     )
     result = service.recommend_for_builder(request)
     handle = result.knowledge_selection.collections[0].collection_handle
+    recommendation_call_count = len(resolver.auto_calls)
 
-    assert service.materialize_collection_handles_for_builder(request, {handle}) == [
+    assert service.materialize_collection_handles_for_builder(
+        request,
+        {handle},
+        issued_resource_ids={handle: collection_id},
+    ) == [
         {
             "safe_handle": handle,
             "knowledge_collection_id": str(collection_id),
             "name": "사내 문서",
         }
     ]
-    assert resolver.auto_calls[-1]["enforce_internal_candidate_limit"] is True
+    assert resolver.explicit_collection_calls == [[collection_id]]
+    assert len(resolver.auto_calls) == recommendation_call_count
 
     resolver.hierarchy = KnowledgeCandidateHierarchyResolution()
 
-    assert service.materialize_collection_handles_for_builder(request, {handle}) == []
+    assert service.materialize_collection_handles_for_builder(
+        request,
+        {handle},
+        issued_resource_ids={handle: collection_id},
+    ) == []
 
 
 def test_recommendation_returns_kb_item_and_collection_summary_only():
@@ -848,6 +903,7 @@ def test_materialize_candidate_handles_does_not_depend_on_top_n_ranking():
     materialized = service.materialize_candidate_handles_for_builder(
         request,
         {lower_handle},
+        issued_resource_ids={lower_handle: lower.candidate_id},
     )
 
     assert materialized == [
@@ -863,7 +919,7 @@ def test_materialize_ungrouped_handle_when_collection_candidates_exist():
     collection_child = _candidate(safe_label="Collection child")
     ungrouped = _candidate(safe_label="Directly authorized KB")
     resolver = FakeResolver(
-        KnowledgeCandidateResolution(candidates=[collection_child])
+        KnowledgeCandidateResolution(candidates=[collection_child, ungrouped])
     )
     resolver.hierarchy = KnowledgeCandidateHierarchyResolution(
         collections=[
@@ -885,6 +941,7 @@ def test_materialize_ungrouped_handle_when_collection_candidates_exist():
     materialized = service.materialize_candidate_handles_for_builder(
         request,
         {ungrouped_handle},
+        issued_resource_ids={ungrouped_handle: ungrouped.candidate_id},
     )
 
     assert materialized == [

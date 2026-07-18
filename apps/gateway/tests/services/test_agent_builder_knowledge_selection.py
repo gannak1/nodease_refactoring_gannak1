@@ -429,7 +429,7 @@ def test_terminal_knowledge_selection_rejects_stale_handles_without_refresh(
     )
     request_row = SimpleNamespace(
         structured_request=structured.model_dump(mode="json"),
-            response_payload={
+        response_payload={
                 "safe_step_node_ids": {"step_llm": "llm-1"},
                 "knowledge_resolution": {
                     "resolution_id": "res-kb-1",
@@ -733,6 +733,7 @@ def test_knowledge_selection_reads_direct_resolution_candidates_without_legacy_o
             ],
         }
     )
+    knowledge_base_id = uuid4()
     request_row = SimpleNamespace(
         structured_request=structured.model_dump(mode="json"),
         response_payload={
@@ -751,6 +752,13 @@ def test_knowledge_selection_reads_direct_resolution_candidates_without_legacy_o
                 "selected": [],
             },
             "clarification_options": [],
+            "_issued_knowledge_handle_bindings": {
+                "resolution_id": "res-kb-1",
+                "knowledge_bases": {
+                    "rec-safe-1": str(knowledge_base_id),
+                },
+                "collections": {},
+            },
             "operation_envelopes": [
                 {
                     "kind": "initial_graph",
@@ -797,7 +805,6 @@ def test_knowledge_selection_reads_direct_resolution_candidates_without_legacy_o
             self.commits += 1
 
     materializer_calls = []
-    knowledge_base_id = uuid4()
 
     def _materializer(*args, **kwargs):
         materializer_calls.append((args, kwargs))
@@ -853,6 +860,10 @@ def test_knowledge_selection_reads_direct_resolution_candidates_without_legacy_o
     )
     assert materializer_calls[0][1]["selected_candidate_handles"] == {
         "rec-safe-1"
+    }
+    assert materializer_calls[0][1]["issued_handle_bindings"] == {
+        "knowledge_bases": {"rec-safe-1": str(knowledge_base_id)},
+        "collections": {},
     }
     assert request_row.response_payload["knowledge_resolutions"][0][
         "selected_candidate_ids"
@@ -1121,9 +1132,22 @@ def test_hierarchical_knowledge_selection_rejects_stale_handles_and_materializes
     )
     assert response.selected_collection_handles == [expected_collection_handle]
     assert response.selected_kb_handles == [expected_kb_handle]
+    expected_issued_bindings = (
+        {
+            "knowledge_bases": {
+                editor_kb_handle: str(knowledge_base_id),
+            },
+            "collections": {
+                editor_collection_handle: str(collection_id),
+            },
+        }
+        if selection_source == "node_editor"
+        else {}
+    )
     assert materializer_calls[0][1] == {
         "selected_kb_handles": {expected_kb_handle},
         "selected_collection_handles": {expected_collection_handle},
+        "issued_handle_bindings": expected_issued_bindings,
     }
     operation = response.graph_mutation.operations[0]
     assert operation.data["knowledgeBases"] == [

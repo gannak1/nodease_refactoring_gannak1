@@ -869,3 +869,6 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Slack API mode의 Bot Token/channel과 Webhook mode의 URL은 required task이며 반대 mode에서는 hidden/skipped다. Bot Token과 URL은 skip/clear/defer할 수 없고 channel의 명시적 defer만 unresolved 저장 뒤 test/run/deploy를 차단한다.
 - GitHub API Token은 `get_pr|comment_pr` 모두 required이며 기존 optional 계약에서 skipped된 미설정 task도 session reconciliation에서 다시 열린다. 설정 존재가 확인된 secret task는 raw 값 없이 completed로 복구한다.
 - GitHub action을 `get_pr`에서 `comment_pr`로 set한 CAS 저장과 acknowledgement 응답은 Planner LLM 재호출 없이 `comment_body`를 required `pending|active`로 다시 열고 `next_task_id`를 갱신한다. 같은 acknowledgement 재조회는 task와 audit을 중복 변경하지 않는다.
+- 발급 뒤 새로운 후보가 추가되어 해당 KB가 추천 탐색의 5,000개 내부 상한 밖으로 밀려나도, resolution에 보존된 handle-to-resource binding으로 해당 KB 하나만 다시 검증해 적용되는지 확인한다.
+- 발급된 Collection handle 적용 시 하위 KB hierarchy를 다시 탐색하지 않고 해당 Collection의 organization, active 상태와 `route` 권한만 재검증하는지 확인한다.
+- server-only handle-to-resource binding의 실제 resource ID가 message/session API 응답, audit 또는 trace에 노출되지 않는지 확인한다.

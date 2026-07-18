@@ -1119,7 +1119,7 @@ Collection parent를 전체 선택하면 client는 해당 Collection handle과 �
 
 ### 8.7 Selected Knowledge Candidate Materialization
 
-Knowledge card 제출은 client가 현재 resolution에서 받은 opaque candidate handle을 사용한다. Backend는 발급된 후보 집합에서 handle을 찾고 active organization 범위, Collection `route` 또는 KB `use` 권한, lifecycle 및 runtime eligibility를 다시 검증해 runtime binding으로 materialize한다. 발급 뒤 handle이 stale이면 8절의 `knowledge_selection_stale` 갱신으로 닫는다.
+Knowledge card 제출은 client가 현재 resolution에서 받은 opaque candidate handle을 사용한다. Backend는 resolution 저장 시 외부 응답에서 제외되는 server-only handle-to-resource binding을 보존한다. 적용 시에는 제출된 최대 20개 handle에 대응하는 resource만 조회해 active organization 범위, Collection `route` 또는 KB `use` 권한, lifecycle 및 runtime eligibility를 다시 검증하고 runtime binding으로 materialize한다. 추천 탐색·점수 계산의 5,000개 내부 상한이나 현재 Top-K를 이 적용 재검증에 다시 사용하지 않는다. 발급 뒤 handle이 stale이면 8절의 `knowledge_selection_stale` 갱신으로 닫는다.
 
 Node Detail 직접 선택은 추천 response의 Top-K allowlist를 사용하지 않는다. Backend는 제출된 real KB/Collection ID를 active organization의 opaque handle로 변환한 뒤 같은 permission, lifecycle 및 runtime eligibility materializer를 적용한다. 따라서 권한 있는 resource가 추천 상위 목록에 없었다는 이유만으로 거부하지 않으며, 현재 검증에 실패하면 `422 catalog_validation_failed`로 종료한다. 두 경로 모두 검증 실패 시 GraphMutation 또는 workflow 저장을 수행하지 않는다.
 

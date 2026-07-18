@@ -502,10 +502,20 @@ def test_direct_session_recovery_preserves_canonical_knowledge_candidates():
             }
         ],
     )
+    issued_kb_id = uuid.uuid4()
+    response._issued_knowledge_handle_bindings = {
+        "knowledge_bases": {"rec-safe-1": str(issued_kb_id)},
+        "collections": {},
+    }
     payload = service._stored_response_payload(  # noqa: SLF001
         response,
         direct_edit=True,
     )
+    assert payload["_issued_knowledge_handle_bindings"] == {
+        "resolution_id": "res-kb-1",
+        "knowledge_bases": {"rec-safe-1": str(issued_kb_id)},
+        "collections": {},
+    }
     request_row = SimpleNamespace(
         id=request_id,
         status="clarification_required",
@@ -524,6 +534,10 @@ def test_direct_session_recovery_preserves_canonical_knowledge_candidates():
     )
 
     recovered = service._session_response(session)  # noqa: SLF001
+
+    assert "_issued_knowledge_handle_bindings" not in str(
+        recovered.model_dump(mode="json")
+    )
 
     assistant = recovered.messages[-1]["response"]
     assert assistant["knowledge_resolution"]["resolution_id"] == "res-kb-1"

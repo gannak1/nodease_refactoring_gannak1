@@ -9,7 +9,14 @@ from apps.shared.schemas.knowledge import (
     KnowledgeSelectionKBCandidate,
 )
 from apps.shared.schemas.workflow import EdgeSchema, NodeSchema, Position
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 AgentBuilderRequestStatus = Literal[
     "planning",
@@ -680,6 +687,10 @@ class AgentBuilderDraftPreview(BaseModel):
 
 
 class AgentBuilderMessageResponse(BaseModel):
+    _issued_knowledge_handle_bindings: dict[str, dict[str, str]] = PrivateAttr(
+        default_factory=dict
+    )
+
     request_id: UUID
     status: AgentBuilderRequestStatus
     structured_request: AgentBuilderStructuredRequest | None = None

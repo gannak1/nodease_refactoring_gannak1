@@ -113,6 +113,14 @@ class KnowledgeSelectionService:
             }
         )
         payload["knowledge_resolution"] = updated_resolution
+        issued_handle_bindings = refreshed.get(
+            "_issued_knowledge_handle_bindings"
+        )
+        if isinstance(issued_handle_bindings, dict):
+            payload["_issued_knowledge_handle_bindings"] = {
+                "resolution_id": resolution_id,
+                **issued_handle_bindings,
+            }
         stored_resolutions = []
         for item in payload.get("knowledge_resolutions") or []:
             if (
@@ -259,6 +267,28 @@ class KnowledgeSelectionService:
                 if isinstance(kb_handle, str) and kb_handle:
                     kb_handles.add(kb_handle)
         return collection_handles, kb_handles
+
+    @staticmethod
+    def _issued_handle_bindings(
+        payload: dict[str, Any],
+        resolution_id: str,
+    ) -> dict[str, dict[str, str]]:
+        raw = payload.get("_issued_knowledge_handle_bindings")
+        if not isinstance(raw, dict) or str(raw.get("resolution_id") or "") != (
+            resolution_id
+        ):
+            return {}
+        result: dict[str, dict[str, str]] = {}
+        for binding_type in ("knowledge_bases", "collections"):
+            values = raw.get(binding_type)
+            if not isinstance(values, dict):
+                continue
+            result[binding_type] = {
+                str(handle): str(resource_id)
+                for handle, resource_id in values.items()
+                if isinstance(handle, str) and handle and resource_id
+            }
+        return result
 
     @staticmethod
     def _placement_for_resolution(
@@ -487,6 +517,23 @@ class KnowledgeSelectionService:
             {*selected_collection_handles, *selected_kb_handles}
         )
         is_editor_selection = selection.editor_target_node_id is not None
+        issued_handle_bindings = self._issued_handle_bindings(
+            payload,
+            selection.resolution_id,
+        )
+        if is_editor_selection:
+            issued_handle_bindings = {
+                "knowledge_bases": {
+                    self.knowledge_base_handle_resolver(resource_id): str(resource_id)
+                    for resource_id in selection.selected_knowledge_base_ids
+                },
+                "collections": {
+                    self.knowledge_collection_handle_resolver(resource_id): str(
+                        resource_id
+                    )
+                    for resource_id in selection.selected_knowledge_collection_ids
+                },
+            }
         existing_resolution = self.repository.find_knowledge_resolution(
             request_row,
             selection.resolution_id,
@@ -548,12 +595,14 @@ class KnowledgeSelectionService:
             recommendation = self.binding_materializer(
                 structured,
                 selected_candidate_handles=candidate_handles,
+                issued_handle_bindings=issued_handle_bindings,
             )
         else:
             recommendation = self.binding_materializer(
                 structured,
                 selected_kb_handles=candidate_handles,
                 selected_collection_handles=set(selected_collection_handles),
+                issued_handle_bindings=issued_handle_bindings,
             )
         if recommendation.get("status") != "ready":
             if not is_editor_selection:

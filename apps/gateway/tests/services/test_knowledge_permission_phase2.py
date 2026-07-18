@@ -236,6 +236,26 @@ def test_collection_read_does_not_allow_route():
     assert route_decision.external_reason_code == "permission.denied"
 
 
+def test_explicit_collection_revalidation_checks_route_without_loading_children():
+    allowed = _collection()
+    denied = _collection()
+    helper = FakePermissionHelper(
+        collection_actions={
+            allowed.id: {"route"},
+            denied.id: {"read"},
+        },
+    )
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[allowed, denied],
+    )
+
+    result = resolver.resolve_explicit_collections([denied.id, allowed.id])
+
+    assert [group.collection_id for group in result] == [allowed.id]
+    assert resolver.requested_item_collection_ids is None
+
+
 def test_explicit_kb_mode_does_not_require_collection_route():
     kb = _kb()
     helper = FakePermissionHelper()

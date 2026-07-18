@@ -1148,6 +1148,7 @@ class AgentBuilderService:
         deferred_knowledge_options: list[dict[str, Any]] = []
         deferred_knowledge_questions: list[str] = []
         deferred_knowledge_selection: dict[str, Any] | None = None
+        deferred_knowledge_handle_bindings: dict[str, dict[str, str]] = {}
         try:
             selected_kb_context = self._selected_knowledge_candidate_context(
                 session,
@@ -1341,6 +1342,9 @@ class AgentBuilderService:
                 recommendations.get("questions") or []
             )
             deferred_knowledge_selection = recommendations.get("knowledge_selection")
+            deferred_knowledge_handle_bindings = dict(
+                recommendations.get("_issued_knowledge_handle_bindings") or {}
+            )
             recommendations = {
                 "status": "ready",
                 "bindings": [],
@@ -1378,6 +1382,9 @@ class AgentBuilderService:
                 knowledge_selection=recommendations.get("knowledge_selection"),
                 validation_result=validation,
                 warnings=[*structured_warnings, *recommendations["warnings"]],
+            )
+            response._issued_knowledge_handle_bindings = dict(
+                recommendations.get("_issued_knowledge_handle_bindings") or {}
             )
             self._finish_request(
                 request_row,
@@ -1575,6 +1582,9 @@ class AgentBuilderService:
                 validation_result=draft_validation,
                 warnings=draft_safety_notices,
                 safe_step_node_ids=issued.step_node_ids,
+            )
+            response._issued_knowledge_handle_bindings = (
+                deferred_knowledge_handle_bindings
             )
             if (
                 self._finish_request(
@@ -3827,6 +3837,18 @@ class AgentBuilderService:
                 if response.knowledge_selection is not None
                 else None
             )
+            issued_handle_bindings = {
+                "knowledge_bases": {
+                    handle: str(resource_id)
+                    for handle, resource_id in response._issued_kb_resource_ids.items()
+                },
+                "collections": {
+                    handle: str(resource_id)
+                    for handle, resource_id in (
+                        response._issued_collection_resource_ids.items()
+                    )
+                },
+            }
             if (
                 require_hierarchical_selection
                 and response.status in {"recommended", "clarification_required"}
@@ -3844,6 +3866,7 @@ class AgentBuilderService:
                     "warnings": [
                         "계층형 Knowledge 후보를 불러오지 못했습니다. 다시 시도해주세요."
                     ],
+                    "_issued_knowledge_handle_bindings": issued_handle_bindings,
                 }
             if response.status == "unavailable":
                 if selected_candidate_handles and not include_materialized_refs:
@@ -3898,6 +3921,7 @@ class AgentBuilderService:
                         response.user_safe_warning
                         or "Knowledge Base 추천을 사용할 수 없습니다."
                     ],
+                    "_issued_knowledge_handle_bindings": issued_handle_bindings,
                 }
             if (
                 response.status == "clarification_required"
@@ -3917,6 +3941,7 @@ class AgentBuilderService:
                         response.user_safe_warning
                         or "Knowledge Base 후보를 사용자 확인으로 선택해야 합니다."
                     ],
+                    "_issued_knowledge_handle_bindings": issued_handle_bindings,
                 }
             recommendations = list(response.recommendations or [])
             if selected_candidate_handles:
@@ -4006,6 +4031,7 @@ class AgentBuilderService:
                         "warnings": [
                             "선택한 Knowledge Base 후보를 다시 확인할 수 없습니다."
                         ],
+                        "_issued_knowledge_handle_bindings": issued_handle_bindings,
                     }
             if not recommendations:
                 has_collection_candidates = bool(
@@ -4031,6 +4057,7 @@ class AgentBuilderService:
                             else "Knowledge Base 후보가 없어 사용자 확인을 기다립니다."
                         )
                     ],
+                    "_issued_knowledge_handle_bindings": issued_handle_bindings,
                 }
             return {
                 "status": "clarification_required",
@@ -4050,6 +4077,7 @@ class AgentBuilderService:
                 ),
                 "knowledge_selection": knowledge_selection,
                 "warnings": ["Knowledge Base 후보를 확인하고 선택해주세요."],
+                "_issued_knowledge_handle_bindings": issued_handle_bindings,
             }
         return {
             "status": "recommended",
@@ -4089,6 +4117,7 @@ class AgentBuilderService:
         selected_candidate_handles: set[str] | None = None,
         selected_collection_handles: set[str] | None = None,
         selected_kb_handles: set[str] | None = None,
+        issued_handle_bindings: dict[str, dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Revalidate selected safe handles without recomputing their ranking."""
         selected_candidate_handles = selected_candidate_handles or set()
@@ -4112,6 +4141,21 @@ class AgentBuilderService:
             user_id=self.user.id,
             organization_id=self.organization_id,
         )
+        issued_handle_bindings = issued_handle_bindings or {}
+
+        def resource_ids(binding_type: str) -> dict[str, uuid.UUID]:
+            result: dict[str, uuid.UUID] = {}
+            for handle, raw_resource_id in (
+                issued_handle_bindings.get(binding_type) or {}
+            ).items():
+                try:
+                    result[str(handle)] = uuid.UUID(str(raw_resource_id))
+                except (TypeError, ValueError):
+                    continue
+            return result
+
+        issued_kb_resource_ids = resource_ids("knowledge_bases")
+        issued_collection_resource_ids = resource_ids("collections")
         pending_by_step = {
             item.target_step_ref: item.resolution_id
             for item in structured.pending_resolution
@@ -4140,6 +4184,7 @@ class AgentBuilderService:
             for binding in service.materialize_candidate_handles_for_builder(
                 request,
                 requested_handles,
+                issued_resource_ids=issued_kb_resource_ids,
             ):
                 handle = str(binding.get("safe_handle") or "")
                 if handle in requested_handles:
@@ -4148,6 +4193,7 @@ class AgentBuilderService:
                 for binding in service.materialize_collection_handles_for_builder(
                     request,
                     selected_collection_handles,
+                    issued_resource_ids=issued_collection_resource_ids,
                 ):
                     handle = str(binding.get("safe_handle") or "")
                     if handle in selected_collection_handles:
@@ -4386,7 +4432,7 @@ class AgentBuilderService:
         runtime_bindings: list[dict[str, Any]] = []
         for requirement in structured.knowledge_requirements:
             runtime_bindings.extend(
-                service.materialize_candidate_handles_for_builder(
+                service.materialize_legacy_candidate_handles_for_builder(
                     KnowledgeRAGRecommendationRequest(
                         workflow_intent=structured.intent_summary,
                         node_purpose="; ".join(requirement.query_topics)
@@ -6396,6 +6442,15 @@ class AgentBuilderService:
                 payload["clarification_options"] = copy.deepcopy(
                     direct_payload["clarification_options"]
                 )
+                if response._issued_knowledge_handle_bindings:
+                    payload["_issued_knowledge_handle_bindings"] = {
+                        "resolution_id": (
+                            direct_response.knowledge_resolution.resolution_id
+                        ),
+                        **copy.deepcopy(
+                            response._issued_knowledge_handle_bindings
+                        ),
+                    }
         payload.pop("draft_preview", None)
         mutation = response.graph_mutation
         if mutation is not None:

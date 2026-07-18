@@ -127,6 +127,31 @@ class KnowledgeCandidateResolver:
             reason_code=None if candidates else "resource.hidden",
         )
 
+    def resolve_explicit_collections(
+        self,
+        collection_ids: Iterable[uuid.UUID],
+    ) -> list[KnowledgeCandidateCollectionGroup]:
+        """Return only operational Collections with current route permission."""
+
+        requested_ids = self._dedupe_ids(collection_ids)
+        collections = self._collections(requested_ids, None)
+        route_decisions = self.permission_helper.bulk_evaluate_collection_action(
+            collections,
+            "route",
+        )
+        return [
+            KnowledgeCandidateCollectionGroup(
+                collection_id=collection.id,
+                safe_label=self._collection_safe_label(collection),
+                safe_metadata={
+                    "safe_topics": self._collection_safe_topics(collection),
+                },
+                candidates=[],
+            )
+            for collection in collections
+            if route_decisions[collection.id].allowed
+        ]
+
     def resolve_auto_collection_candidates(
         self,
         *,

@@ -15,6 +15,9 @@ from apps.gateway.services.agent_builder_service import (
     AgentBuilderService,
     calculate_graph_hash,
 )
+from apps.gateway.services.knowledge_rag_recommendation_service import (
+    knowledge_base_recommendation_handle,
+)
 from apps.gateway.application.agent_builder.graph_mutation_builder import (
     materialize_candidate_graph,
 )
@@ -5709,7 +5712,11 @@ def test_agent_builder_apply_materializes_kb_at_apply_time(monkeypatch):
         def __init__(self, db, *, user_id, organization_id):
             pass
 
-        def materialize_candidate_handles_for_builder(self, request, candidate_handles):
+        def materialize_legacy_candidate_handles_for_builder(
+            self,
+            request,
+            candidate_handles,
+        ):
             assert candidate_handles == {"safe-rec-1"}
             return [
                 {
@@ -5765,6 +5772,11 @@ def test_agent_builder_materializes_selected_kb_without_reranking(monkeypatch):
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
+    knowledge_base_id = uuid.uuid4()
+    safe_handle = knowledge_base_recommendation_handle(
+        svc.organization_id,
+        knowledge_base_id,
+    )
 
     class FakeRecommendationService:
         def __init__(self, db, *, user_id, organization_id):
@@ -5773,13 +5785,20 @@ def test_agent_builder_materializes_selected_kb_without_reranking(monkeypatch):
         def recommend_for_builder(self, *_args, **_kwargs):
             raise AssertionError("selection must not rerun KB ranking")
 
-        def materialize_candidate_handles_for_builder(self, request, candidate_handles):
+        def materialize_candidate_handles_for_builder(
+            self,
+            request,
+            candidate_handles,
+            *,
+            issued_resource_ids,
+        ):
             assert request.pending_resolution_ref == "res_kb_1"
-            assert candidate_handles == {"safe-rec-1"}
+            assert candidate_handles == {safe_handle}
+            assert issued_resource_ids == {safe_handle: knowledge_base_id}
             return [
                 {
-                    "safe_handle": "safe-rec-1",
-                    "knowledge_base_id": str(uuid.uuid4()),
+                    "safe_handle": safe_handle,
+                    "knowledge_base_id": str(knowledge_base_id),
                     "name": "Policy knowledge",
                 }
             ]
@@ -5792,11 +5811,15 @@ def test_agent_builder_materializes_selected_kb_without_reranking(monkeypatch):
 
     response = svc.materialize_knowledge_selection(
         structured,
-        selected_candidate_handles={"safe-rec-1"},
+        selected_candidate_handles={safe_handle},
+        issued_handle_bindings={
+            "knowledge_bases": {safe_handle: str(knowledge_base_id)},
+            "collections": {},
+        },
     )
 
     assert response["status"] == "ready"
-    assert response["bindings"][0]["safe_handle"] == "safe-rec-1"
+    assert response["bindings"][0]["safe_handle"] == safe_handle
 
 
 def test_agent_builder_session_restore_hides_cached_payload_when_scope_denied(

@@ -215,7 +215,7 @@ class KnowledgeRAGRecommendationService:
         )
 
         warning_count = sum(1 for item in recommendations if item.warnings)
-        return KnowledgeRAGRecommendationResponse(
+        response = KnowledgeRAGRecommendationResponse(
             status=(
                 "recommended"
                 if recommendations or has_selectable_hierarchy
@@ -249,6 +249,36 @@ class KnowledgeRAGRecommendationService:
                 else resolution.reason_code or "no_candidate"
             ),
         )
+        issued_kb_handles = {
+            self._recommendation_id(candidate): candidate.candidate_id
+            for candidate, _score, _matched_terms, _used_signals in limited
+        }
+        if knowledge_selection is not None and hierarchy is not None:
+            visible_kb_handles = {
+                child.kb_handle
+                for collection in knowledge_selection.collections
+                for child in collection.children
+            } | {item.kb_handle for item in knowledge_selection.ungrouped_kbs}
+            for group in hierarchy.collections:
+                for candidate in group.candidates:
+                    handle = self._recommendation_id(candidate)
+                    if handle in visible_kb_handles:
+                        issued_kb_handles[handle] = candidate.candidate_id
+            for candidate in hierarchy.ungrouped_candidates:
+                handle = self._recommendation_id(candidate)
+                if handle in visible_kb_handles:
+                    issued_kb_handles[handle] = candidate.candidate_id
+            visible_collection_handles = {
+                item.collection_handle for item in knowledge_selection.collections
+            }
+            response._issued_collection_resource_ids = {
+                self._collection_handle(group.collection_id): group.collection_id
+                for group in hierarchy.collections
+                if self._collection_handle(group.collection_id)
+                in visible_collection_handles
+            }
+        response._issued_kb_resource_ids = issued_kb_handles
+        return response
 
     def safe_intent_candidates_for_builder(
         self,
@@ -322,6 +352,8 @@ class KnowledgeRAGRecommendationService:
         self,
         request: KnowledgeRAGRecommendationRequest,
         candidate_handles: set[str],
+        *,
+        issued_resource_ids: dict[str, uuid.UUID],
     ) -> list[dict[str, str]]:
         """Resolve previously issued safe handles to authorized runtime KB refs.
 
@@ -332,63 +364,44 @@ class KnowledgeRAGRecommendationService:
         if not candidate_handles:
             return []
         resolver = self.resolver or self._resolver_for_request(request)
-        recommendation_mode = self._resolved_mode(request)
+        bound_ids = {
+            handle: resource_id
+            for handle, resource_id in issued_resource_ids.items()
+            if handle in candidate_handles
+            and self._recommendation_handle_for_id(resource_id) == handle
+        }
+        if set(bound_ids) != candidate_handles:
+            return []
         try:
-            if recommendation_mode == "auto_collection":
-                hierarchy = resolver.resolve_builder_hierarchy(
-                    collection_ids=self._collection_scope(request),
-                    max_collections=request.max_collections,
-                    max_candidate_kbs=DEFAULT_MAX_CANDIDATE_KBS,
-                    allow_unready_candidates=True,
-                    apply_collection_limit=False,
-                    apply_candidate_limit=False,
-                    enforce_internal_candidate_limit=True,
-                )
-                candidates_by_id = {
-                    candidate.candidate_id: candidate
-                    for group in hierarchy.collections
-                    for candidate in group.candidates
-                }
-                candidates_by_id.update(
-                    {
-                        candidate.candidate_id: candidate
-                        for candidate in hierarchy.ungrouped_candidates
-                    }
-                )
-                candidates = list(candidates_by_id.values())
-            else:
-                resolution = self._resolve_candidates(
-                    resolver,
-                    request,
-                    recommendation_mode,
-                    allow_unready_candidates=True,
-                )
-                candidates = resolution.candidates
+            resolution = resolver.resolve_explicit_kbs(
+                bound_ids.values(),
+                allow_unready_candidates=True,
+            )
         except Exception:
             return []
+        candidates_by_id = {
+            candidate.candidate_id: candidate
+            for candidate in resolution.candidates
+        }
+        return [
+            {
+                "safe_handle": handle,
+                "knowledge_base_id": str(resource_id),
+                "name": candidates_by_id[resource_id].safe_label
+                or GENERIC_KB_LABEL,
+            }
+            for handle, resource_id in sorted(bound_ids.items())
+            if resource_id in candidates_by_id
+        ]
 
-        materialized: list[dict[str, str]] = []
-        for candidate in candidates:
-            handle = self._recommendation_id(candidate)
-            if handle not in candidate_handles:
-                continue
-            materialized.append(
-                {
-                    "safe_handle": handle,
-                    "knowledge_base_id": str(candidate.candidate_id),
-                    "name": candidate.safe_label or GENERIC_KB_LABEL,
-                }
-            )
-        return materialized
-
-    def materialize_collection_handles_for_builder(
+    def materialize_legacy_candidate_handles_for_builder(
         self,
         request: KnowledgeRAGRecommendationRequest,
-        collection_handles: set[str],
+        candidate_handles: set[str],
     ) -> list[dict[str, str]]:
-        """Revalidate opaque Collection handles without exposing child identities."""
+        """Bounded compatibility lookup for superseded Preview drafts."""
 
-        if not collection_handles:
+        if not candidate_handles:
             return []
         resolver = self.resolver or self._resolver_for_request(request)
         try:
@@ -403,19 +416,62 @@ class KnowledgeRAGRecommendationService:
             )
         except Exception:
             return []
-        materialized: list[dict[str, str]] = []
-        for group in hierarchy.collections:
-            handle = self._collection_handle(group.collection_id)
-            if handle not in collection_handles:
-                continue
-            materialized.append(
-                {
-                    "safe_handle": handle,
-                    "knowledge_collection_id": str(group.collection_id),
-                    "name": group.safe_label or "Knowledge Collection",
-                }
-            )
-        return materialized
+        candidates_by_id = {
+            candidate.candidate_id: candidate
+            for group in hierarchy.collections
+            for candidate in group.candidates
+        }
+        candidates_by_id.update(
+            {
+                candidate.candidate_id: candidate
+                for candidate in hierarchy.ungrouped_candidates
+            }
+        )
+        return [
+            {
+                "safe_handle": handle,
+                "knowledge_base_id": str(candidate.candidate_id),
+                "name": candidate.safe_label or GENERIC_KB_LABEL,
+            }
+            for candidate in candidates_by_id.values()
+            if (handle := self._recommendation_id(candidate)) in candidate_handles
+        ]
+
+    def materialize_collection_handles_for_builder(
+        self,
+        request: KnowledgeRAGRecommendationRequest,
+        collection_handles: set[str],
+        *,
+        issued_resource_ids: dict[str, uuid.UUID],
+    ) -> list[dict[str, str]]:
+        """Revalidate opaque Collection handles without exposing child identities."""
+
+        if not collection_handles:
+            return []
+        resolver = self.resolver or self._resolver_for_request(request)
+        bound_ids = {
+            handle: resource_id
+            for handle, resource_id in issued_resource_ids.items()
+            if handle in collection_handles
+            and self._collection_handle(resource_id) == handle
+        }
+        if set(bound_ids) != collection_handles:
+            return []
+        try:
+            groups = resolver.resolve_explicit_collections(bound_ids.values())
+        except Exception:
+            return []
+        groups_by_id = {group.collection_id: group for group in groups}
+        return [
+            {
+                "safe_handle": handle,
+                "knowledge_collection_id": str(resource_id),
+                "name": groups_by_id[resource_id].safe_label
+                or "Knowledge Collection",
+            }
+            for handle, resource_id in sorted(bound_ids.items())
+            if resource_id in groups_by_id
+        ]
 
     def _adapter_unavailable_response(
         self,
@@ -616,6 +672,12 @@ class KnowledgeRAGRecommendationService:
         return knowledge_base_recommendation_handle(
             self.organization_id,
             candidate.candidate_id,
+        )
+
+    def _recommendation_handle_for_id(self, knowledge_base_id: uuid.UUID) -> str:
+        return knowledge_base_recommendation_handle(
+            self.organization_id,
+            knowledge_base_id,
         )
 
     def _collection_handle(self, collection_id: uuid.UUID) -> str:

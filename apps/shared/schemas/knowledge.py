@@ -3,7 +3,14 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+)
 
 SourceAclState = Literal[
     "fresh",
@@ -536,6 +543,11 @@ class KnowledgeRAGRecommendationSummary(BaseModel):
 
 
 class KnowledgeRAGRecommendationResponse(BaseModel):
+    _issued_kb_resource_ids: dict[str, UUID] = PrivateAttr(default_factory=dict)
+    _issued_collection_resource_ids: dict[str, UUID] = PrivateAttr(
+        default_factory=dict
+    )
+
     status: KnowledgeRAGRecommendationStatus = "recommended"
     resolution_id: str | None = None
     requirement_id: str | None = None
