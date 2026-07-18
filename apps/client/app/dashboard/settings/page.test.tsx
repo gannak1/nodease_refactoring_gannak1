@@ -254,6 +254,22 @@ describe('SettingsPage tabs', () => {
     expect(auditRequestCount()).toBe(0);
   });
 
+  it('manager 뱃지를 설정 제목과 같은 줄에 표시한다', async () => {
+    isManager = true;
+    render(<SettingsPage />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'OpenAI' }),
+    ).toBeVisible();
+
+    const title = screen.getByRole('heading', { level: 1, name: '설정' });
+    const badge = screen.getByText('관리자');
+
+    expect(title.parentElement).toHaveClass('flex', 'items-center', 'gap-2');
+    expect(badge.parentElement).toBe(title.parentElement);
+    expect(badge).not.toHaveClass('mt-2');
+  });
+
   const auditRequestCount = () =>
     fetchMock.mock.calls.filter(([input]) =>
       String(input).includes('/users/me/audit-logs'),

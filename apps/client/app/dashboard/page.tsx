@@ -233,10 +233,9 @@ export default function DashboardHomePage() {
   }, [loadData]);
 
   return (
-    <div className="min-h-full bg-slate-50 px-6 py-8">
+    <div className="min-h-full bg-white px-6 py-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
         <DashboardPageHeader
-          icon={Workflow}
           title="Nodease"
           description="AI 워크플로우를 시각화하고 안전하게 제어할 수 있는 서비스"
           badge={

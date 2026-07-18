@@ -18,6 +18,9 @@ Verified Against: feature/mba-127 @ 258b26a9
   - `ActiveOrganizationGate`
   - `Sidebar`
   - dashboard child route content
+- 시각 표면:
+  - `/dashboard`, `/dashboard/mymodule`, `/dashboard/explore`, `/dashboard/statistics`, `/dashboard/knowledge`, `/dashboard/admin`, `/dashboard/settings`의 페이지 배경은 `rgb(255, 255, 255)`를 사용한다.
+  - 최상위 페이지 제목은 `text-2xl`(24px)로 통일하고 장식 아이콘 없이 텍스트로 표시한다. 카드, 패널, 버튼처럼 의미를 전달하는 아이콘은 유지한다.
 
 ### DashboardHomePage
 
@@ -57,6 +60,7 @@ Verified Against: feature/mba-127 @ 258b26a9
 - 책임: 현재 organization 이름과 organization auth badge를 표시한다. Access-management tab을 노출하는 경우 AdminConsolePage와 같은 workflow/KB/LLM permission semantics를 사용해야 한다.
 - 현재 동작:
   - organization manager에게 `Access`, `LLM Credentials` tab을 노출하고 일반 member에게 `LLM Credentials` tab만 노출한다.
+  - organization auth badge는 `설정` 제목 바로 옆에 표시해 관리 화면의 page header와 위치를 맞춘다.
   - 감사 조회는 AdminConsolePage의 감사 로그 tab이 소유하며 SettingsPage는 Activity tab 또는 본인 audit-log 요청을 제공하지 않는다.
   - Settings access-management는 KB direct grant/revoke와 `none` 거부, DELETE revoke, active member prerequisite를 AdminConsolePage와 동일하게 구현한다.
 

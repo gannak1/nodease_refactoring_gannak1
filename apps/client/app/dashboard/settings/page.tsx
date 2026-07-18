@@ -574,18 +574,19 @@ export default function SettingsPage() {
     <div className="min-h-full bg-white p-8">
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">설정</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-bold text-gray-900">설정</h1>
+            {organization && (
+              <OrganizationAuthBadge
+                state={organization.is_manager ? 'manager' : 'member'}
+              />
+            )}
+          </div>
           <p className="mt-1 text-sm text-gray-600">
             {organization
               ? organization.name
               : 'Organization 확인 중'}
           </p>
-          {organization && (
-            <OrganizationAuthBadge
-              state={organization.is_manager ? 'manager' : 'member'}
-              className="mt-2"
-            />
-          )}
         </div>
         <button
           onClick={loadData}
