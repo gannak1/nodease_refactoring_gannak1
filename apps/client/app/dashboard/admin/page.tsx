@@ -6,7 +6,6 @@ import { isAxiosError } from 'axios';
 import {
   BookOpen,
   Building2,
-  Database,
   Key,
   Lock,
   Pencil,
@@ -65,7 +64,6 @@ import type {
 import {
   DashboardPageHeader,
   DashboardPanel,
-  DashboardSummaryCard,
 } from '@/app/features/dashboard/components/DashboardSurface';
 import {
   knowledgeApi,
@@ -1052,42 +1050,18 @@ export default function AdminConsolePage() {
         </div>
       ) : (
         <>
-          <AdminSummaryCards />
-
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <DashboardSummaryCard
-              label="활성 멤버"
-              value={memberCounts.active}
-              icon={Users}
-              href="/dashboard/admin?tab=organization-structure&view=members"
-              linkAriaLabel="활성 멤버 조직 구성 멤버 보기에서 확인"
-              description={`초대 ${memberCounts.invited} · 정지 ${memberCounts.suspended} · 제거 ${memberCounts.removed}`}
-            />
-            <DashboardSummaryCard
-              label="활성 팀"
-              value={activeTeams.length}
-              icon={Building2}
-              href="/dashboard/admin?tab=organization-structure&view=teams"
-              linkAriaLabel="활성 팀 조직 구성 팀 보기에서 확인"
-              description={`팀 배정 ${totalTeamAssignments}건`}
-            />
-            <DashboardSummaryCard
-              label="LLM Credentials"
-              value={credentials.length}
-              icon={Key}
-              href="/dashboard/admin?tab=credentials"
-              linkAriaLabel="LLM Credentials 탭에서 확인"
-              description={`${providers.length}개 provider 기준`}
-            />
-            <DashboardSummaryCard
-              label="지식 기반"
-              value={knowledgeBases.length}
-              icon={Database}
-              href="/dashboard/admin?tab=knowledge"
-              linkAriaLabel="지식 기반 탭에서 확인"
-              description="팀/사용자 권한 관리 가능"
-            />
-          </div>
+          <AdminSummaryCards
+            members={memberCounts}
+            teams={{
+              active: activeTeams.length,
+              assignments: totalTeamAssignments,
+            }}
+            credentials={{
+              active: credentials.length,
+              providers: providers.length,
+            }}
+            knowledgeBases={knowledgeBases.length}
+          />
 
           <div className="border-b border-slate-200">
             <nav className="-mb-px flex gap-5 overflow-x-auto">

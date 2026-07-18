@@ -39,18 +39,19 @@ Status: Draft
 
 ### AdminSummaryCards (FR-015)
 
-- 상단 1/2 폭 카드 2장: 기존 `DashboardSummaryCard`를 사용하는 "이번 달 LLM 비용"과 상태별 개수를 표시하는 전용 "예산 위험 workflow" 카드. 두 카드의 높이와 정보 밀도를 맞추고, 데스크톱 2열과 모바일 1열 배치는 유지한다.
-- 비용은 USD 소수점 2자리로 표시하고, 예산 위험 개수와 같은 `text-2xl` 크기를 사용한다 (표시 직전 1회 반올림). 비용 값과 날짜 설명은 각각 `mt-2` 간격을 사용하고, 날짜 설명은 상태 요약과 같은 `text-sm` 크기로 표시해 두 카드의 행 기준선을 맞춘다.
+- 상단 요약은 `비용·예산`, `조직 구성`, `운영 리소스` 3장으로 묶는다. 데스크톱에서는 3열 한 줄, 모바일에서는 1열로 배치한다.
+- `비용·예산` 카드는 이번 달 LLM 비용과 예산 위험 상태를 한 카드에 표시한다. 비용은 USD 소수점 2자리로 표시하고 `text-2xl` 크기를 사용한다 (표시 직전 1회 반올림).
 - 예산 카드가 의존하는 판정/분모는 [budget-management](../budget-management/requirements.md)(PRD FR-051)를 따른다.
-- API의 `budget` 블록이 있으면 대표 값은 비율이 아니라 `at_risk_count + exceeded_count`를 계산한 `<n>개 위험`으로 표시한다.
+- API의 `budget` 블록이 있으면 대표 상태는 비율이 아니라 `at_risk_count + exceeded_count`를 계산한 `<n>개 위험`으로 표시한다.
 - 상태 요약은 노란색 점과 `예산 임박 <at_risk_count>`, 빨간색 점과 `예산 초과 <exceeded_count>` 텍스트를 함께 사용한다. 의미를 색상만으로 전달하지 않는다.
 - 활성 예산은 있지만 위험/초과 workflow가 0개면 `<0개 위험>`과 상태별 0건을 표시한다.
-- API의 `budget` 블록이 null이면 카드에 "예산 미설정" 상태를 표시한다.
-- 카드 전체를 클릭하면 `/dashboard/admin?tab=usage`로 이동한다. 별도 링크 문구는 표시하지 않고, 접근 가능한 이름으로 이동 목적을 제공해 키보드로 접근할 수 있어야 한다.
-- 이번 달 LLM 비용 카드는 기존 총비용을 주 값으로 유지하고 바로 아래에 `워크플로 실행`과 `Agent Builder` 비용을 표시한다. 카드 전체를 클릭하면 `/dashboard/admin?tab=usage`로 이동한다.
-- 하단 요약 카드 전체를 클릭하면 활성 멤버는 `/dashboard/admin?tab=organization-structure&view=members`, 활성 팀은 `/dashboard/admin?tab=organization-structure&view=teams`, LLM Credentials는 `/dashboard/admin?tab=credentials`, 지식 기반은 `/dashboard/admin?tab=knowledge`로 이동한다. 모든 링크는 별도 링크 문구 없이 접근 가능한 이름과 키보드 포커스 표시를 제공한다.
+- API의 `budget` 블록이 null이면 비용 값 옆에 "예산 미설정" 상태를 표시한다.
+- `비용·예산` 카드 전체를 클릭하면 `/dashboard/admin?tab=usage`로 이동한다. 총비용을 주 값으로 유지하고 같은 카드 안에 `워크플로 실행`과 `Agent Builder` 비용을 표시한다.
+- `조직 구성` 카드 안의 활성 멤버/활성 팀 지표는 각각 `/dashboard/admin?tab=organization-structure&view=members`와 `view=teams`로 이동한다.
+- `운영 리소스` 카드 안의 LLM Credentials/지식 기반 지표는 각각 `/dashboard/admin?tab=credentials`와 `/dashboard/admin?tab=knowledge`로 이동한다.
+- 모든 링크는 별도 링크 문구 없이 접근 가능한 이름과 키보드 포커스 표시를 제공한다. 하나의 그룹 카드 안에 여러 목적지가 있으면 각 지표를 독립 링크로 렌더링한다.
 - 요약 조회 중에는 기존 집계 중 상태를 유지하고, 실패하면 "요약을 불러오지 못했습니다"를 표시한다.
-- 데이터 원천: `GET /admin/summary`.
+- 비용·예산 데이터 원천은 `GET /admin/summary`다. 조직 구성과 운영 리소스는 관리자 페이지가 이미 조회한 멤버, 팀, credential, provider, 지식 기반 집계를 사용한다.
 
 ### AuditSearchTab (FR-011)
 
