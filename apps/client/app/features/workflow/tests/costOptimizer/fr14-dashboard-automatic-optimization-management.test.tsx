@@ -44,6 +44,15 @@ const { workflowApi } = await import('@/app/features/workflow/api/workflowApi');
 describe('FR-014 워크플로우 화면 자동 최적화 관리', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.removeItem('mymodule:operations-view');
+    vi.mocked(
+      moduleOperationsApi.getModuleOperationsCostSummary,
+    ).mockResolvedValue({
+      active_workflow_count: 1,
+      projected_month_cost: 20,
+      projected_month_workflow_execution_cost: 14,
+      projected_month_agent_builder_cost: 6,
+    } as never);
     vi.mocked(moduleOperationsApi.listModuleOperations).mockResolvedValue([
       {
         app: {
@@ -171,6 +180,51 @@ describe('FR-014 워크플로우 화면 자동 최적화 관리', () => {
         name: '자동 최적화 수집 진행률',
       }),
     ).toHaveAttribute('aria-valuenow', '12');
+  });
+
+  it('리스트 보기에서는 자동 최적화를 짧은 상태 요약과 설정 아이콘으로 표시한다', async () => {
+    vi.mocked(moduleOperationsApi.listModuleOperations).mockResolvedValueOnce([
+      {
+        app: {
+          id: 'app-1',
+          name: '예산 위험 티켓 처리',
+          workflow_id: 'workflow-1',
+          created_at: '2026-07-11T00:00:00.000Z',
+          updated_at: '2026-07-11T00:00:00.000Z',
+        },
+        deployment: { state: 'active', deployment_id: 'deployment-1' },
+        deploymentState: 'active',
+        automaticOptimization: {
+          enabled: true,
+          status: 'collecting',
+          node_count: 1,
+          collected_runs: 12,
+          check_every_runs: 50,
+          validation_spend_usd: 0.25,
+          monthly_validation_budget_usd: 3,
+        },
+        latestRun: { state: 'success' },
+        permissionStatus: 'loaded',
+        permission: { can_deploy: true },
+        permissionSources: [],
+        dataQuality: {
+          permissionSourcesUnavailable: false,
+          latestRunUnavailable: false,
+        },
+      },
+    ] as never);
+
+    render(<MyModulePage />);
+    fireEvent.click(await screen.findByRole('button', { name: '리스트 보기' }));
+
+    const summary = await screen.findByLabelText('자동 파라미터 최적화 요약');
+    expect(summary).toHaveTextContent('수집 중');
+    expect(summary).toHaveTextContent('수집 12 / 50회');
+    expect(summary).toHaveTextContent('월 검증 $0.25 / $3.00');
+    expect(
+      within(summary).getByRole('button', { name: '자동 최적화 설정' }),
+    ).toBeEnabled();
+    expect(summary.querySelector('progress')).not.toBeInTheDocument();
   });
 
   it('자동 최적화를 사용하지 않으면 꺼진 상태와 설정 행동을 표시한다', async () => {

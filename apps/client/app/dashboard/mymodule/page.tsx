@@ -251,6 +251,84 @@ function AutomaticOptimizationCell({
   );
 }
 
+function AutomaticOptimizationTableCell({
+  summary,
+  hasDeployment,
+  canManage,
+  isLoading,
+  onManage,
+}: {
+  summary: ModuleOperationRow['automaticOptimization'];
+  hasDeployment: boolean;
+  canManage: boolean;
+  isLoading: boolean;
+  onManage: () => void;
+}) {
+  const isEnabled = Boolean(summary?.enabled);
+  const status = summary?.status || 'disabled';
+  const collectedRuns = summary?.collected_runs || 0;
+  const checkEveryRuns = summary?.check_every_runs || 50;
+  const spend = summary?.validation_spend_usd || 0;
+  const monthlyBudget = summary?.monthly_validation_budget_usd || 3;
+  const statusClassName =
+    !isEnabled
+      ? 'border-slate-200 bg-slate-50 text-slate-600'
+      : status === 'budget_exhausted' || status === 'failed'
+        ? 'border-amber-200 bg-amber-50 text-amber-700'
+        : 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  const statusLabel = hasDeployment
+    ? automaticOptimizationStatusLabel[status]
+    : '배포 후 설정';
+
+  return (
+    <div
+      aria-label="자동 파라미터 최적화 요약"
+      className="min-w-40 space-y-1.5"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <Badge
+          className={
+            hasDeployment
+              ? statusClassName
+              : 'border-slate-200 bg-slate-50 text-slate-600'
+          }
+        >
+          {statusLabel}
+        </Badge>
+        <button
+          type="button"
+          aria-label="자동 최적화 설정"
+          title="자동 최적화 설정"
+          onClick={onManage}
+          disabled={!hasDeployment || !canManage || isLoading}
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-100 disabled:text-slate-300"
+        >
+          {isLoading ? (
+            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+          )}
+        </button>
+      </div>
+      {hasDeployment && isEnabled ? (
+        <>
+          <p className="whitespace-nowrap text-xs font-medium text-slate-700">
+            수집 {Math.min(collectedRuns, checkEveryRuns)} / {checkEveryRuns}회
+          </p>
+          <p className="whitespace-nowrap text-[11px] text-slate-500">
+            월 검증 {formatValidationBudget(spend)} /{' '}
+            {formatValidationBudget(monthlyBudget)}
+          </p>
+        </>
+      ) : (
+        <p className="whitespace-nowrap text-xs text-slate-500">
+          {hasDeployment ? '설정에서 사용 여부를 변경합니다.' : '배포 후 설정할 수 있습니다.'}
+        </p>
+      )}
+    </div>
+  );
+}
+
 type CostOptimizationSignal = {
   monthlyCost: number | null;
   workflowExecutionCost: number | null;
@@ -740,16 +818,16 @@ export default function MyModulePage() {
             <div>
               {viewMode === 'list' ? (
                 <div className="overflow-x-auto">
-                  <table className="min-w-full table-fixed divide-y divide-slate-100">
+                  <table className="min-w-[1120px] table-fixed divide-y divide-slate-100">
                     <thead className="bg-slate-50 text-left text-xs font-semibold text-slate-500">
                       <tr>
-                        <th className="w-[21%] px-5 py-3">워크플로우</th>
-                        <th className="w-[13%] px-4 py-3">월 예상 비용</th>
-                        <th className="w-[13%] px-4 py-3">증가 추세</th>
+                        <th className="w-[20%] px-5 py-3">워크플로우</th>
+                        <th className="w-[12%] px-4 py-3">월 예상 비용</th>
+                        <th className="w-[10%] px-4 py-3">증가 추세</th>
                         <th className="w-[14%] px-4 py-3">예산 사용률</th>
-                        <th className="w-[14%] px-4 py-3">자동 최적화</th>
-                        <th className="w-[11%] px-4 py-3">상태</th>
-                        <th className="w-[14%] px-5 py-3 text-right">작업</th>
+                        <th className="w-[18%] px-4 py-3">자동 최적화</th>
+                        <th className="w-[10%] px-4 py-3">상태</th>
+                        <th className="w-[16%] px-5 py-3 text-right">작업</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 bg-white">
@@ -1010,15 +1088,13 @@ function ModuleOperationTableRow({
         )}
       </td>
       <td className="px-4 py-4 align-top">
-        <div className="flex flex-col gap-2">
-          <AutomaticOptimizationCell
-            summary={row.automaticOptimization}
-            hasDeployment={Boolean(row.deployment.deployment_id)}
-            canManage={canToggle}
-            isLoading={isLoadingAutomaticOptimization}
-            onManage={onManageAutomaticOptimization}
-          />
-        </div>
+        <AutomaticOptimizationTableCell
+          summary={row.automaticOptimization}
+          hasDeployment={Boolean(row.deployment.deployment_id)}
+          canManage={canToggle}
+          isLoading={isLoadingAutomaticOptimization}
+          onManage={onManageAutomaticOptimization}
+        />
       </td>
       <td className="px-4 py-4 align-top">
         <div className="flex flex-col gap-2">
