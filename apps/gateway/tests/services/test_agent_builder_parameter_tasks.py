@@ -42,6 +42,9 @@ from apps.gateway.services.agent_builder.parameter_task_service import (
     ParameterTaskService,
     apply_parameter_value_to_node_data,
 )
+from apps.gateway.services.agent_builder.mutation_lifecycle import (
+    _refresh_parameter_group,
+)
 from apps.gateway.services.agent_builder.parameter_candidates import (
     ParameterCandidateProvider,
 )
@@ -156,6 +159,9 @@ def test_slack_parameter_tasks_only_activate_fields_for_the_selected_delivery_mo
     assert api_tasks["bot_token"].status == "active"
     assert api_tasks["channel"].status == "pending"
     assert api_tasks["url"].status == "skipped"
+    assert api_tasks["bot_token"].required is True
+    assert api_tasks["channel"].required is True
+    assert api_tasks["url"].required is False
 
     webhook_plan = planner.plan(
         graph={
@@ -179,6 +185,9 @@ def test_slack_parameter_tasks_only_activate_fields_for_the_selected_delivery_mo
     assert webhook_tasks["bot_token"].status == "skipped"
     assert webhook_tasks["channel"].status == "skipped"
     assert webhook_tasks["url"].status == "active"
+    assert webhook_tasks["bot_token"].required is False
+    assert webhook_tasks["channel"].required is False
+    assert webhook_tasks["url"].required is True
 
 
 def test_switching_slack_delivery_mode_removes_incompatible_secret_fields():
@@ -1145,6 +1154,107 @@ def test_reconcile_adds_new_catalog_tasks_to_completed_group_once():
     assert recovered_model.status == "completed"
     assert sum(task.status == "active" for task in recovered.tasks) == 1
     assert reconcile_parameter_group_catalog_tasks(recovered, plan.tasks) == recovered
+
+
+def test_reconcile_reopens_a_legacy_skipped_required_github_token():
+    plan = ParameterTaskPlanner().plan(
+        graph={
+            "nodes": [
+                _node(
+                    "github",
+                    "githubNode",
+                    {
+                        "action": "get_pr",
+                        "repo_owner": "octo",
+                        "repo_name": "repo",
+                        "pr_number": "15",
+                    },
+                )
+            ],
+            "edges": [],
+        },
+        step_node_ids={"step_github": "github"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+        base_node_ids={"github"},
+    )
+    legacy_tasks = [
+        task.model_copy(
+            update={
+                "status": (
+                    "skipped"
+                    if task.parameter_key in {"api_token", "comment_body"}
+                    else "completed"
+                )
+            }
+        )
+        for task in plan.tasks
+    ]
+    legacy_group = AgentBuilderParameterGroup(
+        group_id=plan.group_id,
+        status="completed",
+        tasks=legacy_tasks,
+    )
+
+    recovered = reconcile_parameter_group_catalog_tasks(legacy_group, plan.tasks)
+
+    token_task = next(
+        task for task in recovered.tasks if task.parameter_key == "api_token"
+    )
+    assert token_task.required is True
+    assert token_task.status == "active"
+    assert recovered.status == "active"
+
+
+def test_reconcile_completes_a_legacy_skipped_github_token_when_configured():
+    plan = ParameterTaskPlanner().plan(
+        graph={
+            "nodes": [
+                _node(
+                    "github",
+                    "githubNode",
+                    {
+                        "action": "get_pr",
+                        "api_token": "configured-value",
+                        "repo_owner": "octo",
+                        "repo_name": "repo",
+                        "pr_number": "15",
+                    },
+                )
+            ],
+            "edges": [],
+        },
+        step_node_ids={"step_github": "github"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+        base_node_ids={"github"},
+    )
+    legacy_group = AgentBuilderParameterGroup(
+        group_id=plan.group_id,
+        status="completed",
+        tasks=[
+            task.model_copy(
+                update={
+                    "status": (
+                        "skipped"
+                        if task.parameter_key in {"api_token", "comment_body"}
+                        else "completed"
+                    )
+                }
+            )
+            for task in plan.tasks
+        ],
+    )
+
+    recovered = reconcile_parameter_group_catalog_tasks(legacy_group, plan.tasks)
+
+    token_task = next(
+        task for task in recovered.tasks if task.parameter_key == "api_token"
+    )
+    assert token_task.status == "completed"
+    assert recovered.status == "completed"
 
 
 def test_slack_parameter_flow_cannot_skip_every_payload_format():
@@ -2664,6 +2774,74 @@ def test_github_comment_body_is_required_only_for_comment_action():
     )
     assert (comment_task.required, comment_task.status) == (True, "pending")
     assert (read_task.required, read_task.status) == (False, "skipped")
+
+
+def test_graph_ack_refresh_reopens_comment_body_after_github_action_changes():
+    planner = ParameterTaskPlanner()
+    read_plan = planner.plan(
+        graph={
+            "nodes": [
+                _node(
+                    "github",
+                    "githubNode",
+                    {
+                        "action": "get_pr",
+                        "api_token": "configured",
+                        "repo_owner": "octo",
+                        "repo_name": "repo",
+                        "pr_number": "15",
+                    },
+                )
+            ],
+            "edges": [],
+        },
+        step_node_ids={"step_github": "github"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+        base_node_ids={"github"},
+    )
+    completed_read_group = AgentBuilderParameterGroup(
+        group_id=read_plan.group_id,
+        status="completed",
+        tasks=[
+            task.model_copy(
+                update={
+                    "status": (
+                        "skipped"
+                        if task.parameter_key == "comment_body"
+                        else "completed"
+                    )
+                }
+            )
+            for task in read_plan.tasks
+        ],
+    )
+    comment_graph = {
+        "nodes": [
+            _node(
+                "github",
+                "githubNode",
+                {
+                    "action": "comment_pr",
+                    "api_token": "configured",
+                    "repo_owner": "octo",
+                    "repo_name": "repo",
+                    "pr_number": "15",
+                },
+            )
+        ],
+        "edges": [],
+    }
+
+    refreshed = _refresh_parameter_group(completed_read_group, comment_graph)
+
+    comment_task = next(
+        task for task in refreshed.tasks if task.parameter_key == "comment_body"
+    )
+    assert comment_task.required is True
+    assert comment_task.status == "active"
+    assert refreshed.status == "active"
 
 
 def test_file_extraction_selector_parameter_matches_runtime_schema():

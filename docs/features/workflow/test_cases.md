@@ -871,4 +871,5 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - `operation envelope not found`는 Agent Builder 결과를 `applied|unapplied|pending|stale`로 구분하고 권한 오류나 일반 저장 실패로 표시하지 않는지 검증한다.
 - Node root의 React Flow measurement/selection field와 node data의 실행 status, observability, editor-only `displayNumber` 갱신이 최상위, 중첩 `subGraph.nodes`와 `features.noteNodes`의 autosync, draft payload, canonical hash와 Workflow Undo/Redo history에 포함되지 않는지 검증한다. 모든 client save path와 Gateway save가 같은 projection을 사용하는지 함께 검증한다.
 - Server-derived node `configuration_state` 차이만으로 Client canonical 비교가 실패하지 않고, Client payload에서는 최상위 및 중첩 값이 제거된 뒤 Server가 재계산하는지 검증한다.
+- Canonical server draft와 local snapshot의 viewport만 다르면 test preflight graph 비교는 일치로 판정하지만 일반 full snapshot 비교와 실제 draft 저장·복원은 viewport 차이를 유지하는지 검증한다.
 - Test 전 save 중 발생한 별도 수동 편집은 dirty 상태와 history를 유지하는지 검증한다.

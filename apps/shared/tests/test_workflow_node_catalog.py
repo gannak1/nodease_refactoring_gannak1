@@ -9,6 +9,7 @@ from apps.shared.services.workflow_node_catalog import (
     derive_node_configuration_state,
     implemented_node_types,
     load_workflow_node_catalog,
+    missing_required_configuration,
     node_parameter_definitions,
     node_parameter_is_configured,
     node_parameter_value,
@@ -477,6 +478,21 @@ def test_node_configuration_state_is_derived_from_all_required_parameters():
     assert "bot_token" in {definition["key"] for definition in definitions}
     assert "url" in {definition["key"] for definition in definitions}
     assert "channel" in {definition["key"] for definition in definitions}
+    definitions_by_key = {
+        definition["key"]: definition for definition in definitions
+    }
+    assert definitions_by_key["bot_token"]["validation"]["required_when"] == {
+        "parameter_key": "slackMode",
+        "equals": "api",
+    }
+    assert definitions_by_key["channel"]["validation"]["required_when"] == {
+        "parameter_key": "slackMode",
+        "equals": "api",
+    }
+    assert definitions_by_key["url"]["validation"]["required_when"] == {
+        "parameter_key": "slackMode",
+        "equals": "webhook",
+    }
 
     assert derive_node_configuration_state(
         "slackPostNode",
@@ -488,6 +504,23 @@ def test_node_configuration_state_is_derived_from_all_required_parameters():
             "configuration_state": "resolved",
         },
     ) == "resolved"
+
+
+def test_slack_missing_configuration_deduplicates_mode_required_parameters():
+    assert missing_required_configuration(
+        "slackPostNode",
+        {"slackMode": "api"},
+    ) == ["bot_token", "channel", "payload"]
+
+
+def test_github_api_token_parameter_is_required_for_every_action():
+    definitions = {
+        definition["key"]: definition
+        for definition in node_parameter_definitions("githubNode")
+    }
+
+    assert definitions["api_token"]["required"] is True
+    assert definitions["api_token"]["defer_policy"] == "forbidden"
     assert derive_node_configuration_state(
         "slackPostNode",
         {

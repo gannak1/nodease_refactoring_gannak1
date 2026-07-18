@@ -1316,6 +1316,157 @@ def test_external_parameter_decision_persists_and_acknowledges(
     assert acknowledged.parameter_group.tasks[0].status == "completed"
 
 
+def test_parameter_ack_reconciles_github_comment_task_from_canonical_graph(
+    db_session,
+):
+    user, workflow, request_row = _fixture(db_session)
+    session = db_session.get(AgentBuilderSession, request_row.session_id)
+    session.protocol_version = "direct_edit_v1"
+    workflow.graph = {
+        "nodes": [
+            {
+                "id": "github",
+                "type": "githubNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "title": "GitHub PR",
+                    "action": "get_pr",
+                    "api_token": "configured",
+                    "repo_owner": "octo",
+                    "repo_name": "repo",
+                    "pr_number": "15",
+                    "configuration_state": "resolved",
+                },
+            }
+        ],
+        "edges": [],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+    group_id = uuid.uuid4()
+    action_task = AgentBuilderParameterTask(
+        task_id=uuid.uuid4(),
+        group_id=group_id,
+        step_id="step_github",
+        node_id="github",
+        node_type="githubNode",
+        parameter_key="action",
+        label="GitHub 작업",
+        input_type="select",
+        required=True,
+        status="active",
+        task_version=1,
+        stable_order=0,
+        reason="Select the GitHub action.",
+        input_guidance="Select read or comment.",
+        validation={"options": ["get_pr", "comment_pr"]},
+    )
+    comment_task = AgentBuilderParameterTask(
+        task_id=uuid.uuid4(),
+        group_id=group_id,
+        step_id="step_github",
+        node_id="github",
+        node_type="githubNode",
+        parameter_key="comment_body",
+        label="댓글 내용",
+        input_type="textarea",
+        required=False,
+        status="skipped",
+        task_version=1,
+        stable_order=1,
+        reason="Enter the pull request comment.",
+        input_guidance="Enter a non-empty comment.",
+        validation={
+            "visible_when": {
+                "parameter_key": "action",
+                "equals": "comment_pr",
+            },
+            "required_when": {
+                "parameter_key": "action",
+                "equals": "comment_pr",
+            },
+        },
+    )
+    AgentBuilderRepository().store_parameter_group(
+        request_row,
+        AgentBuilderParameterGroup(
+            group_id=group_id,
+            status="active",
+            tasks=[action_task, comment_task],
+        ),
+    )
+    db_session.flush()
+
+    operation_id = uuid.uuid4()
+    issued = ParameterTaskService(
+        db_session,
+        user_id=user.id,
+        organization_id=workflow.organization_id,
+    ).decide(
+        session.id,
+        action_task.task_id,
+        AgentBuilderParameterTaskDecisionRequest.model_validate(
+            {
+                "operation_id": operation_id,
+                "expected_task_version": 1,
+                "action": "set",
+                "value": {"kind": "select", "value": "comment_pr"},
+            }
+        ),
+    )
+    assert issued.graph_mutation is not None
+    result_graph = apply_graph_operations(
+        workflow.graph,
+        issued.graph_mutation.operations,
+    )
+    saved = WorkflowService.save_draft(
+        db_session,
+        str(workflow.id),
+        _draft_request(
+            {
+                **result_graph,
+                "mutation_context": {
+                    "operation_id": operation_id,
+                    "action": "apply",
+                    "expected_base_graph_hash": (
+                        issued.graph_mutation.base_graph_hash
+                    ),
+                    "expected_workflow_updated_at": (
+                        issued.graph_mutation.expected_workflow_updated_at
+                    ),
+                    "catalog_version": 3,
+                },
+            }
+        ),
+        user_id=str(user.id),
+    )
+
+    acknowledged = GraphMutationLifecycleService(
+        db_session,
+        user_id=user.id,
+        organization_id=workflow.organization_id,
+    ).acknowledge(
+        session.id,
+        operation_id,
+        GraphMutationAcknowledgementRequest.model_validate(
+            {
+                "workflow_id": workflow.id,
+                "graph_hash": saved["graph_hash"],
+                "updated_at": saved["updated_at"],
+            }
+        ),
+    )
+
+    assert acknowledged.parameter_group is not None
+    acknowledged_comment = next(
+        task
+        for task in acknowledged.parameter_group.tasks
+        if task.parameter_key == "comment_body"
+    )
+    assert acknowledged_comment.required is True
+    assert acknowledged_comment.status == "active"
+    assert acknowledged.next_task_id == acknowledged_comment.task_id
+
+
 def test_knowledge_binding_acknowledgement_completes_parameter_task(db_session):
     user, workflow, request_row = _fixture(db_session)
     knowledge_bases = [

@@ -86,4 +86,22 @@ describe('TestSidebar canonical draft comparison', () => {
 
     expect(canonicalDraftMatchesSnapshot(canonical, snapshot)).toBe(true);
   });
+
+  it('ignores viewport-only differences when checking the canonical graph before a test run', () => {
+    const snapshot: WorkflowDraftRequest = {
+      nodes: [],
+      edges: [],
+      viewport: { x: 320, y: -140, zoom: 1.75 },
+      features: {},
+      envVariables: [],
+      runtimeVariables: [],
+    };
+    const canonical: WorkflowDraftRequest = {
+      ...snapshot,
+      viewport: { x: 0, y: 0, zoom: 1 },
+    };
+
+    expect(canonicalDraftMatchesSnapshot(canonical, snapshot)).toBe(true);
+    expect(workflowDraftSnapshotsEqual(canonical, snapshot)).toBe(false);
+  });
 });

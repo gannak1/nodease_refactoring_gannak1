@@ -12,7 +12,9 @@ const buildComparableDraftPayload = (
   });
   delete payload.envVariables;
   delete payload.runtimeVariables;
-  return payload;
+  const comparablePayload = payload as Partial<typeof payload>;
+  delete comparablePayload.viewport;
+  return comparablePayload;
 };
 
 const buildFullDraftPayload = (

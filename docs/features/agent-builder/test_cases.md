@@ -863,3 +863,6 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Direct-edit 응답에 hierarchy data가 없고 flat `candidates`만 있으면 flat 후보를 표시해 전용 Knowledge selection endpoint로 제출한다. Hierarchy와 flat 후보가 함께 있으면 hierarchy만 표시한다.
 - Gemini chat client는 internal `request_timeout_seconds`를 provider payload에서 제외하면서 실제 HTTP timeout으로 사용한다. 미지정 호출은 60초, Agent Builder intent 호출은 전달된 90초를 사용한다.
 - GitHub `get_pr` task/preflight에는 `comment_body`가 나타나지 않으며 `comment_pr`에서는 표시되고 required다. 빈 본문은 unresolved preflight로 외부 GitHub 호출 전에 차단된다.
+- Slack API mode의 Bot Token/channel과 Webhook mode의 URL은 required task이며 반대 mode에서는 hidden/skipped다. Bot Token과 URL은 skip/clear/defer할 수 없고 channel의 명시적 defer만 unresolved 저장 뒤 test/run/deploy를 차단한다.
+- GitHub API Token은 `get_pr|comment_pr` 모두 required이며 기존 optional 계약에서 skipped된 미설정 task도 session reconciliation에서 다시 열린다. 설정 존재가 확인된 secret task는 raw 값 없이 completed로 복구한다.
+- GitHub action을 `get_pr`에서 `comment_pr`로 set한 CAS 저장과 acknowledgement 응답은 Planner LLM 재호출 없이 `comment_body`를 required `pending|active`로 다시 열고 `next_task_id`를 갱신한다. 같은 acknowledgement 재조회는 task와 audit을 중복 변경하지 않는다.

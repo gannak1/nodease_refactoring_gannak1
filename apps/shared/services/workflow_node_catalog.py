@@ -951,7 +951,7 @@ def missing_required_configuration(
                 deferred,
             ):
                 missing.append(key)
-    return missing
+    return list(dict.fromkeys(missing))
 
 
 def derive_node_configuration_state(

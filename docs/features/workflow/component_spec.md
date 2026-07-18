@@ -364,7 +364,7 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
 
 - TestSidebar는 canonical GET부터 execution stream 요청 시작까지 `test_preflight` owner를 유지한다.
 - 같은 구간에 Agent Builder owner가 대기하면 test stream을 열지 않고 사용자의 재시도를 안내한다.
-- Clean editor라도 canonical graph 비교를 수행하고 불일치 시 metadata ingest와 실행을 차단한다.
+- Clean editor라도 canonical graph 비교를 수행하고 불일치 시 metadata ingest와 실행을 차단한다. 이 실행 전 동일성 비교는 canonical graph hash에서 제외되는 viewport를 무시하며 pan/zoom만 다른 경우 테스트를 허용한다. 실제 draft 저장·조회와 version restore의 viewport 계약은 유지한다.
 - `401`, `403`, `409 stale_graph`, `409 operation envelope not found`와 일반 저장 실패를 서로 다른 안내로 표시한다. Stale canonical graph는 local snapshot 비교 전 metadata를 store에 반영하지 않고, operation envelope 복구는 `applied|unapplied|pending|stale` 상태별 안내를 사용한다.
 - 실행 중 node status/observability, editor-only `displayNumber`, React Flow measurement/selection field는 비영속 presentation state로 갱신하며 graph edit action을 사용하지 않는다. Agent Builder, autosync, version 복원, test preflight, Undo/Redo와 note 저장 payload는 공통 recursive canonical serializer를 사용한다.
 - Version restore는 선택한 workflow의 save lock을 획득한 직후 현재 active workflow를 다시 확인한다. 대기 중 다른 workflow로 전환됐다면 canonical GET/POST, metadata ingest와 editor/history 갱신을 수행하지 않는다.

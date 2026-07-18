@@ -615,6 +615,11 @@ def reconcile_parameter_group_catalog_tasks(
             and existing.status == "skipped"
             and isinstance(planned.validation.get("visible_when"), dict)
         )
+        required_task_reopened = (
+            planned.required
+            and planned.status in {"pending", "active"}
+            and existing.status == "skipped"
+        )
         legacy_unconfirmed_disabled_routing = (
             existing.node_type == "llmNode"
             and existing.parameter_key == "auto_model_routing"
@@ -635,14 +640,18 @@ def reconcile_parameter_group_catalog_tasks(
         secret_configuration_completed = (
             planned.input_type == "secret"
             and planned.status == "completed"
-            and existing.status in {"pending", "active", "invalid"}
+            and existing.status in {"pending", "active", "invalid", "skipped"}
         )
         secret_configuration_removed = (
             planned.input_type == "secret"
             and planned.status != "completed"
             and existing.status == "completed"
         )
-        if mode_visibility_changed:
+        if required_task_reopened:
+            status = planned.status
+            if priority_reopen_identity is None:
+                priority_reopen_identity = identity
+        elif mode_visibility_changed:
             status = planned.status
         elif legacy_unconfirmed_disabled_routing:
             status = "pending"

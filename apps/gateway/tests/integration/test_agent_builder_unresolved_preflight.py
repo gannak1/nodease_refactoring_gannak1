@@ -28,7 +28,7 @@ def test_preflight_ignores_client_configuration_state_and_reports_missing_fields
 
     assert len(issues) == 1
     assert issues[0].node_id == "slack"
-    assert issues[0].missing_parameters == ("payload", "bot_token", "channel")
+    assert set(issues[0].missing_parameters) == {"payload", "bot_token", "channel"}
 
 
 def test_preflight_reports_deferred_slack_channel_despite_retained_value():
