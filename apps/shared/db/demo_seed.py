@@ -4036,12 +4036,18 @@ def _seed_llm_credential(
     db: Session, provider: LLMProvider, models: dict[str, LLMModel]
 ) -> LLMCredential:
     """데모 조직 공용 credential과 verified model relation (FR-012 비용 집계용)."""
-    # 현재 구현은 encrypted_config에 config JSON을 평문 저장한다 (data_model.md 알려진 한계).
+    from apps.shared.services.llm_credential_config import (
+        protect_llm_credential_config,
+    )
+
     runtime_credential_enabled = _runtime_openai_credential_requested()
     api_key = (
         _require_seed_env("OPENAI_API_KEY")
         if runtime_credential_enabled
         else "sk-demo-not-a-real-key"
+    )
+    envelope = protect_llm_credential_config(
+        {"apiKey": api_key, "baseUrl": provider.base_url}
     )
     credential = _upsert_by_id(
         db,
@@ -4056,9 +4062,9 @@ def _seed_llm_credential(
                 if runtime_credential_enabled
                 else "데모 OpenAI Credential"
             ),
-            "encrypted_config": json.dumps(
-                {"apiKey": api_key, "baseUrl": provider.base_url}
-            ),
+            "encrypted_config": envelope.ciphertext,
+            "encryption_key_version": envelope.key_version,
+            "encryption_algorithm": envelope.algorithm,
             "config_preview": (
                 _mask_demo_api_key(api_key)
                 if runtime_credential_enabled

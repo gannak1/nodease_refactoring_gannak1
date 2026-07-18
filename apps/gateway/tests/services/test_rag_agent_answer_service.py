@@ -1377,6 +1377,13 @@ def test_answer_invalid_credential_config_returns_sanitized_generation_failure(
     monkeypatch.setattr(service.audit, "record_retrieval", lambda *args, **kwargs: None)
     monkeypatch.setattr(service.audit, "record_lifecycle", lambda *args, **kwargs: None)
     monkeypatch.setattr(service.audit, "record_llm_call", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        generation_module,
+        "get_llm_client",
+        lambda *args, **kwargs: pytest.fail(
+            "provider client must not be created for an invalid credential"
+        ),
+    )
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(service.answer(payload))

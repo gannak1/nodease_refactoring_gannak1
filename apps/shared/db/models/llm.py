@@ -155,6 +155,15 @@ class LLMCredential(Base):
             "organization_id",
             name="uq_llm_credentials_id_organization_id",
         ),
+        CheckConstraint(
+            "(encryption_key_version IS NULL) = "
+            "(encryption_algorithm IS NULL)",
+            name="ck_llm_credentials_encryption_metadata_pair",
+        ),
+        Index(
+            "ix_llm_credentials_encryption_key_version",
+            "encryption_key_version",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -180,7 +189,13 @@ class LLMCredential(Base):
     credential_name: Mapped[str] = mapped_column(Text, nullable=False)
     encrypted_config: Mapped[str] = mapped_column(
         Text, nullable=False
-    )  # Encrypted JSON or string
+    )
+    encryption_key_version: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    encryption_algorithm: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True
+    )
     config_preview: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True
     )  # sk-****

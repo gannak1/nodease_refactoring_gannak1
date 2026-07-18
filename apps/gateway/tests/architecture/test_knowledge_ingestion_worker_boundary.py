@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -66,6 +67,26 @@ def test_helm_worker_is_migration_first_and_has_bounded_concurrency() -> None:
     assert "localStorage:\n    enabled: true" in local
 
 
+def test_knowledge_worker_receives_llm_keyring_for_init_and_runtime() -> None:
+    compose = _read("docker/docker-compose.yml")
+    compose_section = compose.split("  knowledge_worker:", 1)[1].split(
+        "  # Workflow Engine", 1
+    )[0]
+    template = _read("infra/helm/moduly/templates/knowledge-worker-deployment.yaml")
+    init_container = template.split("initContainers:", 1)[1].split(
+        "      containers:", 1
+    )[0]
+    worker_container = template.split("- name: knowledge-worker", 1)[1]
+
+    assert "LLM_CREDENTIAL_ENCRYPTION_KEYS" in compose_section
+    assert "LLM_CREDENTIAL_ACTIVE_KEY_VERSION" in compose_section
+    assert "ENCRYPTION_KEY" in init_container
+    assert "LLM_CREDENTIAL_ENCRYPTION_KEYS" in init_container
+    assert "LLM_CREDENTIAL_ACTIVE_KEY_VERSION" in init_container
+    assert "LLM_CREDENTIAL_ENCRYPTION_KEYS" in worker_container
+    assert "LLM_CREDENTIAL_ACTIVE_KEY_VERSION" in worker_container
+
+
 def test_shared_celery_routes_and_recovers_knowledge_jobs() -> None:
     celery_source = _read("apps/shared/celery_app.py")
     worker_source = _read("apps/gateway/knowledge_worker.py")
@@ -74,6 +95,42 @@ def test_shared_celery_routes_and_recovers_knowledge_jobs() -> None:
     assert '"task": "knowledge.document_ingestion.recover"' in celery_source
     assert 'os.environ.setdefault("CELERY_WORKER_ROLE", "knowledge")' in worker_source
     assert "require_knowledge_document_ingestion_ready" in worker_source
+
+
+def test_knowledge_worker_checks_keyring_before_schema_readiness(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        knowledge_worker,
+        "require_llm_credential_keyring_ready",
+        lambda: calls.append("keyring"),
+    )
+    monkeypatch.setattr(
+        knowledge_worker,
+        "require_knowledge_document_ingestion_ready",
+        lambda *_args, **_kwargs: calls.append("schema"),
+    )
+
+    knowledge_worker._require_readiness()
+
+    assert calls == ["keyring", "schema"]
+
+
+def test_knowledge_worker_child_process_revalidates_keyring(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        knowledge_worker,
+        "engine",
+        SimpleNamespace(dispose=lambda: calls.append("dispose")),
+    )
+    monkeypatch.setattr(
+        knowledge_worker,
+        "require_llm_credential_keyring_ready",
+        lambda: calls.append("keyring"),
+    )
+
+    knowledge_worker.initialize_knowledge_worker_process()
+
+    assert calls == ["dispose", "keyring"]
 
 
 def test_worker_readiness_bootstep_propagates_startup_failure(monkeypatch) -> None:

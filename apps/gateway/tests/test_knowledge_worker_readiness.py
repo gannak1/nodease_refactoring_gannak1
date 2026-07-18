@@ -1,5 +1,6 @@
 import pytest
 
+from apps.gateway import knowledge_worker_readiness
 from apps.gateway.knowledge_worker_readiness import wait_for_readiness
 from apps.shared.services.knowledge_document_ingestion_schema_readiness import (
     KnowledgeDocumentIngestionSchemaNotReady,
@@ -48,6 +49,24 @@ def test_readiness_wait_fails_closed_after_deadline() -> None:
             clock=lambda: next(times),
             sleep=lambda _seconds: None,
         )
+
+
+def test_readiness_checks_llm_keyring_before_schema(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        knowledge_worker_readiness,
+        "require_llm_credential_keyring_ready",
+        lambda: calls.append("keyring"),
+    )
+    monkeypatch.setattr(
+        knowledge_worker_readiness,
+        "require_knowledge_document_ingestion_ready",
+        lambda *_args, **_kwargs: calls.append("schema"),
+    )
+
+    knowledge_worker_readiness._require_readiness()
+
+    assert calls == ["keyring", "schema"]
 
 
 @pytest.mark.parametrize(

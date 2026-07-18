@@ -13,7 +13,7 @@ Status: Draft
 
 ## 도메인별 테이블
 
-현재 코드의 SQLAlchemy `__tablename__` 기준 활성 테이블은 98개다. 아래 목록은 공통 model registry와 Alembic head `b0c1d2e3f4a5`를 대조한 inventory다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 주석 처리된 호환 모델이므로 개수와 목록에서 제외한다. 테이블 추가·삭제 시 수동 개수만 바꾸지 말고 이 inventory와 해당 도메인 설명을 함께 갱신한다.
+현재 코드의 SQLAlchemy `__tablename__` 기준 활성 테이블은 98개다. 아래 목록은 공통 model registry와 Alembic head `c2e8f4a91d67`를 대조한 inventory다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 주석 처리된 호환 모델이므로 개수와 목록에서 제외한다. 테이블 추가·삭제 시 수동 개수만 바꾸지 말고 이 inventory와 해당 도메인 설명을 함께 갱신한다.
 
 | 도메인 | 테이블 |
 | --- | --- |
@@ -1066,11 +1066,11 @@ model catalog와 가격 정보.
 
 #### `llm_credentials`
 
-Organization-scoped provider credential. 정책상 개인 사용자 credential은 허용하지 않으며, credential 등록은 organization manager만 수행할 수 있다. 현재 schema의 `user_id`(필수)는 등록 행위자 또는 호환 owner reference이고, credential scope의 기준은 `organization_id`다. 원문은 암호화 저장을 목표로 한다.
+Organization-scoped provider credential. 정책상 개인 사용자 credential은 허용하지 않으며, credential 등록은 organization manager만 수행할 수 있다. 현재 schema의 `user_id`(필수)는 등록 행위자 또는 호환 owner reference이고, credential scope의 기준은 `organization_id`다. Provider config는 [ADR-0057](decisions/ADR-0057-llm-credential-at-rest-encryption-and-rotation.md)의 versioned encryption envelope로 저장한다.
 
 - 알려진 차이 (현재 구현): `organization_id`는 nullable이지만 active credential은 organization-scoped resource로 해석해야 한다. 신규 등록 경로는 organization manager 권한을 요구하고 organization scope를 채워야 한다.
-- 알려진 차이 (현재 구현): `encrypted_config`는 이름과 달리 config JSON(`apiKey`, `baseUrl`)을 암호화 없이 평문으로 저장하고, 조회 경로도 `json.loads`로 직접 읽는다 (`apps/gateway/services/llm_service.py`의 생성/조회 흐름). 암호화 저장 적용은 별도 작업이며, 그 전까지는 이 컬럼 값의 응답/로그/문서 노출 금지 규칙이 유일한 방어선이다.
-- 현재 credential `DELETE` API는 row를 hard delete하지 않고 `is_valid=false`로 바꾸는 revoke 동작이다. 따라서 기존 usage relation은 유지되지만 secret material도 row에 남는다. Nodease 목표는 revoke 즉시 신규 provider 호출을 차단하고, secret purge 또는 crypto-shred는 사용량·감사 이력의 참조 가능성을 훼손하지 않는 별도 lifecycle로 처리하는 것이다. 구체 보존 기간과 key rotation/purge 방식은 MBA-248 및 [operational_lifecycle.md](operational_lifecycle.md)의 Decision Required 항목에서 확정한다.
+- 전환 규칙: 기존 row 중 `encryption_key_version`과 `encryption_algorithm`이 모두 null인 경우만 legacy 평문 config로 읽을 수 있다. 신규·갱신 row는 active key 암호문을 저장한다. Metadata pair 불일치나 encrypted row 복호화 실패에는 평문 fallback을 하지 않는다.
+- 현재 credential `DELETE` API는 row를 hard delete하지 않고 `is_valid=false`로 바꾸는 revoke 동작이다. 기존 usage relation과 암호화된 secret material은 row에 남으며, 별도 purge 또는 crypto-shred 정책이 확정되기 전까지 revoked row도 backfill과 rotation 대상에 포함한다. 구체 보존 기간과 물리 삭제 정책은 [operational_lifecycle.md](operational_lifecycle.md)의 Decision Required 항목으로 유지한다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
@@ -1079,7 +1079,9 @@ Organization-scoped provider credential. 정책상 개인 사용자 credential�
 | user_id | UUID | NOT NULL, FK→users.id (CASCADE) |
 | organization_id | UUID | NULL, FK→organization.id |
 | credential_name | TEXT | NOT NULL |
-| encrypted_config | TEXT | NOT NULL — 응답/로그 노출 금지 |
+| encrypted_config | TEXT | NOT NULL — legacy row는 config JSON, encrypted row는 ciphertext. 어느 값도 응답/로그 노출 금지 |
+| encryption_key_version | VARCHAR(64) | NULL — legacy row는 NULL, encrypted row는 keyring version |
+| encryption_algorithm | VARCHAR(32) | NULL — legacy row는 NULL, 현재 encrypted row는 `fernet-v1` |
 | config_preview | TEXT | NULL |
 | is_valid | BOOLEAN | NOT NULL |
 | quota_type | TEXT | NOT NULL |
@@ -1088,6 +1090,9 @@ Organization-scoped provider credential. 정책상 개인 사용자 credential�
 | created_at / updated_at | DATETIME | NOT NULL |
 
 - UNIQUE `(id, organization_id)` — user direct permission의 복합 FK 대상.
+- CHECK `(encryption_key_version IS NULL) = (encryption_algorithm IS NULL)` — legacy/encrypted metadata pair를 원자적으로 구분한다.
+- INDEX `(encryption_key_version)` — backfill/rotation 대상과 구키 잔여 row를 조회한다.
+- Alembic은 metadata만 추가하고 application key를 읽지 않는다. 제한 batch 운영 경로가 legacy·구키 row를 active version으로 재암호화하며 encrypted row가 남아 있는 metadata downgrade는 차단한다.
 
 #### `llm_rel_credential_models`
 

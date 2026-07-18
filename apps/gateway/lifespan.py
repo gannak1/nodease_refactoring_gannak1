@@ -27,6 +27,9 @@ from apps.shared.services.schedule_dispatch_schema_readiness import (
 from apps.shared.services.credential_encryption import (
     require_mail_credential_keyring_ready,
 )
+from apps.shared.services.llm_credential_config import (
+    require_llm_credential_keyring_ready,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,7 @@ async def lifespan(app: FastAPI):
 
     register_audit_listeners()
     require_mail_credential_keyring_ready()
+    require_llm_credential_keyring_ready()
     require_connector_test_security_ready()
 
     dispatch_settings = schedule_dispatch_settings_from_environment(os.environ)

@@ -29,6 +29,11 @@ LLM credential은 organization scope의 provider API 호출 권한과 모델 연
 - Main/summary provider adapter, Memory context lease, Budget reservation과 usage reconciliation은 같은 capability identity/revision과 자기 operation binding을 검증해야 한다. Capability는 short-lived single invocation scope이고 credential revoke, credential permission decision revision 변경, model relation/egress policy 변경 또는 expiry 뒤 새 lease claim, reservation, provider attempt admission이나 outbound call의 근거로 재사용할 수 없어야 한다. 이미 시작된 provider attempt의 usage reconciliation은 stale capability로 새 호출을 허용하는 것과 분리해야 한다.
 - Conversation Memory 초기 summary model policy는 `inherit_node`만 지원해야 한다. Node의 approved provider/model/credential scope에서 `purpose=memory_summary` capability를 별도로 발급하며, 조직 기본 credential/model preset이나 owner fallback을 추론해서는 안 된다.
 - Credential principal은 capability 발급 시 서버가 canonical deployment/credential policy에서 파생하며 execution subject, billing principal과 audit actor와 구분해야 한다. Deployment creator는 명시 deployment policy가 canonical credential principal로 고정한 경우에만 capability 발급 근거가 될 수 있고 Knowledge subject나 public audit actor로 승격되지 않아야 한다. Memory, Workflow와 Budget consumer가 credential principal 또는 permission revision을 자체 합성해서는 안 된다.
+- LLM credential config는 `LLM_CREDENTIAL_ENCRYPTION_KEYS`의 active version을 사용하는 versioned encryption envelope로 저장해야 한다. active version은 공백이 아닌 최대 64자여야 하며 신규·갱신 row는 평문 JSON을 저장해서는 안 된다.
+- Gateway, Workflow Engine, RAG answer, embedding과 parser는 Shared LLM credential config service를 통해서만 저장 config를 읽어야 한다. ORM row의 `encrypted_config`를 직접 parse하거나 decrypt 실패 뒤 평문 fallback을 수행해서는 안 된다.
+- 기존 metadata 없는 평문 row는 제한된 전환 기간에만 dual-read할 수 있다. Encryption metadata가 일부만 있거나 algorithm/key version/ciphertext/config가 유효하지 않으면 외부 provider 호출 전에 fail-closed해야 한다.
+- Gateway, Workflow Worker와 Knowledge Worker는 process startup에서 LLM keyring 형식과 active version을 검증해야 한다. Celery Worker는 parent와 child process 모두 task 소비 전에 검증한다. 세 process는 rotation 중 구키와 신키를 함께 받아야 하며 LLM credential을 사용하지 않는 Log System에는 keyring을 주입하지 않는다.
+- 평문 backfill과 key rotation은 row lock과 제한 batch transaction을 사용하는 명시적 운영 경로로 수행해야 한다. 구키 참조 row가 0임을 확인하기 전에는 구키를 제거해서는 안 된다.
 
 ## Policies And Edge Cases
 
@@ -43,6 +48,7 @@ LLM credential은 organization scope의 provider API 호출 권한과 모델 연
 - LLM usage는 비용·감사의 historical fact로 취급하고 credential/model lifecycle에 cascade delete하지 않는다. Retention이 끝난 usage의 purge는 organization policy와 legal hold를 적용하며, credential secret purge와 같은 작업으로 묶지 않는다.
 - Current revoke 뒤 secret material이 저장 row에 남는 것은 목표 상태가 아니다. Secret physical purge 또는 crypto-shred는 usage/audit가 provider/model/pricing/billing 의미를 유지할 tombstone 또는 safe snapshot 계약과 함께 별도 lifecycle로 도입한다.
 - Auto collection answer와 LLM node RAG option runtime은 generation model/credential visibility, credential `use`, verified credential-model relation 실패를 Knowledge permission/source ACL 실패와 구분해 반환하고 기록한다. Raw credential value 또는 provider raw response는 audit/trace/usage에 저장하지 않는다.
+- Credential 저장·복호화·등록 검증·rotation 중 config 평문, ciphertext, encryption key, provider 검증 raw payload와 원본 decrypt 예외는 API, audit, trace, usage, log, fixture, migration 또는 rotation 출력에 저장하지 않는다. 운영 결과는 safe 상태와 count만 제공한다.
 
 ## Open Questions
 

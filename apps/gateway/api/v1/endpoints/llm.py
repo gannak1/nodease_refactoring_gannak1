@@ -143,7 +143,14 @@ def register_credential(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.error(
+            "LLM credential registration failed: error_type=%s",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Credential registration failed",
+        ) from None
 
 
 @router.delete("/credentials/{credential_id}")
@@ -165,7 +172,14 @@ def delete_credential(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.error(
+            "LLM credential deletion failed: error_type=%s",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Credential deletion failed",
+        ) from None
 
 
 @router.post("/credentials/{credential_id}/sync-models")
@@ -188,7 +202,14 @@ def sync_credential_models(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.error(
+            "LLM credential model sync failed: error_type=%s",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Credential model synchronization failed",
+        ) from None
 
 
 # --- Stats ---

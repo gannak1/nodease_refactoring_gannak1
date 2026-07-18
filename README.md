@@ -65,7 +65,7 @@ Workflow 생성과 설정 확인 단계에서는 Knowledge retrieval, Slack 전�
 | **Agent Builder** | 자연어를 typed GraphMutation과 ParameterTask로 변환하고 Editor 적용·CAS 저장·acknowledgement로 연결 | [Agent Builder](./docs/features/agent-builder/requirements.md) |
 | **Organization & RBAC** | active organization, Organization/Team membership, 역할, team·user direct permission과 resource action 강제 | [Organization](./docs/features/organization/requirements.md) |
 | **Knowledge & RAG** | 1문서·source item 단위 Knowledge Base, Knowledge Collection, versioned ingestion, metadata/hierarchical retrieval, permission과 citation | [Knowledge](./docs/features/knowledge/requirements.md) |
-| **LLM & Mail Credentials** | OpenAI·Anthropic·Google model 연결, organization-scoped Mail credential reference와 versioned encryption keyring | [LLM Credentials](./docs/features/llm-credentials/requirements.md) · [Mail Credentials](./docs/features/mail-credentials/requirements.md) |
+| **LLM & Mail Credentials** | OpenAI·Anthropic·Google model 연결, organization-scoped credential reference와 도메인별 versioned encryption keyring | [LLM Credentials](./docs/features/llm-credentials/requirements.md) · [Mail Credentials](./docs/features/mail-credentials/requirements.md) |
 | **External Actions** | HTTP, Slack, GitHub, Mail 검색, Gmail 답장 초안과 terminal acknowledgement. unresolved 설정은 실행·활성 배포 전에 차단 | [Workflow](./docs/features/workflow/component_spec.md) |
 | **Audit, Trace & Security Alert** | Audit 검색, workflow/node trace, request correlation, visibility·redaction과 audit 기반 보안 알림 | [Audit/Tracing](./docs/features/audit-tracing/requirements.md) · [Security Alert](./docs/features/security-alert/requirements.md) |
 | **Usage, Budget & Cost Optimizer** | LLM token·비용·latency, workflow 월 예산, baseline/candidate 비교와 검증 후 적용 | [Budget](./docs/features/budget-management/requirements.md) · [Cost Optimizer](./docs/features/cost-optimizer/requirements.md) |
@@ -175,10 +175,12 @@ cp docker/.env.example docker/.env
 | 변수 | 용도 |
 | --- | --- |
 | `SECRET_KEY` | 인증 token 서명 |
-| `MASTER_KEY` | 예약·legacy 설정. 현재 Docker Gateway와 LLM credential의 `encrypted_config` 암호화에는 연결되지 않음 |
-| `ENCRYPTION_KEY` | 현재 shared·legacy 암호화 경로에 필요한 Fernet 호환 URL-safe Base64 32바이트 key. Mail keyring이 비어 있을 때 `v1` fallback으로도 사용 |
+| `MASTER_KEY` | 예약·legacy 설정. LLM credential의 `encrypted_config` 암호화에는 연결되지 않음 |
+| `ENCRYPTION_KEY` | 현재 shared·legacy 암호화 경로에 필요한 Fernet 호환 URL-safe Base64 32바이트 key. Mail/LLM 전용 keyring이 비어 있을 때 각각 `v1` fallback으로도 사용 |
 | `MAIL_CREDENTIAL_ENCRYPTION_KEYS` | Mail credential용 JSON keyring. 예: `{"v1":"<Fernet-key>"}` |
 | `MAIL_CREDENTIAL_ACTIVE_KEY_VERSION` | 새 Mail credential을 암호화할 active key version. JSON keyring에 같은 version이 반드시 존재해야 함 |
+| `LLM_CREDENTIAL_ENCRYPTION_KEYS` | LLM credential config용 JSON keyring. Mail keyring과 분리해 Gateway와 Workflow Worker에 동일하게 주입 |
+| `LLM_CREDENTIAL_ACTIVE_KEY_VERSION` | 새 LLM credential을 암호화할 active key version. JSON keyring에 같은 version이 반드시 존재해야 함 |
 
 실제 key, token, credential과 `.env` 파일을 Git, 문서, log에 남기지 마세요. 로컬 파일 저장은 `STORAGE_TYPE=LOCAL`을 사용할 수 있습니다.
 
@@ -193,8 +195,7 @@ Mail credential은 다음 중 한 방식으로 구성합니다.
 - 호환 방식: `MAIL_CREDENTIAL_ENCRYPTION_KEYS`를 비워 두면 위 `ENCRYPTION_KEY`를 `v1` key로 사용합니다.
 - Versioned 방식: 별도 Fernet key를 생성해 `MAIL_CREDENTIAL_ENCRYPTION_KEYS={"v1":"<Mail-Fernet-key>"}`와 `MAIL_CREDENTIAL_ACTIVE_KEY_VERSION=v1`을 설정합니다. Rotation 중에는 기존 row를 복호화할 구 key도 JSON에 유지하고 Gateway와 Workflow Worker에 동일한 keyring을 주입합니다.
 
-> [!WARNING]
-> 현재 LLM credential의 `encrypted_config`는 이름과 달리 config JSON을 평문으로 저장합니다. `MASTER_KEY`를 설정해도 이 저장 경로가 암호화되지는 않으므로 운영·공유 DB에 실제 provider key를 넣지 말고 [Data Model의 알려진 차이](./docs/data_model.md#llm_credentials)를 확인합니다.
+LLM credential도 같은 방식으로 구성하되 `LLM_CREDENTIAL_ENCRYPTION_KEYS`와 `LLM_CREDENTIAL_ACTIVE_KEY_VERSION`을 사용합니다. Schema upgrade와 새 Gateway, Workflow Worker, Knowledge Worker 배포 뒤 기존 평문 또는 구키 row는 제한 batch로 전환합니다.
 
 ### 2. 실행
 
@@ -224,6 +225,33 @@ docker compose \
 ```
 
 Docker Gateway entrypoint는 시작 전에 Alembic migration을 `heads`까지 적용합니다. 첫 기동에서 Gateway와 worker를 동시에 시작하면 worker의 schema readiness 검사가 migration보다 먼저 실행될 수 있으므로 위 순서를 유지합니다.
+
+### LLM credential rotation (기존 credential이 있는 경우)
+
+Schema upgrade와 새 keyring을 받은 Gateway/Worker 배포가 완료된 뒤에만, Gateway container에서 제한 batch rotation을 실행합니다.
+
+```bash
+docker compose \
+  --env-file docker/.env \
+  -f docker/docker-compose.yml \
+  exec -T gateway \
+  python /app/scripts/rotate_llm_credentials.py --batch-size 100 --max-batches 10
+
+docker compose \
+  --env-file docker/.env \
+  -f docker/docker-compose.yml \
+  exec -T gateway \
+  python /app/scripts/rotate_llm_credentials.py --check
+```
+
+Helm 환경도 migration과 Gateway readiness가 완료된 뒤 같은 Gateway image의 `/app/scripts/rotate_llm_credentials.py`를 단일 운영 명령으로 실행합니다.
+
+```bash
+kubectl -n <namespace> exec deployment/<release>-gateway -- \
+  python /app/scripts/rotate_llm_credentials.py --batch-size 100 --max-batches 10
+```
+
+`--check`가 pending 0을 확인한 뒤에만 구키를 제거합니다. 명령 출력에는 credential config, ciphertext 또는 key가 포함되지 않습니다.
 
 > [!IMPORTANT]
 > `docker/.env.example`은 안전을 위해 `SCHEDULE_DISPATCH_MODE=disabled`를 기본값으로 사용합니다. 이 상태에서는 Schedule node를 편집·배포할 수 있어도 신규 schedule claim과 dispatch는 실행되지 않습니다. `claim` 활성화는 Gateway와 Workflow Worker의 동일 설정, migration/readiness, rollback을 함께 맞추는 coordinated rollout이므로 [Deployment 요구사항](./docs/features/deployment/requirements.md)을 확인한 뒤 적용합니다.
