@@ -553,6 +553,12 @@ jobs:
         env:
           CI_CONTROL_CHANGED: ${{ needs.scope.outputs.ci_control_changed }}
         run: |
+          mapfile -d '' changed_workflow_files < <(
+            git diff --name-only --no-renames --diff-filter=ACMR -z \
+              "$BASE_SHA" "$HEAD_SHA" -- \
+              '.github/workflows/*.yml' \
+              '.github/workflows/*.yaml'
+          )
           if [[ "$CI_CONTROL_CHANGED" == "true" ]]; then
             workflow_files=(
               '.github/workflows/pr-quality-gate.yml'
@@ -563,12 +569,21 @@ jobs:
               '.github/workflows/test-memory-postgres.yml'
             )
           else
-            mapfile -t workflow_files < <(
-              git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA" -- \
-                '.github/workflows/*.yml' \
-                '.github/workflows/*.yaml'
-            )
+            workflow_files=()
           fi
+          workflow_files+=("${changed_workflow_files[@]}")
+
+          declare -A seen_workflow_files=()
+          unique_workflow_files=()
+          for path in "${workflow_files[@]}"; do
+            if [[ -z "$path" || ! -f "$path" || -n "${seen_workflow_files[$path]+x}" ]]; then
+              continue
+            fi
+            seen_workflow_files["$path"]=1
+            unique_workflow_files+=("$path")
+          done
+          workflow_files=("${unique_workflow_files[@]}")
+
           if (( ${#workflow_files[@]} == 0 )); then
             echo "No changed workflow files to validate."
             exit 0
@@ -582,10 +597,16 @@ jobs:
       - name: Validate Helm chart
         if: needs.scope.outputs.helm_validation == 'true'
         run: |
+          chart_lock="infra/helm/moduly/Chart.lock"
+          if ! git ls-files --error-unmatch -- "$chart_lock" > /dev/null 2>&1 || \
+            [[ ! -f "$chart_lock" || -L "$chart_lock" ]]; then
+            echo "::error::$chart_lock must remain a tracked regular file."
+            exit 1
+          fi
           helm repo add bitnami https://charts.bitnami.com/bitnami
           helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
           helm dependency build infra/helm/moduly
-          git diff --exit-code -- infra/helm/moduly/Chart.lock
+          git diff --exit-code -- "$chart_lock"
           helm lint infra/helm/moduly \
             -f tests/ci/fixtures/helm-values-ci.yaml
           helm lint infra/helm/moduly \
@@ -708,7 +729,7 @@ jobs:
             dockerfile_paths=("tests/ci/fixtures/dockerfile-smoke/Dockerfile")
           else
             mapfile -d '' dockerfile_paths < <(
-              git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" --
+              git diff --name-only --no-renames -z "$BASE_SHA" "$HEAD_SHA" --
             )
           fi
           selected=0

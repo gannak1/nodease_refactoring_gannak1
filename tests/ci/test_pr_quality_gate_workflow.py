@@ -49,7 +49,10 @@ def test_deployment_validation_is_fail_closed_in_required_gate():
 def test_actionlint_validates_only_changed_workflow_files():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
 
-    assert 'git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA"' in workflow
+    assert (
+        'git diff --name-only --no-renames --diff-filter=ACMR -z'
+        in workflow
+    )
     assert "'.github/workflows/*.yml'" in workflow
     assert "'.github/workflows/*.yaml'" in workflow
     assert 'actionlint@v1.7.12 "${workflow_files[@]}"' in workflow
@@ -114,6 +117,19 @@ def test_ci_control_smoke_uses_protected_actionlint_and_dockerfile_fixture():
     assert "git ls-files -z -- ':(glob)**/Dockerfile'" not in workflow
 
 
+def test_ci_control_actionlint_smoke_also_validates_changed_workflows():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+    actionlint_block = workflow.split(
+        "- name: Validate GitHub Actions workflows",
+        maxsplit=1,
+    )[1].split("- name: Set up Helm", maxsplit=1)[0]
+
+    assert "mapfile -d '' changed_workflow_files" in actionlint_block
+    assert 'workflow_files+=("${changed_workflow_files[@]}")' in actionlint_block
+    assert "declare -A seen_workflow_files" in actionlint_block
+    assert 'actionlint@v1.7.12 "${workflow_files[@]}"' in actionlint_block
+
+
 def test_compose_validation_combines_variant_with_base_file():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
 
@@ -137,6 +153,20 @@ def test_kubernetes_validation_uses_cluster_independent_schema_check():
     assert "kubectl create --dry-run=client" not in workflow
 
 
+def test_helm_validation_requires_tracked_lock_before_dependency_build():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+    helm_block = workflow.split(
+        "- name: Validate Helm chart",
+        maxsplit=1,
+    )[1].split("- name: Validate Kubernetes manifests", maxsplit=1)[0]
+
+    tracked_lock_guard = 'git ls-files --error-unmatch -- "$chart_lock"'
+    dependency_build = "helm dependency build infra/helm/moduly"
+    assert tracked_lock_guard in helm_block
+    assert '[[ ! -f "$chart_lock" || -L "$chart_lock" ]]' in helm_block
+    assert helm_block.index(tracked_lock_guard) < helm_block.index(dependency_build)
+
+
 def test_ci_control_terraform_smoke_uses_fixture_without_hiding_real_changes():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
 
@@ -153,6 +183,19 @@ def test_ci_control_terraform_smoke_uses_fixture_without_hiding_real_changes():
     )
     assert 'terraform_target="infra/terraform"' in workflow
     assert 'terraform_target="tests/ci/fixtures/terraform-smoke"' in workflow
+
+
+def test_dockerfile_validation_preserves_rename_source_paths():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+    dockerfile_block = workflow.split(
+        "- name: Validate changed Dockerfiles",
+        maxsplit=1,
+    )[1].split("ci_required:", maxsplit=1)[0]
+
+    assert (
+        'git diff --name-only --no-renames -z "$BASE_SHA" "$HEAD_SHA" --'
+        in dockerfile_block
+    )
 
 
 def test_helm_validation_registers_chart_dependency_repositories():
