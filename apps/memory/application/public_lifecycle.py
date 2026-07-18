@@ -59,7 +59,7 @@ class PublicConversationPolicy:
     absolute_lifetime: timedelta = timedelta(days=7)
     access_grant_lifetime: timedelta = timedelta(days=1)
     access_secret_replay_lifetime: timedelta = timedelta(minutes=10)
-    purge_receipt_lifetime: timedelta = timedelta(days=7)
+    purge_receipt_lifetime: timedelta = timedelta(days=8)
     purge_secret_replay_lifetime: timedelta = timedelta(hours=24)
     idempotency_retention: timedelta = timedelta(hours=24)
     purge_max_attempts: int = 8
@@ -78,8 +78,8 @@ class PublicConversationPolicy:
             raise ValueError("public conversation lifetimes must be positive")
         if self.absolute_lifetime <= self.idle_lifetime:
             raise ValueError("absolute lifetime must exceed idle lifetime")
-        if self.purge_receipt_lifetime > timedelta(days=8):
-            raise ValueError("purge receipt lifetime must not exceed eight days")
+        if self.purge_receipt_lifetime != timedelta(days=8):
+            raise ValueError("purge receipt lifetime must be eight days")
         if self.idempotency_retention > timedelta(hours=24):
             raise ValueError("idempotency retention must not exceed twenty-four hours")
         if self.idempotency_retention < max(
@@ -253,7 +253,9 @@ class DeletePublicConversationResult:
 class PublicTranscriptResult:
     lifecycle: SessionLifecycle
     lifecycle_revision: int
-    entries: tuple[object, ...]
+    content_revision: int
+    expires_at: datetime
+    turns: tuple[object, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -548,7 +550,7 @@ class CreatePublicConversationUseCase(_TransactionalPublicUseCase):
                 replay_record_reference=str(replay.id),
                 secret_replay_expires_at=replay.expires_at,
                 safe_result_code="created",
-                result_snapshot=_session_result_snapshot(session),
+                result_snapshot=_session_result_snapshot(session, grant=grant),
                 now=command.now,
             )
             self.repository.add_session(session)
@@ -572,6 +574,7 @@ class CreatePublicConversationUseCase(_TransactionalPublicUseCase):
             )
             return _conversation_result(
                 session=session,
+                grant=grant,
                 access_token=issued.raw_value,
                 replayed=False,
             )
@@ -654,7 +657,7 @@ class ClosePublicConversationUseCase(_TransactionalPublicUseCase):
                 replay_record_reference=None,
                 secret_replay_expires_at=None,
                 safe_result_code="closed",
-                result_snapshot=_session_result_snapshot(session),
+                result_snapshot=_session_result_snapshot(session, grant=grant),
                 now=command.now,
             )
             self.repository.save_session(session)
@@ -668,7 +671,7 @@ class ClosePublicConversationUseCase(_TransactionalPublicUseCase):
                 target_type="conversation_session",
                 target_id=session.id,
             )
-            return _close_result(session, replayed=False)
+            return _close_result(session, grant=grant, replayed=False)
 
         return self._execute(operation)
 
@@ -770,6 +773,7 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
                 safe_result_code="reset",
                 result_snapshot=_session_result_snapshot(
                     new_session,
+                    grant=new_grant,
                     previous_lifecycle=old_session.lifecycle,
                     previous_lifecycle_revision=old_session.lifecycle_revision,
                 ),
@@ -814,6 +818,7 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
             )
             return _conversation_result(
                 session=new_session,
+                grant=new_grant,
                 access_token=issued.raw_value,
                 replayed=False,
                 previous_lifecycle=old_session.lifecycle,
@@ -996,7 +1001,12 @@ class GetPublicTranscriptUseCase(_TransactionalPublicUseCase):
             return PublicTranscriptResult(
                 lifecycle=session.lifecycle,
                 lifecycle_revision=session.lifecycle_revision,
-                entries=(),
+                content_revision=session.content_revision,
+                expires_at=_effective_access_expires_at(
+                    session=session,
+                    grant=grant,
+                ),
+                turns=(),
             )
 
         return self._execute(operation)
@@ -1170,6 +1180,7 @@ def _record_purge_job(
 def _conversation_result(
     *,
     session: ConversationSession,
+    grant: ConversationAccessGrant,
     access_token: str,
     replayed: bool,
     previous_lifecycle: SessionLifecycle | None = None,
@@ -1179,7 +1190,7 @@ def _conversation_result(
         lifecycle=session.lifecycle,
         lifecycle_revision=session.lifecycle_revision,
         memory_contract_version=session.memory_contract_version,
-        expires_at=session.absolute_expires_at,
+        expires_at=_effective_access_expires_at(session=session, grant=grant),
         access_token=access_token,
         replayed=replayed,
         previous_lifecycle=previous_lifecycle,
@@ -1190,6 +1201,7 @@ def _conversation_result(
 def _session_result_snapshot(
     session: ConversationSession,
     *,
+    grant: ConversationAccessGrant,
     previous_lifecycle: SessionLifecycle | None = None,
     previous_lifecycle_revision: int | None = None,
 ) -> IdempotencyResultSnapshot:
@@ -1197,7 +1209,7 @@ def _session_result_snapshot(
         lifecycle=session.lifecycle,
         lifecycle_revision=session.lifecycle_revision,
         memory_contract_version=session.memory_contract_version,
-        expires_at=session.absolute_expires_at,
+        expires_at=_effective_access_expires_at(session=session, grant=grant),
         previous_lifecycle=previous_lifecycle,
         previous_lifecycle_revision=previous_lifecycle_revision,
     )
@@ -1228,14 +1240,29 @@ def _conversation_result_from_snapshot(
 
 
 def _close_result(
-    session: ConversationSession, *, replayed: bool
+    session: ConversationSession,
+    *,
+    grant: ConversationAccessGrant,
+    replayed: bool,
 ) -> ClosePublicConversationResult:
     return ClosePublicConversationResult(
         lifecycle=session.lifecycle,
         lifecycle_revision=session.lifecycle_revision,
         memory_contract_version=session.memory_contract_version,
-        expires_at=session.absolute_expires_at,
+        expires_at=_effective_access_expires_at(session=session, grant=grant),
         replayed=replayed,
+    )
+
+
+def _effective_access_expires_at(
+    *,
+    session: ConversationSession,
+    grant: ConversationAccessGrant,
+) -> datetime:
+    return min(
+        grant.expires_at,
+        session.idle_expires_at,
+        session.absolute_expires_at,
     )
 
 

@@ -42,6 +42,36 @@ def test_enabled_composition_requires_three_independent_memory_security_keys():
         )
 
 
+@pytest.mark.parametrize(
+    ("first_name", "second_name"),
+    (
+        (
+            "MEMORY_PUBLIC_CAPABILITY_HMAC_KEY",
+            "MEMORY_PUBLIC_REPLAY_ENCRYPTION_KEY",
+        ),
+        (
+            "MEMORY_PUBLIC_CAPABILITY_HMAC_KEY",
+            "MEMORY_PUBLIC_ADMISSION_HMAC_KEY",
+        ),
+        (
+            "MEMORY_PUBLIC_REPLAY_ENCRYPTION_KEY",
+            "MEMORY_PUBLIC_ADMISSION_HMAC_KEY",
+        ),
+    ),
+)
+def test_enabled_composition_rejects_reused_memory_security_key_material(
+    first_name: str,
+    second_name: str,
+):
+    environment = _environment()
+    shared_key = Fernet.generate_key().decode("ascii")
+    environment[first_name] = shared_key
+    environment[second_name] = shared_key
+
+    with pytest.raises(RuntimeError, match="must be distinct"):
+        validate_public_conversation_security_configuration(environment)
+
+
 def test_enabled_composition_requires_an_approved_backup_erasure_contract():
     environment = _environment()
     environment["MEMORY_PUBLIC_REPLAY_BACKUP_ERASURE_MODE"] = "unconfirmed"
@@ -100,3 +130,17 @@ def test_composition_limits_general_idempotency_retention_to_twenty_four_hours()
     policy = public_conversation_policy_from_environment({})
 
     assert policy.idempotency_retention == timedelta(hours=24)
+
+
+def test_composition_retains_purge_receipt_for_the_full_eight_day_contract():
+    policy = public_conversation_policy_from_environment({})
+
+    assert policy.purge_receipt_lifetime == timedelta(days=8)
+
+
+def test_composition_rejects_a_purge_receipt_lifetime_shorter_than_eight_days():
+    environment = _environment()
+    environment["MEMORY_PUBLIC_PURGE_RECEIPT_SECONDS"] = "604800"
+
+    with pytest.raises(RuntimeError, match="outside allowed bounds"):
+        public_conversation_policy_from_environment(environment)

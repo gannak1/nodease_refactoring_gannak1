@@ -110,6 +110,7 @@ Public reset/delete의 `memory.secret_replay_expired`는 stored idempotency scop
 - Raw access token은 create 또는 reset replacement 응답에서만 반환한다.
 - Internal session ID, token hash, subject hash와 persistence key는 반환하지 않는다.
 - Response/log redaction middleware는 `access_token`을 secret field로 처리한다.
+- Public create/reset/close/transcript의 `expires_at`은 현재 Access Grant 만료, Session idle 만료와 Session absolute 만료 중 가장 이른 시각이다. 이는 raw Session 보존 상한이 아니라 해당 응답의 capability로 실제 접근할 수 있는 상한이며, completed mutation replay는 최초 성공 시각의 값을 typed snapshot에서 그대로 복구한다.
 - Access token은 versioned CSPRNG token이며 최소 128-bit entropy를 가져야 한다. Server verifier는 HMAC 같은 keyed one-way verifier 또는 승인된 memory-hard password hash와 constant-time comparison을 사용한다.
 - Create/reset의 replay record가 필요하면 application-level encryption과 10분 TTL을 적용한다. Grant table의 hash에서 raw token을 복원하지 않는다. TTL 이후 same-key replay는 `memory.secret_replay_expired`이며 Memory-owned periodic retention task가 만료 ciphertext row와 retention이 끝난 idempotency parent를 하나의 bounded batch budget으로 삭제한다. 이 live-store 삭제를 backup crypto-erasure와 동일하다고 주장하지 않으며, 별도 승인된 backup erasure/no-backup mode가 없으면 public lifecycle activation 자체를 거부한다.
 - V1은 standalone grant rotation endpoint, rotated-grant chain과 old/new grant grace window를 제공하지 않는다. Reset은 old grant를 즉시 revoke하고 새 session/grant를 원자 발급하는 replacement다.
@@ -233,6 +234,7 @@ Turn status는 `pending_dispatch | queued | running | completed | failed | cance
 ```
 
 - Transcript는 bounded page size와 opaque cursor를 사용한다.
+- MBA-317의 안전한 빈 projection도 같은 response envelope을 사용해 `conversation.state`, lifecycle/content revision, 실제 접근 `expires_at`, 빈 `turns`와 `next_cursor`를 반환한다. 내부 application DTO 이름이나 legacy `status/entries` shape를 공개 계약으로 노출하지 않는다.
 - Raw prompt, Memory summary, Data Dependency, private source identity와 authorization reason을 반환하지 않는다.
 - Public transcript를 지원하면 해당 public session에서 생성된 redacted display turn만 반환한다.
 - Failed/cancelled turn은 state, timestamp와 safe failure reason만 표시한다. Authenticated owner에게 redacted user display entry를 반환할 수 있지만 public transcript에는 failed assistant content와 partial output을 반환하지 않는다.
@@ -277,7 +279,7 @@ Reset response의 새 session revision과 이전 terminal revision은 다음처�
 }
 ```
 
-Authenticated caller는 `purge_request_id`와 현재 authentication으로 상태를 조회한다. Public delete는 grant를 즉시 revoke하므로 별도 short-lived `Authorization: Purge <receipt>` capability를 사용한다. Receipt source-of-truth는 verifier hash만 저장하고 URL에 넣지 않는다. Purge Job은 organization, deployment ID/version과 public audience snapshot을 receipt와 함께 보존하므로 Session/Grant row의 물리 삭제 뒤에도 현재 URL slug가 가리키는 canonical deployment scope와 대조할 수 있다. Delete 응답 유실 뒤 같은 idempotency key에 receipt를 재반환해야 하면 최대 24시간의 encrypted response replay store를 사용한다. 상태 응답은 `pending | running | completed | completed_with_hold | retryable_failure | terminal_failure`와 safe timestamp/reason만 반환한다. Public purge는 발급 후 7일 안에 terminal 상태로 전이하며 receipt는 terminal 후 최소 24시간, 발급 후 최대 8일까지 유효하다. Public response는 legal-hold 내부 사유를 숨기고 retention notice만 표시한다. `completed_with_hold`는 runtime/compliance 격리가 durable하다는 뜻이며 물리 삭제나 `memory.session.purged` 완료를 뜻하지 않는다.
+Authenticated caller는 `purge_request_id`와 현재 authentication으로 상태를 조회한다. Public delete는 grant를 즉시 revoke하므로 별도 short-lived `Authorization: Purge <receipt>` capability를 사용한다. Receipt source-of-truth는 verifier hash만 저장하고 URL에 넣지 않는다. Purge Job은 organization, deployment ID/version과 public audience snapshot을 receipt와 함께 보존하므로 Session/Grant row의 물리 삭제 뒤에도 현재 URL slug가 가리키는 canonical deployment scope와 대조할 수 있다. Delete 응답 유실 뒤 같은 idempotency key에 receipt를 재반환해야 하면 최대 24시간의 encrypted response replay store를 사용한다. 상태 응답은 `pending | running | completed | completed_with_hold | retryable_failure | terminal_failure`와 safe timestamp/reason만 반환한다. Public purge는 발급 후 7일 안에 terminal 상태로 전이하며 receipt는 terminal 후 최소 24시간, 발급 후 최대 8일까지 유효하다. V1은 terminal 전 receipt expiry를 갱신하는 별도 상태 전이를 두지 않으므로 발급 시 receipt lifetime을 정확히 8일로 고정해 최악의 7일 terminal 경계에서도 이후 24시간을 보장한다. Public response는 legal-hold 내부 사유를 숨기고 retention notice만 표시한다. `completed_with_hold`는 runtime/compliance 격리가 durable하다는 뜻이며 물리 삭제나 `memory.session.purged` 완료를 뜻하지 않는다.
 
 Response/log redaction middleware는 `purge_receipt` field와 versioned purge receipt가 포함된 자유 텍스트를 `access_token`과 동일한 secret으로 처리한다.
 

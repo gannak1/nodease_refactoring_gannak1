@@ -352,8 +352,13 @@ def get_public_transcript(
         raise _map_public_error(error) from None
     _set_public_headers(response, lifecycle_revision=result.lifecycle_revision)
     return {
-        "status": result.lifecycle.value,
-        "entries": list(result.entries),
+        "conversation": {
+            "state": result.lifecycle.value,
+            "lifecycle_revision": result.lifecycle_revision,
+            "content_revision": result.content_revision,
+            "expires_at": result.expires_at,
+        },
+        "turns": list(result.turns),
         "next_cursor": None,
     }
 

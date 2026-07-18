@@ -13,6 +13,7 @@ from apps.gateway.api.v1.endpoints import public_conversation, run
 from apps.memory.application.public_lifecycle import (
     ClosePublicConversationResult,
     PublicConversationResult,
+    PublicTranscriptResult,
 )
 from apps.memory.domain.conversation import SessionLifecycle
 
@@ -70,11 +71,27 @@ class _Reset:
         )
 
 
+class _Transcript:
+    def __init__(self) -> None:
+        self.queries = []
+
+    def execute(self, **query):
+        self.queries.append(query)
+        return PublicTranscriptResult(
+            lifecycle=SessionLifecycle.CLOSED,
+            lifecycle_revision=2,
+            content_revision=3,
+            expires_at=datetime(2026, 7, 25, tzinfo=timezone.utc),
+            turns=(),
+        )
+
+
 class _Application:
     def __init__(self) -> None:
         self.create = _Create()
         self.close = _Close()
         self.reset = _Reset()
+        self.transcript = _Transcript()
 
 
 def _client(
@@ -222,6 +239,30 @@ def test_reset_returns_old_terminal_revision_separately_from_the_new_etag(
         "lifecycle": "closed",
         "lifecycle_revision": 2,
     }
+
+
+def test_transcript_uses_the_documented_public_response_shape(monkeypatch):
+    application = _Application()
+    access_token = f"cag_v1_{secrets.token_urlsafe(32)}"
+
+    response = _client(monkeypatch, application).get(
+        "/run-public/public-chatbot/conversation/transcript",
+        headers={"Authorization": f"Conversation {access_token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "conversation": {
+            "state": "closed",
+            "lifecycle_revision": 2,
+            "content_revision": 3,
+            "expires_at": "2026-07-25T00:00:00+00:00",
+        },
+        "turns": [],
+        "next_cursor": None,
+    }
+    assert response.headers["etag"] == '"lifecycle-revision-2"'
+    assert application.transcript.queries[0]["access_token"] == access_token
 
 
 def test_bearer_or_cookie_cannot_be_interpreted_as_public_conversation_grant(monkeypatch):

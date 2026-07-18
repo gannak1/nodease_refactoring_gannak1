@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -106,6 +107,7 @@ def validate_public_conversation_security_configuration(
     HmacPublicSecretIssuer.from_environment(values)
     FernetSecretReplayCipher.from_environment(values)
     _admission_key(values)
+    _require_distinct_public_security_keys(values)
 
 
 def public_conversation_enabled_from_environment(
@@ -154,8 +156,8 @@ def public_conversation_policy_from_environment(
         purge_receipt_lifetime=_seconds(
             environ,
             "MEMORY_PUBLIC_PURGE_RECEIPT_SECONDS",
-            604_800,
-            3600,
+            691_200,
+            691_200,
             691_200,
         ),
         purge_secret_replay_lifetime=_seconds(
@@ -262,6 +264,23 @@ def _admission_key(environ: Mapping[str, str]) -> bytes:
             "MEMORY_PUBLIC_ADMISSION_HMAC_KEY must contain at least 32 bytes"
         )
     return key
+
+
+def _require_distinct_public_security_keys(environ: Mapping[str, str]) -> None:
+    key_materials = tuple(
+        environ.get(name, "").encode("utf-8")
+        for name in (
+            "MEMORY_PUBLIC_CAPABILITY_HMAC_KEY",
+            "MEMORY_PUBLIC_REPLAY_ENCRYPTION_KEY",
+            "MEMORY_PUBLIC_ADMISSION_HMAC_KEY",
+        )
+    )
+    if any(
+        hmac.compare_digest(left, right)
+        for index, left in enumerate(key_materials)
+        for right in key_materials[index + 1 :]
+    ):
+        raise RuntimeError("public conversation security keys must be distinct")
 
 
 def _redis_client(environ: Mapping[str, str]):

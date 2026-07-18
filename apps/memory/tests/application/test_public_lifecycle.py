@@ -357,6 +357,48 @@ def test_create_replay_restores_the_initial_response_after_the_session_closes():
     )
 
 
+def test_public_results_report_the_earliest_access_expiry_and_replay_it_stably():
+    policy = replace(
+        PublicConversationPolicy(),
+        idle_lifetime=timedelta(hours=12),
+        access_grant_lifetime=timedelta(hours=18),
+    )
+    components = _application(policy=policy)
+    create = _use_case(CreatePublicConversationUseCase, components)
+    reset = _use_case(ResetPublicConversationUseCase, components)
+    close = _use_case(ClosePublicConversationUseCase, components)
+    transcript = _use_case(GetPublicTranscriptUseCase, components)
+    create_command = _create_command()
+
+    created = create.execute(create_command)
+    created_replay = create.execute(create_command)
+    reset_command = _lifecycle_command(created.access_token, suffix="expiry-reset")
+    replacement = reset.execute(reset_command)
+    close_command = _lifecycle_command(
+        replacement.access_token,
+        suffix="expiry-close",
+    )
+    closed = close.execute(close_command)
+    replacement_replay = reset.execute(reset_command)
+    closed_replay = close.execute(close_command)
+    visible = transcript.execute(
+        url_slug="public-chatbot",
+        access_token=replacement.access_token,
+        now=_now(),
+    )
+
+    expected_expiry = _now() + timedelta(hours=12)
+    assert created.expires_at == expected_expiry
+    assert created_replay.expires_at == expected_expiry
+    assert replacement.expires_at == expected_expiry
+    assert replacement_replay.expires_at == expected_expiry
+    assert closed.expires_at == expected_expiry
+    assert closed_replay.expires_at == expected_expiry
+    assert visible.expires_at == expected_expiry
+    assert visible.content_revision == 0
+    assert visible.turns == ()
+
+
 @pytest.mark.parametrize(
     ("field", "replacement_value"),
     (
@@ -441,7 +483,7 @@ def test_close_makes_grant_transcript_only_and_does_not_duplicate_audit_event():
 
     assert closed.lifecycle.value == "closed"
     assert replay.replayed is True
-    assert visible.entries == ()
+    assert visible.turns == ()
     with pytest.raises(AccessGrantNotUsableError):
         reset.execute(_lifecycle_command(first.access_token, suffix="different"))
     assert [event["action"] for event in components[4].events] == [
