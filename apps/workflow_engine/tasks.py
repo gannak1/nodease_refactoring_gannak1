@@ -110,13 +110,50 @@ def _cleanup_execution_resources(engine, session, *, label: str) -> None:
         )
 
 
-
-
 def _enforce_runtime_configuration(graph: Dict[str, Any], *, surface: str) -> None:
     try:
         enforce_workflow_configuration_preflight(graph, surface=surface)
     except WorkflowConfigurationPreflightError as exc:
         raise NonRetryableWorkflowError(str(exc)) from exc
+
+
+def _engine_workflow_run_id(engine) -> str | None:
+    """API 실험 도구가 결과를 정확한 실행 로그와 연결할 safe 식별자를 반환한다."""
+    run_id = getattr(getattr(engine, "logger", None), "workflow_run_id", None)
+    return str(run_id) if run_id is not None else None
+
+
+@celery_app.task(
+    name="workflow.model_routing.bootstrap_policy",
+    bind=True,
+    max_retries=3,
+    base=RedactedWorkflowTask,
+)
+def bootstrap_model_routing_policy(self, policy_id: str):
+    """배포 직후 Judge-first 정책 상태와 로컬 학습 조건을 정합화한다."""
+    from apps.workflow_engine.services.model_routing_policy_refresh_task import (
+        PersistedModelRoutingPolicyRefreshService,
+    )
+
+    session = SessionLocal()
+    try:
+        update = PersistedModelRoutingPolicyRefreshService.refresh(
+            session,
+            policy_id=policy_id,
+            trigger="deployment_bootstrap",
+        )
+        session.commit()
+        return {
+            "status": update.status if update is not None else "not_found",
+            "policy_id": policy_id,
+            "update_id": str(update.id) if update is not None else None,
+        }
+    except Exception as exc:
+        session.rollback()
+        logger.error("[Model-Routing] deployment bootstrap failed: %s", exc)
+        raise self.retry(exc=exc, countdown=min(2 ** (self.request.retries + 1), 30))
+    finally:
+        session.close()
 
 
 @celery_app.task(
@@ -142,7 +179,7 @@ def record_model_routing_operational_run(self, workflow_run_id: str):
             send_workflow_task(
                 celery_app,
                 "workflow.model_routing.refresh_policy",
-                args=[str(policy_id), "auto_n_runs"],
+                args=[str(policy_id), "score_change"],
             )
         return {
             "status": "success",
@@ -163,14 +200,14 @@ def record_model_routing_operational_run(self, workflow_run_id: str):
     base=RedactedWorkflowTask,
 )
 def refresh_model_routing_policy(self, policy_id: str, trigger: str = "manual_refresh"):
-    """정책 초안을 갱신하고, 필요할 때만 실제 후보 Replay 검증 batch를 예약한다."""
+    """누적된 Judge 선택과 운영 품질로 local-first 전환 여부를 갱신한다."""
     from apps.workflow_engine.services.model_routing_policy_refresh_task import (
         PersistedModelRoutingPolicyRefreshService,
     )
 
     session = SessionLocal()
     try:
-        if trigger == "auto_n_runs":
+        if trigger in {"auto_n_runs", "score_change"}:
             from apps.workflow_engine.services.model_routing_policy_store import (
                 ModelRoutingPolicyStore,
             )
@@ -190,82 +227,15 @@ def refresh_model_routing_policy(self, policy_id: str, trigger: str = "manual_re
             trigger=trigger,
         )
         session.commit()
-        batch_id = None
-        if update is not None:
-            from apps.workflow_engine.services.model_routing_adaptive_validation_service import (
-                AdaptiveModelRoutingValidationService,
-            )
-
-            batch = AdaptiveModelRoutingValidationService.plan_batch(
-                session,
-                policy_id=policy_id,
-                trigger=trigger,
-                policy_update_id=update.id,
-            )
-            if batch is None:
-                # cohort가 아직 두 review window를 채우지 못한 첫 refresh는 정상이다.
-                # 이 경우 lease를 해제해야 다음 운영 입력이 새 refresh를 예약할 수 있다.
-                AdaptiveModelRoutingValidationService.complete_refresh_without_batch(
-                    session,
-                    policy_id=policy_id,
-                )
-            session.commit()
-            if batch is not None and batch.status == "pending":
-                batch_id = str(batch.id)
-                send_workflow_task(
-                    celery_app,
-                    "workflow.model_routing.validate_batch",
-                    args=[batch_id],
-                )
         return {
             "status": "success" if update is not None else "not_found",
             "update_id": str(update.id) if update is not None else None,
             "result": update.status if update is not None else None,
-            "validation_batch_id": batch_id,
+            "validation_batch_id": None,
         }
     except Exception as exc:
         session.rollback()
         logger.error("[Model-Routing] policy refresh failed: %s", exc)
-        raise self.retry(exc=exc, countdown=min(2 ** (self.request.retries + 1), 30))
-    finally:
-        session.close()
-
-
-@celery_app.task(
-    name="workflow.model_routing.validate_batch",
-    bind=True,
-    max_retries=12,
-    base=RedactedWorkflowTask,
-)
-def validate_model_routing_batch(self, batch_id: str):
-    """예약된 후보 Replay를 순차 실행해 실제 품질 증거가 있을 때만 rule을 활성화한다."""
-    from apps.workflow_engine.services.model_routing_adaptive_validation_service import (
-        AdaptiveModelRoutingValidationService,
-    )
-
-    session = SessionLocal()
-    try:
-        batch = AdaptiveModelRoutingValidationService.execute_batch(
-            session,
-            batch_id=batch_id,
-        )
-        session.commit()
-        if getattr(batch, "status", None) == "running":
-            # 다른 worker가 아직 유효한 lease를 가진 item을 실행 중이면 finalization을
-            # 하지 않는다. lease가 만료되면 다음 retry가 item을 retry로 복구한다.
-            raise self.retry(countdown=30)
-        return {
-            "status": getattr(batch, "status", "not_found"),
-            "batch_id": str(getattr(batch, "id", "")) if batch is not None else None,
-            "completed_items": int(getattr(batch, "completed_items", 0) or 0)
-            if batch is not None
-            else 0,
-        }
-    except Retry:
-        raise
-    except Exception as exc:
-        session.rollback()
-        logger.error("[Model-Routing] validation batch failed: %s", exc)
         raise self.retry(exc=exc, countdown=min(2 ** (self.request.retries + 1), 30))
     finally:
         session.close()
@@ -440,8 +410,7 @@ def _canonical_deployed_graph_execution_context(
     if (
         deployment is None
         or str(deployment.app_id) != str(context["app_id"])
-        or str(queued_context.get("workflow_version"))
-        != str(deployment.version)
+        or str(queued_context.get("workflow_version")) != str(deployment.version)
         or not isinstance(deployment.graph_snapshot, dict)
         or canonical_snapshot_sha256(graph)
         != canonical_snapshot_sha256(deployment.graph_snapshot)
@@ -529,7 +498,12 @@ def execute_workflow(
 
         # [GEVENT] 직접 동기 호출 - asyncio 불필요
         result = engine.execute()
-        return {"status": "success", "result": result, "sync_status": sync_result}
+        return {
+            "status": "success",
+            "result": result,
+            "sync_status": sync_result,
+            "run_id": _engine_workflow_run_id(engine),
+        }
 
     except ExternalEffectRetrySignal as e:
         logger.warning("Workflow external effect retry requested: code=%s", e.code)
@@ -579,9 +553,7 @@ def execute_deployed_workflow(
         queued_context = dict(execution_context or {})
         app = session.query(App).filter(App.workflow_id == workflow_id).first()
         if not app:
-            raise PermanentDeploymentExecutionError(
-                "deployed workflow is unavailable"
-            )
+            raise PermanentDeploymentExecutionError("deployed workflow is unavailable")
         active_deployment = (
             session.query(WorkflowDeployment)
             .filter(
@@ -592,9 +564,7 @@ def execute_deployed_workflow(
             .first()
         )
         if active_deployment is None:
-            raise PermanentDeploymentExecutionError(
-                "deployed workflow is unavailable"
-            )
+            raise PermanentDeploymentExecutionError("deployed workflow is unavailable")
         queued_deployment_id = queued_context.get("deployment_id")
         if queued_deployment_id is None:
             deployment = active_deployment
@@ -614,16 +584,12 @@ def execute_deployed_workflow(
                 .first()
             )
         if not deployment or not deployment.graph_snapshot:
-            raise PermanentDeploymentExecutionError(
-                "deployed workflow is unavailable"
-            )
+            raise PermanentDeploymentExecutionError("deployed workflow is unavailable")
         graph = deployment.graph_snapshot
         if _graph_requires_frozen_deployment(graph) and (
             str(queued_context.get("deployment_id")) != str(deployment.id)
-            or str(queued_context.get("deployment_version"))
-            != str(deployment.version)
-            or queued_context.get("snapshot_sha256")
-            != canonical_snapshot_sha256(graph)
+            or str(queued_context.get("deployment_version")) != str(deployment.version)
+            or queued_context.get("snapshot_sha256") != canonical_snapshot_sha256(graph)
         ):
             raise PermanentDeploymentExecutionError(
                 "deployed workflow identity is not frozen"
@@ -663,7 +629,12 @@ def execute_deployed_workflow(
 
         # [GEVENT] 직접 동기 호출
         result = engine.execute()
-        return {"status": "success", "result": result, "sync_status": sync_result}
+        return {
+            "status": "success",
+            "result": result,
+            "sync_status": sync_result,
+            "run_id": _engine_workflow_run_id(engine),
+        }
 
     except ExternalEffectRetrySignal as e:
         logger.warning("Workflow external effect retry requested: code=%s", e.code)
@@ -806,7 +777,12 @@ def execute_by_deployment(
 
         # [GEVENT] 직접 동기 호출
         result = engine.execute()
-        return {"status": "success", "result": result, "sync_status": sync_result}
+        return {
+            "status": "success",
+            "result": result,
+            "sync_status": sync_result,
+            "run_id": _engine_workflow_run_id(engine),
+        }
 
     except ExternalEffectRetrySignal as e:
         logger.warning("Workflow external effect retry requested: code=%s", e.code)

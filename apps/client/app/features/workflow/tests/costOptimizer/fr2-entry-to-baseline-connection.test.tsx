@@ -146,16 +146,16 @@ describe('FR-002 Cost Optimizer 진입-playground 연결', () => {
     vi.restoreAllMocks();
   });
 
-  it('모델 라우팅 최적화 클릭 시 해당 workflow/node 전용 추천 모달을 연다', async () => {
+  it('비교 분석 테스트는 최적화 버튼 없이 해당 workflow/node 전용 비교 화면으로 이동한다', async () => {
     render(<NodeInlinePanel node={createLlmNode()} />);
 
     fireEvent.click(
-      screen.getByRole('button', { name: /^최적화$/i }),
+      await screen.findByRole('button', { name: '비교 분석 테스트' }),
     );
 
-    expect(
-      await screen.findByRole('dialog', { name: /LLM 노드 설정 추천/i }),
-    ).toBeInTheDocument();
-    expect(routerMock.push).not.toHaveBeenCalled();
+    expect(routerMock.push).toHaveBeenCalledWith(
+      '/modules/workflow-1/cost-optimizer/llm-1',
+    );
+    expect(screen.queryByRole('button', { name: /^최적화$/i })).not.toBeInTheDocument();
   });
 });

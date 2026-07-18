@@ -16,8 +16,11 @@ RUN apt-get update && apt-get install -y \
 # 공통 패키지 복사 및 설치
 COPY apps/shared /build/apps/shared
 COPY apps/workflow_engine /build/apps/workflow_engine
+COPY docker/model-routing-cpu-constraints.txt /build/model-routing-cpu-constraints.txt
 
 ARG INSTALL_RAG_RERANKER=false
+ARG PREFETCH_MODEL_ROUTING_CLASSIFIER=true
+ARG MODEL_ROUTING_DIFFICULTY_MODEL_ID=microsoft/mdeberta-v3-base
 
 # [FIX] 의존성만 설치 (코드는 /app/에서 직접 사용, site-packages 중복 방지)
 # 1. pyproject.toml 기반으로 전체 설치 (의존성 해결을 위해)
@@ -25,12 +28,27 @@ ARG INSTALL_RAG_RERANKER=false
 RUN if [ "$INSTALL_RAG_RERANKER" = "true" ]; then \
         pip install --no-cache-dir --prefix=/install "sentence-transformers>=3.0.0,<4.0.0"; \
     fi && \
-    pip install --no-cache-dir --prefix=/install /build/apps/shared /build/apps/workflow_engine && \
+    pip install --no-cache-dir --prefix=/install \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        --constraint /build/model-routing-cpu-constraints.txt \
+        /build/apps/shared /build/apps/workflow_engine && \
     rm -rf /install/lib/python3.11/site-packages/workflow && \
     rm -rf /install/lib/python3.11/site-packages/services && \
     rm -rf /install/lib/python3.11/site-packages/utils && \
     rm -rf /install/lib/python3.11/site-packages/tests && \
     rm -rf /install/lib/python3.11/site-packages/moduly_workflow_engine*.dist-info
+
+# 요청 난이도 분류기는 첫 정책 생성과 첫 자동 라우팅에서 사용된다. 실행 중에
+# checkpoint를 내려받으면 worker가 오래 멈추거나 네트워크 상태에 따라 기본 모델로
+# fallback할 수 있으므로, 기본 이미지에는 mDeBERTa 가중치를 함께 넣는다.
+# 로컬의 빠른 의존성 전용 빌드가 필요할 때만 build arg로 건너뛸 수 있다.
+RUN mkdir -p /model-routing-hf-cache && \
+    if [ "$PREFETCH_MODEL_ROUTING_CLASSIFIER" = "true" ]; then \
+        PYTHONPATH=/install/lib/python3.11/site-packages \
+        HF_HOME=/model-routing-hf-cache \
+        HF_HUB_DISABLE_XET=1 \
+        python -c "from transformers import AutoModel, AutoTokenizer; model_id='${MODEL_ROUTING_DIFFICULTY_MODEL_ID}'; AutoTokenizer.from_pretrained(model_id, use_fast=False); AutoModel.from_pretrained(model_id)"; \
+    fi
 
 
 # --- 2단계: 실행(Final) 스테이지 ---
@@ -40,6 +58,8 @@ WORKDIR /app
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
+ENV HF_HUB_DISABLE_XET=1
+ENV HF_HOME=/opt/huggingface
 
 # 실행 시 필요한 최소 라이브러리 설치
 RUN apt-get update && apt-get install -y \
@@ -50,6 +70,7 @@ RUN apt-get update && apt-get install -y \
 
 # 빌더 스테이지에서 설치된 패키지 복사
 COPY --from=builder /install /usr/local
+COPY --from=builder /model-routing-hf-cache /opt/huggingface
 
 # 앱 코드 복사 (모노레포 구조 유지)
 COPY apps/shared /app/apps/shared
@@ -59,7 +80,7 @@ COPY apps/workflow_engine /app/apps/workflow_engine
 COPY docker/workflow_engine/docker-entrypoint.sh /docker-entrypoint.sh
 
 # 보안: Root가 아닌 일반 유저로 실행
-RUN useradd -m appuser && chown -R appuser:appuser /app
+RUN useradd -m appuser && chown -R appuser:appuser /app /opt/huggingface
 
 # Entrypoint 스크립트 실행 권한 설정
 RUN chmod +x /docker-entrypoint.sh

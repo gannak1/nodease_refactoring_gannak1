@@ -48,15 +48,15 @@ from apps.shared.domain.workflow_graph import (
 )
 from apps.shared.schemas.deployment import DeploymentCreate, DeploymentPreflightResponse
 from apps.shared.services.permissions import has_workflow_permission
-from apps.shared.services.model_routing_policy_inheritance import (
-    ModelRoutingPolicyInheritanceService,
-)
 from apps.shared.services.workflow_configuration_preflight import (
     WorkflowConfigurationPreflightError,
     enforce_workflow_configuration_preflight,
     workflow_configuration_issues,
 )
 from apps.shared.services.workflow_task_publisher import send_workflow_task
+from apps.workflow_engine.services.model_routing_policy_store import (
+    ModelRoutingPolicyStore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,10 +92,7 @@ def _safe_deployment_error_detail(value: Any) -> Any:
         return "Workflow execution failed"
     code = value.get("code")
     if isinstance(code, str) and code.startswith("external_effect."):
-        return (
-            safe_external_effect_error_payload(value)
-            or "Workflow execution failed"
-        )
+        return safe_external_effect_error_payload(value) or "Workflow execution failed"
     return value
 
 
@@ -322,15 +319,15 @@ class DeploymentService:
 
             # 8.1. 같은 앱의 기존 배포를 모두 비활성화 (단일 활성화 정책)
             if db_obj.is_active:
-                # 정책과 입력군은 배포 snapshot에 귀속된다. 재배포 시 이전 활성
-                # snapshot의 검증 근거를 먼저 새 snapshot으로 복제해야 UI와 runtime이
-                # 같은 정책을 계속 조회할 수 있다.
-                ModelRoutingPolicyInheritanceService.inherit_for_deployment(
+                # bootstrap 정책은 현재 deployment snapshot의 작업 지문과 실행 주체
+                # 권한을 기준으로 다시 만든다. 이전 입력군 기반 정책은 상속하지 않는다.
+                ModelRoutingPolicyStore.ensure_policies_for_deployment(
                     db,
                     workflow_id=workflow.id,
-                    source_deployment_id=app.active_deployment_id,
-                    target_deployment_id=db_obj.id,
-                    target_graph=graph_snapshot,
+                    deployment_id=db_obj.id,
+                    organization_id=workflow.organization_id,
+                    execution_subject_user_id=user_id,
+                    graph_snapshot=graph_snapshot,
                 )
                 from apps.gateway.services.scheduler_service import (
                     get_scheduler_service,
@@ -1153,7 +1150,11 @@ class DeploymentService:
             result = await wait_for_celery_result(task.id, timeout=600)
 
             if result.get("status") == "success":
-                return {"status": "success", "results": result.get("result", {})}
+                return {
+                    "status": "success",
+                    "results": result.get("result", {}),
+                    "run_id": result.get("run_id"),
+                }
             else:
                 detail = _safe_deployment_error_detail(result.get("error"))
                 raise HTTPException(status_code=500, detail=detail)
@@ -1221,7 +1222,9 @@ class DeploymentService:
         if (
             not normalized
             or len(normalized) > _MAX_LEGACY_CONVERSATION_ID_LENGTH
-            or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
+            or any(
+                ord(character) < 32 or ord(character) == 127 for character in normalized
+            )
         ):
             raise HTTPException(
                 status_code=400,

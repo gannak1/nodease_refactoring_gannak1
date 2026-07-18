@@ -9,6 +9,68 @@ from apps.shared.db.models.workflow_run import NodeRunStatus
 from apps.workflow_engine.services.llm_service import LLMService
 
 
+def test_completed_judge_label_updates_local_artifact_only_after_contract_passes(monkeypatch):
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+    from apps.workflow_engine.services.model_routing_local_classifier import (
+        MDebertaModelChoiceClassifier,
+    )
+
+    policy = SimpleNamespace(
+        active_policy={
+            "strategy_id": "judge_bootstrap_incremental_v1",
+            "learning": {"mode": "judge_first"},
+        }
+    )
+    accepted = SimpleNamespace(
+        status="pending",
+        feature_vector=[0.2, 0.8],
+        encoder_model_id="test-encoder",
+        selected_model_id="gpt-5-mini",
+        candidate_model_ids=["gpt-4o-mini", "gpt-5-mini"],
+        confidence=0.88,
+        reason_code="multi_constraint",
+        outcome_reason=None,
+    )
+    updated = {}
+    monkeypatch.setattr(
+        MDebertaModelChoiceClassifier,
+        "update_from_vector",
+        lambda artifact, **kwargs: updated.update(kwargs) or {"kind": "test"},
+    )
+
+    assert ModelRoutingPolicyStore._finalize_runtime_judge_label(
+        policy=policy,
+        label=accepted,
+        contract_passed=True,
+        outcome_reason="contract_passed",
+    ) is True
+    assert accepted.status == "accepted"
+    assert updated["selected_model_id"] == "gpt-5-mini"
+    assert policy.active_policy["learning"]["judged_request_count"] == 1
+
+    rejected = SimpleNamespace(
+        status="pending",
+        feature_vector=[0.2, 0.8],
+        encoder_model_id="test-encoder",
+        selected_model_id="gpt-4o-mini",
+        candidate_model_ids=["gpt-4o-mini", "gpt-5-mini"],
+        confidence=0.72,
+        reason_code="fallback",
+        outcome_reason=None,
+    )
+    assert ModelRoutingPolicyStore._finalize_runtime_judge_label(
+        policy=policy,
+        label=rejected,
+        contract_passed=False,
+        outcome_reason="fallback_used",
+    ) is False
+    assert rejected.status == "rejected"
+    assert rejected.outcome_reason == "fallback_used"
+    assert policy.active_policy["learning"]["judged_request_count"] == 1
+
+
 class _Query:
     def __init__(self, *, first_value=None, all_value=None):
         self.first_value = first_value
@@ -26,11 +88,68 @@ class _Query:
         self.with_for_update_called = True
         return self
 
+    def order_by(self, *_args):
+        return self
+
     def first(self):
         return self.first_value
 
     def all(self):
         return self.all_value
+
+
+def test_learning_label_summary_returns_counts_without_exposing_vectors():
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    policy_id = uuid4()
+    db = MagicMock()
+    db.query.return_value = _Query(
+        all_value=[
+            SimpleNamespace(status="pending", outcome_reason=None),
+            SimpleNamespace(status="accepted", outcome_reason="contract_passed"),
+            SimpleNamespace(status="rejected", outcome_reason="schema_failed"),
+        ]
+    )
+
+    assert ModelRoutingPolicyStore.learning_label_summary(
+        db,
+        policy_id=policy_id,
+    ) == {
+        "pending_count": 1,
+        "accepted_count": 1,
+        "rejected_count": 1,
+        "last_outcome_reason": "contract_passed",
+    }
+
+
+def test_finalize_learning_outcome_updates_node_trace_without_storing_feature_vector():
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    node_run = SimpleNamespace(
+        trace_metadata={"llm": {"selected_model": "gpt-5-mini"}},
+        outputs={
+            "metadata": {
+                "model_routing": {"selected_model": "gpt-5-mini"},
+            }
+        },
+    )
+
+    ModelRoutingPolicyStore._write_runtime_judge_learning_outcome(
+        node_run=node_run,
+        status="accepted",
+        outcome_reason="contract_passed",
+    )
+
+    assert node_run.trace_metadata["llm"]["learning_status"] == "accepted"
+    assert (
+        node_run.outputs["metadata"]["model_routing"]["learning_outcome_reason"]
+        == "contract_passed"
+    )
+    assert "feature_vector" not in node_run.trace_metadata["llm"]
 
 
 def test_claim_pending_auto_refresh_skips_delivery_after_refresh_started():
@@ -181,7 +300,9 @@ def test_successful_run_does_not_wait_for_auto_routing_node_in_an_unselected_bra
             "ensure_policy_for_deployed_node",
             return_value=policy,
         ),
-        patch.object(ModelRoutingPolicyStore, "_record_policy_event", return_value=True),
+        patch.object(
+            ModelRoutingPolicyStore, "_record_policy_event", return_value=True
+        ),
         patch.object(
             ModelRoutingPolicyStore,
             "_lock_policy_for_update",
@@ -265,6 +386,100 @@ def test_record_completed_run_counts_only_successful_llm_node_runs():
     assert "workflow_node_runs.node_id" in str(node_query.filters[-1])
 
 
+def test_record_completed_run_excludes_rag_safe_no_result_from_policy_evidence():
+    """모델을 호출하지 않은 RAG 안전 응답은 routing 품질 표본이 아니다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    workflow_run = SimpleNamespace(
+        id=uuid4(),
+        workflow_id=uuid4(),
+        deployment_id=uuid4(),
+        trigger_mode="webhook",
+        status="success",
+    )
+    deployment = SimpleNamespace(
+        graph_snapshot={
+            "nodes": [
+                {
+                    "id": "llm-1",
+                    "data": {"auto_model_routing": True},
+                }
+            ]
+        }
+    )
+    safe_rag_node = SimpleNamespace(
+        node_id="llm-1",
+        status=NodeRunStatus.SUCCESS,
+        outputs={
+            "metadata": {
+                "rag": {
+                    "failure_policy": "safe_no_result",
+                    "evidence_sufficient": False,
+                }
+            }
+        },
+        trace_metadata={
+            "rag": {
+                "failure_policy": "safe_no_result",
+                "evidence_sufficient": False,
+            }
+        },
+    )
+    db = MagicMock()
+    db.query.side_effect = [
+        _Query(first_value=workflow_run),
+        _Query(first_value=deployment),
+        _Query(all_value=[safe_rag_node]),
+    ]
+
+    with patch.object(
+        ModelRoutingPolicyStore,
+        "ensure_policy_for_deployed_node",
+    ) as ensure_policy:
+        assert (
+            ModelRoutingPolicyStore.record_completed_deployed_run(
+                db,
+                workflow_run_id=workflow_run.id,
+            )
+            == []
+        )
+
+    ensure_policy.assert_not_called()
+
+
+def test_routing_evidence_includes_successful_rag_run_with_safe_failure_policy():
+    """safe_no_result 설정이 있어도 근거가 충분하면 실제 모델 실행 표본이다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    successful_rag_node = SimpleNamespace(
+        outputs={
+            "metadata": {
+                "rag": {
+                    "failure_policy": "safe_no_result",
+                    "evidence_sufficient": True,
+                }
+            }
+        },
+        trace_metadata={
+            "rag": {
+                "failure_policy": "safe_no_result",
+                "evidence_sufficient": True,
+            }
+        },
+    )
+
+    assert (
+        ModelRoutingPolicyStore._is_routing_evidence_eligible_node_run(
+            successful_rag_node
+        )
+        is True
+    )
+
+
 def test_record_completed_run_ignores_deployment_snapshot_without_auto_routing():
     """draft 토글이 아니라 배포 snapshot의 자동 라우팅 ON 여부만 집계 기준이다."""
     from apps.workflow_engine.services.model_routing_policy_store import (
@@ -338,9 +553,7 @@ def test_duplicate_run_requeues_refresh_that_is_still_pending_publish():
         _Query(first_value=workflow_run),
         _Query(first_value=deployment),
         _Query(
-            all_value=[
-                SimpleNamespace(node_id="llm-1", status=NodeRunStatus.SUCCESS)
-            ]
+            all_value=[SimpleNamespace(node_id="llm-1", status=NodeRunStatus.SUCCESS)]
         ),
     ]
 
@@ -350,7 +563,9 @@ def test_duplicate_run_requeues_refresh_that_is_still_pending_publish():
             "ensure_policy_for_deployed_node",
             return_value=policy,
         ),
-        patch.object(ModelRoutingPolicyStore, "_record_policy_event", return_value=False),
+        patch.object(
+            ModelRoutingPolicyStore, "_record_policy_event", return_value=False
+        ),
         patch.object(
             ModelRoutingPolicyStore,
             "_lock_policy_for_update",
@@ -398,9 +613,7 @@ def test_new_run_does_not_reenqueue_refresh_already_requested_by_another_run():
         _Query(first_value=workflow_run),
         _Query(first_value=deployment),
         _Query(
-            all_value=[
-                SimpleNamespace(node_id="llm-1", status=NodeRunStatus.SUCCESS)
-            ]
+            all_value=[SimpleNamespace(node_id="llm-1", status=NodeRunStatus.SUCCESS)]
         ),
     ]
 
@@ -410,7 +623,9 @@ def test_new_run_does_not_reenqueue_refresh_already_requested_by_another_run():
             "ensure_policy_for_deployed_node",
             return_value=policy,
         ),
-        patch.object(ModelRoutingPolicyStore, "_record_policy_event", return_value=True),
+        patch.object(
+            ModelRoutingPolicyStore, "_record_policy_event", return_value=True
+        ),
         patch.object(
             ModelRoutingPolicyStore,
             "_lock_policy_for_update",
@@ -525,12 +740,17 @@ def test_bootstrap_policy_ignores_legacy_active_policy_and_preserves_node_models
             node_data=node_data,
         )
 
-    assert policy.active_policy == {
-        "default_model_id": "gpt-4.1",
-        "fallback_model_id": "gpt-4.1-mini",
-        "rules": [],
-    }
-    assert policy.policy_version == "bootstrap-preserve-config-v1"
+    assert policy.active_policy["strategy_id"] == "judge_bootstrap_incremental_v1"
+    assert policy.active_policy["default_model_id"] == "gpt-4.1"
+    assert policy.active_policy["fallback_model_id"] == "gpt-4.1-mini"
+    assert policy.active_policy["candidate_model_ids"] == [
+        "gpt-4.1",
+        "gpt-4.1-mini",
+    ]
+    assert policy.active_policy["learning"]["mode"] == "judge_first"
+    assert "rules" not in policy.active_policy
+    assert policy.policy_version == "deployment-judge-first-v2"
+    assert policy.status == "active"
     assert policy.refresh_every_runs == 35
     available_models.assert_called_once_with(
         db,
@@ -539,8 +759,8 @@ def test_bootstrap_policy_ignores_legacy_active_policy_and_preserves_node_models
     )
 
 
-def test_bootstrap_policy_preserves_deployment_max_cohorts_setting():
-    """배포 snapshot의 입력군 상한은 첫 persisted policy에도 그대로 저장한다."""
+def test_bootstrap_policy_matches_google_catalog_ids_with_or_without_models_prefix():
+    """배포 graph와 Google credential catalog의 표기가 달라도 bootstrap을 만들 수 있다."""
     from apps.workflow_engine.services.model_routing_policy_store import (
         ModelRoutingPolicyStore,
     )
@@ -552,11 +772,6 @@ def test_bootstrap_policy_preserves_deployment_max_cohorts_setting():
         user_id=uuid4(),
     )
     db = MagicMock()
-    node_data = {
-        "auto_model_routing": True,
-        "model_id": "gpt-4.1",
-        "model_routing_policy": {"max_cohorts": 8},
-    }
 
     with (
         patch.object(ModelRoutingPolicyStore, "get_runtime_policy", return_value=None),
@@ -568,18 +783,128 @@ def test_bootstrap_policy_preserves_deployment_max_cohorts_setting():
         patch.object(
             LLMService,
             "get_runtime_available_model_ids_for_user",
-            return_value=["gpt-4.1"],
+            return_value=["models/gemini-2.5-flash", "models/gemini-2.5-pro"],
         ),
     ):
         policy = ModelRoutingPolicyStore.ensure_policy_for_deployed_node(
             db,
             workflow_run=workflow_run,
             node_id="llm-1",
-            node_data=node_data,
+            node_data={
+                "auto_model_routing": True,
+                "model_id": "gemini-2.5-flash",
+                "fallback_model_id": "gemini-2.5-pro",
+            },
         )
 
     assert policy is not None
-    assert policy.max_cohorts == 8
+    assert policy.active_policy["strategy_id"] == "judge_bootstrap_incremental_v1"
+    assert policy.active_policy["default_model_id"] == "models/gemini-2.5-flash"
+    assert policy.active_policy["fallback_model_id"] == "models/gemini-2.5-pro"
+    assert policy.active_policy["candidate_model_ids"] == [
+        "models/gemini-2.5-flash",
+        "models/gemini-2.5-pro",
+    ]
+
+
+def test_deployment_creates_judge_first_policy_before_first_run():
+    """배포 transaction 안에서 첫 실행용 Judge-first 정책을 즉시 저장한다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    organization_id = uuid4()
+    workflow_run = SimpleNamespace(
+        workflow_id=uuid4(),
+        deployment_id=uuid4(),
+        user_id=uuid4(),
+    )
+    db = MagicMock()
+    with (
+        patch.object(ModelRoutingPolicyStore, "get_runtime_policy", return_value=None),
+        patch.object(
+            ModelRoutingPolicyStore,
+            "_organization_id_for_run",
+            return_value=organization_id,
+        ),
+        patch.object(
+            LLMService,
+            "get_runtime_available_model_ids_for_user",
+            return_value=["gpt-4.1", "gpt-4.1-mini"],
+        ),
+    ):
+        policy = ModelRoutingPolicyStore.ensure_policy_for_deployed_node(
+            db,
+            workflow_run=workflow_run,
+            node_id="llm-1",
+            node_data={
+                "auto_model_routing": True,
+                "model_id": "gpt-4.1",
+            },
+        )
+
+    assert policy.status == "active"
+    assert policy.policy_version == "deployment-judge-first-v2"
+    assert policy.active_policy["strategy_id"] == "judge_bootstrap_incremental_v1"
+    assert policy.active_policy["default_model_id"] == "gpt-4.1"
+    assert policy.active_policy["candidate_model_ids"] == [
+        "gpt-4.1",
+        "gpt-4.1-mini",
+    ]
+
+
+def test_deployment_bootstrap_creates_policy_before_first_operational_run():
+    """배포가 끝나면 운영 실행을 기다리지 않고 저장 모델 기반 정책을 만든다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    deployment_id = uuid4()
+    execution_subject_user_id = uuid4()
+    db = MagicMock()
+    graph_snapshot = {
+        "nodes": [
+            {
+                "id": "llm-1",
+                "type": "llmNode",
+                "data": {
+                    "auto_model_routing": True,
+                    "model_id": "gpt-4.1",
+                    "fallback_model_id": "gpt-4.1-mini",
+                },
+            }
+        ]
+    }
+
+    with (
+        patch.object(ModelRoutingPolicyStore, "get_runtime_policy", return_value=None),
+        patch.object(
+            LLMService,
+            "get_runtime_available_model_ids_for_user",
+            return_value=["gpt-4.1", "gpt-4.1-mini"],
+        ),
+    ):
+        policies = ModelRoutingPolicyStore.ensure_policies_for_deployment(
+            db,
+            workflow_id=workflow_id,
+            deployment_id=deployment_id,
+            organization_id=organization_id,
+            execution_subject_user_id=execution_subject_user_id,
+            graph_snapshot=graph_snapshot,
+        )
+
+    assert len(policies) == 1
+    assert policies[0].workflow_id == workflow_id
+    assert policies[0].deployment_id == deployment_id
+    assert policies[0].execution_subject_user_id == execution_subject_user_id
+    assert (
+        policies[0].active_policy["strategy_id"]
+        == "judge_bootstrap_incremental_v1"
+    )
+    assert policies[0].active_policy["default_model_id"] == "gpt-4.1"
+    assert policies[0].active_policy["fallback_model_id"] == "gpt-4.1-mini"
 
 
 def test_record_completed_run_locks_policies_in_node_id_order_before_counting():
@@ -613,8 +938,8 @@ def test_record_completed_run_locks_policies_in_node_id_order_before_counting():
         _Query(first_value=deployment),
         _Query(
             all_value=[
-                    SimpleNamespace(node_id="llm-z", status=NodeRunStatus.SUCCESS),
-                    SimpleNamespace(node_id="llm-a", status=NodeRunStatus.SUCCESS),
+                SimpleNamespace(node_id="llm-z", status=NodeRunStatus.SUCCESS),
+                SimpleNamespace(node_id="llm-a", status=NodeRunStatus.SUCCESS),
             ]
         ),
     ]
@@ -622,7 +947,9 @@ def test_record_completed_run_locks_policies_in_node_id_order_before_counting():
 
     def lock_policy(_db, *, policy_id):
         locked_policy_ids.append(policy_id)
-        return next(policy for policy in policy_by_node.values() if policy.id == policy_id)
+        return next(
+            policy for policy in policy_by_node.values() if policy.id == policy_id
+        )
 
     with (
         patch.object(
@@ -630,7 +957,9 @@ def test_record_completed_run_locks_policies_in_node_id_order_before_counting():
             "ensure_policy_for_deployed_node",
             side_effect=lambda _db, **kwargs: policy_by_node[kwargs["node_id"]],
         ),
-        patch.object(ModelRoutingPolicyStore, "_record_policy_event", return_value=True),
+        patch.object(
+            ModelRoutingPolicyStore, "_record_policy_event", return_value=True
+        ),
         patch.object(
             ModelRoutingPolicyStore,
             "_lock_policy_for_update",
@@ -648,4 +977,6 @@ def test_record_completed_run_locks_policies_in_node_id_order_before_counting():
 
     expected_policy_ids = [policy_by_node["llm-a"].id, policy_by_node["llm-z"].id]
     assert locked_policy_ids == expected_policy_ids
-    assert [call.args[0].id for call in apply_run_event.call_args_list] == expected_policy_ids
+    assert [
+        call.args[0].id for call in apply_run_event.call_args_list
+    ] == expected_policy_ids

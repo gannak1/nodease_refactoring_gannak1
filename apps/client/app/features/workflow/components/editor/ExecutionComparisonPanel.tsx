@@ -93,7 +93,6 @@ const containsRoutingDecision = (value: unknown) => {
   return [
     'decision_source',
     'fallback_model',
-    'matched_cohort_id',
     'matched_rule_id',
     'policy_id',
     'policy_version',

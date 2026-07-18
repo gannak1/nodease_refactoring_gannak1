@@ -30,8 +30,7 @@ class ModelRoutingPreviewService:
     """실제 deployment runtime과 같은 policy evaluator를 재사용한다.
 
     이 service는 policy/run/usage를 변경하거나 Celery task를 발행하지 않는다.
-    semantic cohort가 있는 policy에 한해 input embedding을 한 번 계산할 수 있지만,
-    LLM completion을 실행하거나 raw input을 저장하지 않는다.
+    embedding이나 LLM completion을 실행하지 않고 raw input도 저장하지 않는다.
     """
 
     @classmethod
@@ -85,21 +84,12 @@ class ModelRoutingPreviewService:
             "policy_version": policy.policy_version,
             "active_policy": policy.active_policy,
         }
-        semantic_query_vector, semantic_evaluation = cls._semantic_query_vector(
-            db,
-            policy=policy,
-            policy_payload=policy_payload,
-            inputs=inputs,
-            organization_id=organization_id,
-            subject_id=subject_id,
-        )
         try:
             decision = ModelRouter.resolve_policy(
                 policy_payload,
                 inputs=inputs,
                 node_data=node_data,
                 available_model_ids=available_model_ids,
-                semantic_query_vector=semantic_query_vector,
             )
         except ModelRoutingUnavailableError as exc:
             raise ModelRoutingPreviewBlockedError(
@@ -120,14 +110,6 @@ class ModelRoutingPreviewService:
             decision_source = "fallback_model"
             availability = "fallback"
 
-        semantic_match = decision.semantic_match
-        matched_cohort = None
-        if semantic_match is not None and semantic_match.status == "matched":
-            matched_cohort = {
-                "id": semantic_match.cohort_id,
-                "label": semantic_match.label,
-            }
-
         return {
             "deployment_version": deployment.version,
             "policy_version": policy.policy_version,
@@ -136,11 +118,12 @@ class ModelRoutingPreviewService:
             "fallback_model_id": decision.fallback_model_id,
             "default_model_id": configured_default_model,
             "configured_fallback_model_id": configured_fallback_model,
-            "matched_cohort": matched_cohort,
             "matched_rule_id": decision.matched_rule_id,
             "reason_code": decision.reason_code,
+            "strategy_id": decision.strategy_id,
+            "decision_factors": decision.decision_factors,
+            "runtime_context": decision.runtime_context.as_metadata(),
             "availability": availability,
-            "semantic_evaluation": semantic_evaluation,
             "draft_matches_deployment": cls._draft_matches_deployment(
                 workflow, node_id, deployed_node_data
             ),
@@ -178,51 +161,6 @@ class ModelRoutingPreviewService:
         if not isinstance(data, dict):
             raise ModelRoutingPreviewBlockedError("model_routing.deployed_node_invalid")
         return data
-
-    @classmethod
-    def _semantic_query_vector(
-        cls,
-        db: Session,
-        *,
-        policy: LLMNodeModelRoutingPolicy,
-        policy_payload: dict[str, Any],
-        inputs: dict[str, Any],
-        organization_id: Any,
-        subject_id: Any,
-    ) -> tuple[tuple[float, ...] | None, str]:
-        active_policy = policy_payload.get("active_policy")
-        semantic_router = (
-            active_policy.get("semantic_router")
-            if isinstance(active_policy, dict)
-            else None
-        )
-        if not isinstance(semantic_router, dict) or not semantic_router:
-            return None, "not_required"
-
-        encoder = semantic_router.get("encoder")
-        encoder_model_id = semantic_router.get("encoder_model_id")
-        if not encoder_model_id and isinstance(encoder, dict):
-            encoder_model_id = encoder.get("model_id")
-        encoder_model_id = cls._model_id(encoder_model_id)
-        query_text = ModelRouter.semantic_query_text(inputs, semantic_router)
-        if not encoder_model_id or not query_text:
-            return None, "unavailable"
-
-        try:
-            runtime = WorkflowRuntimeLLMService.get_runtime_client_for_user(
-                db,
-                user_id=subject_id,
-                model_id=encoder_model_id,
-                organization_id=organization_id,
-            )
-            vector = runtime.client.embed_sync(query_text)
-            if not isinstance(vector, (list, tuple)) or not vector:
-                return None, "unavailable"
-            return tuple(float(value) for value in vector), "embedding_used"
-        except Exception:
-            # embedding provider/credential 문제는 preview 자체를 실패시키지 않는다.
-            # runtime과 같이 semantic route 없이 안전한 default rule을 평가한다.
-            return None, "unavailable"
 
     @classmethod
     def _draft_matches_deployment(

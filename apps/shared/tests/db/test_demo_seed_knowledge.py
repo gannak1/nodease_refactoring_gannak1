@@ -11,6 +11,9 @@ from apps.shared.domain.app_auth_secret import (
     APP_AUTH_SECRET_VERIFIER_VERSION,
     app_auth_secret_verifier,
 )
+from apps.shared.domain.workflow_graph import validate_workflow_graph
+from apps.workflow_engine.workflow.nodes.webhook.entities import WebhookTriggerNodeData
+from apps.workflow_engine.workflow.nodes.webhook.webhook_node import WebhookTriggerNode
 from scripts import seed_demo as seed_demo_script
 
 
@@ -492,6 +495,163 @@ def test_team_onboarding_access_control_graph_references_bundled_pdf_kbs():
         for key in (spec.key for spec in demo_seed.ONBOARDING_PDF_SPECS)
     ]
     assert "추측하지" in llm_node["data"]["system_prompt"]
+
+
+def test_team_onboarding_adaptive_routing_demo_only_changes_routing_settings():
+    """라우팅 실험 workflow는 원본 RAG/프롬프트/생성 파라미터를 그대로 복제한다."""
+    source = demo_seed._team_onboarding_access_control_graph()
+    experiment = demo_seed._team_onboarding_adaptive_routing_graph()
+    source_llm = next(node for node in source["nodes"] if node["id"] == "llm-answer")
+    experiment_llm = next(
+        node for node in experiment["nodes"] if node["id"] == "llm-answer"
+    )
+    source_data = source_llm["data"]
+    experiment_data = experiment_llm["data"]
+
+    assert experiment_data["knowledgeBases"] == source_data["knowledgeBases"]
+    assert experiment_data["system_prompt"] == source_data["system_prompt"]
+    assert experiment_data["user_prompt"] == source_data["user_prompt"]
+    assert experiment_data["parameters"] == source_data["parameters"]
+    assert experiment_data["model_id"] == "gpt-4.1"
+    assert experiment_data["auto_model_routing"] is True
+    assert experiment_data["model_routing_context"] == {
+        "customer_facing": False,
+        "node_task": "employee_onboarding_guidance",
+        "risk_level": "low",
+    }
+    policy = experiment_data["model_routing_policy"]
+    assert policy["refresh"]["refresh_every_runs"] == 5
+    assert policy["validation_budget_usd"] == 3.0
+    assert policy["excluded_model_ids"] == ["gpt-5.6-sol"]
+
+
+def test_team_onboarding_adaptive_routing_app_is_seeded_for_people_manager(
+    monkeypatch,
+):
+    calls = {}
+
+    def capture(
+        _db,
+        key,
+        name,
+        description,
+        owner_key,
+        graph,
+        *,
+        deployed,
+        deployment_type=demo_seed.DeploymentType.API,
+    ):
+        calls[key] = {
+            "name": name,
+            "owner_key": owner_key,
+            "graph": graph,
+            "deployed": deployed,
+            "deployment_type": deployment_type,
+        }
+        return key
+
+    monkeypatch.setattr(demo_seed, "_upsert_app_workflow", capture)
+
+    workflows = demo_seed._seed_apps_and_workflows(object())
+
+    assert workflows["team_onboarding_adaptive_routing"] == (
+        "team_onboarding_adaptive_routing"
+    )
+    call = calls["team_onboarding_adaptive_routing"]
+    assert call["name"] == "팀별 온보딩 자동 모델 라우팅 검증"
+    assert call["owner_key"] == "onboarding_people_manager"
+    assert call["deployed"] is True
+    assert call["deployment_type"] is demo_seed.DeploymentType.INTERNAL_CHATBOT
+
+
+def test_enterprise_request_routing_graph_uses_current_routing_context():
+    """통합 업무 요청 workflow는 입력군 없이 현재 난이도 라우팅 설정을 제공한다."""
+    graph = demo_seed._enterprise_request_routing_graph()
+    llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-request")
+    data = llm_node["data"]
+
+    assert data["auto_model_routing"] is True
+    assert data["model_id"] == demo_seed.DEMO_ONBOARDING_ROUTER_MODEL
+    assert data["model_routing_context"] == {
+        "customer_facing": False,
+        "node_task": "enterprise_internal_request",
+        "risk_level": "medium",
+    }
+
+    policy = data["model_routing_policy"]
+    assert policy["refresh"]["refresh_every_runs"] == 10
+    assert policy == {
+        "refresh": {"refresh_every_runs": 10},
+        "validation_budget_usd": 3.0,
+        "excluded_model_ids": ["gpt-5.6-sol"],
+    }
+    node_ids = {node["id"] for node in graph["nodes"]}
+    assert all(
+        edge["source"] in node_ids and edge["target"] in node_ids
+        for edge in graph["edges"]
+    )
+
+
+def test_enterprise_request_routing_graph_validates_and_maps_webhook_payload():
+    """시연 webhook의 실제 입력 필드가 LLM 입력 변수로 전달된다."""
+    graph = demo_seed._enterprise_request_routing_graph()
+    validate_workflow_graph(graph)
+    webhook = next(node for node in graph["nodes"] if node["id"] == "webhook-request")
+    node = WebhookTriggerNode(
+        id=webhook["id"],
+        data=WebhookTriggerNodeData.model_validate(webhook["data"]),
+    )
+
+    result = node.execute(
+        {
+            "query": "VPN 접근 권한을 회수하는 절차를 알려 주세요.",
+            "department": "플랫폼",
+            "requesterRole": "관리자",
+            "locale": "ko-KR",
+        }
+    )
+
+    assert result == {
+        "query": "VPN 접근 권한을 회수하는 절차를 알려 주세요.",
+        "department": "플랫폼",
+        "requesterRole": "관리자",
+        "locale": "ko-KR",
+    }
+
+
+def test_enterprise_request_routing_app_is_seeded_as_deployed_webhook(monkeypatch):
+    calls = {}
+
+    def capture(
+        _db,
+        key,
+        name,
+        description,
+        owner_key,
+        graph,
+        *,
+        deployed,
+        deployment_type=demo_seed.DeploymentType.API,
+    ):
+        calls[key] = {
+            "name": name,
+            "owner_key": owner_key,
+            "graph": graph,
+            "deployed": deployed,
+            "deployment_type": deployment_type,
+        }
+        return key
+
+    monkeypatch.setattr(demo_seed, "_upsert_app_workflow", capture)
+
+    workflows = demo_seed._seed_apps_and_workflows(object())
+
+    assert workflows["enterprise_request_routing"] == "enterprise_request_routing"
+    call = calls["enterprise_request_routing"]
+    assert call["name"] == "엔터프라이즈 통합 업무 요청 처리"
+    assert call["owner_key"] == "admin"
+    assert call["deployed"] is True
+    assert call["deployment_type"] is demo_seed.DeploymentType.WEBHOOK
 
 
 def test_team_onboarding_access_control_app_is_active_internal_chatbot(monkeypatch):
@@ -977,12 +1137,12 @@ def test_demo_seed_chat_models_use_gpt_5_4_family():
         demo_seed.DEMO_MODEL_ROUTER_FALLBACK_MODEL,
         demo_seed.DEMO_MODEL_ROUTER_CHEAP_MODEL,
         demo_seed.DEMO_MODEL_ROUTER_BALANCED_MODEL,
+        demo_seed.DEMO_ONBOARDING_ROUTER_MODEL,
         demo_seed.DEMO_EMBEDDING_MODEL,
-        demo_seed.DEMO_MODEL_ROUTER_EMBEDDING_MODEL,
     }
 
 
-def test_model_router_demo_workflow_enables_versioned_semantic_cohorts():
+def test_model_router_demo_workflow_uses_current_routing_context():
     graph = demo_seed._model_router_ticket_ops_graph()
     llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-triage")
     data = llm_node["data"]
@@ -990,42 +1150,15 @@ def test_model_router_demo_workflow_enables_versioned_semantic_cohorts():
     assert data["auto_model_routing"] is True
     assert data["model_id"] == "gpt-4.1"
     assert data["fallback_model_id"] == "gpt-4.1-mini"
-    semantic_router = data["model_routing_context"]["semantic_router"]
-    assert semantic_router["route_catalog_version"] == "demo-ticket-routing-v7"
-    assert (
-        semantic_router["encoder_model_id"]
-        == demo_seed.DEMO_MODEL_ROUTER_EMBEDDING_MODEL
-    )
-    assert semantic_router["input_paths"] == ["webhook-ticket.message"]
-    assert semantic_router["aggregation"] == "centroid"
-    assert semantic_router["min_margin"] == 0.005
-
-    routes = semantic_router["routes"]
-    assert {route["cohort_id"] for route in routes} == {
-        "routine_support",
-        "account_billing",
-        "high_risk",
+    assert data["model_routing_context"] == {
+        "customer_facing": True,
+        "node_task": "customer_support_triage",
+        "risk_level": "medium",
     }
-    high_risk = next(route for route in routes if route["cohort_id"] == "high_risk")
-    assert high_risk["safety_override"] is True
-    assert high_risk["lexical_override_threshold"] == 1.0
-    assert {signal["term"] for signal in high_risk["lexical_signals"]} >= {
-        "계정 탈취",
-        "변조",
-        "법무 검토",
-        "환불 분쟁",
-        "unauthorized access",
-    }
-    assert all(len(route["utterances"]) >= 12 for route in routes)
-    utterances = [
-        utterance for route in routes for utterance in route["utterances"]
-    ]
-    assert len(utterances) == len(set(utterances))
-    assert all(0 < route["threshold"] < 1 for route in routes)
-    assert {route["cohort_id"]: route["threshold"] for route in routes} == {
-        "routine_support": 0.35,
-        "account_billing": 0.38,
-        "high_risk": 0.34,
+    assert data["model_routing_policy"] == {
+        "refresh": {"refresh_every_runs": 10},
+        "validation_budget_usd": 3.0,
+        "excluded_model_ids": ["gpt-5.6-sol"],
     }
 
 
@@ -1214,7 +1347,11 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     conversation_memory_revision = script.get_revision("ab1c2d3e4f50")
     current_head_revision = script.get_revision("ac2d3e4f5061")
     app_auth_secret_revision = script.get_revision("b0c1d2e3f4a5")
-    llm_credential_encryption_revision = script.get_revision("c2e8f4a91d67")
+    routing_bootstrap_inputs_revision = script.get_revision("ba6f5c4d3e2f")
+    routing_performance_revision = script.get_revision("bb7c8d9e0f13")
+    routing_bootstrap_artifacts_revision = script.get_revision("bc8d9e0f1a24")
+    routing_global_profiles_revision = script.get_revision("bd9e0f1a2b35")
+    retired_input_cohort_cleanup_revision = script.get_revision("c6f8a1b2d3e4")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -1270,15 +1407,18 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
         "ab1c2d3e4f50",
     }
     assert app_auth_secret_revision.down_revision == "ac2d3e4f5061"
-    assert llm_credential_encryption_revision.down_revision == "b0c1d2e3f4a5"
+    assert routing_bootstrap_inputs_revision.down_revision == "c2e8f4a91d67"
+    assert routing_performance_revision.down_revision == "ba6f5c4d3e2f"
+    assert routing_bootstrap_artifacts_revision.down_revision == "bb7c8d9e0f13"
+    assert routing_global_profiles_revision.down_revision == "bc8d9e0f1a24"
     assert "2b6c7d8e9f02" in ancestry
     assert "a6f4d2c8e1b7" in ancestry
     assert "a9b0c1d2e3f4" in ancestry
     assert "aa0b1c2d3e4f" in ancestry
     assert "ab1c2d3e4f50" in ancestry
     assert "b0c1d2e3f4a5" in ancestry
-    assert "c2e8f4a91d67" in ancestry
-    assert script.get_heads() == ["c2e8f4a91d67"]
+    assert retired_input_cohort_cleanup_revision.down_revision == "bd9e0f1a2b35"
+    assert script.get_heads() == ["f4a5b6c7d8e9"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

@@ -176,6 +176,7 @@ def test_chatbot_forces_memory_mode_and_threads_conversation_id(monkeypatch):
     # conversation_id / memory_mode는 워크플로우 입력에서 제거된다.
     assert sent_inputs == {"question": "안녕"}
     assert result["status"] == "success"
+    assert result["run_id"] == "00000000-0000-0000-0000-000000000777"
 
 
 def test_chatbot_overrides_client_memory_false(monkeypatch):
@@ -800,7 +801,11 @@ class _FakeAsyncResult:
 
     @property
     def result(self):
-        return {"status": "success", "result": {"answer": "ok"}}
+        return {
+            "status": "success",
+            "result": {"answer": "ok"},
+            "run_id": "00000000-0000-0000-0000-000000000777",
+        }
 
 
 class _SecretFailureAsyncResult:

@@ -73,7 +73,7 @@ ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_memory"
 PARENT_REVISION = "aa0b1c2d3e4f"
-CURRENT_HEAD_REVISION = "head"
+MEMORY_MERGE_REVISION = "ac2d3e4f5061"
 
 
 def _run_alembic(
@@ -360,11 +360,14 @@ def test_memory_migration_uow_and_concurrent_start_turn_contracts():
         try:
             ids = _seed_legacy_execution(engine)
             _run_alembic(
-                CURRENT_HEAD_REVISION,
+                MEMORY_MERGE_REVISION,
                 operation="upgrade",
                 database=database,
                 config=config,
             )
+            # 이 테스트는 Memory foundation의 upgrade/downgrade 계약만 검증한다.
+            # 이후 revision까지 올린 뒤 rollback하면, 의도적으로 비가역인 후속
+            # migration 때문에 Memory rollback과 무관하게 실패한다.
             _assert_legacy_execution_survives(engine, ids)
             with Session(engine) as db:
                 assert check_memory_schema_readiness(db).ready is True

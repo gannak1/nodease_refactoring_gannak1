@@ -135,7 +135,7 @@ const setWorkflowPermission = (canWrite: boolean) => {
 
 const renderPanel = (node: AppNode) => render(<NodeInlinePanel node={node} />);
 
-describe('FR-001 Cost Optimizer 진입 액션', () => {
+describe('FR-001 Cost Optimizer 비교 분석 진입 액션', () => {
   beforeEach(() => {
     resetStore();
     setWorkflowPermission(true);
@@ -169,42 +169,45 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
     vi.restoreAllMocks();
   });
 
-  it('LLM 노드 상세 패널에는 모델 라우팅 최적화 진입 액션이 표시된다', () => {
+  it('LLM 노드 상세 패널에는 비교 분석 테스트 진입 액션이 표시된다', () => {
     renderPanel(createLlmNode());
 
     expect(
-      screen.getByRole('button', { name: /^최적화$/i }),
+      screen.getByRole('button', { name: /^비교 분석 테스트$/i }),
     ).toBeInTheDocument();
   });
 
-  it('LLM 노드가 아닌 노드 상세 패널에는 모델 라우팅 최적화 진입 액션이 표시되지 않는다', () => {
+  it('LLM 노드가 아닌 노드 상세 패널에는 비교 분석 테스트 진입 액션이 표시되지 않는다', () => {
     renderPanel(createNonLlmNode());
 
     expect(
-      screen.queryByRole('button', { name: /^최적화$/i }),
+      screen.queryByRole('button', { name: /^비교 분석 테스트$/i }),
     ).not.toBeInTheDocument();
   });
 
-  it('builder 이상 권한이 없으면 모델 라우팅 최적화 진입 액션은 비활성화된다', () => {
+  it('builder 이상 권한이 없으면 비교 분석 테스트 진입 액션은 비활성화된다', () => {
     setWorkflowPermission(false);
 
     renderPanel(createLlmNode());
 
     expect(
-      screen.getByRole('button', { name: /^최적화$/i }),
+      screen.getByRole('button', { name: /^비교 분석 테스트$/i }),
     ).toBeDisabled();
   });
 
-  it('모델 라우팅 최적화 클릭 시 모델 추천 모달을 연다', async () => {
+  it('비교 분석 테스트 클릭 시 Cost Optimizer 화면으로 이동한다', async () => {
     renderPanel(createLlmNode());
+    const button = screen.getByRole('button', {
+      name: /^비교 분석 테스트$/i,
+    });
+    await waitFor(() => expect(button).not.toBeDisabled());
     fireEvent.click(
-      screen.getByRole('button', { name: /^최적화$/i }),
+      button,
     );
 
-    expect(
-      await screen.findByRole('dialog', { name: /LLM 노드 설정 추천/i }),
-    ).toBeInTheDocument();
-    expect(routerMock.push).not.toHaveBeenCalled();
+    expect(routerMock.push).toHaveBeenCalledWith(
+      '/modules/workflow-1/cost-optimizer/llm-1',
+    );
   });
 
   it('저장되지 않은 draft가 있으면 저장 후 비교를 시작해야 한다는 안내를 표시한다', async () => {
@@ -214,7 +217,7 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
 
     renderPanel(createLlmNode());
     fireEvent.click(
-      screen.getByRole('button', { name: /^최적화$/i }),
+      screen.getByRole('button', { name: /^비교 분석 테스트$/i }),
     );
 
     expect(routerMock.push).not.toHaveBeenCalled();
@@ -248,7 +251,7 @@ describe('FR-001 Cost Optimizer 진입 액션', () => {
       );
     });
     expect(
-      screen.getByRole('button', { name: /^최적화$/i }),
+      screen.getByRole('button', { name: /^비교 분석 테스트$/i }),
     ).toBeDisabled();
   });
 });

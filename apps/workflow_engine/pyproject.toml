@@ -20,6 +20,10 @@ dependencies = [
     "pymupdf4llm>=0.0.5",  # PDF 텍스트 추출
     "gidgethub>=5.0.0",  # GitHub API 비동기 통합
     "gevent>=24.2.0",  # [NEW] Celery gevent pool for async I/O
+    # 자동 모델 라우팅의 초기 난이도 분류기. 모델은 lazy-load하므로 bootstrap/실행 시에만 메모리를 사용한다.
+    "transformers>=4.46.0,<5.0.0",
+    "torch>=2.6.0,<3.0.0",
+    "sentencepiece>=0.2.0,<0.3.0",
     # [SY] 외부 DB SSH 터널 동기화용
     "paramiko>=2.12.0,<3.0",
     "sshtunnel>=0.4.0,<0.5",

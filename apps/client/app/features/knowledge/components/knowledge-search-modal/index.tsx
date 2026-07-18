@@ -86,11 +86,14 @@ export default function KnowledgeSearchModal({
     knowledgeBaseId,
     organizationId: activeOrganizationId,
   });
-  searchRequestScope.current = {
-    isOpen,
-    knowledgeBaseId,
-    organizationId: activeOrganizationId,
-  };
+
+  useEffect(() => {
+    searchRequestScope.current = {
+      isOpen,
+      knowledgeBaseId,
+      organizationId: activeOrganizationId,
+    };
+  }, [activeOrganizationId, isOpen, knowledgeBaseId]);
 
   useEffect(() => {
     const syncActiveOrganization = () => {

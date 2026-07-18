@@ -273,6 +273,7 @@ export const useAutoSync = () => {
   const debouncedSync = useMemo(
     () =>
       debounce(
+        // eslint-disable-next-line react-hooks/refs -- debounce 콜백은 렌더 이후에만 실행되며 최신 ref를 읽어 저장 충돌을 막는다.
         async (
           currentNodes: typeof nodes,
           currentEdges: typeof edges,

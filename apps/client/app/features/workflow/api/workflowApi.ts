@@ -42,15 +42,12 @@ import {
   CostOptimizerRecommendationVerificationResponse,
   CostOptimizerRecommendationVerifyRequest,
   ModelRoutingPolicyPatchRequest,
-  ModelRoutingCohortCreateRequest,
-  ModelRoutingCohortCreateResponse,
-  ModelRoutingCohortUpdateRequest,
-  ModelRoutingCohortUpdateResponse,
-  ModelRoutingCohortSuggestionRequest,
-  ModelRoutingCohortSuggestionResponse,
   ModelRoutingPolicyPatchResponse,
   ModelRoutingPolicyRefreshResponse,
   ModelRoutingPolicyResponse,
+  ModelRoutingBootstrapPreview,
+  ModelRoutingBootstrapRequest,
+  ModelRoutingBootstrapResponse,
   WorkflowPermissionResponse,
   LLMTraceListResponse,
   WorkflowResponse,
@@ -480,64 +477,36 @@ export const workflowApi = {
     return response.data;
   },
 
-  suggestModelRoutingCohort: async (
+  getModelRoutingBootstrapPreview: async (
     workflowId: string,
     nodeId: string,
-    data: ModelRoutingCohortSuggestionRequest,
-  ): Promise<ModelRoutingCohortSuggestionResponse> => {
+  ): Promise<ModelRoutingBootstrapPreview> => {
+    const response = await api.get(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/bootstrap-preview`,
+    );
+    return response.data;
+  },
+
+  getModelRoutingBootstrap: async (
+    workflowId: string,
+    nodeId: string,
+  ): Promise<ModelRoutingBootstrapResponse | null> => {
+    const response = await api.get(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/bootstrap`,
+    );
+    return response.data;
+  },
+
+  createModelRoutingBootstrap: async (
+    workflowId: string,
+    nodeId: string,
+    data: ModelRoutingBootstrapRequest,
+  ): Promise<ModelRoutingBootstrapResponse> => {
     const response = await api.post(
-      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/cohorts/suggest`,
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/bootstrap`,
       data,
     );
     return response.data;
-  },
-
-  createModelRoutingCohort: async (
-    workflowId: string,
-    nodeId: string,
-    data: ModelRoutingCohortCreateRequest,
-  ): Promise<ModelRoutingCohortCreateResponse> => {
-    const response = await api.post(
-      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/cohorts`,
-      data,
-    );
-    return response.data;
-  },
-
-  updateModelRoutingCohort: async (
-    workflowId: string,
-    nodeId: string,
-    cohortId: string,
-    data: ModelRoutingCohortUpdateRequest,
-  ): Promise<ModelRoutingCohortUpdateResponse> => {
-    const response = await api.patch(
-      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/cohorts/${cohortId}`,
-      data,
-    );
-    return response.data;
-  },
-
-  convertModelRoutingCohortToManual: async (
-    workflowId: string,
-    nodeId: string,
-    cohortId: string,
-    data: ModelRoutingCohortUpdateRequest,
-  ): Promise<ModelRoutingCohortUpdateResponse> => {
-    const response = await api.post(
-      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/cohorts/${cohortId}/convert-to-manual`,
-      data,
-    );
-    return response.data;
-  },
-
-  deleteModelRoutingCohort: async (
-    workflowId: string,
-    nodeId: string,
-    cohortId: string,
-  ): Promise<void> => {
-    await api.delete(
-      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/cohorts/${cohortId}`,
-    );
   },
 
   // 5. 새 워크플로우 생성
@@ -683,7 +652,11 @@ export const workflowApi = {
         ? { conversation: { client_id: clientConversationId } }
         : {}),
     });
-    return response.data as { status: string; results?: unknown };
+    return response.data as {
+      status: string;
+      results?: unknown;
+      run_id?: string | null;
+    };
   },
 
   listWorkflowNodes: async (excludedAppId?: string) => {

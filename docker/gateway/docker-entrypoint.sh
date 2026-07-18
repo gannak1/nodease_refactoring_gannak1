@@ -53,6 +53,17 @@ echo ""
 echo "Starting Uvicorn server..."
 echo "================================================"
 
-# Uvicorn 실행 (원래 CMD)
+# Development Compose sets GATEWAY_RELOAD=true and syncs source files into the
+# container. Production keeps a single worker process without file watching.
 cd /app
+if [ "${GATEWAY_RELOAD:-false}" = "true" ]; then
+    exec uvicorn apps.gateway.main:app \
+        --host 0.0.0.0 \
+        --port 8000 \
+        --reload \
+        --reload-dir /app/apps/gateway \
+        --reload-dir /app/apps/shared \
+        --reload-dir /app/apps/workflow_engine
+fi
+
 exec uvicorn apps.gateway.main:app --host 0.0.0.0 --port 8000

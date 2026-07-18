@@ -6,6 +6,9 @@ import hashlib
 import json
 from typing import Any
 
+from apps.shared.services.model_routing_model_filter import (
+    normalize_model_routing_model_id,
+)
 
 LLM_RUNTIME_RELEVANT_KEYS = (
     "model_id",
@@ -43,6 +46,16 @@ def llm_node_config_fingerprint(node_data: dict[str, Any]) -> str:
         payload["model_routing_refresh_every_runs"] = refresh.get(
             "refresh_every_runs"
         )
+    if isinstance(routing_policy, dict):
+        excluded_model_ids = routing_policy.get("excluded_model_ids")
+        if isinstance(excluded_model_ids, list):
+            payload["model_routing_excluded_model_ids"] = sorted(
+                {
+                    normalize_model_routing_model_id(model_id)
+                    for model_id in excluded_model_ids
+                    if normalize_model_routing_model_id(model_id)
+                }
+            )
     serialized = json.dumps(
         payload,
         ensure_ascii=False,

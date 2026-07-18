@@ -394,41 +394,16 @@ def test_llm_trace_metadata_preserves_canonical_routing_and_rag_summaries():
                     "selected_model": "gpt-4.1",
                     "fallback_model": "gpt-4.1-mini",
                     "fallback_used": True,
-                    "decision_source": "active_policy",
-                    "matched_rule_id": "short-json",
-                    "matched_cohort_id": "routine_support",
-                    "cohort_matcher": "hybrid",
-                    "semantic_route_label": "단순 사용·안내 문의",
-                    "semantic_candidate_cohort_id": "routine_support",
-                    "semantic_candidate_label": "단순 사용·안내 문의",
-                    "semantic_similarity": 0.88,
-                    "semantic_threshold": 0.75,
-                    "semantic_runner_up_score": 0.51,
-                    "semantic_margin": 0.37,
-                    "semantic_min_margin": 0.05,
-                    "semantic_cohort_scores": [
-                        {
-                            "cohort_id": "routine_support",
-                            "label": "단순 사용·안내 문의",
-                            "similarity": 0.88,
-                            "threshold": 0.75,
-                            "raw_query": "must not persist",
-                        },
-                        {
-                            "cohort_id": "high_risk_support",
-                            "label": "보안·보상·장애 문의",
-                            "similarity": 0.51,
-                            "threshold": 0.75,
-                        },
-                    ],
-                    "semantic_match_status": "matched",
-                    "semantic_decision_source": "safety_override",
-                    "semantic_lexical_score": 2.0,
-                    "semantic_lexical_signal_count": 2,
-                    "semantic_safety_override": True,
-                    "route_catalog_version": "ticket-routing-v1",
-                    "semantic_encoder_model": "text-embedding-test",
-                    "reason_code": "quality_gate_passed",
+                    "decision_source": "local_router",
+                    "matched_rule_id": "incremental-local-router",
+                    "strategy_id": "judge_bootstrap_incremental_v1",
+                    "reason_code": "local_router_confident",
+                    "decision_factors": {
+                        "learning_mode": "local_first",
+                        "local_confidence": 0.86,
+                        "local_confidence_threshold": 0.78,
+                        "candidate_model_count": 3,
+                    },
                     "judge_called": False,
                     "runtime_context": {
                         "output_format": "json",
@@ -457,30 +432,12 @@ def test_llm_trace_metadata_preserves_canonical_routing_and_rag_summaries():
     assert metadata["llm"]["repetition_rate"] == 0.125
     assert metadata["llm"]["fallback_used"] is True
     assert metadata["llm"]["input_length_bucket"] == "short"
-    assert metadata["llm"]["matched_cohort_id"] == "routine_support"
-    assert metadata["llm"]["semantic_route_label"] == "단순 사용·안내 문의"
-    assert metadata["llm"]["semantic_candidate_cohort_id"] == "routine_support"
-    assert metadata["llm"]["semantic_candidate_label"] == "단순 사용·안내 문의"
-    assert metadata["llm"]["semantic_similarity"] == 0.88
-    assert metadata["llm"]["semantic_min_margin"] == 0.05
-    assert metadata["llm"]["semantic_cohort_scores"] == [
-        {
-            "cohort_id": "routine_support",
-            "label": "단순 사용·안내 문의",
-            "similarity": 0.88,
-            "threshold": 0.75,
-        },
-        {
-            "cohort_id": "high_risk_support",
-            "label": "보안·보상·장애 문의",
-            "similarity": 0.51,
-            "threshold": 0.75,
-        },
-    ]
-    assert metadata["llm"]["semantic_decision_source"] == "safety_override"
-    assert metadata["llm"]["semantic_lexical_signal_count"] == 2
-    assert metadata["llm"]["semantic_safety_override"] is True
-    assert metadata["llm"]["route_catalog_version"] == "ticket-routing-v1"
+    assert metadata["llm"]["decision_factors"] == {
+        "learning_mode": "local_first",
+        "local_confidence": 0.86,
+        "local_confidence_threshold": 0.78,
+        "candidate_model_count": 3,
+    }
     assert metadata["rag"]["context_token_estimate"] == 123
     assert metadata["rag"]["evidence_sufficient"] is True
     assert "raw_input" not in str(metadata)

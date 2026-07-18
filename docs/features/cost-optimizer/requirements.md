@@ -2,11 +2,48 @@
 
 Status: Draft
 Related Features: workflow, llm-credentials, observability
-Verified Against: feature/mba-198 @ 40c45fcc
+Verified Against: feature/mba-270 @ d2d416b9
 
 ## Purpose
 
 Cost Optimizer는 workflow 안의 LLM 노드 비용을 줄이기 위한 기능이다.
+
+## Current Routing Decision
+
+FR-011의 현재 제품 계약은
+[ADR-0059](../../decisions/ADR-0059-judge-bootstrap-incremental-routing.md)를 따르는
+`judge_bootstrap_incremental_v1`의 무수동-bootstrap 경로다. 새 workflow가
+"정책이 없어서 routing을 시작할 수 없는" 상태에 머물지 않게, 자동 라우팅을 켠 테스트와
+배포 실행은 첫 요청부터 runtime Judge가 현재 요청에 맞는 모델을 선택한다. 정상 실행 결과가
+쌓일수록 로컬 라우터가 Judge를 대신한다.
+
+배포 시에는 실행 주체가 사용할 수 있는 후보 모델로 Judge-first policy를 저장한다. 정책 행이
+아직 없거나 삭제된 예외 상황에서도 runtime은 같은 후보 모델로 일회성 Judge-first policy를
+구성해 요청을 처리한다. 따라서 `기본 모델`은 Judge 자체를 호출할 판단 모델이며, 정책 부재의
+fallback이 아니다. `실행 실패 대체 모델`은 선택된 모델 호출이 실패했을 때만 사용한다.
+
+일반 실행은 현재 문의의 주제 키워드나 문장 유사도를 저장·검색하지 않는다. 초기 단계에서는
+**변수 치환이 끝난 prompt와 들어온 입력**을 Judge에 일시적으로 전달해, 실행 주체가 쓸 수
+있는 전체 후보 중 하나를 선택하게 한다. Judge 응답은 선택 모델·신뢰도·안전한 근거만 남기며,
+원문 prompt, 입력 payload, RAG 문서 원문은 정책 artifact나 API 응답에 저장하지 않는다.
+
+Judge 선택은 즉시 학습하지 않는다. 실행 중에는 원문 없는 숫자 vector·선택 모델만 대기 label로
+저장하고, workflow가 끝난 뒤 해당 node가 schema 통과, 후속 노드 성공, fallback 미발생 조건을
+모두 만족할 때만 local artifact에 누적한다. 완료된 운영 결과가 최소 표본 수,
+schema/downstream 성공률, fallback 비율 기준을 통과하면 로컬
+분류기가 먼저 모델을 선택한다. 로컬 신뢰도가 낮거나 선택 모델의 credential 권한이 바뀐
+경우에만 Judge를 다시 호출한다. prompt, 출력 schema, RAG, downstream 계약이 바뀌면
+기존 local artifact를 오래됨으로 표시하고 Judge-first로 다시 시작한다.
+
+문장 품질을 평가하기 위한 별도 LLM Judge는 자동 모델 라우팅의 운영 성적에 사용하지 않는다.
+대신 완료된 배포 실행의 schema 통과, 후속 노드 성공, provider fallback, 실행 성공 신호를
+후보 모델별로 누적한다. 다음 Runtime Judge 호출에는 이 운영 계약 성적을 함께 전달하며,
+같은 모델의 성적이 5건 이상 쌓인 경우에는 카탈로그 품질값보다 해당 성적을 우선 참고한다.
+표본이 부족할 때 카탈로그 값은 초기 선택을 위한 약한 사전 정보로만 사용한다.
+
+배포 후 성공 운영 실행이 설정 주기만큼 쌓이면 Judge 선택 label 수와 모델별 품질·비용·지연을
+재평가한다. local router가 충분히 학습됐는지는 이 시점의 품질 gate로만 전환한다. 정책 갱신은
+정적 rule이나 별도 난이도 모델을 만들지 않고 학습 모드만 조정한다.
 
 이 기능의 첫 번째 목표는 workflow 전체를 A/B 테스트하는 것이 아니라, 사용자가 선택한 특정 LLM 노드 하나에 대해 현재 설정과 후보 설정을 같은 입력 기준으로 비교할 수 있게 하는 것이다.
 
@@ -39,14 +76,14 @@ Cost Optimizer는 이 질문에 답하기 위한 기능이다.
 
 ## Current Implementation Snapshot
 
-현재 구현은 Cost Optimizer를 두 흐름으로 나눈다.
+현재 구현은 Cost Optimizer 비교와 자동 모델 라우팅을 분리한다.
 
 1. `비교 분석 테스트`: 특정 LLM 노드의 과거 `workflow_node_runs.id`를 baseline으로 직접 선택하고, 같은 입력으로 B candidate를 실행해 결과를 비교한다.
-2. `모델 라우팅 최적화`: 최신 baseline과 과거 Cost Optimizer experiment/candidate 이력을 읽어, 사용자가 선택한 전략(`자동 균형`, `비용 우선`, `속도 우선`)에 맞는 검증된 후보가 있는지 보여준다.
+2. `자동 모델 라우팅`: LLM 노드 설정에서 Judge-first 정책을 준비한다. 초기에는 runtime Judge가 실행 모델을 선택하고, 안전한 선택 label과 운영 품질이 충분히 쌓이면 로컬 라우터가 먼저 선택한다.
 
-baseline 선택 UI는 현재 최신 로그를 자동으로 고정하지 않는다. 사용자는 baseline 목록에서 비교 기준 실행 로그를 직접 선택해야 한다. `GET /baselines/latest` API는 모델 라우팅 추천 화면과 API 호환을 위해 남아 있지만, A/B workspace 진입의 기본 UX는 “선택 없이 최신 baseline 자동 사용”이 아니다.
+baseline 선택 UI는 현재 최신 로그를 자동으로 고정하지 않는다. 사용자는 baseline 목록에서 비교 기준 실행 로그를 직접 선택해야 한다. `GET /baselines/latest` API는 추천 모달 검증과 API 호환을 위해 남아 있지만, A/B workspace 진입의 기본 UX는 “선택 없이 최신 baseline 자동 사용”이 아니다.
 
-정책 기반 자동 모델 라우팅의 실행 기준은 별도 policy 저장소다. 현재 코드는 active policy 저장, runtime rule 평가, 실행 주체 기준 credential Hard Gate, 운영 run 집계, 자동 입력군 발견, 후보 Replay/Judge 검증, 검증 통과 rule 활성화를 제공한다. 입력군과 검증 증거는 전용 DB table에 저장한다. 다만 Cost Optimizer의 기존 비교 이력을 정책 증거로 자동 흡수하는 통합과, 운영자가 evidence gap을 상세히 보는 분석 화면은 남아 있다. FR-011은 이 범위를 [ADR-0038](../../decisions/ADR-0038-workflow-aware-adaptive-routing.md)의 Workflow-Aware Adaptive Routing으로 다루는 진행중 요구사항이다.
+정책 기반 자동 모델 라우팅의 실행 기준은 별도 policy 저장소다. 현재 코드는 active policy 저장, runtime 일반 rule 평가, 실행 주체 기준 credential Hard Gate, 운영 run 집계와 전역 모델 profile·노드별 운영 성적 반영을 제공한다. 입력군 발견, 의미 유사도 계산, 입력군별 후보 Replay/Judge 검증은 활성 제품 경로에서 제거했다.
 
 파라미터 추천은 미구현이 아니다. `GET /cost-optimizer/parameter-recommendations`는 배포 후 운영 로그 기반 추천을 반환하고, `PATCH /cost-optimizer/apply-recommendations`는 현재 `direct_policy_update` 성격의 추천만 즉시 draft에 반영한다. 일반 파라미터 변경 추천은 A/B 후보 실험을 거쳐 검증하는 흐름으로 다룬다.
 
@@ -86,7 +123,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | FR-008 | 후보 적용 | P1 | `구현 완료` | `테스트 통과` | 사용자가 성공한 B 후보 설정 전체를 현재 target LLM node draft에 적용한다. downstream warning 확인과 schema 실패 후보 차단을 제공한다. draft conflict 처리는 후속 보강 대상이다. |
 | FR-009 | 비용 기록 | P1 | `구현 완료` | `테스트 통과` | 결과 분석 화면은 A/B 비용, prompt/completion/total token, latency를 표시한다. 비교 실행은 전용 experiment/candidate row로 저장되고 usage row가 candidate를 직접 참조한다. 과거 결과 재조회 API와 trace metadata retention 기준 정리를 제공한다. |
 | FR-010 | 권한 | P1 | `구현 완료` | `UI/API 권한 기반 구현, 테스트 통과` | A/B 테스트와 후보 적용은 builder 이상 권한이 있는 사용자만 수행한다. compare/apply/history API와 모델/Knowledge 후보 사용 가능성 검증이 적용됐다. |
-| FR-011 | Workflow-Aware Adaptive Routing | P1 | `진행중` | `전용 cohort/evidence DB, 자동·직접 입력군, 실제 Replay/Judge gate, runtime trace, 실제 Provider 50건 holdout 검증 완료. 기존 비교 이력 자동 흡수와 분석 UI 보강이 남음` | 운영 로그와 Cost Optimizer Replay를 출처가 구분된 evidence로 사용한다. Hard Gate와 품질 gate를 통과한 후보만 versioned input cohort rule에 연결하며, runtime은 저장 policy만 평가한다. Judge는 검증 단계에서만 출력 품질 평가와 설명을 돕고, 요청마다 정책을 직접 결정하지 않는다. |
+| FR-011 | Judge Bootstrap 점진 학습 자동 모델 라우팅 | P1 | `진행중` | `기존 bootstrap 회귀 라우팅을 Judge-first/local-first 구조로 전환 중` | 초기 운영 요청은 Judge가 후보 모델을 선택하고, 선택 label과 실제 운영 성과가 충분히 쌓이면 로컬 라우터가 우선 선택한다. |
 | FR-012 | LLM 파라미터 추천 룰셋 | P2 | `진행중` | `서비스/API/UI 일부 구현` | 운영 로그 기반 추천 API와 추천 모달이 있다. 모델 라우팅 enable/refresh 같은 `direct_policy_update`는 즉시 적용 가능하고, 일반 파라미터/RAG 조정은 A/B 후보 실험으로 검증한다. |
 | FR-013 | Cost Optimizer 후보 검증 및 출력 품질 평가 | P1 | `구현 완료` | `추천 빠른 검증·일반 compare quality judge·이력 저장·결과 분석 UI 및 targeted test 통과` | 추천 모달과 일반 비교 분석 테스트에서 동일 입력의 A/B 출력을 평가해 비용·속도·token·품질 점수·JSON schema·downstream 호환성을 보여주고, 같은 결과를 적용하거나 다시 조회한다. |
 | FR-014 | 배포별 자동 파라미터 최적화 | P2 | `진행중` | `배포 설정·운영 수집·상태/예산 UI 구현` | 배포 시 선택한 LLM 노드의 운영 실행을 수집하고, 점검 주기와 월간 검증 예산을 분리해 관리한다. 모델 라우팅·모델 선택·프롬프트 변경은 포함하지 않는다. |
@@ -172,7 +209,7 @@ LLM 노드 상세 화면의 모델 설정 UX는 다음을 따른다.
 
 - 자동 모델 라우팅 OFF 상태에서는 기본 모델과 fallback 모델 선택 UI를 표시한다.
 - 자동 모델 라우팅 ON 상태에서는 기본 모델과 fallback 모델 선택 UI를 숨기고 active policy 상태를 표시한다.
-- 실행 시점 자동 라우팅은 active policy를 사용하며, judge LLM을 매 실행마다 호출하지 않는다.
+- 초기 `judge_first` 상태의 배포 운영 실행은 active policy가 정한 후보 집합 안에서 Judge LLM을 호출한다. 충분한 Judge 선택 label과 건강한 운영 결과가 쌓인 `local_first` 상태에서는 로컬 라우터가 먼저 선택하고, 확신이 낮은 요청만 Judge로 되돌린다.
 - 정책 갱신은 새 validated Replay evidence, 운영 evidence threshold, model availability/drift, 사용자의 수동 요청으로 수행한다. `refresh_every_runs` 기본 20회는 호환용 주기 재평가 trigger이며 모델 변경을 보장하지 않는다.
 - 작업 유형 입력은 표시하지 않는다.
 
@@ -406,561 +443,54 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 
 현재 Gateway의 Cost Optimizer availability, baseline 조회, experiment history, compare, apply API는 workflow `write` 권한을 요구한다. 프론트 진입 액션은 builder 미만 사용자에게 비활성화 상태와 권한 부족 안내를 제공한다. compare/apply API는 선택한 모델 후보가 현재 사용자의 사용 가능 모델 목록에 있는지 확인하고, Knowledge Base 후보가 현재 organization/workflow scope에서 `use` 가능한지 다시 검증한다.
 
-### FR-011. Workflow-Aware Adaptive Routing
-
-Cost Optimizer는 LLM 노드의 workflow 맥락과 검증된 실행 증거를 사용해 모델을
-선택하는 Workflow-Aware Adaptive Routing을 제공해야 한다.
-
-여기서 `workflow 맥락`은 다음을 뜻한다.
-
-- target LLM node의 출력 형식과 schema 계약
-- Knowledge/RAG 사용 여부
-- 파일 입력 여부와 입력/prompt 길이 구간
-- downstream node가 기대하는 출력 계약
-- 명시적으로 저장된 `customer_facing`과 `node_task`
-- 과거 운영 traffic에서 각 입력군이 차지한 비중
-
-`Adaptive`는 매 실행마다 Judge LLM이 모델을 고른다는 뜻이 아니다. 새로운 운영
-증거나 Cost Optimizer Replay 결과가 생기면 policy를 재평가하고, 일반 실행은 이미
-검증되어 저장된 active policy만 평가한다.
-
-#### 테스트 실행 후 실제 라우팅 상세
-
-Test Sidebar는 실행 전 모델을 예상하는 UI를 제공하지 않는다. 자동 라우팅이 켜진 LLM
-node는 현재 draft 설정이 활성 deployment snapshot과 같을 때에만 그 deployment의 active
-policy를 **테스트 실행에도 읽어** 모델을 고른다. 사용자는 실제 테스트를 실행한 뒤 각
-node의 `상세 보기`를 눌러, **이번 실행에서 실제로 어떤 모델이 선택·호출됐는지** 같은
-사이드바 안에서 확인한다. 상세 보기에서 `테스트 결과로 돌아가기`를 누르면 노드별 실행
-결과 목록으로 복귀한다.
-
-- 실행 상세에는 상태, 실행 시간, 비용, 전체 출력 데이터를 표시한다. 출력은 임의로 자르지
-  않고 내부 스크롤 영역에서 전체 값을 확인할 수 있어야 한다.
-- 자동 모델 라우팅이 적용된 LLM node는 입력 유형, 가장 가까운 입력 유형, **현재 policy에
-  등록된 모든 입력군의 유사도와 각 입력군의 선택 기준**, 처음 선택한 모델, 선택 이유,
-  policy version을 표시한다. 목록은 유사도 내림차순으로 보여 주며, 선택된 입력군 또는
-  기준 미달 상태를 함께 표시한다. 매칭 점수는 해당 입력이 특정 입력군과 얼마나 가까운지를
-  뜻하며, 입력군의 운영 traffic 비중이나 성공 확률을 뜻하지 않는다.
-- 입력군 선택에는 개별 입력군의 통과 기준과 1위·2위 최소 점수 차이 기준을 모두 적용한다.
-  화면은 두 기준을 수치로 보여 주되, 입력 원문이나 embedding vector는 표시하지 않는다.
-- 입력군 매칭이 기준에 미달하거나 애매하면 `기준 미달로 기본 모델 사용`과 그 이유를
-  표시한다. 저비용 모델을 불확실한 입력에 임의로 적용하지 않는 안전 장치다.
-- 실제 provider 호출에서 fallback이 발생했으면 최초 선택 모델, 안전한 실패 사유 코드,
-  실제 대체 실행 모델을 함께 표시한다. 계획된 fallback 모델만 있는 것과 실제 fallback이
-  발생한 것은 구분한다.
-- 테스트 실행은 배포 후 운영 실행이 아니므로 policy 학습, 입력군 traffic 집계, 정책 갱신
-  카운터에 포함하지 않는다는 안내를 표시한다.
-- draft와 활성 deployment의 같은 LLM node 설정 fingerprint가 다르면 해당 node는 배포
-  policy를 읽지 않고 현재 저장 모델로 실행한다. 오래된 policy로 새 draft를 테스트하지 않기
-  위한 경계다.
-- trace에는 raw credential, API key, embedding vector, 입력 원문을 새로 복사해 노출하지
-  않는다. 출력 데이터는 기존 테스트 실행 권한 범위에서만 제공한다.
-
-#### 해결해야 하는 현재 공백
-
-현재 구현은 다음 기반을 제공한다.
-
-- policy table과 update/run event 이력
-- 배포 runtime의 active policy 조회와 rule evaluator
-- 실행 주체 기준 credential/model Hard Gate
-- 운영 run 중복 집계와 비동기 refresh task
-- 선택 모델, fallback, rule, policy version safe trace
-
-그러나 bootstrap policy는 저장 모델만 유지하고, 운영 profile은 Cost Optimizer
-candidate를 제외한다. 새 모델을 policy에 넣으려면 그 모델의 품질 표본이 필요한데
-runtime은 검증되지 않은 모델을 임의로 탐색하지 않는다. 따라서 Replay에서 이미
-검증한 후보를 policy evidence로 연결하지 않으면 새 모델이 승격될 수 없는 순환이
-생긴다.
-
-기존 synthetic E2E는 여러 모델의 profile을 테스트 안에서 미리 주입한다. 이는
-rule evaluator와 refresh gate가 주어진 profile에서 동작함을 검증하지만, 실제 DB의
-Replay candidate가 policy와 runtime 모델 변경으로 이어짐을 증명하지 않는다.
-
-#### 목표 처리 순서
-
-```text
-운영 로그 + Cost Optimizer Replay
-  -> Evidence Adapter
-  -> Hard Gate
-  -> Routing Eligibility Analyzer
-  -> Candidate Quality/Efficiency Gate
-  -> Deterministic Policy Optimizer
-  -> Policy Proposal 또는 Fixed Model 권고
-  -> Active Policy
-  -> Runtime Semantic Cohort Matcher + Rule Evaluator
-  -> Decision Trace
-```
-
-#### Evidence source
-
-Evidence는 출처를 구분해야 한다.
-
-| Source | 의미 | FR-011 적용 |
-| --- | --- | --- |
-| `operational` | 배포 후 실제 운영 run | 현재 구현과 연결 |
-| `replay` | 같은 baseline input으로 실행한 Cost Optimizer candidate | 현재 FR-011 구현 범위 |
-| `shadow` | 운영 응답에 영향 없이 후보를 병렬 실행 | 후속 |
-| `canary` | 제한된 실제 traffic에 후보를 적용 | 후속 |
-
-Replay는 실제 운영 traffic 비중을 증명하지 않는다. 따라서 `replay`와
-`operational` sample count를 하나의 숫자로 합치지 않는다. Replay는 후보 품질을
-검증하고, 운영 로그는 현재 정책 성능과 입력군 비중을 계산하는 데 사용한다.
-
-현재 구현은 정책 단위로 전용 학습 저장소를 둔다. 일반 운영 입력 원문은 이 저장소에
-복사하지 않으며 hash와 embedding vector만 관찰값으로 보관한다.
-
-| 저장소 | 용도 | 원문 보관 여부 |
-| --- | --- | --- |
-| `workflow_runs`, `workflow_node_runs`, `llm_usage_logs` | 배포 후 운영 실행과 비용의 원천 | 기존 trace 정책을 따른다. |
-| `cost_optimizer_experiments`, `cost_optimizer_candidates` | 사용자가 만든 비교/Replay 이력 | 기존 Cost Optimizer 보존 정책을 따른다. |
-| `llm_node_model_routing_policies`, `llm_node_model_routing_policy_updates` | active policy와 갱신 이력 | 원문 없음 |
-| `llm_node_model_routing_cohorts`, `..._observations`, `..._model_evidence`, `..._validation_*` | 입력군 lifecycle, 비가역 관찰값, 후보 검증 결과, 월간 예산 | 운영 입력 원문 없음 |
-| `llm_node_model_routing_cohort_examples` | 입력군의 합성 대표 문장 | 사용자가 직접 등록한 대표 문의 또는 별도 안전 요약 과정이 만든 합성 문장만 보관한다. 운영 원문, secret, 실제 고객 식별 정보는 보관하지 않는다. |
-
-입력군은 자동 발견과 직접 등록을 함께 지원한다.
-
-- 자동 발견: 최근 40개 관찰에서 서로 다른 입력 5개 이상이 두 점검 구간에 반복되면 제안한다.
-- 직접 등록: 사용자가 대표 한국어 문의를 쓰고 마법사로 이름/영문 key 초안을 받은 뒤 수정해 저장한다. 직접 등록만으로는 즉시 저비용 모델을 사용하지 않으며, 운영 관찰과 Replay 검증을 통과해야 active rule이 된다.
-- 입력군이 0개여도 자동 라우팅을 막지 않는다. 이때 모든 요청은 `기본 모델 (규칙 미일치 시)`로 실행하고, 자동 발견 또는 직접 등록 후 검증된 rule만 별도 모델을 선택한다.
-- 대표 문의: policy 조회는 cohort별 `representative_query`를 반환한다. 자동 발견 입력군은 운영 원문을 저장하지 않으므로 안전한 합성 대표 문장이 아직 없으면 `null`을 반환하며, 화면은 준비 중 상태와 `사용자 입력군으로 전환` 액션을 표시한다.
-- 수정 경계: `source=manual` 입력군만 이름, 영문 key, 대표 문의, 고정 여부를 수정할 수 있다. 대표 문의를 바꾸면 centroid와 기존 품질 증거의 의미가 달라지므로 기존 route/evidence를 비활성화하고 `proposed` 상태에서 다시 검증한다. `source=auto`는 원본을 수정하지 않고 같은 값을 새 manual cohort 초안으로 복사해 사용자가 별도 입력군으로 등록한다.
-- 최대 개수: policy별 `1~12`, 기본 `6`, 권장 `3~6`이다. `proposed`, `validating`, `validated_waiting`, `active` 상태만 자리를 차지한다. `dormant`와 `retired`는 과거 trend 이력이므로 새 입력군 자리를 막지 않는다.
-- lifecycle: 자동 입력군은 최근 traffic share가 3개 점검 구간 연속 5% 이하이면 `dormant`, 휴면 뒤 10% 이상으로 회복하면 `active`, 90일이 지나면 `retired`가 된다. 직접 등록/필수/안전 보호 입력군은 자동 휴면 처리하지 않는다.
-
-#### Hard Gate
-
-다음 조건을 통과하지 못한 모델은 점수 계산 전에 후보에서 제외한다.
-
-- 현재 organization과 execution subject가 credential `use` 권한을 가진다.
-- credential-model relation이 verified이고 active chat model이다.
-- context/output limit, JSON/schema, tool/file/image 기능이 node 요구사항과 호환된다.
-- RAG/provider 기능과 organization 정책을 만족한다.
-- 삭제, 비활성, 만료 또는 scope 밖 resource를 참조하지 않는다.
-
-권한이나 capability를 통과하지 못한 모델은 fallback으로도 저장하지 않는다.
-
-#### Routing Eligibility Analyzer
-
-모든 LLM node에 adaptive routing을 강제하지 않는다. 분석 결과는 다음 값 중
-하나다.
-
-| 결과 | 의미 |
-| --- | --- |
-| `eligible` | 둘 이상의 실행 가능한 후보와 검증 가능한 품질 계약이 있다. |
-| `needs_evidence` | 후보는 있지만 Replay/운영 표본이 부족하다. |
-| `fixed_model_recommended` | 모델을 나눠 쓸 예상 이익이 작거나 안전한 품질 검증이 어렵다. |
-| `blocked` | 권한, credential, capability 또는 데이터 계약 문제로 분석할 수 없다. |
-
-Analyzer는 후보 수, 품질 계약, cohort 구분 가능성, 표본 수, 예상 순절감액을 본다.
-예상 순절감액은 모델 비용 차이에서 Replay/Judge/fallback 비용을 뺀 값이다.
-`fixed_model_recommended`이면 억지로 조건 rule을 만들지 않고 현재 모델을 유지한다.
-
-#### Candidate lifecycle과 품질 gate
-
-Candidate 상태는 최소한 다음 의미를 구분한다.
-
-| 상태 | 의미 |
-| --- | --- |
-| `discovered` | credential/capability 목록에서 발견됨 |
-| `eligible` | Hard Gate 통과 |
-| `evaluating` | Replay 또는 후속 Shadow/Canary 검증 중 |
-| `validated` | 품질/효율 gate 통과 |
-| `rejected` | 품질, 호환성 또는 효율 gate 실패 |
-| `active` | active policy의 default 또는 rule model로 사용 중 |
-
-`CostOptimizerCandidate` row가 존재한다는 사실만으로 `validated`가 되지 않는다.
-다음 조건을 만족해야 한다.
-
-- candidate 실행 성공
-- schema가 필요한 경우 schema 통과
-- downstream contract가 compatible 또는 승인 가능한 warning
-- 자유형 출력은 quality judge score/confidence 통과
-- baseline 대비 비용 또는 latency 개선
-- fallback/retry 증가가 허용 범위 이내
-- candidate와 현재 배포 node fingerprint 비교 가능
-
-임계값은 service 여러 곳에 숫자로 하드코딩하지 않고 versioned
-`gate_profile`에서 관리한다. Policy와 trace에는 `gate_profile_version`을 남긴다.
-
-#### Judge 역할
-
-Judge LLM은 다음만 담당한다.
-
-- 자유형 A/B 출력 품질 점수와 safe 근거 생성
-- evidence 설명 문구 생성
-- policy proposal을 위한 보조 신호 생성
-
-Judge 결과를 active policy에 직접 저장하면 안 된다. Hard Gate, sample gate,
-schema/downstream gate, 비용/latency 비교와 허용 condition 검사는 결정론적 코드가
-다시 수행해야 한다. Runtime 요청마다 Judge를 호출해서도 안 된다.
-
-#### Semantic cohort catalog
-
-입력의 의미가 다른데도 길이와 JSON 여부가 같으면 일반 feature만으로는 서로 다른
-모델을 선택할 수 없다. 따라서 FR-011은 Aurelio Semantic Router의 정적 Route 방식을
-참고한 semantic cohort matcher를 포함한다.
-
-Semantic cohort는 runtime에서 즉석으로 군집을 만드는 기능이 아니다. Policy를
-활성화하기 전에 다음을 준비한다.
-
-- node별 versioned Route catalog
-- Route별 사용자 친화 label과 대표 문장
-- 대표 문장의 사전 계산 embedding vector
-- Route별 사전 계산 centroid vector
-- embedding model/version
-- 의미 분류에 사용할 runtime input의 명시적인 `input_paths`
-- Route별 threshold, `centroid` aggregation, `min_margin`
-
-대표 문장은 실제 운영 raw input을 그대로 저장하지 않는다. 첫 구현은 node에
-명시적으로 등록했거나 검토된 synthetic 문장만 허용한다. Runtime은 `input_paths`에
-지정된 업무 본문 값만 순서대로 추출해 한 번 embedding한다. 객체 key, customer tier,
-실행 식별자처럼 의미 분류 대상이 아닌 주변 metadata는 포함하지 않는다. 원문과
-vector는 trace/API에 저장하지 않는다. 지정 경로에 값이 없으면 임의로 전체 payload를
-사용하지 않고 semantic match를 `unavailable`로 닫아 default model을 유지한다.
-
-Route 대표 문장과 threshold/min-margin은 label이 있는 calibration 입력으로만
-조정한다. Aurelio의 `fit/evaluate` 분리를 참고해 calibration에 사용한 문장은 최종
-정확도 보고용 holdout에서 제외한다. Holdout 결과를 보고 같은 holdout 문장을 그대로
-대표 문장에 추가한 뒤 그 데이터로 정확도를 다시 주장해서는 안 된다.
-
-Policy 활성화 시 각 Route 대표 vector의 평균으로 centroid를 미리 계산한다. Runtime은
-입력 vector와 각 Route centroid의 cosine similarity를 계산한다. 이 방식은 대표 문장
-하나와 우연히 비슷해서 잘못 분류되는 `max` 방식의 위험을 줄이고 Route 전체 의미를
-반영한다. 최고 Route가 threshold를 넘고 2위와의 차이가 `min_margin` 이상일 때만
-semantic cohort를 확정한다. 불확실하면 `no_match` 또는 `ambiguous`로 표시하고 현재
-default model을 유지한다. 기존 policy의 `mean`, `max`, `sum`은 호환을 위해 유지한다.
-
-분류가 확정되지 않아도 운영자가 기준을 조정할 수 있도록 가장 점수가 높았던 Route의
-`candidate_cohort_id`, 사용자 친화 label, similarity, threshold와 margin은 safe
-진단 정보로 남긴다. 이 후보 Route는 확정 cohort가 아니며 모델 선택 rule에 전달하지
-않는다. Runtime input 원문, 대표 문장 원문과 embedding vector는 계속 trace/API에
-노출하지 않는다.
-
-Semantic cohort는 입력 의미를 판정할 뿐 모델을 직접 결정하지 않는다. 해당
-cohort에서 품질 gate를 통과한 모델만 active policy rule에 연결할 수 있다. Embedding
-호출 비용과 latency도 예상 순절감 계산에 포함한다.
-
-#### Hybrid safety override
-
-결제·계정처럼 같은 주제 안에서도 일반 문의와 보안 사고가 함께 발생할 수 있으므로,
-서로 배타적인 centroid Route 하나만으로 위험도를 판정하지 않는다. FR-011 runtime은
-다음 순서의 하이브리드 matcher를 사용한다.
-
-1. active policy catalog에 `safety_override=true`인 Route가 있으면 해당 Route의
-   versioned `lexical_signals`를 먼저 평가한다.
-2. signal 점수가 Route의 `lexical_override_threshold` 이상이면 dense similarity보다
-   안전 Route를 우선 확정한다.
-3. 안전 override가 없으면 기존 embedding centroid, Route threshold와 `min_margin`으로
-   semantic cohort를 판정한다.
-4. 두 단계 모두 확정하지 못하면 default model을 유지한다.
-
-도메인 신호는 runtime Python 상수에 하드코딩하지 않고 Route catalog/policy 데이터에만
-저장한다. 따라서 다른 workflow는 자기 catalog에 맞는 신호를 가질 수 있고, catalog
-version 변경으로 검증·배포 이력을 추적할 수 있다. Runtime matcher는 문자열 정규화,
-가중치 합산과 threshold 비교만 담당하며 `보안`, `결제`, `SLA` 같은 업무 단어의 의미를
-알지 못한다.
-
-Trace에는 `hybrid` matcher 여부, safety override 적용 여부, 매칭 signal 수와 합산
-점수만 남긴다. 입력 원문과 매칭된 signal 원문은 저장하지 않는다. 일반 결제 단어만
-있다는 이유로 안전 Route를 선택해서는 안 되며, catalog에 명시된 사고 신호가 실제로
-threshold를 넘어야 한다.
-
-#### Deterministic Policy Optimizer
-
-Optimizer는 다음 순서로 policy를 만든다.
-
-1. Hard Gate와 quality gate를 통과한 `validated` 후보만 남긴다.
-2. 성공/schema/downstream 같은 이진 품질은 Wilson lower bound로 작은 표본의
-   불확실성을 반영한다.
-3. 자유형 quality score는 표본 수와 분산을 반영한 보수적 lower bound를 사용한다.
-4. 후보의 품질 하한이 `baseline 품질 하한 - 허용 품질 저하` 이상인 경우에만 품질
-   floor를 통과한다.
-5. 품질 floor 안에서 expected cost 또는 latency를 최소화한다. 동률이면 현재 모델을
-   유지한다.
-6. 운영 traffic share로 전체 예상 비용을 계산한다.
-7. fallback, Replay/Judge, semantic embedding 비용을 포함한 예상 순절감액이 양수일
-   때만 변경한다.
-8. 증거가 부족한 cohort는 현재 모델을 유지한다.
-
-이 알고리즘은 RouteLLM의 `강한 모델이 필요한 확률을 threshold와 비교한 뒤 약한
-모델을 사용한다`는 보수적 경계를 참고하되, Nodease의 여러 모델/provider와
-schema/downstream 계약에 맞게 constrained optimization으로 확장한다.
-
-초기 cohort condition은 runtime과 optimizer가 공통으로 이해하는 일반 feature만
-사용한다.
-
-- `output_format`
-- `schema_required`
-- `knowledge_enabled`
-- `has_file_input`
-- `input_length_bucket`
-- `prompt_length_bucket`
-- 명시적 `customer_facing`
-- 명시적 `node_task`
-
-런타임 코드에 SLA, 법무, 고객지원 같은 도메인 키워드를 하드코딩하지 않는다.
-초기 자동 policy 생성은 `keyword_any`를 사용하지 않는다.
-
-Policy rule은 `cohort_id`, `when`, `selected_model_id`, `fallback_model_id`,
-`reason_code`, `evidence_version`, `gate_profile_version`을 가져야 한다.
-
-#### Runtime과 trace
-
-Runtime은 active policy만 읽고 일반 feature를 계산해 rule을 평가한다. Judge와
-optimizer는 runtime request path에서 호출하지 않는다. 사용할 수 없는 rule model은
-건너뛰고 검증된 fallback을 사용하며, 사용할 수 있는 policy model이 없으면 provider
-호출 전에 fail-closed한다.
-
-Semantic Route catalog가 있으면 runtime은 일반 feature와 semantic cohort를 함께
-평가한다. Encoder 사용 실패, threshold 미달, margin 미달에서는 임의로 저비용
-모델을 선택하지 않고 default model을 사용한다.
-
-Trace에는 최소한 다음 safe metadata를 남긴다.
-
-- `strategy=workflow_aware_adaptive`
-- policy id/version
-- evidence version과 gate profile version
-- selected/fallback model
-- matched cohort/rule id
-- semantic Route label, similarity, threshold, margin, match status
-- route catalog와 encoder version
-- decision source와 reason code
-- fallback/escalation 여부와 사유
-- `judge_called=false`
-
-#### Policy refresh
-
-고정 N회는 policy 변경의 충분조건이 아니다. `refresh_every_runs`는 호환용
-재평가 trigger로 유지할 수 있지만 다음 evidence trigger도 지원해야 한다.
-
-- 새 validated Replay candidate 생성
-- 새 운영 evidence가 gate 최소 표본 충족
-- model/credential availability 변경
-- 품질, 비용 또는 latency drift
-- 사용자 수동 갱신
-- 호환용 `auto_n_runs`
-
-새 evidence가 없으면 `kept_current`로 끝내고 policy version을 불필요하게 올리지
-않는다.
-
-#### 구현 및 실험 완료 조건
-
-FR-011 구현 완료는 문서나 synthetic profile 테스트만으로 판정하지 않는다. 한
-workflow의 한 LLM node에서 다음 흐름이 실제 DB 데이터를 통해 연결되어야 한다.
-
-1. 현재 모델과 저비용 후보를 같은 대표 입력군으로 Replay한다.
-2. 후보가 schema/downstream/quality gate를 통과한다.
-3. refresh가 Replay evidence를 읽어 policy proposal을 만든다.
-4. active policy가 versioned Semantic Route catalog를 포함한다.
-5. runtime은 입력을 embedding하고 threshold/margin을 통과한 semantic cohort에서
-   검증된 후보 모델을 선택한다.
-6. 다른 cohort, 애매한 입력 또는 근거 부족 입력은 현재 모델을 유지한다.
-7. trace에서 모델, Route label/score/threshold, rule, policy/evidence/catalog version과
-   사유를 확인한다.
-8. gate 실패 후보는 active policy에 들어가지 않는다.
-9. 배포된 workflow에 학습 대표 문장과 겹치지 않는 50개 이상의 다양한 입력을 보내
-   예상 cohort/model과 실제 선택 결과를 비교한다.
-10. 전체 semantic cohort 정확도 90% 이상, 고위험 입력 recall 95% 이상, trace 필수
-    필드 기록률 100%, 권한 없는 모델 선택 0건을 만족해야 한다.
-11. 기준을 만족하지 못하면 threshold, 대표 문장 또는 policy mapping의 원인을
-    분석하고 수정한 뒤 같은 검증을 반복한다.
-
-실제 Provider 검증은
-`reports/model-routing/adaptive-routing-run-b46d0c6d30924f1bbde73c9857fe1969.md`와
-보정 기록에 남겼다. 실제 배포 discovery 40건으로 자동 입력군 2개를 만들고,
-각 입력군에서 후보별 실제 Replay 5회와 LLM Judge gate를 수행했다. 실제 모델이
-요청 모델과 달라 fallback이 발생한 `gpt-5-nano` 후보는 제외했고,
-`gpt-5.4-nano`만 검증 통과 rule로 활성화했다. discovery/Replay에 쓰지 않은
-holdout 50건은 50/50 성공, trace 선택 근거 50/50 기록, 자동 입력군 2개는 각각
-20/20으로 `gpt-5.4-nano`, 고위험 입력군 10/10은 `gpt-4.1`로 실행됐다.
-이 결과는 해당 seed/deployment의 재현 결과이지, 모든 업무 입력에서 같은 품질을
-보장한다는 일반 성능 수치는 아니다.
-
-Replay 품질 증거를 만드는 입력군은 Route 대표 문장, threshold 보정용 calibration,
-최종 정확도 평가용 holdout과 분리한다. 증거 수집 입력은 실제 배포 baseline을 먼저
-만들고, 그 baseline의 동일 입력으로 후보 모델만 실행한다. 이 과정에서 생성된 실제
-`cost_optimizer_experiments`와 `cost_optimizer_candidates`만 policy optimizer의
-후보 증거로 사용하며, 임의로 만든 DB 행이나 최종 holdout 결과를 증거로 사용하지
-않는다.
-
-#### 후속 제품 범위
-
-후속 제품 작업에서는 라우팅 적합성/evidence gap/예상 절감/policy diff UI,
-activation/rollback UI, traffic share 기반 예상 절감 보강과 시연 QA를 진행한다.
-실행 로그의 실제 선택 모델·입력 유형·fallback·policy version과 사용자 친화적 선택
-근거 표시는 현재 구현 범위에 포함된다.
-
-Shadow, Canary, Selective Cascade, provider SLO, drift 기반 adaptive refresh와
-Contextual Bandit은 후속 범위다. Semantic cohort matcher는 현재 FR-011 범위에
-포함한다.
-
-#### 현재 구현 호환 동작
-
-아래 내용은 Workflow-Aware evidence pipeline이 연결되기 전 현재 policy 저장,
-runtime, 운영 run 집계와 Judge refresh의 호환 동작이다. 고정 20회와 Judge policy
-초안은 최종 policy 결정 규칙이 아니라 기존 trigger/입력 경로로만 유지한다.
-
-Cost Optimizer는 LLM 노드가 배포 후 운영 실행에서 모델을 자동 선택할 수 있도록 정책 기반 모델 라우팅을 제공해야 한다.
-
-모델 라우팅은 매 실행마다 LLM judge를 호출해 판단하는 기능이 아니다. 실행 시점에는 이미 저장된 active policy를 읽고, 그 정책의 rule에 따라 사용할 기본 모델과 fallback 모델을 선택한다. Judge LLM은 정책 생성 또는 정책 갱신 시점에만 호출한다.
-
-정책 갱신은 모델 변경과 같은 의미가 아니다. 배포 후 운영 실행이 20회 쌓이면 시스템은 기존 active policy를 재평가하지만, 충분한 운영 샘플과 품질 gate를 통과한 저비용 후보가 없으면 기존 active policy를 유지한다. 검증 샘플을 만들기 위해 자동으로 더 싼 모델로 하향하는 동작은 하지 않는다. 저비용 모델 탐색은 A/B 테스트나 별도 실험 기능에서 수행한다.
-
-사용자 시나리오는 다음 흐름을 따른다.
-
-1. 빌더가 LLM 노드 상세 화면에서 `자동 모델 라우팅`을 켠다.
-2. ON 상태에서는 사용자가 `기본 모델 (규칙 미일치 시)`과 `기본 대체 모델`을 설정하고 현재 정책 상태를 확인한다. 입력군 rule에 매칭되지 않은 요청만 이 기본 모델을 사용하며, 검증된 입력군 rule은 별도 모델을 선택할 수 있다.
-3. 변경한 node 설정을 포함해 workflow를 배포한다. draft에서 토글만 켠 상태는 운영 표본 집계 대상이 아니다.
-4. 배포 후 첫 성공 운영 실행은 저장 `model_id`/`fallback_model_id`로 보수적으로 실행하고, 같은 두 모델만 담은 policy row를 만든다. bootstrap은 모델을 하향하거나 조건 rule을 만들지 않는다.
-5. 그 다음 배포 후 실행부터 LLM 노드는 policy table의 active policy를 읽어 모델을 선택한다.
-6. 실행 시점에는 judge LLM을 호출하지 않는다.
-7. 배포 후 운영 실행이 20회 쌓이면 정책 갱신 job이 실행된다.
-8. 사용자는 policy row가 만들어진 뒤 `자동 정책 갱신하기` 버튼으로 즉시 갱신을 요청할 수 있다.
-9. judge가 새 정책을 만들면 품질 gate 통과 시 active policy로 반영한다.
-10. 품질 근거가 부족하거나 검증된 저비용 후보가 없으면 기존 active policy를 유지하고 갱신 결과를 `kept_current`로 기록한다.
-11. 새 정책안이 만들어졌지만 불확실성이 높으면 `pending_review` 상태로 저장하고 기존 active policy를 유지한다.
-12. credential 또는 model이 사용할 수 없게 되면 해당 모델은 후보에서 제외하고 policy fallback을 찾는다. 현재 실행 주체가 쓸 수 있는 모델이 하나도 없으면 provider 호출 전에 명시적으로 실패한다.
-
-정책 상태는 다음 값만 사용한다. `cold_start`, `warming_up`, `optimized` 같은 데이터 성숙도 단계는 사용자-facing 상태와 API 계약에서 사용하지 않는다.
-
-| 상태 | 의미 |
-| --- | --- |
-| `off` | 자동 라우팅 꺼짐 |
-| `collecting` | 자동 라우팅은 켜졌지만 정책 갱신에 필요한 운영 로그를 모으는 중 |
-| `active` | active policy로 실행 중 |
-| `refreshing` | judge가 운영 로그를 분석해 정책을 갱신 중 |
-| `pending_review` | 새 정책안이 만들어졌지만 품질 gate 미통과 또는 불확실성 때문에 반영 보류 |
-| `failed` | 정책 갱신 실패 |
-
-정책 저장 source of truth는 `llm_node_model_routing_policies`다. 이 row는 active policy, pending policy, 정책 버전, 설정된 갱신 횟수, 마지막 갱신 시각과 누적 운영 실행 수를 가진다. LLM node data의 `model_routing_policy` JSON은 이전 draft/Cost Optimizer candidate 호환용 snapshot일 뿐, 일반 배포 실행의 정책 기준이 아니다.
-
-자동 모델 라우팅이 켜진 동일 LLM node를 새 deployment version으로 다시 배포하면, 이전 cohort/evidence의 node 설정 지문과 새 deployment snapshot의 LLM 설정 지문이 모두 같을 때만 이전 활성 배포의 active policy, 입력군, 대표 예문, 검증 완료 모델 evidence를 이어받아야 한다. 모델, prompt, RAG, 출력 형식처럼 실행 결과에 영향을 주는 설정이 달라졌다면 이전 정책을 복제하지 않고 새 버전에서 근거를 다시 수집·검증한다. 상속하는 경우 policy 안의 semantic cohort ID 참조도 새 입력군 row ID로 다시 연결해야 한다. 반면 이전 배포에서 누적한 운영 실행 수, refresh 진행 상태, run event, 운영 관찰값, 월간 Replay/Judge 검증 비용은 새 배포의 운영 이력이 아니므로 복사하지 않고 새 버전에서 0부터 다시 기록한다. 이 규칙은 새 배포 직후 입력군 목록과 직접 입력군 추가 기능이 비어 보이지 않게 하면서, 예전 버전의 실행 수로 새 버전의 정책 갱신이 조기에 예약되는 문제를 막는다.
-
-배포된 graph snapshot에서 `auto_model_routing=true`인 LLM node에 아직 policy row가 없다면 첫 실행은 node에 저장된 `model_id`와 `fallback_model_id`를 보수적으로 사용한다. graph snapshot 안의 legacy `model_routing_policy` JSON은 이 시점에 평가하지 않는다. 첫 terminal 운영 workflow 완료 후 생성되는 bootstrap policy도 저장 `model_id`/`fallback_model_id`만 보존하고 rule은 빈 배열로 둔다. bootstrap 생성은 judge refresh가 아니며, `auto_n_runs` 또는 `manual_refresh`가 policy update row를 남기는 실제 정책 갱신이다.
-
-각 배포 후 workflow run은 `llm_node_model_routing_policy_run_events`에 한 번만 기록한다. 이 event의 `(policy_id, workflow_run_id)` 고유 제약으로 Celery 재시도나 중복 완료 훅이 같은 run을 두 번 카운트하지 못하게 한다. 누적 수가 `refresh_every_runs`에 처음 도달한 event만 refresh task를 예약한다.
-
-자동 라우팅 ON 상태에서 운영 실행은 다음 순서로 동작한다.
-
-1. target LLM node의 policy table에서 active policy를 조회한다.
-2. active policy가 있고 사용할 수 있는 모델이면 policy rule로 모델을 선택한다.
-3. policy의 default/rule/fallback 모델을 현재 execution subject의 credential `use` 권한과 verified credential-model relation으로 제한한다.
-4. 선택된 rule 모델을 사용할 수 없으면 policy default/fallback 중 현재 사용 가능한 모델을 선택한다.
-5. 현재 사용 가능한 policy 모델이 하나도 없으면 provider 호출 전에 `model_routing_no_available_model`로 실패한다. 저장 모델이나 임의 상위 모델을 추정해 호출하지 않는다.
-6. 실행 metadata에 policy id, policy version, selected model, fallback model, reason code, `judge_called=false`를 남긴다.
-
-런타임 rule evaluator는 도메인 키워드 목록을 코드 상수로 가지지 않는다. 실행 시점에는 입력 길이 bucket, prompt 길이 bucket, 출력 형식, schema 필요 여부, RAG 사용 여부, 파일 입력 여부, 명시적 `customer_facing`, 명시적 `node_task` 같은 일반 feature만 계산한다. 현재 judge refresh에는 raw 입력이 전달되지 않으므로 `keyword_any`를 추정 생성하지 않고, 위 일반 feature와 동일한 segment 성능 근거가 있는 rule만 자동 반영한다. 기존에 검토·저장된 `keyword_any` rule은 runtime이 저장 policy로만 평가할 수 있지만, 자동 refresh의 생성 대상은 아니다.
-
-generic rule은 policy의 `priority` 순서를 따른다. 기본 bootstrap policy는 rule 없이 저장 모델을 유지한다.
-
-허용되지 않은 `when` condition key가 들어온 rule은 저장하거나 평가하지 않는다. 런타임이 모르는 key를 무시하면 judge가 잘못 만든 rule이 너무 넓게 매칭될 수 있기 때문이다. 예를 들어 `customer_support_ticket_triage: true` 같은 임의 key는 사용할 수 없고, 노드 작업 분류는 `node_task: "customer_support_ticket_triage"`로 표현해야 한다.
-
-정책 갱신 샘플은 workflow 전체가 아니라 target LLM node 기준으로 계산한다. 자동 갱신 기준은 배포 후 운영 실행 20회다.
-
-정책 갱신 샘플에 포함하는 데이터:
-
-- `workflow_runs.deployment_id IS NOT NULL`인 배포 후 terminal (`success` 또는 `failed`) 실행
-- `trigger_mode`가 API, webhook, scheduler, app 같은 운영 실행인 run
-- target LLM node의 `workflow_node_runs`
-- 모델, 비용, token, latency 원천인 `llm_usage_logs`
-- schema/downstream/fallback/retry safe metadata
-
-정책 갱신 샘플에서 제외하는 데이터:
-
-- 배포 전 테스트 실행
-- `deployment_id IS NULL`인 수동 테스트 실행
-- Cost Optimizer A/B 후보 실행
-- 모델을 식별할 수 없거나 safe summary를 만들 수 없는 실행
-- retention/redaction 정책 때문에 safe summary를 만들 수 없는 실행
-
-Judge LLM 호출은 정책 갱신 작업에서만 발생한다. 자동 라우팅 ON 상태의 일반 workflow 실행마다 judge를 호출해서는 안 된다.
-
-정책 갱신 trigger는 다음 두 가지다. 자동 trigger는 배포 후 운영 실행이 완료된 뒤에만 생성한다. 테스트 실행, Cost Optimizer candidate 실행, `deployment_id`가 없는 수동 실행은 카운트와 judge 입력에서 제외한다.
-
-| Trigger | 설명 |
-| --- | --- |
-| `auto_n_runs` | active policy 기준 마지막 갱신 이후 배포 후 운영 실행이 node 설정의 `refresh_every_runs`만큼 누적되면 자동 실행. 기본값은 20회이며 이 trigger는 정책 재평가를 뜻할 뿐 모델 변경을 보장하지 않는다. |
-| `manual_refresh` | 사용자가 `자동 정책 갱신하기` 버튼을 눌러 즉시 실행 |
-
-Judge LLM에 전달하는 입력은 safe summary만 허용한다. raw prompt, raw output, raw input, credential 원문, API key, encrypted config, raw trace payload, raw RAG chunk content는 전달하거나 저장하지 않는다.
-
-Judge 입력 safe summary는 다음 정보를 포함할 수 있다.
-
-- eligible run count
-- excluded run count와 제외 사유 count
-- 모델별 평균 비용, 평균 token, 평균 latency
-- schema pass rate
-- downstream success rate
-- fallback rate
-- retry count
-- 입력/프롬프트 길이 bucket, output format, schema 필요 여부, RAG 사용 여부, 파일 입력 여부, `customer_facing`, `node_task`별 segment 성능 summary
-- output format/schema summary
-- RAG 사용 여부와 retrieval safe summary
-- 현재 active policy version
-- candidate model 목록과 가격/credential 사용 가능 여부 summary
-
-Judge 결과는 바로 운영 정책에 반영하지 않는다. 다음 gate를 통과한 경우에만 active policy로 조건부 자동 반영한다. gate를 통과한 변경안이 없으면 정책 갱신은 성공했더라도 active policy는 유지하며 결과를 `kept_current`로 남긴다.
-
-- 사용할 수 있는 credential/model만 포함한다.
-- 비용 또는 latency 개선 근거가 있다.
-- schema/downstream 품질 지표가 기준 이하로 떨어지지 않는다.
-- fallback/retry 증가가 허용 범위 이내다.
-- 후보 Replay의 `requested_model_id`와 provider가 실제로 응답한 `actual_model_id`가 같고 fallback이 발생하지 않는다. 요청 모델과 실제 실행 모델이 다르면 해당 표본은 후보 모델의 품질 증거가 아니므로, schema와 judge 점수가 통과했더라도 candidate 승격에 사용하지 않는다.
-- judge 결과 confidence가 정책 기준 이상이다.
-- 조건 rule은 같은 `when` 조건의 segment에서 해당 모델이 품질 gate를 통과한 근거가 있다.
-- raw payload 또는 secret을 포함하지 않는다.
-
-새 default model 또는 새/변경된 rule의 `selected_model_id`는 기존 bootstrap policy의 rule이나 fallback에 이미 등장했더라도 별도의 운영 품질 표본을 가져야 한다. 단순히 후보 목록에 있었던 사실은 검증 근거가 아니다. 변경 모델과 현재 primary model 모두 관측 평균 비용 또는 평균 latency가 있으면 변경 모델은 둘 중 하나에서 개선되어야 한다. 관측값을 비교할 수 없는 경우에만 verified candidate의 정적 price 정보를 보조 비용 근거로 사용한다.
-
-gate를 통과하지 못하면 새 정책안은 `pending_review`로 저장하고 기존 active policy를 유지한다. 검증된 변경안 자체가 없으면 `kept_current`로 기록하고 보류 정책을 만들지 않는다. `pending_review` 정책은 운영 실행에 영향을 주지 않는다.
-
-정책 갱신 metadata는 추적 가능해야 한다. 최소한 다음 정보를 저장한다.
-
-```json
-{
-  "trigger": "auto_n_runs",
-  "judge_model": "gpt-4.1-mini",
-  "prompt_version": "model-routing-policy-judge-v1",
-  "eligible_run_count": 20,
-  "excluded_run_count": 7,
-  "judge_usage_log_id": "uuid",
-  "result": "applied",
-  "new_policy_version": "router-policy-v4"
-}
-```
-
-실행 시점 trace metadata는 모델 선택 결과와 파라미터 추천 품질 신호를 canonical `trace_metadata.llm`/`.rag`에 safe summary로 남긴다.
-
-```json
-{
-  "llm": {
-    "policy_id": "uuid",
-    "policy_version": "router-policy-v4",
-    "selected_model": "gpt-4.1-mini",
-    "fallback_model": "gpt-4.1",
-    "decision_source": "active_policy",
-    "matched_rule_id": "low-risk-json-triage",
-    "reason_code": "quality_gate_passed_cost_reduction",
-    "judge_called": false,
-    "finish_reason": "stop",
-    "schema_status": "passed",
-    "downstream_status": "passed",
-    "fallback_used": false,
-    "repetition_rate": 0.02
-  },
-  "rag": {
-    "context_token_estimate": 420,
-    "retrieved_chunk_count": 3,
-    "evidence_sufficient": true
-  }
-}
-```
-
-작업 유형은 사용자가 직접 고르는 입력값으로 두지 않는다. 정책 갱신은 node 설정, output format/schema, prompt safe summary, RAG 사용 여부, downstream 계약, 과거 node run profile을 보고 내부적으로 판단한다.
-
-정책 기반 자동 모델 라우팅의 기본 원칙은 `품질 유지 후 비용 절감`이다. 비용이 더 싼 모델이라도 품질 gate를 통과하지 못하면 active policy로 반영하지 않는다.
-
-최적화 에이전트는 실행 로그와 A/B 비교 결과를 바탕으로 모델, 프롬프트, `max_tokens`, 출력 형식 같은 최적화 후보를 제안하는 별도 후속 기능이다. 에이전트는 자동 정책 갱신 judge와 역할이 다르며, 후속 기능으로 추가한다.
-
+### FR-011. Judge Bootstrap 점진 학습 자동 모델 라우팅
+
+자동 모델 라우팅은 입력 문장을 입력군으로 저장하거나 주제 키워드 rule을 하드코딩하지
+않는다. 초기에는 Judge가 현재 요청과 노드 계약을 읽어 후보 모델을 선택하고, 이후에는
+그 선택과 실제 실행 결과로 학습한 로컬 라우터가 먼저 모델을 고른다.
+
+#### 초기 정책 생성
+
+- 사용자는 LLM 노드에서 자동 라우팅을 켜고 작업 설명, 기본 모델, 기본 대체 모델을 입력한다.
+- bootstrap은 system/user/assistant prompt, 입력 매핑, 출력 형식과 schema, RAG 설정,
+  후속 노드 계약을 읽어 Judge 요청 계약과 로컬 router artifact 초기 상태를 만든다.
+- bootstrap 생성은 외부 LLM을 호출하지 않으며 즉시 `ready` 상태가 된다.
+- 초기 Judge는 현재 요청별로 `selected_model_id`, `confidence`, `reason_code`를 반환한다.
+  Judge label은 로컬 모델 선택 분류기의 학습 데이터이며 runtime keyword rule이 아니다.
+- 학습은 실행 중 메모리에 있는 rendered prompt로 mDeBERTa feature를 만든 뒤, 원문 대신
+  숫자 vector·Judge 선택만 대기 저장한다. workflow 완료 뒤 schema 통과, 후속 노드 성공,
+  fallback 미발생을 확인한 label만 artifact 가중치에 반영한다. RAG 문서 원문은 Judge와
+  artifact에 넣지 않고 retrieval 사용 여부·문맥 길이·출처 수 같은 구조 정보만 쓴다.
+- prompt, 입력 매핑, 출력 schema, RAG 또는 downstream 계약이 바뀌면 bootstrap은 오래됨
+  상태가 되며 다시 생성해야 한다. 수동 모델만 바뀐 경우에는 재사용할 수 있다.
+
+#### 실행 시 모델 선택과 점진 전환
+
+- `judge_first`: local artifact가 준비되기 전에는 매 운영 요청에 Judge를 호출한다.
+- `local_first`: Judge 선택 label이 충분히 쌓이고 완료된 운영 품질 기준을 통과하면 로컬
+  mDeBERTa 분류기가 전체 사용 가능 후보 중 하나를 먼저 선택한다.
+- `local_first` 상태에서 local prediction의 confidence가 기준 미만이거나 선택 모델이 현재
+  실행 주체에게 허용되지 않으면 Judge를 호출한다. 별도 `hybrid` 상태값은 두지 않는다.
+- Judge 호출 실패·형식 오류는 workflow를 실패시키지 않으며 사용자가 지정한 기본 모델, 그 뒤
+  기본 대체 모델 순서로 실행한다.
+- 실행 trace에는 `decision_source`(`runtime_judge`, `local_router`, `stored_model`), Judge
+  호출 여부와 비용, 선택 모델, 대체 모델, 정책 버전, 안전한 선택 근거를 남긴다.
+
+#### 배포 후 재평가
+
+- Test Sidebar 실행은 활성 배포 정책과 같은 후보 목록으로 runtime Judge를 호출해 실제 실행 모델을 고른다. 다만 Judge usage는 해당 테스트 run에만 기록하고, Judge label·운영 성적·갱신 카운터에는 포함하지 않는다.
+- 성공한 배포 후 운영 실행만 노드별 모델·입력 길이 profile별 성적에 반영한다.
+- 설정한 점검 주기에 도달하면 완료된 Judge 표본과 운영 성적을 다시 평가한다.
+  최소 표본 수, 최소 두 개 이상의 선택 모델, schema/downstream 성공률, fallback 비율 기준을
+  충족하면 `local_first`로 전환한다. 기준을 잃으면 다시 `judge_first`로 돌아간다.
+- 재평가는 추가 Planner/Judge 호출 없이 이미 누적된 Judge label과 완료된 운영 결과를 읽는다.
+
+#### 제외 범위
+
+- 입력군, 대표 예문, semantic cohort, embedding 유사도, cohort별 lifecycle과
+  cohort별 Replay/Judge gate는 제품 경로와 저장소에서 제거한다.
+- 과거 전략 정책은 신규 runtime에서 실행하지 않는다. 정책 refresh 시 정적 rule을 버리고
+  Judge-first 기본·대체 모델과 빈 학습 상태로 한 번 이관하며, 이관 전 실행은 저장 모델로 닫는다.
 ### FR-012. LLM 파라미터 추천 룰셋
 
 Cost Optimizer는 모델 교체뿐 아니라 LLM 노드의 파라미터 조정 후보도 추천한다.

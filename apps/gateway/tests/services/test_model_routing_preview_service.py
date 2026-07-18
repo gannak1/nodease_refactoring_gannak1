@@ -92,21 +92,15 @@ class TestModelRoutingPreviewService:
 
         assert exc_info.value.code == "model_routing.policy_not_ready"
 
-    def test_preview_uses_deployed_rule_without_creating_run_or_policy_event(self):
-        """미리보기는 active deployment rule을 읽기만 하고 어떤 DB 기록도 남기지 않는다."""
+    def test_preview_uses_judge_first_default_without_creating_run_or_policy_event(self):
+        """미리보기는 Judge를 호출하지 않고 기본 모델만 안전하게 보여준다."""
         policy = _policy(
             active_policy={
+                "strategy_id": "judge_bootstrap_incremental_v1",
                 "default_model_id": "gpt-4.1",
                 "fallback_model_id": "gpt-4.1-mini",
-                "rules": [
-                    {
-                        "id": "route-routine-support",
-                        "when": {"input_length_bucket": "short"},
-                        "selected_model_id": "gpt-4o-mini",
-                        "fallback_model_id": "gpt-4.1-mini",
-                        "reason_code": "validated_quality_floor_cost_reduction",
-                    }
-                ],
+                "candidate_model_ids": ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+                "learning": {"mode": "judge_first", "judged_request_count": 0},
             }
         )
         db = _db_with_policy(policy)
@@ -137,7 +131,9 @@ class TestModelRoutingPreviewService:
         with patch(
             "apps.gateway.services.model_routing_preview_service.WorkflowRuntimeLLMService.get_runtime_available_model_ids_for_user",
             return_value=["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
-        ):
+        ), patch(
+            "apps.gateway.services.model_routing_preview_service.WorkflowRuntimeLLMService.get_runtime_client_for_user"
+        ) as runtime_client:
             result = ModelRoutingPreviewService.preview(
                 db,
                 workflow=workflow,
@@ -147,22 +143,28 @@ class TestModelRoutingPreviewService:
             )
 
         assert result["deployment_version"] == 2
-        assert result["selected_model_id"] == "gpt-4o-mini"
+        assert result["selected_model_id"] == "gpt-4.1"
         assert result["fallback_model_id"] == "gpt-4.1-mini"
-        assert result["decision_source"] == "matched_rule"
-        assert result["matched_rule_id"] == "route-routine-support"
+        assert result["decision_source"] == "default_model"
+        assert result["matched_rule_id"] is None
+        assert result["strategy_id"] == "judge_bootstrap_incremental_v1"
+        assert result["reason_code"] == "judge_bootstrap_required"
+        assert result["runtime_context"]["input_length_bucket"] == "short"
         assert result["draft_matches_deployment"] is False
         assert "inputs" not in result
+        runtime_client.assert_not_called()
         db.add.assert_not_called()
         db.commit.assert_not_called()
         db.flush.assert_not_called()
 
-    def test_preview_uses_deployed_default_when_no_rule_matches(self):
+    def test_preview_uses_deployed_default_before_runtime_judge_runs(self):
         policy = _policy(
             active_policy={
+                "strategy_id": "judge_bootstrap_incremental_v1",
                 "default_model_id": "gpt-4.1",
                 "fallback_model_id": "gpt-4.1-mini",
-                "rules": [],
+                "candidate_model_ids": ["gpt-4.1", "gpt-4.1-mini"],
+                "learning": {"mode": "judge_first"},
             }
         )
         db = _db_with_policy(policy)
@@ -195,9 +197,11 @@ class TestModelRoutingPreviewService:
     def test_preview_uses_fallback_when_default_model_is_not_available(self):
         policy = _policy(
             active_policy={
+                "strategy_id": "judge_bootstrap_incremental_v1",
                 "default_model_id": "gpt-4.1",
                 "fallback_model_id": "gpt-4.1-mini",
-                "rules": [],
+                "candidate_model_ids": ["gpt-4.1", "gpt-4.1-mini"],
+                "learning": {"mode": "judge_first"},
             }
         )
         db = _db_with_policy(policy)
@@ -230,9 +234,11 @@ class TestModelRoutingPreviewService:
     def test_preview_blocks_when_no_policy_model_is_available(self):
         policy = _policy(
             active_policy={
+                "strategy_id": "judge_bootstrap_incremental_v1",
                 "default_model_id": "gpt-4.1",
                 "fallback_model_id": "gpt-4.1-mini",
-                "rules": [],
+                "candidate_model_ids": ["gpt-4.1", "gpt-4.1-mini"],
+                "learning": {"mode": "judge_first"},
             }
         )
         db = _db_with_policy(policy)

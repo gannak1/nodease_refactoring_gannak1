@@ -140,7 +140,7 @@ def test_llm_span_metadata_preserves_model_routing_summary_only():
     }
 
 
-def test_llm_span_metadata_preserves_safe_runtime_policy_outcome_fields():
+def test_llm_span_metadata_preserves_current_routing_fields_without_sensitive_values():
     metadata = TraceMetadataSanitizer.sanitize_span_metadata(
         "llmNode",
         {
@@ -151,25 +151,13 @@ def test_llm_span_metadata_preserves_safe_runtime_policy_outcome_fields():
                 "downstream_status": "passed",
                 "fallback_used": True,
                 "policy_id": "policy-1",
-                "matched_rule_id": "short-json",
-                "matched_cohort_id": "routine_support",
-                "cohort_matcher": "hybrid",
-                "semantic_route_label": "단순 사용·안내 문의",
-                "semantic_candidate_cohort_id": "routine_support",
-                "semantic_candidate_label": "단순 사용·안내 문의",
-                "semantic_similarity": 0.88,
-                "semantic_threshold": 0.75,
-                "semantic_runner_up_score": 0.51,
-                "semantic_margin": 0.37,
-                "semantic_match_status": "matched",
-                "semantic_decision_source": "safety_override",
-                "semantic_lexical_score": 2.0,
-                "semantic_lexical_signal_count": 2,
-                "semantic_safety_override": True,
-                "route_catalog_version": "ticket-routing-v1",
-                "semantic_encoder_model": "text-embedding-test",
+                "policy_version": "bootstrap-1234",
+                "strategy_id": "bootstrap_task_complexity_v2",
+                "selected_model": "gpt-4.1-mini",
+                "fallback_model": "gpt-4.1",
+                "matched_rule_id": "task-complexity-balanced",
                 "decision_source": "active_policy",
-                "reason_code": "quality_gate_passed",
+                "reason_code": "bootstrap_task_complexity_balanced",
                 "judge_called": False,
                 "input_length_bucket": "short",
                 "prompt_length_bucket": "medium",
@@ -177,8 +165,7 @@ def test_llm_span_metadata_preserves_safe_runtime_policy_outcome_fields():
                 "schema_required": True,
                 "knowledge_enabled": False,
                 "raw_input": "secret input",
-                "query_vector": [0.1, 0.2, 0.3],
-                "matched_lexical_signals": ["credential leak"],
+                "raw_prompt": "secret prompt",
             }
         },
     )
@@ -187,19 +174,180 @@ def test_llm_span_metadata_preserves_safe_runtime_policy_outcome_fields():
     assert metadata["llm"]["finish_reason"] == "stop"
     assert metadata["llm"]["repetition_rate"] == 0.125
     assert metadata["llm"]["input_length_bucket"] == "short"
-    assert metadata["llm"]["matched_cohort_id"] == "routine_support"
-    assert metadata["llm"]["semantic_candidate_cohort_id"] == "routine_support"
-    assert metadata["llm"]["semantic_candidate_label"] == "단순 사용·안내 문의"
-    assert metadata["llm"]["semantic_similarity"] == 0.88
-    assert metadata["llm"]["semantic_match_status"] == "matched"
-    assert metadata["llm"]["semantic_decision_source"] == "safety_override"
-    assert metadata["llm"]["semantic_lexical_score"] == 2.0
-    assert metadata["llm"]["semantic_lexical_signal_count"] == 2
-    assert metadata["llm"]["semantic_safety_override"] is True
-    assert metadata["llm"]["route_catalog_version"] == "ticket-routing-v1"
+    assert metadata["llm"]["matched_rule_id"] == "task-complexity-balanced"
+    assert metadata["llm"]["decision_source"] == "active_policy"
+    assert metadata["llm"]["strategy_id"] == "bootstrap_task_complexity_v2"
+    assert metadata["llm"]["selected_model"] == "gpt-4.1-mini"
     assert "raw_input" not in metadata["llm"]
-    assert "query_vector" not in metadata["llm"]
-    assert "matched_lexical_signals" not in metadata["llm"]
+    assert "raw_prompt" not in metadata["llm"]
+
+
+def test_llm_span_metadata_preserves_safe_runtime_judge_summary_only():
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "llm": {
+                "strategy_id": "judge_bootstrap_incremental_v1",
+                "judge_called": True,
+                "judge": {
+                    "model": "gpt-5-mini",
+                    "selected_model": "gpt-4o-mini",
+                    "confidence": 0.87,
+                    "reason_code": "simple_request",
+                    "cost": 0.00012,
+                    "usage": {
+                        "prompt_tokens": 120,
+                        "completion_tokens": 30,
+                        "raw_content": "customer secret",
+                    },
+                    "raw_prompt": "sensitive prompt",
+                },
+                "decision_factors": {
+                    "learning_mode": "judge_first",
+                    "judged_request_count": 7,
+                    "local_confidence": 0.42,
+                    "raw_input": "sensitive input",
+                },
+            }
+        },
+    )
+
+    assert metadata["llm"]["judge"] == {
+        "model": "gpt-5-mini",
+        "selected_model": "gpt-4o-mini",
+        "confidence": 0.87,
+        "reason_code": "simple_request",
+        "cost": 0.00012,
+        "usage": {"prompt_tokens": 120, "completion_tokens": 30},
+    }
+    assert metadata["llm"]["decision_factors"] == {
+        "learning_mode": "judge_first",
+        "judged_request_count": 7,
+        "local_confidence": 0.42,
+    }
+
+
+def test_llm_span_metadata_preserves_safe_provider_fallback_diagnostics_only():
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "llm": {
+                "fallback_provider_error_code": "responses_incomplete",
+                "fallback_provider_error_type": "ValueError",
+                "fallback_provider_status_code": 429,
+                "fallback_provider_remote_error_code": "unsupported_parameter",
+                "fallback_provider_remote_error_param": "reasoning.effort",
+                "provider_error_message": "raw provider detail must not persist",
+            }
+        },
+    )
+
+    assert metadata["llm"] == {
+        "fallback_provider_error_code": "responses_incomplete",
+        "fallback_provider_error_type": "ValueError",
+        "fallback_provider_status_code": 429,
+        "fallback_provider_remote_error_code": "unsupported_parameter",
+        "fallback_provider_remote_error_param": "reasoning.effort",
+    }
+
+
+def test_llm_span_metadata_preserves_safe_model_routing_decision_factors_only():
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "llm": {
+                "strategy_id": "prior_guided_adaptive_v1",
+                "selected_model": "gpt-4.1-mini",
+                "decision_factors": {
+                    "profile": "short",
+                    "evaluated_candidate_count": 3,
+                    "excluded_candidate_count": 1,
+                    "selected_model_score": {
+                        "quality_lower_bound": 0.92,
+                        "expected_total_cost_usd": 0.00042,
+                        "expected_latency_ms": 640,
+                        "expected_fallback_rate": 0.01,
+                        "effective_evidence_samples": 12,
+                        "prior_source": "model_catalog_family_prior",
+                        "raw_input": "민감한 원문",
+                    },
+                    "constraint_signature": {
+                        "context_input_bucket": "short",
+                        "output_contract": "json_schema",
+                        "schema_required": True,
+                        "raw_query": "민감한 질의",
+                    },
+                    "raw_prompt": "민감한 프롬프트",
+                },
+            }
+        },
+    )
+
+    assert metadata["llm"]["strategy_id"] == "prior_guided_adaptive_v1"
+    assert metadata["llm"]["decision_factors"] == {
+        "profile": "short",
+        "evaluated_candidate_count": 3,
+        "excluded_candidate_count": 1,
+        "selected_model_score": {
+            "quality_lower_bound": 0.92,
+            "expected_total_cost_usd": 0.00042,
+            "expected_latency_ms": 640,
+            "expected_fallback_rate": 0.01,
+            "effective_evidence_samples": 12,
+            "prior_source": "model_catalog_family_prior",
+        },
+        "constraint_signature": {
+            "context_input_bucket": "short",
+            "output_contract": "json_schema",
+            "schema_required": True,
+        },
+    }
+    assert "민감한" not in str(metadata)
+
+
+def test_llm_span_metadata_preserves_safe_bootstrap_difficulty_summary_only():
+    """Bootstrap 난이도 라우팅의 판정값은 보이되, 입력 원문/매칭 문구는 숨긴다."""
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "llm": {
+                "strategy_id": "bootstrap_mdeberta_difficulty_v1",
+                "matched_rule_id": "planner-advanced-policy-conflict",
+                "selected_model": "gpt-5.4",
+                "decision_factors": {
+                    "classification_status": "planner_rule",
+                    "difficulty": "advanced",
+                    "confidence": 0.84,
+                    "minimum_confidence": 0.0,
+                    "matched_signal_count": 2,
+                    "match_score": 4,
+                    "probabilities": {
+                        "economy": 0.05,
+                        "balanced": 0.16,
+                        "advanced": 0.79,
+                    },
+                    "matched_terms": ["개인정보", "충돌"],
+                    "raw_input": "민감한 사용자 문의 원문",
+                },
+            }
+        },
+    )
+
+    assert metadata["llm"]["decision_factors"] == {
+        "classification_status": "planner_rule",
+        "difficulty": "advanced",
+        "confidence": 0.84,
+        "minimum_confidence": 0.0,
+        "matched_signal_count": 2,
+        "match_score": 4,
+        "probabilities": {
+            "economy": 0.05,
+            "balanced": 0.16,
+            "advanced": 0.79,
+        },
+    }
+    assert "개인정보" not in str(metadata)
+    assert "민감한" not in str(metadata)
 
 
 def test_rag_metadata_preserves_payload_reference_and_summarizes_evidence():

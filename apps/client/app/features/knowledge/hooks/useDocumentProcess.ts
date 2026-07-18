@@ -74,7 +74,11 @@ export function useDocumentProcess({
   const [previewSegments, setPreviewSegments] = useState<DocumentSegment[]>([]);
   const requestScope = requestScopeOverride ?? `${kbId}:${documentId}`;
   const requestScopeRef = useRef(requestScope);
-  requestScopeRef.current = requestScope;
+
+  useEffect(() => {
+    requestScopeRef.current = requestScope;
+  }, [requestScope]);
+
   const operationScopeIsCurrent = (operationScope: string) =>
     requestScopeRef.current === operationScope &&
     (isRequestScopeCurrent?.(operationScope) ?? true);

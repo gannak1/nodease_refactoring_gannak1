@@ -1661,7 +1661,9 @@ def test_workflow_node_create_does_not_create_schedule_surface(monkeypatch):
     assert scheduler.added == []
 
 
-def test_active_redeployment_inherits_model_routing_state(monkeypatch):
+def test_active_redeployment_creates_fresh_model_routing_policy_without_bootstrap(
+    monkeypatch,
+):
     app_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
     previous_deployment_id = uuid.uuid4()
@@ -1686,11 +1688,31 @@ def test_active_redeployment_inherits_model_routing_state(monkeypatch):
         is_active=True,
         version=1,
     )
+    graph_snapshot = {
+        "nodes": [
+            _node("trigger", "webhookTrigger"),
+            _node(
+                "llm-triage",
+                "llmNode",
+                {
+                    "auto_model_routing": True,
+                    "model_id": "test-model",
+                },
+            ),
+        ],
+        "edges": [_edge("trigger", "llm-triage", "trigger-llm")],
+    }
     db = _Db(
-        {App: [app], Workflow: [workflow], WorkflowDeployment: [previous_deployment], Schedule: []},
+        {
+            App: [app],
+            Workflow: [workflow],
+            WorkflowDeployment: [previous_deployment],
+            Schedule: [],
+        },
         max_deployment_version=1,
     )
-    inherited = []
+    bootstrapped = []
+    published = []
     monkeypatch.setattr(
         deployment_module, "has_workflow_permission", lambda *a, **k: True
     )
@@ -1704,9 +1726,16 @@ def test_active_redeployment_inherits_model_routing_state(monkeypatch):
         lambda: _Scheduler(),
     )
     monkeypatch.setattr(
-        deployment_module.ModelRoutingPolicyInheritanceService,
-        "inherit_for_deployment",
-        lambda _db, **kwargs: inherited.append(kwargs) or 1,
+        deployment_module.ModelRoutingPolicyStore,
+        "ensure_policies_for_deployment",
+        lambda _db, **kwargs: (
+            bootstrapped.append(kwargs) or [SimpleNamespace(id=uuid.uuid4())]
+        ),
+    )
+    monkeypatch.setattr(
+        deployment_module,
+        "send_workflow_task",
+        lambda _app, name, args: published.append((name, args)),
     )
 
     deployment = DeploymentService.create_deployment(
@@ -1714,20 +1743,7 @@ def test_active_redeployment_inherits_model_routing_state(monkeypatch):
         DeploymentCreate(
             app_id=app_id,
             type=DeploymentType.WEBHOOK,
-            graph_snapshot={
-                "nodes": [
-                    _node("trigger", "webhookTrigger"),
-                    _node(
-                        "llm-triage",
-                        "llmNode",
-                        {
-                            "auto_model_routing": True,
-                            "model_id": "test-model",
-                        },
-                    ),
-                ],
-                "edges": [_edge("trigger", "llm-triage", "trigger-llm")],
-            },
+            graph_snapshot=graph_snapshot,
             is_active=True,
         ),
         user_id=app.created_by,
@@ -1735,14 +1751,16 @@ def test_active_redeployment_inherits_model_routing_state(monkeypatch):
         runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
     )
 
-    assert inherited == [
+    assert bootstrapped == [
         {
             "workflow_id": workflow_id,
-            "source_deployment_id": previous_deployment_id,
-            "target_deployment_id": deployment.id,
-            "target_graph": deployment.graph_snapshot,
+            "deployment_id": deployment.id,
+            "organization_id": workflow.organization_id,
+            "execution_subject_user_id": app.created_by,
+            "graph_snapshot": deployment.graph_snapshot,
         }
     ]
+    assert published == []
 
 
 def test_workflow_node_toggle_removes_legacy_schedule_surface(monkeypatch):
@@ -2085,6 +2103,16 @@ class _Db:
         }:
             return _Query(self.rows_by_model.setdefault(model, []))
         return _ScalarQuery(self.max_deployment_version)
+
+    def get(self, model, object_id):
+        return next(
+            (
+                row
+                for row in self.rows_by_model.get(model, [])
+                if getattr(row, "id", None) == object_id
+            ),
+            None,
+        )
 
     def add(self, obj):
         self.rows_by_model.setdefault(type(obj), []).append(obj)

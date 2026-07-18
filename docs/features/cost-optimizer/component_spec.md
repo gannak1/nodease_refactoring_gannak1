@@ -5,8 +5,12 @@ Verified Against: feature/mba-198 @ 40c45fcc
 
 ## Purpose
 
-이 문서는 `requirements.md`의 FR-001부터 FR-014까지를 화면과 컴포넌트 관점에서 구현 가능한 형태로 정리한다.
-FR-011은 LLM 노드 상세 화면의 자동 라우팅 컨트롤과 Workflow-Aware 분석 상태로 다룬다. 사용자는 단순 ON/OFF가 아니라 `이 node가 라우팅에 적합한지`, `어떤 evidence가 부족한지`, `어떤 cohort에서 어떤 모델을 쓰는지`, `예상 순절감과 품질 근거가 무엇인지`를 확인할 수 있어야 한다.
+이 문서는 `requirements.md`의 FR-001부터 FR-015까지를 화면과 컴포넌트 관점에서 구현 가능한 형태로 정리한다.
+FR-011은 LLM 노드 상세 화면의 bootstrap 난이도 자동 라우팅 컨트롤로 다룬다. 사용자는
+작업 설명, 기본 모델, 기본 대체 모델, 초기 생성 예산을 정하고 `자동 선택 기준 만들기`로
+초안 단계의 초기 policy를 만든다. 입력군/유사도 편집 UI는 노출하지 않는다. 자동 라우팅이
+켜진 뒤에는 policy 출처, 활용한 운영 로그 수, 난이도별 표본 수, 경제형·균형형·고성능형
+선택 모델과 실제 실행 근거를 확인한다.
 
 Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상세 화면에서 시작하는 LLM 노드 단위 A/B 테스트 흐름이다.
 
@@ -26,10 +30,11 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-008 | Apply candidate action | 선택한 B 후보 설정을 현재 LLM 노드 draft에 적용한다. |
 | FR-009 | Cost/usage display | 비교 실행 비용이 기록된다는 사실과 후보별 비용을 표시한다. |
 | FR-010 | Permission-gated UI | builder 이상이 아니면 A/B 테스트와 적용 액션을 막는다. |
-| FR-011 | Workflow-Aware routing controls / analysis / decision trace | 자동 라우팅 ON/OFF, 라우팅 적합성, evidence gap, semantic cohort별 policy, 예상 순절감, 실제 선택 모델과 Route 점수/fallback 근거를 보여준다. |
+| FR-011 | Bootstrap routing controls / decision trace | 자동 라우팅 ON/OFF, 작업 설명, 기본·fallback 모델, 초기 생성 예산, bootstrap 출처/표본과 난이도별 선택 모델 및 실제 선택 근거를 보여준다. |
 | FR-012 | Optimization recommendation modal | LLM 노드 상세 화면의 `최적화` 버튼으로 추천 모달을 열고, 추천 근거와 위험도를 확인한 뒤 직접 정책 적용 또는 A/B 후보 실험으로 연결한다. |
 | FR-013 | Recommendation verification / compare quality row | 추천 모달과 일반 결과 분석 화면에서 baseline 대비 candidate 비용·속도·token·품질 점수·schema·downstream 결과를 보여주고 적용 또는 이력 재조회로 연결한다. |
 | FR-014 | 배포별 자동 파라미터 최적화 | 배포 모달에서 운영 로그 수집·점검 주기·월간 검증 예산을 설정하고, 내 모듈 운영 현황에서는 비용 위험과 분리된 자동 최적화 상태를 관리한다. |
+| FR-015 | 제약·난이도/사전 지식 기반 라우터 실험 | 현재 UI와 운영 active policy를 바꾸지 않는다. fixed-fixture 보고서로 검증 전용 전략과 사전 지식 기반 전략을 함께 검토한다. |
 
 ## Implementation Tracking
 
@@ -48,12 +53,17 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-009 | Cost/usage metric display, experiment history | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx`, `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerHistoryPanel.tsx`, `apps/client/app/features/workflow/hooks/useCostOptimizerHistory.ts` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr9-usage-display.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr9-experiment-history-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr9-history-model.test.ts` | 통과 |
 | FR-010 | Permission-gated UI | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
 | FR-011 | 기존 policy controls와 model-routing route | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/modules/[id]/model-routing/[nodeId]/page.tsx` | 기반 구현 완료 | 기존 Cost Optimizer frontend tests | 토글, 주기, policy 상태, 추천 route 통과 |
-| FR-011 | Runtime decision trace UI | `apps/client/app/features/workflow/components/modelRouting/ModelRoutingDecisionDetails.tsx`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx`, `apps/client/app/features/workflow/components/logs/LogDetail.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr11-semantic-routing-trace.test.tsx`, `apps/client/app/features/workflow/components/logs/LogDetail.test.tsx` | 통과 |
-| FR-011 | Test Sidebar 실행 노드 상세 | `apps/client/app/features/workflow/components/editor/TestSidebar.tsx`, `apps/client/app/features/workflow/components/modelRouting/ModelRoutingDecisionDetails.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/test-sidebar-node-detail.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr11-semantic-routing-trace.test.tsx` | 이번 변경 targeted test |
-| FR-011 | 적합성/evidence/policy diff UI | 기존 model-routing route 확장 | 구현 필요 | Workflow-Aware routing component tests | 미작성 |
+| FR-011 | Bootstrap creation panel / runtime decision trace | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/features/workflow/components/modelRouting/ModelRoutingDecisionDetails.tsx` | 진행중 | `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx`, `apps/workflow_engine/tests/services/test_model_routing_bootstrap*.py` | 초안 생성/분류기/runtime unit 통과, Inspector 상세 보강 필요 |
 | FR-012 | Optimization recommendation modal | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 기록 있음 |
 | FR-013 | Recommendation verification, compare quality row, history restore | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerHistoryPanel.tsx`, `apps/client/app/features/workflow/hooks/useCostOptimizerHistory.ts`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/features/workflow/types/Api.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | modal 검증, 일반 compare 품질 행, 평가 불가, 단건 비교 이력 복원 통과 |
 | FR-014 | Deployment optimization step / management | `apps/client/app/features/workflow/components/deployment/ParameterOptimizationStep.tsx`, `apps/client/app/features/workflow/components/deployment/AutomaticOptimizationManagementModal.tsx`, `apps/client/app/dashboard/mymodule/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/components/deployment/DeploymentFlowModal.test.tsx`, `apps/client/app/features/workflow/components/deployment/AutomaticOptimizationManagementModal.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr14-dashboard-automatic-optimization-management.test.tsx` | 통과 |
+| FR-015 | 실험 결과 artifact | `scripts/experiment_constraint_difficulty_router.py`, 실행 시 생성되는 로컬 `reports/model-routing/constraint-difficulty-v1-fixed-fixture/` | 실제 semantic matcher fixture, 검증 전용 constraint, prior-guided cold-start 비교를 포함한 개발자용 JSON/Markdown 생성 구현, 제품 UI 없음 | `tests/experiments/test_constraint_difficulty_routing_experiment.py` | 통과 |
+
+## FR-015 UI Boundary
+
+현재 제품 화면과 runtime은 `prior_guided_adaptive_v1`을 사용한다. 입력군·유사도·semantic
+matcher UI는 노출하지 않는다. Test Sidebar와 실행 로그는 같은 공통 컴포넌트로 선택 모델과
+safe 판단 근거를 표시한다.
 
 ## FR-014 배포별 자동 파라미터 최적화 UI
 
@@ -237,20 +247,48 @@ B 후보 재실행을 위해 baseline picker를 다시 열거나 workspace를 �
 
 관련 FR: FR-011
 
+> 현재 기준: 아래 기존 prior-guided/semantic cohort 설명 중 bootstrap 계약과 충돌하는 내용은
+> 이력으로만 본다. 신규 화면은 `bootstrap_mdeberta_difficulty_v1`을 우선한다.
+
+#### Bootstrap 생성 화면
+
+자동 라우팅 토글을 켠 중앙 LLM 설정 패널은 다음 순서로 보인다.
+
+1. 작업 설명 textarea와 `자동 선택 기준이란?` 도움말
+2. 규칙 미일치 시 기본 모델, 기본 대체 모델 select
+3. `1회 초기 생성 예산` select (`$0.50`, `$1`, `$3`, `$5`, `$10`)
+4. 운영 로그 활용 상태: `새 예시 기반`, `운영 로그 보강`, `운영 로그 기반` 중 하나와
+   활용/제외 개수
+5. `자동 선택 기준 만들기` 또는 오래된 artifact의 `다시 만들기` 버튼
+6. 배포 후 자동 재평가 주기와 월간 재검증 예산
+
+버튼을 누르면 진행 중 상태에서는 중복 클릭을 막고, 완료 후에는 난이도별 표본 수와
+Planner 실제 비용만 중앙 요약에 표시한다. 상세 Inspector는 payload 출처, 마스킹된 입력
+요약, 출력 형식, RAG 여부, 난이도 label/근거, 난이도별 모델, 실제 실행 confidence와
+fallback 여부를 표시한다. 원문 prompt/input/KB 본문은 어느 화면에도 표시하지 않는다.
+
+초안 artifact가 없거나 생성에 실패해도 workflow 편집과 수동 모델 실행은 막지 않는다.
+배포 preflight는 bootstrap 전략을 선택한 node의 artifact가 없거나 오래된 경우에만 배포를
+차단하고, 화면은 작업 설정 변경 후 기준을 다시 만들도록 안내한다.
+
 #### 목표 사용자 흐름
 
 1. 사용자가 LLM node에서 `자동 모델 라우팅`을 켠다.
-2. 시스템은 먼저 라우팅 적합성을 분석한다.
-3. 후보가 있지만 증거가 부족하면 `Replay로 검증하기`를 안내한다.
-4. Cost Optimizer Replay에서 후보가 품질/효율 gate를 통과하면 policy proposal을
-   만든다.
-5. 사용자는 의미 입력군, 대표 문장 수, 기준 점수와 입력군별 검증 모델을 확인한다.
-6. 사용자는 예상 순절감, 품질 근거, cohort별 선택 모델과 fallback을 확인한다.
-7. 검증된 policy가 active가 되면 일반 실행은 저장 policy로 모델을 선택한다.
-8. 실행 로그에서 실제 선택 모델, matched cohort/rule, fallback과 policy version을
-   확인한다.
+2. 시스템은 실행 가능한 모델과 일반 실행 조건, 모델 catalog 사전 지식, 운영 집계로
+   `짧음/보통/긺` profile 정책을 만든다.
+3. 일반 실행은 저장된 active policy rule로 모델과 fallback을 선택한다.
+4. 실행 중에는 Judge나 embedding 모델을 호출하지 않는다.
+5. 테스트 실행 상세와 실행 로그에서 실제 선택 모델, 적용 rule, fallback, policy version과
+   safe 판단 근거를 확인한다.
 
 후보 검증 결과에서 provider가 요청 후보와 다른 모델을 실제 실행한 경우, 후보 모델명만 성공으로 표시하면 안 된다. 분석 화면은 `요청 모델 -> 실제 실행 모델`과 `fallback 발생`을 함께 표시하고, 해당 후보를 `검증 제외` 상태로 표시한다. 이 경우 schema, downstream, 품질 점수가 있어도 policy 적용 후보로 선택할 수 없다.
+
+후보가 품질 gate에서 탈락하면 분석 화면은 raw 입출력 없이 `평균 품질`, `보수적 품질 하한`, `기준 대비 평균 변화`, `가장 큰 개별 하락`, `fallback 여부`를 보여준다. 개별 Replay가 기준보다 10점을 초과해 낮은 경우 `대표 입력 품질 하락`으로 표시해, 평균 점수가 높더라도 rule로 적용되지 않은 이유를 설명한다.
+
+같은 입력군에서 여러 후보가 통과했지만 더 싼 후보의 품질 하한이 최고 후보보다 3점을
+초과해 낮으면, 분석 화면은 이를 `품질 여유 부족`으로 설명한다. 최종 rule에는 품질 여유
+범위 안에서 가장 경제적인 후보가 표시되어야 하며, 단순히 최저가 후보라고 표시해서는
+안 된다.
 
 #### Routing analysis panel
 
@@ -300,43 +338,30 @@ Hard Gate와 deterministic optimizer가 검증했다는 상태를 별도로 보�
 
 - 실제 선택 모델
 - fallback 모델과 fallback 사용 여부
-- 사용자 친화적인 입력 유형 이름과 matched cohort/rule
-- 의미 유사도, 통과 기준, 2위와의 점수 차이
-- 현재 policy에 등록된 모든 입력군의 유사도 순위와 각 입력군의 통과 기준
-- 입력군 선택에 필요한 1위·2위 최소 점수 차이 기준
-- 의미 유사도 판정인지 policy 안전 override인지 구분하는 선택 근거
-- 안전 override가 적용된 경우 signal 원문 대신 매칭 개수와 안전 우선 적용 상태
-- 선택 reason code의 사용자 친화 문구
-- policy/evidence/gate profile/Route catalog version
+- 입력 길이 profile과 JSON schema/Knowledge 사용 여부
+- 검토한 모델 수와 일반 조건에서 제외된 모델 수
+- 선택 모델의 보수적 품질 하한, 예상 비용, 예상 지연 시간
+- 판단 근거 출처와 선택 reason code의 사용자 친화 문구
+- 적용 rule과 policy version
 - `실행 중 Judge 호출 안 함`
+
+초기 bootstrap policy의 상세 정보가 있으면 Inspector는 raw 전역 profile JSON 대신
+`비교한 모델 수`, `전역 profile 출처/버전`, `품질 하한`, `예상 비용`, `예상 지연 시간`을
+요약으로 표시한다. 특정 배포에서 쌓인 운영 성적은 같은 모델·입력 길이 구간의 표본 수와
+함께 표시하며, 다른 workflow의 운영 성적을 합산해 보여주지 않는다.
 
 기술 식별자를 그대로 나열하지 않고 다음 순서로 설명한다.
 
 ```text
-입력 유형: 단순 사용·안내 문의
-판정: 유사도 88% (선택 기준 75%, 2위와 차이 37%p)
+입력 조건: 짧은 입력, JSON schema 필요
+비교 근거: 현재 사용 가능한 8개 모델 검토, 1개 조건 제외, 품질 하한 92%
 선택 모델: gpt-4o-mini
-선택 이유: 이 입력 유형에서 품질 기준을 통과한 모델 중 예상 비용이 가장 낮습니다.
+선택 이유: 품질 하한을 만족한 후보 중 예상 비용과 지연 시간을 함께 비교했습니다.
 안전 장치: 호출 실패 시 검증된 gpt-4.1-mini로 한 번 전환합니다.
 ```
 
-분류가 불확실하면 비용 절감 성공처럼 표시하지 않는다.
-
-```text
-입력 유형: 명확히 분류하지 못함
-판정: 1위와 2위 의미 점수 차이가 안전 기준보다 작습니다.
-선택 모델: 현재 기본 모델 유지
-선택 이유: 애매한 입력을 저비용 모델로 보내지 않는 보수적 정책입니다.
-```
-
-Frontend는 raw query, embedding vector, 대표 문장 원문을 trace 화면에 노출하지
-않는다. `semantic_similarity`, `semantic_threshold`, `semantic_margin`,
-`semantic_min_margin`, `semantic_cohort_scores[]`의 safe number와 입력군 이름만
-표시한다. 입력군 목록은 유사도 내림차순으로 표시하고, 선택된 행 또는 가장 가까운 행을
-구분한다.
-`semantic_decision_source=safety_override`이면 전문 점수 대신
-`정책의 안전 조건과 일치해 고성능 모델을 선택함`으로 설명한다. Catalog의 signal
-원문도 화면에 노출하지 않는다.
+Frontend는 raw query, prompt, credential을 trace 화면에 노출하지 않는다. 숫자·분류값으로
+제한된 `decision_factors`만 표시한다.
 
 이 정보가 없으면 `자동 라우팅 ON` badge만으로 모델이 실제 바뀌었는지 증명할 수
 없으므로 시연 완료로 보지 않는다.
@@ -357,10 +382,8 @@ Frontend는 raw query, embedding vector, 대표 문장 원문을 trace 화면에
   자르지 않고 scrollable code block으로 보여준다. 자동 라우팅 상세가 있으면 출력 데이터를
   먼저, 그 다음 `배포 정책 기준 테스트`와 판정 근거를 표시한다.
 - LLM node output에 `metadata.model_routing`이 있으면 `ModelRoutingDecisionDetails`를
-  재사용해 입력 유형, 가장 가까운 입력 유형, 모든 입력군의 유사도·선택 기준·최소 점수 차이,
-  매칭 결과, 최초 선택 모델, 판단/선택 이유, policy version을 보여준다.
-- `semantic_match_status=no_match|ambiguous|unavailable`이면 `기준 미달로 기본 모델 사용`
-  라벨과 유사도/기준 미달 또는 판정 불가 사유를 보여준다.
+  재사용해 입력 길이 profile, 검토/제외 모델 수, 품질 하한, 예상 비용·지연, 최초 선택 모델,
+  판단/선택 이유와 policy version을 보여준다.
 - `fallback_used=true`이면 계획된 fallback 설명과 별도로 `실제 대체 실행` block에서
   `fallback_from_model`, `fallback_reason_code`, 실제 output model을 표시한다.
 - 자동 라우팅 trace가 있는 테스트 실행에는 `이 테스트 실행은 자동 라우팅 정책의 학습 및
@@ -383,7 +406,7 @@ LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라
 
 - 위치: LLM 노드 상세 패널의 모델 설정 영역 상단
 - 라벨: `자동 모델 라우팅`
-- 보조 설명: `저장된 정책으로 실행 시점 모델을 선택합니다. Judge는 정책 갱신 시에만 호출됩니다.`
+- 보조 설명: `저장된 정책으로 실행 모델을 고르고, 배포 운영 성적이 의미 있게 달라질 때만 정책을 다시 계산합니다.`
 - 권한: builder 이상에서만 수정 가능
 
 자동 라우팅 OFF 상태:
@@ -400,7 +423,7 @@ LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라
 - `기본 대체 모델` 선택 UI를 표시한다. 이 값은 기본 모델 호출 실패 시에만 사용하며, `active_policy.fallback_model_id`와 node draft의 `fallback_model_id`를 함께 갱신한다.
 - active policy 상태 panel을 표시한다. panel은 `GET /model-routing/policy` 응답을 우선 사용한다.
 - runtime은 active policy를 사용해 모델을 선택한다.
-- active policy가 없으면 `collecting` 상태로 표시하고, runtime은 node에 저장된 `model_id`/`fallback_model_id`를 그대로 사용한다. bootstrap은 새 모델이나 rule을 만들지 않는다.
+- 배포 직후 기본 policy와 빈 rule을 `collecting` 상태로 표시한다. 비동기 bootstrap 검증 중에는 node에 저장된 `model_id`/`fallback_model_id`를 사용하고, 입력군별 기준·후보 검증을 통과한 rule만 이후 표시한다.
 - judge LLM은 일반 실행 중 호출하지 않는다.
 
 정책 상태 panel은 다음 정보를 보여준다.
@@ -411,35 +434,38 @@ LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라
 - 선택 사유 또는 reason code
 - 마지막 정책 갱신 결과
 - 마지막 정책 갱신 시각
-- 다음 자동 갱신까지 남은 운영 실행 수: 예) `13/20회 수집됨`
-- `자동 정책 갱신하기` 버튼
+- 배포 시 첫 실행용 정책 생성 여부와 policy version
+- `운영 성적 자동 반영`: 전체 운영 실행 수와 모델·입력 길이별 품질, 평균 비용, 평균 지연
+- `정책 교체 보호 기준`: 최소 새 표본 수, 품질 하락 방지, 비용·지연 최소 개선율
+- `정책 다시 평가` 버튼
 
 정책 상태별 UI:
 
 | 상태 | 표시 | 사용자 액션 |
 | --- | --- | --- |
 | `off` | 자동 라우팅 꺼짐 | 토글 ON |
-| `collecting` + policy id 없음 | 첫 배포 운영 실행 대기 | `자동 정책 갱신하기` disabled, `첫 배포 운영 실행이 완료된 뒤 정책을 갱신할 수 있습니다.` 안내 |
-| `collecting` + policy id 있음 | 운영 로그 수집 중, `n/20회` | 수동 갱신 가능. 로그/후보 근거가 부족하면 최종 결과에서 실패 또는 기존 policy 유지 안내 |
+| `collecting` + policy id 없음 | 현재 draft가 아직 배포되지 않음 | `정책 다시 평가` disabled, `배포할 때 첫 실행용 정책을 즉시 생성합니다.` 안내 |
+| `collecting` + policy id 있음 | 배포 직후 기준·후보 검증 중 또는 운영 로그 수집 중 | 수동 갱신 가능. 입력군별 검증 상태와 기존 기본 모델 유지 안내 |
 | `active` | active policy로 실행 중 | 수동 갱신 가능 |
 | `refreshing` | 정책 갱신 중 | 중복 갱신 버튼 disabled |
 | `pending_review` | 새 정책 보류, 기존 정책 유지 | 보류 사유 확인 |
 | `failed` | 마지막 갱신 실패 | 실패 사유 확인 후 재시도 |
 
-`자동 정책 갱신하기` 버튼을 누르면 `POST /model-routing/policy/refresh`로 즉시 정책 갱신 작업을 예약한다.
+`정책 다시 평가` 버튼을 누르면 `POST /model-routing/policy/refresh`로 현재 누적 운영 성적에 대한 정책 재평가를 예약한다.
+
+고정 횟수 slider는 표시하지 않는다. 실행이 끝날 때마다 성적이 누적되고 의미 있는 변화가 감지될 때 자동 재평가되므로, 사용자가 횟수를 정책 교체 조건으로 오해하지 않게 한다. Canary와 Shadow 상태나 제어는 화면에 제공하지 않는다.
 
 - 요청 중에는 버튼을 disabled 처리한다. policy id가 없는 초기 `collecting` 상태에서도 disabled 처리한다.
-- 요청 성공은 judge 완료가 아니라 `refreshing` 상태 전환을 뜻한다. UI는 policy 조회를 다시 수행해 새 policy version과 최종 적용 결과를 표시한다.
+- 요청 성공은 정책 재평가 완료가 아니라 `refreshing` 상태 전환을 뜻한다. UI는 policy 조회를 다시 수행해 새 policy version과 최종 적용 결과를 표시한다.
 - `kept_current`이면 정책 재평가는 끝났지만 검증된 변경 후보가 없어 기존 active policy를 유지했다는 문구를 표시한다.
+- 운영 재검증에서 기존 active 모델이 품질 gate를 통과하지 못해 rule이 철회되면, 해당 입력군은 기본 모델로 복귀했고 다른 검증 rule은 유지됐다는 safe summary를 표시한다. raw Replay 입출력은 이 상태 panel에 노출하지 않는다.
 - `pending_review`이면 새 정책이 운영에 반영되지 않았고 기존 active policy가 유지된다는 문구를 표시한다.
-- 실패하면 로그 부족, credential/model 사용 불가, judge 호출 실패 같은 safe reason을 표시한다.
+- 실패하면 운영 성적 부족, credential/model 사용 불가, policy 계산 실패 같은 safe reason을 표시한다.
 - active policy의 default/rule/fallback 중 현재 사용자의 credential `use` 권한으로 실행 가능한 모델이 없으면 provider 호출 전에 실행이 차단된다는 안내를 표시한다.
 
-정책 갱신 결과의 judge 호출 비용은 숨기지 않는다. UI는 policy update summary에서 judge 모델, token/cost, 갱신 trigger를 확인할 수 있어야 한다. 단 raw prompt, raw output, credential 원문, API key, raw trace payload는 표시하지 않는다.
+현재 구현은 policy 조회 응답의 `last_update`, `performance`, `change_policy` safe summary를 사용해 최근 정책 계산 사유, 반영/유지/실패 상태, 모델·입력 길이별 운영 성적과 교체 보호 기준을 표시한다.
 
-현재 구현은 policy 조회 응답의 `last_update` safe summary를 사용해 `최근 정책 점검`, 자동/수동 갱신 여부, `반영됨`/보류/실패 상태, judge 모델과 judge 비용을 표시한다. 사용자는 judge usage log id를 원문 로그로 열람하지 않고 추적 식별자로만 확인한다.
-
-자동 라우팅 토글과 점검 주기 slider는 local draft만 바꾸지 않는다. 사용자가 토글을 바꾸거나 slider 조작을 마치면 `PATCH /model-routing/policy`로 `enabled`, `refresh_every_runs`, `validation_budget_usd`, `max_cohorts`를 저장한다. 현재 배포가 없거나 현재 deployment snapshot에 자동 라우팅 ON 설정이 포함되지 않은 경우에는 draft 설정은 저장되지만 policy panel은 `collecting`으로 남고, 해당 설정을 포함해 다시 배포한 뒤 target LLM node가 성공한 terminal 운영 workflow 완료가 policy row를 생성한다.
+자동 라우팅 토글과 기본/fallback 모델은 `PATCH /model-routing/policy`로 저장한다. 현재 deployment가 없으면 draft 설정만 저장되고 policy panel은 `collecting`으로 남는다. 이 설정을 포함해 배포하면 배포 transaction이 첫 운영 실행 전에 policy와 입력 길이 rule을 동기 생성한다. 고정 점검 주기 slider는 제공하지 않는다.
 
 자동 라우팅이 켜진 노드를 다시 배포하면, 화면은 새 deployment snapshot의 LLM 설정 지문과 이전 cohort/evidence 지문이 모두 같을 때만 복제된 policy와 입력군을 조회한다. 따라서 같은 설정을 재배포한 직후에는 `입력군 관리` 목록, 검증된 기본 모델, `직접 입력군 추가` 액션이 이전 version 상태를 이어서 표시한다. 모델·prompt·RAG 등 실행 설정이 달라지면 이전 근거를 이어서 표시하지 않고 새 deployment에서 다시 수집한다. 어느 경우든 `정책 갱신 기준`의 누적 실행 수는 새 배포의 운영 로그만 세므로 `0/{refresh_every_runs}회`부터 다시 표시한다.
 
@@ -448,15 +474,24 @@ LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라
 - `입력군 관리`은 자동 정책 점검 주기와 월간 검증 한도보다 위에 표시한다.
 - `입력군 최대 개수` slider: `1~12`, 기본값 `6`, 권장 범위 `3~6`을 표시한다.
 - count badge: `proposed`, `validating`, `validated_waiting`, `active` 상태의 개수만 `현재/최대`로 표시한다. 휴면/종료 입력군은 이력 목록에는 남지만 자리를 차지하지 않는다.
-- 입력군 목록: 한국어 이름, 변수명, source(`직접 등록`/`자동 발견`), 합성 `대표 문의`, 관찰 수, lifecycle, 고정 여부, 검증된 기본 모델 또는 `검증 대기`를 표시한다. 대표 문의가 없는 자동 발견 입력군은 `대표 문의를 준비 중입니다.`라고 표시한다. 검증된 기본 모델은 읽기 전용이며 사용자가 직접 고르지 않는다.
-- 직접 등록: 대표 문의를 입력하고 `입력군 마법사`를 누르면 한국어 이름과 영문 변수명 초안을 채운다. 사용자는 두 값을 수정하고 `입력군 고정` 여부를 정한 뒤 `입력군 추가`를 누른다.
-- 직접 등록 입력군: `수정` 액션으로 대표 문의, 한국어 이름, 변수명, 고정 여부를 다시 편집할 수 있다. 저장 전 화면은 대표 문의 변경이 기존 검증을 무효화하고 재검증 대기로 바꾼다는 경고를 보여준다.
+- 입력군 목록: 한국어 이름, 변수명, source(`직접 등록`/`자동 발견`), 합성 `대표 문의`, 매칭 예문 수, 관찰 수, lifecycle, 고정 여부, 검증된 기본 모델 또는 `검증 대기`를 표시한다. 자동 발견 입력군도 업무 의미가 드러나는 이름과 변수명을 표시한다. 필수 직접 입력군은 모델 검증 대기 중에도 `입력군 분류 가능 · 기본 모델 사용` 상태를 표시해, 입력군 매칭 실패와 저가 모델 검증 대기를 혼동하지 않게 한다.
+- 직접 등록: 대표 문의 하나를 입력하고 `입력군 마법사`를 누르면 한국어 이름, 영문 변수명과 서로 다른 표현의 합성 예문 3~5개를 채운다. 사용자는 생성된 예문을 확인하고 맞지 않는 예문을 개별 삭제할 수 있다.
+- 고위험 입력군: form에 `고위험 입력군` 체크박스를 둔다. 일반 입력군은 중복 없는 예문
+  3개 이상, 고위험 입력군은 5개가 있어야 저장 버튼이 활성화된다. 현재 개수와 필요한
+  개수를 함께 표시하고, 마법사 결과가 부족하면 저장 대신 재생성을 안내한다.
+- 입력군별 기준: 목록과 실행 trace에는 입력군마다 검증된 선택 기준을 표시한다. 보정이
+  불가능해 기본값을 사용한 입력군은 `예문 보강 필요` 상태를 표시하되 runtime을 막지 않는다.
+- 직접 등록 입력군: `수정` 액션으로 대표 문의, 합성 예문, 한국어 이름, 변수명, 고정 여부를 다시 편집할 수 있다. 저장 전 화면은 의미 기준 변경이 기존 검증을 무효화하고 재검증 대기로 바꾼다는 경고를 보여준다.
 - 자동 발견 입력군: 원본을 직접 수정하지 않는다. `사용자 입력군으로 전환` 액션은 같은 cohort row를 `manual`로 전환하고 현재 이름/key/대표 문의를 수정 form에 채운다. 저장 시 기존 route, observation, evidence를 재검증 대상으로 초기화한다. 자동 입력군의 대표 문의가 아직 없으면 사용자가 대표 문의를 입력한 뒤 전환해야 한다.
 - 입력군 고정: 고정된 입력군은 traffic이 줄어도 자동 휴면/종료 처리하지 않는다. 고정하지 않은 직접 등록 입력군은 lifecycle 정책을 따른다.
 - 삭제: safety-protected 입력군을 제외한 입력군은 `삭제`할 수 있다. 삭제는 DB 이력을 물리적으로 지우지 않고 `retired`로 전환하며, 이후 요청은 전체 기본 정책으로 처리한다.
-- 직접 등록은 policy row가 생성된 뒤에만 활성화한다. 첫 배포 운영 실행 전에는 대표 문장 embedding과 policy 연결을 할 수 없으므로 disabled 안내를 표시한다.
+- 직접 등록은 workflow draft 단계부터 활성화한다. policy id가 없는 상태에서 추가한
+  입력군은 `초안` badge로 표시하고 graph에 저장한다. 이 단계에서는 embedding과
+  Replay 검증을 시작하지 않는다. 자동 라우팅 설정을 포함해 배포하면 policy row가
+  즉시 생기고 같은 입력군 ID가 `검증 대기` 상태에 승격된다. 배포 commit 뒤 기준 모델
+  검증을 먼저 수행하고 통과한 예시에 한해서만 후보와 Judge 비용을 사용한다.
 - 대표 문의는 설정 데이터로 DB에 저장된다. UI는 secret, 실제 고객 원문, credential 정보를 넣지 말아야 한다는 안내를 제공해야 한다.
-- 직접/자동 입력군 모두 등록 직후 실행 모델을 바꾸지 않는다. 운영 관찰과 candidate Replay/Judge gate가 통과해 `active` rule이 된 뒤에만 runtime 선택에 참여한다.
+- 직접/자동 입력군 모두 등록 직후 실행 모델을 바꾸지 않는다. 필수 직접 입력군은 runtime matching catalog에 참여할 수 있지만, 배포 직후 대표 예시 bootstrap 또는 이후 운영 관찰 기반 candidate Replay/Judge gate를 통과해 `active` rule이 되기 전에는 저장 기본 모델을 사용한다. 일반 자동 발견 입력군은 검증 전 runtime catalog에 포함하지 않는다.
 
 - 모델 목록 API: `GET /api/v1/llm/my-models`
 - 모델 선택 컴포넌트: 기존 `ModelSelectDropdown` 계열을 우선 재사용한다.

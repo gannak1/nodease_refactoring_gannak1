@@ -7,11 +7,13 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from jinja2 import Environment
+from sqlalchemy.exc import SQLAlchemyError
 
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMModel
+from apps.shared.db.models.model_routing_policy import LLMModelRoutingGlobalProfile
 from apps.shared.db.models.workflow_run import RunStatus, WorkflowNodeRun, WorkflowRun
 from apps.shared.domain.knowledge_runtime_candidates import (
     AnonymousPublicAudience,
@@ -28,6 +30,11 @@ from apps.shared.schemas.workflow_citation import (
 from apps.shared.services.permission_audit import (
     record_resource_permission_denied,
     record_system_resource_permission_denied,
+)
+from apps.shared.services.model_routing_global_profile_catalog import (
+    OFFICIAL_PROVIDER_CATALOG,
+    catalog_metadata_for_model_id,
+    normalize_model_id,
 )
 from apps.shared.services.rag_evidence_policy import (
     RAGEvidenceDecision,
@@ -54,6 +61,9 @@ from apps.workflow_engine.services.llm_service import (
 from apps.workflow_engine.services.model_router import (
     ModelRouter,
     ModelRoutingUnavailableError,
+)
+from apps.workflow_engine.services.model_routing_judge_first_policy import (
+    JUDGE_FIRST_STRATEGY_ID,
 )
 from apps.workflow_engine.services.retrieval import RetrievalService
 from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
@@ -83,6 +93,8 @@ RAG_FANOUT_AGGREGATE_TIMEOUT_SECONDS = 30.0
 RAG_FANOUT_PER_KB_TIMEOUT_SECONDS = 10.0
 MAX_RAG_REWRITTEN_QUERY_LENGTH = 1000
 QUERY_REWRITE_PLACEHOLDER_RE = re.compile(r"\{\{\s*query\s*\}\}|\{query\}")
+PROVIDER_HTTP_STATUS_RE = re.compile(r"\bstatus\s*[=:]?\s*(\d{3})\b", re.IGNORECASE)
+SAFE_PROVIDER_ERROR_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
 SUMMARY_MODEL_PREFS = {
     "openai": ["gpt-5.4-mini", "gpt-5.4-nano", "gpt-4o-mini"],
     "google": ["gemini-3.1-flash-lite", "gemini-2.5-flash"],
@@ -94,6 +106,48 @@ SAFETY_SYSTEM_PROMPT = PLATFORM_UNTRUSTED_CONTEXT_GUARDRAIL_PROMPT
 JSON_OUTPUT_SCHEMA_SYSTEM_INSTRUCTION_PREFIX = (
     "응답은 반드시 아래 json schema를 만족하는 json object 하나만 반환하세요."
 )
+
+
+def _safe_provider_failure_metadata(error: Exception) -> dict[str, Any]:
+    """원문 오류를 보존하지 않고 provider fallback 원인을 trace에 남긴다."""
+    message = str(error)
+    normalized = message.lower()
+    error_code = "provider_exception"
+
+    if "responses 응답이 완료되지 않았습니다" in normalized:
+        error_code = "responses_incomplete"
+    elif "responses 응답에 사용할 수 있는 텍스트가 없습니다" in normalized:
+        error_code = "responses_empty_text"
+    elif "응답을 json으로 파싱할 수 없습니다" in normalized:
+        error_code = "provider_response_invalid_json"
+    elif "호출 실패" in normalized:
+        error_code = "provider_request_failed"
+
+    structured_reason = getattr(error, "reason_code", None)
+    if isinstance(structured_reason, str) and structured_reason:
+        error_code = structured_reason
+
+    metadata: dict[str, Any] = {
+        "fallback_provider_error_code": error_code,
+        "fallback_provider_error_type": type(error).__name__,
+    }
+    structured_status = getattr(error, "status_code", None)
+    if isinstance(structured_status, int) and 100 <= structured_status <= 599:
+        metadata["fallback_provider_status_code"] = structured_status
+    else:
+        status_match = PROVIDER_HTTP_STATUS_RE.search(message)
+        if status_match:
+            metadata["fallback_provider_status_code"] = int(status_match.group(1))
+
+    for source_name, metadata_name in (
+        ("provider_error_code", "fallback_provider_remote_error_code"),
+        ("provider_error_param", "fallback_provider_remote_error_param"),
+        ("provider_response_status", "fallback_provider_response_status"),
+    ):
+        value = getattr(error, source_name, None)
+        if isinstance(value, str) and SAFE_PROVIDER_ERROR_IDENTIFIER_RE.fullmatch(value):
+            metadata[metadata_name] = value
+    return metadata
 
 
 def _build_json_output_schema_instruction(
@@ -371,13 +425,14 @@ class LLMNode(Node[LLMNodeData]):
         self._knowledge_runtime_candidate_resolver = resolver
 
     def _resolve_model_routing_policy(
-        self, inputs: Dict[str, Any], db_session=None
+        self,
+        inputs: Dict[str, Any],
+        db_session=None,
+        *,
+        routing_feature_text: str | None = None,
+        routing_rag_context: dict[str, Any] | None = None,
     ) -> tuple[str, Optional[str], Optional[dict]]:
-        """저장된 active policy snapshot으로 실행 모델을 결정한다.
-
-        Judge LLM은 정책 갱신 단계에서만 호출되어야 하므로, 런타임은 이미
-        저장된 policy rule만 읽고 safe summary metadata를 남긴다.
-        """
+        """저장 policy를 읽고 Judge-first/local-first 모델 선택을 수행한다."""
         selected_model_id = self.data.model_id
         fallback_model_id = self.data.fallback_model_id
         if not self.data.auto_model_routing:
@@ -460,30 +515,32 @@ class LLMNode(Node[LLMNodeData]):
                 },
             )
 
+        if active_policy.get("strategy_id") != JUDGE_FIRST_STRATEGY_ID:
+            return selected_model_id, fallback_model_id, {
+                "enabled": True,
+                "policy_id": policy.get("policy_id"),
+                "policy_version": policy.get("policy_version"),
+                "strategy_id": active_policy.get("strategy_id"),
+                "decision_source": "stored_model",
+                "reason_code": "legacy_policy_ignored",
+                "judge_called": False,
+                **preview_metadata,
+            }
+
         try:
             available_model_ids = self._available_routing_model_ids(db_session)
-            semantic_query_vector = self._resolve_semantic_query_vector(
-                policy=policy,
-                inputs=inputs,
-                db_session=db_session,
-            )
             decision = ModelRouter.resolve_policy(
                 policy,
                 inputs=inputs,
                 node_data=self.data,
                 available_model_ids=available_model_ids,
-                semantic_query_vector=semantic_query_vector,
+                routing_feature_text=routing_feature_text,
             )
             selected_model_id = decision.selected_model_id
             fallback_model_id = decision.fallback_model_id
             matched_rule_id = decision.matched_rule_id
             reason_code = decision.reason_code
             routing_context = decision.runtime_context.as_metadata()
-            semantic_metadata = (
-                decision.semantic_match.as_metadata()
-                if decision.semantic_match is not None
-                else {}
-            )
         except ModelRoutingUnavailableError as exc:
             # active policy가 있는데 실행 주체가 사용할 모델이 하나도 없으면
             # 저장 모델로 되돌아가 provider 호출을 시도하지 않는다. credential
@@ -497,77 +554,280 @@ class LLMNode(Node[LLMNodeData]):
         if fallback_model_id == selected_model_id:
             fallback_model_id = None
 
+        judge_metadata: dict[str, Any] = {}
+        decision_source = decision.decision_source
+        if decision.requires_runtime_judge and not is_policy_preview_node:
+            try:
+                from apps.workflow_engine.services.model_routing_runtime_judge import (
+                    ModelRoutingRuntimeJudge,
+                )
+
+                user_id = self._resolve_credential_principal_user()
+                if user_id is None or db_session is None:
+                    raise ValueError("routing judge execution subject is unavailable")
+                organization_id = self._require_runtime_organization_id(
+                    user_id, selected_model_id
+                )
+                judge_model_id = str(
+                    active_policy.get("judge_model_id") or selected_model_id
+                )
+                normalized_available = {
+                    ModelRouter.normalize_model_id(model_id): model_id
+                    for model_id in (available_model_ids or [])
+                }
+                judge_model_id = normalized_available.get(
+                    ModelRouter.normalize_model_id(judge_model_id), selected_model_id
+                )
+                judge_selection = LLMService.get_runtime_client_for_user(
+                    db_session,
+                    user_id=user_id,
+                    model_id=judge_model_id,
+                    organization_id=organization_id,
+                )
+                candidate_model_ids = list(available_model_ids or [])
+                judge_default_model_id = selected_model_id
+                candidate_profiles = self._routing_candidate_profiles(
+                    db_session,
+                    candidate_model_ids,
+                    policy_id=policy.get("policy_id"),
+                )
+                judge_decision = ModelRoutingRuntimeJudge.decide(
+                    client=judge_selection.client,
+                    candidate_model_ids=candidate_model_ids,
+                    routing_feature_text=routing_feature_text or "",
+                    rag_context=routing_rag_context,
+                    candidate_profiles=candidate_profiles,
+                )
+            except (RuntimeError, ValueError, TypeError, SQLAlchemyError) as exc:
+                # Judge는 초기 학습을 위한 보조 경로다. 일시 실패가 운영 요청을
+                # 차단하면 안 되므로 이미 계산한 기본 모델로 닫는다.
+                decision_source = "stored_model"
+                reason_code = "runtime_judge_unavailable"
+                # ProviderInvocationError처럼 이미 정규화한 reason_code가 있으면
+                # 운영 trace에서 재시도/토큰 한도/형식 실패를 구분할 수 있다. 원문
+                # provider 메시지는 민감 정보가 될 수 있으므로 남기지 않는다.
+                judge_metadata = {
+                    "error_code": str(
+                        getattr(exc, "reason_code", None) or type(exc).__name__
+                    )[:96]
+                }
+            else:
+                # Judge가 정상적으로 고른 모델은 usage 기록이나 학습 artifact 저장이
+                # 일시 실패하더라도 유지한다. 두 후속 작업은 관측성/학습 보조 경로다.
+                selected_model_id = judge_decision.selected_model_id or judge_default_model_id
+                if fallback_model_id == selected_model_id:
+                    fallback_model_id = ModelRouter.first_available_model(
+                        [
+                            judge_default_model_id,
+                            active_policy.get("fallback_model_id"),
+                            active_policy.get("default_model_id"),
+                        ],
+                        {
+                            ModelRouter.normalize_model_id(model_id)
+                            for model_id in (available_model_ids or [])
+                        },
+                        exclude=selected_model_id,
+                    )
+                decision_source = "runtime_judge"
+                reason_code = judge_decision.reason_code
+                judge_metadata = judge_decision.safe_metadata()
+                judge_metadata["model"] = judge_model_id
+                judge_metadata["selection_source"] = "judge_candidate_selection"
+                judge_metadata["candidate_model_count"] = len(candidate_model_ids)
+
+                usage = judge_decision.usage
+                if usage:
+                    try:
+                        judge_cost = LLMService.calculate_cost(
+                            db_session,
+                            judge_model_id,
+                            int(usage.get("prompt_tokens") or 0),
+                            int(usage.get("completion_tokens") or 0),
+                        )
+                        workflow_run_id = self.execution_context.get("workflow_run_id")
+                        LLMService.log_usage(
+                            db=db_session,
+                            user_id=user_id,
+                            model_id=judge_model_id,
+                            usage=usage,
+                            cost=judge_cost,
+                            organization_id=self.execution_context.get("organization_id"),
+                            workflow_id=self.execution_context.get("workflow_id"),
+                            workflow_run_id=(
+                                uuid.UUID(str(workflow_run_id))
+                                if workflow_run_id
+                                else None
+                            ),
+                            node_id=f"{self.id}:routing_judge",
+                            credential_id=judge_selection.credential_id,
+                        )
+                        judge_metadata["cost"] = judge_cost
+                    except (RuntimeError, ValueError, TypeError, SQLAlchemyError) as exc:
+                        judge_metadata["usage_log_error"] = type(exc).__name__
+
+                policy_id = policy.get("policy_id")
+                if policy_id:
+                    try:
+                        workflow_run_id = self.execution_context.get("workflow_run_id")
+                        if workflow_run_id:
+                            queued_learning = ModelRoutingPolicyStore.queue_runtime_judge_label(
+                                db_session,
+                                policy_id=policy_id,
+                                workflow_run_id=workflow_run_id,
+                                node_id=self.id,
+                                routing_feature_text=routing_feature_text or "",
+                                selected_model_id=selected_model_id,
+                                candidate_model_ids=candidate_model_ids,
+                                confidence=judge_decision.confidence,
+                                reason_code=judge_decision.reason_code,
+                            )
+                            if queued_learning.get("learning_queued"):
+                                judge_metadata["learning_status"] = "pending_contract"
+                    except (RuntimeError, ValueError, TypeError, SQLAlchemyError) as exc:
+                        judge_metadata["learning_error"] = type(exc).__name__
+
         metadata = {
             "enabled": True,
             "policy_id": policy.get("policy_id"),
             "policy_version": policy.get("policy_version"),
             "selected_model": selected_model_id,
             "fallback_model": fallback_model_id,
-            "decision_source": (
-                "test_policy_preview" if is_policy_preview_node else "active_policy"
-            ),
+            "decision_source": "test_policy_preview" if is_policy_preview_node else decision_source,
             "matched_rule_id": matched_rule_id,
             "reason_code": reason_code,
+            "strategy_id": decision.strategy_id,
             "runtime_context": routing_context,
-            "judge_called": False,
+            "judge_called": bool(judge_metadata and decision_source == "runtime_judge"),
         }
+        if routing_rag_context is not None:
+            metadata["rag_context"] = dict(routing_rag_context)
+        if judge_metadata:
+            metadata["judge"] = judge_metadata
+            if judge_metadata.get("learning_status"):
+                metadata["learning_status"] = judge_metadata["learning_status"]
+        if decision.decision_factors:
+            metadata["decision_factors"] = decision.decision_factors
         metadata.update(preview_metadata)
-        if decision.semantic_match is not None:
-            metadata["matched_cohort_id"] = decision.semantic_match.cohort_id
-            metadata.update(semantic_metadata)
         return selected_model_id, fallback_model_id, metadata
 
-    def _resolve_semantic_query_vector(
-        self,
-        *,
-        policy: dict[str, Any],
-        inputs: dict[str, Any],
+    @staticmethod
+    def _routing_candidate_profiles(
         db_session,
-    ) -> tuple[float, ...] | None:
-        """Embed one runtime input only when the active policy has a route catalog."""
-        active_policy = policy.get("active_policy")
-        active_policy = active_policy if isinstance(active_policy, dict) else {}
-        semantic_router = active_policy.get("semantic_router")
-        if not isinstance(semantic_router, dict) or not semantic_router:
-            return None
+        candidate_model_ids: list[str],
+        *,
+        policy_id: str | uuid.UUID | None = None,
+    ) -> list[dict[str, Any]]:
+        """Judge가 비용과 문맥 여유를 비교할 수 있는 공개 카탈로그 요약이다."""
 
-        encoder = semantic_router.get("encoder")
-        encoder_model_id = semantic_router.get("encoder_model_id")
-        if not encoder_model_id and isinstance(encoder, dict):
-            encoder_model_id = encoder.get("model_id")
-        encoder_model_id = str(encoder_model_id or "").strip()
-        if not encoder_model_id or db_session is None:
-            return None
+        normalized_ids = [
+            str(model_id).strip()
+            for model_id in candidate_model_ids
+            if str(model_id).strip()
+        ]
+        if not normalized_ids:
+            return []
 
-        query_text = ModelRouter.semantic_query_text(inputs, semantic_router)
-        if not query_text:
-            return None
-
-        user_id = self._resolve_credential_principal_user()
-        if user_id is None:
-            return None
-
-        try:
-            organization_id = self._require_runtime_organization_id(
-                user_id,
-                encoder_model_id,
+        rows_by_model_id: dict[str, LLMModel] = {}
+        profile_by_llm_model_id: dict[uuid.UUID, LLMModelRoutingGlobalProfile] = {}
+        operational_evidence_by_model: dict[str, dict[str, Any]] = {}
+        if callable(getattr(db_session, "query", None)):
+            rows = (
+                db_session.query(LLMModel)
+                .filter(LLMModel.model_id_for_api_call.in_(normalized_ids))
+                .all()
             )
-            runtime_selection = LLMService.get_runtime_client_for_user(
-                db_session,
-                user_id=user_id,
-                model_id=encoder_model_id,
-                organization_id=organization_id,
+            rows_by_model_id = {
+                str(row.model_id_for_api_call): row
+                for row in rows
+            }
+            try:
+                global_profiles = (
+                    db_session.query(LLMModelRoutingGlobalProfile)
+                    .filter(
+                        LLMModelRoutingGlobalProfile.llm_model_id.in_(
+                            [row.id for row in rows]
+                        )
+                    )
+                    .filter(LLMModelRoutingGlobalProfile.is_active.is_(True))
+                    .all()
+                )
+            except (AttributeError, SQLAlchemyError):
+                global_profiles = []
+            profile_by_llm_model_id = {
+                profile.llm_model_id: profile
+                for profile in global_profiles
+            }
+            if policy_id:
+                try:
+                    from apps.workflow_engine.services.model_routing_operational_performance import (
+                        ModelRoutingOperationalPerformanceService,
+                    )
+
+                    operational_evidence_by_model = (
+                        ModelRoutingOperationalPerformanceService.candidate_contract_evidence(
+                            db_session,
+                            policy_id=policy_id,
+                            candidate_model_ids=normalized_ids,
+                        )
+                    )
+                except (AttributeError, SQLAlchemyError, TypeError, ValueError):
+                    operational_evidence_by_model = {}
+
+        profiles: list[dict[str, Any]] = []
+        for model_id in normalized_ids:
+            row = rows_by_model_id.get(model_id)
+            price = LLMService.KNOWN_MODEL_PRICES.get(model_id)
+            if price is None:
+                price = LLMService.KNOWN_MODEL_PRICES.get(
+                    LLMService._normalize_model_id(model_id)
+                )
+            profile: dict[str, Any] = {"model_id": model_id}
+            input_price = row.input_price_1k if row is not None else None
+            output_price = row.output_price_1k if row is not None else None
+            if input_price is None and price is not None:
+                input_price = price.get("input")
+            if output_price is None and price is not None:
+                output_price = price.get("output")
+            if input_price is not None:
+                profile["input_price_per_1k"] = float(input_price)
+            if output_price is not None:
+                profile["output_price_per_1k"] = float(output_price)
+            if (
+                row is not None
+                and isinstance(row.context_window, int)
+                and row.context_window > 0
+            ):
+                profile["context_window"] = row.context_window
+            catalog_entry = OFFICIAL_PROVIDER_CATALOG.get(normalize_model_id(model_id))
+            if catalog_entry is not None:
+                profile["capability_tier"] = catalog_entry.capability_tier
+                catalog_metadata = catalog_metadata_for_model_id(model_id)
+                profile["official_position"] = catalog_metadata["official_position"]
+                profile["catalog_lifecycle"] = catalog_metadata["lifecycle"]
+
+            global_profile = profile_by_llm_model_id.get(row.id) if row is not None else None
+            if global_profile is not None:
+                profile["capability_tier"] = global_profile.capability_tier
+                prior_strength = float(global_profile.prior_strength or 0)
+                if prior_strength > 0 and isinstance(global_profile.quality_by_difficulty, dict):
+                    profile["quality_by_difficulty"] = dict(
+                        global_profile.quality_by_difficulty
+                    )
+                if prior_strength > 0 and isinstance(
+                    global_profile.expected_latency_ms_by_input_profile, dict
+                ):
+                    profile["expected_latency_ms_by_input_profile"] = dict(
+                        global_profile.expected_latency_ms_by_input_profile
+                    )
+                if prior_strength > 0 and global_profile.fallback_rate is not None:
+                    profile["fallback_rate"] = float(global_profile.fallback_rate)
+            operational_evidence = operational_evidence_by_model.get(
+                model_id.lower()
             )
-            vector = runtime_selection.client.embed_sync(query_text)
-            if not isinstance(vector, (list, tuple)) or not vector:
-                return None
-            return tuple(float(value) for value in vector)
-        except Exception as exc:
-            logger.warning(
-                "[LLMNode] Semantic routing embedding unavailable: error_type=%s",
-                type(exc).__name__,
-            )
-            return None
+            if isinstance(operational_evidence, dict):
+                profile.update(operational_evidence)
+            profiles.append(profile)
+        return profiles
 
     def _available_routing_model_ids(self, db_session) -> list[str] | None:
         """현재 execution subject가 실제로 호출할 수 있는 모델만 policy 평가에 넘긴다."""
@@ -580,11 +840,25 @@ class LLMNode(Node[LLMNodeData]):
             user_id,
             self.data.model_id,
         )
-        return LLMService.get_runtime_available_model_ids_for_user(
+        available_model_ids = LLMService.get_runtime_available_model_ids_for_user(
             db_session,
             user_id=user_id,
             organization_id=organization_id,
         )
+        from apps.shared.services.model_routing_model_filter import (
+            filter_model_routing_available_model_ids,
+            filter_supported_model_routing_candidates,
+        )
+
+        node_data = (
+            self.data.model_dump()
+            if callable(getattr(self.data, "model_dump", None))
+            else vars(self.data)
+        )
+        allowed_model_ids = filter_model_routing_available_model_ids(
+            available_model_ids, node_data=node_data
+        )
+        return filter_supported_model_routing_candidates(allowed_model_ids)
 
     def _run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -659,104 +933,7 @@ class LLMNode(Node[LLMNodeData]):
                     },
                 }
 
-        selected_model_id, fallback_model_id, model_routing_metadata = (
-            self._resolve_model_routing_policy(inputs, db_session)
-        )
-        # 자동 라우팅을 끈 노드도 provider fallback은 사용할 수 있다. 이 경우에도
-        # 실제 대체 실행 정보를 안전하게 남길 수 있도록 빈 metadata로 정규화한다.
-        model_routing_metadata = dict(model_routing_metadata or {})
-        routed_model_id = selected_model_id
-        routing_context = ModelRouter.infer_runtime_context(
-            inputs,
-            self.data,
-        ).as_metadata()
-        fallback_used = False
-        fallback_reason_code = None
-
         try:
-            if client_override:
-                client = client_override
-            else:
-                user_id = self._resolve_credential_principal_user()
-                if user_id is None:
-                    raise ValueError(
-                        "LLM 노드 실행에는 유효한 credential principal이 필요합니다."
-                    )
-                organization_id = self._require_runtime_organization_id(
-                    user_id, selected_model_id
-                )
-
-                try:
-                    runtime_selection = LLMService.get_runtime_client_for_user(
-                        db_session,
-                        user_id=user_id,
-                        model_id=selected_model_id,
-                        organization_id=organization_id,
-                    )
-                    client = runtime_selection.client
-                    selected_credential_id = runtime_selection.credential_id
-                    selected_model_id = runtime_selection.model_id
-                except Exception as primary_client_error:
-                    if (
-                        isinstance(primary_client_error, LLMCredentialNotAvailableError)
-                        and primary_client_error.reason == "organization_scope_missing"
-                    ):
-                        self._record_llm_runtime_permission_denied(
-                            user_id=user_id,
-                            model_id=selected_model_id,
-                            organization_id=None,
-                            error=primary_client_error,
-                        )
-                        raise
-
-                    # [FIX] API 키 조회 실패 시 fallback 모델로 시도
-                    if fallback_model_id:
-                        logger.warning(
-                            "[LLMNode] Primary model client failed: "
-                            "error_type=%s fallback_model=%s",
-                            type(primary_client_error).__name__,
-                            fallback_model_id,
-                        )
-                        try:
-                            runtime_selection = LLMService.get_runtime_client_for_user(
-                                db_session,
-                                user_id=user_id,
-                                model_id=fallback_model_id,
-                                organization_id=organization_id,
-                            )
-                            client = runtime_selection.client
-                            selected_credential_id = runtime_selection.credential_id
-                            selected_model_id = runtime_selection.model_id
-                            fallback_used = True
-                            fallback_reason_code = "runtime_client_unavailable"
-                            # The fallback is now the active client. Do not invoke
-                            # the same provider a second time if this call fails.
-                            fallback_model_id = None
-                        except Exception as fallback_client_error:
-                            logger.error(
-                                "[LLMNode] Fallback model client failed: error_type=%s",
-                                type(fallback_client_error).__name__,
-                            )
-                            self._record_llm_runtime_permission_denied(
-                                user_id=user_id,
-                                model_id=fallback_model_id,
-                                organization_id=organization_id,
-                                error=fallback_client_error,
-                            )
-                            raise primary_client_error  # 원래 에러로 raise
-                    else:
-                        logger.warning(
-                            "[LLMNode] Credential client unavailable: error_type=%s",
-                            type(primary_client_error).__name__,
-                        )
-                        self._record_llm_runtime_permission_denied(
-                            user_id=user_id,
-                            model_id=selected_model_id,
-                            organization_id=organization_id,
-                            error=primary_client_error,
-                        )
-                        raise
-
             memory_summary = None
             try:
                 memory_summary = self._build_memory_summary()
@@ -853,7 +1030,8 @@ class LLMNode(Node[LLMNodeData]):
                 return {
                     "text": knowledge_result.answer_override or "",
                     "usage": {},
-                    "model": selected_model_id,
+                    # 근거 부족으로 LLM을 호출하지 않았으므로 라우팅 결정을 만들지 않는다.
+                    "model": self.data.model_id,
                     "cost": 0.0,
                     "metadata": {
                         "knowledge_search": knowledge_metadata
@@ -930,6 +1108,145 @@ class LLMNode(Node[LLMNodeData]):
                     {"role": "assistant", "content": rendered_assistant_prompt}
                 )
 
+            # RAG 원문은 Judge/local router에 재전송하지 않는다. 대신 이번 요청에서
+            # 실제로 검색된 문맥의 크기와 근거 상태만 별도 안전 요약으로 전달한다.
+            rag_trace_summary = (
+                knowledge_result.trace_summary
+                if knowledge_result is not None
+                and isinstance(knowledge_result.trace_summary, dict)
+                else {}
+            )
+            routing_rag_context = {
+                "used": bool(knowledge_enabled),
+                "retrieved_context_token_estimate": int(
+                    rag_trace_summary.get("context_token_estimate") or 0
+                ),
+                "retrieved_context_chars": len(knowledge_context),
+                "retrieved_chunk_count": int(
+                    rag_trace_summary.get("retrieved_chunk_count") or 0
+                ),
+                "source_count": len(knowledge_metadata),
+                "evidence_sufficient": bool(
+                    knowledge_result is not None
+                    and knowledge_result.evidence_decision.evidence_sufficient
+                ),
+            }
+            # 이 feature는 호출 중 메모리에만 있으며 trace나 DB artifact에 남기지 않는다.
+            routing_feature_text = ModelRouter.routing_feature_text(
+                inputs,
+                self.data,
+                rendered_prompt_parts=[
+                    system_content,
+                    rendered_user_prompt,
+                    rendered_assistant_prompt,
+                ],
+                rag_metadata=routing_rag_context,
+            )
+            selected_model_id, fallback_model_id, model_routing_metadata = (
+                self._resolve_model_routing_policy(
+                    inputs,
+                    db_session,
+                    routing_feature_text=routing_feature_text,
+                    routing_rag_context=routing_rag_context,
+                )
+            )
+            # 자동 라우팅을 끈 노드도 provider fallback은 사용할 수 있다. 이 경우에도
+            # 실제 대체 실행 정보를 안전하게 남길 수 있도록 빈 metadata로 정규화한다.
+            model_routing_metadata = dict(model_routing_metadata or {})
+            routed_model_id = selected_model_id
+            routing_context = ModelRouter.infer_runtime_context(
+                inputs,
+                self.data,
+            ).as_metadata()
+            fallback_used = False
+            fallback_reason_code = None
+            fallback_error_metadata: dict[str, Any] = {}
+
+            if client_override:
+                client = client_override
+            else:
+                user_id = self._resolve_credential_principal_user()
+                if user_id is None:
+                    raise ValueError(
+                        "LLM 노드 실행에는 유효한 credential principal이 필요합니다."
+                    )
+                organization_id = self._require_runtime_organization_id(
+                    user_id, selected_model_id
+                )
+
+                try:
+                    runtime_selection = LLMService.get_runtime_client_for_user(
+                        db_session,
+                        user_id=user_id,
+                        model_id=selected_model_id,
+                        organization_id=organization_id,
+                    )
+                    client = runtime_selection.client
+                    selected_credential_id = runtime_selection.credential_id
+                    selected_model_id = runtime_selection.model_id
+                except Exception as primary_client_error:
+                    if (
+                        isinstance(
+                            primary_client_error, LLMCredentialNotAvailableError
+                        )
+                        and primary_client_error.reason == "organization_scope_missing"
+                    ):
+                        self._record_llm_runtime_permission_denied(
+                            user_id=user_id,
+                            model_id=selected_model_id,
+                            organization_id=None,
+                            error=primary_client_error,
+                        )
+                        raise
+
+                    # API 키 조회 실패 시 fallback 모델로 시도한다.
+                    if fallback_model_id:
+                        logger.warning(
+                            "[LLMNode] Primary model client failed: "
+                            "error_type=%s fallback_model=%s",
+                            type(primary_client_error).__name__,
+                            fallback_model_id,
+                        )
+                        try:
+                            runtime_selection = LLMService.get_runtime_client_for_user(
+                                db_session,
+                                user_id=user_id,
+                                model_id=fallback_model_id,
+                                organization_id=organization_id,
+                            )
+                            client = runtime_selection.client
+                            selected_credential_id = runtime_selection.credential_id
+                            selected_model_id = runtime_selection.model_id
+                            fallback_used = True
+                            fallback_reason_code = "runtime_client_unavailable"
+                            # The fallback is now the active client. Do not invoke
+                            # the same provider a second time if this call fails.
+                            fallback_model_id = None
+                        except Exception as fallback_client_error:
+                            logger.error(
+                                "[LLMNode] Fallback model client failed: error_type=%s",
+                                type(fallback_client_error).__name__,
+                            )
+                            self._record_llm_runtime_permission_denied(
+                                user_id=user_id,
+                                model_id=fallback_model_id,
+                                organization_id=organization_id,
+                                error=fallback_client_error,
+                            )
+                            raise primary_client_error
+                    else:
+                        logger.warning(
+                            "[LLMNode] Credential client unavailable: error_type=%s",
+                            type(primary_client_error).__name__,
+                        )
+                        self._record_llm_runtime_permission_denied(
+                            user_id=user_id,
+                            model_id=selected_model_id,
+                            organization_id=organization_id,
+                            error=primary_client_error,
+                        )
+                        raise
+
             # STEP 4. LLM 호출 ----------------------------------------------------
             used_model_id = selected_model_id
             try:
@@ -938,10 +1255,15 @@ class LLMNode(Node[LLMNodeData]):
             except Exception as primary_error:
                 if not fallback_model_id:
                     raise
+                fallback_error_metadata = _safe_provider_failure_metadata(
+                    primary_error
+                )
                 logger.warning(
-                    "[LLMNode] Primary provider call failed: "
-                    "error_type=%s fallback_model=%s",
-                    type(primary_error).__name__,
+                    "[LLMNode] Primary provider call failed: error_code=%s "
+                    "error_type=%s status_code=%s fallback_model=%s",
+                    fallback_error_metadata["fallback_provider_error_code"],
+                    fallback_error_metadata["fallback_provider_error_type"],
+                    fallback_error_metadata.get("fallback_provider_status_code"),
                     fallback_model_id,
                 )
                 fallback_client = None
@@ -1110,6 +1432,7 @@ class LLMNode(Node[LLMNodeData]):
                         "fallback_used": True,
                         "fallback_from_model": routed_model_id,
                         "fallback_reason_code": fallback_reason_code,
+                        **fallback_error_metadata,
                     }
                 )
 

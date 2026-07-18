@@ -11,6 +11,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -42,6 +43,7 @@ from apps.shared.domain.knowledge_runtime_candidates import (  # noqa: E402
     resolve_knowledge_runtime_candidates,
 )
 from apps.shared.schemas.rag import ChunkPreview  # noqa: E402
+from apps.shared.services.llm_client.base import ProviderInvocationError  # noqa: E402
 from apps.shared.services.rag_evidence_policy import RAGEvidenceDecision  # noqa: E402
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer  # noqa: E402
 from apps.workflow_engine.services import (  # noqa: E402
@@ -115,6 +117,17 @@ class FailingClient:
         """동기 호출 - 실패"""
         self.calls.append({"messages": messages, "kwargs": kwargs})
         raise RuntimeError("primary model failed")
+
+
+class IncompleteResponsesClient:
+    """Responses API가 출력 전 종료된 상황을 재현한다."""
+
+    def invoke_sync(self, messages, **kwargs):
+        raise ProviderInvocationError(
+            "OpenAI Responses 응답이 완료되지 않았습니다: status=incomplete",
+            reason_code="responses_incomplete",
+            provider_response_status="incomplete",
+        )
 
 
 class SuccessClient:
@@ -384,6 +397,76 @@ def test_llm_node_runs_with_override_client():
     assert called["messages"][4] == {
         "role": "assistant",
         "content": "assistant [UNTRUSTED_INPUT:var]",
+    }
+
+
+def test_llm_node_passes_rendered_prompt_and_request_to_judge_first_router(
+    monkeypatch,
+):
+    """v3 분류기는 템플릿 원문이 아니라 실제로 치환된 요청을 받아야 한다."""
+    captured: dict[str, Any] = {}
+    data = LLMNodeData(
+        title="요청별 난이도",
+        provider="openai",
+        model_id="gpt-4o-mini",
+        auto_model_routing=True,
+        system_prompt="여러 조건을 검토해 JSON으로 답변합니다.",
+        user_prompt="고객 요청: {{message}}",
+        assistant_prompt="",
+        referenced_variables=[
+            LLMVariable(name="message", value_selector=["webhook", "message"])
+        ],
+        parameters={},
+    )
+    node = LLMNode("llm-request-complexity", data)
+    node._client_override = DummyClient()  # noqa: SLF001 - 실제 provider 호출 방지
+
+    def capture_routing(
+        inputs,
+        db_session=None,
+        *,
+        routing_feature_text=None,
+        routing_rag_context=None,
+    ):
+        captured["feature"] = routing_feature_text
+        captured["rag_context"] = routing_rag_context
+        return "gpt-4o-mini", None, {
+            "enabled": True,
+            "policy_id": "policy-v3",
+            "policy_version": "bootstrap-v3",
+            "selected_model": "gpt-4o-mini",
+            "fallback_model": None,
+            "decision_source": "active_policy",
+            "matched_rule_id": "difficulty-balanced",
+                "reason_code": "judge_bootstrap_required",
+                "strategy_id": "judge_bootstrap_incremental_v1",
+            "judge_called": False,
+        }
+
+    monkeypatch.setattr(node, "_resolve_model_routing_policy", capture_routing)
+
+    node.execute(
+        {
+            "webhook": {
+                "message": "세 가지 계약 조건이 충돌할 때 승인 여부를 판단해 주세요."
+            }
+        }
+    )
+
+    feature = captured["feature"] or ""
+    assert "CURRENT_REQUEST:" in feature
+    assert "세 가지 계약 조건이 충돌할 때 승인 여부를 판단해 주세요." in feature
+    assert "RENDERED_PROMPT:" not in feature
+    assert "STRUCTURAL_CONSTRAINTS:" not in feature
+    assert SAFETY_SYSTEM_PROMPT not in feature
+    assert "RAG_RUNTIME_METADATA" not in feature
+    assert captured["rag_context"] == {
+        "used": False,
+        "retrieved_context_token_estimate": 0,
+        "retrieved_context_chars": 0,
+        "retrieved_chunk_count": 0,
+        "source_count": 0,
+        "evidence_sufficient": False,
     }
 
 
@@ -685,9 +768,11 @@ def test_llm_node_policy_is_limited_to_models_usable_by_current_execution_subjec
         id=uuid.uuid4(),
         policy_version="router-policy-v2",
         active_policy={
+            "strategy_id": "judge_bootstrap_incremental_v1",
             "default_model_id": "gpt-4.1",
             "fallback_model_id": "gpt-4.1-mini",
-            "rules": [],
+            "candidate_model_ids": ["gpt-4.1", "gpt-4.1-mini"],
+            "learning": {"mode": "judge_first"},
         },
         refresh_every_runs=20,
         eligible_runs_since_last_refresh=0,
@@ -713,6 +798,9 @@ def test_llm_node_policy_is_limited_to_models_usable_by_current_execution_subjec
             "deployment_id": str(uuid.uuid4()),
             "user_id": str(user_id),
             "organization_id": str(organization_id),
+            "routing_policy_preview": True,
+            "routing_policy_preview_node_ids": ["llm-router"],
+            "routing_policy_deployment_id": str(uuid.uuid4()),
         },
     )
     captured = {}
@@ -736,7 +824,8 @@ def test_llm_node_policy_is_limited_to_models_usable_by_current_execution_subjec
     assert captured == {"user_id": user_id, "organization_id": organization_id}
     assert selected == "gpt-4.1-mini"
     assert fallback is None
-    assert metadata["reason_code"] == "policy_default"
+    assert metadata["reason_code"] == "judge_bootstrap_required"
+    assert metadata["decision_source"] == "test_policy_preview"
 
 
 def test_llm_node_data_preserves_output_format_for_cost_optimizer_apply():
@@ -1272,11 +1361,66 @@ def test_llm_node_uses_fallback_model_on_failure(monkeypatch):
         "fallback_used": True,
         "fallback_from_model": "primary-model",
         "fallback_reason_code": "provider_call_failed",
+        "fallback_provider_error_code": "provider_exception",
+        "fallback_provider_error_type": "RuntimeError",
     }
     assert service_calls == [
         {"model_id": "primary-model", "organization_id": organization_id},
         {"model_id": "fallback-model", "organization_id": organization_id},
     ]
+
+
+def test_llm_node_records_safe_responses_failure_category_before_fallback(monkeypatch):
+    """Responses 오류의 원문 없이 상태 범주만 fallback trace에 남긴다."""
+    organization_id = uuid.uuid4()
+
+    def fake_get_runtime_client_for_user(db, user_id, model_id, organization_id=None):
+        client = (
+            IncompleteResponsesClient()
+            if model_id == "primary-model"
+            else SuccessClient()
+        )
+        return SimpleNamespace(
+            client=client,
+            credential_id=uuid.uuid4(),
+            model_id=model_id,
+            organization_id=organization_id,
+        )
+
+    monkeypatch.setattr(
+        LLMService, "get_runtime_client_for_user", fake_get_runtime_client_for_user
+    )
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="primary-model",
+            fallback_model_id="fallback-model",
+            system_prompt="sys",
+            user_prompt="user",
+            assistant_prompt=None,
+            referenced_variables=[],
+            context_variable=None,
+            parameters={},
+        ),
+        execution_context={
+            "user_id": str(uuid.uuid4()),
+            "organization_id": str(organization_id),
+            "db": object(),
+        },
+    )
+
+    result = node.execute({})
+
+    assert result["metadata"]["model_routing"] == {
+        "fallback_used": True,
+        "fallback_from_model": "primary-model",
+        "fallback_reason_code": "provider_call_failed",
+        "fallback_provider_error_code": "responses_incomplete",
+        "fallback_provider_error_type": "ProviderInvocationError",
+        "fallback_provider_response_status": "incomplete",
+    }
 
 
 def test_llm_node_logs_fallback_model_when_primary_client_selection_fails(
@@ -3531,8 +3675,15 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
             "policy_id": "policy-1",
             "policy_version": "router-policy-v4",
             "active_policy": {
+                "strategy_id": "judge_bootstrap_incremental_v1",
                 "default_model_id": "gpt-4.1-mini",
                 "fallback_model_id": "gpt-4.1",
+                "candidate_model_ids": ["gpt-4.1-mini", "gpt-4.1"],
+                "learning": {
+                    "mode": "local_first",
+                    "local_confidence_threshold": 0.78,
+                    "local_router_artifact": {"version": 1},
+                },
                 "rules": [
                     {
                         "id": "low-risk-json-triage",
@@ -3558,6 +3709,14 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
         "workflow_id": str(workflow_id),
         "workflow_run_id": str(workflow_run_id),
     }
+    monkeypatch.setattr(
+        "apps.workflow_engine.services.model_router."
+        "MDebertaModelChoiceClassifier.predict",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            selected_model_id="gpt-4.1-mini",
+            confidence=0.92,
+        ),
+    )
 
     result = node.execute({})
 
@@ -3565,179 +3724,66 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
     assert calls[0]["kind"] == "client"
     assert calls[0]["model_id"] == "gpt-4.1-mini"
     assert not any(call.get("kind") == "judge" for call in calls)
-    assert result["metadata"]["model_routing"] == {
-        "enabled": True,
-        "policy_id": "policy-1",
-        "policy_version": "router-policy-v4",
-        "selected_model": "gpt-4.1-mini",
-        "fallback_model": "gpt-4.1",
-        "decision_source": "active_policy",
-        "matched_rule_id": "low-risk-json-triage",
-        "reason_code": "quality_gate_passed_cost_reduction",
-        "runtime_context": {
-            "intent": "generate",
-            "risk_level": "medium",
-            "customer_facing": False,
-            "knowledge_enabled": False,
-            "output_format": "text",
-            "schema_required": False,
-            "has_file_input": False,
-            "input_length": 0,
-            "input_length_bucket": "short",
-            "prompt_length": 5,
-            "prompt_length_bucket": "short",
-            "node_task": "generate",
+    routing = result["metadata"]["model_routing"]
+    assert routing["policy_id"] == "policy-1"
+    assert routing["policy_version"] == "router-policy-v4"
+    assert routing["selected_model"] == "gpt-4.1-mini"
+    assert routing["fallback_model"] == "gpt-4.1"
+    assert routing["decision_source"] == "local_router"
+    assert routing["matched_rule_id"] == "incremental-local-router"
+    assert routing["reason_code"] == "local_router_confident"
+    assert routing["strategy_id"] == "judge_bootstrap_incremental_v1"
+    assert routing["judge_called"] is False
+
+
+def test_auto_model_routing_excludes_node_blocked_models_from_runtime_candidates(
+    monkeypatch,
+):
+    """노드에서 제외한 모델은 credential이 있어도 active rule이 선택하지 못한다."""
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    data = LLMNodeData(
+        title="excluded routing model",
+        model_id="gpt-5.6-luna",
+        auto_model_routing=True,
+        model_routing_policy={
+            "excluded_model_ids": ["gpt-5.6-sol"],
+            "active_policy": {
+                "default_model_id": "gpt-5.6-luna",
+                "rules": [
+                    {
+                        "id": "blocked-sol-rule",
+                        "priority": 1,
+                        "when": {"input_length_bucket": "short"},
+                        "selected_model_id": "gpt-5.6-sol",
+                    }
+                ],
+            },
         },
-        "judge_called": False,
+        user_prompt="hello",
+        referenced_variables=[],
+        parameters={},
+    )
+    node = LLMNode("llm-1", data)
+    node.execution_context = {
+        "user_id": str(user_id),
+        "organization_id": str(organization_id),
     }
-
-
-def test_auto_model_routing_embeds_query_once_and_exposes_semantic_reason(monkeypatch):
-    """FR-011-A26/A28: query 1회 embedding 결과로 Route와 모델 근거를 남긴다."""
-    calls = []
-    data = LLMNodeData(
-        title="semantic routing",
-        model_id="gpt-4.1-mini",
-        fallback_model_id="gpt-4.1",
-        auto_model_routing=True,
-        model_routing_policy={
-            "policy_id": "policy-semantic-1",
-            "policy_version": "router-policy-v5",
-            "active_policy": {
-                "default_model_id": "gpt-4.1-mini",
-                "fallback_model_id": "gpt-4.1",
-                "semantic_router": {
-                    "route_catalog_version": "ticket-routing-v1",
-                    "encoder_model_id": "text-embedding-test",
-                    "top_k": 2,
-                    "aggregation": "mean",
-                    "min_margin": 0.1,
-                    "routes": [
-                        {
-                            "cohort_id": "routine_support",
-                            "label": "단순 사용·안내 문의",
-                            "threshold": 0.6,
-                            "representatives": [
-                                {"embedding": [1.0, 0.0, 0.0]},
-                            ],
-                        },
-                        {
-                            "cohort_id": "high_risk_support",
-                            "label": "보안·보상·장애 문의",
-                            "threshold": 0.6,
-                            "representatives": [
-                                {"embedding": [0.0, 1.0, 0.0]},
-                            ],
-                        },
-                    ],
-                },
-                "rules": [
-                    {
-                        "id": "routine-low-cost",
-                        "when": {"semantic_cohort_id": "routine_support"},
-                        "selected_model_id": "gpt-4o-mini",
-                        "fallback_model_id": "gpt-4.1-mini",
-                        "reason_code": "semantic_routine_validated_low_cost",
-                    }
-                ],
-            },
-        },
-        user_prompt="{{message}}",
-        referenced_variables=[],
-        parameters={},
-    )
-    node = LLMNode("llm-semantic", data)
     monkeypatch.setattr(
         node,
-        "_available_routing_model_ids",
-        lambda _db: ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
-    )
-
-    def fake_query_vector(*, policy, inputs, db_session):
-        calls.append((policy, inputs, db_session))
-        return (1.0, 0.0, 0.0)
-
-    monkeypatch.setattr(node, "_resolve_semantic_query_vector", fake_query_vector)
-
-    selected, fallback, metadata = node._resolve_model_routing_policy(
-        {"message": "다운로드 위치를 알려 주세요."},
-        object(),
-    )
-
-    assert len(calls) == 1
-    assert selected == "gpt-4o-mini"
-    assert fallback == "gpt-4.1-mini"
-    assert metadata["matched_rule_id"] == "routine-low-cost"
-    assert metadata["matched_cohort_id"] == "routine_support"
-    assert metadata["semantic_route_label"] == "단순 사용·안내 문의"
-    assert metadata["semantic_match_status"] == "matched"
-    assert metadata["semantic_similarity"] == pytest.approx(1.0)
-    assert metadata["semantic_threshold"] == 0.6
-    assert metadata["route_catalog_version"] == "ticket-routing-v1"
-    assert "query_vector" not in metadata
-
-
-def test_auto_model_routing_keeps_default_when_semantic_embedding_fails(monkeypatch):
-    """FR-011-A27: encoder 실패는 임의 Route 대신 검증된 default model로 닫힌다."""
-    data = LLMNodeData(
-        title="semantic routing fallback",
-        model_id="gpt-4.1-mini",
-        fallback_model_id="gpt-4.1",
-        auto_model_routing=True,
-        model_routing_policy={
-            "policy_id": "policy-semantic-1",
-            "active_policy": {
-                "default_model_id": "gpt-4.1-mini",
-                "fallback_model_id": "gpt-4.1",
-                "semantic_router": {
-                    "route_catalog_version": "ticket-routing-v1",
-                    "encoder_model_id": "text-embedding-test",
-                    "routes": [
-                        {
-                            "cohort_id": "routine_support",
-                            "label": "단순 사용·안내 문의",
-                            "threshold": 0.6,
-                            "representatives": [
-                                {"embedding": [1.0, 0.0, 0.0]},
-                            ],
-                        }
-                    ],
-                },
-                "rules": [
-                    {
-                        "id": "routine-low-cost",
-                        "when": {"semantic_cohort_id": "routine_support"},
-                        "selected_model_id": "gpt-4o-mini",
-                    }
-                ],
-            },
-        },
-        user_prompt="{{message}}",
-        referenced_variables=[],
-        parameters={},
-    )
-    node = LLMNode("llm-semantic", data)
-    monkeypatch.setattr(
-        node,
-        "_available_routing_model_ids",
-        lambda _db: ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+        "_require_runtime_organization_id",
+        lambda *_args: organization_id,
     )
     monkeypatch.setattr(
-        node,
-        "_resolve_semantic_query_vector",
-        lambda **_kwargs: None,
+        workflow_llm_service.LLMService,
+        "get_runtime_available_model_ids_for_user",
+        lambda *args, **kwargs: ["gpt-5.6-luna", "gpt-5.6-sol"],
     )
 
-    selected, fallback, metadata = node._resolve_model_routing_policy(
-        {"message": "다운로드 위치를 알려 주세요."},
-        object(),
-    )
+    selected, _, metadata = node._resolve_model_routing_policy({}, object())
 
-    assert selected == "gpt-4.1-mini"
-    assert fallback == "gpt-4.1"
-    assert metadata["matched_rule_id"] is None
-    assert metadata["reason_code"] == "semantic_unavailable_default"
-    assert metadata["semantic_match_status"] == "unavailable"
+    assert selected == "gpt-5.6-luna"
+    assert metadata["reason_code"] != "blocked-sol-rule"
 
 
 def test_auto_model_routing_prefers_persisted_policy_over_legacy_node_json(monkeypatch):
@@ -3751,19 +3797,12 @@ def test_auto_model_routing_prefers_persisted_policy_over_legacy_node_json(monke
         enabled=True,
         status="active",
         policy_version="router-policy-v9",
-        active_policy={
-            "default_model_id": "gpt-4.1-mini",
-            "fallback_model_id": "gpt-4.1",
-            "rules": [
-                {
-                    "id": "persisted-short-text",
-                    "priority": 10,
-                    "when": {"input_length_bucket": "short"},
-                    "selected_model_id": "gpt-4.1-mini",
-                    "fallback_model_id": "gpt-4.1",
-                    "reason_code": "persisted_policy_rule",
-                }
-            ],
+            active_policy={
+                "strategy_id": "judge_bootstrap_incremental_v1",
+                "default_model_id": "gpt-4.1-mini",
+                "fallback_model_id": "gpt-4.1",
+                "candidate_model_ids": ["gpt-4.1-mini", "gpt-4.1"],
+                "learning": {"mode": "judge_first"},
         },
         refresh_every_runs=20,
         eligible_runs_since_last_refresh=4,
@@ -3788,9 +3827,12 @@ def test_auto_model_routing_prefers_persisted_policy_over_legacy_node_json(monke
     node = LLMNode(
         "llm-1",
         data,
-        execution_context={
-            "workflow_id": str(uuid.uuid4()),
-            "deployment_id": str(uuid.uuid4()),
+            execution_context={
+                "workflow_id": str(uuid.uuid4()),
+                "deployment_id": str(uuid.uuid4()),
+                "routing_policy_preview": True,
+                "routing_policy_preview_node_ids": ["llm-1"],
+                "routing_policy_deployment_id": str(uuid.uuid4()),
         },
     )
     monkeypatch.setattr(
@@ -3808,6 +3850,127 @@ def test_auto_model_routing_prefers_persisted_policy_over_legacy_node_json(monke
     assert metadata["judge_called"] is False
 
 
+def test_deployed_judge_bootstrap_uses_judge_and_queues_safe_learning_label(monkeypatch):
+    """초기 배포 실행은 Judge 선택을 쓰되 완료 후 학습할 label만 남긴다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    policy_id = uuid.uuid4()
+    persisted = SimpleNamespace(
+        id=policy_id,
+        enabled=True,
+        status="active",
+        policy_version="judge-bootstrap-v1",
+        active_policy={
+            "strategy_id": "judge_bootstrap_incremental_v1",
+            "default_model_id": "gpt-5-mini",
+            "fallback_model_id": "gpt-4o-mini",
+            "learning": {"mode": "judge_first", "local_router_artifact": {}},
+        },
+        refresh_every_runs=20,
+        eligible_runs_since_last_refresh=0,
+    )
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore, "get_runtime_policy", lambda *_args, **_kwargs: persisted
+    )
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore,
+        "queue_runtime_judge_label",
+        lambda *_args, **kwargs: captured.update(kwargs) or {"learning_queued": True},
+    )
+
+    class _JudgeClient:
+        def invoke_sync(self, *, messages, **kwargs):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"selected_model_id":"gpt-4o-mini","confidence":0.9,"reason_short":"단순 안내 요청","reason_code":"economy_fit"}'
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 9, "completion_tokens": 4},
+            }
+
+    user_id = uuid.uuid4()
+    monkeypatch.setattr(
+        LLMService,
+        "get_runtime_client_for_user",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            client=_JudgeClient(), credential_id=uuid.uuid4(), model_id="gpt-5-mini"
+        ),
+    )
+    monkeypatch.setattr(LLMService, "calculate_cost", lambda *_args, **_kwargs: 0.0001)
+    def _raise_usage_log_error(*_args, **_kwargs):
+        raise RuntimeError("usage log temporary failure")
+
+    monkeypatch.setattr(LLMService, "log_usage", _raise_usage_log_error)
+
+    node = LLMNode(
+        "llm-judge",
+        LLMNodeData(
+            title="judge bootstrap",
+            model_id="gpt-5-mini",
+            fallback_model_id="gpt-4o-mini",
+            auto_model_routing=True,
+            user_prompt="{{ message }}",
+            referenced_variables=[],
+            parameters={},
+        ),
+        execution_context={
+            "workflow_id": str(uuid.uuid4()),
+            "deployment_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+            "organization_id": str(uuid.uuid4()),
+        },
+    )
+    monkeypatch.setattr(node, "_available_routing_model_ids", lambda _db: ["gpt-4o-mini", "gpt-5-mini"])
+    monkeypatch.setattr(
+        node,
+        "_routing_candidate_profiles",
+            lambda *_args, **_kwargs: [
+            {
+                "model_id": "gpt-4o-mini",
+                "input_price_per_1k": 0.00015,
+                "output_price_per_1k": 0.0006,
+                "quality_by_difficulty": {
+                    "economy": 0.94,
+                    "balanced": 0.84,
+                    "advanced": 0.68,
+                },
+            },
+            {
+                "model_id": "gpt-5-mini",
+                "input_price_per_1k": 0.00025,
+                "output_price_per_1k": 0.002,
+                "quality_by_difficulty": {
+                    "economy": 0.98,
+                    "balanced": 0.95,
+                    "advanced": 0.90,
+                },
+            },
+        ],
+    )
+    monkeypatch.setattr(node, "_resolve_credential_principal_user", lambda: user_id)
+    monkeypatch.setattr(node, "_require_runtime_organization_id", lambda *_args: uuid.uuid4())
+
+    selected, fallback, metadata = node._resolve_model_routing_policy(
+        {"message": "짧은 사용 방법을 알려 주세요"}, object(), routing_feature_text="짧은 안내"
+    )
+
+    assert selected == "gpt-4o-mini"
+    assert fallback == "gpt-5-mini"
+    assert metadata["decision_source"] == "runtime_judge"
+    assert metadata["judge_called"] is True
+    assert metadata["judge"]["reason_short"] == "단순 안내 요청"
+    assert metadata["judge"]["candidate_model_count"] == 2
+    assert metadata["judge"]["usage_log_error"] == "RuntimeError"
+    assert captured["policy_id"] == str(policy_id)
+    assert captured["selected_model_id"] == "gpt-4o-mini"
+
+
 def test_test_execution_uses_matching_deployment_policy_without_becoming_deployed(
     monkeypatch,
 ):
@@ -3821,10 +3984,12 @@ def test_test_execution_uses_matching_deployment_policy_without_becoming_deploye
         enabled=True,
         status="active",
         policy_version="router-policy-v10",
-        active_policy={
-            "default_model_id": "gpt-4.1-mini",
-            "fallback_model_id": "gpt-4.1",
-            "rules": [],
+            active_policy={
+                "strategy_id": "judge_bootstrap_incremental_v1",
+                "default_model_id": "gpt-4.1-mini",
+                "fallback_model_id": "gpt-4.1",
+                "candidate_model_ids": ["gpt-4.1-mini", "gpt-4.1"],
+                "learning": {"mode": "judge_first"},
         },
         refresh_every_runs=20,
         eligible_runs_since_last_refresh=5,
@@ -3881,11 +4046,13 @@ def test_llm_node_blocks_policy_when_no_model_is_usable_by_execution_subject(
         auto_model_routing=True,
         model_routing_policy={
             "policy_id": "policy-1",
-            "active_policy": {
-                "default_model_id": "gpt-4.1-mini",
-                "fallback_model_id": "gpt-4.1",
-                "rules": [],
-            },
+                "active_policy": {
+                    "strategy_id": "judge_bootstrap_incremental_v1",
+                    "default_model_id": "gpt-4.1-mini",
+                    "fallback_model_id": "gpt-4.1",
+                    "candidate_model_ids": ["gpt-4.1-mini", "gpt-4.1"],
+                    "learning": {"mode": "judge_first"},
+                },
         },
         user_prompt="hello",
         referenced_variables=[],

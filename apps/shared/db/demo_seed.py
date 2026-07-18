@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import copy
 import gzip
 import json
 import os
@@ -109,11 +110,16 @@ DEMO_MODEL_ROUTER_BASE_MODEL = "gpt-5-mini"
 DEMO_MODEL_ROUTER_FALLBACK_MODEL = "gpt-4.1"
 DEMO_MODEL_ROUTER_CHEAP_MODEL = "gpt-4o-mini"
 DEMO_MODEL_ROUTER_BALANCED_MODEL = "gpt-4.1-mini"
+# 이 RAG 실험은 낮은 비용 후보를 검증하는 흐름이 목적이다. Responses API의
+# reasoning token이 900 token 출력 예산을 먼저 소진하지 않는 안정적인 기준 모델로
+# 시작해, 후보 품질 gate와 입력군 routing 자체를 검증한다.
+DEMO_ONBOARDING_ROUTER_MODEL = "gpt-4.1"
 DEMO_EMBEDDING_MODEL = "text-embedding-3-small"
 DEMO_EMBEDDING_DIMENSION = 1536
-# 모델 라우팅은 문서 검색과 달리 입력 문의의 의미상 군집을 구분해야 한다.
-# RAG 문서용 small 임베딩을 바꾸지 않고, routing catalog에만 더 정밀한 encoder를 쓴다.
-DEMO_MODEL_ROUTER_EMBEDDING_MODEL = "text-embedding-3-large"
+ENTERPRISE_REQUEST_ROUTING_NAME = "엔터프라이즈 통합 업무 요청 처리"
+ENTERPRISE_REQUEST_ROUTING_DESCRIPTION = (
+    "사내 문서 RAG와 난이도 기반 자동 모델 라우팅으로 다양한 업무 요청을 처리하는 workflow"
+)
 DEMO_REPO_ROOT = Path(__file__).resolve().parents[3]
 DEMO_LEGAL_DOCS_LABOR_DIR = DEMO_REPO_ROOT / "local" / "legal-docs-labor"
 DEMO_INTERNAL_DOCS_DIR = (
@@ -236,7 +242,7 @@ CREDENTIAL_MODEL_REL_IDS = {
     DEMO_MODEL_ROUTER_FALLBACK_MODEL: _uuid(925),
     DEMO_MODEL_ROUTER_CHEAP_MODEL: _uuid(926),
     DEMO_MODEL_ROUTER_BALANCED_MODEL: _uuid(927),
-    DEMO_MODEL_ROUTER_EMBEDDING_MODEL: _uuid(928),
+    DEMO_ONBOARDING_ROUTER_MODEL: _uuid(929),
 }
 
 TEAM_LLM_PERMISSION_IDS = {
@@ -333,6 +339,8 @@ APP_IDS = {
     "department_onboarding_chatbot": _uuid(406),
     "team_onboarding_access_control": _uuid(407),
     "model_router_ticket_ops": uuid.UUID("91000000-0000-0000-0000-000000000001"),
+    "team_onboarding_adaptive_routing": _uuid(408),
+    "enterprise_request_routing": _uuid(409),
 }
 
 WORKFLOW_IDS = {
@@ -342,6 +350,7 @@ WORKFLOW_IDS = {
 WORKFLOW_IDS["model_router_ticket_ops"] = uuid.UUID(
     "91000000-0000-0000-0000-000000000002"
 )
+WORKFLOW_IDS["team_onboarding_adaptive_routing"] = _uuid(508)
 
 DEPLOYMENT_IDS = {
     key: _uuid(600 + index)
@@ -350,6 +359,7 @@ DEPLOYMENT_IDS = {
 DEPLOYMENT_IDS["model_router_ticket_ops"] = uuid.UUID(
     "91000000-0000-0000-0000-000000000003"
 )
+DEPLOYMENT_IDS["team_onboarding_adaptive_routing"] = _uuid(608)
 
 LEGACY_DEMO_LLM_CREDENTIAL_ID = _uuid(700)
 
@@ -364,6 +374,10 @@ TEAM_PERMISSION_IDS = {
     "team_onboarding_platform": _uuid(807),
     "team_onboarding_sales": _uuid(808),
     "team_onboarding_people": _uuid(809),
+    "team_onboarding_adaptive_platform": _uuid(810),
+    "team_onboarding_adaptive_sales": _uuid(811),
+    "team_onboarding_adaptive_people": _uuid(812),
+    "enterprise_request_routing": _uuid(813),
 }
 
 
@@ -1232,6 +1246,7 @@ def demo_summary(profile: str = "demo") -> dict[str, Any]:
             "사내 문서 질문 응답 봇",
             "부서별 온보딩 RAG 챗봇",
             "팀별 온보딩 문서 접근 제어 데모",
+            ENTERPRISE_REQUEST_ROUTING_NAME,
             "Enterprise 고객 티켓 처리",
             "테스트용 문의 응답 워크플로우",
         ],
@@ -2239,6 +2254,28 @@ def _team_onboarding_access_control_graph() -> dict[str, Any]:
     }
 
 
+def _team_onboarding_adaptive_routing_graph() -> dict[str, Any]:
+    """RAG 기반 팀 온보딩 안내 workflow에 자동 모델 라우팅을 설정한다."""
+    graph = copy.deepcopy(_team_onboarding_access_control_graph())
+    llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-answer")
+    data = llm_node["data"]
+    data["model_id"] = DEMO_ONBOARDING_ROUTER_MODEL
+    data["fallback_model_id"] = None
+    data["auto_model_routing"] = True
+    data["model_routing_context"] = {
+        "customer_facing": False,
+        "node_task": "employee_onboarding_guidance",
+        "risk_level": "low",
+    }
+    data["model_routing_policy"] = {
+        "refresh": {"refresh_every_runs": 5},
+        "validation_budget_usd": 3.0,
+        "excluded_model_ids": ["gpt-5.6-sol"],
+    }
+    return graph
+
+
+
 def _ticket_ops_graph() -> dict[str, Any]:
     return {
         "nodes": [
@@ -2449,6 +2486,7 @@ def _ticket_ops_graph() -> dict[str, Any]:
 
 
 def _model_router_ticket_ops_graph() -> dict[str, Any]:
+    """고객 티켓 처리 workflow에 자동 모델 라우팅을 설정한다."""
     graph = _ticket_ops_graph()
     for node in graph["nodes"]:
         if node["id"] != "llm-triage":
@@ -2456,180 +2494,183 @@ def _model_router_ticket_ops_graph() -> dict[str, Any]:
         node["data"].update(
             {
                 "title": "보상/SLA 위험 판단",
-                "description": "고객 보상, SLA, 장애 영향 범위를 보수적으로 판단합니다.",
+                "description": "고객 문의, SLA, 보상 위험을 분류하고 처리 방향을 판단합니다.",
                 "model_id": DEMO_MODEL_ROUTER_FALLBACK_MODEL,
                 "fallback_model_id": DEMO_MODEL_ROUTER_BALANCED_MODEL,
                 "auto_model_routing": True,
-                "model_routing_policy": {"refresh": {"refresh_every_runs": 20}},
                 "model_routing_context": {
                     "customer_facing": True,
                     "node_task": "customer_support_triage",
                     "risk_level": "medium",
-                    "semantic_router": {
-                        "route_catalog_version": "demo-ticket-routing-v7",
-                        "encoder_model_id": DEMO_MODEL_ROUTER_EMBEDDING_MODEL,
-                        "input_paths": ["webhook-ticket.message"],
-                        "top_k": 8,
-                        "aggregation": "centroid",
-                        "min_margin": 0.005,
-                        "routes": [
-                            {
-                                "cohort_id": "routine_support",
-                                "label": "일반 사용 안내",
-                                "threshold": 0.35,
-                                "utterances": [
-                                    "정산 파일을 다시 생성하는 방법을 알려 주세요.",
-                                    "다운로드한 보고서는 어디에서 확인하나요?",
-                                    "팀원 초대 메일을 다시 보내고 싶습니다.",
-                                    "프로필 이름과 알림 설정은 어디서 바꾸나요?",
-                                    "사용 방법과 메뉴 위치를 안내해 주세요.",
-                                    "비밀번호 재설정 링크를 다시 받고 싶어요.",
-                                    "내보낸 CSV 파일을 찾을 수 없습니다.",
-                                    "일반 계정 설정을 변경하는 방법이 궁금합니다.",
-                                    "날짜 형식과 화면 언어 같은 표시 설정을 바꾸고 싶습니다.",
-                                    "대시보드 카드와 위젯 순서를 다시 배치하는 방법을 알려 주세요.",
-                                    "예약 시간과 기본 시간대 표시를 변경하고 싶습니다.",
-                                    "푸시 알림과 이메일 알림을 각각 설정하고 싶습니다.",
-                                    "워크플로우를 복제하거나 다른 폴더로 옮기는 방법이 필요합니다.",
-                                    "보관한 모듈과 이전 보고서를 다시 찾는 위치를 알려 주세요.",
-                                    "API 요청 예제와 사용 설명서를 확인할 수 있는 곳이 궁금합니다.",
-                                    "화면 테마와 사용자 환경 설정을 변경하고 싶습니다.",
-                                    "보관함으로 옮긴 항목을 복원하거나 다시 열고 싶습니다.",
-                                    "저장해 둔 응답 양식과 템플릿 이름을 수정하고 싶습니다.",
-                                    "정기적으로 받는 사용 보고서의 구독과 발송 주기를 설정하고 싶습니다.",
-                                    "보고서 수신 알림과 이메일 전달 설정을 변경하고 싶습니다.",
-                                    "목록에 표시되는 열과 정렬 순서를 사용자 설정으로 바꾸고 싶습니다.",
-                                    "즐겨찾기와 최근 사용 항목을 관리하는 메뉴를 찾고 있습니다.",
-                                ],
-                            },
-                            {
-                                "cohort_id": "account_billing",
-                                "label": "계정 및 결제 문제",
-                                "threshold": 0.38,
-                                "utterances": [
-                                    "결제는 완료됐지만 구독이 활성화되지 않았습니다.",
-                                    "청구 금액과 세금계산서 내역이 맞지 않습니다.",
-                                    "팀원 초대가 실패하고 계정 권한을 바꿀 수 없습니다.",
-                                    "중복 결제를 확인하고 환불 절차를 알려 주세요.",
-                                    "요금제를 변경했는데 사용 한도가 반영되지 않았습니다.",
-                                    "관리자 계정의 소유권을 다른 직원에게 이전하고 싶습니다.",
-                                    "기업 계약 갱신과 청구서를 확인해 주세요.",
-                                    "로그인은 되지만 조직 워크스페이스에 접근할 수 없습니다.",
-                                    "법인 결제 카드를 변경하려는데 결제 수단 저장이 실패합니다.",
-                                    "자동 결제가 실패한 뒤 유료 기능이 잠겨 복구가 필요합니다.",
-                                    "이번 달 초과 사용량과 추가 과금 계산 기준을 확인해 주세요.",
-                                    "해외 결제 통화와 부가세가 청구서에 잘못 표시된 것 같습니다.",
-                                    "환불 승인은 완료됐지만 카드 취소 내역이 반영되지 않았습니다.",
-                                    "좌석 수를 줄였는데 다음 청구 금액이 바뀌지 않았습니다.",
-                                    "결제 관리자와 청구서 수신 담당자를 변경하고 싶습니다.",
-                                    "추가 구매한 크레딧과 사용 한도가 계정에 반영되지 않았습니다.",
-                                    "세금계산서의 회사 정보와 등록 번호를 고쳐 재발행하고 싶습니다.",
-                                    "월별 청구서를 받을 회계 담당자 이메일을 추가하고 싶습니다.",
-                                    "영수증과 청구 문서의 수신 주소를 변경해 주세요.",
-                                    "사업자 정보가 바뀌어 이전 청구서를 정정 발급해야 합니다.",
-                                    "구독 결제 담당자와 결제 알림 수신자를 교체하고 싶습니다.",
-                                    "청구서 발송 설정과 회계 연락처를 관리하고 싶습니다.",
-                                ],
-                            },
-                            {
-                                "cohort_id": "high_risk",
-                                "label": "보안 및 SLA 고위험",
-                                "threshold": 0.34,
-                                "safety_override": True,
-                                "lexical_override_threshold": 1.0,
-                                "lexical_signals": [
-                                    {"term": "보안 사고", "weight": 1.0},
-                                    {"term": "계정 탈취", "weight": 1.5},
-                                    {"term": "공격자", "weight": 1.0},
-                                    {"term": "변조", "weight": 1.0},
-                                    {"term": "위조", "weight": 1.0},
-                                    {"term": "침해", "weight": 1.0},
-                                    {"term": "유출", "weight": 1.0},
-                                    {"term": "외부 공개", "weight": 1.0},
-                                    {"term": "공개 저장소", "weight": 1.0},
-                                    {"term": "무단 접근", "weight": 1.0},
-                                    {"term": "인증 우회", "weight": 1.0},
-                                    {"term": "권한 상승", "weight": 1.0},
-                                    {"term": "랜섬웨어", "weight": 1.5},
-                                    {"term": "악성 파일", "weight": 1.0},
-                                    {"term": "SLA 위반", "weight": 1.0},
-                                    {"term": "서비스 중단", "weight": 1.0},
-                                    {"term": "전체 장애", "weight": 1.0},
-                                    {"term": "대규모 장애", "weight": 1.0},
-                                    {"term": "규제 위반", "weight": 1.0},
-                                    {"term": "법정 신고", "weight": 1.0},
-                                    {"term": "법무 검토", "weight": 1.0},
-                                    {"term": "환불 분쟁", "weight": 1.0},
-                                    {"term": "감사 로그 삭제", "weight": 1.0},
-                                    {"term": "감사 기록 위조", "weight": 1.0},
-                                    {"term": "원장 손상", "weight": 1.0},
-                                    {"term": "금전 피해", "weight": 1.0},
-                                    {"term": "비밀 키 노출", "weight": 1.0},
-                                    {"term": "API 키 유출", "weight": 1.0},
-                                    {"term": "account takeover", "weight": 1.5},
-                                    {"term": "credential leak", "weight": 1.0},
-                                    {"term": "data breach", "weight": 1.0},
-                                    {"term": "unauthorized access", "weight": 1.0},
-                                    {"term": "security incident", "weight": 1.0},
-                                    {"term": "ransomware", "weight": 1.5},
-                                    {"term": "privilege escalation", "weight": 1.0},
-                                    {"term": "service outage", "weight": 1.0},
-                                    {"term": "sla breach", "weight": 1.0},
-                                ],
-                                "utterances": [
-                                    "SLA 위반 가능성이 있어 고객 보상안을 검토해 주세요.",
-                                    "결제 API 장애로 여러 고객의 정산이 실패했습니다.",
-                                    "관리자 계정 탈취와 개인정보 노출이 의심됩니다.",
-                                    "보안 사고로 모든 API 키를 긴급 폐기해야 합니다.",
-                                    "법무 검토가 필요한 고객 데이터 삭제 요청입니다.",
-                                    "서비스 전체 장애가 발생해 즉시 대응이 필요합니다.",
-                                    "크레딧 보상 승인이 필요한 대규모 장애입니다.",
-                                    "권한 상승 공격으로 민감 정보가 노출되었을 수 있습니다.",
-                                    "고객 개인정보가 권한 없는 사용자에게 노출된 정황이 있습니다.",
-                                    "운영 서버에서 랜섬웨어가 의심되어 즉시 격리가 필요합니다.",
-                                    "위조된 웹훅이 운영 주문과 데이터를 변경한 것으로 보입니다.",
-                                    "고객 문서가 공개 링크로 외부에 노출된 상태입니다.",
-                                    "감사 로그가 삭제되거나 위조된 흔적을 조사해야 합니다.",
-                                    "규제 기관 사고 보고 기한 전에 영향 범위를 확인해야 합니다.",
-                                    "퇴사자 계정이 SSO를 우회해 운영 환경에 접근했습니다.",
-                                    "백업 복구 실패로 재해 복구 목표 시간을 넘길 위험이 있습니다.",
-                                    "인증 우회로 관리자 기능이 노출되어 즉시 접근을 차단해야 합니다.",
-                                    "민감한 고객 파일이 외부 공개 상태라 긴급 회수가 필요합니다.",
-                                    "운영 데이터가 비정상적으로 변경되어 사고 대응을 시작해야 합니다.",
-                                    "악성 파일 감염 정황으로 서버와 계정을 격리해야 합니다.",
-                                    "보안 감사 기록의 무결성이 훼손되어 조사와 보고가 필요합니다.",
-                                    "규제 위반 가능성이 있는 데이터 이동을 즉시 조사해야 합니다.",
-                                ],
-                            },
-                        ],
-                    },
                 },
-                "knowledgeBases": [],
-                "dedupeRetrievedContext": False,
-                "system_prompt": (
-                    "고객지원 티켓을 처리하는 AI입니다."
-                    "필드는 \"긴급도\", \"답변 초안\" 두 개만 사용합니다. "
-                    "답변 초안은 고객에게 보낼 수 있는 3문장 이내의 간결한 문장으로 작성하세요."
-                ),
-                "user_prompt": (
-                    "고객 등급: {{ customerTier }}\n"
-                    "문의: {{ message }}\n"
-                    "승인 필요 여부와 고객 답변 초안을 작성하세요."
-                ),
-                "parameters": {"temperature": 0.2, "max_tokens": 700},
-                "output_format": {
-                    "type": "json",
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "긴급도": {"type": "boolean"},
-                            "답변 초안": {"type": "string"},
-                        },
-                        "required": ["긴급도", "답변 초안"],
-                    },
+                "model_routing_policy": {
+                    "refresh": {"refresh_every_runs": 10},
+                    "validation_budget_usd": 3.0,
+                    "excluded_model_ids": ["gpt-5.6-sol"],
                 },
             }
         )
+    return graph
+
+
+
+def _enterprise_request_routing_graph() -> dict[str, Any]:
+    """사내 업무 요청을 RAG와 입력군별 자동 모델 라우팅으로 처리한다."""
+    graph = copy.deepcopy(_ticket_ops_graph())
+    webhook_node = next(
+        node for node in graph["nodes"] if node["id"] == "webhook-ticket"
+    )
+    webhook_node["id"] = "webhook-request"
+    webhook_node["data"].update(
+        {
+            "title": "사내 업무 요청 수신",
+            "description": "부서, 요청자 역할과 업무 문의를 수신합니다.",
+            "variable_mappings": [
+                {"json_path": "query", "variable_name": "query"},
+                {"json_path": "department", "variable_name": "department"},
+                {"json_path": "requesterRole", "variable_name": "requesterRole"},
+                {"json_path": "locale", "variable_name": "locale"},
+            ],
+        }
+    )
+
+    llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-triage")
+    llm_node["id"] = "llm-request"
+    llm_node["data"].update(
+        {
+            "title": "업무 요청 분류 및 답변",
+            "description": "사내 문서를 검색하고 요청 위험도에 맞는 모델로 답변합니다.",
+            "model_id": DEMO_ONBOARDING_ROUTER_MODEL,
+            "fallback_model_id": None,
+            "auto_model_routing": True,
+            "model_routing_context": {
+                "customer_facing": False,
+                "node_task": "enterprise_internal_request",
+                "risk_level": "medium",
+            },
+            "model_routing_policy": {
+                "refresh": {"refresh_every_runs": 10},
+                "validation_budget_usd": 3.0,
+                "excluded_model_ids": ["gpt-5.6-sol"],
+            },
+            "knowledgeBases": [
+                _knowledge_base_ref(key)
+                for key in (
+                    "internal_onboarding",
+                    "internal_privacy_hr_records",
+                    "internal_budget_alert_runbook",
+                    "internal_cost_optimization_playbook",
+                    "internal_developer_onboarding_rules",
+                    "onboarding_finance",
+                )
+            ],
+            "scoreThreshold": 0.3,
+            "topK": 5,
+            "system_prompt": (
+                "기업 내부 업무 요청을 처리하는 AI입니다. 현재 실행 주체에게 허용된 사내 문서만 "
+                "근거로 답변하고, 근거가 없으면 추측하지 않습니다. 반드시 JSON object 하나만 "
+                "출력하며 필드는 '입력군', '승인 필요', '답변'만 사용합니다. 보안·개인정보 사고와 "
+                "재무 지급 승인은 보수적으로 판단합니다."
+            ),
+            "user_prompt": (
+                "부서: {{ department }}\n"
+                "요청자 역할: {{ requesterRole }}\n"
+                "언어: {{ locale }}\n"
+                "업무 요청: {{ query }}\n"
+                "요청 유형을 분류하고 승인 필요 여부와 실행 가능한 답변을 작성하세요."
+            ),
+            "referenced_variables": [
+                {
+                    "name": name,
+                    "value_selector": ["webhook-request", name],
+                }
+                for name in ("department", "requesterRole", "locale", "query")
+            ],
+            "parameters": {"temperature": 0.15, "max_tokens": 900},
+            "output_format": {
+                "type": "json",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "입력군": {"type": "string"},
+                        "승인 필요": {"type": "boolean"},
+                        "답변": {"type": "string"},
+                    },
+                    "required": ["입력군", "승인 필요", "답변"],
+                },
+            },
+        }
+    )
+
+    extract_node = next(
+        node for node in graph["nodes"] if node["id"] == "extract-ticket"
+    )
+    extract_node["data"].update(
+        {
+            "title": "업무 처리 결과 추출",
+            "description": "LLM JSON에서 승인 여부와 답변을 추출합니다.",
+            "source_selector": ["llm-request", "text"],
+            "mappings": [
+                {"name": "approvalRequired", "json_path": "승인 필요"},
+                {"name": "mailDraft", "json_path": "답변"},
+            ],
+        }
+    )
+
+    condition_node = next(
+        node for node in graph["nodes"] if node["id"] == "condition-approval"
+    )
+    condition_node["data"].update(
+        {
+            "title": "검토 필요 분기",
+            "description": "보안·재무 등 승인 필요 요청을 검토 경로로 분기합니다.",
+        }
+    )
+
+    approval_template = next(
+        node for node in graph["nodes"] if node["id"] == "template-approval"
+    )
+    approval_template["data"].update(
+        {
+            "title": "담당 부서 검토 요청",
+            "description": "승인이 필요한 업무 요청을 담당 부서에 전달합니다.",
+            "template": (
+                "담당 부서 검토가 필요한 요청입니다.\n\n"
+                "부서: {{ department }}\n"
+                "요청자 역할: {{ requesterRole }}\n"
+                "요청: {{ query }}\n\n"
+                "AI 검토 결과:\n{{ mailDraft }}"
+            ),
+            "variables": [
+                {"name": "mailDraft", "value_selector": ["extract-ticket", "mailDraft"]},
+                {"name": "department", "value_selector": ["webhook-request", "department"]},
+                {
+                    "name": "requesterRole",
+                    "value_selector": ["webhook-request", "requesterRole"],
+                },
+                {"name": "query", "value_selector": ["webhook-request", "query"]},
+            ],
+        }
+    )
+
+    reply_template = next(
+        node for node in graph["nodes"] if node["id"] == "template-reply"
+    )
+    reply_template["data"].update(
+        {
+            "title": "사내 업무 안내",
+            "description": "승인 없이 처리할 수 있는 업무 답변을 정리합니다.",
+            "template": "{{ mailDraft }}",
+        }
+    )
+
+    for edge in graph["edges"]:
+        if edge["source"] == "webhook-ticket":
+            edge["source"] = "webhook-request"
+        if edge["source"] == "llm-triage":
+            edge["source"] = "llm-request"
+        if edge["target"] == "llm-triage":
+            edge["target"] = "llm-request"
     return graph
 
 
@@ -3432,15 +3473,15 @@ def _ensure_openai_provider_and_models(db: Session) -> tuple[LLMProvider, dict[s
             Decimal("0.001600"),
             1000000,
         ),
+        DEMO_ONBOARDING_ROUTER_MODEL: (
+            "chat",
+            Decimal("0.001000"),
+            Decimal("0.006000"),
+            400000,
+        ),
         DEMO_EMBEDDING_MODEL: (
             "embedding",
             Decimal("0.000020"),
-            Decimal("0.000000"),
-            8191,
-        ),
-        DEMO_MODEL_ROUTER_EMBEDDING_MODEL: (
-            "embedding",
-            Decimal("0.000130"),
             Decimal("0.000000"),
             8191,
         ),
@@ -3608,6 +3649,26 @@ def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
             deployed=True,
             deployment_type=DeploymentType.INTERNAL_CHATBOT,
         ),
+        "team_onboarding_adaptive_routing": _upsert_app_workflow(
+            db,
+            "team_onboarding_adaptive_routing",
+            "팀별 온보딩 자동 모델 라우팅 검증",
+            "팀 권한 RAG와 입력 추세 변화에 따른 자동 모델 라우팅을 검증하는 내부 챗봇",
+            "onboarding_people_manager",
+            _team_onboarding_adaptive_routing_graph(),
+            deployed=True,
+            deployment_type=DeploymentType.INTERNAL_CHATBOT,
+        ),
+        "enterprise_request_routing": _upsert_app_workflow(
+            db,
+            "enterprise_request_routing",
+            ENTERPRISE_REQUEST_ROUTING_NAME,
+            ENTERPRISE_REQUEST_ROUTING_DESCRIPTION,
+            "admin",
+            _enterprise_request_routing_graph(),
+            deployed=True,
+            deployment_type=DeploymentType.WEBHOOK,
+        ),
         "ticket_ops": _upsert_app_workflow(
             db,
             "ticket_ops",
@@ -3684,6 +3745,19 @@ def _seed_permissions(db: Session) -> None:
                 "auth_state": "manager",
                 "assigned_by": USER_IDS["admin"],
                 "options": _demo_options("permission-model-router-ticket"),
+                "flags": 0,
+            },
+        ),
+        (
+            TEAM_PERMISSION_IDS["enterprise_request_routing"],
+            TeamWorkflowPermission,
+            {
+                "grantee_organization_id": ORG_ID,
+                "team_id": TEAM_IDS["platform_admin"],
+                "workflow_id": WORKFLOW_IDS["enterprise_request_routing"],
+                "auth_state": "manager",
+                "assigned_by": USER_IDS["admin"],
+                "options": _demo_options("permission-enterprise-request-routing"),
                 "flags": 0,
             },
         ),
@@ -3767,6 +3841,30 @@ def _seed_permissions(db: Session) -> None:
                 "flags": 0,
             },
         ),
+        *[
+            (
+                TEAM_PERMISSION_IDS[f"team_onboarding_adaptive_{team_suffix}"],
+                TeamWorkflowPermission,
+                {
+                    "grantee_organization_id": ORG_ID,
+                    "team_id": TEAM_IDS[f"onboarding_{team_suffix}"],
+                    "workflow_id": WORKFLOW_IDS[
+                        "team_onboarding_adaptive_routing"
+                    ],
+                    "auth_state": auth_state,
+                    "assigned_by": USER_IDS["onboarding_people_manager"],
+                    "options": _demo_options(
+                        f"permission-team-onboarding-adaptive-{team_suffix}"
+                    ),
+                    "flags": 0,
+                },
+            )
+            for team_suffix, auth_state in (
+                ("platform", "operator"),
+                ("sales", "operator"),
+                ("people", "manager"),
+            )
+        ],
         (
             TEAM_PERMISSION_IDS["test_builder"],
             TeamWorkflowPermission,
@@ -4083,22 +4181,23 @@ def _seed_llm_credential(
         DEMO_MODEL_ROUTER_FALLBACK_MODEL,
         DEMO_MODEL_ROUTER_CHEAP_MODEL,
         DEMO_MODEL_ROUTER_BALANCED_MODEL,
+        DEMO_ONBOARDING_ROUTER_MODEL,
     ]
     if runtime_credential_enabled:
         relation_model_names.append(DEMO_EMBEDDING_MODEL)
-        relation_model_names.append(DEMO_MODEL_ROUTER_EMBEDDING_MODEL)
     else:
         db.query(LLMRelCredentialModel).filter(
             LLMRelCredentialModel.id.in_(
                 [
                     CREDENTIAL_MODEL_REL_IDS[DEMO_EMBEDDING_MODEL],
-                    CREDENTIAL_MODEL_REL_IDS[DEMO_MODEL_ROUTER_EMBEDDING_MODEL],
                 ]
             )
         ).delete(synchronize_session=False)
         _delete_demo_runtime_llm_permissions(db)
 
-    for model_name in relation_model_names:
+    # A model can serve multiple demo roles (for example, fallback and onboarding
+    # routing). Persist one credential relation per distinct model.
+    for model_name in dict.fromkeys(relation_model_names):
         _upsert_by_id(
             db,
             LLMRelCredentialModel,
@@ -4681,6 +4780,11 @@ def seed_demo_data(db: Session) -> None:
     _seed_teams_and_memberships(db)
     _seed_knowledge(db)
     provider, models = _ensure_openai_provider_and_models(db)
+    from apps.shared.services.model_routing_global_profile_catalog import (
+        seed_model_routing_global_profiles,
+    )
+
+    seed_model_routing_global_profiles(db)
     _seed_apps_and_workflows(db)
     db.flush()
     _seed_permissions(db)

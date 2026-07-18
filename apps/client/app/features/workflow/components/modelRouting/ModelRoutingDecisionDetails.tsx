@@ -1,98 +1,124 @@
+type ModelRoutingDecisionDetailsProps = {
+  output?: unknown;
+  traceMetadata?: unknown;
+};
+
+type RoutingContext = {
+  inputLengthBucket?: string;
+  outputFormat?: string;
+  schemaRequired?: boolean;
+  knowledgeEnabled?: boolean;
+  hasFileInput?: boolean;
+};
+
+type JudgeSummary = {
+  model?: string;
+  confidence?: number;
+  reasonCode?: string;
+  reasonShort?: string;
+  candidateModelCount?: number;
+  cost?: number;
+};
+
 type ModelRoutingSummary = {
+  strategyId?: string;
   selectedModel?: string;
   fallbackModel?: string;
   fallbackUsed?: boolean;
   fallbackFromModel?: string;
   fallbackReasonCode?: string;
   actualModel?: string;
-  decisionSource?: string;
   reasonCode?: string;
   policyVersion?: string;
-  matchedRuleId?: string;
-  matchedCohortId?: string;
-  semanticRouteLabel?: string;
-  semanticCandidateCohortId?: string;
-  semanticCandidateLabel?: string;
-  semanticSimilarity?: number;
-  semanticThreshold?: number;
-  semanticRunnerUpScore?: number;
-  semanticMargin?: number;
-  semanticMinMargin?: number;
-  semanticCohortScores: SemanticCohortScore[];
-  semanticMatchStatus?: string;
-  semanticDecisionSource?: string;
-  semanticLexicalScore?: number;
-  semanticLexicalSignalCount?: number;
-  semanticSafetyOverride?: boolean;
-  routeCatalogVersion?: string;
   judgeCalled?: boolean;
+  decisionSource?: string;
+  judge?: JudgeSummary;
   policySource?: string;
   includedInPolicyLearning?: boolean;
-};
-
-type SemanticCohortScore = {
-  cohortId: string;
-  label: string;
-  similarity: number;
-  threshold: number;
-};
-
-type ModelRoutingDecisionDetailsProps = {
-  output?: unknown;
-  traceMetadata?: unknown;
+  runtimeContext: RoutingContext;
+  localConfidence?: number;
+  localConfidenceThreshold?: number;
+  learningMode?: string;
+  learningStatus?: string;
+  learningOutcomeReason?: string;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const stringValue = (value: unknown): string | undefined =>
-  typeof value === 'string' && value.trim().length > 0
-    ? value.trim()
-    : undefined;
-
-const numberValue = (value: unknown): number | undefined =>
-  typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  typeof value === 'string' && value.trim() ? value.trim() : undefined;
 
 const booleanValue = (value: unknown): boolean | undefined =>
   typeof value === 'boolean' ? value : undefined;
 
-const semanticCohortScoresOf = (value: unknown): SemanticCohortScore[] => {
-  if (!Array.isArray(value)) return [];
-
-  return value.flatMap((item) => {
-    if (!isRecord(item)) return [];
-    const cohortId = stringValue(item.cohort_id);
-    const label = stringValue(item.label);
-    const similarity = numberValue(item.similarity);
-    const threshold = numberValue(item.threshold);
-
-    return cohortId &&
-      label &&
-      similarity !== undefined &&
-      threshold !== undefined
-      ? [{ cohortId, label, similarity, threshold }]
-      : [];
-  });
-};
+const numberValue = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
 const routingRecordOf = (
   output: unknown,
   traceMetadata: unknown,
 ): Record<string, unknown> | null => {
-  if (isRecord(traceMetadata)) {
-    return isRecord(traceMetadata.llm) ? traceMetadata.llm : traceMetadata;
-  }
-  if (!isRecord(output)) return null;
-  const metadata = isRecord(output.metadata) ? output.metadata : null;
-  if (metadata && isRecord(metadata.model_routing)) {
-    return metadata.model_routing;
-  }
-  return metadata && isRecord(metadata.model_routing_metadata)
-    ? metadata.model_routing_metadata
+  const traceRoot = isRecord(traceMetadata) ? traceMetadata : null;
+  const traceLlm = traceRoot && isRecord(traceRoot.llm) ? traceRoot.llm : null;
+  const traceRouting =
+    traceLlm && isRecord(traceLlm.model_routing)
+      ? traceLlm.model_routing
+      : traceRoot && isRecord(traceRoot.model_routing)
+        ? traceRoot.model_routing
+        : traceLlm || traceRoot;
+  const metadata = isRecord(output) && isRecord(output.metadata)
+    ? output.metadata
     : null;
+  const outputRouting = metadata && isRecord(metadata.model_routing)
+    ? metadata.model_routing
+    : metadata && isRecord(metadata.llm)
+      ? metadata.llm
+      : metadata && isRecord(metadata.model_routing_metadata)
+        ? metadata.model_routing_metadata
+        : null;
+
+  if (!traceRouting) return outputRouting;
+  if (!outputRouting) return traceRouting;
+
+  // Trace에는 안전한 Judge 요약만 남고, output metadata에는 UI용 짧은 사유와
+  // 후보 수가 추가된다. trace의 최신 실행값을 우선하되 누락된 Judge 필드만 보완한다.
+  const traceJudge = isRecord(traceRouting.judge) ? traceRouting.judge : {};
+  const outputJudge = isRecord(outputRouting.judge) ? outputRouting.judge : {};
+  return {
+    ...outputRouting,
+    ...traceRouting,
+    judge: {
+      ...outputJudge,
+      ...traceJudge,
+    },
+  };
 };
 
-const modelRoutingSummaryOf = ({
+const contextOf = (value: unknown): RoutingContext => {
+  if (!isRecord(value)) return {};
+  return {
+    inputLengthBucket: stringValue(value.input_length_bucket),
+    outputFormat: stringValue(value.output_format),
+    schemaRequired: booleanValue(value.schema_required),
+    knowledgeEnabled: booleanValue(value.knowledge_enabled),
+    hasFileInput: booleanValue(value.has_file_input),
+  };
+};
+
+const judgeOf = (value: unknown): JudgeSummary | undefined => {
+  if (!isRecord(value)) return undefined;
+  return {
+    model: stringValue(value.model),
+    confidence: numberValue(value.confidence),
+    reasonCode: stringValue(value.reason_code),
+    reasonShort: stringValue(value.reason_short),
+    candidateModelCount: numberValue(value.candidate_model_count),
+    cost: numberValue(value.cost),
+  };
+};
+
+const summaryOf = ({
   output,
   traceMetadata,
 }: ModelRoutingDecisionDetailsProps): ModelRoutingSummary | null => {
@@ -102,7 +128,12 @@ const modelRoutingSummaryOf = ({
   const outputMetadata = isRecord(outputRecord?.metadata)
     ? outputRecord.metadata
     : null;
-  const summary = {
+  const decisionFactors = isRecord(routing.decision_factors)
+    ? routing.decision_factors
+    : {};
+
+  const summary: ModelRoutingSummary = {
+    strategyId: stringValue(routing.strategy_id),
     selectedModel:
       stringValue(routing.selected_model) || stringValue(outputRecord?.model),
     fallbackModel: stringValue(routing.fallback_model),
@@ -112,266 +143,144 @@ const modelRoutingSummaryOf = ({
     fallbackFromModel: stringValue(routing.fallback_from_model),
     fallbackReasonCode: stringValue(routing.fallback_reason_code),
     actualModel: stringValue(outputRecord?.model),
-    decisionSource: stringValue(routing.decision_source),
     reasonCode: stringValue(routing.reason_code),
     policyVersion: stringValue(routing.policy_version),
-    matchedRuleId: stringValue(routing.matched_rule_id),
-    matchedCohortId: stringValue(routing.matched_cohort_id),
-    semanticRouteLabel: stringValue(routing.semantic_route_label),
-    semanticCandidateCohortId: stringValue(
-      routing.semantic_candidate_cohort_id,
-    ),
-    semanticCandidateLabel: stringValue(routing.semantic_candidate_label),
-    semanticSimilarity: numberValue(routing.semantic_similarity),
-    semanticThreshold: numberValue(routing.semantic_threshold),
-    semanticRunnerUpScore: numberValue(routing.semantic_runner_up_score),
-    semanticMargin: numberValue(routing.semantic_margin),
-    semanticMinMargin: numberValue(routing.semantic_min_margin),
-    semanticCohortScores: semanticCohortScoresOf(
-      routing.semantic_cohort_scores,
-    ),
-    semanticMatchStatus: stringValue(routing.semantic_match_status),
-    semanticDecisionSource: stringValue(routing.semantic_decision_source),
-    semanticLexicalScore: numberValue(routing.semantic_lexical_score),
-    semanticLexicalSignalCount: numberValue(
-      routing.semantic_lexical_signal_count,
-    ),
-    semanticSafetyOverride: booleanValue(routing.semantic_safety_override),
-    routeCatalogVersion: stringValue(routing.route_catalog_version),
     judgeCalled: booleanValue(routing.judge_called),
+    decisionSource: stringValue(routing.decision_source),
+    judge: judgeOf(routing.judge),
     policySource: stringValue(routing.policy_source),
     includedInPolicyLearning: booleanValue(routing.included_in_policy_learning),
+    runtimeContext: contextOf(routing.runtime_context || routing),
+    localConfidence: numberValue(decisionFactors.local_confidence),
+    localConfidenceThreshold: numberValue(
+      decisionFactors.local_confidence_threshold,
+    ),
+    learningMode: stringValue(decisionFactors.learning_mode),
+    learningStatus: stringValue(routing.learning_status),
+    learningOutcomeReason: stringValue(routing.learning_outcome_reason),
   };
 
-  return summary.selectedModel || summary.decisionSource || summary.reasonCode
-    ? summary
-    : null;
+  return summary.selectedModel || summary.reasonCode ? summary : null;
 };
 
-const formatRoutingPercent = (value: number): string =>
-  `${Math.round(value * 1000) / 10}%`;
+const lengthBucketLabel = (bucket?: string): string => {
+  if (bucket === 'short') return '짧은 입력';
+  if (bucket === 'medium') return '보통 입력';
+  if (bucket === 'long') return '긴 입력';
+  return '입력 길이 정보 없음';
+};
+
+const reasonText = (reasonCode?: string, reasonShort?: string): string => {
+  if (reasonShort) return reasonShort;
+  switch (reasonCode) {
+    case 'judge_bootstrap_required':
+      return '학습 초기 단계라 Judge가 현재 요청과 후보 모델을 비교해 선택했습니다.';
+    case 'local_router_confident':
+      return '이전 Judge 선택과 성공 실행을 학습한 로컬 라우터가 충분한 확신으로 선택했습니다.';
+    case 'local_router_uncertain':
+      return '로컬 라우터의 확신이 기준보다 낮아 Judge가 최종 선택했습니다.';
+    case 'runtime_judge_unavailable':
+      return 'Judge를 사용할 수 없어 기본 모델로 안전하게 실행했습니다.';
+    case 'legacy_policy_ignored':
+      return '지원이 끝난 과거 정책은 실행하지 않고 저장된 기본 모델을 사용했습니다.';
+    case 'active_policy_unavailable':
+    case 'policy_unavailable':
+      return 'Judge-first 활성 정책이 없어 저장된 기본 모델을 사용했습니다.';
+    case 'structured_reasoning_required':
+      return '구조적인 추론이 필요해 선택했습니다.';
+    case 'multi_constraint':
+      return '여러 조건을 함께 판단해야 해 선택했습니다.';
+    case 'simple_response':
+      return '간단한 응답으로 처리할 수 있어 선택했습니다.';
+    default:
+      return 'Judge-first 정책의 모델 선택 결과입니다.';
+  }
+};
 
 const fallbackReasonText = (reasonCode?: string): string => {
-  switch (reasonCode) {
-    case 'runtime_client_unavailable':
-      return '모델 호출 준비 실패';
-    case 'provider_call_failed':
-      return 'Provider 호출 실패';
-    default:
-      return '호출 실패';
-  }
-};
-
-const semanticJudgementText = (summary: ModelRoutingSummary): string => {
-  if (
-    summary.semanticDecisionSource === 'safety_override' &&
-    summary.semanticSafetyOverride === true
-  ) {
-    const matchedCount = summary.semanticLexicalSignalCount;
-    return matchedCount !== undefined && matchedCount > 0
-      ? `정책의 안전 조건 ${matchedCount}개와 일치해 안전 유형을 우선했습니다.`
-      : '정책의 안전 조건과 일치해 안전 유형을 우선했습니다.';
-  }
-  if (summary.semanticMatchStatus === 'ambiguous') {
-    return '1위와 2위 의미 점수 차이가 안전 기준보다 작아 기본 모델을 유지했습니다.';
-  }
-  if (summary.semanticMatchStatus === 'no_match') {
-    if (
-      summary.semanticSimilarity !== undefined &&
-      summary.semanticThreshold !== undefined
-    ) {
-      return `유사도 ${formatRoutingPercent(summary.semanticSimilarity)}가 선택 기준 ${formatRoutingPercent(summary.semanticThreshold)}에 미달해 기본 모델을 유지했습니다.`;
-    }
-    return '선택 기준을 통과한 입력 유형이 없어 기본 모델을 유지했습니다.';
-  }
-  if (summary.semanticMatchStatus === 'unavailable') {
-    return '입력 유형을 안전하게 판정하지 못해 기본 모델을 유지했습니다.';
-  }
-  if (
-    summary.semanticMatchStatus === 'matched' &&
-    summary.semanticSimilarity !== undefined &&
-    summary.semanticThreshold !== undefined
-  ) {
-    const margin =
-      summary.semanticMargin ??
-      (summary.semanticRunnerUpScore !== undefined
-        ? summary.semanticSimilarity - summary.semanticRunnerUpScore
-        : undefined);
-    const marginText =
-      margin !== undefined
-        ? `, 2위와 차이 ${formatRoutingPercent(margin)}p`
-        : '';
-    return `유사도 ${formatRoutingPercent(summary.semanticSimilarity)} (선택 기준 ${formatRoutingPercent(summary.semanticThreshold)}${marginText})`;
-  }
-  return '저장된 라우팅 정책의 조건을 적용했습니다.';
-};
-
-const routingReasonText = (summary: ModelRoutingSummary): string => {
-  if (summary.reasonCode === 'active_policy_unavailable') {
-    return summary.policySource === 'active_deployment'
-      ? '현재 draft와 같은 활성 배포 정책이 아직 없어 저장 모델을 사용했습니다.'
-      : '사용할 수 있는 활성 정책이 없어 저장 모델을 사용했습니다.';
-  }
-  if (
-    summary.semanticDecisionSource === 'safety_override' &&
-    summary.semanticSafetyOverride === true
-  ) {
-    return '비용 절감보다 사고 대응 품질을 우선해 검증된 모델을 선택했습니다.';
-  }
-  if (
-    ['ambiguous', 'no_match', 'unavailable'].includes(
-      summary.semanticMatchStatus || '',
-    )
-  ) {
-    return '애매한 입력을 저비용 모델로 보내지 않는 보수적 정책입니다.';
-  }
-  const reasonCode = summary.reasonCode || '';
-  if (
-    reasonCode.includes('cost') ||
-    reasonCode.includes('low_cost') ||
-    reasonCode.includes('positive_net_saving')
-  ) {
-    return '이 입력 유형에서 품질 기준을 통과한 모델 중 예상 비용이 가장 낮습니다.';
-  }
-  if (reasonCode.includes('quality') || reasonCode.includes('high_risk')) {
-    return '이 입력 유형은 결과 품질 보호가 우선이라 검증된 모델을 선택했습니다.';
-  }
-  return '검증된 라우팅 정책의 입력 유형 조건에 따라 모델을 선택했습니다.';
+  if (reasonCode === 'runtime_client_unavailable') return '모델 호출 준비 실패';
+  if (reasonCode === 'provider_call_failed') return 'Provider 호출 실패';
+  return '호출 실패';
 };
 
 export function ModelRoutingDecisionDetails({
   output,
   traceMetadata,
 }: ModelRoutingDecisionDetailsProps) {
-  const summary = modelRoutingSummaryOf({ output, traceMetadata });
+  const summary = summaryOf({ output, traceMetadata });
   if (!summary) return null;
 
-  const routeLabel =
-    summary.semanticMatchStatus === 'matched' && summary.semanticRouteLabel
-      ? summary.semanticRouteLabel
-      : summary.semanticMatchStatus
-        ? '명확히 분류하지 못함'
-        : undefined;
+  const isJudgeFirst =
+    summary.strategyId === 'judge_bootstrap_incremental_v1';
   const isDeploymentPolicyTest =
     summary.policySource === 'active_deployment' &&
     summary.includedInPolicyLearning === false;
+  const context = summary.runtimeContext;
 
   return (
     <dl className="grid gap-3 rounded-lg border border-emerald-100 bg-emerald-50/50 px-4 py-3 text-xs dark:border-emerald-900 dark:bg-emerald-950/20 sm:grid-cols-2">
       <div className="sm:col-span-2">
         <dt className="font-semibold text-emerald-700 dark:text-emerald-200">
-          {isDeploymentPolicyTest ? '배포 정책 기준 테스트' : '자동 라우팅'}
+          {isDeploymentPolicyTest
+            ? '배포 정책 기준 테스트'
+            : isJudgeFirst
+              ? 'Judge-first + 점진적 로컬 학습'
+              : '기본 모델 실행'}
         </dt>
         <dd className="mt-1 text-gray-700 dark:text-gray-200">
           {isDeploymentPolicyTest
-            ? '활성 배포의 저장 정책을 테스트 실행에만 적용했습니다. 이 결과는 정책 학습에 포함되지 않습니다.'
-            : '실제 실행에서 선택된 모델과 라우팅 근거입니다.'}
+            ? '활성 배포 정책을 테스트에만 적용했습니다. 이 결과는 로컬 라우터 학습에 포함되지 않습니다.'
+            : summary.decisionSource === 'runtime_judge'
+              ? '이번 요청과 사용 가능한 후보 모델을 Judge가 함께 검토해 선택했습니다.'
+              : summary.decisionSource === 'local_router'
+                ? '누적된 Judge 선택을 학습한 로컬 라우터가 먼저 선택했습니다.'
+                : 'Judge-first 정책을 적용할 수 없어 저장된 기본 모델로 실행했습니다.'}
         </dd>
       </div>
-      {routeLabel ? (
-        <div>
-          <dt className="text-gray-500">입력 유형</dt>
-          <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-            {routeLabel}
-          </dd>
-        </div>
-      ) : null}
-      {summary.semanticMatchStatus !== 'matched' &&
-      summary.semanticCandidateLabel ? (
-        <div>
-          <dt className="text-gray-500">가장 가까운 유형</dt>
-          <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-            {summary.semanticCandidateLabel}
-          </dd>
-        </div>
-      ) : null}
-      {['ambiguous', 'no_match', 'unavailable'].includes(
-        summary.semanticMatchStatus || '',
-      ) ? (
-        <div>
-          <dt className="text-gray-500">매칭 결과</dt>
-          <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-            기준 미달로 기본 모델 사용
-          </dd>
-        </div>
-      ) : null}
+
+      <div>
+        <dt className="text-gray-500">입력 길이</dt>
+        <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+          {lengthBucketLabel(context.inputLengthBucket)}
+        </dd>
+      </div>
       <div>
         <dt className="text-gray-500">선택 모델</dt>
         <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
           {summary.selectedModel || '-'}
         </dd>
       </div>
-      {summary.semanticCohortScores.length > 0 ? (
-        <div className="sm:col-span-2">
-          <dt className="text-gray-500">입력군별 유사도</dt>
-          <dd className="mt-2 space-y-2">
-            {summary.semanticCohortScores.map((cohort, index) => {
-              const isMatched =
-                summary.semanticMatchStatus === 'matched' &&
-                cohort.cohortId === summary.matchedCohortId;
-              const isClosest = !isMatched && index === 0;
 
-              return (
-                <div
-                  key={cohort.cohortId}
-                  className="flex items-center justify-between gap-3 rounded-md border border-emerald-100 bg-white/80 px-3 py-2 dark:border-emerald-900 dark:bg-gray-900/70"
-                >
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-gray-500">{index + 1}위</span>
-                      <span className="font-semibold text-gray-900 dark:text-gray-100">
-                        {cohort.label}
-                      </span>
-                      {isMatched ? (
-                        <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200">
-                          선택됨
-                        </span>
-                      ) : null}
-                      {isClosest ? (
-                        <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-200">
-                          가장 가까움
-                        </span>
-                      ) : null}
-                    </div>
-                  </div>
-                  <div className="shrink-0 text-right">
-                    <div className="font-semibold text-gray-900 dark:text-gray-100">
-                      {formatRoutingPercent(cohort.similarity)}
-                    </div>
-                    <div className="mt-0.5 text-[10px] text-gray-500">
-                      선택 기준 {formatRoutingPercent(cohort.threshold)}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </dd>
-          {summary.semanticMinMargin !== undefined ? (
-            <dd className="mt-2 text-[11px] leading-relaxed text-gray-500">
-              입력군을 선택하려면 1위와 2위 점수 차이가 최소{' '}
-              {formatRoutingPercent(summary.semanticMinMargin)}p 이상이어야
-              합니다.
-            </dd>
-          ) : null}
-        </div>
-      ) : null}
-      <div className="sm:col-span-2">
-        <dt className="text-gray-500">판정</dt>
-        <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-          {semanticJudgementText(summary)}
-        </dd>
+      <div className="sm:col-span-2 flex flex-wrap gap-2">
+        {context.outputFormat === 'json' && context.schemaRequired ? (
+          <span className="rounded border border-emerald-200 bg-white px-2 py-1 font-medium text-emerald-800">
+            JSON 스키마 필요
+          </span>
+        ) : null}
+        <span className="rounded border border-emerald-200 bg-white px-2 py-1 font-medium text-emerald-800">
+          {context.knowledgeEnabled
+            ? '지식 베이스 사용'
+            : '지식 베이스 사용 안 함'}
+        </span>
+        {context.hasFileInput ? (
+          <span className="rounded border border-emerald-200 bg-white px-2 py-1 font-medium text-emerald-800">
+            파일 입력 포함
+          </span>
+        ) : null}
       </div>
+
       <div className="sm:col-span-2">
         <dt className="text-gray-500">선택 이유</dt>
         <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-          {routingReasonText(summary)}
+          {reasonText(summary.reasonCode, summary.judge?.reasonShort)}
         </dd>
       </div>
+
       {summary.fallbackModel ? (
         <div className="sm:col-span-2">
           <dt className="text-gray-500">안전 장치</dt>
           <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-            호출 실패 시 검증된 {summary.fallbackModel} 모델로 한 번 전환합니다.
+            호출 실패 시 {summary.fallbackModel} 모델로 한 번 전환합니다.
           </dd>
         </div>
       ) : null}
@@ -381,23 +290,80 @@ export function ModelRoutingDecisionDetails({
             실제 대체 실행
           </dt>
           <dd className="mt-1">
-            최초 선택:{' '}
-            {summary.fallbackFromModel || summary.selectedModel || '-'}
+            최초 선택: {summary.fallbackFromModel || summary.selectedModel || '-'}
           </dd>
           <dd>사유: {fallbackReasonText(summary.fallbackReasonCode)}</dd>
-          <dd>
-            실제 사용: {summary.actualModel || summary.fallbackModel || '-'}
+          <dd>실제 사용: {summary.actualModel || summary.fallbackModel || '-'}</dd>
+        </div>
+      ) : null}
+
+      {isJudgeFirst && summary.judge ? (
+        <div className="sm:col-span-2 rounded-md border border-violet-200 bg-violet-50/60 p-3 text-gray-900 dark:border-violet-900 dark:bg-violet-950/20 dark:text-gray-100">
+          <dt className="font-semibold text-violet-900 dark:text-violet-100">
+            이번 Judge 판단
+          </dt>
+          <dd className="mt-1 text-gray-700 dark:text-gray-200">
+            Judge 모델: {summary.judge.model || '-'} · 판단 확신도{' '}
+            {summary.judge.confidence === undefined
+              ? '-'
+              : `${(summary.judge.confidence * 100).toFixed(1)}%`}
+          </dd>
+          <dd className="mt-2 grid gap-2 sm:grid-cols-2">
+            <span className="rounded border border-violet-200 bg-white px-2 py-1">
+              사유: {reasonText(
+                summary.judge.reasonCode,
+                summary.judge.reasonShort,
+              )}
+            </span>
+            <span className="rounded border border-violet-200 bg-white px-2 py-1">
+              검토 후보 모델 {summary.judge.candidateModelCount ?? '-'}개
+            </span>
+          </dd>
+          <dd className="mt-1 text-gray-500">
+            판단 코드: {summary.judge.reasonCode || '-'}
+            {summary.judge.cost === undefined
+              ? ''
+              : ` · Judge 비용 $${summary.judge.cost.toFixed(6)}`}
           </dd>
         </div>
       ) : null}
-      {summary.policyVersion || summary.routeCatalogVersion ? (
-        <div className="sm:col-span-2 flex flex-wrap gap-x-4 gap-y-1 text-gray-500">
-          {summary.policyVersion ? (
-            <span>정책 버전: {summary.policyVersion}</span>
-          ) : null}
-          {summary.routeCatalogVersion ? (
-            <span>입력 유형 기준: {summary.routeCatalogVersion}</span>
-          ) : null}
+
+      {isJudgeFirst && summary.learningMode ? (
+        <div className="sm:col-span-2 text-gray-500">
+          학습 방식:{' '}
+          {summary.learningMode === 'local_first'
+            ? '로컬 라우터 우선'
+            : 'Judge 학습 중'}
+          {summary.localConfidence !== undefined
+            ? ` · 로컬 확신도 ${(summary.localConfidence * 100).toFixed(1)}%`
+            : ''}
+          {summary.localConfidenceThreshold !== undefined
+            ? ` · 선택 기준 ${(summary.localConfidenceThreshold * 100).toFixed(1)}%`
+            : ''}
+        </div>
+      ) : null}
+
+      {isJudgeFirst && summary.learningStatus === 'pending_contract' ? (
+        <div className="sm:col-span-2 rounded-md border border-sky-200 bg-sky-50 p-3 text-sky-950 dark:border-sky-900 dark:bg-sky-950/20 dark:text-sky-100">
+          실행 결과 계약을 확인한 뒤 학습에 반영합니다.
+        </div>
+      ) : null}
+      {isJudgeFirst && summary.learningStatus === 'accepted' ? (
+        <div className="sm:col-span-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-emerald-950 dark:border-emerald-900 dark:bg-emerald-950/20 dark:text-emerald-100">
+          스키마와 후속 단계 조건을 통과해 이 선택을 로컬 학습에 반영했습니다.
+        </div>
+      ) : null}
+      {isJudgeFirst && summary.learningStatus === 'rejected' ? (
+        <div className="sm:col-span-2 rounded-md border border-rose-200 bg-rose-50 p-3 text-rose-950 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-100">
+          {summary.learningOutcomeReason === 'schema_failed'
+            ? '스키마 또는 후속 단계 조건을 통과하지 못해 학습에서 제외되었습니다.'
+            : '실행 계약을 통과하지 못해 학습에서 제외되었습니다.'}
+        </div>
+      ) : null}
+
+      {summary.policyVersion ? (
+        <div className="sm:col-span-2 text-gray-500">
+          정책 버전: {summary.policyVersion}
         </div>
       ) : null}
       {summary.judgeCalled === false ? (

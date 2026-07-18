@@ -1,4 +1,5 @@
 import { Node as ReactFlowNode } from '@xyflow/react';
+import type { JudgeFirstActivePolicy } from './ModelRouting';
 
 // 모든 노드가 가져야 할 공통 데이터 필드. 서버의 BaseNodeData에 대응됩니다.
 export interface BaseNodeData {
@@ -155,6 +156,13 @@ export interface LLMNodeData extends BaseNodeData {
   model_id: string;
   fallback_model_id?: string;
   auto_model_routing?: boolean;
+  /** 초안 단계에서 만든 Judge-first 라우팅 준비 정보의 식별자 */
+  model_routing_bootstrap_id?: string;
+  /** prompt/RAG/schema/후속 계약이 같은지 배포 시 확인하는 지문 */
+  model_routing_bootstrap_fingerprint?: string;
+  /** Judge가 후보를 판단할 때 참고하는 사용자 작업 설명. */
+  model_routing_task_description?: string;
+  model_routing_strategy?: 'judge_bootstrap_incremental_v1';
   model_routing_policy?: {
     status?:
       | 'off'
@@ -165,25 +173,12 @@ export interface LLMNodeData extends BaseNodeData {
       | 'failed';
     policy_id?: string;
     policy_version?: string;
-    active_policy?: {
-      default_model_id?: string;
-      fallback_model_id?: string;
-      rules?: Array<{
-        id?: string;
-        priority?: number;
-        when?: Record<string, unknown>;
-        selected_model_id?: string;
-        fallback_model_id?: string;
-        reason_code?: string;
-      }>;
-    };
+    active_policy?: JudgeFirstActivePolicy;
     refresh?: {
       runs_since_last_refresh?: number;
       refresh_every_runs?: number;
       last_refresh_result?: string;
     };
-    validation_budget_usd?: number;
-    max_cohorts?: number;
   };
   model_routing_context?: {
     customer_facing?: boolean;

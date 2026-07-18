@@ -1,39 +1,31 @@
+"""Judge-first + 점진적 local learning 모델 라우팅 runtime."""
+
+from __future__ import annotations
+
 import json
 import re
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
-from sqlalchemy import and_
+from jinja2 import Environment
 from sqlalchemy.orm import Session
 
 from apps.shared.db.models.llm import (
     LLMCredential,
     LLMModel,
     LLMRelCredentialModel,
-    LLMUsageLog,
 )
-from apps.shared.db.models.workflow_run import (
-    NodeRunStatus,
-    RunStatus,
-    RunTriggerMode,
-    WorkflowNodeRun,
-    WorkflowRun,
+from apps.workflow_engine.services.model_routing_judge_first_policy import (
+    JUDGE_FIRST_STRATEGY_ID,
 )
-from apps.workflow_engine.services.model_routing_semantic_router import (
-    SemanticRouteMatch,
-    SemanticRouteMatcher,
-    semantic_catalog_from_policy,
+from apps.workflow_engine.services.model_routing_local_classifier import (
+    MDebertaModelChoiceClassifier,
 )
 
 
-OPERATIONAL_TRIGGER_MODES = {
-    RunTriggerMode.API,
-    RunTriggerMode.WEBHOOK,
-    RunTriggerMode.SCHEDULER,
-    RunTriggerMode.APP,
-}
+_routing_jinja_env = Environment(autoescape=False)
 
 WORKFLOW_CHAT_MODEL_ALIASES = {
     "gpt-5.5",
@@ -111,9 +103,7 @@ class ModelCandidate:
             for price in (self.input_price_1k, self.output_price_1k)
             if price is not None
         ]
-        if not prices:
-            return float("inf")
-        return float(sum(prices))
+        return float(sum(prices)) if prices else float("inf")
 
     @classmethod
     def from_model(cls, model: Any) -> "ModelCandidate":
@@ -158,21 +148,15 @@ class ModelPerformance:
 
     @property
     def avg_cost(self) -> Optional[float]:
-        if self.run_count <= 0:
-            return None
-        return self.total_cost / self.run_count
+        return self.total_cost / self.run_count if self.run_count > 0 else None
 
     @property
     def avg_total_tokens(self) -> Optional[float]:
-        if self.run_count <= 0:
-            return None
-        return self.total_tokens / self.run_count
+        return self.total_tokens / self.run_count if self.run_count > 0 else None
 
     @property
     def avg_latency_ms(self) -> Optional[float]:
-        if self.run_count <= 0:
-            return None
-        return self.total_latency_ms / self.run_count
+        return self.total_latency_ms / self.run_count if self.run_count > 0 else None
 
     def as_summary(self) -> dict[str, Any]:
         return {
@@ -217,43 +201,6 @@ class NodeRunProfile:
 
 
 @dataclass(frozen=True)
-class ModelRouterContext:
-    workflow_id: str
-    node_id: str
-    current_model_id: Optional[str]
-    deployment_id: Optional[str] = None
-    candidate_models: Iterable[ModelCandidate] = field(default_factory=list)
-    node_profile: Optional[NodeRunProfile] = None
-    fallback_model_id: Optional[str] = None
-    customer_facing: bool = False
-    knowledge_enabled: bool = False
-    output_format: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class ModelRouterDecision:
-    routing_stage: str
-    selected_model_id: str
-    fallback_model_id: Optional[str]
-    reason: str
-    policy_version: str = "model-router-v1"
-    confidence: Optional[float] = None
-    metrics_snapshot: dict[str, Any] = field(default_factory=dict)
-
-    def as_metadata(self) -> dict[str, Any]:
-        return {
-            "recommendation_type": "user_click_model_routing",
-            "analysis_stage": self.routing_stage,
-            "recommended_model": self.selected_model_id,
-            "recommended_fallback_model": self.fallback_model_id,
-            "reason": self.reason,
-            "policy_version": self.policy_version,
-            "confidence": self.confidence,
-            "metrics_snapshot": self.metrics_snapshot,
-        }
-
-
-@dataclass(frozen=True)
 class ModelRoutingRuntimeContext:
     text: str
     intent: str
@@ -293,8 +240,10 @@ class ModelRoutingPolicyDecision:
     matched_rule_id: Optional[str]
     reason_code: str
     runtime_context: ModelRoutingRuntimeContext
-    decision_source: str = "active_policy"
-    semantic_match: Optional[SemanticRouteMatch] = None
+    decision_source: str
+    strategy_id: str
+    decision_factors: dict[str, Any] = field(default_factory=dict)
+    requires_runtime_judge: bool = False
 
 
 class ModelRoutingUnavailableError(ValueError):
@@ -302,92 +251,13 @@ class ModelRoutingUnavailableError(ValueError):
 
 
 class ModelRouter:
-    POLICY_CONDITION_KEYS = {
-        "intent",
-        "customer_facing",
-        "knowledge_enabled",
-        "output_format",
-        "schema_required",
-        "has_file_input",
-        "input_length_bucket",
-        "prompt_length_bucket",
-        "node_task",
-        "keyword_any",
-        "semantic_cohort_id",
-    }
-    COLD_START_MAX_USABLE_RUNS = 20
-    OPTIMIZED_MIN_USABLE_RUNS = 90
-    SCHEMA_PASS_RATE_MIN = 0.98
-    DOWNSTREAM_SUCCESS_RATE_MIN = 0.99
-    FALLBACK_RATE_MAX = 0.02
-    MIN_WARMING_MODEL_SAMPLES = 5
-    MIN_OPTIMIZED_MODEL_SAMPLES = 10
+    """Judge-first와 충분히 학습된 local-first 사이만 조정한다."""
 
-    @classmethod
-    def resolve(
-        cls,
-        context: ModelRouterContext,
-        *,
-        db: Optional[Session] = None,
-    ) -> ModelRouterDecision:
-        if not context.current_model_id:
-            raise ModelRoutingUnavailableError("current_model_id is required.")
-
-        profile = context.node_profile
-        if profile is None and db is not None:
-            profile = cls.collect_profile(db, context)
-        profile = profile or NodeRunProfile()
-
-        candidates = cls._normalize_candidates(context)
-        if not candidates:
-            raise ModelRoutingUnavailableError("No executable model candidate.")
-
-        stage = cls._stage_for(profile)
-        high = cls._current_or_highest_candidate(candidates, context.current_model_id)
-
-        if stage == "cold_start":
-            return cls._decision(
-                stage=stage,
-                selected=high,
-                fallback=high,
-                reason="운영 로그가 부족해 보수적 규칙 기반으로 모델을 선택합니다.",
-                profile=profile,
-            )
-
-        passing = cls._passing_candidates(candidates, profile, stage)
-        lower_cost_passing = cls._lower_cost_candidates(
-            passing, context.current_model_id
-        )
-        if lower_cost_passing:
-            selected = lower_cost_passing[0]
-            return cls._decision(
-                stage=stage,
-                selected=selected,
-                fallback=high,
-                reason="최근 운영 로그의 품질 gate를 통과한 저비용 모델을 선택합니다.",
-                profile=profile,
-                confidence=0.8 if stage == "warming_up" else 0.9,
-            )
-
-        if passing:
-            selected = passing[0]
-            return cls._decision(
-                stage=stage,
-                selected=selected,
-                fallback=high,
-                reason="현재 모델만 품질 gate를 통과해 안정 모델을 유지합니다.",
-                profile=profile,
-                confidence=0.75,
-            )
-
-        return cls._decision(
-            stage=stage,
-            selected=high,
-            fallback=None,
-            reason="저비용 후보가 품질 gate를 통과하지 못해 상위 모델을 사용합니다.",
-            profile=profile,
-            confidence=0.7,
-        )
+    # Judge 입력에서 이번 요청은 매 실행 달라지는 핵심 신호다. 고정 노드 프롬프트가
+    # 길어도 요청 원문이 잘리지 않도록 별도 예산을 둔다.
+    _JUDGE_REQUEST_CHAR_BUDGET = 1_650
+    _JUDGE_TASK_DESCRIPTION_CHAR_BUDGET = 420
+    _JUDGE_PROMPT_SECTION_CHAR_BUDGET = 180
 
     @classmethod
     def resolve_policy(
@@ -397,408 +267,276 @@ class ModelRouter:
         inputs: dict[str, Any],
         node_data: Any,
         available_model_ids: Optional[Iterable[str]] = None,
-        semantic_query_vector: Optional[Iterable[float]] = None,
+        routing_feature_text: str | None = None,
+        node_profile: NodeRunProfile | None = None,
     ) -> ModelRoutingPolicyDecision:
+        del node_profile  # 운영 품질은 refresh에서 학습 모드 전환에만 사용한다.
         active_policy = policy.get("active_policy") if isinstance(policy, dict) else None
         active_policy = active_policy if isinstance(active_policy, dict) else {}
+        if active_policy.get("strategy_id") != JUDGE_FIRST_STRATEGY_ID:
+            raise ModelRoutingUnavailableError(
+                "Only judge_bootstrap_incremental_v1 policies are executable."
+            )
+
         default_model_id = cls._first_non_empty(
             active_policy.get("default_model_id"),
-            getattr(node_data, "model_id", None),
+            cls._node_data_value(node_data, "model_id"),
         )
         fallback_model_id = cls._first_non_empty(
             active_policy.get("fallback_model_id"),
-            getattr(node_data, "fallback_model_id", None),
+            cls._node_data_value(node_data, "fallback_model_id"),
         )
         if not default_model_id:
             raise ModelRoutingUnavailableError("default model is required.")
 
-        allowed_models = (
-            {cls.normalize_model_id(model_id) for model_id in available_model_ids}
-            if available_model_ids is not None
-            else None
+        availability_is_enforced = available_model_ids is not None
+        executable_model_ids = cls._unique_model_ids(available_model_ids or [])
+        configured_candidates = cls._unique_model_ids(
+            active_policy.get("candidate_model_ids") or []
         )
+        candidates = configured_candidates or executable_model_ids
+        if availability_is_enforced:
+            executable_by_normalized_id = {
+                cls.normalize_model_id(model_id): model_id
+                for model_id in executable_model_ids
+            }
+            candidates = [
+                executable_by_normalized_id[cls.normalize_model_id(model_id)]
+                for model_id in candidates
+                if cls.normalize_model_id(model_id) in executable_by_normalized_id
+            ]
+            if not candidates and executable_model_ids:
+                candidates = executable_model_ids
+            allowed_models: set[str] | None = set(executable_by_normalized_id)
+        else:
+            allowed_models = None
+
         runtime_context = cls.infer_runtime_context(inputs, node_data)
-        semantic_match = None
-        semantic_router = active_policy.get("semantic_router")
-        if isinstance(semantic_router, dict) and semantic_router:
-            try:
-                semantic_catalog = semantic_catalog_from_policy(semantic_router)
-                if semantic_catalog is not None:
-                    if semantic_query_vector is not None:
-                        semantic_match = SemanticRouteMatcher.match(
-                            semantic_catalog,
-                            query_vector=tuple(semantic_query_vector),
-                            query_text=cls.semantic_query_text(
-                                inputs,
-                                semantic_router,
-                            ),
-                        )
-                    else:
-                        semantic_match = SemanticRouteMatch.unavailable(semantic_catalog)
-            except (TypeError, ValueError):
-                semantic_match = None
-        rules = active_policy.get("rules")
-        normalized_rules = [
-            rule
-            for rule in (rules if isinstance(rules, list) else [])
-            if isinstance(rule, dict)
-        ]
-        normalized_rules.sort(key=cls._rule_sort_key)
-
-        for rule in normalized_rules:
-            if not cls._matches_rule(
-                rule.get("when"),
-                runtime_context,
-                semantic_cohort_id=(
-                    semantic_match.cohort_id if semantic_match is not None else None
-                ),
-            ):
-                continue
-            selected_model = cls._first_non_empty(rule.get("selected_model_id"))
-            rule_fallback_model = cls._first_non_empty(rule.get("fallback_model_id"))
-            selected_model = cls._first_available_model(
-                [selected_model],
-                allowed_models,
-            )
-            if not selected_model:
-                continue
-            resolved_fallback = cls._first_available_model(
-                [rule_fallback_model, fallback_model_id],
-                allowed_models,
-                exclude=selected_model,
-            )
-            return ModelRoutingPolicyDecision(
-                selected_model_id=selected_model,
-                fallback_model_id=resolved_fallback,
-                matched_rule_id=cls._first_non_empty(rule.get("id")),
-                reason_code=cls._first_non_empty(rule.get("reason_code"))
-                or "policy_rule_matched",
-                runtime_context=runtime_context,
-                semantic_match=semantic_match,
-            )
-
-        selected_model = cls._first_available_model(
-            [
-                default_model_id,
-                fallback_model_id,
-                getattr(node_data, "model_id", None),
-                getattr(node_data, "fallback_model_id", None),
-            ],
+        default_selected = cls.first_available_model(
+            [default_model_id, fallback_model_id, *candidates],
             allowed_models,
         )
-        if not selected_model:
+        if not default_selected:
             raise ModelRoutingUnavailableError(
-                "No policy model is currently available to the execution subject."
+                "No Judge-first model is available to the execution subject."
             )
-        resolved_fallback = cls._first_available_model(
-            [
-                fallback_model_id,
-                default_model_id,
-                getattr(node_data, "fallback_model_id", None),
-                getattr(node_data, "model_id", None),
-            ],
+        resolved_fallback = cls.first_available_model(
+            [fallback_model_id, default_model_id, *candidates],
             allowed_models,
-            exclude=selected_model,
+            exclude=default_selected,
         )
-        default_reason = "policy_default"
-        if semantic_match is not None:
-            default_reason = (
-                "semantic_matched_no_rule_default"
-                if semantic_match.status == "matched"
-                else f"semantic_{semantic_match.status}_default"
+
+        learning = active_policy.get("learning")
+        learning = learning if isinstance(learning, dict) else {}
+        artifact = learning.get("local_router_artifact")
+        min_confidence = cls._confidence(
+            learning.get("local_confidence_threshold"),
+            default=0.78,
+        )
+        if learning.get("mode") == "local_first" and isinstance(artifact, dict):
+            low_confidence: float | None = None
+            try:
+                prediction = MDebertaModelChoiceClassifier.predict(
+                    artifact,
+                    text=routing_feature_text or runtime_context.text,
+                    available_model_ids=candidates,
+                )
+                selected = cls.first_available_model(
+                    [prediction.selected_model_id],
+                    allowed_models,
+                )
+                if selected and prediction.confidence >= min_confidence:
+                    return ModelRoutingPolicyDecision(
+                        selected_model_id=selected,
+                        fallback_model_id=resolved_fallback,
+                        matched_rule_id="incremental-local-router",
+                        reason_code="local_router_confident",
+                        runtime_context=runtime_context,
+                        decision_source="local_router",
+                        strategy_id=JUDGE_FIRST_STRATEGY_ID,
+                        decision_factors={
+                            "learning_mode": "local_first",
+                            "local_confidence": prediction.confidence,
+                            "local_confidence_threshold": min_confidence,
+                            "candidate_model_count": len(candidates),
+                        },
+                    )
+                low_confidence = prediction.confidence
+            except (RuntimeError, ValueError):
+                pass
+            return ModelRoutingPolicyDecision(
+                selected_model_id=default_selected,
+                fallback_model_id=resolved_fallback,
+                matched_rule_id=None,
+                reason_code="local_router_uncertain",
+                runtime_context=runtime_context,
+                decision_source="local_router_uncertain",
+                strategy_id=JUDGE_FIRST_STRATEGY_ID,
+                decision_factors={
+                    "learning_mode": "local_first",
+                    "local_confidence": low_confidence,
+                    "local_confidence_threshold": min_confidence,
+                    "candidate_model_count": len(candidates),
+                },
+                requires_runtime_judge=True,
             )
-        elif isinstance(semantic_router, dict) and semantic_router:
-            default_reason = "semantic_unavailable_default"
+
         return ModelRoutingPolicyDecision(
-            selected_model_id=selected_model,
+            selected_model_id=default_selected,
             fallback_model_id=resolved_fallback,
             matched_rule_id=None,
-            reason_code=default_reason,
+            reason_code="judge_bootstrap_required",
             runtime_context=runtime_context,
-            semantic_match=semantic_match,
+            decision_source="runtime_judge_pending",
+            strategy_id=JUDGE_FIRST_STRATEGY_ID,
+            decision_factors={
+                "learning_mode": "judge_first",
+                "candidate_model_count": len(candidates),
+                "judged_request_count": int(learning.get("judged_request_count") or 0),
+            },
+            requires_runtime_judge=True,
         )
 
     @classmethod
+    def routing_feature_text(
+        cls,
+        inputs: dict[str, Any],
+        node_data: Any,
+        *,
+        rendered_prompt_parts: Iterable[str] | None = None,
+        rag_metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Judge/local router에 노드 작업 계약과 이번 요청의 feature를 전달한다.
+
+        세 프롬프트는 노드가 어떤 업무를 수행하는지 알려주는 최소 작업 계약이다.
+        현재 요청과 RAG runtime 신호는 같은 노드 안에서도 매 실행 달라지는 판단 재료다.
+        """
+
+        if rendered_prompt_parts is None:
+            rendered_prompt_parts = [
+                str(cls._node_data_value(node_data, field) or "")
+                for field in (
+                    "system_prompt",
+                    "user_prompt",
+                    "assistant_prompt",
+                )
+            ]
+
+        prompt_values = list(rendered_prompt_parts)[:3]
+        prompt_values.extend([""] * (3 - len(prompt_values)))
+        prompt_sections = (
+            ("SYSTEM_PROMPT", prompt_values[0]),
+            ("USER_PROMPT", prompt_values[1]),
+            ("ASSISTANT_PROMPT", prompt_values[2]),
+        )
+        prompt_feature = "\n\n".join(
+            f"{label}:\n{cls._judge_prompt_excerpt(value)}"
+            for label, value in prompt_sections
+        )
+        task_description = cls._judge_task_description(node_data)
+        node_title = str(cls._node_data_value(node_data, "title") or "").strip()
+        task_contract_parts = []
+        if node_title:
+            task_contract_parts.append(f"NODE_TITLE: {node_title[:120]}")
+        if task_description:
+            task_contract_parts.append(f"TASK_DESCRIPTION:\n{task_description}")
+        task_contract_parts.append(f"PROMPT_CONSTRAINTS:\n{prompt_feature}")
+
+        request_text = cls._flatten_text(inputs)[: cls._JUDGE_REQUEST_CHAR_BUDGET]
+        safe_rag_metadata = {
+            key: value
+            for key, value in (rag_metadata or {}).items()
+            if key
+            in {
+                "used",
+                "retrieved_context_token_estimate",
+                "retrieved_context_chars",
+                "retrieved_chunk_count",
+                "source_count",
+                "evidence_sufficient",
+            }
+            and isinstance(value, (bool, int, float, str))
+        }
+        parts = [
+            f"CURRENT_REQUEST:\n{request_text}" if request_text else "",
+            "NODE_TASK_CONTRACT:\n" + "\n\n".join(task_contract_parts),
+        ]
+        if safe_rag_metadata:
+            parts.append(
+                "RAG_RUNTIME_SIGNALS:\n"
+                + json.dumps(safe_rag_metadata, ensure_ascii=False, sort_keys=True)
+            )
+        return "\n\n".join(part for part in parts if part)
+
+    @classmethod
+    def _judge_prompt_excerpt(cls, value: Any) -> str:
+        text = str(value or "").strip()
+        if len(text) <= cls._JUDGE_PROMPT_SECTION_CHAR_BUDGET:
+            return text
+        return text[: cls._JUDGE_PROMPT_SECTION_CHAR_BUDGET - 1].rstrip() + "…"
+
+    @classmethod
+    def _judge_task_description(cls, node_data: Any) -> str:
+        """사용자가 적은 작업 설명을 고정 작업 계약의 중심 정보로 사용한다."""
+
+        value = str(
+            cls._node_data_value(node_data, "model_routing_task_description") or ""
+        ).strip()
+        if len(value) <= cls._JUDGE_TASK_DESCRIPTION_CHAR_BUDGET:
+            return value
+        return value[: cls._JUDGE_TASK_DESCRIPTION_CHAR_BUDGET - 1].rstrip() + "…"
+
+    @classmethod
     def infer_runtime_context(
-        cls, inputs: dict[str, Any], node_data: Any
+        cls,
+        inputs: dict[str, Any],
+        node_data: Any,
     ) -> ModelRoutingRuntimeContext:
         text = cls._flatten_text(inputs)
         prompts = " ".join(
             prompt
             for prompt in (
-                str(value or "").strip()
-                for value in (
-                    getattr(node_data, "system_prompt", None),
-                    getattr(node_data, "user_prompt", None),
-                    getattr(node_data, "assistant_prompt", None),
-                )
+                str(cls._node_data_value(node_data, field) or "").strip()
+                for field in ("system_prompt", "user_prompt", "assistant_prompt")
             )
             if prompt
         )
-        routing_context = getattr(node_data, "model_routing_context", None)
+        routing_context = cls._node_data_value(node_data, "model_routing_context")
         routing_context = routing_context if isinstance(routing_context, dict) else {}
+        output_format_value = cls._node_data_value(node_data, "output_format")
         knowledge_enabled = bool(
-            getattr(node_data, "knowledgeBases", None)
-            or getattr(node_data, "knowledgeCollections", None)
+            cls._node_data_value(node_data, "knowledgeBases")
+            or cls._node_data_value(node_data, "knowledgeCollections")
         )
-        output_format = cls._output_format_name(
-            getattr(node_data, "output_format", None)
-        )
-        schema_required = cls._schema_required(getattr(node_data, "output_format", None))
-        customer_facing = bool(routing_context.get("customer_facing", False))
         node_task = cls._first_non_empty(
             routing_context.get("node_task"),
             routing_context.get("category"),
-            getattr(node_data, "task_type", None),
+            cls._node_data_value(node_data, "task_type"),
         ) or "generate"
-        risk_level = cls._first_non_empty(routing_context.get("risk_level")) or "medium"
-        intent = cls._first_non_empty(routing_context.get("intent"), node_task) or "generate"
-        input_length = len(text)
-        prompt_length = len(prompts)
-
         return ModelRoutingRuntimeContext(
             text=text,
-            intent=intent,
-            risk_level=risk_level,
-            customer_facing=customer_facing,
+            intent=cls._first_non_empty(routing_context.get("intent"), node_task)
+            or "generate",
+            risk_level=cls._first_non_empty(routing_context.get("risk_level"))
+            or "medium",
+            customer_facing=bool(routing_context.get("customer_facing", False)),
             knowledge_enabled=knowledge_enabled,
-            output_format=output_format,
-            schema_required=schema_required,
+            output_format=cls._output_format_name(output_format_value),
+            schema_required=cls._schema_required(output_format_value),
             has_file_input=cls._has_file_input(inputs),
-            input_length=input_length,
-            input_length_bucket=cls._length_bucket(input_length),
-            prompt_length=prompt_length,
-            prompt_length_bucket=cls._length_bucket(prompt_length),
+            input_length=len(text),
+            input_length_bucket=cls._length_bucket(len(text)),
+            prompt_length=len(prompts),
+            prompt_length_bucket=cls._length_bucket(len(prompts)),
             node_task=node_task,
         )
 
     @classmethod
-    def semantic_query_text(
-        cls,
-        inputs: dict[str, Any],
-        semantic_router: dict[str, Any],
-    ) -> str:
-        """Extract only configured business fields for semantic classification."""
-        if "input_paths" not in semantic_router:
-            return cls._flatten_text(inputs).strip()
-        paths = semantic_router.get("input_paths")
-        if not isinstance(paths, list):
-            return ""
-
-        parts: list[str] = []
-        for raw_path in paths:
-            path = str(raw_path or "").strip()
-            if not path:
-                continue
-            value = cls._value_at_path(inputs, path)
-            text = cls._flatten_text(value).strip()
-            if text:
-                parts.append(text)
-        return "\n".join(parts)
-
-    @staticmethod
-    def _value_at_path(value: Any, path: str) -> Any:
-        current = value
-        for segment in path.split("."):
-            if isinstance(current, dict):
-                if segment not in current:
-                    return None
-                current = current[segment]
-                continue
-            if isinstance(current, (list, tuple)) and segment.isdigit():
-                index = int(segment)
-                if index >= len(current):
-                    return None
-                current = current[index]
-                continue
-            return None
-        return current
-
-    @classmethod
-    def collect_profile(cls, db: Session, context: ModelRouterContext) -> NodeRunProfile:
-        try:
-            workflow_uuid = uuid.UUID(str(context.workflow_id))
-        except (TypeError, ValueError):
-            return NodeRunProfile()
-        deployment_uuid = None
-        if context.deployment_id:
-            try:
-                deployment_uuid = uuid.UUID(str(context.deployment_id))
-            except (TypeError, ValueError):
-                return NodeRunProfile()
-        query = (
-            db.query(WorkflowNodeRun, WorkflowRun, LLMUsageLog, LLMModel)
-            .join(WorkflowRun, WorkflowNodeRun.workflow_run_id == WorkflowRun.id)
-            .outerjoin(
-                LLMUsageLog,
-                and_(
-                    LLMUsageLog.workflow_run_id == WorkflowRun.id,
-                    LLMUsageLog.node_id == WorkflowNodeRun.node_id,
-                    LLMUsageLog.cost_optimizer_candidate_id.is_(None),
-                ),
-            )
-            .outerjoin(LLMModel, LLMUsageLog.model_id == LLMModel.id)
-            .filter(WorkflowRun.workflow_id == workflow_uuid)
-            .filter(WorkflowRun.deployment_id.isnot(None))
-            .filter(WorkflowRun.trigger_mode.in_(OPERATIONAL_TRIGGER_MODES))
-            .filter(WorkflowRun.status.in_([RunStatus.SUCCESS, RunStatus.FAILED]))
-            .filter(WorkflowNodeRun.node_id == context.node_id)
-            .filter(WorkflowNodeRun.node_type == "llmNode")
-            .filter(WorkflowNodeRun.status.in_([NodeRunStatus.SUCCESS, NodeRunStatus.FAILED]))
-        )
-        if deployment_uuid is not None:
-            query = query.filter(WorkflowRun.deployment_id == deployment_uuid)
-        rows = query.order_by(WorkflowNodeRun.started_at.desc()).limit(200).all()
-
-        performances: dict[str, ModelPerformance] = {}
-        segment_performance: dict[str, dict[str, Any]] = {}
-        usable_runs = 0
-        for node_run, workflow_run, usage_log, model in rows:
-            metadata = (
-                node_run.trace_metadata
-                if isinstance(getattr(node_run, "trace_metadata", None), dict)
-                else {}
-            )
-            llm_metadata = metadata.get("llm")
-            llm_metadata = llm_metadata if isinstance(llm_metadata, dict) else {}
-            model_id = (
-                getattr(model, "model_id_for_api_call", None)
-                or getattr(usage_log, "model_id", None)
-                or llm_metadata.get("selected_model")
-            )
-            if not model_id:
-                continue
-
-            # usage가 누락된 실패 run도 정책의 품질 판단에는 포함한다. 비용/토큰은
-            # 알 수 없지만, model_routing trace가 선택 모델을 남기므로 실패율과
-            # downstream 결과를 그 모델에 귀속할 수 있다.
-            usable_runs += 1
-            performance = performances.setdefault(
-                str(model_id), ModelPerformance(model_id=str(model_id))
-            )
-            performance.run_count += 1
-            usage_succeeded = usage_log is None or getattr(usage_log, "status", None) == "success"
-            if node_run.status == NodeRunStatus.SUCCESS and usage_succeeded:
-                performance.success_count += 1
-            performance.total_cost += float(getattr(usage_log, "total_cost", 0) or 0)
-            performance.total_tokens += int(
-                getattr(usage_log, "prompt_tokens", 0) or 0
-            ) + int(getattr(usage_log, "completion_tokens", 0) or 0)
-            performance.total_latency_ms += int(
-                getattr(usage_log, "latency_ms", 0) or 0
-            )
-            performance.retry_count += int(node_run.retry_count or 0)
-
-            # workflow engine이 저장하는 canonical contract는 trace_metadata.llm/rag다.
-            # 최상위 키는 기존 실행 이력 호환을 위한 fallback으로만 유지한다.
-            schema_status = (
-                llm_metadata.get("schema_status")
-                or metadata.get("schema_status")
-                or metadata.get("schema")
-            )
-            if schema_status is not None:
-                performance.schema_eval_count += 1
-                if schema_status in ("passed", "pass", "valid", True):
-                    performance.schema_pass_count += 1
-            downstream_status = (
-                llm_metadata.get("downstream_status")
-                or metadata.get("downstream_status")
-                or metadata.get("downstream")
-            )
-            if downstream_status is not None:
-                performance.downstream_eval_count += 1
-                if downstream_status in ("passed", "pass", "compatible", True):
-                    performance.downstream_success_count += 1
-            elif workflow_run.status in (RunStatus.SUCCESS, RunStatus.FAILED):
-                # 명시적인 downstream contract check가 아직 없는 일반 실행에서는
-                # workflow 전체 성공 여부를 LLM 출력이 후속 노드를 통과했는지의 보수적 근거로 사용합니다.
-                performance.downstream_eval_count += 1
-                if workflow_run.status == RunStatus.SUCCESS:
-                    performance.downstream_success_count += 1
-            if llm_metadata.get("fallback_used"):
-                performance.fallback_count += 1
-
-            conditions = cls._segment_conditions(llm_metadata)
-            if conditions:
-                segment_key = json.dumps(
-                    conditions,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-                segment = segment_performance.setdefault(
-                    segment_key,
-                    {"conditions": conditions, "model_performance": {}},
-                )
-                segment_model_performance = segment["model_performance"].setdefault(
-                    str(model_id),
-                    ModelPerformance(model_id=str(model_id)),
-                )
-                segment_model_performance.run_count += 1
-                if node_run.status == NodeRunStatus.SUCCESS and usage_succeeded:
-                    segment_model_performance.success_count += 1
-                segment_model_performance.total_cost += float(
-                    getattr(usage_log, "total_cost", 0) or 0
-                )
-                segment_model_performance.total_tokens += int(
-                    getattr(usage_log, "prompt_tokens", 0) or 0
-                ) + int(getattr(usage_log, "completion_tokens", 0) or 0)
-                segment_model_performance.total_latency_ms += int(
-                    getattr(usage_log, "latency_ms", 0) or 0
-                )
-                segment_model_performance.retry_count += int(node_run.retry_count or 0)
-                schema_status = llm_metadata.get("schema_status")
-                if schema_status in ("passed", "pass", "valid", True):
-                    segment_model_performance.schema_eval_count += 1
-                    segment_model_performance.schema_pass_count += 1
-                elif schema_status in ("failed", "schema_failed", "truncated"):
-                    segment_model_performance.schema_eval_count += 1
-                downstream_status = llm_metadata.get("downstream_status")
-                if downstream_status in ("passed", "pass", "compatible", True):
-                    segment_model_performance.downstream_eval_count += 1
-                    segment_model_performance.downstream_success_count += 1
-                elif downstream_status in ("failed", "incompatible"):
-                    segment_model_performance.downstream_eval_count += 1
-                elif workflow_run.status in (RunStatus.SUCCESS, RunStatus.FAILED):
-                    segment_model_performance.downstream_eval_count += 1
-                    if workflow_run.status == RunStatus.SUCCESS:
-                        segment_model_performance.downstream_success_count += 1
-                if llm_metadata.get("fallback_used"):
-                    segment_model_performance.fallback_count += 1
-
-        return NodeRunProfile(
-            operational_usable_runs=usable_runs,
-            model_performance=performances,
-            segment_performance=segment_performance,
-        )
-
-    @staticmethod
-    def _segment_conditions(llm_metadata: dict[str, Any]) -> dict[str, Any]:
-        """입력 원문 없이 policy rule에 쓸 수 있는 일반적인 실행 특징만 남긴다."""
-        allowed = (
-            "customer_facing",
-            "knowledge_enabled",
-            "output_format",
-            "schema_required",
-            "has_file_input",
-            "input_length_bucket",
-            "prompt_length_bucket",
-            "node_task",
-        )
-        conditions = {
-            key: llm_metadata[key]
-            for key in allowed
-            if key in llm_metadata and llm_metadata[key] is not None
-        }
-        matched_cohort_id = str(
-            llm_metadata.get("matched_cohort_id") or ""
-        ).strip()
-        if matched_cohort_id:
-            conditions["semantic_cohort_id"] = matched_cohort_id
-        return conditions
-
-    @classmethod
     def collect_candidates(
-        cls, db: Session, *, organization_id: uuid.UUID
+        cls,
+        db: Session,
+        *,
+        organization_id: uuid.UUID,
     ) -> list[ModelCandidate]:
         models = (
             db.query(LLMModel)
@@ -813,20 +551,23 @@ class ModelRouter:
         )
         by_model_id: dict[str, ModelCandidate] = {}
         for model in models:
-            if not cls.is_workflow_chat_model(model):
-                continue
-            candidate = ModelCandidate.from_model(model)
-            by_model_id[candidate.model_id] = candidate
+            if cls.is_workflow_chat_model(model):
+                candidate = ModelCandidate.from_model(model)
+                by_model_id[candidate.model_id] = candidate
         return list(by_model_id.values())
 
     @classmethod
     def is_workflow_chat_model(cls, model: Any) -> bool:
-        model_id = cls.normalize_model_id(getattr(model, "model_id_for_api_call", ""))
+        raw_model_id = (
+            model
+            if isinstance(model, str)
+            else getattr(model, "model_id_for_api_call", None)
+            or getattr(model, "model_id", "")
+        )
+        model_id = cls.normalize_model_id(raw_model_id)
         model_name = str(getattr(model, "name", "") or "").lower()
         model_type = str(getattr(model, "type", "") or "").lower()
-        is_active = bool(getattr(model, "is_active", True))
-
-        if not is_active:
+        if not bool(getattr(model, "is_active", True)):
             return False
         if model_type in BLOCKED_WORKFLOW_MODEL_TYPES:
             return False
@@ -839,110 +580,18 @@ class ModelRouter:
         return model_id in WORKFLOW_CHAT_MODEL_ALIASES
 
     @staticmethod
-    def normalize_model_id(model_id: str) -> str:
+    def normalize_model_id(model_id: Any) -> str:
         return str(model_id or "").lower().removeprefix("models/")
 
     @classmethod
-    def _matches_rule(
-        cls,
-        when: Any,
-        runtime_context: ModelRoutingRuntimeContext,
-        *,
-        semantic_cohort_id: Optional[str] = None,
-    ) -> bool:
-        if when in (None, {}, []):
-            return True
-        if not isinstance(when, dict):
-            return False
-        if any(key not in cls.POLICY_CONDITION_KEYS for key in when):
-            return False
-        context = runtime_context.as_metadata()
-        context["semantic_cohort_id"] = semantic_cohort_id
-        for key in (
-            "intent",
-            "customer_facing",
-            "knowledge_enabled",
-            "output_format",
-            "schema_required",
-            "has_file_input",
-            "input_length_bucket",
-            "prompt_length_bucket",
-            "node_task",
-            "semantic_cohort_id",
-        ):
-            if key not in when:
-                continue
-            if not cls._condition_value_matches(context.get(key), when[key]):
-                return False
-        keywords = when.get("keyword_any")
-        if keywords is not None:
-            if not isinstance(keywords, list):
-                return False
-            normalized_keywords = [
-                str(keyword).strip().casefold()
-                for keyword in keywords
-                if str(keyword).strip()
-            ]
-            if not normalized_keywords:
-                return False
-            text = runtime_context.text.casefold()
-            if not any(keyword in text for keyword in normalized_keywords):
-                return False
-        return True
-
-    @staticmethod
-    def _rule_sort_key(rule: dict[str, Any]) -> tuple[int, int, int]:
-        when = rule.get("when") if isinstance(rule.get("when"), dict) else {}
-        keyword_weight = 0 if when.get("keyword_any") else 1
-        specificity = -len(when)
-        return (keyword_weight, int(rule.get("priority") or 1000), specificity)
-
-    @staticmethod
-    def _condition_value_matches(value: Any, condition: Any) -> bool:
-        if isinstance(condition, list):
-            return value in condition
-        return value == condition
-
-    @staticmethod
-    def _length_bucket(length: int) -> str:
-        if length <= 500:
-            return "short"
-        if length <= 2_000:
-            return "medium"
-        return "long"
-
-    @classmethod
-    def _schema_required(cls, output_format: Any) -> bool:
-        if not isinstance(output_format, dict):
-            return False
-        if str(output_format.get("type") or "").lower() != "json":
-            return False
-        schema = output_format.get("schema")
-        return isinstance(schema, dict) and bool(schema)
-
-    @classmethod
-    def _has_file_input(cls, value: Any) -> bool:
-        if isinstance(value, dict):
-            for key, item in value.items():
-                key_text = str(key).casefold()
-                if key_text in {"file", "files", "filename", "attachment", "attachments"}:
-                    return True
-                if cls._has_file_input(item):
-                    return True
-            return False
-        if isinstance(value, list):
-            return any(cls._has_file_input(item) for item in value)
-        return False
-
-    @classmethod
-    def _first_available_model(
+    def first_available_model(
         cls,
         model_ids: Iterable[Any],
         allowed_models: Optional[set[str]],
         *,
         exclude: Optional[str] = None,
     ) -> Optional[str]:
-        normalized_exclude = cls.normalize_model_id(exclude or "")
+        normalized_exclude = cls.normalize_model_id(exclude)
         for model_id in model_ids:
             candidate = cls._first_non_empty(model_id)
             if not candidate:
@@ -964,6 +613,57 @@ class ModelRouter:
         return None
 
     @classmethod
+    def _render_prompt_parts(
+        cls,
+        inputs: dict[str, Any],
+        node_data: Any,
+    ) -> tuple[str, str, str]:
+        values: dict[str, Any] = {}
+        referenced_variables = cls._node_data_value(
+            node_data,
+            "referenced_variables",
+            default=[],
+        )
+        if not isinstance(referenced_variables, list):
+            referenced_variables = []
+        for variable in referenced_variables:
+            name = str(cls._node_data_value(variable, "name", default="") or "").strip()
+            selector = cls._node_data_value(variable, "value_selector", default=[])
+            if not name or not isinstance(selector, list) or not selector:
+                continue
+            source = inputs.get(str(selector[0]))
+            values[name] = cls._nested_value(source, selector[1:])
+        return tuple(
+            cls._render_template(cls._node_data_value(node_data, field, default=""), values)
+            for field in ("user_prompt", "system_prompt", "assistant_prompt")
+        )
+
+    @staticmethod
+    def _node_data_value(value: Any, field: str, *, default: Any = None) -> Any:
+        if isinstance(value, Mapping):
+            return value.get(field, default)
+        return getattr(value, field, default)
+
+    @staticmethod
+    def _nested_value(value: Any, path: list[Any]) -> Any:
+        current = value
+        for key in path:
+            if not isinstance(current, Mapping):
+                return None
+            current = current.get(str(key))
+        return current
+
+    @staticmethod
+    def _render_template(template: Any, context: dict[str, Any]) -> str:
+        source = str(template or "")
+        if not source:
+            return ""
+        try:
+            return _routing_jinja_env.from_string(source).render(**context)
+        except Exception:
+            return source
+
+    @classmethod
     def _flatten_text(cls, value: Any) -> str:
         if value is None:
             return ""
@@ -972,12 +672,11 @@ class ModelRouter:
         if isinstance(value, (int, float, bool)):
             return str(value)
         if isinstance(value, dict):
-            parts: list[str] = []
-            for key, child in value.items():
-                child_text = cls._flatten_text(child)
-                if child_text:
-                    parts.append(f"{key}: {child_text}")
-            return " ".join(parts)
+            return " ".join(
+                f"{key}: {child_text}"
+                for key, child in value.items()
+                if (child_text := cls._flatten_text(child))
+            )
         if isinstance(value, (list, tuple, set)):
             return " ".join(cls._flatten_text(item) for item in value)
         try:
@@ -989,161 +688,75 @@ class ModelRouter:
     def _output_format_name(output_format: Any) -> str:
         if isinstance(output_format, dict):
             return str(output_format.get("type") or "text").lower()
-        if isinstance(output_format, str):
-            return output_format.lower()
-        return "text"
-
-    @classmethod
-    def _normalize_candidates(
-        cls, context: ModelRouterContext
-    ) -> list[ModelCandidate]:
-        by_id: dict[str, ModelCandidate] = {}
-        for candidate in context.candidate_models:
-            if isinstance(candidate, ModelCandidate):
-                by_id[candidate.model_id] = candidate
-            else:
-                normalized = ModelCandidate.from_model(candidate)
-                by_id[normalized.model_id] = normalized
-
-        if context.current_model_id and context.current_model_id not in by_id:
-            by_id[context.current_model_id] = ModelCandidate(
-                model_id=context.current_model_id,
-                display_name=context.current_model_id,
-            )
-        if context.fallback_model_id and context.fallback_model_id not in by_id:
-            by_id[context.fallback_model_id] = ModelCandidate(
-                model_id=context.fallback_model_id,
-                display_name=context.fallback_model_id,
-            )
-        return list(by_id.values())
-
-    @classmethod
-    def _stage_for(cls, profile: NodeRunProfile) -> str:
-        count = profile.operational_usable_runs
-        if count < cls.COLD_START_MAX_USABLE_RUNS:
-            return "cold_start"
-        if count < cls.OPTIMIZED_MIN_USABLE_RUNS:
-            return "warming_up"
-        return "optimized"
-
-    @classmethod
-    def _passing_candidates(
-        cls,
-        candidates: list[ModelCandidate],
-        profile: NodeRunProfile,
-        stage: str,
-    ) -> list[ModelCandidate]:
-        min_samples = (
-            cls.MIN_OPTIMIZED_MODEL_SAMPLES
-            if stage == "optimized"
-            else cls.MIN_WARMING_MODEL_SAMPLES
-        )
-        passing = [
-            candidate
-            for candidate in candidates
-            if cls._passes_quality_gate(
-                profile.model_performance.get(candidate.model_id), min_samples
-            )
-        ]
-        return sorted(passing, key=lambda candidate: candidate.price_score)
-
-    @classmethod
-    def _lower_cost_candidates(
-        cls, candidates: list[ModelCandidate], current_model_id: Optional[str]
-    ) -> list[ModelCandidate]:
-        current = next(
-            (
-                candidate
-                for candidate in candidates
-                if candidate.model_id == current_model_id
-            ),
-            None,
-        )
-        current_score = current.price_score if current is not None else float("inf")
-        return [
-            candidate
-            for candidate in candidates
-            if candidate.model_id != current_model_id
-            and candidate.price_score < current_score
-        ]
-
-    @classmethod
-    def _passes_quality_gate(
-        cls, performance: Optional[ModelPerformance], min_samples: int
-    ) -> bool:
-        if performance is None or performance.run_count < min_samples:
-            return False
-        if (performance.success_rate or 0) < cls.SCHEMA_PASS_RATE_MIN:
-            return False
-        schema_rate = performance.schema_pass_rate
-        if schema_rate is not None and schema_rate < cls.SCHEMA_PASS_RATE_MIN:
-            return False
-        downstream_rate = performance.downstream_success_rate
-        if (
-            downstream_rate is not None
-            and downstream_rate < cls.DOWNSTREAM_SUCCESS_RATE_MIN
-        ):
-            return False
-        fallback_rate = performance.fallback_rate
-        if fallback_rate is not None and fallback_rate > cls.FALLBACK_RATE_MAX:
-            return False
-        return True
-
-    @classmethod
-    def _decision(
-        cls,
-        *,
-        stage: str,
-        selected: ModelCandidate,
-        fallback: Optional[ModelCandidate],
-        reason: str,
-        profile: NodeRunProfile,
-        confidence: Optional[float] = None,
-    ) -> ModelRouterDecision:
-        fallback_id = (
-            fallback.model_id
-            if fallback is not None and fallback.model_id != selected.model_id
-            else None
-        )
-        return ModelRouterDecision(
-            routing_stage=stage,
-            selected_model_id=selected.model_id,
-            fallback_model_id=fallback_id,
-            reason=reason,
-            confidence=confidence,
-            metrics_snapshot=profile.as_snapshot(),
-        )
+        return str(output_format or "text").lower()
 
     @staticmethod
-    def _highest_cost_candidate(
-        candidates: list[ModelCandidate], current_model_id: Optional[str]
-    ) -> ModelCandidate:
-        finite = [
-            candidate
-            for candidate in candidates
-            if candidate.price_score != float("inf")
-        ]
-        if finite:
-            return sorted(finite, key=lambda candidate: candidate.price_score)[-1]
-        for candidate in candidates:
-            if candidate.model_id == current_model_id:
-                return candidate
-        return candidates[-1]
+    def _schema_required(output_format: Any) -> bool:
+        return (
+            isinstance(output_format, dict)
+            and str(output_format.get("type") or "").lower() == "json"
+            and isinstance(output_format.get("schema"), dict)
+            and bool(output_format.get("schema"))
+        )
 
     @classmethod
-    def _current_or_highest_candidate(
-        cls, candidates: list[ModelCandidate], current_model_id: Optional[str]
-    ) -> ModelCandidate:
-        for candidate in candidates:
-            if candidate.model_id == current_model_id:
-                return candidate
-        return cls._highest_cost_candidate(candidates, current_model_id)
+    def _has_file_input(cls, value: Any) -> bool:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if str(key).casefold() in {
+                    "file",
+                    "files",
+                    "file_id",
+                    "filename",
+                    "attachment",
+                    "attachments",
+                } and cls._has_meaningful_value(item):
+                    return True
+                if cls._has_file_input(item):
+                    return True
+        if isinstance(value, list):
+            return any(cls._has_file_input(item) for item in value)
+        return False
+
+    @classmethod
+    def _has_meaningful_value(cls, value: Any) -> bool:
+        if value in (None, ""):
+            return False
+        if isinstance(value, dict):
+            return any(cls._has_meaningful_value(item) for item in value.values())
+        if isinstance(value, list):
+            return any(cls._has_meaningful_value(item) for item in value)
+        return True
+
+    @staticmethod
+    def _length_bucket(length: int) -> str:
+        if length <= 500:
+            return "short"
+        if length <= 2_000:
+            return "medium"
+        return "long"
+
+    @staticmethod
+    def _confidence(value: Any, *, default: float) -> float:
+        try:
+            return max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _unique_model_ids(model_ids: Iterable[Any]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for model_id in model_ids:
+            value = str(model_id or "").strip()
+            if value and value not in seen:
+                seen.add(value)
+                result.append(value)
+        return result
 
 
 def _ratio(numerator: int, denominator: int) -> Optional[float]:
-    if denominator <= 0:
-        return None
-    return numerator / denominator
+    return numerator / denominator if denominator > 0 else None
 
 
 def _float_or_none(value: Any) -> Optional[float]:

@@ -78,6 +78,8 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0055](ADR-0055-agent-builder-intent-usage-attribution.md) | Accepted | Agent Builder intent 사용량 귀속 경계 | Planner와 repair 호출을 실제 user/organization/workflow/model/credential에 별도로 귀속하고, provider 응답 직후 raw content 없이 기존 `llm_usage_logs`에 멱등 저장한다. 모델·credential 삭제 뒤에도 token/cost 이력을 보존하며 기존 관리·예산·월 예상 비용 집계에 포함한다. |
 | [ADR-0056](ADR-0056-app-auth-secret-issuance-and-rotation.md) | Accepted | App 인증 secret 발급·검증·rotation 경계 | App·Deployment 일반 응답에서 secret 원문을 제거하고 명시적 one-time rotation API만 원문을 반환한다. App에는 비가역 current/previous verifier와 version을 저장하며, row lock·CAS·최대 5분 grace·즉시 폐기·transaction-bound audit을 적용한다. |
 | [ADR-0057](ADR-0057-llm-credential-at-rest-encryption-and-rotation.md) | Accepted | LLM credential 저장 암호화와 key rotation | LLM credential config를 전용 versioned keyring으로 암호화하고 Shared 단일 decrypt 경계, dual-read/single-write 전환, Gateway·Workflow Worker·Knowledge Worker startup 검증과 제한 batch backfill·rotation을 적용한다. |
+| [ADR-0058](ADR-0058-bootstrap-difficulty-routing-policy.md) | Superseded | Bootstrap 난이도 라우팅 정책 | ADR-0059의 Judge bootstrap과 점진 학습 구조로 대체됐다. |
+| [ADR-0059](ADR-0059-judge-bootstrap-incremental-routing.md) | Accepted | Judge Bootstrap과 점진 학습 로컬 라우팅 | 초기 운영 요청은 Judge가 실행 주체가 쓸 수 있는 후보 중 모델을 선택하고, Judge label과 실제 운영 성과가 충분히 쌓이면 로컬 mDeBERTa 분류기가 우선 선택한다. 낮은 신뢰도는 Judge로 되돌아가며, Judge 실패는 기본/대체 모델로 닫는다. |
 
 ## 참고 보고서
 

@@ -1,3 +1,4 @@
+import math
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -194,22 +195,32 @@ SPAN_SECTION_FIELDS = {
         "recommendation_type",
         "analysis_stage",
         "customer_facing",
+        "decision_factors",
         "decision_source",
         "downstream_status",
         "fallback_used",
+        "fallback_from_model",
+        "fallback_reason_code",
+        "fallback_provider_error_code",
+        "fallback_provider_error_type",
+        "fallback_provider_status_code",
+        "fallback_provider_remote_error_code",
+        "fallback_provider_remote_error_param",
+        "fallback_provider_response_status",
         "finish_reason",
         "has_file_input",
         "input_length_bucket",
         "judge_called",
+        "judge",
         "knowledge_enabled",
         "latency_ms",
-        "cohort_matcher",
         "matched_rule_id",
-        "matched_cohort_id",
         "model",
         "node_task",
         "output_format",
         "policy_id",
+        "policy_source",
+        "included_in_policy_learning",
         "prompt_payload_id",
         "prompt_tokens",
         "prompt_length_bucket",
@@ -222,22 +233,7 @@ SPAN_SECTION_FIELDS = {
         "schema_required",
         "schema_status",
         "selected_model",
-        "semantic_encoder_model",
-        "semantic_candidate_cohort_id",
-        "semantic_candidate_label",
-        "semantic_cohort_scores",
-        "semantic_decision_source",
-        "semantic_lexical_score",
-        "semantic_lexical_signal_count",
-        "semantic_margin",
-        "semantic_match_status",
-        "semantic_min_margin",
-        "semantic_route_label",
-        "semantic_runner_up_score",
-        "semantic_similarity",
-        "semantic_safety_override",
-        "semantic_threshold",
-        "route_catalog_version",
+        "strategy_id",
         "policy_version",
         "total_cost",
         "total_tokens",
@@ -417,12 +413,197 @@ class TraceMetadataSanitizer:
                 if rag:
                     sanitized[key] = rag
                 continue
+            if key == "llm":
+                llm = cls._sanitize_llm_section(safe_metadata[key])
+                if llm:
+                    sanitized[key] = llm
+                continue
             section_value = cls._filter_allowed_dict(
                 safe_metadata[key], SPAN_SECTION_FIELDS.get(key, set())
             )
             if section_value:
                 sanitized[key] = section_value
 
+        return sanitized
+
+    @classmethod
+    def _sanitize_llm_section(cls, value: Any) -> dict[str, Any]:
+        """LLM trace에서 라우팅 판단 근거를 원문 없이 제한된 형태로 보존한다."""
+        safe_value = cls.sanitize_json_safe(value)
+        if not isinstance(safe_value, dict):
+            return {}
+
+        allowed_fields = SPAN_SECTION_FIELDS["llm"] - {"decision_factors", "judge"}
+        sanitized = cls._filter_allowed_dict(safe_value, allowed_fields)
+        decision_factors = cls._sanitize_model_routing_decision_factors(
+            safe_value.get("decision_factors")
+        )
+        if decision_factors:
+            sanitized["decision_factors"] = decision_factors
+        judge = cls._sanitize_model_routing_judge(safe_value.get("judge"))
+        if judge:
+            sanitized["judge"] = judge
+        return sanitized
+
+    @classmethod
+    def _sanitize_model_routing_judge(cls, value: Any) -> dict[str, Any]:
+        """Judge 호출 결과 중 정책 설명에 필요한 수치만 trace에 남긴다."""
+        safe_value = cls.sanitize_json_safe(value)
+        if not isinstance(safe_value, dict):
+            return {}
+        sanitized = cls._filter_allowed_dict(
+            safe_value,
+            {
+                "model",
+                "selected_model",
+                "reason_code",
+                "error_code",
+                "usage_log_error",
+                "learning_error",
+            },
+        )
+        confidence = safe_value.get("confidence")
+        if (
+            not isinstance(confidence, bool)
+            and isinstance(confidence, (int, float))
+            and math.isfinite(float(confidence))
+            and 0.0 <= float(confidence) <= 1.0
+        ):
+            sanitized["confidence"] = float(confidence)
+        cost = safe_value.get("cost")
+        if (
+            not isinstance(cost, bool)
+            and isinstance(cost, (int, float))
+            and math.isfinite(float(cost))
+            and 0.0 <= float(cost) <= 1_000_000.0
+        ):
+            sanitized["cost"] = float(cost)
+        usage = safe_value.get("usage")
+        if isinstance(usage, dict):
+            safe_usage: dict[str, int | float] = {}
+            for key in {"prompt_tokens", "completion_tokens", "total_tokens"}:
+                token_count = usage.get(key)
+                if (
+                    not isinstance(token_count, bool)
+                    and isinstance(token_count, (int, float))
+                    and math.isfinite(float(token_count))
+                    and 0 <= float(token_count) <= 10_000_000
+                ):
+                    safe_usage[key] = token_count
+            if safe_usage:
+                sanitized["usage"] = safe_usage
+        return sanitized
+
+    @classmethod
+    def _sanitize_model_routing_decision_factors(cls, value: Any) -> dict[str, Any]:
+        safe_value = cls.sanitize_json_safe(value)
+        if not isinstance(safe_value, dict):
+            return {}
+
+        sanitized = cls._filter_allowed_dict(
+            safe_value,
+            {
+                "profile",
+                "evaluated_candidate_count",
+                "excluded_candidate_count",
+                "learning_mode",
+                "candidate_model_count",
+                "judged_request_count",
+            },
+        )
+        selected_score = cls._filter_allowed_dict(
+            safe_value.get("selected_model_score"),
+            {
+                "quality_lower_bound",
+                "expected_total_cost_usd",
+                "expected_latency_ms",
+                "expected_fallback_rate",
+                "effective_evidence_samples",
+                "prior_source",
+            },
+        )
+        if selected_score:
+            sanitized["selected_model_score"] = selected_score
+
+        # Bootstrap 난이도 라우팅은 원문 없이도 "왜 이 모델인가"를 설명할 수
+        # 있어야 한다. 아래 값은 enum/범위가 제한된 수치만 보존하고, policy가
+        # 만들었던 phrase나 실제 입력 단어는 trace에 남기지 않는다.
+        classification_status = str(
+            safe_value.get("classification_status") or ""
+        ).strip()
+        if classification_status in {
+            "planner_rule",
+            "matched",
+            "fallback",
+            "artifact_missing",
+            "unavailable",
+        }:
+            sanitized["classification_status"] = classification_status
+        difficulty = str(safe_value.get("difficulty") or "").strip()
+        if difficulty in {"economy", "balanced", "advanced"}:
+            sanitized["difficulty"] = difficulty
+        for key in ("confidence", "minimum_confidence"):
+            raw_value = safe_value.get(key)
+            if (
+                not isinstance(raw_value, bool)
+                and isinstance(raw_value, (int, float))
+                and math.isfinite(float(raw_value))
+                and 0.0 <= float(raw_value) <= 1.0
+            ):
+                sanitized[key] = float(raw_value)
+        for key in ("local_confidence", "local_confidence_threshold"):
+            raw_value = safe_value.get(key)
+            if (
+                not isinstance(raw_value, bool)
+                and isinstance(raw_value, (int, float))
+                and math.isfinite(float(raw_value))
+                and 0.0 <= float(raw_value) <= 1.0
+            ):
+                sanitized[key] = float(raw_value)
+        for key in ("matched_signal_count", "match_score"):
+            raw_value = safe_value.get(key)
+            if (
+                not isinstance(raw_value, bool)
+                and isinstance(raw_value, int)
+                and 0 <= raw_value <= 50
+            ):
+                sanitized[key] = raw_value
+        raw_probabilities = safe_value.get("probabilities")
+        if isinstance(raw_probabilities, dict):
+            probabilities: dict[str, float] = {}
+            for key in ("economy", "balanced", "advanced"):
+                raw_value = raw_probabilities.get(key)
+                if (
+                    not isinstance(raw_value, bool)
+                    and isinstance(raw_value, (int, float))
+                    and math.isfinite(float(raw_value))
+                    and 0.0 <= float(raw_value) <= 1.0
+                ):
+                    probabilities[key] = float(raw_value)
+            if probabilities:
+                sanitized["probabilities"] = probabilities
+
+        signature = cls.sanitize_json_safe(safe_value.get("constraint_signature"))
+        if isinstance(signature, dict):
+            safe_signature: dict[str, Any] = {}
+            for key in {
+                "context_input_bucket",
+                "rag_context_bucket",
+                "output_contract",
+                "schema_complexity",
+                "downstream_strictness",
+                "file_input",
+                "required_input_missing",
+                "required_capability_tier",
+                "schema_required",
+            }:
+                if key not in signature:
+                    continue
+                sanitized_value = cls._sanitize_allowed_value(signature[key])
+                if sanitized_value is not None:
+                    safe_signature[key] = sanitized_value
+            if safe_signature:
+                sanitized["constraint_signature"] = safe_signature
         return sanitized
 
     @classmethod

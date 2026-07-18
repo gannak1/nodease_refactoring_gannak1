@@ -133,7 +133,7 @@ class LLMService:
 
     AGENT_BUILDER_PROVIDER_ORDER = (*SUPPORTED_PROVIDER_ORDER, "llamaparse")
 
-    # [신규] 기본 가격 설정 (1M 토큰 기준 미화를 1K 기준으로 환산)
+   # [신규] 기본 가격 설정 (1M 토큰 기준 미화를 1K 기준으로 환산)
     # 가격 출처: https://openai.com/api/pricing/, https://docs.anthropic.com/en/docs/about-claude/pricing
     # 아래 가격은 1K 토큰 기준입니다. (예: $5/1M -> 0.005/1K)
     KNOWN_MODEL_PRICES = {

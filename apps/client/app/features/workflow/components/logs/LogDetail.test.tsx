@@ -86,22 +86,39 @@ describe('LogDetail', () => {
     llmNodeRun.outputs = {
       ...llmNodeRun.outputs,
       model: 'gpt-4.1',
+      metadata: {
+        model_routing: {
+          judge: {
+            reason_short: '복수 근거 종합',
+            candidate_model_count: 3,
+          },
+        },
+      },
     };
     llmNodeRun.trace_metadata = {
       llm: {
+        strategy_id: 'judge_bootstrap_incremental_v1',
         selected_model: 'gpt-4.1',
         fallback_model: 'gpt-4.1-mini',
-        decision_source: 'active_policy',
-        matched_cohort_id: 'high_risk',
-        semantic_route_label: '보안 및 SLA 고위험',
-        semantic_match_status: 'matched',
-        semantic_decision_source: 'safety_override',
-        semantic_lexical_score: 1,
-        semantic_lexical_signal_count: 1,
-        semantic_safety_override: true,
+        decision_source: 'runtime_judge',
+        reason_code: 'judge_bootstrap_required',
         policy_version: 'routing-policy-v10',
-        route_catalog_version: 'ticket-routing-v7',
-        judge_called: false,
+        input_length_bucket: 'long',
+        output_format: 'json',
+        schema_required: true,
+        knowledge_enabled: true,
+        decision_factors: {
+          learning_mode: 'judge_first',
+          judged_request_count: 8,
+          local_confidence_threshold: 0.78,
+        },
+        judge: {
+          model: 'gpt-4.1-mini',
+          confidence: 0.84,
+          reason_code: 'structured_reasoning_required',
+          cost: 0.00013,
+        },
+        judge_called: true,
       },
     };
 
@@ -109,22 +126,26 @@ describe('LogDetail', () => {
       render(<LogDetail run={run} />);
     });
 
-    const routingDetails = screen.getByText('자동 라우팅').closest('dl');
+    const routingDetails = screen
+      .getByText('Judge-first + 점진적 로컬 학습')
+      .closest('dl');
     expect(routingDetails).not.toBeNull();
     const routing = within(routingDetails as HTMLElement);
-    expect(routing.getByText('보안 및 SLA 고위험')).toBeInTheDocument();
     expect(routing.getByText('gpt-4.1')).toBeInTheDocument();
     expect(
-      routing.getByText(
-        '정책의 안전 조건 1개와 일치해 안전 유형을 우선했습니다.',
-      ),
+      routing.getByText('이번 Judge 판단'),
     ).toBeInTheDocument();
+    expect(routing.getByText(/Judge 모델: gpt-4.1-mini/)).toBeInTheDocument();
+    expect(routing.getByText(/판단 확신도 84.0%/)).toBeInTheDocument();
+    expect(routing.getByText(/Judge 비용 \$0.000130/)).toBeInTheDocument();
+    expect(routing.getByText('사유: 복수 근거 종합')).toBeInTheDocument();
+    expect(routing.getByText('검토 후보 모델 3개')).toBeInTheDocument();
     expect(
       routing.getByText(
-        '비용 절감보다 사고 대응 품질을 우선해 검증된 모델을 선택했습니다.',
+        (_, element) =>
+          element?.textContent === '학습 방식: Judge 학습 중 · 선택 기준 78.0%',
       ),
     ).toBeInTheDocument();
-    expect(routing.getByText('실행 중 Judge 호출 안 함')).toBeInTheDocument();
   });
 
   it('run 전환 시 이전 LLM trace state를 즉시 초기화한다', async () => {

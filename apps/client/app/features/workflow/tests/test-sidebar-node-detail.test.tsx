@@ -61,15 +61,18 @@ vi.mock('../store/useWorkflowStore', () => {
               fallback_used: true,
               fallback_from_model: 'gpt-5.6-luna',
               fallback_reason_code: 'provider_call_failed',
-              decision_source: 'active_policy',
-              reason_code: 'quality_gate_passed_cost_reduction',
-              semantic_candidate_label: '단순 사용 안내',
-              semantic_similarity: 0.61,
-              semantic_threshold: 0.75,
-              semantic_match_status: 'no_match',
+              decision_source: 'test_policy_preview',
+              strategy_id: 'judge_bootstrap_incremental_v1',
+              reason_code: 'judge_bootstrap_required',
               judge_called: false,
               policy_source: 'active_deployment',
               included_in_policy_learning: false,
+              runtime_context: {
+                input_length_bucket: 'medium',
+                output_format: 'json',
+                schema_required: true,
+                knowledge_enabled: false,
+              },
             },
           },
         },
@@ -136,8 +139,12 @@ describe('TestSidebar node execution details', () => {
       ),
     ).toBeVisible();
     expect(screen.getByText('배포 정책 기준 테스트')).toBeVisible();
-    expect(screen.getByText('단순 사용 안내')).toBeVisible();
-    expect(screen.getByText('기준 미달로 기본 모델 사용')).toBeVisible();
+    expect(screen.getByText('보통 입력')).toBeVisible();
+    expect(
+      screen.getByText(
+        '학습 초기 단계라 Judge가 현재 요청과 후보 모델을 비교해 선택했습니다.',
+      ),
+    ).toBeVisible();
     expect(
       screen.getByText(
         (_, element) => element?.textContent === '최초 선택: gpt-5.6-luna',

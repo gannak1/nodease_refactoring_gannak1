@@ -10,7 +10,11 @@ from typing import Any, Dict, List, Optional
 import httpx
 import tiktoken
 
-from .base import BaseLLMClient, LLMResponseValidationError
+from .base import (
+    BaseLLMClient,
+    LLMResponseValidationError,
+    ProviderInvocationError,
+)
 
 
 class OpenAIClient(BaseLLMClient):
@@ -66,6 +70,19 @@ class OpenAIClient(BaseLLMClient):
 
     _LONG_TIMEOUT_PREFIXES = ("gpt-5", "o1", "o3", "o4")
     _RESPONSES_ENDPOINT_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+    _MINIMAL_REASONING_MODEL_PREFIX = "gpt-5"
+    # Responses API의 reasoning effort 지원 범위는 모델별로 다르다. 모델
+    # 이름 접두사만으로 추정하면 지원하지 않는 값을 보내 400이 날 수 있으므로,
+    # 확인된 모델에만 가장 낮은 허용 effort를 명시한다.
+    _REASONING_EFFORT_BY_MODEL = {
+        "gpt-5": "minimal",
+        "gpt-5-mini": "minimal",
+        "gpt-5-nano": "minimal",
+        "gpt-5.4": "low",
+        "gpt-5.4-mini": "low",
+        "gpt-5.4-nano": "low",
+    }
+    _MINIMAL_REASONING_OUTPUT_TOKEN_LIMIT = 1024
     _RESPONSES_UNSUPPORTED_GENERATION_PARAMS = (
         "top_p",
         "presence_penalty",
@@ -145,6 +162,48 @@ class OpenAIClient(BaseLLMClient):
 
     def _should_try_legacy_completions(self) -> bool:
         return self._clean_model_id.startswith(self._LEGACY_COMPLETIONS_PREFIXES)
+
+    def _uses_minimal_reasoning_default(
+        self,
+        *,
+        response_format: Any,
+        max_output_tokens: Any,
+    ) -> bool:
+        """작은 출력 한도의 GPT-5 응답에서 답변 토큰을 남긴다.
+
+        Responses API의 ``max_output_tokens``에는 사용자에게 보이지 않는 추론
+        토큰도 포함된다. JSON 출력은 형식 계약 때문에 짧은 응답으로 끝나는 경우가
+        많고, 일반 텍스트도 노드가 1,024 token 이하로 제한하면 추론만 수행한 뒤
+        ``incomplete``로 끝날 수 있다. 사용자가 reasoning 수준을 직접 지정하지
+        않았을 때만 minimal을 안전 기본값으로 적용한다.
+        """
+        if not self._clean_model_id.startswith(self._MINIMAL_REASONING_MODEL_PREFIX):
+            return False
+        if self._response_format_requires_json_input(response_format):
+            return True
+        try:
+            output_limit = int(max_output_tokens)
+        except (TypeError, ValueError):
+            return False
+        return 0 < output_limit <= self._MINIMAL_REASONING_OUTPUT_TOKEN_LIMIT
+
+    def _default_reasoning_effort(
+        self,
+        *,
+        response_format: Any,
+        max_output_tokens: Any,
+    ) -> str | None:
+        """모델별 Responses API가 허용하는 가장 낮은 reasoning effort를 고른다."""
+
+        effort = self._REASONING_EFFORT_BY_MODEL.get(self._clean_model_id)
+        if effort is None:
+            return None
+        if not self._uses_minimal_reasoning_default(
+            response_format=response_format,
+            max_output_tokens=max_output_tokens,
+        ):
+            return None
+        return effort
 
     def _uses_strict_generation_params(self) -> bool:
         return (
@@ -232,10 +291,12 @@ class OpenAIClient(BaseLLMClient):
 
         response_status = data.get("status")
         if response_status in {"incomplete", "failed", "cancelled"}:
-            raise LLMResponseValidationError(
+            raise ProviderInvocationError(
                 "OpenAI Responses 응답이 완료되지 않았습니다: "
                 f"status={response_status}, "
                 f"summary={self._summarize_responses_response(data)}",
+                reason_code="responses_incomplete",
+                provider_response_status=response_status,
                 usage=mapped_usage,
             )
 
@@ -276,9 +337,10 @@ class OpenAIClient(BaseLLMClient):
                 ) from exc
 
         if not text.strip():
-            raise LLMResponseValidationError(
+            raise ProviderInvocationError(
                 "OpenAI Responses 응답에 사용할 수 있는 텍스트가 없습니다: "
                 f"summary={self._summarize_responses_response(data)}",
+                reason_code="responses_empty_text",
                 usage=mapped_usage,
             )
 
@@ -416,6 +478,13 @@ class OpenAIClient(BaseLLMClient):
             text_options = dict(text_options) if isinstance(text_options, dict) else {}
             text_options.setdefault("format", response_format)
             responses_payload["text"] = text_options
+
+        reasoning_effort = self._default_reasoning_effort(
+            response_format=response_format,
+            max_output_tokens=responses_payload.get("max_output_tokens"),
+        )
+        if "reasoning" not in responses_payload and reasoning_effort is not None:
+            responses_payload["reasoning"] = {"effort": reasoning_effort}
 
         self._ensure_json_instruction_in_responses_input(responses_payload)
 
@@ -784,7 +853,11 @@ class OpenAIClient(BaseLLMClient):
     def _raise_error_response(self, data: Dict[str, Any], status_code: int | None = None) -> None:
         error_info = data.get("error") if isinstance(data, dict) else None
         if not isinstance(error_info, dict):
-            raise ValueError(f"{self.provider_name} 호출 실패: Unknown error")
+            raise ProviderInvocationError(
+                f"{self.provider_name} 호출 실패: Unknown error",
+                reason_code="provider_http_error",
+                status_code=status_code,
+            )
         message = str(error_info.get("message", "Unknown error"))
         parts = [message]
         for key in ("type", "param", "code"):
@@ -792,7 +865,17 @@ class OpenAIClient(BaseLLMClient):
             if value:
                 parts.append(f"{key}={value}")
         status_text = f" (status {status_code})" if status_code else ""
-        raise ValueError(f"{self.provider_name} 호출 실패{status_text}: " + " | ".join(parts))
+        raise ProviderInvocationError(
+            f"{self.provider_name} 호출 실패{status_text}: " + " | ".join(parts),
+            reason_code="provider_http_error",
+            status_code=status_code,
+            provider_error_code=(
+                str(error_info["code"]) if error_info.get("code") else None
+            ),
+            provider_error_param=(
+                str(error_info["param"]) if error_info.get("param") else None
+            ),
+        )
 
     def _build_headers(self) -> Dict[str, str]:
         return {
