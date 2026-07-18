@@ -559,7 +559,7 @@ jobs:
 
       - name: Set up Helm
         if: needs.scope.outputs.helm_validation == 'true'
-        uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       - name: Validate Helm chart
         if: needs.scope.outputs.helm_validation == 'true'
@@ -581,7 +581,7 @@ jobs:
 
       - name: Set up kubectl
         if: needs.scope.outputs.kubernetes_validation == 'true'
-        uses: azure/setup-kubectl@c0c8b32d33a5244f1e5947304550403b63930415 # v4
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
 
       - name: Validate Kubernetes manifests
         if: needs.scope.outputs.kubernetes_validation == 'true'
