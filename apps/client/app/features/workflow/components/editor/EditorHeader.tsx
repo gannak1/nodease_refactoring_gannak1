@@ -30,7 +30,7 @@ export default function EditorHeader() {
           onClick={() => router.push('/dashboard/mymodule')}
           className="font-semibold text-slate-500 transition-colors hover:text-slate-950"
         >
-          내 모듈
+          워크플로우
         </button>
         <ChevronRight className="h-4 w-4 text-slate-400" />
         <span className="font-black text-slate-950">

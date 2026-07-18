@@ -166,7 +166,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - 각 attempt가 provider 호출 전에 pending 행을 예약하고 예약 실패 시 provider를 호출하지 않는지 검증한다.
 - 예약 직전에 credential 유효 상태, active chat model, verified credential-model 관계, 사용자 credential use 권한과 active organization membership을 다시 확인하고 하나라도 무효하면 provider 호출과 pending 행 생성을 모두 차단하는지 검증한다.
 - Provider 호출 중 App primary pointer와 model/credential lifecycle이 바뀌어도 예약된 행이 당시 가격으로 완료되는지 검증한다.
-- Provider 실패 또는 usage 누락은 pending 행을 삭제하고, 완료되지 않은 pending 행은 관리 비용·token·호출 수·Top Model뿐 아니라 workflow 예산과 내 모듈 월 예상 비용 집계에서도 제외하는지 검증한다.
+- Provider 실패 또는 usage 누락은 pending 행을 삭제하고, 완료되지 않은 pending 행은 관리 비용·token·호출 수·Top Model뿐 아니라 workflow 예산과 워크플로우 화면의 workflow별 월 예상 비용 집계에서도 제외하는지 검증한다.
 - Provider 응답 뒤 schema/semantic validation이 실패해도 usage를 먼저 기록한다.
 - Provider 응답이 없거나 성공 응답에 검증 가능한 usage가 없으면 기록하지 않고 요청을 실패 처리하며, provider 호출 횟수는 증가하지 않는다.
 - Normalizer와 recorder에는 token, latency, 실제 model/credential ID 외 raw content를 전달하지 않는다.
@@ -354,8 +354,8 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Commit 응답 유실과 저장 재시도 사이에 모델 가격이 바뀌어도 최초 확정 비용을 재사용하고, model/credential이 삭제돼도 기존 성공 행의 token/cost를 재사용한다.
 - Request/session workflow가 다르거나 App의 현재 primary가 아닌 workflow로 귀속하려는 provider 호출과 신규 저장은 비용 발생 전 차단하고 행을 만들지 않는다. 과거 workflow와 관련 실행·배포·감사 이력은 삭제하지 않는다.
 - 실제 user/organization/workflow/model/credential, planner/repair attempt, token/cost/latency를 검증한다.
-- 기존 user top-model의 활성·비활성 model 행, Admin organization/workflow, workflow budget과 내 모듈 월 예상 비용 집계가 Agent Builder usage를 포함한다. Model 삭제 뒤 해당 행은 Top Model에서 제외되지만 나머지 비용 집계에서는 보존된다.
-- Admin과 내 모듈 응답은 기존 총비용을 유지하고 workflow 실행 비용과 Agent Builder 비용을 구분하며 두 값의 합이 총비용과 같은지 검증한다.
+- 기존 user top-model의 활성·비활성 model 행, Admin organization/workflow, workflow budget과 워크플로우 화면의 workflow별 월 예상 비용 집계가 Agent Builder usage를 포함한다. Model 삭제 뒤 해당 행은 Top Model에서 제외되지만 나머지 비용 집계에서는 보존된다.
+- Admin과 워크플로우 화면의 workflow별 응답은 기존 총비용을 유지하고 workflow 실행 비용과 Agent Builder 비용을 구분하며 두 값의 합이 총비용과 같은지 검증한다. 워크플로우 화면은 page-level 비용·추세·위험 요약을 렌더링하거나 `cost-summary`를 호출하지 않는다.
 - Model/credential 삭제 뒤 연결 ID만 NULL이고 token/cost와 일반 집계는 유지된다.
 - Migration의 single head, nullable history link, partial unique/check 제약과 빈 이력 downgrade/re-upgrade를 검증한다. Agent Builder usage 이력이 한 건이라도 있으면 provenance 보존을 위해 downgrade가 거절되는지 검증한다. PostgreSQL catalog에서 제약 이름을 확인하고 음수 token/cost, 0 이하 attempt와 불완전한 Agent Builder runtime identity 직접 insert가 거절되는지 검증한다.
 - 실제 message HTTP API부터 production composition, intent extractor와 별도 usage transaction까지 통과해 최초 planner는 한 행, semantic repair가 발생하면 attempt 1·2 두 행을 저장하는지 검증한다. Pydantic 구조 오류는 attempt 1 usage만 보존하고 두 번째 Provider 호출 없이 종료하며, 첫 응답 뒤 request가 취소되면 attempt 2 예약도 거절한다.
@@ -623,7 +623,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - typed Knowledge placement의 selected/empty topology, 명시적 skipped 상태, client-only ParameterTask 재진입과 서버 계산형 `configuration_state`를 검증한다.
 - planner/repair usage는 최초·repair attempt 분리, provider 응답 뒤 schema 실패 시 기록, 응답 없음 시 미기록, 실제 model/credential 귀속과 raw content 비저장을 검증한다.
 - 실제 PostgreSQL에서 같은 request/attempt 순차·동시 저장이 한 행만 남는지, commit 응답 유실 뒤 재시도가 기존 행을 재사용하는지, 다른 billing fact 충돌이 fail-closed하는지 검증한다.
-- 모델·credential 삭제 뒤 연결 ID만 NULL이 되고 token/cost와 organization/workflow/budget/내 모듈 예상 비용 집계가 유지되는지 검증한다.
+- 모델·credential 삭제 뒤 연결 ID만 NULL이 되고 token/cost와 organization/workflow/budget/워크플로우 화면의 workflow별 예상 비용 집계가 유지되는지 검증한다.
 - migration single head, nullable history link, partial unique/check 제약과 빈 usage history에서 downgrade/re-upgrade 및 Agent Builder usage history가 있는 경우의 downgrade 거부를 검증한다.
 - 통합 Knowledge/Parameter UI, legacy Knowledge 중복 방지, 자동 추천 confirm 멱등성, 명시적 생성 완료 gate와 canonical completed task의 previous navigation을 검증한다.
 - unresolved 실행·배포 preflight와 mutation audit/redaction 검증을 실행한다.

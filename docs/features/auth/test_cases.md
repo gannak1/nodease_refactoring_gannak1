@@ -154,6 +154,7 @@ Status: Draft
 | AUTH-TC-E014 | 홈 화면은 인증 실패 시 landing을 보여야 한다. | `authApi.me()`가 실패한다. | loading이 해제되고 landing이 렌더링된다. |
 | AUTH-TC-E015 | 실제 로그아웃 사용자 경로는 서버 로그아웃 후 로그인 화면으로 이동해야 한다. | 연결된 로그아웃 UI에서 `authApi.logout()` 성공 후 `/auth/login`으로 이동하지 않는다. | 테스트 실패. |
 | AUTH-TC-E016 | 로그인 화면은 `429`를 generic 사용자 메시지로 표시해야 한다. | Login 요청이 고정 detail의 `429`로 reject된다. | 인라인 오류와 toast에 고정 메시지 표시, 제한 차원/count 미표시. |
+| AUTH-TC-E017 | 랜딩 헤더는 텍스트 브랜드와 인증 진입점만 표시해야 한다. | `Nodease` 브랜드 대신 이미지가 표시되거나 GitHub 외부 링크가 남아 있다. | `/` 브랜드 링크, `Sign in`, `Start for free` 표시. 이미지 브랜드와 GitHub 링크 미표시. |
 
 ## Permission Tests
 

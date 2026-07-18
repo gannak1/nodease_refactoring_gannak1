@@ -16,6 +16,13 @@ import { AdminSummaryCards } from './AdminSummaryCards';
 
 const mockedSummary = vi.mocked(adminApi.getOrganizationSummary);
 
+const summaryProps = {
+  members: { active: 11, invited: 1, suspended: 1, removed: 1 },
+  teams: { active: 13, assignments: 12 },
+  credentials: { active: 1, providers: 4 },
+  knowledgeBases: 25,
+};
+
 afterEach(() => {
   vi.clearAllMocks();
 });
@@ -35,7 +42,7 @@ describe('AdminSummaryCards 예산 카드', () => {
       },
     });
 
-    render(<AdminSummaryCards />);
+    render(<AdminSummaryCards {...summaryProps} />);
 
     expect(await screen.findByText('2개')).toBeInTheDocument();
     expect(screen.getByText('위험')).toBeInTheDocument();
@@ -51,7 +58,7 @@ describe('AdminSummaryCards 예산 카드', () => {
     ).not.toBeInTheDocument();
     expect(
       screen.getByRole('link', {
-        name: '예산 위험 workflow 비용 탭에서 확인',
+        name: '이번 달 비용과 예산 비용 탭에서 확인',
       }),
     ).toHaveAttribute('href', '/dashboard/admin?tab=usage');
     expect(screen.queryByText('예산 미설정')).not.toBeInTheDocument();
@@ -71,7 +78,7 @@ describe('AdminSummaryCards 예산 카드', () => {
       },
     });
 
-    render(<AdminSummaryCards />);
+    render(<AdminSummaryCards {...summaryProps} />);
 
     expect(await screen.findByText('0개')).toBeInTheDocument();
     expect(screen.queryByText('가장 위험한 workflow')).not.toBeInTheDocument();

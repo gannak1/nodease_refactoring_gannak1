@@ -19,19 +19,17 @@ Status: Draft
 - Given `/dashboard/mymodule`에 표시되는 App row의 primary workflow에 활성 예산이 있다, When `GET /apps/operations`를 호출한다, Then `row.app.budget_status`는 `GET /apps`와 동일한 shape로 반환된다.
 - Given `/dashboard/mymodule`에 표시되는 App row의 primary workflow에 당월/전월 `llm_usage_logs` 비용이 있다, When `GET /apps/operations`를 호출한다, Then `row.app.operation_metrics`는 당월 비용, 월 예상 비용, 전월 비용, 전월 대비 증감률을 반환한다.
 - Given primary workflow에 Agent Builder planner/repair usage가 있다, When `GET /apps`와 `GET /apps/operations`를 호출한다, Then 해당 비용은 예산 사용률, 당월 비용과 월 예상 총비용에 포함되고 `operation_metrics`의 Agent Builder 구분 필드에도 반환된다.
-- Given workflow 실행 usage와 Agent Builder usage가 함께 있다, When `/dashboard/mymodule`을 렌더링한다, Then 상단 예상 월 비용과 활성 workflow 비용 칸은 총비용 아래에 두 구분값을 표시하며 구분값의 합은 총비용과 같다.
-- Given 운영 가능한 활성 배포 workflow가 101개 이상이다, When 첫 목록 페이지의 `/dashboard/mymodule`을 렌더링한다, Then 상단 예상 월 비용은 첫 100개 행만 합산하지 않고 `GET /apps/operations/cost-summary`의 전체 합계를 표시한다.
+- Given workflow 실행 usage와 Agent Builder usage가 함께 있다, When `/dashboard/mymodule`을 렌더링한다, Then workflow 비용 칸은 총비용 아래에 두 구분값을 표시하며 구분값의 합은 총비용과 같다.
+- Given `/dashboard/mymodule`을 열거나 새로고침한다, Then `예상 월 비용`, `평균 증가 추세`, `예산 위험`, `비용 위험 신호` 상단 카드는 표시하지 않고 `GET /apps/operations/cost-summary`를 호출하지 않는다.
 - Given App의 `active_deployment_id`가 다른 App의 활성 deployment를 가리킨다, When `GET /apps/operations/cost-summary`를 호출한다, Then 해당 App primary workflow는 활성 workflow 수와 비용 합계에서 제외된다.
 - Given App의 `active_deployment_id`가 다른 App의 활성 deployment를 가리킨다, When `GET /apps/operations`를 호출한다, Then 해당 row는 다른 App deployment를 `active`로 표시하지 않고 해당 App의 실제 배포 이력으로 `inactive` 또는 `undeployed`를 반환하며 `automatic_optimization`은 null이다.
 - Given active organization의 App `workflow_id`가 다른 App 또는 다른 organization 소유 workflow를 가리킨다, When `GET /apps/operations` 또는 `GET /apps/operations/cost-summary`를 호출한다, Then 해당 App은 운영 row, 활성 workflow 수, 비용 합계에서 제외되고 다른 workflow의 권한·최근 실행·비용으로 대체하지 않는다.
-- Given `GET /apps/operations/cost-summary` 요청이 진행 중이다, When `/dashboard/mymodule`을 렌더링한다, Then 상단 카드는 비용 값을 `-`로 표시하고 비용 확인 실패 상태를 표시하지 않는다.
-- Given `GET /apps/operations/cost-summary` 조회가 실패한다, When `/dashboard/mymodule`을 렌더링한다, Then 상단 카드는 목록 행 비용을 임의로 합산하지 않고 비용 확인 실패 상태를 표시한다.
 - Given Agent Builder usage의 model/credential 연결이 삭제로 NULL이 됐다, When 운영 비용을 조회한다, Then 보존된 token/cost는 primary workflow 비용과 월 예상 비용에서 제외되지 않는다.
 - Given 전월 비용이 0이거나 없다, When `GET /apps/operations`를 호출한다, Then `row.app.operation_metrics.trend_percent`는 null이고 클라이언트는 더미 증가율을 만들지 않는다.
 - Given `/dashboard/mymodule`에 표시되는 App row의 `workflow_id`가 null이고 같은 `app_id`의 과거/보조 workflow에 활성 예산이 있다, When `GET /apps/operations`를 호출한다, Then `row.app.budget_status`는 null이다.
 - Given `row.app.budget_status.status`가 `exceeded`다, When 클라이언트가 `/dashboard/mymodule`을 렌더링한다, Then row는 예산 상태 badge와 "실행 차단" 표시를 보여준다.
 - Given `row.app.budget_status`가 null이다, When 클라이언트가 `/dashboard/mymodule`을 렌더링한다, Then 예산 관련 텍스트 없이 기존 row 레이아웃을 유지한다.
-- Given `row.app.operation_metrics`가 null이다, When 클라이언트가 `/dashboard/mymodule`을 렌더링한다, Then 월 예상 비용/증가 추세/최적화 권장 UI는 "운영 비용 없음" 또는 "비교 데이터 없음"을 표시하고 deterministic dummy 값을 생성하지 않는다.
+- Given `row.app.operation_metrics`가 null이다, When 클라이언트가 `/dashboard/mymodule`을 렌더링한다, Then workflow별 월 예상 비용/증가 추세/최적화 권장 UI는 "운영 비용 없음" 또는 "비교 데이터 없음"을 표시하고 deterministic dummy 값을 생성하지 않는다.
 
 ### AC-3. 안전 요약 노출 제한
 

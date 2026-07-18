@@ -12,6 +12,13 @@ import { AdminSummaryCards } from './AdminSummaryCards';
 
 const mockedSummary = vi.mocked(adminApi.getOrganizationSummary);
 
+const summaryProps = {
+  members: { active: 11, invited: 1, suspended: 1, removed: 1 },
+  teams: { active: 13, assignments: 12 },
+  credentials: { active: 1, providers: 4 },
+  knowledgeBases: 25,
+};
+
 afterEach(() => {
   vi.clearAllMocks();
 });
@@ -26,29 +33,66 @@ describe('AdminSummaryCards', () => {
       budget: null,
     });
 
-    render(<AdminSummaryCards />);
+    render(<AdminSummaryCards {...summaryProps} />);
 
-    expect(await screen.findByText('$123.46')).toHaveClass('mt-2', 'text-2xl');
-    expect(
-      screen.getByText(/2026-07/).parentElement?.parentElement,
-    ).toHaveClass('mt-2', 'text-sm');
+    expect(await screen.findByText('$123.46')).toHaveClass('text-2xl');
     expect(screen.getByText('워크플로 실행 $120.00')).toBeInTheDocument();
     expect(screen.getByText('Agent Builder $3.46')).toBeInTheDocument();
     expect(screen.getByText('예산 미설정')).toBeInTheDocument();
     expect(
       screen.getByRole('link', {
-        name: '이번 달 LLM 비용 비용 탭에서 확인',
+        name: '이번 달 비용과 예산 비용 탭에서 확인',
       }),
     ).toHaveAttribute('href', '/dashboard/admin?tab=usage');
+  });
+
+  it('6개 지표를 3개 그룹 카드 한 줄로 묶고 기존 이동 경로를 유지한다', async () => {
+    mockedSummary.mockResolvedValue({
+      month: '2026-07',
+      total_cost: 4.43,
+      workflow_execution_cost: 4.43,
+      agent_builder_cost: 0,
+      budget: null,
+    });
+
+    render(<AdminSummaryCards {...summaryProps} />);
+
+    expect(await screen.findByText('비용·예산')).toBeInTheDocument();
+    expect(screen.getByText('조직 구성')).toBeInTheDocument();
+    expect(screen.getByText('운영 리소스')).toBeInTheDocument();
+    expect(screen.getByLabelText('관리 요약')).toHaveClass('lg:grid-cols-3');
+
+    expect(
+      screen.getByRole('link', {
+        name: '활성 멤버 조직 구성 멤버 보기에서 확인',
+      }),
+    ).toHaveAttribute(
+      'href',
+      '/dashboard/admin?tab=organization-structure&view=members',
+    );
+    expect(
+      screen.getByRole('link', {
+        name: '활성 팀 조직 구성 팀 보기에서 확인',
+      }),
+    ).toHaveAttribute(
+      'href',
+      '/dashboard/admin?tab=organization-structure&view=teams',
+    );
+    expect(
+      screen.getByRole('link', { name: 'LLM Credentials 탭에서 확인' }),
+    ).toHaveAttribute('href', '/dashboard/admin?tab=credentials');
+    expect(
+      screen.getByRole('link', { name: '지식 기반 탭에서 확인' }),
+    ).toHaveAttribute('href', '/dashboard/admin?tab=knowledge');
   });
 
   it('요약 조회 실패 시 오류 상태를 표시한다', async () => {
     mockedSummary.mockRejectedValue(new Error('boom'));
 
-    render(<AdminSummaryCards />);
+    render(<AdminSummaryCards {...summaryProps} />);
 
     expect(
-      await screen.findAllByText('요약을 불러오지 못했습니다'),
-    ).toHaveLength(2);
+      await screen.findByText('요약을 불러오지 못했습니다'),
+    ).toBeInTheDocument();
   });
 });

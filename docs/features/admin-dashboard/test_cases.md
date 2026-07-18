@@ -62,14 +62,13 @@ Security Alert FR-013의 상세 rule/worker/API/component/E2E matrix는 [Securit
 - Given 활성 예산 workflow가 없는 조직, When 요약을 조회하면, Then `budget` 블록은 null이고 이는 오류가 아니다.
 - Given 예산이 설정된 workflow, When 사용률이 80% 이상이면 위험, 100%를 초과하면 초과로 분류되고, 반올림 전 값으로 판정된다. 예산 미설정 workflow는 판정 대상에서 제외된다.
 - Given 위험 1개와 초과 1개가 있는 조직, When 상단 예산 카드를 확인하면, Then 대표 값은 비율이 아니라 `2개 위험`이고 노란색 점의 `예산 임박 1`, 빨간색 점의 `예산 초과 1` 텍스트가 표시된다.
-- Given 상단 요약 카드 2장을 확인, Then 이번 달 LLM 비용과 예산 위험 총개수는 같은 `text-2xl` 크기로 표시된다.
-- Given 상단 요약 카드 2장을 확인, Then 비용 카드의 값/날짜 설명은 각각 `mt-2` 간격이고 날짜 설명은 `text-sm`이어서 예산 카드의 위험 개수/상태 요약과 위아래 기준선이 맞는다.
+- Given 데스크톱에서 상단 요약을 확인, Then `비용·예산`, `조직 구성`, `운영 리소스` 3장이 한 줄로 표시되고 모바일에서는 1열로 전환된다.
+- Given 비용·예산 카드를 확인, Then 이번 달 LLM 비용은 `text-2xl` 크기로 표시되고 예산 상태는 같은 카드 안에 표시된다.
 - Given 활성 예산은 있지만 위험/초과 workflow가 없는 조직, When 카드를 확인하면, Then `0개 위험`, `예산 임박 0`, `예산 초과 0`이 표시된다.
-- Given 예산 카드를 확인, Then 가장 위험한 workflow 미리보기나 개별 workflow 사용액은 표시하지 않고 월간 비용 카드와 비슷한 높이를 유지한다.
-- Given 예산 카드를 키보드 또는 포인터로 선택, Then `/dashboard/admin?tab=usage`로 이동하고 접근 가능한 이름으로 링크 목적이 제공된다.
-- Given 이번 달 LLM 비용 카드를 키보드 또는 포인터로 선택, Then `/dashboard/admin?tab=usage`로 이동하고 접근 가능한 이름으로 링크 목적이 제공된다.
-- Given 활성 멤버 또는 활성 팀 카드를 키보드 또는 포인터로 선택, Then 각각 `/dashboard/admin?tab=organization-structure&view=members` 또는 `view=teams`로 이동하고 접근 가능한 이름으로 링크 목적이 제공된다.
-- Given LLM Credentials 또는 지식 기반 카드를 키보드 또는 포인터로 선택, Then 각각 `/dashboard/admin?tab=credentials` 또는 `/dashboard/admin?tab=knowledge`로 이동하고 접근 가능한 이름으로 링크 목적이 제공된다.
+- Given 비용·예산 카드를 확인, Then 가장 위험한 workflow 미리보기나 개별 workflow 사용액은 표시하지 않는다.
+- Given 비용·예산 카드를 키보드 또는 포인터로 선택, Then `/dashboard/admin?tab=usage`로 이동하고 접근 가능한 이름으로 링크 목적이 제공된다.
+- Given 조직 구성 카드의 활성 멤버 또는 활성 팀 지표를 선택, Then 각각 `/dashboard/admin?tab=organization-structure&view=members` 또는 `view=teams`로 이동한다.
+- Given 운영 리소스 카드의 LLM Credentials 또는 지식 기반 지표를 선택, Then 각각 `/dashboard/admin?tab=credentials` 또는 `/dashboard/admin?tab=knowledge`로 이동한다.
 
 ### AC-5. 권한 경계
 

@@ -8,6 +8,16 @@ Status: Draft
 
 ## Components
 
+### LandingPage
+
+- 출처: `apps/client/app/landing/page.tsx`
+- 경로: `/`에서 비인증 사용자에게 표시
+- 책임: Nodease 제품 소개와 로그인·회원가입 진입점을 제공한다.
+- 헤더 렌더링:
+  - 왼쪽 브랜드 링크는 이미지 없이 `Nodease` 텍스트만 표시하고 `/`로 이동한다.
+  - 오른쪽에는 `Sign in`과 `Start for free` 링크만 표시한다.
+  - GitHub 외부 링크와 리다이렉트 아이콘은 표시하지 않는다.
+
 ### LoginPage
 
 - 출처: `apps/client/app/auth/login/page.tsx`

@@ -7,8 +7,8 @@ Status: Draft
 | Method | Path | Description | Auth |
 | --- | --- | --- | --- |
 | GET | `/api/v1/apps` | 현재 사용자가 접근할 수 있는 App 목록 | authenticated organization member |
-| GET | `/api/v1/apps/operations` | 내 모듈 운영 현황 목록 | organization manager or workflow builder/manager |
-| GET | `/api/v1/apps/operations/cost-summary` | 내 모듈 전체 예상 월 비용 요약 | organization manager or workflow builder/manager |
+| GET | `/api/v1/apps/operations` | 워크플로우 운영 현황 목록 | organization manager or workflow builder/manager |
+| GET | `/api/v1/apps/operations/cost-summary` | 활성 배포 전체 예상 월 비용 요약 (호환 API) | organization manager or workflow builder/manager |
 
 ## Request And Response Models
 
@@ -82,7 +82,7 @@ Budget Management 확장 시 `app.budget_status`는 `GET /apps`의 `budget_statu
 
 ### GET /apps/operations/cost-summary
 
-`/dashboard/mymodule` 상단 예상 월 비용 카드의 전체 합계 원천이다. 목록의 pagination, 검색, filter와 관계없이 현재 사용자가 운영할 수 있는 활성 배포 App primary workflow 전체를 집계한다.
+호환성을 위해 유지하는 전체 합계 API다. 목록의 pagination, 검색, filter와 관계없이 현재 사용자가 운영할 수 있는 활성 배포 App primary workflow 전체를 집계한다. `/dashboard/mymodule`은 상단 요약 카드 제거 후 이 API를 호출하지 않는다 ([ADR-0060](../../decisions/ADR-0060-my-module-cost-summary-presentation.md)).
 
 ```json
 {

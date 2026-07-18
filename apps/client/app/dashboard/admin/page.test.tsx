@@ -21,6 +21,8 @@ const organizationApiMock = vi.hoisted(() => ({
   listMembers: vi.fn(),
 }));
 
+const adminSummaryCardsMock = vi.hoisted(() => vi.fn());
+
 vi.mock('next/navigation', () => ({
   usePathname: () => '/dashboard/admin',
   useRouter: () => ({
@@ -51,7 +53,10 @@ vi.mock('@/app/features/knowledge/api/knowledgeApi', () => ({
 }));
 
 vi.mock('@/app/features/admin/components/AdminSummaryCards', () => ({
-  AdminSummaryCards: () => null,
+  AdminSummaryCards: (props: unknown) => {
+    adminSummaryCardsMock(props);
+    return null;
+  },
 }));
 
 import { PermissionsTab } from '@/app/features/admin/components/PermissionsTab';
@@ -111,6 +116,7 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
     navigationMock.searchParams = 'tab=organization-structure&view=members';
     navigationMock.push.mockReset();
     navigationMock.replace.mockReset();
+    adminSummaryCardsMock.mockClear();
     apiClientMock.get.mockReset();
     organizationApiMock.getCurrentOrganization.mockResolvedValue({
       id: 'org-1',
@@ -205,33 +211,17 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('요약 카드에서 연결된 관리 탭으로 이동할 수 있다', async () => {
+  it('한 줄 요약 카드에 현재 조직 지표를 전달한다', async () => {
     render(<AdminConsolePage />);
 
-    expect(
-      await screen.findByRole('link', {
-        name: '활성 멤버 조직 구성 멤버 보기에서 확인',
-      }),
-    ).toHaveAttribute(
-      'href',
-      '/dashboard/admin?tab=organization-structure&view=members',
-    );
-    expect(
-      screen.getByRole('link', {
-        name: '활성 팀 조직 구성 팀 보기에서 확인',
-      }),
-    ).toHaveAttribute(
-      'href',
-      '/dashboard/admin?tab=organization-structure&view=teams',
-    );
-    expect(
-      screen.getByRole('link', {
-        name: 'LLM Credentials 탭에서 확인',
-      }),
-    ).toHaveAttribute('href', '/dashboard/admin?tab=credentials');
-    expect(
-      screen.getByRole('link', { name: '지식 기반 탭에서 확인' }),
-    ).toHaveAttribute('href', '/dashboard/admin?tab=knowledge');
+    await screen.findByRole('button', { name: '조직 구성' });
+
+    expect(adminSummaryCardsMock).toHaveBeenCalledWith({
+      members: { active: 21, invited: 0, suspended: 0, removed: 0 },
+      teams: { active: 21, assignments: 0 },
+      credentials: { active: 0, providers: 0 },
+      knowledgeBases: 0,
+    });
   });
 
   it('renders current month member usage in descending cost order', async () => {

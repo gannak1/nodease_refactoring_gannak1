@@ -5,11 +5,9 @@ import { useRouter } from 'next/navigation';
 import {
   AlertTriangle,
   CheckCircle2,
-  DollarSign,
   Edit3,
   ExternalLink,
   Filter,
-  Gauge,
   LayoutGrid,
   Layers3,
   List,
@@ -18,8 +16,6 @@ import {
   RefreshCw,
   Search,
   SlidersHorizontal,
-  Sparkles,
-  TrendingUp,
 } from 'lucide-react';
 
 import CreateAppModal from '@/app/features/app/components/create-app-modal';
@@ -29,13 +25,11 @@ import { BudgetStatusBadge } from '@/app/features/budget/components/BudgetStatus
 import { budgetRunBlockMessage } from '@/app/features/budget/utils/budgetGuard';
 import {
   budgetStatusLabel,
-  isBudgetAtRisk,
   type BudgetUsageStatus,
 } from '@/app/features/budget/types';
 import {
   moduleOperationsApi,
   type ModuleOperationRow,
-  type ModuleOperationsCostSummary,
   type ModuleOperationsListParams,
   type ModuleRunState,
 } from '@/app/features/app/api/moduleOperationsApi';
@@ -55,7 +49,6 @@ import type {
 import {
   DashboardPageHeader,
   DashboardPanel,
-  DashboardSummaryCard,
 } from '@/app/features/dashboard/components/DashboardSurface';
 
 type PermissionFilter = 'all' | 'executable' | 'editable' | 'manageable';
@@ -199,8 +192,6 @@ type CostOptimizationSignal = {
   trendPercent: number | null;
   budgetUsageRatio: number | null;
   budgetStatus: BudgetUsageStatus | null;
-  recommended: boolean;
-  reason: string;
 };
 
 const budgetStatusPresentation: Record<
@@ -236,24 +227,6 @@ const costSignalOf = (row: ModuleOperationRow): CostOptimizationSignal => {
   const trendPercent = metrics?.trend_percent ?? null;
   const budgetUsageRatio = row.app.budget_status?.usage_ratio ?? null;
   const budgetStatus = row.app.budget_status?.status ?? null;
-  const hasCostData =
-    metrics != null &&
-    ((metrics.current_month_cost ?? 0) > 0 || (monthlyCost ?? 0) > 0);
-  const budgetAtRisk = isBudgetAtRisk(budgetStatus);
-  const trendAtRisk = trendPercent != null && trendPercent >= 20;
-  const recommended = budgetAtRisk || trendAtRisk;
-
-  const reason = recommended
-    ? budgetAtRisk
-      ? budgetStatus === 'exceeded'
-        ? '예산 초과'
-        : '예산 초과 위험'
-      : '전월 대비 비용 증가'
-    : !hasCostData
-      ? '운영 비용 데이터 없음'
-      : trendPercent == null
-        ? '전월 비교 데이터 없음'
-        : '안정 범위';
 
   return {
     monthlyCost,
@@ -262,8 +235,6 @@ const costSignalOf = (row: ModuleOperationRow): CostOptimizationSignal => {
     trendPercent,
     budgetUsageRatio,
     budgetStatus,
-    recommended,
-    reason,
   };
 };
 
@@ -331,11 +302,6 @@ const capabilityParamOf = (
 export default function MyModulePage() {
   const router = useRouter();
   const [rows, setRows] = useState<ModuleOperationRow[]>([]);
-  const [costSummary, setCostSummary] =
-    useState<ModuleOperationsCostSummary | null>(null);
-  const [costSummaryState, setCostSummaryState] = useState<
-    'loading' | 'ready' | 'error'
-  >('loading');
   const [isOrgManager, setIsOrgManager] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
@@ -416,20 +382,6 @@ export default function MyModulePage() {
           setIsLoadingMore(true);
         } else {
           setIsLoading(true);
-          setCostSummary(null);
-          setCostSummaryState('loading');
-          void moduleOperationsApi
-            .getModuleOperationsCostSummary()
-            .then((nextCostSummary) => {
-              if (requestSeq !== requestSeqRef.current) return;
-              setCostSummary(nextCostSummary);
-              setCostSummaryState('ready');
-            })
-            .catch(() => {
-              if (requestSeq !== requestSeqRef.current) return;
-              setCostSummary(null);
-              setCostSummaryState('error');
-            });
         }
         setError('');
         const data = await moduleOperationsApi.listModuleOperations(
@@ -475,40 +427,13 @@ export default function MyModulePage() {
       window.removeEventListener('openCreateAppModal', handleOpenModal);
   }, []);
 
-  const summary = useMemo(
-    () => {
-      const activeRows = rows.filter((row) => row.deploymentState === 'active');
-      const costSignals = activeRows.map(costSignalOf);
-      const trendSignals = costSignals.filter(
-        (signal) => signal.trendPercent != null,
-      );
-      const recommended = costSignals.filter((signal) => signal.recommended);
-      const atRiskBudget = costSignals.filter(
-        (signal) => isBudgetAtRisk(signal.budgetStatus),
-      );
-      const averageTrend =
-        trendSignals.length > 0
-          ? Math.round(
-              trendSignals.reduce(
-                (total, signal) => total + (signal.trendPercent ?? 0),
-                0,
-              ) / trendSignals.length,
-            )
-          : null;
-
-      return {
-        active: activeRows.length,
-        unavailable: rows.filter(
-          (row) =>
-            row.dataQuality.permissionSourcesUnavailable ||
-            row.dataQuality.latestRunUnavailable,
-        ).length,
-        recommendedCount: recommended.length,
-        atRiskBudgetCount: atRiskBudget.length,
-        averageTrend,
-        trendSampleCount: trendSignals.length,
-      };
-    },
+  const unavailableCount = useMemo(
+    () =>
+      rows.filter(
+        (row) =>
+          row.dataQuality.permissionSourcesUnavailable ||
+          row.dataQuality.latestRunUnavailable,
+      ).length,
     [rows],
   );
 
@@ -595,10 +520,10 @@ export default function MyModulePage() {
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
         <DashboardPageHeader
           icon={Layers3}
-          title="내 모듈"
+          title="워크플로우"
           description="워크플로우 접근 권한, 배포 상태, 실행 흐름을 한 화면에서 확인합니다."
           meta={
-            summary.unavailable > 0 && (
+            unavailableCount > 0 && (
               <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700">
                 <AlertTriangle className="h-3.5 w-3.5" />
                 일부 권한 출처 또는 실행 상태를 확인할 수 없어 확인 필요로
@@ -630,70 +555,6 @@ export default function MyModulePage() {
             {error}
           </div>
         )}
-
-        <section className="grid gap-4 md:grid-cols-4">
-          <DashboardSummaryCard
-            label="예상 월 비용"
-            value={
-              costSummaryState === 'ready'
-                ? formatCurrency(costSummary?.projected_month_cost)
-                : '-'
-            }
-            icon={DollarSign}
-            iconClassName="text-emerald-600"
-            description={
-              costSummaryState === 'ready' && costSummary ? (
-                <div className="space-y-1">
-                  <p>
-                    {costSummary.active_workflow_count}개 배포 workflow의
-                    당월 사용량 기준
-                  </p>
-                  <p>
-                    워크플로 실행{' '}
-                    {formatCurrency(
-                      costSummary.projected_month_workflow_execution_cost,
-                    )}
-                  </p>
-                  <p>
-                    Agent Builder{' '}
-                    {formatCurrency(
-                      costSummary.projected_month_agent_builder_cost,
-                    )}
-                  </p>
-                </div>
-              ) : costSummaryState === 'loading' ? (
-                '예상 비용을 불러오는 중입니다.'
-              ) : (
-                '예상 비용을 확인할 수 없습니다.'
-              )
-            }
-          />
-          <DashboardSummaryCard
-            label="평균 증가 추세"
-            value={
-              summary.averageTrend == null
-                ? '-'
-                : `${summary.averageTrend > 0 ? '+' : ''}${summary.averageTrend}%`
-            }
-            icon={TrendingUp}
-            iconClassName="text-amber-600"
-            description={`${summary.trendSampleCount}개 workflow 전월 비용 비교`}
-          />
-          <DashboardSummaryCard
-            label="예산 위험"
-            value={`${summary.atRiskBudgetCount}개`}
-            icon={Gauge}
-            iconClassName="text-red-600"
-            description="사용률 80% 이상"
-          />
-          <DashboardSummaryCard
-            label="비용 위험 신호"
-            value={`${summary.recommendedCount}개`}
-            icon={Sparkles}
-            iconClassName="text-violet-600"
-            description="비용/추세/예산 위험 신호"
-          />
-        </section>
 
         <DashboardPanel
           title="운영 현황"

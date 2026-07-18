@@ -318,7 +318,7 @@ API endpoint와 graph builder가 permission query를 직접 작성하지 않는�
 - system prompt와 provider response content
 - credential config, API key, token과 exception 원문
 
-모델 또는 credential 삭제 뒤에는 usage row의 연결 ID만 NULL이 될 수 있다. 당시 token/cost와 user/organization/workflow 귀속은 보존한다. Agent Builder 전용 endpoint/대시보드와 Workflow Engine usage 재설계는 이 component 범위가 아니며, 기존 관리·내 모듈 화면의 additive 비용 구분만 제공한다.
+모델 또는 credential 삭제 뒤에는 usage row의 연결 ID만 NULL이 될 수 있다. 당시 token/cost와 user/organization/workflow 귀속은 보존한다. Agent Builder 전용 endpoint/대시보드와 Workflow Engine usage 재설계는 이 component 범위가 아니며, 기존 관리 화면과 워크플로우 화면의 workflow별 비용 영역에 additive 비용 구분만 제공한다. 워크플로우 화면의 page-level 비용·추세·위험 요약은 ADR-0060에 따라 표시하지 않는다.
 
 ## 3. Shared Schemas
 

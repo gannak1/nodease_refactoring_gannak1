@@ -4,9 +4,9 @@ Status: Draft
 
 ## Screens
 
-### `/dashboard/mymodule` — 내 모듈 운영 현황
+### `/dashboard/mymodule` — 워크플로우 운영 현황
 
-내가 운영할 수 있는 App/Workflow의 권한, 배포 상태, 최근 실행 상태를 표시한다. 목록 데이터 원천은 `GET /apps/operations`이고, 상단 예상 월 비용의 전체 합계 원천은 `GET /apps/operations/cost-summary`다. 이 화면은 작성자/관리자 운영 표면이며, 배포된 workflow를 실행만 하는 일반 사용자의 최종 실행 화면이 아니다.
+내가 운영할 수 있는 App/Workflow의 권한, 배포 상태, 최근 실행 상태를 표시한다. 목록 데이터 원천은 `GET /apps/operations`다. 이 화면은 작성자/관리자 운영 표면이며, 배포된 workflow를 실행만 하는 일반 사용자의 최종 실행 화면이 아니다.
 
 Budget Management 확장:
 
@@ -14,10 +14,8 @@ Budget Management 확장:
 - `budget_status.status`가 `exceeded`면 실행 상태 영역에 "실행 차단" 표시를 추가하고, title/tooltip 문구는 "월 예산 초과로 실행이 차단되었습니다"를 사용한다.
 - `budget_status`가 null이면 기존 row 레이아웃을 유지하고 예산 관련 텍스트를 표시하지 않는다.
 - row의 `app.operation_metrics`가 있으면 월 예상 비용, 전월 대비 증가 추세, 최적화 권장 판단의 원천으로 사용한다. 월 예상 총비용 아래에는 `워크플로 실행`과 `Agent Builder` 예상 비용을 함께 표시한다.
-- 상단 예상 월 비용 카드는 목록 페이지에 보이는 행을 다시 합산하지 않고 전체 활성 workflow 요약 API를 사용한다. 총비용을 주 값으로 유지하고 활성 workflow의 `워크플로 실행` 및 `Agent Builder` 합계를 바로 아래에 표시한다. 별도 Agent Builder 대시보드나 카드 페이지는 만들지 않는다.
-- 상단 전체 비용 요약을 요청하는 동안에는 비용 값 대신 `-`와 로딩 상태를 표시한다. 실제 조회 실패가 확정된 뒤에만 실패 상태를 표시한다.
+- 상단의 `예상 월 비용`, `평균 증가 추세`, `예산 위험`, `비용 위험 신호` 요약 카드는 렌더링하지 않는다. 화면 진입과 새로고침에서 `GET /apps/operations/cost-summary`를 호출하지 않는다 ([ADR-0060](../../decisions/ADR-0060-my-module-cost-summary-presentation.md)).
 - `operation_metrics`가 null이거나 `trend_percent`가 null이면 클라이언트는 더미 비용/추세를 만들지 않고 "운영 비용 없음" 또는 "비교 데이터 없음"으로 표시한다.
-- 상단 전체 비용 요약을 불러오지 못하면 목록 페이지 비용으로 대체하지 않고 `예상 비용을 확인할 수 없습니다.`를 표시한다.
 - `budget_status`는 예산 사용률/상태 전용이고, `operation_metrics`는 `/dashboard/mymodule` 운영 비용 지표 전용이다. 두 필드를 합쳐서 해석하지 않는다.
 - 현재 화면의 "열기"는 조회/편집 진입이므로 예산 초과 상태에서도 차단하지 않는다. 실제 실행 차단은 Gateway 실행 경로와 Workflow 편집 화면의 429 처리에서 보장한다.
 - 일반 사용자의 실행 흐름은 챗봇 배포 링크 또는 내부 실행 링크(`/modules/{workflow_id}/run?deploymentId={deployment_id}`)를 사용한다. 내부 실행 화면의 뒤로가기는 운영 현황이 아니라 기본 대시보드로 돌아간다.
