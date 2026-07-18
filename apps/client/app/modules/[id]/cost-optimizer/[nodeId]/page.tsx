@@ -21,6 +21,7 @@ import {
 import { CostOptimizerBaselineSelection } from '@/app/features/workflow/components/costOptimizer/CostOptimizerBaselineSelection';
 import { CostOptimizerHistoryPanel } from '@/app/features/workflow/components/costOptimizer/CostOptimizerHistoryPanel';
 import { CostOptimizerOutputPreviewPanel } from '@/app/features/workflow/components/costOptimizer/CostOptimizerPreviewViewer';
+import { ModelRoutingDecisionDetails } from '@/app/features/workflow/components/modelRouting/ModelRoutingDecisionDetails';
 import { fieldLabelsFromOutputFormat } from '@/app/features/workflow/components/costOptimizer/costOptimizerPreviewLabels';
 import {
   ingestWorkflowDraftCASResult,
@@ -2113,78 +2114,37 @@ function CostOptimizerPlaygroundContent({
                   {activeInspectorTab === 'trace' ? (
                     <div className="rounded-lg border border-slate-200 p-3">
                       <div className="text-xs font-bold text-slate-500">
-                        B usage trace
+                        B 후보 실행 정보
                       </div>
                       {candidateResult ? (
-                        <dl className="mt-2 space-y-2 text-xs">
-                          <div className="flex justify-between gap-3">
-                            <dt className="text-slate-500">상태</dt>
-                            <dd className="font-semibold">
-                              {candidateResult.status}
-                            </dd>
-                          </div>
-                          <div className="flex justify-between gap-3">
-                            <dt className="text-slate-500">비용</dt>
-                            <dd className="font-semibold">
-                              {formatCandidateCost(candidateTotalCost)}
-                            </dd>
-                          </div>
-                          <div className="flex justify-between gap-3">
-                            <dt className="text-slate-500">토큰</dt>
-                            <dd className="font-semibold">
-                              {candidateTotalTokens === null
-                                ? '-'
-                                : formatMetric(candidateTotalTokens)}
-                            </dd>
-                          </div>
-                          {candidateModelRoutingSummary ? (
-                            <div className="grid gap-2 rounded-md border border-emerald-100 bg-emerald-50 p-2 text-emerald-950">
-                              <dt className="font-bold text-emerald-700">
-                                자동 라우팅
-                              </dt>
-                              <dd>
-                                <dl className="grid gap-1">
-                                  <div className="flex justify-between gap-3">
-                                    <dt className="text-emerald-700">
-                                      선택 모델
-                                    </dt>
-                                    <dd className="font-semibold">
-                                      {candidateModelRoutingSummary.selectedModel ||
-                                        '-'}
-                                    </dd>
-                                  </div>
-                                  <div className="flex justify-between gap-3">
-                                    <dt className="text-emerald-700">
-                                      판단 기준
-                                    </dt>
-                                    <dd className="font-semibold">
-                                      {candidateModelRoutingSummary.decisionSource ||
-                                        '-'}
-                                    </dd>
-                                  </div>
-                                  <div className="flex justify-between gap-3">
-                                    <dt className="text-emerald-700">
-                                      근거 코드
-                                    </dt>
-                                    <dd className="font-semibold">
-                                      {candidateModelRoutingSummary.reasonCode ||
-                                        '-'}
-                                    </dd>
-                                  </div>
-                                  <div className="flex justify-between gap-3">
-                                    <dt className="text-emerald-700">
-                                      Fallback
-                                    </dt>
-                                    <dd className="font-semibold">
-                                      {candidateModelRoutingSummary.fallbackModel ||
-                                        '-'}
-                                    </dd>
-                                  </div>
-                                </dl>
+                        <div className="mt-2 space-y-3">
+                          <dl className="space-y-2 text-xs">
+                            <div className="flex justify-between gap-3">
+                              <dt className="text-slate-500">상태</dt>
+                              <dd className="font-semibold">
+                                {candidateResult.status}
                               </dd>
                             </div>
-                          ) : null}
-                        </dl>
+                            <div className="flex justify-between gap-3">
+                              <dt className="text-slate-500">비용</dt>
+                              <dd className="font-semibold">
+                                {formatCandidateCost(candidateTotalCost)}
+                              </dd>
+                            </div>
+                            <div className="flex justify-between gap-3">
+                              <dt className="text-slate-500">토큰</dt>
+                              <dd className="font-semibold">
+                                {candidateTotalTokens === null
+                                  ? '-'
+                                  : formatMetric(candidateTotalTokens)}
+                              </dd>
+                            </div>
+                          </dl>
+                          <ModelRoutingDecisionDetails
+                            output={candidateResult.output}
+                            traceMetadata={candidateResult.trace}
+                          />
+                        </div>
                       ) : (
                         <p className="mt-2 text-xs leading-relaxed text-slate-500">
                           B 실행 후 trace가 표시됩니다.

@@ -11,28 +11,32 @@ type RoutingContext = {
   hasFileInput?: boolean;
 };
 
+type JudgeStatus = 'selected' | 'failed' | 'unavailable' | 'not_called' | 'unknown';
+
 type JudgeSummary = {
+  status: JudgeStatus;
+  attempted: boolean | undefined;
   model?: string;
   confidence?: number;
   reasonCode?: string;
   reasonShort?: string;
   candidateModelCount?: number;
   cost?: number;
+  errorCode?: string;
+  notCalledReason?: string;
 };
 
 type ModelRoutingSummary = {
-  strategyId?: string;
   selectedModel?: string;
+  actualModel?: string;
   fallbackModel?: string;
   fallbackUsed?: boolean;
   fallbackFromModel?: string;
   fallbackReasonCode?: string;
-  actualModel?: string;
   reasonCode?: string;
   policyVersion?: string;
-  judgeCalled?: boolean;
   decisionSource?: string;
-  judge?: JudgeSummary;
+  judge: JudgeSummary;
   policySource?: string;
   includedInPolicyLearning?: boolean;
   runtimeContext: RoutingContext;
@@ -67,8 +71,9 @@ const routingRecordOf = (
       : traceRoot && isRecord(traceRoot.model_routing)
         ? traceRoot.model_routing
         : traceLlm || traceRoot;
-  const metadata = isRecord(output) && isRecord(output.metadata)
-    ? output.metadata
+  const outputRecord = isRecord(output) ? output : null;
+  const metadata = isRecord(outputRecord?.metadata)
+    ? outputRecord.metadata
     : null;
   const outputRouting = metadata && isRecord(metadata.model_routing)
     ? metadata.model_routing
@@ -81,17 +86,12 @@ const routingRecordOf = (
   if (!traceRouting) return outputRouting;
   if (!outputRouting) return traceRouting;
 
-  // Trace에는 안전한 Judge 요약만 남고, output metadata에는 UI용 짧은 사유와
-  // 후보 수가 추가된다. trace의 최신 실행값을 우선하되 누락된 Judge 필드만 보완한다.
   const traceJudge = isRecord(traceRouting.judge) ? traceRouting.judge : {};
   const outputJudge = isRecord(outputRouting.judge) ? outputRouting.judge : {};
   return {
     ...outputRouting,
     ...traceRouting,
-    judge: {
-      ...outputJudge,
-      ...traceJudge,
-    },
+    judge: { ...outputJudge, ...traceJudge },
   };
 };
 
@@ -106,15 +106,43 @@ const contextOf = (value: unknown): RoutingContext => {
   };
 };
 
-const judgeOf = (value: unknown): JudgeSummary | undefined => {
-  if (!isRecord(value)) return undefined;
+const judgeStatusOf = (
+  value: unknown,
+  decisionSource?: string,
+  reasonCode?: string,
+): JudgeStatus => {
+  const status = isRecord(value) ? stringValue(value.status) : undefined;
+  if (
+    status === 'selected' ||
+    status === 'failed' ||
+    status === 'unavailable' ||
+    status === 'not_called'
+  ) {
+    return status;
+  }
+  if (decisionSource === 'runtime_judge') return 'selected';
+  // 이전 로그에는 Judge 시도 여부가 없어 실패로 단정하지 않는다.
+  if (reasonCode === 'runtime_judge_unavailable') return 'unknown';
+  return 'not_called';
+};
+
+const judgeOf = (
+  value: unknown,
+  decisionSource?: string,
+  reasonCode?: string,
+): JudgeSummary => {
+  const judge = isRecord(value) ? value : {};
   return {
-    model: stringValue(value.model),
-    confidence: numberValue(value.confidence),
-    reasonCode: stringValue(value.reason_code),
-    reasonShort: stringValue(value.reason_short),
-    candidateModelCount: numberValue(value.candidate_model_count),
-    cost: numberValue(value.cost),
+    status: judgeStatusOf(value, decisionSource, reasonCode),
+    attempted: booleanValue(judge.attempted),
+    model: stringValue(judge.model),
+    confidence: numberValue(judge.confidence),
+    reasonCode: stringValue(judge.reason_code),
+    reasonShort: stringValue(judge.reason_short),
+    candidateModelCount: numberValue(judge.candidate_model_count),
+    cost: numberValue(judge.cost),
+    errorCode: stringValue(judge.error_code),
+    notCalledReason: stringValue(judge.not_called_reason),
   };
 };
 
@@ -131,23 +159,23 @@ const summaryOf = ({
   const decisionFactors = isRecord(routing.decision_factors)
     ? routing.decision_factors
     : {};
+  const decisionSource = stringValue(routing.decision_source);
+  const reasonCode = stringValue(routing.reason_code);
 
   const summary: ModelRoutingSummary = {
-    strategyId: stringValue(routing.strategy_id),
     selectedModel:
       stringValue(routing.selected_model) || stringValue(outputRecord?.model),
+    actualModel: stringValue(outputRecord?.model),
     fallbackModel: stringValue(routing.fallback_model),
     fallbackUsed:
       booleanValue(routing.fallback_used) ??
       booleanValue(outputMetadata?.fallback_used),
     fallbackFromModel: stringValue(routing.fallback_from_model),
     fallbackReasonCode: stringValue(routing.fallback_reason_code),
-    actualModel: stringValue(outputRecord?.model),
-    reasonCode: stringValue(routing.reason_code),
+    reasonCode,
     policyVersion: stringValue(routing.policy_version),
-    judgeCalled: booleanValue(routing.judge_called),
-    decisionSource: stringValue(routing.decision_source),
-    judge: judgeOf(routing.judge),
+    decisionSource,
+    judge: judgeOf(routing.judge, decisionSource, reasonCode),
     policySource: stringValue(routing.policy_source),
     includedInPolicyLearning: booleanValue(routing.included_in_policy_learning),
     runtimeContext: contextOf(routing.runtime_context || routing),
@@ -174,34 +202,81 @@ const reasonText = (reasonCode?: string, reasonShort?: string): string => {
   if (reasonShort) return reasonShort;
   switch (reasonCode) {
     case 'judge_bootstrap_required':
-      return '학습 초기 단계라 Judge가 현재 요청과 후보 모델을 비교해 선택했습니다.';
+      return '학습 초기 단계';
     case 'local_router_confident':
-      return '이전 Judge 선택과 성공 실행을 학습한 로컬 라우터가 충분한 확신으로 선택했습니다.';
+      return '로컬 라우터 확신 충족';
     case 'local_router_uncertain':
-      return '로컬 라우터의 확신이 기준보다 낮아 Judge가 최종 선택했습니다.';
+      return '로컬 판단이 불확실함';
     case 'runtime_judge_unavailable':
-      return 'Judge를 사용할 수 없어 기본 모델로 안전하게 실행했습니다.';
+      return 'Judge 결과를 사용할 수 없음';
     case 'legacy_policy_ignored':
-      return '지원이 끝난 과거 정책은 실행하지 않고 저장된 기본 모델을 사용했습니다.';
+      return '과거 정책 미사용';
     case 'active_policy_unavailable':
     case 'policy_unavailable':
-      return 'Judge-first 활성 정책이 없어 저장된 기본 모델을 사용했습니다.';
+      return '활성 정책 없음';
     case 'structured_reasoning_required':
-      return '구조적인 추론이 필요해 선택했습니다.';
+      return '구조적 추론 필요';
     case 'multi_constraint':
-      return '여러 조건을 함께 판단해야 해 선택했습니다.';
+      return '여러 조건 종합';
     case 'simple_response':
-      return '간단한 응답으로 처리할 수 있어 선택했습니다.';
+      return '단순 응답 처리';
+    case 'policy_default':
+      return '기본 라우팅 규칙 일치';
     default:
-      return 'Judge-first 정책의 모델 선택 결과입니다.';
+      return '실행 정책에 따른 선택';
   }
 };
 
-const fallbackReasonText = (reasonCode?: string): string => {
-  if (reasonCode === 'runtime_client_unavailable') return '모델 호출 준비 실패';
-  if (reasonCode === 'provider_call_failed') return 'Provider 호출 실패';
-  return '호출 실패';
+const judgeErrorText = (errorCode?: string): string => {
+  if (errorCode === 'responses_incomplete') return '응답이 완료되기 전에 종료됨';
+  if (errorCode === 'RuntimeJudgeResponseError') return 'Judge 응답 형식이 올바르지 않음';
+  if (errorCode === 'LLMCredentialNotAvailableError') return 'Judge 모델 credential을 사용할 수 없음';
+  if (errorCode === 'ValueError') return 'Judge 실행 준비 정보가 부족함';
+  return errorCode ? 'Judge 실행 중 처리 실패' : '실패 원인 정보 없음';
 };
+
+const decisionSourceLabel = (source?: string): string => {
+  switch (source) {
+    case 'runtime_judge':
+      return 'Judge가 모델 선택';
+    case 'local_router':
+      return '로컬 라우터가 모델 선택';
+    case 'active_policy':
+      return '저장된 정책으로 모델 선택';
+    case 'test_policy_preview':
+      return '배포 정책 기준 테스트';
+    case 'stored_model':
+      return '기본 모델로 실행';
+    default:
+      return '선택 경로 정보 없음';
+  }
+};
+
+const noJudgeMessage = (summary: ModelRoutingSummary): string => {
+  if (summary.decisionSource === 'local_router') {
+    return '로컬 라우터가 충분한 확신으로 모델을 선택했습니다.';
+  }
+  if (summary.decisionSource === 'test_policy_preview') {
+    return '테스트 실행은 정책 학습에 포함되지 않아 Judge를 호출하지 않았습니다.';
+  }
+  if (summary.judge.notCalledReason === 'policy_unavailable') {
+    return '활성 정책이 없어 Judge를 호출하지 않고 기본 모델을 사용했습니다.';
+  }
+  return '이번 실행에서는 Judge 호출이 필요하지 않았습니다.';
+};
+
+const Detail = ({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) => (
+  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+    <dt className="text-[11px] font-medium text-slate-500">{label}</dt>
+    <dd className="mt-1 break-all font-semibold text-slate-900">{value}</dd>
+  </div>
+);
 
 export function ModelRoutingDecisionDetails({
   output,
@@ -210,167 +285,197 @@ export function ModelRoutingDecisionDetails({
   const summary = summaryOf({ output, traceMetadata });
   if (!summary) return null;
 
-  const isJudgeFirst =
-    summary.strategyId === 'judge_bootstrap_incremental_v1';
-  const isDeploymentPolicyTest =
+  const context = summary.runtimeContext;
+  const isPolicyPreview =
     summary.policySource === 'active_deployment' &&
     summary.includedInPolicyLearning === false;
-  const context = summary.runtimeContext;
+  const judge = summary.judge;
 
   return (
-    <dl className="grid gap-3 rounded-lg border border-emerald-100 bg-emerald-50/50 px-4 py-3 text-xs dark:border-emerald-900 dark:bg-emerald-950/20 sm:grid-cols-2">
-      <div className="sm:col-span-2">
-        <dt className="font-semibold text-emerald-700 dark:text-emerald-200">
-          {isDeploymentPolicyTest
-            ? '배포 정책 기준 테스트'
-            : isJudgeFirst
-              ? 'Judge-first + 점진적 로컬 학습'
-              : '기본 모델 실행'}
-        </dt>
-        <dd className="mt-1 text-gray-700 dark:text-gray-200">
-          {isDeploymentPolicyTest
-            ? '활성 배포 정책을 테스트에만 적용했습니다. 이 결과는 로컬 라우터 학습에 포함되지 않습니다.'
-            : summary.decisionSource === 'runtime_judge'
-              ? '이번 요청과 사용 가능한 후보 모델을 Judge가 함께 검토해 선택했습니다.'
-              : summary.decisionSource === 'local_router'
-                ? '누적된 Judge 선택을 학습한 로컬 라우터가 먼저 선택했습니다.'
-                : 'Judge-first 정책을 적용할 수 없어 저장된 기본 모델로 실행했습니다.'}
-        </dd>
-      </div>
+    <section className="space-y-3 rounded-lg border border-slate-200 bg-white p-4 text-xs shadow-sm dark:border-slate-700 dark:bg-slate-900">
+      <header className="flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 pb-3 dark:border-slate-800">
+        <div>
+          <h4 className="font-semibold text-slate-950 dark:text-slate-50">
+            모델 선택 결과
+          </h4>
+          <p className="mt-1 text-slate-600 dark:text-slate-300">
+            이 실행에서 실제로 어떤 경로로 모델을 골랐는지 보여줍니다.
+          </p>
+        </div>
+        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
+          {decisionSourceLabel(summary.decisionSource)}
+        </span>
+      </header>
 
-      <div>
-        <dt className="text-gray-500">입력 길이</dt>
-        <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+      {isPolicyPreview ? (
+        <p className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-blue-900 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100">
+          이 테스트 실행은 배포 정책을 미리 적용한 결과이며, 정책 학습에는 포함되지 않습니다.
+        </p>
+      ) : null}
+
+      <dl className="grid gap-2 sm:grid-cols-2">
+        <Detail label="실제 실행 모델" value={summary.actualModel || summary.selectedModel || '-'} />
+        <Detail label="선택 근거" value={reasonText(summary.reasonCode, judge.reasonShort)} />
+      </dl>
+
+      <div className="flex flex-wrap gap-2">
+        <span className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-slate-700">
           {lengthBucketLabel(context.inputLengthBucket)}
-        </dd>
-      </div>
-      <div>
-        <dt className="text-gray-500">선택 모델</dt>
-        <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-          {summary.selectedModel || '-'}
-        </dd>
-      </div>
-
-      <div className="sm:col-span-2 flex flex-wrap gap-2">
+        </span>
         {context.outputFormat === 'json' && context.schemaRequired ? (
-          <span className="rounded border border-emerald-200 bg-white px-2 py-1 font-medium text-emerald-800">
+          <span className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-slate-700">
             JSON 스키마 필요
           </span>
         ) : null}
-        <span className="rounded border border-emerald-200 bg-white px-2 py-1 font-medium text-emerald-800">
-          {context.knowledgeEnabled
-            ? '지식 베이스 사용'
-            : '지식 베이스 사용 안 함'}
+        <span className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-slate-700">
+          {context.knowledgeEnabled ? '지식 베이스 사용' : '지식 베이스 사용 안 함'}
         </span>
         {context.hasFileInput ? (
-          <span className="rounded border border-emerald-200 bg-white px-2 py-1 font-medium text-emerald-800">
+          <span className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-slate-700">
             파일 입력 포함
           </span>
         ) : null}
       </div>
 
-      <div className="sm:col-span-2">
-        <dt className="text-gray-500">선택 이유</dt>
-        <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-          {reasonText(summary.reasonCode, summary.judge?.reasonShort)}
-        </dd>
-      </div>
+      <section className="rounded-lg border border-violet-200 bg-violet-50/50 p-3 dark:border-violet-900 dark:bg-violet-950/20">
+        {judge.status === 'selected' ? (
+          <>
+            <h5 className="font-semibold text-violet-950 dark:text-violet-50">
+              Judge 실행 성공
+            </h5>
+            <p className="mt-1 text-slate-700 dark:text-slate-200">
+              Judge가 이번 요청과 후보 모델을 비교해 실제 실행 모델을 선택했습니다.
+            </p>
+            <dl className="mt-3 grid gap-2 sm:grid-cols-2">
+              <Detail label="Judge 모델" value={judge.model || '-'} />
+              <Detail
+                label="판단 확신도"
+                value={
+                  judge.confidence === undefined
+                    ? '-'
+                    : `${(judge.confidence * 100).toFixed(1)}%`
+                }
+              />
+              <Detail
+                label="검토 후보 모델"
+                value={`${judge.candidateModelCount ?? '-'}개`}
+              />
+              <Detail
+                label="Judge 비용"
+                value={
+                  judge.cost === undefined ? '-' : `$${judge.cost.toFixed(6)}`
+                }
+              />
+            </dl>
+          </>
+        ) : judge.status === 'failed' ? (
+          <>
+            <h5 className="font-semibold text-rose-900 dark:text-rose-100">
+              Judge 호출 실패
+            </h5>
+            <p className="mt-1 text-slate-700 dark:text-slate-200">
+              Judge 결과를 사용할 수 없어 기본 모델로 실행했습니다.
+            </p>
+            <dl className="mt-3 grid gap-2 sm:grid-cols-2">
+              <Detail label="호출한 Judge 모델" value={judge.model || '-'} />
+              <Detail
+                label="검토 후보 모델"
+                value={`${judge.candidateModelCount ?? '-'}개`}
+              />
+              <Detail label="실패 이유" value={judgeErrorText(judge.errorCode)} />
+              <Detail label="오류 코드" value={judge.errorCode || '-'} />
+            </dl>
+          </>
+        ) : judge.status === 'unavailable' ? (
+          <>
+            <h5 className="font-semibold text-amber-900 dark:text-amber-100">
+              Judge 호출 준비 실패
+            </h5>
+            <p className="mt-1 text-slate-700 dark:text-slate-200">
+              Judge를 호출하기 전 필요한 실행 조건을 만들지 못해 기본 모델로 실행했습니다.
+            </p>
+            <dl className="mt-3 grid gap-2 sm:grid-cols-2">
+              <Detail label="Judge 모델" value={judge.model || '-'} />
+              <Detail label="실패 이유" value={judgeErrorText(judge.errorCode)} />
+            </dl>
+          </>
+        ) : judge.status === 'unknown' ? (
+          <>
+            <h5 className="font-semibold text-slate-900 dark:text-slate-100">
+              Judge 실행 정보 없음
+            </h5>
+            <p className="mt-1 text-slate-700 dark:text-slate-200">
+              이 이전 실행 로그에는 Judge 호출 여부와 결과가 기록되지 않았습니다.
+            </p>
+          </>
+        ) : (
+          <>
+            <h5 className="font-semibold text-slate-900 dark:text-slate-100">
+              Judge 호출 안 함
+            </h5>
+            <p className="mt-1 text-slate-700 dark:text-slate-200">
+              {noJudgeMessage(summary)}
+            </p>
+          </>
+        )}
+      </section>
 
-      {summary.fallbackModel ? (
-        <div className="sm:col-span-2">
-          <dt className="text-gray-500">안전 장치</dt>
-          <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-            호출 실패 시 {summary.fallbackModel} 모델로 한 번 전환합니다.
-          </dd>
-        </div>
-      ) : null}
       {summary.fallbackUsed ? (
-        <div className="sm:col-span-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-gray-900 dark:border-amber-800 dark:bg-amber-950/20 dark:text-gray-100">
-          <dt className="font-semibold text-amber-800 dark:text-amber-200">
-            실제 대체 실행
-          </dt>
-          <dd className="mt-1">
-            최초 선택: {summary.fallbackFromModel || summary.selectedModel || '-'}
-          </dd>
-          <dd>사유: {fallbackReasonText(summary.fallbackReasonCode)}</dd>
-          <dd>실제 사용: {summary.actualModel || summary.fallbackModel || '-'}</dd>
-        </div>
+        <section className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-slate-900 dark:border-amber-900 dark:bg-amber-950/20 dark:text-slate-100">
+          <h5 className="font-semibold text-amber-900 dark:text-amber-100">
+            모델 호출 대체 실행
+          </h5>
+          <dl className="mt-3 grid gap-2 sm:grid-cols-3">
+            <Detail
+              label="최초 선택 모델"
+              value={summary.fallbackFromModel || summary.selectedModel || '-'}
+            />
+            <Detail
+              label="실제 대체 모델"
+              value={summary.actualModel || summary.fallbackModel || '-'}
+            />
+            <Detail
+              label="대체 사유"
+              value={summary.fallbackReasonCode === 'provider_call_failed' ? 'Provider 호출 실패' : '호출 준비 또는 실행 실패'}
+            />
+          </dl>
+        </section>
       ) : null}
 
-      {isJudgeFirst && summary.judge ? (
-        <div className="sm:col-span-2 rounded-md border border-violet-200 bg-violet-50/60 p-3 text-gray-900 dark:border-violet-900 dark:bg-violet-950/20 dark:text-gray-100">
-          <dt className="font-semibold text-violet-900 dark:text-violet-100">
-            이번 Judge 판단
-          </dt>
-          <dd className="mt-1 text-gray-700 dark:text-gray-200">
-            Judge 모델: {summary.judge.model || '-'} · 판단 확신도{' '}
-            {summary.judge.confidence === undefined
-              ? '-'
-              : `${(summary.judge.confidence * 100).toFixed(1)}%`}
-          </dd>
-          <dd className="mt-2 grid gap-2 sm:grid-cols-2">
-            <span className="rounded border border-violet-200 bg-white px-2 py-1">
-              사유: {reasonText(
-                summary.judge.reasonCode,
-                summary.judge.reasonShort,
-              )}
+      {(summary.learningMode || summary.policyVersion) && (
+        <footer className="flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-100 pt-3 text-slate-500 dark:border-slate-800">
+          {summary.learningMode ? (
+            <span>
+              학습 방식: {summary.learningMode === 'local_first' ? '로컬 라우터 우선' : 'Judge 학습 중'}
+              {summary.localConfidence !== undefined
+                ? ` · 로컬 확신도 ${(summary.localConfidence * 100).toFixed(1)}%`
+                : ''}
+              {summary.localConfidenceThreshold !== undefined
+                ? ` · 기준 ${(summary.localConfidenceThreshold * 100).toFixed(1)}%`
+                : ''}
             </span>
-            <span className="rounded border border-violet-200 bg-white px-2 py-1">
-              검토 후보 모델 {summary.judge.candidateModelCount ?? '-'}개
-            </span>
-          </dd>
-          <dd className="mt-1 text-gray-500">
-            판단 코드: {summary.judge.reasonCode || '-'}
-            {summary.judge.cost === undefined
-              ? ''
-              : ` · Judge 비용 $${summary.judge.cost.toFixed(6)}`}
-          </dd>
-        </div>
-      ) : null}
+          ) : null}
+          {summary.policyVersion ? <span>정책 버전: {summary.policyVersion}</span> : null}
+        </footer>
+      )}
 
-      {isJudgeFirst && summary.learningMode ? (
-        <div className="sm:col-span-2 text-gray-500">
-          학습 방식:{' '}
-          {summary.learningMode === 'local_first'
-            ? '로컬 라우터 우선'
-            : 'Judge 학습 중'}
-          {summary.localConfidence !== undefined
-            ? ` · 로컬 확신도 ${(summary.localConfidence * 100).toFixed(1)}%`
-            : ''}
-          {summary.localConfidenceThreshold !== undefined
-            ? ` · 선택 기준 ${(summary.localConfidenceThreshold * 100).toFixed(1)}%`
-            : ''}
-        </div>
+      {summary.learningStatus === 'pending_contract' ? (
+        <p className="rounded-md border border-sky-200 bg-sky-50 p-3 text-sky-950 dark:border-sky-900 dark:bg-sky-950/20 dark:text-sky-100">
+          실행 결과 계약을 확인한 뒤 이 선택을 로컬 학습에 반영합니다.
+        </p>
       ) : null}
-
-      {isJudgeFirst && summary.learningStatus === 'pending_contract' ? (
-        <div className="sm:col-span-2 rounded-md border border-sky-200 bg-sky-50 p-3 text-sky-950 dark:border-sky-900 dark:bg-sky-950/20 dark:text-sky-100">
-          실행 결과 계약을 확인한 뒤 학습에 반영합니다.
-        </div>
-      ) : null}
-      {isJudgeFirst && summary.learningStatus === 'accepted' ? (
-        <div className="sm:col-span-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-emerald-950 dark:border-emerald-900 dark:bg-emerald-950/20 dark:text-emerald-100">
+      {summary.learningStatus === 'accepted' ? (
+        <p className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-emerald-950 dark:border-emerald-900 dark:bg-emerald-950/20 dark:text-emerald-100">
           스키마와 후속 단계 조건을 통과해 이 선택을 로컬 학습에 반영했습니다.
-        </div>
+        </p>
       ) : null}
-      {isJudgeFirst && summary.learningStatus === 'rejected' ? (
-        <div className="sm:col-span-2 rounded-md border border-rose-200 bg-rose-50 p-3 text-rose-950 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-100">
+      {summary.learningStatus === 'rejected' ? (
+        <p className="rounded-md border border-rose-200 bg-rose-50 p-3 text-rose-950 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-100">
           {summary.learningOutcomeReason === 'schema_failed'
             ? '스키마 또는 후속 단계 조건을 통과하지 못해 학습에서 제외되었습니다.'
             : '실행 계약을 통과하지 못해 학습에서 제외되었습니다.'}
-        </div>
+        </p>
       ) : null}
-
-      {summary.policyVersion ? (
-        <div className="sm:col-span-2 text-gray-500">
-          정책 버전: {summary.policyVersion}
-        </div>
-      ) : null}
-      {summary.judgeCalled === false ? (
-        <div className="sm:col-span-2 text-gray-500">
-          실행 중 Judge 호출 안 함
-        </div>
-      ) : null}
-    </dl>
+    </section>
   );
 }

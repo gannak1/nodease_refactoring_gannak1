@@ -46,17 +46,17 @@ describe('FR-011 Judge-first model routing trace', () => {
       />,
     );
 
-    expect(screen.getByText('Judge-first + 점진적 로컬 학습')).toBeVisible();
-    expect(screen.getByText('이번 Judge 판단')).toBeVisible();
+    expect(screen.getByText('모델 선택 결과')).toBeVisible();
+    expect(screen.getByText('Judge 실행 성공')).toBeVisible();
     expect(screen.getByText(/Judge 모델: gpt-4.1-mini/)).toBeVisible();
     expect(screen.getByText(/판단 확신도 84.0%/)).toBeVisible();
-    expect(screen.getByText('사유: 근거 종합 필요')).toBeVisible();
-    expect(screen.getByText('검토 후보 모델 2개')).toBeVisible();
+    expect(screen.getByText('근거 종합 필요')).toBeVisible();
+    expect(screen.getByText('2개')).toBeVisible();
     expect(screen.getByText(/Judge 비용 \$0.000130/)).toBeVisible();
     expect(
       screen.getByText(
         (_, element) =>
-          element?.textContent === '학습 방식: Judge 학습 중 · 선택 기준 78.0%',
+          element?.textContent === '학습 방식: Judge 학습 중 · 기준 78.0%',
       ),
     ).toBeVisible();
     expect(screen.getByText('JSON 스키마 필요')).toBeVisible();
@@ -112,8 +112,7 @@ describe('FR-011 Judge-first model routing trace', () => {
 
     expect(screen.getByText('선택 모델')).toBeVisible();
     expect(screen.getByText('gpt-5.4-mini')).toBeVisible();
-    expect(screen.getByText('사유: 구조적인 추론이 필요해 선택했습니다.')).toBeVisible();
-    expect(screen.queryByText('사유: -')).not.toBeInTheDocument();
+    expect(screen.getByText('구조적 추론 필요')).toBeVisible();
   });
 
   it('로컬 라우터가 충분히 확신하면 Judge를 호출하지 않은 근거를 표시한다', () => {
@@ -143,12 +142,12 @@ describe('FR-011 Judge-first model routing trace', () => {
     );
 
     expect(
-      screen.getByText('누적된 Judge 선택을 학습한 로컬 라우터가 먼저 선택했습니다.'),
+      screen.getByText('로컬 라우터가 충분한 확신으로 모델을 선택했습니다.'),
     ).toBeVisible();
     expect(screen.getByText(/학습 방식: 로컬 라우터 우선/)).toBeVisible();
     expect(screen.getByText(/로컬 확신도 86.0%/)).toBeVisible();
     expect(screen.getByText(/선택 기준 78.0%/)).toBeVisible();
-    expect(screen.getByText('실행 중 Judge 호출 안 함')).toBeVisible();
+    expect(screen.getByText('Judge 호출 안 함')).toBeVisible();
   });
 
   it('실제 fallback이 발생하면 최초 모델과 대체 모델을 구분한다', () => {
@@ -173,10 +172,10 @@ describe('FR-011 Judge-first model routing trace', () => {
       />,
     );
 
-    expect(screen.getByText('실제 대체 실행')).toBeVisible();
-    expect(screen.getByText('최초 선택: gpt-5.6-luna')).toBeVisible();
-    expect(screen.getByText('사유: Provider 호출 실패')).toBeVisible();
-    expect(screen.getByText('실제 사용: gpt-5.6-terra')).toBeVisible();
+    expect(screen.getByText('모델 호출 대체 실행')).toBeVisible();
+    expect(screen.getByText('gpt-5.6-luna')).toBeVisible();
+    expect(screen.getByText('Provider 호출 실패')).toBeVisible();
+    expect(screen.getByText('gpt-5.6-terra')).toBeVisible();
   });
 
   it('배포 정책 테스트는 실제 Judge 실행이나 학습으로 오인되지 않게 표시한다', () => {
@@ -202,10 +201,101 @@ describe('FR-011 Judge-first model routing trace', () => {
     expect(screen.getByText('배포 정책 기준 테스트')).toBeVisible();
     expect(
       screen.getByText(
-        '활성 배포 정책을 테스트에만 적용했습니다. 이 결과는 로컬 라우터 학습에 포함되지 않습니다.',
+        '이 테스트 실행은 배포 정책을 미리 적용한 결과이며, 정책 학습에는 포함되지 않습니다.',
       ),
     ).toBeVisible();
-    expect(screen.getByText('실행 중 Judge 호출 안 함')).toBeVisible();
-    expect(screen.queryByText('이번 Judge 판단')).not.toBeInTheDocument();
+    expect(screen.getByText('Judge 호출 안 함')).toBeVisible();
+  });
+
+  it('Judge 호출 성공이면 선택 근거, 확신도, 비용을 하나의 Judge 실행 영역에 표시한다', () => {
+    render(
+      <ModelRoutingDecisionDetails
+        output={{
+          model: 'gpt-4.1-mini',
+          metadata: {
+            model_routing: {
+              strategy_id: 'judge_bootstrap_incremental_v1',
+              selected_model: 'gpt-4.1-mini',
+              decision_source: 'runtime_judge',
+              reason_code: 'balanced_quality',
+              judge_called: true,
+              judge: {
+                status: 'selected',
+                attempted: true,
+                model: 'gpt-5.4-mini',
+                confidence: 0.89,
+                reason_short: '균형 품질 판단',
+                candidate_model_count: 11,
+                cost: 0.003131,
+              },
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('모델 선택 결과')).toBeVisible();
+    expect(screen.getByText('Judge가 모델 선택')).toBeVisible();
+    expect(screen.getByText('Judge 실행 성공')).toBeVisible();
+    expect(screen.getByText(/판단 확신도 89.0%/)).toBeVisible();
+    expect(screen.getByText(/Judge 비용 \$0.003131/)).toBeVisible();
+  });
+
+  it('Judge 호출 후 실패해 기본 모델로 회귀한 경우와 Judge 미호출을 구분한다', () => {
+    const { rerender } = render(
+      <ModelRoutingDecisionDetails
+        output={{
+          model: 'gpt-5.4-mini',
+          metadata: {
+            model_routing: {
+              strategy_id: 'judge_bootstrap_incremental_v1',
+              selected_model: 'gpt-5.4-mini',
+              decision_source: 'stored_model',
+              reason_code: 'runtime_judge_unavailable',
+              judge_called: true,
+              judge: {
+                status: 'failed',
+                attempted: true,
+                model: 'gpt-5.4-mini',
+                candidate_model_count: 11,
+                error_code: 'responses_incomplete',
+              },
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Judge 호출 실패')).toBeVisible();
+    expect(
+      screen.getByText('Judge 결과를 사용할 수 없어 기본 모델로 실행했습니다.'),
+    ).toBeVisible();
+    expect(screen.getByText('응답이 완료되기 전에 종료됨')).toBeVisible();
+
+    rerender(
+      <ModelRoutingDecisionDetails
+        output={{
+          model: 'gpt-4.1-mini',
+          metadata: {
+            model_routing: {
+              strategy_id: 'judge_bootstrap_incremental_v1',
+              selected_model: 'gpt-4.1-mini',
+              decision_source: 'local_router',
+              reason_code: 'local_router_confident',
+              judge_called: false,
+              judge: {
+                status: 'not_called',
+                attempted: false,
+              },
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Judge 호출 안 함')).toBeVisible();
+    expect(
+      screen.getByText('로컬 라우터가 충분한 확신으로 모델을 선택했습니다.'),
+    ).toBeVisible();
   });
 });

@@ -142,22 +142,22 @@ describe('TestSidebar node execution details', () => {
     expect(screen.getByText('보통 입력')).toBeVisible();
     expect(
       screen.getByText(
-        '학습 초기 단계라 Judge가 현재 요청과 후보 모델을 비교해 선택했습니다.',
+        '이 테스트 실행은 정책 학습에 포함되지 않아 Judge를 호출하지 않았습니다.',
       ),
     ).toBeVisible();
     expect(
       screen.getByText(
-        (_, element) => element?.textContent === '최초 선택: gpt-5.6-luna',
+        (_, element) => element?.textContent === '최초 선택 모델gpt-5.6-luna',
       ),
     ).toBeVisible();
     expect(
       screen.getByText(
-        (_, element) => element?.textContent === '실제 사용: gpt-5.6-terra',
+        (_, element) => element?.textContent === '실제 대체 모델gpt-5.6-terra',
       ),
     ).toBeVisible();
     expect(
       screen.getByText(
-        (_, element) => element?.textContent === '사유: Provider 호출 실패',
+        (_, element) => element?.textContent === '대체 이유Provider 호출 실패',
       ),
     ).toBeVisible();
 
