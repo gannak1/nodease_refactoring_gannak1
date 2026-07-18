@@ -1130,6 +1130,12 @@ def test_demo_runtime_credential_grants_agent_builder_user_permission(monkeypatc
 def test_demo_seed_chat_models_use_gpt_5_4_family():
     assert demo_seed.DEMO_CHAT_MODEL == "gpt-5.4"
     assert demo_seed.DEMO_CHAT_MINI_MODEL == "gpt-5.4-mini"
+    assert demo_seed.DEMO_MODEL_ROUTER_LATEST_ECONOMY_MODEL == "gpt-5.6-luna"
+    assert demo_seed.DEMO_MODEL_ROUTER_LATEST_BALANCED_MODEL == "gpt-5.6-terra"
+    assert demo_seed.DEMO_MODEL_ROUTER_LATEST_ADVANCED_MODEL == "gpt-5.6"
+    assert demo_seed.DEMO_MODEL_ROUTER_LATEST_SOL_MODEL == "gpt-5.6-sol"
+    assert demo_seed.DEMO_MODEL_ROUTER_OMNI_MODEL == "gpt-4o"
+    assert demo_seed.DEMO_MODEL_ROUTER_REASONING_MODEL == "o3"
     assert set(demo_seed.CREDENTIAL_MODEL_REL_IDS) == {
         demo_seed.DEMO_CHAT_MODEL,
         demo_seed.DEMO_CHAT_MINI_MODEL,
@@ -1137,6 +1143,12 @@ def test_demo_seed_chat_models_use_gpt_5_4_family():
         demo_seed.DEMO_MODEL_ROUTER_FALLBACK_MODEL,
         demo_seed.DEMO_MODEL_ROUTER_CHEAP_MODEL,
         demo_seed.DEMO_MODEL_ROUTER_BALANCED_MODEL,
+        demo_seed.DEMO_MODEL_ROUTER_LATEST_ECONOMY_MODEL,
+        demo_seed.DEMO_MODEL_ROUTER_LATEST_BALANCED_MODEL,
+        demo_seed.DEMO_MODEL_ROUTER_LATEST_ADVANCED_MODEL,
+        demo_seed.DEMO_MODEL_ROUTER_LATEST_SOL_MODEL,
+        demo_seed.DEMO_MODEL_ROUTER_OMNI_MODEL,
+        demo_seed.DEMO_MODEL_ROUTER_REASONING_MODEL,
         demo_seed.DEMO_ONBOARDING_ROUTER_MODEL,
         demo_seed.DEMO_EMBEDDING_MODEL,
     }
