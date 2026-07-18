@@ -247,13 +247,28 @@ Preview와 runtime은 같은 `ModelRouter.routing_feature_text()` builder와 sid
 `409 model_routing.prompt_render_failed`로 fail-closed하며 raw template/input을 응답에 포함하지 않는다.
 
 실행 trace의 `llm.model_routing`에는 정책 ID/version, 선택·대체 모델, strategy ID,
-reason code, runtime context, `decision_source`, `judge_called`를 남긴다. Judge가 호출된
-경우에만 `judge`에 Judge 모델, confidence, allowlisted reason code, reason code에서 파생한 고정 한국어
-`reason_short`, 토큰 usage와 비용의 안전 요약을
-남긴다. 로컬 라우터가 선택한 경우 `decision_factors`에는 learning mode, confidence,
-후보 확률의 요약만 남긴다. 원문 prompt/입력, 검색 문서 원문, embedding vector는
-반환하거나 저장하지 않는다. Judge가 생성한 자유형 `reason_short`는 durable trace에 저장하지 않으며,
-알 수 없는 reason code는 `judge_reason_unrecognized`로 일반화한다.
+reason code, runtime context, `decision_source`, `judge_called`를 남긴다. `judge_called`은
+**실제 Judge provider 호출을 시도했는지**만 뜻하며, 선택 성공 여부를 뜻하지 않는다.
+
+`judge`는 자동 라우팅 실행마다 다음 안전 요약을 남긴다.
+
+| 필드 | 의미 |
+| --- | --- |
+| `status` | `selected`, `failed`, `unavailable`, `not_called` 중 하나 |
+| `attempted` | Judge provider 호출을 실제로 시도했는지 |
+| `model` | 호출한 Judge 모델. 준비 전에 실패하면 없을 수 있음 |
+| `candidate_model_count` | Judge가 비교하려던 실행 가능 후보 수 |
+| `confidence`, `reason_code`, `reason_short`, `cost` | `status=selected`일 때의 선택 근거 |
+| `error_code` | `failed` 또는 `unavailable`일 때의 안전 오류 코드 |
+| `not_called_reason` | local router 선택, 정책 없음, 테스트 preview 등 미호출 이유 |
+
+따라서 `failed`는 “Judge를 호출했지만 결과를 사용할 수 없어 기본 모델로 회귀함”이고,
+`not_called`은 “이번 실행에서는 Judge 호출 자체가 없었음”이다. 이전 trace에 이 구조가
+없으면 UI는 실패로 추측하지 않고 `Judge 실행 정보 없음`으로 표시한다. 로컬 라우터가
+선택한 경우 `decision_factors`에는 learning mode, confidence, 후보 확률의 요약만 남긴다.
+원문 prompt/입력, 검색 문서 원문, embedding vector는 반환하거나 저장하지 않는다.
+Judge가 생성한 자유형 `reason_short`는 durable trace에 저장하지 않으며, 알 수 없는
+reason code는 `judge_reason_unrecognized`로 일반화한다.
 
 Judge가 선택한 실행은 처음에는 `learning_status=pending_contract`로 기록한다. workflow
 완료 후 node 성공, schema/downstream 계약, fallback 여부를 확인해 `accepted` 또는

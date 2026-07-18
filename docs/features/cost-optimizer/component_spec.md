@@ -385,8 +385,15 @@ Frontend는 raw query, prompt, credential을 trace 화면에 노출하지 않는
   자르지 않고 scrollable code block으로 보여준다. 자동 라우팅 상세가 있으면 출력 데이터를
   먼저, 그 다음 `배포 정책 기준 테스트`와 판정 근거를 표시한다.
 - LLM node output에 `metadata.model_routing`이 있으면 `ModelRoutingDecisionDetails`를
-  재사용해 입력 길이 profile, 검토/제외 모델 수, 품질 하한, 예상 비용·지연, 최초 선택 모델,
-  판단/선택 이유와 policy version을 보여준다.
+  재사용한다. 화면은 `모델 선택 결과`를 첫 영역으로 두고, 실제 실행 모델, 선택 경로,
+  선택 근거를 먼저 표시한다.
+- 이어지는 `Judge 실행` 영역은 항상 같은 위치에 표시한다. `Judge 실행 성공`이면 Judge 모델,
+  확신도, 검토 후보 수, Judge 비용을 보여준다. `Judge 호출 실패`이면 기본 모델 회귀 사실,
+  호출한 Judge 모델, 후보 수, 안전 오류 이유를 보여준다. `Judge 호출 안 함`이면 local router
+  선택·정책 없음·테스트 preview 중 해당 이유를 보여준다. 이전 trace에 Judge 상태가 없으면
+  호출 실패로 추측하지 않고 `Judge 실행 정보 없음`을 표시한다.
+- `fallback_used=true`이면 Judge 실패와 별개인 실제 LLM provider 대체 실행을 `모델 호출 대체 실행`
+  영역에서 최초 선택 모델, 실제 대체 모델, 대체 사유로 구분해 표시한다.
 - `fallback_used=true`이면 계획된 fallback 설명과 별도로 `실제 대체 실행` block에서
   `fallback_from_model`, `fallback_reason_code`, 실제 output model을 표시한다.
 - 자동 라우팅 trace가 있는 테스트 실행에는 `이 테스트 실행은 자동 라우팅 정책의 학습 및
