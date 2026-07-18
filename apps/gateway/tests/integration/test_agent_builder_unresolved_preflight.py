@@ -23,16 +23,16 @@ def _graph(data):
 
 def test_preflight_ignores_client_configuration_state_and_reports_missing_fields():
     issues = workflow_configuration_issues(
-        _graph({"configuration_state": "resolved", "credential": "cred"})
+        _graph({"configuration_state": "resolved", "slackMode": "api"})
     )
 
     assert len(issues) == 1
     assert issues[0].node_id == "slack"
-    assert issues[0].missing_parameters == ("credential", "channel")
+    assert issues[0].missing_parameters == ("bot_token", "channel")
 
 
 def test_unresolved_external_action_is_blocked_for_test_run_and_deployment():
-    graph = _graph({"credential": "", "channel": ""})
+    graph = _graph({"slackMode": "api", "channel": ""})
 
     for surface in ("test", "run", "deployment"):
         with pytest.raises(WorkflowConfigurationPreflightError) as exc:

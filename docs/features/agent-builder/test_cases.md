@@ -520,7 +520,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 1. Webhook -> LLM -> Slack graph를 구조만 생성한다.
 2. 기존 intent model 권한 검증, generated model 추천과 KB 후보 표시가 유지되는지 확인한다. 모델 표시 순서 변경은 이 검증의 합격 조건이 아니다.
 3. 생성과 parameter 설정 중 Slack 외부 요청이 발생하지 않는지 확인한다.
-4. unresolved credential/channel 상태가 실행·배포 preflight에서 차단되는지 확인한다.
+4. unresolved mode별 token/Webhook URL과 API channel 상태가 실행·배포 preflight에서 차단되는지 확인한다.
 5. durable Mail 검색 -> LLM -> Gmail Draft -> Mail terminal acknowledgement graph를 생성하고 credential reference가 unresolved인지 확인한다.
 6. 생성과 설정 과정에서 OAuth refresh, mailbox 조회, Gmail draft 생성, 읽음 처리 또는 전송 호출이 없는지 확인한다.
 7. Mail send 요청이 unsupported로 닫히고 HTTP fallback을 만들지 않는지 확인한다.

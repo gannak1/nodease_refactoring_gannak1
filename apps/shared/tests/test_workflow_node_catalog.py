@@ -1,7 +1,7 @@
 from apps.shared.services.workflow_node_catalog import (
     LLM_ROUTING_GRAPH_PARAMETER_KEYS,
-    apply_node_parameter_value,
     agent_builder_supported_node_types,
+    apply_node_parameter_value,
     capability_contract,
     capability_output_contract,
     capability_output_keys,

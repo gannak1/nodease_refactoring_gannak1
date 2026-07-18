@@ -1,14 +1,13 @@
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError
-
 from apps.shared.schemas.agent_builder import (
     AgentBuilderDirectMessageResponse,
     AgentBuilderMessageResponse,
     AgentBuilderPendingResolution,
     AgentBuilderStructuredRequest,
 )
+from pydantic import ValidationError
 
 
 def test_direct_response_moves_kb_candidates_out_of_clarification_options() -> None:

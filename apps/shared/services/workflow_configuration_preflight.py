@@ -8,6 +8,7 @@ from apps.shared.domain.workflow_graph import (
     MAX_WORKFLOW_GRAPH_NESTING_DEPTH,
 )
 from apps.shared.services.workflow_node_catalog import (
+    missing_required_configuration,
     node_definition,
     node_output_keys,
     node_parameter_definitions,
@@ -239,6 +240,9 @@ def workflow_configuration_issues(
                             for selector in selectors
                         )
                     if invalid:
+                        missing_items.append(parameter_key)
+                for parameter_key in missing_required_configuration(node_type, data):
+                    if parameter_key not in missing_items:
                         missing_items.append(parameter_key)
                 missing = tuple(missing_items)
                 if missing:
