@@ -510,6 +510,12 @@ def node_parameter_value(
     node_data: dict[str, Any] | None,
 ) -> tuple[bool, Any]:
     data = node_data if isinstance(node_data, dict) else {}
+    if (
+        node_type == "githubNode"
+        and parameter_key == "action"
+        and "action" not in data
+    ):
+        return True, "get_pr"
     if node_type == "llmNode" and parameter_key in _LLM_BASIC_PARAMETER_PATHS:
         value: Any = data
         for path_key in _LLM_BASIC_PARAMETER_PATHS[parameter_key]:
@@ -552,24 +558,6 @@ def node_parameter_value(
         auth_config = data.get("authConfig")
         if isinstance(auth_config, dict):
             return ("token" in auth_config), auth_config.get("token")
-    if node_type == "slackPostNode" and parameter_key == "channel":
-        body = data.get("body")
-        if isinstance(body, str):
-            try:
-                body = json.loads(body)
-            except (TypeError, ValueError):
-                body = None
-        if isinstance(body, dict):
-            return ("channel" in body), body.get("channel")
-    if node_type == "slackPostNode" and parameter_key == "message":
-        body = data.get("body")
-        if isinstance(body, str):
-            try:
-                body = json.loads(body)
-            except (TypeError, ValueError):
-                body = None
-        if isinstance(body, dict):
-            return ("text" in body), body.get("text")
     return False, None
 
 
@@ -907,17 +895,6 @@ def missing_required_configuration(
             str(key),
             data,
         )
-        if node_type == "slackPostNode" and key == "channel" and not (
-            _configuration_value_is_present(validation_value)
-        ):
-            body = data.get("body")
-            if isinstance(body, str):
-                try:
-                    body = json.loads(body)
-                except (TypeError, ValueError):
-                    body = None
-            if isinstance(body, dict):
-                validation_value = body.get("channel")
         if (
             str(key) in deferred
             or not node_parameter_is_configured(node_type, str(key), data)

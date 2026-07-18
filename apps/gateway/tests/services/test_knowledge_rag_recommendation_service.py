@@ -322,7 +322,7 @@ def test_handle_materialization_ignores_display_collection_limit():
 
     assert materialized[0]["safe_handle"] == handle
     assert resolver.auto_calls[-1]["apply_collection_limit"] is False
-    assert resolver.auto_calls[-1]["enforce_internal_candidate_limit"] is False
+    assert resolver.auto_calls[-1]["enforce_internal_candidate_limit"] is True
 
 
 def test_route_authorized_collection_remains_selectable_without_visible_children():
@@ -399,7 +399,7 @@ def test_collection_handle_materialization_revalidates_current_visibility():
             "name": "사내 문서",
         }
     ]
-    assert resolver.auto_calls[-1]["enforce_internal_candidate_limit"] is False
+    assert resolver.auto_calls[-1]["enforce_internal_candidate_limit"] is True
 
     resolver.hierarchy = KnowledgeCandidateHierarchyResolution()
 

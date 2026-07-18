@@ -5,6 +5,9 @@ from uuid import uuid4
 
 import pytest
 
+from apps.gateway.application.agent_builder.graph_mutation_builder import (
+    materialize_candidate_graph,
+)
 from apps.shared.services.workflow_node_catalog import (
     apply_node_parameter_value,
     node_parameter_definitions,
@@ -209,3 +212,26 @@ def test_every_agent_builder_parameter_matches_runtime_node_schema(node_type):
         )
 
         model.model_validate(updated)
+
+
+def test_materialized_mail_acknowledgement_configuration_is_runtime_valid():
+    graph = materialize_candidate_graph(
+        {
+            "nodes": [
+                {
+                    "id": "mail-ack",
+                    "type": "mailAcknowledgeNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": deepcopy(BASE_NODE_DATA["mailAcknowledgeNode"]),
+                }
+            ],
+            "edges": [],
+        }
+    )
+
+    data = graph["nodes"][0]["data"]
+    parsed = MailAcknowledgeNodeData.model_validate(data)
+
+    assert parsed.configuration_state == "resolved"
+    with pytest.raises(ValueError):
+        MailAcknowledgeNodeData.model_validate({**data, "unknown_field": "value"})

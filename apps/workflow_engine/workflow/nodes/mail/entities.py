@@ -79,5 +79,6 @@ class GmailDraftNodeData(BaseNodeData):
 class MailAcknowledgeNodeData(BaseNodeData):
     model_config = ConfigDict(extra="forbid")
 
+    configuration_state: Optional[Literal["resolved", "unresolved"]] = None
     processing_ref_selector: List[str] = Field(min_length=2)
     required_effect_ref_selectors: List[List[str]] = Field(min_length=1)

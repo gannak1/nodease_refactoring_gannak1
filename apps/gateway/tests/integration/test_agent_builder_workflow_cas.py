@@ -1467,7 +1467,9 @@ def test_parameter_ack_reconciles_github_comment_task_from_canonical_graph(
     assert acknowledged.next_task_id == acknowledged_comment.task_id
 
 
-def test_knowledge_binding_acknowledgement_completes_parameter_task(db_session):
+def test_knowledge_binding_acknowledgement_completes_binding_without_skipping_catalog_tasks(
+    db_session,
+):
     user, workflow, request_row = _fixture(db_session)
     knowledge_bases = [
         KnowledgeBase(
@@ -1603,11 +1605,20 @@ def test_knowledge_binding_acknowledgement_completes_parameter_task(db_session):
     )
 
     assert first.parameter_group is not None
-    assert first.parameter_group.status == "completed"
-    assert first.parameter_group.tasks[0].status == "completed"
-    assert first.parameter_group.tasks[0].task_version == 2
+    assert first.parameter_group.status == "active"
+    knowledge_task = next(
+        task
+        for task in first.parameter_group.tasks
+        if task.parameter_key == "knowledgeBases"
+    )
+    assert knowledge_task.status == "completed"
+    assert knowledge_task.task_version == 2
     assert first.completed_knowledge_resolution_id == resolution_id
-    assert first.next_task_id is None
+    assert first.next_task_id is not None
+    assert any(
+        task.task_id == first.next_task_id and task.status == "active"
+        for task in first.parameter_group.tasks
+    )
     assert second == first
     boundary = repository.load_history_boundary(request_row)
     if boundary is not None:

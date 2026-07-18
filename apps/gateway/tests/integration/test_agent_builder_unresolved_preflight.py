@@ -63,6 +63,34 @@ def test_preflight_reports_only_payload_when_slack_delivery_is_configured():
     assert issues[0].missing_parameters == ("payload",)
 
 
+def test_preflight_does_not_treat_legacy_slack_body_text_as_payload():
+    issues = workflow_configuration_issues(
+        _graph(
+            {
+                "slackMode": "api",
+                "authConfig": {"token": "configured-value"},
+                "channel": "C123",
+                "body": '{"channel":"C123","text":"legacy-only"}',
+            }
+        )
+    )
+
+    assert len(issues) == 1
+    assert issues[0].missing_parameters == ("payload",)
+
+    body_only_issues = workflow_configuration_issues(
+        _graph(
+            {
+                "slackMode": "api",
+                "authConfig": {"token": "configured-value"},
+                "body": '{"channel":"C123","text":"legacy-only"}',
+            }
+        )
+    )
+    assert len(body_only_issues) == 1
+    assert body_only_issues[0].missing_parameters == ("channel", "payload")
+
+
 def test_unresolved_external_action_is_blocked_for_test_run_and_deployment():
     graph = _graph({"slackMode": "api", "channel": ""})
 
@@ -558,9 +586,10 @@ def test_resolved_external_action_passes_without_external_calls():
     enforce_workflow_configuration_preflight(
         _graph(
             {
-                "authType": "bearer",
+                "slackMode": "api",
                 "authConfig": {"token": "test-only-placeholder"},
-                "body": '{"channel":"C123","text":"hello"}',
+                "channel": "C123",
+                "message": "hello",
             }
         ),
         surface="run",

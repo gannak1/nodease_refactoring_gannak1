@@ -410,7 +410,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - `auto_model_routing` task가 active/pending/invalid이면 고급 Routing action을 표시하지 않는다. 해당 task와 전체 workflow 설정이 완료되면 기존 Routing control을 여는 action을 표시하며, 클릭 자체는 GraphMutation, save, planner 또는 policy API를 호출하지 않는다.
 - `구조만 생성` 결과에 포함된 라우팅 미설정 LLM은 하나의 자동 라우팅 안내에만 표시한다. routing이 이미 활성화됐거나 현재 결과에 포함되지 않은 LLM은 표시하지 않는다. 각 `Routing 설정으로 이동` 버튼은 해당 node의 Routing control을 열되 GraphMutation, workflow save, policy API 또는 planner 호출을 만들지 않는다.
 - 구조만 생성 결과를 새로고침한 뒤에도 canonical safe envelope의 `affected_node_ids`로 동일한 routing 안내를 복구한다. full typed operation을 복구하거나 재생하지 않는다.
-- 미완료 session 복구는 현재 request의 모든 non-reverted v3 envelope affected node와 기존 ParameterTask node를 합치고 canonical graph에 없는 node를 제외한다. 최신 envelope의 node만 남기거나 관계없는 기존 LLM을 추가하지 않으며 completed/canceled group을 다시 열지 않는다.
+- Session 복구는 현재 request의 모든 non-reverted v3 envelope affected node와 기존 ParameterTask node를 합치고 canonical graph에 없는 node를 제외한다. 최신 envelope의 node만 남기거나 관계없는 기존 LLM을 추가하지 않는다. Completed group은 신규 또는 새로 필수가 된 미설정 Catalog task가 있을 때만 기존 상태/version/`stable_order`를 보존한 채 새 task를 뒤에 추가하고 첫 대상 task를 active로 다시 열며, canceled group은 다시 열지 않는다.
 - 여러 node를 하나의 result group 아래 표시한다.
 - Knowledge 선택, 자동 추천 완료 요약/수정과 수동 parameter 입력을 같은 result group 안에서 순차 표시한다.
 - 같은 Knowledge requirement의 legacy clarification과 direct-edit Knowledge card를 동시에 표시하지 않는다.
@@ -676,7 +676,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - A new LLM node whose Catalog recommendation is `auto_model_routing=false` renders an unchecked active confirmation task. Confirming it unchanged sends no GraphMutation/save; enabling it uses set and the normal CAS/acknowledgement path. Other safe recommendations retain their completed-summary behavior.
 - The disabled-routing confirmation has no skip control and backend skip is rejected. Node card status remains `설정 진행 중` until the task is terminal even if runtime `configuration_state` is resolved.
 - Text output hides JSON Schema. JSON output reveals an optional schema editor; an empty schema remains valid JSON-object output. At least one of system/user/assistant prompt must be present without making all three prompts required.
-- Only LLM nodes in the current operation `affected_node_ids` receive or recover basic tasks. Unrelated existing LLM nodes remain unchanged. Incomplete session read recovers missing tasks from the canonical graph without planner/save calls, while completed sessions are not reopened except for the existing legacy disabled-routing correction.
+- Only LLM nodes in the current operation `affected_node_ids` receive or recover basic tasks. Unrelated existing LLM nodes remain unchanged. Session read recovers missing tasks from the canonical graph without planner/save calls. A completed affected group is reopened only for a newly discovered or newly required task that still needs user input; configured or hidden additions keep it completed, and canceled groups remain closed.
 - A Mail search plan creates tasks for credential, keyword, sender, subject, start/end date, folder, maximum results, unread-only, mark-as-read, and processing mode. A Gmail durable flow additionally keeps Gmail Draft and Mail Acknowledge selectors as confirmation tasks. No generated value is marked completed before an explicit confirm/set/skip/defer decision.
 - Failed KB selection classifies permission, stale, validation, pending acknowledgement, and retryable unapplied outcomes without resubmitting natural language or rerunning the planner. Permission/validation/transport 실패는 선택값을 유지하고 stale refresh만 같은 card의 Collection/KB 선택을 초기화한다.
 - A reference task hydrates canonical graph values by `candidate_id` or `reference_value`. A deleted or unauthorized reference is unavailable and cannot be treated as complete.
@@ -858,7 +858,10 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Slack `blocks`/`attachments`의 기존 runtime JSON 문자열을 다시 열면 array control 값으로 hydrate되고 그대로 적용해도 graph에 정확히 한 번 문자열화된다. 파싱 불가 또는 non-array 기존 값은 unavailable이며 자동 덮어쓰지 않는다.
 - 기존 Slack channel 값이 graph에 남아 있어도 `_deferred_parameters`에 channel이 있으면 unresolved이며 test/run/deploy preflight가 차단한다. Required, required-any와 mode별 필수 검사가 모두 deferred를 우선한다.
 - Slack `message|blocks|attachments`가 모두 공백 또는 빈 array이면 configuration 완료와 preflight를 차단하고, 하나라도 유효하면 payload 요구사항을 충족한다.
-- completed persisted group에 현재 Catalog의 신규 task가 없으면 identity 기준으로 한 번만 추가하고 첫 신규 입력 task를 active로 열며 기존 task 상태/version은 유지한다. 반복 session read는 중복 task를 만들지 않는다.
+- completed persisted group에 현재 Catalog의 신규 task가 없으면 identity 기준으로 한 번만 추가한다. 기존 task의 상태/version/`stable_order`는 그대로 유지하고 신규 task는 기존 최대 order 뒤에 Catalog 순서로 배치한다. 신규 또는 새로 필수가 된 미설정 task만 첫 active 입력으로 열며, 모두 configured/hidden이면 completed를 유지하고 canceled group은 열지 않는다. 반복 session read는 중복 task나 order 변경을 만들지 않는다.
+- 저장 materializer가 `mailAcknowledgeNode.data.configuration_state`를 추가한 graph는 `extra=forbid` runtime schema를 통과하고, 다른 미정의 field는 계속 거부되는지 검증한다.
+- Slack legacy `body.text|body.channel`만 있는 node는 payload와 channel 미설정으로 configuration/preflight에서 차단되고, 실제 channel과 `message|blocks|attachments` 중 하나가 있을 때만 통과하는지 검증한다.
+- `action`이 없는 기존 GitHub graph는 Catalog hydration과 preflight에서 `get_pr`로 호환되지만 명시적인 invalid action은 차단되고 graph save를 유발하지 않는지 검증한다.
 - Undo/Redo 저장 결과가 두 번 불명확하고 canonical graph가 requested/opposite 어느 쪽도 아니면 canonical graph와 metadata를 적용하고 해당 workflow의 pending Agent Builder context 및 Undo/Redo stack을 비운다. Typed operation이나 ParameterTask를 재생하지 않고 editor는 clean 상태가 된다.
 - Direct-edit 응답에 hierarchy data가 없고 flat `candidates`만 있으면 flat 후보를 표시해 전용 Knowledge selection endpoint로 제출한다. Hierarchy와 flat 후보가 함께 있으면 hierarchy만 표시한다.
 - Gemini chat client는 internal `request_timeout_seconds`를 provider payload에서 제외하면서 실제 HTTP timeout으로 사용한다. 미지정 호출은 60초, Agent Builder intent 호출은 전달된 90초를 사용한다.

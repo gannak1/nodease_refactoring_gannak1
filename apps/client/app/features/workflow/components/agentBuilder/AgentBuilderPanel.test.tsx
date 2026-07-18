@@ -652,9 +652,9 @@ describe('AgentBuilderPanel', () => {
       expect(
         vi.mocked(agentBuilderApi.getSession).mock.calls.length,
       ).toBeGreaterThanOrEqual(2);
+      expect(screen.getByLabelText('Slack channel')).not.toBeDisabled();
+      expect(screen.getByRole('button', { name: '적용' })).not.toBeDisabled();
     });
-    expect(screen.getByLabelText('Slack channel')).not.toBeDisabled();
-    expect(screen.getByRole('button', { name: '적용' })).not.toBeDisabled();
   });
 
   it('sends Agent Builder secret input through the workflow editor bridge', async () => {

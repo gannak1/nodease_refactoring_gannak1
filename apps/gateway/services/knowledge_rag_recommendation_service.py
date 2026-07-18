@@ -342,7 +342,7 @@ class KnowledgeRAGRecommendationService:
                     allow_unready_candidates=True,
                     apply_collection_limit=False,
                     apply_candidate_limit=False,
-                    enforce_internal_candidate_limit=False,
+                    enforce_internal_candidate_limit=True,
                 )
                 candidates_by_id = {
                     candidate.candidate_id: candidate
@@ -399,7 +399,7 @@ class KnowledgeRAGRecommendationService:
                 allow_unready_candidates=True,
                 apply_collection_limit=False,
                 apply_candidate_limit=False,
-                enforce_internal_candidate_limit=False,
+                enforce_internal_candidate_limit=True,
             )
         except Exception:
             return []

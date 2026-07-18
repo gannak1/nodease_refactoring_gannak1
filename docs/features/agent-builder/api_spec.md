@@ -996,7 +996,7 @@ Rules:
 - `_deferred_parameters`에 포함된 key는 graph에 값이 남아 있어도 configured가 아니다. `required_configuration`, `required_any_configuration`과 Slack mode별 필수 검사는 모두 이 우선순위를 사용한다. Slack은 API/Webhook mode 모두 `message|blocks|attachments` 중 유효한 값 하나 이상을 요구하며 공백 문자열, 빈 array와 invalid JSON을 미설정으로 판정한다.
 - LLM은 `model_id`와 세 prompt 중 하나 이상을 runtime required configuration으로 검사한다. Agent Builder의 기본 LLM task는 모델, 출력 형식, 세 prompt, 이전 node 출력 연결과 자동 routing toggle로 제한한다. JSON Schema는 JSON 출력에서만 표시하는 optional JSON object이며 array, scalar와 null의 `set`은 `json_object_required`로 거부한다. 세 prompt가 모두 비어 있으면 각 prompt를 순차 task로 만들고 마지막 빈 prompt의 `skip`은 `task_conflict`로 거부한다.
 - Session read reconciliation은 현재 request의 모든 유효하고 `reverted`가 아닌 v3 operation envelope의 `affected_node_ids`와 기존 ParameterTask node id를 합친 뒤 canonical graph에 존재하는 node만 사용해 미완료 LLM task를 복구한다. 최신 envelope 하나만 사용하거나 관계없는 기존 LLM으로 넓히지 않는다. 이 read 경로는 planner, Knowledge ranking, mutation, save와 acknowledgement를 호출하지 않는다.
-- Session read reconciliation은 persisted group이 `completed`여도 현재 Catalog task를 identity 기준으로 병합한다. 기존 task의 status/version을 보존하고 신규 task만 추가하며, 신규 pending task가 있으면 첫 task를 active로 전환하고 group을 active로 되돌린다. 같은 response를 다시 읽어도 task를 중복 추가하지 않는다.
+- Session read reconciliation은 persisted group이 `completed`여도 현재 Catalog task를 identity 기준으로 병합한다. 기존 task의 status/version/`stable_order`를 보존하고 신규 task를 기존 최대 order 뒤에 Catalog 순서로 추가한다. 신규 또는 새로 필수가 된 미설정 task가 있으면 첫 task를 active로 전환하고 group을 active로 되돌리며, canceled group은 다시 열지 않는다. 같은 response를 다시 읽어도 task를 중복 추가하지 않는다.
 
 Response:
 
@@ -1248,6 +1248,8 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 - LLM과 File Extraction의 selector decision은 canonical selector 배열을 제출한다. LLM graph의 기존 selector와 일치하는 `referenced_variables[].name`은 보존하고 새 selector는 Catalog output key를 이름으로 사용한다. 같은 LLM 안의 중복 이름은 `duplicate_variable_name`으로 거부한다. File Extraction은 `[{"name": "<output-key>", "value_selector": [...]}]` 형태를 유지한다.
 - Slack `blocks`와 `attachments` decision은 JSON array/object로 제출하며 graph에는 Slack node runtime이 사용하는 JSON 문자열로 저장한다.
 - 기존 Slack `blocks`와 `attachments` graph 문자열을 ParameterTask control로 hydrate할 때는 JSON array로 파싱한다. 파싱 불가 또는 non-array 값은 unavailable이며 동일 문자열을 JSON scalar로 다시 제출하거나 이중 문자열화하지 않는다.
+- Slack legacy `body.text|body.channel`은 `message|channel` hydration 또는 completeness에 사용하지 않는다. 실제 `channel` 또는 `message|blocks|attachments`가 없으면 configuration/preflight는 unresolved이고 server는 legacy body를 자동 materialize하지 않는다.
+- 기존 GitHub graph에서 `action` key가 누락되면 Catalog hydration과 preflight read는 runtime default인 `get_pr`를 반환한다. 명시적인 null/invalid action에는 적용하지 않으며 이 read compatibility는 GraphMutation이나 save를 만들지 않는다.
 - Catalog parameter의 `validation.required_when`은 같은 node의 canonical controlling parameter를 기준으로 조건부 필수 여부를 계산한다. Slack API mode의 `bot_token|channel`, Webhook mode의 `url`과 GitHub `action=comment_pr`의 `comment_body`가 이 계약을 사용한다. GitHub `api_token`은 action과 무관하게 required다. ParameterTask와 configuration preflight는 같은 조건 판정을 사용한다.
 - 조건을 제어하는 parameter의 GraphMutation 저장과 acknowledgement가 성공하면 Backend는 canonical graph로 Catalog task를 deterministic하게 재계획하고 `node_id + parameter_key`로 기존 group과 병합한 뒤 같은 acknowledgement 응답의 `parameter_group`과 `next_task_id`를 갱신한다. Planner LLM은 다시 호출하지 않으며 같은 operation acknowledgement 재조회는 task 상태, DB commit 또는 audit을 반복하지 않는다.
 - `request_timeout_seconds`는 provider payload field가 아닌 internal transport option이다. Google client는 이를 payload에서 제거한 뒤 chat HTTP client timeout으로 적용하고, 미지정 시 60초를 사용한다.

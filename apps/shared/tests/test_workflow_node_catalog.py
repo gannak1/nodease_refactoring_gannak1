@@ -588,6 +588,54 @@ def test_slack_requires_one_non_empty_payload_configuration():
     ) == "unresolved"
 
 
+def test_slack_legacy_body_text_is_not_a_runtime_payload():
+    legacy_data = {
+        "slackMode": "api",
+        "authConfig": {"token": "secret-value"},
+        "channel": "C123",
+        "body": '{"channel":"C123","text":"legacy-only"}',
+    }
+
+    assert node_parameter_value(
+        "slackPostNode", "message", legacy_data
+    ) == (False, None)
+    assert missing_required_configuration(
+        "slackPostNode", legacy_data
+    ) == ["payload"]
+    assert derive_node_configuration_state(
+        "slackPostNode", legacy_data
+    ) == "unresolved"
+
+    legacy_body_only = {
+        "slackMode": "api",
+        "authConfig": {"token": "secret-value"},
+        "body": '{"channel":"C123","text":"legacy-only"}',
+    }
+    assert node_parameter_value(
+        "slackPostNode", "channel", legacy_body_only
+    ) == (False, None)
+    assert missing_required_configuration(
+        "slackPostNode", legacy_body_only
+    ) == ["channel", "payload"]
+
+
+def test_github_missing_legacy_action_uses_runtime_default_for_reads():
+    legacy_data = {
+        "api_token": "secret-value",
+        "repo_owner": "octo",
+        "repo_name": "repo",
+        "pr_number": "1",
+    }
+
+    assert node_parameter_value(
+        "githubNode", "action", legacy_data
+    ) == (True, "get_pr")
+    assert missing_required_configuration("githubNode", legacy_data) == []
+    assert derive_node_configuration_state(
+        "githubNode", legacy_data
+    ) == "resolved"
+
+
 def test_slack_and_github_secret_parameters_map_to_existing_node_fields():
     slack = apply_node_parameter_value(
         "slackPostNode", "bot_token", {"authConfig": {}}, "secret-value"
@@ -722,7 +770,8 @@ def test_external_node_configuration_uses_catalog_safe_parameter_fields():
         {
             "slackMode": "api",
             "authConfig": {"token": "secret-value"},
-            "body": '{"channel":"C123","text":"hello"}',
+            "channel": "C123",
+            "message": "hello",
         },
     ) == "resolved"
     assert derive_node_configuration_state(

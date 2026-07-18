@@ -582,30 +582,51 @@ def reconcile_parameter_group_catalog_tasks(
     group: AgentBuilderParameterGroup,
     catalog_tasks: list[AgentBuilderParameterTask],
 ) -> AgentBuilderParameterGroup:
-    """Add Catalog tasks missing from a persisted group without losing progress."""
+    """Merge current Catalog tasks without changing persisted task order."""
     if group.status in {"pending_save", "pending_ack", "blocked", "canceled"}:
         return group
 
     existing_by_identity = {
         (task.node_id, task.parameter_key): task for task in group.tasks
     }
-    planned_identities: set[tuple[str, str]] = set()
+    catalog_tasks_by_identity = {
+        (task.node_id, task.parameter_key): task for task in catalog_tasks
+    }
+    planned_identities = set(catalog_tasks_by_identity)
+    existing_identities_in_order = [
+        (task.node_id, task.parameter_key)
+        for task in sorted(group.tasks, key=lambda task: task.stable_order)
+        if (task.node_id, task.parameter_key) in catalog_tasks_by_identity
+    ]
+    ordered_catalog_tasks = [
+        catalog_tasks_by_identity[identity]
+        for identity in existing_identities_in_order
+    ]
+    ordered_catalog_tasks.extend(
+        task
+        for task in sorted(catalog_tasks, key=lambda task: task.stable_order)
+        if (task.node_id, task.parameter_key) not in existing_by_identity
+    )
     merged: list[AgentBuilderParameterTask] = []
     priority_reopen_identity: tuple[str, str] | None = None
+    next_stable_order = max(
+        (task.stable_order for task in group.tasks),
+        default=-1,
+    ) + 1
 
-    for planned in sorted(catalog_tasks, key=lambda task: task.stable_order):
+    for planned in ordered_catalog_tasks:
         identity = (planned.node_id, planned.parameter_key)
-        planned_identities.add(identity)
         existing = existing_by_identity.get(identity)
         if existing is None:
             merged.append(
                 planned.model_copy(
                     update={
                         "group_id": group.group_id,
-                        "stable_order": len(merged),
+                        "stable_order": next_stable_order,
                     }
                 )
             )
+            next_stable_order += 1
             continue
         status = existing.status
         mode_visibility_changed = (
@@ -682,7 +703,7 @@ def reconcile_parameter_group_catalog_tasks(
                     "group_id": group.group_id,
                     "status": status,
                     "task_version": existing.task_version,
-                    "stable_order": len(merged),
+                    "stable_order": existing.stable_order,
                     "resolution_source": resolution_source,
                     "recommendation_fingerprint": recommendation_fingerprint,
                     "suggestions": planned.suggestions or existing.suggestions,
@@ -700,7 +721,9 @@ def reconcile_parameter_group_catalog_tasks(
         )
         if definition is not None and definition.get("agent_builder_task") is False:
             continue
-        merged.append(existing.model_copy(update={"stable_order": len(merged)}))
+        merged.append(existing)
+
+    merged.sort(key=lambda task: task.stable_order)
 
     if not merged:
         return group.model_copy(update={"status": "completed", "tasks": []})

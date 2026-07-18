@@ -418,10 +418,10 @@ def test_legacy_partial_group_recovers_all_current_catalog_tasks():
     )
 
     assert [task.parameter_key for task in recovered.tasks] == [
+        "channel",
         "slackMode",
         "bot_token",
         "url",
-        "channel",
         "message",
         "blocks",
         "attachments",
@@ -429,6 +429,16 @@ def test_legacy_partial_group_recovers_all_current_catalog_tasks():
         "username",
         "icon_emoji",
     ]
+    recovered_channel = next(
+        task for task in recovered.tasks if task.parameter_key == "channel"
+    )
+    assert recovered_channel.task_id == channel.task_id
+    assert recovered_channel.stable_order == channel.stable_order
+    assert all(
+        task.stable_order > channel.stable_order
+        for task in recovered.tasks
+        if task.task_id != channel.task_id
+    )
     recovered_channel = next(
         task for task in recovered.tasks if task.parameter_key == "channel"
     )
@@ -1154,6 +1164,122 @@ def test_reconcile_adds_new_catalog_tasks_to_completed_group_once():
     assert recovered_model.status == "completed"
     assert sum(task.status == "active" for task in recovered.tasks) == 1
     assert reconcile_parameter_group_catalog_tasks(recovered, plan.tasks) == recovered
+
+
+def test_reconcile_preserves_existing_stable_order_and_appends_new_catalog_tasks():
+    plan = ParameterTaskPlanner().plan(
+        graph={
+            "nodes": [
+                _node(
+                    "llm",
+                    "llmNode",
+                    {
+                        "model_id": "default-model",
+                        "system_prompt": "Answer safely.",
+                        "auto_model_routing": True,
+                    },
+                )
+            ],
+            "edges": [],
+        },
+        step_node_ids={"step_llm": "llm"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+        base_node_ids={"llm"},
+    )
+    model_task = next(task for task in plan.tasks if task.parameter_key == "model_id")
+    prompt_task = next(
+        task for task in plan.tasks if task.parameter_key == "system_prompt"
+    )
+    existing_prompt = prompt_task.model_copy(
+        update={"status": "completed", "stable_order": 4}
+    )
+    existing_model = model_task.model_copy(
+        update={"status": "completed", "stable_order": 9}
+    )
+    completed_group = AgentBuilderParameterGroup(
+        group_id=plan.group_id,
+        status="completed",
+        tasks=[existing_prompt, existing_model],
+    )
+
+    recovered = reconcile_parameter_group_catalog_tasks(completed_group, plan.tasks)
+    recovered_by_key = {task.parameter_key: task for task in recovered.tasks}
+
+    assert recovered_by_key["system_prompt"].task_id == existing_prompt.task_id
+    assert recovered_by_key["system_prompt"].stable_order == 4
+    assert recovered_by_key["model_id"].task_id == existing_model.task_id
+    assert recovered_by_key["model_id"].stable_order == 9
+    assert all(
+        task.stable_order > 9
+        for task in recovered.tasks
+        if task.task_id not in {existing_prompt.task_id, existing_model.task_id}
+    )
+    assert reconcile_parameter_group_catalog_tasks(recovered, plan.tasks) == recovered
+
+
+def test_reconcile_keeps_completed_group_closed_for_configured_additions():
+    plan = ParameterTaskPlanner().plan(
+        graph={
+            "nodes": [
+                _node(
+                    "llm",
+                    "llmNode",
+                    {
+                        "model_id": "default-model",
+                        "system_prompt": "Answer safely.",
+                        "auto_model_routing": True,
+                    },
+                )
+            ],
+            "edges": [],
+        },
+        step_node_ids={"step_llm": "llm"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+        base_node_ids={"llm"},
+    )
+    model_task = next(task for task in plan.tasks if task.parameter_key == "model_id")
+    prompt_task = next(
+        task for task in plan.tasks if task.parameter_key == "system_prompt"
+    )
+    completed_group = AgentBuilderParameterGroup(
+        group_id=plan.group_id,
+        status="completed",
+        tasks=[model_task],
+    )
+
+    recovered = reconcile_parameter_group_catalog_tasks(
+        completed_group,
+        [model_task, prompt_task],
+    )
+
+    assert recovered.status == "completed"
+    assert [task.status for task in recovered.tasks] == ["completed", "completed"]
+    assert recovered.tasks[0].task_id == model_task.task_id
+    assert recovered.tasks[1].stable_order > recovered.tasks[0].stable_order
+
+
+def test_reconcile_never_reopens_canceled_group():
+    plan = ParameterTaskPlanner().plan(
+        graph={"nodes": [_node("slack", "slackPostNode")], "edges": []},
+        step_node_ids={"step_slack": "slack"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+    )
+    canceled_group = AgentBuilderParameterGroup(
+        group_id=plan.group_id,
+        status="canceled",
+        tasks=[plan.tasks[0].model_copy(update={"status": "canceled"})],
+    )
+
+    assert reconcile_parameter_group_catalog_tasks(
+        canceled_group,
+        plan.tasks,
+    ) == canceled_group
 
 
 def test_reconcile_reopens_a_legacy_skipped_required_github_token():
