@@ -89,6 +89,14 @@ ARMS = (AUTO_ARM, HIGH_ARM, MID_ARM, LOW_ARM)
 HIGH_MODEL = "gpt-5.4"
 MID_MODEL = "gpt-5.4-mini"
 LOW_MODEL = "gpt-4o-mini"
+AUTO_CANDIDATE_MODELS = (
+    "gpt-4o-mini",
+    "gpt-4.1-mini",
+    "gpt-4.1",
+    "gpt-5-mini",
+    "gpt-5.4-mini",
+    "gpt-5.4",
+)
 ROUTING_JUDGE_MODEL = "gpt-5-mini"
 # 품질 평가는 라우팅 Judge와 분리한다. 라우팅 Judge만 바꿔도 동일한 품질 평가
 # 기준으로 결과를 비교할 수 있어야 한다.
@@ -647,18 +655,45 @@ def _run_id(arm: str, case_id: str) -> uuid.UUID:
     return uuid.uuid5(NAMESPACE, f"judge-first-economics:{arm}:{case_id}")
 
 
+def configure_experiment_models(
+    *,
+    high_model: str,
+    mid_model: str,
+    low_model: str,
+    auto_candidates: Iterable[str],
+) -> None:
+    """가격군 예선 대표와 자동 후보를 한 실행 조건으로 고정한다."""
+
+    normalized_candidates = tuple(
+        dict.fromkeys(str(model_id).strip() for model_id in auto_candidates if str(model_id).strip())
+    )
+    if not normalized_candidates:
+        raise ValueError("자동 라우팅 후보가 비어 있습니다.")
+    fixed_models = {
+        str(high_model).strip(),
+        str(mid_model).strip(),
+        str(low_model).strip(),
+    }
+    if "" in fixed_models or len(fixed_models) != 3:
+        raise ValueError("고가·중가·저가 고정 arm 모델은 서로 달라야 합니다.")
+    missing = fixed_models - set(normalized_candidates)
+    if missing:
+        raise ValueError(
+            f"고정 arm 모델은 자동 라우팅 후보에도 포함돼야 합니다: {sorted(missing)}"
+        )
+
+    global HIGH_MODEL, MID_MODEL, LOW_MODEL, AUTO_CANDIDATE_MODELS
+    HIGH_MODEL = str(high_model).strip()
+    MID_MODEL = str(mid_model).strip()
+    LOW_MODEL = str(low_model).strip()
+    AUTO_CANDIDATE_MODELS = normalized_candidates
+
+
 def _ensure_runtime_models(db) -> list[str]:
     available = LLMService.get_runtime_available_model_ids_for_user(
         db, user_id=USER_ID, organization_id=ORG_ID
     )
-    wanted = [
-        "gpt-4o-mini",
-        "gpt-4.1-mini",
-        "gpt-4.1",
-        "gpt-5-mini",
-        "gpt-5.4-mini",
-        "gpt-5.4",
-    ]
+    wanted = list(AUTO_CANDIDATE_MODELS)
     selected = [model_id for model_id in wanted if model_id in available]
     required = {
         HIGH_MODEL,
@@ -825,16 +860,15 @@ def _clear_prior_experiment_runs(db) -> None:
             LLMNodeModelRoutingPolicyUpdate.policy_id.in_(policy_ids)
         ).delete(synchronize_session=False)
 
+    # 같은 workflow를 재사용하는 가격군 예선 run까지 지우지 않는다. 이 실험이
+    # 결정적으로 생성하는 80 case x 4 arm run id만 정리한다.
     run_ids = [
-        row[0]
-        for row in db.query(WorkflowRun.id)
-        .filter(WorkflowRun.workflow_id == WORKFLOW_ID)
-        .all()
+        _run_id(arm, case.case_id) for case in build_cases() for arm in ARMS
     ]
-    db.query(LLMUsageLog).filter(LLMUsageLog.workflow_id == WORKFLOW_ID).delete(
-        synchronize_session=False
-    )
     if run_ids:
+        db.query(LLMUsageLog).filter(
+            LLMUsageLog.workflow_run_id.in_(run_ids)
+        ).delete(synchronize_session=False)
         db.query(WorkflowNodeRun).filter(
             WorkflowNodeRun.workflow_run_id.in_(run_ids)
         ).delete(synchronize_session=False)
@@ -1811,14 +1845,7 @@ def _write_run_config(
         "routing_judge_max_output_tokens": ModelRoutingRuntimeJudge.MAX_OUTPUT_TOKENS,
         "quality_judge_model": QUALITY_JUDGE_MODEL,
         "quality_judge_max_output_tokens": QUALITY_JUDGE_MAX_OUTPUT_TOKENS,
-        "candidate_model_ids": [
-            "gpt-4o-mini",
-            "gpt-4.1-mini",
-            "gpt-4.1",
-            "gpt-5-mini",
-            "gpt-5.4-mini",
-            "gpt-5.4",
-        ],
+        "candidate_model_ids": list(AUTO_CANDIDATE_MODELS),
         "comparison_arms": {
             AUTO_ARM: "automatic routing",
             HIGH_ARM: HIGH_MODEL,
@@ -1847,6 +1874,7 @@ def _write_run_config(
             "quality_judge_model",
             "quality_judge_max_output_tokens",
             "strategy_id",
+            "candidate_model_ids",
             "comparison_arms",
             "dataset",
         ):
@@ -2173,6 +2201,14 @@ def parse_args() -> argparse.Namespace:
         default=ROUTING_JUDGE_MODEL,
         help="자동 라우팅 판단에만 사용할 Judge 모델입니다. 독립 품질 평가는 별도 고정 모델을 사용합니다.",
     )
+    parser.add_argument("--high-model", default=HIGH_MODEL)
+    parser.add_argument("--mid-model", default=MID_MODEL)
+    parser.add_argument("--low-model", default=LOW_MODEL)
+    parser.add_argument(
+        "--auto-candidates",
+        default=",".join(AUTO_CANDIDATE_MODELS),
+        help="쉼표로 구분한 자동 라우팅 후보 모델입니다.",
+    )
     parser.add_argument(
         "--report-name",
         default=None,
@@ -2197,6 +2233,12 @@ def main() -> None:
     global ROUTING_JUDGE_MODEL
     args = parse_args()
     ROUTING_JUDGE_MODEL = str(args.routing_judge_model)
+    configure_experiment_models(
+        high_model=args.high_model,
+        mid_model=args.mid_model,
+        low_model=args.low_model,
+        auto_candidates=str(args.auto_candidates).split(","),
+    )
     output_dir, report_name = resolve_artifact_target(
         output_dir=str(args.output_dir),
         run_id=args.run_id,
@@ -2223,6 +2265,12 @@ def main() -> None:
                     "arm_count": len(ARMS),
                     "workflow_execution_count": len(selected_cases) * len(ARMS),
                     "arms": list(ARMS),
+                    "comparison_models": {
+                        HIGH_ARM: HIGH_MODEL,
+                        MID_ARM: MID_MODEL,
+                        LOW_ARM: LOW_MODEL,
+                    },
+                    "automatic_candidate_models": list(AUTO_CANDIDATE_MODELS),
                     "categories": dict(
                         Counter(case.category for case in selected_cases)
                     ),

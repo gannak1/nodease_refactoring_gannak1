@@ -4,8 +4,10 @@ import tempfile
 
 import pytest
 
+import scripts.experiment_judge_first_economics_80 as economics
 from scripts.experiment_judge_first_economics_80 import (
     ARMS,
+    AUTO_CANDIDATE_MODELS,
     AUTO_ARM,
     HIGH_MODEL,
     LOW_MODEL,
@@ -16,6 +18,7 @@ from scripts.experiment_judge_first_economics_80 import (
     _tradeoff_assessment,
     _write_run_config,
     build_cases,
+    configure_experiment_models,
     graph_for_arm,
     resolve_artifact_target,
 )
@@ -80,6 +83,42 @@ def test_each_fixed_arm_uses_its_declared_model():
         llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-triage")
         assert llm_node["data"]["model_id"] == model_id
         assert llm_node["data"]["auto_model_routing"] is False
+
+
+def test_experiment_models_can_be_replaced_by_qualified_representatives(monkeypatch):
+    monkeypatch.setattr(economics, "HIGH_MODEL", HIGH_MODEL)
+    monkeypatch.setattr(economics, "MID_MODEL", MID_MODEL)
+    monkeypatch.setattr(economics, "LOW_MODEL", LOW_MODEL)
+    monkeypatch.setattr(economics, "AUTO_CANDIDATE_MODELS", AUTO_CANDIDATE_MODELS)
+
+    configure_experiment_models(
+        high_model="gpt-5.5",
+        mid_model="gpt-5.4",
+        low_model="gpt-5-mini",
+        auto_candidates=["gpt-5-mini", "gpt-5.4", "gpt-5.5"],
+    )
+
+    assert economics.HIGH_MODEL == "gpt-5.5"
+    assert economics.MID_MODEL == "gpt-5.4"
+    assert economics.LOW_MODEL == "gpt-5-mini"
+    assert economics.AUTO_CANDIDATE_MODELS == (
+        "gpt-5-mini",
+        "gpt-5.4",
+        "gpt-5.5",
+    )
+    high_graph = graph_for_arm("high_fixed")
+    high_node = next(node for node in high_graph["nodes"] if node["id"] == "llm-triage")
+    assert high_node["data"]["model_id"] == "gpt-5.5"
+
+
+def test_experiment_rejects_fixed_model_outside_automatic_candidates():
+    with pytest.raises(ValueError, match="고정 arm 모델"):
+        configure_experiment_models(
+            high_model="gpt-5.5",
+            mid_model="gpt-5.4",
+            low_model="gpt-5-mini",
+            auto_candidates=["gpt-5-mini", "gpt-5.4"],
+        )
 
 
 def test_workflow_normalizes_each_input_structure_without_losing_the_request():
