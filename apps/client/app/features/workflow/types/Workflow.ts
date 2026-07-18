@@ -63,6 +63,7 @@ export interface WorkflowDraftSaveResponse {
   workflow_id: string;
   graph_hash: string;
   updated_at: string;
+  canonical_deferred_parameters?: Record<string, string[]>;
   operation_id?: string;
   parameter_group?: unknown;
 }

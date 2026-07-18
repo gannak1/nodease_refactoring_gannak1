@@ -25,6 +25,7 @@ from apps.shared.services.workflow_layout import calculate_workflow_auto_layout
 from apps.shared.services.workflow_node_catalog import (
     derive_node_configuration_state,
     implemented_node_types,
+    normalize_deferred_parameters,
     validate_workflow_graph_connections,
 )
 
@@ -268,6 +269,10 @@ def _materialize_candidate_node(
     if isinstance(subgraph, dict):
         data["subGraph"] = materialize_candidate_graph(subgraph)
     if derive_configuration:
+        data = normalize_deferred_parameters(
+            str(node.get("type") or ""),
+            data,
+        )
         data["configuration_state"] = derive_node_configuration_state(
             str(node.get("type") or ""), data
         )
@@ -295,6 +300,27 @@ def materialize_candidate_graph(graph: dict[str, Any]) -> dict[str, Any]:
         raise
     except (AttributeError, TypeError, ValueError, ValidationError) as exc:
         raise GraphMutationValidationError("workflow.graph_invalid") from exc
+
+
+def deferred_parameter_projection(graph: dict[str, Any]) -> dict[str, list[str]]:
+    projection: dict[str, list[str]] = {}
+    pending = list(graph.get("nodes") or [])
+    while pending:
+        node = pending.pop()
+        if not isinstance(node, dict):
+            continue
+        node_id = node.get("id")
+        data = node.get("data")
+        if isinstance(node_id, str) and isinstance(data, dict):
+            projection[node_id] = [
+                key
+                for key in data.get("_deferred_parameters") or []
+                if isinstance(key, str)
+            ]
+            subgraph = data.get("subGraph")
+            if isinstance(subgraph, dict):
+                pending.extend(subgraph.get("nodes") or [])
+    return projection
 
 
 def materialize_candidate_features(features: dict[str, Any] | None) -> dict[str, Any]:

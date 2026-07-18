@@ -1922,7 +1922,7 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
     expect(state.nodes[0].data.newField).toBe('newValue');
   });
 
-  it('clears only the explicitly resolved deferred parameter on node detail edit', () => {
+  it('clears only a server-validated deferred parameter after node detail save', () => {
     const node = createMockNode('slack-1', 'slackPostNode');
     node.data = {
       ...node.data,
@@ -1934,6 +1934,17 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
 
     useWorkflowStore.getState().updateNodeData('slack-1', {
       channel: 'new-channel',
+    });
+
+    expect(
+      useWorkflowStore.getState().nodes[0].data._deferred_parameters,
+    ).toEqual(['channel', 'message']);
+
+    useWorkflowStore.getState().ingestCanonicalDraftMetadata({
+      workflow_id: 'workflow-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-19T00:00:00Z',
+      canonical_deferred_parameters: { 'slack-1': ['message'] },
     });
 
     expect(useWorkflowStore.getState().nodes[0].data).toMatchObject({
@@ -1961,7 +1972,32 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
     ).toEqual(['channel']);
   });
 
-  it('clears a resolved deferred parameter inside a nested subgraph', () => {
+  it('keeps a deferred marker when a non-empty node detail value violates catalog validation', () => {
+    const node = createMockNode('github-1', 'githubNode');
+    node.data = {
+      ...node.data,
+      pr_number: '',
+      _deferred_parameters: ['pr_number'],
+    } as Node['data'];
+    useWorkflowStore.getState().setNodes([node]);
+
+    useWorkflowStore.getState().updateNodeData('github-1', {
+      pr_number: 0,
+    });
+
+    useWorkflowStore.getState().ingestCanonicalDraftMetadata({
+      workflow_id: 'workflow-1',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-19T00:00:00Z',
+      canonical_deferred_parameters: { 'github-1': ['pr_number'] },
+    });
+
+    expect(
+      useWorkflowStore.getState().nodes[0].data._deferred_parameters,
+    ).toEqual(['pr_number']);
+  });
+
+  it('reconciles a server-validated deferred parameter inside a nested subgraph', () => {
     const nestedNode = createMockNode('mail-1', 'mailNode');
     nestedNode.data = {
       ...nestedNode.data,
@@ -1980,6 +2016,16 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
       .updateInnerNodeData('loop-1', 'mail-1', {
         credential_id: 'credential-1',
       });
+
+    useWorkflowStore.getState().ingestCanonicalDraftMetadata({
+      workflow_id: 'workflow-1',
+      graph_hash: 'c'.repeat(64),
+      updated_at: '2026-07-19T00:00:00Z',
+      canonical_deferred_parameters: {
+        'loop-1': [],
+        'mail-1': ['query'],
+      },
+    });
 
     const nestedData = (useWorkflowStore.getState().nodes[0].data.subGraph as {
       nodes: Node[];

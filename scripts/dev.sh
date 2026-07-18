@@ -14,6 +14,8 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 SANDBOX_STARTUP_TIMEOUT_SECONDS="${SANDBOX_STARTUP_TIMEOUT_SECONDS:-180}"
+SANDBOX_HEALTH_CONNECT_TIMEOUT_SECONDS="${SANDBOX_HEALTH_CONNECT_TIMEOUT_SECONDS:-2}"
+SANDBOX_HEALTH_REQUEST_TIMEOUT_SECONDS="${SANDBOX_HEALTH_REQUEST_TIMEOUT_SECONDS:-5}"
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
@@ -98,6 +100,14 @@ wait_for_first_service_exit() {
     done
 }
 
+sandbox_is_healthy() {
+    local request_timeout="${1:-$SANDBOX_HEALTH_REQUEST_TIMEOUT_SECONDS}"
+
+    curl --connect-timeout "$SANDBOX_HEALTH_CONNECT_TIMEOUT_SECONDS" \
+        --max-time "$request_timeout" -fsS \
+        http://localhost:8194/health > /dev/null 2>&1
+}
+
 monitor_docker_services() {
     local consecutive_failures=0
 
@@ -106,7 +116,7 @@ monitor_docker_services() {
                 pg_isready -U admin -d moduly_local > /dev/null 2>&1 && \
            docker compose -f dev/docker-compose.yml exec -T redis \
                 redis-cli ping > /dev/null 2>&1 && \
-           curl -fsS http://localhost:8194/health > /dev/null 2>&1; then
+           sandbox_is_healthy; then
             consecutive_failures=0
         else
             consecutive_failures=$((consecutive_failures + 1))
@@ -120,11 +130,27 @@ monitor_docker_services() {
 }
 
 wait_for_sandbox_ready() {
-    local elapsed=0
+    local started_at
+    local deadline
+    local now
+    local remaining
+    local request_timeout
+
+    started_at="$(date +%s)"
+    deadline=$((started_at + SANDBOX_STARTUP_TIMEOUT_SECONDS))
 
     echo "Waiting for Sandbox readiness..."
-    while [ "$elapsed" -lt "$SANDBOX_STARTUP_TIMEOUT_SECONDS" ]; do
-        if curl -fsS http://localhost:8194/health > /dev/null 2>&1; then
+    while true; do
+        now="$(date +%s)"
+        remaining=$((deadline - now))
+        if [ "$remaining" -le 0 ]; then
+            break
+        fi
+        request_timeout="$SANDBOX_HEALTH_REQUEST_TIMEOUT_SECONDS"
+        if [ "$remaining" -lt "$request_timeout" ]; then
+            request_timeout="$remaining"
+        fi
+        if sandbox_is_healthy "$request_timeout"; then
             echo -e "${GREEN}Sandbox is ready.${NC}"
             return 0
         fi
@@ -133,7 +159,6 @@ wait_for_sandbox_ready() {
             return 1
         fi
         sleep 1
-        elapsed=$((elapsed + 1))
     done
 
     echo -e "${RED}Sandbox startup timed out after ${SANDBOX_STARTUP_TIMEOUT_SECONDS}s.${NC}"

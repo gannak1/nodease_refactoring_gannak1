@@ -776,6 +776,40 @@ def stored_parameter_value_for_validation(
     return _stored_parameter_value_for_validation(node_type, parameter_key, data)
 
 
+def normalize_deferred_parameters(
+    node_type: str,
+    node_data: dict[str, Any] | None,
+) -> dict[str, Any]:
+    data = copy.deepcopy(node_data) if isinstance(node_data, dict) else {}
+    raw_deferred = data.get("_deferred_parameters")
+    if not isinstance(raw_deferred, list):
+        return data
+
+    deferred: list[str] = []
+    for raw_key in raw_deferred:
+        if not isinstance(raw_key, str) or raw_key in deferred:
+            continue
+        if parameter_definition(node_type, raw_key) is None:
+            deferred.append(raw_key)
+            continue
+        validation_value = _stored_parameter_value_for_validation(
+            node_type,
+            raw_key,
+            data,
+        )
+        if not node_parameter_is_configured(node_type, raw_key, data):
+            deferred.append(raw_key)
+            continue
+        if validate_node_parameter_value(node_type, raw_key, validation_value):
+            deferred.append(raw_key)
+
+    if deferred:
+        data["_deferred_parameters"] = deferred
+    else:
+        data.pop("_deferred_parameters", None)
+    return data
+
+
 def required_any_configuration_groups(
     node_type: str,
 ) -> list[tuple[str, tuple[str, ...]]]:

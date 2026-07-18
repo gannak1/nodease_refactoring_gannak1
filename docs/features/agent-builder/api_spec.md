@@ -791,9 +791,14 @@ Success response:
   "workflow_id": "uuid",
   "operation_id": "uuid",
   "graph_hash": "sha256",
-  "updated_at": "ISO-8601"
+  "updated_at": "ISO-8601",
+  "canonical_deferred_parameters": {
+    "node-id": ["parameter_key"]
+  }
 }
 ```
+
+일반 editor와 Agent Builder save는 같은 `canonical_deferred_parameters` projection을 반환한다. Gateway는 Catalog의 stored-value 정규화와 validation을 통과한 key만 `_deferred_parameters`에서 제거하고, Client는 응답 projection을 top-level 및 중첩 node에 반영한다. 이 projection은 ParameterTask 상태/version이나 decision audit을 변경하지 않는다.
 
 `workflow_version`, `revision`처럼 현재 Workflow model에 존재하지 않는 값을 응답에 추가하지 않는다. 같은 workflow에서 두 사용자가 같은 base로 저장하면 첫 요청만 성공하고 두 번째 요청은 stale conflict다.
 

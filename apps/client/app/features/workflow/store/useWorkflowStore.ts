@@ -410,35 +410,55 @@ const canonicalDraftMetadataFrom = (
     : null;
 };
 
-const isConfiguredDeferredValue = (value: unknown): boolean => {
-  if (typeof value === 'string') return value.trim().length > 0;
-  if (typeof value === 'number') return Number.isFinite(value);
-  if (typeof value === 'boolean') return true;
-  if (Array.isArray(value)) return value.length > 0;
-  if (value && typeof value === 'object') return Object.keys(value).length > 0;
-  return value !== null && value !== undefined;
-};
-
 const mergeNodeDataForExplicitEdit = (
   currentData: Record<string, unknown>,
   newData: Record<string, unknown>,
-): Record<string, unknown> => {
-  const merged = { ...currentData, ...newData };
-  if (Object.prototype.hasOwnProperty.call(newData, '_deferred_parameters')) {
-    return merged;
-  }
+): Record<string, unknown> => ({ ...currentData, ...newData });
 
-  const deferred = currentData._deferred_parameters;
-  if (!Array.isArray(deferred)) return merged;
-
-  merged._deferred_parameters = deferred.filter((parameterKey) => {
-    if (typeof parameterKey !== 'string') return true;
-    if (!Object.prototype.hasOwnProperty.call(newData, parameterKey)) return true;
-    if (Object.is(currentData[parameterKey], newData[parameterKey])) return true;
-    return !isConfiguredDeferredValue(newData[parameterKey]);
-  });
-  return merged;
+const canonicalDeferredParametersFrom = (
+  value: unknown,
+): Record<string, string[]> | null => {
+  if (!value || typeof value !== 'object') return null;
+  const raw = (
+    value as { canonical_deferred_parameters?: unknown }
+  ).canonical_deferred_parameters;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  return Object.fromEntries(
+    Object.entries(raw).flatMap(([nodeId, parameterKeys]) =>
+      Array.isArray(parameterKeys) &&
+      parameterKeys.every((key) => typeof key === 'string')
+        ? [[nodeId, parameterKeys]]
+        : [],
+    ),
+  );
 };
+
+const reconcileCanonicalDeferredParameters = (
+  nodes: Node[],
+  projection: Record<string, string[]>,
+): Node[] =>
+  nodes.map((node) => {
+    const data = { ...(node.data as Record<string, unknown>) };
+    const subGraph = data.subGraph;
+    if (subGraph && typeof subGraph === 'object' && !Array.isArray(subGraph)) {
+      const nestedNodes = (subGraph as { nodes?: unknown }).nodes;
+      if (Array.isArray(nestedNodes)) {
+        data.subGraph = {
+          ...subGraph,
+          nodes: reconcileCanonicalDeferredParameters(
+            nestedNodes as Node[],
+            projection,
+          ),
+        };
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(projection, node.id)) {
+      const deferred = projection[node.id];
+      if (deferred.length > 0) data._deferred_parameters = [...deferred];
+      else delete data._deferred_parameters;
+    }
+    return { ...node, data } as Node;
+  });
 
 const STRUCTURAL_AGENT_BUILDER_MUTATIONS = new Set<
   AgentBuilderGraphMutation['kind']
@@ -2281,7 +2301,29 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   ingestCanonicalDraftMetadata: (value, workflowId) => {
     const metadata = canonicalDraftMetadataFrom(value, workflowId);
     if (metadata) {
-      get().setCanonicalDraftMetadata(metadata);
+      const projection = canonicalDeferredParametersFrom(value);
+      set((state) => {
+        const nodes = projection
+          ? reconcileCanonicalDeferredParameters(state.nodes, projection)
+          : state.nodes;
+        return {
+          nodes,
+          workflows:
+            projection && state.activeWorkflowId
+              ? syncActiveWorkflow(
+                  state.workflows,
+                  state.activeWorkflowId,
+                  nodes,
+                  state.edges,
+                  state.features,
+                )
+              : state.workflows,
+          canonicalDraftMetadata: {
+            ...state.canonicalDraftMetadata,
+            [metadata.workflowId]: metadata,
+          },
+        };
+      });
     }
     return metadata;
   },

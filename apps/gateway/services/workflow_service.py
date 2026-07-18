@@ -55,6 +55,7 @@ from apps.gateway.application.agent_builder.workflow_cas import (
 from apps.gateway.application.agent_builder.graph_mutation_builder import (
     GraphMutationValidationError,
     canonical_graph_hash,
+    deferred_parameter_projection,
     materialize_candidate_features,
     materialize_candidate_graph,
 )
@@ -367,6 +368,9 @@ class WorkflowService:
                     "operation_id": str(validated.operation_id),
                     "graph_hash": validated.graph_hash,
                     "updated_at": workflow.updated_at.isoformat(),
+                    "canonical_deferred_parameters": deferred_parameter_projection(
+                        workflow.graph
+                    ),
                     "parameter_group": (
                         parameter_group.model_dump(mode="json")
                         if parameter_group is not None
@@ -472,6 +476,9 @@ class WorkflowService:
                 "operation_id": str(validated.operation_id),
                 "graph_hash": validated.graph_hash,
                 "updated_at": workflow.updated_at.isoformat(),
+                "canonical_deferred_parameters": deferred_parameter_projection(
+                    workflow.graph
+                ),
                 "parameter_group": (
                     reverted_parameter_group.model_dump(mode="json")
                     if mutation_context.action == "revert"
@@ -534,6 +541,9 @@ class WorkflowService:
             "workflow_id": str(workflow.id),
             "graph_hash": canonical_graph_hash(workflow.graph),
             "updated_at": workflow.updated_at.isoformat(),
+            "canonical_deferred_parameters": deferred_parameter_projection(
+                workflow.graph
+            ),
         }
 
     @staticmethod

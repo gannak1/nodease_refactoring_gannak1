@@ -240,7 +240,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - required task skip을 거부한다.
 - optional task skip과 Catalog `defer_policy`를 구분한다. Optional skip은 GraphMutation 없이 task를 `skipped`로 만들고 next task를 한 번만 활성화한다. Policy 누락/`forbidden` defer는 거부하고 `allow_unresolved` defer만 parameter mutation을 만든다.
 - `allow_unresolved` defer는 CDS 저장/acknowledgement 뒤 task를 deferred로 전환하고 실행·배포 preflight가 해당 node를 차단한다.
-- 일반 Node Detail에서 deferred Slack channel 또는 Mail credential을 다른 유효 값으로 편집하면 해당 marker만 제거되고 server-derived configuration state가 다시 계산되는지 검증한다. 다른 field, 동일 값, 빈 값·invalid 값과 viewport/autosync는 marker를 유지하며 중첩 `subGraph` node에도 같은 규칙을 적용한다. 이 경로는 persisted ParameterTask status/version과 decision audit을 바꾸지 않는다.
+- 일반 Node Detail에서 deferred Slack channel 또는 Mail credential을 다른 유효 값으로 편집하면 Gateway Catalog validation 뒤 해당 marker만 제거되고 server-derived configuration state가 다시 계산되는지 검증한다. Client는 non-empty 여부로 marker를 선제 제거하지 않고 save 응답의 `canonical_deferred_parameters`를 top-level 및 중첩 `subGraph` node에 반영한다. 다른 field, 동일 값, 빈 값·invalid 값과 viewport/autosync는 marker를 유지한다. 이 경로는 persisted ParameterTask status/version과 decision audit을 바꾸지 않는다.
 - 유효한 decision은 현재 task를 유지한 `parameter_update` GraphMutation을 반환한다.
 - mutation local 적용만으로 task를 완료하거나 next task를 활성화하지 않는다.
 - CDS 저장과 canonical graph hash/`updated_at` acknowledgement 뒤 현재 task가 완료되고 next task가 안정적으로 이동한다.

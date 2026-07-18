@@ -162,10 +162,16 @@ def test_draft_save_refreshes_identity_map_before_row_lock(monkeypatch):
     monkeypatch.setattr(WorkflowService, "validate_mail_credential_references", Mock())
     db.refresh = Mock()
 
-    WorkflowService.save_draft(db, str(workflow.id), request, user_id=str(uuid4()))
+    result = WorkflowService.save_draft(
+        db,
+        str(workflow.id),
+        request,
+        user_id=str(uuid4()),
+    )
 
     query.populate_existing.assert_called_once_with()
     query.with_for_update.assert_called_once_with()
+    assert result["canonical_deferred_parameters"] == {}
 
 
 def test_draft_save_rechecks_write_permission_after_row_lock(monkeypatch):
@@ -517,6 +523,33 @@ def test_graph_materializer_wraps_nested_schema_errors():
 
     with pytest.raises(GraphMutationValidationError, match="workflow.graph_invalid"):
         materialize_candidate_graph(graph)
+
+
+def test_graph_materializer_clears_only_catalog_valid_deferred_parameters():
+    graph = {
+        "nodes": [
+            {
+                "id": "github-1",
+                "type": "githubNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "title": "GitHub",
+                    "action": "get_pr",
+                    "repo_owner": "nodease",
+                    "repo_name": "mbased",
+                    "pr_number": 0,
+                    "_deferred_parameters": ["repo_owner", "pr_number"],
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    materialized = materialize_candidate_graph(graph)
+
+    assert materialized["nodes"][0]["data"]["_deferred_parameters"] == [
+        "pr_number"
+    ]
 
 
 def test_agent_builder_draft_save_materializes_note_features(monkeypatch):

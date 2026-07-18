@@ -53,6 +53,22 @@ def test_dev_script_waits_for_sandbox_readiness_before_watchdog() -> None:
     assert wait_function_index >= 0
     assert wait_call_index > wait_function_index
     assert wait_call_index < watchdog_start_index
-    assert "curl -fsS http://localhost:8194/health" in script
+    assert "sandbox_is_healthy" in script
     assert "Sandbox startup timed out" in script
     assert "background" not in script.lower()
+
+
+def test_dev_script_bounds_each_sandbox_health_request() -> None:
+    script = (ROOT_DIR / "scripts" / "dev.sh").read_text(encoding="utf-8")
+
+    assert (
+        'SANDBOX_HEALTH_CONNECT_TIMEOUT_SECONDS="${SANDBOX_HEALTH_CONNECT_TIMEOUT_SECONDS:-2}"'
+        in script
+    )
+    assert (
+        'SANDBOX_HEALTH_REQUEST_TIMEOUT_SECONDS="${SANDBOX_HEALTH_REQUEST_TIMEOUT_SECONDS:-5}"'
+        in script
+    )
+    assert 'curl --connect-timeout "$SANDBOX_HEALTH_CONNECT_TIMEOUT_SECONDS"' in script
+    assert '--max-time "$request_timeout"' in script
+    assert script.count("sandbox_is_healthy") >= 3
