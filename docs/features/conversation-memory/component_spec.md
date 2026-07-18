@@ -117,6 +117,8 @@ Public session bearer capability의 server-side hash와 lifecycle을 관리한�
 
 Authenticated session은 Access Grant가 아니라 current authentication/authorization과 session subject binding으로 접근한다.
 
+Public lifecycle composition은 명시적 feature activation boundary다. 기본 배포는 비활성이고, 활성화 시 capability verifier, replay encryption, admission HMAC의 독립 key 세 개와 승인된 backup erasure/no-backup mode를 startup에서 함께 검증한다. 누락된 설정을 요청 시점의 임시 adapter 오류로 늦추지 않는다.
+
 ### ConversationTurn
 
 - canonical request ID/fingerprint
@@ -250,6 +252,7 @@ Main provider usage와 `llm.call` 감사는 기존 LLM/Workflow 경계가 소유
 Delete tombstone 뒤 content-bearing record를 지우고 operational record를 content-free bounded 상태로 정리하는 durable process다.
 
 - purge request/session opaque reference
+- organization, deployment ID/version과 audience의 durable scope snapshot. Session FK가 `SET NULL`된 뒤에도 public receipt 검증에 사용
 - pending/running/completed/completed_with_hold/retryable_failure/terminal_failure 상태
 - monotonic claim generation, cursor, attempt와 next-attempt timestamp
 - legal-hold/backup erasure policy reference와 safe terminal reason
@@ -267,6 +270,8 @@ Legal hold는 runtime/session 접근을 되살리지 않는다. 보존이 강제
 Public purge는 발급 후 7일 안에 completed/completed_with_hold/terminal_failure 중 하나로 닫는다. Retryable failure가 7일을 넘으면 dead-letter와 운영 alert를 남기고 terminal failure로 승격한다. Receipt는 terminal 후 최소 24시간, 발급 후 최대 8일까지 유효하다. Legal hold는 compliance 격리가 durable해진 시점에 completed_with_hold로 terminal 처리하며 hold 해제까지 public job을 running으로 유지하지 않는다. `completed_with_hold`와 `terminal_failure`에는 `memory.session.purged`를 만들지 않는다. Hold 해제 후 별도 compliance erasure process가 실제 삭제를 완료한 시점에만 physical purge complete를 기록하고 public terminal status/receipt는 재개하지 않는다.
 
 `completed`는 configured content-bearing live store/cache, conversation access-token replay와 backup/export retention contract가 삭제 또는 승인된 irreversible crypto-erasure marker를 모두 반환한 경우에만 허용한다. 위 표의 최소 purge-control tombstone, receipt verifier와 encrypted delete-response replay만 정해진 TTL/receipt expiry까지 예외로 남길 수 있으며 raw session content 접근에는 사용할 수 없다. Unknown/partial marker는 낙관적으로 완료 처리하지 않는다.
+
+MBA-317은 `conversation_secret_replays.expires_at` 기준의 Memory-owned periodic retention task를 제공한다. Log worker queue는 실행 host일 뿐 정책 소유자는 Memory이며, task는 1분마다 최대 500개 row를 `FOR UPDATE SKIP LOCKED`로 claim해 같은 transaction에서 live-store ciphertext를 삭제한다. 이는 database backup의 즉시 crypto-erasure를 증명하지 않으므로 public lifecycle activation은 별도 승인된 external crypto-erasure 또는 database-backup 미사용 mode를 요구한다. Session/Turn/Summary를 지우고 purge terminal marker를 만드는 physical purge worker는 여전히 MBA-320 범위다.
 
 ## Application Use Cases
 
@@ -348,7 +353,7 @@ Window-only path는 read-only다. Summary path는 generation job, budget reserva
 - Access Grant replacement/revoke
 - Source invalidation/revalidation
 
-Public close는 session lifecycle에서 current grant의 사용 범위를 transcript-only로 제한하되 새 grant issue audit을 만들지 않는다. Reset은 old grant를 즉시 revoke하고 새 session/grant를 원자 발급하며, delete는 old grant를 즉시 revoke한다. 이는 grace rotation이 아니며 delete status는 별도 purge receipt가 소유한다.
+Public close는 session lifecycle에서 current grant의 사용 범위를 transcript-only로 제한하되 새 grant issue audit을 만들지 않는다. Transcript-only grant는 run/reset에는 사용할 수 없지만 privacy delete에는 사용할 수 있다. Reset은 old grant를 즉시 revoke하고 새 session/grant를 원자 발급하며, delete는 active 또는 transcript-only old grant를 즉시 revoke한다. 이는 grace rotation이 아니며 delete status는 별도 purge receipt가 소유한다.
 
 ## Ports And Adapters
 
@@ -382,6 +387,8 @@ Public grant/purge receipt 응답 유실 복구만 담당하는 bounded port다.
 Access Grant/Purge Job table에는 verifier hash만 두고 ciphertext를 섞지 않는다. Memory application은 encryption algorithm이나 raw key를 직접 선택하지 않으며 replay store unavailable이면 새 secret을 중복 발급하지 않고 fail-closed 한다.
 
 Access Grant token replay TTL이 끝난 same-key request는 `memory.secret_replay_expired`로 닫는다. Replay store가 만료 secret을 대신해 새 grant/receipt를 발급하거나 rotation하지 않는다.
+
+Live database의 만료 row는 Memory-owned periodic retention use case가 bounded batch로 삭제한다. Backup에서의 복구 불가능성은 replay store가 임의로 추정하지 않고 deployment activation 시 승인된 external crypto-erasure/no-backup contract로 확인한다.
 
 ### Source Authorization
 

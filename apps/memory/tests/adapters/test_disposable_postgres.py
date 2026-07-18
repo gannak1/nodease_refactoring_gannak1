@@ -42,6 +42,7 @@ from apps.memory.domain.conversation import (
     ProtectedEntryContent,
 )
 from apps.memory.domain.errors import MemoryDomainError
+from apps.shared.db.models.audit_log import AuditEventOutbox
 from apps.shared.db.models.conversation_memory import (
     ConversationAccessGrantRecord,
     ConversationMemoryEntryRecord,
@@ -77,8 +78,14 @@ PARENT_REVISION = "aa0b1c2d3e4f"
 MEMORY_MERGE_REVISION = "ac2d3e4f5061"
 PUBLIC_CONVERSATION_PARENT_REVISION = "f4a5b6c7d8e9"
 PUBLIC_CONVERSATION_REPLAY_REVISION = "ac1d2e3f4a50"
+PUBLIC_CONVERSATION_SCOPE_REVISION = "ad2e3f4a5b61"
 FOUNDATION_MEMORY_SCHEMA = {
-    table_name: columns
+    table_name: (
+        columns
+        - {"deployment_id", "deployment_version", "audience_kind"}
+        if table_name == "conversation_purge_jobs"
+        else columns
+    )
     for table_name, columns in REQUIRED_MEMORY_SCHEMA.items()
     if table_name != "conversation_secret_replays"
 }
@@ -117,6 +124,36 @@ def _run_alembic(
             "alembic command failed; stdout/stderr omitted to avoid leaking "
             "local configuration"
         )
+
+
+def _assert_alembic_fails(
+    revision: str,
+    *,
+    operation: str,
+    database: str,
+    config: DisposablePostgresConfig,
+) -> None:
+    environment = config.subprocess_environment(database=database, root_dir=ROOT_DIR)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            "apps/shared/alembic.ini",
+            operation,
+            revision,
+        ],
+        cwd=ROOT_DIR,
+        env=environment,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=180,
+        check=False,
+    )
+    assert result.returncode != 0
 
 
 def _enable_vector_extension(database: str, config: DisposablePostgresConfig) -> None:
@@ -599,9 +636,37 @@ def test_memory_migration_uow_and_concurrent_start_turn_contracts():
                 database=database,
                 config=config,
             )
+            _run_alembic(
+                PUBLIC_CONVERSATION_SCOPE_REVISION,
+                operation="upgrade",
+                database=database,
+                config=config,
+            )
             _assert_legacy_execution_survives(engine, ids)
             with Session(engine) as db:
                 assert check_memory_schema_readiness(db).ready is True
+
+                public_outbox = AuditEventOutbox(
+                    payload={
+                        "id": str(uuid.uuid4()),
+                        "actor_id": None,
+                        "actor_type": "public",
+                        "action": "memory.session.created",
+                    },
+                    idempotency_key=f"memory-public-{uuid.uuid4()}",
+                )
+                db.add(public_outbox)
+                db.commit()
+
+            _assert_alembic_fails(
+                PUBLIC_CONVERSATION_PARENT_REVISION,
+                operation="downgrade",
+                database=database,
+                config=config,
+            )
+            with Session(engine) as db:
+                db.execute(text("DELETE FROM audit_event_outbox"))
+                db.commit()
 
             _run_alembic(
                 PUBLIC_CONVERSATION_PARENT_REVISION,

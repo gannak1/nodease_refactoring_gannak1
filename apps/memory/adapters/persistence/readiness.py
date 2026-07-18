@@ -105,7 +105,15 @@ REQUIRED_MEMORY_SCHEMA: dict[str, frozenset[str]] = {
         {"id", "lease_id", "status", "version", "provider_started_at"}
     ),
     "conversation_purge_jobs": frozenset(
-        {"id", "session_reference_digest", "status", "receipt_verifier_hash"}
+        {
+            "id",
+            "session_reference_digest",
+            "deployment_id",
+            "deployment_version",
+            "audience_kind",
+            "status",
+            "receipt_verifier_hash",
+        }
     ),
     "conversation_idempotency_records": frozenset(
         {

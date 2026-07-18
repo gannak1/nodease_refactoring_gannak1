@@ -56,6 +56,7 @@ celery_app.conf.update(
         "audit.*": {"queue": "log"},  # 감사 로그도 log_system 워커가 소비
         "security_alert.*": {"queue": "log"},
         "knowledge.*": {"queue": "knowledge"},
+        "memory.*": {"queue": "log"},
     },
     beat_schedule={
         "security-alert-reconciliation": {
@@ -71,6 +72,11 @@ celery_app.conf.update(
         "audit-event-outbox": {
             "task": "audit.event_outbox.process",
             "schedule": 30.0,
+            "options": {"queue": "log"},
+        },
+        "memory-secret-replay-retention": {
+            "task": "memory.secret_replay_retention_purge",
+            "schedule": 60.0,
             "options": {"queue": "log"},
         },
         "knowledge-collection-sync-recovery": {

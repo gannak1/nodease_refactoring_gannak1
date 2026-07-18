@@ -50,7 +50,7 @@ Workflow와 Chatbot의 여러 turn에서 필요한 대화 맥락을 독립 Memor
 - MEM-REQ-001: Memory bounded context는 Conversation Session, Access Grant, Turn, final/provisional Entry와 projection, Summary, Data Dependency, Dispatch/Summary/Context/Purge process state, retention과 purge의 유일한 업무 mutation owner여야 한다.
 - MEM-REQ-002: Gateway, Workflow Engine, Log System과 다른 도메인은 Memory persistence table을 직접 변경하지 않고 Memory application contract를 사용해야 한다.
 - MEM-REQ-003: 새 대화는 기존 session을 변경하지 않고 새 session을 발급해야 한다.
-- MEM-REQ-004: Close는 새 runtime Memory Context read와 모든 mutation을 즉시 차단해야 한다. 소유자 또는 유효한 grant의 redacted transcript read는 retention 기간 동안 허용할 수 있다.
+- MEM-REQ-004: Close는 새 runtime Memory Context read, turn append와 reset 같은 content/runtime mutation을 즉시 차단해야 한다. 소유자 또는 transcript-only grant의 redacted transcript read와 privacy delete request는 retention 기간 동안 허용할 수 있다. Close가 delete 권리를 제거해서는 안 된다.
 - MEM-REQ-005: Reset은 기존 session close와 새 session 발급을 하나의 lifecycle operation으로 처리해야 한다.
 - MEM-REQ-006: Delete는 접근을 즉시 차단하고 tombstone 이후 entry, summary, dependency와 access grant를 durable purge해야 한다. Legal hold 대상 content는 runtime/provider 접근에서 분리된 compliance boundary에 격리하고 hold 종료 후 purge한다.
 - MEM-REQ-007: Expiry, close, reset 또는 delete 이후 도착한 queued/retried completion은 session을 다시 활성화하거나 entry를 append할 수 없어야 한다.
@@ -94,15 +94,15 @@ Workflow와 Chatbot의 여러 turn에서 필요한 대화 맥락을 독립 Memor
 ### Public And Authenticated Boundary
 
 - MEM-REQ-040: Public conversation token은 server-issued opaque bearer capability여야 하며 raw token과 internal session ID를 분리해야 한다.
-- MEM-REQ-041: Public token 원문은 Access Grant source-of-truth에 저장하지 않고 verifier hash, session/deployment ID·version/audience binding, `active|transcript_only|revoked|expired` state와 expiry만 관리해야 한다. V1은 standalone rotation endpoint, rotated grant chain과 old/new grant grace window를 지원하지 않는다. 별도 idempotency response store의 application-encrypted replay record는 최대 10분 TTL 예외이며 만료 후 복구 불가능하게 삭제해야 한다. TTL 뒤 same-key replay는 새 secret/grant를 만들지 않고 `memory.secret_replay_expired` conflict를 반환해야 한다.
+- MEM-REQ-041: Public token 원문은 Access Grant source-of-truth에 저장하지 않고 verifier hash, session/deployment ID·version/audience binding, `active|transcript_only|revoked|expired` state와 expiry만 관리해야 한다. V1은 standalone rotation endpoint, rotated grant chain과 old/new grant grace window를 지원하지 않는다. 별도 idempotency response store의 application-encrypted replay record는 최대 10분 TTL 예외이며 Memory-owned bounded retention worker가 만료 row를 live store에서 물리 삭제해야 한다. Backup에서 즉시 복구 불가능하다는 보장은 승인된 외부 crypto-erasure 또는 database-backup 미사용 계약이 확인된 환경에 한정하며, 확인되지 않은 환경에서는 public lifecycle을 활성화하지 않아야 한다. TTL 뒤 same-key replay는 새 secret/grant를 만들지 않고 `memory.secret_replay_expired` conflict를 반환해야 한다.
 - MEM-REQ-042: Public token 원문을 URL/query, audit, trace, metric label과 application log에 남기지 않아야 한다.
 - MEM-REQ-043: Public session을 로그인 후 authenticated session으로 자동 승격·병합하지 않아야 한다.
 - MEM-REQ-044: Authenticated session은 current user execution subject, organization, workflow/deployment scope를 서버가 canonical하게 구성해야 한다. Credential principal, billing principal과 audit actor는 execution subject와 별도로 파생해야 한다.
 - MEM-REQ-045: Public bearer capability 또는 public route의 optional authentication header가 private Memory와 private Knowledge 권한을 부여해서는 안 된다. `public_chatbot`과 `authenticated_internal_chatbot`은 시각 컴포넌트를 재사용할 수 있어도 backend route, 인증/CORS/Origin, deployment access policy와 session namespace를 분리해야 한다.
 - MEM-REQ-046: 로그아웃 후 authenticated session을 public endpoint에서 이어갈 수 없어야 한다.
 - MEM-REQ-047: Public token은 CSPRNG로 생성한 최소 128-bit entropy의 versioned opaque token이어야 하며 server-side verifier는 HMAC 같은 keyed one-way verifier 또는 승인된 memory-hard password hash와 constant-time comparison을 사용해야 한다.
-- MEM-REQ-048: Public session 생성·실행은 deployment, grant, network source와 organization cost scope별 finite rate, concurrency, turn/content와 비용 한도를 가져야 하며 운영 설정이 누락되어도 무제한으로 완화되지 않아야 한다.
-- MEM-REQ-049: Cookie 기반 authenticated mutation은 CSRF token, exact allowed Origin과 Fetch Metadata를 검증하고 public credential-less CORS와 분리해야 한다.
+- MEM-REQ-048: Public session 생성은 deployment, organization과 network source별 finite rate limit을 적용하고 아직 존재하지 않는 grant의 전역 placeholder bucket을 만들지 않아야 한다. Grant 발급 이후 lifecycle/run은 deployment, organization, network source와 실제 grant별 finite rate, concurrency, turn/content와 비용 한도를 가져야 하며 운영 설정이 누락되어도 무제한으로 완화되지 않아야 한다.
+- MEM-REQ-049: Cookie 기반 authenticated mutation은 CSRF token, exact allowed Origin과 Fetch Metadata를 검증하고, CORS grant를 제공하지 않는 public same-origin iframe API 경계와 분리해야 한다.
 
 ### Context, Summary And Cost
 
@@ -128,7 +128,7 @@ Workflow와 Chatbot의 여러 turn에서 필요한 대화 맥락을 독립 Memor
 - MEM-REQ-066: Audit/Tracing은 safe session/entry reference, action, status, reason과 bucketed count만 기록하고 raw Memory content를 저장하지 않아야 한다. AuditLog는 `memory.session.*`/`memory.grant.*` 관리·보안 lifecycle에 제한하고 정상 turn/summary 상태는 operational trace/metric으로 기록해야 한다.
 - MEM-REQ-067: Memory content는 shared privacy classification/redaction capability를 사용해야 하며 Memory domain이 PII/secret 판별 규칙을 자체 복제하지 않아야 한다.
 - MEM-REQ-068: Close 후 transcript 허용 여부, reset 이후 이전 transcript 표시와 delete purge 상태는 runtime Memory Context 접근과 별도 정책으로 평가해야 한다.
-- MEM-REQ-069: Delete가 비동기 purge를 시작하면 caller가 raw session/grant 없이도 완료·실패·재시도 상태를 확인할 수 있는 scoped receipt를 제공해야 한다. Public purge는 발급 후 7일 안에 terminal 상태로 전이하고 receipt는 terminal 후 최소 24시간, 최대 발급 후 8일까지 유효해야 한다. `completed_with_hold`는 compliance 격리 완료이며 물리 삭제 완료로 표시해서는 안 된다.
+- MEM-REQ-069: Delete가 비동기 purge를 시작하면 caller가 raw session/grant 없이도 완료·실패·재시도 상태를 확인할 수 있는 scoped receipt를 제공해야 한다. Purge Job은 organization, deployment ID/version과 audience snapshot을 durable하게 보존해 Session/Grant row가 물리 삭제된 뒤에도 receipt scope를 검증해야 한다. Public purge는 발급 후 7일 안에 terminal 상태로 전이하고 receipt는 terminal 후 최소 24시간, 최대 발급 후 8일까지 유효해야 한다. `completed_with_hold`는 compliance 격리 완료이며 물리 삭제 완료로 표시해서는 안 된다.
 
 ### Migration And Compatibility
 

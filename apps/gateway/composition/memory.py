@@ -29,6 +29,7 @@ from apps.memory.application.public_lifecycle import (
     PublicConversationPolicy,
     ResetPublicConversationUseCase,
 )
+from apps.memory.domain.errors import PublicConversationFeatureDisabledError
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,9 @@ def build_public_conversation_application(
     redis_client=None,
 ) -> PublicConversationApplication:
     values = environ if environ is not None else os.environ
+    validate_public_conversation_security_configuration(values)
+    if not public_conversation_enabled_from_environment(values):
+        raise PublicConversationFeatureDisabledError()
     policy = public_conversation_policy_from_environment(values)
     admission_policy = public_conversation_admission_policy_from_environment(values)
     repository = SqlAlchemyConversationMemoryRepository(db)
@@ -88,11 +92,31 @@ def validate_public_conversation_security_configuration(
     environ: Mapping[str, str] | None = None,
 ) -> None:
     values = environ if environ is not None else os.environ
+    if not public_conversation_enabled_from_environment(values):
+        return
+    if values.get("MEMORY_PUBLIC_REPLAY_BACKUP_ERASURE_MODE", "") not in {
+        "external_crypto_erasure",
+        "no_database_backups",
+    }:
+        raise RuntimeError(
+            "MEMORY_PUBLIC_REPLAY_BACKUP_ERASURE_MODE must confirm an approved mode"
+        )
     public_conversation_policy_from_environment(values)
     public_conversation_admission_policy_from_environment(values)
     HmacPublicSecretIssuer.from_environment(values)
     FernetSecretReplayCipher.from_environment(values)
     _admission_key(values)
+
+
+def public_conversation_enabled_from_environment(
+    environ: Mapping[str, str],
+) -> bool:
+    value = environ.get("MEMORY_PUBLIC_CONVERSATION_ENABLED", "false").strip().lower()
+    if value in {"true", "1"}:
+        return True
+    if value in {"false", "0"}:
+        return False
+    raise RuntimeError("MEMORY_PUBLIC_CONVERSATION_ENABLED must be true or false")
 
 
 def public_conversation_policy_from_environment(
@@ -265,6 +289,7 @@ def _seconds(
 __all__ = [
     "PublicConversationApplication",
     "build_public_conversation_application",
+    "public_conversation_enabled_from_environment",
     "public_conversation_admission_policy_from_environment",
     "public_conversation_policy_from_environment",
     "validate_public_conversation_security_configuration",

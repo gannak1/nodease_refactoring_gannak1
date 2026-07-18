@@ -107,6 +107,30 @@ def test_lifecycle_requires_exact_if_match_before_application_mutation(monkeypat
     assert application.close.commands == []
 
 
+def test_lifecycle_fingerprint_includes_if_match_revision(monkeypatch):
+    application = _Application()
+    client = _client(monkeypatch, application)
+    access_token = f"cag_v1_{secrets.token_urlsafe(32)}"
+    idempotency_key = _key()
+
+    for revision in (1, 2):
+        response = client.post(
+            "/run-public/public-chatbot/conversation/close",
+            json={},
+            headers={
+                "Authorization": f"Conversation {access_token}",
+                "Idempotency-Key": idempotency_key,
+                "If-Match": f'"lifecycle-revision-{revision}"',
+            },
+        )
+        assert response.status_code == 200
+
+    first, second = application.close.commands
+    assert first.expected_lifecycle_revision == 1
+    assert second.expected_lifecycle_revision == 2
+    assert first.request_fingerprint != second.request_fingerprint
+
+
 def test_bearer_or_cookie_cannot_be_interpreted_as_public_conversation_grant(monkeypatch):
     application = _Application()
     client = _client(monkeypatch, application)

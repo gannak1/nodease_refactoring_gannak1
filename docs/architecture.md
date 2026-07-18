@@ -94,8 +94,10 @@ Direct-edit protocol은 MBA-228의 단일 기능 PR에서 nullable `AgentBuilder
 | 구성요소 | 책임 |
 | --- | --- |
 | Memory Domain/Application | Conversation Session, Turn, Access Grant, final/provisional entry와 summary, dependency, lifecycle과 retention policy의 단일 업무 mutation owner |
+| Public Conversation Lifecycle | Same-origin iframe의 public Session·Access Grant 생성, transcript 조회, close/reset/privacy delete, purge receipt 조회와 transaction-bound canonical audit를 조율한다. 기본 비활성 feature를 명시적으로 활성화하고 독립 key와 backup erasure 전제를 충족한 환경에서만 composition한다. |
 | Turn Dispatch Job/Dispatcher | StartTurn과 원자적으로 저장된 durable dispatch를 application command로 claim/publish/reconcile하고 Gateway crash, broker ambiguity와 Workflow admission acknowledgement 유실을 복구 |
 | Memory Persistence Adapter | Memory-owned aggregate/revision/outbox를 PostgreSQL에 저장. 다른 production module의 Memory table 직접 mutation을 허용하지 않음 |
+| Public Replay Retention | Memory가 만료 판정과 bounded ciphertext 삭제 정책·repository를 소유한다. 공용 Log queue/worker는 주기 task의 실행 host일 뿐 Conversation state나 retention policy의 source of truth가 아니다. |
 | Source Authorization Adapter | Knowledge/connector/subworkflow의 current decision과 principal-neutral authorization decision/resource/policy revision을 bulk contract로 변환 |
 | Memory Provider Adapter | Reference-only materialization plan, LLM Credentials가 발급한 opaque `ProviderExecutionCapability` identity/revision에 binding된 provider attempt/lease claim, current authorization 재검증, raw bounded context materialization과 provider-start marker를 main provider 호출 직전에 결합 |
 | Summary Process Adapter | Fenced generation lease, approved provider execution capability/egress, capability-bound budget reservation, provider usage와 reconciliation 조정 |
@@ -242,7 +244,7 @@ Package 기준:
 - `apps/gateway/adapters/db/access_management_*`와 `apps/gateway/adapters/audit/*`는 SQLAlchemy projection/mutation/lock, transaction-bound audit와 management reason redaction을 구현한다. `apps/gateway/composition/access_management.py`가 이를 조립한다.
 - 기존 member/team/user-direct/App 생성 권한 경로는 일괄 이동하지 않고 같은 subject lock protocol과 transaction-bound audit을 사용하는 compatibility path로 보강한다. 기존 authorization, response/status와 latent-row 정책은 유지한다.
 - 다른 도메인도 동일한 router/use case/domain policy/port/adapter 기준을 따른다. `permissions`, `knowledge`, `llm`, `workflow_management`, `runtime_retrieval` 같은 domain package는 빈 구조로 선생성하지 않고, 해당 도메인의 첫 리팩터링 PR에서 실제 use case/port와 함께 만든다.
-- Conversation Memory는 Gateway 또는 Workflow Engine 하위 helper로 중복 구현하지 않는다. MBA-316에서 `apps/memory/`의 dormant domain/application/persistence 기반만 추가했으며 `apps/gateway/composition/memory.py`, `apps/workflow_engine/composition/memory.py`와 production traffic 연결은 후속 단계가 runtime별 adapter를 준비한 뒤 명시적으로 추가한다. 현재 global `memory_mode`/execution-log memory가 이 구조로 이관됐다고 간주하지 않는다.
+- Conversation Memory는 Gateway 또는 Workflow Engine 하위 helper로 중복 구현하지 않는다. MBA-316에서 `apps/memory/`의 domain/application/persistence 기반을 추가했고 MBA-317은 기본 비활성 feature gate 아래 public Session·Access Grant lifecycle과 만료 replay ciphertext 정리를 Gateway/Log worker execution host에 제한적으로 연결한다. Turn dispatch, provider 실행, summary와 전체 conversation physical purge는 각 후속 단계가 runtime별 adapter를 준비한 뒤 명시적으로 연결하며, 현재 global `memory_mode`/execution-log memory가 이 구조로 이관됐다고 간주하지 않는다.
 - Deployment preflight pilot을 이후 도메인 리팩터링의 reference implementation으로 사용하되, mutation 도메인은 별도 UnitOfWork와 transaction-bound audit 요구를 추가해야 한다.
 - `apps/shared/domain/*` 하위 도메인 package는 실제 cross-runtime pure policy가 생길 때만 만든다.
 - Gateway workflow 관리 책임은 `workflow_management`처럼 API 관리 책임을 드러내고, Workflow Engine 실행 책임과 혼동하지 않는다.

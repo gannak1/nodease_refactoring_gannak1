@@ -96,3 +96,23 @@ def test_idempotency_reservation_uses_database_conflict_gate_before_secret_creat
     compiled = str(statement.compile(dialect=postgresql.dialect()))
     assert "ON CONFLICT ON CONSTRAINT uq_conv_idempotency_scope_key DO NOTHING" in compiled
     assert "RETURNING conversation_idempotency_records.id" in compiled
+
+
+def test_expired_secret_replay_cleanup_uses_a_bounded_skip_locked_delete():
+    replay_ids = [uuid.uuid4(), uuid.uuid4()]
+    selected = MagicMock()
+    selected.scalars.return_value.all.return_value = replay_ids
+    db = MagicMock(spec=Session)
+    db.execute.side_effect = [selected, MagicMock()]
+    repository = SqlAlchemyConversationMemoryRepository(db)
+
+    deleted = repository.delete_expired_secret_replays(now=_now(), limit=500)
+
+    assert deleted == 2
+    select_statement = db.execute.call_args_list[0].args[0]
+    delete_statement = db.execute.call_args_list[1].args[0]
+    select_sql = str(select_statement.compile(dialect=postgresql.dialect()))
+    delete_sql = str(delete_statement.compile(dialect=postgresql.dialect()))
+    assert "FOR UPDATE SKIP LOCKED" in select_sql
+    assert "LIMIT" in select_sql
+    assert "DELETE FROM conversation_secret_replays" in delete_sql

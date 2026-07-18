@@ -21,10 +21,12 @@ def test_public_lifecycle_audit_uses_anonymous_public_actor_and_safe_metadata(mo
     audit = SqlAlchemyPublicConversationAudit(MagicMock(spec=Session))
 
     audit.record(
-        action="conversation.public.created",
+        action="memory.session.created",
         organization_id=uuid.uuid4(),
         deployment_id=uuid.uuid4(),
         session_id=uuid.uuid4(),
+        target_type="conversation_session",
+        target_id=uuid.uuid4(),
     )
 
     assert captured["actor_id"] is None
@@ -33,6 +35,7 @@ def test_public_lifecycle_audit_uses_anonymous_public_actor_and_safe_metadata(mo
     assert set(captured["metadata"]) == {
         "organization_id",
         "deployment_id",
+        "session_id",
         "surface",
         "purge_job_id",
     }
@@ -44,8 +47,10 @@ def test_public_lifecycle_audit_outbox_failure_aborts_the_memory_uow(monkeypatch
 
     with pytest.raises(MemoryAdapterUnavailableError):
         audit.record(
-            action="conversation.public.created",
+            action="memory.session.created",
             organization_id=uuid.uuid4(),
             deployment_id=uuid.uuid4(),
             session_id=uuid.uuid4(),
+            target_type="conversation_session",
+            target_id=uuid.uuid4(),
         )

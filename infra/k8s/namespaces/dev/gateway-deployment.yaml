@@ -97,6 +97,28 @@ spec:
               value: "http://localhost:3000,http://127.0.0.1:3000"
             - name: SECRET_KEY
               value: "dev_secret_key_for_testing_only"
+            - name: MEMORY_PUBLIC_CONVERSATION_ENABLED
+              value: "false"
+            - name: MEMORY_PUBLIC_REPLAY_BACKUP_ERASURE_MODE
+              value: "unconfirmed"
+            - name: MEMORY_PUBLIC_CAPABILITY_HMAC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: MEMORY_PUBLIC_CAPABILITY_HMAC_KEY
+                  optional: true
+            - name: MEMORY_PUBLIC_REPLAY_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: MEMORY_PUBLIC_REPLAY_ENCRYPTION_KEY
+                  optional: true
+            - name: MEMORY_PUBLIC_ADMISSION_HMAC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: MEMORY_PUBLIC_ADMISSION_HMAC_KEY
+                  optional: true
             # Sandbox 설정
             - name: SANDBOX_URL
               value: "http://sandbox-service.default.svc.cluster.local:8194"

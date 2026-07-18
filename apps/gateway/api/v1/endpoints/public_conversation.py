@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from datetime import datetime, timezone
 from typing import Annotated
@@ -15,11 +14,13 @@ from apps.gateway.composition.memory import build_public_conversation_applicatio
 from apps.memory.application.public_lifecycle import (
     CreatePublicConversationCommand,
     LifecycleCommand,
+    public_request_fingerprint,
 )
 from apps.memory.domain.errors import (
     AccessGrantNotUsableError,
     DuplicateRequestConflictError,
     MemoryAdapterUnavailableError,
+    PublicConversationFeatureDisabledError,
     PublicConversationRateLimitedError,
     PurgeReceiptNotUsableError,
     SecretReplayExpiredError,
@@ -52,13 +53,15 @@ def _idempotency_key_hash(value: str | None) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _request_fingerprint(request_model: BaseModel) -> str:
-    payload = json.dumps(
+def _request_fingerprint(
+    request_model: BaseModel,
+    *,
+    expected_lifecycle_revision: int | None = None,
+) -> str:
+    return public_request_fingerprint(
         request_model.model_dump(mode="json"),
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+        expected_lifecycle_revision=expected_lifecycle_revision,
+    )
 
 
 def _expected_lifecycle_revision(if_match: str | None) -> int:
@@ -148,6 +151,12 @@ def _map_public_error(error: Exception) -> HTTPException:
                 "Cache-Control": "no-store",
                 "Referrer-Policy": "no-referrer",
             },
+        )
+    if isinstance(error, PublicConversationFeatureDisabledError):
+        return _safe_error(
+            "memory.feature_unavailable",
+            "Public conversation is not enabled.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
     if isinstance(error, (MemoryAdapterUnavailableError, RuntimeError)):
         return _safe_error(
@@ -395,12 +404,16 @@ def _lifecycle_command(
     idempotency_key: str | None,
     if_match: str | None,
 ) -> LifecycleCommand:
+    expected_lifecycle_revision = _expected_lifecycle_revision(if_match)
     return LifecycleCommand(
         url_slug=url_slug,
         access_token=_conversation_token(authorization),
         idempotency_key_hash=_idempotency_key_hash(idempotency_key),
-        request_fingerprint=_request_fingerprint(body),
-        expected_lifecycle_revision=_expected_lifecycle_revision(if_match),
+        request_fingerprint=_request_fingerprint(
+            body,
+            expected_lifecycle_revision=expected_lifecycle_revision,
+        ),
+        expected_lifecycle_revision=expected_lifecycle_revision,
         now=_now(),
         network_address=request.client.host if request.client else "",
     )

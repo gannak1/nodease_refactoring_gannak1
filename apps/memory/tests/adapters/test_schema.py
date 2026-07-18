@@ -275,6 +275,9 @@ def test_access_grant_and_purge_receipt_never_define_raw_secret_columns():
     assert {
         "receipt_verifier_hash",
         "receipt_verifier_key_version",
+        "deployment_id",
+        "deployment_version",
+        "audience_kind",
     } <= set(ConversationPurgeJobRecord.__table__.c.keys())
 
 
@@ -390,7 +393,7 @@ def test_memory_migration_is_additive_reversible_and_descends_from_current_head(
     assert "op.drop_column" not in source
 
 
-def test_public_capability_replay_migration_follows_current_dev_head():
+def test_public_capability_replay_migration_follows_declared_parent():
     migration = (
         ROOT
         / "apps"
@@ -406,7 +409,31 @@ def test_public_capability_replay_migration_follows_current_dev_head():
     assert '"conversation_secret_replays"' in source
     assert "uq_conv_idempotency_id_org" in source
     assert "ALTER TYPE audit_actor_type ADD VALUE IF NOT EXISTS 'public'" in source
+    assert "audit_event_outbox" in source
+    assert "payload ->> 'actor_type' = 'public'" in source
+    assert source.index("audit_event_outbox") < source.index(
+        'op.drop_table("conversation_secret_replays")'
+    )
     assert "raw_token" not in source
+
+
+def test_public_purge_scope_snapshot_migration_extends_the_replay_revision():
+    migration = (
+        ROOT
+        / "apps"
+        / "shared"
+        / "alembic"
+        / "versions"
+        / "ad2e3f4a5b61_add_public_purge_scope_snapshot.py"
+    )
+    source = migration.read_text(encoding="utf-8")
+
+    assert 'revision: str = "ad2e3f4a5b61"' in source
+    assert 'down_revision: str | Sequence[str] | None = "ac1d2e3f4a50"' in source
+    for column in ("deployment_id", "deployment_version", "audience_kind"):
+        assert f'sa.Column("{column}"' in source
+        assert f'op.drop_column("conversation_purge_jobs", "{column}")' in source
+    assert "ck_conv_purge_scope_snapshot" in source
 
 
 class _Inspector:

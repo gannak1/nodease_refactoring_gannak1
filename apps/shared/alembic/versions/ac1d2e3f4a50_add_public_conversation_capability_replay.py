@@ -84,6 +84,26 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # PostgreSQL cannot remove an enum label in place. Refuse before any
+    # destructive DDL when either delivered history or a durable pending
+    # outbox event still depends on the public actor label.
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM audit_logs WHERE actor_type::text = 'public'
+            ) OR EXISTS (
+                SELECT 1
+                FROM audit_event_outbox
+                WHERE payload ->> 'actor_type' = 'public'
+            ) THEN
+                RAISE EXCEPTION
+                    'cannot downgrade public audit actor type while public audit events exist';
+            END IF;
+        END $$;
+        """
+    )
     op.drop_index(
         "ix_conv_secret_replays_expiry",
         table_name="conversation_secret_replays",
@@ -93,21 +113,6 @@ def downgrade() -> None:
         "uq_conv_idempotency_id_org",
         "conversation_idempotency_records",
         type_="unique",
-    )
-    # PostgreSQL cannot remove an enum label in place.  Refuse a downgrade that
-    # would silently reinterpret public audit history, then rebuild the enum.
-    op.execute(
-        """
-        DO $$
-        BEGIN
-            IF EXISTS (
-                SELECT 1 FROM audit_logs WHERE actor_type::text = 'public'
-            ) THEN
-                RAISE EXCEPTION
-                    'cannot downgrade public audit actor type while public audit rows exist';
-            END IF;
-        END $$;
-        """
     )
     op.execute(
         "ALTER TABLE audit_logs ALTER COLUMN actor_type TYPE VARCHAR(16) "

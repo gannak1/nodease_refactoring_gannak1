@@ -54,6 +54,10 @@ class MemoryAdapterUnavailableError(MemoryDomainError):
     code = "memory.adapter_unavailable"
 
 
+class PublicConversationFeatureDisabledError(MemoryDomainError):
+    code = "memory.feature_unavailable"
+
+
 class EntryNotFoundError(MemoryDomainError):
     code = "memory.entry_not_found"
 

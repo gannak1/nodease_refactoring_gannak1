@@ -92,16 +92,32 @@ class RedisPublicConversationAdmission:
     ) -> None:
         if not network_address or len(network_address) > 255:
             raise MemoryAdapterUnavailableError()
-        dimensions = (
-            ("deployment", str(binding.deployment_id), self._policy.deployment_rate_limit),
-            ("organization", str(binding.organization_id), self._policy.organization_rate_limit),
-            ("network", network_address, self._policy.network_rate_limit),
+        dimensions = [
             (
-                "grant",
-                str(grant_id) if grant_id is not None else f"create:{operation}",
-                self._policy.grant_rate_limit,
+                "deployment",
+                str(binding.deployment_id),
+                self._policy.deployment_rate_limit,
             ),
-        )
+            (
+                "organization",
+                str(binding.organization_id),
+                self._policy.organization_rate_limit,
+            ),
+            ("network", network_address, self._policy.network_rate_limit),
+        ]
+        if operation == "conversation.create":
+            if grant_id is not None:
+                raise MemoryAdapterUnavailableError()
+        else:
+            if grant_id is None:
+                raise MemoryAdapterUnavailableError()
+            dimensions.append(
+                (
+                    "grant",
+                    str(grant_id),
+                    self._policy.grant_rate_limit,
+                )
+            )
         keys = tuple(
             f"{self._key_prefix}:{operation}:{dimension}:{self._digest(dimension, value)}"
             for dimension, value, _limit in dimensions

@@ -3,9 +3,10 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, SessionTransaction
@@ -304,6 +305,28 @@ class SqlAlchemyConversationMemoryRepository:
         )
         record = _execute(self._session, statement).scalar_one_or_none()
         return _secret_replay_domain(record) if record is not None else None
+
+    def delete_expired_secret_replays(self, *, now: datetime, limit: int) -> int:
+        statement = (
+            select(ConversationSecretReplayRecord.id)
+            .where(ConversationSecretReplayRecord.expires_at <= now)
+            .order_by(
+                ConversationSecretReplayRecord.expires_at,
+                ConversationSecretReplayRecord.id,
+            )
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        replay_ids = list(_execute(self._session, statement).scalars().all())
+        if not replay_ids:
+            return 0
+        _execute(
+            self._session,
+            delete(ConversationSecretReplayRecord)
+            .where(ConversationSecretReplayRecord.id.in_(replay_ids))
+            .execution_options(synchronize_session=False),
+        )
+        return len(replay_ids)
 
     def find_purge_job(
         self,
@@ -942,6 +965,11 @@ def _purge_record(job: ConversationPurgeJob) -> ConversationPurgeJobRecord:
         organization_id=job.organization_id,
         session_id=job.session_id,
         session_reference_digest=job.session_reference_digest,
+        deployment_id=job.deployment_id,
+        deployment_version=job.deployment_version,
+        audience_kind=(
+            job.audience_kind.value if job.audience_kind is not None else None
+        ),
         receipt_verifier_hash=job.receipt_verifier_hash,
         receipt_verifier_key_version=job.receipt_verifier_key_version,
         receipt_expires_at=job.receipt_expires_at,
@@ -964,6 +992,11 @@ def _purge_domain(record: ConversationPurgeJobRecord) -> ConversationPurgeJob:
         organization_id=record.organization_id,
         session_id=record.session_id,
         session_reference_digest=record.session_reference_digest,
+        deployment_id=record.deployment_id,
+        deployment_version=record.deployment_version,
+        audience_kind=(
+            AudienceKind(record.audience_kind) if record.audience_kind is not None else None
+        ),
         receipt_verifier_hash=record.receipt_verifier_hash,
         receipt_verifier_key_version=record.receipt_verifier_key_version,
         receipt_expires_at=record.receipt_expires_at,

@@ -36,6 +36,7 @@ from apps.memory.domain.public_access import (
     EncryptedSecretReplay,
     IdempotencyStatus,
 )
+from apps.shared.audit.actions import AuditAction
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +126,8 @@ class PublicConversationAuditPort(Protocol):
         organization_id: uuid.UUID,
         deployment_id: uuid.UUID,
         session_id: uuid.UUID,
+        target_type: str,
+        target_id: uuid.UUID,
         purge_job_id: uuid.UUID | None = None,
     ) -> None: ...
 
@@ -521,10 +524,20 @@ class CreatePublicConversationUseCase(_TransactionalPublicUseCase):
             self.repository.add_access_grant(grant)
             self.repository.save_idempotency(record)
             self.audit.record(
-                action="conversation.public.created",
+                action=AuditAction.MEMORY_SESSION_CREATED,
                 organization_id=binding.organization_id,
                 deployment_id=binding.deployment_id,
                 session_id=session.id,
+                target_type="conversation_session",
+                target_id=session.id,
+            )
+            self.audit.record(
+                action=AuditAction.MEMORY_GRANT_ISSUED,
+                organization_id=binding.organization_id,
+                deployment_id=binding.deployment_id,
+                session_id=session.id,
+                target_type="conversation_access_grant",
+                target_id=grant.id,
             )
             return _conversation_result(
                 session=session,
@@ -613,10 +626,12 @@ class ClosePublicConversationUseCase(_TransactionalPublicUseCase):
             self.repository.save_access_grant(grant)
             self.repository.save_idempotency(reservation.record)
             self.audit.record(
-                action="conversation.public.closed",
+                action=AuditAction.MEMORY_SESSION_CLOSED,
                 organization_id=binding.organization_id,
                 deployment_id=binding.deployment_id,
                 session_id=session.id,
+                target_type="conversation_session",
+                target_id=session.id,
             )
             return _close_result(session, replayed=False)
 
@@ -723,10 +738,36 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
             self.repository.add_access_grant(new_grant)
             self.repository.save_idempotency(reservation.record)
             self.audit.record(
-                action="conversation.public.reset",
+                action=AuditAction.MEMORY_SESSION_RESET,
                 organization_id=binding.organization_id,
                 deployment_id=binding.deployment_id,
                 session_id=old_session.id,
+                target_type="conversation_session",
+                target_id=old_session.id,
+            )
+            self.audit.record(
+                action=AuditAction.MEMORY_GRANT_REVOKED,
+                organization_id=binding.organization_id,
+                deployment_id=binding.deployment_id,
+                session_id=old_session.id,
+                target_type="conversation_access_grant",
+                target_id=old_grant.id,
+            )
+            self.audit.record(
+                action=AuditAction.MEMORY_SESSION_CREATED,
+                organization_id=binding.organization_id,
+                deployment_id=binding.deployment_id,
+                session_id=new_session.id,
+                target_type="conversation_session",
+                target_id=new_session.id,
+            )
+            self.audit.record(
+                action=AuditAction.MEMORY_GRANT_ISSUED,
+                organization_id=binding.organization_id,
+                deployment_id=binding.deployment_id,
+                session_id=new_session.id,
+                target_type="conversation_access_grant",
+                target_id=new_grant.id,
             )
             return _conversation_result(
                 session=new_session,
@@ -786,7 +827,7 @@ class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
                 network_address=command.network_address,
             )
 
-            grant.require_active(
+            grant.require_transcript(
                 deployment_id=binding.deployment_id,
                 deployment_version=binding.deployment_version,
                 audience_kind=AudienceKind.PUBLIC_CHATBOT,
@@ -800,6 +841,9 @@ class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
                 session_reference_digest=hashlib.sha256(
                     str(session.id).encode("ascii")
                 ).hexdigest(),
+                deployment_id=binding.deployment_id,
+                deployment_version=binding.deployment_version,
+                audience_kind=AudienceKind.PUBLIC_CHATBOT,
                 receipt_verifier_hash=issued.verifier_hash,
                 receipt_verifier_key_version=issued.verifier_key_version,
                 receipt_expires_at=command.now + self.policy.purge_receipt_lifetime,
@@ -833,10 +877,21 @@ class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
             self.repository.add_purge_job(purge_job)
             self.repository.save_idempotency(reservation.record)
             self.audit.record(
-                action="conversation.public.delete_requested",
+                action=AuditAction.MEMORY_SESSION_DELETE_REQUESTED,
                 organization_id=binding.organization_id,
                 deployment_id=binding.deployment_id,
                 session_id=session.id,
+                target_type="conversation_session",
+                target_id=session.id,
+                purge_job_id=purge_job.id,
+            )
+            self.audit.record(
+                action=AuditAction.MEMORY_GRANT_REVOKED,
+                organization_id=binding.organization_id,
+                deployment_id=binding.deployment_id,
+                session_id=session.id,
+                target_type="conversation_access_grant",
+                target_id=grant.id,
                 purge_job_id=purge_job.id,
             )
             return DeletePublicConversationResult(
@@ -913,17 +968,11 @@ class GetPublicPurgeStatusUseCase(_TransactionalPublicUseCase):
                 or not hmac.compare_digest(job.receipt_verifier_hash, verifier[1])
             ):
                 raise PurgeReceiptNotUsableError()
-            if job.session_id is None:
-                raise PurgeReceiptNotUsableError()
-            session = self.repository.lock_session(
-                organization_id=job.organization_id,
-                session_id=job.session_id,
-            )
             if (
-                session is None
-                or session.deployment_id != binding.deployment_id
-                or session.deployment_version != binding.deployment_version
-                or session.audience_kind is not AudienceKind.PUBLIC_CHATBOT
+                job.organization_id != binding.organization_id
+                or job.deployment_id != binding.deployment_id
+                or job.deployment_version != binding.deployment_version
+                or job.audience_kind is not AudienceKind.PUBLIC_CHATBOT
             ):
                 raise PurgeReceiptNotUsableError()
             return PublicPurgeStatusResult(
@@ -978,6 +1027,25 @@ def _scope_digest(
         "grant_id": str(grant.id) if grant is not None else None,
         "session_id": str(session.id) if session is not None else None,
     }
+    return hashlib.sha256(
+        json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def public_request_fingerprint(
+    request_body: dict[str, object],
+    *,
+    expected_lifecycle_revision: int | None = None,
+) -> str:
+    """Hash the bounded semantic request, including lifecycle preconditions."""
+
+    if expected_lifecycle_revision is not None and expected_lifecycle_revision < 1:
+        raise ValueError("expected lifecycle revision must be positive")
+    data: dict[str, object] = {"body": request_body}
+    if expected_lifecycle_revision is not None:
+        data["preconditions"] = {
+            "expected_lifecycle_revision": expected_lifecycle_revision,
+        }
     return hashlib.sha256(
         json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -1087,6 +1155,7 @@ __all__ = [
     "PublicDeploymentBinding",
     "PublicPurgeStatusResult",
     "PublicSecretIssuerPort",
+    "public_request_fingerprint",
     "ResetPublicConversationUseCase",
     "SecretCiphertext",
     "SecretReplayCipherPort",

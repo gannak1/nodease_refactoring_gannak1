@@ -1534,6 +1534,16 @@ class ConversationPurgeJobRecord(_TimestampMixin, Base):
             name="ck_conv_purge_counters",
         ),
         CheckConstraint(
+            "((deployment_id IS NULL AND deployment_version IS NULL "
+            "AND audience_kind IS NULL) OR "
+            "(deployment_id IS NOT NULL AND audience_kind IS NOT NULL AND "
+            "((audience_kind = 'public_chatbot' "
+            "AND deployment_version IS NOT NULL AND deployment_version > 0) OR "
+            "(audience_kind = 'authenticated_internal_chatbot' AND "
+            "(deployment_version IS NULL OR deployment_version > 0)))))",
+            name="ck_conv_purge_scope_snapshot",
+        ),
+        CheckConstraint(
             "(status = 'running' AND claim_owner IS NOT NULL "
             "AND claim_deadline_at IS NOT NULL) OR "
             "(status <> 'running' AND claim_owner IS NULL)",
@@ -1568,6 +1578,12 @@ class ConversationPurgeJobRecord(_TimestampMixin, Base):
         String(64),
         nullable=False,
     )
+    deployment_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=True,
+    )
+    deployment_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    audience_kind: Mapped[str | None] = mapped_column(String(48), nullable=True)
     receipt_verifier_hash: Mapped[str] = mapped_column(
         String(128),
         nullable=False,

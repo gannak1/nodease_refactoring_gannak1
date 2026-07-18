@@ -29,6 +29,7 @@ from apps.memory.application.public_lifecycle import (
 from apps.memory.domain.conversation import ConversationPurgeJob, ConversationSession
 from apps.memory.domain.errors import (
     AccessGrantNotUsableError,
+    DuplicateRequestConflictError,
     MemoryAdapterUnavailableError,
     SecretReplayExpiredError,
 )
@@ -230,10 +231,10 @@ class _Cipher:
 
 class _Audit:
     def __init__(self) -> None:
-        self.events: list[tuple[str, uuid.UUID, uuid.UUID]] = []
+        self.events: list[dict] = []
 
-    def record(self, *, action, organization_id, deployment_id, session_id, **_kwargs):
-        self.events.append((action, organization_id, session_id))
+    def record(self, **event):
+        self.events.append(event)
 
 
 def _binding() -> PublicDeploymentBinding:
@@ -295,13 +296,19 @@ def _create_command(*, now: datetime = _now(), suffix: str = "one"):
     )
 
 
-def _lifecycle_command(token: str, *, now: datetime = _now(), suffix: str = "one"):
+def _lifecycle_command(
+    token: str,
+    *,
+    now: datetime = _now(),
+    suffix: str = "one",
+    expected_revision: int = 1,
+):
     return LifecycleCommand(
         url_slug="public-chatbot",
         access_token=token,
         idempotency_key_hash=_hash(f"lifecycle-key-{suffix}"),
         request_fingerprint=_hash("empty-json"),
-        expected_lifecycle_revision=1,
+        expected_lifecycle_revision=expected_revision,
         now=now,
     )
 
@@ -341,7 +348,30 @@ def test_close_makes_grant_transcript_only_and_does_not_duplicate_audit_event():
     assert visible.entries == ()
     with pytest.raises(AccessGrantNotUsableError):
         reset.execute(_lifecycle_command(first.access_token, suffix="different"))
-    assert [event[0] for event in components[4].events].count("conversation.public.closed") == 1
+    assert [event["action"] for event in components[4].events] == [
+        "memory.session.created",
+        "memory.grant.issued",
+        "memory.session.closed",
+    ]
+
+
+def test_same_lifecycle_key_with_a_different_precondition_fingerprint_conflicts():
+    components = _application()
+    create = _use_case(CreatePublicConversationUseCase, components)
+    close = _use_case(ClosePublicConversationUseCase, components)
+    first = create.execute(_create_command())
+    command = _lifecycle_command(first.access_token)
+
+    close.execute(command)
+
+    with pytest.raises(DuplicateRequestConflictError):
+        close.execute(
+            replace(
+                command,
+                expected_lifecycle_revision=2,
+                request_fingerprint=_hash("empty-json-with-revision-2"),
+            )
+        )
 
 
 def test_reset_revokes_old_grant_but_matching_retry_returns_one_replacement():
@@ -359,6 +389,23 @@ def test_reset_revokes_old_grant_but_matching_retry_returns_one_replacement():
     assert replay.access_token == replacement.access_token
     with pytest.raises(AccessGrantNotUsableError):
         reset.execute(_lifecycle_command(first.access_token, suffix="other"))
+    assert [event["action"] for event in components[4].events] == [
+        "memory.session.created",
+        "memory.grant.issued",
+        "memory.session.reset",
+        "memory.grant.revoked",
+        "memory.session.created",
+        "memory.grant.issued",
+    ]
+    assert [event["target_type"] for event in components[4].events] == [
+        "conversation_session",
+        "conversation_access_grant",
+        "conversation_session",
+        "conversation_access_grant",
+        "conversation_session",
+        "conversation_access_grant",
+    ]
+    assert components[4].events[2]["target_id"] != components[4].events[4]["target_id"]
 
 
 def test_delete_revokes_conversation_grant_and_replays_receipt_only_until_ttl():
@@ -369,6 +416,7 @@ def test_delete_revokes_conversation_grant_and_replays_receipt_only_until_ttl():
             access_grant_lifetime=timedelta(days=2),
         )
     )
+    repository = components[0]
     create = _use_case(CreatePublicConversationUseCase, components)
     delete = _use_case(DeletePublicConversationUseCase, components)
     purge_status = _use_case(GetPublicPurgeStatusUseCase, components)
@@ -393,6 +441,54 @@ def test_delete_revokes_conversation_grant_and_replays_receipt_only_until_ttl():
                 now=_now() + timedelta(hours=24),
             )
         )
+    purge_job = repository.purge_jobs[deleted.purge_job_id]
+    repository.sessions.pop(purge_job.session_id)
+    purge_job.session_id = None
+    status_after_physical_session_delete = purge_status.execute(
+        url_slug="public-chatbot",
+        purge_receipt=deleted.purge_receipt,
+        now=_now(),
+    )
+    assert status_after_physical_session_delete.status.value == "pending"
+    assert [event["action"] for event in components[4].events] == [
+        "memory.session.created",
+        "memory.grant.issued",
+        "memory.session.delete_requested",
+        "memory.grant.revoked",
+    ]
+    assert [event["target_type"] for event in components[4].events[-2:]] == [
+        "conversation_session",
+        "conversation_access_grant",
+    ]
+
+
+def test_closed_conversation_can_request_privacy_delete_but_cannot_reset():
+    components = _application()
+    create = _use_case(CreatePublicConversationUseCase, components)
+    close = _use_case(ClosePublicConversationUseCase, components)
+    reset = _use_case(ResetPublicConversationUseCase, components)
+    delete = _use_case(DeletePublicConversationUseCase, components)
+    first = create.execute(_create_command())
+    close.execute(_lifecycle_command(first.access_token, suffix="close"))
+
+    with pytest.raises(AccessGrantNotUsableError):
+        reset.execute(
+            _lifecycle_command(
+                first.access_token,
+                suffix="reset-after-close",
+                expected_revision=2,
+            )
+        )
+
+    result = delete.execute(
+        _lifecycle_command(
+            first.access_token,
+            suffix="delete-after-close",
+            expected_revision=2,
+        )
+    )
+
+    assert result.lifecycle.value == "delete_pending"
 
 
 def test_mutation_admission_runs_once_for_new_request_not_for_idempotency_replay():

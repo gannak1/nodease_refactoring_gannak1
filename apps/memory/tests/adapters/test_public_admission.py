@@ -63,7 +63,7 @@ def test_admission_uses_hashed_dimensions_not_network_or_grant_values_in_redis_k
     grant_id = uuid.uuid4()
 
     admission.admit(
-        operation="conversation.create",
+        operation="conversation.close",
         binding=_binding(),
         grant_id=grant_id,
         network_address=network,
@@ -74,6 +74,30 @@ def test_admission_uses_hashed_dimensions_not_network_or_grant_values_in_redis_k
     assert all(network not in key for key in keys)
     assert all(str(grant_id) not in key for key in keys)
     assert call[-5:] == (60, 2, 3, 4, 5)
+
+
+def test_create_omits_global_grant_bucket_and_preserves_tenant_dimensions():
+    redis = _Redis()
+    admission = _admission(redis)
+    first = _binding()
+    second = _binding()
+    network = "198.51.100.42"
+
+    for binding in (first, second):
+        admission.admit(
+            operation="conversation.create",
+            binding=binding,
+            grant_id=None,
+            network_address=network,
+        )
+
+    first_call, second_call = redis.calls
+    first_keys = set(first_call[2:5])
+    second_keys = set(second_call[2:5])
+    assert len(first_keys) == len(second_keys) == 3
+    assert len(first_keys & second_keys) == 1  # shared abuse-source network only
+    assert first_call[-4:] == (60, 2, 3, 4)
+    assert second_call[-4:] == (60, 2, 3, 4)
 
 
 def test_admission_returns_bounded_retry_after_when_any_scope_is_limited():
