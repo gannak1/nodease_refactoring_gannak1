@@ -204,17 +204,6 @@ Policy response는 다음 구조를 사용한다.
     "reason_label": "여러 조건 종합",
     "created_at": "2026-07-18T09:30:00+00:00"
   },
-  "performance": {
-    "total_runs": 42,
-    "model_count": 5,
-    "models": []
-  },
-  "learning_summary": {
-    "pending_count": 2,
-    "accepted_count": 18,
-    "rejected_count": 3,
-    "last_outcome_reason": "contract_passed"
-  }
 }
 ~~~
 
@@ -249,8 +238,8 @@ reason code, runtime context, `decision_source`, `judge_called`를 남긴다. Ju
 
 Judge가 선택한 실행은 처음에는 `learning_status=pending_contract`로 기록한다. workflow
 완료 후 node 성공, schema/downstream 계약, fallback 여부를 확인해 `accepted` 또는
-`rejected`와 `learning_outcome_reason`으로 갱신한다. policy 조회의 `learning_summary`는
-이 상태별 건수만 반환하며 feature vector나 원문은 포함하지 않는다.
+`rejected`와 `learning_outcome_reason`으로 갱신한다. 이 학습 상태는 정책 갱신 경로에서만
+사용하며, 노드 상세 패널의 policy 조회 응답에는 feature vector나 원문, 집계값을 반환하지 않는다.
 
 ### Persistence Model
 

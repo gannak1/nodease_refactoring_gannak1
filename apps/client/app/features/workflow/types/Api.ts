@@ -287,20 +287,6 @@ export interface ModelRoutingPolicyResponse {
     last_refresh_result: string | null;
     last_refresh_at: string | null;
   };
-  last_update: {
-    id: string;
-    trigger: string;
-    status: string;
-    eligible_run_count: number;
-    excluded_run_count: number;
-    judge_provider: string | null;
-    judge_model: string | null;
-    judge_usage_log_id: string | null;
-    prompt_version: string | null;
-    new_policy_version: string | null;
-    judge_cost: number | null;
-    created_at: string | null;
-  } | null;
   last_decision: {
     selected_model_id: string;
     fallback_model_id: string | null;
@@ -310,36 +296,6 @@ export interface ModelRoutingPolicyResponse {
     reason_label: string;
     created_at: string | null;
   } | null;
-  performance?: {
-    total_runs: number;
-    model_count: number;
-    last_recorded_at: string | null;
-    models: Array<{
-      model_id: string;
-      input_profile: string;
-      run_count: number;
-      success_rate: number | null;
-      schema_pass_rate: number | null;
-      downstream_success_rate: number | null;
-      fallback_rate: number | null;
-      quality_score: number;
-      avg_cost: number | null;
-      avg_latency_ms: number | null;
-      avg_total_tokens: number | null;
-    }>;
-  };
-  learning_summary?: {
-    pending_count: number;
-    accepted_count: number;
-    rejected_count: number;
-    last_outcome_reason: string | null;
-  };
-  change_policy?: {
-    mode: 'event_driven';
-    minimum_new_runs: number;
-    quality_change_threshold: number;
-    efficiency_improvement_threshold: number;
-  };
 }
 
 export interface ModelRoutingPolicyPatchResponse

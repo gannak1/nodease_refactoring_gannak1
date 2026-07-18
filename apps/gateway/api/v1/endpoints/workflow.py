@@ -66,7 +66,6 @@ from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.model_routing_policy import (
     LLMNodeModelRoutingBootstrap,
     LLMNodeModelRoutingPolicy,
-    LLMNodeModelRoutingPolicyUpdate,
 )
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.user import User
@@ -90,15 +89,9 @@ from apps.workflow_engine.services.model_router import ModelCandidate, ModelRout
 from apps.workflow_engine.services.model_routing_judge_first_policy import (
     build_judge_first_active_policy,
 )
-from apps.workflow_engine.services.model_routing_policy_store import (
-    ModelRoutingPolicyStore,
-)
 from apps.workflow_engine.services.model_routing_bootstrap import (
     PersistedModelRoutingBootstrapStore,
     downstream_contract_from_graph,
-)
-from apps.workflow_engine.services.model_routing_operational_performance import (
-    ModelRoutingOperationalPerformanceService,
 )
 
 # [NEW] 로깅 모델 및 스키마
@@ -1014,11 +1007,9 @@ def _model_routing_policy_response(
     *,
     enabled: bool,
     db: Session | None = None,
-    latest_update: LLMNodeModelRoutingPolicyUpdate | None = None,
     decision_deployment_id: UUID | None = None,
     decision_node_id: str | None = None,
 ) -> dict[str, Any]:
-    last_update = _model_routing_policy_update_summary(latest_update)
     last_decision = _model_routing_latest_decision_summary(
         db,
         policy,
@@ -1041,21 +1032,7 @@ def _model_routing_policy_response(
                 "last_refresh_result": None,
                 "last_refresh_at": None,
             },
-            "last_update": last_update,
             "last_decision": last_decision,
-            "performance": {
-                "total_runs": 0,
-                "model_count": 0,
-                "last_recorded_at": None,
-                "models": [],
-            },
-            "learning_summary": {
-                "pending_count": 0,
-                "accepted_count": 0,
-                "rejected_count": 0,
-                "last_outcome_reason": None,
-            },
-            "change_policy": _model_routing_change_policy_summary(),
         }
 
     refresh_every_runs = policy.refresh_every_runs
@@ -1078,32 +1055,7 @@ def _model_routing_policy_response(
             if policy.last_refreshed_at
             else None,
         },
-        "last_update": last_update,
         "last_decision": last_decision,
-        "performance": (
-            ModelRoutingOperationalPerformanceService.response_summary(
-                db,
-                policy_id=policy.id,
-            )
-            if db is not None
-            else {
-                "total_runs": 0,
-                "model_count": 0,
-                "last_recorded_at": None,
-                "models": [],
-            }
-        ),
-        "learning_summary": (
-            ModelRoutingPolicyStore.learning_label_summary(db, policy_id=policy.id)
-            if db is not None
-            else {
-                "pending_count": 0,
-                "accepted_count": 0,
-                "rejected_count": 0,
-                "last_outcome_reason": None,
-            }
-        ),
-        "change_policy": _model_routing_change_policy_summary(),
     }
 
 
@@ -1180,51 +1132,6 @@ def _model_routing_latest_decision_summary(
     }
 
 
-def _model_routing_change_policy_summary() -> dict[str, Any]:
-    return {
-        "mode": "event_driven",
-        "minimum_new_runs": ModelRoutingOperationalPerformanceService.MIN_NEW_RUNS,
-        "quality_change_threshold": (
-            ModelRoutingOperationalPerformanceService.QUALITY_CHANGE_THRESHOLD
-        ),
-        "efficiency_improvement_threshold": (
-            ModelRoutingOperationalPerformanceService.EFFICIENCY_IMPROVEMENT_THRESHOLD
-        ),
-    }
-
-
-def _model_routing_policy_update_summary(
-    update: LLMNodeModelRoutingPolicyUpdate | None,
-) -> dict[str, Any] | None:
-    """정책 갱신 이력에서 UI에 필요한 safe summary만 반환한다."""
-    if update is None:
-        return None
-    output_summary = (
-        update.output_summary if isinstance(update.output_summary, dict) else {}
-    )
-    judge_cost = output_summary.get("judge_cost")
-    try:
-        judge_cost = float(judge_cost) if judge_cost is not None else None
-    except (TypeError, ValueError):
-        judge_cost = None
-    return {
-        "id": str(update.id),
-        "trigger": update.trigger,
-        "status": update.status,
-        "eligible_run_count": update.eligible_run_count,
-        "excluded_run_count": update.excluded_run_count,
-        "judge_provider": update.judge_provider,
-        "judge_model": update.judge_model,
-        "judge_usage_log_id": str(update.judge_usage_log_id)
-        if update.judge_usage_log_id
-        else None,
-        "prompt_version": update.prompt_version,
-        "new_policy_version": update.new_policy_version,
-        "judge_cost": judge_cost,
-        "created_at": update.created_at.isoformat() if update.created_at else None,
-    }
-
-
 def _get_model_routing_policy_for_workflow(
     db: Session,
     workflow: Workflow,
@@ -1238,20 +1145,6 @@ def _get_model_routing_policy_for_workflow(
         .filter(LLMNodeModelRoutingPolicy.workflow_id == workflow.id)
         .filter(LLMNodeModelRoutingPolicy.deployment_id == deployment.id)
         .filter(LLMNodeModelRoutingPolicy.node_id == node_id)
-        .first()
-    )
-
-
-def _get_latest_model_routing_policy_update(
-    db: Session,
-    policy: LLMNodeModelRoutingPolicy | None,
-) -> LLMNodeModelRoutingPolicyUpdate | None:
-    if policy is None:
-        return None
-    return (
-        db.query(LLMNodeModelRoutingPolicyUpdate)
-        .filter(LLMNodeModelRoutingPolicyUpdate.policy_id == policy.id)
-        .order_by(LLMNodeModelRoutingPolicyUpdate.created_at.desc())
         .first()
     )
 
@@ -4040,13 +3933,11 @@ def get_model_routing_policy_endpoint(
     node = _ensure_cost_optimizer_llm_node(workflow, node_id)
     node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
     policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
-    latest_update = _get_latest_model_routing_policy_update(db, policy)
     deployment = _active_deployment_for_workflow(db, workflow)
     return _model_routing_policy_response(
         policy,
         enabled=bool(node_data.get("auto_model_routing")),
         db=db,
-        latest_update=latest_update,
         decision_deployment_id=deployment.id if deployment else None,
         decision_node_id=node_id,
     )
