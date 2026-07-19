@@ -17,6 +17,9 @@ from apps.shared.db.models.llm import (
     LLMModel,
     LLMRelCredentialModel,
 )
+from apps.shared.services.model_routing_global_profile_catalog import (
+    canonical_model_routing_id,
+)
 from apps.workflow_engine.services.llm_output_contract import (
     build_json_output_schema_instruction,
     response_format_requires_json_instruction,
@@ -305,18 +308,35 @@ class ModelRouter:
         )
         candidates = configured_candidates or executable_model_ids
         if availability_is_enforced:
-            executable_by_normalized_id = {
-                cls.normalize_model_id(model_id): model_id
-                for model_id in executable_model_ids
-            }
+            executable_by_canonical_id: dict[str, str] = {}
+            for model_id in executable_model_ids:
+                normalized_model_id = cls.normalize_model_id(model_id)
+                canonical_id = canonical_model_routing_id(model_id)
+                existing = executable_by_canonical_id.get(canonical_id)
+                # canonical ID와 별칭이 함께 있으면 canonical API ID를 우선한다.
+                # 단, 별칭만 credential에 연결된 경우에는 그 별칭을 보존한다.
+                if existing is None or normalized_model_id == canonical_id:
+                    executable_by_canonical_id[canonical_id] = model_id
+
+            def available_representative(model_id: str | None) -> str | None:
+                if not model_id:
+                    return model_id
+                return executable_by_canonical_id.get(
+                    canonical_model_routing_id(model_id), model_id
+                )
+
+            default_model_id = available_representative(default_model_id)
+            fallback_model_id = available_representative(fallback_model_id)
             candidates = [
-                executable_by_normalized_id[cls.normalize_model_id(model_id)]
+                executable_by_canonical_id[canonical_model_routing_id(model_id)]
                 for model_id in candidates
-                if cls.normalize_model_id(model_id) in executable_by_normalized_id
+                if canonical_model_routing_id(model_id) in executable_by_canonical_id
             ]
             if not candidates and executable_model_ids:
                 candidates = executable_model_ids
-            allowed_models: set[str] | None = set(executable_by_normalized_id)
+            allowed_models: set[str] | None = {
+                cls.normalize_model_id(model_id) for model_id in executable_model_ids
+            }
         else:
             allowed_models = None
 

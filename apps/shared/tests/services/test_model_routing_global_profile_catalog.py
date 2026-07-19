@@ -5,6 +5,9 @@ from apps.shared.services.model_routing_global_profile_catalog import (
     catalog_metadata_for_model_id,
     supported_model_routing_ids,
 )
+from apps.shared.services.model_routing_model_filter import (
+    filter_model_routing_available_model_ids,
+)
 from apps.workflow_engine.services.model_router import WORKFLOW_CHAT_MODEL_ALIASES
 
 
@@ -34,6 +37,17 @@ def test_supported_candidates_collapse_provider_aliases_to_available_canonical_i
 
 def test_supported_candidates_preserve_executable_alias_when_canonical_is_unavailable():
     assert supported_model_routing_ids(["gpt-5.6"]) == ["gpt-5.6"]
+
+
+def test_excluded_model_filter_matches_provider_aliases_by_canonical_id():
+    allowed = filter_model_routing_available_model_ids(
+        ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-luna"],
+        node_data={
+            "model_routing_policy": {"excluded_model_ids": ["gpt-5.6-sol"]}
+        },
+    )
+
+    assert allowed == ["gpt-5.6-luna"]
 
 
 def test_official_catalog_profiles_do_not_claim_unmeasured_runtime_metrics():

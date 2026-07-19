@@ -45,6 +45,23 @@ def test_workflow_chat_model_allowlist_includes_gpt_56_aliases():
         )
 
 
+def test_resolve_policy_matches_legacy_alias_default_to_available_canonical_model():
+    policy = _policy(
+        default_model_id="gpt-5.6",
+        fallback_model_id="gpt-4.1-mini",
+        candidate_model_ids=["gpt-5.6-sol", "gpt-4.1-mini"],
+    )
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={},
+        node_data=_node(model_id="gpt-4.1-mini"),
+        available_model_ids=["gpt-5.6-sol", "gpt-4.1-mini"],
+    )
+
+    assert decision.selected_model_id == "gpt-5.6-sol"
+
+
 def test_judge_first_requires_runtime_judge_before_local_learning():
     decision = ModelRouter.resolve_policy(
         _policy(),

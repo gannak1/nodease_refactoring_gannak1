@@ -1237,6 +1237,9 @@ def _write_run_config(
             "routing_judge_max_output_tokens",
             "quality_judge_model",
             "strategy_id",
+            "candidate_model_ids",
+            "comparison_arms",
+            "dataset",
         ):
             if previous.get(key) != config[key]:
                 raise RuntimeError(

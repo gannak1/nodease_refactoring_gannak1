@@ -3,6 +3,11 @@
 from typing import Any
 
 
+from apps.shared.services.model_routing_global_profile_catalog import (
+    canonical_model_routing_id,
+)
+
+
 def normalize_model_routing_model_id(value: Any) -> str:
     """권한/제외 비교에 사용할 provider-agnostic 모델 ID를 반환한다."""
     return str(value or "").strip().lower().removeprefix("models/")
@@ -17,7 +22,7 @@ def model_routing_excluded_model_ids(node_data: dict[str, Any]) -> set[str]:
     return {
         normalized
         for value in raw_values
-        if (normalized := normalize_model_routing_model_id(value))
+        if (normalized := canonical_model_routing_id(value))
     }
 
 
@@ -31,7 +36,7 @@ def filter_model_routing_available_model_ids(
     return [
         model_id
         for model_id in model_ids
-        if normalize_model_routing_model_id(model_id) not in excluded_model_ids
+        if canonical_model_routing_id(model_id) not in excluded_model_ids
     ]
 
 

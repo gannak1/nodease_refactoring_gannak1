@@ -91,3 +91,31 @@ def test_run_config_records_models_and_rejects_a_different_judge(monkeypatch):
                 report_name=None,
                 batch_size=10,
             )
+
+
+def test_run_config_rejects_resuming_with_different_comparison_arms(monkeypatch):
+    monkeypatch.setattr(
+        "scripts.experiment_judge_first_economics_80.build_cases",
+        lambda: [object()] * 80,
+    )
+    with tempfile.TemporaryDirectory(dir=pathlib.Path.cwd()) as temp_dir:
+        output_dir = pathlib.Path(temp_dir) / "judge-run"
+        config_path = _write_run_config(
+            output_dir,
+            run_id="2026-07-18__ticket-json-v1__judge-gpt-5-mini__out-256",
+            report_name=None,
+            batch_size=10,
+        )
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["comparison_arms"].pop("mid_fixed")
+        config_path.write_text(
+            json.dumps(config, ensure_ascii=False), encoding="utf-8"
+        )
+
+        with pytest.raises(RuntimeError, match="comparison_arms"):
+            _write_run_config(
+                output_dir,
+                run_id="2026-07-18__ticket-json-v1__judge-gpt-5-mini__out-256",
+                report_name=None,
+                batch_size=10,
+            )
