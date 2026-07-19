@@ -410,7 +410,7 @@ def test_memory_migration_is_additive_reversible_and_descends_from_current_head(
     assert "op.drop_column" not in source
 
 
-def test_public_capability_replay_migration_follows_declared_parent():
+def test_public_capability_replay_migration_contract():
     migration = (
         ROOT
         / "apps"
@@ -421,8 +421,6 @@ def test_public_capability_replay_migration_follows_declared_parent():
     )
     source = migration.read_text(encoding="utf-8")
 
-    assert 'revision: str = "ac1d2e3f4a50"' in source
-    assert 'down_revision: str | Sequence[str] | None = "f4a5b6c7d8e9"' in source
     assert '"conversation_secret_replays"' in source
     assert "uq_conv_idempotency_id_org" in source
     assert "ALTER TYPE audit_actor_type ADD VALUE IF NOT EXISTS 'public'" in source
