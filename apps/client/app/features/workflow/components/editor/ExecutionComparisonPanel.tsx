@@ -78,6 +78,27 @@ const getHttpStatus = (error: unknown) => {
   return undefined;
 };
 
+const isRetryableRunDetailError = (error: unknown) => {
+  const status = getHttpStatus(error);
+  return (
+    status === undefined ||
+    status === 404 ||
+    status === 408 ||
+    status === 429 ||
+    status >= 500
+  );
+};
+
+const runComparisonErrorMessage = (error: unknown) => {
+  const status = getHttpStatus(error);
+  if (status === 401) return '로그인이 만료되었습니다. 다시 로그인해 주세요.';
+  if (status === 403) return '이 실행 기록을 조회할 권한이 없습니다.';
+  if (status === 404) {
+    return '선택한 실행 기록을 찾을 수 없습니다. 기준 실행을 다시 선택해 주세요.';
+  }
+  return '실행 비교 데이터를 불러오지 못했습니다.';
+};
+
 class RunBundleNotReadyError extends Error {
   constructor() {
     super('workflow run node logs are not ready');
@@ -241,7 +262,7 @@ const loadWorkflowRunDetail = async (
     } catch (error) {
       lastError = error;
       const retryDelay = RUN_DETAIL_RETRY_DELAYS_MS[attempt];
-      if (getHttpStatus(error) !== 404 || retryDelay === undefined) {
+      if (!isRetryableRunDetailError(error) || retryDelay === undefined) {
         throw error;
       }
       await wait(retryDelay);
@@ -293,7 +314,8 @@ const loadRunBundle = async (
       lastError = error;
       const retryDelay = retryDelaysMs[attempt];
       const shouldRetry =
-        error instanceof RunBundleNotReadyError || getHttpStatus(error) === 404;
+        error instanceof RunBundleNotReadyError ||
+        isRetryableRunDetailError(error);
       if (retryDelay === undefined || !shouldRetry) throw error;
       await wait(retryDelay);
     }
@@ -908,14 +930,14 @@ export function ExecutionComparisonPanel({
     let cancelled = false;
     setIsComparisonLoading(true);
     setComparisonError(null);
-    if (isCurrentExecutionRunning) {
-      setCurrentBundle(null);
-    }
+    setBaselineBundle(null);
+    setCurrentBundle(null);
     const comparisonNodes = latestNodesRef.current;
     const baselineRequest = loadRunBundle(
       workflowId,
       baselineRunId,
       comparisonNodes,
+      { retryDelaysMs: RUN_DETAIL_RETRY_DELAYS_MS },
     );
     const currentRequest =
       !isCurrentExecutionRunning &&
@@ -933,9 +955,9 @@ export function ExecutionComparisonPanel({
         setBaselineBundle(baseline);
         setCurrentBundle(current);
       })
-      .catch(() => {
+      .catch((error) => {
         if (!cancelled) {
-          setComparisonError('실행 비교 데이터를 불러오지 못했습니다.');
+          setComparisonError(runComparisonErrorMessage(error));
         }
       })
       .finally(() => {

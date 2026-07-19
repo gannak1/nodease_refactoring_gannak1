@@ -468,6 +468,83 @@ describe('TestSidebar execution comparison', () => {
     expect(screen.getByText('기준 실행 고정됨')).toBeVisible();
   });
 
+  it.each([404, 500])(
+    '기준으로 고정한 실행 상세가 일시적인 %s 오류여도 재조회 후 비교를 표시한다',
+    async (status) => {
+      mocks.getWorkflowRuns.mockResolvedValue({
+        total: 2,
+        items: [
+          runSummary('current-run', '2026-07-14T01:00:00Z'),
+          runSummary('baseline-run', '2026-07-13T01:00:00Z'),
+        ],
+      });
+      mocks.getWorkflowRun
+        .mockRejectedValueOnce({ response: { status } })
+        .mockResolvedValueOnce(
+          runDetail('current-run', 'gpt-4.1-mini', '현재 문의', '현재 답변'),
+        )
+        .mockResolvedValueOnce(
+          runDetail('baseline-run', 'gpt-4.1', '기존 문의', '기존 답변'),
+        );
+      mocks.getWorkflowRunLlmTraces.mockResolvedValue({
+        total: 0,
+        limit: 100,
+        offset: 0,
+        items: [],
+      });
+
+      render(<ComparisonHarness />);
+
+      const pinButtons = await screen.findAllByRole('button', {
+        name: '기준으로 고정',
+      });
+      fireEvent.click(pinButtons[1]);
+
+      expect(
+        await screen.findByRole('button', {
+          name: '문의 분류 노드 상세 비교하기',
+        }),
+      ).toBeVisible();
+      expect(mocks.getWorkflowRun).toHaveBeenCalledTimes(3);
+      expect(
+        screen.queryByText('실행 비교 데이터를 불러오지 못했습니다.'),
+      ).not.toBeInTheDocument();
+    },
+  );
+
+  it('기준 실행 상세 권한 오류는 재시도하지 않고 원인을 안내한다', async () => {
+    mocks.getWorkflowRuns.mockResolvedValue({
+      total: 2,
+      items: [
+        runSummary('current-run', '2026-07-14T01:00:00Z'),
+        runSummary('baseline-run', '2026-07-13T01:00:00Z'),
+      ],
+    });
+    mocks.getWorkflowRun
+      .mockRejectedValueOnce({ response: { status: 403 } })
+      .mockResolvedValueOnce(
+        runDetail('current-run', 'gpt-4.1-mini', '현재 문의', '현재 답변'),
+      );
+    mocks.getWorkflowRunLlmTraces.mockResolvedValue({
+      total: 0,
+      limit: 100,
+      offset: 0,
+      items: [],
+    });
+
+    render(<ComparisonHarness />);
+
+    const pinButtons = await screen.findAllByRole('button', {
+      name: '기준으로 고정',
+    });
+    fireEvent.click(pinButtons[1]);
+
+    expect(
+      await screen.findByText('이 실행 기록을 조회할 권한이 없습니다.'),
+    ).toBeVisible();
+    expect(mocks.getWorkflowRun).toHaveBeenCalledTimes(2);
+  });
+
   it('기준 실행을 얇은 식별 행으로 표시하고 요청한 실행의 상세만 펼친다', async () => {
     mocks.getWorkflowRuns.mockResolvedValue({
       total: 1,
@@ -558,6 +635,7 @@ describe('TestSidebar execution comparison', () => {
     });
     mocks.getWorkflowRun
       .mockRejectedValueOnce({ response: { status: 500 } })
+      .mockRejectedValueOnce({ response: { status: 500 } })
       .mockResolvedValueOnce(
         runDetail(
           'baseline-run',
@@ -576,7 +654,7 @@ describe('TestSidebar execution comparison', () => {
     fireEvent.click(screen.getByRole('button', { name: '다시 불러오기' }));
 
     expect(await screen.findByText('재시도한 실행 입력')).toBeVisible();
-    expect(mocks.getWorkflowRun).toHaveBeenCalledTimes(2);
+    expect(mocks.getWorkflowRun).toHaveBeenCalledTimes(3);
   });
 
   it('노드별 비교 목록에서 노드 이름과 유형을 함께 표시한다', async () => {
