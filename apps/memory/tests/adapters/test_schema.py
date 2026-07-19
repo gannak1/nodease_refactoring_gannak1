@@ -525,6 +525,8 @@ def test_public_replay_authorization_scope_migration_is_additive_and_reversible(
     assert "ck_conv_idempotency_authorization_scope" in source
     assert "ix_conv_idempotency_authorized_replay" in source
     assert "down_revision ==" not in source
+    assert "AS grant" not in source
+    assert "AS access_grant" in source
 
 
 class _Inspector:

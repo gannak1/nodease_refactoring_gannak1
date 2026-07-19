@@ -105,18 +105,18 @@ def upgrade() -> None:
         """
         UPDATE conversation_idempotency_records AS record
         SET authorization_app_id = session.app_id,
-            authorization_verifier_key_version = grant.verifier_key_version,
-            authorization_verifier_hash = grant.verifier_hash
+            authorization_verifier_key_version = access_grant.verifier_key_version,
+            authorization_verifier_hash = access_grant.verifier_hash
         FROM conversation_purge_jobs AS job,
              conversation_sessions AS session,
-             conversation_access_grants AS grant
+             conversation_access_grants AS access_grant
         WHERE record.operation = 'conversation.delete'
           AND record.resource_type = 'conversation_purge_job'
           AND record.resource_reference = job.id::text
           AND job.session_id = session.id
           AND job.organization_id = session.organization_id
-          AND grant.session_id = session.id
-          AND grant.organization_id = session.organization_id
+          AND access_grant.session_id = session.id
+          AND access_grant.organization_id = session.organization_id
           AND record.authorization_app_id IS NULL
           AND (
               SELECT count(*)

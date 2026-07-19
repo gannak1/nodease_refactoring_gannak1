@@ -80,20 +80,30 @@ PUBLIC_CONVERSATION_PARENT_REVISION = "f4a5b6c7d8e9"
 PUBLIC_CONVERSATION_REPLAY_REVISION = "ac1d2e3f4a50"
 PUBLIC_CONVERSATION_SCOPE_REVISION = "ad2e3f4a5b61"
 PUBLIC_CONVERSATION_RESULT_SNAPSHOT_REVISION = "ae3f4a5b6c72"
+PUBLIC_CONVERSATION_RESULT_SNAPSHOT_COLUMNS = {
+    "result_lifecycle",
+    "result_lifecycle_revision",
+    "result_memory_contract_version",
+    "result_expires_at",
+    "result_previous_lifecycle",
+    "result_previous_lifecycle_revision",
+}
+PUBLIC_CONVERSATION_AUTHORIZATION_SCOPE_COLUMNS = {
+    "authorization_app_id",
+    "authorization_verifier_key_version",
+    "authorization_verifier_hash",
+}
 POST_FOUNDATION_COLUMNS = {
     "conversation_purge_jobs": {
         "deployment_id",
         "deployment_version",
         "audience_kind",
+        "app_id",
     },
-    "conversation_idempotency_records": {
-        "result_lifecycle",
-        "result_lifecycle_revision",
-        "result_memory_contract_version",
-        "result_expires_at",
-        "result_previous_lifecycle",
-        "result_previous_lifecycle_revision",
-    },
+    "conversation_idempotency_records": (
+        PUBLIC_CONVERSATION_RESULT_SNAPSHOT_COLUMNS
+        | PUBLIC_CONVERSATION_AUTHORIZATION_SCOPE_COLUMNS
+    ),
 }
 FOUNDATION_MEMORY_SCHEMA = {
     table_name: columns - POST_FOUNDATION_COLUMNS.get(table_name, set())
@@ -659,13 +669,47 @@ def test_memory_migration_uow_and_concurrent_start_turn_contracts():
                 assert readiness.ready is False
                 assert set(
                     readiness.missing_columns.get(
+                        "conversation_purge_jobs",
+                        (),
+                    )
+                ) == {"app_id"}
+                assert set(
+                    readiness.missing_columns.get(
                         "conversation_idempotency_records",
                         (),
                     )
-                ) == POST_FOUNDATION_COLUMNS["conversation_idempotency_records"]
+                ) == (
+                    PUBLIC_CONVERSATION_RESULT_SNAPSHOT_COLUMNS
+                    | PUBLIC_CONVERSATION_AUTHORIZATION_SCOPE_COLUMNS
+                )
 
             _run_alembic(
                 PUBLIC_CONVERSATION_RESULT_SNAPSHOT_REVISION,
+                operation="upgrade",
+                database=database,
+                config=config,
+            )
+            with Session(engine) as db:
+                readiness = check_memory_schema_readiness(db)
+                assert readiness.ready is False
+                assert set(
+                    readiness.missing_columns.get(
+                        "conversation_purge_jobs",
+                        (),
+                    )
+                ) == {"app_id"}
+                assert set(
+                    readiness.missing_columns.get(
+                        "conversation_idempotency_records",
+                        (),
+                    )
+                ) == PUBLIC_CONVERSATION_AUTHORIZATION_SCOPE_COLUMNS
+
+            # The authorization-scope migration is the immediate additive
+            # successor. Advance relatively so this contract does not pin a
+            # repository-specific revision identifier.
+            _run_alembic(
+                "+1",
                 operation="upgrade",
                 database=database,
                 config=config,
