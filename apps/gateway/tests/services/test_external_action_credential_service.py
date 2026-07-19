@@ -4,9 +4,11 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 from apps.gateway.services.external_action_credential_service import (
     ExternalActionCredentialNotFound,
+    ExternalActionCredentialPersistenceFailed,
     ExternalActionCredentialRevoked,
     ExternalActionCredentialTargetNotFound,
     ExternalActionCredentialService,
@@ -15,6 +17,7 @@ from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.context import clear_current_metadata, set_current_metadata
 from apps.shared.db.models.audit_log import AuditLog, AuditStatus
 from apps.shared.schemas.external_action_credential import (
+    ExternalActionCredentialCreate,
     ExternalActionCredentialPermissionGrant,
     ExternalActionCredentialUpdate,
 )
@@ -53,6 +56,93 @@ def test_safe_response_never_serializes_secret_or_encryption_fields():
         "updated_at",
         "revoked_at",
     }
+
+
+def _populate_created_credential(db, credential_id):
+    credential = db.add.call_args_list[0].args[0]
+    credential.id = credential_id
+    credential.created_at = NOW
+    credential.updated_at = NOW
+
+
+@patch(
+    "apps.gateway.services.external_action_credential_service."
+    "register_manual_audit_ownership"
+)
+@patch(
+    "apps.gateway.services.external_action_credential_service."
+    "get_external_action_credential_secret_service"
+)
+def test_create_returns_committed_snapshot_without_post_commit_refresh(
+    secret_service_factory,
+    _register_manual_audit_ownership,
+):
+    actor_id = uuid4()
+    organization_id = uuid4()
+    credential_id = uuid4()
+    db = MagicMock()
+    db.flush.side_effect = lambda: _populate_created_credential(db, credential_id)
+    secret_service_factory.return_value.protect.return_value = SimpleNamespace(
+        ciphertext="encrypted-test-placeholder",
+        key_version="v1",
+        algorithm="test",
+    )
+    service = ExternalActionCredentialService(db)
+    service._require_organization_manager = MagicMock()
+
+    result = service.create(
+        actor_id,
+        organization_id,
+        ExternalActionCredentialCreate(
+            credential_name="운영 Slack",
+            provider="slack_api",
+            secret="test-secret-placeholder",
+        ),
+    )
+
+    assert result.id == credential_id
+    assert result.organization_id == organization_id
+    db.commit.assert_called_once_with()
+    db.refresh.assert_not_called()
+
+
+@patch(
+    "apps.gateway.services.external_action_credential_service."
+    "register_manual_audit_ownership"
+)
+@patch(
+    "apps.gateway.services.external_action_credential_service."
+    "get_external_action_credential_secret_service"
+)
+def test_create_flush_failure_rolls_back_and_raises_safe_persistence_error(
+    secret_service_factory,
+    _register_manual_audit_ownership,
+):
+    db = MagicMock()
+    db.flush.side_effect = SQLAlchemyError()
+    secret_service_factory.return_value.protect.return_value = SimpleNamespace(
+        ciphertext="encrypted-test-placeholder",
+        key_version="v1",
+        algorithm="test",
+    )
+    service = ExternalActionCredentialService(db)
+    service._require_organization_manager = MagicMock()
+
+    with pytest.raises(ExternalActionCredentialPersistenceFailed) as exc_info:
+        service.create(
+            uuid4(),
+            uuid4(),
+            ExternalActionCredentialCreate(
+                credential_name="운영 Slack",
+                provider="slack_api",
+                secret="test-secret-placeholder",
+            ),
+        )
+
+    assert exc_info.value.code == "external_action_credential.persistence_failed"
+    db.rollback.assert_called_once_with()
+    db.commit.assert_not_called()
+    db.refresh.assert_not_called()
 
 
 @patch(
@@ -268,6 +358,35 @@ def test_revoked_credential_allows_existing_user_permission_revoke(has_permissio
     "apps.gateway.services.external_action_credential_service."
     "register_manual_audit_ownership"
 )
+def test_update_returns_committed_snapshot_without_post_commit_refresh(
+    _register_manual_audit_ownership,
+):
+    credential = _credential()
+    db = MagicMock()
+    service = ExternalActionCredentialService(db)
+    service._get_scoped = MagicMock(return_value=credential)
+    service._require = MagicMock()
+
+    result = service.update(
+        uuid4(),
+        credential.organization_id,
+        credential.id,
+        ExternalActionCredentialUpdate(
+            expected_revision=credential.revision,
+            credential_name="교체된 이름",
+        ),
+    )
+
+    assert result.credential_name == "교체된 이름"
+    assert result.revision == 2
+    db.commit.assert_called_once_with()
+    db.refresh.assert_not_called()
+
+
+@patch(
+    "apps.gateway.services.external_action_credential_service."
+    "register_manual_audit_ownership"
+)
 def test_revoke_writes_one_safe_lifecycle_audit_with_the_state_change(
     _register_manual_audit_ownership,
 ):
@@ -312,6 +431,7 @@ def test_revoke_writes_one_safe_lifecycle_audit_with_the_state_change(
         "credential_revision": 2,
     }
     db.commit.assert_called_once_with()
+    db.refresh.assert_not_called()
 
 
 def test_grant_user_permission_locks_active_membership_and_rejects_deactivated_user():

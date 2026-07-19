@@ -135,16 +135,20 @@ class ExternalActionCredentialService:
         )
         register_manual_audit_ownership(self.db, credential, "created")
         self.db.add(credential)
-        self.db.flush()
-        self._add_audit(
-            action=AuditAction.EXTERNAL_ACTION_CREDENTIAL_CREATE,
-            actor_id=actor_id,
-            organization_id=organization_id,
-            credential=credential,
-        )
-        self._commit()
-        self.db.refresh(credential)
-        return self._response(credential)
+        try:
+            self.db.flush()
+            self._add_audit(
+                action=AuditAction.EXTERNAL_ACTION_CREDENTIAL_CREATE,
+                actor_id=actor_id,
+                organization_id=organization_id,
+                credential=credential,
+            )
+            response = self._response(credential)
+            self.db.commit()
+        except SQLAlchemyError as exc:
+            self.db.rollback()
+            raise ExternalActionCredentialPersistenceFailed() from exc
+        return response
 
     def list_available(
         self, actor_id: uuid.UUID, organization_id: uuid.UUID
@@ -272,9 +276,9 @@ class ExternalActionCredentialService:
             organization_id=organization_id,
             credential=credential,
         )
+        response = self._response(credential)
         self._commit()
-        self.db.refresh(credential)
-        return self._response(credential)
+        return response
 
     def revoke(
         self,
@@ -301,9 +305,9 @@ class ExternalActionCredentialService:
             organization_id=organization_id,
             credential=credential,
         )
+        response = self._response(credential)
         self._commit()
-        self.db.refresh(credential)
-        return self._response(credential)
+        return response
 
     def list_permissions(
         self,
