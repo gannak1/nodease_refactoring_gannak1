@@ -84,6 +84,7 @@ class RAGAgentAnswerGenerationRunner:
             model.model_id_for_api_call,
             prompt_tokens,
             completion_tokens,
+            usage=usage,
         )
         answer = (
             result.get("choices", [{}])[0]

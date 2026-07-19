@@ -10,8 +10,13 @@ from scripts.experiment_judge_first_economics_80 import (
     MID_MODEL,
     QUALITY_JUDGE_MODEL,
     ROUTING_JUDGE_MODEL,
+    _append_jsonl,
+    _arm_execution_order,
+    _retry_quality_evaluation,
+    _routing_accuracy,
     _write_run_config,
     build_cases,
+    graph_for_arm,
     resolve_artifact_target,
 )
 from apps.workflow_engine.services.model_routing_runtime_judge import (
@@ -30,6 +35,73 @@ def test_economics_dataset_has_80_unique_diverse_cases():
         "advanced",
     }
     assert len({case.category for case in cases}) >= 8
+    assert all(case.context is not None for case in cases)
+    assert all(case.constraints for case in cases)
+    assert all(case.acceptable_model_ids for case in cases)
+
+
+def test_arm_execution_order_is_seeded_but_not_fixed_to_arm_declaration_order():
+    first = _arm_execution_order("security-01")
+    second = _arm_execution_order("security-01")
+
+    assert first == second
+    assert set(first) == {"automatic", "mid_fixed", "high_fixed", "low_fixed"}
+    assert first != ("automatic", "mid_fixed", "high_fixed", "low_fixed")
+
+
+def test_append_jsonl_keeps_each_completed_request_as_an_independent_record():
+    with tempfile.TemporaryDirectory(dir=pathlib.Path.cwd()) as temp_dir:
+        path = pathlib.Path(temp_dir) / "execution-events.jsonl"
+
+        _append_jsonl(path, {"case_id": "case-01", "event": "execution_complete"})
+        _append_jsonl(path, {"case_id": "case-02", "event": "execution_complete"})
+
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        assert [row["case_id"] for row in rows] == ["case-01", "case-02"]
+
+
+def test_routing_accuracy_distinguishes_appropriate_underpowered_and_overprovisioned():
+    case = build_cases()[0]
+    allowed = list(case.acceptable_model_ids)
+    appropriate = _routing_accuracy(case, allowed[0])
+    underpowered = _routing_accuracy(case, "gpt-4o-mini")
+    overprovisioned = _routing_accuracy(case, "gpt-5.6-sol")
+
+    assert appropriate["classification"] == "appropriate"
+    assert underpowered["classification"] in {"underpowered", "appropriate"}
+    assert overprovisioned["classification"] in {"overprovisioned", "appropriate"}
+
+
+def test_quality_evaluation_retries_only_the_failed_evaluation():
+    attempts = []
+
+    def evaluate():
+        attempts.append(True)
+        if len(attempts) == 1:
+            return None, {"error": "temporary_provider_error"}
+        return {"output_1": {"quality_score": 90}}, {"model": "judge"}
+
+    payload, metadata = _retry_quality_evaluation(evaluate, max_attempts=3)
+
+    assert len(attempts) == 2
+    assert payload == {"output_1": {"quality_score": 90}}
+    assert metadata["evaluation_status"] == "completed"
+    assert metadata["attempt_count"] == 2
+
+
+def test_norag_experiment_graph_maps_generic_request_payload_fields():
+    graph = graph_for_arm("automatic")
+    trigger = next(node for node in graph["nodes"] if node["id"] == "webhook-ticket")
+    llm = next(node for node in graph["nodes"] if node["id"] == "llm-triage")
+
+    assert {item["variable_name"] for item in trigger["data"]["variable_mappings"]} == {
+        "customerTier",
+        "request",
+        "context",
+        "constraints",
+        "outputMode",
+    }
+    assert llm["data"]["knowledgeBases"] == []
 
 
 def test_economics_experiment_uses_distinct_high_low_and_judge_models():

@@ -31,6 +31,7 @@ from apps.shared.services.permission_audit import (
     record_resource_permission_denied,
     record_system_resource_permission_denied,
 )
+from apps.shared.services.llm_model_pricing import pricing_estimate_metadata
 from apps.shared.services.model_routing_global_profile_catalog import (
     OFFICIAL_PROVIDER_CATALOG,
     catalog_metadata_for_model_id,
@@ -68,6 +69,7 @@ from apps.workflow_engine.services.model_router import (
 )
 from apps.workflow_engine.services.model_routing_judge_first_policy import (
     JUDGE_FIRST_STRATEGY_ID,
+    build_judge_first_active_policy,
     select_runtime_judge_model_id,
 )
 from apps.workflow_engine.services.retrieval import RetrievalService
@@ -416,8 +418,22 @@ class LLMNode(Node[LLMNodeData]):
             and self.id in preview_node_ids
         )
         if is_policy_preview_node:
-            policy_deployment_id = self.execution_context.get(
-                "routing_policy_deployment_id"
+            deployment_ids_by_node = self.execution_context.get(
+                "routing_policy_deployment_ids_by_node"
+            )
+            deployment_policy_node_ids = self.execution_context.get(
+                "routing_policy_deployment_node_ids"
+            )
+            may_use_deployment_policy = (
+                not isinstance(deployment_policy_node_ids, list)
+                or self.id in deployment_policy_node_ids
+            )
+            policy_deployment_id = (
+                deployment_ids_by_node.get(self.id)
+                if isinstance(deployment_ids_by_node, dict)
+                else self.execution_context.get("routing_policy_deployment_id")
+                if may_use_deployment_policy
+                else None
             )
         preview_metadata = (
             {
@@ -427,6 +443,7 @@ class LLMNode(Node[LLMNodeData]):
             if is_policy_preview_node
             else {}
         )
+        persisted_policy_is_disabled = False
         if db_session is not None:
             from apps.workflow_engine.services.model_routing_policy_store import (
                 ModelRoutingPolicyStore,
@@ -449,11 +466,58 @@ class LLMNode(Node[LLMNodeData]):
                         "runs_since_last_refresh": persisted_policy.eligible_runs_since_last_refresh,
                     },
                 }
+            elif persisted_policy is not None:
+                persisted_policy_is_disabled = True
+                policy = {}
             elif is_deployed_execution:
                 # 배포 runtime의 source of truth는 policy table이다. 첫 성공 실행이
                 # policy row를 만들기 전까지 graph에 남은 legacy snapshot을 평가하면
                 # 저장 모델과 다른 과거 후보로 임의 라우팅될 수 있다.
                 policy = {}
+        active_policy = policy.get("active_policy") if isinstance(policy, dict) else None
+        should_build_ephemeral_policy = is_policy_preview_node or (
+            is_deployed_execution and not persisted_policy_is_disabled
+        )
+        if should_build_ephemeral_policy and not isinstance(active_policy, dict):
+            available_model_ids = self._available_routing_model_ids(db_session) or []
+            allowed_models = {
+                ModelRouter.normalize_model_id(model_id)
+                for model_id in available_model_ids
+            }
+            default_model_id = ModelRouter.first_available_model(
+                [self.data.model_id, *available_model_ids],
+                allowed_models,
+            )
+            if default_model_id is None:
+                raise LLMCredentialNotAvailableError(
+                    "model_routing_no_available_model",
+                    "자동 모델 라우팅에 사용할 수 있는 모델을 찾지 못했습니다.",
+                    model_id=self.data.model_id,
+                )
+            fallback_model_id = ModelRouter.first_available_model(
+                [self.data.fallback_model_id, *available_model_ids],
+                allowed_models,
+                exclude=default_model_id,
+            )
+            policy_version = (
+                "test-ephemeral-judge-first-v1"
+                if is_policy_preview_node
+                else "runtime-ephemeral-judge-first-v1"
+            )
+            policy = {
+                "status": "preview",
+                "policy_id": None,
+                "policy_version": policy_version,
+                "active_policy": build_judge_first_active_policy(
+                    policy_version=policy_version,
+                    default_model_id=default_model_id,
+                    fallback_model_id=fallback_model_id,
+                    candidate_model_ids=available_model_ids,
+                ),
+            }
+            preview_metadata["policy_source"] = (
+                "test_ephemeral" if is_policy_preview_node else "runtime_ephemeral"
+            )
         if not isinstance(policy, dict):
             return (
                 selected_model_id,
@@ -548,6 +612,10 @@ class LLMNode(Node[LLMNodeData]):
         should_execute_runtime_judge = decision.requires_runtime_judge and (
             not is_policy_preview_node or execute_judge_for_preview
         )
+        if decision.requires_runtime_judge and not should_execute_runtime_judge:
+            # Judge-first policy의 기본값은 Judge를 실제로 호출하지 않은 한
+            # "Judge 선택"으로 기록하면 안 된다.
+            decision_source = "stored_model"
         if should_execute_runtime_judge:
             judge_metadata = {
                 "status": "unavailable",
@@ -654,6 +722,7 @@ class LLMNode(Node[LLMNodeData]):
                             judge_model_id,
                             int(usage.get("prompt_tokens") or 0),
                             int(usage.get("completion_tokens") or 0),
+                            usage=usage,
                         )
                         workflow_run_id = self.execution_context.get("workflow_run_id")
                         LLMService.log_usage(
@@ -713,7 +782,10 @@ class LLMNode(Node[LLMNodeData]):
             "policy_version": policy.get("policy_version"),
             "selected_model": selected_model_id,
             "fallback_model": fallback_model_id,
-            "decision_source": "test_policy_preview" if is_policy_preview_node else decision_source,
+            # 선택 주체(Judge/local/stored)와 실행 환경(test/deployed)은 별개다.
+            # 테스트 여부가 실제 모델 선택 경로를 덮어쓰면 trace 해석이 틀어진다.
+            "decision_source": decision_source,
+            "execution_mode": "test" if is_policy_preview_node else "deployed",
             "matched_rule_id": matched_rule_id,
                 "reason_code": reason_code,
                 "strategy_id": decision.strategy_id,
@@ -754,13 +826,17 @@ class LLMNode(Node[LLMNodeData]):
         profile_by_llm_model_id: dict[uuid.UUID, LLMModelRoutingGlobalProfile] = {}
         operational_evidence_by_model: dict[str, dict[str, Any]] = {}
         if callable(getattr(db_session, "query", None)):
+            lookup_ids = sorted(
+                set(normalized_ids)
+                | {normalize_model_id(model_id) for model_id in normalized_ids}
+            )
             rows = (
                 db_session.query(LLMModel)
-                .filter(LLMModel.model_id_for_api_call.in_(normalized_ids))
+                .filter(LLMModel.model_id_for_api_call.in_(lookup_ids))
                 .all()
             )
             rows_by_model_id = {
-                str(row.model_id_for_api_call): row
+                normalize_model_id(row.model_id_for_api_call): row
                 for row in rows
             }
             try:
@@ -798,7 +874,7 @@ class LLMNode(Node[LLMNodeData]):
 
         profiles: list[dict[str, Any]] = []
         for model_id in normalized_ids:
-            row = rows_by_model_id.get(model_id)
+            row = rows_by_model_id.get(normalize_model_id(model_id))
             price = LLMService.KNOWN_MODEL_PRICES.get(model_id)
             if price is None:
                 price = LLMService.KNOWN_MODEL_PRICES.get(
@@ -827,6 +903,10 @@ class LLMNode(Node[LLMNodeData]):
                 catalog_metadata = catalog_metadata_for_model_id(model_id)
                 profile["official_position"] = catalog_metadata["official_position"]
                 profile["model_role"] = catalog_metadata["model_role"]
+                profile["reasoning_profile"] = catalog_metadata["reasoning_profile"]
+                profile["complexity_ceiling"] = catalog_metadata["complexity_ceiling"]
+                profile["cost_position"] = catalog_metadata["cost_position"]
+                profile["task_affinities"] = catalog_metadata["task_affinities"]
                 profile["catalog_lifecycle"] = catalog_metadata["lifecycle"]
                 profile["canonical_model_id"] = catalog_metadata["canonical_model_id"]
                 profile["specialization_tags"] = catalog_metadata[
@@ -836,8 +916,11 @@ class LLMNode(Node[LLMNodeData]):
 
             global_profile = profile_by_llm_model_id.get(row.id) if row is not None else None
             if global_profile is not None:
-                profile["capability_tier"] = global_profile.capability_tier
                 prior_strength = float(global_profile.prior_strength or 0)
+                if prior_strength > 0:
+                    # 측정 증거가 없는 이전 seed row가 최신 공식 카탈로그의
+                    # 다차원 분류를 덮어쓰지 않게 한다.
+                    profile["capability_tier"] = global_profile.capability_tier
                 if prior_strength > 0 and isinstance(global_profile.quality_by_difficulty, dict):
                     profile["quality_by_difficulty"] = dict(
                         global_profile.quality_by_difficulty
@@ -952,7 +1035,7 @@ class LLMNode(Node[LLMNodeData]):
                         or "knowledge_candidates.safe_no_result"
                     )
                 return {
-                    "text": RAG_NO_EVIDENCE_MESSAGE,
+                    "text": self._rag_safe_no_result_text(RAG_NO_EVIDENCE_MESSAGE),
                     "usage": {},
                     "model": self.data.model_id,
                     "cost": 0.0,
@@ -1057,7 +1140,9 @@ class LLMNode(Node[LLMNodeData]):
                     }
                 ]
                 return {
-                    "text": knowledge_result.answer_override or "",
+                    "text": self._rag_safe_no_result_text(
+                        knowledge_result.answer_override or ""
+                    ),
                     "usage": {},
                     # 근거 부족으로 LLM을 호출하지 않았으므로 라우팅 결정을 만들지 않는다.
                     "model": self.data.model_id,
@@ -1381,7 +1466,11 @@ class LLMNode(Node[LLMNodeData]):
                 # 성공한 workflow LLM node 호출은 provider usage가 없어도 최소 row를 남깁니다. MBA-43
                 if db_session:
                     cost = LLMService.calculate_cost(
-                        db_session, used_model_id, prompt_tokens, completion_tokens
+                        db_session,
+                        used_model_id,
+                        prompt_tokens,
+                        completion_tokens,
+                        usage=usage_for_log,
                     )
 
                     usage_user_id = self._resolve_credential_principal_user()
@@ -1488,6 +1577,10 @@ class LLMNode(Node[LLMNodeData]):
                 "model": used_model_id,
                 "cost": cost,
                 "metadata": {
+                    "cost_estimate": pricing_estimate_metadata(
+                        used_model_id,
+                        usage,
+                    ),
                     "model_routing": model_routing_metadata,
                     "routing_context": routing_context,
                     "fallback_used": fallback_used,
@@ -1600,6 +1693,24 @@ class LLMNode(Node[LLMNodeData]):
             if not math.isfinite(value) or value < 0:
                 continue
             safe_usage[key] = value
+
+        # Cache token counts are billing metadata, not prompt content. Keep the
+        # numeric value so the shared calculator can apply a cached-input rate.
+        cached_tokens = usage.get("cached_tokens")
+        if cached_tokens is None:
+            for details_key in ("prompt_tokens_details", "input_tokens_details"):
+                details = usage.get(details_key)
+                if isinstance(details, dict):
+                    cached_tokens = details.get("cached_tokens")
+                    if cached_tokens is not None:
+                        break
+        if (
+            not isinstance(cached_tokens, bool)
+            and isinstance(cached_tokens, (int, float))
+            and math.isfinite(cached_tokens)
+            and cached_tokens >= 0
+        ):
+            safe_usage["cached_tokens"] = cached_tokens
         return safe_usage
 
     def _render_prompt(self, template: Optional[str], inputs: Dict[str, Any]) -> str:
@@ -2801,6 +2912,57 @@ class LLMNode(Node[LLMNodeData]):
         if evidence_decision.insufficiency_reason == "no_evidence":
             return RAG_NO_EVIDENCE_MESSAGE
         return RAG_INSUFFICIENT_EVIDENCE_MESSAGE
+
+    def _rag_safe_no_result_text(self, message: str) -> str:
+        """RAG 안전 응답도 JSON 출력 계약을 깨지 않도록 직렬화한다.
+
+        근거가 없을 때는 provider를 호출하지 않는다. 다만 다음 노드가 JSON 필드를
+        추출하도록 연결된 경우 일반 문장을 반환하면 workflow 전체가 실패하므로,
+        schema의 각 필드 타입에 맞는 보수적인 기본값을 만든다.
+        """
+
+        output_format = self.data.output_format
+        if not isinstance(output_format, dict) or output_format.get("type") != "json":
+            return message
+        schema = output_format.get("schema")
+        if not isinstance(schema, dict):
+            return json.dumps({"message": message}, ensure_ascii=False)
+        return json.dumps(
+            self._rag_safe_no_result_schema_value(schema, message),
+            ensure_ascii=False,
+        )
+
+    @classmethod
+    def _rag_safe_no_result_schema_value(cls, schema: dict[str, Any], message: str) -> Any:
+        """JSON Schema의 기본 타입만 사용해 안전 응답의 placeholder를 만든다."""
+
+        enum = schema.get("enum")
+        if isinstance(enum, list) and enum:
+            return enum[0]
+
+        schema_type = schema.get("type")
+        if schema_type == "object" or isinstance(schema.get("properties"), dict):
+            properties = schema.get("properties")
+            if not isinstance(properties, dict):
+                return {}
+            return {
+                str(name): cls._rag_safe_no_result_schema_value(
+                    property_schema if isinstance(property_schema, dict) else {},
+                    message,
+                )
+                for name, property_schema in properties.items()
+            }
+        if schema_type == "array":
+            return []
+        if schema_type == "boolean":
+            return False
+        if schema_type == "integer":
+            return 0
+        if schema_type == "number":
+            return 0.0
+        if schema_type == "null":
+            return None
+        return message
 
     def _rag_evidence_summary(
         self,

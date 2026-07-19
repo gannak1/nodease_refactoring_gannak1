@@ -148,14 +148,15 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 | 1 | 실행 편의성 | stream 시작 시 큐 등록·복원용 run id·실제 SSE record delimiter 전달 | 통과 | Gateway는 Redis 구독 뒤 workflow task를 큐에 등록한 다음 `workflow_start` UUID를 보내며, 각 event를 실제 `\n\n` record delimiter로 끝내 다음 JSON event와 분리한다 | `apps/gateway/tests/api/test_workflow_stream_start_contract.py` |
 | 1 | 실행 비교 | 기준 실행 목록 서버 필터 | 통과 | status와 trigger mode를 limit 전에 적용하고 다른 workflow run을 노출하지 않는다 | `apps/gateway/tests/api/test_workflow_run_comparison_api.py` |
 | 1 | 실행 비교 | 기준 실행 목록 기본 필터 | 통과 | 비교 모드 진입 시 상태는 `전체 상태`, 실행 방식은 `전체 방식`으로 시작하고 제한 없는 목록 조회에는 status와 trigger mode를 전송하지 않는다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
-| 1 | 실행 비교 | 기준 실행 식별 행과 요청 시 상세 조회 | 통과 | 접힌 행에는 실행 시각·방식·대표 입력을 표시하고, `상세`를 누르기 전에는 상세 API를 호출하지 않는다. 펼친 행에는 전체 입력·모델 라우팅·실행 지표를 표시한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
+| 1 | 실행 비교 | 기준 실행 식별 행과 요청 시 상세 조회 | 통과 | 접힌 행에는 실행 시각·방식·대표 입력을 표시하고, `상세`를 누르기 전에는 상세 API를 호출하지 않는다. 상세 조회와 `기준으로 고정` 후 비교 기준 조회의 일시적인 네트워크 오류·`404`·`408`·`429`·`5xx`는 제한적으로 재조회하고, `401`·`403`은 즉시 안내하며 최종 실패에는 `다시 불러오기`를 제공한다. 펼친 행에는 전체 입력·모델 라우팅·실행 지표를 표시한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
+| 1 | 실행 비교 | 목록 갱신 실패 시 기존 기록 유지와 재시도 | 통과 | 기준 실행 목록 재조회가 실패해도 기존 행을 유지하고, 목록 또는 TestSidebar 상단 재시도 신호가 실제 목록 API를 다시 호출해 복구한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 실행 비교 | 최신 실행 자동 선택 금지와 명시적 기준 고정 | 통과 | 비교 모드 진입 시 선택이 비어 있고 사용자가 기준 고정 버튼을 눌러야 상세를 조회한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 실행 비교 | 재실행 중 기준 실행 유지와 상세 선택 초기화 | 통과 | 다시 테스트하기와 새 현재 실행은 baseline run id를 유지하지만 이전 비교 노드 선택과 URL 식별자는 지워 전체 노드 비교 목록부터 표시한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 실행 비교 | 단일 결과 전환 중 기존 비교 분석 유지 | 통과 | 같은 TestSidebar 세션에서 단일 결과를 거쳐 다시 실행 비교를 열어도 기준 실행, 선택 상세와 이미 불러온 분석을 유지한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 실행 비교 | 보고 화면 왕복 뒤 비교 상세 복원 | 통과 | URL에 보존한 현재 실행, 기준 실행, 비교 모드, 선택 노드를 읽어 보고 화면 복귀 뒤 동일한 노드 상세 비교를 다시 표시한다 | `apps/client/app/features/workflow/tests/test-sidebar-comparison-restore.test.tsx` |
 | 1 | 실행 비교 | 실시간 노드 상태 갱신 중 비교 화면 유지 | 통과 | 같은 실행과 같은 노드 표시 정보를 유지한 상태 갱신은 비교 API 재조회와 로딩 화면 전환을 만들지 않는다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 실행 비교 | 전체 실행 기준·현재 가로 막대와 상태 배지 | 통과 | 비용·실행 시간·전체 토큰을 세로로 쌓고, 각 항목에서 기준 실행·현재 실행의 가로 막대와 변화율을 표시한다. 상태는 별도 배지로 분리한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
-| 1 | 실행 비교 | 현재 실행 중 비교 대기와 완료 뒤 자동 동기화 | 통과 | 현재 실행이 `running`인 동안에는 비교 조회 오류 대신 완료 대기 안내를 표시하고, terminal 상태 전환 뒤 비교 결과를 자동으로 읽는다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
+| 1 | 실행 비교 | 현재 실행 중 단일 진행 패널과 완료 뒤 자동 동기화 | 통과 | 현재 실행이 `running`인 동안 노드 대기와 비교 준비 안내를 하나의 진행 패널에 표시하고, terminal 상태 전환 뒤 비교 결과를 자동으로 읽는다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 실행 비교 | 노드 목록 지표와 상세 비교 | 통과 | 목록에는 노드 이름·사람용 유형명·상태·시간을 표시하고, `llmNode`에만 비용·토큰을 추가한다. 상세에는 입력·출력을 양쪽으로 표시하고 LLM 노드에는 라우팅 근거를 추가한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 실행 비교 | LLM trace 기록 없음과 조회 실패 구분 | 통과 | `404`/빈 trace는 `LLM trace 기록 없음`으로 표시하고, `403`/`5xx`/네트워크 실패는 비교를 유지하면서 근거 일부 누락 경고를 표시한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 노드 조작 편의성 | 3패널 기본 표시 | 통과 | 기본 3패널 폭 산출 unit test와 `NodeFullscreenEditor` grid 구현 완료 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts`, `apps/client/app/features/workflow/components/editor/NodeFullscreenEditor.tsx` |
@@ -871,7 +872,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 ## Test preflight와 실행 presentation state
 
 - Test preflight 중 Agent Builder save가 대기하면 stream을 호출하지 않고 coordinator를 해제한 뒤 Agent Builder save가 진행되는지 검증한다.
-- Clean local graph와 canonical server graph가 다르면 test와 save를 차단하고 비교 전에 최신 metadata를 stale local graph에 적용하지 않는지 검증한다.
+- Clean 표시가 누락됐어도 local graph와 canonical server graph가 다를 때 서버의 `graph_hash + updated_at`이 마지막 local 기준점과 같으면 현재 snapshot을 CAS 저장한 뒤 테스트를 실행한다. 서버 기준점이 달라진 실제 동시 변경이면 test와 save를 차단하고 최신 metadata를 stale local graph에 적용하지 않는다.
 - `operation envelope not found`는 Agent Builder 결과를 `applied|unapplied|pending|stale`로 구분하고 권한 오류나 일반 저장 실패로 표시하지 않는지 검증한다.
 - Node root의 React Flow measurement/selection field와 node data의 실행 status, observability, editor-only `displayNumber` 갱신이 최상위, 중첩 `subGraph.nodes`와 `features.noteNodes`의 autosync, draft payload, canonical hash와 Workflow Undo/Redo history에 포함되지 않는지 검증한다. 모든 client save path와 Gateway save가 같은 projection을 사용하는지 함께 검증한다.
 - Server-derived node `configuration_state` 차이만으로 Client canonical 비교가 실패하지 않고, Client payload에서는 최상위 및 중첩 값이 제거된 뒤 Server가 재계산하는지 검증한다.

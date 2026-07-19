@@ -20,6 +20,7 @@ type JudgeSummary = {
   confidence?: number;
   reasonCode?: string;
   reasonShort?: string;
+  reasonFactors: string[];
   candidateModelCount?: number;
   cost?: number;
   errorCode?: string;
@@ -36,6 +37,7 @@ type ModelRoutingSummary = {
   reasonCode?: string;
   policyVersion?: string;
   decisionSource?: string;
+  executionMode?: string;
   judge: JudgeSummary;
   policySource?: string;
   includedInPolicyLearning?: boolean;
@@ -58,6 +60,11 @@ const booleanValue = (value: unknown): boolean | undefined =>
 
 const numberValue = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
+const stringArrayValue = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+    : [];
 
 const routingRecordOf = (
   output: unknown,
@@ -139,6 +146,7 @@ const judgeOf = (
     confidence: numberValue(judge.confidence),
     reasonCode: stringValue(judge.reason_code),
     reasonShort: stringValue(judge.reason_short),
+    reasonFactors: stringArrayValue(judge.reason_factors),
     candidateModelCount: numberValue(judge.candidate_model_count),
     cost: numberValue(judge.cost),
     errorCode: stringValue(judge.error_code),
@@ -175,6 +183,7 @@ const summaryOf = ({
     reasonCode,
     policyVersion: stringValue(routing.policy_version),
     decisionSource,
+    executionMode: stringValue(routing.execution_mode),
     judge: judgeOf(routing.judge, decisionSource, reasonCode),
     policySource: stringValue(routing.policy_source),
     includedInPolicyLearning: booleanValue(routing.included_in_policy_learning),
@@ -227,6 +236,27 @@ const reasonText = (reasonCode?: string, reasonShort?: string): string => {
   }
 };
 
+const reasonFactorLabel = (factor: string): string | null => {
+  switch (factor) {
+    case 'high_decision_impact':
+      return '영향이 큰 판단';
+    case 'security_or_compliance_risk':
+      return '보안·규정 위험';
+    case 'multi_step_reasoning':
+      return '다단계 판단 필요';
+    case 'evidence_conflict':
+      return '근거 충돌 해석';
+    case 'broad_context_synthesis':
+      return '여러 정보 종합';
+    case 'strict_output_reliability':
+      return '형식 정확성 요구';
+    case 'long_context_handling':
+      return '긴 문맥 처리';
+    default:
+      return null;
+  }
+};
+
 const judgeErrorText = (errorCode?: string): string => {
   if (errorCode === 'responses_incomplete') return '응답이 완료되기 전에 종료됨';
   if (errorCode === 'RuntimeJudgeResponseError') return 'Judge 응답 형식이 올바르지 않음';
@@ -239,12 +269,12 @@ const decisionSourceLabel = (source?: string): string => {
   switch (source) {
     case 'runtime_judge':
       return 'Judge가 모델 선택';
+    case 'test_policy_preview':
+      return '테스트 Judge가 모델 선택';
     case 'local_router':
       return '로컬 라우터가 모델 선택';
     case 'active_policy':
       return '저장된 정책으로 모델 선택';
-    case 'test_policy_preview':
-      return '배포 정책 기준 테스트';
     case 'stored_model':
       return '기본 모델로 실행';
     default:
@@ -256,8 +286,8 @@ const noJudgeMessage = (summary: ModelRoutingSummary): string => {
   if (summary.decisionSource === 'local_router') {
     return '로컬 라우터가 충분한 확신으로 모델을 선택했습니다.';
   }
-  if (summary.decisionSource === 'test_policy_preview') {
-    return '테스트 실행은 정책 학습에 포함되지 않아 Judge를 호출하지 않았습니다.';
+  if (summary.executionMode === 'test') {
+    return '테스트 실행은 정책 학습에서 제외되며, 이번 요청에는 Judge 호출이 필요하지 않았습니다.';
   }
   if (summary.judge.notCalledReason === 'policy_unavailable') {
     return '활성 정책이 없어 Judge를 호출하지 않고 기본 모델을 사용했습니다.';
@@ -287,9 +317,16 @@ export function ModelRoutingDecisionDetails({
 
   const context = summary.runtimeContext;
   const isPolicyPreview =
-    summary.policySource === 'active_deployment' &&
+    summary.includedInPolicyLearning === false &&
+    (summary.policySource === 'active_deployment' ||
+      summary.policySource === 'test_ephemeral');
+  const isEphemeralPolicyPreview =
+    summary.policySource === 'test_ephemeral' &&
     summary.includedInPolicyLearning === false;
   const judge = summary.judge;
+  const shortReason = reasonText(summary.reasonCode, judge.reasonShort);
+  // 자유형 Judge 설명은 저장하지 않는다. 정해진 reason code로만 표시한다.
+  const selectionReason = shortReason;
 
   return (
     <section className="space-y-3 rounded-lg border border-slate-200 bg-white p-4 text-xs shadow-sm dark:border-slate-700 dark:bg-slate-900">
@@ -307,18 +344,37 @@ export function ModelRoutingDecisionDetails({
         </span>
       </header>
 
-      {isPolicyPreview ? (
-        <p className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-blue-900 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100">
-          이 테스트 실행은 배포 정책을 미리 적용한 결과이며, 정책 학습에는 포함되지 않습니다.
+      {summary.executionMode === 'test' && (
+        <p className="rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
+          테스트 실행입니다. 이 결과는 자동 라우팅 학습에 포함되지 않습니다.
         </p>
-      ) : null}
+      )}
 
       <dl className="grid gap-2 sm:grid-cols-2">
         <Detail label="실제 실행 모델" value={summary.actualModel || summary.selectedModel || '-'} />
-        <Detail label="선택 근거" value={reasonText(summary.reasonCode, judge.reasonShort)} />
+        <Detail
+          label="선택 근거"
+          value={selectionReason}
+        />
       </dl>
 
       <div className="flex flex-wrap gap-2">
+        {judge.reasonShort ? (
+          <span className="rounded border border-violet-200 bg-violet-50 px-2 py-1 text-violet-800">
+            판단 분류: {shortReason}
+          </span>
+        ) : null}
+        {judge.reasonFactors.map((factor) => {
+          const label = reasonFactorLabel(factor);
+          return label ? (
+            <span
+              key={factor}
+              className="rounded border border-violet-200 bg-violet-50 px-2 py-1 text-violet-800"
+            >
+              {label}
+            </span>
+          ) : null;
+        })}
         <span className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-slate-700">
           {lengthBucketLabel(context.inputLengthBucket)}
         </span>
@@ -337,7 +393,11 @@ export function ModelRoutingDecisionDetails({
         ) : null}
       </div>
 
-      <section className="rounded-lg border border-violet-200 bg-violet-50/50 p-3 dark:border-violet-900 dark:bg-violet-950/20">
+      <section
+        aria-label="Judge 실행"
+        data-testid="judge-execution-details"
+        className="rounded-lg border border-violet-200 bg-violet-50/50 p-3 dark:border-violet-900 dark:bg-violet-950/20"
+      >
         {judge.status === 'selected' ? (
           <>
             <h5 className="font-semibold text-violet-950 dark:text-violet-50">
@@ -474,6 +534,16 @@ export function ModelRoutingDecisionDetails({
           {summary.learningOutcomeReason === 'schema_failed'
             ? '스키마 또는 후속 단계 조건을 통과하지 못해 학습에서 제외되었습니다.'
             : '실행 계약을 통과하지 못해 학습에서 제외되었습니다.'}
+        </p>
+      ) : null}
+      {isPolicyPreview ? (
+        <p
+          data-testid="model-routing-policy-preview"
+          className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-blue-900 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100"
+        >
+          {isEphemeralPolicyPreview
+            ? '활성 정책이 없어 현재 테스트에서만 사용할 임시 정책으로 모델을 선택했습니다. 이 결과는 정책 학습에 포함되지 않습니다.'
+            : '이 테스트 실행은 배포 정책을 미리 적용한 결과이며, 정책 학습에는 포함되지 않습니다.'}
         </p>
       ) : null}
     </section>

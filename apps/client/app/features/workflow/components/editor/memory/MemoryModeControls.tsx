@@ -117,13 +117,21 @@ function MemoryModeModals({
 type MemoryModeToggleProps = {
   isEnabled: boolean;
   hasProviderKey: boolean | null;
+  providerKeyStatus?: ProviderKeyStatus;
   description: string;
   onToggle: () => void;
 };
 
+export type ProviderKeyStatus =
+  | 'checking'
+  | 'available'
+  | 'missing'
+  | 'unavailable';
+
 export function MemoryModeToggle({
   isEnabled,
   hasProviderKey,
+  providerKeyStatus,
   description,
   onToggle,
 }: MemoryModeToggleProps) {
@@ -143,6 +151,11 @@ export function MemoryModeToggle({
         {hasProviderKey === false && (
           <span className="text-[10px] text-amber-600 bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded-full font-medium">
             키 필요
+          </span>
+        )}
+        {providerKeyStatus === 'unavailable' && (
+          <span className="rounded-full border border-red-100 bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-600">
+            확인 실패
           </span>
         )}
       </div>
@@ -173,7 +186,14 @@ export function useMemoryMode(
   const [isMemoryModeEnabled, setIsMemoryModeEnabled] = useState(false);
   const [showMemoryConfirm, setShowMemoryConfirm] = useState(false);
   const [showKeyPrompt, setShowKeyPrompt] = useState(false);
-  const [hasProviderKey, setHasProviderKey] = useState<boolean | null>(null);
+  const [providerKeyStatus, setProviderKeyStatus] =
+    useState<ProviderKeyStatus>('checking');
+  const hasProviderKey =
+    providerKeyStatus === 'available'
+      ? true
+      : providerKeyStatus === 'missing'
+        ? false
+        : null;
 
   // 기억 모드 설명 (툴팁)
   const memoryModeDescription =
@@ -181,25 +201,37 @@ export function useMemoryMode(
 
   // 키 상태 조회 (최소 침습)
   useEffect(() => {
+    const controller = new AbortController();
+
     const fetchKeyStatus = async () => {
       if (isMockWorkflowPath(pathname)) {
-        setHasProviderKey(true);
+        setProviderKeyStatus('available');
         return;
       }
 
+      setProviderKeyStatus('checking');
       try {
         const res = await fetch('/api/v1/llm/credentials', {
           credentials: 'include',
+          signal: controller.signal,
         });
-        if (!res.ok) throw new Error('Failed to fetch credentials');
+        if (!res.ok) {
+          setProviderKeyStatus('unavailable');
+          return;
+        }
         const data = await res.json();
-        setHasProviderKey(Array.isArray(data) && data.length > 0);
-      } catch (error) {
-        console.error('Failed to check provider key:', error);
-        setHasProviderKey(false);
+        setProviderKeyStatus(
+          Array.isArray(data) && data.length > 0 ? 'available' : 'missing',
+        );
+      } catch {
+        if (!controller.signal.aborted) {
+          setProviderKeyStatus('unavailable');
+        }
       }
     };
-    fetchKeyStatus();
+
+    void fetchKeyStatus();
+    return () => controller.abort();
   }, [pathname]);
 
   // 키 해제 시 자동 OFF
@@ -214,6 +246,13 @@ export function useMemoryMode(
   }, [hasProviderKey, isMemoryModeEnabled, toaster]);
 
   const toggleMemoryMode = useCallback(() => {
+    if (providerKeyStatus === 'unavailable') {
+      toaster.error(
+        '프로바이더 키 상태를 확인하지 못했습니다. 로그인 상태와 서버 연결을 확인해 주세요.',
+        { duration: 3000 },
+      );
+      return;
+    }
     if (hasProviderKey === false) {
       setShowKeyPrompt(true);
       return;
@@ -227,7 +266,7 @@ export function useMemoryMode(
       setIsMemoryModeEnabled(false);
       return prev;
     });
-  }, [hasProviderKey, isMemoryModeEnabled]);
+  }, [hasProviderKey, isMemoryModeEnabled, providerKeyStatus, toaster]);
 
   const handleConfirmMemoryMode = useCallback(() => {
     setIsMemoryModeEnabled(true);
@@ -298,6 +337,7 @@ export function useMemoryMode(
   return {
     isMemoryModeEnabled,
     hasProviderKey,
+    providerKeyStatus,
     memoryModeDescription,
     toggleMemoryMode,
     appendMemoryFlag,

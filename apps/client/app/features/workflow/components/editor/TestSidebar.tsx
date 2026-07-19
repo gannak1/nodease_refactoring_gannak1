@@ -86,6 +86,7 @@ type TestSidebarProps = {
 
 const STREAM_IDLE_TIMEOUT_MS = 60_000;
 const TEST_SIDEBAR_DEFAULT_WIDTH = 480;
+const TEST_SIDEBAR_COMPARISON_WIDTH = 640;
 const TEST_SIDEBAR_MIN_WIDTH = 380;
 const TEST_SIDEBAR_MAX_WIDTH = 640;
 const TEST_SIDEBAR_VIEWPORT_GUTTER = 24;
@@ -464,7 +465,9 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     maxTestSidebarWidth,
   );
   const renderedTestSidebarWidth = clamp(
-    testSidebarWidth,
+    isComparisonMode
+      ? Math.max(testSidebarWidth, TEST_SIDEBAR_COMPARISON_WIDTH)
+      : testSidebarWidth,
     minTestSidebarWidth,
     maxTestSidebarWidth,
   );
@@ -1282,23 +1285,24 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
           return;
         }
 
-        const shouldSave = currentState.hasUnsavedChanges;
+        const snapshotMatchesCanonical = canonicalDraftMatchesSnapshot(
+          canonical,
+          graphSnapshot,
+        );
+        const localBase = currentState.getCanonicalDraftMetadata(
+          activeWorkflowId,
+        );
+        // 일부 편집 경로에서 dirty 표시보다 graph 변경이 먼저 관측될 수 있다.
+        // 서버가 마지막으로 읽은 기준점에 그대로 있을 때만 현재 snapshot을
+        // CAS 저장해 테스트를 계속하고, 실제 동시 변경은 아래에서 차단한다.
+        const shouldSave =
+          currentState.hasUnsavedChanges || !snapshotMatchesCanonical;
         if (!shouldSave) {
-          if (!canonicalDraftMatchesSnapshot(canonical, graphSnapshot)) {
-            const message =
-              '서버의 Workflow가 현재 화면과 다릅니다. 최신 상태를 불러온 뒤 다시 시도해주세요.';
-            failTestExecution(message);
-            toast.error(message);
-            return;
-          }
           currentState.ingestCanonicalDraftMetadata(
             canonical,
             activeWorkflowId,
           );
         } else {
-          const localBase = currentState.getCanonicalDraftMetadata(
-            activeWorkflowId,
-          );
           if (
             !localBase ||
             canonical.graph_hash !== localBase.graphHash ||
@@ -1682,7 +1686,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   return (
     <div
       data-testid="test-execution-sidebar"
-      className="absolute top-18 right-2 bottom-2 z-50 flex min-w-0 flex-col rounded-xl border-l border-gray-200 bg-white shadow-xl animate-in slide-in-from-right duration-200 dark:border-gray-800 dark:bg-gray-900"
+      className="absolute top-2 right-2 bottom-2 z-50 flex min-w-0 flex-col rounded-xl border-l border-gray-200 bg-white shadow-xl animate-in slide-in-from-right duration-200 dark:border-gray-800 dark:bg-gray-900"
       style={{ width: `${renderedTestSidebarWidth}px` }}
     >
       {canResizeTestSidebar && (
@@ -1746,7 +1750,6 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 testSelectedNodeId,
                 { comparisonMode: true },
               );
-              setClampedTestSidebarWidth(maxTestSidebarWidth);
             }}
             className={`inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-semibold transition-colors ${
               isComparisonMode
@@ -1797,6 +1800,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               currentRunId={testExecutionRunId}
               currentExecutionStatus={testExecutionStatus}
               currentExecutionError={testExecutionError}
+              reloadRequestKey={testRunRestoreRetry}
               selectedNodeId={comparisonSelectedNodeId}
               onBaselineRunIdChange={handleComparisonBaselineRunIdChange}
               onSelectedNodeIdChange={handleComparisonSelectedNodeIdChange}
@@ -1809,11 +1813,19 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             {nodeExecutionSummaries.length > 0 ? (
               nodeExecutionSummaries.map(renderNodeExecutionSummary)
             ) : (
-              <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+              <div
+                data-testid="execution-progress-status"
+                className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300"
+              >
                 <div className="flex items-center gap-2 font-medium">
                   <Loader2 className="h-4 w-4 animate-spin" />첫 노드 실행
                   결과를 기다리는 중입니다.
                 </div>
+                {isComparisonMode ? (
+                  <p className="mt-2 pl-6 text-xs leading-5 text-blue-600 dark:text-blue-300">
+                    실행이 완료되면 비교 결과를 준비합니다.
+                  </p>
+                ) : null}
               </div>
             )}
           </div>

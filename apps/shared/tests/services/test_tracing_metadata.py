@@ -269,6 +269,53 @@ def test_llm_span_metadata_uses_canonical_reason_instead_of_judge_text():
     assert "sk-abc123" not in str(metadata)
 
 
+def test_llm_span_metadata_drops_all_runtime_judge_selection_explanations():
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "llm": {
+                "judge": {
+                    "reason_code": "evidence_synthesis",
+                    "selection_explanation": "홍길동 고객의 010-1234-5678 계정 계약을 확인해야 합니다.",
+                }
+            }
+        },
+    )
+
+    assert "selection_explanation" not in metadata["llm"]["judge"]
+    assert "홍길동" not in str(metadata)
+    assert "010-1234-5678" not in str(metadata)
+
+
+def test_llm_span_metadata_keeps_only_safe_runtime_judge_reason_factors():
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "llm": {
+                "judge": {
+                    "reason_code": "high_risk_reasoning",
+                    "reason_factors": [
+                        "high_decision_impact",
+                        "security_or_compliance_risk",
+                        "홍길동 계정 차단",
+                        "high_decision_impact",
+                    ],
+                }
+            }
+        },
+    )
+
+    assert metadata["llm"]["judge"] == {
+        "reason_code": "high_risk_reasoning",
+        "reason_short": "고위험 판단 필요",
+        "reason_factors": [
+            "high_decision_impact",
+            "security_or_compliance_risk",
+        ],
+    }
+    assert "홍길동" not in str(metadata)
+
+
 def test_llm_span_metadata_preserves_safe_provider_fallback_diagnostics_only():
     metadata = TraceMetadataSanitizer.sanitize_span_metadata(
         "llmNode",

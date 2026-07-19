@@ -148,11 +148,18 @@ const runDetail = (
 function ComparisonHarness() {
   const [baselineRunId, setBaselineRunId] = useState<string | null>(null);
   const [currentRunId, setCurrentRunId] = useState('current-run');
+  const [reloadRequestKey, setReloadRequestKey] = useState(0);
 
   return (
     <>
       <button type="button" onClick={() => setCurrentRunId('current-run-2')}>
         새 현재 실행
+      </button>
+      <button
+        type="button"
+        onClick={() => setReloadRequestKey((value) => value + 1)}
+      >
+        상위 재시도
       </button>
       <ExecutionComparisonPanel
         workflowId="workflow-1"
@@ -168,6 +175,7 @@ function ComparisonHarness() {
         }
         baselineRunId={baselineRunId}
         currentRunId={currentRunId}
+        reloadRequestKey={reloadRequestKey}
         onBaselineRunIdChange={setBaselineRunId}
       />
     </>
@@ -271,8 +279,17 @@ function LiveExecutionComparisonHarness() {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  window.history.replaceState({}, '', '/');
   mocks.workflowState.testExecutionStatus = 'success';
   mocks.workflowState.testExecutionResult = { answer: '현재 답변' };
+  mocks.workflowState.nodes = [
+    {
+      id: 'llm-triage',
+      type: 'llmNode',
+      position: { x: 0, y: 0 },
+      data: { title: '문의 분류', observability: { status: 'success' } },
+    },
+  ];
 });
 
 describe('TestSidebar execution comparison', () => {
@@ -285,6 +302,44 @@ describe('TestSidebar execution comparison', () => {
     expect(
       screen.queryByRole('heading', { name: '테스트 실행 중...' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('실행 비교 중의 노드 대기와 비교 준비 상태를 한 패널에 표시한다', async () => {
+    mocks.workflowState.testExecutionStatus = 'running';
+    mocks.workflowState.testExecutionResult = null;
+    mocks.workflowState.nodes = [
+      {
+        id: 'llm-triage',
+        type: 'llmNode',
+        position: { x: 0, y: 0 },
+        data: { title: '문의 분류' },
+      },
+    ];
+    mocks.getWorkflowRuns.mockResolvedValue({
+      total: 1,
+      items: [runSummary('baseline-run', '2026-07-13T01:00:00Z')],
+    });
+    mocks.getWorkflowRun.mockResolvedValue(
+      runDetail('baseline-run', 'gpt-4.1', '기존 문의', '기존 답변'),
+    );
+    mocks.getWorkflowRunLlmTraces.mockResolvedValue({
+      total: 0,
+      limit: 100,
+      offset: 0,
+      items: [],
+    });
+
+    render(<TestSidebar />);
+    fireEvent.click(screen.getByRole('button', { name: '실행 비교' }));
+
+    const statusPanel = await screen.findByTestId('execution-progress-status');
+    expect(statusPanel).toHaveTextContent(
+      '첫 노드 실행 결과를 기다리는 중입니다.',
+    );
+    expect(statusPanel).toHaveTextContent(
+      '실행이 완료되면 비교 결과를 준비합니다.',
+    );
+    expect(screen.getAllByTestId('execution-progress-status')).toHaveLength(1);
   });
 
   it('기준 실행 목록은 전체 상태와 전체 방식으로 시작한다', async () => {
@@ -308,6 +363,44 @@ describe('TestSidebar execution comparison', () => {
     });
   });
 
+  it('목록 재조회 실패 시 기존 실행을 유지하고 상위 재시도로 다시 조회한다', async () => {
+    mocks.getWorkflowRuns
+      .mockResolvedValueOnce({
+        total: 1,
+        items: [runSummary('baseline-run', '2026-07-13T01:00:00Z')],
+      })
+      .mockRejectedValueOnce(new Error('temporary list failure'))
+      .mockResolvedValueOnce({
+        total: 2,
+        items: [
+          runSummary('recovered-run', '2026-07-15T01:00:00Z'),
+          runSummary('baseline-run', '2026-07-13T01:00:00Z'),
+        ],
+      });
+
+    render(<ComparisonHarness />);
+
+    expect(await screen.findByText('baseline-run 고객 문의 내용')).toBeVisible();
+
+    fireEvent.change(
+      screen.getByRole('combobox', { name: '기준 실행 상태 필터' }),
+      { target: { value: 'failed' } },
+    );
+
+    expect(
+      await screen.findByText('실행 기록 목록을 불러오지 못했습니다.'),
+    ).toBeVisible();
+    expect(screen.getByText('baseline-run 고객 문의 내용')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: '상위 재시도' }));
+
+    expect(await screen.findByText('recovered-run 고객 문의 내용')).toBeVisible();
+    expect(
+      screen.queryByText('실행 기록 목록을 불러오지 못했습니다.'),
+    ).not.toBeInTheDocument();
+    expect(mocks.getWorkflowRuns).toHaveBeenCalledTimes(3);
+  });
+
   it('워크플로우 화면을 벗어나지 않고 TestSidebar를 실행 비교 모드로 전환한다', async () => {
     mocks.getWorkflowRuns.mockResolvedValue({ total: 0, items: [] });
 
@@ -316,6 +409,9 @@ describe('TestSidebar execution comparison', () => {
 
     expect(await screen.findByText('기준 실행 선택')).toBeVisible();
     expect(screen.getByTestId('test-execution-sidebar')).toBeVisible();
+    expect(screen.getByTestId('test-execution-sidebar')).toHaveStyle({
+      width: '640px',
+    });
     expect(screen.queryByText('노드별 실행 결과')).not.toBeInTheDocument();
   });
 
@@ -422,6 +518,83 @@ describe('TestSidebar execution comparison', () => {
     expect(screen.getByText('기준 실행 고정됨')).toBeVisible();
   });
 
+  it.each([404, 500])(
+    '기준으로 고정한 실행 상세가 일시적인 %s 오류여도 재조회 후 비교를 표시한다',
+    async (status) => {
+      mocks.getWorkflowRuns.mockResolvedValue({
+        total: 2,
+        items: [
+          runSummary('current-run', '2026-07-14T01:00:00Z'),
+          runSummary('baseline-run', '2026-07-13T01:00:00Z'),
+        ],
+      });
+      mocks.getWorkflowRun
+        .mockRejectedValueOnce({ response: { status } })
+        .mockResolvedValueOnce(
+          runDetail('current-run', 'gpt-4.1-mini', '현재 문의', '현재 답변'),
+        )
+        .mockResolvedValueOnce(
+          runDetail('baseline-run', 'gpt-4.1', '기존 문의', '기존 답변'),
+        );
+      mocks.getWorkflowRunLlmTraces.mockResolvedValue({
+        total: 0,
+        limit: 100,
+        offset: 0,
+        items: [],
+      });
+
+      render(<ComparisonHarness />);
+
+      const pinButtons = await screen.findAllByRole('button', {
+        name: '기준으로 고정',
+      });
+      fireEvent.click(pinButtons[1]);
+
+      expect(
+        await screen.findByRole('button', {
+          name: '문의 분류 노드 상세 비교하기',
+        }),
+      ).toBeVisible();
+      expect(mocks.getWorkflowRun).toHaveBeenCalledTimes(3);
+      expect(
+        screen.queryByText('실행 비교 데이터를 불러오지 못했습니다.'),
+      ).not.toBeInTheDocument();
+    },
+  );
+
+  it('기준 실행 상세 권한 오류는 재시도하지 않고 원인을 안내한다', async () => {
+    mocks.getWorkflowRuns.mockResolvedValue({
+      total: 2,
+      items: [
+        runSummary('current-run', '2026-07-14T01:00:00Z'),
+        runSummary('baseline-run', '2026-07-13T01:00:00Z'),
+      ],
+    });
+    mocks.getWorkflowRun
+      .mockRejectedValueOnce({ response: { status: 403 } })
+      .mockResolvedValueOnce(
+        runDetail('current-run', 'gpt-4.1-mini', '현재 문의', '현재 답변'),
+      );
+    mocks.getWorkflowRunLlmTraces.mockResolvedValue({
+      total: 0,
+      limit: 100,
+      offset: 0,
+      items: [],
+    });
+
+    render(<ComparisonHarness />);
+
+    const pinButtons = await screen.findAllByRole('button', {
+      name: '기준으로 고정',
+    });
+    fireEvent.click(pinButtons[1]);
+
+    expect(
+      await screen.findByText('이 실행 기록을 조회할 권한이 없습니다.'),
+    ).toBeVisible();
+    expect(mocks.getWorkflowRun).toHaveBeenCalledTimes(2);
+  });
+
   it('기준 실행을 얇은 식별 행으로 표시하고 요청한 실행의 상세만 펼친다', async () => {
     mocks.getWorkflowRuns.mockResolvedValue({
       total: 1,
@@ -473,6 +646,65 @@ describe('TestSidebar execution comparison', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /실행 상세 닫기$/ }));
     expect(screen.queryByText('실행 입력')).not.toBeInTheDocument();
+  });
+
+  it('실행 상세가 아직 저장되지 않은 404는 재조회한 뒤 상세를 표시한다', async () => {
+    mocks.getWorkflowRuns.mockResolvedValue({
+      total: 1,
+      items: [runSummary('baseline-run', '2026-07-13T01:00:00Z')],
+    });
+    mocks.getWorkflowRun
+      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockResolvedValueOnce(
+        runDetail(
+          'baseline-run',
+          'gpt-4.1',
+          '저장이 지연된 실행 입력',
+          '복원된 실행 출력',
+        ),
+      );
+
+    render(<ComparisonHarness />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: /실행 상세보기$/ }),
+    );
+
+    expect(await screen.findByText('저장이 지연된 실행 입력')).toBeVisible();
+    expect(screen.getByText('실행 지표')).toBeVisible();
+    expect(
+      screen.queryByText('실행 상세를 불러오지 못했습니다. 다시 시도해 주세요.'),
+    ).not.toBeInTheDocument();
+    expect(mocks.getWorkflowRun).toHaveBeenCalledTimes(2);
+  });
+
+  it('실행 상세 조회 실패 뒤 다시 불러오기를 제공한다', async () => {
+    mocks.getWorkflowRuns.mockResolvedValue({
+      total: 1,
+      items: [runSummary('baseline-run', '2026-07-13T01:00:00Z')],
+    });
+    mocks.getWorkflowRun
+      .mockRejectedValueOnce({ response: { status: 500 } })
+      .mockRejectedValueOnce({ response: { status: 500 } })
+      .mockResolvedValueOnce(
+        runDetail(
+          'baseline-run',
+          'gpt-4.1',
+          '재시도한 실행 입력',
+          '재시도한 실행 출력',
+        ),
+      );
+
+    render(<ComparisonHarness />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: /실행 상세보기$/ }),
+    );
+
+    expect(await screen.findByText('실행 상세를 불러오지 못했습니다.')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '다시 불러오기' }));
+
+    expect(await screen.findByText('재시도한 실행 입력')).toBeVisible();
+    expect(mocks.getWorkflowRun).toHaveBeenCalledTimes(3);
   });
 
   it('노드별 비교 목록에서 노드 이름과 유형을 함께 표시한다', async () => {
@@ -562,7 +794,7 @@ describe('TestSidebar execution comparison', () => {
     expect(screen.getByText('현재 실행: 성공')).toBeVisible();
   });
 
-  it('현재 실행 중에는 비교 조회 오류 대신 완료 대기 안내를 표시한다', async () => {
+  it('현재 실행 중에는 비교 조회를 미루고 완료 후 비교한다', async () => {
     mocks.getWorkflowRuns.mockResolvedValue({
       total: 1,
       items: [runSummary('baseline-run', '2026-07-13T01:00:00Z')],
@@ -593,8 +825,8 @@ describe('TestSidebar execution comparison', () => {
     );
 
     expect(
-      await screen.findByText('현재 실행이 완료되면 비교 결과를 준비합니다.'),
-    ).toBeVisible();
+      screen.queryByText('현재 실행이 완료되면 비교 결과를 준비합니다.'),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByText('실행 비교 데이터를 불러오지 못했습니다.'),
     ).not.toBeInTheDocument();
@@ -890,6 +1122,20 @@ describe('TestSidebar execution comparison', () => {
     expect(screen.getByText('모델 라우팅 비교')).toBeVisible();
     expect(screen.getAllByText('gpt-4.1').length).toBeGreaterThan(0);
     expect(screen.getAllByText('gpt-4.1-mini').length).toBeGreaterThan(0);
+
+    const detailSections = [
+      screen.getByTestId('node-comparison-status-panels'),
+      screen.getByText('모델 라우팅 비교'),
+      screen.getByText('입력 비교'),
+      screen.getByText('출력 비교'),
+    ];
+    for (let index = 0; index < detailSections.length - 1; index += 1) {
+      expect(
+        detailSections[index].compareDocumentPosition(
+          detailSections[index + 1],
+        ) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    }
   });
 
   it('LLM 노드가 아닌 비교 카드에는 비용과 토큰을 표시하지 않는다', async () => {

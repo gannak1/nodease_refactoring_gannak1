@@ -117,7 +117,8 @@ embedding vector, semantic cohort endpoint는 제공하지 않는다. 초기 운
 router가 먼저 선택한다.
 
 Runtime Judge의 `candidate_models`에는 provider 공식 문서에서 확인한
-`canonical_model_id`, `model_role`, `specialization_tags`,
+`canonical_model_id`, `model_role`, `reasoning_profile`, `complexity_ceiling`,
+`cost_position`, `task_affinities`, `specialization_tags`,
 `evidence_type=provider_documentation`을 포함한다.
 공식 별칭과 정식 ID가 동시에 실행 가능하면 정식 ID 하나만 전달하고, 별칭만 실행 가능하면
 credential 조회가 가능한 별칭을 유지한다. 공급자 특화 태그는 약한 사전 정보이며
@@ -227,7 +228,9 @@ Runtime Judge provider request는 외부 API 계약이 아니라 Workflow Engine
 `request_feature`, `rag_context`, `candidate_models`만 보낸다. `request_feature`는 JSON 구조를 보존한
 `CURRENT_REQUEST_JSON`과 길이 제한된 세 prompt, 출력 계약을 포함한다. `rag_context`는 검색량과
 근거 충분성 같은 safe signal만 허용하며 chunk/document 원문은 금지한다. `candidate_models`에는 가격,
-운영 계약 성적, 공식 역할·특화 태그와 `context_window`를 포함할 수 있다. 정상 응답은 선택 결과 외에
+운영 계약 성적, 공식 역할·특화 태그, 난이도 상한, 비용 역할과 `context_window`를 포함할 수 있다.
+`cost_position`은 모델 능력값이 아니며 `capability_tier` 단독으로 후보를 선택하거나 제외하지 않는다.
+정상 응답은 선택 결과 외에
 다음 선택적 요구 능력 요약을 반환할 수 있다.
 
 ~~~json
@@ -288,7 +291,7 @@ reason code, runtime context, `decision_source`, `judge_called`를 남긴다. `j
 | `attempted` | Judge provider 호출을 실제로 시도했는지 |
 | `model` | 호출한 Judge 모델. 준비 전에 실패하면 없을 수 있음 |
 | `candidate_model_count` | Judge가 비교하려던 실행 가능 후보 수 |
-| `confidence`, `reason_code`, `reason_short`, `cost` | `status=selected`일 때의 선택 근거 |
+| `confidence`, `reason_code`, `reason_short`, `cost` | `status=selected`일 때의 구조화된 선택 근거. `reason_short`은 사전 정의된 코드에 대응하는 짧은 안전 설명이며, Judge 자유 문장은 durable trace에 저장하지 않는다. |
 | `error_code` | `failed` 또는 `unavailable`일 때의 안전 오류 코드 |
 | `not_called_reason` | local router 선택, 정책 없음, 테스트 preview 등 미호출 이유 |
 | `learning_status`, `learning_not_queued_reason` | label이 `pending_contract`로 저장됐는지, 저장하지 못했다면 안전한 실패 코드 |
@@ -298,8 +301,7 @@ reason code, runtime context, `decision_source`, `judge_called`를 남긴다. `j
 없으면 UI는 실패로 추측하지 않고 `Judge 실행 정보 없음`으로 표시한다. 로컬 라우터가
 선택한 경우 `decision_factors`에는 learning mode, confidence, 후보 확률의 요약만 남긴다.
 원문 prompt/입력, 검색 문서 원문, embedding vector는 반환하거나 저장하지 않는다.
-Judge가 생성한 자유형 `reason_short`는 durable trace에 저장하지 않으며, 알 수 없는
-reason code는 `judge_reason_unrecognized`로 일반화한다.
+Judge 자유형 설명은 원문 요청이나 개인정보를 반복할 수 있으므로 durable trace에 저장하지 않는다. UI는 `reason_code`와 `reason_short`의 안전한 구조화된 값으로 설명을 만든다. 원문 prompt/input, 검색 문서 원문, 개인식별 정보는 저장하지 않으며, 알 수 없는 reason code는 `judge_reason_unrecognized`로 일반화한다.
 
 Judge가 선택한 실행은 처음에는 `learning_status=pending_contract`로 기록한다. workflow
 완료 후 node 성공, schema/downstream 계약, fallback 여부를 확인해 `accepted` 또는
@@ -327,7 +329,7 @@ cache hit로 처리하지 않는다.
 | llm_node_model_routing_learning_labels | Judge 선택의 안전한 vector, HMAC routing feature hash와 완료 후 계약 기반 학습 확정 상태. 원문 prompt/input은 저장하지 않는다. |
 | llm_model_routing_global_profiles | Judge-first runtime이 후보 모델의 초기 품질·지연·fallback 사전 정보를 읽는 전역 catalog profile. 실행 주체가 사용할 수 있으면서 명시적 catalog에 등록된 모델만 후보가 된다. |
 
-Test Sidebar 실행은 활성 배포 정책을 대상으로 runtime Judge를 호출할 수 있지만, Judge label·운영 정책 카운터·성적에는 포함하지 않는다. Cost Optimizer candidate 비교 실행도 운영 정책 카운터와 성적에 포함하지 않는다.
+Test Sidebar 실행은 설정 지문이 같은 활성 배포 정책을 우선 사용한다. 활성 정책이 없거나 현재 draft와 다르면 실행 주체가 사용할 수 있는 모델로 일회성 Judge-first 정책을 구성해 runtime Judge를 호출한다. 두 경우 모두 Judge label·운영 정책 카운터·성적에는 포함하지 않는다. Cost Optimizer candidate 비교 실행도 운영 정책 카운터와 성적에 포함하지 않는다.
 ## LLM Parameter Recommendation Contract
 
 관련 FR: FR-012

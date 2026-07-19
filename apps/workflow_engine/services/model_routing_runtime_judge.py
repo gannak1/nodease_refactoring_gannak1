@@ -31,6 +31,8 @@ class RuntimeJudgeDecision:
     reason_short: str | None
     reason_code: str
     usage: dict[str, Any]
+    reason_factors: list[str] | None = None
+    selection_explanation: str | None = None
     decision_detail: dict[str, Any] | None = None
     task_requirements: dict[str, int] | None = None
 
@@ -46,6 +48,8 @@ class RuntimeJudgeDecision:
             metadata["selected_model"] = self.selected_model_id
         if self.reason_short:
             metadata["reason_short"] = self.reason_short
+        if self.reason_factors:
+            metadata["reason_factors"] = list(self.reason_factors)
         if self.task_requirements:
             metadata["task_requirements"] = dict(self.task_requirements)
         return metadata
@@ -74,6 +78,30 @@ class ModelRoutingRuntimeJudge:
         "ambiguous_request": "모호한 요청 해석",
         "long_context": "긴 문맥 종합",
     }
+    # 자유형 설명 대신 저장할 수 있는 제한된 판단 축이다. 각 값은 요청 원문을
+    # 포함하지 않으며, UI에서 사람이 읽는 고정 문구로만 변환한다.
+    _REASON_FACTOR_CODES = {
+        "high_decision_impact",
+        "security_or_compliance_risk",
+        "multi_step_reasoning",
+        "evidence_conflict",
+        "broad_context_synthesis",
+        "strict_output_reliability",
+        "long_context_handling",
+    }
+    _DEFAULT_REASON_FACTORS_BY_CODE = {
+        "simple_response": ["strict_output_reliability"],
+        "multi_constraint": ["multi_step_reasoning", "broad_context_synthesis"],
+        "evidence_synthesis": ["evidence_conflict", "broad_context_synthesis"],
+        "structured_precision": ["strict_output_reliability"],
+        "high_risk_reasoning": [
+            "high_decision_impact",
+            "security_or_compliance_risk",
+            "multi_step_reasoning",
+        ],
+        "ambiguous_request": ["multi_step_reasoning"],
+        "long_context": ["long_context_handling", "broad_context_synthesis"],
+    }
     @classmethod
     def decide(
         cls,
@@ -98,6 +126,7 @@ class ModelRoutingRuntimeJudge:
             ),
             "response_format": {"type": "json_object"},
         }
+        attempt_usages: list[dict[str, Any]] = []
         try:
             response = client.invoke_sync(
                 messages=cls._messages(
@@ -114,6 +143,9 @@ class ModelRoutingRuntimeJudge:
             # 계약으로 재시도한다. 정상 요청에는 추가 호출이 없다.
             if str(getattr(exc, "reason_code", "")) not in cls._RETRYABLE_PROVIDER_REASON_CODES:
                 raise
+            # Provider가 incomplete response에도 usage를 제공하면 이미 과금된
+            # 첫 호출을 숨기지 않는다. 최종 trace/usage에는 재시도까지 합산한다.
+            attempt_usages.append(cls._safe_usage(getattr(exc, "usage", None)))
             response = client.invoke_sync(
                 messages=cls._retry_messages(
                     candidate_model_ids=candidates,
@@ -167,8 +199,16 @@ class ModelRoutingRuntimeJudge:
             if diagnostic_mode
             else None
         )
+        # 자유형 Judge 설명은 입력 원문을 되풀이할 수 있어 durable trace에 남기지
+        # 않는다. 진단 응답의 상세 정보도 이 객체 밖으로 저장하지 않는다.
+        selection_explanation = None
         task_requirements = cls._safe_task_requirements(
             payload.get("task_requirements")
+        )
+        reason_factors = cls._safe_reason_factors(
+            payload.get("reason_factors"),
+            reason_code=reason_code,
+            task_requirements=task_requirements,
         )
 
         return RuntimeJudgeDecision(
@@ -176,7 +216,16 @@ class ModelRoutingRuntimeJudge:
             confidence=confidence,
             reason_short=reason_short,
             reason_code=reason_code,
-            usage=cls._safe_usage(response.get("usage") if isinstance(response, dict) else None),
+            usage=cls._aggregate_usages(
+                [
+                    *attempt_usages,
+                    cls._safe_usage(
+                        response.get("usage") if isinstance(response, dict) else None
+                    ),
+                ]
+            ),
+            reason_factors=reason_factors,
+            selection_explanation=selection_explanation,
             decision_detail=decision_detail,
             task_requirements=task_requirements,
         )
@@ -203,15 +252,25 @@ class ModelRoutingRuntimeJudge:
             "충돌·누락 근거를 해석하면 높은 능력이 필요하고, 전문 주제라도 정해진 절차 안내·추출·분류면 낮을 수 있습니다. "
             "2단계로 필요한 능력을 안정적으로 충족하지 못하는 후보를 제외하세요. operational_run_count가 5건 이상이면 "
             "실제 배포 실행에서 나온 workflow 계약 성적인 schema·후속 노드 성공률과 fallback 비율을 "
-            "공식 카탈로그 설명보다 우선하세요. 표본이 부족하면 capability_tier, official_position, model_role, "
-            "specialization_tags 같은 공급자 공식 특화 태그는 약한 사전 정보로만 사용하세요. "
+            "공식 카탈로그 설명보다 우선하세요. 표본이 부족하면 capability_tier, reasoning_profile, "
+            "complexity_ceiling, task_affinities 같은 공급자 공식 설명 기반 정보를 약한 사전 정보로만 사용하세요. "
+            "공급자 공식 특화 태그는 약한 사전 정보이며 측정된 품질 점수가 아닙니다. "
+            "capability_tier 하나만으로 후보를 선택하거나 제외하지 마세요. cost_position은 비용 역할일 뿐 "
+            "작업 능력 등급이 아니며, complexity_ceiling은 공급자 설명을 Nodease 난이도로 정규화한 상한입니다. "
+            "요청에 복잡한 전문 판단이 필요하면 complexity_ceiling이 complex_professional인지 확인하고, "
+            "다단계 추론이 핵심이면 reasoning_profile과 task_affinities가 실제 요구에 맞는지 확인하세요. "
             "reasoning_specialist는 형식 논증·수학·과학·코드의 다단계 추론이 핵심일 때, frontier_generalist는 복합 전문 업무 "
             "완성도가 핵심일 때 우선 검토하세요. 일반 전문 업무 능력과 전문 추론 능력을 같은 것으로 취급하지 마세요. "
             "3단계로 남은 충분한 후보 사이에서만 가격·지연·fallback을 비교해 가장 합리적인 하나를 선택하세요. "
             "모든 요청에 같은 후보를 관성적으로 선택하지 말고 현재 요청의 요구 능력과 후보 증거를 다시 비교하세요. "
-            "reason_short는 한국어 8~14자로 작성하고 JSON object 하나만 반환하세요: "
+            "reason_short는 한국어 8~14자로 작성하세요. reason_factors는 아래 code 중 현재 선택에 직접 영향을 준 "
+            "1~3개만 고르세요: high_decision_impact, security_or_compliance_risk, multi_step_reasoning, "
+            "evidence_conflict, broad_context_synthesis, strict_output_reliability, long_context_handling. "
+            "요청 원문·개인정보·RAG 문서를 출력하지 마세요. "
+            "JSON object 하나만 반환하세요: "
             '{"selected_model_id":"candidate id","confidence":0.0,'
             '"reason_short":"여러 조건 종합","reason_code":"multi_constraint",'
+            '"reason_factors":["multi_step_reasoning","evidence_conflict"],'
             '"task_requirements":{"task_complexity":0,"decision_impact":0,'
             '"evidence_synthesis":0,"output_precision":0}}.'
         )
@@ -257,7 +316,11 @@ class ModelRoutingRuntimeJudge:
             "고성능 모델은 고위험 판단·복수 근거 종합·다단계 추론일 때만 선택하세요. "
             "JSON 하나만 반환: {\"selected_model_id\":\"id\",\"confidence\":0.0,"
             "\"reason_code\":\"simple_response|multi_constraint|evidence_synthesis|"
-            "structured_precision|high_risk_reasoning|ambiguous_request|long_context\"}."
+            "structured_precision|high_risk_reasoning|ambiguous_request|long_context\","
+            "\"reason_short\":\"짧은 한국어 이유\","
+            "\"reason_factors\":[\"high_decision_impact|security_or_compliance_risk|multi_step_reasoning|"
+            "evidence_conflict|broad_context_synthesis|strict_output_reliability|long_context_handling\"]}. "
+            "요청 원문·개인정보·RAG 문서를 출력하지 마세요."
         )
         if diagnostic_mode:
             instruction += (
@@ -345,6 +408,57 @@ class ModelRoutingRuntimeJudge:
             "selection_explanation": selection_explanation,
             "candidate_comparison": safe_comparisons,
         }
+
+    @staticmethod
+    def _safe_selection_explanation(value: Any) -> str | None:
+        """일반 실행 trace에 남길 짧은 Judge 선택 설명을 정규화한다."""
+
+        explanation = " ".join(str(value or "").split())
+        if not explanation or len(explanation) > 240:
+            return None
+        return explanation
+
+    @classmethod
+    def _safe_reason_factors(
+        cls,
+        value: Any,
+        *,
+        reason_code: str,
+        task_requirements: dict[str, int] | None,
+    ) -> list[str]:
+        """원문 없이 Judge의 선택 근거를 최대 세 개의 code로 정규화한다."""
+
+        factors: list[str] = []
+        if isinstance(value, list):
+            for raw_factor in value:
+                factor = str(raw_factor or "").strip()
+                if factor in cls._REASON_FACTOR_CODES and factor not in factors:
+                    factors.append(factor)
+                if len(factors) == 3:
+                    return factors
+        if factors:
+            return factors
+
+        # 일부 provider 응답은 optional 배열을 생략한다. 이때도 이미 Judge가
+        # 산출한 0~3 요구 수준만으로 같은 안전 범주의 근거를 복원한다.
+        requirements = task_requirements or {}
+        derived = []
+        if requirements.get("decision_impact", 0) >= 2:
+            derived.append("high_decision_impact")
+        if requirements.get("task_complexity", 0) >= 2:
+            derived.append("multi_step_reasoning")
+        if requirements.get("evidence_synthesis", 0) >= 2:
+            derived.append("broad_context_synthesis")
+        if requirements.get("output_precision", 0) >= 2:
+            derived.append("strict_output_reliability")
+        if not derived:
+            derived = cls._DEFAULT_REASON_FACTORS_BY_CODE.get(reason_code, [])
+        for factor in derived:
+            if factor in cls._REASON_FACTOR_CODES and factor not in factors:
+                factors.append(factor)
+            if len(factors) == 3:
+                break
+        return factors
 
     @staticmethod
     def _safe_rag_context(value: dict[str, Any] | None) -> dict[str, Any]:
@@ -439,6 +553,24 @@ class ModelRoutingRuntimeJudge:
                 "general_purpose",
             }:
                 safe["model_role"] = model_role
+            reasoning_profile = raw.get("reasoning_profile")
+            if reasoning_profile in {
+                "non_reasoning",
+                "general_reasoning",
+                "specialized_reasoning",
+                "frontier_reasoning",
+            }:
+                safe["reasoning_profile"] = reasoning_profile
+            complexity_ceiling = raw.get("complexity_ceiling")
+            if complexity_ceiling in {
+                "routine",
+                "multi_constraint",
+                "complex_professional",
+            }:
+                safe["complexity_ceiling"] = complexity_ceiling
+            cost_position = raw.get("cost_position")
+            if cost_position in {"economy", "balanced", "premium"}:
+                safe["cost_position"] = cost_position
             canonical_model_id = raw.get("canonical_model_id")
             if isinstance(canonical_model_id, str) and canonical_model_id:
                 safe["canonical_model_id"] = canonical_model_id[:120]
@@ -454,6 +586,15 @@ class ModelRoutingRuntimeJudge:
                 ][:12]
                 if safe_tags:
                     safe["specialization_tags"] = safe_tags
+            task_affinities = raw.get("task_affinities")
+            if isinstance(task_affinities, list):
+                safe_affinities = [
+                    affinity[:80]
+                    for affinity in task_affinities
+                    if isinstance(affinity, str) and affinity
+                ][:12]
+                if safe_affinities:
+                    safe["task_affinities"] = safe_affinities
             catalog_lifecycle = raw.get("catalog_lifecycle")
             if catalog_lifecycle in {"listed", "preview"}:
                 safe["catalog_lifecycle"] = catalog_lifecycle
@@ -517,6 +658,9 @@ class ModelRoutingRuntimeJudge:
                 "capability_tier",
                 "official_position",
                 "model_role",
+                "reasoning_profile",
+                "complexity_ceiling",
+                "cost_position",
                 "catalog_lifecycle",
             ):
                 value = profile.get(key)
@@ -536,6 +680,11 @@ class ModelRoutingRuntimeJudge:
             if isinstance(specialization_tags, list) and specialization_tags:
                 row["specialization_tags"] = [
                     str(tag) for tag in specialization_tags[:3] if str(tag).strip()
+                ]
+            task_affinities = profile.get("task_affinities")
+            if isinstance(task_affinities, list) and task_affinities:
+                row["task_affinities"] = [
+                    str(tag) for tag in task_affinities[:4] if str(tag).strip()
                 ]
             quality = profile.get("quality_by_difficulty")
             if isinstance(quality, dict):
@@ -598,3 +747,33 @@ class ModelRoutingRuntimeJudge:
             if key in {"prompt_tokens", "completion_tokens", "total_tokens"}
             and isinstance(value, (int, float))
         }
+
+    @staticmethod
+    def _aggregate_usages(usages: list[dict[str, Any]]) -> dict[str, int | float]:
+        """Aggregate every provider attempt so retry cost cannot disappear."""
+
+        non_empty_usages = [usage for usage in usages if usage]
+        if len(non_empty_usages) == 1:
+            return dict(non_empty_usages[0])
+
+        totals: dict[str, int | float] = {}
+        for key in ("prompt_tokens", "completion_tokens"):
+            value = sum(
+                usage.get(key, 0)
+                for usage in usages
+                if isinstance(usage.get(key), (int, float))
+            )
+            if value:
+                totals[key] = value
+        if totals:
+            totals["total_tokens"] = sum(
+                totals.get(key, 0) for key in ("prompt_tokens", "completion_tokens")
+            )
+            return totals
+
+        total_tokens = sum(
+            usage.get("total_tokens", 0)
+            for usage in usages
+            if isinstance(usage.get("total_tokens"), (int, float))
+        )
+        return {"total_tokens": total_tokens} if total_tokens else {}

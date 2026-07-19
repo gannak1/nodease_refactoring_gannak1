@@ -131,10 +131,13 @@ def seed_default_llm_models(db: Session) -> None:
     gpt-5.4, o3-mini와 같은 모델이 DB에 존재하도록 보장합니다.
     또한, 해당 모델이 UI에 표시되도록 기존 Credential과 연결합니다.
     """
-    from apps.gateway.services.llm_service import LLMService
     from apps.shared.db.models.llm import (
         LLMModel,
         LLMProvider,
+    )
+    from apps.shared.services.llm_model_pricing import (
+        get_model_pricing,
+        known_model_prices,
     )
 
     # 1. 모든 Provider 조회 후 맵핑 생성
@@ -160,7 +163,7 @@ def seed_default_llm_models(db: Session) -> None:
     models_updated_count = 0
 
     # 3. KNOWN_MODEL_PRICES 순회하며 모델 생성 또는 가격 업데이트
-    for model_id, pricing in LLMService.KNOWN_MODEL_PRICES.items():
+    for model_id, pricing in known_model_prices().items():
         provider_name = get_provider_name(model_id)
         provider = provider_map.get(provider_name)
 
@@ -175,9 +178,9 @@ def seed_default_llm_models(db: Session) -> None:
                 (m for m in existing_models if m.model_id_for_api_call == model_id),
                 None,
             )
-            # [NEW] 기존 모델이지만 가격 정보가 없으면 업데이트
             if model and (
-                model.input_price_1k is None or model.output_price_1k is None
+                float(model.input_price_1k or -1) != pricing["input"]
+                or float(model.output_price_1k or -1) != pricing["output"]
             ):
                 model.input_price_1k = pricing["input"]
                 model.output_price_1k = pricing["output"]
@@ -207,6 +210,22 @@ def seed_default_llm_models(db: Session) -> None:
 
         if not model:
             continue
+
+    # Existing rows can use executable aliases such as models/gemini-... or a
+    # dated provider version. Update them too, rather than only rows created by
+    # this seed invocation.
+    for model in existing_models:
+        pricing = get_model_pricing(model.model_id_for_api_call)
+        if pricing is None:
+            continue
+        if (
+            float(model.input_price_1k or -1) != pricing.standard_input_per_1k
+            or float(model.output_price_1k or -1) != pricing.standard_output_per_1k
+        ):
+            model.input_price_1k = pricing.standard_input_per_1k
+            model.output_price_1k = pricing.standard_output_per_1k
+            db.add(model)
+            models_updated_count += 1
 
     db.flush()
     from apps.shared.services.model_routing_global_profile_catalog import (

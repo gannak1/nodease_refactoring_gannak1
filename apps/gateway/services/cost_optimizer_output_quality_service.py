@@ -113,6 +113,7 @@ class CostOptimizerOutputQualityService:
                 selected_model_id,
                 int(usage.get("prompt_tokens") or 0),
                 int(usage.get("completion_tokens") or 0),
+                usage=usage,
             )
             usage_log = LLMService.log_usage(
                 db,

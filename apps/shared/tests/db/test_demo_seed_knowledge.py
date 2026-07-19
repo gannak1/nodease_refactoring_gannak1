@@ -1,12 +1,14 @@
 import gzip
 import json
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from apps.shared.db import demo_seed
+from apps.shared.db.models.workflow_run import RunStatus
 from apps.shared.domain.app_auth_secret import (
     APP_AUTH_SECRET_VERIFIER_VERSION,
     app_auth_secret_verifier,
@@ -1172,6 +1174,104 @@ def test_model_router_demo_workflow_uses_current_routing_context():
         "validation_budget_usd": 3.0,
         "excluded_model_ids": ["gpt-5.6-sol"],
     }
+    assert data["knowledgeBases"] == []
+
+
+def test_internal_it_helpdesk_routing_demo_matches_presentation_contract():
+    graph = demo_seed._internal_it_helpdesk_routing_graph()
+    nodes = {node["id"]: node for node in graph["nodes"]}
+
+    assert demo_seed.APP_IDS["internal_it_helpdesk_routing"] == uuid.UUID(
+        "94000000-0000-0000-0000-000000000001"
+    )
+    assert demo_seed.WORKFLOW_IDS["internal_it_helpdesk_routing"] == uuid.UUID(
+        "94000000-0000-0000-0000-000000000002"
+    )
+    assert demo_seed.DEPLOYMENT_IDS["internal_it_helpdesk_routing"] == uuid.UUID(
+        "94000000-0000-0000-0000-000000000003"
+    )
+    assert demo_seed._input_schema_from_graph(graph) == {
+        "variables": [
+            {"name": "department", "type": "text", "label": "부서"},
+            {"name": "message", "type": "text", "label": "문의"},
+        ]
+    }
+
+    llm_data = nodes["llm-triage"]["data"]
+    assert llm_data["auto_model_routing"] is True
+    assert llm_data["model_routing_context"]["node_task"] == "internal_it_helpdesk"
+    assert llm_data["knowledgeBases"] == [
+        demo_seed._knowledge_base_ref("onboarding_company_common"),
+        demo_seed._knowledge_base_ref("onboarding_platform"),
+    ]
+    assert llm_data["output_format"]["schema"]["required"] == [
+        "문의 유형",
+        "긴급도",
+        "답변 초안",
+    ]
+    assert "경제형" in llm_data["model_routing_task_description"]
+    assert "균형형" in llm_data["model_routing_task_description"]
+    assert "고성능형" in llm_data["model_routing_task_description"]
+
+
+def test_internal_it_helpdesk_routing_demo_seeds_all_presentation_logs():
+    specs = demo_seed.INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS
+
+    assert len(specs) == 10
+    assert {spec.model_name for spec in specs} >= {
+        "gpt-4o-mini",
+        "gpt-4.1-mini",
+        "gpt-4.1",
+        "gpt-5.4",
+        "gpt-5.6-terra",
+    }
+    assert all(spec.status == RunStatus.SUCCESS for spec in specs)
+    assert all(spec.department and spec.message for spec in specs)
+    assert all(spec.total_tokens > 0 and spec.total_cost > 0 for spec in specs)
+    assert specs[-1].run_id == uuid.UUID("5a699356-1c89-498f-8aa6-0922f8887f16")
+    assert specs[-1].model_name == "gpt-5.6-terra"
+    assert specs[-1].department == "정보보안팀"
+    assert specs[-1].message == (
+        "외부에서 접속한 것으로 보이는 계정이 운영 조회 권한을 사용했습니다. "
+        "MFA 재설정, VPN 세션 차단, Git 토큰 폐기 중 어떤 조치를 먼저 해야 하는지 "
+        "근거와 함께 판단해 주세요."
+    )
+
+
+def test_internal_it_helpdesk_seed_uses_catalog_tier_for_terra_security_reason():
+    last_spec = demo_seed.INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS[-1]
+
+    tier, reason_code, reason_short = demo_seed._internal_it_helpdesk_routing_reason(
+        last_spec,
+        approval_required=True,
+    )
+
+    assert tier == "advanced"
+    assert reason_code == "security_incident_reasoning"
+    assert reason_short == "보안 사고 판단에 적합"
+
+
+def test_internal_it_helpdesk_seed_exposes_safe_judge_reason_factors_for_high_risk_run():
+    last_spec = demo_seed.INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS[-1]
+
+    assert demo_seed._internal_it_helpdesk_reason_factors(
+        last_spec,
+        approval_required=True,
+    ) == [
+        "high_decision_impact",
+        "security_or_compliance_risk",
+        "multi_step_reasoning",
+    ]
+
+
+def test_internal_it_helpdesk_seed_separates_judge_usage_node_id():
+    assert (
+        demo_seed._internal_it_helpdesk_usage_node_id("execution") == "llm-triage"
+    )
+    assert (
+        demo_seed._internal_it_helpdesk_usage_node_id("judge")
+        == "llm-triage:routing_judge"
+    )
 
 
 def test_ticket_ops_input_schema_matches_webhook_mappings():

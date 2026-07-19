@@ -380,6 +380,12 @@ Frontend는 raw query, prompt, credential을 trace 화면에 노출하지 않는
 
 #### Test Sidebar 실행 노드 상세
 
+`실행 비교` 탭을 선택하면 Test Sidebar는 화면 우측 여백 24px을 제외한 최대 너비로
+확장한다. `단일 결과` 탭에서는 사용자가 조절한 일반 패널 최대 너비를 유지한다.
+
+LLM 노드 상세 비교는 `실행 상태(상태·비용·시간·토큰) → 실행 모델/자동 라우팅 → 입력 → 출력`
+순서로 표시한다. 기준 실행과 현재 실행의 같은 종류 정보가 항상 나란히 보이게 한다.
+
 테스트 실행 결과 목록의 각 완료 노드는 icon-only `상세 보기` 버튼을 제공한다. 버튼은
 페이지를 이동하지 않고 같은 Test Sidebar를 노드 실행 상세 상태로 전환한다.
 
@@ -391,7 +397,8 @@ Frontend는 raw query, prompt, credential을 trace 화면에 노출하지 않는
   재사용한다. 화면은 `모델 선택 결과`를 첫 영역으로 두고, 실제 실행 모델, 선택 경로,
   선택 근거를 먼저 표시한다.
 - 이어지는 `Judge 실행` 영역은 항상 같은 위치에 표시한다. `Judge 실행 성공`이면 Judge 모델,
-  확신도, 검토 후보 수, Judge 비용을 보여준다. `Judge 호출 실패`이면 기본 모델 회귀 사실,
+  확신도, 검토 후보 수, Judge 비용과 safe `Judge 판단 설명`을 보여준다. 판단 설명은 선택 모델이
+  필요한 능력과 후보 증거에 맞는 이유만 240자 이하로 표시하며 요청 원문·RAG 문서 원문은 표시하지 않는다. `Judge 호출 실패`이면 기본 모델 회귀 사실,
   호출한 Judge 모델, 후보 수, 안전 오류 이유를 보여준다. `Judge 호출 안 함`이면 local router
   선택·정책 없음·테스트 preview 중 해당 이유를 보여준다. 이전 trace에 Judge 상태가 없으면
   호출 실패로 추측하지 않고 `Judge 실행 정보 없음`을 표시한다.
@@ -401,11 +408,15 @@ Frontend는 raw query, prompt, credential을 trace 화면에 노출하지 않는
   `fallback_from_model`, `fallback_reason_code`, 실제 output model을 표시한다.
 - 자동 라우팅 trace가 있는 테스트 실행에는 `이 테스트 실행은 자동 라우팅 정책의 학습 및
   갱신 횟수에 포함되지 않습니다.`를 표시한다.
+- `배포 정책 기준 테스트` 안내는 모델 선택·Judge 실행·학습 상태를 읽은 뒤 상세 화면의
+  마지막에 표시한다. 비교 화면의 두 실행 패널에서 핵심 실행 정보가 같은 순서로 먼저
+  보이도록 한다.
 - trace의 `policy_source=active_deployment`와 `included_in_policy_learning=false`이면 공통
   상세 컴포넌트 header를 `배포 정책 기준 테스트`로 표시한다. 활성 배포 policy를 읽었지만
   테스트 결과는 운영 학습에 포함하지 않았다는 뜻이다.
 - 현재 draft와 활성 deployment의 node 설정이 다르면 배포 policy를 적용하지 않는다. 이 경우
-  기존 `자동 라우팅` 상세에서 저장 모델 사용 사유를 표시한다.
+  테스트 실행은 현재 draft와 실행 주체가 사용할 수 있는 후보로 임시 Judge-first 정책을 만들고,
+  상세에 `테스트 임시 정책`과 Judge 선택 결과를 표시한다. 이 결과는 운영 학습에 포함하지 않는다.
 
 #### Backend core와 UI 연결 경계
 

@@ -30,6 +30,7 @@ class _IncompleteThenCompactJudgeClient(_JudgeClient):
                 "OpenAI Responses 응답이 완료되지 않았습니다: status=incomplete",
                 reason_code="responses_incomplete",
                 provider_response_status="incomplete",
+                usage={"prompt_tokens": 80, "completion_tokens": 40},
             )
         return {
             "choices": [
@@ -65,11 +66,34 @@ def test_runtime_judge_normalizes_invalid_display_reason_without_discarding_sele
     assert decision.reason_short == "단순 응답 처리"
 
 
+def test_runtime_judge_derives_safe_reason_factors_when_optional_array_is_missing():
+    client = _JudgeClient(
+        '{"selected_model_id":"gpt-5.4","confidence":0.91,'
+        '"reason_short":"여러 조건 종합","reason_code":"multi_constraint",'
+        '"task_requirements":{"task_complexity":3,"decision_impact":3,'
+        '"evidence_synthesis":2,"output_precision":1}}'
+    )
+
+    decision = ModelRoutingRuntimeJudge.decide(
+        client=client,
+        candidate_model_ids=["gpt-5.4"],
+        routing_feature_text="safe routing feature",
+    )
+
+    assert decision.reason_factors == [
+        "high_decision_impact",
+        "multi_step_reasoning",
+        "broad_context_synthesis",
+    ]
+
+
 def test_runtime_judge_accepts_only_current_execution_subject_candidates():
     client = _JudgeClient(
         '{"selected_model_id":"gpt-5-mini",'
         '"confidence":0.86,'
         '"reason_short":"근거 종합 필요","reason_code":"advanced_quality",'
+        '"reason_factors":["evidence_conflict","multi_step_reasoning"],'
+        '"selection_explanation":"복수 근거의 충돌을 해석해야 하므로 근거 종합 능력이 높은 후보를 선택했습니다.",'
         '"task_requirements":{"task_complexity":2,"decision_impact":1,'
         '"evidence_synthesis":3,"output_precision":2}}'
     )
@@ -116,7 +140,13 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
         "evidence_synthesis": 3,
         "output_precision": 2,
     }
+    assert decision.reason_factors == [
+        "evidence_conflict",
+        "multi_step_reasoning",
+    ]
     assert decision.safe_metadata()["task_requirements"] == decision.task_requirements
+    assert decision.safe_metadata()["reason_factors"] == decision.reason_factors
+    assert "selection_explanation" not in decision.safe_metadata()
     assert decision.usage == {"prompt_tokens": 42, "completion_tokens": 18}
     rendered_prompt = client.calls[0]["messages"][1]["content"]
     prompt_body = __import__("json").loads(rendered_prompt)
@@ -236,7 +266,15 @@ def test_runtime_judge_collapses_sol_alias_and_receives_source_backed_specializa
                 "model_id": "gpt-5.6-sol",
                 "canonical_model_id": "gpt-5.6-sol",
                 "evidence_type": "provider_documentation",
+                "capability_tier": "advanced",
+                "reasoning_profile": "frontier_reasoning",
+                "complexity_ceiling": "complex_professional",
+                "cost_position": "premium",
                 "model_role": "frontier_generalist",
+                "task_affinities": [
+                    "complex_professional_work",
+                    "complex_reasoning",
+                ],
                 "specialization_tags": [
                     "complex_professional_work",
                     "complex_reasoning",
@@ -270,6 +308,13 @@ def test_runtime_judge_collapses_sol_alias_and_receives_source_backed_specializa
     ]
     assert prompt_body["candidate_models"][0]["evidence_type"] == "provider_documentation"
     assert prompt_body["candidate_models"][0]["model_role"] == "frontier_generalist"
+    assert prompt_body["candidate_models"][0]["reasoning_profile"] == "frontier_reasoning"
+    assert prompt_body["candidate_models"][0]["complexity_ceiling"] == "complex_professional"
+    assert prompt_body["candidate_models"][0]["cost_position"] == "premium"
+    assert prompt_body["candidate_models"][0]["task_affinities"] == [
+        "complex_professional_work",
+        "complex_reasoning",
+    ]
     assert prompt_body["candidate_models"][1]["specialization_tags"] == [
         "multi_step_reasoning",
         "math_reasoning",
@@ -278,6 +323,8 @@ def test_runtime_judge_collapses_sol_alias_and_receives_source_backed_specializa
     assert prompt_body["candidate_models"][1]["model_role"] == "reasoning_specialist"
     instruction = client.calls[0]["messages"][0]["content"]
     assert "공급자 공식 특화 태그는 약한 사전 정보" in instruction
+    assert "capability_tier 하나만으로 후보를 선택하거나 제외하지 마세요" in instruction
+    assert "complexity_ceiling" in instruction
     assert "일반 전문 업무 능력과 전문 추론 능력을 같은 것으로 취급하지 마세요" in instruction
     assert "reasoning_specialist는 형식 논증·수학·과학·코드의 다단계 추론이 핵심일 때" in instruction
 
@@ -293,6 +340,21 @@ def test_llm_node_builds_distinct_source_backed_profiles_for_sol_and_o3():
     assert "complex_professional_work" in profiles[0]["specialization_tags"]
     assert "math_reasoning" in profiles[1]["specialization_tags"]
     assert profiles[0]["specialization_tags"] != profiles[1]["specialization_tags"]
+
+
+def test_llm_node_does_not_present_gpt_41_as_frontier_reasoning_peer():
+    profiles = LLMNode._routing_candidate_profiles(
+        object(),
+        ["gpt-4.1", "gpt-5.6-terra", "gpt-5.6-sol"],
+    )
+
+    assert profiles[0]["capability_tier"] == "balanced"
+    assert profiles[0]["reasoning_profile"] == "non_reasoning"
+    assert profiles[0]["complexity_ceiling"] == "multi_constraint"
+    assert profiles[1]["capability_tier"] == "advanced"
+    assert profiles[1]["cost_position"] == "balanced"
+    assert profiles[2]["reasoning_profile"] == "frontier_reasoning"
+    assert profiles[2]["cost_position"] == "premium"
 
 
 def test_runtime_judge_receives_operational_contract_evidence_as_stronger_than_catalog_prior():
@@ -398,12 +460,18 @@ def test_runtime_judge_retries_incomplete_response_with_compact_contract():
     )
 
     assert len(client.calls) == 2
+    assert decision.usage == {
+        "prompt_tokens": 106,
+        "completion_tokens": 52,
+        "total_tokens": 158,
+    }
     assert client.calls[0]["kwargs"]["max_tokens"] == 768
     assert client.calls[1]["kwargs"]["max_tokens"] == 768
     assert decision.reason_short == "고위험 판단 필요"
     compact_instruction = client.calls[1]["messages"][0]["content"]
-    assert "reason_short" not in compact_instruction
+    assert "reason_short" in compact_instruction
     assert "reason_code" in compact_instruction
+    assert "selection_explanation" not in compact_instruction
     compact_body = __import__("json").loads(client.calls[1]["messages"][1]["content"])
     assert compact_body["candidate_models"] == [{"id": "gpt-4o-mini"}]
 

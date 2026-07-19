@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import pathlib
 import random
 import statistics
@@ -95,6 +96,26 @@ ROUTING_JUDGE_MODEL = "gpt-5.4-mini"
 # 기준으로 결과를 비교할 수 있어야 한다.
 QUALITY_JUDGE_MODEL = "gpt-5-mini"
 LOCAL_CONFIDENCE_THRESHOLD = 0.78
+QUALITY_JUDGE_MAX_ATTEMPTS = 3
+
+
+MODEL_EXPECTATIONS_BY_DIFFICULTY: dict[str, dict[str, tuple[str, ...]]] = {
+    "economy": {
+        "acceptable": ("gpt-4o-mini", "gpt-4.1-mini", "gpt-5-mini", "gpt-5.6-luna"),
+        "underpowered": (),
+        "overprovisioned": ("gpt-5.4", "gpt-5.6-sol", "o3"),
+    },
+    "balanced": {
+        "acceptable": ("gpt-4.1-mini", "gpt-4o", "gpt-5-mini", "gpt-5.4-mini", "gpt-5.6-terra"),
+        "underpowered": ("gpt-4o-mini", "gpt-5.6-luna"),
+        "overprovisioned": ("gpt-5.6-sol", "o3"),
+    },
+    "advanced": {
+        "acceptable": ("gpt-5.4", "gpt-5.6-sol", "o3"),
+        "underpowered": ("gpt-4o-mini", "gpt-4.1-mini", "gpt-5.6-luna"),
+        "overprovisioned": (),
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -104,6 +125,12 @@ class ExperimentCase:
     expected_difficulty: str
     customer_tier: str
     message: str
+    context: str
+    constraints: tuple[str, ...]
+    output_mode: str
+    acceptable_model_ids: tuple[str, ...]
+    underpowered_model_ids: tuple[str, ...]
+    overprovisioned_model_ids: tuple[str, ...]
 
 
 @dataclass
@@ -147,10 +174,10 @@ EXTRA_CASES: tuple[tuple[str, str, str, str], ...] = (
     ("integration_support", "advanced", "enterprise", "파트너 연동이 중복 결제를 유발했을 가능성이 있습니다. 재시도 로그, idempotency key, 정산 상태를 어떤 순서로 조사해야 하는지 작성해 주세요."),
     ("integration_support", "balanced", "business", "Slack 알림은 오는데 담당자 멘션이 빠집니다. 사용자가 바로 확인할 수 있는 설정 항목을 간단히 설명해 주세요."),
     ("integration_support", "advanced", "enterprise", "서로 다른 고객사의 OAuth 연결이 같은 서비스 계정을 공유한 정황이 있습니다. 토큰 회수와 서비스 영향 최소화를 함께 고려한 조치안을 제시해 주세요."),
-    ("product_guidance", "economy", "startup", "내 모듈 목록에서 내가 수정 가능한 워크플로우만 보고 싶습니다. 가장 짧은 안내 문장으로 답해 주세요."),
-    ("product_guidance", "economy", "business", "테스트 실행 결과에서 비용이 어디에 표시되는지 알려 주세요."),
-    ("product_guidance", "economy", "startup", "지식 베이스 문서 업로드가 끝난 뒤 상태를 확인하는 방법이 궁금합니다."),
-    ("product_guidance", "economy", "business", "배포된 모듈의 URL을 팀원에게 전달하려면 어디에서 복사하나요?"),
+    ("algorithmic_reasoning", "advanced", "enterprise", "세 서비스 A, B, C의 배포 순서에는 A 이전 DB migration, B와 C의 동시 배포 금지, C 이전 A health check 통과 조건이 있습니다. 가능한 순서를 검증하고 실패 시 되돌리는 절차를 JSON으로 정리해 주세요."),
+    ("concurrency_code_review", "advanced", "enterprise", "다음 의사코드는 잔액을 읽고 차감한 뒤 저장합니다. 동시에 두 요청이 오면 잔액이 음수가 될 수 있습니다. 경쟁 조건의 원인과 트랜잭션 또는 낙관적 잠금으로 고치는 방법을 설명해 주세요."),
+    ("formal_policy_reasoning", "advanced", "enterprise", "규정상 EU 고객 데이터는 EU 리전에서만 처리해야 하지만 장애 대응을 위해 미국 리전 로그를 30분 조회해야 할 수 있습니다. 사실 확인, 승인 조건, 금지되는 조치를 구분한 결정을 제시해 주세요."),
+    ("data_reconciliation", "balanced", "business", "주문 120건, 승인 118건, 취소 3건, 환불 2건이라는 집계가 있습니다. 서로 동시에 성립할 수 있는지 먼저 검산하고, 불일치가 있으면 확인 순서를 작성해 주세요."),
     ("product_guidance", "economy", "startup", "워크플로우 캔버스 확대 비율을 기본값으로 되돌리는 방법만 알려 주세요."),
     ("product_guidance", "economy", "business", "사용하지 않는 초안 워크플로우를 삭제하기 전에 확인할 점이 있나요?"),
     ("product_guidance", "economy", "startup", "실행 로그에서 성공한 결과만 필터링하는 메뉴가 어디인지 알려 주세요."),
@@ -160,6 +187,63 @@ EXTRA_CASES: tuple[tuple[str, str, str, str], ...] = (
     ("risk_triage", "balanced", "business", "계정 권한 변경 요청이 들어왔지만 요청자가 팀 리더인지 확인되지 않습니다. 필요한 확인 정보와 보류 안내를 작성해 주세요."),
     ("risk_triage", "advanced", "enterprise", "생산 환경에서 비정상적으로 많은 API 키가 발급됐고 같은 시간대에 대량 데이터 다운로드도 있었습니다. 즉시 대응과 증거 보존을 구분해 주세요."),
 )
+
+
+def _case_contract(category: str, difficulty: str) -> tuple[str, tuple[str, ...], str]:
+    """각 요청이 동일한 무RAG workflow 계약으로 실행되도록 입력 부가 정보를 만든다."""
+
+    context_by_category = {
+        "algorithmic_reasoning": "제공된 조건만 사용하고, 누락된 전제는 가정으로 분리해야 합니다.",
+        "concurrency_code_review": "외부 코드 실행 없이 의사코드와 제약만 분석합니다.",
+        "formal_policy_reasoning": "정책 문서 원문은 제공하지 않으며, 요청에 드러난 사실만 사용합니다.",
+        "data_reconciliation": "집계 숫자는 입력값일 뿐, 서로 일치한다는 보장은 없습니다.",
+    }
+    context = context_by_category.get(
+        category,
+        "지식 베이스 검색이나 외부 문서 조회 없이, 요청에 포함된 정보만 사용합니다.",
+    )
+    constraints = [
+        "근거 없는 사실을 확정하지 않습니다.",
+        "누락된 정보는 assumptions에 분리합니다.",
+        "필수 JSON 필드를 모두 반환합니다.",
+    ]
+    if difficulty == "advanced":
+        constraints.append("위험하거나 되돌리기 어려운 조치는 승인 전제로 보수적으로 제안합니다.")
+    output_mode = "analysis" if difficulty == "advanced" else "checklist"
+    return context, tuple(constraints), output_mode
+
+
+def _model_expectations(category: str, difficulty: str) -> dict[str, tuple[str, ...]]:
+    expected = dict(MODEL_EXPECTATIONS_BY_DIFFICULTY[difficulty])
+    if category in {"algorithmic_reasoning", "concurrency_code_review", "formal_policy_reasoning"}:
+        expected["acceptable"] = ("o3", "gpt-5.6-sol", "gpt-5.4")
+        expected["underpowered"] = ("gpt-4o-mini", "gpt-4.1-mini", "gpt-5.6-luna")
+    return expected
+
+
+def _experiment_case(
+    *,
+    case_id: str,
+    category: str,
+    difficulty: str,
+    customer_tier: str,
+    message: str,
+) -> ExperimentCase:
+    context, constraints, output_mode = _case_contract(category, difficulty)
+    expectations = _model_expectations(category, difficulty)
+    return ExperimentCase(
+        case_id=case_id,
+        category=category,
+        expected_difficulty=difficulty,
+        customer_tier=customer_tier,
+        message=message,
+        context=context,
+        constraints=constraints,
+        output_mode=output_mode,
+        acceptable_model_ids=expectations["acceptable"],
+        underpowered_model_ids=expectations["underpowered"],
+        overprovisioned_model_ids=expectations["overprovisioned"],
+    )
 
 
 def build_cases() -> list[ExperimentCase]:
@@ -175,20 +259,20 @@ def build_cases() -> list[ExperimentCase]:
     for category, difficulty in pool_specs:
         for message, _team, role in V22_HOLDOUT_CASE_POOLS[category]:
             cases.append(
-                ExperimentCase(
+                _experiment_case(
                     case_id=f"{category}-{len(cases) + 1:02d}",
                     category=category,
-                    expected_difficulty=difficulty,
+                    difficulty=difficulty,
                     customer_tier=("enterprise" if difficulty == "advanced" else "business"),
                     message=message,
                 )
             )
     for category, difficulty, customer_tier, message in EXTRA_CASES:
         cases.append(
-            ExperimentCase(
+            _experiment_case(
                 case_id=f"{category}-{len(cases) + 1:02d}",
                 category=category,
-                expected_difficulty=difficulty,
+                difficulty=difficulty,
                 customer_tier=customer_tier,
                 message=message,
             )
@@ -197,6 +281,43 @@ def build_cases() -> list[ExperimentCase]:
         raise AssertionError(f"expected 80 cases, got {len(cases)}")
     random.Random(20260717).shuffle(cases)
     return cases
+
+
+def _arm_execution_order(case_id: str) -> tuple[str, ...]:
+    """같은 case는 재개해도 같은 arm 순서를 쓰고, case 간 순서는 섞는다."""
+
+    order = list(ARMS)
+    random.Random(f"judge-first-economics-arm-order:{case_id}").shuffle(order)
+    return tuple(order)
+
+
+def _append_jsonl(path: pathlib.Path, row: dict[str, Any]) -> None:
+    """Provider 비용이 발생한 직후 결과를 복구 가능한 단위로 남긴다."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _routing_accuracy(case: ExperimentCase, selected_model: str | None) -> dict[str, Any]:
+    model_id = str(selected_model or "")
+    if model_id in case.acceptable_model_ids:
+        classification = "appropriate"
+    elif model_id in case.underpowered_model_ids:
+        classification = "underpowered"
+    elif model_id in case.overprovisioned_model_ids:
+        classification = "overprovisioned"
+    else:
+        classification = "unclassified"
+    return {
+        "classification": classification,
+        "selected_model": model_id or None,
+        "acceptable_model_ids": list(case.acceptable_model_ids),
+        "underpowered_model_ids": list(case.underpowered_model_ids),
+        "overprovisioned_model_ids": list(case.overprovisioned_model_ids),
+    }
 
 
 def _json_from_text(text: str) -> dict[str, Any]:
@@ -252,16 +373,22 @@ def _node_data(*, auto_routing: bool, model_id: str, fallback_model_id: str | No
             "refresh": {"refresh_every_runs": 100},
         },
         "system_prompt": (
-            "당신은 기업용 AI 워크플로우의 요청 처리 노드입니다. 고객 또는 내부 운영 요청을 "
-            "분류하고 위험도와 승인 필요 여부를 판단하세요. 반드시 JSON object 하나만 반환하세요. "
+            "당신은 기업용 AI 워크플로우의 범용 요청 처리 노드입니다. 요청, 제공된 문맥, 제약을 "
+            "함께 검토하고 필요한 판단·계획·답변을 작성하세요. 반드시 JSON object 하나만 반환하세요. "
             "필수 필드는 분류(string), 우선순위(low|medium|high|critical), 승인필요(boolean), "
             "대응계획(string 배열), 답변초안(string)입니다. 보안, 개인정보, 보상, 법무, 결제, "
             "장애는 사실이 불명확하면 보수적으로 설명하되 근거 없는 확정 약속은 하지 마세요."
         ),
-        "user_prompt": "고객 등급: {{ customerTier }}\n요청: {{ message }}",
+        "user_prompt": (
+            "요청자 등급: {{ customerTier }}\n요청: {{ request }}\n"
+            "제공 문맥: {{ context }}\n제약: {{ constraints }}\n출력 모드: {{ outputMode }}"
+        ),
         "referenced_variables": [
             {"name": "customerTier", "value_selector": ["webhook-ticket", "customerTier"]},
-            {"name": "message", "value_selector": ["webhook-ticket", "message"]},
+            {"name": "request", "value_selector": ["webhook-ticket", "request"]},
+            {"name": "context", "value_selector": ["webhook-ticket", "context"]},
+            {"name": "constraints", "value_selector": ["webhook-ticket", "constraints"]},
+            {"name": "outputMode", "value_selector": ["webhook-ticket", "outputMode"]},
         ],
         "knowledgeBases": [],
         "parameters": {
@@ -285,6 +412,21 @@ def _node_data(*, auto_routing: bool, model_id: str, fallback_model_id: str | No
 def graph_for_arm(arm: str) -> dict[str, Any]:
     graph = copy.deepcopy(_ticket_ops_graph())
     for node in graph["nodes"]:
+        if node["id"] == "webhook-ticket":
+            node["data"].update(
+                {
+                    "title": "무RAG 기업 요청 수신",
+                    "description": "범용 기업 요청 payload를 수신합니다.",
+                    "variable_mappings": [
+                        {"json_path": "customerTier", "variable_name": "customerTier"},
+                        {"json_path": "request", "variable_name": "request"},
+                        {"json_path": "context", "variable_name": "context"},
+                        {"json_path": "constraints", "variable_name": "constraints"},
+                        {"json_path": "outputMode", "variable_name": "outputMode"},
+                    ],
+                }
+            )
+    for node in graph["nodes"]:
         if node["id"] == NODE_ID:
             if arm == AUTO_ARM:
                 node["data"].update(
@@ -306,8 +448,8 @@ def graph_for_arm(arm: str) -> dict[str, Any]:
                 node["data"].update(
                     _node_data(auto_routing=False, model_id=LOW_MODEL, fallback_model_id=None)
                 )
-            node["data"]["title"] = "기업 요청 처리 및 위험 판단"
-            node["data"]["description"] = "다양한 기업 운영 요청을 JSON 계약으로 처리합니다."
+            node["data"]["title"] = "무RAG 기업 요청 처리"
+            node["data"]["description"] = "다양한 기업 요청을 같은 JSON 계약으로 처리합니다."
     # 기존 demo extractor가 실험 output 계약과 일치하도록 맞춘다.
     for node in graph["nodes"]:
         if node["id"] == "extract-ticket":
@@ -374,8 +516,8 @@ def _upsert_workflow_and_deployments(db, available_models: list[str]) -> None:
         app = App(
             id=APP_ID,
             organization_id=ORG_ID,
-            name="Judge-first 자동 모델 라우팅 경제성 실험",
-            description="동일한 기업 요청 처리 workflow를 자동·고가·저가 고정 방식으로 비교합니다.",
+            name="무RAG 자동 모델 라우팅 블라인드 경제성 실험",
+            description="동일한 무RAG 기업 요청 workflow를 자동·고가·중가·저가 고정 방식으로 비교합니다.",
             icon={"type": "emoji", "content": "🧪", "background_color": "#E0F2FE"},
             url_slug="judge-first-routing-economics-80",
             auth_secret="experiment-routing-economics-secret",
@@ -424,10 +566,10 @@ def _upsert_workflow_and_deployments(db, available_models: list[str]) -> None:
                 version=1,
                 type=DeploymentType.WEBHOOK,
                 graph_snapshot=graph,
-                config={"experiment": "judge-first-economics-80", "arm": arm},
+                config={"experiment": "judge-first-norag-blind-80", "arm": arm},
                 input_schema={"type": "object"},
                 output_schema={"type": "object"},
-                description=f"80회 경제성 실험: {arm}",
+            description=f"무RAG 80회 블라인드 경제성 실험: {arm}",
                 created_by=USER_ID,
                 is_active=True,
             )
@@ -435,7 +577,7 @@ def _upsert_workflow_and_deployments(db, available_models: list[str]) -> None:
         else:
             deployment.app_id = APP_ID
             deployment.graph_snapshot = graph
-            deployment.config = {"experiment": "judge-first-economics-80", "arm": arm}
+            deployment.config = {"experiment": "judge-first-norag-blind-80", "arm": arm}
             deployment.is_active = True
 
     db.flush()
@@ -704,7 +846,13 @@ def _execute_case(arm: str, case: ExperimentCase) -> ArmResult:
     run_id = _run_id(arm, case.case_id)
     engine = WorkflowEngine(
         graph=graph,
-        user_input={"customerTier": case.customer_tier, "message": case.message},
+        user_input={
+            "customerTier": case.customer_tier,
+            "request": case.message,
+            "context": case.context,
+            "constraints": list(case.constraints),
+            "outputMode": case.output_mode,
+        },
         execution_context={
             "workflow_id": str(WORKFLOW_ID),
             "workflow_run_id": str(run_id),
@@ -855,6 +1003,22 @@ def _record_automatic_operational_result(case: ExperimentCase) -> None:
         db.close()
 
 
+def _retry_quality_evaluation(evaluate, *, max_attempts: int) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """평가 시스템의 일시 오류만 재시도하고 workflow 결과는 다시 실행하지 않는다."""
+
+    last_metadata: dict[str, Any] = {}
+    for attempt in range(1, max_attempts + 1):
+        payload, metadata = evaluate()
+        metadata = dict(metadata or {})
+        metadata["attempt_count"] = attempt
+        if payload is not None and not metadata.get("error"):
+            metadata["evaluation_status"] = "completed"
+            return payload, metadata
+        last_metadata = metadata
+    last_metadata["evaluation_status"] = "failed"
+    return None, last_metadata
+
+
 def _quality_judge(case: ExperimentCase, results: dict[str, ArmResult]) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     """모델명과 Arm 이름을 숨긴 한 번의 비교 평가로 네 Arm 품질을 비교한다."""
 
@@ -865,8 +1029,14 @@ def _quality_judge(case: ExperimentCase, results: dict[str, ArmResult]) -> tuple
         for index, arm in enumerate(mapping)
     }
     prompt = {
-        "task": "기업 운영 요청 처리 workflow의 네 JSON 출력을 품질만으로 비교하세요.",
-        "input": {"customerTier": case.customer_tier, "message": case.message},
+        "task": "무RAG 기업 요청 처리 workflow의 네 JSON 출력을 품질만으로 비교하세요.",
+        "input": {
+            "customerTier": case.customer_tier,
+            "request": case.message,
+            "context": case.context,
+            "constraints": list(case.constraints),
+            "outputMode": case.output_mode,
+        },
         "required_contract": {
             "fields": ["분류", "우선순위", "승인필요", "대응계획", "답변초안"],
             "rules": [
@@ -883,34 +1053,59 @@ def _quality_judge(case: ExperimentCase, results: dict[str, ArmResult]) -> tuple
             for key in anonymous
         },
     }
-    db = SessionLocal()
-    try:
-        selection = LLMService.get_runtime_client_for_user(
-            db, USER_ID, QUALITY_JUDGE_MODEL, ORG_ID
+    def evaluate_once() -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        db = SessionLocal()
+        try:
+            selection = LLMService.get_runtime_client_for_user(
+                db, USER_ID, QUALITY_JUDGE_MODEL, ORG_ID
+            )
+            started = datetime.now(timezone.utc)
+            response = selection.client.invoke_sync(
+                [
+                    {"role": "system", "content": "당신은 엄격하고 공정한 workflow output 품질 평가자입니다. 반드시 JSON object 하나만 반환하세요."},
+                    {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+                ],
+                temperature=0,
+                max_tokens=800,
+                response_format={"type": "json_object"},
+            )
+            elapsed_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+            payload = _json_from_text(str(response.get("choices", [{}])[0].get("message", {}).get("content", "")))
+            if not payload:
+                return None, {"error": "quality_judge_invalid_json"}
+            usage = response.get("usage") if isinstance(response, dict) else {}
+            prompt_tokens = int((usage or {}).get("prompt_tokens") or 0)
+            completion_tokens = int((usage or {}).get("completion_tokens") or 0)
+            return payload, {
+                "model": QUALITY_JUDGE_MODEL,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+                "cost_usd": LLMService.calculate_cost(db, QUALITY_JUDGE_MODEL, prompt_tokens, completion_tokens),
+                "latency_ms": elapsed_ms,
+            }
+        except Exception as exc:
+            return None, {"error": f"{type(exc).__name__}:{str(exc)[:180]}"}
+        finally:
+            db.close()
+
+    payload, metadata = _retry_quality_evaluation(
+        evaluate_once,
+        max_attempts=QUALITY_JUDGE_MAX_ATTEMPTS,
+    )
+    if payload is None:
+        return (
+            {
+                arm: {
+                    "quality_score": None,
+                    "contract_pass": None,
+                    "reason": "품질 평가 시스템 오류",
+                    "evaluation_status": "failed",
+                }
+                for arm in ARMS
+            },
+            metadata,
         )
-        started = datetime.now(timezone.utc)
-        response = selection.client.invoke_sync(
-            [
-                {"role": "system", "content": "당신은 엄격하고 공정한 workflow output 품질 평가자입니다. 반드시 JSON object 하나만 반환하세요."},
-                {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
-            ],
-            temperature=0,
-            # 세 arm의 긴 JSON 출력을 함께 읽는 평가다. Judge 자신의 추론 토큰과
-            # 세 결과 score를 충분히 남기기 위해 task output보다 넉넉히 둔다.
-            max_tokens=800,
-            response_format={"type": "json_object"},
-        )
-        elapsed_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
-        payload = _json_from_text(str(response.get("choices", [{}])[0].get("message", {}).get("content", "")))
-        usage = response.get("usage") if isinstance(response, dict) else {}
-        prompt_tokens = int((usage or {}).get("prompt_tokens") or 0)
-        completion_tokens = int((usage or {}).get("completion_tokens") or 0)
-        cost = LLMService.calculate_cost(db, QUALITY_JUDGE_MODEL, prompt_tokens, completion_tokens)
-    except Exception as exc:
-        error_code = f"{type(exc).__name__}:{str(exc)[:180]}"
-        return ({arm: {"quality_score": 0.0, "contract_pass": False, "reason": f"quality_judge_error:{error_code}"} for arm in ARMS}, {"error": error_code})
-    finally:
-        db.close()
 
     judged: dict[str, dict[str, Any]] = {}
     for index, arm in enumerate(mapping):
@@ -925,15 +1120,9 @@ def _quality_judge(case: ExperimentCase, results: dict[str, ArmResult]) -> tuple
             "quality_score": score,
             "contract_pass": bool(row.get("contract_pass")),
             "reason": str(row.get("reason") or "품질 Judge 응답 없음")[:240],
+            "evaluation_status": "completed",
         }
-    return judged, {
-        "model": QUALITY_JUDGE_MODEL,
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": prompt_tokens + completion_tokens,
-        "cost_usd": cost,
-        "latency_ms": elapsed_ms,
-    }
+    return judged, metadata
 
 
 def _mean(values: Iterable[float | int | None]) -> float | None:
@@ -950,6 +1139,11 @@ def _p95(values: Iterable[float | int | None]) -> float | None:
 
 def _arm_summary(rows: list[dict[str, Any]], arm: str) -> dict[str, Any]:
     arm_rows = [row["arms"][arm] for row in rows]
+    completed_quality = [
+        row["quality"][arm]
+        for row in rows
+        if row["quality"][arm].get("evaluation_status") == "completed"
+    ]
     task_cost = sum(float(item["task_cost_usd"] or 0) for item in arm_rows)
     route_cost = sum(float(item["routing_judge_cost_usd"] or 0) for item in arm_rows)
     return {
@@ -965,8 +1159,13 @@ def _arm_summary(rows: list[dict[str, Any]], arm: str) -> dict[str, Any]:
         "total_tokens": sum(int(item["total_tokens"] or 0) for item in arm_rows),
         "schema_pass_rate": sum(1 for item in arm_rows if item["schema_pass"]) / len(arm_rows),
         "workflow_success_rate": sum(1 for item in arm_rows if item["workflow_success"]) / len(arm_rows),
-        "quality_score_average": _mean(row["quality"][arm]["quality_score"] for row in rows),
-        "quality_pass_rate": sum(1 for row in rows if row["quality"][arm]["contract_pass"]) / len(rows),
+        "quality_score_average": _mean(item["quality_score"] for item in completed_quality),
+        "quality_pass_rate": (
+            sum(1 for item in completed_quality if item["contract_pass"]) / len(completed_quality)
+            if completed_quality
+            else None
+        ),
+        "quality_evaluation_failure_count": len(rows) - len(completed_quality),
         "model_distribution": dict(Counter(item["selected_model"] or "unknown" for item in arm_rows)),
         "runtime_judge_call_count": sum(1 for item in arm_rows if item["routing_judge_tokens"] > 0),
     }
@@ -1044,6 +1243,10 @@ def _percent(value: float | None) -> str:
     return "-" if value is None else f"{value * 100:.1f}%"
 
 
+def _score(value: float | None) -> str:
+    return "평가 실패" if value is None else f"{value:.1f}"
+
+
 def render_markdown(report: dict[str, Any]) -> str:
     summary = report["arm_summary"]
     automatic = summary[AUTO_ARM]
@@ -1071,14 +1274,14 @@ def render_markdown(report: dict[str, Any]) -> str:
         ),
         (
             f"- 중간 고정 모델: `{MID_MODEL}` / 중간 고정 대비 자동 품질 차이: "
-            f"{(automatic['quality_score_average'] - mid['quality_score_average']):+.2f}점"
-            if mid is not None
+            f"{((automatic['quality_score_average'] or 0) - (mid['quality_score_average'] or 0)):+.2f}점"
+            if mid is not None and automatic['quality_score_average'] is not None and mid['quality_score_average'] is not None
             else "- 중간 고정 비교: 이번 실행에서 제외"
         ),
         (
             f"- 저가 고정 대비 자동 라우팅 평균 품질 차이: "
-            f"{(automatic['quality_score_average'] - low['quality_score_average']):+.2f}점"
-            if low is not None
+            f"{((automatic['quality_score_average'] or 0) - (low['quality_score_average'] or 0)):+.2f}점"
+            if low is not None and automatic['quality_score_average'] is not None and low['quality_score_average'] is not None
             else "- 저가 고정 비교: 이번 실행에서 제외"
         ),
         f"- 자동 라우팅에서 Runtime Judge가 실제 호출된 횟수: {automatic['runtime_judge_call_count']}/{report['case_count']}",
@@ -1131,7 +1334,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.append(
             f"| {labels[arm]} | {_money(item['task_cost_usd'])} | {_money(item['routing_judge_cost_usd'])} | "
             f"{_money(item['total_product_cost_usd'])} | {item['average_task_latency_ms'] or 0:.0f}ms | "
-            f"{item['average_end_to_end_latency_ms'] or 0:.0f}ms | {item['quality_score_average'] or 0:.2f} | "
+            f"{item['average_end_to_end_latency_ms'] or 0:.0f}ms | {_score(item['quality_score_average'])} | "
             f"{_percent(item['schema_pass_rate'])} | {_percent(item['quality_pass_rate'])} |"
         )
     lines.extend([
@@ -1141,6 +1344,14 @@ def render_markdown(report: dict[str, Any]) -> str:
     ])
     for model_id, count in sorted(automatic["model_distribution"].items()):
         lines.append(f"- `{model_id}`: {count}회")
+    routing_classes = Counter(
+        str(row.get("routing_accuracy", {}).get("classification") or "unclassified")
+        for row in report["runs"]
+    )
+    lines.extend([
+        f"- 사전 가설 기준 적중: {routing_classes.get('appropriate', 0)}/{report['case_count']}건",
+        f"- 성능 부족 선택: {routing_classes.get('underpowered', 0)}건 / 과도한 선택: {routing_classes.get('overprovisioned', 0)}건 / 미분류: {routing_classes.get('unclassified', 0)}건",
+    ])
     lines.extend([
         "",
         "## 로컬 라우터 학습 수준",
@@ -1197,7 +1408,7 @@ def render_markdown(report: dict[str, Any]) -> str:
             auto = row["arms"][AUTO_ARM]
             cells.extend([
                 auto["selected_model"] or "-",
-                f"{row['quality'][AUTO_ARM]['quality_score']:.1f}",
+                _score(row['quality'][AUTO_ARM]['quality_score']),
                 _money(auto["task_cost_usd"] + auto["routing_judge_cost_usd"]),
             ])
         for arm in (MID_ARM, HIGH_ARM, LOW_ARM):
@@ -1205,7 +1416,7 @@ def render_markdown(report: dict[str, Any]) -> str:
                 continue
             fixed = row["arms"][arm]
             cells.extend([
-                f"{row['quality'][arm]['quality_score']:.1f}",
+                _score(row['quality'][arm]['quality_score']),
                 _money(fixed["task_cost_usd"]),
             ])
         lines.append("| " + " | ".join(cells) + " |")
@@ -1215,7 +1426,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "- 품질 점수는 독립 Judge가 동일한 계약으로 평가한 상대 지표입니다. 실제 고객 만족도나 사람 검수 결과를 완전히 대체하지는 않습니다.",
         "- 자동 라우팅의 전체 시간에는 Judge 호출 시간이 포함됩니다. 처리 모델 시간만 보면 절감돼도 전체 시간은 늘어날 수 있습니다.",
-        "- JSON 계약 실패, workflow 실패, Judge 오류는 모두 결과에 포함됩니다. 성공 사례만 골라 평균을 낸 결과가 아닙니다.",
+        "- JSON 계약 실패와 workflow 실패는 실행 품질 지표에 포함합니다. 품질 Judge 시스템 오류는 최대 3회 재시도하고, 끝내 실패하면 품질 평균에서 제외한 뒤 실패 건수를 별도로 표시합니다.",
     ])
     return "\n".join(lines) + "\n"
 
@@ -1246,7 +1457,7 @@ def _write_run_config(
     config = {
         "schema_version": 1,
         "run_id": run_id,
-        "experiment": "judge-first-economics",
+        "experiment": "judge-first-norag-blind-economics",
         "strategy_id": "judge_bootstrap_incremental_v1",
         "routing_judge_model": ROUTING_JUDGE_MODEL,
         "routing_judge_max_output_tokens": ModelRoutingRuntimeJudge.MAX_OUTPUT_TOKENS,
@@ -1274,7 +1485,7 @@ def _write_run_config(
             for arm in ARMS
         },
         "dataset": {
-            "name": "enterprise-ticket-80-v1",
+            "name": "enterprise-norag-routing-80-v2",
             "total_case_count": len(build_cases()),
         },
         "batch_size": batch_size,
@@ -1282,6 +1493,7 @@ def _write_run_config(
             "report": "report.md" if report_name is None else f"{report_name}.md",
             "result": "result.json" if report_name is None else f"{report_name}.json",
             "batches": "batches/",
+            "append_only_events": "execution-events.jsonl",
         },
     }
     if config_path.exists():
@@ -1359,6 +1571,48 @@ def _read_existing_report(output_dir: pathlib.Path, *, report_name: str | None) 
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _experiment_report(
+    *,
+    rows: list[dict[str, Any]],
+    available_models: list[str],
+    batch_offset: int,
+    batch_count: int,
+    prior_quality_cost: float,
+    prior_quality_calls: int,
+    prior_quality_errors: list[dict[str, Any]],
+    quality_judge_metrics: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "executed_at": datetime.now(timezone.utc).isoformat(),
+        "workflow_id": str(WORKFLOW_ID),
+        "node_id": NODE_ID,
+        "case_count": len(rows),
+        "latest_batch": {
+            "offset": batch_offset,
+            "count": batch_count,
+            "completed_case_count": len(rows),
+        },
+        "available_models": available_models,
+        "routing_judge_model": ROUTING_JUDGE_MODEL,
+        "quality_judge_model": QUALITY_JUDGE_MODEL,
+        "runs": rows,
+        "arm_summary": {arm: _arm_summary(rows, arm) for arm in ARMS},
+        "learning_summary": {
+            **_learning_summary(rows),
+            "persisted": _persisted_learning_state(),
+        },
+        "policy_checkpoint": _policy_checkpoint(),
+        "quality_judge_total_cost_usd": prior_quality_cost + sum(
+            float(metric.get("cost_usd") or 0) for metric in quality_judge_metrics
+        ),
+        "quality_judge_call_count": prior_quality_calls + sum(
+            1 for metric in quality_judge_metrics if metric.get("evaluation_status") == "completed"
+        ),
+        "quality_judge_errors": prior_quality_errors
+        + [metric for metric in quality_judge_metrics if metric.get("evaluation_status") == "failed"],
+    }
+
+
 def run_experiment(
     cases: list[ExperimentCase],
     output_dir: pathlib.Path,
@@ -1390,59 +1644,65 @@ def run_experiment(
         prior_quality_errors: list[dict[str, Any]] = []
 
     quality_judge_metrics: list[dict[str, Any]] = []
+    event_path = output_dir / "execution-events.jsonl"
     with synchronous_experiment_tasks():
         for index, case in enumerate(cases, start=1):
-            results = {arm: _execute_case(arm, case) for arm in ARMS}
+            execution_order = _arm_execution_order(case.case_id)
+            results = {arm: _execute_case(arm, case) for arm in execution_order}
             _record_automatic_operational_result(case)
             quality, quality_meta = _quality_judge(case, results)
             quality_judge_metrics.append(quality_meta)
-            rows.append(
-                {
-                    "case_id": case.case_id,
-                    "category": case.category,
-                    "expected_difficulty": case.expected_difficulty,
-                    "customer_tier": case.customer_tier,
-                    "message": case.message,
-                    "arms": {arm: asdict(result) for arm, result in results.items()},
-                    "quality": quality,
-                }
-            )
+            row = {
+                "case_id": case.case_id,
+                "category": case.category,
+                "expected_difficulty": case.expected_difficulty,
+                "customer_tier": case.customer_tier,
+                "input": {
+                    "request": case.message,
+                    "context": case.context,
+                    "constraints": list(case.constraints),
+                    "output_mode": case.output_mode,
+                },
+                "execution_order": list(execution_order),
+                "arms": {arm: asdict(result) for arm, result in results.items()},
+                "routing_accuracy": _routing_accuracy(
+                    case,
+                    results[AUTO_ARM].selected_model,
+                ),
+                "quality": quality,
+                "quality_evaluation": quality_meta,
+            }
+            _append_jsonl(event_path, row)
+            rows.append(row)
             if index == 1 or index % 5 == 0 or index == len(cases):
                 print(
                     f"[progress] batch {batch_offset + index}/{batch_offset + len(cases)} "
                     f"(this batch {index}/{len(cases)}) completed",
                     flush=True,
                 )
+            if index % 10 == 0 or index == len(cases):
+                checkpoint = _experiment_report(
+                    rows=rows,
+                    available_models=available_models,
+                    batch_offset=batch_offset + index - min(index, 10),
+                    batch_count=min(index, 10),
+                    prior_quality_cost=prior_quality_cost,
+                    prior_quality_calls=prior_quality_calls,
+                    prior_quality_errors=prior_quality_errors,
+                    quality_judge_metrics=quality_judge_metrics,
+                )
+                write_report(output_dir, checkpoint, report_name=report_name)
 
-    report = {
-        "executed_at": datetime.now(timezone.utc).isoformat(),
-        "workflow_id": str(WORKFLOW_ID),
-        "node_id": NODE_ID,
-        "case_count": len(rows),
-        "latest_batch": {
-            "offset": batch_offset,
-            "count": len(cases),
-            "completed_case_count": len(rows),
-        },
-        "available_models": available_models,
-        "routing_judge_model": ROUTING_JUDGE_MODEL,
-        "quality_judge_model": QUALITY_JUDGE_MODEL,
-        "runs": rows,
-        "arm_summary": {arm: _arm_summary(rows, arm) for arm in ARMS},
-        "learning_summary": {
-            **_learning_summary(rows),
-            "persisted": _persisted_learning_state(),
-        },
-        "policy_checkpoint": _policy_checkpoint(),
-        "quality_judge_total_cost_usd": prior_quality_cost + sum(
-            float(metric.get("cost_usd") or 0) for metric in quality_judge_metrics
-        ),
-        "quality_judge_call_count": prior_quality_calls + sum(
-            1 for metric in quality_judge_metrics if not metric.get("error")
-        ),
-        "quality_judge_errors": prior_quality_errors
-        + [metric for metric in quality_judge_metrics if metric.get("error")],
-    }
+    report = _experiment_report(
+        rows=rows,
+        available_models=available_models,
+        batch_offset=batch_offset,
+        batch_count=len(cases),
+        prior_quality_cost=prior_quality_cost,
+        prior_quality_calls=prior_quality_calls,
+        prior_quality_errors=prior_quality_errors,
+        quality_judge_metrics=quality_judge_metrics,
+    )
     json_path, markdown_path = write_report(output_dir, report, report_name=report_name)
     print(json.dumps({"json": str(json_path.resolve()), "markdown": str(markdown_path.resolve())}, ensure_ascii=False), flush=True)
     return report

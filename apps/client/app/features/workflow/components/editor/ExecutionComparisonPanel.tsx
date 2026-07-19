@@ -30,6 +30,7 @@ type ExecutionComparisonPanelProps = {
   currentRunId: string | null;
   currentExecutionStatus?: string | null;
   currentExecutionError?: string | null;
+  reloadRequestKey?: number;
   selectedNodeId?: string | null;
   onBaselineRunIdChange: (runId: string | null) => void;
   onSelectedNodeIdChange?: (nodeId: string | null) => void;
@@ -58,6 +59,7 @@ const PAGE_SIZE = 10;
 const CURRENT_RUN_COMPARISON_RETRY_DELAYS_MS = [
   400, 800, 1_200, 2_000, 3_000, 4_000,
 ] as const;
+const RUN_DETAIL_RETRY_DELAYS_MS = [200] as const;
 
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
@@ -74,6 +76,27 @@ const getHttpStatus = (error: unknown) => {
     return error.response.status;
   }
   return undefined;
+};
+
+const isRetryableRunDetailError = (error: unknown) => {
+  const status = getHttpStatus(error);
+  return (
+    status === undefined ||
+    status === 404 ||
+    status === 408 ||
+    status === 429 ||
+    status >= 500
+  );
+};
+
+const runComparisonErrorMessage = (error: unknown) => {
+  const status = getHttpStatus(error);
+  if (status === 401) return '로그인이 만료되었습니다. 다시 로그인해 주세요.';
+  if (status === 403) return '이 실행 기록을 조회할 권한이 없습니다.';
+  if (status === 404) {
+    return '선택한 실행 기록을 찾을 수 없습니다. 기준 실행을 다시 선택해 주세요.';
+  }
+  return '실행 비교 데이터를 불러오지 못했습니다.';
 };
 
 class RunBundleNotReadyError extends Error {
@@ -223,6 +246,32 @@ const toRunBundle = (
 const wait = (durationMs: number) =>
   new Promise((resolve) => setTimeout(resolve, durationMs));
 
+const loadWorkflowRunDetail = async (
+  workflowId: string,
+  runId: string,
+): Promise<WorkflowRun> => {
+  let lastError: unknown;
+
+  for (
+    let attempt = 0;
+    attempt <= RUN_DETAIL_RETRY_DELAYS_MS.length;
+    attempt += 1
+  ) {
+    try {
+      return await workflowApi.getWorkflowRun(workflowId, runId);
+    } catch (error) {
+      lastError = error;
+      const retryDelay = RUN_DETAIL_RETRY_DELAYS_MS[attempt];
+      if (!isRetryableRunDetailError(error) || retryDelay === undefined) {
+        throw error;
+      }
+      await wait(retryDelay);
+    }
+  }
+
+  throw lastError;
+};
+
 const loadRunBundle = async (
   workflowId: string,
   runId: string,
@@ -265,7 +314,8 @@ const loadRunBundle = async (
       lastError = error;
       const retryDelay = retryDelaysMs[attempt];
       const shouldRetry =
-        error instanceof RunBundleNotReadyError || getHttpStatus(error) === 404;
+        error instanceof RunBundleNotReadyError ||
+        isRetryableRunDetailError(error);
       if (retryDelay === undefined || !shouldRetry) throw error;
       await wait(retryDelay);
     }
@@ -756,6 +806,7 @@ export function ExecutionComparisonPanel({
   currentRunId,
   currentExecutionStatus,
   currentExecutionError,
+  reloadRequestKey = 0,
   selectedNodeId: selectedNodeIdProp,
   onBaselineRunIdChange,
   onSelectedNodeIdChange,
@@ -769,12 +820,16 @@ export function ExecutionComparisonPanel({
   const [totalRuns, setTotalRuns] = useState(0);
   const [isListLoading, setIsListLoading] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
+  const [listReloadKey, setListReloadKey] = useState(0);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const [runDetails, setRunDetails] = useState<Record<string, WorkflowRun>>({});
   const [detailLoadingRunId, setDetailLoadingRunId] = useState<string | null>(
     null,
   );
   const [detailErrorRunId, setDetailErrorRunId] = useState<string | null>(null);
+  const [detailErrorStatus, setDetailErrorStatus] = useState<number | null>(
+    null,
+  );
   const [baselineBundle, setBaselineBundle] = useState<RunBundle | null>(null);
   const [currentBundle, setCurrentBundle] = useState<RunBundle | null>(null);
   const [isComparisonLoading, setIsComparisonLoading] = useState(false);
@@ -795,25 +850,31 @@ export function ExecutionComparisonPanel({
     onSelectedNodeIdChange?.(nodeId);
   };
 
-  const toggleRunDetails = async (run: WorkflowRun) => {
+  const loadRunDetails = async (run: WorkflowRun) => {
+    setDetailErrorRunId(null);
+    setDetailErrorStatus(null);
+
+    setDetailLoadingRunId(run.id);
+    try {
+      const detail = await loadWorkflowRunDetail(workflowId, run.id);
+      setRunDetails((current) => ({ ...current, [run.id]: detail }));
+    } catch (error) {
+      setDetailErrorRunId(run.id);
+      setDetailErrorStatus(getHttpStatus(error) ?? null);
+    } finally {
+      setDetailLoadingRunId((current) => (current === run.id ? null : current));
+    }
+  };
+
+  const toggleRunDetails = (run: WorkflowRun) => {
     if (expandedRunId === run.id) {
       setExpandedRunId(null);
       return;
     }
 
     setExpandedRunId(run.id);
-    setDetailErrorRunId(null);
     if (runDetails[run.id]) return;
-
-    setDetailLoadingRunId(run.id);
-    try {
-      const detail = await workflowApi.getWorkflowRun(workflowId, run.id);
-      setRunDetails((current) => ({ ...current, [run.id]: detail }));
-    } catch {
-      setDetailErrorRunId(run.id);
-    } finally {
-      setDetailLoadingRunId((current) => (current === run.id ? null : current));
-    }
+    void loadRunDetails(run);
   };
 
   useEffect(() => {
@@ -845,7 +906,15 @@ export function ExecutionComparisonPanel({
     return () => {
       cancelled = true;
     };
-  }, [baselineRunId, page, statusFilter, triggerFilter, workflowId]);
+  }, [
+    baselineRunId,
+    listReloadKey,
+    page,
+    reloadRequestKey,
+    statusFilter,
+    triggerFilter,
+    workflowId,
+  ]);
 
   useEffect(() => {
     if (!isSelectedNodeControlled) {
@@ -861,14 +930,14 @@ export function ExecutionComparisonPanel({
     let cancelled = false;
     setIsComparisonLoading(true);
     setComparisonError(null);
-    if (isCurrentExecutionRunning) {
-      setCurrentBundle(null);
-    }
+    setBaselineBundle(null);
+    setCurrentBundle(null);
     const comparisonNodes = latestNodesRef.current;
     const baselineRequest = loadRunBundle(
       workflowId,
       baselineRunId,
       comparisonNodes,
+      { retryDelaysMs: RUN_DETAIL_RETRY_DELAYS_MS },
     );
     const currentRequest =
       !isCurrentExecutionRunning &&
@@ -886,9 +955,9 @@ export function ExecutionComparisonPanel({
         setBaselineBundle(baseline);
         setCurrentBundle(current);
       })
-      .catch(() => {
+      .catch((error) => {
         if (!cancelled) {
-          setComparisonError('실행 비교 데이터를 불러오지 못했습니다.');
+          setComparisonError(runComparisonErrorMessage(error));
         }
       })
       .finally(() => {
@@ -979,17 +1048,30 @@ export function ExecutionComparisonPanel({
           </select>
         </div>
 
-        {isListLoading ? (
+        {listError ? (
+          <div className="mt-4 flex items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+            <p>{listError}</p>
+            <button
+              type="button"
+              onClick={() => setListReloadKey((value) => value + 1)}
+              className="shrink-0 rounded-md border border-red-200 bg-white px-2.5 py-1.5 font-semibold hover:bg-red-100 dark:bg-gray-900"
+            >
+              다시 불러오기
+            </button>
+          </div>
+        ) : null}
+
+        {isListLoading && runs.length === 0 ? (
           <div className="mt-4 flex items-center gap-2 text-xs text-gray-600">
             <Loader2 className="h-4 w-4 animate-spin" /> 실행 기록을 불러오는
             중입니다.
           </div>
-        ) : listError ? (
-          <p className="mt-4 text-xs text-red-600">{listError}</p>
         ) : runs.length === 0 ? (
-          <p className="mt-4 rounded-md border border-dashed border-gray-300 bg-white p-3 text-xs text-gray-500 dark:border-gray-700 dark:bg-gray-900">
-            조건에 맞는 실행 기록이 없습니다.
-          </p>
+          listError ? null : (
+            <p className="mt-4 rounded-md border border-dashed border-gray-300 bg-white p-3 text-xs text-gray-500 dark:border-gray-700 dark:bg-gray-900">
+              조건에 맞는 실행 기록이 없습니다.
+            </p>
+          )
         ) : (
           <div className="mt-3 space-y-2">
             {runs.map((run) => {
@@ -1059,9 +1141,21 @@ export function ExecutionComparisonPanel({
                         불러오는 중입니다.
                       </div>
                     ) : detailErrorRunId === run.id ? (
-                      <p className="border-t border-gray-100 px-3 py-3 text-xs text-red-600 dark:border-gray-700">
-                        실행 상세를 불러오지 못했습니다. 다시 시도해 주세요.
-                      </p>
+                      <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-3 py-3 text-xs text-red-600 dark:border-gray-700">
+                        <p>
+                          {detailErrorStatus === 404
+                            ? '실행 기록이 아직 저장되지 않았거나 더 이상 존재하지 않습니다.'
+                            : '실행 상세를 불러오지 못했습니다.'}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => void loadRunDetails(run)}
+                          className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md border border-red-200 px-2 font-semibold hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-950/30"
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" />
+                          다시 불러오기
+                        </button>
+                      </div>
                     ) : detail ? (
                       <RunSelectionDetails run={detail} nodes={nodes} />
                     ) : null
@@ -1177,12 +1271,7 @@ export function ExecutionComparisonPanel({
           기준 실행은 유지됩니다. 노드를 수정한 뒤 현재 설정으로 다시
           테스트하세요.
         </div>
-      ) : isCurrentExecutionRunning ? (
-        <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700 dark:border-blue-900 dark:bg-blue-950/20 dark:text-blue-200">
-          <Loader2 className="h-4 w-4 animate-spin" /> 현재 실행이 완료되면 비교
-          결과를 준비합니다.
-        </div>
-      ) : isComparisonLoading ? (
+      ) : isCurrentExecutionRunning ? null : isComparisonLoading ? (
         <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-900">
           <Loader2 className="h-4 w-4 animate-spin" /> 현재 실행 기록을
           동기화하는 중입니다.
@@ -1218,7 +1307,10 @@ export function ExecutionComparisonPanel({
               상세 비교
             </h3>
 
-            <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
+            <div
+              data-testid="node-comparison-status-panels"
+              className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3"
+            >
               <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
                 <p className="mb-3 text-xs font-semibold text-gray-500">
                   기준 실행
@@ -1232,6 +1324,33 @@ export function ExecutionComparisonPanel({
                 <MetricGrid snapshot={selectedComparison.current} />
               </div>
             </div>
+
+            {selectedComparison.baseline?.nodeType === 'llmNode' ||
+            selectedComparison.current?.nodeType === 'llmNode' ? (
+              <div>
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  모델 라우팅 비교
+                </h4>
+                <p className="mt-1 text-xs leading-5 text-gray-500">
+                  테스트 실행은 활성 배포 정책을 미리 보지만 정책 학습 횟수에는
+                  포함되지 않습니다.
+                </p>
+                <div className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
+                  <div>
+                    <p className="mb-2 text-[11px] font-semibold text-gray-500">
+                      기준 실행
+                    </p>
+                    <RoutingSide snapshot={selectedComparison.baseline} />
+                  </div>
+                  <div>
+                    <p className="mb-2 text-[11px] font-semibold text-blue-700">
+                      현재 실행
+                    </p>
+                    <RoutingSide snapshot={selectedComparison.current} />
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
             <div>
               <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
@@ -1273,32 +1392,6 @@ export function ExecutionComparisonPanel({
               </div>
             </div>
 
-            {selectedComparison.baseline?.nodeType === 'llmNode' ||
-            selectedComparison.current?.nodeType === 'llmNode' ? (
-              <div>
-                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                  모델 라우팅 비교
-                </h4>
-                <p className="mt-1 text-xs leading-5 text-gray-500">
-                  테스트 실행은 활성 배포 정책을 미리 보지만 정책 학습 횟수에는
-                  포함되지 않습니다.
-                </p>
-                <div className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
-                  <div>
-                    <p className="mb-2 text-[11px] font-semibold text-gray-500">
-                      기준 실행
-                    </p>
-                    <RoutingSide snapshot={selectedComparison.baseline} />
-                  </div>
-                  <div>
-                    <p className="mb-2 text-[11px] font-semibold text-blue-700">
-                      현재 실행
-                    </p>
-                    <RoutingSide snapshot={selectedComparison.current} />
-                  </div>
-                </div>
-              </div>
-            ) : null}
           </div>
         ) : (
           <div className="space-y-4">

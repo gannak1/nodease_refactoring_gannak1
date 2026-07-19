@@ -63,6 +63,19 @@ def test_each_catalog_entry_has_provider_documentation_sources():
         assert entry.model_source_url.startswith("https://")
         assert entry.pricing_source_url.startswith("https://")
         assert entry.provider in {"openai", "anthropic", "google"}
+        assert entry.reasoning_profile in {
+            "non_reasoning",
+            "general_reasoning",
+            "specialized_reasoning",
+            "frontier_reasoning",
+        }
+        assert entry.complexity_ceiling in {
+            "routine",
+            "multi_constraint",
+            "complex_professional",
+        }
+        assert entry.cost_position in {"economy", "balanced", "premium"}
+        assert entry.task_affinities
 
 
 def test_official_catalog_keeps_provider_claims_distinct_from_runtime_evidence():
@@ -88,3 +101,43 @@ def test_official_catalog_keeps_provider_claims_distinct_from_runtime_evidence()
     ]
     assert o3["model_role"] == "reasoning_specialist"
     assert sol["specialization_tags"] != o3["specialization_tags"]
+
+
+def test_catalog_separates_capability_complexity_reasoning_and_cost_position():
+    gpt_41 = catalog_metadata_for_model_id("gpt-4.1")
+    terra = catalog_metadata_for_model_id("gpt-5.6-terra")
+    sol = catalog_metadata_for_model_id("gpt-5.6-sol")
+
+    assert gpt_41["capability_tier"] == "balanced"
+    assert gpt_41["reasoning_profile"] == "non_reasoning"
+    assert gpt_41["complexity_ceiling"] == "multi_constraint"
+    assert gpt_41["cost_position"] == "balanced"
+    assert "instruction_following" in gpt_41["task_affinities"]
+
+    assert terra["capability_tier"] == "advanced"
+    assert terra["reasoning_profile"] == "general_reasoning"
+    assert terra["complexity_ceiling"] == "complex_professional"
+    assert terra["cost_position"] == "balanced"
+
+    assert sol["capability_tier"] == "advanced"
+    assert sol["reasoning_profile"] == "frontier_reasoning"
+    assert sol["complexity_ceiling"] == "complex_professional"
+    assert sol["cost_position"] == "premium"
+
+
+def test_catalog_keeps_provider_cost_position_separate_from_capability():
+    haiku = catalog_metadata_for_model_id("claude-haiku-4-5")
+    gemini_flash = catalog_metadata_for_model_id("gemini-3.5-flash")
+
+    assert haiku["capability_tier"] == "balanced"
+    assert haiku["cost_position"] == "economy"
+    assert haiku["complexity_ceiling"] == "multi_constraint"
+
+    assert gemini_flash["capability_tier"] == "advanced"
+    assert gemini_flash["cost_position"] == "balanced"
+    assert gemini_flash["complexity_ceiling"] == "complex_professional"
+def test_dated_openai_model_is_kept_as_an_executable_routing_candidate():
+    executable_id = "gpt-4.1-2025-04-14"
+
+    assert supported_model_routing_ids([executable_id]) == [executable_id]
+    assert catalog_metadata_for_model_id(executable_id)["canonical_model_id"] == "gpt-4.1"

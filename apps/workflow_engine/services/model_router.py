@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -19,6 +18,7 @@ from apps.shared.db.models.llm import (
 )
 from apps.shared.services.model_routing_global_profile_catalog import (
     canonical_model_routing_id,
+    normalize_model_id as normalize_model_routing_id,
 )
 from apps.workflow_engine.services.llm_output_contract import (
     build_json_output_schema_instruction,
@@ -96,7 +96,6 @@ BLOCKED_WORKFLOW_MODEL_TYPES = {
     "realtime",
     "moderation",
 }
-VERSION_SUFFIX_PATTERN = re.compile(r"-(?:\d{4}-\d{2}-\d{2}|\d{8})$")
 
 
 class ModelRoutingPromptRenderError(ValueError):
@@ -742,13 +741,11 @@ class ModelRouter:
             return False
         if any(keyword in model_name for keyword in BLOCKED_WORKFLOW_MODEL_KEYWORDS):
             return False
-        if VERSION_SUFFIX_PATTERN.search(model_id):
-            return False
         return model_id in WORKFLOW_CHAT_MODEL_ALIASES
 
     @staticmethod
     def normalize_model_id(model_id: Any) -> str:
-        return str(model_id or "").lower().removeprefix("models/")
+        return normalize_model_routing_id(model_id)
 
     @classmethod
     def first_available_model(
