@@ -82,7 +82,7 @@ def test_run_config_records_models_and_rejects_a_different_judge(monkeypatch):
 
         monkeypatch.setattr(
             "scripts.experiment_judge_first_economics_80.ROUTING_JUDGE_MODEL",
-            "gpt-5.4-mini",
+            "gpt-5-mini",
         )
         with pytest.raises(RuntimeError, match="routing_judge_model"):
             _write_run_config(
