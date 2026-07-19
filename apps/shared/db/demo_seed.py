@@ -4575,7 +4575,12 @@ def _seed_internal_it_helpdesk_run(
         "advanced"
         if spec.model_name == DEMO_CHAT_MODEL
         else "balanced"
-        if spec.model_name in {DEMO_CHAT_MINI_MODEL, DEMO_MODEL_ROUTER_BALANCED_MODEL}
+        if spec.model_name
+        in {
+            DEMO_CHAT_MINI_MODEL,
+            DEMO_MODEL_ROUTER_BALANCED_MODEL,
+            DEMO_MODEL_ROUTER_FALLBACK_MODEL,
+        }
         else "economy"
     )
     retrieved_chunks = 2 if approval_required or "MFA" in spec.message else 1
