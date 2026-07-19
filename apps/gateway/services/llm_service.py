@@ -1,7 +1,7 @@
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import requests
 from sqlalchemy import or_
@@ -35,6 +35,13 @@ from apps.shared.services.llm_credential_config import (
     LLMCredentialConfigError,
     load_llm_credential_config,
     protect_llm_credential_config,
+)
+from apps.shared.services.llm_model_pricing import (
+    calculate_text_token_cost,
+    extract_cached_input_tokens,
+    get_model_pricing,
+    known_model_prices,
+    normalize_model_pricing_id,
 )
 from apps.shared.services.llm_usage_context import resolve_llm_usage_context
 from apps.shared.services.permission_audit import record_resource_permission_denied
@@ -132,100 +139,9 @@ class LLMService:
     }
 
     AGENT_BUILDER_PROVIDER_ORDER = (*SUPPORTED_PROVIDER_ORDER, "llamaparse")
-
-   # [신규] 기본 가격 설정 (1M 토큰 기준 미화를 1K 기준으로 환산)
-    # 가격 출처: https://openai.com/api/pricing/, https://docs.anthropic.com/en/docs/about-claude/pricing
-    # 아래 가격은 1K 토큰 기준입니다. (예: $5/1M -> 0.005/1K)
-    KNOWN_MODEL_PRICES = {
-        # ==================== OpenAI 채팅 모델 ====================
-        # 가격 출처: https://developers.openai.com/api/docs/pricing
-        # 아래 가격은 1K 토큰 기준입니다. 공식 pricing의 1M 토큰 가격을 환산합니다.
-        # --- GPT-5.6 / GPT-5.5 / GPT-5.4 시리즈 ---
-        # GPT-5.6 alias는 Sol tier를 가리킵니다.
-        "gpt-5.6": {"input": 0.005, "output": 0.030},
-        "gpt-5.6-sol": {"input": 0.005, "output": 0.030},
-        "gpt-5.6-terra": {"input": 0.0025, "output": 0.015},
-        "gpt-5.6-luna": {"input": 0.001, "output": 0.006},
-        "gpt-5.5": {"input": 0.005, "output": 0.030},
-        "gpt-5.5-pro": {"input": 0.030, "output": 0.180},
-        "gpt-5.4": {"input": 0.0025, "output": 0.015},
-        "gpt-5.4-mini": {"input": 0.00075, "output": 0.0045},
-        "gpt-5.4-nano": {"input": 0.0002, "output": 0.00125},
-        "gpt-5.4-pro": {"input": 0.030, "output": 0.180},
-        # --- GPT-5 이전 세대 중 아직 pricing에 노출되는 모델 ---
-        "gpt-5.2": {"input": 0.00175, "output": 0.014},
-        "gpt-5.2-pro": {"input": 0.021, "output": 0.168},
-        "gpt-5.1": {"input": 0.00125, "output": 0.010},
-        "gpt-5": {"input": 0.00125, "output": 0.010},
-        "gpt-5-mini": {"input": 0.00025, "output": 0.002},
-        "gpt-5-nano": {"input": 0.00005, "output": 0.0004},
-        "gpt-5-pro": {"input": 0.015, "output": 0.120},
-        # --- GPT-4.1 / GPT-4o 시리즈 ---
-        "gpt-4.1": {"input": 0.002, "output": 0.008},
-        "gpt-4.1-2025-04-14": {"input": 0.002, "output": 0.008},
-        "gpt-4.1-mini": {"input": 0.0004, "output": 0.0016},
-        "gpt-4.1-mini-2025-04-14": {"input": 0.0004, "output": 0.0016},
-        "gpt-4o": {"input": 0.0025, "output": 0.010},
-        "gpt-4o-2024-08-06": {"input": 0.0025, "output": 0.010},
-        "gpt-4o-2024-11-20": {"input": 0.0025, "output": 0.010},
-        "gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
-        "gpt-4o-mini-2024-07-18": {"input": 0.00015, "output": 0.0006},
-        # --- 추론 모델 (O 시리즈) ---
-        "o3-pro": {"input": 0.020, "output": 0.080},
-        "o3": {"input": 0.002, "output": 0.008},
-        # --- 검색 / Codex 특화 모델 ---
-        "gpt-5-search-api": {"input": 0.00125, "output": 0.010},
-        "gpt-5.3-codex": {"input": 0.00175, "output": 0.014},
-        # --- Realtime / audio / 전사 / 음성합성 ---
-        "gpt-realtime-2": {"input": 0.004, "output": 0.024},
-        "gpt-realtime-1.5": {"input": 0.004, "output": 0.016},
-        "gpt-realtime": {"input": 0.004, "output": 0.016},
-        "gpt-realtime-mini": {"input": 0.0006, "output": 0.0024},
-        "gpt-audio-1.5": {"input": 0.0025, "output": 0.010},
-        "gpt-audio": {"input": 0.0025, "output": 0.010},
-        "gpt-audio-mini": {"input": 0.0006, "output": 0.0024},
-        "gpt-4o-transcribe": {"input": 0.0025, "output": 0.010},
-        "gpt-4o-transcribe-diarize": {"input": 0.0025, "output": 0.010},
-        "gpt-4o-mini-transcribe": {"input": 0.00125, "output": 0.005},
-        "gpt-4o-mini-tts": {"input": 0.0, "output": 0.0006},
-        # ==================== OpenAI 임베딩 모델 ====================
-        "text-embedding-3-small": {"input": 0.00002, "output": 0.0},
-        "text-embedding-3-large": {"input": 0.00013, "output": 0.0},
-        "text-embedding-ada-002": {"input": 0.00010, "output": 0.0},
-        # ==================== Anthropic 모델 ====================
-        # 가격 출처: https://docs.anthropic.com/en/docs/about-claude/pricing
-        # 아래 가격은 1K 토큰 기준입니다. 공식 pricing의 1M 토큰 가격을 환산합니다.
-        "claude-fable-5": {"input": 0.010, "output": 0.050},
-        "claude-opus-4-8": {"input": 0.005, "output": 0.025},
-        "claude-opus-4-7": {"input": 0.005, "output": 0.025},
-        "claude-opus-4-6": {"input": 0.005, "output": 0.025},
-        "claude-opus-4-5": {"input": 0.005, "output": 0.025},
-        "claude-opus-4-5-20251101": {"input": 0.005, "output": 0.025},
-        # Claude Sonnet 5는 2026-08-31까지 introductory 가격이 적용됩니다.
-        "claude-sonnet-5": {"input": 0.002, "output": 0.010},
-        "claude-sonnet-4-6": {"input": 0.003, "output": 0.015},
-        "claude-sonnet-4-5": {"input": 0.003, "output": 0.015},
-        "claude-sonnet-4-5-20250929": {"input": 0.003, "output": 0.015},
-        "claude-haiku-4-5": {"input": 0.001, "output": 0.005},
-        "claude-haiku-4-5-20251001": {"input": 0.001, "output": 0.005},
-        # ==================== Google 모델 ====================
-        # 가격 출처: https://ai.google.dev/gemini-api/docs/pricing
-        # 아래 가격은 1K 토큰 기준입니다. 공식 pricing의 1M 토큰 가격을 환산합니다.
-        # --- Gemini 3.x 시리즈 ---
-        "gemini-3.5-flash": {"input": 0.0015, "output": 0.009},
-        "gemini-3.1-pro-preview": {"input": 0.002, "output": 0.012},
-        "gemini-3.1-flash-lite": {"input": 0.00025, "output": 0.0015},
-        "gemini-3-flash-preview": {"input": 0.0005, "output": 0.003},
-        # --- Gemini 2.5 시리즈 ---
-        "gemini-2.5-pro": {"input": 0.00125, "output": 0.010},
-        "gemini-2.5-flash": {"input": 0.0003, "output": 0.0025},
-        "gemini-2.5-flash-lite": {"input": 0.0001, "output": 0.0004},
-        # --- Gemini 특화 모델 ---
-        "gemini-robotics-er-1.6-preview": {"input": 0.001, "output": 0.005},
-        # --- 임베딩 ---
-        "gemini-embedding-2": {"input": 0.0002, "output": 0.0},
-        "gemini-embedding-001": {"input": 0.00015, "output": 0.0},
-    }
+    # Pricing data lives in apps.shared.services.llm_model_pricing.
+    # This compatibility shape is retained for model seed and admin APIs.
+    KNOWN_MODEL_PRICES = known_model_prices()
 
     @staticmethod
     def _mask_plain(value: str) -> str:
@@ -444,10 +360,10 @@ class LLMService:
             # 친화적인 이름 매핑이 있으면 적용, 없으면 ID 대문자화 등 사용
             display_name = LLMService.MODEL_DISPLAY_NAMES.get(clean_id, clean_id)
 
-            # [신규] 기본 가격 결정
-            pricing = LLMService.KNOWN_MODEL_PRICES.get(clean_id)
-            input_price = pricing["input"] if pricing else None
-            output_price = pricing["output"] if pricing else None
+            # Shared catalog owns canonical aliases and current standard rates.
+            pricing = get_model_pricing(mid)
+            input_price = pricing.standard_input_per_1k if pricing else None
+            output_price = pricing.standard_output_per_1k if pricing else None
 
             if mid in existing_models:
                 # 메타데이터 및 이름 변경 시 업데이트
@@ -460,11 +376,16 @@ class LLMService:
                     model.name = display_name
                     changed = True
 
-                # 가격 정보가 명시적으로 없고, 우리가 알고 있는 가격이 있다면 업데이트
-                if model.input_price_1k is None and input_price is not None:
+                if (
+                    input_price is not None
+                    and float(model.input_price_1k or -1) != input_price
+                ):
                     model.input_price_1k = input_price
                     changed = True
-                if model.output_price_1k is None and output_price is not None:
+                if (
+                    output_price is not None
+                    and float(model.output_price_1k or -1) != output_price
+                ):
                     model.output_price_1k = output_price
                     changed = True
 
@@ -1671,28 +1592,30 @@ class LLMService:
         모델 ID를 정규화하여 KNOWN_MODEL_PRICES와 매칭 가능하게 변환합니다.
         예: gpt-4o-2024-11-20 -> gpt-4o, claude-haiku-4-5-20251001 -> claude-haiku-4-5
         """
-        import re
-
-        # 1. Google 접두사 제거
-        clean = model_id.replace("models/", "")
-
-        # 2. 날짜 접미사 패턴 제거
-        # 패턴: -YYYY-MM-DD (예: gpt-4o-2024-11-20)
-        clean = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", clean)
-        # 패턴: -YYYYMMDD (예: claude-haiku-4-5-20251001)
-        clean = re.sub(r"-\d{8}$", "", clean)
-
-        return clean
+        return normalize_model_pricing_id(model_id)
 
     @staticmethod
     def calculate_cost(
-        db: Session, model_id: str, prompt_tokens: int, completion_tokens: int
+        db: Session,
+        model_id: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        usage: Optional[Mapping[str, Any]] = None,
     ) -> float:
         """
         모델 가격 정보를 기반으로 비용을 계산합니다.
         DB에 가격 정보가 없으면 KNOWN_MODEL_PRICES로 폴백합니다.
         정규화된 모델 ID로 폴백 시도하여 버전 차이로 인한 매칭 실패를 방지합니다.
         """
+        catalog_pricing = get_model_pricing(model_id)
+        if catalog_pricing is not None:
+            return calculate_text_token_cost(
+                model_id,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cached_input_tokens=extract_cached_input_tokens(usage),
+            )
+
         input_price = None
         output_price = None
 
@@ -1712,13 +1635,9 @@ class LLMService:
             output_price = float(model.output_price_1k)
         else:
             # 2. KNOWN_MODEL_PRICES로 폴백 (정규화된 ID로 시도)
-            clean_id = model_id.replace("models/", "")  # Google 접두사 제거
-            pricing = LLMService.KNOWN_MODEL_PRICES.get(clean_id)
-
-            # 정확한 매칭 실패 시, 정규화된 ID로 재시도
-            if not pricing:
-                normalized_id = LLMService._normalize_model_id(model_id)
-                pricing = LLMService.KNOWN_MODEL_PRICES.get(normalized_id)
+            pricing = LLMService.KNOWN_MODEL_PRICES.get(
+                LLMService._normalize_model_id(model_id)
+            )
 
             if pricing:
                 input_price = pricing["input"]
@@ -1935,9 +1854,7 @@ class LLMService:
         for m in models:
             # model_id_for_api_call로 매칭 (예: gpt-4o)
             # "models/" 접두사가 있으면 제거 (Google)
-            clean_id = m.model_id_for_api_call.replace("models/", "")
-
-            pricing = known_prices.get(clean_id)
+            pricing = known_prices.get(LLMService._normalize_model_id(m.model_id_for_api_call))
             if pricing:
                 # 다른 값이거나 (또는 기존 값이 None인 경우) 업데이트
                 # float 비교는 대략적으로 처리

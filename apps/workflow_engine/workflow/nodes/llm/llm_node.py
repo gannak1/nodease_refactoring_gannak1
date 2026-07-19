@@ -654,6 +654,7 @@ class LLMNode(Node[LLMNodeData]):
                             judge_model_id,
                             int(usage.get("prompt_tokens") or 0),
                             int(usage.get("completion_tokens") or 0),
+                            usage=usage,
                         )
                         workflow_run_id = self.execution_context.get("workflow_run_id")
                         LLMService.log_usage(
@@ -1381,7 +1382,11 @@ class LLMNode(Node[LLMNodeData]):
                 # 성공한 workflow LLM node 호출은 provider usage가 없어도 최소 row를 남깁니다. MBA-43
                 if db_session:
                     cost = LLMService.calculate_cost(
-                        db_session, used_model_id, prompt_tokens, completion_tokens
+                        db_session,
+                        used_model_id,
+                        prompt_tokens,
+                        completion_tokens,
+                        usage=usage_for_log,
                     )
 
                     usage_user_id = self._resolve_credential_principal_user()
