@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -30,6 +31,14 @@ class WorkflowNodeSecretError(ValueError):
 
 class WorkflowNodeSecretStorageError(WorkflowNodeSecretError):
     """Safe availability failure for encrypted workflow-node secret storage."""
+
+
+@dataclass(frozen=True)
+class _WorkflowNodeSecretBinding:
+    secret_id: UUID
+    node_id: str
+    node_type: str
+    parameter_key: str
 
 
 def get_workflow_node_secret_encryption_service() -> CredentialEncryptionService:
@@ -69,41 +78,106 @@ def is_workflow_node_secret_reference(value: object) -> bool:
     return True
 
 
-def validate_workflow_node_secret_persistence_boundary(nodes: object) -> None:
+def _workflow_node_secret_bindings(
+    nodes: object,
+) -> list[_WorkflowNodeSecretBinding]:
     if not isinstance(nodes, list):
         raise WorkflowNodeSecretError("Workflow node secret reference is invalid.")
+    bindings: list[_WorkflowNodeSecretBinding] = []
+    binding_identities: set[tuple[str, str, str]] = set()
     pending = list(nodes)
     while pending:
         node = pending.pop()
         if isinstance(node, Mapping):
+            node_id = str(node.get("id") or "")
             node_type = str(node.get("type") or "")
             data = node.get("data")
         else:
+            node_id = str(getattr(node, "id", "") or "")
             node_type = str(getattr(node, "type", "") or "")
             data = getattr(node, "data", None)
         if not isinstance(data, Mapping):
             continue
-        values: list[object] = []
+        values: list[tuple[str, object]] = []
         if node_type == "slackPostNode":
-            values.append(data.get("url"))
+            values.append(("url", data.get("url")))
             auth_config = data.get("authConfig")
             if isinstance(auth_config, Mapping):
-                values.append(auth_config.get("token"))
+                values.append(("bot_token", auth_config.get("token")))
         elif node_type == "githubNode":
-            values.append(data.get("api_token"))
-        for value in values:
+            values.append(("api_token", data.get("api_token")))
+        for parameter_key, value in values:
             if value in (None, ""):
                 continue
-            if not is_workflow_node_secret_reference(value):
+            if not node_id or not isinstance(value, str):
                 raise WorkflowNodeSecretError(
                     "Workflow node secret reference is invalid."
                 )
+            try:
+                secret_id = workflow_node_secret_id(value)
+            except WorkflowNodeSecretError as exc:
+                raise WorkflowNodeSecretError(
+                    "Workflow node secret reference is invalid."
+                ) from exc
+            binding_identity = (node_id, node_type, parameter_key)
+            if binding_identity in binding_identities:
+                raise WorkflowNodeSecretError(
+                    "Workflow node secret reference is invalid."
+                )
+            binding_identities.add(binding_identity)
+            bindings.append(
+                _WorkflowNodeSecretBinding(
+                    secret_id=secret_id,
+                    node_id=node_id,
+                    node_type=node_type,
+                    parameter_key=parameter_key,
+                )
+            )
         subgraph = data.get("subGraph")
         nested_nodes = (
             subgraph.get("nodes") if isinstance(subgraph, Mapping) else None
         )
         if isinstance(nested_nodes, list):
             pending.extend(nested_nodes)
+    return bindings
+
+
+def validate_workflow_node_secret_persistence_boundary(nodes: object) -> None:
+    _workflow_node_secret_bindings(nodes)
+
+
+def validate_workflow_node_secret_reference_ownership(
+    db,
+    *,
+    nodes: object,
+    workflow_id: UUID,
+    organization_id: UUID | None,
+) -> None:
+    bindings = _workflow_node_secret_bindings(nodes)
+    if not bindings:
+        return
+
+    secret_ids = {binding.secret_id for binding in bindings}
+    rows = (
+        db.query(WorkflowNodeSecret)
+        .filter(WorkflowNodeSecret.id.in_(secret_ids))
+        .all()
+    )
+    rows_by_id = {row.id: row for row in rows}
+    for binding in bindings:
+        row = rows_by_id.get(binding.secret_id)
+        if (
+            row is None
+            or row.workflow_id != workflow_id
+            or row.organization_id != organization_id
+            or row.node_id != binding.node_id
+            or row.node_type != binding.node_type
+            or row.parameter_key != binding.parameter_key
+            or row.status != WORKFLOW_NODE_SECRET_ACTIVE
+        ):
+            raise WorkflowNodeSecretError(
+                "Workflow node secret is not available."
+            )
 
 
 def redact_legacy_workflow_node_secrets(

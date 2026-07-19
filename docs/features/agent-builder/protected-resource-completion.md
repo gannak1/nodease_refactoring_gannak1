@@ -4,7 +4,7 @@ Status: Verification Blocked
 
 Verified Against: feature/mba-277 @ 9341ed3d
 
-Working Tree Base: feature/mba-277 @ dbf7830dffc2889c0087593ecca20111434e9ea2 (uncommitted changes; commit-pinned verification unavailable)
+Working Tree Base: feature/mba-277 @ d8c75e79 (uncommitted changes; commit-pinned verification unavailable)
 
 이 문서는 MBA-331의 보호 리소스 기능 완결성 기준을 Agent Builder direct-edit 변경에 적용한 PR-visible 증거다. 상세 실행 이력은 로컬 작업 기록과 분리하며, 아래 행은 현재 계약·구현·검증 증거만 유지한다.
 
@@ -25,13 +25,13 @@ Working Tree Base: feature/mba-277 @ dbf7830dffc2889c0087593ecca20111434e9ea2 (u
 
 | 경계 | 상태 | 계약 증거 | 구현 위치 | 검증 증거 | 해당 없음 사유 또는 남은 검증 |
 | --- | --- | --- | --- | --- | --- |
-| 정책·식별자·organization scope | 완료 | ADR-0045/0061 Knowledge handle과 ADR-0062 workflow/node/type/key-scoped secret reference | `KnowledgeSelectionService`, `KnowledgeCandidateResolver`, `WorkflowNodeSecretService`, workflow permission helpers | Knowledge permission tests, `test_workflow_node_secret_service.py` | PostgreSQL FK/row-lock 실행 검증은 아래 Transaction 행에서 blocked |
-| 관리 API command/query | 완료 | ADR-0062 authenticated secret-write command, read-back 원문 금지 | `POST /api/v1/workflows/{workflow_id}/node-secrets`, `WorkflowService.store_node_secret` | Gateway/shared secret service tests와 `SecretStr` response-redaction test | 인증 browser에서 403/422/error UX 미검증 |
+| 정책·식별자·organization scope | 완료 | ADR-0045/0061 Knowledge handle과 ADR-0062 workflow/node/type/key-scoped secret reference | `KnowledgeSelectionService`, `KnowledgeCandidateResolver`, `WorkflowNodeSecretService`, workflow permission helpers | 현재 작업 트리의 exact organization/workflow/node/type/key/status 단위 테스트와 PostgreSQL draft-save 거부 테스트 통과 | 인증 browser에서 organization 전환 UX 미검증 |
+| 관리 API command/query | 완료 | ADR-0062 authenticated secret-write command, read-back 원문 금지 | `POST /api/v1/workflows/{workflow_id}/node-secrets`, `WorkflowService.store_node_secret` | Gateway/shared secret service 테스트에서 active organization 전달과 row-lock 재검증 통과 | 인증 browser에서 403/404/422 안내 UX 미검증 |
 | 관리 UI·catalog·picker | 완료 | ADR-0045 typed ParameterTask, ADR-0061 hierarchy-only Knowledge card, ADR-0062 masked input과 `나중에 설정` 유지 | `KnowledgeSelectionControl`, `ParameterInputRenderer`, `AgentBuilderPanel`, Slack/GitHub Node Detail | Client full 139 files / 1160 passed / 1 skipped; Node Detail late-response 2 files / 9 passed | 인증된 실제 browser smoke는 미실행 |
-| 저장 schema·GraphMutation·redaction | Verification Blocked | ADR-0062 encrypted immutable revision과 graph opaque reference-only 계약 | `workflow_node_secrets`, secret service, draft/deployment persistence guards와 response redaction | Shared full 1165 passed/32 skipped 및 secret/deployment focused 127 passed; inactive Slack mode plaintext RED/GREEN 3 failures -> 10 passed | Current revision PostgreSQL migration/FK/transaction 미실행 |
+| 저장 schema·GraphMutation·redaction | 완료 | ADR-0062 encrypted immutable revision과 graph opaque reference-only 계약 | `workflow_node_secrets`, secret service, draft/deployment persistence guards와 response redaction | Shared full 1173 passed/32 skipped, focused Gateway/shared 103 passed, PostgreSQL CAS file 18 passed | 인증 browser network response 미검증 |
 | Deployment/test preflight | 완료 | Catalog 전체 required configuration과 selector validity를 같은 의미로 검사 | `workflow_configuration_preflight.py`, `workflow_node_catalog.py` | 이번 correction은 preflight 계약을 변경하지 않음; 517 passed는 이전 변경의 역사적 결과로만 유지 |  |
-| Runtime/background 재검증 또는 capability validity | Verification Blocked | Catalog/runtime parameter parity, unresolved 실행 차단, ADR-0062 provider I/O 직전 scope/status/key-version 검증 | Slack/GitHub Workflow Engine nodes, `resolve_runtime_workflow_node_secret` | GitHub opaque-reference runtime test 통과 | Slack runtime test는 현재 Windows 세션의 WSL 배포판 부재로 미실행; 원격 Workflow Engine CI 필요 |
-| Transaction·session·TOCTOU | Verification Blocked | ADR-0046 graph hash와 `updated_at` CAS, Knowledge handle 제출 시 권한·lifecycle 재검증 | workflow draft save service, `KnowledgeSelectionService` | Current working tree backend/shared 8 files / 296 passed; 이전 revision의 disposable PostgreSQL 증거는 현재 revision 완료 근거로 재사용하지 않음 | Current revision disposable PostgreSQL 미실행 |
+| Runtime/background 재검증 또는 capability validity | 완료 | Catalog/runtime parameter parity, unresolved 실행 차단, ADR-0062 provider I/O 직전 scope/status/key-version 검증 | Slack/GitHub Workflow Engine nodes, `resolve_runtime_workflow_node_secret` | Workflow Engine GitHub/Slack opaque-reference runtime 집중 테스트 2 passed | 전체 Workflow Engine 회귀는 원격 CI에 위임 |
+| Transaction·session·TOCTOU | 완료 | ADR-0046 graph hash와 `updated_at` CAS, Knowledge handle 및 secret reference 제출 시 권한·lifecycle 재검증 | workflow draft save service, `KnowledgeSelectionService`, `WorkflowNodeSecretService` | 실제 PostgreSQL에서 draft read migration 대 concurrent CAS 및 unknown reference save 거부를 포함한 CAS file 18 passed | 전체 PostgreSQL suite는 원격 CI에 위임 |
 | Retry·idempotency·terminal acknowledgement | Verification Blocked | ADR-0046 operation id, task version, canonical acknowledgement/reconciliation | parameter decision service, mutation lifecycle, frontend save coordinator | Current working tree related suite 296 passed; legacy completed group reconciliation 1 passed | Current revision acknowledgement 재계획 PostgreSQL 미실행 |
 | Background lease·claim·fencing | 해당 없음 | Agent Builder direct-edit 요청은 background lease/claim을 도입하지 않음 | 해당 없음 | 해당 없음 | Workflow runtime worker lease 정책은 변경하지 않음 |
 | Revoke/delete/expire/rotation lifecycle | Verification Blocked | Knowledge는 선택/실행 전 lifecycle 재검증, secret 교체는 immutable 새 revision이며 기존 deployment ref를 변경하지 않음 | Knowledge resolvers, `WorkflowNodeSecret.status`, workflow cascade | Unit scope/status mismatch tests | Secret revoke command는 이번 범위가 아니며 PostgreSQL cascade/legacy deployment 실행 검증이 남음 |
@@ -55,6 +55,7 @@ Working Tree Base: feature/mba-277 @ dbf7830dffc2889c0087593ecca20111434e9ea2 (u
 | 늦은 저장 응답 격리 | 응답 `workflow_id` | 비활성 Workflow metadata/cache만 갱신 | `default`를 포함해 ID가 다른 현재 live graph, marker, dirty/history 보존 | 응답 도착 뒤 exact active identity 재검사 | 다른 Workflow의 autosync를 유발하지 않음 | A→B와 A→default deferred-promise 회귀 통과 |
 | Knowledge hierarchy-only UI | `collections + ungrouped_kbs` | flat candidate는 읽기 호환 데이터로만 유지 | flat-only direct 응답은 오류와 제출 차단 | 전용 Knowledge endpoint만 유지 | planner/runtime 변경 없음 | component 회귀와 Knowledge service 회귀 통과 |
 | Knowledge 후보 공유 예산 | ADR-0061 고유 KB 5,000 상한 | 적격 direct 결과 최대 20개를 bounded pagination으로 채운 뒤 실제 평가 수를 제외한 예산만 linked 후보에 사용 | 표시 상한 20은 scoring 뒤 적용 | 발급 handle 적용 계약은 변경 없음 | 권한 거부 후보는 readiness 조회 전에 제외하고 legacy chunk visibility는 허용 후보 page별 bulk 조회 | permission/recommendation/selection service tests와 bulk lookup 회귀 통과 |
+| Workflow node secret ownership | `workflow-node-secret://<uuid>` 형식과 binding tuple | 저장·배포 전에 reference row를 한 번에 조회해 active organization/workflow/node id/type/key/status를 정확히 검증하고 모호한 중첩 identity를 차단 | masked input과 `나중에 설정`을 유지하고 node 복제 시 secret reference만 제거 | 일반 draft save도 active organization을 검사하고 ownership 실패를 422로 닫으며 legacy read migration은 locked 최신 graph만 변경 | runtime은 provider I/O 직전에 같은 binding을 다시 검증 | shared/gateway 103 passed, Shared full 1173 passed/32 skipped, PostgreSQL CAS 18 passed, frontend copy 90 passed, runtime 2 passed |
 
 ## 실행 결과
 
@@ -79,9 +80,15 @@ Working Tree Base: feature/mba-277 @ dbf7830dffc2889c0087593ecca20111434e9ea2 (u
 | Client static | `npm run typecheck`; `npm run lint`; `npm run build` | typecheck passed; full lint 0 errors / 248 existing warnings; production build passed |
 | Git static | `git diff --check`; `git diff --name-status --diff-filter=D` | passed; whitespace errors 0, deleted files 0 |
 | Authenticated browser | Agent Builder secret set/delete, Knowledge selection, save/acknowledgement recovery | 미실행; 인증 organization fixture 필요 |
+| Working tree secret ownership focused | `.ignore\codex-py311-venv\Scripts\python.exe -m pytest -p no:cacheprovider apps/shared/tests/test_workflow_node_secret_service.py apps/gateway/tests/services/test_workflow_node_secret_service.py apps/gateway/tests/api/test_active_organization_app_workflow.py apps/gateway/tests/services/test_deployment_preflight.py -q` | 103 passed; active organization mismatch와 모호한 nested identity 회귀 포함 |
+| Working tree secret ownership Shared full | `.ignore\codex-py311-venv\Scripts\python.exe -m pytest -p no:cacheprovider apps/shared/tests -q` | 1173 passed / 32 skipped |
+| Working tree secret ownership PostgreSQL | `NODEASE_RUN_DISPOSABLE_DB_TEST=1`과 로컬 disposable DB 환경에서 `.ignore\codex-py311-venv\Scripts\python.exe -m pytest -p no:cacheprovider apps/gateway/tests/integration/test_agent_builder_workflow_cas.py -q` | 18 passed; legacy migration/CAS race와 unknown reference save 거부 포함 |
+| Working tree secret copy frontend | `npm exec vitest run app/features/workflow/store/useWorkflowStore.test.ts` | 1 file / 90 passed |
+| Working tree secret runtime | `.ignore\workflow-ci-venv\Scripts\python.exe -m pytest -p no:cacheprovider apps/workflow_engine/tests/nodes/test_github_node.py::test_get_pr_resolves_opaque_secret_reference_at_runtime apps/workflow_engine/tests/nodes/test_slack_post_node.py::test_node_resolves_opaque_secret_reference_only_at_runtime -q` | 2 passed |
+| Working tree static | `npm run typecheck`; targeted ESLint; `uvx --from ruff==0.15.20 ruff check <changed Python files>`; `git diff --check` | passed; ESLint 0 errors / 6 existing warnings |
 
 ## 완료 Gate
 
 - Current revision unit/component/service, TypeScript, lint와 static diff 검증은 통과했다.
-- Current revision disposable PostgreSQL acknowledgement/Collection cap과 인증된 browser smoke를 실행하기 전까지 상태를 `Verification Blocked`로 유지한다.
+- 현재 변경의 secret ownership과 migration/CAS PostgreSQL 집중 검증은 통과했다. Collection cap 전체 통합과 인증된 browser smoke를 실행하기 전까지 문서 전체 상태를 `Verification Blocked`로 유지한다.
 - 인증된 browser smoke는 미실행 사실과 남은 위험을 PR에 기록한다. 이를 실행하지 않은 상태를 browser 검증 완료로 표시하지 않는다.

@@ -14,6 +14,7 @@ from apps.shared.services.workflow_node_secret_service import (
     migrate_legacy_workflow_graph_secrets,
     redact_legacy_workflow_node_secrets,
     validate_workflow_node_secret_persistence_boundary,
+    validate_workflow_node_secret_reference_ownership,
 )
 from cryptography.fernet import Fernet
 
@@ -235,6 +236,164 @@ def test_legacy_slack_api_endpoint_is_removed_without_creating_secret() -> None:
         "https://slack.com/api/chat.postMessage"
     )
     db.add.assert_not_called()
+
+
+def test_reference_ownership_validation_accepts_exact_active_binding_in_one_query() -> None:
+    workflow_id = uuid4()
+    organization_id = uuid4()
+    secret_id = uuid4()
+    row = Mock(
+        id=secret_id,
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+        node_id="slack-1",
+        node_type="slackPostNode",
+        parameter_key="bot_token",
+        status="active",
+    )
+    db = Mock()
+    db.query.return_value.filter.return_value.all.return_value = [row]
+
+    validate_workflow_node_secret_reference_ownership(
+        db,
+        nodes=[
+            {
+                "id": "slack-1",
+                "type": "slackPostNode",
+                "data": {
+                    "authConfig": {
+                        "token": f"workflow-node-secret://{secret_id}",
+                    }
+                },
+            }
+        ],
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+    )
+
+    db.query.assert_called_once_with(WorkflowNodeSecret)
+    db.query.return_value.filter.return_value.all.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_message"),
+    [
+        ({"node_id": "different-node"}, "not available"),
+        ({"node_type": "githubNode"}, "not available"),
+        ({"parameter_key": "url"}, "not available"),
+        ({"status": "revoked"}, "not available"),
+    ],
+)
+def test_reference_ownership_validation_rejects_non_owned_binding(
+    override: dict[str, str],
+    expected_message: str,
+) -> None:
+    workflow_id = uuid4()
+    organization_id = uuid4()
+    secret_id = uuid4()
+    row_values = {
+        "id": secret_id,
+        "workflow_id": workflow_id,
+        "organization_id": organization_id,
+        "node_id": "slack-1",
+        "node_type": "slackPostNode",
+        "parameter_key": "bot_token",
+        "status": "active",
+    }
+    row_values.update(override)
+    db = Mock()
+    db.query.return_value.filter.return_value.all.return_value = [
+        Mock(**row_values)
+    ]
+
+    with pytest.raises(WorkflowNodeSecretError, match=expected_message):
+        validate_workflow_node_secret_reference_ownership(
+            db,
+            nodes=[
+                {
+                    "id": "slack-1",
+                    "type": "slackPostNode",
+                    "data": {
+                        "authConfig": {
+                            "token": f"workflow-node-secret://{secret_id}",
+                        }
+                    },
+                }
+            ],
+            workflow_id=workflow_id,
+            organization_id=organization_id,
+        )
+
+
+def test_reference_ownership_validation_rejects_unknown_uuid_reference() -> None:
+    db = Mock()
+    db.query.return_value.filter.return_value.all.return_value = []
+
+    with pytest.raises(WorkflowNodeSecretError, match="not available"):
+        validate_workflow_node_secret_reference_ownership(
+            db,
+            nodes=[
+                {
+                    "id": "github-1",
+                    "type": "githubNode",
+                    "data": {
+                        "api_token": f"workflow-node-secret://{uuid4()}",
+                    },
+                }
+            ],
+            workflow_id=uuid4(),
+            organization_id=uuid4(),
+        )
+
+
+def test_reference_ownership_validation_rejects_ambiguous_nested_node_identity() -> None:
+    workflow_id = uuid4()
+    organization_id = uuid4()
+    secret_id = uuid4()
+    row = Mock(
+        id=secret_id,
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+        node_id="slack-1",
+        node_type="slackPostNode",
+        parameter_key="bot_token",
+        status="active",
+    )
+    db = Mock()
+    db.query.return_value.filter.return_value.all.return_value = [row]
+    reference = f"workflow-node-secret://{secret_id}"
+
+    with pytest.raises(WorkflowNodeSecretError, match="invalid"):
+        validate_workflow_node_secret_reference_ownership(
+            db,
+            nodes=[
+                {
+                    "id": "slack-1",
+                    "type": "slackPostNode",
+                    "data": {"authConfig": {"token": reference}},
+                },
+                {
+                    "id": "loop-1",
+                    "type": "loopNode",
+                    "data": {
+                        "subGraph": {
+                            "nodes": [
+                                {
+                                    "id": "slack-1",
+                                    "type": "slackPostNode",
+                                    "data": {
+                                        "authConfig": {"token": reference}
+                                    },
+                                }
+                            ],
+                            "edges": [],
+                        }
+                    },
+                },
+            ],
+            workflow_id=workflow_id,
+            organization_id=organization_id,
+        )
 
 
 def test_response_redaction_keeps_references_and_drops_legacy_plaintext() -> None:

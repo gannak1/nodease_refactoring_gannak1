@@ -1606,6 +1606,77 @@ describe('캔버스 히스토리/클립보드 테스트', () => {
     ]);
   });
 
+  it('노드 복제는 Slack과 GitHub secret reference만 제거하고 일반 설정은 보존한다', () => {
+    const slackReference =
+      'workflow-node-secret://00000000-0000-4000-8000-000000000001';
+    const webhookReference =
+      'workflow-node-secret://00000000-0000-4000-8000-000000000002';
+    const githubReference =
+      'workflow-node-secret://00000000-0000-4000-8000-000000000003';
+    useWorkflowStore.getState().setNodes([
+      {
+        ...createMockNode('slack-api'),
+        type: 'slackPostNode',
+        selected: true,
+        data: {
+          title: 'Slack API',
+          slackMode: 'api',
+          channel: 'C123',
+          message: 'hello',
+          authConfig: { token: slackReference },
+        },
+      } as Node,
+      {
+        ...createMockNode('slack-webhook'),
+        type: 'slackPostNode',
+        selected: true,
+        data: {
+          title: 'Slack Webhook',
+          slackMode: 'webhook',
+          url: webhookReference,
+          message: 'webhook message',
+        },
+      } as Node,
+      {
+        ...createMockNode('github'),
+        type: 'githubNode',
+        selected: true,
+        data: {
+          title: 'GitHub',
+          action: 'get_pr',
+          repo_owner: 'octo',
+          repo_name: 'repo',
+          pr_number: '15',
+          api_token: githubReference,
+        },
+      } as Node,
+    ]);
+
+    useWorkflowStore.getState().duplicateSelectedNodes();
+
+    const duplicates = useWorkflowStore
+      .getState()
+      .nodes.filter((node) => node.id.includes('-copy-'));
+    const slackApi = duplicates.find((node) =>
+      node.id.startsWith('slack-api-copy-'),
+    );
+    const slackWebhook = duplicates.find((node) =>
+      node.id.startsWith('slack-webhook-copy-'),
+    );
+    const github = duplicates.find((node) =>
+      node.id.startsWith('github-copy-'),
+    );
+
+    expect(slackApi?.data.authConfig).toEqual({});
+    expect(slackApi?.data.channel).toBe('C123');
+    expect(slackApi?.data.message).toBe('hello');
+    expect(slackWebhook?.data.url).toBeUndefined();
+    expect(slackWebhook?.data.message).toBe('webhook message');
+    expect(github?.data.api_token).toBeUndefined();
+    expect(github?.data.repo_owner).toBe('octo');
+    expect(github?.data.pr_number).toBe('15');
+  });
+
   it('selector 배열은 첫 번째 슬롯만 새 ID로 재매핑하고 이후 key 값은 보존한다', () => {
     useWorkflowStore.getState().setNodes([
       {

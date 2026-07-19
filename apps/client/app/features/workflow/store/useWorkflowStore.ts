@@ -43,6 +43,7 @@ import {
 import type { AgentBuilderParameterGroup } from '../api/agentBuilderApi';
 import { buildWorkflowDraftPayload } from '../utils/workflowDraftPayload';
 import { acquireWorkflowDraftSave } from '../utils/workflowDraftSaveCoordinator';
+import { isWorkflowNodeSecretReference } from '../utils/workflowNodeSecret';
 
 export type { SnapGridSize } from '../utils/gridSnap';
 
@@ -677,6 +678,7 @@ const remapCopiedNodeReferences = (
 const preparePastedNodeData = (
   data: Node['data'],
   idMap: Map<string, string>,
+  nodeType: Node['type'],
 ): Node['data'] => {
   const remappedData = remapCopiedNodeReferences(
     data,
@@ -685,6 +687,29 @@ const preparePastedNodeData = (
     displayNumber?: unknown;
   };
   delete remappedData.displayNumber;
+  if (nodeType === 'slackPostNode') {
+    const authConfig = remappedData.authConfig;
+    if (
+      authConfig &&
+      typeof authConfig === 'object' &&
+      !Array.isArray(authConfig) &&
+      isWorkflowNodeSecretReference(
+        (authConfig as Record<string, unknown>).token,
+      )
+    ) {
+      const nextAuthConfig = { ...authConfig } as Record<string, unknown>;
+      delete nextAuthConfig.token;
+      remappedData.authConfig = nextAuthConfig;
+    }
+    if (isWorkflowNodeSecretReference(remappedData.url)) {
+      delete remappedData.url;
+    }
+  } else if (
+    nodeType === 'githubNode' &&
+    isWorkflowNodeSecretReference(remappedData.api_token)
+  ) {
+    delete remappedData.api_token;
+  }
   return remappedData;
 };
 
@@ -774,7 +799,7 @@ const buildDuplicatedGraphElements = (
     return {
       ...structuredClone(node),
       id: newId || `${node.id}-copy-${timestamp}`,
-      data: preparePastedNodeData(node.data, idMap),
+      data: preparePastedNodeData(node.data, idMap, node.type),
       selected: true,
       position: {
         x: node.position.x + PASTE_OFFSET,

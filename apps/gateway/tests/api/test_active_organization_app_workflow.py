@@ -35,6 +35,93 @@ from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_run import WorkflowRun
 from apps.shared.db.session import get_db
+from apps.shared.schemas.workflow import WorkflowNodeSecretWriteRequest
+
+
+def test_store_workflow_node_secret_uses_active_organization_header(monkeypatch):
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4())
+    workflow = SimpleNamespace(id=workflow_id, organization_id=organization_id)
+    captured = {}
+
+    monkeypatch.setattr(
+        workflow_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, user_id: organization_id,
+    )
+    monkeypatch.setattr(
+        workflow_endpoint,
+        "ensure_workflow_permission",
+        lambda db, current_user, requested_workflow_id, action: workflow,
+    )
+    monkeypatch.setattr(
+        workflow_endpoint.WorkflowService,
+        "store_node_secret",
+        lambda db, **kwargs: captured.update(kwargs)
+        or {"secret_reference": f"workflow-node-secret://{uuid.uuid4()}", "configured": True},
+    )
+
+    result = workflow_endpoint.store_workflow_node_secret(
+        workflow_id=str(workflow_id),
+        payload=WorkflowNodeSecretWriteRequest(
+            node_id="slack-1",
+            node_type="slackPostNode",
+            parameter_key="bot_token",
+            secret_value="synthetic-input-value",
+        ),
+        request=object(),
+        x_organization_id=str(organization_id),
+        db=object(),
+        current_user=user,
+    )
+
+    assert result["configured"] is True
+    assert captured["workflow_id"] == str(workflow_id)
+    assert captured["active_organization_id"] == organization_id
+    assert captured["user_id"] == user.id
+
+
+def test_sync_draft_rejects_workflow_outside_active_organization(monkeypatch):
+    active_organization_id = uuid.uuid4()
+    workflow_organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4())
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        organization_id=workflow_organization_id,
+    )
+    captured = {"saved": False}
+
+    monkeypatch.setattr(
+        workflow_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, user_id: active_organization_id,
+    )
+    monkeypatch.setattr(
+        workflow_endpoint,
+        "ensure_workflow_permission",
+        lambda db, current_user, requested_workflow_id, action: workflow,
+    )
+    monkeypatch.setattr(
+        workflow_endpoint.WorkflowService,
+        "save_draft",
+        lambda *args, **kwargs: captured.update(saved=True),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        workflow_endpoint.sync_draft_workflow(
+            workflow_id=str(workflow_id),
+            request=object(),
+            payload=object(),
+            x_organization_id=str(active_organization_id),
+            db=object(),
+            current_user=user,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Workflow not found"
+    assert captured["saved"] is False
 
 
 def test_create_app_uses_active_organization_header(monkeypatch):
@@ -1187,6 +1274,7 @@ def test_active_member_can_manage_app_draft_after_creating_app(monkeypatch):
 
         draft_response = TestClient(app).post(
             f"/api/v1/workflows/{workflow_id}/draft",
+            headers={"X-Organization-Id": str(organization_id)},
             json={
                 "nodes": [llm_node],
                 "edges": [],

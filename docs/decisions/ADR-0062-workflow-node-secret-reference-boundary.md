@@ -44,6 +44,20 @@ storage representation must change without removing that input path.
 8. Secret clear/defer removes the graph reference but does not rewrite an
    immutable revision that may still be referenced by an older deployment.
    Unreferenced revision cleanup is a separate retention operation.
+9. Draft save and deployment preflight bulk-load referenced revisions and
+   validate active organization, workflow, node id, node type, parameter key
+   and active status before accepting the graph. A validly formatted reference
+   owned by another binding is rejected before runtime.
+10. Legacy draft migration re-reads the Workflow under `FOR UPDATE` and
+    transforms only that locked current graph. It never commits a graph that
+    was read before a concurrent CAS save.
+11. Node copy and paste remove Slack/GitHub workflow-node secret references
+    from the copied node while preserving non-secret configuration. A copied
+    node must obtain a new revision scoped to its new node id.
+12. Until secret revisions carry a canonical nested container path, a graph
+    containing the same secret-bearing node id/type/parameter identity more
+    than once is rejected as ambiguous. This does not prohibit unrelated
+    nested node ids; it prevents one revision from authorizing two locations.
 
 This ADR supersedes only the plaintext graph persistence portions of ADR-0045
 and ADR-0046. Their masked direct-input UX, `나중에 설정`, ParameterTask,

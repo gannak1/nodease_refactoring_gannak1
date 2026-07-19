@@ -58,6 +58,7 @@ from apps.shared.services.workflow_node_secret_service import (
     get_workflow_node_secret_encryption_service,
     migrate_legacy_workflow_graph_secrets,
     validate_workflow_node_secret_persistence_boundary,
+    validate_workflow_node_secret_reference_ownership,
 )
 from apps.shared.services.credential_encryption import CredentialEncryptionError
 from apps.shared.services.workflow_task_publisher import send_workflow_task
@@ -199,7 +200,12 @@ class DeploymentService:
             principal_id=user_id,
             is_active=deployment_in.is_active,
         )
-        DeploymentService._enforce_node_secret_storage_boundary(graph_snapshot)
+        DeploymentService._enforce_node_secret_storage_boundary(
+            db,
+            graph_snapshot,
+            workflow_id=workflow.id,
+            organization_id=workflow.organization_id,
+        )
         WorkflowService.validate_knowledge_references(
             db,
             graph_snapshot,
@@ -667,7 +673,13 @@ class DeploymentService:
         return graph_snapshot
 
     @staticmethod
-    def _enforce_node_secret_storage_boundary(graph_snapshot: dict) -> None:
+    def _enforce_node_secret_storage_boundary(
+        db: Session,
+        graph_snapshot: dict,
+        *,
+        workflow_id: uuid.UUID,
+        organization_id: uuid.UUID | None,
+    ) -> None:
         try:
             validate_workflow_node_secret_persistence_boundary(
                 graph_snapshot.get("nodes", [])
@@ -676,6 +688,18 @@ class DeploymentService:
             raise HTTPException(
                 status_code=422,
                 detail="workflow.node_secret_reference_required",
+            ) from exc
+        try:
+            validate_workflow_node_secret_reference_ownership(
+                db,
+                nodes=graph_snapshot.get("nodes", []),
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+            )
+        except WorkflowNodeSecretError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="workflow.node_secret_reference_invalid",
             ) from exc
 
     @staticmethod

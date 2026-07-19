@@ -37,7 +37,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 
 ### 3.2 Out Of Scope
 
-- 일반 chat/planner/ParameterTask를 통한 credential secret 수집과 Agent Builder 전용 secret 저장소 추가. 기존 node graph의 secret field도 Agent Builder API로 직접 갱신하지 않는다.
+- 일반 chat/planner/typed ParameterDecision/GraphMutation을 통한 credential secret 수집과 신규 managed Slack/GitHub credential resource 또는 picker 추가. Slack/GitHub masked input은 예외적으로 ADR-0062의 인증된 Workflow node secret-write command를 사용하며 graph에는 opaque reference만 반영한다.
 - workflow 실행, retrieval 또는 외부 API action 실행
 - runtime에 존재하지 않는 node type 구현
 - 임의의 plugin parameter schema 추론
@@ -175,7 +175,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - 지원 input type은 `text`, `textarea`, `code`, `json`, `number`, `boolean`, `select`, `secret`, `resource_ref`, `credential_ref`, `variable_selector`, `variable_selector_list`다.
 - Decision value는 input type과 일치하는 discriminator를 사용한다. `variable_selector`는 server-issued `suggestion_id`와 기존 runtime 표준인 `[source_node_id, output_key, ...nested_path]` 배열을 함께 보낸다. `variable_selector_list`는 중복되지 않은 하나 이상의 server-issued selector selection을 보낸다. 임의 selector 문자열은 허용하지 않는다.
 - `secret`은 기존 node graph가 직접 소유하는 민감 설정을 위한 Catalog/runtime/preflight 입력 유형이다. Slack Bot Token, Slack Incoming Webhook URL과 GitHub API Token은 direct-edit task와 masked input card로 제공한다. 기존 원문은 hydrate하거나 표시하지 않고 새 입력으로 교체하거나 명시적으로 삭제한다.
-- Secret 입력은 일반 typed ParameterDecision이나 GraphMutation payload로 제출하지 않는다. Frontend editor adapter가 기존 node data 저장 경로에 직접 반영하고 canonical draft metadata 변경 뒤 session reconciliation로 task 상태를 갱신한다. Agent Builder session/task/audit/log에는 원문을 복제하지 않으며 신규 managed credential picker, 암호화 secret 저장소 또는 node secret reference를 추가하지 않는다.
+- Secret 입력은 일반 typed ParameterDecision이나 GraphMutation payload로 제출하지 않는다. Frontend는 ADR-0062의 인증된 Workflow node secret-write command로 원문을 한 번 제출하고, 서버가 만든 immutable encrypted revision의 opaque reference만 editor/autosync 경로에 반영한다. Agent Builder session/task/audit/log에는 원문이나 ciphertext를 복제하지 않으며 신규 managed credential picker 또는 credential resource를 추가하지 않는다.
 - Catalog v3 parameter의 `defer_policy`는 `forbidden` 또는 `allow_unresolved`이며 생략하면 `forbidden`이다.
 - `credential_ref`를 포함한 configurable parameter는 현재 reference가 없다는 이유만으로 자동 `deferred` 처리하지 않는다. Agent Builder가 발급하는 task는 `pending|active`에서 사용자 확인을 기다리며, 사용자가 명시적으로 `defer`를 제출하고 Catalog policy가 허용한 경우에만 GraphMutation, CDS 저장과 acknowledgement 뒤 `deferred`가 된다. Permission-filtered picker는 durable credential resource/use 권한 resolver가 이미 존재하는 Mail/Gmail에만 제공한다. Gmail Draft에는 Gmail OAuth2 use-permitted credential만 노출하고 제출도 같은 조건으로 검증한다. Gmail/Mail selector는 defer할 수 없다. Slack/GitHub에는 신규 credential resource나 빈 picker를 만들지 않고 기존 node graph 방식의 masked token/URL control을 제공한다.
 - required parameter는 유효한 값 또는 `allow_unresolved` 정책 없이 완료할 수 없다. `forbidden`인 task에는 defer control을 표시하지 않고 backend도 defer 요청을 거부한다.
@@ -456,5 +456,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - Slack Bot Token, Slack Incoming Webhook URL과 GitHub API Token의 masked 직접 입력은 Agent Builder 제품 경로에 유지한다. `defer_policy=allow_unresolved`인 active task에는 `나중에 설정`을 유지하며 credential picker 또는 Node Detail 이동으로 대체하지 않는다.
 - 원문은 authenticated secret-write 요청에서만 Gateway로 전달한다. Workflow graph, draft/version/deployment snapshot, ParameterTask/session, GraphMutation, audit, trace와 log에는 `workflow-node-secret://<opaque-id>` reference만 저장한다.
 - Gateway는 active organization과 Workflow write 권한을 다시 확인하고 원문을 versioned keyring으로 암호화한 immutable revision을 만든다. 교체는 새 revision을 만들며 기존 deployment의 reference를 암묵적으로 바꾸지 않는다.
+- Draft 저장과 deployment preflight는 reference 형식뿐 아니라 현재 organization/workflow/node id/node type/parameter key와 active status의 정확한 소유권을 일괄 검증한다. 알 수 없거나 다른 node에서 복제된 reference는 저장·배포 전에 거부한다.
+- Node 복제와 붙여넣기는 Slack Bot Token/Webhook URL 및 GitHub API Token reference를 새 node data에서 제거하고 나머지 일반 설정은 보존한다. 새 node는 자체 secret-write command로 새 reference를 받아야 한다.
 - Runtime은 provider I/O 직전에 organization/workflow/node type/parameter key/status를 검증하고 짧은 DB session으로 reference를 해석한다. 실패 시 외부 I/O 전에 fail-closed한다.
-- 기존 plaintext graph는 legacy migration 대상이다. Draft read 또는 신규 deployment 전에 reference로 전환하며 신규 write는 plaintext 표현을 다시 만들지 않는다.
+- 기존 plaintext graph는 legacy migration 대상이다. Draft read 변환은 Workflow row lock을 획득한 뒤 최신 graph를 다시 읽어 수행하고, 동시 CAS save의 최신 변경을 덮어쓰지 않는다. Draft read 또는 신규 deployment 전에 reference로 전환하며 신규 write는 plaintext 표현을 다시 만들지 않는다.

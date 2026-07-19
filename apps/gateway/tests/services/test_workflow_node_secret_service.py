@@ -40,6 +40,7 @@ def test_store_node_secret_checks_scope_and_returns_only_reference(monkeypatch) 
     result = WorkflowService.store_node_secret(
         db,
         workflow_id=str(workflow.id),
+        active_organization_id=workflow.organization_id,
         user_id=user_id,
         node_id="slack-1",
         node_type="slackPostNode",
@@ -81,6 +82,7 @@ def test_store_node_secret_returns_safe_503_when_keyring_is_unavailable(
         WorkflowService.store_node_secret(
             db,
             workflow_id=str(workflow.id),
+            active_organization_id=workflow.organization_id,
             user_id=uuid4(),
             node_id="slack-1",
             node_type="slackPostNode",
@@ -115,6 +117,7 @@ def test_store_node_secret_rejects_invalid_slack_webhook_before_encryption(
         WorkflowService.store_node_secret(
             db,
             workflow_id=str(workflow.id),
+            active_organization_id=workflow.organization_id,
             user_id=uuid4(),
             node_id="slack-1",
             node_type="slackPostNode",
@@ -126,3 +129,38 @@ def test_store_node_secret_rejects_invalid_slack_webhook_before_encryption(
     assert captured.value.detail == "workflow.node_secret_invalid"
     create_reference.assert_not_called()
     db.rollback.assert_called_once_with()
+
+
+def test_store_node_secret_rejects_workflow_outside_active_organization(
+    monkeypatch,
+) -> None:
+    workflow = SimpleNamespace(id=uuid4(), organization_id=uuid4())
+    db = Mock()
+    db.query.return_value.filter.return_value.with_for_update.return_value.first.return_value = workflow
+    create_reference = Mock()
+    monkeypatch.setattr(
+        "apps.gateway.services.workflow_service.has_workflow_permission",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        WorkflowNodeSecretService,
+        "create_reference",
+        create_reference,
+    )
+
+    with pytest.raises(HTTPException) as captured:
+        WorkflowService.store_node_secret(
+            db,
+            workflow_id=str(workflow.id),
+            active_organization_id=uuid4(),
+            user_id=uuid4(),
+            node_id="slack-1",
+            node_type="slackPostNode",
+            parameter_key="bot_token",
+            secret_value="synthetic-input-value",
+        )
+
+    assert captured.value.status_code == 404
+    assert captured.value.detail == "Workflow not found"
+    create_reference.assert_not_called()
+    db.commit.assert_not_called()

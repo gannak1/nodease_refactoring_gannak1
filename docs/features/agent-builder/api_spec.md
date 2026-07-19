@@ -1290,10 +1290,11 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 
 - 허용 조합은 `slackPostNode.bot_token`, `slackPostNode.url`, `githubNode.api_token`이다.
 - 응답 reference는 요청 Workflow, organization, node id/type와 parameter key에 scope된 immutable encrypted revision을 가리킨다.
-- 일반 draft/version/deployment graph는 이 reference만 저장한다. 같은 위치의 raw value를 포함한 신규 save는 `422 workflow.node_secret_reference_required`로 거부한다.
-- `403`은 Workflow write 권한 부족, `404`는 Workflow 비공개/부재, `422 workflow.node_secret_invalid`는 지원하지 않는 node/parameter 또는 invalid input이다. `503 workflow.node_secret_storage_unavailable`은 신규 revision을 암호화할 keyring이 없거나 사용할 수 없는 경우이고, `503 workflow.node_secret_migration_unavailable`은 legacy plaintext를 안전하게 변환할 keyring이 없는 경우다.
+- 일반 draft/version/deployment graph는 이 reference만 저장한다. 같은 위치의 raw value를 포함한 신규 save는 `422 workflow.node_secret_reference_required`로 거부한다. 유효한 형식이지만 현재 organization/workflow/node id/type/parameter key에 속한 active revision이 아니면 저장과 배포를 `422 workflow.node_secret_reference_invalid`로 거부한다.
+- 일반 `POST /workflows/{workflow_id}/draft`도 `X-Organization-Id`를 요구하며 active organization과 Workflow organization이 다르면 `404`로 닫는다. 중첩 graph에서 동일한 secret-bearing node id/type/parameter identity가 둘 이상이면 path가 모호하므로 `422 workflow.node_secret_reference_invalid`로 거부한다.
+- `403`은 Workflow write 권한 부족, `404`는 Workflow 비공개/부재 또는 active organization 불일치, `422 workflow.node_secret_invalid`는 지원하지 않는 node/parameter 또는 invalid input이다. `503 workflow.node_secret_storage_unavailable`은 신규 revision을 암호화할 keyring이 없거나 사용할 수 없는 경우이고, `503 workflow.node_secret_migration_unavailable`은 legacy plaintext를 안전하게 변환할 keyring이 없는 경우다.
 - Request body와 원문은 audit metadata, error detail, trace와 log에 포함하지 않는다.
-- 기존 plaintext draft/deployment는 bounded read/execution 경계에서 같은 scope의 encrypted revision으로 전환한다. 전환 전 응답은 원문을 redaction하고 keyring이 없으면 fail-closed한다.
+- 기존 plaintext draft/deployment는 bounded read/execution 경계에서 같은 scope의 encrypted revision으로 전환한다. Draft read 변환은 Workflow row를 잠그고 최신 graph를 다시 읽은 뒤 commit하여 동시 CAS save를 덮어쓰지 않는다. 전환 전 응답은 원문을 redaction하고 keyring이 없으면 fail-closed한다.
 - `model_id`는 일반 LLM ParameterTask로 반환한다. `auto_model_routing`만 `task_group=model_routing`을 반환하고 node data에 직접 저장한다. 새 LLM node에서 Catalog 기본값이 `false`이면 task는 recommendation fingerprint와 `resolution_source=catalog_default`를 가진 `active` 상태로 반환한다. 같은 `false` 확인은 `action=confirm`으로 GraphMutation 없이 완료하고, `true` 변경은 `action=set`과 기존 CAS/acknowledgement 계약을 사용한다. 이 group metadata는 표시와 completeness 판정용이며 graph에는 저장하지 않는다.
 - `fallback_model_id`, `model_routing_refresh_every_runs`, `model_routing_validation_budget_usd`, `model_routing_max_cohorts`의 Catalog/runtime 정의는 유지하지만 `agent_builder_task=false`이므로 Agent Builder ParameterTask를 발급하지 않는다. Catalog reconciliation은 이전 session의 해당 task를 제거하되 canonical graph의 기존 값을 변경하지 않는다.
 - Fallback model과 상세 routing policy의 후보 선택, 검증과 저장은 기존 LLM Routing control의 API 계약을 따른다.

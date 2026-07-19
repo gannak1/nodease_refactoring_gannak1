@@ -44,6 +44,7 @@ from apps.shared.services.workflow_node_secret_service import (
     is_workflow_node_secret_reference,
     migrate_legacy_workflow_graph_secrets,
     validate_workflow_node_secret_persistence_boundary,
+    validate_workflow_node_secret_reference_ownership,
 )
 from apps.shared.services.workflow_node_catalog import (
     validate_node_parameter_value,
@@ -173,6 +174,7 @@ class WorkflowService:
         db: Session,
         *,
         workflow_id: str,
+        active_organization_id: UUID,
         user_id: UUID,
         node_id: str,
         node_type: str,
@@ -187,7 +189,12 @@ class WorkflowService:
         )
         if workflow is None:
             raise HTTPException(status_code=404, detail="Workflow not found")
-        if workflow.organization_id is None or not has_workflow_permission(
+        if (
+            workflow.organization_id is None
+            or workflow.organization_id != active_organization_id
+        ):
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        if not has_workflow_permission(
             db,
             user_id,
             workflow.id,
@@ -304,6 +311,18 @@ class WorkflowService:
             raise HTTPException(
                 status_code=422,
                 detail="workflow.node_secret_reference_required",
+            ) from exc
+        try:
+            validate_workflow_node_secret_reference_ownership(
+                db,
+                nodes=request_nodes,
+                workflow_id=workflow.id,
+                organization_id=workflow.organization_id,
+            )
+        except WorkflowNodeSecretError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="workflow.node_secret_reference_invalid",
             ) from exc
 
         raw_features = (
@@ -921,6 +940,30 @@ class WorkflowService:
             except WorkflowNodeSecretError:
                 needs_secret_migration = True
         if needs_secret_migration and workflow.organization_id is not None:
+            workflow = (
+                db.query(Workflow)
+                .filter(Workflow.id == workflow_id)
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
+            if workflow is None:
+                return None
+            try:
+                validate_workflow_node_secret_persistence_boundary(
+                    workflow.graph.get("nodes", [])
+                    if isinstance(workflow.graph, Mapping)
+                    else []
+                )
+                needs_secret_migration = False
+            except WorkflowNodeSecretError:
+                needs_secret_migration = True
+        if needs_secret_migration:
+            if workflow.organization_id is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="workflow.node_secret_migration_unavailable",
+                )
             try:
                 migrated_graph, changed = migrate_legacy_workflow_graph_secrets(
                     db,

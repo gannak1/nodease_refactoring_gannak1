@@ -21,6 +21,7 @@ from apps.shared.db.models.mail_credential import MailCredential
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
+from apps.shared.db.models.workflow_node_secret import WorkflowNodeSecret
 from apps.shared.domain.deployment_runtime_policy import (
     DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
 )
@@ -95,6 +96,7 @@ def test_unresolved_configuration_uses_workflow_409_preflight_envelope():
 def test_deployment_snapshot_rejects_raw_workflow_node_secret() -> None:
     with pytest.raises(HTTPException) as captured:
         DeploymentService._enforce_node_secret_storage_boundary(
+            object(),
             {
                 "nodes": [
                     {
@@ -107,11 +109,59 @@ def test_deployment_snapshot_rejects_raw_workflow_node_secret() -> None:
                     }
                 ],
                 "edges": [],
-            }
+            },
+            workflow_id=uuid.uuid4(),
+            organization_id=uuid.uuid4(),
         )
 
     assert captured.value.status_code == 422
     assert captured.value.detail == "workflow.node_secret_reference_required"
+
+
+def test_deployment_snapshot_rejects_secret_reference_owned_by_another_node() -> None:
+    workflow_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    secret_id = uuid.uuid4()
+    db = _Db(
+        {
+            WorkflowNodeSecret: [
+                _row(
+                    id=secret_id,
+                    workflow_id=workflow_id,
+                    organization_id=organization_id,
+                    node_id="original-slack",
+                    node_type="slackPostNode",
+                    parameter_key="bot_token",
+                    status="active",
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(HTTPException) as captured:
+        DeploymentService._enforce_node_secret_storage_boundary(
+            db,
+            {
+                "nodes": [
+                    {
+                        "id": "copied-slack",
+                        "type": "slackPostNode",
+                        "data": {
+                            "slackMode": "api",
+                            "authConfig": {
+                                "token": f"workflow-node-secret://{secret_id}"
+                            },
+                        },
+                    }
+                ],
+                "edges": [],
+            },
+            workflow_id=workflow_id,
+            organization_id=organization_id,
+        )
+
+    assert captured.value.status_code == 422
+    assert captured.value.detail == "workflow.node_secret_reference_invalid"
 
 
 def test_legacy_deployment_snapshot_is_migrated_before_reuse(monkeypatch) -> None:
@@ -2185,6 +2235,7 @@ class _Db:
             KnowledgeCollection,
             KnowledgeCollectionItem,
             MailCredential,
+            WorkflowNodeSecret,
         }:
             return _Query(self.rows_by_model.setdefault(model, []))
         return _ScalarQuery(self.max_deployment_version)

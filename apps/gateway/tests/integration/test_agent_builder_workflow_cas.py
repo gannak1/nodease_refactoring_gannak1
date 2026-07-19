@@ -2,12 +2,13 @@ import os
 import subprocess
 import sys
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
@@ -28,6 +29,7 @@ from apps.gateway.services.agent_builder.mutation_lifecycle import (
     GraphMutationLifecycleService,
 )
 from apps.gateway.services.agent_builder_service import AgentBuilderService
+from apps.gateway.services import workflow_service as workflow_service_module
 from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.agent_builder import AgentBuilderRequest, AgentBuilderSession
@@ -37,6 +39,7 @@ from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import OrganizationMembership
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_node_secret import WorkflowNodeSecret
 from apps.shared.tests.helpers.disposable_postgres import (
     DisposablePostgresConfig,
     DisposablePostgresConfigurationError,
@@ -55,6 +58,11 @@ from apps.shared.schemas.agent_builder import (
     GraphMutationAcknowledgementRequest,
 )
 from apps.shared.schemas.workflow import WorkflowDraftRequest
+from apps.shared.services.credential_encryption import CredentialEncryptionService
+from apps.shared.services.workflow_node_secret_service import (
+    WorkflowNodeSecretService,
+    is_workflow_node_secret_reference,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[4]
@@ -138,6 +146,14 @@ def _draft_request(payload):
         data.setdefault("expected_graph_hash", context["expected_base_graph_hash"])
         data.setdefault("expected_updated_at", context["expected_workflow_updated_at"])
     return WorkflowDraftRequest.model_validate(data)
+
+
+def _workflow_node_secret_encryption() -> CredentialEncryptionService:
+    return CredentialEncryptionService(
+        {"test": Fernet.generate_key().decode("ascii")},
+        "test",
+        subject_label="Workflow node secret",
+    )
 
 
 def _normal_draft_request(graph, *, expected_graph_hash, expected_updated_at):
@@ -486,6 +502,194 @@ def test_actual_postgresql_autosync_race_has_single_cas_winner(
     assert persisted.updated_at.isoformat() == winner["result"]["updated_at"]
     assert persisted_node_ids == [candidates[winner["label"]]["nodes"][0]["id"]]
     assert candidates[loser["label"]]["nodes"][0]["id"] not in persisted_node_ids
+
+
+def test_draft_read_secret_migration_cannot_overwrite_concurrent_cas_save(
+    disposable_cas_engine,
+    monkeypatch,
+):
+    ids = _seed_committed_cas_fixture(disposable_cas_engine)
+    session_factory = sessionmaker(bind=disposable_cas_engine, expire_on_commit=False)
+    encryption = _workflow_node_secret_encryption()
+    with session_factory() as db:
+        workflow = db.get(Workflow, ids["workflow"])
+        reference = WorkflowNodeSecretService.create_reference(
+            db,
+            encryption=encryption,
+            workflow_id=workflow.id,
+            organization_id=workflow.organization_id,
+            user_id=ids["user"],
+            node_id="slack-1",
+            node_type="slackPostNode",
+            parameter_key="bot_token",
+            secret_value="synthetic-current-token",
+        )
+        workflow.graph = {
+            "nodes": [
+                {
+                    "id": "slack-1",
+                    "type": "slackPostNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "title": "Slack",
+                        "slackMode": "api",
+                        "authConfig": {"token": "synthetic-legacy-token"},
+                        "channel": "C-OLD",
+                        "message": "hello",
+                    },
+                }
+            ],
+            "edges": [],
+            "viewport": {"x": 0, "y": 0, "zoom": 1},
+        }
+        db.commit()
+        db.refresh(workflow)
+        base_hash = canonical_graph_hash(workflow.graph)
+        base_updated_at = workflow.updated_at
+
+    latest_graph = {
+        "nodes": [
+            {
+                "id": "slack-1",
+                "type": "slackPostNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "title": "Slack",
+                    "slackMode": "api",
+                    "authConfig": {"token": reference},
+                    "channel": "C-LATEST",
+                    "message": "hello",
+                },
+            }
+        ],
+        "edges": [],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+    save_request = _normal_draft_request(
+        latest_graph,
+        expected_graph_hash=base_hash,
+        expected_updated_at=base_updated_at,
+    )
+    migration_entered = Event()
+    allow_migration = Event()
+    real_migrate = workflow_service_module.migrate_legacy_workflow_graph_secrets
+
+    def blocking_migration(*args, **kwargs):
+        migration_entered.set()
+        assert allow_migration.wait(timeout=10)
+        return real_migrate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        workflow_service_module,
+        "migrate_legacy_workflow_graph_secrets",
+        blocking_migration,
+    )
+    monkeypatch.setattr(
+        workflow_service_module,
+        "get_workflow_node_secret_encryption_service",
+        lambda: encryption,
+    )
+
+    def read_draft():
+        with session_factory() as db:
+            return WorkflowService.get_draft(db, str(ids["workflow"]))
+
+    def save_latest():
+        with session_factory() as db:
+            try:
+                return {
+                    "outcome": "success",
+                    "result": WorkflowService.save_draft(
+                        db,
+                        str(ids["workflow"]),
+                        save_request,
+                        user_id=str(ids["user"]),
+                    ),
+                }
+            except HTTPException as exc:
+                db.rollback()
+                return {
+                    "outcome": "conflict",
+                    "status_code": exc.status_code,
+                    "detail": exc.detail,
+                }
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        read_future = executor.submit(read_draft)
+        assert migration_entered.wait(timeout=10)
+        save_future = executor.submit(save_latest)
+        try:
+            early_save = save_future.result(timeout=1)
+        except FutureTimeoutError:
+            early_save = None
+        allow_migration.set()
+        read_future.result(timeout=10)
+        save_outcome = early_save or save_future.result(timeout=10)
+
+    with session_factory() as db:
+        persisted = db.get(Workflow, ids["workflow"])
+        secret_rows = db.query(WorkflowNodeSecret).all()
+
+    if save_outcome["outcome"] == "success":
+        assert canonical_graph_hash(persisted.graph) == save_outcome["result"][
+            "graph_hash"
+        ]
+        assert persisted.graph["nodes"][0]["data"]["channel"] == "C-LATEST"
+    else:
+        assert save_outcome["status_code"] == 409
+        assert save_outcome["detail"] == "stale_graph"
+        assert persisted.graph["nodes"][0]["data"]["channel"] == "C-OLD"
+    stored_token = persisted.graph["nodes"][0]["data"]["authConfig"]["token"]
+    assert is_workflow_node_secret_reference(stored_token)
+    assert "synthetic-legacy-token" not in str(persisted.graph)
+    assert len(secret_rows) in {1, 2}
+
+
+def test_save_draft_rejects_unknown_workflow_node_secret_reference(
+    disposable_cas_engine,
+):
+    ids = _seed_committed_cas_fixture(disposable_cas_engine)
+    session_factory = sessionmaker(bind=disposable_cas_engine, expire_on_commit=False)
+    with session_factory() as db:
+        workflow = db.get(Workflow, ids["workflow"])
+        base_hash = canonical_graph_hash(workflow.graph)
+        base_updated_at = workflow.updated_at
+
+    graph = {
+        "nodes": [
+            {
+                "id": "github-1",
+                "type": "githubNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "title": "GitHub",
+                    "action": "get_pr",
+                    "api_token": f"workflow-node-secret://{uuid.uuid4()}",
+                    "repo_owner": "octo",
+                    "repo_name": "repo",
+                    "pr_number": "15",
+                },
+            }
+        ],
+        "edges": [],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+    request = _normal_draft_request(
+        graph,
+        expected_graph_hash=base_hash,
+        expected_updated_at=base_updated_at,
+    )
+
+    with session_factory() as db, pytest.raises(HTTPException) as captured:
+        WorkflowService.save_draft(
+            db,
+            str(ids["workflow"]),
+            request,
+            user_id=str(ids["user"]),
+        )
+
+    assert captured.value.status_code == 422
+    assert captured.value.detail == "workflow.node_secret_reference_invalid"
 
 
 def test_actual_postgresql_autosync_and_agent_builder_race_has_no_silent_overwrite(
@@ -1322,6 +1526,17 @@ def test_parameter_ack_reconciles_github_comment_task_from_canonical_graph(
     user, workflow, request_row = _fixture(db_session)
     session = db_session.get(AgentBuilderSession, request_row.session_id)
     session.protocol_version = "direct_edit_v1"
+    github_token_reference = WorkflowNodeSecretService.create_reference(
+        db_session,
+        encryption=_workflow_node_secret_encryption(),
+        workflow_id=workflow.id,
+        organization_id=workflow.organization_id,
+        user_id=user.id,
+        node_id="github",
+        node_type="githubNode",
+        parameter_key="api_token",
+        secret_value="synthetic-github-token",
+    )
     workflow.graph = {
         "nodes": [
             {
@@ -1331,10 +1546,7 @@ def test_parameter_ack_reconciles_github_comment_task_from_canonical_graph(
                 "data": {
                     "title": "GitHub PR",
                     "action": "get_pr",
-                    "api_token": (
-                        "workflow-node-secret://"
-                        "00000000-0000-4000-8000-000000000001"
-                    ),
+                    "api_token": github_token_reference,
                     "repo_owner": "octo",
                     "repo_name": "repo",
                     "pr_number": "15",

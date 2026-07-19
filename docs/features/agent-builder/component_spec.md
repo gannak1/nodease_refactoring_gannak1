@@ -724,6 +724,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 ## Secret task와 이전 항목 action
 
 - `ParameterInputRenderer`는 Catalog `input_type=secret`을 password control로 렌더링하고 기존 raw 값 또는 opaque reference는 hydrate하지 않는다. 새 입력은 `onSecretSubmit`에서 Workflow node secret-write API로만 전달하며 일반 `onSubmit` ParameterDecision을 사용하지 않는다. Node Detail 강제 이동은 제공하지 않고 일반 Node Detail 기능과 LLM Routing 이동 action은 유지한다.
+- Workflow store의 node 복제·붙여넣기 정규화는 Slack `authConfig.token`, Slack webhook `url`, GitHub `api_token`이 `workflow-node-secret://` reference인 경우 새 node data에서 제거한다. Channel, message, repository, PR 번호와 그 밖의 일반 설정은 보존하며 다른 node id에 기존 reference를 재사용하지 않는다.
 - `WorkflowResultGroup`의 presentation task가 `이전 항목`으로 바뀌면 `NodeParameterCard`는 canonical active task ID가 아니라 presentation task의 required/confirmation 상태와 canonical graph hydration 결과로 action을 계산한다.
 - Optional presentation task에 값이 없으면 `건너뛰기`, 값이 있으면 `값 지우고 건너뛰기`를 표시한다. 전자는 `skip`, 후자는 `clear`를 호출한다. Required 또는 confirmation-required task에는 표시하지 않는다.
 - Previous 이동, secret save 실패 또는 clear acknowledgement 실패 시 card와 입력값을 유지한다. 성공한 secret save는 canonical metadata를 반영한 뒤 configured/unconfigured session reconciliation만 수행한다.
