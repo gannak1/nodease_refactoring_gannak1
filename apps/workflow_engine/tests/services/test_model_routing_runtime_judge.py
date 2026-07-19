@@ -70,6 +70,7 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
         '{"selected_model_id":"gpt-5-mini",'
         '"confidence":0.86,'
         '"reason_short":"근거 종합 필요","reason_code":"advanced_quality",'
+        '"selection_explanation":"복수 근거의 충돌을 해석해야 하므로 근거 종합 능력이 높은 후보를 선택했습니다.",'
         '"task_requirements":{"task_complexity":2,"decision_impact":1,'
         '"evidence_synthesis":3,"output_precision":2}}'
     )
@@ -117,6 +118,9 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
         "output_precision": 2,
     }
     assert decision.safe_metadata()["task_requirements"] == decision.task_requirements
+    assert decision.safe_metadata()["selection_explanation"] == (
+        "복수 근거의 충돌을 해석해야 하므로 근거 종합 능력이 높은 후보를 선택했습니다."
+    )
     assert decision.usage == {"prompt_tokens": 42, "completion_tokens": 18}
     rendered_prompt = client.calls[0]["messages"][1]["content"]
     prompt_body = __import__("json").loads(rendered_prompt)

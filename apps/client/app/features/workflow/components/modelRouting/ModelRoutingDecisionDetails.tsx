@@ -20,6 +20,7 @@ type JudgeSummary = {
   confidence?: number;
   reasonCode?: string;
   reasonShort?: string;
+  selectionExplanation?: string;
   candidateModelCount?: number;
   cost?: number;
   errorCode?: string;
@@ -139,6 +140,7 @@ const judgeOf = (
     confidence: numberValue(judge.confidence),
     reasonCode: stringValue(judge.reason_code),
     reasonShort: stringValue(judge.reason_short),
+    selectionExplanation: stringValue(judge.selection_explanation),
     candidateModelCount: numberValue(judge.candidate_model_count),
     cost: numberValue(judge.cost),
     errorCode: stringValue(judge.error_code),
@@ -374,6 +376,16 @@ export function ModelRoutingDecisionDetails({
                 }
               />
             </dl>
+            {judge.selectionExplanation ? (
+              <div className="mt-3 rounded-md border border-violet-200 bg-white/70 px-3 py-2 text-slate-800 dark:border-violet-800 dark:bg-slate-900/40 dark:text-slate-100">
+                <p className="text-[11px] font-medium text-violet-800 dark:text-violet-200">
+                  Judge 판단 설명
+                </p>
+                <p className="mt-1 break-words leading-relaxed">
+                  {judge.selectionExplanation}
+                </p>
+              </div>
+            ) : null}
           </>
         ) : judge.status === 'failed' ? (
           <>

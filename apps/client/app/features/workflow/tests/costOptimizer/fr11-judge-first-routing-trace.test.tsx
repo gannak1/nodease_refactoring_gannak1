@@ -25,6 +25,8 @@ describe('FR-011 Judge-first model routing trace', () => {
               model: 'gpt-4.1-mini',
               confidence: 0.84,
               reason_short: '근거 종합 필요',
+              selection_explanation:
+                '복수 근거의 충돌을 해석해야 하므로 근거 종합 능력이 높은 후보를 선택했습니다.',
               candidate_model_count: 2,
               reason_code: 'structured_reasoning_required',
               cost: 0.00013,
@@ -53,6 +55,12 @@ describe('FR-011 Judge-first model routing trace', () => {
     expect(screen.getByText('판단 확신도')).toBeVisible();
     expect(screen.getByText('84.0%')).toBeVisible();
     expect(screen.getByText('근거 종합 필요')).toBeVisible();
+    expect(screen.getByText('Judge 판단 설명')).toBeVisible();
+    expect(
+      screen.getByText(
+        '복수 근거의 충돌을 해석해야 하므로 근거 종합 능력이 높은 후보를 선택했습니다.',
+      ),
+    ).toBeVisible();
     expect(screen.getByText('2개')).toBeVisible();
     expect(screen.getByText('Judge 비용')).toBeVisible();
     expect(screen.getByText('$0.000130')).toBeVisible();

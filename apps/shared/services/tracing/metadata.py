@@ -1,4 +1,5 @@
 import math
+import re
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -511,6 +512,11 @@ class TraceMetadataSanitizer:
             else:
                 sanitized["reason_code"] = reason_code
                 sanitized["reason_short"] = reason_short
+        selection_explanation = cls._sanitize_model_routing_selection_explanation(
+            safe_value.get("selection_explanation")
+        )
+        if selection_explanation:
+            sanitized["selection_explanation"] = selection_explanation
         confidence = safe_value.get("confidence")
         if (
             not isinstance(confidence, bool)
@@ -542,6 +548,32 @@ class TraceMetadataSanitizer:
             if safe_usage:
                 sanitized["usage"] = safe_usage
         return sanitized
+
+    @staticmethod
+    def _sanitize_model_routing_selection_explanation(value: Any) -> str | None:
+        """Judge 자유형 설명은 짧은 capability 설명만 durable trace에 허용한다."""
+
+        explanation = " ".join(str(value or "").split())
+        if not explanation or len(explanation) > 240:
+            return None
+        lowered = explanation.lower()
+        if any(
+            marker in lowered
+            for marker in (
+                "api_key",
+                "authorization",
+                "bearer ",
+                "password",
+                "secret",
+                "sk-",
+                "http://",
+                "https://",
+            )
+        ):
+            return None
+        if re.search(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}", explanation, flags=re.I):
+            return None
+        return explanation
 
     @classmethod
     def _sanitize_model_routing_decision_factors(cls, value: Any) -> dict[str, Any]:
