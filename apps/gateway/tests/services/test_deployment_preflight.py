@@ -2008,6 +2008,62 @@ def test_toggle_rejects_unresolved_mail_with_common_preflight(monkeypatch):
     assert deployment.is_active is False
 
 
+def test_schedule_reactivation_preflight_uses_deployment_creator(monkeypatch):
+    app_id = uuid.uuid4()
+    deployment_id = uuid.uuid4()
+    creator_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    app = _row(
+        id=app_id,
+        organization_id=uuid.uuid4(),
+        active_deployment_id=None,
+    )
+    deployment = _row(
+        id=deployment_id,
+        app_id=app_id,
+        type=DeploymentType.SCHEDULE,
+        is_active=False,
+        created_by=creator_id,
+        graph_snapshot={
+            "nodes": [
+                _node(
+                    "schedule-1",
+                    "scheduleTrigger",
+                    {"cron_expression": "* * * * *"},
+                )
+            ],
+            "edges": [],
+        },
+    )
+    db = _Db({App: [app], WorkflowDeployment: [deployment], Schedule: []})
+    preflight_calls = []
+    monkeypatch.setattr(
+        deployment_module.WorkflowService,
+        "validate_mail_credential_references",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        deployment_module,
+        "enforce_workflow_configuration_preflight",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        DeploymentService,
+        "_enforce_knowledge_preflight",
+        lambda *args, **kwargs: preflight_calls.append(kwargs),
+    )
+
+    DeploymentService.toggle_deployment(
+        db,
+        deployment_id,
+        _Scheduler(),
+        runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+        user_id=actor_id,
+    )
+
+    assert preflight_calls[0]["principal_id"] == creator_id
+
+
 def test_delete_active_deployment_does_not_auto_promote_other_deployment():
     app_id = uuid.uuid4()
     deployment_id = uuid.uuid4()

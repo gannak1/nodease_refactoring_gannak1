@@ -106,6 +106,103 @@ def test_get_pr_success(mock_get):
     assert mock_get.call_count == 2
 
 
+@patch("requests.get")
+def test_schedule_uses_explicit_credential_principal_for_github(mock_get):
+    pr_response = MagicMock()
+    pr_response.json.return_value = {
+        "title": "Scheduled review",
+        "body": "",
+        "state": "open",
+        "number": 123,
+        "diff_url": "https://github.com/owner/repo/pull/123.diff",
+    }
+    files_response = MagicMock()
+    files_response.json.return_value = []
+    mock_get.side_effect = [pr_response, files_response]
+    node = _github_node(
+        action=GithubAction.GET_PR,
+        repo_owner="facebook",
+        repo_name="react",
+        pr_number="123",
+    )
+    node.execution_context.pop("execution_subject")
+    node.execution_context.update(
+        {
+            "user_id": None,
+            "trigger_mode": "schedule",
+            "workflow_task_id": f"schedule:{uuid4()}",
+            "credential_principal": {
+                "subject_type": "user",
+                "subject_id": str(USER_ID),
+            },
+        }
+    )
+
+    result = node._run(inputs={})
+
+    assert result["pr_title"] == "Scheduled review"
+    assert mock_get.call_count == 2
+
+
+@patch("requests.get")
+def test_schedule_rejects_invalid_credential_principal_before_github_io(mock_get):
+    node = _github_node(
+        action=GithubAction.GET_PR,
+        repo_owner="facebook",
+        repo_name="react",
+        pr_number="123",
+    )
+    node.execution_context.pop("execution_subject")
+    node.execution_context.update(
+        {
+            "user_id": None,
+            "trigger_mode": "schedule",
+            "workflow_task_id": f"schedule:{uuid4()}",
+            "credential_principal": {
+                "subject_type": "service",
+                "subject_id": str(USER_ID),
+            },
+        }
+    )
+
+    with pytest.raises(
+        NonRetryableWorkflowError,
+        match="external_action_credential.execution_subject_required",
+    ):
+        node._run(inputs={})
+
+    mock_get.assert_not_called()
+
+
+@patch("requests.get")
+def test_schedule_principal_requires_canonical_schedule_context(mock_get):
+    node = _github_node(
+        action=GithubAction.GET_PR,
+        repo_owner="facebook",
+        repo_name="react",
+        pr_number="123",
+    )
+    node.execution_context.pop("execution_subject")
+    node.execution_context.update(
+        {
+            "user_id": None,
+            "trigger_mode": "schedule",
+            "credential_principal": {
+                "subject_type": "user",
+                "subject_id": str(USER_ID),
+            },
+        }
+    )
+
+    with pytest.raises(
+        NonRetryableWorkflowError,
+        match="external_action_credential.execution_subject_required",
+    ):
+        node._run(inputs={})
+
+    mock_get.assert_not_called()
+
+
 @patch("requests.post")
 def test_comment_pr_success(mock_post):
     comment_response = MagicMock()

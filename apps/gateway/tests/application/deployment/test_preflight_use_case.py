@@ -212,6 +212,75 @@ def test_enforcement_audits_denied_external_action_credential_once():
     ]
 
 
+def test_schedule_external_action_uses_credential_principal_without_rag_subject():
+    organization_id = uuid.uuid4()
+    principal_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    repository = _Repository()
+    repository.external_action_credentials[credential_id] = (
+        ExternalActionCredentialSnapshot(
+            provider="slack_api",
+            usable_by_principal=True,
+            effective_auth_state="operator",
+        )
+    )
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=organization_id,
+        principal_id=principal_id,
+        node_catalog_by_type=_catalog(slackPostNode=("external_write", True)),
+    )
+
+    result = use_case.enforce_schedule_dispatch(
+        graph_snapshot=_slack_graph(
+            {
+                "title": "Slack",
+                "slackMode": "api",
+                "credential_id": str(credential_id),
+                "channel": "C123",
+                "message": "hello",
+                "configuration_state": "resolved",
+            }
+        )
+    )
+
+    assert result.status == "passed"
+    assert result.audience == "anonymous_public"
+    assert repository.calls == [("external_action", organization_id)]
+
+
+def test_schedule_external_action_requires_canonical_credential_principal():
+    credential_id = uuid.uuid4()
+    repository = _Repository()
+    repository.external_action_credentials[credential_id] = (
+        ExternalActionCredentialSnapshot(
+            provider="slack_api",
+            usable_by_principal=True,
+            effective_auth_state="operator",
+        )
+    )
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=uuid.uuid4(),
+        principal_id=None,
+        node_catalog_by_type=_catalog(slackPostNode=("external_write", True)),
+    )
+
+    with pytest.raises(DeploymentPreflightBlocked):
+        use_case.enforce_schedule_dispatch(
+            graph_snapshot=_slack_graph(
+                {
+                    "title": "Slack",
+                    "slackMode": "api",
+                    "credential_id": str(credential_id),
+                    "channel": "C123",
+                    "message": "hello",
+                    "configuration_state": "resolved",
+                }
+            )
+        )
+
+
 def test_internal_chatbot_private_kb_uses_authenticated_audience():
     organization_id = uuid.uuid4()
     kb_id = uuid.uuid4()

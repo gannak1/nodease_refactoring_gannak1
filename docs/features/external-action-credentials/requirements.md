@@ -15,9 +15,9 @@ External Action Credential은 GitHub PR 조회·댓글과 Slack API/Webhook 전�
 - EAC-REQ-004: API response와 picker option은 credential id, safe name, provider, revision, lifecycle 상태만 반환한다. Credential 존재를 알 권한이 없는 동일 organization 사용자의 상세 접근은 resource hiding으로 처리한다.
 - EAC-REQ-005: Workflow의 `slackPostNode`와 `githubNode`는 secret 대신 opaque `credential_id`만 durable graph에 저장한다. Slack `authConfig.token`/Webhook URL과 GitHub `api_token`/`token`/`authConfig`는 새 저장, Agent Builder apply, deployment snapshot과 실행 경계에서 허용하지 않는다. GitHub node의 durable data는 현재 UI/runtime 계약의 allowlist로 제한하며, 계약 밖 field는 credential-like 여부와 무관하게 저장하지 않는다.
 - EAC-REQ-006: 기존 direct-secret graph는 자동으로 새 credential에 매핑하지 않는다. migration은 secret-shaped field를 제거하고 해당 node를 `configuration_state=unresolved`로 남긴다. downgrade는 제거된 secret을 복구하지 않는다.
-- EAC-REQ-007: Draft와 Agent Builder 결과는 unresolved `credential_id`를 보존할 수 있지만, active deployment, authenticated execution, schedule dispatch와 provider call은 유효한 reference와 명시 user execution subject를 요구한다.
+- EAC-REQ-007: Draft와 Agent Builder 결과는 unresolved `credential_id`를 보존할 수 있지만, active deployment, authenticated execution, schedule dispatch와 provider call은 유효한 reference와 명시 user형 Credential 사용 주체를 요구한다. Interactive 실행은 `execution_subject`, system schedule은 locked canonical deployment에서 구성한 `credential_principal`을 사용한다. Schedule principal은 executor, Knowledge execution subject 또는 audit actor가 아니다.
 - EAC-REQ-008: Graph 저장 시 Gateway는 active organization, credential active 상태, provider 일치와 저장 요청자의 `use` 권한을 `ExternalActionCredentialUseResolver`로 확인한다. endpoint, Workflow service, runtime은 권한 조합 규칙을 중복 구현하지 않는다.
-- EAC-REQ-009: Workflow Engine은 provider call 직전에 같은 resolver로 organization, execution subject, lifecycle, provider, `use` 권한과 credential revision을 다시 확인한다. 저장 후 revoke, 권한 회수, provider 변경 또는 secret rotation은 외부 request 전에 fail-closed한다.
+- EAC-REQ-009: Workflow Engine은 provider call 직전에 같은 resolver로 organization, Credential 사용 주체, lifecycle, provider, `use` 권한과 credential revision을 다시 확인한다. 저장 후 revoke, 권한 회수, provider 변경 또는 secret rotation은 외부 request 전에 fail-closed한다.
 - EAC-REQ-010: Slack API credential은 `slack_api`, Slack incoming webhook credential은 `slack_webhook`, GitHub node는 `github` provider와 정확히 일치해야 한다. 불일치, missing, revoked, cross-organization, 권한 거부와 복호화 실패는 같은 safe unavailable reason으로 projection한다.
 - EAC-REQ-011: Deployment preflight는 secret을 복호화하거나 provider network call을 하지 않는다. safe snapshot의 provider, active lifecycle, principal `use` 결과만 사용하며 runtime authorization capability로 재사용하지 않는다.
 - EAC-REQ-012: Preflight preview는 permission-denied audit을 만들지 않는다. active create/toggle 또는 authenticated execution enforcement에서 확인된 same-organization `use` 거부는 credential별 한 번의 safe `permission.denied` audit으로 기록한다.
@@ -26,6 +26,7 @@ External Action Credential은 GitHub PR 조회·댓글과 Slack API/Webhook 전�
 - EAC-REQ-015: Agent Builder는 credential을 자동 선택하거나 secret을 생성 결과에 넣지 않는다. Slack/GitHub node는 unresolved reference와 parameter task만 생성한다.
 - EAC-REQ-016: 실행용 picker는 active이고 `use` 가능한 credential만 반환한다. 권한 관리 화면은 active 또는 revoked 중 `manage` 가능한 safe option을 별도 조회하며, revoked credential은 기존 permission 조회·회수에만 사용하고 신규 grant 대상으로 노출하지 않는다.
 - EAC-REQ-017: Organization manager 화면은 외부 연동 Credential 등록, 이름·secret 교체와 revoke 경로를 제공한다. 기존 secret은 다시 표시하지 않고 mutation은 현재 revision을 사용하며, 서버 mutation 성공 뒤 목록 갱신 실패를 같은 mutation의 실패로 오인해 재제출하지 않는다.
+- EAC-REQ-018: Lifecycle mutation의 상태 변경과 canonical audit은 flush부터 commit까지 하나의 persistence 경계에서 처리한다. SQLAlchemy persistence 실패는 rollback 후 safe `external_action_credential.persistence_failed`로 정규화하고, commit 완료 뒤 response 생성을 위한 refresh 실패가 성공한 mutation을 실패처럼 보이게 해서는 안 된다.
 
 ## Out Of Scope
 

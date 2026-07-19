@@ -20,6 +20,9 @@ from apps.workflow_engine.adapters.providers.github import (
 )
 from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 from apps.workflow_engine.workflow.nodes.base.node import Node
+from apps.workflow_engine.workflow.nodes.external_action_credential import (
+    required_external_action_credential_user_id,
+)
 from apps.workflow_engine.workflow.nodes.github.entities import GithubNodeData
 
 
@@ -43,7 +46,7 @@ class GithubNode(Node[GithubNodeData]):
     def _run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         data = self.data
         organization_id = self._required_context_uuid("organization_id")
-        user_id = self._required_execution_subject_uuid()
+        user_id = self._required_credential_user_id()
         credential_id = self._credential_id()
         db, should_close = self._borrow_db_session()
         try:
@@ -265,24 +268,8 @@ class GithubNode(Node[GithubNodeData]):
                 "external_action_credential.context_invalid"
             ) from exc
 
-    def _required_execution_subject_uuid(self) -> uuid.UUID:
-        subject = self.execution_context.get("execution_subject")
-        if not isinstance(subject, dict):
-            raise NonRetryableWorkflowError(
-                "external_action_credential.execution_subject_required"
-            )
-        subject_type = subject.get("subject_type") or subject.get("type") or "user"
-        subject_id = subject.get("subject_id") or subject.get("id")
-        if subject_type != "user":
-            raise NonRetryableWorkflowError(
-                "external_action_credential.execution_subject_required"
-            )
-        try:
-            return uuid.UUID(str(subject_id))
-        except (TypeError, ValueError) as exc:
-            raise NonRetryableWorkflowError(
-                "external_action_credential.execution_subject_required"
-            ) from exc
+    def _required_credential_user_id(self) -> uuid.UUID:
+        return required_external_action_credential_user_id(self.execution_context)
 
     def _borrow_db_session(self):
         factory = self.execution_context.get("db_session_factory")

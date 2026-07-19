@@ -24,14 +24,15 @@ Status: Draft
 ## Deployment And Runtime
 
 - Deployment preflight repository는 credential secret을 읽지 않고 provider, active state, principal effective auth state만 `ExternalActionCredentialSnapshot`으로 반환한다.
-- Active deployment와 authenticated execution enforcement는 unresolved/invalid/unavailable credential을 task publish 전에 차단한다. Preview는 safe blocker/warning만 반환한다.
-- Workflow Engine Slack/GitHub node는 execution context의 canonical organization과 explicit user execution subject를 사용한다. app/workflow owner fallback은 허용하지 않는다.
+- Active deployment와 authenticated execution enforcement는 unresolved/invalid/unavailable credential을 task publish 전에 차단한다. 인증 deployment ID 실행도 current active snapshot과 로그인 principal로 같은 enforcement를 다시 수행한다. Preview는 safe blocker/warning만 반환한다.
+- Schedule 활성화·재활성화와 dispatch preflight는 locked canonical deployment의 `created_by`를 Credential principal로 사용한다. 재활성화 요청 actor나 queue payload로 이를 대체하지 않으며, Knowledge audience는 계속 anonymous public-only로 유지한다.
+- Workflow Engine Slack/GitHub node는 execution context의 canonical organization과 user형 Credential 사용 주체를 사용한다. Interactive 실행은 명시 `execution_subject`를, `trigger_mode=schedule`인 system schedule만 명시 `credential_principal`을 사용하며 app/workflow owner fallback은 허용하지 않는다. Schedule principal은 RAG subject나 audit actor로 재사용하지 않는다.
 - Runtime은 resolver로 secret을 메모리에 투영한 뒤 provider request 바로 전에 fresh DB session에서 동일 credential id/provider/revision의 `use`를 재검증한다. Slack adapter는 이 재검증을 URL 검증·DNS 조회와 HTTP client 생성보다 먼저 수행한다.
 - Provider adapter는 secret material의 `repr`/copy를 막고 trace에는 delivery outcome, status bucket, latency 같은 allowlisted metadata만 남긴다.
 
 ## Audit And Redaction
 
 - Lifecycle action은 `external_action_credential.create`, `external_action_credential.update`, `external_action_credential.revoke`를 사용한다.
-- Lifecycle mutation과 해당 canonical audit row는 같은 transaction에서 한 번만 저장한다.
+- Lifecycle mutation과 해당 canonical audit row는 같은 transaction에서 한 번만 저장한다. Create의 ID/default 확보용 flush와 commit은 같은 SQLAlchemy error 경계에 포함하고, response는 commit 전에 만든 safe snapshot을 commit 성공 뒤 반환해 post-commit refresh 실패에 따른 재시도 모호성을 만들지 않는다.
 - Permission denial은 common `permission.denied` audit을 사용하며 resource id, organization id, effective auth state와 safe correlation id만 허용한다.
 - Credential secret, raw Webhook URL, GitHub authorization header, channel, comment/message body와 raw provider exception은 audit/trace에 포함하지 않는다.

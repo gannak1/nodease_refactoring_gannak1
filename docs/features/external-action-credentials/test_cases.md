@@ -16,7 +16,7 @@ Status: Draft
 - EAC-TC-012: Cross-organization 및 same-organization unauthorized resource access는 existence를 노출하지 않는다.
 - EAC-TC-013: 빈 PATCH, unknown field, stale revision, revoked credential update/new grant는 safe validation/conflict로 거부한다.
 - EAC-TC-014: revoked credential은 실행용 option 및 `use` 집계에서 제외된다. 관리 option에는 `manage` 가능한 revoked 항목이 safe 상태와 함께 포함되고, 기존 grant 조회·회수만 허용하며 신규 grant UI/API는 차단한다.
-- EAC-TC-015: lifecycle mutation은 상태 변경과 같은 transaction에 canonical audit를 정확히 한 번 추가하고 allowlist 밖 request metadata와 secret material을 저장하지 않는다.
+- EAC-TC-015: lifecycle mutation은 상태 변경과 같은 transaction에 canonical audit를 정확히 한 번 추가하고 allowlist 밖 request metadata와 secret material을 저장하지 않는다. Create flush/commit 실패는 rollback과 safe persistence error로 끝나며, create/update/revoke 성공 response는 post-commit refresh에 의존하지 않는다.
 
 ## Graph, Builder And Client
 
@@ -38,6 +38,8 @@ Status: Draft
 - EAC-TC-035: Gateway와 Workflow Worker는 invalid keyring/active key version에서 startup fail-fast한다.
 - EAC-TC-036: Slack authorization revalidation 실패 시 URL guard, DNS 조회, HTTP client 생성과 provider request가 모두 실행되지 않는다.
 - EAC-TC-037: Slack Webhook mode는 channel 없이 configuration state, preflight와 Agent Builder parameter task를 통과하고 Slack API mode는 channel 필수 계약을 유지한다.
+- EAC-TC-038: Schedule 활성화·재활성화와 Gateway dispatch preflight는 canonical deployment creator의 Credential `use`를 검사하고, Workflow Engine Slack/GitHub node는 같은 explicit user형 `credential_principal`로 다시 검사한다. 재활성화 actor나 queue 값으로 principal을 대체하지 않고 이를 `execution_subject`, RAG actor 또는 workflow executor로 승격하지 않는다. Missing·malformed·non-user principal은 task publish 또는 provider I/O 전에 fail-closed한다.
+- EAC-TC-039: 인증 deployment ID 실행은 current active graph snapshot, app organization과 로그인 user로 authenticated configuration preflight를 수행하고 unavailable Credential이면 Celery task publish 전에 `409 workflow.configuration_preflight.blocked`로 종료한다.
 
 ## Non-Exposure
 

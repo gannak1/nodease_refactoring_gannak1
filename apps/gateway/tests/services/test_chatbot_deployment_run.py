@@ -429,6 +429,61 @@ def test_authenticated_run_uses_current_user_execution_subject(
     assert result["status"] == "success"
 
 
+def test_authenticated_run_enforces_resource_preflight_before_publish(monkeypatch):
+    from apps.gateway.services import deployment_service as deployment_module
+
+    app_row, deployment_row = _deployed_app(DeploymentType.INTERNAL_CHATBOT)
+    current_user_id = uuid4()
+    db = _Db(rows=[app_row, deployment_row])
+    celery = _CaptureCelery()
+    preflight_calls = []
+
+    def block_preflight(db_arg, **kwargs):
+        preflight_calls.append((db_arg, kwargs))
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": {
+                    "code": "workflow.configuration_preflight.blocked",
+                    "reason_code": "external_action_credential_unavailable",
+                }
+            },
+        )
+
+    monkeypatch.setattr(deployment_module, "celery_app", celery)
+    monkeypatch.setattr("celery.result.AsyncResult", _FakeAsyncResult)
+    monkeypatch.setattr(
+        deployment_module.DeploymentService,
+        "enforce_authenticated_configuration_preflight",
+        staticmethod(block_preflight),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            deployment_module.DeploymentService.run_authenticated_deployment(
+                db=db,
+                deployment_id=deployment_row.id,
+                user_inputs={"question": "안녕"},
+                client_conversation_id=None,
+                current_user_id=current_user_id,
+                runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert preflight_calls == [
+        (
+            db,
+            {
+                "graph_snapshot": deployment_row.graph_snapshot,
+                "organization_id": app_row.organization_id,
+                "principal_id": current_user_id,
+            },
+        )
+    ]
+    assert celery.captured is None
+
+
 def test_authenticated_conversation_control_preserves_declared_reserved_inputs(
     monkeypatch,
 ):
@@ -771,7 +826,17 @@ def _deployed_app(deployment_type):
         app_id=app_row.id,
         version=1,
         type=deployment_type,
-        graph_snapshot={"nodes": [], "edges": []},
+        graph_snapshot={
+            "nodes": [
+                {
+                    "id": "start",
+                    "type": "startNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {},
+                }
+            ],
+            "edges": [],
+        },
         is_active=True,
         created_by=uuid4(),
     )

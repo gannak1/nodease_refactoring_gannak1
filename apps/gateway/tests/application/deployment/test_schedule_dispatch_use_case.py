@@ -49,6 +49,7 @@ def _context(claim, **overrides):
         "schedule_id": claim.schedule_id,
         "deployment_id": claim.deployment_id,
         "organization_id": claim.organization_id,
+        "credential_principal_user_id": uuid.uuid4(),
         "workflow_id": uuid.uuid4(),
         "deployment_type": DeploymentType.SCHEDULE,
         "deployment_active": True,
@@ -446,6 +447,9 @@ def test_configuration_preflight_block_cancels_before_budget_and_publish():
         {
             "graph_snapshot": context.graph_snapshot,
             "organization_id": claim.organization_id,
+            "credential_principal_user_id": (
+                context.credential_principal_user_id
+            ),
         }
     ]
 

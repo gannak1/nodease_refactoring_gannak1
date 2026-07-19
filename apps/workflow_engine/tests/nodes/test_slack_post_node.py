@@ -274,6 +274,27 @@ def test_webhook_ignores_hidden_legacy_channel_and_has_no_message_reference() ->
     assert "channel" not in adapter.request.payload
 
 
+def test_schedule_uses_explicit_credential_principal_for_slack() -> None:
+    node, adapter = _node()
+    node.execution_context.pop("execution_subject")
+    node.execution_context.update(
+        {
+            "user_id": None,
+            "trigger_mode": "schedule",
+            "workflow_task_id": f"schedule:{uuid4()}",
+            "credential_principal": {
+                "subject_type": "user",
+                "subject_id": str(USER_ID),
+            },
+        }
+    )
+
+    result = node.execute({})
+
+    assert result["delivery_status"] == "delivered"
+    assert adapter.invoke_count == 1
+
+
 def test_revoked_or_rotated_credential_blocks_slack_effect(monkeypatch) -> None:
     def deny_revalidation(_db, **_kwargs):
         raise ExternalActionCredentialRuntimeError()

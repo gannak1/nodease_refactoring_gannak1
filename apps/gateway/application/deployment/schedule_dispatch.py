@@ -97,6 +97,9 @@ class ScheduleDispatchUseCase:
                 if not configuration_preflight.is_ready(
                     graph_snapshot=context.graph_snapshot,
                     organization_id=claim.organization_id,
+                    credential_principal_user_id=(
+                        context.credential_principal_user_id
+                    ),
                 ):
                     transition_now = repository.database_now()
                     repository.mark_pre_dispatch_terminal(
@@ -363,6 +366,8 @@ class ScheduleDispatchUseCase:
         if context.deployment_id != claim.deployment_id:
             return REASON_SCHEDULE_DEPLOYMENT_MISMATCH
         if not context.app_exists:
+            return REASON_APP_NOT_FOUND
+        if context.credential_principal_user_id is None:
             return REASON_APP_NOT_FOUND
         if context.organization_id is None:
             return REASON_ORGANIZATION_SCOPE_MISSING

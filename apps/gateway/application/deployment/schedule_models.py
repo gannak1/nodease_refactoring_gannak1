@@ -38,6 +38,7 @@ class DispatchCanonicalContext:
     schedule_id: uuid.UUID | None
     deployment_id: uuid.UUID | None
     organization_id: uuid.UUID | None
+    credential_principal_user_id: uuid.UUID | None
     workflow_id: uuid.UUID | None
     deployment_type: object | None
     deployment_active: bool

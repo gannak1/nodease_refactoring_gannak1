@@ -197,6 +197,7 @@ class ScheduleConfigurationPreflightPort(Protocol):
         *,
         graph_snapshot: dict | None,
         organization_id: uuid.UUID,
+        credential_principal_user_id: uuid.UUID | None,
     ) -> bool: ...
 
 

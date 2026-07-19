@@ -27,13 +27,14 @@ class ScheduleConfigurationPreflightAdapter:
         *,
         graph_snapshot: dict | None,
         organization_id: uuid.UUID,
+        credential_principal_user_id: uuid.UUID | None,
     ) -> bool:
         if workflow_configuration_issues(graph_snapshot):
             return False
         use_case = DeploymentPreflightUseCase(
             self.repository,
             organization_id=organization_id,
-            principal_id=None,
+            principal_id=credential_principal_user_id,
             node_catalog_by_type=self.node_catalog_by_type,
         )
         try:

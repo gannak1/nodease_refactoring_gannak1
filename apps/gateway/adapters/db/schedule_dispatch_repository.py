@@ -176,6 +176,9 @@ class SqlAlchemyScheduleDispatchRepository:
                 else (deployment.id if deployment is not None else None)
             ),
             organization_id=app.organization_id if app is not None else None,
+            credential_principal_user_id=(
+                deployment.created_by if deployment is not None else None
+            ),
             workflow_id=app.workflow_id if app is not None else None,
             deployment_type=deployment.type if deployment is not None else None,
             deployment_active=bool(deployment and deployment.is_active),

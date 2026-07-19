@@ -70,3 +70,12 @@ def test_repository_uses_wall_clock_for_lease_and_age_observation():
     assert "clock_timestamp" in clock_source
     assert "ScheduleDispatchClaim.claimed_at" in age_source
     assert "ScheduleDispatchClaim.started_at" in age_source
+
+
+def test_canonical_context_uses_deployment_creator_as_credential_principal():
+    source = __import__("inspect").getsource(
+        SqlAlchemyScheduleDispatchRepository.load_canonical_context
+    )
+
+    assert "credential_principal_user_id" in source
+    assert "deployment.created_by" in source

@@ -214,6 +214,9 @@ class DeploymentPreflightUseCase:
             graph_snapshot=graph_snapshot,
             audience=audience,
             is_active=is_active,
+            allow_external_action_credential_principal=(
+                deployment_type == "schedule"
+            ),
         )
 
     def _preview_for_audience(
@@ -223,12 +226,16 @@ class DeploymentPreflightUseCase:
         audience: PreflightAudience,
         is_active: bool,
         record_permission_denials: bool = False,
+        allow_external_action_credential_principal: bool = False,
     ) -> DeploymentPreflightResult:
         issues = self._evaluate_graph(
             graph_snapshot,
             audience=audience,
             depth=0,
             visited_app_ids=set(self.candidate_graphs_by_app_id),
+            allow_external_action_credential_principal=(
+                allow_external_action_credential_principal
+            ),
         )
         if not is_active:
             issues = self._downgrade_blocked_issues(issues)
@@ -247,6 +254,9 @@ class DeploymentPreflightUseCase:
             audience=self._effective_audience(deployment_type, None),
             is_active=True,
             record_permission_denials=True,
+            allow_external_action_credential_principal=(
+                deployment_type == "schedule"
+            ),
         )
         if result.status == "blocked":
             raise DeploymentPreflightBlocked(result)
@@ -263,6 +273,9 @@ class DeploymentPreflightUseCase:
             audience=self._effective_audience(deployment_type, None),
             is_active=False,
             record_permission_denials=True,
+            allow_external_action_credential_principal=(
+                deployment_type == "schedule"
+            ),
         )
         if result.status == "blocked":
             raise DeploymentPreflightBlocked(result)
@@ -292,6 +305,7 @@ class DeploymentPreflightUseCase:
             graph_snapshot=graph_snapshot,
             audience="anonymous_public",
             is_active=True,
+            allow_external_action_credential_principal=True,
         )
         if result.status == "blocked":
             raise DeploymentPreflightBlocked(result)
@@ -327,6 +341,7 @@ class DeploymentPreflightUseCase:
         audience: PreflightAudience,
         depth: int,
         visited_app_ids: set[uuid.UUID],
+        allow_external_action_credential_principal: bool,
     ) -> list[_PreflightIssue]:
         issues: list[_PreflightIssue] = []
         try:
@@ -358,6 +373,9 @@ class DeploymentPreflightUseCase:
                 for issue in self.node_configuration_evaluator.evaluate(
                     graph_snapshot,
                     audience=audience,
+                    allow_external_action_credential_principal=(
+                        allow_external_action_credential_principal
+                    ),
                 )
             )
         if not isinstance(graph_snapshot, dict):
@@ -459,6 +477,9 @@ class DeploymentPreflightUseCase:
                         audience=audience,
                         depth=depth,
                         visited_app_ids=visited_app_ids,
+                        allow_external_action_credential_principal=(
+                            allow_external_action_credential_principal
+                        ),
                         binding=bindings_by_reference.get(
                             (container_path, str(node.get("id") or ""))
                         ),
@@ -696,6 +717,7 @@ class DeploymentPreflightUseCase:
         audience: PreflightAudience,
         depth: int,
         visited_app_ids: set[uuid.UUID],
+        allow_external_action_credential_principal: bool,
         binding: WorkflowNodeBinding | None,
     ) -> list[_PreflightIssue]:
         if depth >= self.MAX_WORKFLOW_NODE_DEPTH:
@@ -737,6 +759,9 @@ class DeploymentPreflightUseCase:
                 audience=audience,
                 depth=depth + 1,
                 visited_app_ids={*visited_app_ids, target_app_id},
+                allow_external_action_credential_principal=(
+                    allow_external_action_credential_principal
+                ),
             )
 
         if target_app_id in visited_app_ids:
@@ -748,6 +773,9 @@ class DeploymentPreflightUseCase:
             audience=audience,
             depth=depth + 1,
             visited_app_ids={*visited_app_ids, target_app_id},
+            allow_external_action_credential_principal=(
+                allow_external_action_credential_principal
+            ),
         )
 
     def _bound_target_matches(

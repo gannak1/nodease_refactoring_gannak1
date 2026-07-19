@@ -75,6 +75,7 @@ class NodeConfigurationEvaluator:
         graph_snapshot: dict,
         *,
         audience: PreflightAudience,
+        allow_external_action_credential_principal: bool = False,
     ) -> list[NodeConfigurationIssue]:
         nodes, graph_issue = self._flatten_nodes(graph_snapshot)
         if graph_issue is not None:
@@ -111,7 +112,10 @@ class NodeConfigurationEvaluator:
             for node in nodes
             if str(node.get("type") or "") in {"slackPostNode", "githubNode"}
         ]
-        if audience == "anonymous_public":
+        if audience == "anonymous_public" and not (
+            allow_external_action_credential_principal
+            and self.principal_id is not None
+        ):
             issues.extend(
                 self._issue(
                     node,

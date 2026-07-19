@@ -943,14 +943,22 @@ class DeploymentService:
                 detail="Conversation control is only supported for chatbot deployments",
             )
 
+        principal_id = uuid.UUID(str(current_user_id))
+        DeploymentService.enforce_authenticated_configuration_preflight(
+            db,
+            graph_snapshot=deployment.graph_snapshot,
+            organization_id=app.organization_id,
+            principal_id=principal_id,
+        )
+
         return await DeploymentService._execute_deployment_snapshot(
             db=db,
             app=app,
             deployment=deployment,
             user_inputs=user_inputs,
             trigger_mode="app",
-            actor_user_id=current_user_id,
-            execution_subject_user_id=current_user_id,
+            actor_user_id=principal_id,
+            execution_subject_user_id=principal_id,
             client_conversation_id=client_conversation_id,
             separate_conversation_control=True,
             request_id=request_id,
@@ -1505,11 +1513,20 @@ class DeploymentService:
                         ),
                     },
                 )
+            runtime_principal_id = (
+                deployment.created_by
+                if deployment.type == DeploymentType.SCHEDULE
+                else user_id
+            )
             try:
                 WorkflowService.validate_mail_credential_references(
                     db,
                     deployment.graph_snapshot,
-                    user_id=str(user_id) if user_id is not None else "",
+                    user_id=(
+                        str(runtime_principal_id)
+                        if runtime_principal_id is not None
+                        else ""
+                    ),
                     organization_id=getattr(app, "organization_id", None),
                     require_resolved=False,
                 )
@@ -1541,7 +1558,11 @@ class DeploymentService:
                 app=app,
                 deployment_type=deployment.type,
                 graph_snapshot=deployment.graph_snapshot,
-                principal_id=(uuid.UUID(str(user_id)) if user_id is not None else None),
+                principal_id=(
+                    uuid.UUID(str(runtime_principal_id))
+                    if runtime_principal_id is not None
+                    else None
+                ),
             )
             WorkflowService.validate_external_node_storage_boundaries(
                 deployment.graph_snapshot,

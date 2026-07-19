@@ -39,6 +39,7 @@ def test_schedule_preflight_blocks_unresolved_local_execution_before_deployment_
             {"workflowId": str(uuid4()), "configuration_state": "resolved"}
         ),
         organization_id=uuid4(),
+        credential_principal_user_id=uuid4(),
     )
 
     assert ready is False
@@ -51,11 +52,14 @@ def test_schedule_preflight_keeps_deployment_policy_for_resolved_local_execution
     graph = _workflow_node_graph(
         {"workflowId": "", "appId": str(uuid4()), "deployment_id": str(uuid4())}
     )
+    principal_id = uuid4()
     deployment_calls = []
     monkeypatch.setattr(
         DeploymentPreflightUseCase,
         "enforce_schedule_dispatch",
-        lambda *_args, **kwargs: deployment_calls.append(kwargs),
+        lambda self, **kwargs: deployment_calls.append(
+            {"principal_id": self.principal_id, **kwargs}
+        ),
     )
     adapter = ScheduleConfigurationPreflightAdapter(
         object(),
@@ -65,7 +69,10 @@ def test_schedule_preflight_keeps_deployment_policy_for_resolved_local_execution
     ready = adapter.is_ready(
         graph_snapshot=graph,
         organization_id=uuid4(),
+        credential_principal_user_id=principal_id,
     )
 
     assert ready is True
-    assert deployment_calls == [{"graph_snapshot": graph}]
+    assert deployment_calls == [
+        {"principal_id": principal_id, "graph_snapshot": graph}
+    ]
