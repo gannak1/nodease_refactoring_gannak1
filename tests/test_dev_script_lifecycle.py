@@ -72,3 +72,14 @@ def test_dev_script_bounds_each_sandbox_health_request() -> None:
     assert 'curl --connect-timeout "$SANDBOX_HEALTH_CONNECT_TIMEOUT_SECONDS"' in script
     assert '--max-time "$request_timeout"' in script
     assert script.count("sandbox_is_healthy") >= 3
+
+
+def test_dev_gateway_uses_settled_change_supervisor() -> None:
+    script = (ROOT_DIR / "scripts" / "dev.sh").read_text(encoding="utf-8")
+
+    assert (
+        'DEV_GATEWAY_RELOAD_QUIET_SECONDS="${DEV_GATEWAY_RELOAD_QUIET_SECONDS:-3}"'
+        in script
+    )
+    assert "$VENV_PYTHON scripts/dev_gateway.py" in script
+    assert "-m uvicorn apps.gateway.main:app --reload" not in script
