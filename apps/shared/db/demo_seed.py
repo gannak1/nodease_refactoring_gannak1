@@ -4657,6 +4657,29 @@ def _internal_it_helpdesk_routing_reason(
     return capability_tier, "simple_response", "단순 안내에 충분한 모델"
 
 
+def _internal_it_helpdesk_reason_factors(
+    spec: InternalITHelpdeskRunSpec,
+    *,
+    approval_required: bool,
+) -> list[str]:
+    """Return the safe, UI-visible Judge factors for a seeded routing decision."""
+    capability_tier = str(
+        catalog_metadata_for_model_id(spec.model_name).get("capability_tier")
+        or "balanced"
+    )
+    if approval_required:
+        return [
+            "high_decision_impact",
+            "security_or_compliance_risk",
+            "multi_step_reasoning",
+        ]
+    if capability_tier == "advanced":
+        return ["high_decision_impact", "broad_context_synthesis"]
+    if capability_tier == "balanced":
+        return ["multi_step_reasoning", "strict_output_reliability"]
+    return ["strict_output_reliability"]
+
+
 def _internal_it_helpdesk_usage_node_id(usage_kind: str) -> str:
     """Keep Judge billing separate from the LLM node's execution billing."""
 
@@ -4692,6 +4715,10 @@ def _seed_internal_it_helpdesk_run(
         spec,
         approval_required=approval_required,
     )
+    reason_factors = _internal_it_helpdesk_reason_factors(
+        spec,
+        approval_required=approval_required,
+    )
     retrieved_chunks = 2 if approval_required or "MFA" in spec.message else 1
     context_tokens = 1024 if retrieved_chunks == 2 else 514
     judge_cost = max(spec.total_cost - spec.node_cost, Decimal("0"))
@@ -4720,6 +4747,7 @@ def _seed_internal_it_helpdesk_run(
             "confidence": 0.92 if routing_tier != "balanced" else 0.86,
             "reason_code": reason_code,
             "reason_short": reason_short,
+            "reason_factors": reason_factors,
             "candidate_model_count": 10,
             "cost": float(judge_cost),
             "usage": {

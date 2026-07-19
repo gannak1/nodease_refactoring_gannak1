@@ -287,6 +287,35 @@ def test_llm_span_metadata_drops_all_runtime_judge_selection_explanations():
     assert "010-1234-5678" not in str(metadata)
 
 
+def test_llm_span_metadata_keeps_only_safe_runtime_judge_reason_factors():
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "llm": {
+                "judge": {
+                    "reason_code": "high_risk_reasoning",
+                    "reason_factors": [
+                        "high_decision_impact",
+                        "security_or_compliance_risk",
+                        "홍길동 계정 차단",
+                        "high_decision_impact",
+                    ],
+                }
+            }
+        },
+    )
+
+    assert metadata["llm"]["judge"] == {
+        "reason_code": "high_risk_reasoning",
+        "reason_short": "고위험 판단 필요",
+        "reason_factors": [
+            "high_decision_impact",
+            "security_or_compliance_risk",
+        ],
+    }
+    assert "홍길동" not in str(metadata)
+
+
 def test_llm_span_metadata_preserves_safe_provider_fallback_diagnostics_only():
     metadata = TraceMetadataSanitizer.sanitize_span_metadata(
         "llmNode",

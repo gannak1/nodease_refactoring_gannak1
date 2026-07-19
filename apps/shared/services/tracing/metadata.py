@@ -331,6 +331,15 @@ _MODEL_ROUTING_REASON_SHORT_BY_CODE = {
     "structured_precision": "정확한 형식 필요",
 }
 _UNRECOGNIZED_MODEL_ROUTING_REASON_CODE = "judge_reason_unrecognized"
+_MODEL_ROUTING_REASON_FACTOR_CODES = {
+    "high_decision_impact",
+    "security_or_compliance_risk",
+    "multi_step_reasoning",
+    "evidence_conflict",
+    "broad_context_synthesis",
+    "strict_output_reliability",
+    "long_context_handling",
+}
 
 
 class TraceMetadataSanitizer:
@@ -512,6 +521,20 @@ class TraceMetadataSanitizer:
             else:
                 sanitized["reason_code"] = reason_code
                 sanitized["reason_short"] = reason_short
+        raw_reason_factors = safe_value.get("reason_factors")
+        if isinstance(raw_reason_factors, list):
+            reason_factors: list[str] = []
+            for raw_factor in raw_reason_factors:
+                factor = raw_factor.strip() if isinstance(raw_factor, str) else ""
+                if (
+                    factor in _MODEL_ROUTING_REASON_FACTOR_CODES
+                    and factor not in reason_factors
+                ):
+                    reason_factors.append(factor)
+                if len(reason_factors) == 3:
+                    break
+            if reason_factors:
+                sanitized["reason_factors"] = reason_factors
         confidence = safe_value.get("confidence")
         if (
             not isinstance(confidence, bool)

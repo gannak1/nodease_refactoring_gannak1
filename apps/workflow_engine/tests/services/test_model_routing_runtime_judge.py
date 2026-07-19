@@ -66,11 +66,33 @@ def test_runtime_judge_normalizes_invalid_display_reason_without_discarding_sele
     assert decision.reason_short == "단순 응답 처리"
 
 
+def test_runtime_judge_derives_safe_reason_factors_when_optional_array_is_missing():
+    client = _JudgeClient(
+        '{"selected_model_id":"gpt-5.4","confidence":0.91,'
+        '"reason_short":"여러 조건 종합","reason_code":"multi_constraint",'
+        '"task_requirements":{"task_complexity":3,"decision_impact":3,'
+        '"evidence_synthesis":2,"output_precision":1}}'
+    )
+
+    decision = ModelRoutingRuntimeJudge.decide(
+        client=client,
+        candidate_model_ids=["gpt-5.4"],
+        routing_feature_text="safe routing feature",
+    )
+
+    assert decision.reason_factors == [
+        "high_decision_impact",
+        "multi_step_reasoning",
+        "broad_context_synthesis",
+    ]
+
+
 def test_runtime_judge_accepts_only_current_execution_subject_candidates():
     client = _JudgeClient(
         '{"selected_model_id":"gpt-5-mini",'
         '"confidence":0.86,'
         '"reason_short":"근거 종합 필요","reason_code":"advanced_quality",'
+        '"reason_factors":["evidence_conflict","multi_step_reasoning"],'
         '"selection_explanation":"복수 근거의 충돌을 해석해야 하므로 근거 종합 능력이 높은 후보를 선택했습니다.",'
         '"task_requirements":{"task_complexity":2,"decision_impact":1,'
         '"evidence_synthesis":3,"output_precision":2}}'
@@ -118,7 +140,12 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
         "evidence_synthesis": 3,
         "output_precision": 2,
     }
+    assert decision.reason_factors == [
+        "evidence_conflict",
+        "multi_step_reasoning",
+    ]
     assert decision.safe_metadata()["task_requirements"] == decision.task_requirements
+    assert decision.safe_metadata()["reason_factors"] == decision.reason_factors
     assert "selection_explanation" not in decision.safe_metadata()
     assert decision.usage == {"prompt_tokens": 42, "completion_tokens": 18}
     rendered_prompt = client.calls[0]["messages"][1]["content"]

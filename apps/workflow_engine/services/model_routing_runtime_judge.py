@@ -31,6 +31,7 @@ class RuntimeJudgeDecision:
     reason_short: str | None
     reason_code: str
     usage: dict[str, Any]
+    reason_factors: list[str] | None = None
     selection_explanation: str | None = None
     decision_detail: dict[str, Any] | None = None
     task_requirements: dict[str, int] | None = None
@@ -47,6 +48,8 @@ class RuntimeJudgeDecision:
             metadata["selected_model"] = self.selected_model_id
         if self.reason_short:
             metadata["reason_short"] = self.reason_short
+        if self.reason_factors:
+            metadata["reason_factors"] = list(self.reason_factors)
         if self.task_requirements:
             metadata["task_requirements"] = dict(self.task_requirements)
         return metadata
@@ -74,6 +77,30 @@ class ModelRoutingRuntimeJudge:
         "high_risk_reasoning": "고위험 판단 필요",
         "ambiguous_request": "모호한 요청 해석",
         "long_context": "긴 문맥 종합",
+    }
+    # 자유형 설명 대신 저장할 수 있는 제한된 판단 축이다. 각 값은 요청 원문을
+    # 포함하지 않으며, UI에서 사람이 읽는 고정 문구로만 변환한다.
+    _REASON_FACTOR_CODES = {
+        "high_decision_impact",
+        "security_or_compliance_risk",
+        "multi_step_reasoning",
+        "evidence_conflict",
+        "broad_context_synthesis",
+        "strict_output_reliability",
+        "long_context_handling",
+    }
+    _DEFAULT_REASON_FACTORS_BY_CODE = {
+        "simple_response": ["strict_output_reliability"],
+        "multi_constraint": ["multi_step_reasoning", "broad_context_synthesis"],
+        "evidence_synthesis": ["evidence_conflict", "broad_context_synthesis"],
+        "structured_precision": ["strict_output_reliability"],
+        "high_risk_reasoning": [
+            "high_decision_impact",
+            "security_or_compliance_risk",
+            "multi_step_reasoning",
+        ],
+        "ambiguous_request": ["multi_step_reasoning"],
+        "long_context": ["long_context_handling", "broad_context_synthesis"],
     }
     @classmethod
     def decide(
@@ -178,6 +205,11 @@ class ModelRoutingRuntimeJudge:
         task_requirements = cls._safe_task_requirements(
             payload.get("task_requirements")
         )
+        reason_factors = cls._safe_reason_factors(
+            payload.get("reason_factors"),
+            reason_code=reason_code,
+            task_requirements=task_requirements,
+        )
 
         return RuntimeJudgeDecision(
             selected_model_id=selected_model_id,
@@ -192,6 +224,7 @@ class ModelRoutingRuntimeJudge:
                     ),
                 ]
             ),
+            reason_factors=reason_factors,
             selection_explanation=selection_explanation,
             decision_detail=decision_detail,
             task_requirements=task_requirements,
@@ -230,10 +263,14 @@ class ModelRoutingRuntimeJudge:
             "완성도가 핵심일 때 우선 검토하세요. 일반 전문 업무 능력과 전문 추론 능력을 같은 것으로 취급하지 마세요. "
             "3단계로 남은 충분한 후보 사이에서만 가격·지연·fallback을 비교해 가장 합리적인 하나를 선택하세요. "
             "모든 요청에 같은 후보를 관성적으로 선택하지 말고 현재 요청의 요구 능력과 후보 증거를 다시 비교하세요. "
-            "reason_short는 한국어 8~14자로 작성하세요. 요청 원문·개인정보·RAG 문서를 출력하지 마세요. "
+            "reason_short는 한국어 8~14자로 작성하세요. reason_factors는 아래 code 중 현재 선택에 직접 영향을 준 "
+            "1~3개만 고르세요: high_decision_impact, security_or_compliance_risk, multi_step_reasoning, "
+            "evidence_conflict, broad_context_synthesis, strict_output_reliability, long_context_handling. "
+            "요청 원문·개인정보·RAG 문서를 출력하지 마세요. "
             "JSON object 하나만 반환하세요: "
             '{"selected_model_id":"candidate id","confidence":0.0,'
             '"reason_short":"여러 조건 종합","reason_code":"multi_constraint",'
+            '"reason_factors":["multi_step_reasoning","evidence_conflict"],'
             '"task_requirements":{"task_complexity":0,"decision_impact":0,'
             '"evidence_synthesis":0,"output_precision":0}}.'
         )
@@ -280,7 +317,10 @@ class ModelRoutingRuntimeJudge:
             "JSON 하나만 반환: {\"selected_model_id\":\"id\",\"confidence\":0.0,"
             "\"reason_code\":\"simple_response|multi_constraint|evidence_synthesis|"
             "structured_precision|high_risk_reasoning|ambiguous_request|long_context\","
-            "\"reason_short\":\"짧은 한국어 이유\"}. 요청 원문·개인정보·RAG 문서를 출력하지 마세요."
+            "\"reason_short\":\"짧은 한국어 이유\","
+            "\"reason_factors\":[\"high_decision_impact|security_or_compliance_risk|multi_step_reasoning|"
+            "evidence_conflict|broad_context_synthesis|strict_output_reliability|long_context_handling\"]}. "
+            "요청 원문·개인정보·RAG 문서를 출력하지 마세요."
         )
         if diagnostic_mode:
             instruction += (
@@ -377,6 +417,48 @@ class ModelRoutingRuntimeJudge:
         if not explanation or len(explanation) > 240:
             return None
         return explanation
+
+    @classmethod
+    def _safe_reason_factors(
+        cls,
+        value: Any,
+        *,
+        reason_code: str,
+        task_requirements: dict[str, int] | None,
+    ) -> list[str]:
+        """원문 없이 Judge의 선택 근거를 최대 세 개의 code로 정규화한다."""
+
+        factors: list[str] = []
+        if isinstance(value, list):
+            for raw_factor in value:
+                factor = str(raw_factor or "").strip()
+                if factor in cls._REASON_FACTOR_CODES and factor not in factors:
+                    factors.append(factor)
+                if len(factors) == 3:
+                    return factors
+        if factors:
+            return factors
+
+        # 일부 provider 응답은 optional 배열을 생략한다. 이때도 이미 Judge가
+        # 산출한 0~3 요구 수준만으로 같은 안전 범주의 근거를 복원한다.
+        requirements = task_requirements or {}
+        derived = []
+        if requirements.get("decision_impact", 0) >= 2:
+            derived.append("high_decision_impact")
+        if requirements.get("task_complexity", 0) >= 2:
+            derived.append("multi_step_reasoning")
+        if requirements.get("evidence_synthesis", 0) >= 2:
+            derived.append("broad_context_synthesis")
+        if requirements.get("output_precision", 0) >= 2:
+            derived.append("strict_output_reliability")
+        if not derived:
+            derived = cls._DEFAULT_REASON_FACTORS_BY_CODE.get(reason_code, [])
+        for factor in derived:
+            if factor in cls._REASON_FACTOR_CODES and factor not in factors:
+                factors.append(factor)
+            if len(factors) == 3:
+                break
+        return factors
 
     @staticmethod
     def _safe_rag_context(value: dict[str, Any] | None) -> dict[str, Any]:

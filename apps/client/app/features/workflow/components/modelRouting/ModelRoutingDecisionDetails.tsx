@@ -20,6 +20,7 @@ type JudgeSummary = {
   confidence?: number;
   reasonCode?: string;
   reasonShort?: string;
+  reasonFactors: string[];
   candidateModelCount?: number;
   cost?: number;
   errorCode?: string;
@@ -59,6 +60,11 @@ const booleanValue = (value: unknown): boolean | undefined =>
 
 const numberValue = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
+const stringArrayValue = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+    : [];
 
 const routingRecordOf = (
   output: unknown,
@@ -140,6 +146,7 @@ const judgeOf = (
     confidence: numberValue(judge.confidence),
     reasonCode: stringValue(judge.reason_code),
     reasonShort: stringValue(judge.reason_short),
+    reasonFactors: stringArrayValue(judge.reason_factors),
     candidateModelCount: numberValue(judge.candidate_model_count),
     cost: numberValue(judge.cost),
     errorCode: stringValue(judge.error_code),
@@ -226,6 +233,27 @@ const reasonText = (reasonCode?: string, reasonShort?: string): string => {
       return '기본 라우팅 규칙 일치';
     default:
       return '실행 정책에 따른 선택';
+  }
+};
+
+const reasonFactorLabel = (factor: string): string | null => {
+  switch (factor) {
+    case 'high_decision_impact':
+      return '영향이 큰 판단';
+    case 'security_or_compliance_risk':
+      return '보안·규정 위험';
+    case 'multi_step_reasoning':
+      return '다단계 판단 필요';
+    case 'evidence_conflict':
+      return '근거 충돌 해석';
+    case 'broad_context_synthesis':
+      return '여러 정보 종합';
+    case 'strict_output_reliability':
+      return '형식 정확성 요구';
+    case 'long_context_handling':
+      return '긴 문맥 처리';
+    default:
+      return null;
   }
 };
 
@@ -336,6 +364,17 @@ export function ModelRoutingDecisionDetails({
             판단 분류: {shortReason}
           </span>
         ) : null}
+        {judge.reasonFactors.map((factor) => {
+          const label = reasonFactorLabel(factor);
+          return label ? (
+            <span
+              key={factor}
+              className="rounded border border-violet-200 bg-violet-50 px-2 py-1 text-violet-800"
+            >
+              {label}
+            </span>
+          ) : null;
+        })}
         <span className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-slate-700">
           {lengthBucketLabel(context.inputLengthBucket)}
         </span>
