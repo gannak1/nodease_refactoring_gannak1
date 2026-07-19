@@ -47,8 +47,6 @@ class RuntimeJudgeDecision:
             metadata["selected_model"] = self.selected_model_id
         if self.reason_short:
             metadata["reason_short"] = self.reason_short
-        if self.selection_explanation:
-            metadata["selection_explanation"] = self.selection_explanation
         if self.task_requirements:
             metadata["task_requirements"] = dict(self.task_requirements)
         return metadata
@@ -101,6 +99,7 @@ class ModelRoutingRuntimeJudge:
             ),
             "response_format": {"type": "json_object"},
         }
+        attempt_usages: list[dict[str, Any]] = []
         try:
             response = client.invoke_sync(
                 messages=cls._messages(
@@ -117,6 +116,9 @@ class ModelRoutingRuntimeJudge:
             # 계약으로 재시도한다. 정상 요청에는 추가 호출이 없다.
             if str(getattr(exc, "reason_code", "")) not in cls._RETRYABLE_PROVIDER_REASON_CODES:
                 raise
+            # Provider가 incomplete response에도 usage를 제공하면 이미 과금된
+            # 첫 호출을 숨기지 않는다. 최종 trace/usage에는 재시도까지 합산한다.
+            attempt_usages.append(cls._safe_usage(getattr(exc, "usage", None)))
             response = client.invoke_sync(
                 messages=cls._retry_messages(
                     candidate_model_ids=candidates,
@@ -170,13 +172,9 @@ class ModelRoutingRuntimeJudge:
             if diagnostic_mode
             else None
         )
-        selection_explanation = cls._safe_selection_explanation(
-            (
-                decision_detail.get("selection_explanation")
-                if decision_detail is not None
-                else payload.get("selection_explanation")
-            )
-        )
+        # 자유형 Judge 설명은 입력 원문을 되풀이할 수 있어 durable trace에 남기지
+        # 않는다. 진단 응답의 상세 정보도 이 객체 밖으로 저장하지 않는다.
+        selection_explanation = None
         task_requirements = cls._safe_task_requirements(
             payload.get("task_requirements")
         )
@@ -186,7 +184,14 @@ class ModelRoutingRuntimeJudge:
             confidence=confidence,
             reason_short=reason_short,
             reason_code=reason_code,
-            usage=cls._safe_usage(response.get("usage") if isinstance(response, dict) else None),
+            usage=cls._aggregate_usages(
+                [
+                    *attempt_usages,
+                    cls._safe_usage(
+                        response.get("usage") if isinstance(response, dict) else None
+                    ),
+                ]
+            ),
             selection_explanation=selection_explanation,
             decision_detail=decision_detail,
             task_requirements=task_requirements,
@@ -225,12 +230,10 @@ class ModelRoutingRuntimeJudge:
             "완성도가 핵심일 때 우선 검토하세요. 일반 전문 업무 능력과 전문 추론 능력을 같은 것으로 취급하지 마세요. "
             "3단계로 남은 충분한 후보 사이에서만 가격·지연·fallback을 비교해 가장 합리적인 하나를 선택하세요. "
             "모든 요청에 같은 후보를 관성적으로 선택하지 말고 현재 요청의 요구 능력과 후보 증거를 다시 비교하세요. "
-            "reason_short는 한국어 8~14자로 작성하세요. selection_explanation은 요청 원문·개인정보·RAG 문서를 "
-            "반복하지 않고, 선택 모델이 필요한 능력과 후보 증거에 맞는 이유를 한국어 한두 문장(240자 이하)으로 작성하세요. "
+            "reason_short는 한국어 8~14자로 작성하세요. 요청 원문·개인정보·RAG 문서를 출력하지 마세요. "
             "JSON object 하나만 반환하세요: "
             '{"selected_model_id":"candidate id","confidence":0.0,'
             '"reason_short":"여러 조건 종합","reason_code":"multi_constraint",'
-            '"selection_explanation":"복수 근거를 종합해야 하므로 해당 능력이 강한 후보를 선택했습니다.",'
             '"task_requirements":{"task_complexity":0,"decision_impact":0,'
             '"evidence_synthesis":0,"output_precision":0}}.'
         )
@@ -277,7 +280,7 @@ class ModelRoutingRuntimeJudge:
             "JSON 하나만 반환: {\"selected_model_id\":\"id\",\"confidence\":0.0,"
             "\"reason_code\":\"simple_response|multi_constraint|evidence_synthesis|"
             "structured_precision|high_risk_reasoning|ambiguous_request|long_context\","
-            "\"selection_explanation\":\"선택 이유\"}. selection_explanation에는 요청 원문을 반복하지 마세요."
+            "\"reason_short\":\"짧은 한국어 이유\"}. 요청 원문·개인정보·RAG 문서를 출력하지 마세요."
         )
         if diagnostic_mode:
             instruction += (
@@ -662,3 +665,33 @@ class ModelRoutingRuntimeJudge:
             if key in {"prompt_tokens", "completion_tokens", "total_tokens"}
             and isinstance(value, (int, float))
         }
+
+    @staticmethod
+    def _aggregate_usages(usages: list[dict[str, Any]]) -> dict[str, int | float]:
+        """Aggregate every provider attempt so retry cost cannot disappear."""
+
+        non_empty_usages = [usage for usage in usages if usage]
+        if len(non_empty_usages) == 1:
+            return dict(non_empty_usages[0])
+
+        totals: dict[str, int | float] = {}
+        for key in ("prompt_tokens", "completion_tokens"):
+            value = sum(
+                usage.get(key, 0)
+                for usage in usages
+                if isinstance(usage.get(key), (int, float))
+            )
+            if value:
+                totals[key] = value
+        if totals:
+            totals["total_tokens"] = sum(
+                totals.get(key, 0) for key in ("prompt_tokens", "completion_tokens")
+            )
+            return totals
+
+        total_tokens = sum(
+            usage.get("total_tokens", 0)
+            for usage in usages
+            if isinstance(usage.get("total_tokens"), (int, float))
+        )
+        return {"total_tokens": total_tokens} if total_tokens else {}

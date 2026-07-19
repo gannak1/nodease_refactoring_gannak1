@@ -38,6 +38,7 @@ from apps.shared.services.llm_credential_config import (
 )
 from apps.shared.services.llm_model_pricing import (
     calculate_text_token_cost,
+    calculate_text_token_cost_from_rates,
     extract_cached_input_tokens,
     get_model_pricing,
     known_model_prices,
@@ -376,16 +377,10 @@ class LLMService:
                     model.name = display_name
                     changed = True
 
-                if (
-                    input_price is not None
-                    and float(model.input_price_1k or -1) != input_price
-                ):
+                if model.input_price_1k is None and input_price is not None:
                     model.input_price_1k = input_price
                     changed = True
-                if (
-                    output_price is not None
-                    and float(model.output_price_1k or -1) != output_price
-                ):
+                if model.output_price_1k is None and output_price is not None:
                     model.output_price_1k = output_price
                     changed = True
 
@@ -1607,52 +1602,42 @@ class LLMService:
         DB에 가격 정보가 없으면 KNOWN_MODEL_PRICES로 폴백합니다.
         정규화된 모델 ID로 폴백 시도하여 버전 차이로 인한 매칭 실패를 방지합니다.
         """
-        catalog_pricing = get_model_pricing(model_id)
-        if catalog_pricing is not None:
-            return calculate_text_token_cost(
-                model_id,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cached_input_tokens=extract_cached_input_tokens(usage),
+        # 1. DB의 관리 가격이 있으면 Judge 후보 프로필과 같은 가격을 사용한다.
+        # DB가 없는 lightweight caller는 즉시 catalog fallback으로 간다.
+        model = None
+        if db is not None:
+            model = (
+                db.query(LLMModel)
+                .filter(LLMModel.model_id_for_api_call == model_id)
+                .first()
             )
-
-        input_price = None
-        output_price = None
-
-        # 1. DB에서 가격 정보 조회
-        model = (
-            db.query(LLMModel)
-            .filter(LLMModel.model_id_for_api_call == model_id)
-            .first()
-        )
+            normalized_model_id = LLMService._normalize_model_id(model_id)
+            if model is None and normalized_model_id != model_id:
+                model = (
+                    db.query(LLMModel)
+                    .filter(LLMModel.model_id_for_api_call == normalized_model_id)
+                    .first()
+                )
 
         if (
             model
             and model.input_price_1k is not None
             and model.output_price_1k is not None
         ):
-            input_price = float(model.input_price_1k)
-            output_price = float(model.output_price_1k)
-        else:
-            # 2. KNOWN_MODEL_PRICES로 폴백 (정규화된 ID로 시도)
-            pricing = LLMService.KNOWN_MODEL_PRICES.get(
-                LLMService._normalize_model_id(model_id)
+            return calculate_text_token_cost_from_rates(
+                input_price_per_1k=float(model.input_price_1k),
+                output_price_per_1k=float(model.output_price_1k),
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
             )
 
-            if pricing:
-                input_price = pricing["input"]
-                output_price = pricing["output"]
-
-        # 3. 가격이 없으면 0 반환
-        if input_price is None or output_price is None:
-            return 0.0
-
-        # 4. 비용 계산
-        input_cost = (prompt_tokens / 1000.0) * input_price
-        output_cost = (completion_tokens / 1000.0) * output_price
-        total = input_cost + output_cost
-
-        return total
+        # 2. DB 값이 없을 때만 shared catalog의 conditional rate를 적용한다.
+        return calculate_text_token_cost(
+            model_id,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cached_input_tokens=extract_cached_input_tokens(usage),
+        )
 
     @staticmethod
     def log_usage(

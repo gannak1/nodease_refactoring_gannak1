@@ -418,6 +418,9 @@ class LLMNode(Node[LLMNodeData]):
             and self.id in preview_node_ids
         )
         if is_policy_preview_node:
+            deployment_ids_by_node = self.execution_context.get(
+                "routing_policy_deployment_ids_by_node"
+            )
             deployment_policy_node_ids = self.execution_context.get(
                 "routing_policy_deployment_node_ids"
             )
@@ -426,7 +429,9 @@ class LLMNode(Node[LLMNodeData]):
                 or self.id in deployment_policy_node_ids
             )
             policy_deployment_id = (
-                self.execution_context.get("routing_policy_deployment_id")
+                deployment_ids_by_node.get(self.id)
+                if isinstance(deployment_ids_by_node, dict)
+                else self.execution_context.get("routing_policy_deployment_id")
                 if may_use_deployment_policy
                 else None
             )
@@ -607,6 +612,10 @@ class LLMNode(Node[LLMNodeData]):
         should_execute_runtime_judge = decision.requires_runtime_judge and (
             not is_policy_preview_node or execute_judge_for_preview
         )
+        if decision.requires_runtime_judge and not should_execute_runtime_judge:
+            # Judge-first policy의 기본값은 Judge를 실제로 호출하지 않은 한
+            # "Judge 선택"으로 기록하면 안 된다.
+            decision_source = "stored_model"
         if should_execute_runtime_judge:
             judge_metadata = {
                 "status": "unavailable",
@@ -773,7 +782,10 @@ class LLMNode(Node[LLMNodeData]):
             "policy_version": policy.get("policy_version"),
             "selected_model": selected_model_id,
             "fallback_model": fallback_model_id,
-            "decision_source": "test_policy_preview" if is_policy_preview_node else decision_source,
+            # 선택 주체(Judge/local/stored)와 실행 환경(test/deployed)은 별개다.
+            # 테스트 여부가 실제 모델 선택 경로를 덮어쓰면 trace 해석이 틀어진다.
+            "decision_source": decision_source,
+            "execution_mode": "test" if is_policy_preview_node else "deployed",
             "matched_rule_id": matched_rule_id,
                 "reason_code": reason_code,
                 "strategy_id": decision.strategy_id,
@@ -814,13 +826,17 @@ class LLMNode(Node[LLMNodeData]):
         profile_by_llm_model_id: dict[uuid.UUID, LLMModelRoutingGlobalProfile] = {}
         operational_evidence_by_model: dict[str, dict[str, Any]] = {}
         if callable(getattr(db_session, "query", None)):
+            lookup_ids = sorted(
+                set(normalized_ids)
+                | {normalize_model_id(model_id) for model_id in normalized_ids}
+            )
             rows = (
                 db_session.query(LLMModel)
-                .filter(LLMModel.model_id_for_api_call.in_(normalized_ids))
+                .filter(LLMModel.model_id_for_api_call.in_(lookup_ids))
                 .all()
             )
             rows_by_model_id = {
-                str(row.model_id_for_api_call): row
+                normalize_model_id(row.model_id_for_api_call): row
                 for row in rows
             }
             try:
@@ -858,7 +874,7 @@ class LLMNode(Node[LLMNodeData]):
 
         profiles: list[dict[str, Any]] = []
         for model_id in normalized_ids:
-            row = rows_by_model_id.get(model_id)
+            row = rows_by_model_id.get(normalize_model_id(model_id))
             price = LLMService.KNOWN_MODEL_PRICES.get(model_id)
             if price is None:
                 price = LLMService.KNOWN_MODEL_PRICES.get(

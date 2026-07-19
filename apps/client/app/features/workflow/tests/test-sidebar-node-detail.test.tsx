@@ -62,7 +62,8 @@ vi.mock('../store/useWorkflowStore', () => {
             fallback_used: true,
             fallback_from_model: 'gpt-5.6-luna',
             fallback_reason_code: 'provider_call_failed',
-            decision_source: 'test_policy_preview',
+            decision_source: 'stored_model',
+            execution_mode: 'test',
             strategy_id: 'judge_bootstrap_incremental_v1',
             reason_code: 'judge_bootstrap_required',
             judge_called: false,
@@ -136,7 +137,7 @@ describe('TestSidebar node execution details', () => {
         '이 테스트 실행은 자동 라우팅 정책의 학습 및 갱신 횟수에 포함되지 않습니다.',
       ),
     ).toBeVisible();
-    expect(screen.getByText('배포 정책 기준 테스트')).toBeVisible();
+    expect(screen.getByText('기본 모델로 실행')).toBeVisible();
     expect(screen.getByText('보통 입력')).toBeVisible();
     expect(screen.getByText('Judge 호출 안 함')).toBeVisible();
     expect(
@@ -156,7 +157,7 @@ describe('TestSidebar node execution details', () => {
     ).toBeVisible();
 
     const outputHeading = screen.getByText('출력 데이터');
-    const routingHeading = screen.getByText('배포 정책 기준 테스트');
+    const routingHeading = screen.getByText('모델 선택 결과');
     expect(
       outputHeading.compareDocumentPosition(routingHeading) &
         Node.DOCUMENT_POSITION_FOLLOWING,

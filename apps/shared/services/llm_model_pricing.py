@@ -263,3 +263,26 @@ def calculate_text_token_cost(
         + Decimal(completion) * Decimal(str(pricing.standard_output_per_1k))
     ) / Decimal(1000)
     return float(total)
+
+
+def calculate_text_token_cost_from_rates(
+    *,
+    input_price_per_1k: float,
+    output_price_per_1k: float,
+    prompt_tokens: int,
+    completion_tokens: int,
+) -> float:
+    """Calculate a standard text-token cost from an explicitly stored rate pair.
+
+    Database overrides intentionally use their own standard rates for every
+    input token. Conditional catalog rates such as cached-input discounts are
+    provider terms, not part of the editable ``LLMModel`` price pair.
+    """
+
+    prompt = max(0, int(prompt_tokens or 0))
+    completion = max(0, int(completion_tokens or 0))
+    total = (
+        Decimal(prompt) * Decimal(str(input_price_per_1k))
+        + Decimal(completion) * Decimal(str(output_price_per_1k))
+    ) / Decimal(1000)
+    return float(total)

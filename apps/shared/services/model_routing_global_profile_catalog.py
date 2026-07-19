@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Iterable
 
+from apps.shared.services.llm_model_pricing import normalize_model_pricing_id
+
 CATALOG_SOURCE = "official_provider_catalog"
 CATALOG_PROFILE_VERSION = "official-provider-catalog-v3"
 CATALOG_EVIDENCE_TYPE = "provider_documentation"
@@ -63,7 +65,9 @@ MODEL_ROUTING_MODEL_ALIASES = {
 
 
 def normalize_model_id(value: object) -> str:
-    return str(value or "").strip().lower().removeprefix("models/")
+    """Normalize only for catalog lookup; callers retain the executable ID."""
+
+    return normalize_model_pricing_id(value)
 
 
 def canonical_model_routing_id(value: object) -> str:

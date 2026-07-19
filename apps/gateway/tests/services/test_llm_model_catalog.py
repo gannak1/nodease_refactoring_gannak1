@@ -38,6 +38,81 @@ def test_gateway_and_workflow_engine_use_the_same_catalog_costs():
     assert gateway_cost == workflow_cost == 0.00042
 
 
+def test_gateway_and_workflow_engine_prefer_the_same_db_price_override():
+    """관리자가 바꾼 단가는 라우팅 판단과 실행 비용에 같은 기준으로 쓰인다."""
+
+    model = SimpleNamespace(
+        model_id_for_api_call="gpt-4o-mini",
+        input_price_1k=0.01,
+        output_price_1k=0.02,
+    )
+
+    class FakeDb:
+        def query(self, _model):
+            return self
+
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return model
+
+    db = FakeDb()
+    gateway_cost = LLMService.calculate_cost(
+        db,
+        "gpt-4o-mini",
+        prompt_tokens=1_000,
+        completion_tokens=500,
+    )
+    workflow_cost = WorkflowLLMService.calculate_cost(
+        db,
+        "gpt-4o-mini",
+        prompt_tokens=1_000,
+        completion_tokens=500,
+    )
+
+    assert gateway_cost == workflow_cost == 0.02
+
+
+def test_dated_model_uses_the_canonical_db_price_override():
+    """날짜가 붙은 실행 ID도 canonical DB 가격과 라우팅 catalog를 공유한다."""
+
+    model = SimpleNamespace(
+        model_id_for_api_call="gpt-4.1",
+        input_price_1k=0.01,
+        output_price_1k=0.02,
+    )
+
+    class FakeDb:
+        def __init__(self):
+            self.lookup_count = 0
+
+        def query(self, _model):
+            return self
+
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            self.lookup_count += 1
+            return None if self.lookup_count == 1 else model
+
+    gateway_cost = LLMService.calculate_cost(
+        FakeDb(),
+        "gpt-4.1-2025-04-14",
+        prompt_tokens=1_000,
+        completion_tokens=500,
+    )
+    workflow_cost = WorkflowLLMService.calculate_cost(
+        FakeDb(),
+        "gpt-4.1-2025-04-14",
+        prompt_tokens=1_000,
+        completion_tokens=500,
+    )
+
+    assert gateway_cost == workflow_cost == 0.02
+
+
 def test_pricing_sync_overwrites_legacy_google_alias_price():
     model = SimpleNamespace(
         model_id_for_api_call="models/gemini-3.5-flash",

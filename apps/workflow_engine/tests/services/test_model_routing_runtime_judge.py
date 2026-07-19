@@ -30,6 +30,7 @@ class _IncompleteThenCompactJudgeClient(_JudgeClient):
                 "OpenAI Responses 응답이 완료되지 않았습니다: status=incomplete",
                 reason_code="responses_incomplete",
                 provider_response_status="incomplete",
+                usage={"prompt_tokens": 80, "completion_tokens": 40},
             )
         return {
             "choices": [
@@ -118,9 +119,7 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
         "output_precision": 2,
     }
     assert decision.safe_metadata()["task_requirements"] == decision.task_requirements
-    assert decision.safe_metadata()["selection_explanation"] == (
-        "복수 근거의 충돌을 해석해야 하므로 근거 종합 능력이 높은 후보를 선택했습니다."
-    )
+    assert "selection_explanation" not in decision.safe_metadata()
     assert decision.usage == {"prompt_tokens": 42, "completion_tokens": 18}
     rendered_prompt = client.calls[0]["messages"][1]["content"]
     prompt_body = __import__("json").loads(rendered_prompt)
@@ -434,12 +433,18 @@ def test_runtime_judge_retries_incomplete_response_with_compact_contract():
     )
 
     assert len(client.calls) == 2
+    assert decision.usage == {
+        "prompt_tokens": 106,
+        "completion_tokens": 52,
+        "total_tokens": 158,
+    }
     assert client.calls[0]["kwargs"]["max_tokens"] == 768
     assert client.calls[1]["kwargs"]["max_tokens"] == 768
     assert decision.reason_short == "고위험 판단 필요"
     compact_instruction = client.calls[1]["messages"][0]["content"]
-    assert "reason_short" not in compact_instruction
+    assert "reason_short" in compact_instruction
     assert "reason_code" in compact_instruction
+    assert "selection_explanation" not in compact_instruction
     compact_body = __import__("json").loads(client.calls[1]["messages"][1]["content"])
     assert compact_body["candidate_models"] == [{"id": "gpt-4o-mini"}]
 

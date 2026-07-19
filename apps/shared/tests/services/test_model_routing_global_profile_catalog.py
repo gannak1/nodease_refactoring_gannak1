@@ -136,3 +136,8 @@ def test_catalog_keeps_provider_cost_position_separate_from_capability():
     assert gemini_flash["capability_tier"] == "advanced"
     assert gemini_flash["cost_position"] == "balanced"
     assert gemini_flash["complexity_ceiling"] == "complex_professional"
+def test_dated_openai_model_is_kept_as_an_executable_routing_candidate():
+    executable_id = "gpt-4.1-2025-04-14"
+
+    assert supported_model_routing_ids([executable_id]) == [executable_id]
+    assert catalog_metadata_for_model_id(executable_id)["canonical_model_id"] == "gpt-4.1"

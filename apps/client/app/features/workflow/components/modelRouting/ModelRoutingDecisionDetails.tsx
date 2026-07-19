@@ -20,7 +20,6 @@ type JudgeSummary = {
   confidence?: number;
   reasonCode?: string;
   reasonShort?: string;
-  selectionExplanation?: string;
   candidateModelCount?: number;
   cost?: number;
   errorCode?: string;
@@ -37,6 +36,7 @@ type ModelRoutingSummary = {
   reasonCode?: string;
   policyVersion?: string;
   decisionSource?: string;
+  executionMode?: string;
   judge: JudgeSummary;
   policySource?: string;
   includedInPolicyLearning?: boolean;
@@ -140,7 +140,6 @@ const judgeOf = (
     confidence: numberValue(judge.confidence),
     reasonCode: stringValue(judge.reason_code),
     reasonShort: stringValue(judge.reason_short),
-    selectionExplanation: stringValue(judge.selection_explanation),
     candidateModelCount: numberValue(judge.candidate_model_count),
     cost: numberValue(judge.cost),
     errorCode: stringValue(judge.error_code),
@@ -177,6 +176,7 @@ const summaryOf = ({
     reasonCode,
     policyVersion: stringValue(routing.policy_version),
     decisionSource,
+    executionMode: stringValue(routing.execution_mode),
     judge: judgeOf(routing.judge, decisionSource, reasonCode),
     policySource: stringValue(routing.policy_source),
     includedInPolicyLearning: booleanValue(routing.included_in_policy_learning),
@@ -237,21 +237,16 @@ const judgeErrorText = (errorCode?: string): string => {
   return errorCode ? 'Judge 실행 중 처리 실패' : '실패 원인 정보 없음';
 };
 
-const decisionSourceLabel = (
-  source?: string,
-  policySource?: string,
-): string => {
+const decisionSourceLabel = (source?: string): string => {
   switch (source) {
     case 'runtime_judge':
       return 'Judge가 모델 선택';
+    case 'test_policy_preview':
+      return '테스트 Judge가 모델 선택';
     case 'local_router':
       return '로컬 라우터가 모델 선택';
     case 'active_policy':
       return '저장된 정책으로 모델 선택';
-    case 'test_policy_preview':
-      return policySource === 'test_ephemeral'
-        ? '임시 정책 라우팅 테스트'
-        : '배포 정책 기준 테스트';
     case 'stored_model':
       return '기본 모델로 실행';
     default:
@@ -263,8 +258,8 @@ const noJudgeMessage = (summary: ModelRoutingSummary): string => {
   if (summary.decisionSource === 'local_router') {
     return '로컬 라우터가 충분한 확신으로 모델을 선택했습니다.';
   }
-  if (summary.decisionSource === 'test_policy_preview') {
-    return '테스트 실행은 정책 학습에 포함되지 않아 Judge를 호출하지 않았습니다.';
+  if (summary.executionMode === 'test') {
+    return '테스트 실행은 정책 학습에서 제외되며, 이번 요청에는 Judge 호출이 필요하지 않았습니다.';
   }
   if (summary.judge.notCalledReason === 'policy_unavailable') {
     return '활성 정책이 없어 Judge를 호출하지 않고 기본 모델을 사용했습니다.';
@@ -302,7 +297,8 @@ export function ModelRoutingDecisionDetails({
     summary.includedInPolicyLearning === false;
   const judge = summary.judge;
   const shortReason = reasonText(summary.reasonCode, judge.reasonShort);
-  const selectionReason = judge.selectionExplanation || shortReason;
+  // 자유형 Judge 설명은 저장하지 않는다. 정해진 reason code로만 표시한다.
+  const selectionReason = shortReason;
 
   return (
     <section className="space-y-3 rounded-lg border border-slate-200 bg-white p-4 text-xs shadow-sm dark:border-slate-700 dark:bg-slate-900">
@@ -316,20 +312,26 @@ export function ModelRoutingDecisionDetails({
           </p>
         </div>
         <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
-          {decisionSourceLabel(summary.decisionSource, summary.policySource)}
+          {decisionSourceLabel(summary.decisionSource)}
         </span>
       </header>
+
+      {summary.executionMode === 'test' && (
+        <p className="rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
+          테스트 실행입니다. 이 결과는 자동 라우팅 학습에 포함되지 않습니다.
+        </p>
+      )}
 
       <dl className="grid gap-2 sm:grid-cols-2">
         <Detail label="실제 실행 모델" value={summary.actualModel || summary.selectedModel || '-'} />
         <Detail
-          label={judge.selectionExplanation ? 'Judge 선택 근거' : '선택 근거'}
+          label="선택 근거"
           value={selectionReason}
         />
       </dl>
 
       <div className="flex flex-wrap gap-2">
-        {judge.selectionExplanation ? (
+        {judge.reasonShort ? (
           <span className="rounded border border-violet-200 bg-violet-50 px-2 py-1 text-violet-800">
             판단 분류: {shortReason}
           </span>

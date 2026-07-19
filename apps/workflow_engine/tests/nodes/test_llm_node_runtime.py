@@ -705,7 +705,8 @@ def test_test_execution_without_active_policy_calls_runtime_judge(monkeypatch):
 
     assert selected == "gpt-4.1-mini"
     assert fallback == "gpt-4.1"
-    assert metadata["decision_source"] == "test_policy_preview"
+    assert metadata["decision_source"] == "runtime_judge"
+    assert metadata["execution_mode"] == "test"
     assert metadata["policy_source"] == "test_ephemeral"
     assert metadata["judge_called"] is True
     assert metadata["judge"]["status"] == "selected"
@@ -958,7 +959,8 @@ def test_llm_node_policy_is_limited_to_models_usable_by_current_execution_subjec
     assert selected == "gpt-4.1-mini"
     assert fallback is None
     assert metadata["reason_code"] == "judge_bootstrap_required"
-    assert metadata["decision_source"] == "test_policy_preview"
+    assert metadata["decision_source"] == "stored_model"
+    assert metadata["execution_mode"] == "test"
 
 
 def test_llm_node_data_preserves_output_format_for_cost_optimizer_apply():
@@ -4460,7 +4462,8 @@ def test_test_execution_uses_matching_deployment_policy_and_judge_without_learni
         captured["deployment_id"]
         == node.execution_context["routing_policy_deployment_id"]
     )
-    assert metadata["decision_source"] == "test_policy_preview"
+    assert metadata["decision_source"] == "runtime_judge"
+    assert metadata["execution_mode"] == "test"
     assert metadata["judge_called"] is True
     assert metadata["judge"]["reason_short"] == "단순 안내 처리"
     assert metadata["policy_source"] == "active_deployment"

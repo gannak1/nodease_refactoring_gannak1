@@ -195,7 +195,6 @@ def test_llm_span_metadata_preserves_safe_runtime_judge_summary_only():
                     "confidence": 0.87,
                     "reason_short": "여러 조건 종합",
                     "reason_code": "simple_request",
-                    "selection_explanation": "정해진 절차 안내에 필요한 능력을 충족하면서 비용 부담이 낮은 후보를 선택했습니다.",
                     "cost": 0.00012,
                     "usage": {
                         "prompt_tokens": 120,
@@ -220,7 +219,6 @@ def test_llm_span_metadata_preserves_safe_runtime_judge_summary_only():
         "confidence": 0.87,
         "reason_short": "단순 요청 적합",
         "reason_code": "simple_request",
-        "selection_explanation": "정해진 절차 안내에 필요한 능력을 충족하면서 비용 부담이 낮은 후보를 선택했습니다.",
         "cost": 0.00012,
         "usage": {"prompt_tokens": 120, "completion_tokens": 30},
     }
@@ -271,22 +269,22 @@ def test_llm_span_metadata_uses_canonical_reason_instead_of_judge_text():
     assert "sk-abc123" not in str(metadata)
 
 
-def test_llm_span_metadata_drops_unsafe_runtime_judge_selection_explanation():
+def test_llm_span_metadata_drops_all_runtime_judge_selection_explanations():
     metadata = TraceMetadataSanitizer.sanitize_span_metadata(
         "llmNode",
         {
             "llm": {
                 "judge": {
                     "reason_code": "evidence_synthesis",
-                    "selection_explanation": "customer@example.com의 SECRET-123 계약을 확인해야 합니다.",
+                    "selection_explanation": "홍길동 고객의 010-1234-5678 계정 계약을 확인해야 합니다.",
                 }
             }
         },
     )
 
     assert "selection_explanation" not in metadata["llm"]["judge"]
-    assert "customer@example.com" not in str(metadata)
-    assert "SECRET-123" not in str(metadata)
+    assert "홍길동" not in str(metadata)
+    assert "010-1234-5678" not in str(metadata)
 
 
 def test_llm_span_metadata_preserves_safe_provider_fallback_diagnostics_only():

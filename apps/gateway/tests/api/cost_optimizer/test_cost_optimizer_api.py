@@ -87,6 +87,46 @@ def _available_model_options(*model_ids):
     return [_available_model_option(model_id) for model_id in model_ids]
 
 
+def test_test_routing_context_does_not_reuse_an_ambiguous_active_deployment_policy(
+    monkeypatch,
+):
+    workflow = _workflow_with_nodes(
+        uuid4(),
+        uuid4(),
+        [
+            {
+                "id": "llm-router",
+                "type": "llmNode",
+                "data": {"model_id": "gpt-4.1", "auto_model_routing": True},
+            }
+        ],
+    )
+    snapshot = {
+        "nodes": [
+            {
+                "id": "llm-router",
+                "type": "llmNode",
+                "data": {"model_id": "gpt-4.1", "auto_model_routing": True},
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        workflow_endpoint,
+        "_active_deployments_for_workflow",
+        lambda *_args: [
+            SimpleNamespace(id=uuid4(), graph_snapshot=snapshot),
+            SimpleNamespace(id=uuid4(), graph_snapshot=snapshot),
+        ],
+    )
+
+    context = workflow_endpoint._test_routing_policy_context(
+        MagicMock(), workflow=workflow, graph=workflow.graph
+    )
+
+    assert context["routing_policy_deployment_ids_by_node"] == {}
+    assert context["routing_policy_ambiguous_node_ids"] == ["llm-router"]
+
+
 def _configure_cost_optimizer_experiment_query(db, experiment):
     (
         db.query.return_value.options.return_value.filter.return_value.first.return_value

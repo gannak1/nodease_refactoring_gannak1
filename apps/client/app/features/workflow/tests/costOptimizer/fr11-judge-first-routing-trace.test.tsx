@@ -25,8 +25,6 @@ describe('FR-011 Judge-first model routing trace', () => {
               model: 'gpt-4.1-mini',
               confidence: 0.84,
               reason_short: '근거 종합 필요',
-              selection_explanation:
-                '복수 근거의 충돌을 해석해야 하므로 근거 종합 능력이 높은 후보를 선택했습니다.',
               candidate_model_count: 2,
               reason_code: 'structured_reasoning_required',
               cost: 0.00013,
@@ -54,12 +52,6 @@ describe('FR-011 Judge-first model routing trace', () => {
     expect(screen.getByText('gpt-4.1-mini')).toBeVisible();
     expect(screen.getByText('판단 확신도')).toBeVisible();
     expect(screen.getByText('84.0%')).toBeVisible();
-    expect(screen.getByText('Judge 선택 근거')).toBeVisible();
-    expect(
-      screen.getByText(
-        '복수 근거의 충돌을 해석해야 하므로 근거 종합 능력이 높은 후보를 선택했습니다.',
-      ),
-    ).toBeVisible();
     expect(screen.getByText('판단 분류: 근거 종합 필요')).toBeVisible();
     expect(screen.getByText('2개')).toBeVisible();
     expect(screen.getByText('Judge 비용')).toBeVisible();
@@ -198,7 +190,8 @@ describe('FR-011 Judge-first model routing trace', () => {
             model_routing: {
               strategy_id: 'judge_bootstrap_incremental_v1',
               selected_model: 'gpt-4.1',
-              decision_source: 'test_policy_preview',
+              decision_source: 'stored_model',
+              execution_mode: 'test',
               reason_code: 'judge_bootstrap_required',
               policy_source: 'active_deployment',
               included_in_policy_learning: false,
@@ -209,7 +202,10 @@ describe('FR-011 Judge-first model routing trace', () => {
       />,
     );
 
-    expect(screen.getByText('배포 정책 기준 테스트')).toBeVisible();
+    expect(screen.getByText('기본 모델로 실행')).toBeVisible();
+    expect(
+      screen.getByText('테스트 실행입니다. 이 결과는 자동 라우팅 학습에 포함되지 않습니다.'),
+    ).toBeVisible();
     expect(
       screen.getByText(
         '이 테스트 실행은 배포 정책을 미리 적용한 결과이며, 정책 학습에는 포함되지 않습니다.',
@@ -235,7 +231,8 @@ describe('FR-011 Judge-first model routing trace', () => {
             model_routing: {
               strategy_id: 'judge_bootstrap_incremental_v1',
               selected_model: 'gpt-4.1-mini',
-              decision_source: 'test_policy_preview',
+              decision_source: 'runtime_judge',
+              execution_mode: 'test',
               reason_code: 'routine_classification',
               policy_source: 'test_ephemeral',
               included_in_policy_learning: false,
@@ -254,13 +251,42 @@ describe('FR-011 Judge-first model routing trace', () => {
       />,
     );
 
-    expect(screen.getByText('임시 정책 라우팅 테스트')).toBeVisible();
+    expect(screen.getByText('Judge가 모델 선택')).toBeVisible();
     expect(screen.getByText('Judge 실행 성공')).toBeVisible();
     expect(
       screen.getByText(
         '활성 정책이 없어 현재 테스트에서만 사용할 임시 정책으로 모델을 선택했습니다. 이 결과는 정책 학습에 포함되지 않습니다.',
       ),
     ).toBeVisible();
+  });
+
+  it('시드된 테스트 Judge 선택 경로를 정보 없음으로 표시하지 않는다', () => {
+    render(
+      <ModelRoutingDecisionDetails
+        output={{
+          model: 'gpt-5.6-terra',
+          metadata: {
+            model_routing: {
+              selected_model: 'gpt-5.6-terra',
+              decision_source: 'runtime_judge',
+              execution_mode: 'test',
+              reason_code: 'security_incident_reasoning',
+              judge: {
+                status: 'selected',
+                attempted: true,
+                model: 'gpt-5.4-mini',
+                reason_short: '보안 사고 판단에 적합',
+                candidate_model_count: 10,
+              },
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Judge가 모델 선택')).toBeVisible();
+    expect(screen.getByText('보안 사고 판단에 적합')).toBeVisible();
+    expect(screen.queryByText('선택 경로 정보 없음')).not.toBeInTheDocument();
   });
 
   it('Judge 호출 성공이면 선택 근거, 확신도, 비용을 하나의 Judge 실행 영역에 표시한다', () => {

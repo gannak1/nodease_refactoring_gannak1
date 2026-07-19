@@ -937,13 +937,20 @@ def _ensure_cost_optimizer_llm_node(workflow: Workflow, node_id: str) -> dict[st
 def _active_deployment_for_workflow(
     db: Session, workflow: Workflow
 ) -> WorkflowDeployment | None:
+    deployments = _active_deployments_for_workflow(db, workflow)
+    return deployments[0] if deployments else None
+
+
+def _active_deployments_for_workflow(
+    db: Session, workflow: Workflow
+) -> list[WorkflowDeployment]:
     return (
         db.query(WorkflowDeployment)
         .join(App, App.id == WorkflowDeployment.app_id)
         .filter(App.workflow_id == workflow.id)
         .filter(WorkflowDeployment.is_active.is_(True))
         .order_by(WorkflowDeployment.created_at.desc())
-        .first()
+        .all()
     )
 
 
@@ -972,47 +979,54 @@ def _test_routing_policy_context(
     if not preview_node_ids:
         return {}
 
-    deployment = _active_deployment_for_workflow(db, workflow)
-    deployed_nodes = (
-        {
-            str(node.get("id")): node
-            for node in deployment.graph_snapshot.get("nodes", [])
-            if isinstance(node, dict) and node.get("type") == "llmNode"
-        }
-        if deployment is not None and isinstance(deployment.graph_snapshot, dict)
-        else {}
-    )
-    matching_node_ids: list[str] = []
+    deployments = _active_deployments_for_workflow(db, workflow)
+    matching_deployment_ids_by_node: dict[str, str] = {}
+    ambiguous_node_ids: list[str] = []
     for node in graph.get("nodes", []):
         if not isinstance(node, dict) or node.get("type") != "llmNode":
             continue
         node_id = str(node.get("id") or "")
         node_data = node.get("data")
-        deployed_node = deployed_nodes.get(node_id)
-        deployed_data = deployed_node.get("data") if deployed_node else None
-        if (
-            not node_id
-            or not isinstance(node_data, dict)
-            or not isinstance(deployed_data, dict)
-            or not node_data.get("auto_model_routing")
-            or not deployed_data.get("auto_model_routing")
-        ):
+        if not node_id or not isinstance(node_data, dict) or not node_data.get("auto_model_routing"):
             continue
-        if _node_config_fingerprint(node_data) == _node_config_fingerprint(
-            deployed_data
-        ):
-            matching_node_ids.append(node_id)
+        matching_deployments = []
+        for deployment in deployments:
+            snapshot = deployment.graph_snapshot
+            if not isinstance(snapshot, dict):
+                continue
+            deployed_node = next(
+                (
+                    item
+                    for item in snapshot.get("nodes", [])
+                    if isinstance(item, dict)
+                    and item.get("type") == "llmNode"
+                    and str(item.get("id") or "") == node_id
+                ),
+                None,
+            )
+            deployed_data = deployed_node.get("data") if deployed_node else None
+            if (
+                isinstance(deployed_data, dict)
+                and deployed_data.get("auto_model_routing")
+                and _node_config_fingerprint(node_data)
+                == _node_config_fingerprint(deployed_data)
+            ):
+                matching_deployments.append(deployment)
+        if len(matching_deployments) == 1:
+            matching_deployment_ids_by_node[node_id] = str(matching_deployments[0].id)
+        elif len(matching_deployments) > 1:
+            ambiguous_node_ids.append(node_id)
 
     context = {
         "routing_policy_preview_node_ids": preview_node_ids,
-        "routing_policy_deployment_node_ids": matching_node_ids,
+        "routing_policy_deployment_node_ids": list(matching_deployment_ids_by_node),
+        "routing_policy_deployment_ids_by_node": matching_deployment_ids_by_node,
+        "routing_policy_ambiguous_node_ids": ambiguous_node_ids,
         "routing_policy_preview": True,
         # Test Sidebar는 실제 workflow를 실행하므로 배포 runtime과 같은 Judge 선택을
         # 수행한다. read-only routing preview API는 이 flag를 전달하지 않는다.
         "routing_policy_execute_judge": True,
     }
-    if deployment is not None and matching_node_ids:
-        context["routing_policy_deployment_id"] = str(deployment.id)
     return context
 
 
