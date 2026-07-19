@@ -1995,7 +1995,7 @@ def test_llm_node_rag_no_evidence_skips_llm_call(monkeypatch):
                 metadata=[],
                 evidence_decision=decision,
                 should_invoke_llm=False,
-                answer_override="해당 질문에 답변할 수 있는 문서를 찾지 못했습니다.",
+                answer_override=RAG_NO_EVIDENCE_MESSAGE,
             )
         ),
     )
@@ -2003,7 +2003,10 @@ def test_llm_node_rag_no_evidence_skips_llm_call(monkeypatch):
     result = node._run({})
 
     assert client.calls == []
-    assert result["text"] == "해당 질문에 답변할 수 있는 문서를 찾지 못했습니다."
+    assert (
+        result["text"]
+        == "요청하신 문서를 찾을 수 없거나 접근 권한이 없습니다."
+    )
     assert result["usage"] == {}
     assert result["metadata"]["rag"]["evidence_sufficient"] is False
     assert result["metadata"]["rag"]["insufficiency_reason"] == "no_evidence"
@@ -5156,7 +5159,10 @@ def test_workflow_llm_node_empty_retrieval_result_skips_llm_call(monkeypatch):
     assert result["metadata"]["knowledge_search"] is None
     assert result["metadata"]["rag"]["evidence_sufficient"] is False
     assert result["metadata"]["rag"]["insufficiency_reason"] == "no_evidence"
-    assert result["text"] == "해당 질문에 답변할 수 있는 문서를 찾지 못했습니다."
+    assert (
+        result["text"]
+        == "요청하신 문서를 찾을 수 없거나 접근 권한이 없습니다."
+    )
 
 
 def test_workflow_llm_node_wraps_prompt_injection_chunk_as_untrusted_knowledge(
