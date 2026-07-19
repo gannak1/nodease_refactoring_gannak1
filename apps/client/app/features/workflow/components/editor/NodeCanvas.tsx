@@ -167,6 +167,7 @@ export default function NodeCanvas() {
   const {
     isMemoryModeEnabled,
     hasProviderKey,
+    providerKeyStatus,
     memoryModeDescription,
     toggleMemoryMode,
     appendMemoryFlag,
@@ -973,6 +974,7 @@ export default function NodeCanvas() {
           <MemoryModeToggle
             isEnabled={isMemoryModeEnabled}
             hasProviderKey={hasProviderKey}
+            providerKeyStatus={providerKeyStatus}
             description={memoryModeDescription}
             onToggle={toggleMemoryMode}
           />
