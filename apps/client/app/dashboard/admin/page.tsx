@@ -22,6 +22,7 @@ import { apiClient } from '@/lib/apiClient';
 import { ACTIVE_ORGANIZATION_CHANGED_EVENT } from '@/lib/activeOrganization';
 import { AdminSummaryCards } from '@/app/features/admin/components/AdminSummaryCards';
 import { AuditSearchTab } from '@/app/features/admin/components/AuditSearchTab';
+import { ExternalActionCredentialsPanel } from '@/app/features/admin/components/ExternalActionCredentialsPanel';
 import { OrganizationStructureSwitch } from '@/app/features/admin/components/OrganizationStructureSwitch';
 import { PermissionRequestsTab } from '@/app/features/admin/components/PermissionRequestsTab';
 import {
@@ -520,6 +521,12 @@ export default function AdminConsolePage() {
       await apiClient.get<LLMCredentialResponse[]>('/llm/credentials');
     setCredentials(response.data);
     return response.data;
+  };
+
+  const refreshExternalActionCredentials = async () => {
+    const data = await externalActionCredentialApi.listManageable();
+    setExternalActionCredentials(data);
+    return data;
   };
 
   const loadData = async () => {
@@ -1309,31 +1316,42 @@ export default function AdminConsolePage() {
             </div>
           )}
           {activeTab === 'credentials' && (
-            <CredentialsTab
-              providers={providers}
-              credentials={credentials}
-              actionPending={actionPending}
-              onOpenCreate={() => setCredentialPanelOpen(true)}
-              onManagePermission={(credentialId) => {
-                setSelectedCredentialId(credentialId);
-                setPermissionResourceType('llm_credential');
-                selectAdminTab('permissions');
-              }}
-              onSync={(credential) =>
-                runAction(() => syncCredentialModels(credential))
-              }
-              onDelete={(credential) =>
-                openConfirm({
-                  title: 'Credential을 삭제할까요?',
-                  description:
-                    '삭제 후 이 credential을 사용하는 workflow 실행이 실패할 수 있습니다.',
-                  confirmLabel: '삭제',
-                  tone: 'danger',
-                  details: [credential.credential_name],
-                  onConfirm: () => deleteCredential(credential),
-                })
-              }
-            />
+            <div className="space-y-6">
+              <CredentialsTab
+                providers={providers}
+                credentials={credentials}
+                actionPending={actionPending}
+                onOpenCreate={() => setCredentialPanelOpen(true)}
+                onManagePermission={(credentialId) => {
+                  setSelectedCredentialId(credentialId);
+                  setPermissionResourceType('llm_credential');
+                  selectAdminTab('permissions');
+                }}
+                onSync={(credential) =>
+                  runAction(() => syncCredentialModels(credential))
+                }
+                onDelete={(credential) =>
+                  openConfirm({
+                    title: 'Credential을 삭제할까요?',
+                    description:
+                      '삭제 후 이 credential을 사용하는 workflow 실행이 실패할 수 있습니다.',
+                    confirmLabel: '삭제',
+                    tone: 'danger',
+                    details: [credential.credential_name],
+                    onConfirm: () => deleteCredential(credential),
+                  })
+                }
+              />
+              <ExternalActionCredentialsPanel
+                credentials={externalActionCredentials}
+                onRefresh={refreshExternalActionCredentials}
+                onManagePermission={(credentialId) => {
+                  setSelectedExternalActionCredentialId(credentialId);
+                  setPermissionResourceType('external_action_credential');
+                  selectAdminTab('permissions');
+                }}
+              />
+            </div>
           )}
           {activeTab === 'knowledge' && (
             <KnowledgeTab
