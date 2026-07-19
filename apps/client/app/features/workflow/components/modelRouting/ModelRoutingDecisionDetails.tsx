@@ -235,7 +235,10 @@ const judgeErrorText = (errorCode?: string): string => {
   return errorCode ? 'Judge 실행 중 처리 실패' : '실패 원인 정보 없음';
 };
 
-const decisionSourceLabel = (source?: string): string => {
+const decisionSourceLabel = (
+  source?: string,
+  policySource?: string,
+): string => {
   switch (source) {
     case 'runtime_judge':
       return 'Judge가 모델 선택';
@@ -244,7 +247,9 @@ const decisionSourceLabel = (source?: string): string => {
     case 'active_policy':
       return '저장된 정책으로 모델 선택';
     case 'test_policy_preview':
-      return '배포 정책 기준 테스트';
+      return policySource === 'test_ephemeral'
+        ? '임시 정책 라우팅 테스트'
+        : '배포 정책 기준 테스트';
     case 'stored_model':
       return '기본 모델로 실행';
     default:
@@ -287,7 +292,11 @@ export function ModelRoutingDecisionDetails({
 
   const context = summary.runtimeContext;
   const isPolicyPreview =
-    summary.policySource === 'active_deployment' &&
+    summary.includedInPolicyLearning === false &&
+    (summary.policySource === 'active_deployment' ||
+      summary.policySource === 'test_ephemeral');
+  const isEphemeralPolicyPreview =
+    summary.policySource === 'test_ephemeral' &&
     summary.includedInPolicyLearning === false;
   const judge = summary.judge;
 
@@ -303,7 +312,7 @@ export function ModelRoutingDecisionDetails({
           </p>
         </div>
         <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
-          {decisionSourceLabel(summary.decisionSource)}
+          {decisionSourceLabel(summary.decisionSource, summary.policySource)}
         </span>
       </header>
 
@@ -479,7 +488,9 @@ export function ModelRoutingDecisionDetails({
           data-testid="model-routing-policy-preview"
           className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-blue-900 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100"
         >
-          이 테스트 실행은 배포 정책을 미리 적용한 결과이며, 정책 학습에는 포함되지 않습니다.
+          {isEphemeralPolicyPreview
+            ? '활성 정책이 없어 현재 테스트에서만 사용할 임시 정책으로 모델을 선택했습니다. 이 결과는 정책 학습에 포함되지 않습니다.'
+            : '이 테스트 실행은 배포 정책을 미리 적용한 결과이며, 정책 학습에는 포함되지 않습니다.'}
         </p>
       ) : null}
     </section>

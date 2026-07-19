@@ -362,12 +362,47 @@ describe('TestSidebar final response card', () => {
     ).not.toHaveBeenCalled();
   });
 
-  it('clean editor graph가 canonical graph와 다르면 metadata를 수용하거나 실행하지 않는다', async () => {
+  it('clean 표시가 누락됐어도 서버 기준점이 그대로면 현재 화면을 저장하고 실행한다', async () => {
     useWorkflowStore.getState().hasUnsavedChanges = false;
     vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
       workflow_id: 'workflow-1',
       graph_hash: 'a'.repeat(64),
       updated_at: '2026-07-14T00:00:00Z',
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({
+      status: 'success',
+      workflow_id: 'workflow-1',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-14T00:00:01Z',
+    });
+
+    render(<TestSidebar />);
+    fireEvent.click(screen.getByRole('button', { name: /테스트 실행하기/ }));
+
+    await waitFor(() => {
+      expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledWith(
+        'workflow-1',
+        expect.objectContaining({
+          expected_graph_hash: 'a'.repeat(64),
+          expected_updated_at: '2026-07-14T00:00:00Z',
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(workflowApi.executeWorkflowStream).toHaveBeenCalledTimes(1);
+    });
+    expect(useWorkflowStore.getState().failTestExecution).not.toHaveBeenCalled();
+  });
+
+  it('clean editor라도 서버 기준점이 바뀌었으면 현재 화면을 덮어쓰지 않는다', async () => {
+    useWorkflowStore.getState().hasUnsavedChanges = false;
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      workflow_id: 'workflow-1',
+      graph_hash: 'c'.repeat(64),
+      updated_at: '2026-07-14T00:00:02Z',
       nodes: [],
       edges: [],
       viewport: { x: 0, y: 0, zoom: 1 },
@@ -380,7 +415,7 @@ describe('TestSidebar final response card', () => {
       expect(
         useWorkflowStore.getState().failTestExecution,
       ).toHaveBeenCalledWith(
-        '서버의 Workflow가 현재 화면과 다릅니다. 최신 상태를 불러온 뒤 다시 시도해주세요.',
+        '서버의 Workflow가 현재 편집 기준보다 앞서 있습니다. 최신 상태를 불러온 뒤 다시 시도해주세요.',
       );
     });
     expect(

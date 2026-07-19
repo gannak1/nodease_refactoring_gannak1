@@ -410,7 +410,7 @@ describe('TestSidebar execution comparison', () => {
     expect(await screen.findByText('기준 실행 선택')).toBeVisible();
     expect(screen.getByTestId('test-execution-sidebar')).toBeVisible();
     expect(screen.getByTestId('test-execution-sidebar')).toHaveStyle({
-      width: '480px',
+      width: '640px',
     });
     expect(screen.queryByText('노드별 실행 결과')).not.toBeInTheDocument();
   });

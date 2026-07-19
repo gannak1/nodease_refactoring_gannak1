@@ -872,7 +872,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 ## Test preflight와 실행 presentation state
 
 - Test preflight 중 Agent Builder save가 대기하면 stream을 호출하지 않고 coordinator를 해제한 뒤 Agent Builder save가 진행되는지 검증한다.
-- Clean local graph와 canonical server graph가 다르면 test와 save를 차단하고 비교 전에 최신 metadata를 stale local graph에 적용하지 않는지 검증한다.
+- Clean 표시가 누락됐어도 local graph와 canonical server graph가 다를 때 서버의 `graph_hash + updated_at`이 마지막 local 기준점과 같으면 현재 snapshot을 CAS 저장한 뒤 테스트를 실행한다. 서버 기준점이 달라진 실제 동시 변경이면 test와 save를 차단하고 최신 metadata를 stale local graph에 적용하지 않는다.
 - `operation envelope not found`는 Agent Builder 결과를 `applied|unapplied|pending|stale`로 구분하고 권한 오류나 일반 저장 실패로 표시하지 않는지 검증한다.
 - Node root의 React Flow measurement/selection field와 node data의 실행 status, observability, editor-only `displayNumber` 갱신이 최상위, 중첩 `subGraph.nodes`와 `features.noteNodes`의 autosync, draft payload, canonical hash와 Workflow Undo/Redo history에 포함되지 않는지 검증한다. 모든 client save path와 Gateway save가 같은 projection을 사용하는지 함께 검증한다.
 - Server-derived node `configuration_state` 차이만으로 Client canonical 비교가 실패하지 않고, Client payload에서는 최상위 및 중첩 값이 제거된 뒤 Server가 재계산하는지 검증한다.

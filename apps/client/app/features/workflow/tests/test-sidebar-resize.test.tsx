@@ -71,6 +71,15 @@ describe('TestSidebar resize', () => {
     });
   });
 
+  it('캔버스 상단에 맞춰 패널을 배치한다', () => {
+    render(<TestSidebar />);
+
+    expect(screen.getByTestId('test-execution-sidebar')).toHaveClass('top-2');
+    expect(screen.getByTestId('test-execution-sidebar')).not.toHaveClass(
+      'top-18',
+    );
+  });
+
   it('왼쪽 handle을 드래그해 넓히되 최대 640px를 넘지 않는다', () => {
     render(<TestSidebar />);
 

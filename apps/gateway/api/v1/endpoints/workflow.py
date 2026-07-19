@@ -953,21 +953,35 @@ def _test_routing_policy_context(
     workflow: Workflow,
     graph: dict[str, Any],
 ) -> dict[str, Any]:
-    """현재 draft와 같은 LLM node에만 활성 배포 정책을 테스트로 연결한다.
+    """자동 라우팅 LLM node를 테스트하되 일치하는 배포 정책만 재사용한다.
 
     테스트 실행은 deployment run이 아니므로 ``deployment_id``를 넣지 않는다.
-    이 별도 context는 runtime policy lookup에만 쓰이며 run 집계/갱신 작업은
-    기존 ``deployment_id`` 기준을 계속 사용한다.
+    현재 draft와 활성 배포 설정이 같은 node는 저장 정책을 조회하고, 나머지는
+    runtime에서 임시 Judge-first 정책을 만든다. 어느 경로도 운영 학습/갱신에는
+    포함하지 않는다.
     """
-    deployment = _active_deployment_for_workflow(db, workflow)
-    if deployment is None or not isinstance(deployment.graph_snapshot, dict):
+    preview_node_ids = [
+        str(node.get("id"))
+        for node in graph.get("nodes", [])
+        if isinstance(node, dict)
+        and node.get("type") == "llmNode"
+        and isinstance(node.get("data"), dict)
+        and node["data"].get("auto_model_routing")
+        and str(node.get("id") or "")
+    ]
+    if not preview_node_ids:
         return {}
 
-    deployed_nodes = {
-        str(node.get("id")): node
-        for node in deployment.graph_snapshot.get("nodes", [])
-        if isinstance(node, dict) and node.get("type") == "llmNode"
-    }
+    deployment = _active_deployment_for_workflow(db, workflow)
+    deployed_nodes = (
+        {
+            str(node.get("id")): node
+            for node in deployment.graph_snapshot.get("nodes", [])
+            if isinstance(node, dict) and node.get("type") == "llmNode"
+        }
+        if deployment is not None and isinstance(deployment.graph_snapshot, dict)
+        else {}
+    )
     matching_node_ids: list[str] = []
     for node in graph.get("nodes", []):
         if not isinstance(node, dict) or node.get("type") != "llmNode":
@@ -989,16 +1003,17 @@ def _test_routing_policy_context(
         ):
             matching_node_ids.append(node_id)
 
-    if not matching_node_ids:
-        return {}
-    return {
-        "routing_policy_deployment_id": str(deployment.id),
-        "routing_policy_preview_node_ids": matching_node_ids,
+    context = {
+        "routing_policy_preview_node_ids": preview_node_ids,
+        "routing_policy_deployment_node_ids": matching_node_ids,
         "routing_policy_preview": True,
         # Test Sidebar는 실제 workflow를 실행하므로 배포 runtime과 같은 Judge 선택을
         # 수행한다. read-only routing preview API는 이 flag를 전달하지 않는다.
         "routing_policy_execute_judge": True,
     }
+    if deployment is not None and matching_node_ids:
+        context["routing_policy_deployment_id"] = str(deployment.id)
+    return context
 
 
 def _model_routing_policy_response(

@@ -218,6 +218,43 @@ describe('FR-011 Judge-first model routing trace', () => {
     ).toBeTruthy();
   });
 
+  it('활성 정책이 없는 테스트는 임시 정책 Judge 실행임을 표시한다', () => {
+    render(
+      <ModelRoutingDecisionDetails
+        output={{
+          model: 'gpt-4.1-mini',
+          metadata: {
+            model_routing: {
+              strategy_id: 'judge_bootstrap_incremental_v1',
+              selected_model: 'gpt-4.1-mini',
+              decision_source: 'test_policy_preview',
+              reason_code: 'routine_classification',
+              policy_source: 'test_ephemeral',
+              included_in_policy_learning: false,
+              judge_called: true,
+              judge: {
+                status: 'selected',
+                attempted: true,
+                model: 'gpt-5.4-mini',
+                confidence: 0.92,
+                reason_short: '간단한 분류 요청',
+                candidate_model_count: 2,
+              },
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('임시 정책 라우팅 테스트')).toBeVisible();
+    expect(screen.getByText('Judge 실행 성공')).toBeVisible();
+    expect(
+      screen.getByText(
+        '활성 정책이 없어 현재 테스트에서만 사용할 임시 정책으로 모델을 선택했습니다. 이 결과는 정책 학습에 포함되지 않습니다.',
+      ),
+    ).toBeVisible();
+  });
+
   it('Judge 호출 성공이면 선택 근거, 확신도, 비용을 하나의 Judge 실행 영역에 표시한다', () => {
     render(
       <ModelRoutingDecisionDetails
