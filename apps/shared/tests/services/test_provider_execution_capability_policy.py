@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -30,6 +30,7 @@ from apps.shared.domain.provider_execution_capability import (
 )
 from apps.shared.services import provider_execution_capability as capability_service
 from apps.shared.services.provider_execution_capability import (
+    CAPABILITY_TTL,
     DeploymentCredentialPolicyCommand,
     ProviderExecutionCapabilityAdmissionCommand,
     ProviderExecutionCapabilityIssueCommand,
@@ -105,6 +106,10 @@ class _ReplacementQuery:
         self.lock_order = lock_order
 
     def filter(self, *_args):
+        return self
+
+    def populate_existing(self):
+        self.lock_order.append("policy_refresh")
         return self
 
     def with_for_update(self):
@@ -207,7 +212,12 @@ def test_policy_replacement_flushes_superseded_active_row_before_insert(monkeypa
     assert policy.policy_revision == 8
     assert policy.credential_id == credential_id
     assert canonical_calls[0]["lock"] is True
-    assert db.lock_order == ["deployment", "policy", "authorization"]
+    assert db.lock_order == [
+        "deployment",
+        "policy_refresh",
+        "policy",
+        "authorization",
+    ]
     assert selection_lock_modes == [True]
     assert manager_checks == [actor_id, actor_id]
 
@@ -353,6 +363,10 @@ def test_admission_locks_policy_before_capability_record(monkeypatch):
         def filter(self, *_args):
             return self
 
+        def populate_existing(self):
+            order.append("capability_refresh")
+            return self
+
         def with_for_update(self):
             order.append("capability")
             return self
@@ -444,7 +458,13 @@ def test_admission_locks_policy_before_capability_record(monkeypatch):
         now=injected_now,
     )
 
-    assert order == ["deployment", "policy", "capability", "database_clock"]
+    assert order == [
+        "deployment",
+        "policy",
+        "capability_refresh",
+        "capability",
+        "database_clock",
+    ]
     assert lock_modes == {"selection": True, "permission": True}
     assert validation_times == [injected_now, database_now]
     assert lease.credential is credential
@@ -467,6 +487,154 @@ def test_database_clock_now_uses_wall_clock_timestamp():
 
     assert "clock_timestamp" in str(statements[0])
     assert result == database_now.replace(tzinfo=timezone.utc)
+
+
+def test_issue_capability_uses_database_clock_for_expiry(monkeypatch):
+    organization_id = uuid.uuid4()
+    model_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    provider_id = uuid.uuid4()
+    principal_id = uuid.uuid4()
+    policy_id = uuid.uuid4()
+    binding = ProviderExecutionBinding(
+        organization_id=organization_id,
+        workflow_id=uuid.uuid4(),
+        deployment_id=uuid.uuid4(),
+        deployment_version=1,
+        node_id="llm-1",
+        node_invocation_id=uuid.uuid4(),
+        execution_admission_id=uuid.uuid4(),
+        provider_attempt_id=uuid.uuid4(),
+        purpose=CapabilityPurpose.MAIN_GENERATION,
+    )
+    database_now = datetime(2026, 7, 19, 2, 0, tzinfo=timezone.utc)
+    worker_now = database_now + timedelta(hours=1)
+    order: list[str] = []
+    policy = SimpleNamespace(
+        id=policy_id,
+        policy_revision=1,
+        model_id=model_id,
+        credential_id=credential_id,
+        credential_principal_user_id=principal_id,
+    )
+    model = SimpleNamespace(id=model_id)
+    credential = SimpleNamespace(id=credential_id)
+    provider = SimpleNamespace(id=provider_id)
+    relation = SimpleNamespace()
+
+    class _CapabilityQuery:
+        def filter(self, *_args):
+            return self
+
+        def populate_existing(self):
+            order.append("capability_refresh")
+            return self
+
+        def with_for_update(self):
+            order.append("capability_lock")
+            return self
+
+        def one_or_none(self):
+            order.append("capability_read")
+            return None
+
+    class _Db:
+        added = None
+
+        def query(self, entity):
+            assert entity is ProviderExecutionCapabilityRecord
+            return _CapabilityQuery()
+
+        def add(self, record):
+            self.added = record
+
+        def flush(self):
+            return None
+
+    db = _Db()
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_canonical_deployment",
+        staticmethod(
+            lambda *_args, **_kwargs: (
+                SimpleNamespace(id=binding.deployment_id, version=1),
+                SimpleNamespace(id=uuid.uuid4()),
+                SimpleNamespace(id=binding.workflow_id),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_assert_binding_matches_deployment",
+        staticmethod(lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_active_policy_for_binding",
+        classmethod(lambda _cls, *_args, **_kwargs: policy),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_validate_issue_principals",
+        staticmethod(lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_resolve_policy_selection",
+        classmethod(
+            lambda _cls, *_args, **_kwargs: (
+                model,
+                credential,
+                provider,
+                relation,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_current_revisions",
+        classmethod(
+            lambda _cls, *_args, **_kwargs: {
+                "permission": "a" * 64,
+                "relation": "b" * 64,
+                "egress": "c" * 64,
+                "pricing": "d" * 64,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_database_clock_now",
+        staticmethod(lambda _db: order.append("database_clock") or database_now),
+    )
+    monkeypatch.setattr(capability_service, "_utc_now", lambda: worker_now)
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_domain_capability",
+        staticmethod(lambda record: record),
+    )
+
+    capability = ProviderExecutionCapabilityService.issue_capability(
+        db,
+        command=ProviderExecutionCapabilityIssueCommand(
+            binding=binding,
+            execution_subject=RuntimePrincipal.user(principal_id),
+            billing_principal=RuntimePrincipal.organization(organization_id),
+            audit_actor=RuntimePrincipal.user(principal_id),
+            input_token_cap=100,
+            output_token_cap=10,
+            cost_cap_microusd=1_000,
+        ),
+    )
+
+    assert capability is db.added
+    assert capability.expires_at == database_now + CAPABILITY_TTL
+    assert order == [
+        "capability_refresh",
+        "capability_lock",
+        "capability_read",
+        "database_clock",
+    ]
 
 
 def test_policy_selection_locks_runtime_authorization_rows(monkeypatch):
@@ -501,6 +669,7 @@ def test_policy_selection_locks_runtime_authorization_rows(monkeypatch):
         LLMCredential: [credential],
         LLMRelCredentialModel: [relation],
     }
+    refreshed: list[type] = []
     locked: list[type] = []
     permission_lock_modes: list[bool] = []
 
@@ -509,6 +678,10 @@ def test_policy_selection_locks_runtime_authorization_rows(monkeypatch):
             self.entity = entity
 
         def filter(self, *_args):
+            return self
+
+        def populate_existing(self):
+            refreshed.append(self.entity)
             return self
 
         def with_for_update(self):
@@ -564,11 +737,13 @@ def test_policy_selection_locks_runtime_authorization_rows(monkeypatch):
     )
 
     assert selection == (model, credential, provider, relation)
+    assert refreshed == [LLMModel, LLMProvider, LLMCredential, LLMRelCredentialModel]
     assert locked == [LLMModel, LLMProvider, LLMCredential, LLMRelCredentialModel]
     assert permission_lock_modes == [True]
 
 
 def test_permission_revision_locks_every_existing_permission_source(monkeypatch):
+    refreshed: list[tuple[type, ...]] = []
     locked: list[tuple[type, ...]] = []
 
     class _Query:
@@ -579,6 +754,10 @@ def test_permission_revision_locks_every_existing_permission_source(monkeypatch)
             return self
 
         def join(self, *_args):
+            return self
+
+        def populate_existing(self):
+            refreshed.append(self.entities)
             return self
 
         def with_for_update(self):
@@ -610,6 +789,13 @@ def test_permission_revision_locks_every_existing_permission_source(monkeypatch)
     )
 
     assert len(revision) == 64
+    assert refreshed == [
+        (Organization,),
+        (User,),
+        (OrganizationMembership,),
+        (UserLLMPermission,),
+        (TeamLLMPermission, TeamMembership, Team),
+    ]
     assert locked == [
         (Organization,),
         (User,),

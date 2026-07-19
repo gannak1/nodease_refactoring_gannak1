@@ -174,6 +174,12 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _lock_fresh(query: Any) -> Any:
+    """Lock rows while replacing any stale identity-map state."""
+
+    return query.populate_existing().with_for_update()
+
+
 def _safe_json_value(value: Any) -> Any:
     if isinstance(value, uuid.UUID):
         return str(value)
@@ -232,6 +238,7 @@ class ProviderExecutionCapabilityService:
                 LLMDeploymentCredentialPolicy.node_id == command.node_id,
                 LLMDeploymentCredentialPolicy.is_active.is_(True),
             )
+            .populate_existing()
             .with_for_update()
             .all()
         )
@@ -317,9 +324,7 @@ class ProviderExecutionCapabilityService:
         db: Session,
         *,
         command: ProviderExecutionCapabilityIssueCommand,
-        now: datetime | None = None,
     ) -> ProviderExecutionCapability:
-        now = now or _utc_now()
         cls._validate_nonnegative_caps(
             command.input_token_cap,
             command.output_token_cap,
@@ -371,16 +376,18 @@ class ProviderExecutionCapabilityService:
                 == binding.provider_attempt_id,
                 ProviderExecutionCapabilityRecord.purpose == binding.purpose.value,
             )
+            .populate_existing()
             .with_for_update()
             .one_or_none()
         )
+        issue_now = cls._database_clock_now(db)
         if existing is not None:
             existing_capability = cls._domain_capability(existing)
             try:
                 existing_capability.require_usable(
                     binding=binding,
                     revision=existing.capability_revision,
-                    now=now,
+                    now=issue_now,
                 )
             except CapabilityBindingError as exc:
                 raise ProviderExecutionPolicyError("capability_stale") from exc
@@ -439,7 +446,7 @@ class ProviderExecutionCapabilityService:
             output_token_cap=command.output_token_cap,
             cost_cap_microusd=command.cost_cap_microusd,
             state="active",
-            expires_at=now + CAPABILITY_TTL,
+            expires_at=issue_now + CAPABILITY_TTL,
         )
         db.add(record)
         db.flush()
@@ -472,6 +479,7 @@ class ProviderExecutionCapabilityService:
         record = (
             db.query(ProviderExecutionCapabilityRecord)
             .filter(ProviderExecutionCapabilityRecord.id == command.capability_id)
+            .populate_existing()
             .with_for_update()
             .one_or_none()
         )
@@ -661,7 +669,7 @@ class ProviderExecutionCapabilityService:
             WorkflowDeployment.id == deployment_id
         )
         if lock:
-            deployment_query = deployment_query.with_for_update()
+            deployment_query = _lock_fresh(deployment_query)
         deployment = deployment_query.one_or_none()
         if deployment is None:
             raise ProviderExecutionPolicyError("resource_not_found")
@@ -706,6 +714,7 @@ class ProviderExecutionCapabilityService:
                 LLMDeploymentCredentialPolicy.node_id == binding.node_id,
                 LLMDeploymentCredentialPolicy.is_active.is_(True),
             )
+            .populate_existing()
             .with_for_update()
             .all()
         )
@@ -743,7 +752,7 @@ class ProviderExecutionCapabilityService:
         )
         model_query = db.query(LLMModel).filter(LLMModel.id == model_id)
         if lock_authorization_rows:
-            model_query = model_query.with_for_update()
+            model_query = _lock_fresh(model_query)
         model = model_query.one_or_none()
         if (
             model is None
@@ -755,7 +764,7 @@ class ProviderExecutionCapabilityService:
             LLMProvider.id == model.provider_id
         )
         if lock_authorization_rows:
-            provider_query = provider_query.with_for_update()
+            provider_query = _lock_fresh(provider_query)
         provider = provider_query.one_or_none()
         credential_query = (
             db.query(LLMCredential)
@@ -767,7 +776,7 @@ class ProviderExecutionCapabilityService:
             )
         )
         if lock_authorization_rows:
-            credential_query = credential_query.with_for_update()
+            credential_query = _lock_fresh(credential_query)
         credential = credential_query.one_or_none()
         if provider is None or credential is None:
             raise ProviderExecutionPolicyError("configuration_required")
@@ -780,7 +789,7 @@ class ProviderExecutionCapabilityService:
             )
         )
         if lock_authorization_rows:
-            relation_query = relation_query.with_for_update()
+            relation_query = _lock_fresh(relation_query)
         relations = relation_query.all()
         if len(relations) != 1:
             raise ProviderExecutionPolicyError("relation_unavailable")
@@ -887,11 +896,11 @@ class ProviderExecutionCapabilityService:
             Organization.id == organization_id
         )
         if lock_rows:
-            organization_query = organization_query.with_for_update()
+            organization_query = _lock_fresh(organization_query)
         organization = organization_query.one_or_none()
         user_query = db.query(User).filter(User.id == credential_principal_user_id)
         if lock_rows:
-            user_query = user_query.with_for_update()
+            user_query = _lock_fresh(user_query)
         user = user_query.one_or_none()
         membership_query = (
             db.query(OrganizationMembership)
@@ -901,7 +910,7 @@ class ProviderExecutionCapabilityService:
             )
         )
         if lock_rows:
-            membership_query = membership_query.with_for_update()
+            membership_query = _lock_fresh(membership_query)
         membership = membership_query.one_or_none()
         direct_query = (
             db.query(UserLLMPermission)
@@ -912,7 +921,7 @@ class ProviderExecutionCapabilityService:
             )
         )
         if lock_rows:
-            direct_query = direct_query.with_for_update()
+            direct_query = _lock_fresh(direct_query)
         direct_rows = direct_query.all()
         team_query = (
             db.query(TeamLLMPermission, TeamMembership, Team)
@@ -930,7 +939,7 @@ class ProviderExecutionCapabilityService:
             )
         )
         if lock_rows:
-            team_query = team_query.with_for_update()
+            team_query = _lock_fresh(team_query)
         team_rows = team_query.all()
         effective_state = get_effective_llm_credential_auth_state(
             db,
