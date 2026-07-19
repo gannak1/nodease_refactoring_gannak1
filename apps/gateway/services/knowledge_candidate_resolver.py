@@ -314,6 +314,7 @@ class KnowledgeCandidateResolver:
             direct_pairs, direct_unavailable, direct_hidden = (
                 self._direct_authorized_kb_pairs(
                     direct_candidate_limit,
+                    max_evaluated_kbs=internal_candidate_limit,
                     allow_unready_candidates=allow_unready_candidates,
                     excluded_collection_ids=set(visible_collection_ids),
                 )
@@ -565,6 +566,7 @@ class KnowledgeCandidateResolver:
         self,
         max_candidate_kbs: int | None,
         *,
+        offset: int = 0,
         excluded_kb_ids: set[uuid.UUID] | None = None,
         excluded_collection_ids: set[uuid.UUID] | None = None,
     ) -> list[KnowledgeBase]:
@@ -598,6 +600,8 @@ class KnowledgeCandidateResolver:
                 .exists()
             )
             query = query.filter(~linked_membership)
+        if offset > 0:
+            query = query.offset(offset)
         if max_candidate_kbs is not None:
             query = query.limit(max_candidate_kbs)
         return query.all()
@@ -606,38 +610,77 @@ class KnowledgeCandidateResolver:
         self,
         max_candidate_kbs: int | None,
         *,
+        max_evaluated_kbs: int | None = None,
         allow_unready_candidates: bool = False,
         excluded_kb_ids: set[uuid.UUID] | None = None,
         excluded_collection_ids: set[uuid.UUID] | None = None,
     ) -> tuple[list[tuple[KnowledgeBase, KnowledgePermissionDecision]], int, int]:
-        kbs = self._direct_knowledge_bases(
-            max_candidate_kbs,
-            excluded_kb_ids=excluded_kb_ids,
-            excluded_collection_ids=excluded_collection_ids,
+        evaluation_limit = (
+            max_candidate_kbs
+            if max_evaluated_kbs is None
+            else max_evaluated_kbs
         )
-        if not kbs:
+        if max_candidate_kbs is not None and max_candidate_kbs <= 0:
+            return [], 0, 0
+        if evaluation_limit is not None and evaluation_limit <= 0:
             return [], 0, 0
 
         unavailable_count = 0
         hidden_count = 0
         allowed_pairs: list[tuple[KnowledgeBase, KnowledgePermissionDecision]] = []
-        kb_decisions = self.permission_helper.bulk_evaluate_kb_use(kbs)
-        for kb in kbs:
-            if self._kb_candidate_exclusion_reason(
-                kb,
-                allow_unready_candidates=allow_unready_candidates,
-            ):
-                unavailable_count += 1
-                continue
-            decision = kb_decisions[kb.id]
-            if decision.allowed:
-                allowed_pairs.append((kb, decision))
-            elif decision.external_reason_code == "resource.hidden":
-                hidden_count += 1
-            else:
-                unavailable_count += 1
-        if max_candidate_kbs is not None:
-            allowed_pairs = allowed_pairs[:max_candidate_kbs]
+        evaluated_count = 0
+        offset = 0
+        while True:
+            remaining_results = (
+                None
+                if max_candidate_kbs is None
+                else max_candidate_kbs - len(allowed_pairs)
+            )
+            remaining_evaluations = (
+                None
+                if evaluation_limit is None
+                else evaluation_limit - evaluated_count
+            )
+            if remaining_results is not None and remaining_results <= 0:
+                break
+            if remaining_evaluations is not None and remaining_evaluations <= 0:
+                break
+
+            page_limit = remaining_results
+            if page_limit is None:
+                page_limit = remaining_evaluations
+            elif remaining_evaluations is not None:
+                page_limit = min(page_limit, remaining_evaluations)
+
+            kbs = self._direct_knowledge_bases(
+                page_limit,
+                offset=offset,
+                excluded_kb_ids=excluded_kb_ids,
+                excluded_collection_ids=excluded_collection_ids,
+            )
+            if not kbs:
+                break
+            offset += len(kbs)
+            evaluated_count += len(kbs)
+
+            kb_decisions = self.permission_helper.bulk_evaluate_kb_use(kbs)
+            for kb in kbs:
+                if self._kb_candidate_exclusion_reason(
+                    kb,
+                    allow_unready_candidates=allow_unready_candidates,
+                ):
+                    unavailable_count += 1
+                    continue
+                decision = kb_decisions[kb.id]
+                if decision.allowed:
+                    allowed_pairs.append((kb, decision))
+                elif decision.external_reason_code == "resource.hidden":
+                    hidden_count += 1
+                else:
+                    unavailable_count += 1
+
+            if page_limit is None or len(kbs) < page_limit:
+                break
         return allowed_pairs, unavailable_count, hidden_count
 
     def _kb_candidate(

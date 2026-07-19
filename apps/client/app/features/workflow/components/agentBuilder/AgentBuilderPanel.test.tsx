@@ -2438,8 +2438,8 @@ describe('AgentBuilderPanel', () => {
         {
           resolutionId: 'resolve-kb-empty-direct',
           selectedCandidates: [],
-          selectedCollectionHandles: undefined,
-          selectedKbHandles: undefined,
+          selectedCollectionHandles: [],
+          selectedKbHandles: [],
           selectedKnowledgeBaseIds: undefined,
           selectedKnowledgeCollectionIds: undefined,
           editorTargetNodeId: undefined,

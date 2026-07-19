@@ -2,9 +2,11 @@
 
 Status: Verification Blocked
 
+Verified Against: feature/mba-277 @ 9341ed3d
+
 이 문서는 MBA-331의 보호 리소스 기능 완결성 기준을 Agent Builder direct-edit 변경에 적용한 PR-visible 증거다. 상세 실행 이력은 로컬 작업 기록과 분리하며, 아래 행은 현재 계약·구현·검증 증거만 유지한다.
 
-현재 검증 기준은 `feature/mba-277 @ 637cfa3f420d5c9a6cc61149afd7ef592a4e6e7a`와 이 문서를 포함한 현재 working tree다. 아래에서 역사적이라고 표시한 수치는 현재 working tree 완료 증거로 사용하지 않는다.
+`122 passed`와 `121 passed` 증거는 위 commit에 고정한다. 이후 working tree correction은 별도 RED/GREEN 결과로 기록하며 commit 전에는 위 검증 SHA에 포함하지 않는다. 아래에서 역사적이라고 표시한 수치는 현재 완료 증거로 사용하지 않는다.
 
 ## 대상
 
@@ -50,7 +52,7 @@ Status: Verification Blocked
 | Scoped deferred projection | `node_path[] + parameter_keys[]` | Gateway가 root 기준 path projection을 저장 응답에 계산 | active Workflow와 path가 일치하는 node에만 marker 반영 | 일반/Agent Builder save가 같은 projection 사용 | ParameterTask/audit 상태는 변경하지 않음 | store 88 tests와 CAS service tests 통과 |
 | 늦은 저장 응답 격리 | 응답 `workflow_id` | 비활성 Workflow metadata/cache만 갱신 | 현재 live graph, marker, dirty/history 보존 | 응답 도착 뒤 active identity 재검사 | 다른 Workflow의 autosync를 유발하지 않음 | deferred-promise autosync race regression 통과 |
 | Knowledge hierarchy-only UI | `collections + ungrouped_kbs` | flat candidate는 읽기 호환 데이터로만 유지 | flat-only direct 응답은 오류와 제출 차단 | 전용 Knowledge endpoint만 유지 | planner/runtime 변경 없음 | component 회귀와 Knowledge service 회귀 통과 |
-| Knowledge 후보 공유 예산 | ADR-0061 고유 KB 5,000 상한 | direct 비소속 후보 bounded 탐색 뒤 남은 예산만 linked 후보에 사용 | 표시 상한 20은 scoring 뒤 적용 | 발급 handle 적용 계약은 변경 없음 | 권한·lifecycle·readiness 평가 합계가 상한 이내 | permission/recommendation/selection service 121 tests 통과 |
+| Knowledge 후보 공유 예산 | ADR-0061 고유 KB 5,000 상한 | 적격 direct 결과 최대 20개를 bounded pagination으로 채운 뒤 실제 평가 수를 제외한 예산만 linked 후보에 사용 | 표시 상한 20은 scoring 뒤 적용 | 발급 handle 적용 계약은 변경 없음 | 권한·lifecycle·readiness 실패도 평가 예산에 포함하고 합계가 상한 이내 | permission/recommendation/selection service tests와 denied-20/allowed-21 회귀 |
 
 ## 실행 결과
 
@@ -60,11 +62,13 @@ Status: Verification Blocked
 | Historical backend/shared/runtime related | `.ignore/codex-py311-venv/Scripts/python.exe -m pytest <previous 13-file suite> -q` | 이전 변경 517 passed; 현재 working tree 증거로 사용하지 않음 |
 | Current frontend focused | `npm test -- --run app/features/workflow/store/useWorkflowStore.test.ts app/features/workflow/hooks/useAutoSync.test.ts app/features/workflow/components/agentBuilder/KnowledgeSelectionControl.test.tsx` | 3 files / 122 passed |
 | Current backend Knowledge/CAS related | `.ignore/codex-py311-venv/Scripts/python.exe -m pytest apps/gateway/tests/services/test_agent_builder_workflow_cas.py apps/gateway/tests/services/test_knowledge_permission_phase2.py apps/gateway/tests/services/test_knowledge_rag_recommendation_service.py apps/gateway/tests/services/test_agent_builder_knowledge_selection.py -q -p no:cacheprovider` | 121 passed; 3 existing Pydantic deprecation warnings only |
+| Working tree direct candidate pagination | `.ignore/codex-py311-venv/Scripts/python.exe -m pytest apps/gateway/tests/services/test_knowledge_permission_phase2.py::test_builder_hierarchy_pages_past_denied_direct_kbs_within_shared_budget -q -p no:cacheprovider`; related four-file suite | RED 1 failed at 20 evaluated; GREEN single test passed; related suite 122 passed with 3 existing Pydantic warnings |
+| Working tree Client CI reproduction | `npm run lint`; `npm run typecheck`; `npm run test -- --changed=cebb34178c82830e02e3f5b3d2124821c3c1fd1f --passWithNoTests` | Initial test run 1 failed / 1137 passed; hierarchy empty-handle expectation correction 뒤 138 files / 1138 passed / 1 skipped; lint 0 errors / 248 warnings; typecheck passed |
 | Collection cap PostgreSQL | current revision disposable DB | 미실행; explicit disposable DB environment가 없음 |
 | Workflow CAS PostgreSQL | current revision disposable DB | 미실행; explicit disposable DB environment가 없음 |
 | Python lint | `uvx --from ruff==0.15.20 ruff check apps/gateway/application/agent_builder/graph_mutation_builder.py apps/gateway/services/knowledge_candidate_resolver.py apps/gateway/tests/services/test_agent_builder_workflow_cas.py apps/gateway/tests/services/test_knowledge_permission_phase2.py` | passed |
 | Python/import and schema | `.ignore/codex-py311-venv/Scripts/python.exe -c <projection-and-resolver-import-check>` | passed; path projection empty graph and 5,000 cap assertions passed |
-| Client static | `npm run typecheck`; targeted `npx eslint <7 changed TS/TSX files>` | typecheck passed; lint 0 errors / 54 existing warnings; production build는 실행 중 dev server와 `.next`를 공유하지 않기 위해 미실행 |
+| Client static | `npm run typecheck`; `npm run lint`; targeted ESLint | typecheck passed; full lint 0 errors / 248 existing warnings; changed test lint passed; production build는 실행 중 dev server와 `.next`를 공유하지 않기 위해 미실행 |
 | Git static | `git diff --check`; `git diff --name-status --diff-filter=D` | passed; whitespace errors 0, deleted files 0 |
 | Authenticated browser | Agent Builder secret set/delete, Knowledge selection, save/acknowledgement recovery | 미실행; 인증 organization fixture 필요 |
 

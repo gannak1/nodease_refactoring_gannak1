@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from apps.gateway.services.knowledge_candidate_resolver import (
+    DEFAULT_DIRECT_KB_CANDIDATE_RESERVE,
     DEFAULT_MAX_CANDIDATE_KBS,
     KnowledgeCandidateResolver,
     bucket_count,
@@ -197,6 +198,7 @@ class FakeResolver(KnowledgeCandidateResolver):
         self,
         max_candidate_kbs,
         *,
+        offset=0,
         excluded_kb_ids=None,
         excluded_collection_ids=None,
     ):
@@ -212,6 +214,7 @@ class FakeResolver(KnowledgeCandidateResolver):
             for kb in self._fake_kbs.values()
             if kb.id not in excluded and kb.id not in collection_member_ids
         ]
+        values = values[offset:]
         return values if max_candidate_kbs is None else values[:max_candidate_kbs]
 
 
@@ -869,6 +872,42 @@ def test_builder_hierarchy_reserves_bounded_space_for_direct_kbs():
         kb_id for call in helper.bulk_kb_calls for kb_id in call
     }
     assert len(evaluated_kb_ids) <= 2
+    assert [
+        candidate.candidate_id for candidate in result.ungrouped_candidates
+    ] == [allowed_direct.id]
+
+
+def test_builder_hierarchy_pages_past_denied_direct_kbs_within_shared_budget():
+    collection = _collection()
+    denied_direct = [
+        _kb(name=f"Denied direct {index}")
+        for index in range(DEFAULT_DIRECT_KB_CANDIDATE_RESERVE)
+    ]
+    allowed_direct = _kb(name="Allowed direct")
+
+    class PerKbPermissionHelper(FakePermissionHelper):
+        def _manual_kb_auth_state(self, kb):
+            return AUTH_STATE_OPERATOR if kb.id == allowed_direct.id else "none"
+
+    helper = PerKbPermissionHelper(
+        collection_actions={collection.id: {"route"}},
+    )
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        kbs=[*denied_direct, allowed_direct],
+    )
+
+    result = resolver.resolve_builder_hierarchy(
+        max_candidate_kbs=50,
+        apply_candidate_limit=False,
+    )
+
+    evaluated_kb_ids = [
+        kb_id for call in helper.bulk_kb_calls for kb_id in call
+    ]
+    assert len(evaluated_kb_ids) == DEFAULT_DIRECT_KB_CANDIDATE_RESERVE + 1
+    assert len(evaluated_kb_ids) <= 50
     assert [
         candidate.candidate_id for candidate in result.ungrouped_candidates
     ] == [allowed_direct.id]

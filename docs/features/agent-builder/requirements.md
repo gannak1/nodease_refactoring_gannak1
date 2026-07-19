@@ -421,7 +421,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - Runtime은 direct KB와 Collection child KB를 합집합으로 만들고 동일 KB를 한 번만 검색해야 한다.
 - Collection/KB 후보 상한은 권한/lifecycle 필터, 전체 후보 점수 계산과 안정 정렬 뒤에 적용해야 한다.
 - 화면 응답은 Collection 최대 20개와 고유 KB 최대 20개로 제한하며 내부 후보 탐색과 권한·점수 계산 범위는 이 표시 상한으로 먼저 자르지 않는다. 내부 고유 KB 안전 상한은 5,000개이며 표시 상한 적용을 미루는 경로에서도 무제한 조회로 바뀌면 안 된다.
-- Collection-linked 후보와 Collection에 속하지 않은 direct KB 후보는 같은 5,000개 내부 안전 예산을 사용해야 한다. 표시 가능한 Collection이 있으면 direct KB 탐색에 최대 20개이자 작은 예산에서는 절반 이하인 bounded slot을 먼저 배정하고, 실제 탐색한 direct 후보 수를 제외한 나머지만 Collection-linked 후보에 사용한다. Direct 조회는 표시 가능한 Collection membership을 제외하며 권한·lifecycle·readiness·점수 계산에 투입되는 고유 KB 합계는 5,000개를 넘지 않아야 한다.
+- Collection-linked 후보와 Collection에 속하지 않은 direct KB 후보는 같은 5,000개 내부 안전 예산을 사용해야 한다. 표시 가능한 Collection이 있으면 적격 direct 결과에 최대 20개이자 작은 예산에서는 절반 이하인 bounded result slot을 먼저 배정한다. Direct 조회는 안정 정렬된 page를 권한·lifecycle·readiness 검사하며 result slot을 채우거나 공유 평가 예산이 소진될 때까지 진행하고, 실패한 후보도 평가 예산에서 차감한다. 실제 평가한 direct 후보 수를 제외한 나머지만 Collection-linked 후보에 사용한다. Direct 조회는 표시 가능한 Collection membership을 제외하며 두 경로에서 평가·점수 계산한 고유 KB 합계는 5,000개를 넘지 않아야 한다.
 - 동일 점수는 safe label 오름차순(없는 label은 마지막), opaque handle 오름차순으로 정렬하며 source tier/availability를 별도 tie-break로 중복 적용하지 않는다.
 
 ## Test 실행 및 secret 경계 정합성

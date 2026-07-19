@@ -659,7 +659,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - 권한과 lifecycle을 통과한 Collection 전체를 점수 계산한 뒤 표시 상한을 적용해, 이름순 상한 밖의 최고 점수 Collection이 응답에 포함되는지 확인한다.
 - 화면 Top-K 적용을 점수 계산 뒤로 미루더라도 KB 후보와 Collection membership 내부 탐색이 5,000개 안전 상한을 넘지 않는지 확인한다.
 - 동일 KB가 여러 Collection에 연결된 membership 행은 내부 5,000개 상한을 중복 소비하지 않으며, 상한 안에 포함된 KB의 허용된 Collection 위치가 모두 유지되는지 확인한다.
-- Collection-linked KB와 ungrouped direct KB를 함께 탐색해도 권한·lifecycle·점수 계산에 투입되는 고유 KB 합계가 내부 5,000개 상한을 넘지 않는지 확인한다. 표시 가능한 Collection이 있어도 bounded direct slot을 먼저 사용해 권한 있는 비소속 KB가 완전히 배제되지 않고, direct 실제 탐색 수를 제외한 예산만 linked 후보에 사용하는지 검증한다.
+- Collection-linked KB와 ungrouped direct KB를 함께 탐색해도 권한·lifecycle·점수 계산에 투입되는 고유 KB 합계가 내부 5,000개 상한을 넘지 않는지 확인한다. 표시 가능한 Collection이 있어도 bounded direct result slot을 먼저 사용해 권한 있는 비소속 KB가 완전히 배제되지 않고, direct 실제 평가 수를 제외한 예산만 linked 후보에 사용하는지 검증한다. 안정 정렬상 앞선 20개 direct KB가 권한 또는 readiness를 통과하지 못하고 21번째만 통과하는 경우에도 bounded pagination으로 21번째 후보를 반환하며 평가 합계가 공유 상한을 넘지 않는지 확인한다.
 - 이미 발급된 KB/Collection handle이 이후 추천 탐색 상한이나 표시 Top-K 밖으로 이동해도, 권한과 lifecycle이 유효하면 적용 재검증을 통과하는지 확인한다.
 - 같은 점수의 KB/Collection은 safe label 오름차순(없는 label은 마지막), opaque handle 오름차순으로 안정 정렬되고 source tier/availability가 별도 tie-break로 재적용되지 않는지 확인한다.
 - `before_graph` placement가 여러 LLM 중 target step 하나에만 Collection/KB binding을 적용하고 target이 없거나 모호하면 validation failure로 닫는지 확인한다.
