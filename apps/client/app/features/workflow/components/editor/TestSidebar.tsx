@@ -1209,9 +1209,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     }
 
     selectExecutionNode(null);
+    setComparisonSelectedNodeId(null);
     restoredRunRef.current = null;
     setTestRunRestoreState('idle');
-    replaceTestExecutionLocation(null, null);
+    replaceTestExecutionLocation(null, null, { comparisonNodeId: null });
     setValidationErrors([]);
     setPreflightStatus('validating');
     let releaseTestPreflightSave: (() => void) | null = null;
@@ -1650,9 +1651,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
 
   const handleReset = () => {
     selectExecutionNode(null);
+    setComparisonSelectedNodeId(null);
     restoredRunRef.current = null;
     setTestRunRestoreState('idle');
-    replaceTestExecutionLocation(null, null);
+    replaceTestExecutionLocation(null, null, { comparisonNodeId: null });
     setValidationErrors([]);
     setPreflightStatus('idle');
     resetTestExecution();
@@ -1804,10 +1806,6 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
         {isExecuting ? (
           /* Execution Progress - Show node results as they come in */
           <div className="space-y-4">
-            <div className="flex items-center gap-2 text-blue-600 mb-4">
-              <Loader2 className="w-5 h-5 animate-spin" />
-              <h3 className="text-sm font-medium">테스트 실행 중...</h3>
-            </div>
             {nodeExecutionSummaries.length > 0 ? (
               nodeExecutionSummaries.map(renderNodeExecutionSummary)
             ) : (

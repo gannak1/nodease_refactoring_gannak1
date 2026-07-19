@@ -3,6 +3,8 @@ import {
   AlertCircle,
   ArrowLeft,
   CheckCircle,
+  ChevronDown,
+  ChevronUp,
   Loader2,
   Pin,
   RefreshCw,
@@ -129,10 +131,7 @@ const nodeTitle = (node: Node | undefined, nodeRun: WorkflowNodeRun) => {
   return nodeRun.node_id;
 };
 
-const nodeTypeLabel = (
-  baseline?: NodeSnapshot,
-  current?: NodeSnapshot,
-) => {
+const nodeTypeLabel = (baseline?: NodeSnapshot, current?: NodeSnapshot) => {
   const nodeType = current?.nodeType || baseline?.nodeType;
   if (!nodeType) return '유형 정보 없음';
   return getNodeDefinitionByType(nodeType)?.name || nodeType;
@@ -302,6 +301,59 @@ const formatRunTime = (value?: string) => {
   }).format(date);
 };
 
+const runTriggerLabel = (triggerMode: WorkflowRun['trigger_mode']) => {
+  switch (triggerMode) {
+    case 'manual':
+      return '빌더 테스트';
+    case 'app':
+      return '내부 배포';
+    case 'webhook':
+      return 'Webhook';
+    case 'api':
+      return 'API';
+    case 'scheduler':
+      return '스케줄';
+    default:
+      return '실행 방식 없음';
+  }
+};
+
+const SENSITIVE_INPUT_KEY_PATTERN =
+  /(?:authorization|credential|password|secret|token|api[_-]?key)/i;
+
+const collectInputTextCandidates = (
+  value: unknown,
+  candidates: string[],
+  depth = 0,
+) => {
+  if (depth > 4 || candidates.length >= 30) return;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (text) candidates.push(text);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 10)) {
+      collectInputTextCandidates(item, candidates, depth + 1);
+    }
+    return;
+  }
+  if (!isRecord(value)) return;
+  for (const [key, item] of Object.entries(value)) {
+    if (SENSITIVE_INPUT_KEY_PATTERN.test(key)) continue;
+    collectInputTextCandidates(item, candidates, depth + 1);
+  }
+};
+
+const runInputPreview = (inputs: unknown) => {
+  const candidates: string[] = [];
+  collectInputTextCandidates(inputs, candidates);
+  return (
+    candidates.sort((left, right) => right.length - left.length)[0] ||
+    '식별할 수 있는 입력 내용이 없습니다.'
+  );
+};
+
 function ValueViewer({ value }: { value: unknown }) {
   if (value === null || value === undefined) {
     return <p className="text-xs text-gray-500">기록 없음</p>;
@@ -355,6 +407,90 @@ function ValueViewer({ value }: { value: unknown }) {
         </div>
       ))}
     </dl>
+  );
+}
+
+function RunSelectionDetails({
+  run,
+  nodes,
+}: {
+  run: WorkflowRun;
+  nodes: Node[];
+}) {
+  const snapshots = Array.from(
+    toRunBundle(run, nodes, [], 'not_recorded').nodes.values(),
+  );
+  const llmSnapshots = snapshots.filter(
+    (snapshot) => snapshot.nodeType === 'llmNode',
+  );
+
+  return (
+    <div className="border-t border-gray-100 bg-slate-50/70 px-3 py-3 dark:border-gray-700 dark:bg-gray-800/40">
+      <div className="grid gap-3">
+        <section>
+          <h4 className="text-xs font-semibold text-gray-800 dark:text-gray-100">
+            실행 입력
+          </h4>
+          <div className="mt-2 max-h-48 overflow-y-auto rounded-md border border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-gray-900">
+            <ValueViewer value={run.inputs} />
+          </div>
+        </section>
+
+        <section>
+          <h4 className="text-xs font-semibold text-gray-800 dark:text-gray-100">
+            모델 라우팅
+          </h4>
+          <div className="mt-2 space-y-2">
+            {llmSnapshots.length > 0 ? (
+              llmSnapshots.map((snapshot) => (
+                <div key={snapshot.nodeId}>
+                  <p className="mb-1 text-[11px] font-semibold text-gray-600 dark:text-gray-300">
+                    {snapshot.title}
+                  </p>
+                  <RoutingSide snapshot={snapshot} />
+                </div>
+              ))
+            ) : (
+              <p className="rounded-md border border-dashed border-gray-300 bg-white p-2 text-xs text-gray-500 dark:border-gray-700 dark:bg-gray-900">
+                이 실행에는 LLM 노드 기록이 없습니다.
+              </p>
+            )}
+          </div>
+        </section>
+
+        <section>
+          <h4 className="text-xs font-semibold text-gray-800 dark:text-gray-100">
+            실행 지표
+          </h4>
+          <dl className="mt-2 grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
+            <div>
+              <dt className="text-gray-500">상태</dt>
+              <dd className="mt-0.5 font-semibold text-gray-900 dark:text-gray-100">
+                {runStatusLabel(run.status)}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-gray-500">실행 시간</dt>
+              <dd className="mt-0.5 font-semibold text-gray-900 dark:text-gray-100">
+                {formatLatency(runDurationMs(run))}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-gray-500">비용</dt>
+              <dd className="mt-0.5 font-semibold text-gray-900 dark:text-gray-100">
+                {formatCost(run.total_cost)}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-gray-500">전체 토큰</dt>
+              <dd className="mt-0.5 font-semibold text-gray-900 dark:text-gray-100">
+                {formatTokens(run.total_tokens)}
+              </dd>
+            </div>
+          </dl>
+        </section>
+      </div>
+    </div>
   );
 }
 
@@ -627,12 +763,18 @@ export function ExecutionComparisonPanel({
   const latestNodesRef = useRef(nodes);
   const nodeDefinitionKey = comparisonNodeDefinitionKey(nodes);
   const [page, setPage] = useState(1);
-  const [statusFilter, setStatusFilter] = useState('success');
-  const [triggerFilter, setTriggerFilter] = useState('manual');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [triggerFilter, setTriggerFilter] = useState('all');
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [totalRuns, setTotalRuns] = useState(0);
   const [isListLoading, setIsListLoading] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const [runDetails, setRunDetails] = useState<Record<string, WorkflowRun>>({});
+  const [detailLoadingRunId, setDetailLoadingRunId] = useState<string | null>(
+    null,
+  );
+  const [detailErrorRunId, setDetailErrorRunId] = useState<string | null>(null);
   const [baselineBundle, setBaselineBundle] = useState<RunBundle | null>(null);
   const [currentBundle, setCurrentBundle] = useState<RunBundle | null>(null);
   const [isComparisonLoading, setIsComparisonLoading] = useState(false);
@@ -653,6 +795,27 @@ export function ExecutionComparisonPanel({
     onSelectedNodeIdChange?.(nodeId);
   };
 
+  const toggleRunDetails = async (run: WorkflowRun) => {
+    if (expandedRunId === run.id) {
+      setExpandedRunId(null);
+      return;
+    }
+
+    setExpandedRunId(run.id);
+    setDetailErrorRunId(null);
+    if (runDetails[run.id]) return;
+
+    setDetailLoadingRunId(run.id);
+    try {
+      const detail = await workflowApi.getWorkflowRun(workflowId, run.id);
+      setRunDetails((current) => ({ ...current, [run.id]: detail }));
+    } catch {
+      setDetailErrorRunId(run.id);
+    } finally {
+      setDetailLoadingRunId((current) => (current === run.id ? null : current));
+    }
+  };
+
   useEffect(() => {
     latestNodesRef.current = nodes;
   }, [nodes]);
@@ -671,6 +834,7 @@ export function ExecutionComparisonPanel({
         if (cancelled) return;
         setRuns(response.items);
         setTotalRuns(response.total);
+        setExpandedRunId(null);
       })
       .catch(() => {
         if (!cancelled) setListError('실행 기록 목록을 불러오지 못했습니다.');
@@ -828,37 +992,83 @@ export function ExecutionComparisonPanel({
           </p>
         ) : (
           <div className="mt-3 space-y-2">
-            {runs.map((run) => (
-              <article
-                key={run.id}
-                className="rounded-md border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-xs font-semibold text-gray-900 dark:text-gray-100">
-                      {formatRunTime(run.started_at)}
-                    </p>
-                    <p className="mt-1 text-[11px] text-gray-500">
-                      {runStatusLabel(run.status)} ·{' '}
-                      {formatLatency(
-                        isFiniteNumber(run.duration)
-                          ? run.duration * 1000
-                          : undefined,
-                      )}{' '}
-                      · {formatCost(run.total_cost)} ·{' '}
-                      {formatTokens(run.total_tokens)} tokens
-                    </p>
+            {runs.map((run) => {
+              const isExpanded = expandedRunId === run.id;
+              const detail = runDetails[run.id];
+              const formattedTime = formatRunTime(run.started_at);
+              return (
+                <article
+                  key={run.id}
+                  aria-label={`${formattedTime} ${runTriggerLabel(run.trigger_mode)} 실행`}
+                  className="overflow-hidden rounded-md border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900"
+                >
+                  <div className="flex items-center gap-2 px-3 py-2.5">
+                    <span
+                      aria-label={`실행 상태 ${runStatusLabel(run.status)}`}
+                      className={`h-2 w-2 shrink-0 rounded-full ${
+                        run.status.toLowerCase() === 'success'
+                          ? 'bg-emerald-500'
+                          : run.status.toLowerCase() === 'failed'
+                            ? 'bg-red-500'
+                            : 'bg-blue-500'
+                      }`}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 items-center gap-2 text-[11px]">
+                        <span className="shrink-0 font-semibold text-gray-900 dark:text-gray-100">
+                          {formattedTime}
+                        </span>
+                        <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                          {runTriggerLabel(run.trigger_mode)}
+                        </span>
+                      </div>
+                      <p
+                        title={runInputPreview(run.inputs)}
+                        className="mt-1 truncate text-xs text-gray-700 dark:text-gray-200"
+                      >
+                        {runInputPreview(run.inputs)}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      aria-expanded={isExpanded}
+                      aria-label={`${formattedTime} 실행 ${isExpanded ? '상세 닫기' : '상세보기'}`}
+                      onClick={() => void toggleRunDetails(run)}
+                      className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md border border-gray-200 px-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                    >
+                      상세
+                      {isExpanded ? (
+                        <ChevronUp className="h-3.5 w-3.5" />
+                      ) : (
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onBaselineRunIdChange(run.id)}
+                      className="h-8 shrink-0 rounded-md bg-blue-600 px-2.5 text-xs font-semibold text-white hover:bg-blue-700"
+                    >
+                      기준으로 고정
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => onBaselineRunIdChange(run.id)}
-                    className="shrink-0 rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
-                  >
-                    기준으로 고정
-                  </button>
-                </div>
-              </article>
-            ))}
+
+                  {isExpanded ? (
+                    detailLoadingRunId === run.id ? (
+                      <div className="flex items-center gap-2 border-t border-gray-100 px-3 py-3 text-xs text-gray-500 dark:border-gray-700">
+                        <Loader2 className="h-4 w-4 animate-spin" /> 실행 상세를
+                        불러오는 중입니다.
+                      </div>
+                    ) : detailErrorRunId === run.id ? (
+                      <p className="border-t border-gray-100 px-3 py-3 text-xs text-red-600 dark:border-gray-700">
+                        실행 상세를 불러오지 못했습니다. 다시 시도해 주세요.
+                      </p>
+                    ) : detail ? (
+                      <RunSelectionDetails run={detail} nodes={nodes} />
+                    ) : null
+                  ) : null}
+                </article>
+              );
+            })}
           </div>
         )}
 
@@ -896,12 +1106,8 @@ export function ExecutionComparisonPanel({
     (bundle) => bundle?.traceAvailability === 'unavailable',
   );
   const traceNotRecordedLabels = [
-    baselineBundle?.traceAvailability === 'not_recorded'
-      ? '기준 실행'
-      : null,
-    currentBundle?.traceAvailability === 'not_recorded'
-      ? '현재 실행'
-      : null,
+    baselineBundle?.traceAvailability === 'not_recorded' ? '기준 실행' : null,
+    currentBundle?.traceAvailability === 'not_recorded' ? '현재 실행' : null,
   ].filter((label): label is string => label !== null);
 
   return (
@@ -973,8 +1179,8 @@ export function ExecutionComparisonPanel({
         </div>
       ) : isCurrentExecutionRunning ? (
         <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700 dark:border-blue-900 dark:bg-blue-950/20 dark:text-blue-200">
-          <Loader2 className="h-4 w-4 animate-spin" /> 현재 실행이 완료되면
-          비교 결과를 준비합니다.
+          <Loader2 className="h-4 w-4 animate-spin" /> 현재 실행이 완료되면 비교
+          결과를 준비합니다.
         </div>
       ) : isComparisonLoading ? (
         <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-900">
