@@ -4068,6 +4068,88 @@ def test_deployed_judge_bootstrap_uses_judge_and_queues_safe_learning_label(monk
     assert captured["selected_model_id"] == "gpt-4o-mini"
 
 
+def test_deployed_judge_bootstrap_exposes_learning_queue_failure_reason(monkeypatch):
+    """학습 label 생성 실패는 Judge 성공과 구분해 trace에 남긴다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    policy_id = uuid.uuid4()
+    persisted = SimpleNamespace(
+        id=policy_id,
+        enabled=True,
+        status="active",
+        policy_version="judge-bootstrap-v1",
+        active_policy={
+            "strategy_id": "judge_bootstrap_incremental_v1",
+            "default_model_id": "gpt-5-mini",
+            "candidate_model_ids": ["gpt-4o-mini", "gpt-5-mini"],
+            "learning": {"mode": "judge_first"},
+        },
+        refresh_every_runs=20,
+        eligible_runs_since_last_refresh=0,
+    )
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore, "get_runtime_policy", lambda *_args, **_kwargs: persisted
+    )
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore,
+        "queue_runtime_judge_label",
+        lambda *_args, **_kwargs: {"learning_queued": False, "reason": "RuntimeError"},
+    )
+
+    class _JudgeClient:
+        def invoke_sync(self, *, messages, **kwargs):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"selected_model_id":"gpt-5-mini","confidence":0.91,"reason_short":"조건 검토 필요","reason_code":"multi_constraint"}'
+                        }
+                    }
+                ],
+                "usage": {},
+            }
+
+    user_id = uuid.uuid4()
+    monkeypatch.setattr(
+        LLMService,
+        "get_runtime_client_for_user",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            client=_JudgeClient(), credential_id=uuid.uuid4(), model_id="gpt-5-mini"
+        ),
+    )
+    node = LLMNode(
+        "llm-judge",
+        LLMNodeData(
+            title="judge bootstrap",
+            model_id="gpt-5-mini",
+            auto_model_routing=True,
+            user_prompt="{{ message }}",
+            referenced_variables=[],
+            parameters={},
+        ),
+        execution_context={
+            "workflow_id": str(uuid.uuid4()),
+            "deployment_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+            "organization_id": str(uuid.uuid4()),
+        },
+    )
+    monkeypatch.setattr(node, "_available_routing_model_ids", lambda _db: ["gpt-4o-mini", "gpt-5-mini"])
+    monkeypatch.setattr(node, "_routing_candidate_profiles", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(node, "_resolve_credential_principal_user", lambda: user_id)
+    monkeypatch.setattr(node, "_require_runtime_organization_id", lambda *_args: uuid.uuid4())
+
+    _, _, metadata = node._resolve_model_routing_policy(
+        {"message": "조건을 검토해 주세요"}, object(), routing_feature_text="조건 검토"
+    )
+
+    assert metadata["judge"]["status"] == "selected"
+    assert metadata["judge"]["learning_status"] == "not_queued"
+    assert metadata["judge"]["learning_not_queued_reason"] == "RuntimeError"
+
+
 def test_runtime_judge_failure_is_recorded_separately_from_judge_not_called(
     monkeypatch,
 ):

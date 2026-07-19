@@ -31,6 +31,7 @@ def test_completed_judge_label_updates_local_artifact_only_after_contract_passes
         candidate_model_ids=["gpt-4o-mini", "gpt-5-mini"],
         confidence=0.88,
         reason_code="multi_constraint",
+        feature_hash="safe-feature-hash",
         outcome_reason=None,
     )
     updated = {}
@@ -49,6 +50,7 @@ def test_completed_judge_label_updates_local_artifact_only_after_contract_passes
     assert accepted.status == "accepted"
     assert updated["selected_model_id"] == "gpt-5-mini"
     assert policy.active_policy["learning"]["judged_request_count"] == 1
+    assert policy.active_policy["learning"]["accepted_decision_cache"]["safe-feature-hash"]["selected_model_id"] == "gpt-5-mini"
 
     rejected = SimpleNamespace(
         status="pending",

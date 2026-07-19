@@ -326,3 +326,34 @@ def test_routing_feature_preserves_json_contract_when_system_prompt_is_long():
     assert "TOP_LEVEL_PROPERTY_COUNT: 2" in output_contract
     assert "REQUIRED_PROPERTY_COUNT: 2" in output_contract
     assert '"decision"' in output_contract
+
+
+def test_resolve_policy_reuses_accepted_judge_decision_for_same_safe_feature(monkeypatch):
+    monkeypatch.setenv("MODEL_ROUTING_FEATURE_HASH_KEY", "test-routing-cache-key")
+    from apps.workflow_engine.services.model_routing_decision_cache import (
+        remember_accepted_decision,
+        routing_feature_hash,
+    )
+
+    feature = "CURRENT_REQUEST:\nmessage: 동일한 안전 요청"
+    policy = _policy()
+    learning = policy["active_policy"]["learning"]
+    remember_accepted_decision(
+        learning,
+        feature_hash=routing_feature_hash(feature),
+        selected_model_id="gpt-4o-mini",
+        confidence=0.94,
+        reason_code="simple_response",
+    )
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "동일한 안전 요청"},
+        node_data=_node(),
+        available_model_ids=["gpt-4.1", "gpt-4.1-mini", "gpt-4o-mini"],
+        routing_feature_text=feature,
+    )
+
+    assert decision.decision_source == "accepted_judge_cache"
+    assert decision.selected_model_id == "gpt-4o-mini"
+    assert decision.requires_runtime_judge is False

@@ -27,6 +27,9 @@ from apps.workflow_engine.services.llm_output_contract import (
 from apps.workflow_engine.services.model_routing_judge_first_policy import (
     JUDGE_FIRST_STRATEGY_ID,
 )
+from apps.workflow_engine.services.model_routing_decision_cache import (
+    accepted_decision,
+)
 from apps.workflow_engine.services.model_routing_local_classifier import (
     MDebertaModelChoiceClassifier,
 )
@@ -357,6 +360,30 @@ class ModelRouter:
 
         learning = active_policy.get("learning")
         learning = learning if isinstance(learning, dict) else {}
+        cached_decision = accepted_decision(
+            learning,
+            feature_text=routing_feature_text or runtime_context.text,
+            available_model_ids=candidates,
+        )
+        if cached_decision:
+            cached_selected = cls.first_available_model(
+                [cached_decision.get("selected_model_id")], allowed_models
+            )
+            if cached_selected:
+                return ModelRoutingPolicyDecision(
+                    selected_model_id=cached_selected,
+                    fallback_model_id=resolved_fallback,
+                    matched_rule_id="accepted-judge-decision-cache",
+                    reason_code=str(cached_decision.get("reason_code") or "judge_selected"),
+                    runtime_context=runtime_context,
+                    decision_source="accepted_judge_cache",
+                    strategy_id=JUDGE_FIRST_STRATEGY_ID,
+                    decision_factors={
+                        "learning_mode": str(learning.get("mode") or "judge_first"),
+                        "cached_judge_confidence": cached_decision.get("confidence"),
+                        "candidate_model_count": len(candidates),
+                    },
+                )
         artifact = learning.get("local_router_artifact")
         min_confidence = cls._confidence(
             learning.get("local_confidence_threshold"),

@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+from uuid import uuid4
 
 from apps.workflow_engine.services.model_router import ModelRouter
 from apps.workflow_engine.services.model_routing_incremental_learning import (
@@ -148,3 +149,103 @@ def test_judge_labels_gradually_enable_confident_local_routing(monkeypatch):
     assert complex_request.decision_source == "local_router"
     assert simple.requires_runtime_judge is False
     assert complex_request.requires_runtime_judge is False
+
+
+def test_fifty_accepted_labels_enable_local_router_on_fifty_first_request(monkeypatch):
+    """배포 1회 label 확정부터 51회차 local router 전환까지 같은 경로로 검증한다."""
+    from apps.workflow_engine.services.model_routing_operational_performance import (
+        ModelRoutingOperationalPerformanceService,
+    )
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    candidates = ["gpt-4o-mini", "gpt-5-mini"]
+    policy = SimpleNamespace(
+        id=uuid4(),
+        active_policy=build_judge_first_active_policy(
+            policy_version="judge-first-e2e-v2",
+            default_model_id="gpt-5-mini",
+            fallback_model_id="gpt-4o-mini",
+            candidate_model_ids=candidates,
+        ),
+    )
+    initial_label = SimpleNamespace(
+        status="pending",
+        feature_vector=[1.0, 0.0],
+        encoder_model_id="test/judge-first-feature-encoder",
+        selected_model_id="gpt-4o-mini",
+        candidate_model_ids=candidates,
+        confidence=0.94,
+        reason_code="simple_response",
+        routing_feature_hash=None,
+        outcome_reason=None,
+    )
+
+    # 첫 label은 실제 finalize 경로에서 accepted가 되고 count가 1이 된다.
+    assert ModelRoutingPolicyStore._finalize_runtime_judge_label(
+        policy=policy,
+        label=initial_label,
+        contract_passed=True,
+        outcome_reason="contract_passed",
+    )
+    assert initial_label.status == "accepted"
+    assert policy.active_policy["learning"]["judged_request_count"] == 1
+
+    # 서로 다른 두 Judge 선택을 계약 통과 label로 50개 누적한다.
+    for index in range(49):
+        simple = index % 2 == 0
+        label = SimpleNamespace(
+            status="pending",
+            feature_vector=[1.0, 0.0] if simple else [0.0, 1.0],
+            encoder_model_id="test/judge-first-feature-encoder",
+            selected_model_id="gpt-4o-mini" if simple else "gpt-5-mini",
+            candidate_model_ids=candidates,
+            confidence=0.94,
+            reason_code="simple_response" if simple else "multi_constraint",
+            routing_feature_hash=None,
+            outcome_reason=None,
+        )
+        assert ModelRoutingPolicyStore._finalize_runtime_judge_label(
+            policy=policy,
+            label=label,
+            contract_passed=True,
+            outcome_reason="contract_passed",
+        )
+
+    assert policy.active_policy["learning"]["judged_request_count"] == 50
+    monkeypatch.setattr(
+        ModelRoutingOperationalPerformanceService,
+        "response_summary",
+        lambda *_args, **_kwargs: {
+            "models": [
+                {
+                    "run_count": 50,
+                    "success_rate": 1.0,
+                    "schema_pass_rate": 1.0,
+                    "downstream_success_rate": 1.0,
+                    "fallback_rate": 0.0,
+                }
+            ]
+        },
+    )
+    ModelRoutingPolicyStore.reconcile_incremental_learning_mode(
+        object(), policy=policy
+    )
+    assert policy.active_policy["learning"]["mode"] == "local_first"
+
+    embedder = _FeatureEmbedder()
+    monkeypatch.setitem(
+        MDebertaModelChoiceClassifier._embedder_cache,
+        embedder.model_id,
+        embedder,
+    )
+    decision = ModelRouter.resolve_policy(
+        {"active_policy": policy.active_policy},
+        inputs={"message": "간단 사용 안내"},
+        node_data=_node_data(),
+        available_model_ids=candidates,
+        routing_feature_text="간단 사용 안내",
+    )
+    assert decision.decision_source == "local_router"
+    assert decision.selected_model_id == "gpt-4o-mini"

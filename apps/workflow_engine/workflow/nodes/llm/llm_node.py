@@ -641,7 +641,6 @@ class LLMNode(Node[LLMNodeData]):
                 judge_metadata["model"] = judge_model_id
                 judge_metadata["selection_source"] = "judge_candidate_selection"
                 judge_metadata["candidate_model_count"] = len(candidate_model_ids)
-
                 usage = judge_decision.usage
                 if usage:
                     try:
@@ -692,6 +691,11 @@ class LLMNode(Node[LLMNodeData]):
                             )
                             if queued_learning.get("learning_queued"):
                                 judge_metadata["learning_status"] = "pending_contract"
+                            else:
+                                judge_metadata["learning_status"] = "not_queued"
+                                judge_metadata["learning_not_queued_reason"] = str(
+                                    queued_learning.get("reason") or "unknown"
+                                )[:80]
                     except (RuntimeError, ValueError, TypeError, SQLAlchemyError) as exc:
                         judge_metadata["learning_error"] = type(exc).__name__
 

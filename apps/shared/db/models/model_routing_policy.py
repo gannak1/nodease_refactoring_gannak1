@@ -349,6 +349,7 @@ class LLMNodeModelRoutingLearningLabel(Base):
     selected_model_id: Mapped[str] = mapped_column(String(255), nullable=False)
     candidate_model_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     feature_vector: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    routing_feature_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     encoder_model_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     confidence: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 6), nullable=True)
     reason_code: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)

@@ -36,6 +36,10 @@ from apps.workflow_engine.services.model_routing_operational_performance import 
 from apps.workflow_engine.services.model_routing_incremental_learning import (
     learning_mode_for,
 )
+from apps.workflow_engine.services.model_routing_decision_cache import (
+    remember_accepted_decision,
+    routing_feature_hash,
+)
 from apps.workflow_engine.services.llm_service import LLMService
 from apps.shared.services.model_routing_model_filter import (
     filter_model_routing_available_model_ids,
@@ -117,8 +121,10 @@ class ModelRoutingPolicyStore:
                 routing_feature_text,
                 artifact=learning.get("local_router_artifact"),
             )
-        except (RuntimeError, ValueError) as exc:
+        except (RuntimeError, ValueError, OSError) as exc:
             return {"learning_queued": False, "reason": type(exc).__name__}
+
+        feature_hash = routing_feature_hash(routing_feature_text)
 
         run_uuid = uuid.UUID(str(workflow_run_id))
         existing = (
@@ -138,6 +144,7 @@ class ModelRoutingPolicyStore:
                 selected_model_id=str(selected_model_id),
                 candidate_model_ids=[str(model_id) for model_id in candidate_model_ids],
                 feature_vector=[float(value) for value in vector],
+                routing_feature_hash=feature_hash,
                 encoder_model_id=encoder_model_id,
                 confidence=Decimal(str(confidence)),
                 reason_code=str(reason_code)[:128],
@@ -351,6 +358,14 @@ class ModelRoutingPolicyStore:
         learning["selected_model_ids"] = sorted(labels)
         learning["last_judge_confidence"] = round(float(label.confidence or 0), 4)
         learning["last_judge_reason_code"] = str(label.reason_code or "")[:80]
+        remember_accepted_decision(
+            learning,
+            feature_hash=getattr(label, "routing_feature_hash", None)
+            or getattr(label, "feature_hash", None),
+            selected_model_id=str(label.selected_model_id),
+            confidence=float(label.confidence or 0),
+            reason_code=str(label.reason_code or ""),
+        )
         active_policy["learning"] = learning
         policy.active_policy = active_policy
         label.status = "accepted"
