@@ -1019,7 +1019,7 @@ class LLMNode(Node[LLMNodeData]):
                         or "knowledge_candidates.safe_no_result"
                     )
                 return {
-                    "text": RAG_NO_EVIDENCE_MESSAGE,
+                    "text": self._rag_safe_no_result_text(RAG_NO_EVIDENCE_MESSAGE),
                     "usage": {},
                     "model": self.data.model_id,
                     "cost": 0.0,
@@ -1124,7 +1124,9 @@ class LLMNode(Node[LLMNodeData]):
                     }
                 ]
                 return {
-                    "text": knowledge_result.answer_override or "",
+                    "text": self._rag_safe_no_result_text(
+                        knowledge_result.answer_override or ""
+                    ),
                     "usage": {},
                     # 근거 부족으로 LLM을 호출하지 않았으므로 라우팅 결정을 만들지 않는다.
                     "model": self.data.model_id,
@@ -2890,6 +2892,57 @@ class LLMNode(Node[LLMNodeData]):
         if evidence_decision.insufficiency_reason == "no_evidence":
             return RAG_NO_EVIDENCE_MESSAGE
         return RAG_INSUFFICIENT_EVIDENCE_MESSAGE
+
+    def _rag_safe_no_result_text(self, message: str) -> str:
+        """RAG 안전 응답도 JSON 출력 계약을 깨지 않도록 직렬화한다.
+
+        근거가 없을 때는 provider를 호출하지 않는다. 다만 다음 노드가 JSON 필드를
+        추출하도록 연결된 경우 일반 문장을 반환하면 workflow 전체가 실패하므로,
+        schema의 각 필드 타입에 맞는 보수적인 기본값을 만든다.
+        """
+
+        output_format = self.data.output_format
+        if not isinstance(output_format, dict) or output_format.get("type") != "json":
+            return message
+        schema = output_format.get("schema")
+        if not isinstance(schema, dict):
+            return json.dumps({"message": message}, ensure_ascii=False)
+        return json.dumps(
+            self._rag_safe_no_result_schema_value(schema, message),
+            ensure_ascii=False,
+        )
+
+    @classmethod
+    def _rag_safe_no_result_schema_value(cls, schema: dict[str, Any], message: str) -> Any:
+        """JSON Schema의 기본 타입만 사용해 안전 응답의 placeholder를 만든다."""
+
+        enum = schema.get("enum")
+        if isinstance(enum, list) and enum:
+            return enum[0]
+
+        schema_type = schema.get("type")
+        if schema_type == "object" or isinstance(schema.get("properties"), dict):
+            properties = schema.get("properties")
+            if not isinstance(properties, dict):
+                return {}
+            return {
+                str(name): cls._rag_safe_no_result_schema_value(
+                    property_schema if isinstance(property_schema, dict) else {},
+                    message,
+                )
+                for name, property_schema in properties.items()
+            }
+        if schema_type == "array":
+            return []
+        if schema_type == "boolean":
+            return False
+        if schema_type == "integer":
+            return 0
+        if schema_type == "number":
+            return 0.0
+        if schema_type == "null":
+            return None
+        return message
 
     def _rag_evidence_summary(
         self,

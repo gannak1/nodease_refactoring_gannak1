@@ -5106,6 +5106,69 @@ def test_llm_run_resolves_candidates_once_and_reuses_resolution_for_search(
     assert result["text"] == RAG_NO_EVIDENCE_MESSAGE
 
 
+def test_llm_node_rag_safe_no_result_preserves_json_output_contract(monkeypatch):
+    """RAG 근거가 없더라도 다음 변수 추출 노드가 읽을 JSON 계약은 지킨다."""
+
+    kb_id = uuid.uuid4()
+    resolver = CapturingRuntimeCandidateResolver(
+        KnowledgeRuntimeCandidateSnapshot(eligible_direct_kb_ids=(kb_id,))
+    )
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-4o",
+            user_prompt="{{ message }}",
+            knowledgeBases=[KnowledgeBaseRef(id=str(kb_id), name="KB")],
+            output_format={
+                "type": "json",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "문의 유형": {"type": "string"},
+                        "긴급도": {"type": "boolean"},
+                        "답변 초안": {"type": "string"},
+                    },
+                    "required": ["문의 유형", "긴급도", "답변 초안"],
+                },
+            },
+        ),
+        execution_context={
+            "organization_id": str(uuid.uuid4()),
+            "db": object(),
+            "knowledge_runtime_candidate_resolver": resolver,
+        },
+    )
+    client = DummyClient()
+    node._client_override = client  # noqa: SLF001
+
+    monkeypatch.setattr(
+        node,
+        "_execute_knowledge_search",
+        lambda **_: WorkflowRAGSearchResult(
+            context="",
+            metadata=[],
+            evidence_decision=RAGEvidenceDecision(
+                evidence_sufficient=False,
+                insufficiency_reason="no_evidence",
+            ),
+            should_invoke_llm=False,
+            answer_override=RAG_NO_EVIDENCE_MESSAGE,
+        ),
+    )
+
+    result = node._run({"message": "VPN 설치 위치를 알려주세요"})  # noqa: SLF001
+
+    assert client.calls == []
+    assert json.loads(result["text"]) == {
+        "문의 유형": RAG_NO_EVIDENCE_MESSAGE,
+        "긴급도": False,
+        "답변 초안": RAG_NO_EVIDENCE_MESSAGE,
+    }
+    assert result["metadata"]["rag"]["evidence_sufficient"] is False
+
+
 def test_runtime_candidate_resolver_uses_anonymous_audience_without_explicit_subject():
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
