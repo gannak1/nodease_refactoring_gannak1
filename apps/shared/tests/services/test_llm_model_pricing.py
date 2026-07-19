@@ -1,7 +1,9 @@
 from apps.shared.services.llm_model_pricing import (
     calculate_text_token_cost,
+    extract_cached_input_tokens,
     get_model_pricing,
     normalize_model_pricing_id,
+    pricing_estimate_metadata,
 )
 
 
@@ -29,6 +31,20 @@ def test_openai_cached_input_tokens_use_cached_input_price():
     # $0.15 / 1M standard input, $0.075 / 1M cached input,
     # $0.60 / 1M output.
     assert cost == 0.00042
+
+
+def test_cached_tokens_are_read_from_provider_prompt_details():
+    assert extract_cached_input_tokens(
+        {"prompt_tokens_details": {"cached_tokens": 400}}
+    ) == 400
+
+
+def test_pricing_metadata_marks_unsupported_terms_as_standard_estimate():
+    metadata = pricing_estimate_metadata("gemini-3.5-flash")
+
+    assert metadata["basis"] == "standard_text_tokens"
+    assert metadata["unsupported_conditions"]["long_context"] is True
+    assert metadata["unsupported_conditions"]["batch"] is True
 
 
 def test_unknown_conditional_prices_are_reported_as_standard_estimate():

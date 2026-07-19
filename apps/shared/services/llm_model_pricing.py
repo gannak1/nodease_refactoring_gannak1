@@ -10,7 +10,7 @@ provider usage does not identify a supported conditional rate.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Any, Mapping, Optional
 
@@ -153,11 +153,9 @@ for _model_id, _cached_price in {
     "gpt-4.1": 0.0005,
 }.items():
     _pricing = MODEL_PRICING_CATALOG[_model_id]
-    MODEL_PRICING_CATALOG[_model_id] = ModelPricing(
-        **{
-            **_pricing.__dict__,
-            "cached_input_per_1k": _cached_price,
-        }
+    MODEL_PRICING_CATALOG[_model_id] = replace(
+        _pricing,
+        cached_input_per_1k=_cached_price,
     )
 
 
@@ -197,6 +195,44 @@ def extract_cached_input_tokens(usage: Optional[Mapping[str, Any]]) -> int:
         except (TypeError, ValueError):
             continue
     return 0
+
+
+def pricing_estimate_metadata(
+    model_id: object,
+    usage: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """Return display-safe context for a token cost estimate.
+
+    The current DB model stores only one Standard rate pair. The returned
+    metadata makes that limitation explicit to trace and cost UIs instead of
+    silently implying that Batch, Flex, Priority, or long-context terms were
+    priced exactly.
+    """
+
+    pricing = get_model_pricing(model_id)
+    if pricing is None:
+        return {
+            "status": "unavailable",
+            "reason": "model_price_not_in_catalog",
+        }
+
+    cached_tokens = extract_cached_input_tokens(usage)
+    return {
+        "status": "estimated",
+        "basis": (
+            "cached_input_and_standard_text_tokens"
+            if cached_tokens > 0 and pricing.cached_input_per_1k is not None
+            else "standard_text_tokens"
+        ),
+        "source_url": pricing.source_url,
+        "unsupported_conditions": {
+            "long_context": pricing.long_context_input_per_1k is None,
+            "batch": pricing.batch_input_per_1k is None,
+            "flex": pricing.flex_input_per_1k is None,
+            "priority": pricing.priority_input_per_1k is None,
+            "data_residency": True,
+        },
+    }
 
 
 def calculate_text_token_cost(

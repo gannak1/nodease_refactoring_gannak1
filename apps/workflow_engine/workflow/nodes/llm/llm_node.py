@@ -31,6 +31,7 @@ from apps.shared.services.permission_audit import (
     record_resource_permission_denied,
     record_system_resource_permission_denied,
 )
+from apps.shared.services.llm_model_pricing import pricing_estimate_metadata
 from apps.shared.services.model_routing_global_profile_catalog import (
     OFFICIAL_PROVIDER_CATALOG,
     catalog_metadata_for_model_id,
@@ -1493,6 +1494,10 @@ class LLMNode(Node[LLMNodeData]):
                 "model": used_model_id,
                 "cost": cost,
                 "metadata": {
+                    "cost_estimate": pricing_estimate_metadata(
+                        used_model_id,
+                        usage,
+                    ),
                     "model_routing": model_routing_metadata,
                     "routing_context": routing_context,
                     "fallback_used": fallback_used,
@@ -1605,6 +1610,20 @@ class LLMNode(Node[LLMNodeData]):
             if not math.isfinite(value) or value < 0:
                 continue
             safe_usage[key] = value
+
+        # Cache token counts are billing metadata, not prompt content. Keep the
+        # numeric value so the shared calculator can apply a cached-input rate.
+        cached_tokens = usage.get("cached_tokens")
+        prompt_details = usage.get("prompt_tokens_details")
+        if cached_tokens is None and isinstance(prompt_details, dict):
+            cached_tokens = prompt_details.get("cached_tokens")
+        if (
+            not isinstance(cached_tokens, bool)
+            and isinstance(cached_tokens, (int, float))
+            and math.isfinite(cached_tokens)
+            and cached_tokens >= 0
+        ):
+            safe_usage["cached_tokens"] = cached_tokens
         return safe_usage
 
     def _render_prompt(self, template: Optional[str], inputs: Dict[str, Any]) -> str:

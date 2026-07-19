@@ -86,6 +86,18 @@ def test_llm_node_answer_grounding_check_defaults_to_basic():
     assert data.answerGroundingCheck == "basic"
 
 
+def test_llm_node_keeps_cached_token_count_for_cost_calculation():
+    usage = LLMNode._safe_usage_metadata(
+        {
+            "prompt_tokens": 1_000,
+            "completion_tokens": 50,
+            "prompt_tokens_details": {"cached_tokens": 400},
+        }
+    )
+
+    assert usage["cached_tokens"] == 400
+
+
 def test_llm_node_legacy_citation_display_defaults_to_hidden():
     data = LLMNodeData(title="LLM", model_id="gpt-4o-mini")
 
@@ -1498,7 +1510,9 @@ def test_llm_node_logs_fallback_model_when_primary_client_selection_fails(
             )
         raise AssertionError(f"unexpected model_id: {model_id}")
 
-    def fake_calculate_cost(db, model_id, prompt_tokens, completion_tokens):
+    def fake_calculate_cost(
+        db, model_id, prompt_tokens, completion_tokens, usage=None
+    ):
         cost_calls.append(
             {
                 "model_id": model_id,
