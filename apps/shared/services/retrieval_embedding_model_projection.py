@@ -6,12 +6,11 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
-from sqlalchemy.orm import Session
-
 from apps.shared.db.models.llm import LLMModel
 from apps.shared.domain.knowledge_runtime_candidates import (
     MAX_RUNTIME_DIRECT_KB_REFERENCES,
 )
+from sqlalchemy.orm import Session
 
 
 class EmbeddingModelProjectionError(RuntimeError):

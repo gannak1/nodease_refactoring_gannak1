@@ -2,7 +2,6 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
-
 from apps.shared.db.models.llm import LLMModel
 from apps.shared.services.retrieval_embedding_model_projection import (
     EmbeddingModelProjectionError,
