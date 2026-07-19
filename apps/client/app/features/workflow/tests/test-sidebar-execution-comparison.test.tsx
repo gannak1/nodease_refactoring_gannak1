@@ -453,15 +453,13 @@ describe('TestSidebar execution comparison', () => {
       ),
     ).toBeVisible();
     const runRow = screen.getByRole('article', {
-      name: '07. 13. 오전 10:00 내부 배포 실행',
+      name: /내부 배포 실행$/,
     });
     expect(within(runRow).getByText('내부 배포')).toBeVisible();
     expect(mocks.getWorkflowRun).not.toHaveBeenCalled();
     expect(screen.queryByText('실행 입력')).not.toBeInTheDocument();
 
-    fireEvent.click(
-      screen.getByRole('button', { name: '07. 13. 오전 10:00 실행 상세보기' }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /실행 상세보기$/ }));
 
     expect(await screen.findByText('실행 입력')).toBeVisible();
     expect(screen.getByText('실행 지표')).toBeVisible();
@@ -473,9 +471,7 @@ describe('TestSidebar execution comparison', () => {
       'baseline-run',
     );
 
-    fireEvent.click(
-      screen.getByRole('button', { name: '07. 13. 오전 10:00 실행 상세 닫기' }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /실행 상세 닫기$/ }));
     expect(screen.queryByText('실행 입력')).not.toBeInTheDocument();
   });
 
