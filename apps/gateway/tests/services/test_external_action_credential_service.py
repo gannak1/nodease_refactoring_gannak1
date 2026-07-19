@@ -189,6 +189,7 @@ def test_same_organization_denial_is_hidden_and_audit_metadata_is_allowlisted(
     token = set_current_metadata(
         {
             "request_id": "request-safe",
+            "correlation_id": "correlation-safe",
             "ip": "203.0.113.10",
             "user_agent": "test-agent",
             "method": "PATCH",
@@ -208,8 +209,7 @@ def test_same_organization_denial_is_hidden_and_audit_metadata_is_allowlisted(
 
     assert record_denial.call_args.kwargs["metadata"] == {
         "request_id": "request-safe",
-        "ip": "203.0.113.10",
-        "user_agent": "test-agent",
+        "correlation_id": "correlation-safe",
     }
 
 

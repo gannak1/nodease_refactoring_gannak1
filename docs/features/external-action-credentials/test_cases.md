@@ -38,4 +38,4 @@ Status: Draft
 ## Non-Exposure
 
 - EAC-TC-040: API, graph, deployment snapshot, audit, trace, structured log, exception, test fixture에 secret/ciphertext/raw provider response가 없다.
-- EAC-TC-041: permission denial audit은 safe correlation metadata만 가지며 raw URL, header, repository, channel/message/comment을 포함하지 않는다.
+- EAC-TC-041: permission denial audit은 `request_id`와 `correlation_id`만 가지며 IP, User-Agent, raw URL, header, repository, channel/message/comment을 포함하지 않는다.

@@ -611,9 +611,18 @@ class ExternalActionCredentialService:
                 include_revoked=True,
             ),
             organization_id=organization_id,
-            metadata=self._safe_request_metadata(),
+            metadata=self._safe_permission_denial_metadata(),
         )
         raise ExternalActionCredentialNotFound()
+
+    @staticmethod
+    def _safe_permission_denial_metadata() -> dict[str, object]:
+        request_metadata = get_current_metadata()
+        return {
+            key: request_metadata[key]
+            for key in ("request_id", "correlation_id")
+            if request_metadata.get(key) is not None
+        }
 
     @staticmethod
     def _safe_request_metadata() -> dict[str, object]:
