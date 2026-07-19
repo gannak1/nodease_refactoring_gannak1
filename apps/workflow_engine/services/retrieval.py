@@ -30,6 +30,9 @@ from apps.shared.services.rag_source_tier import (
     retrieval_candidate_source_tier_priority,
     source_tier_tie_break_enabled,
 )
+from apps.shared.services.retrieval_embedding_model_projection import (
+    EmbeddingModelBinding,
+)
 from apps.shared.services.retrieval_metadata import (
     chunk_metadata as build_chunk_metadata,
     hierarchy_path as build_hierarchy_path,
@@ -1020,6 +1023,7 @@ class RetrievalService:
         hierarchy_mode: str = "auto",
         source_tier_policy: str = "tie_break",
         query_vector: list[float] | None = None,
+        embedding_model_binding: EmbeddingModelBinding | None = None,
     ) -> list[ChunkPreview]:
         """
         [GEVENT] 동기 검색 API - gevent pool 호환성을 위해.
@@ -1044,13 +1048,21 @@ class RetrievalService:
             if not kb or not kb.embedding_model:
                 return []
 
-            model_info = (
-                self.db.query(LLMModel)
-                .filter(LLMModel.model_id_for_api_call == kb.embedding_model)
-                .first()
-            )
-            if model_info and model_info.type != "embedding":
-                return []
+            if embedding_model_binding is not None:
+                if (
+                    query_vector is None
+                    or embedding_model_binding.model_identifier
+                    != kb.embedding_model
+                ):
+                    return []
+            else:
+                model_info = (
+                    self.db.query(LLMModel)
+                    .filter(LLMModel.model_id_for_api_call == kb.embedding_model)
+                    .first()
+                )
+                if model_info and model_info.type != "embedding":
+                    return []
 
             has_hierarchy = self._has_valid_hierarchy(knowledge_base_id)
             if hierarchy_mode == HIERARCHY_MODE_PARENT_CHILD and not has_hierarchy:

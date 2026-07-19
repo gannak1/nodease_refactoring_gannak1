@@ -35,6 +35,9 @@ from apps.shared.services.llm_model_pricing import (
 )
 from apps.shared.services.llm_usage_context import resolve_llm_usage_context
 from apps.shared.services.permissions import has_llm_credential_permission
+from apps.shared.services.retrieval_embedding_model_projection import (
+    EmbeddingModelBinding,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -613,6 +616,39 @@ class LLMService:
         ).client
 
     @staticmethod
+    def get_client_for_model_binding(
+        db: Session,
+        user_id: uuid.UUID,
+        binding: EmbeddingModelBinding,
+        organization_id: Optional[uuid.UUID] = None,
+    ):
+        """Return a client without resolving the model identifier again."""
+        return LLMService.get_runtime_client_for_model_binding(
+            db=db,
+            user_id=user_id,
+            binding=binding,
+            organization_id=organization_id,
+        ).client
+
+    @staticmethod
+    def get_runtime_client_for_model_binding(
+        db: Session,
+        user_id: uuid.UUID,
+        binding: EmbeddingModelBinding,
+        organization_id: Optional[uuid.UUID] = None,
+    ) -> LLMRuntimeSelection:
+        organization_uuid = LLMService._require_runtime_organization_id(
+            organization_id,
+            model_id=binding.model_identifier,
+        )
+        return LLMService._get_runtime_client_for_resolved_model(
+            db,
+            user_id=user_id,
+            target_model=binding,
+            organization_id=organization_uuid,
+        )
+
+    @staticmethod
     def get_runtime_client_for_user(
         db: Session,
         user_id: uuid.UUID,
@@ -657,30 +693,37 @@ class LLMService:
                 organization_id=organization_uuid,
             )
 
-        # verified credential-model relation과 credential use 권한을 함께 평가한다.
-        # relation이 없으면 fail-closed로 처리한다.
-        cred = LLMService._get_runtime_credential_for_user(
+        return LLMService._get_runtime_client_for_resolved_model(
             db,
             user_id=user_id,
             target_model=target_model,
             organization_id=organization_uuid,
         )
 
+    @staticmethod
+    def _get_runtime_client_for_resolved_model(
+        db: Session,
+        *,
+        user_id: uuid.UUID,
+        target_model: LLMModel | EmbeddingModelBinding,
+        organization_id: uuid.UUID,
+    ) -> LLMRuntimeSelection:
+        """Apply the existing runtime credential policy to a resolved model."""
+        model_id = target_model.model_id_for_api_call
+        cred = LLMService._get_runtime_credential_for_user(
+            db,
+            user_id=user_id,
+            target_model=target_model,
+            organization_id=organization_id,
+        )
         if not cred:
-            logger.error(
-                f"[LLMService] No valid credential found for user_id={user_id}, model_id='{model_id}'. "
-                f"TargetModel: {target_model.name if target_model else 'None'} (ID: {target_model.id if target_model else 'None'}), "
-                f"ProviderID: {target_model.provider_id if target_model else 'None'}"
-            )
-
             raise LLMCredentialNotAvailableError(
                 "credential_not_available",
                 f"유효한 API 키를 찾을 수 없습니다. [설정 > 모델 키 관리]에서 '{model_id}' 모델을 지원하는 API Key를 등록해주세요.",
                 model_id=model_id,
-                organization_id=organization_uuid,
+                organization_id=organization_id,
             )
 
-        # 설정 로드
         try:
             cfg = load_llm_credential_config(cred)
             api_key = cfg.get("apiKey")
@@ -689,19 +732,16 @@ class LLMService:
             raise ValueError("Invalid credential config") from exc
 
         db.refresh(cred)
-        provider_type = cred.provider.name
-
         client = get_llm_client(
-            provider=provider_type,
+            provider=cred.provider.name,
             model_id=model_id,
             credentials={"apiKey": api_key, "baseUrl": base_url},
         )
-
         return LLMRuntimeSelection(
             client=client,
             credential_id=cred.id,
             model_id=model_id,
-            organization_id=organization_uuid,
+            organization_id=organization_id,
         )
 
     @staticmethod
@@ -884,7 +924,7 @@ class LLMService:
     def _get_runtime_credential_for_user(
         db: Session,
         user_id: uuid.UUID,
-        target_model: LLMModel,
+        target_model: LLMModel | EmbeddingModelBinding,
         organization_id: Optional[uuid.UUID] = None,
     ) -> Optional[LLMCredential]:
         """workflow runtime의 credential 선택 실패 원인을 세분화합니다. MBA-43"""

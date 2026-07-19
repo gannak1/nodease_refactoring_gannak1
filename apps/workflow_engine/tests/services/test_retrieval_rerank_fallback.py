@@ -15,8 +15,11 @@ for p in [ROOT, PARENT_OF_ROOT]:
 
 from apps.shared.db.models.knowledge import KnowledgeBase  # noqa: E402
 from apps.shared.db.models.llm import LLMModel  # noqa: E402
-from apps.workflow_engine.services.retrieval import RetrievalService  # noqa: E402
+from apps.shared.services.retrieval_embedding_model_projection import (  # noqa: E402
+    EmbeddingModelBinding,
+)
 from apps.workflow_engine.services.llm_service import LLMService  # noqa: E402
+from apps.workflow_engine.services.retrieval import RetrievalService  # noqa: E402
 
 
 def test_rerank_is_disabled_by_default_and_does_not_load_model(monkeypatch):
@@ -180,29 +183,32 @@ def test_sync_search_threshold_uses_score_when_rerank_falls_back(monkeypatch):
     assert result[0].score > 0
 
 
-def test_sync_search_uses_precomputed_query_vector_without_embedding_client(monkeypatch):
+def test_sync_search_uses_precomputed_model_binding_without_model_lookup(
+    monkeypatch,
+):
     kb_id = uuid.uuid4()
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     vectors = []
+    binding = EmbeddingModelBinding(
+        model_id=uuid.uuid4(),
+        provider_id=uuid.uuid4(),
+        model_identifier="text-embedding-test",
+    )
 
     class FakeQuery:
-        def __init__(self, model):
-            self.model = model
-
         def filter(self, *args, **kwargs):
             return self
 
         def first(self):
-            if self.model is KnowledgeBase:
-                return SimpleNamespace(id=kb_id, embedding_model="text-embedding-test")
-            if self.model is LLMModel:
-                return SimpleNamespace(type="embedding")
-            return None
+            return SimpleNamespace(id=kb_id, embedding_model="text-embedding-test")
 
     class FakeDb:
         def query(self, model):
-            return FakeQuery(model)
+            if model is LLMModel:
+                raise AssertionError("precomputed binding must skip model lookup")
+            assert model is KnowledgeBase
+            return FakeQuery()
 
     chunk = SimpleNamespace(
         id=uuid.uuid4(),
@@ -240,10 +246,57 @@ def test_sync_search_uses_precomputed_query_vector_without_embedding_client(monk
         hybrid_search=False,
         use_rerank=False,
         query_vector=[0.3, 0.7],
+        embedding_model_binding=binding,
     )
 
     assert vectors == [[0.3, 0.7]]
     assert [chunk.filename for chunk in result] == ["commit-convention.md"]
+
+
+def test_sync_search_rejects_mismatched_precomputed_model_binding(monkeypatch):
+    kb_id = uuid.uuid4()
+    binding = EmbeddingModelBinding(
+        model_id=uuid.uuid4(),
+        provider_id=uuid.uuid4(),
+        model_identifier="embedding-other",
+    )
+
+    class FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return SimpleNamespace(id=kb_id, embedding_model="embedding-expected")
+
+    class FakeDb:
+        def query(self, model):
+            if model is LLMModel:
+                raise AssertionError("mismatched binding must skip model lookup")
+            assert model is KnowledgeBase
+            return FakeQuery()
+
+    service = RetrievalService(
+        FakeDb(),
+        uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_vector_search",
+        lambda *_args, **_kwargs: pytest.fail(
+            "mismatched binding must not reach vector search"
+        ),
+    )
+
+    assert (
+        service.search_documents_sync(
+            "query",
+            knowledge_base_id=str(kb_id),
+            query_vector=[0.3, 0.7],
+            embedding_model_binding=binding,
+        )
+        == []
+    )
 
 
 def test_sync_search_rejects_non_embedding_model_before_vector_search(monkeypatch):

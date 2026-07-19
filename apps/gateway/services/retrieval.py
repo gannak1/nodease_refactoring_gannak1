@@ -33,6 +33,9 @@ from apps.shared.services.rag_source_tier import (
     retrieval_candidate_source_tier_priority,
     source_tier_tie_break_enabled,
 )
+from apps.shared.services.retrieval_embedding_model_projection import (
+    load_embedding_model_projection,
+)
 from apps.shared.services.retrieval_metadata import (
     chunk_metadata as build_chunk_metadata,
     hierarchy_path as build_hierarchy_path,
@@ -650,6 +653,18 @@ class RetrievalService:
 
         try:
             kbs_by_id = self._retrieval_knowledge_bases(kb_ids)
+            model_projection = (
+                {}
+                if embedding_model is not None
+                else load_embedding_model_projection(
+                    self.db,
+                    (
+                        kbs_by_id[kb_id].embedding_model
+                        for kb_id in kb_ids
+                        if kb_id in kbs_by_id
+                    ),
+                )
+            )
 
             for current_kb_id in kb_ids:
                 kb = kbs_by_id.get(current_kb_id)
@@ -661,13 +676,11 @@ class RetrievalService:
                 ):
                     continue
 
-                model_info = embedding_model or (
-                    self.db.query(LLMModel)
-                    .filter(LLMModel.model_id_for_api_call == kb.embedding_model)
-                    .first()
-                )
-                if model_info and (
-                    model_info.type != "embedding" or not model_info.is_active
+                if embedding_model is not None and (
+                    embedding_model.type != "embedding"
+                    or not embedding_model.is_active
+                    or embedding_model.model_id_for_api_call
+                    != kb.embedding_model
                 ):
                     continue
 
@@ -688,10 +701,13 @@ class RetrievalService:
                         organization_id=self.organization_id,
                     )
                 else:
-                    embed_client = LLMService.get_client_for_user(
+                    model_binding = model_projection.get(kb.embedding_model)
+                    if model_binding is None:
+                        continue
+                    embed_client = LLMService.get_client_for_model_binding(
                         self.db,
                         self.user_id,
-                        kb.embedding_model,
+                        model_binding,
                         organization_id=self.organization_id,
                     )
 

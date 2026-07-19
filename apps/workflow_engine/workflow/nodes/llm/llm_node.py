@@ -49,6 +49,10 @@ from apps.shared.services.rag_source_tier import (
     chunk_source_tier_priority,
     source_tier_tie_break_enabled,
 )
+from apps.shared.services.retrieval_embedding_model_projection import (
+    EmbeddingModelBinding,
+    load_embedding_model_projection,
+)
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.shared.utils.prompt_injection_guard import (
     PLATFORM_UNTRUSTED_CONTEXT_GUARDRAIL_PROMPT,
@@ -2007,14 +2011,17 @@ class LLMNode(Node[LLMNodeData]):
 
         all_chunks: List[tuple[str, ChunkPreview]] = []
         rag_result_counts: list[tuple[str, int]] = []
-        query_vectors_by_kb, embedding_failed_count, precomputed_vectors = (
-            self._precompute_rag_query_vectors_by_kb(
-                db_session,
-                query=search_query,
-                user_id=credential_user_id,
-                organization_id=organization_uuid,
-                knowledge_base_ids=kb_ids,
-            )
+        (
+            query_vectors_by_kb,
+            model_bindings_by_kb,
+            embedding_failed_count,
+            precomputed_vectors,
+        ) = self._precompute_rag_query_vectors_by_kb(
+            db_session,
+            query=search_query,
+            user_id=credential_user_id,
+            organization_id=organization_uuid,
+            knowledge_base_ids=kb_ids,
         )
         fanout_kb_ids = kb_ids
         if precomputed_vectors:
@@ -2029,6 +2036,9 @@ class LLMNode(Node[LLMNodeData]):
             top_k=top_k,
             threshold=threshold,
             query_vectors_by_kb=query_vectors_by_kb if precomputed_vectors else None,
+            model_bindings_by_kb=(
+                model_bindings_by_kb if precomputed_vectors else None
+            ),
         )
         if embedding_failed_count:
             fanout = WorkflowRAGFanoutResult(
@@ -2247,6 +2257,9 @@ class LLMNode(Node[LLMNodeData]):
         top_k: int,
         threshold: float,
         query_vectors_by_kb: Optional[Dict[str, List[float]]] = None,
+        model_bindings_by_kb: Optional[
+            Dict[str, EmbeddingModelBinding]
+        ] = None,
     ) -> WorkflowRAGFanoutResult:
         if not knowledge_base_ids:
             return WorkflowRAGFanoutResult(results=[], failed_count=0)
@@ -2266,6 +2279,7 @@ class LLMNode(Node[LLMNodeData]):
                 top_k=top_k,
                 threshold=threshold,
                 query_vectors_by_kb=query_vectors_by_kb,
+                model_bindings_by_kb=model_bindings_by_kb,
             )
 
         gevent_modules = self._rag_gevent_modules()
@@ -2279,6 +2293,7 @@ class LLMNode(Node[LLMNodeData]):
                 top_k=top_k,
                 threshold=threshold,
                 query_vectors_by_kb=query_vectors_by_kb,
+                model_bindings_by_kb=model_bindings_by_kb,
             )
 
         gevent, pool_cls = gevent_modules
@@ -2294,6 +2309,9 @@ class LLMNode(Node[LLMNodeData]):
                 threshold=threshold,
                 query_vector=query_vectors_by_kb.get(kb_id)
                 if query_vectors_by_kb
+                else None,
+                embedding_model_binding=model_bindings_by_kb.get(kb_id)
+                if model_bindings_by_kb
                 else None,
             ): kb_id
             for kb_id in knowledge_base_ids
@@ -2340,6 +2358,9 @@ class LLMNode(Node[LLMNodeData]):
         top_k: int,
         threshold: float,
         query_vectors_by_kb: Optional[Dict[str, List[float]]] = None,
+        model_bindings_by_kb: Optional[
+            Dict[str, EmbeddingModelBinding]
+        ] = None,
     ) -> WorkflowRAGFanoutResult:
         retrieval = RetrievalService(
             db_session,
@@ -2359,6 +2380,9 @@ class LLMNode(Node[LLMNodeData]):
                     threshold=threshold,
                     query_vector=query_vectors_by_kb.get(kb_id)
                     if query_vectors_by_kb
+                    else None,
+                    embedding_model_binding=model_bindings_by_kb.get(kb_id)
+                    if model_bindings_by_kb
                     else None,
                 )
             except Exception as exc:
@@ -2385,6 +2409,7 @@ class LLMNode(Node[LLMNodeData]):
         top_k: int,
         threshold: float,
         query_vector: Optional[List[float]] = None,
+        embedding_model_binding: Optional[EmbeddingModelBinding] = None,
     ) -> List[ChunkPreview]:
         session = SessionLocal()
         try:
@@ -2400,6 +2425,7 @@ class LLMNode(Node[LLMNodeData]):
                 top_k=top_k,
                 threshold=threshold,
                 query_vector=query_vector,
+                embedding_model_binding=embedding_model_binding,
             )
         finally:
             session.close()
@@ -2413,6 +2439,7 @@ class LLMNode(Node[LLMNodeData]):
         top_k: int,
         threshold: float,
         query_vector: Optional[List[float]] = None,
+        embedding_model_binding: Optional[EmbeddingModelBinding] = None,
     ) -> List[ChunkPreview]:
         gevent_modules = self._rag_gevent_modules()
         if gevent_modules is None:
@@ -2430,6 +2457,7 @@ class LLMNode(Node[LLMNodeData]):
                 top_k=top_k,
                 threshold=threshold,
                 query_vector=query_vector,
+                embedding_model_binding=embedding_model_binding,
             )
         except gevent.Timeout as exc:
             if exc is timer:
@@ -2447,6 +2475,7 @@ class LLMNode(Node[LLMNodeData]):
         top_k: int,
         threshold: float,
         query_vector: Optional[List[float]] = None,
+        embedding_model_binding: Optional[EmbeddingModelBinding] = None,
     ) -> List[ChunkPreview]:
         return retrieval.search_documents_sync(
             query,
@@ -2456,6 +2485,7 @@ class LLMNode(Node[LLMNodeData]):
             hierarchy_mode="auto",
             source_tier_policy=getattr(self.data, "sourceTierPolicy", "tie_break"),
             query_vector=query_vector,
+            embedding_model_binding=embedding_model_binding,
         )
 
     def _precompute_rag_query_vectors_by_kb(
@@ -2466,9 +2496,14 @@ class LLMNode(Node[LLMNodeData]):
         user_id: uuid.UUID,
         organization_id: uuid.UUID,
         knowledge_base_ids: List[str],
-    ) -> tuple[Dict[str, List[float]], int, bool]:
+    ) -> tuple[
+        Dict[str, List[float]],
+        Dict[str, EmbeddingModelBinding],
+        int,
+        bool,
+    ]:
         if not knowledge_base_ids:
-            return {}, 0, False
+            return {}, {}, 0, False
 
         try:
             parsed_ids = [uuid.UUID(str(kb_id)) for kb_id in knowledge_base_ids]
@@ -2483,16 +2518,23 @@ class LLMNode(Node[LLMNodeData]):
             )
         except Exception as exc:
             logger.warning(
-                "[LLMNode] RAG query vector precompute skipped: %s",
+                "[LLMNode] RAG query vector precompute failed: %s",
                 exc.__class__.__name__,
             )
-            return {}, 0, False
+            if self.data.ragFailurePolicy == "fail_node":
+                raise RuntimeError(
+                    "embedding_model_projection_unavailable"
+                ) from exc
+            return {}, {}, len(knowledge_base_ids), True
 
         if any(not hasattr(row, "embedding_model") for row in rows):
             logger.info(
-                "[LLMNode] RAG query vector precompute skipped: missing embedding model attribute"
+                "[LLMNode] RAG query vector precompute failed: "
+                "missing embedding model attribute"
             )
-            return {}, 0, False
+            if self.data.ragFailurePolicy == "fail_node":
+                raise RuntimeError("embedding_model_projection_unavailable")
+            return {}, {}, len(knowledge_base_ids), True
 
         kb_by_id = {str(row.id): row for row in rows}
         model_to_kb_ids: Dict[str, List[str]] = {}
@@ -2504,21 +2546,32 @@ class LLMNode(Node[LLMNodeData]):
                 continue
             model_to_kb_ids.setdefault(kb.embedding_model, []).append(str(kb_id))
 
+        try:
+            model_projection = load_embedding_model_projection(
+                db_session,
+                model_to_kb_ids,
+            )
+        except Exception:
+            if self.data.ragFailurePolicy == "fail_node":
+                raise
+            failed_count += sum(
+                len(grouped_kb_ids)
+                for grouped_kb_ids in model_to_kb_ids.values()
+            )
+            return {}, {}, failed_count, True
+
         query_vectors_by_kb: Dict[str, List[float]] = {}
+        model_bindings_by_kb: Dict[str, EmbeddingModelBinding] = {}
         for embedding_model, grouped_kb_ids in model_to_kb_ids.items():
+            model_binding = model_projection.get(embedding_model)
+            if model_binding is None:
+                failed_count += len(grouped_kb_ids)
+                continue
             try:
-                model_info = (
-                    db_session.query(LLMModel)
-                    .filter(LLMModel.model_id_for_api_call == embedding_model)
-                    .first()
-                )
-                if model_info and model_info.type != "embedding":
-                    failed_count += len(grouped_kb_ids)
-                    continue
-                embed_client = LLMService.get_client_for_user(
+                embed_client = LLMService.get_client_for_model_binding(
                     db_session,
                     user_id,
-                    embedding_model,
+                    model_binding,
                     organization_id=organization_id,
                 )
                 query_vector = embed_client.embed_sync(query)
@@ -2529,6 +2582,7 @@ class LLMNode(Node[LLMNodeData]):
                 continue
             for kb_id in grouped_kb_ids:
                 query_vectors_by_kb[kb_id] = query_vector
+                model_bindings_by_kb[kb_id] = model_binding
 
         logger.info(
             "[LLMNode] RAG query vector precompute completed: "
@@ -2539,7 +2593,12 @@ class LLMNode(Node[LLMNodeData]):
             self._bucket_count(len(query_vectors_by_kb)),
             self._bucket_count(failed_count),
         )
-        return query_vectors_by_kb, failed_count, True
+        return (
+            query_vectors_by_kb,
+            model_bindings_by_kb,
+            failed_count,
+            True,
+        )
 
     def _rewrite_rag_query(self, query: str) -> tuple[str, bool, str]:
         mode = getattr(self.data, "queryRewriteMode", "off")
