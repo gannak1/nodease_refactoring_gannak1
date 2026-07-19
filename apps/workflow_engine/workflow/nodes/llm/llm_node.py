@@ -1697,9 +1697,13 @@ class LLMNode(Node[LLMNodeData]):
         # Cache token counts are billing metadata, not prompt content. Keep the
         # numeric value so the shared calculator can apply a cached-input rate.
         cached_tokens = usage.get("cached_tokens")
-        prompt_details = usage.get("prompt_tokens_details")
-        if cached_tokens is None and isinstance(prompt_details, dict):
-            cached_tokens = prompt_details.get("cached_tokens")
+        if cached_tokens is None:
+            for details_key in ("prompt_tokens_details", "input_tokens_details"):
+                details = usage.get(details_key)
+                if isinstance(details, dict):
+                    cached_tokens = details.get("cached_tokens")
+                    if cached_tokens is not None:
+                        break
         if (
             not isinstance(cached_tokens, bool)
             and isinstance(cached_tokens, (int, float))

@@ -1251,6 +1251,16 @@ def test_internal_it_helpdesk_seed_uses_catalog_tier_for_terra_security_reason()
     assert reason_short == "보안 사고 판단에 적합"
 
 
+def test_internal_it_helpdesk_seed_separates_judge_usage_node_id():
+    assert (
+        demo_seed._internal_it_helpdesk_usage_node_id("execution") == "llm-triage"
+    )
+    assert (
+        demo_seed._internal_it_helpdesk_usage_node_id("judge")
+        == "llm-triage:routing_judge"
+    )
+
+
 def test_ticket_ops_input_schema_matches_webhook_mappings():
     graph = demo_seed._ticket_ops_graph()
 

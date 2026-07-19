@@ -86,12 +86,16 @@ def test_llm_node_answer_grounding_check_defaults_to_basic():
     assert data.answerGroundingCheck == "basic"
 
 
-def test_llm_node_keeps_cached_token_count_for_cost_calculation():
+@pytest.mark.parametrize(
+    "details_key",
+    ["prompt_tokens_details", "input_tokens_details"],
+)
+def test_llm_node_keeps_cached_token_count_for_cost_calculation(details_key: str):
     usage = LLMNode._safe_usage_metadata(
         {
             "prompt_tokens": 1_000,
             "completion_tokens": 50,
-            "prompt_tokens_details": {"cached_tokens": 400},
+            details_key: {"cached_tokens": 400},
         }
     )
 

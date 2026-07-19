@@ -4657,6 +4657,12 @@ def _internal_it_helpdesk_routing_reason(
     return capability_tier, "simple_response", "단순 안내에 충분한 모델"
 
 
+def _internal_it_helpdesk_usage_node_id(usage_kind: str) -> str:
+    """Keep Judge billing separate from the LLM node's execution billing."""
+
+    return "llm-triage:routing_judge" if usage_kind == "judge" else "llm-triage"
+
+
 def _seed_internal_it_helpdesk_run(
     db: Session,
     *,
@@ -4919,7 +4925,7 @@ def _seed_internal_it_helpdesk_run(
                 "model_id": models[model_name].id,
                 "workflow_id": WORKFLOW_IDS["internal_it_helpdesk_routing"],
                 "workflow_run_id": spec.run_id,
-                "node_id": "llm-triage",
+                "node_id": _internal_it_helpdesk_usage_node_id(usage_kind),
                 "prompt_tokens": prompt,
                 "completion_tokens": completion,
                 "total_cost": cost,

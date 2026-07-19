@@ -2,6 +2,7 @@ from apps.shared.services.llm_model_pricing import (
     calculate_text_token_cost,
     extract_cached_input_tokens,
     get_model_pricing,
+    known_model_prices,
     normalize_model_pricing_id,
     pricing_estimate_metadata,
 )
@@ -37,6 +38,13 @@ def test_cached_tokens_are_read_from_provider_prompt_details():
     assert extract_cached_input_tokens(
         {"prompt_tokens_details": {"cached_tokens": 400}}
     ) == 400
+
+
+def test_known_model_prices_include_executable_provider_aliases():
+    prices = known_model_prices()
+
+    assert prices["claude-haiku-4-5-20251001"] == prices["claude-haiku-4-5"]
+    assert prices["claude-sonnet-4-5-20250929"] == prices["claude-sonnet-4-5"]
 
 
 def test_pricing_metadata_marks_unsupported_terms_as_standard_estimate():

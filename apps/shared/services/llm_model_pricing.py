@@ -172,12 +172,23 @@ def get_model_pricing(model_id: object) -> Optional[ModelPricing]:
 
 
 def known_model_prices() -> dict[str, dict[str, float]]:
-    """Compatibility view for existing model seed and API contracts."""
+    """Compatibility view for model seed and API contracts.
 
-    return {
+    Canonical catalog rows are returned together with known executable provider
+    aliases. Runtime credential lookup uses the exact provider model ID, so a
+    fresh database must have rows for aliases such as dated Claude releases.
+    """
+
+    prices = {
         model_id: pricing.legacy_standard_prices()
         for model_id, pricing in MODEL_PRICING_CATALOG.items()
     }
+    for alias_model_id, canonical_model_id in MODEL_PRICING_ALIASES.items():
+        if alias_model_id not in prices:
+            prices[alias_model_id] = MODEL_PRICING_CATALOG[
+                canonical_model_id
+            ].legacy_standard_prices()
+    return prices
 
 
 def extract_cached_input_tokens(usage: Optional[Mapping[str, Any]]) -> int:
