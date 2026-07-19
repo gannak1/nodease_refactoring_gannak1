@@ -520,7 +520,7 @@ def test_github_api_token_parameter_is_required_for_every_action():
     }
 
     assert definitions["api_token"]["required"] is True
-    assert definitions["api_token"]["defer_policy"] == "forbidden"
+    assert definitions["api_token"]["defer_policy"] == "allow_unresolved"
     assert derive_node_configuration_state(
         "slackPostNode",
         {

@@ -164,6 +164,46 @@ describe('Agent Builder parameter cards', () => {
     ).toBeInTheDocument();
   });
 
+  it.each([
+    ['Slack Bot Token', 'slackPostNode', 'bot_token'],
+    ['Slack Webhook URL', 'slackPostNode', 'url'],
+    ['GitHub API Token', 'githubNode', 'api_token'],
+  ] as const)(
+    '%s 필수 secret task는 나중에 설정으로 unresolved defer할 수 있다',
+    (label, nodeType, parameterKey) => {
+      const onDecision = vi.fn();
+      render(
+        <WorkflowResultGroup
+          tasks={[
+            {
+              ...tasks[0],
+              task_id: `task-${parameterKey}`,
+              node_id: nodeType === 'githubNode' ? 'github' : 'slack',
+              node_type: nodeType,
+              parameter_key: parameterKey,
+              label,
+              input_type: 'secret',
+              required: true,
+              defer_policy: 'allow_unresolved',
+            },
+          ]}
+          onFocusNode={vi.fn()}
+          onDecision={onDecision}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: '나중에 설정' }));
+
+      expect(onDecision).toHaveBeenCalledWith({
+        taskId: `task-${parameterKey}`,
+        action: 'defer',
+      });
+      expect(
+        screen.queryByRole('button', { name: '건너뛰기' }),
+      ).not.toBeInTheDocument();
+    },
+  );
+
   it('typed value를 제출한다', () => {
     const onDecision = vi.fn();
     render(

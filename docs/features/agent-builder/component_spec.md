@@ -660,7 +660,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 9. Quick endpoint, eligibility policy, clone dry-run, transition/remaining-completion integration과 E2E가 함께 준비되고 canonical-v2가 협상된 revision에서만 `빠른 생성` control을 노출한다. Rollback은 quick/canonical creation gate를 먼저 닫고 foreground 및 open configuration을 포함한 canonical-v2 nonterminal request를 완료·mode-free cancel해 0건임을 확인한 뒤 legacy-write로 전환할 수 있다. Session GET 보존 기간 내 terminal canonical-v2 request까지 포함한 retained-history aggregate가 0건이 되기 전에는 dual-contract Gateway와 Client dual-read를 제거하거나 legacy-only Client를 배포하지 않는다.
 ## 2026-07-15 Connection Navigation And Completion Correction
 
-- WorkflowResultGroup does not render Slack/GitHub managed credential tasks, empty credential pickers, credential defer controls, or raw `secret` tasks. It renders only Catalog-declared non-secret Agent Builder parameters. Mail/Gmail continue to use the existing managed credential picker.
+- WorkflowResultGroup does not render Slack/GitHub managed credential tasks, empty credential pickers, or raw secret values. It renders Catalog-declared Slack/GitHub `secret` tasks as empty masked controls and renders `나중에 설정` when their Catalog defer policy is `allow_unresolved`. Mail/Gmail continue to use the existing managed credential picker.
 - Mail/Gmail retain their typed managed credential picker. Agent Builder never accepts or retains a raw credential value.
 - The Mail search card is catalog-driven for every user-configurable search field: credential, keyword, sender, subject, date range, folder, result limit, unread/read handling, and processing mode. Safe generated template values and Gmail processing selectors are completed after structural acknowledgement and remain editable; runtime-only graph fields are not rendered as user tasks.
 - Configure-and-generate renders Catalog routing tasks in the LLM parameter card and suppresses duplicate routing guidance. Structure-only keeps the `Routing 설정으로 이동` action, which opens the target LLM Routing control without creating a mutation or saving the graph.
@@ -705,7 +705,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 
 ## Test preflight 연동과 secret 입력 경계
 
-- `ParameterInputRenderer`는 Catalog가 발급한 Slack/GitHub `secret` task에 기존 값을 비운 password input을 표시하고 새 입력을 editor save bridge로 전달한다. Backend는 조작된 raw secret decision을 방어적으로 `secret_forbidden`으로 거부한다.
+- `ParameterInputRenderer`는 Catalog가 발급한 Slack/GitHub `secret` task에 기존 값을 비운 password input을 표시하고 새 입력을 editor save bridge로 전달한다. Required secret의 `나중에 설정`은 raw value 없는 typed `defer`를 보내고 node를 unresolved로 유지한다. Backend는 조작된 raw secret decision을 방어적으로 `secret_forbidden`으로 거부한다.
 - TestSidebar는 canonical 확인부터 valid `workflow_start.run_id` 수신까지 test preflight owner를 유지한다. Persisted Agent Builder history boundary가 아직 acknowledgement되지 않았거나 Agent Builder를 포함한 어떤 저장 owner라도 stream 시작 시점에 대기 중이면 stream을 열지 않는다. Agent Builder acknowledgement에는 기존 전용 안내를, 일반 저장 대기에는 `Workflow 변경사항을 저장하는 중입니다. 저장 완료 후 다시 실행해주세요.`를 표시하며 자동 재실행하지 않는다.
 - Agent Builder editor bridge는 save coordinator lock 획득 직후와 canonical draft 조회 직후 active workflow id를 확인한다. Workflow가 바뀌면 이전 mutation/save/acknowledgement/rollback을 중단하고 `Workflow가 전환되어 이전 Agent Builder 작업을 적용하지 않았습니다.` 계열의 안전한 안내를 표시한다.
 - Autosync는 lock miss를 workflow별 하나의 대기 작업으로 합치고, lock 해제 뒤 store에서 다시 읽은 최신 dirty snapshot만 저장한다. 대기 중 workflow 전환 또는 clean 전환이 발생하면 저장하지 않는다.

@@ -829,9 +829,12 @@ def test_slack_and_github_use_secret_tasks_instead_of_managed_credential_tasks()
     assert ("github", "credential") not in by_identity
     assert by_identity[("slack", "bot_token")].input_type == "secret"
     assert by_identity[("slack", "bot_token")].required is True
+    assert by_identity[("slack", "bot_token")].defer_policy == "allow_unresolved"
     assert by_identity[("slack", "url")].status == "skipped"
+    assert by_identity[("slack", "url")].defer_policy == "allow_unresolved"
     assert by_identity[("github", "api_token")].input_type == "secret"
     assert by_identity[("github", "api_token")].required is True
+    assert by_identity[("github", "api_token")].defer_policy == "allow_unresolved"
     assert by_identity[("mail", "credential_id")].status == "pending"
     assert by_identity[("slack", "slackMode")].status == "completed"
     assert by_identity[("slack", "channel")].status == "pending"
@@ -2053,6 +2056,38 @@ def test_defer_requires_catalog_policy_and_only_advances_after_acknowledgement()
             action="defer",
             value=None,
         )
+
+
+def test_required_secret_defer_keeps_slack_unresolved_until_token_is_set():
+    result = ParameterTaskPlanner().plan(
+        graph={"nodes": [_node("slack", "slackPostNode")], "edges": []},
+        step_node_ids={"step_slack": "slack"},
+        explicit_values={},
+        upstream_candidates={},
+        guidance_hints=[],
+    )
+    token_task = next(
+        task for task in result.tasks if task.parameter_key == "bot_token"
+    )
+
+    decision = prepare_task_decision(
+        tasks=result.tasks,
+        task_id=token_task.task_id,
+        operation_id=uuid4(),
+        expected_task_version=token_task.task_version,
+        action="defer",
+        value=None,
+    )
+
+    assert token_task.required is True
+    assert decision.awaiting_persistence_ack is True
+    assert decision.graph_data_patch == {"_deferred_parameter": "bot_token"}
+    acknowledged = acknowledge_task_decision(result.tasks, decision)
+    acknowledged_token = next(
+        task for task in acknowledged if task.parameter_key == "bot_token"
+    )
+    assert acknowledged_token.status == "deferred"
+    assert acknowledged_token.configuration_state == "unresolved"
 
 
 def test_cancel_parameter_group_preserves_completed_and_closes_remaining_tasks():

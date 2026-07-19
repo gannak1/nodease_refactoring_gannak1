@@ -3631,8 +3631,10 @@ def test_direct_session_recovery_removes_legacy_generic_knowledge_task(
     assert db.commits == 1
 
 
+@pytest.mark.parametrize("include_safe_step_node_ids", [True, False])
 def test_direct_session_recovery_adds_catalog_tasks_missing_from_legacy_group(
     monkeypatch,
+    include_safe_step_node_ids,
 ):
     group_id = uuid.uuid4()
     channel_task = AgentBuilderParameterTask(
@@ -3659,18 +3661,20 @@ def test_direct_session_recovery_adds_catalog_tasks_missing_from_legacy_group(
         tasks=[channel_task],
     )
     request_id = uuid.uuid4()
+    response_payload = {
+        "request_id": str(request_id),
+        "status": "graph_mutation_ready",
+        "parameter_groups": [group.model_dump(mode="json")],
+    }
+    if include_safe_step_node_ids:
+        response_payload["safe_step_node_ids"] = {"step_slack": "slack"}
     request_row = SimpleNamespace(
         id=request_id,
         status="completed",
         created_at=None,
         expires_at=None,
         message_summary="Send a Slack message",
-        response_payload={
-            "request_id": str(request_id),
-            "status": "graph_mutation_ready",
-            "safe_step_node_ids": {"step_slack": "slack"},
-            "parameter_groups": [group.model_dump(mode="json")],
-        },
+        response_payload=response_payload,
     )
     workflow_id = uuid.uuid4()
     workflow = SimpleNamespace(
@@ -3746,6 +3750,7 @@ def test_direct_session_recovery_adds_catalog_tasks_missing_from_legacy_group(
     assert [task["parameter_key"] for task in stored_tasks] == expected_keys
     stored_by_key = {task["parameter_key"]: task for task in stored_tasks}
     assert stored_by_key["bot_token"]["required"] is True
+    assert stored_by_key["bot_token"]["defer_policy"] == "allow_unresolved"
     assert stored_by_key["url"]["required"] is False
     assert stored_by_key["url"]["status"] == "skipped"
     recovered_channel = next(

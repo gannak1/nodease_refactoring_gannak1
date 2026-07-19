@@ -5655,13 +5655,28 @@ class AgentBuilderService:
                 remove_direct_edit_knowledge_parameter_tasks(parameter_group)
             )
             workflow_graph = None
-            safe_step_node_ids = payload.get("safe_step_node_ids")
+            stored_step_node_ids = payload.get("safe_step_node_ids")
+            recovery_step_node_ids = {
+                str(step_id): str(node_id)
+                for step_id, node_id in (
+                    stored_step_node_ids.items()
+                    if isinstance(stored_step_node_ids, dict)
+                    else []
+                )
+                if step_id and node_id
+            }
+            if normalized_parameter_group is not None:
+                for task in normalized_parameter_group.tasks:
+                    if task.step_id and task.node_id:
+                        recovery_step_node_ids.setdefault(
+                            str(task.step_id),
+                            str(task.node_id),
+                        )
             needs_catalog_recovery = (
                 normalized_parameter_group is not None
                 and normalized_parameter_group.status in {"active", "completed"}
                 and session.workflow_id is not None
-                and isinstance(safe_step_node_ids, dict)
-                and bool(safe_step_node_ids)
+                and bool(recovery_step_node_ids)
             )
             needs_reference_recovery = (
                 normalized_parameter_group is not None
@@ -5693,10 +5708,7 @@ class AgentBuilderService:
                 )
                 planned_tasks = plan_parameter_tasks_for_existing_graph(
                     graph=workflow_graph,
-                    step_node_ids={
-                        str(step_id): str(node_id)
-                        for step_id, node_id in safe_step_node_ids.items()
-                    },
+                    step_node_ids=recovery_step_node_ids,
                     group_id=normalized_parameter_group.group_id,
                     affected_node_ids=recoverable_node_ids,
                 )
