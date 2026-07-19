@@ -1,7 +1,7 @@
 # PR CI 품질 게이트
 
 Status: Draft
-Verified Against: feature/mba-328 @ 33a14c85
+Verified Against: feature/mba-328 @ 0ad2bac9
 
 ## 목적
 
@@ -50,7 +50,7 @@ PR 검증 진입점은 `.github/workflows/pr-quality-gate.yml`과 `.github/workf
 PR workspace의 selector 결과만으로 required gate를 결정하지 않는다.
 
 - 품질 게이트는 selector 실행 전에 `pr-quality-gate.yml`, `pr-ci-control-guard.yml`, 네 PostgreSQL 계약 workflow, `.github/actions/**`, `scripts/ci/**`, `tests/ci/**` 변경을 독립적으로 확인한다. 이 경로가 바뀌면 selector 출력과 무관하게 Client, Python service smoke, root, PostgreSQL 계약 검사와 Actions·Helm·Kubernetes·Terraform·Compose·Dockerfile 정적 검증을 모두 선택한다.
-- 동일한 독립 diff 단계가 `infra/terraform/**`와 Dockerfile 실변경 신호도 계산한다. CI 제어 파일과 실제 배포 설정을 함께 수정한 PR은 selector 출력이 잘못되어도 smoke fixture로 대체하지 않고 변경된 실제 구성을 검증한다.
+- 동일한 독립 diff 단계가 `infra/terraform/**`와 `Dockerfile`, `Dockerfile.*`, `*.Dockerfile` 실변경 신호도 계산한다. CI 제어 파일과 실제 배포 설정을 함께 수정한 PR은 selector 출력이 잘못되어도 smoke fixture로 대체하지 않고 변경된 실제 구성을 검증한다.
 - GitHub workflow는 Actionlint로 검사하고, composite action metadata는 commit SHA로 고정한 action-validator와 저장소 fixture로 별도 검사한다.
 - 신뢰 가드는 base 브랜치에서 `.github/workflows/**`, `.github/actions/**`, `scripts/ci/**`, `tests/ci/**` 변경을 별도로 확인한다. rename은 이전 경로와 새 경로를 모두 검사하고, 변경 파일 전체를 열거하지 못하면 실패한다.
 - CI 제어 변경은 PR 작성자가 아닌 write 이상 권한 보유자가 현재 head commit에 남긴 `APPROVED` review가 있어야 통과한다. 이전 commit 승인은 재사용하지 않는다.
@@ -135,7 +135,7 @@ DB 관련 변경에서는 graph 검사에 더해 disposable PostgreSQL upgrade�
 - `.github/workflows/test-agent-builder-postgres.yml`
 - `.github/workflows/test-memory-postgres.yml`
 
-네 workflow는 PR에서는 통합 gate가 호출하고, `dev` push에서는 기존 post-merge 방어선으로 계속 실행한다. Knowledge workflow는 runtime candidate SQL뿐 아니라 durable ingestion의 동시 claim, lease 만료, fencing, heartbeat, late finalization과 DB wall clock 계약을 실제 PostgreSQL에서 검증한다. 각 workflow 파일 자체의 변경은 보호된 CI 제어 변경으로 분류해 `tests/ci`와 네 PostgreSQL 계약 검사를 모두 실행한다. 일반 기능 코드 변경은 도메인 selector로 필요한 PostgreSQL workflow만 선택하되, 선택되지 않은 job의 skip을 성공 근거로 사용하지 않는다.
+네 workflow는 PR에서는 통합 gate가 호출하고, `dev` push에서는 기존 post-merge 방어선으로 계속 실행한다. Knowledge workflow는 runtime candidate SQL뿐 아니라 durable ingestion의 동시 claim, lease 만료, fencing, heartbeat, late finalization과 DB wall clock 계약을 실제 PostgreSQL에서 검증한다. PR selector와 `dev` push 경로는 `knowledge_document_ingestion_*.py` 및 `knowledge_ingestion_*.py` 서비스 계열을 동일하게 추적한다. 각 workflow 파일 자체의 변경은 보호된 CI 제어 변경으로 분류해 `tests/ci`와 네 PostgreSQL 계약 검사를 모두 실행한다. 일반 기능 코드 변경은 도메인 selector로 필요한 PostgreSQL workflow만 선택하되, 선택되지 않은 job의 skip을 성공 근거로 사용하지 않는다.
 
 ## 검증 및 실패 재현
 
@@ -198,7 +198,7 @@ actionlint .github/workflows/pr-quality-gate.yml .github/workflows/pr-ci-control
 - Kubernetes: 목표 EKS `1.31`과 CI Go 1.25 도구체인에 맞춘 `kubeconform v0.7.0` strict schema 검증을 실행하며 cluster API에 접속하지 않음
 - Terraform: 실제 Terraform 변경은 `infra/terraform`을 대상으로 format, backend 없는 init, validate를 실행한다. CI 제어만 변경된 경우에는 provider와 module lock 부채에 영향을 받지 않는 `tests/ci/fixtures/terraform-smoke`로 같은 명령 계약을 검증한다.
 - Docker Compose: Compose 변경 또는 CI 제어 변경 시 tracked Compose 구성을 모두 해석한다. `compose.<variant>.yml`과 `docker-compose.<variant>.yml`은 같은 디렉터리의 기본 Compose 파일과 합성하고 선언된 profile을 활성화해 검사한다.
-- Dockerfile: 실제 Dockerfile 변경에서는 rename을 delete+add로 해석해 이전 경로를 선택 근거로 보존하고, 현재 존재하는 변경 파일에 BuildKit check를 실행한다. 삭제 또는 비지원 이름으로의 rename은 검증 대상이 존재하지 않는 상태로 허용한다. CI 제어만 변경된 경우에는 기존 Dockerfile의 lint 부채와 분리된 `tests/ci/fixtures/dockerfile-smoke/Dockerfile`로 같은 명령 계약을 검증한다.
+- Dockerfile: `Dockerfile`, `Dockerfile.*`, `*.Dockerfile` 이름을 지원한다. 실제 Dockerfile 변경에서는 rename을 delete+add로 해석해 이전 경로를 선택 근거로 보존하고, 현재 존재하는 변경 파일에 BuildKit check를 실행한다. 삭제 또는 비지원 이름으로의 rename은 검증 대상이 존재하지 않는 상태로 허용한다. CI 제어만 변경된 경우에는 기존 Dockerfile의 lint 부채와 분리된 `tests/ci/fixtures/dockerfile-smoke/Dockerfile`로 같은 명령 계약을 검증한다.
 
 CI 제어와 PostgreSQL workflow가 사용하는 공식 Action은 40자리 commit SHA로 고정한다. Action 내부 runtime은 Node 24 기반 공식 major를 사용한다. Client build의 Node 20은 현재 Docker runtime과 별도 제품 계약이므로 이 문서의 Action runtime 전환 대상이 아니다. AWS·Docker 배포 Action과 장기 credential 전환은 MBA-224/MBA-329가 소유한다.
 
