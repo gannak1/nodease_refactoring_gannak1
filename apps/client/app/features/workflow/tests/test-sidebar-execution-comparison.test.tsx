@@ -279,8 +279,17 @@ function LiveExecutionComparisonHarness() {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  window.history.replaceState({}, '', '/');
   mocks.workflowState.testExecutionStatus = 'success';
   mocks.workflowState.testExecutionResult = { answer: '현재 답변' };
+  mocks.workflowState.nodes = [
+    {
+      id: 'llm-triage',
+      type: 'llmNode',
+      position: { x: 0, y: 0 },
+      data: { title: '문의 분류', observability: { status: 'success' } },
+    },
+  ];
 });
 
 describe('TestSidebar execution comparison', () => {
@@ -293,6 +302,44 @@ describe('TestSidebar execution comparison', () => {
     expect(
       screen.queryByRole('heading', { name: '테스트 실행 중...' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('실행 비교 중의 노드 대기와 비교 준비 상태를 한 패널에 표시한다', async () => {
+    mocks.workflowState.testExecutionStatus = 'running';
+    mocks.workflowState.testExecutionResult = null;
+    mocks.workflowState.nodes = [
+      {
+        id: 'llm-triage',
+        type: 'llmNode',
+        position: { x: 0, y: 0 },
+        data: { title: '문의 분류' },
+      },
+    ];
+    mocks.getWorkflowRuns.mockResolvedValue({
+      total: 1,
+      items: [runSummary('baseline-run', '2026-07-13T01:00:00Z')],
+    });
+    mocks.getWorkflowRun.mockResolvedValue(
+      runDetail('baseline-run', 'gpt-4.1', '기존 문의', '기존 답변'),
+    );
+    mocks.getWorkflowRunLlmTraces.mockResolvedValue({
+      total: 0,
+      limit: 100,
+      offset: 0,
+      items: [],
+    });
+
+    render(<TestSidebar />);
+    fireEvent.click(screen.getByRole('button', { name: '실행 비교' }));
+
+    const statusPanel = await screen.findByTestId('execution-progress-status');
+    expect(statusPanel).toHaveTextContent(
+      '첫 노드 실행 결과를 기다리는 중입니다.',
+    );
+    expect(statusPanel).toHaveTextContent(
+      '실행이 완료되면 비교 결과를 준비합니다.',
+    );
+    expect(screen.getAllByTestId('execution-progress-status')).toHaveLength(1);
   });
 
   it('기준 실행 목록은 전체 상태와 전체 방식으로 시작한다', async () => {
@@ -744,7 +791,7 @@ describe('TestSidebar execution comparison', () => {
     expect(screen.getByText('현재 실행: 성공')).toBeVisible();
   });
 
-  it('현재 실행 중에는 비교 조회 오류 대신 완료 대기 안내를 표시한다', async () => {
+  it('현재 실행 중에는 비교 조회를 미루고 완료 후 비교한다', async () => {
     mocks.getWorkflowRuns.mockResolvedValue({
       total: 1,
       items: [runSummary('baseline-run', '2026-07-13T01:00:00Z')],
@@ -775,8 +822,8 @@ describe('TestSidebar execution comparison', () => {
     );
 
     expect(
-      await screen.findByText('현재 실행이 완료되면 비교 결과를 준비합니다.'),
-    ).toBeVisible();
+      screen.queryByText('현재 실행이 완료되면 비교 결과를 준비합니다.'),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByText('실행 비교 데이터를 불러오지 못했습니다.'),
     ).not.toBeInTheDocument();

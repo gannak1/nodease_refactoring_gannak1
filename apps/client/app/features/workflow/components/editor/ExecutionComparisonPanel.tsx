@@ -1271,12 +1271,7 @@ export function ExecutionComparisonPanel({
           기준 실행은 유지됩니다. 노드를 수정한 뒤 현재 설정으로 다시
           테스트하세요.
         </div>
-      ) : isCurrentExecutionRunning ? (
-        <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700 dark:border-blue-900 dark:bg-blue-950/20 dark:text-blue-200">
-          <Loader2 className="h-4 w-4 animate-spin" /> 현재 실행이 완료되면 비교
-          결과를 준비합니다.
-        </div>
-      ) : isComparisonLoading ? (
+      ) : isCurrentExecutionRunning ? null : isComparisonLoading ? (
         <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-900">
           <Loader2 className="h-4 w-4 animate-spin" /> 현재 실행 기록을
           동기화하는 중입니다.

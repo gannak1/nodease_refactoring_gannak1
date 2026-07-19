@@ -1810,11 +1810,19 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             {nodeExecutionSummaries.length > 0 ? (
               nodeExecutionSummaries.map(renderNodeExecutionSummary)
             ) : (
-              <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+              <div
+                data-testid="execution-progress-status"
+                className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300"
+              >
                 <div className="flex items-center gap-2 font-medium">
                   <Loader2 className="h-4 w-4 animate-spin" />첫 노드 실행
                   결과를 기다리는 중입니다.
                 </div>
+                {isComparisonMode ? (
+                  <p className="mt-2 pl-6 text-xs leading-5 text-blue-600 dark:text-blue-300">
+                    실행이 완료되면 비교 결과를 준비합니다.
+                  </p>
+                ) : null}
               </div>
             )}
           </div>
