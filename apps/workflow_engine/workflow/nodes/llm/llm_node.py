@@ -149,7 +149,7 @@ def _safe_provider_failure_metadata(error: Exception) -> dict[str, Any]:
     return metadata
 
 
-RAG_NO_EVIDENCE_MESSAGE = "해당 질문에 답변할 수 있는 문서를 찾지 못했습니다."
+RAG_NO_EVIDENCE_MESSAGE = "요청하신 문서를 찾을 수 없거나 접근 권한이 없습니다."
 RAG_INSUFFICIENT_EVIDENCE_MESSAGE = "확인된 문서 기준으로는 답변 근거가 부족합니다."
 _TOKEN_PATTERN = re.compile(r"[0-9A-Za-z가-힣]+")
 _SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?。！？])\s+|\n+")
