@@ -97,6 +97,9 @@ from apps.shared.domain.app_auth_secret import (
     app_auth_secret_verifier,
     app_auth_secret_verifier_state_is_valid,
 )
+from apps.shared.services.model_routing_global_profile_catalog import (
+    catalog_metadata_for_model_id,
+)
 from apps.shared.services.password_hashing import hash_password
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import or_, text
@@ -4624,6 +4627,36 @@ def _internal_it_helpdesk_result(
     )
 
 
+def _internal_it_helpdesk_routing_reason(
+    spec: InternalITHelpdeskRunSpec,
+    *,
+    approval_required: bool,
+) -> tuple[str, str, str]:
+    """Return demo routing evidence from the canonical model catalog."""
+    catalog = catalog_metadata_for_model_id(spec.model_name)
+    capability_tier = str(catalog.get("capability_tier") or "balanced")
+
+    if approval_required:
+        return (
+            capability_tier,
+            "security_incident_reasoning",
+            "보안 사고 판단에 적합",
+        )
+    if capability_tier == "advanced":
+        return (
+            capability_tier,
+            "complex_professional_reasoning",
+            "복합 조건 판단에 적합",
+        )
+    if capability_tier == "balanced":
+        return (
+            capability_tier,
+            "multi_constraint",
+            "복수 조건 처리에 적합",
+        )
+    return capability_tier, "simple_response", "단순 안내에 충분한 모델"
+
+
 def _seed_internal_it_helpdesk_run(
     db: Session,
     *,
@@ -4649,17 +4682,9 @@ def _seed_internal_it_helpdesk_run(
         else answer
     )
     finished_at = started_at + timedelta(seconds=spec.duration)
-    routing_tier = (
-        "advanced"
-        if spec.model_name == DEMO_CHAT_MODEL
-        else "balanced"
-        if spec.model_name
-        in {
-            DEMO_CHAT_MINI_MODEL,
-            DEMO_MODEL_ROUTER_BALANCED_MODEL,
-            DEMO_MODEL_ROUTER_FALLBACK_MODEL,
-        }
-        else "economy"
+    routing_tier, reason_code, reason_short = _internal_it_helpdesk_routing_reason(
+        spec,
+        approval_required=approval_required,
     )
     retrieved_chunks = 2 if approval_required or "MFA" in spec.message else 1
     context_tokens = 1024 if retrieved_chunks == 2 else 514
@@ -4673,12 +4698,12 @@ def _seed_internal_it_helpdesk_run(
     routing_metadata = {
         "enabled": True,
         "strategy_id": "judge_bootstrap_incremental_v1",
-        "decision_source": "test_policy_preview",
+        "decision_source": "runtime_judge",
         "policy_source": "test_ephemeral",
         "policy_version": "test-ephemeral-judge-first-v1",
         "selected_model": spec.model_name,
         "fallback_model": DEMO_MODEL_ROUTER_BALANCED_MODEL,
-        "reason_code": "multi_constraint",
+        "reason_code": reason_code,
         "judge_called": True,
         "included_in_policy_learning": False,
         "judge": {
@@ -4687,12 +4712,8 @@ def _seed_internal_it_helpdesk_run(
             "model": DEMO_CHAT_MINI_MODEL,
             "selected_model": spec.model_name,
             "confidence": 0.92 if routing_tier != "balanced" else 0.86,
-            "reason_code": "multi_constraint",
-            "reason_short": {
-                "economy": "단순 안내에 충분한 모델",
-                "balanced": "복수 증상 진단에 적합",
-                "advanced": "보안 사고 판단에 적합",
-            }[routing_tier],
+            "reason_code": reason_code,
+            "reason_short": reason_short,
             "candidate_model_count": 10,
             "cost": float(judge_cost),
             "usage": {
@@ -4823,12 +4844,8 @@ def _seed_internal_it_helpdesk_run(
             node_trace.update(
                 {
                     "llm": {
+                        **routing_metadata,
                         "model": spec.model_name,
-                        "selected_model": spec.model_name,
-                        "fallback_model": DEMO_MODEL_ROUTER_BALANCED_MODEL,
-                        "decision_source": "test_policy_preview",
-                        "judge_called": True,
-                        "reason_code": "multi_constraint",
                         "total_cost": float(spec.node_cost),
                         "prompt_tokens": spec.prompt_tokens,
                         "completion_tokens": spec.completion_tokens,

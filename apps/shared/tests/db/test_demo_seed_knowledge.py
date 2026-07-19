@@ -1238,6 +1238,19 @@ def test_internal_it_helpdesk_routing_demo_seeds_all_presentation_logs():
     )
 
 
+def test_internal_it_helpdesk_seed_uses_catalog_tier_for_terra_security_reason():
+    last_spec = demo_seed.INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS[-1]
+
+    tier, reason_code, reason_short = demo_seed._internal_it_helpdesk_routing_reason(
+        last_spec,
+        approval_required=True,
+    )
+
+    assert tier == "advanced"
+    assert reason_code == "security_incident_reasoning"
+    assert reason_short == "보안 사고 판단에 적합"
+
+
 def test_ticket_ops_input_schema_matches_webhook_mappings():
     graph = demo_seed._ticket_ops_graph()
 
