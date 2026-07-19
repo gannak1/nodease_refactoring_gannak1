@@ -14,7 +14,19 @@ from typing import Iterable
 _SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
 _KNOWLEDGE_POSTGRES_PATTERNS = (
+    "apps/gateway/adapters/db/knowledge_document_ingestion_repository.py",
+    "apps/gateway/adapters/db/sqlalchemy_unit_of_work.py",
+    "apps/gateway/application/knowledge_document_ingestion/**",
+    "apps/gateway/composition/knowledge_document_ingestion*.py",
+    "apps/gateway/knowledge_ingestion_tasks.py",
+    "apps/gateway/services/ingestion/job_runner.py",
+    "apps/gateway/tests/adapters/db/test_knowledge_document_ingestion_repository_postgres.py",
+    "apps/shared/alembic/**",
+    "apps/shared/db/models/knowledge.py",
+    "apps/shared/domain/knowledge_document_ingestion.py",
     "apps/shared/domain/knowledge_runtime_candidates.py",
+    "apps/shared/services/knowledge_document_ingestion_*.py",
+    "apps/shared/services/knowledge_ingestion_*.py",
     "apps/shared/services/knowledge_permission_service.py",
     "apps/shared/tests/db/test_knowledge_runtime_snapshot_disposable_postgres.py",
     "apps/shared/tests/domain/test_knowledge_runtime_candidates.py",
@@ -126,6 +138,19 @@ _DEPLOYMENT_ONLY_WORKFLOWS = (
     ".github/workflows/publish-images.yml",
 )
 
+_PROTECTED_CI_WORKFLOW_PATHS = {
+    ".github/workflows/pr-ci-control-guard.yml",
+    ".github/workflows/pr-quality-gate.yml",
+    ".github/workflows/test-knowledge-runtime-postgres.yml",
+    ".github/workflows/test-schedule-dispatch-postgres.yml",
+    ".github/workflows/test-agent-builder-postgres.yml",
+    ".github/workflows/test-memory-postgres.yml",
+}
+
+_COMPOSE_FILE_NAME_PATTERN = re.compile(
+    r"^(?:docker-)?compose(?:\.[A-Za-z0-9_-]+)*\.ya?ml$"
+)
+
 
 @dataclass
 class ChangeScope:
@@ -143,6 +168,15 @@ class ChangeScope:
     workflow_postgres: bool = False
     agent_builder_postgres: bool = False
     memory_postgres: bool = False
+    deployment_validation: bool = False
+    actions_validation: bool = False
+    helm_validation: bool = False
+    kubernetes_validation: bool = False
+    terraform_validation: bool = False
+    terraform_config_changed: bool = False
+    compose_validation: bool = False
+    dockerfile_validation: bool = False
+    dockerfile_config_changed: bool = False
     broad_python: bool = False
 
     def enable_python_smoke(self) -> None:
@@ -154,6 +188,15 @@ class ChangeScope:
         self.root_tests = True
         self.memory_tests = True
         self.broad_python = True
+
+    def enable_deployment_smoke(self) -> None:
+        self.deployment_validation = True
+        self.actions_validation = True
+        self.helm_validation = True
+        self.kubernetes_validation = True
+        self.terraform_validation = True
+        self.compose_validation = True
+        self.dockerfile_validation = True
 
     def github_outputs(self) -> dict[str, str]:
         outputs = {
@@ -247,14 +290,47 @@ def _is_deployment_only_path(path: str) -> bool:
 
 def _is_ci_control_path(path: str) -> bool:
     return (
-        path
-        in {
-            ".github/workflows/pr-ci-control-guard.yml",
-            ".github/workflows/pr-quality-gate.yml",
-        }
+        path in _PROTECTED_CI_WORKFLOW_PATHS
         or path.startswith(".github/actions/")
         or path.startswith("scripts/ci/")
         or path.startswith("tests/ci/")
+    )
+
+
+def _is_dockerfile_path(path: str) -> bool:
+    name = PurePosixPath(path).name
+    return (
+        name == "Dockerfile"
+        or name.startswith("Dockerfile.")
+        or name.endswith(".Dockerfile")
+    )
+
+
+def _select_deployment_validation(path: str, scope: ChangeScope) -> None:
+    if path.startswith((".github/workflows/", ".github/actions/")):
+        scope.actions_validation = True
+    if path.startswith("infra/helm/") or path == "tests/ci/fixtures/helm-values-ci.yaml":
+        scope.helm_validation = True
+    if path.startswith("infra/k8s/"):
+        scope.kubernetes_validation = True
+    if path.startswith("infra/terraform/"):
+        scope.terraform_validation = True
+        scope.terraform_config_changed = True
+    if _COMPOSE_FILE_NAME_PATTERN.fullmatch(PurePosixPath(path).name):
+        scope.compose_validation = True
+    if _is_dockerfile_path(path):
+        scope.dockerfile_validation = True
+        scope.dockerfile_config_changed = True
+
+    scope.deployment_validation = any(
+        (
+            scope.actions_validation,
+            scope.helm_validation,
+            scope.kubernetes_validation,
+            scope.terraform_validation,
+            scope.compose_validation,
+            scope.dockerfile_validation,
+        )
     )
 
 
@@ -274,6 +350,8 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
         return scope
 
     for path in paths:
+        _select_deployment_validation(path, scope)
+
         if _matches_any(path, _KNOWLEDGE_POSTGRES_PATTERNS):
             scope.knowledge_postgres = True
         if _matches_any(path, _WORKFLOW_POSTGRES_PATTERNS):
@@ -291,6 +369,7 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
             continue
 
         if _is_ci_control_path(path):
+            scope.enable_deployment_smoke()
             scope.client = True
             scope.enable_python_smoke()
             scope.knowledge_postgres = True
@@ -360,15 +439,8 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
             continue
 
         if path.startswith(".github/workflows/"):
-            # Specialized PostgreSQL workflows are selected above. Other non-deploy
-            # workflow changes are treated as CI control changes.
-            if path in {
-                ".github/workflows/test-knowledge-runtime-postgres.yml",
-                ".github/workflows/test-schedule-dispatch-postgres.yml",
-                ".github/workflows/test-agent-builder-postgres.yml",
-                ".github/workflows/test-memory-postgres.yml",
-            }:
-                continue
+            # Protected workflows are handled as CI control above. Other non-deploy
+            # workflow changes keep broad runtime smoke coverage.
             scope.client = True
             scope.enable_python_smoke()
             continue

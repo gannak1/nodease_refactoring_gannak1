@@ -47,6 +47,21 @@ def test_memory_change_selects_only_memory_python_and_postgres_contracts():
     assert scope.broad_python is False
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "apps/shared/services/knowledge_ingestion_fencing.py",
+        "apps/shared/services/knowledge_ingestion_finalizer.py",
+        "apps/shared/services/knowledge_ingestion_outbox.py",
+        "apps/shared/services/knowledge_ingestion_outbox_processor.py",
+    ],
+)
+def test_durable_knowledge_ingestion_service_selects_postgres_contract(path: str):
+    scope = classify_paths([path])
+
+    assert scope.knowledge_postgres is True
+
+
 def test_unrelated_shared_change_does_not_expand_to_memory_domain():
     scope = classify_paths(["apps/shared/schemas/organization_membership.py"])
 
@@ -132,6 +147,24 @@ def test_knowledge_runtime_change_selects_knowledge_postgres():
     assert scope.workflow_postgres is False
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "apps/gateway/adapters/db/knowledge_document_ingestion_repository.py",
+        "apps/gateway/application/knowledge_document_ingestion/worker.py",
+        "apps/gateway/services/ingestion/job_runner.py",
+        "apps/shared/db/models/knowledge.py",
+        "apps/shared/domain/knowledge_document_ingestion.py",
+        "apps/shared/services/knowledge_document_ingestion_projection.py",
+        "apps/gateway/tests/adapters/db/test_knowledge_document_ingestion_repository_postgres.py",
+    ],
+)
+def test_knowledge_ingestion_change_selects_knowledge_postgres(path: str):
+    scope = classify_paths([path])
+
+    assert scope.knowledge_postgres is True
+
+
 def test_schedule_change_selects_workflow_postgres():
     scope = classify_paths(["apps/shared/domain/schedule_dispatch.py"])
 
@@ -171,6 +204,15 @@ def test_ci_control_change_selects_smoke_jobs_and_postgres_contracts():
     assert scope.agent_builder_postgres is True
     assert scope.memory_tests is True
     assert scope.memory_postgres is True
+    assert scope.deployment_validation is True
+    assert scope.actions_validation is True
+    assert scope.helm_validation is True
+    assert scope.kubernetes_validation is True
+    assert scope.terraform_validation is True
+    assert scope.terraform_config_changed is False
+    assert scope.compose_validation is True
+    assert scope.dockerfile_validation is True
+    assert scope.dockerfile_config_changed is False
 
 
 def test_trusted_guard_change_is_treated_as_ci_control():
@@ -184,12 +226,84 @@ def test_trusted_guard_change_is_treated_as_ci_control():
     assert scope.memory_postgres is True
 
 
-def test_deployment_workflow_does_not_pull_runtime_tests_into_pr_gate():
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/workflows/test-knowledge-runtime-postgres.yml",
+        ".github/workflows/test-schedule-dispatch-postgres.yml",
+        ".github/workflows/test-agent-builder-postgres.yml",
+        ".github/workflows/test-memory-postgres.yml",
+    ],
+)
+def test_protected_postgres_workflow_change_is_treated_as_ci_control(path: str):
+    scope = classify_paths([path])
+
+    assert scope.root_tests is True
+    assert scope.broad_python is True
+    assert scope.actions_validation is True
+    assert scope.knowledge_postgres is True
+    assert scope.workflow_postgres is True
+    assert scope.agent_builder_postgres is True
+    assert scope.memory_postgres is True
+
+
+def test_deployment_workflow_selects_static_validation_without_runtime_tests():
     scope = classify_paths([".github/workflows/deploy-eks-gateway.yml"])
 
+    assert scope.deployment_validation is True
+    assert scope.actions_validation is True
     assert scope.client is False
     assert scope.gateway_tests is False
     assert scope.broad_python is False
+
+
+@pytest.mark.parametrize(
+    ("path", "selected_output"),
+    [
+        ("infra/helm/moduly/values-production.yaml", "helm_validation"),
+        ("infra/k8s/ingress.yaml", "kubernetes_validation"),
+        ("infra/terraform/eks.tf", "terraform_validation"),
+        ("docker/docker-compose.yml", "compose_validation"),
+        ("docker/docker-compose.connector-demo.yml", "compose_validation"),
+        ("docker/gateway/Dockerfile", "dockerfile_validation"),
+        ("docker/gateway/Dockerfile.dev", "dockerfile_validation"),
+    ],
+)
+def test_deployment_config_selects_only_its_static_validator(
+    path: str,
+    selected_output: str,
+):
+    scope = classify_paths([path])
+
+    assert scope.deployment_validation is True
+    assert getattr(scope, selected_output) is True
+    assert scope.client is False
+    assert scope.gateway_tests is False
+    assert scope.broad_python is False
+
+
+def test_terraform_change_is_distinct_from_ci_control_smoke_selection():
+    scope = classify_paths(
+        [
+            ".github/workflows/pr-quality-gate.yml",
+            "infra/terraform/eks.tf",
+        ]
+    )
+
+    assert scope.terraform_validation is True
+    assert scope.terraform_config_changed is True
+
+
+def test_dockerfile_change_is_distinct_from_ci_control_smoke_selection():
+    scope = classify_paths(
+        [
+            ".github/workflows/pr-quality-gate.yml",
+            "docker/gateway/Dockerfile",
+        ]
+    )
+
+    assert scope.dockerfile_validation is True
+    assert scope.dockerfile_config_changed is True
 
 
 def test_unrelated_workflow_still_fails_closed_with_postgres_change():

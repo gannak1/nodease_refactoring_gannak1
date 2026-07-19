@@ -38,10 +38,18 @@ def test_selects_changed_test_file_directly(tmp_path: Path):
     ]
 
 
-def test_gateway_selector_excludes_postgres_only_agent_builder_tests(
+@pytest.mark.parametrize(
+    "target",
+    [
+        "apps/gateway/tests/adapters/db/test_knowledge_document_ingestion_repository_postgres.py",
+        "apps/gateway/tests/integration/test_agent_builder_intent_usage_postgres.py",
+        "apps/gateway/tests/integration/test_agent_builder_workflow_cas.py",
+    ],
+)
+def test_gateway_selector_excludes_postgres_only_tests(
     tmp_path: Path,
+    target: str,
 ):
-    target = "apps/gateway/tests/integration/test_agent_builder_workflow_cas.py"
     _write(tmp_path, target)
     _write(tmp_path, "apps/gateway/tests/architecture/test_boundaries.py")
 
