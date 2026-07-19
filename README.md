@@ -154,6 +154,33 @@ apps/gateway/.venv/Scripts/python.exe -m alembic \
 
 `Ctrl+C`로 host process와 개발용 Compose 서비스를 함께 종료합니다.
 
+### LLM credential rotation
+
+Schema upgrade와 새 keyring을 받은 Gateway/Worker 배포가 완료된 뒤에만 Gateway container에서 제한 batch rotation을 실행합니다.
+
+```bash
+docker compose \
+  --env-file docker/.env \
+  -f docker/docker-compose.yml \
+  exec -T gateway \
+  python /app/scripts/rotate_llm_credentials.py --batch-size 100 --max-batches 10
+
+docker compose \
+  --env-file docker/.env \
+  -f docker/docker-compose.yml \
+  exec -T gateway \
+  python /app/scripts/rotate_llm_credentials.py --check
+```
+
+Helm 환경도 migration과 Gateway readiness가 완료된 뒤 같은 Gateway image의 `/app/scripts/rotate_llm_credentials.py`를 단일 운영 명령으로 실행합니다.
+
+```bash
+kubectl -n <namespace> exec deployment/<release>-gateway -- \
+  python /app/scripts/rotate_llm_credentials.py --batch-size 100 --max-batches 10
+```
+
+`--check`가 pending 0을 확인한 뒤에만 구키를 제거합니다. 명령 출력에는 credential config, ciphertext 또는 key가 포함되지 않습니다.
+
 ## Testing
 
 Backend, Shared, Workflow Engine, Log System, Sandbox와 Client build를 포함한 저장소 검증:
