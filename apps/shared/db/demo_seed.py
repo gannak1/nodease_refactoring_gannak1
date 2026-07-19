@@ -355,6 +355,9 @@ APP_IDS = {
     "model_router_ticket_ops": uuid.UUID("91000000-0000-0000-0000-000000000001"),
     "team_onboarding_adaptive_routing": _uuid(408),
     "enterprise_request_routing": _uuid(409),
+    "internal_it_helpdesk_routing": uuid.UUID(
+        "94000000-0000-0000-0000-000000000001"
+    ),
 }
 
 WORKFLOW_IDS = {
@@ -365,6 +368,9 @@ WORKFLOW_IDS["model_router_ticket_ops"] = uuid.UUID(
     "91000000-0000-0000-0000-000000000002"
 )
 WORKFLOW_IDS["team_onboarding_adaptive_routing"] = _uuid(508)
+WORKFLOW_IDS["internal_it_helpdesk_routing"] = uuid.UUID(
+    "94000000-0000-0000-0000-000000000002"
+)
 
 DEPLOYMENT_IDS = {
     key: _uuid(600 + index)
@@ -374,6 +380,9 @@ DEPLOYMENT_IDS["model_router_ticket_ops"] = uuid.UUID(
     "91000000-0000-0000-0000-000000000003"
 )
 DEPLOYMENT_IDS["team_onboarding_adaptive_routing"] = _uuid(608)
+DEPLOYMENT_IDS["internal_it_helpdesk_routing"] = uuid.UUID(
+    "94000000-0000-0000-0000-000000000003"
+)
 
 LEGACY_DEMO_LLM_CREDENTIAL_ID = _uuid(700)
 
@@ -392,6 +401,7 @@ TEAM_PERMISSION_IDS = {
     "team_onboarding_adaptive_sales": _uuid(811),
     "team_onboarding_adaptive_people": _uuid(812),
     "enterprise_request_routing": _uuid(813),
+    "internal_it_helpdesk_routing": _uuid(814),
 }
 
 
@@ -403,6 +413,131 @@ class DemoUserSpec:
     membership_state: str
     organization_auth_state: str
     teams: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class InternalITHelpdeskRunSpec:
+    run_id: uuid.UUID
+    department: str
+    message: str
+    model_name: str
+    duration: float
+    total_tokens: int
+    total_cost: Decimal
+    prompt_tokens: int
+    completion_tokens: int
+    node_cost: Decimal
+    request_type: str | None = None
+    answer: str | None = None
+    status: RunStatus = RunStatus.SUCCESS
+
+
+def _it_run_spec(
+    run_id: str,
+    department: str,
+    message: str,
+    model_name: str,
+    duration: float,
+    total_tokens: int,
+    total_cost: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    node_cost: str,
+    request_type: str | None = None,
+    answer: str | None = None,
+) -> InternalITHelpdeskRunSpec:
+    return InternalITHelpdeskRunSpec(
+        run_id=uuid.UUID(run_id),
+        department=department,
+        message=message,
+        model_name=model_name,
+        duration=duration,
+        total_tokens=total_tokens,
+        total_cost=Decimal(total_cost),
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        node_cost=Decimal(node_cost),
+        request_type=request_type,
+        answer=answer,
+    )
+
+
+IT_VPN_GUIDE = "VPN 설치 가이드는 어디 있나요?"
+IT_VPN_ONBOARDING = "신규 입사자용 VPN 설치 문서 링크와 설치 순서만 알려주세요."
+IT_MFA_DIAGNOSIS = (
+    "MFA 재등록 후에도 SSO 로그인이 안 됩니다. 원인을 확인하고 순서대로 해결 절차를 알려주세요."
+)
+IT_COMPOUND_ACCESS = (
+    "VPN은 연결되지만 Git 저장소는 권한 거부가 나고, SSO 세션도 계속 끊깁니다. "
+    "계정, MFA, VPN 설정 중 무엇부터 점검해야 할지 판단해 주세요."
+)
+IT_OFFBOARDING_INCIDENT = (
+    "퇴사자 관리자 계정이 아직 활성화되어 있고 고객 정보에 접근한 흔적이 있습니다. "
+    "즉시 조치와 증거 보존 순서를 판단해 주세요."
+)
+IT_ADMIN_COMPROMISE = (
+    "공용 관리자 계정 탈취가 의심되며 야간에 고객 DB 조회 기록이 발견됐습니다. "
+    "서비스 영향을 최소화하면서 권한 차단과 포렌식 증거 보존을 어떤 순서로 해야 하나요?"
+)
+
+
+# 2026-07-20 시연 준비 때 실제로 실행한 26개 성공 기록을 재현한다. 중간
+# 튜닝 기록도 남겨 모델 선택이 점차 경제형/균형형/고성능형으로 안정되는
+# 과정을 실행 이력 화면에서 확인할 수 있다.
+INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS = (
+    _it_run_spec("5f60da30-30d7-474f-b373-139e4465d1e7", "전체", IT_VPN_GUIDE, "gpt-4o-mini", 9.107133, 3220, "0.002989", 723, 55, "0.00014145"),
+    _it_run_spec("4b4e540c-19ae-457b-b4a5-29a7678c04c5", "전체", IT_VPN_ONBOARDING, "gpt-4o-mini", 6.102559, 3648, "0.003110", 1102, 74, "0.0002097"),
+    _it_run_spec("d26f04ac-daf9-4774-80a2-05bbb0573664", "개발", IT_MFA_DIAGNOSIS, "gpt-4o-mini", 5.660688, 3647, "0.002665", 1110, 142, "0.0001749"),
+    _it_run_spec("c1121450-c763-4cd2-b9de-8f6abaf86a20", "플랫폼개발", IT_COMPOUND_ACCESS, "gpt-4o-mini", 5.775419, 4065, "0.003070", 1474, 89, "0.0002745"),
+    _it_run_spec("7ead86fc-4a27-4506-aeee-b299094f0084", "보안", IT_OFFBOARDING_INCIDENT, "gpt-5.4", 10.595579, 4144, "0.013826", 1147, 566, "0.0113575"),
+    _it_run_spec("5280d7ce-56d1-49a3-be2e-822e60ea33c1", "보안", IT_ADMIN_COMPROMISE, "gpt-4.1-mini", 7.173036, 4272, "0.004320", 1491, 110, "0.0007724"),
+    _it_run_spec("db2c06e9-d27f-4233-bde2-9e9b0d412792", "전체", IT_VPN_ONBOARDING, "gpt-4o-mini", 5.939823, 3695, "0.003217", 1102, 81, "0.0001371"),
+    _it_run_spec("6ce41bc8-7c7e-45fc-b350-ece8f458644a", "개발", IT_MFA_DIAGNOSIS, "gpt-4o-mini", 7.590929, 3830, "0.003227", 1110, 209, "0.0002151"),
+    _it_run_spec("28ab9135-cdfc-4d16-a812-98678b8ab720", "플랫폼개발", IT_COMPOUND_ACCESS, "gpt-5.4-mini", 8.795908, 4548, "0.006434", 1485, 472, "0.00323775"),
+    _it_run_spec("14e0f678-0285-4410-ab73-43a93d425adb", "보안", IT_OFFBOARDING_INCIDENT, "gpt-4o-mini", 6.174132, 3764, "0.003128", 1136, 102, "0.0002316"),
+    _it_run_spec("f38e070b-9518-430a-83a1-d0697a1349ad", "보안", IT_ADMIN_COMPROMISE, "gpt-4.1", 5.922401, 4172, "0.007314", 1491, 211, "0.00467"),
+    _it_run_spec("48c261a3-d5d9-415b-b356-f17b1ec1bcb0", "전체", IT_VPN_GUIDE, "gpt-4o-mini", 6.745534, 3208, "0.002920", 723, 59, "0.00014385"),
+    _it_run_spec("23c25362-4298-4979-9a22-0a1250ff04ee", "개발", "MFA 재등록 후에도 SSO 로그인이 안 됩니다. 원인을 확인해 주세요.", "gpt-4o-mini", 5.598987, 3580, "0.002529", 1102, 124, "0.0001629"),
+    _it_run_spec("ac4635fd-dafe-4f8b-9357-48ba5780b53f", "보안", "퇴사자 관리자 계정이 아직 활성화되어 있고 고객 정보에 접근한 흔적이 있습니다.", "gpt-4.1", 5.596836, 3692, "0.006024", 1108, 126, "0.003224"),
+    _it_run_spec("57135a0d-bb85-4a58-9dd2-168b6c1c4f4c", "개발", IT_MFA_DIAGNOSIS, "gpt-4o-mini", 9.957074, 3801, "0.003378", 1110, 137, "0.0001719"),
+    _it_run_spec("db896ef0-80fb-4063-9715-8aef7aafe880", "개발", IT_MFA_DIAGNOSIS, "gpt-4o-mini", 6.759056, 3694, "0.002986", 1110, 114, "0.0001581"),
+    _it_run_spec("9cbebe01-d601-4ed4-8236-8e343db71107", "전체", IT_VPN_GUIDE, "gpt-4o-mini", 5.806209, 3188, "0.002459", 723, 57, "0.00014265"),
+    _it_run_spec("c9d6ba48-85ce-4bb0-9808-634ebc342c07", "개발", IT_MFA_DIAGNOSIS, "gpt-4o-mini", 6.780191, 3850, "0.003313", 1110, 113, "0.0001575"),
+    _it_run_spec("bb85e0cf-bdfc-4a7a-aee0-ead170011a60", "보안", IT_OFFBOARDING_INCIDENT, "gpt-5.4", 11.898704, 4340, "0.014589", 1134, 579, "0.01152"),
+    _it_run_spec("614dda58-e48d-4def-a0b0-2c6900b68ad4", "전체", IT_VPN_GUIDE, "gpt-4o-mini", 6.711201, 3251, "0.002570", 723, 59, "0.00014385"),
+    _it_run_spec("3ecbf319-ca36-4222-a736-856eadd83b7c", "개발", IT_MFA_DIAGNOSIS, "gpt-4.1-mini", 6.895443, 3878, "0.003660", 1110, 141, "0.0006696"),
+    _it_run_spec("50345ba4-fbb1-404a-8d3e-bef182b7772d", "보안", IT_OFFBOARDING_INCIDENT, "gpt-5.4", 10.134884, 4229, "0.012780", 1134, 470, "0.009885"),
+    _it_run_spec("b320bba4-4ead-408d-818b-a2665ae5f14d", "개발", IT_MFA_DIAGNOSIS, "gpt-4.1-mini", 7.638235, 4114, "0.004373", 1157, 134, "0.0006772"),
+    _it_run_spec("e3a7c5f5-f36d-4d6f-ad53-1f8580cce333", "보안", IT_OFFBOARDING_INCIDENT, "gpt-4.1", 9.390942, 4077, "0.006804", 1170, 136, "0.003428"),
+    _it_run_spec("1c264e92-5c83-41b8-8232-3f908fc47702", "전체", IT_VPN_GUIDE, "gpt-4o-mini", 6.570640, 3345, "0.002608", 770, 60, "0.0001515"),
+    _it_run_spec(
+        "754e8960-ecfa-4ff1-9538-45fd51ca0271",
+        "정보보안팀",
+        (
+            "지난주 퇴사한 외주 개발자의 관리자 계정이 아직 활성화되어 있으며, "
+            "퇴사 이후 운영 데이터베이스 백업 파일을 조회한 기록이 발견됐습니다. "
+            "추가 피해를 막으면서 증거를 훼손하지 않도록 즉시 수행할 접근 차단, "
+            "세션·토큰 폐기, 로그 보존, 영향 범위 조사와 내부 보고 순서를 정리해 주세요."
+        ),
+        "gpt-5.4",
+        17.903081,
+        4636,
+        "0.019606",
+        897,
+        954,
+        "0.0165525",
+        request_type="보안 사고 대응(퇴사자 권한 잔존 및 무단 접근 의심)",
+        answer=(
+            "긴급 보안 사고로 판단됩니다. 먼저 현재 계정 상태와 조회 기록을 캡처하고 "
+            "인증·VPN·데이터베이스·백업 저장소 감사 로그를 보존하세요. 증거 보존 후 "
+            "해당 계정과 관리자·DB·백업·클라우드 권한을 즉시 차단하고, 활성 세션, "
+            "SSO·VPN 세션, API 토큰, SSH 키, MFA 복구 수단을 모두 폐기하세요. "
+            "퇴사일 이후의 로그인 위치·IP·권한 상승·백업 조회 및 다운로드·타 시스템 "
+            "접근 여부를 조사하고, 정보보안팀을 중심으로 IAM·인프라·DBA·HR·"
+            "개인정보 담당자에게 조치 시각과 증거 위치를 포함해 즉시 보고하세요."
+        ),
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -2530,6 +2665,176 @@ def _model_router_ticket_ops_graph() -> dict[str, Any]:
     return graph
 
 
+def _internal_it_helpdesk_routing_graph() -> dict[str, Any]:
+    """사내 IT 문의를 RAG와 요청 난이도에 맞는 모델로 처리한다."""
+    graph = copy.deepcopy(_ticket_ops_graph())
+    nodes = {node["id"]: node for node in graph["nodes"]}
+
+    nodes["webhook-ticket"]["data"].update(
+        {
+            "title": "직원 IT 문의 수신",
+            "description": "직원의 부서와 IT 문의를 수신합니다.",
+            "variable_mappings": [
+                {
+                    "label": "부서",
+                    "json_path": "department",
+                    "variable_name": "department",
+                },
+                {
+                    "label": "문의",
+                    "json_path": "message",
+                    "variable_name": "message",
+                },
+            ],
+        }
+    )
+
+    nodes["llm-triage"]["data"].update(
+        {
+            "title": "IT 문의 판단 및 답변",
+            "description": (
+                "사내 IT 문의를 처리합니다. 단일 문서 위치나 설치 안내는 경제형, "
+                "복수 인증·접속 증상 진단은 균형형, 보안 사고 대응은 고성능형 "
+                "모델이 필요한 작업입니다."
+            ),
+            "model_id": DEMO_MODEL_ROUTER_FALLBACK_MODEL,
+            "fallback_model_id": DEMO_MODEL_ROUTER_BALANCED_MODEL,
+            "auto_model_routing": True,
+            "model_routing_context": {
+                "customer_facing": False,
+                "node_task": "internal_it_helpdesk",
+                "risk_level": "medium",
+            },
+            "model_routing_task_description": (
+                "사내 IT 문의를 처리합니다. 단일 문서 위치·설치 안내·단순 조회는 "
+                "경제형 능력, 둘 이상의 인증·접속 증상을 조합해 원인을 진단하거나 "
+                "단계별 해결 절차를 설계하는 요청은 균형형 능력, 관리자 계정 탈취·"
+                "퇴사자 권한·고객 정보 접근 사고의 차단·증거 보존·통지 판단은 "
+                "고성능형 능력이 필요합니다."
+            ),
+            "model_routing_policy": {
+                "refresh": {"refresh_every_runs": 20},
+                "validation_budget_usd": 3.0,
+                "excluded_model_ids": [DEMO_MODEL_ROUTER_LATEST_SOL_MODEL],
+            },
+            "system_prompt": (
+                "사내 IT 헬프데스크 AI입니다. 연결된 사내 문서를 우선 근거로 "
+                "사용하세요. 단순 사용 안내는 짧고 직접적으로 답하고, 여러 증상이 "
+                "얽힌 장애는 확인 순서와 해결 절차를 제시하세요. 계정 탈취, 퇴사자 "
+                "권한, 개인정보 접근, 관리자 권한처럼 보안 위험이 있으면 긴급으로 "
+                "판정하고 증거 보존, 접근 차단, 보안 담당자 에스컬레이션 순서를 "
+                "포함하세요. 반드시 JSON object 하나만 출력하세요. 필드는 "
+                "'문의 유형' string, '긴급도' boolean, '답변 초안' string 세 개만 "
+                "사용합니다. 무단 접근 근거가 없는 일반 MFA·SSO·VPN 접속 장애는 "
+                "긴급도를 false로 판정하세요."
+            ),
+            "user_prompt": (
+                "요청 부서: {{ department }}\n"
+                "직원 문의: {{ message }}\n"
+                "문의 유형, 긴급 여부와 직원에게 제공할 답변을 작성하세요."
+            ),
+            "assistant_prompt": "",
+            "referenced_variables": [
+                {
+                    "name": "department",
+                    "value_selector": ["webhook-ticket", "department"],
+                },
+                {
+                    "name": "message",
+                    "value_selector": ["webhook-ticket", "message"],
+                },
+            ],
+            "parameters": {"temperature": 0.2, "max_tokens": 900},
+            "knowledgeBases": [
+                _knowledge_base_ref("onboarding_company_common"),
+                _knowledge_base_ref("onboarding_platform"),
+            ],
+            "output_format": {
+                "type": "json",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "문의 유형": {"type": "string"},
+                        "긴급도": {"type": "boolean"},
+                        "답변 초안": {"type": "string"},
+                    },
+                    "required": ["문의 유형", "긴급도", "답변 초안"],
+                },
+            },
+        }
+    )
+    nodes["extract-ticket"]["data"].update(
+        {
+            "title": "문의 유형·긴급도 추출",
+            "description": "LLM JSON 결과에서 문의 유형, 긴급도와 답변을 추출합니다.",
+            "source_selector": ["llm-triage", "text"],
+            "mappings": [
+                {"name": "requestType", "json_path": "문의 유형"},
+                {"name": "approvalRequired", "json_path": "긴급도"},
+                {"name": "mailDraft", "json_path": "답변 초안"},
+            ],
+        }
+    )
+    nodes["condition-approval"]["data"].update(
+        {
+            "title": "긴급 보안 문의 분기",
+            "description": "즉시 보안 담당자 대응이 필요한 문의인지 분기합니다.",
+        }
+    )
+    nodes["condition-approval"]["data"]["cases"][0]["case_name"] = (
+        "보안 에스컬레이션"
+    )
+    nodes["template-approval"]["data"].update(
+        {
+            "title": "보안 담당자 에스컬레이션",
+            "description": "긴급 보안 문의를 담당자에게 전달할 메시지를 만듭니다.",
+            "template": (
+                "[긴급 IT 보안 에스컬레이션]\n\n"
+                "부서: {{ department }}\n문의: {{ message }}\n"
+                "문의 유형: {{ requestType }}\n\n초기 대응 안내:\n{{ mailDraft }}"
+            ),
+            "variables": [
+                {
+                    "name": "department",
+                    "value_selector": ["webhook-ticket", "department"],
+                },
+                {
+                    "name": "message",
+                    "value_selector": ["webhook-ticket", "message"],
+                },
+                {
+                    "name": "requestType",
+                    "value_selector": ["extract-ticket", "requestType"],
+                },
+                {
+                    "name": "mailDraft",
+                    "value_selector": ["extract-ticket", "mailDraft"],
+                },
+            ],
+        }
+    )
+    nodes["template-reply"]["data"].update(
+        {
+            "title": "일반 IT 안내",
+            "description": "직원에게 전달할 IT 안내를 정리합니다.",
+            "template": "{{ mailDraft }}",
+        }
+    )
+    nodes["answer-approval"]["data"].update(
+        {
+            "title": "보안 대응 결과",
+            "description": "보안 에스컬레이션 결과를 반환합니다.",
+        }
+    )
+    nodes["answer-reply"]["data"].update(
+        {
+            "title": "IT 안내 결과",
+            "description": "일반 IT 안내 결과를 반환합니다.",
+        }
+    )
+    return graph
+
+
 
 def _enterprise_request_routing_graph() -> dict[str, Any]:
     """사내 업무 요청을 RAG와 입력군별 자동 모델 라우팅으로 처리한다."""
@@ -3600,10 +3905,19 @@ def _upsert_app_workflow(
         "description": description,
         "icon": _icon(
             "🧭"
-            if key in {"ticket_ops", "model_router_ticket_ops"}
+            if key
+            in {
+                "ticket_ops",
+                "model_router_ticket_ops",
+                "internal_it_helpdesk_routing",
+            }
             else "📘"
         ),
-        "url_slug": f"demo-{key.replace('_', '-')}",
+        "url_slug": (
+            "internal-it-helpdesk-routing-demo"
+            if key == "internal_it_helpdesk_routing"
+            else f"demo-{key.replace('_', '-')}"
+        ),
         "auth_secret": None,
         "auth_secret_verifier": app_auth_secret_verifier(app_secret),
         "auth_secret_verifier_version": APP_AUTH_SECRET_VERIFIER_VERSION,
@@ -3725,6 +4039,16 @@ def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
             deployed=True,
             deployment_type=DeploymentType.WEBHOOK,
         ),
+        "internal_it_helpdesk_routing": _upsert_app_workflow(
+            db,
+            "internal_it_helpdesk_routing",
+            "사내 IT 문의 자동 처리",
+            "RAG와 자동 모델 라우팅으로 사내 IT 문의의 비용과 품질을 함께 관리하는 시연 workflow",
+            "admin",
+            _internal_it_helpdesk_routing_graph(),
+            deployed=True,
+            deployment_type=DeploymentType.WEBHOOK,
+        ),
         "ticket_ops": _upsert_app_workflow(
             db,
             "ticket_ops",
@@ -3814,6 +4138,19 @@ def _seed_permissions(db: Session) -> None:
                 "auth_state": "manager",
                 "assigned_by": USER_IDS["admin"],
                 "options": _demo_options("permission-enterprise-request-routing"),
+                "flags": 0,
+            },
+        ),
+        (
+            TEAM_PERMISSION_IDS["internal_it_helpdesk_routing"],
+            TeamWorkflowPermission,
+            {
+                "grantee_organization_id": ORG_ID,
+                "team_id": TEAM_IDS["platform_admin"],
+                "workflow_id": WORKFLOW_IDS["internal_it_helpdesk_routing"],
+                "auth_state": "manager",
+                "assigned_by": USER_IDS["admin"],
+                "options": _demo_options("permission-internal-it-helpdesk-routing"),
                 "flags": 0,
             },
         ),
@@ -4186,6 +4523,313 @@ def _seed_run(
         )
 
 
+def _internal_it_helpdesk_result(
+    spec: InternalITHelpdeskRunSpec,
+) -> tuple[str, bool, str]:
+    if spec.department in {"보안", "정보보안팀"}:
+        return (
+            spec.request_type or "보안 사고 대응",
+            True,
+            spec.answer
+            or "관련 계정의 접근을 즉시 제한하고 로그와 증거를 보존한 뒤 보안 담당자에게 에스컬레이션하세요.",
+        )
+    if "MFA" in spec.message or "Git" in spec.message:
+        return (
+            "인증·접근 장애",
+            False,
+            "계정 상태와 MFA 등록을 먼저 확인한 뒤 SSO 세션, VPN, 저장소 권한 순서로 점검하세요.",
+        )
+    return (
+        "VPN 사용 안내",
+        False,
+        "사내 People 포털에서 VPN 설치 가이드를 확인하고 안내된 순서대로 설치하세요.",
+    )
+
+
+def _seed_internal_it_helpdesk_run(
+    db: Session,
+    *,
+    spec: InternalITHelpdeskRunSpec,
+    started_at: datetime,
+    models: dict[str, LLMModel],
+) -> None:
+    request_type, approval_required, answer = _internal_it_helpdesk_result(spec)
+    llm_text = json.dumps(
+        {
+            "문의 유형": request_type,
+            "긴급도": approval_required,
+            "답변 초안": answer,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    final_text = (
+        "[긴급 IT 보안 에스컬레이션]\n\n"
+        f"부서: {spec.department}\n문의: {spec.message}\n"
+        f"문의 유형: {request_type}\n\n초기 대응 안내:\n{answer}"
+        if approval_required
+        else answer
+    )
+    finished_at = started_at + timedelta(seconds=spec.duration)
+    routing_tier = (
+        "advanced"
+        if spec.model_name == DEMO_CHAT_MODEL
+        else "balanced"
+        if spec.model_name in {DEMO_CHAT_MINI_MODEL, DEMO_MODEL_ROUTER_BALANCED_MODEL}
+        else "economy"
+    )
+    retrieved_chunks = 2 if approval_required or "MFA" in spec.message else 1
+    context_tokens = 1024 if retrieved_chunks == 2 else 514
+    judge_cost = max(spec.total_cost - spec.node_cost, Decimal("0"))
+    judge_tokens = max(
+        spec.total_tokens - spec.prompt_tokens - spec.completion_tokens,
+        0,
+    )
+    judge_completion_tokens = min(judge_tokens, 153)
+    judge_prompt_tokens = judge_tokens - judge_completion_tokens
+    routing_metadata = {
+        "enabled": True,
+        "strategy_id": "judge_bootstrap_incremental_v1",
+        "decision_source": "test_policy_preview",
+        "policy_source": "test_ephemeral",
+        "policy_version": "test-ephemeral-judge-first-v1",
+        "selected_model": spec.model_name,
+        "fallback_model": DEMO_MODEL_ROUTER_BALANCED_MODEL,
+        "reason_code": "multi_constraint",
+        "judge_called": True,
+        "included_in_policy_learning": False,
+        "judge": {
+            "attempted": True,
+            "status": "selected",
+            "model": DEMO_CHAT_MINI_MODEL,
+            "selected_model": spec.model_name,
+            "confidence": 0.92 if routing_tier != "balanced" else 0.86,
+            "reason_code": "multi_constraint",
+            "reason_short": {
+                "economy": "단순 안내에 충분한 모델",
+                "balanced": "복수 증상 진단에 적합",
+                "advanced": "보안 사고 판단에 적합",
+            }[routing_tier],
+            "candidate_model_count": 10,
+            "cost": float(judge_cost),
+            "usage": {
+                "prompt_tokens": judge_prompt_tokens,
+                "completion_tokens": judge_completion_tokens,
+                "total_tokens": judge_tokens,
+            },
+        },
+        "runtime_context": {
+            "intent": "internal_it_helpdesk",
+            "node_task": "internal_it_helpdesk",
+            "risk_level": "high" if approval_required else "medium",
+            "output_format": "json",
+            "schema_required": True,
+            "knowledge_enabled": True,
+            "input_length_bucket": "short" if len(spec.message) < 80 else "medium",
+        },
+        "rag_context": {
+            "used": True,
+            "retrieved_chunk_count": retrieved_chunks,
+            "retrieved_context_token_estimate": context_tokens,
+            "evidence_sufficient": True,
+            "partial_result": False,
+        },
+    }
+    llm_outputs = {
+        "text": llm_text,
+        "model": spec.model_name,
+        "cost": float(spec.node_cost),
+        "usage": {
+            "prompt_tokens": spec.prompt_tokens,
+            "completion_tokens": spec.completion_tokens,
+            "total_tokens": spec.prompt_tokens + spec.completion_tokens,
+        },
+        "metadata": {
+            "model_routing": routing_metadata,
+            "fallback_used": False,
+            "finish_reason": "stop",
+            "schema_status": "passed",
+            "rag": {
+                "rag_mode": "explicit_kb",
+                "retrieved_chunk_count": retrieved_chunks,
+                "context_token_estimate": context_tokens,
+                "evidence_sufficient": True,
+                "permission_filter_applied": True,
+            },
+        },
+    }
+    run = _upsert_by_id(
+        db,
+        WorkflowRun,
+        spec.run_id,
+        {
+            "workflow_id": WORKFLOW_IDS["internal_it_helpdesk_routing"],
+            "user_id": USER_IDS["admin"],
+            "app_id": APP_IDS["internal_it_helpdesk_routing"],
+            "deployment_id": None,
+            "workflow_version": 1,
+            "status": RunStatus.SUCCESS,
+            "trigger_mode": RunTriggerMode.MANUAL,
+            "inputs": {"department": spec.department, "message": spec.message},
+            "outputs": {"answer_text": final_text},
+            "error_message": None,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "duration": spec.duration,
+            "meta_info": _demo_options(f"run-internal-it-{spec.run_id}"),
+            "total_tokens": spec.total_tokens,
+            "total_cost": spec.total_cost,
+            "trace_metadata": {
+                "demo_seed": True,
+                "scenario": "internal_it_helpdesk_model_routing",
+            },
+            "redaction_applied": False,
+            "pii_detected": False,
+            "payload_storage_mode": "redacted_only",
+        },
+    )
+    db.flush()
+
+    selected_handle = "approval" if approval_required else "default"
+    template_node_id = "template-approval" if approval_required else "template-reply"
+    answer_node_id = "answer-approval" if approval_required else "answer-reply"
+    node_specs = (
+        (
+            "webhook-ticket",
+            "webhookTrigger",
+            0.02,
+            {"department": spec.department, "message": spec.message},
+            {"department": spec.department, "message": spec.message},
+        ),
+        (
+            "llm-triage",
+            "llmNode",
+            max(spec.duration - 0.15, 0.5),
+            {"department": spec.department, "message": spec.message},
+            llm_outputs,
+        ),
+        (
+            "extract-ticket",
+            "variableExtractionNode",
+            0.03,
+            {"llm-triage": llm_outputs},
+            {
+                "requestType": request_type,
+                "approvalRequired": approval_required,
+                "mailDraft": answer,
+            },
+        ),
+        (
+            "condition-approval",
+            "conditionNode",
+            0.01,
+            {"approvalRequired": approval_required},
+            {"selected_handle": selected_handle},
+        ),
+        (template_node_id, "templateNode", 0.01, {"mailDraft": answer}, {"text": final_text}),
+        (answer_node_id, "answerNode", 0.01, {"text": final_text}, {"answer_text": final_text}),
+    )
+    for sequence, (node_id, node_type, duration, inputs, outputs) in enumerate(
+        node_specs, start=1
+    ):
+        node_trace = {
+            "demo_seed": True,
+            "cost_hotspot": node_id == "llm-triage",
+        }
+        if node_id == "llm-triage":
+            node_trace.update(
+                {
+                    "llm": {
+                        "model": spec.model_name,
+                        "selected_model": spec.model_name,
+                        "fallback_model": DEMO_MODEL_ROUTER_BALANCED_MODEL,
+                        "decision_source": "test_policy_preview",
+                        "judge_called": True,
+                        "reason_code": "multi_constraint",
+                        "total_cost": float(spec.node_cost),
+                        "prompt_tokens": spec.prompt_tokens,
+                        "completion_tokens": spec.completion_tokens,
+                        "total_tokens": spec.prompt_tokens + spec.completion_tokens,
+                        "schema_status": "passed",
+                        "downstream_status": "passed",
+                        "fallback_used": False,
+                    },
+                    "rag": {
+                        "retrieved_chunk_count": retrieved_chunks,
+                        "context_token_estimate": context_tokens,
+                        "evidence_sufficient": True,
+                    },
+                }
+            )
+        _upsert_by_id(
+            db,
+            WorkflowNodeRun,
+            uuid.uuid5(spec.run_id, f"internal-it-node:{node_id}"),
+            {
+                "workflow_run_id": run.id,
+                "node_id": node_id,
+                "node_type": node_type,
+                "status": NodeRunStatus.SUCCESS,
+                "inputs": inputs,
+                "process_data": _demo_options(
+                    f"internal-it-node-{spec.run_id}-{node_id}"
+                ),
+                "outputs": outputs,
+                "error_message": None,
+                "started_at": started_at + timedelta(milliseconds=100 * sequence),
+                "finished_at": started_at
+                + timedelta(milliseconds=100 * sequence)
+                + timedelta(seconds=duration),
+                "duration": duration,
+                "trace_metadata": node_trace,
+                "redaction_applied": False,
+                "pii_detected": False,
+                "sequence": sequence,
+                "retry_count": 0,
+            },
+        )
+
+    usage_specs = (
+        (
+            "execution",
+            spec.model_name,
+            spec.prompt_tokens,
+            spec.completion_tokens,
+            spec.node_cost,
+            int(spec.duration * 1000),
+        ),
+        (
+            "judge",
+            DEMO_CHAT_MINI_MODEL,
+            judge_prompt_tokens,
+            judge_completion_tokens,
+            judge_cost,
+            max(int(spec.duration * 1000) - 500, 1),
+        ),
+    )
+    for usage_kind, model_name, prompt, completion, cost, latency_ms in usage_specs:
+        _upsert_by_id(
+            db,
+            LLMUsageLog,
+            uuid.uuid5(spec.run_id, f"internal-it-usage:{usage_kind}"),
+            {
+                "user_id": USER_IDS["admin"],
+                "organization_id": ORG_ID,
+                "credential_id": LLM_CREDENTIAL_IDS["demo_openai"],
+                "model_id": models[model_name].id,
+                "workflow_id": WORKFLOW_IDS["internal_it_helpdesk_routing"],
+                "workflow_run_id": spec.run_id,
+                "node_id": "llm-triage",
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "total_cost": cost,
+                "latency_ms": latency_ms,
+                "status": "success",
+                "created_at": started_at,
+            },
+        )
+
+
 def _seed_llm_credential(
     db: Session, provider: LLMProvider, models: dict[str, LLMModel]
 ) -> LLMCredential:
@@ -4406,6 +5050,15 @@ def _seed_runs_and_usage(db: Session, models: dict[str, LLMModel]) -> None:
                     "created_at": now - timedelta(hours=index + 1),
                 },
             )
+
+    internal_it_started_at = now - timedelta(minutes=25)
+    for index, spec in enumerate(INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS):
+        _seed_internal_it_helpdesk_run(
+            db,
+            spec=spec,
+            started_at=internal_it_started_at + timedelta(minutes=index),
+            models=models,
+        )
 
 
 def _seed_permission_requests(db: Session) -> None:

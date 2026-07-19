@@ -1,12 +1,14 @@
 import gzip
 import json
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from apps.shared.db import demo_seed
+from apps.shared.db.models.workflow_run import RunStatus
 from apps.shared.domain.app_auth_secret import (
     APP_AUTH_SECRET_VERIFIER_VERSION,
     app_auth_secret_verifier,
@@ -1173,6 +1175,60 @@ def test_model_router_demo_workflow_uses_current_routing_context():
         "excluded_model_ids": ["gpt-5.6-sol"],
     }
     assert data["knowledgeBases"] == []
+
+
+def test_internal_it_helpdesk_routing_demo_matches_presentation_contract():
+    graph = demo_seed._internal_it_helpdesk_routing_graph()
+    nodes = {node["id"]: node for node in graph["nodes"]}
+
+    assert demo_seed.APP_IDS["internal_it_helpdesk_routing"] == uuid.UUID(
+        "94000000-0000-0000-0000-000000000001"
+    )
+    assert demo_seed.WORKFLOW_IDS["internal_it_helpdesk_routing"] == uuid.UUID(
+        "94000000-0000-0000-0000-000000000002"
+    )
+    assert demo_seed.DEPLOYMENT_IDS["internal_it_helpdesk_routing"] == uuid.UUID(
+        "94000000-0000-0000-0000-000000000003"
+    )
+    assert demo_seed._input_schema_from_graph(graph) == {
+        "variables": [
+            {"name": "department", "type": "text", "label": "부서"},
+            {"name": "message", "type": "text", "label": "문의"},
+        ]
+    }
+
+    llm_data = nodes["llm-triage"]["data"]
+    assert llm_data["auto_model_routing"] is True
+    assert llm_data["model_routing_context"]["node_task"] == "internal_it_helpdesk"
+    assert llm_data["knowledgeBases"] == [
+        demo_seed._knowledge_base_ref("onboarding_company_common"),
+        demo_seed._knowledge_base_ref("onboarding_platform"),
+    ]
+    assert llm_data["output_format"]["schema"]["required"] == [
+        "문의 유형",
+        "긴급도",
+        "답변 초안",
+    ]
+    assert "경제형" in llm_data["model_routing_task_description"]
+    assert "균형형" in llm_data["model_routing_task_description"]
+    assert "고성능형" in llm_data["model_routing_task_description"]
+
+
+def test_internal_it_helpdesk_routing_demo_seeds_all_presentation_logs():
+    specs = demo_seed.INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS
+
+    assert len(specs) == 26
+    assert {spec.model_name for spec in specs} >= {
+        "gpt-4o-mini",
+        "gpt-4.1-mini",
+        "gpt-5.4",
+    }
+    assert all(spec.status == RunStatus.SUCCESS for spec in specs)
+    assert all(spec.department and spec.message for spec in specs)
+    assert all(spec.total_tokens > 0 and spec.total_cost > 0 for spec in specs)
+    assert specs[-1].run_id == uuid.UUID("754e8960-ecfa-4ff1-9538-45fd51ca0271")
+    assert specs[-1].model_name == "gpt-5.4"
+    assert specs[-1].request_type == "보안 사고 대응(퇴사자 권한 잔존 및 무단 접근 의심)"
 
 
 def test_ticket_ops_input_schema_matches_webhook_mappings():
