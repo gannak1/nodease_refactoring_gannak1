@@ -316,7 +316,23 @@ class FakeRuntimePriorityDb:
         self.refreshed = row
 
 
-def _patch_allowed_knowledge_permissions(monkeypatch, knowledge_base_ids):
+def _patch_rag_model_precompute_out_of_scope(monkeypatch):
+    monkeypatch.setattr(
+        LLMNode,
+        "_precompute_rag_query_vectors_by_kb",
+        lambda *_args, **_kwargs: ({}, {}, 0, False),
+    )
+
+
+def _patch_allowed_knowledge_permissions(
+    monkeypatch,
+    knowledge_base_ids,
+    *,
+    bypass_model_precompute=True,
+):
+    if bypass_model_precompute:
+        _patch_rag_model_precompute_out_of_scope(monkeypatch)
+
     class FakeQuery:
         def filter(self, *args, **kwargs):
             return self
@@ -2246,6 +2262,7 @@ def test_llm_node_rejects_over_limit_kbs_without_silent_slicing():
 def test_llm_node_rag_partial_retrieval_failure_uses_safe_partial_result(
     monkeypatch,
 ):
+    _patch_rag_model_precompute_out_of_scope(monkeypatch)
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     ok_kb_id = uuid.uuid4()
@@ -2332,6 +2349,7 @@ def test_llm_node_rag_partial_retrieval_failure_uses_safe_partial_result(
 
 
 def test_llm_node_rag_preserves_explicit_zero_score_threshold(monkeypatch):
+    _patch_rag_model_precompute_out_of_scope(monkeypatch)
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     kb_id = uuid.uuid4()
@@ -2404,6 +2422,7 @@ def test_llm_node_rag_preserves_explicit_zero_score_threshold(monkeypatch):
 
 
 def test_llm_node_rag_source_tier_breaks_equal_score_ties(monkeypatch):
+    _patch_rag_model_precompute_out_of_scope(monkeypatch)
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     policy_kb_id = uuid.uuid4()
@@ -2493,6 +2512,7 @@ def test_llm_node_rag_source_tier_breaks_equal_score_ties(monkeypatch):
 
 
 def test_llm_node_rag_source_tier_policy_off_preserves_score_order(monkeypatch):
+    _patch_rag_model_precompute_out_of_scope(monkeypatch)
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     policy_kb_id = uuid.uuid4()
@@ -3107,6 +3127,7 @@ def test_llm_node_precompute_fails_closed_on_projection_infrastructure_error(
 
 
 def test_llm_node_rag_template_query_rewrite_uses_safe_trace_summary(monkeypatch):
+    _patch_rag_model_precompute_out_of_scope(monkeypatch)
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     kb_id = uuid.uuid4()
@@ -3299,6 +3320,7 @@ def test_llm_node_rag_pii_evidence_blocks_llm_context(monkeypatch):
 
 
 def test_llm_node_rag_pii_evidence_fail_node_raises(monkeypatch):
+    _patch_rag_model_precompute_out_of_scope(monkeypatch)
     kb_id = uuid.uuid4()
     data = LLMNodeData(
         title="LLM",
@@ -3810,6 +3832,7 @@ def test_llm_node_rag_fails_closed_when_timeout_guard_unavailable(monkeypatch):
 def test_llm_node_rag_partial_retrieval_failure_respects_fail_node_policy(
     monkeypatch,
 ):
+    _patch_rag_model_precompute_out_of_scope(monkeypatch)
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     kb_id = uuid.uuid4()
@@ -5837,7 +5860,11 @@ def test_workflow_llm_node_applies_selected_kb_chunks_to_llm_prompt(monkeypatch)
             return [0.1, 0.2, 0.3]
 
     fake_db = FakeDb()
-    _patch_allowed_knowledge_permissions(monkeypatch, [kb_id])
+    _patch_allowed_knowledge_permissions(
+        monkeypatch,
+        [kb_id],
+        bypass_model_precompute=False,
+    )
     monkeypatch.setattr(
         "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
         lambda **kwargs: audit_calls.append(kwargs),
