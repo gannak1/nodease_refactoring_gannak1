@@ -13,6 +13,14 @@ TERRAFORM_CI_FIXTURE_PATH = (
 DOCKERFILE_CI_FIXTURE_PATH = (
     REPOSITORY_ROOT / "tests" / "ci" / "fixtures" / "dockerfile-smoke" / "Dockerfile"
 )
+COMPOSITE_ACTION_CI_FIXTURE_PATH = (
+    REPOSITORY_ROOT
+    / "tests"
+    / "ci"
+    / "fixtures"
+    / "composite-action-smoke"
+    / "action.yml"
+)
 KNOWLEDGE_POSTGRES_PATH = (
     REPOSITORY_ROOT
     / ".github"
@@ -130,6 +138,21 @@ def test_ci_control_actionlint_smoke_also_validates_changed_workflows():
     assert 'actionlint@v1.7.12 "${workflow_files[@]}"' in actionlint_block
 
 
+def test_composite_action_metadata_uses_pinned_validator_and_fixture():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+
+    assert COMPOSITE_ACTION_CI_FIXTURE_PATH.is_file()
+    assert (
+        "uses: mpalmer/action-validator@"
+        "c994f427b7c42cd5ecb1bc9315cb91c3d7d72e3d # v0.9.0"
+        in workflow
+    )
+    assert 'version: "0.9.0"' in workflow
+    assert "tests/ci/fixtures/composite-action-smoke/action.yml" in workflow
+    assert ":(glob).github/actions/**/action.yml" in workflow
+    assert ":(glob).github/actions/**/action.yaml" in workflow
+
+
 def test_trusted_diff_detects_real_terraform_and_dockerfile_changes():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
     trusted_diff_block = workflow.split(
@@ -239,6 +262,10 @@ def test_dockerfile_validation_preserves_rename_source_paths():
 
     assert (
         'git diff --name-only --no-renames -z "$BASE_SHA" "$HEAD_SHA" --'
+        in dockerfile_block
+    )
+    assert (
+        '--build-arg "BUILDKIT_DOCKERFILE_CHECK=error=true"'
         in dockerfile_block
     )
 

@@ -623,6 +623,16 @@ jobs:
           fi
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 "${workflow_files[@]}"
 
+      - name: Validate composite action metadata
+        if: needs.scope.outputs.actions_validation == 'true'
+        uses: mpalmer/action-validator@c994f427b7c42cd5ecb1bc9315cb91c3d7d72e3d # v0.9.0
+        with:
+          version: "0.9.0"
+          patterns: |
+            tests/ci/fixtures/composite-action-smoke/action.yml
+            :(glob).github/actions/**/action.yml
+            :(glob).github/actions/**/action.yaml
+
       - name: Set up Helm
         if: needs.scope.outputs.helm_validation == 'true'
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
@@ -772,7 +782,9 @@ jobs:
               Dockerfile|*.Dockerfile)
                 selected=$((selected + 1))
                 if [[ -f "$path" ]]; then
-                  docker build --check --file "$path" .
+                  docker build --check \
+                    --build-arg "BUILDKIT_DOCKERFILE_CHECK=error=true" \
+                    --file "$path" .
                   validated=$((validated + 1))
                 fi
                 ;;

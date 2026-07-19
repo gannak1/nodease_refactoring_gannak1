@@ -47,6 +47,21 @@ def test_memory_change_selects_only_memory_python_and_postgres_contracts():
     assert scope.broad_python is False
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "apps/shared/services/knowledge_ingestion_fencing.py",
+        "apps/shared/services/knowledge_ingestion_finalizer.py",
+        "apps/shared/services/knowledge_ingestion_outbox.py",
+        "apps/shared/services/knowledge_ingestion_outbox_processor.py",
+    ],
+)
+def test_durable_knowledge_ingestion_service_selects_postgres_contract(path: str):
+    scope = classify_paths([path])
+
+    assert scope.knowledge_postgres is True
+
+
 def test_unrelated_shared_change_does_not_expand_to_memory_domain():
     scope = classify_paths(["apps/shared/schemas/organization_membership.py"])
 
