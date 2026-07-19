@@ -269,10 +269,10 @@ class ModelRouter:
 
     # Judge 입력에서 이번 요청은 매 실행 달라지는 핵심 신호다. 고정 노드 프롬프트가
     # 길어도 요청 원문이 잘리지 않도록 별도 예산을 둔다.
-    _JUDGE_REQUEST_CHAR_BUDGET = 1_650
-    _JUDGE_TASK_DESCRIPTION_CHAR_BUDGET = 420
-    _JUDGE_PROMPT_SECTION_CHAR_BUDGET = 180
-    _JUDGE_OUTPUT_CONTRACT_CHAR_BUDGET = 720
+    _JUDGE_REQUEST_CHAR_BUDGET = 2_200
+    _JUDGE_TASK_DESCRIPTION_CHAR_BUDGET = 600
+    _JUDGE_PROMPT_SECTION_CHAR_BUDGET = 480
+    _JUDGE_OUTPUT_CONTRACT_CHAR_BUDGET = 900
 
     @classmethod
     def resolve_policy(
@@ -494,7 +494,7 @@ class ModelRouter:
         if output_contract:
             task_contract_parts.append(f"OUTPUT_CONTRACT:\n{output_contract}")
 
-        request_text = cls._flatten_text(inputs)[: cls._JUDGE_REQUEST_CHAR_BUDGET]
+        request_json = cls._judge_request_json(inputs)
         safe_rag_metadata = {
             key: value
             for key, value in (rag_metadata or {}).items()
@@ -506,11 +506,15 @@ class ModelRouter:
                 "retrieved_chunk_count",
                 "source_count",
                 "evidence_sufficient",
+                "partial_result",
+                "query_rewrite_applied",
+                "insufficiency_reason",
+                "source_tier_used",
             }
             and isinstance(value, (bool, int, float, str))
         }
         parts = [
-            f"CURRENT_REQUEST:\n{request_text}" if request_text else "",
+            f"CURRENT_REQUEST_JSON:\n{request_json}" if request_json else "",
             "NODE_TASK_CONTRACT:\n" + "\n\n".join(task_contract_parts),
         ]
         if safe_rag_metadata:
@@ -519,6 +523,77 @@ class ModelRouter:
                 + json.dumps(safe_rag_metadata, ensure_ascii=False, sort_keys=True)
             )
         return "\n\n".join(part for part in parts if part)
+
+    @classmethod
+    def _judge_request_json(cls, inputs: dict[str, Any]) -> str:
+        """Preserve request keys and scalar types within the Judge budget."""
+
+        for string_limit, item_limit in ((900, 24), (360, 16), (160, 10)):
+            bounded = cls._bounded_judge_value(
+                inputs,
+                string_limit=string_limit,
+                item_limit=item_limit,
+            )
+            serialized = json.dumps(
+                bounded,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+            if len(serialized) <= cls._JUDGE_REQUEST_CHAR_BUDGET:
+                return serialized
+
+        preview_budget = max(cls._JUDGE_REQUEST_CHAR_BUDGET - 80, 0)
+        return json.dumps(
+            {
+                "_truncated": True,
+                "text_preview": cls._flatten_text(inputs)[:preview_budget],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    @classmethod
+    def _bounded_judge_value(
+        cls,
+        value: Any,
+        *,
+        string_limit: int,
+        item_limit: int,
+    ) -> Any:
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            if len(value) <= string_limit:
+                return value
+            return value[: string_limit - 1].rstrip() + "…"
+        if isinstance(value, dict):
+            items = list(value.items())
+            result = {
+                str(key): cls._bounded_judge_value(
+                    child,
+                    string_limit=string_limit,
+                    item_limit=item_limit,
+                )
+                for key, child in items[:item_limit]
+            }
+            if len(items) > item_limit:
+                result["_omitted_key_count"] = len(items) - item_limit
+            return result
+        if isinstance(value, (list, tuple, set)):
+            items = list(value)
+            result = [
+                cls._bounded_judge_value(
+                    child,
+                    string_limit=string_limit,
+                    item_limit=item_limit,
+                )
+                for child in items[:item_limit]
+            ]
+            if len(items) > item_limit:
+                result.append({"_omitted_item_count": len(items) - item_limit})
+            return result
+        return str(value)[:string_limit]
 
     @classmethod
     def _judge_prompt_excerpt(cls, value: Any) -> str:

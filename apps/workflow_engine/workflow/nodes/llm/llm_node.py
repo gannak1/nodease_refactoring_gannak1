@@ -68,6 +68,7 @@ from apps.workflow_engine.services.model_router import (
 )
 from apps.workflow_engine.services.model_routing_judge_first_policy import (
     JUDGE_FIRST_STRATEGY_ID,
+    select_runtime_judge_model_id,
 )
 from apps.workflow_engine.services.retrieval import RetrievalService
 from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
@@ -563,8 +564,12 @@ class LLMNode(Node[LLMNodeData]):
                 organization_id = self._require_runtime_organization_id(
                     user_id, selected_model_id
                 )
-                judge_model_id = str(
-                    active_policy.get("judge_model_id") or selected_model_id
+                judge_model_id = select_runtime_judge_model_id(
+                    available_model_ids or [],
+                    default_model_id=str(
+                        active_policy.get("default_model_id") or selected_model_id
+                    ),
+                    configured_judge_model_id=active_policy.get("judge_model_id"),
                 )
                 normalized_available = {
                     ModelRouter.normalize_model_id(model_id): model_id
@@ -1153,6 +1158,23 @@ class LLMNode(Node[LLMNodeData]):
                 "evidence_sufficient": bool(
                     knowledge_result is not None
                     and knowledge_result.evidence_decision.evidence_sufficient
+                ),
+                "partial_result": bool(
+                    knowledge_result is not None
+                    and knowledge_result.evidence_decision.partial_result
+                ),
+                "insufficiency_reason": (
+                    knowledge_result.evidence_decision.insufficiency_reason
+                    if knowledge_result is not None
+                    else None
+                ),
+                "source_tier_used": (
+                    knowledge_result.evidence_decision.source_tier_used
+                    if knowledge_result is not None
+                    else None
+                ),
+                "query_rewrite_applied": bool(
+                    rag_trace_summary.get("query_rewrite_applied")
                 ),
             }
             # 이 feature는 호출 중 메모리에만 있으며 trace나 DB artifact에 남기지 않는다.

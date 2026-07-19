@@ -32,6 +32,7 @@ class RuntimeJudgeDecision:
     reason_code: str
     usage: dict[str, Any]
     decision_detail: dict[str, Any] | None = None
+    task_requirements: dict[str, int] | None = None
 
     def safe_metadata(self) -> dict[str, Any]:
         """원문 없이 trace에 남길 Judge 판단 요약이다."""
@@ -45,6 +46,8 @@ class RuntimeJudgeDecision:
             metadata["selected_model"] = self.selected_model_id
         if self.reason_short:
             metadata["reason_short"] = self.reason_short
+        if self.task_requirements:
+            metadata["task_requirements"] = dict(self.task_requirements)
         return metadata
 
 
@@ -55,9 +58,9 @@ class ModelRoutingRuntimeJudge:
     *지금 실행 주체가 실제로 쓸 수 있는 후보* 중 하나만 선택하게 한다.
     """
 
-    MAX_FEATURE_CHARS = 3_000
+    MAX_FEATURE_CHARS = 7_000
     # Judge가 후보 비교와 짧은 선택 근거를 함께 끝낼 수 있도록 둔 상한이다.
-    MAX_OUTPUT_TOKENS = 512
+    MAX_OUTPUT_TOKENS = 768
     # 진단은 후보별 제외 근거까지 반환하므로 운영 경로와 별도 예산을 사용한다.
     DIAGNOSTIC_MAX_OUTPUT_TOKENS = 2_000
     _RETRY_FEATURE_CHARS = 1_200
@@ -71,7 +74,6 @@ class ModelRoutingRuntimeJudge:
         "ambiguous_request": "모호한 요청 해석",
         "long_context": "긴 문맥 종합",
     }
-
     @classmethod
     def decide(
         cls,
@@ -133,8 +135,17 @@ class ModelRoutingRuntimeJudge:
         selected_model_id = str(payload.get("selected_model_id") or "").strip() or None
         reason_code = str(payload.get("reason_code") or "judge_selected").strip()[:80]
         reason_short = str(payload.get("reason_short") or "").strip() or None
-        if reason_short is None:
-            reason_short = cls._REASON_SHORT_BY_CODE.get(reason_code)
+        # Judge의 모델 선택 자체가 유효해도 사람이 읽는 짧은 문구가 8~14자 규칙을
+        # 조금 벗어날 수 있다. 이 표현 오류 때문에 전체 라우팅을 기본 모델로
+        # 되돌리는 것은 과도하므로, 안전한 code별 기본 문구로 정규화한다.
+        if (
+            reason_short is None
+            or len(reason_short) > 14
+            or not any("가" <= char <= "힣" for char in reason_short)
+        ):
+            reason_short = cls._REASON_SHORT_BY_CODE.get(
+                reason_code, "요청 적합성 판단"
+            )
         if not selected_model_id:
             raise RuntimeJudgeResponseError("selected model is missing")
         if selected_model_id not in candidates:
@@ -156,6 +167,9 @@ class ModelRoutingRuntimeJudge:
             if diagnostic_mode
             else None
         )
+        task_requirements = cls._safe_task_requirements(
+            payload.get("task_requirements")
+        )
 
         return RuntimeJudgeDecision(
             selected_model_id=selected_model_id,
@@ -164,6 +178,7 @@ class ModelRoutingRuntimeJudge:
             reason_code=reason_code,
             usage=cls._safe_usage(response.get("usage") if isinstance(response, dict) else None),
             decision_detail=decision_detail,
+            task_requirements=task_requirements,
         )
 
     @classmethod
@@ -180,32 +195,25 @@ class ModelRoutingRuntimeJudge:
             cls._safe_candidate_profiles(candidate_model_ids, candidate_profiles)
         )
         instruction = (
-            "당신은 워크플로우 LLM 모델 선택 Judge입니다. 현재 요청과 실제 RAG 검색량을 보고 "
-            "candidate_models 중 정확히 하나를 selected_model_id로 고르세요. 기본 모델과 fallback 모델은 고려하지 않습니다. "
-            "CURRENT_REQUEST는 이번 실행에서 달라지는 난이도 판단의 주된 근거입니다. NODE_TASK_CONTRACT는 이 노드가 허용하는 출력·역할의 고정 경계일 뿐이므로, "
-            "고정 계약의 주제나 단어만으로 이번 요청의 난이도를 단정하지 마세요. "
-            "먼저 이 요청의 내용과 실제 RAG 검색량을 바탕으로 필요한 능력 수준을 내부적으로 판단하세요. 반드시 다음 세 축을 서로 독립적으로 평가한 뒤, "
-            "가장 높은 필요 수준에 맞는 후보를 선택하세요. 첫째, 작업 복잡도는 지시·조건·예외가 몇 개이며 서로 의존하는지, 여러 단계를 거쳐 결론을 내야 하는지를 봅니다. "
-            "둘째, 결정 영향도는 모델 출력이 실제 승인·거절·변경·약속·집행처럼 되돌리기 어려운 행동 또는 중요한 판단을 직접 결정하는지를 봅니다. "
-            "셋째, 근거 종합 범위는 긴 검색 근거, 여러 출처, 서로 충돌하는 정보, 누락된 정보를 비교·해석해야 하는지를 봅니다. "
-            "특정 업무 분야의 단어만으로 고성능 모델을 고르면 안 됩니다. 같은 주제라도 정해진 절차를 안내하거나 값을 추출·분류하는 요청은 낮은 능력으로 충분할 수 있고, "
-            "반대로 짧은 요청이라도 여러 제약을 풀거나 실제 결정을 내려야 하면 높은 능력이 필요할 수 있습니다. 문장이 짧거나 JSON 출력이라는 이유만으로 저성능 모델을 선택해서도 안 됩니다. "
-            "고성능 모델은 충돌·누락된 근거를 해석해야 하거나, 여러 조건과 예외를 단계적으로 해결해야 하거나, 출력이 중요한 결정을 직접 좌우하는 경우에 선택하세요. "
-            "세 축을 각각 0(없음)부터 3(높음)까지 내부적으로 채점하되, 이 점수로 economy·balanced·advanced 중 하나를 기계적으로 먼저 고르지 마세요. "
-            "후보마다 필요한 능력과 실제 계약 성적을 직접 비교해, 이번 요청을 안정적으로 수행할 최소 충분 후보 하나를 선택하세요. "
-            "후보 목록의 순서, 모델 ID의 숫자, capability_tier 하나만으로 선택하지 말고 모든 후보를 비교하세요. capability_tier는 약한 사전 정보일 뿐이며, 가격·지연·실패율은 필요한 능력을 만족하는 후보들 사이에서만 비교하세요. "
-            "candidate_models의 capability_tier와 official_position은 provider가 공개한 역할 구분을 구조화한 약한 사전 정보이며, 측정된 품질·지연·실패율이 아닙니다. "
-            "공급자 공식 특화 태그는 약한 사전 정보입니다. 요청에 실제로 필요한 능력과 태그가 직접 맞을 때만 사용하고, 일반 전문 업무 능력과 전문 추론 능력을 같은 것으로 취급하지 마세요. "
-            "예를 들어 전문 업무 전반에 맞는 후보와 수학·과학·코드의 다단계 추론에 특화된 후보가 모두 있으면, 단순히 둘 다 advanced라는 이유로 같은 후보처럼 보지 마세요. "
-            "model_role이 reasoning_specialist인 후보는 형식 논증이나 다단계 추론 자체가 핵심일 때 우선 검토하고, 전문 문서 작성·종합 결과물처럼 폭넓은 업무 완성도가 핵심이면 frontier_generalist를 우선 검토하세요. "
-            "quality_for_*와 latency_ms_for_*가 있는 경우에만 Nodease가 별도로 보유한 사전 측정치입니다. "
-            "candidate_models의 operational_*은 실제 배포 실행에서 나온 workflow 계약 성적입니다. "
-            "operational_run_count가 5건 이상이면, schema·후속 노드 성공률이 낮거나 fallback 비율이 높은 후보를 "
-            "카탈로그 사전 품질값이 높더라도 우선 선택하지 마세요. 표본이 5건 미만이면 실제 성적은 참고만 하고 카탈로그를 약한 사전 정보로 사용하세요. "
-            "reason_short에는 판단 이유를 한국어 8~14자로만 작성하세요. "
-            "반드시 JSON object 하나만 반환하세요: "
+            "당신은 워크플로우 LLM 모델 선택 Judge입니다. CURRENT_REQUEST_JSON과 "
+            "RAG_RUNTIME_SIGNALS는 이번 실행의 판단 자료이고, NODE_TASK_CONTRACT는 고정 작업 경계입니다. "
+            "candidate_models 중 정확히 하나를 고르며 기본 모델과 fallback 모델은 고려하지 마세요. "
+            "1단계로 이번 요청에 필요한 작업 복잡도, 결정 영향도, 근거 종합 범위, 출력 정밀도를 각각 0~3으로 평가하세요. "
+            "주제 단어, 문장 길이, JSON 여부 하나만으로 수준을 결정하지 마세요. 짧아도 되돌리기 어려운 결정을 직접 내리거나 "
+            "충돌·누락 근거를 해석하면 높은 능력이 필요하고, 전문 주제라도 정해진 절차 안내·추출·분류면 낮을 수 있습니다. "
+            "2단계로 필요한 능력을 안정적으로 충족하지 못하는 후보를 제외하세요. operational_run_count가 5건 이상이면 "
+            "실제 배포 실행에서 나온 workflow 계약 성적인 schema·후속 노드 성공률과 fallback 비율을 "
+            "공식 카탈로그 설명보다 우선하세요. 표본이 부족하면 capability_tier, official_position, model_role, "
+            "specialization_tags 같은 공급자 공식 특화 태그는 약한 사전 정보로만 사용하세요. "
+            "reasoning_specialist는 형식 논증·수학·과학·코드의 다단계 추론이 핵심일 때, frontier_generalist는 복합 전문 업무 "
+            "완성도가 핵심일 때 우선 검토하세요. 일반 전문 업무 능력과 전문 추론 능력을 같은 것으로 취급하지 마세요. "
+            "3단계로 남은 충분한 후보 사이에서만 가격·지연·fallback을 비교해 가장 합리적인 하나를 선택하세요. "
+            "모든 요청에 같은 후보를 관성적으로 선택하지 말고 현재 요청의 요구 능력과 후보 증거를 다시 비교하세요. "
+            "reason_short는 한국어 8~14자로 작성하고 JSON object 하나만 반환하세요: "
             '{"selected_model_id":"candidate id","confidence":0.0,'
-            '"reason_short":"여러 조건 종합","reason_code":"balanced_quality"}.'
+            '"reason_short":"여러 조건 종합","reason_code":"multi_constraint",'
+            '"task_requirements":{"task_complexity":0,"decision_impact":0,'
+            '"evidence_synthesis":0,"output_precision":0}}.'
         )
         if diagnostic_mode:
             instruction += (
@@ -357,7 +365,36 @@ class ModelRoutingRuntimeJudge:
                 safe[key] = raw_value
         if isinstance(value.get("evidence_sufficient"), bool):
             safe["evidence_sufficient"] = value["evidence_sufficient"]
+        for key in ("partial_result", "query_rewrite_applied"):
+            if isinstance(value.get(key), bool):
+                safe[key] = value[key]
+        for key in ("insufficiency_reason", "source_tier_used"):
+            raw_value = value.get(key)
+            if isinstance(raw_value, str) and raw_value:
+                safe[key] = raw_value[:80]
         return safe
+
+    @staticmethod
+    def _safe_task_requirements(value: Any) -> dict[str, int] | None:
+        if not isinstance(value, dict):
+            return None
+        result: dict[str, int] = {}
+        for key in (
+            "task_complexity",
+            "decision_impact",
+            "evidence_synthesis",
+            "output_precision",
+        ):
+            raw_value = value.get(key)
+            if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+                return None
+            if isinstance(raw_value, float) and not raw_value.is_integer():
+                return None
+            score = int(raw_value)
+            if score < 0 or score > 3:
+                return None
+            result[key] = score
+        return result
 
     @staticmethod
     def _safe_candidate_profiles(
@@ -473,6 +510,9 @@ class ModelRoutingRuntimeJudge:
                 row["input_price_per_1k"] = input_price
             if isinstance(output_price, (int, float)):
                 row["output_price_per_1k"] = output_price
+            context_window = profile.get("context_window")
+            if isinstance(context_window, int) and context_window > 0:
+                row["context_window"] = context_window
             for key in (
                 "capability_tier",
                 "official_position",
@@ -483,14 +523,20 @@ class ModelRoutingRuntimeJudge:
                 if isinstance(value, str) and value:
                     row[key] = value
             canonical_model_id = profile.get("canonical_model_id")
-            if isinstance(canonical_model_id, str) and canonical_model_id:
+            if (
+                isinstance(canonical_model_id, str)
+                and canonical_model_id
+                and canonical_model_id != row["id"]
+            ):
                 row["canonical_model_id"] = canonical_model_id
             evidence_type = profile.get("evidence_type")
             if evidence_type == "provider_documentation":
                 row["evidence_type"] = evidence_type
             specialization_tags = profile.get("specialization_tags")
             if isinstance(specialization_tags, list) and specialization_tags:
-                row["specialization_tags"] = specialization_tags
+                row["specialization_tags"] = [
+                    str(tag) for tag in specialization_tags[:3] if str(tag).strip()
+                ]
             quality = profile.get("quality_by_difficulty")
             if isinstance(quality, dict):
                 for source_key, output_key in (

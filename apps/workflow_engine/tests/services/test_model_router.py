@@ -181,7 +181,8 @@ def test_routing_feature_contains_all_node_prompts_and_runtime_signals():
         },
     )
 
-    assert feature.startswith("CURRENT_REQUEST:")
+    assert feature.startswith("CURRENT_REQUEST_JSON:")
+    assert '"message": "세 문서를 비교해 승인 여부를 판단해 주세요."' in feature
     assert "세 문서를 비교" in feature
     assert "RAG_RUNTIME_SIGNALS:" in feature
     assert '"retrieved_chunk_count": 3' in feature
@@ -280,7 +281,7 @@ def test_routing_feature_truncates_task_description_to_judge_budget():
     description = feature.split("TASK_DESCRIPTION:\n", 1)[1].split(
         "\n\nPROMPT_CONSTRAINTS:", 1
     )[0]
-    assert len(description) == 420
+    assert len(description) == 600
     assert description.endswith("…")
 
 
@@ -294,10 +295,35 @@ def test_routing_feature_preserves_current_request_when_node_prompts_are_long():
         rendered_prompt_parts=[long_prompt, long_prompt, long_prompt],
     )
 
-    assert feature.startswith(f"CURRENT_REQUEST:\nmessage: {request}")
+    assert feature.startswith("CURRENT_REQUEST_JSON:")
+    assert f'"message": "{request}"' in feature
     assert "NODE_TASK_CONTRACT:" in feature
-    assert len(feature) < 3_000
+    assert len(feature) < 7_000
     assert feature.count("…") == 3
+
+
+def test_routing_feature_preserves_request_types_and_more_prompt_constraints():
+    important_tail = "반드시 승인 여부와 보류 사유를 각각 분리해서 판단하세요."
+    prompt = "일반 지침입니다. " * 20 + important_tail
+    feature = ModelRouter.routing_feature_text(
+        {
+            "message": "두 계약의 예외를 비교해 주세요.",
+            "flags": ["legal_hold", "customer_notice"],
+            "retry_count": 2,
+            "dry_run": False,
+        },
+        _node(),
+        rendered_prompt_parts=[prompt, prompt, prompt],
+    )
+
+    request_json = feature.split("CURRENT_REQUEST_JSON:\n", 1)[1].split(
+        "\n\nNODE_TASK_CONTRACT:", 1
+    )[0]
+    parsed = __import__("json").loads(request_json)
+    assert parsed["flags"] == ["legal_hold", "customer_notice"]
+    assert parsed["retry_count"] == 2
+    assert parsed["dry_run"] is False
+    assert important_tail in feature
 
 
 def test_routing_feature_preserves_json_contract_when_system_prompt_is_long():

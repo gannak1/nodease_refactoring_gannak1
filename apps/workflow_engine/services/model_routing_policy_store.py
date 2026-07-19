@@ -619,7 +619,6 @@ class ModelRoutingPolicyStore:
             fallback_model_id=fallback_model_id,
             candidate_model_ids=available_model_ids,
         )
-        bootstrap_active_policy["judge_model_id"] = configured_model_id
         update_summary = {
             "strategy_id": JUDGE_FIRST_STRATEGY_ID,
             "policy_source": "deployment_runtime",
