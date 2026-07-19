@@ -81,6 +81,7 @@ ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_agent_builder_intent_usage"
 AGENT_BUILDER_USAGE_MERGE_REVISION = "ac2d3e4f5061"
+AGENT_BUILDER_USAGE_SEED_REVISION = "c2e8f4a91d67"
 pytestmark = pytest.mark.skipif(
     os.getenv(RUN_ENV) != "1",
     reason=f"set {RUN_ENV}=1 to run disposable Agent Builder usage tests",
@@ -1932,7 +1933,9 @@ def test_migration_downgrade_rejects_agent_builder_usage_history():
 
     with _disposable_database(
         config,
-        target_revision=AGENT_BUILDER_USAGE_MERGE_REVISION,
+        # The current ORM seed includes App auth and credential encryption
+        # columns added immediately after the usage merge revision.
+        target_revision=AGENT_BUILDER_USAGE_SEED_REVISION,
     ) as (engine, database):
         _seed_historical_agent_builder_usage(engine)
         engine.dispose()
@@ -1966,4 +1969,4 @@ def test_migration_downgrade_rejects_agent_builder_usage_history():
     if "Agent Builder usage rows exist" not in output:
         pytest.fail("downgrade rejection did not report the preserved usage reason")
     assert preserved_usage_count == 1
-    assert version == AGENT_BUILDER_USAGE_MERGE_REVISION
+    assert version == AGENT_BUILDER_USAGE_SEED_REVISION

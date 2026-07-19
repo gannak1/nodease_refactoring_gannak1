@@ -3130,6 +3130,7 @@ def _seed_knowledge(db: Session) -> None:
             "lifecycle_state": "active",
             "safe_metadata": {
                 **_demo_options("collection-legal-public"),
+                "safe_label": "공개 노동·온보딩 법령 컬렉션",
                 "visibility": "public",
                 "approved_by": str(USER_IDS["admin"]),
                 "approved_source": "demo_seed",
@@ -3153,6 +3154,7 @@ def _seed_knowledge(db: Session) -> None:
             "lifecycle_state": "active",
             "safe_metadata": {
                 **_demo_options("collection-internal-onboarding"),
+                "safe_label": "사내 온보딩·운영 문서 컬렉션",
                 "visibility": "private",
             },
             "created_by": USER_IDS["admin"],
@@ -3173,6 +3175,7 @@ def _seed_knowledge(db: Session) -> None:
             "lifecycle_state": "active",
             "safe_metadata": {
                 **_demo_options("collection-team-onboarding-access-control"),
+                "safe_label": "팀별 온보딩 접근 제어 문서",
                 "visibility": "private",
                 "document_seed_mode": "bundled_pdf",
             },

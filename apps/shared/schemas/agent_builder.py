@@ -4,8 +4,19 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
+from apps.shared.schemas.knowledge import (
+    KnowledgeSelectionCollection,
+    KnowledgeSelectionKBCandidate,
+)
 from apps.shared.schemas.workflow import EdgeSchema, NodeSchema, Position
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 AgentBuilderRequestStatus = Literal[
     "planning",
@@ -217,11 +228,37 @@ class AgentBuilderKnowledgeSelectionRequest(BaseModel):
         default_factory=list,
         max_length=20,
     )
+    selected_collection_handles: list[str] = Field(default_factory=list, max_length=20)
+    selected_kb_handles: list[str] = Field(default_factory=list, max_length=20)
+    editor_target_node_id: str | None = Field(default=None, max_length=255)
+    selected_knowledge_base_ids: list[UUID] = Field(default_factory=list, max_length=20)
+    selected_knowledge_collection_ids: list[UUID] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+
+    @model_validator(mode="after")
+    def validate_selection_source(self):
+        editor_ids_present = bool(
+            self.selected_knowledge_base_ids
+            or self.selected_knowledge_collection_ids
+        )
+        if editor_ids_present and self.editor_target_node_id is None:
+            raise ValueError("editor_target_node_id is required for editor selections")
+        if self.editor_target_node_id is not None and (
+            self.selected_candidates
+            or self.selected_collection_handles
+            or self.selected_kb_handles
+        ):
+            raise ValueError("editor and Agent Builder selections cannot be mixed")
+        return self
 
 
 class AgentBuilderKnowledgeSelectionResponse(BaseModel):
     resolution_id: str
     selected_candidates: list[AgentBuilderKnowledgeCandidateSelection]
+    selected_collection_handles: list[str] = Field(default_factory=list)
+    selected_kb_handles: list[str] = Field(default_factory=list)
     graph_mutation: GraphMutation
 
 
@@ -323,9 +360,11 @@ class AgentBuilderParameterTask(BaseModel):
     node_id: str
     node_type: str
     parameter_key: str
+    task_group: str | None = Field(default=None, min_length=1, max_length=64)
     label: str
     input_type: str
     required: bool
+    confirmation_required: bool = False
     defer_policy: Literal["forbidden", "allow_unresolved"] = "forbidden"
     status: ParameterTaskStatus
     task_version: int = Field(ge=1)
@@ -366,10 +405,23 @@ class ParameterSelectValue(BaseModel):
     value: str
 
 
+class ParameterSecretValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["secret"]
+    value: str = Field(min_length=1, max_length=4096)
+
+
 class ParameterNumberValue(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["number"]
-    value: float
+    value: int | float
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def reject_boolean_value(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("number value must not be boolean")
+        return value
 
 
 class ParameterBooleanValue(BaseModel):
@@ -403,15 +455,46 @@ class ParameterVariableSelectorValue(BaseModel):
     value_selector: list[str] = Field(min_length=2, max_length=32)
 
 
+class ParameterVariableSelectorSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    suggestion_id: str = Field(min_length=1, max_length=255)
+    value_selector: list[str] = Field(min_length=2, max_length=32)
+
+
+class ParameterVariableSelectorListValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["variable_selector_list"]
+    selections: list[ParameterVariableSelectorSelection] = Field(
+        min_length=1,
+        max_length=32,
+    )
+
+    @field_validator("selections")
+    @classmethod
+    def reject_duplicate_selections(
+        cls,
+        selections: list[ParameterVariableSelectorSelection],
+    ) -> list[ParameterVariableSelectorSelection]:
+        suggestion_ids = [selection.suggestion_id for selection in selections]
+        selectors = [tuple(selection.value_selector) for selection in selections]
+        if len(suggestion_ids) != len(set(suggestion_ids)) or len(selectors) != len(
+            set(selectors)
+        ):
+            raise ValueError("selector list selections must be unique")
+        return selections
+
+
 ParameterDecisionValue = Annotated[
     ParameterTextValue
     | ParameterSelectValue
+    | ParameterSecretValue
     | ParameterNumberValue
     | ParameterBooleanValue
     | ParameterJsonValue
     | ParameterResourceValue
     | ParameterCredentialValue
-    | ParameterVariableSelectorValue,
+    | ParameterVariableSelectorValue
+    | ParameterVariableSelectorListValue,
     Field(discriminator="kind"),
 ]
 
@@ -420,7 +503,7 @@ class AgentBuilderParameterTaskDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     operation_id: UUID
     expected_task_version: int = Field(ge=1)
-    action: Literal["set", "confirm", "defer", "skip", "previous"]
+    action: Literal["set", "clear", "confirm", "defer", "skip", "previous"]
     value: ParameterDecisionValue | None = None
 
     @model_validator(mode="after")
@@ -604,6 +687,10 @@ class AgentBuilderDraftPreview(BaseModel):
 
 
 class AgentBuilderMessageResponse(BaseModel):
+    _issued_knowledge_handle_bindings: dict[str, dict[str, str]] = PrivateAttr(
+        default_factory=dict
+    )
+
     request_id: UUID
     status: AgentBuilderRequestStatus
     structured_request: AgentBuilderStructuredRequest | None = None
@@ -611,6 +698,7 @@ class AgentBuilderMessageResponse(BaseModel):
     parameter_group: AgentBuilderParameterGroup | None = None
     clarification_questions: list[str] = Field(default_factory=list)
     clarification_options: list[dict[str, Any]] = Field(default_factory=list)
+    knowledge_selection: dict[str, Any] | None = None
     draft_preview: AgentBuilderDraftPreview | None = None
     validation_result: AgentBuilderValidationResult | None = None
     preview_prompt: str | None = None
@@ -654,13 +742,62 @@ class AgentBuilderDirectStructuredPlan(BaseModel):
     )
 
 
+class AgentBuilderKnowledgeCandidateOption(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: str | None = None
+    candidate_id: str
+    resolution_id: str | None = None
+    requirement_id: str | None = None
+    label: str | None = None
+    safe_label: str | None = None
+    confidence: Literal["high", "medium", "low"] | None = None
+    score: float | None = Field(default=None, ge=0.0, le=1.0)
+    reason_category: str | None = None
+    reason: str | None = None
+    threshold_result: str | None = None
+    runtime_availability: str | None = None
+
+
+class AgentBuilderKnowledgeSelectedOption(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    selection_type: Literal["collection", "knowledge_base"] | None = None
+    candidate_id: str | None = None
+    collection_handle: str | None = None
+    kb_handle: str | None = None
+    resolution_id: str | None = None
+    requirement_id: str | None = None
+    label: str | None = None
+    safe_label: str | None = None
+
+
+class AgentBuilderKnowledgeResolution(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    resolution_id: str | None = None
+    requirement_id: str | None = None
+    target_node_id: str | None = None
+    timing: Literal["before_graph", "after_graph"] = "after_graph"
+    required: bool = False
+    candidates: list[AgentBuilderKnowledgeCandidateOption] = Field(
+        default_factory=list
+    )
+    collections: list[KnowledgeSelectionCollection] = Field(default_factory=list)
+    ungrouped_kbs: list[KnowledgeSelectionKBCandidate] = Field(default_factory=list)
+    selected: list[AgentBuilderKnowledgeSelectedOption] = Field(default_factory=list)
+    selected_collection_handles: list[str] = Field(default_factory=list)
+    selected_kb_handles: list[str] = Field(default_factory=list)
+    selection_status: Literal["pending_ack", "completed", "unapplied"] | None = None
+
+
 class AgentBuilderDirectMessageResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_id: UUID
     status: AgentBuilderRequestStatus
     structured_plan: AgentBuilderDirectStructuredPlan | None = None
-    knowledge_resolution: dict[str, Any] | None = None
+    knowledge_resolution: AgentBuilderKnowledgeResolution | None = None
     graph_mutation: GraphMutation | None = None
     parameter_group: AgentBuilderParameterGroup | None = None
     clarification_questions: list[str] = Field(default_factory=list)
@@ -703,13 +840,32 @@ class AgentBuilderDirectMessageResponse(BaseModel):
                 None,
             )
         knowledge_resolution = None
-        if placements or requirements or options:
+        if placements or requirements or options or response.knowledge_selection:
+            target_step_id = placements[0].target_step_id if placements else None
+            target_node_id = (
+                response.safe_step_node_ids.get(target_step_id)
+                if target_step_id is not None
+                else None
+            )
             knowledge_resolution = {
                 "resolution_id": resolution_id,
+                "target_node_id": target_node_id,
                 "timing": placements[0].timing if placements else "after_graph",
                 "required": bool(requirements),
                 "candidates": options,
+                "collections": (
+                    response.knowledge_selection.get("collections", [])
+                    if response.knowledge_selection
+                    else []
+                ),
+                "ungrouped_kbs": (
+                    response.knowledge_selection.get("ungrouped_kbs", [])
+                    if response.knowledge_selection
+                    else []
+                ),
                 "selected": [],
+                "selected_collection_handles": [],
+                "selected_kb_handles": [],
             }
         return cls(
             request_id=response.request_id,

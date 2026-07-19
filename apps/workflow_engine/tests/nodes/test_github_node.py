@@ -4,7 +4,7 @@ GithubNode가 _run 내에서 `import requests`로 로컬 임포트하므로
 requests.get/requests.post를 직접 패치합니다.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 import requests
@@ -77,6 +77,54 @@ def test_get_pr_success(mock_get):
 
     # API 호출 확인
     assert mock_get.call_count == 2
+
+
+@patch("requests.get")
+def test_get_pr_resolves_opaque_secret_reference_at_runtime(mock_get):
+    pr_response = MagicMock()
+    pr_response.json.return_value = {
+        "title": "Title",
+        "body": "Body",
+        "state": "open",
+        "number": 1,
+        "diff_url": "https://example.invalid/diff",
+    }
+    files_response = MagicMock()
+    files_response.json.return_value = []
+    mock_get.side_effect = [pr_response, files_response]
+    resolver = Mock(return_value="resolved-runtime-token")
+    node = GithubNode(
+        id="github-1",
+        data=GithubNodeData(
+            title="GitHub",
+            action=GithubAction.GET_PR,
+            api_token=(
+                "workflow-node-secret://00000000-0000-4000-8000-000000000001"
+            ),
+            repo_owner="owner",
+            repo_name="repo",
+            pr_number="1",
+        ),
+        execution_context={
+            "workflow_id": "00000000-0000-4000-8000-000000000010",
+            "organization_id": "00000000-0000-4000-8000-000000000020",
+            "workflow_node_secret_resolver": resolver,
+        },
+    )
+
+    node._run(inputs={})
+
+    resolver.assert_called_once_with(
+        reference="workflow-node-secret://00000000-0000-4000-8000-000000000001",
+        workflow_id="00000000-0000-4000-8000-000000000010",
+        organization_id="00000000-0000-4000-8000-000000000020",
+        node_id="github-1",
+        node_type="githubNode",
+        parameter_key="api_token",
+    )
+    assert mock_get.call_args_list[0].kwargs["headers"]["Authorization"] == (
+        "token resolved-runtime-token"
+    )
 
 
 # ============================================================================

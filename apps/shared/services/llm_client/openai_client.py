@@ -997,12 +997,18 @@ class OpenAIClient(BaseLLMClient):
         계열은 Responses endpoint를 사용하므로 worker sync path에서 직접
         동기 httpx.Client를 사용해 async event loop wrapper 의존을 피한다.
         """
+        request_timeout_seconds = kwargs.pop("request_timeout_seconds", None)
         payload: Dict[str, Any] = {
             "model": self.model_id,
             "messages": messages,
         }
         payload.update(self._normalize_params(kwargs))
         timeout_seconds = self._get_chat_timeout()
+        if isinstance(request_timeout_seconds, (int, float)):
+            timeout_seconds = min(
+                timeout_seconds,
+                max(1, int(request_timeout_seconds)),
+            )
 
         with httpx.Client(timeout=60) as client:
             if self._should_use_responses_endpoint():

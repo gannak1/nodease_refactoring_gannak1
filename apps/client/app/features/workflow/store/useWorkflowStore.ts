@@ -41,6 +41,9 @@ import {
   type AgentBuilderGraphMutation,
 } from '../components/agentBuilder/agentBuilderGraphMutation';
 import type { AgentBuilderParameterGroup } from '../api/agentBuilderApi';
+import { buildWorkflowDraftPayload } from '../utils/workflowDraftPayload';
+import { acquireWorkflowDraftSave } from '../utils/workflowDraftSaveCoordinator';
+import { isWorkflowNodeSecretReference } from '../utils/workflowNodeSecret';
 
 export type { SnapGridSize } from '../utils/gridSnap';
 
@@ -179,6 +182,7 @@ type WorkflowState = {
   runtimeVariables: RuntimeVariable[]; // 런타임 변수
   hasUnsavedChanges: boolean;
   isAgentBuilderMutationSaving: boolean;
+  agentBuilderMutationSaveCount: number;
   pendingAgentBuilderRevert: PersistedAgentBuilderOperation | null;
   recoveredAgentBuilderParameterGroup: {
     sessionId: string;
@@ -256,10 +260,7 @@ type WorkflowState = {
 
   // === 시작노드 검증 핼퍼 ===
   getStartNodeType: () =>
-    | 'startNode'
-    | 'webhookTrigger'
-    | 'scheduleTrigger'
-    | null;
+    'startNode' | 'webhookTrigger' | 'scheduleTrigger' | null;
   getStartNodeCount: () => number;
   canPublish: () => boolean;
 
@@ -272,6 +273,7 @@ type WorkflowState = {
   ingestCanonicalDraftMetadata: (
     value: unknown,
     workflowId?: string,
+    options?: { applyDeferredProjection?: boolean },
   ) => CanonicalDraftMetadata | null;
   getCanonicalDraftMetadata: (
     workflowId?: string,
@@ -312,6 +314,11 @@ type WorkflowState = {
   ) => void;
   clearAgentBuilderHistoryNotice: () => void;
   updateNodeData: (nodeId: string, newData: Record<string, unknown>) => void;
+  updateNodeExecutionData: (
+    nodeId: string,
+    newData: Record<string, unknown>,
+  ) => void;
+  resetNodeExecutionData: () => void;
   setWorkflowData: (
     data: {
       nodes: Node[];
@@ -405,6 +412,71 @@ const canonicalDraftMetadataFrom = (
     : null;
 };
 
+const mergeNodeDataForExplicitEdit = (
+  currentData: Record<string, unknown>,
+  newData: Record<string, unknown>,
+): Record<string, unknown> => ({ ...currentData, ...newData });
+
+const canonicalDeferredParametersFrom = (
+  value: unknown,
+): Array<{ nodePath: string[]; parameterKeys: string[] }> | null => {
+  if (!value || typeof value !== 'object') return null;
+  const raw = (
+    value as { canonical_deferred_parameters?: unknown }
+  ).canonical_deferred_parameters;
+  if (!Array.isArray(raw)) return null;
+  const projection = raw.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const nodePath = (entry as { node_path?: unknown }).node_path;
+    const parameterKeys = (entry as { parameter_keys?: unknown })
+      .parameter_keys;
+    return Array.isArray(nodePath) &&
+      nodePath.length > 0 &&
+      nodePath.every((nodeId) => typeof nodeId === 'string') &&
+      Array.isArray(parameterKeys) &&
+      parameterKeys.every((key) => typeof key === 'string')
+      ? [{ nodePath, parameterKeys }]
+      : [];
+  });
+  return projection.length === raw.length ? projection : null;
+};
+
+const reconcileCanonicalDeferredParameters = (
+  nodes: Node[],
+  projection: Array<{ nodePath: string[]; parameterKeys: string[] }>,
+  parentPath: string[] = [],
+): Node[] => {
+  const projectionByPath = new Map(
+    projection.map((entry) => [
+      JSON.stringify(entry.nodePath),
+      entry.parameterKeys,
+    ]),
+  );
+  const reconcile = (currentNodes: Node[], currentParentPath: string[]) =>
+    currentNodes.map((node) => {
+      const nodePath = [...currentParentPath, node.id];
+      const data = { ...(node.data as Record<string, unknown>) };
+      const subGraph = data.subGraph;
+      if (subGraph && typeof subGraph === 'object' && !Array.isArray(subGraph)) {
+        const nestedNodes = (subGraph as { nodes?: unknown }).nodes;
+        if (Array.isArray(nestedNodes)) {
+          data.subGraph = {
+            ...subGraph,
+            nodes: reconcile(nestedNodes as Node[], nodePath),
+          };
+        }
+      }
+      const deferred = projectionByPath.get(JSON.stringify(nodePath));
+      if (deferred) {
+        if (deferred.length > 0) data._deferred_parameters = [...deferred];
+        else delete data._deferred_parameters;
+      }
+      return { ...node, data } as Node;
+    });
+
+  return reconcile(nodes, parentPath);
+};
+
 const STRUCTURAL_AGENT_BUILDER_MUTATIONS = new Set<
   AgentBuilderGraphMutation['kind']
 >(['initial_graph', 'graph_edit', 'replace_workflow']);
@@ -458,9 +530,7 @@ const latestReenterableParameterTaskId = (
   parameterGroup?.tasks.reduce<
     AgentBuilderParameterGroup['tasks'][number] | null
   >((latest, task) => {
-    if (
-      !REENTERABLE_PARAMETER_STATUSES.has(task.status)
-    ) {
+    if (!REENTERABLE_PARAMETER_STATUSES.has(task.status)) {
       return latest;
     }
     if (!latest || task.stable_order > latest.stable_order) return task;
@@ -608,6 +678,7 @@ const remapCopiedNodeReferences = (
 const preparePastedNodeData = (
   data: Node['data'],
   idMap: Map<string, string>,
+  nodeType: Node['type'],
 ): Node['data'] => {
   const remappedData = remapCopiedNodeReferences(
     data,
@@ -616,6 +687,29 @@ const preparePastedNodeData = (
     displayNumber?: unknown;
   };
   delete remappedData.displayNumber;
+  if (nodeType === 'slackPostNode') {
+    const authConfig = remappedData.authConfig;
+    if (
+      authConfig &&
+      typeof authConfig === 'object' &&
+      !Array.isArray(authConfig) &&
+      isWorkflowNodeSecretReference(
+        (authConfig as Record<string, unknown>).token,
+      )
+    ) {
+      const nextAuthConfig = { ...authConfig } as Record<string, unknown>;
+      delete nextAuthConfig.token;
+      remappedData.authConfig = nextAuthConfig;
+    }
+    if (isWorkflowNodeSecretReference(remappedData.url)) {
+      delete remappedData.url;
+    }
+  } else if (
+    nodeType === 'githubNode' &&
+    isWorkflowNodeSecretReference(remappedData.api_token)
+  ) {
+    delete remappedData.api_token;
+  }
   return remappedData;
 };
 
@@ -705,7 +799,7 @@ const buildDuplicatedGraphElements = (
     return {
       ...structuredClone(node),
       id: newId || `${node.id}-copy-${timestamp}`,
-      data: preparePastedNodeData(node.data, idMap),
+      data: preparePastedNodeData(node.data, idMap, node.type),
       selected: true,
       position: {
         x: node.position.x + PASTE_OFFSET,
@@ -829,6 +923,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   runtimeVariables: [],
   hasUnsavedChanges: false,
   isAgentBuilderMutationSaving: false,
+  agentBuilderMutationSaveCount: 0,
   pendingAgentBuilderRevert: null,
   recoveredAgentBuilderParameterGroup: null,
   agentBuilderHistoryNotice: null,
@@ -1103,7 +1198,10 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       // Agent Builder operations come from the canonical server graph, which
       // deliberately excludes editor-only display numbers. Restore them only
       // in the canvas state so every generated node retains visible handles.
-      const numbered = assignMissingNodeDisplayNumbers(next.nodes, state.features);
+      const numbered = assignMissingNodeDisplayNumbers(
+        next.nodes,
+        state.features,
+      );
       const existingBoundaryIndex = STRUCTURAL_AGENT_BUILDER_MUTATIONS.has(
         mutation.kind,
       )
@@ -1177,7 +1275,15 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     }),
 
   setAgentBuilderMutationSaving: (saving) =>
-    set({ isAgentBuilderMutationSaving: saving }),
+    set((state) => {
+      const agentBuilderMutationSaveCount = saving
+        ? state.agentBuilderMutationSaveCount + 1
+        : Math.max(0, state.agentBuilderMutationSaveCount - 1);
+      return {
+        agentBuilderMutationSaveCount,
+        isAgentBuilderMutationSaving: agentBuilderMutationSaveCount > 0,
+      };
+    }),
 
   markLatestAgentBuilderMutationPersisted: (operation) =>
     set((state) => {
@@ -1768,7 +1874,9 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   addTestNodeResult: (result) =>
     set((state) => ({
       testNodeResults: [
-        ...state.testNodeResults.filter((item) => item.nodeId !== result.nodeId),
+        ...state.testNodeResults.filter(
+          (item) => item.nodeId !== result.nodeId,
+        ),
         result,
       ],
     })),
@@ -1897,29 +2005,89 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   notifyDeploymentComplete: () => set({ lastDeployedAt: new Date() }),
 
   restoreVersion: async (version) => {
-    const state = get();
-    const { activeWorkflowId } = state;
+    const targetWorkflowId = get().activeWorkflowId;
+    const releaseWorkflowSave = await acquireWorkflowDraftSave(
+      targetWorkflowId,
+      'version_restore',
+    );
 
     try {
+      const state = get();
+      if (state.activeWorkflowId !== targetWorkflowId) return;
+      const activeWorkflowId = targetWorkflowId;
       // 1. 스냅샷 데이터로 현재 드래프트 업데이트 API 호출
       const snapshot = version.graph_snapshot;
+      const rawSnapshotFeatures =
+        'features' in snapshot ? snapshot.features : null;
       const snapshotFeatures =
-        'features' in snapshot ? (snapshot.features as Features) : {};
+        rawSnapshotFeatures &&
+        typeof rawSnapshotFeatures === 'object' &&
+        !Array.isArray(rawSnapshotFeatures)
+          ? (rawSnapshotFeatures as Features)
+          : {};
+      const snapshotNodes = (snapshot.nodes || []) as Node[];
+      const hasFeatureNoteNodes = Object.prototype.hasOwnProperty.call(
+        snapshotFeatures,
+        'noteNodes',
+      );
+      if (
+        hasFeatureNoteNodes &&
+        !Array.isArray(snapshotFeatures.noteNodes)
+      ) {
+        throw new Error('Version snapshot contains invalid note nodes.');
+      }
+      const legacyNoteNodes = snapshotNodes.filter(
+        (node) => node.type === 'note',
+      );
+      const currentNodeNotes = state.nodes.filter(
+        (node) => node.type === 'note',
+      );
+      const currentFeatureNotes = Array.isArray(state.features?.noteNodes)
+        ? (state.features.noteNodes as Node[])
+        : [];
+      const restoredNoteNodes = hasFeatureNoteNodes
+        ? (snapshotFeatures.noteNodes as Node[])
+        : legacyNoteNodes.length > 0
+          ? legacyNoteNodes
+          : currentNodeNotes.length > 0
+            ? currentNodeNotes
+            : currentFeatureNotes;
+      const restoredNodes = [
+        ...snapshotNodes.filter((node) => node.type !== 'note'),
+        ...restoredNoteNodes,
+      ];
+      const restoredFeatures = {
+        ...snapshotFeatures,
+        noteNodes: restoredNoteNodes,
+      };
       const normalized = assignMissingNodeDisplayNumbers(
-        (snapshot.nodes || []) as Node[],
-        snapshotFeatures || {},
+        restoredNodes,
+        restoredFeatures,
       );
 
       const canonical = await workflowApi.getDraftWorkflow(activeWorkflowId);
       get().ingestCanonicalDraftMetadata(canonical, activeWorkflowId);
-      const saveResponse = await workflowApi.syncDraftWorkflow(activeWorkflowId, {
-        nodes: normalized.nodes,
-        edges: snapshot.edges || [],
-        viewport: { x: 0, y: 0, zoom: 1 }, // 뷰포트는 초기화하거나 스냅샷에서 가져옴
-        features: normalized.features,
-        expected_graph_hash: canonical.graph_hash,
-        expected_updated_at: canonical.updated_at,
-      });
+      const restoredViewport = { x: 0, y: 0, zoom: 1 };
+      const canonicalPayload = buildWorkflowDraftPayload(
+        {
+          nodes: normalized.nodes,
+          edges: snapshot.edges || [],
+          viewport: restoredViewport,
+          features: normalized.features,
+          envVariables: state.envVariables,
+          runtimeVariables: state.runtimeVariables,
+        },
+        restoredViewport,
+        { noteNodesSource: 'features' },
+      );
+      const saveResponse = await workflowApi.syncDraftWorkflow(
+        activeWorkflowId,
+        {
+          ...canonicalPayload,
+          expected_graph_hash: canonical.graph_hash,
+          expected_updated_at: canonical.updated_at,
+        },
+      );
       get().ingestCanonicalDraftMetadata(saveResponse, activeWorkflowId);
 
       // 2. Store, local state 업데이트
@@ -1931,6 +2099,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
               nodes: normalized.nodes,
               edges: snapshot.edges || [],
               features: normalized.features,
+              viewport: restoredViewport,
             }
           : w,
       );
@@ -1946,6 +2115,8 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     } catch (error) {
       console.error('Failed to restore version:', error);
       throw error;
+    } finally {
+      releaseWorkflowSave();
     }
   },
 
@@ -2168,16 +2339,54 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         [metadata.workflowId]: metadata,
       },
     })),
-  ingestCanonicalDraftMetadata: (value, workflowId) => {
+  ingestCanonicalDraftMetadata: (value, workflowId, options) => {
     const metadata = canonicalDraftMetadataFrom(value, workflowId);
     if (metadata) {
-      get().setCanonicalDraftMetadata(metadata);
+      const projection =
+        options?.applyDeferredProjection === false
+          ? null
+          : canonicalDeferredParametersFrom(value);
+      set((state) => {
+        const isActiveWorkflow =
+          state.activeWorkflowId === metadata.workflowId;
+        const nodes = projection && isActiveWorkflow
+          ? reconcileCanonicalDeferredParameters(state.nodes, projection)
+          : state.nodes;
+        return {
+          nodes,
+          workflows: projection
+            ? isActiveWorkflow && state.activeWorkflowId
+              ? syncActiveWorkflow(
+                  state.workflows,
+                  state.activeWorkflowId,
+                  nodes,
+                  state.edges,
+                  state.features,
+                )
+              : state.workflows.map((workflow) =>
+                  workflow.id === metadata.workflowId
+                    ? {
+                        ...workflow,
+                        nodes: reconcileCanonicalDeferredParameters(
+                          workflow.nodes,
+                          projection,
+                        ),
+                      }
+                    : workflow,
+                )
+            : state.workflows,
+          canonicalDraftMetadata: {
+            ...state.canonicalDraftMetadata,
+            [metadata.workflowId]: metadata,
+          },
+        };
+      });
     }
     return metadata;
   },
   getCanonicalDraftMetadata: (workflowId) => {
     const targetId = workflowId || get().activeWorkflowId;
-    return targetId ? get().canonicalDraftMetadata[targetId] ?? null : null;
+    return targetId ? (get().canonicalDraftMetadata[targetId] ?? null) : null;
   },
   clearCanonicalDraftMetadata: (workflowId) =>
     set((state) => {
@@ -2195,12 +2404,39 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         if (node.id === nodeId) {
           return {
             ...node,
-            data: { ...node.data, ...newData },
+            data: mergeNodeDataForExplicitEdit(
+              node.data as Record<string, unknown>,
+              newData,
+            ),
           } as Node;
         }
         return node;
       }),
     });
+  },
+
+  updateNodeExecutionData: (nodeId, newData) => {
+    set((state) => ({
+      nodes: state.nodes.map((node) =>
+        node.id === nodeId
+          ? ({
+              ...node,
+              data: { ...node.data, ...newData },
+            } as Node)
+          : node,
+      ),
+    }));
+  },
+
+  resetNodeExecutionData: () => {
+    set((state) => ({
+      nodes: state.nodes.map((node) => {
+        const data = { ...node.data } as Record<string, unknown>;
+        delete data.status;
+        delete data.observability;
+        return { ...node, data } as Node;
+      }),
+    }));
   },
 
   // === Inner Node Selection Methods ===
@@ -2219,7 +2455,13 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
           if (subGraph && subGraph.nodes) {
             const updatedSubNodes = subGraph.nodes.map((subNode: any) =>
               subNode.id === nodeId
-                ? { ...subNode, data: { ...subNode.data, ...newData } }
+                ? {
+                    ...subNode,
+                    data: mergeNodeDataForExplicitEdit(
+                      subNode.data as Record<string, unknown>,
+                      newData,
+                    ),
+                  }
                 : subNode,
             );
             return {

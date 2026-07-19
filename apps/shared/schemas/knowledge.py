@@ -3,7 +3,14 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+)
 
 SourceAclState = Literal[
     "fresh",
@@ -103,6 +110,43 @@ class KnowledgeCandidateResolution(BaseModel):
     hidden_candidate_count_bucket: str = "0"
     unavailable_candidate_count_bucket: str = "0"
     reason_code: str | None = None
+
+
+class KnowledgeCandidateCollectionGroup(BaseModel):
+    """Internal authorized Collection group used before opaque projection."""
+
+    collection_id: UUID
+    safe_label: str | None = None
+    safe_metadata: dict = Field(default_factory=dict)
+    candidates: list[KnowledgeCandidate] = Field(default_factory=list)
+
+
+class KnowledgeCandidateHierarchyResolution(BaseModel):
+    collections: list[KnowledgeCandidateCollectionGroup] = Field(default_factory=list)
+    ungrouped_candidates: list[KnowledgeCandidate] = Field(default_factory=list)
+    hidden_candidate_count_bucket: str = "0"
+    unavailable_candidate_count_bucket: str = "0"
+    reason_code: str | None = None
+
+
+class KnowledgeSelectionKBCandidate(BaseModel):
+    kb_handle: str
+    selection_key: str
+    safe_label: str | None = None
+    score: float = Field(ge=0.0, le=1.0)
+    shared_collection_count: int = Field(default=0, ge=0)
+
+
+class KnowledgeSelectionCollection(BaseModel):
+    collection_handle: str
+    safe_label: str | None = None
+    score: float = Field(ge=0.0, le=1.0)
+    children: list[KnowledgeSelectionKBCandidate] = Field(default_factory=list)
+
+
+class KnowledgeSelection(BaseModel):
+    collections: list[KnowledgeSelectionCollection] = Field(default_factory=list)
+    ungrouped_kbs: list[KnowledgeSelectionKBCandidate] = Field(default_factory=list)
 
 
 class KnowledgeCandidateResolveRequest(BaseModel):
@@ -393,8 +437,8 @@ class KnowledgeRAGRecommendationRequest(BaseModel):
     collection_ids: list[UUID] = Field(default_factory=list)
     knowledge_base_ids: list[UUID] = Field(default_factory=list)
     intended_execution_subject_id: UUID | None = None
-    max_recommendations: int = Field(default=5, ge=1, le=20)
-    max_collections: int = Field(default=20, ge=1, le=100)
+    max_recommendations: int = Field(default=20, ge=1, le=20)
+    max_collections: int = Field(default=20, ge=1, le=20)
     max_candidate_kbs: int = Field(default=5000, ge=1, le=5000)
     high_risk_domain: KnowledgeRAGHighRiskDomain = "none"
     allow_query_rewrite: bool = True
@@ -499,11 +543,17 @@ class KnowledgeRAGRecommendationSummary(BaseModel):
 
 
 class KnowledgeRAGRecommendationResponse(BaseModel):
+    _issued_kb_resource_ids: dict[str, UUID] = PrivateAttr(default_factory=dict)
+    _issued_collection_resource_ids: dict[str, UUID] = PrivateAttr(
+        default_factory=dict
+    )
+
     status: KnowledgeRAGRecommendationStatus = "recommended"
     resolution_id: str | None = None
     requirement_id: str | None = None
     recommendations: list[KnowledgeRAGRecommendation] = Field(default_factory=list)
     clarification_options: list[dict] = Field(default_factory=list)
+    knowledge_selection: KnowledgeSelection | None = None
     fallback_reason: str | None = None
     summary: KnowledgeRAGRecommendationSummary = Field(
         default_factory=KnowledgeRAGRecommendationSummary

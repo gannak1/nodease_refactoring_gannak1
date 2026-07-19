@@ -12,15 +12,55 @@ def test_catalog_parameter_guide_contains_only_catalog_parameters():
     assert guide == {
         "step_slack": [
             {
-                "parameter_key": "credential",
-                "label": "Slack credential",
-                "input_type": "credential_ref",
+                "parameter_key": "slackMode",
+                "label": "Slack 전송 방식",
+                "input_type": "select",
             },
-                {
-                    "parameter_key": "channel",
-                    "label": "Slack channel",
-                    "input_type": "text",
-                },
+            {
+                "parameter_key": "bot_token",
+                "label": "Bot Token",
+                "input_type": "secret",
+            },
+            {
+                "parameter_key": "url",
+                "label": "Webhook URL",
+                "input_type": "secret",
+            },
+            {
+                "parameter_key": "channel",
+                "label": "Slack channel",
+                "input_type": "text",
+            },
+            {
+                "parameter_key": "message",
+                "label": "메시지",
+                "input_type": "textarea",
+            },
+            {
+                "parameter_key": "blocks",
+                "label": "Blocks",
+                "input_type": "json",
+            },
+            {
+                "parameter_key": "attachments",
+                "label": "Attachments",
+                "input_type": "json",
+            },
+            {
+                "parameter_key": "thread_ts",
+                "label": "Thread timestamp",
+                "input_type": "text",
+            },
+            {
+                "parameter_key": "username",
+                "label": "표시 이름",
+                "input_type": "text",
+            },
+            {
+                "parameter_key": "icon_emoji",
+                "label": "아이콘 이모지",
+                "input_type": "text",
+            },
         ]
     }
 
@@ -43,7 +83,7 @@ def test_parameter_guidance_discards_unknown_mismatched_and_secret_like_hints():
         ),
         AgentBuilderParameterGuidanceHint(
             step_id="step_slack",
-            parameter_key="url",
+            parameter_key="unknown_parameter",
             reason="다른 node의 parameter입니다.",
             input_guidance="URL을 입력하세요.",
         ),

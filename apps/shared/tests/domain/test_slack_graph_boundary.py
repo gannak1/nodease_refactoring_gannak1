@@ -24,6 +24,50 @@ def _slack_node(data=None):
     }
 
 
+def test_slack_graph_allows_agent_builder_deferred_parameter_metadata():
+    validate_slack_graph_boundary(
+        [
+            _slack_node(
+                {
+                    "channel": "C123",
+                    "body": '{"channel":"C123","text":"hello"}',
+                    "_deferred_parameters": [],
+                    "configuration_state": "unresolved",
+                }
+            )
+        ],
+        allow_legacy_selectors=True,
+    )
+
+
+def test_slack_graph_rejects_invalid_agent_builder_deferred_parameter_metadata():
+    with pytest.raises(SlackGraphBoundaryError):
+        validate_slack_graph_boundary(
+            [
+                _slack_node(
+                    {
+                        "_deferred_parameters": ["channel", 123],
+                    }
+                )
+            ],
+            allow_legacy_selectors=True,
+        )
+
+
+def test_slack_graph_rejects_unhashable_agent_builder_deferred_parameter_metadata():
+    with pytest.raises(SlackGraphBoundaryError):
+        validate_slack_graph_boundary(
+            [
+                _slack_node(
+                    {
+                        "_deferred_parameters": ["channel", {"unexpected": True}],
+                    }
+                )
+            ],
+            allow_legacy_selectors=True,
+        )
+
+
 def test_slack_graph_boundary_allows_dedicated_api_configuration():
     validate_slack_graph_boundary([_slack_node()], require_resolved=True)
 
@@ -161,6 +205,20 @@ def test_slack_graph_boundary_rejects_noncanonical_webhook_before_deployment(url
         validate_slack_graph_boundary([node], require_resolved=True)
 
     assert error.value.reason_code == SLACK_GRAPH_CONFIGURATION_INVALID
+
+
+def test_slack_graph_boundary_accepts_opaque_webhook_reference_before_deployment():
+    node = _slack_node(
+        {
+            "slackMode": "webhook",
+            "url": "workflow-node-secret://00000000-0000-4000-8000-000000000001",
+            "authConfig": {},
+            "authType": "none",
+            "message": "hello",
+        }
+    )
+
+    validate_slack_graph_boundary([node], require_resolved=True)
 
 
 def test_commercial_slack_webhook_validator_accepts_exact_shape():

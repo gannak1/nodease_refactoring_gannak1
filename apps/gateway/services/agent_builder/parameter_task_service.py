@@ -48,12 +48,16 @@ from apps.shared.schemas.agent_builder import (
     GraphMutationCompletionContext,
     GraphMutationSafeEnvelope,
     ParameterCredentialValue,
+    ParameterSecretValue,
+    ParameterVariableSelectorListValue,
     ParameterVariableSelectorValue,
 )
 from apps.shared.services.permissions import has_workflow_permission
 from apps.shared.services.permissions import has_mail_credential_permission
+from apps.shared.services.workflow_node_catalog import validate_node_parameter_update
 from apps.shared.services.workflow_node_catalog import derive_node_configuration_state
 from apps.shared.services.workflow_node_catalog import apply_node_parameter_value
+from apps.shared.services.workflow_node_catalog import remove_node_parameter_value
 from apps.gateway.application.agent_builder.parameter_suggestions import (
     ParameterSuggestionError,
     ParameterSuggestionResolver,
@@ -66,6 +70,8 @@ def _decision_value(payload: AgentBuilderParameterTaskDecisionRequest):
         return None
     if isinstance(value, ParameterVariableSelectorValue):
         return list(value.value_selector)
+    if isinstance(value, ParameterVariableSelectorListValue):
+        return [list(selection.value_selector) for selection in value.selections]
     if isinstance(value, ParameterCredentialValue):
         return str(value.credential_id)
     if hasattr(value, "resource_id"):
@@ -199,7 +205,10 @@ class ParameterTaskService:
                 raise HTTPException(status_code=400, detail="invalid_decision")
             return str(credential.id)
 
-        if task.node_type == "llmNode" and task.parameter_key == "model_id":
+        if task.node_type == "llmNode" and task.parameter_key in {
+            "model_id",
+            "fallback_model_id",
+        }:
             options = [
                 option
                 for group in LLMService.get_agent_builder_model_option_groups(
@@ -543,6 +552,8 @@ class ParameterTaskService:
                 continue
         if request_row is None or group is None:
             raise HTTPException(status_code=404, detail="resource_not_found")
+        if payload.action == "set" and isinstance(payload.value, ParameterSecretValue):
+            raise HTTPException(status_code=400, detail="secret_forbidden")
         decision_fingerprint = _decision_payload_fingerprint(task_id, payload)
         prior_local = self.repository.find_local_task_decision(
             request_row, payload.operation_id
@@ -636,6 +647,21 @@ class ParameterTaskService:
                     raise HTTPException(
                         status_code=400, detail="invalid_decision"
                     ) from exc
+            if isinstance(payload.value, ParameterVariableSelectorListValue):
+                resolver = ParameterSuggestionResolver()
+                try:
+                    for selection in payload.value.selections:
+                        resolver.validate_selection(
+                            graph=workflow.graph or {"nodes": [], "edges": []},
+                            target_node_id=task.node_id,
+                            parameter_key=task.parameter_key,
+                            suggestion_id=selection.suggestion_id,
+                            value_selector=list(selection.value_selector),
+                        )
+                except ParameterSuggestionError as exc:
+                    raise HTTPException(
+                        status_code=400, detail="invalid_decision"
+                    ) from exc
         if payload.action == "confirm":
             if task.resolution_source is None or not (
                 recommendation_matches_canonical_graph(task, workflow.graph)
@@ -650,6 +676,21 @@ class ParameterTaskService:
                     value=decision_value,
                 )
             else:
+                task_node = next(
+                    (
+                        node
+                        for node in (workflow.graph or {}).get("nodes") or []
+                        if isinstance(node, dict)
+                        and str(node.get("id")) == task.node_id
+                    ),
+                    None,
+                )
+                node_data = (
+                    task_node.get("data")
+                    if isinstance(task_node, dict)
+                    and isinstance(task_node.get("data"), dict)
+                    else {}
+                )
                 try:
                     validation_issues = validate_direct_set_value(
                         node_type=task.node_type,
@@ -659,8 +700,20 @@ class ParameterTaskService:
                     )
                 except ParameterTaskSafetyError as exc:
                     raise HTTPException(
-                        status_code=400, detail="invalid_decision"
+                        status_code=400,
+                        detail=(
+                            "secret_forbidden"
+                            if str(exc) == "secret_forbidden"
+                            else "invalid_decision"
+                        ),
                     ) from exc
+                if not validation_issues:
+                    validation_issues = validate_node_parameter_update(
+                        task.node_type,
+                        task.parameter_key,
+                        node_data,
+                        decision_value,
+                    )
             if validation_issues:
                 validation_issue_payload = [
                     {
@@ -828,6 +881,17 @@ class ParameterTaskService:
                     task.parameter_key,
                     data,
                     decision.graph_data_patch[task.parameter_key],
+                )
+                data["_deferred_parameters"] = [
+                    key
+                    for key in data.get("_deferred_parameters", [])
+                    if key != task.parameter_key
+                ]
+            elif decision.action == "clear":
+                data = remove_node_parameter_value(
+                    task.node_type,
+                    task.parameter_key,
+                    data,
                 )
                 data["_deferred_parameters"] = [
                     key

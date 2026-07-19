@@ -8,11 +8,16 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
+from apps.shared.services.workflow_node_secret_service import (
+    is_workflow_node_secret_reference,
+)
+
 SLACK_GRAPH_CONFIGURATION_INVALID = "slack.graph_configuration_invalid"
 SLACK_LEGACY_SELECTOR_REQUIRES_MIGRATION = "slack.legacy_selector_requires_migration"
 _SLACK_WEBHOOK_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _SLACK_TEMPLATE_TOKEN_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]{0,127})\s*\}\}")
 _SLACK_UNSAFE_TEMPLATE_MARKERS = ("{{", "{%", "%}", "{#", "#}")
+_SLACK_DEFERRED_PARAMETER_KEYS = frozenset({"channel"})
 _SLACK_ALLOWED_FIELDS = frozenset(
     {
         "title",
@@ -37,6 +42,7 @@ _SLACK_ALLOWED_FIELDS = frozenset(
         "authType",
         "configuration_state",
         "channel_resolution_state",
+        "_deferred_parameters",
         "displayNumber",
         "visibleProperties",
     }
@@ -148,6 +154,14 @@ def _validate_slack_data(data: Mapping[str, Any], *, require_resolved: bool) -> 
         raise SlackGraphBoundaryError()
     if data.get("channel_resolution_state") not in (None, "resolved", "unresolved"):
         raise SlackGraphBoundaryError()
+    deferred_parameters = data.get("_deferred_parameters", [])
+    if not isinstance(deferred_parameters, list) or any(
+        not isinstance(item, str) or item not in _SLACK_DEFERRED_PARAMETER_KEYS
+        for item in deferred_parameters
+    ):
+        raise SlackGraphBoundaryError()
+    if len(deferred_parameters) != len(set(deferred_parameters)):
+        raise SlackGraphBoundaryError()
     display_number = data.get("displayNumber")
     if display_number is not None and (
         not isinstance(display_number, int)
@@ -232,7 +246,11 @@ def _validate_slack_data(data: Mapping[str, Any], *, require_resolved: bool) -> 
             raise SlackGraphBoundaryError()
         url = data.get("url")
         if require_resolved and (
-            not url or not is_valid_commercial_slack_webhook_url(url)
+            not url
+            or not (
+                is_workflow_node_secret_reference(url)
+                or is_valid_commercial_slack_webhook_url(url)
+            )
         ):
             raise SlackGraphBoundaryError()
     if require_resolved and not _has_delivery_payload(data):

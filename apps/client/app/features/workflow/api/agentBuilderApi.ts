@@ -24,6 +24,7 @@ export type AgentBuilderParameterTask = {
   node_id: string;
   node_type: string;
   parameter_key: string;
+  task_group?: string | null;
   label: string;
   input_type:
     | 'boolean'
@@ -32,11 +33,14 @@ export type AgentBuilderParameterTask = {
     | 'json'
     | 'number'
     | 'resource_ref'
+    | 'secret'
     | 'select'
     | 'text'
     | 'textarea'
-    | 'variable_selector';
+    | 'variable_selector'
+    | 'variable_selector_list';
   required: boolean;
+  confirmation_required?: boolean;
   defer_policy: 'forbidden' | 'allow_unresolved';
   status:
     | 'completed'
@@ -219,14 +223,7 @@ export type AgentBuilderMessageResponse = {
   request_id: string;
   status: AgentBuilderStatus;
   structured_plan?: AgentBuilderStructuredRequest | null;
-  knowledge_resolution?: {
-    resolution_id?: string | null;
-    timing: 'before_graph' | 'after_graph';
-    required: boolean;
-    candidates: Array<Record<string, unknown>>;
-    selected: Array<Record<string, unknown>>;
-    selection_status?: 'pending_ack' | 'completed' | 'unapplied';
-  } | null;
+  knowledge_resolution?: AgentBuilderKnowledgeResolution | null;
   graph_mutation?: AgentBuilderGraphMutation | null;
   parameter_group?: AgentBuilderParameterGroup | null;
   clarification_questions: string[];
@@ -235,15 +232,76 @@ export type AgentBuilderMessageResponse = {
   warnings: string[];
 };
 
+export type AgentBuilderKnowledgeCandidateOption = {
+  type?: string | null;
+  candidate_id: string;
+  resolution_id?: string | null;
+  requirement_id?: string | null;
+  collection_handle?: string | null;
+  kb_handle?: string | null;
+  selection_key?: string | null;
+  label?: string | null;
+  safe_label?: string | null;
+  confidence?: 'high' | 'medium' | 'low' | null;
+  score?: number | null;
+  reason_category?: string | null;
+  reason?: string | null;
+  threshold_result?: string | null;
+  runtime_availability?: string | null;
+};
+
+export type AgentBuilderKnowledgeSelectedOption = {
+  selection_type?: 'collection' | 'knowledge_base' | null;
+  candidate_id?: string | null;
+  collection_handle?: string | null;
+  kb_handle?: string | null;
+  resolution_id?: string | null;
+  requirement_id?: string | null;
+  label?: string | null;
+  safe_label?: string | null;
+};
+
+export type AgentBuilderKnowledgeResolution = {
+  resolution_id?: string | null;
+  requirement_id?: string | null;
+  target_node_id?: string | null;
+  timing: 'before_graph' | 'after_graph';
+  required: boolean;
+  candidates: AgentBuilderKnowledgeCandidateOption[];
+  collections?: AgentBuilderKnowledgeCollection[];
+  ungrouped_kbs?: AgentBuilderKnowledgeKBCandidate[];
+  selected: AgentBuilderKnowledgeSelectedOption[];
+  selected_collection_handles?: string[];
+  selected_kb_handles?: string[];
+  selection_status?: 'pending_ack' | 'completed' | 'unapplied' | null;
+};
+
 export type AgentBuilderKnowledgeCandidateSelection = {
   candidate_id: string;
   resolution_id?: string | null;
   requirement_id?: string | null;
 };
 
+export type AgentBuilderKnowledgeKBCandidate = {
+  kb_handle: string;
+  selection_key: string;
+  safe_label?: string | null;
+  score?: number | null;
+  shared_collection_count?: number;
+};
+
+export type AgentBuilderKnowledgeCollection = {
+  collection_handle: string;
+  safe_label?: string | null;
+  score?: number | null;
+  children: AgentBuilderKnowledgeKBCandidate[];
+};
+
 export type AgentBuilderKnowledgeSelectionResponse = {
   resolution_id: string;
   selected_candidates: AgentBuilderKnowledgeCandidateSelection[];
+  selected_collection_handles?: string[];
+  selected_kb_handles?: string[];
   graph_mutation: AgentBuilderGraphMutation;
 };
 
@@ -371,7 +429,7 @@ export const agentBuilderApi = {
     input: {
       operationId: string;
       expectedTaskVersion: number;
-      action: 'confirm' | 'set' | 'defer' | 'skip' | 'previous';
+      action: 'confirm' | 'set' | 'clear' | 'defer' | 'skip' | 'previous';
       value?: Record<string, unknown>;
     },
   ): Promise<{
@@ -397,14 +455,25 @@ export const agentBuilderApi = {
     sessionId: string,
     input: {
       resolutionId: string;
-      selectedCandidates: AgentBuilderKnowledgeCandidateSelection[];
+      selectedCandidates?: AgentBuilderKnowledgeCandidateSelection[];
+      selectedCollectionHandles?: string[];
+      selectedKbHandles?: string[];
+      editorTargetNodeId?: string;
+      selectedKnowledgeBaseIds?: string[];
+      selectedKnowledgeCollectionIds?: string[];
     },
   ): Promise<AgentBuilderKnowledgeSelectionResponse> {
     const response = await apiClient.post(
       `/agent-builder/sessions/${sessionId}/knowledge-selection`,
       {
         resolution_id: input.resolutionId,
-        selected_candidates: input.selectedCandidates,
+        selected_candidates: input.selectedCandidates ?? [],
+        selected_collection_handles: input.selectedCollectionHandles ?? [],
+        selected_kb_handles: input.selectedKbHandles ?? [],
+        editor_target_node_id: input.editorTargetNodeId,
+        selected_knowledge_base_ids: input.selectedKnowledgeBaseIds ?? [],
+        selected_knowledge_collection_ids:
+          input.selectedKnowledgeCollectionIds ?? [],
       },
     );
     return response.data;

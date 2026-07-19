@@ -87,6 +87,7 @@ class KnowledgeTimingResolver:
         target_node_id: str,
         selected_knowledge_bases: list[dict[str, str]],
         resolution_id: str,
+        selected_knowledge_collections: list[dict[str, str]] | None = None,
     ) -> GraphMutation:
         target = next(
             (
@@ -113,6 +114,17 @@ class KnowledgeTimingResolver:
                 {"id": knowledge_base_id, "name": name},
             )
         data["knowledgeBases"] = list(knowledge_bases_by_id.values())
+        knowledge_collections_by_id: dict[str, dict[str, str]] = {}
+        for reference in selected_knowledge_collections or []:
+            collection_id = str(reference.get("id") or "")
+            name = str(reference.get("name") or "")
+            if not collection_id or not name:
+                raise ValueError("knowledge collection reference is invalid")
+            knowledge_collections_by_id.setdefault(
+                collection_id,
+                {"id": collection_id, "safeLabel": name},
+            )
+        data["knowledgeCollections"] = list(knowledge_collections_by_id.values())
         return GraphMutationBuilder().build(
             operation_id=operation_id,
             kind="knowledge_binding",

@@ -53,6 +53,14 @@ from apps.shared.services.workflow_configuration_preflight import (
     enforce_workflow_configuration_preflight,
     workflow_configuration_issues,
 )
+from apps.shared.services.workflow_node_secret_service import (
+    WorkflowNodeSecretError,
+    get_workflow_node_secret_encryption_service,
+    migrate_legacy_workflow_graph_secrets,
+    validate_workflow_node_secret_persistence_boundary,
+    validate_workflow_node_secret_reference_ownership,
+)
+from apps.shared.services.credential_encryption import CredentialEncryptionError
 from apps.shared.services.workflow_task_publisher import send_workflow_task
 from apps.workflow_engine.services.model_routing_policy_store import (
     ModelRoutingPolicyStore,
@@ -191,6 +199,12 @@ class DeploymentService:
             graph_snapshot=graph_snapshot,
             principal_id=user_id,
             is_active=deployment_in.is_active,
+        )
+        DeploymentService._enforce_node_secret_storage_boundary(
+            db,
+            graph_snapshot,
+            workflow_id=workflow.id,
+            organization_id=workflow.organization_id,
         )
         WorkflowService.validate_knowledge_references(
             db,
@@ -659,6 +673,87 @@ class DeploymentService:
         return graph_snapshot
 
     @staticmethod
+    def _enforce_node_secret_storage_boundary(
+        db: Session,
+        graph_snapshot: dict,
+        *,
+        workflow_id: uuid.UUID,
+        organization_id: uuid.UUID | None,
+    ) -> None:
+        try:
+            validate_workflow_node_secret_persistence_boundary(
+                graph_snapshot.get("nodes", [])
+            )
+        except WorkflowNodeSecretError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="workflow.node_secret_reference_required",
+            ) from exc
+        try:
+            validate_workflow_node_secret_reference_ownership(
+                db,
+                nodes=graph_snapshot.get("nodes", []),
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+            )
+        except WorkflowNodeSecretError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="workflow.node_secret_reference_invalid",
+            ) from exc
+
+    @staticmethod
+    def migrate_legacy_node_secrets(
+        db: Session,
+        deployment: WorkflowDeployment,
+        *,
+        actor_id: uuid.UUID | None = None,
+    ) -> WorkflowDeployment:
+        graph_snapshot = getattr(deployment, "graph_snapshot", None)
+        if not isinstance(graph_snapshot, dict):
+            return deployment
+        try:
+            validate_workflow_node_secret_persistence_boundary(
+                graph_snapshot.get("nodes", [])
+            )
+            return deployment
+        except WorkflowNodeSecretError:
+            pass
+
+        app = db.query(App).filter(App.id == deployment.app_id).first()
+        workflow = (
+            db.query(Workflow).filter(Workflow.id == app.workflow_id).first()
+            if app is not None
+            else None
+        )
+        if workflow is None or workflow.organization_id is None:
+            raise HTTPException(
+                status_code=503,
+                detail="workflow.node_secret_migration_unavailable",
+            )
+        migration_actor = actor_id or deployment.created_by
+        try:
+            migrated_graph, changed = migrate_legacy_workflow_graph_secrets(
+                db,
+                graph=graph_snapshot,
+                encryption=get_workflow_node_secret_encryption_service(),
+                workflow_id=workflow.id,
+                organization_id=workflow.organization_id,
+                user_id=migration_actor,
+            )
+        except (WorkflowNodeSecretError, CredentialEncryptionError) as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=503,
+                detail="workflow.node_secret_migration_unavailable",
+            ) from exc
+        if changed:
+            deployment.graph_snapshot = migrated_graph
+            db.commit()
+            db.refresh(deployment)
+        return deployment
+
+    @staticmethod
     def bind_workflow_node_targets(
         db: Session,
         graph_snapshot: dict,
@@ -736,6 +831,7 @@ class DeploymentService:
         # The slug belongs to App but is part of the authenticated deployment
         # response contract used to construct share URLs.
         for deployment in deployments:
+            DeploymentService.migrate_legacy_node_secrets(db, deployment)
             deployment.url_slug = app.url_slug
 
         return deployments
@@ -763,7 +859,7 @@ class DeploymentService:
         if not deployment:
             raise HTTPException(status_code=404, detail="Deployment not found")
 
-        return deployment
+        return DeploymentService.migrate_legacy_node_secrets(db, deployment)
 
     @staticmethod
     def list_workflow_node_deployments(
@@ -1032,6 +1128,15 @@ class DeploymentService:
             actor_id=actor_user_id,
         )
 
+        DeploymentService.migrate_legacy_node_secrets(
+            db,
+            deployment,
+            actor_id=(
+                uuid.UUID(str(actor_user_id))
+                if actor_user_id is not None
+                else None
+            ),
+        )
         graph_data = deployment.graph_snapshot
         try:
             enforce_workflow_configuration_preflight(graph_data, surface="run")

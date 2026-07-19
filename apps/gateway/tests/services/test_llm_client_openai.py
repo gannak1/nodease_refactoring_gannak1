@@ -481,14 +481,19 @@ def test_openai_invoke_sync_uses_responses_sync_client(monkeypatch):
         credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
     )
 
-    resp = client.invoke_sync([{"role": "user", "content": "hi"}], max_tokens=10)
+    resp = client.invoke_sync(
+        [{"role": "user", "content": "hi"}],
+        max_tokens=10,
+        request_timeout_seconds=90,
+    )
 
     assert requested["client_kwargs"] == {"timeout": 60}
     assert requested["url"] == "https://api.openai.com/v1/responses"
     assert requested["payload"]["model"] == "gpt-5.4-mini"
     assert requested["payload"]["max_output_tokens"] == 10
     assert requested["payload"]["input"][0]["role"] == "user"
-    assert requested["timeout"] == 180
+    assert requested["timeout"] == 90
+    assert "request_timeout_seconds" not in requested["payload"]
     assert resp["choices"][0]["message"]["content"] == "hello"
     assert resp["usage"]["total_tokens"] == 5
 
@@ -765,8 +770,8 @@ def test_openai_responses_keeps_explicit_reasoning_effort_for_json_output():
     assert payload["reasoning"] == {"effort": "high"}
 
 
-def test_openai_responses_small_text_budget_defaults_to_minimal_reasoning():
-    """작은 출력 한도에서는 GPT-5 추론만으로 응답이 끝나는 것을 막는다."""
+def test_openai_responses_unknown_model_omits_unverified_reasoning_effort():
+    """알 수 없는 모델에는 provider가 거부할 수 있는 reasoning 값을 추정하지 않는다."""
     client = OpenAIClient(
         model_id="gpt-5-mini",
         credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},

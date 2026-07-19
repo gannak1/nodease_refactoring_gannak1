@@ -109,6 +109,8 @@ from apps.shared.schemas.permission import WorkflowPermissionResponse
 from apps.shared.schemas.workflow import (
     WorkflowCreateRequest,
     WorkflowDraftRequest,
+    WorkflowNodeSecretWriteRequest,
+    WorkflowNodeSecretWriteResponse,
     WorkflowResponse,
 )
 from apps.shared.services.permissions import (
@@ -5683,7 +5685,9 @@ def list_workflows_by_app(
 @audit(AuditAction.WORKFLOW_UPDATE, target_param="workflow_id")
 def sync_draft_workflow(
     workflow_id: str,
-    request: WorkflowDraftRequest,
+    request: Request,
+    payload: WorkflowDraftRequest,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -5692,14 +5696,66 @@ def sync_draft_workflow(
 
     Args:
         workflow_id: 워크플로우 ID (URL 경로에서 가져옴)
-        request: 워크플로우 데이터 (노드, 엣지, 뷰포트)
+        payload: 워크플로우 데이터 (노드, 엣지, 뷰포트)
         db: 데이터베이스 세션 (의존성 주입)
         current_user: 현재 로그인한 사용자
     """
-    ensure_workflow_permission(db, current_user, workflow_id, "write")
+    active_organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
+    workflow = ensure_workflow_permission(
+        db,
+        current_user,
+        workflow_id,
+        "write",
+    )
+    if workflow.organization_id != active_organization_id:
+        raise HTTPException(status_code=404, detail="Workflow not found")
 
     return WorkflowService.save_draft(
-        db, workflow_id, request, user_id=str(current_user.id)
+        db, workflow_id, payload, user_id=str(current_user.id)
+    )
+
+
+@router.post(
+    "/{workflow_id}/node-secrets",
+    response_model=WorkflowNodeSecretWriteResponse,
+)
+@audit(AuditAction.WORKFLOW_UPDATE, target_param="workflow_id")
+def store_workflow_node_secret(
+    workflow_id: str,
+    request: Request,
+    payload: WorkflowNodeSecretWriteRequest,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    active_organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
+    workflow = ensure_workflow_permission(
+        db,
+        current_user,
+        workflow_id,
+        "write",
+    )
+    if workflow.organization_id != active_organization_id:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return WorkflowService.store_node_secret(
+        db,
+        workflow_id=workflow_id,
+        active_organization_id=active_organization_id,
+        user_id=current_user.id,
+        node_id=payload.node_id,
+        node_type=payload.node_type,
+        parameter_key=payload.parameter_key,
+        secret_value=payload.secret_value.get_secret_value(),
     )
 
 

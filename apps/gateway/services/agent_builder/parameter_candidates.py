@@ -50,7 +50,13 @@ class ParameterCandidateProvider:
         }
         tasks = []
         for task in group.tasks:
-            candidates = self.for_task(task)
+            node = nodes.get(task.node_id)
+            node_data = (
+                node.get("data")
+                if isinstance(node, dict) and isinstance(node.get("data"), dict)
+                else {}
+            )
+            candidates = self.for_task(task, node_data=node_data)
             update: dict[str, Any] = {"candidates": candidates}
             if self._reference_is_unavailable(task, nodes, candidates):
                 update.update(
@@ -86,7 +92,10 @@ class ParameterCandidateProvider:
         }
         if str(value) in candidate_ids or str(value) in candidate_reference_values:
             return False
-        if task.node_type == "llmNode" and task.parameter_key == "model_id":
+        if task.node_type == "llmNode" and task.parameter_key in {
+            "model_id",
+            "fallback_model_id",
+        }:
             return not self._model_runtime_value_is_available(value, candidate_ids)
         return True
 
@@ -109,11 +118,16 @@ class ParameterCandidateProvider:
     def for_task(
         self,
         task: AgentBuilderParameterTask,
+        *,
+        node_data: dict[str, Any] | None = None,
     ) -> list[AgentBuilderParameterCandidate]:
         if task.input_type not in {"resource_ref", "credential_ref"}:
             return []
         if task.node_type == "llmNode" and task.parameter_key == "model_id":
             return self._model_candidates()
+        if task.node_type == "llmNode" and task.parameter_key == "fallback_model_id":
+            primary_model = (node_data or {}).get("model_id")
+            return self._model_candidates(excluded_runtime_value=primary_model)
         if task.node_type == "workflowNode" and task.parameter_key == "workflowId":
             return self._workflow_candidates()
         if task.node_type == "workflowNode" and task.parameter_key == "appId":
@@ -125,8 +139,12 @@ class ParameterCandidateProvider:
             return self._mail_credential_candidates(node_type=task.node_type)
         return []
 
-    def _model_candidates(self) -> list[AgentBuilderParameterCandidate]:
-        return [
+    def _model_candidates(
+        self,
+        *,
+        excluded_runtime_value: Any = None,
+    ) -> list[AgentBuilderParameterCandidate]:
+        candidates = [
             AgentBuilderParameterCandidate(
                 candidate_id=option.model.id,
                 kind="resource_ref",
@@ -140,6 +158,14 @@ class ParameterCandidateProvider:
                 self.organization_id,
             )
             for option in group.options
+        ]
+        if excluded_runtime_value in {None, ""}:
+            return candidates
+        return [
+            candidate
+            for candidate in candidates
+            if str(candidate.candidate_id) != str(excluded_runtime_value)
+            and str(candidate.reference_value) != str(excluded_runtime_value)
         ]
 
     def _workflow_candidates(self) -> list[AgentBuilderParameterCandidate]:

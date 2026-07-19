@@ -23,11 +23,17 @@ from apps.gateway.application.agent_builder.knowledge_timing import (
     materialize_before_graph_plan,
 )
 from apps.gateway.application.agent_builder.parameter_tasks import (
+    recovery_affected_node_ids,
+    reconcile_parameter_group_catalog_tasks,
     remove_direct_edit_external_credential_tasks,
     remove_direct_edit_knowledge_parameter_tasks,
 )
 from apps.gateway.application.agent_builder.semantic_plan import CAPABILITY_STEP_IDS
-from apps.gateway.application.agent_builder.service import DirectEditOrchestrator
+from apps.gateway.application.agent_builder.service import (
+    DirectEditOrchestrator,
+    plan_parameter_tasks_for_existing_graph,
+    step_node_ids_for_graph,
+)
 from apps.gateway.auth.permissions import (
     ensure_workflow_permission,
     recorded_permission_denied_exception,
@@ -98,6 +104,7 @@ from apps.shared.services.workflow_node_catalog import (
     agent_builder_supported_capabilities,
     agent_builder_supported_node_types,
     capability_output_keys,
+    missing_required_configuration,
     node_definition,
     node_type_for_capability,
     validate_workflow_graph_connections,
@@ -108,6 +115,7 @@ logger = logging.getLogger(__name__)
 
 SESSION_TTL = timedelta(hours=24)
 DRAFT_TTL = timedelta(minutes=30)
+AGENT_BUILDER_REQUEST_PROCESSING_TIMEOUT = timedelta(minutes=4)
 AGENT_BUILDER_SUPPORTED_NODE_TYPES = agent_builder_supported_node_types()
 AGENT_BUILDER_SUPPORTED_CAPABILITIES = agent_builder_supported_capabilities()
 STRUCTURAL_NODE_TARGET_ALIASES = {
@@ -128,14 +136,14 @@ SAFE_SIDE_EFFECT_NOTICE = (
 )
 SLACK_CHANNEL_UNRESOLVED_WARNING = (
     "Slack 채널이 아직 선택되지 않아 Slack node는 채널 미정 상태로 생성됩니다. "
-    "저장 후 실행 전에 Slack 채널과 연동 인증 정보를 확인해야 합니다."
+    "저장 후 실행 전에 Slack 채널 등 미설정 일반 파라미터를 확인해야 합니다."
 )
 GITHUB_CONFIGURATION_UNRESOLVED_WARNING = (
-    "GitHub credential과 repository와 PR 대상이 설정되지 않아 GitHub node는 미설정 상태로 생성됩니다. "
-    "저장 후 실행 전에 GitHub credential, repository, PR 번호를 확인해야 합니다."
+    "GitHub repository와 PR 대상이 설정되지 않아 GitHub node는 미설정 상태로 생성됩니다. "
+    "저장 후 실행 전에 repository, PR 번호 등 미설정 일반 파라미터를 확인해야 합니다."
 )
 EXTERNAL_NODE_CONFIGURATION_WARNING = (
-    "외부 연동 node의 credential과 target 설정은 자동으로 채우지 않았습니다. "
+    "외부 연동 node의 실행 대상과 필수 파라미터는 확인 전까지 미설정 상태로 유지됩니다. "
     "저장 후 실제 실행 전에 미설정 항목을 확인해야 합니다."
 )
 CAPABILITY_GENERATION_ORDER = (
@@ -1068,7 +1076,13 @@ class AgentBuilderService:
         ):
             raise HTTPException(
                 status_code=422,
-                detail="legacy_knowledge_selection_not_supported",
+                detail={
+                    "code": "invalid_request",
+                    "message": (
+                        "현재 Agent Builder에서는 대화 메시지로 Knowledge Base 선택을 "
+                        "제출할 수 없습니다. 표시된 Knowledge Base 선택 화면에서 선택해주세요."
+                    ),
+                },
             )
         session = self._lock_session_for_request(session)
         self._reject_if_pending(session)
@@ -1133,6 +1147,8 @@ class AgentBuilderService:
 
         deferred_knowledge_options: list[dict[str, Any]] = []
         deferred_knowledge_questions: list[str] = []
+        deferred_knowledge_selection: dict[str, Any] | None = None
+        deferred_knowledge_handle_bindings: dict[str, dict[str, str]] = {}
         try:
             selected_kb_context = self._selected_knowledge_candidate_context(
                 session,
@@ -1223,6 +1239,7 @@ class AgentBuilderService:
             validation = self._validate_structured_request(structured, app_id=app_id)
             recommendations = self._resolve_knowledge_requirements(
                 structured,
+                require_hierarchical_selection=direct_edit_session,
                 selected_candidate_handles=(
                     selected_kb_context["candidate_handles"]
                     if selected_kb_context
@@ -1324,6 +1341,10 @@ class AgentBuilderService:
             deferred_knowledge_questions = list(
                 recommendations.get("questions") or []
             )
+            deferred_knowledge_selection = recommendations.get("knowledge_selection")
+            deferred_knowledge_handle_bindings = dict(
+                recommendations.get("_issued_knowledge_handle_bindings") or {}
+            )
             recommendations = {
                 "status": "ready",
                 "bindings": [],
@@ -1358,8 +1379,12 @@ class AgentBuilderService:
                 structured_request=structured,
                 clarification_questions=recommendations["questions"],
                 clarification_options=recommendations.get("options", []),
+                knowledge_selection=recommendations.get("knowledge_selection"),
                 validation_result=validation,
                 warnings=[*structured_warnings, *recommendations["warnings"]],
+            )
+            response._issued_knowledge_handle_bindings = dict(
+                recommendations.get("_issued_knowledge_handle_bindings") or {}
             )
             self._finish_request(
                 request_row,
@@ -1553,9 +1578,13 @@ class AgentBuilderService:
                 ).enrich_group(issued.parameter_group),
                 clarification_questions=deferred_knowledge_questions,
                 clarification_options=deferred_knowledge_options,
+                knowledge_selection=deferred_knowledge_selection,
                 validation_result=draft_validation,
                 warnings=draft_safety_notices,
                 safe_step_node_ids=issued.step_node_ids,
+            )
+            response._issued_knowledge_handle_bindings = (
+                deferred_knowledge_handle_bindings
             )
             if (
                 self._finish_request(
@@ -3752,6 +3781,7 @@ class AgentBuilderService:
         *,
         include_materialized_refs: bool = False,
         selected_candidate_handles: set[str] | None = None,
+        require_hierarchical_selection: bool = False,
     ) -> dict[str, Any]:
         if not structured.knowledge_requirements:
             return {
@@ -3802,6 +3832,42 @@ class AgentBuilderService:
                 allow_unready_candidates=True,
             )
             resolution_id = pending_by_step.get(requirement.target_step_ref)
+            knowledge_selection = (
+                response.knowledge_selection.model_dump(mode="json")
+                if response.knowledge_selection is not None
+                else None
+            )
+            issued_handle_bindings = {
+                "knowledge_bases": {
+                    handle: str(resource_id)
+                    for handle, resource_id in response._issued_kb_resource_ids.items()
+                },
+                "collections": {
+                    handle: str(resource_id)
+                    for handle, resource_id in (
+                        response._issued_collection_resource_ids.items()
+                    )
+                },
+            }
+            if (
+                require_hierarchical_selection
+                and response.status in {"recommended", "clarification_required"}
+                and knowledge_selection is None
+            ):
+                return {
+                    "status": "validation_failed",
+                    "bindings": [],
+                    "questions": [],
+                    "options": [],
+                    "knowledge_selection": {
+                        "collections": [],
+                        "ungrouped_kbs": [],
+                    },
+                    "warnings": [
+                        "계층형 Knowledge 후보를 불러오지 못했습니다. 다시 시도해주세요."
+                    ],
+                    "_issued_knowledge_handle_bindings": issued_handle_bindings,
+                }
             if response.status == "unavailable":
                 if selected_candidate_handles and not include_materialized_refs:
                     selected_option = next(
@@ -3850,10 +3916,12 @@ class AgentBuilderService:
                         requirement=requirement,
                         resolution_id=resolution_id,
                     ),
+                    "knowledge_selection": knowledge_selection,
                     "warnings": [
                         response.user_safe_warning
                         or "Knowledge Base 추천을 사용할 수 없습니다."
                     ],
+                    "_issued_knowledge_handle_bindings": issued_handle_bindings,
                 }
             if (
                 response.status == "clarification_required"
@@ -3868,10 +3936,12 @@ class AgentBuilderService:
                         requirement=requirement,
                         resolution_id=resolution_id,
                     ),
+                    "knowledge_selection": knowledge_selection,
                     "warnings": [
                         response.user_safe_warning
                         or "Knowledge Base 후보를 사용자 확인으로 선택해야 합니다."
                     ],
+                    "_issued_knowledge_handle_bindings": issued_handle_bindings,
                 }
             recommendations = list(response.recommendations or [])
             if selected_candidate_handles:
@@ -3961,18 +4031,33 @@ class AgentBuilderService:
                         "warnings": [
                             "선택한 Knowledge Base 후보를 다시 확인할 수 없습니다."
                         ],
+                        "_issued_knowledge_handle_bindings": issued_handle_bindings,
                     }
             if not recommendations:
+                has_collection_candidates = bool(
+                    knowledge_selection
+                    and knowledge_selection.get("collections")
+                )
                 return {
                     "status": "clarification_required",
                     "bindings": [],
                     "questions": [
-                        "권한 확인된 Knowledge Base 후보가 없습니다. Knowledge Base 없이 계속할지 확인해주세요."
+                        (
+                            "추천 Collection을 확인하고 사용할 항목을 선택해주세요."
+                            if has_collection_candidates
+                            else "권한 확인된 Knowledge Base 후보가 없습니다. Knowledge Base 없이 계속할지 확인해주세요."
+                        )
                     ],
                     "options": [],
+                    "knowledge_selection": knowledge_selection,
                     "warnings": [
-                        "Knowledge Base 후보가 없어 사용자 확인을 기다립니다."
+                        (
+                            "Knowledge Collection 후보 확인을 기다립니다."
+                            if has_collection_candidates
+                            else "Knowledge Base 후보가 없어 사용자 확인을 기다립니다."
+                        )
                     ],
+                    "_issued_knowledge_handle_bindings": issued_handle_bindings,
                 }
             return {
                 "status": "clarification_required",
@@ -3990,7 +4075,9 @@ class AgentBuilderService:
                     requirement=requirement,
                     resolution_id=resolution_id,
                 ),
+                "knowledge_selection": knowledge_selection,
                 "warnings": ["Knowledge Base 후보를 확인하고 선택해주세요."],
+                "_issued_knowledge_handle_bindings": issued_handle_bindings,
             }
         return {
             "status": "recommended",
@@ -4013,6 +4100,131 @@ class AgentBuilderService:
             selected_candidate_handles=selected_candidate_handles,
         )
 
+    def refresh_knowledge_selection_candidates(
+        self,
+        structured: AgentBuilderStructuredRequest,
+    ) -> dict[str, Any]:
+        """Refresh permission-filtered candidates without invoking the planner."""
+        return self._resolve_knowledge_requirements(
+            structured,
+            require_hierarchical_selection=True,
+        )
+
+    def materialize_knowledge_selection(
+        self,
+        structured: AgentBuilderStructuredRequest,
+        *,
+        selected_candidate_handles: set[str] | None = None,
+        selected_collection_handles: set[str] | None = None,
+        selected_kb_handles: set[str] | None = None,
+        issued_handle_bindings: dict[str, dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        """Revalidate selected safe handles without recomputing their ranking."""
+        selected_candidate_handles = selected_candidate_handles or set()
+        selected_kb_handles = selected_kb_handles or set()
+        selected_collection_handles = selected_collection_handles or set()
+        requested_handles = {
+            handle
+            for handle in {*selected_candidate_handles, *selected_kb_handles}
+            if handle != NO_KB_CANDIDATE_ID
+        }
+        if not requested_handles and not selected_collection_handles:
+            return {
+                "status": "ready",
+                "bindings": [],
+                "collections": [],
+                "warnings": [],
+            }
+
+        service = KnowledgeRAGRecommendationService(
+            self.db,
+            user_id=self.user.id,
+            organization_id=self.organization_id,
+        )
+        issued_handle_bindings = issued_handle_bindings or {}
+
+        def resource_ids(binding_type: str) -> dict[str, uuid.UUID]:
+            result: dict[str, uuid.UUID] = {}
+            for handle, raw_resource_id in (
+                issued_handle_bindings.get(binding_type) or {}
+            ).items():
+                try:
+                    result[str(handle)] = uuid.UUID(str(raw_resource_id))
+                except (TypeError, ValueError):
+                    continue
+            return result
+
+        issued_kb_resource_ids = resource_ids("knowledge_bases")
+        issued_collection_resource_ids = resource_ids("collections")
+        pending_by_step = {
+            item.target_step_ref: item.resolution_id
+            for item in structured.pending_resolution
+            if item.slot_type == "knowledge_base"
+        }
+        bindings_by_handle: dict[str, dict[str, Any]] = {}
+        collections_by_handle: dict[str, dict[str, Any]] = {}
+        for requirement in structured.knowledge_requirements:
+            request = KnowledgeRAGRecommendationRequest(
+                workflow_intent=structured.intent_summary,
+                node_purpose="; ".join(requirement.query_topics)
+                or requirement.expected_evidence_type,
+                knowledge_requirement=requirement.model_dump(mode="json"),
+                safe_query_topics=requirement.query_topics,
+                pending_resolution_ref=pending_by_step.get(
+                    requirement.target_step_ref
+                ),
+                safe_workflow_context_summary={
+                    "planned_step_count": len(structured.planned_steps),
+                    "required_capabilities": structured.required_capabilities,
+                },
+                intended_execution_subject_id=self.user.id,
+                mode="auto",
+                max_recommendations=AGENT_BUILDER_KB_RECOMMENDATION_LIMIT,
+            )
+            for binding in service.materialize_candidate_handles_for_builder(
+                request,
+                requested_handles,
+                issued_resource_ids=issued_kb_resource_ids,
+            ):
+                handle = str(binding.get("safe_handle") or "")
+                if handle in requested_handles:
+                    bindings_by_handle[handle] = binding
+            if selected_collection_handles:
+                for binding in service.materialize_collection_handles_for_builder(
+                    request,
+                    selected_collection_handles,
+                    issued_resource_ids=issued_collection_resource_ids,
+                ):
+                    handle = str(binding.get("safe_handle") or "")
+                    if handle in selected_collection_handles:
+                        collections_by_handle[handle] = binding
+
+        missing_handles = requested_handles - set(bindings_by_handle)
+        missing_collection_handles = selected_collection_handles - set(
+            collections_by_handle
+        )
+        if missing_handles or missing_collection_handles:
+            return {
+                "status": "validation_failed",
+                "bindings": [],
+                "collections": [],
+                "warnings": [
+                    "선택한 Knowledge Base 정보를 다시 확인할 수 없습니다."
+                ],
+            }
+        return {
+            "status": "ready",
+            "bindings": [
+                bindings_by_handle[handle]
+                for handle in sorted(requested_handles)
+            ],
+            "collections": [
+                collections_by_handle[handle]
+                for handle in sorted(selected_collection_handles)
+            ],
+            "warnings": [],
+        }
+
     def build_before_graph_knowledge_selection(
         self,
         *,
@@ -4020,35 +4232,27 @@ class AgentBuilderService:
         workflow: Workflow,
         placement: AgentBuilderKnowledgePlacement,
         bindings: list[dict[str, Any]],
+        collection_bindings: list[dict[str, Any]] | None = None,
         resolution_id: str,
     ) -> dict[str, Any]:
         effective_plan = materialize_before_graph_plan(
             structured,
             placement=placement,
-            has_selection=bool(bindings),
+            has_selection=bool(bindings or collection_bindings),
         )
         candidate_graph = self._build_preview_graph(
             effective_plan,
             workflow=workflow,
-            kb_bindings=self._safe_kb_bindings(bindings),
+            kb_bindings=[],
         )
-        knowledge_base_ids = [
-            str(binding["knowledge_base_id"])
-            for binding in bindings
-            if binding.get("knowledge_base_id")
-        ]
-        if knowledge_base_ids:
-            for node in candidate_graph.get("nodes") or []:
-                if node.get("type") != "llmNode":
-                    continue
-                data = dict(node.get("data") or {})
-                if "knowledgeBases" not in data:
-                    continue
-                data["knowledgeBases"] = [
-                    {"id": knowledge_base_id}
-                    for knowledge_base_id in dict.fromkeys(knowledge_base_ids)
-                ]
-                node["data"] = data
+        if bindings or collection_bindings:
+            self._apply_before_graph_knowledge_bindings(
+                candidate_graph=candidate_graph,
+                structured=effective_plan,
+                placement=placement,
+                bindings=bindings,
+                collection_bindings=collection_bindings or [],
+            )
         validation = self.validate_preview_graph(candidate_graph)
         if not validation.valid:
             raise ValueError("knowledge candidate graph is invalid")
@@ -4075,6 +4279,55 @@ class AgentBuilderService:
             "parameter_group": parameter_group,
             "step_node_ids": issued.step_node_ids,
         }
+
+    def _apply_before_graph_knowledge_bindings(
+        self,
+        *,
+        candidate_graph: dict[str, Any],
+        structured: AgentBuilderStructuredRequest,
+        placement: AgentBuilderKnowledgePlacement,
+        bindings: list[dict[str, Any]],
+        collection_bindings: list[dict[str, Any]],
+    ) -> None:
+        step_node_ids = step_node_ids_for_graph(structured, candidate_graph)
+        target_node_id = step_node_ids.get(str(placement.target_step_id or ""))
+        target_node = next(
+            (
+                node
+                for node in candidate_graph.get("nodes") or []
+                if isinstance(node, dict) and str(node.get("id")) == target_node_id
+            ),
+            None,
+        )
+        target_data = dict(target_node.get("data") or {}) if target_node else {}
+        if (
+            target_node is None
+            or target_node.get("type") != "llmNode"
+            or "knowledgeBases" not in target_data
+        ):
+            raise ValueError("knowledge placement target is invalid")
+
+        target_data["knowledgeBases"] = [
+            {
+                "id": str(binding["knowledge_base_id"]),
+                "name": str(binding.get("name") or "Knowledge Base"),
+            }
+            for binding in bindings
+            if binding.get("knowledge_base_id")
+        ]
+        target_data["knowledgeCollections"] = list(
+            {
+                str(binding["knowledge_collection_id"]): {
+                    "id": str(binding["knowledge_collection_id"]),
+                    "safeLabel": str(
+                        binding.get("name") or "Knowledge Collection"
+                    ),
+                }
+                for binding in collection_bindings
+                if binding.get("knowledge_collection_id")
+            }.values()
+        )
+        target_node["data"] = target_data
 
     def _kb_clarification_options(
         self,
@@ -4179,7 +4432,7 @@ class AgentBuilderService:
         runtime_bindings: list[dict[str, Any]] = []
         for requirement in structured.knowledge_requirements:
             runtime_bindings.extend(
-                service.materialize_candidate_handles_for_builder(
+                service.materialize_legacy_candidate_handles_for_builder(
                     KnowledgeRAGRecommendationRequest(
                         workflow_intent=structured.intent_summary,
                         node_purpose="; ".join(requirement.query_topics)
@@ -4326,6 +4579,7 @@ class AgentBuilderService:
             for capability in planned_capabilities
             if capability not in {"start_input", "webhook_trigger", "schedule_trigger"}
         ]
+        uses_planned_body = bool(body_capabilities)
         if not body_capabilities:
             body_capabilities = [
                 capability
@@ -4336,7 +4590,7 @@ class AgentBuilderService:
             body_capabilities = [
                 capability for capability in body_capabilities if capability != "answer"
             ]
-        if "knowledge_backed_llm" in body_capabilities:
+        if not uses_planned_body and "knowledge_backed_llm" in body_capabilities:
             body_capabilities = [
                 capability for capability in body_capabilities if capability != "llm"
             ]
@@ -5162,7 +5416,7 @@ class AgentBuilderService:
             definition = node_definition(node_type)
             if not definition or not definition.get("agent_builder_supported"):
                 continue
-            required_parameters = definition.get("required_configuration") or []
+            required_parameters = missing_required_configuration(node_type, data)
             parameter_labels = definition.get("configuration_labels") or {}
             capabilities = definition.get("capabilities") or []
             if node_type == "githubNode":
@@ -5307,6 +5561,21 @@ class AgentBuilderService:
                     .with_for_update()
                     .first()
                 )
+                if self._reconcile_processing_deadline(latest_request, now=now):
+                    add_action_audit(
+                        self.db,
+                        AuditAction.AGENT_BUILDER_REQUEST_FAILED,
+                        self.user.id,
+                        "agent_builder_request",
+                        latest_request.id,
+                        organization_id=self.organization_id,
+                        metadata={
+                            "request_id": str(latest_request.id),
+                            "reason": "processing_timeout",
+                        },
+                        status="failure",
+                    )
+                    self.db.commit()
             payload = (
                 copy.deepcopy(latest_request.response_payload or {})
                 if latest_request is not None
@@ -5385,19 +5654,40 @@ class AgentBuilderService:
             normalized_parameter_group = remove_direct_edit_external_credential_tasks(
                 remove_direct_edit_knowledge_parameter_tasks(parameter_group)
             )
-            if normalized_parameter_group is not parameter_group:
-                AgentBuilderRepository().store_parameter_group(
-                    latest_request,
-                    normalized_parameter_group,
-                )
-                self.db.commit()
-                parameter_group = normalized_parameter_group
             workflow_graph = None
-            needs_reference_recovery = parameter_group is not None and any(
-                task.input_type in {"resource_ref", "credential_ref"}
-                for task in parameter_group.tasks
+            stored_step_node_ids = payload.get("safe_step_node_ids")
+            recovery_step_node_ids = {
+                str(step_id): str(node_id)
+                for step_id, node_id in (
+                    stored_step_node_ids.items()
+                    if isinstance(stored_step_node_ids, dict)
+                    else []
+                )
+                if step_id and node_id
+            }
+            if normalized_parameter_group is not None:
+                for task in normalized_parameter_group.tasks:
+                    if task.step_id and task.node_id:
+                        recovery_step_node_ids.setdefault(
+                            str(task.step_id),
+                            str(task.node_id),
+                        )
+            needs_catalog_recovery = (
+                normalized_parameter_group is not None
+                and normalized_parameter_group.status in {"active", "completed"}
+                and session.workflow_id is not None
+                and bool(recovery_step_node_ids)
             )
-            if session.workflow_id is not None and needs_reference_recovery:
+            needs_reference_recovery = (
+                normalized_parameter_group is not None
+                and any(
+                    task.input_type in {"resource_ref", "credential_ref"}
+                    for task in normalized_parameter_group.tasks
+                )
+            )
+            if session.workflow_id is not None and (
+                needs_catalog_recovery or needs_reference_recovery
+            ):
                 recovery_workflow = (
                     self.db.query(Workflow)
                     .filter(
@@ -5408,6 +5698,31 @@ class AgentBuilderService:
                 )
                 if recovery_workflow is not None:
                     workflow_graph = getattr(recovery_workflow, "graph", None)
+            if needs_catalog_recovery and isinstance(workflow_graph, dict):
+                recoverable_node_ids = recovery_affected_node_ids(
+                    graph=workflow_graph,
+                    envelopes=envelopes,
+                    parameter_task_node_ids=[
+                        task.node_id for task in normalized_parameter_group.tasks
+                    ],
+                )
+                planned_tasks = plan_parameter_tasks_for_existing_graph(
+                    graph=workflow_graph,
+                    step_node_ids=recovery_step_node_ids,
+                    group_id=normalized_parameter_group.group_id,
+                    affected_node_ids=recoverable_node_ids,
+                )
+                normalized_parameter_group = reconcile_parameter_group_catalog_tasks(
+                    normalized_parameter_group,
+                    planned_tasks,
+                )
+            if normalized_parameter_group != parameter_group:
+                AgentBuilderRepository().store_parameter_group(
+                    latest_request,
+                    normalized_parameter_group,
+                )
+                self.db.commit()
+                parameter_group = normalized_parameter_group
             parameter_group = ParameterCandidateProvider(
                 self.db,
                 user_id=self.user.id,
@@ -5599,7 +5914,7 @@ class AgentBuilderService:
             return resolution
         candidates = resolution.get("candidates")
         if not isinstance(candidates, list):
-            return resolution
+            candidates = []
         candidates_by_id = {
             candidate.get("candidate_id"): candidate
             for candidate in candidates
@@ -5611,9 +5926,67 @@ class AgentBuilderService:
             for candidate_id in persisted_resolution.get("selected_candidate_ids") or []
             if isinstance(candidate_id, str) and candidate_id in candidates_by_id
         ]
+        selected_collection_handles = list(
+            dict.fromkeys(
+                item
+                for item in persisted_resolution.get(
+                    "selected_collection_handles", []
+                )
+                if isinstance(item, str) and item
+            )
+        )
+        selected_kb_handles = list(
+            dict.fromkeys(
+                item
+                for item in persisted_resolution.get("selected_kb_handles", [])
+                if isinstance(item, str) and item
+            )
+        )
+        collections_by_handle: dict[str, dict[str, Any]] = {}
+        kbs_by_handle: dict[str, dict[str, Any]] = {}
+        for collection in resolution.get("collections") or []:
+            if not isinstance(collection, dict):
+                continue
+            collection_handle = collection.get("collection_handle")
+            if isinstance(collection_handle, str) and collection_handle:
+                collections_by_handle[collection_handle] = collection
+            for child in collection.get("children") or []:
+                if not isinstance(child, dict):
+                    continue
+                kb_handle = child.get("kb_handle")
+                if isinstance(kb_handle, str) and kb_handle:
+                    kbs_by_handle[kb_handle] = child
+        for candidate in resolution.get("ungrouped_kbs") or []:
+            if not isinstance(candidate, dict):
+                continue
+            kb_handle = candidate.get("kb_handle")
+            if isinstance(kb_handle, str) and kb_handle:
+                kbs_by_handle[kb_handle] = candidate
+
+        selected.extend(
+            {
+                "selection_type": "collection",
+                "collection_handle": handle,
+                "safe_label": collections_by_handle[handle].get("safe_label"),
+            }
+            for handle in selected_collection_handles
+            if handle in collections_by_handle
+        )
+        selected.extend(
+            {
+                "selection_type": "knowledge_base",
+                "kb_handle": handle,
+                "candidate_id": handle,
+                "safe_label": kbs_by_handle[handle].get("safe_label"),
+            }
+            for handle in selected_kb_handles
+            if handle in kbs_by_handle and handle not in candidates_by_id
+        )
         return {
             **resolution,
             "selected": selected,
+            "selected_collection_handles": selected_collection_handles,
+            "selected_kb_handles": selected_kb_handles,
             "selection_status": persisted_resolution["status"],
         }
 
@@ -5869,6 +6242,46 @@ class AgentBuilderService:
         *,
         direct_edit: bool = False,
     ) -> bool | None:
+        def preserve_terminal_response() -> bool:
+            stored_payload = getattr(request_row, "response_payload", None)
+            if isinstance(stored_payload, dict) and stored_payload:
+                try:
+                    stored_response = AgentBuilderMessageResponse.model_validate(
+                        stored_payload
+                    )
+                except Exception:
+                    stored_response = None
+                if stored_response is not None:
+                    for field_name in type(response).model_fields:
+                        setattr(
+                            response,
+                            field_name,
+                            copy.deepcopy(getattr(stored_response, field_name)),
+                        )
+                    return False
+
+            terminal_status = getattr(request_row, "status", None)
+            response.status = (
+                terminal_status
+                if terminal_status in {"failed", "canceled"}
+                else "failed"
+            )
+            response.draft_preview = None
+            response.preview_prompt = None
+            response.clarification_questions = []
+            response.warnings = (
+                ["Agent Builder request processing ended before this result was saved."]
+                if response.status == "failed"
+                else ["요청이 취소되었습니다."]
+            )
+            if terminal_status == "canceled":
+                request_row.response_payload = self._stored_response_payload(
+                    response,
+                    direct_edit=direct_edit,
+                )
+                request_row.completed_at = request_row.completed_at or _now()
+            return False
+
         payload = self._stored_response_payload(response, direct_edit=direct_edit)
         structured_request = (
             response.structured_request.model_dump(mode="json")
@@ -5894,11 +6307,10 @@ class AgentBuilderService:
                 )
             )
             if updated != 1:
-                response.status = "canceled"
-                response.draft_preview = None
-                response.preview_prompt = None
-                response.clarification_questions = []
-                response.warnings = ["요청이 취소되었습니다."]
+                try:
+                    self.db.refresh(request_row)
+                except Exception:
+                    pass
                 try:
                     (
                         self.db.query(AgentBuilderDraft)
@@ -5907,9 +6319,7 @@ class AgentBuilderService:
                     )
                 except Exception:
                     pass
-                request_row.response_payload = response.model_dump(mode="json")
-                request_row.completed_at = request_row.completed_at or completed_at
-                return False
+                return preserve_terminal_response()
             request_row.status = response.status
             request_row.response_payload = payload
             request_row.structured_request = structured_request
@@ -5919,23 +6329,17 @@ class AgentBuilderService:
             self.db.refresh(request_row)
         except Exception:
             pass
-        if request_row.status == "canceled":
-            response.status = "canceled"
-            response.draft_preview = None
-            response.preview_prompt = None
-            response.clarification_questions = []
-            response.warnings = ["요청이 취소되었습니다."]
-            try:
-                (
-                    self.db.query(AgentBuilderDraft)
-                    .filter(AgentBuilderDraft.request_id == request_row.id)
-                    .update({"status": "canceled"}, synchronize_session=False)
-                )
-            except Exception:
-                pass
-            request_row.response_payload = response.model_dump(mode="json")
-            request_row.completed_at = request_row.completed_at or _now()
-            return
+        if request_row.status != "processing":
+            if request_row.status == "canceled":
+                try:
+                    (
+                        self.db.query(AgentBuilderDraft)
+                        .filter(AgentBuilderDraft.request_id == request_row.id)
+                        .update({"status": "canceled"}, synchronize_session=False)
+                    )
+                except Exception:
+                    pass
+            return preserve_terminal_response()
         request_row.status = response.status
         request_row.response_payload = self._stored_response_payload(
             response,
@@ -5947,6 +6351,64 @@ class AgentBuilderService:
             else {}
         )
         request_row.completed_at = _now()
+
+    def _reconcile_processing_deadline(
+        self,
+        request_row: AgentBuilderRequest,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        checked_at = now or _now()
+        created_at = getattr(request_row, "created_at", None)
+        if (
+            getattr(request_row, "status", None) != "processing"
+            or created_at is None
+            or created_at + AGENT_BUILDER_REQUEST_PROCESSING_TIMEOUT > checked_at
+        ):
+            return False
+
+        response = AgentBuilderMessageResponse(
+            request_id=request_row.id,
+            status="failed",
+            validation_result=AgentBuilderValidationResult(
+                valid=False,
+                issues=[
+                    AgentBuilderValidationIssue(
+                        code="REQUEST_PROCESSING_TIMEOUT",
+                        message=(
+                            "Agent Builder 요청 처리 제한시간이 지나 작업을 종료했습니다. "
+                            "같은 요청을 다시 제출해주세요."
+                        ),
+                    )
+                ],
+            ),
+            warnings=[
+                "서버가 처리 완료를 확인하지 못해 기존 요청을 종료했습니다."
+            ],
+        )
+        payload = self._stored_response_payload(response, direct_edit=True)
+        if isinstance(self.db, Session):
+            updated = (
+                self.db.query(AgentBuilderRequest)
+                .filter(
+                    AgentBuilderRequest.id == request_row.id,
+                    AgentBuilderRequest.status == "processing",
+                )
+                .update(
+                    {
+                        "status": "failed",
+                        "response_payload": payload,
+                        "completed_at": checked_at,
+                    },
+                    synchronize_session=False,
+                )
+            )
+            if updated != 1:
+                return False
+        request_row.status = "failed"
+        request_row.response_payload = payload
+        request_row.completed_at = checked_at
+        return True
 
     def _fail_processing_request(
         self,
@@ -5982,12 +6444,25 @@ class AgentBuilderService:
         if direct_edit:
             direct_response = AgentBuilderDirectMessageResponse.from_internal(response)
             if direct_response.knowledge_resolution is not None:
+                direct_payload = direct_response.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                )
                 payload["knowledge_resolution"] = copy.deepcopy(
-                    direct_response.knowledge_resolution
+                    direct_payload["knowledge_resolution"]
                 )
                 payload["clarification_options"] = copy.deepcopy(
-                    direct_response.clarification_options
+                    direct_payload["clarification_options"]
                 )
+                if response._issued_knowledge_handle_bindings:
+                    payload["_issued_knowledge_handle_bindings"] = {
+                        "resolution_id": (
+                            direct_response.knowledge_resolution.resolution_id
+                        ),
+                        **copy.deepcopy(
+                            response._issued_knowledge_handle_bindings
+                        ),
+                    }
         payload.pop("draft_preview", None)
         mutation = response.graph_mutation
         if mutation is not None:
@@ -6134,4 +6609,19 @@ class AgentBuilderService:
             .first()
         )
         if pending is not None:
+            if self._reconcile_processing_deadline(pending):
+                add_action_audit(
+                    self.db,
+                    AuditAction.AGENT_BUILDER_REQUEST_FAILED,
+                    self.user.id,
+                    "agent_builder_request",
+                    pending.id,
+                    organization_id=self.organization_id,
+                    metadata={
+                        "request_id": str(pending.id),
+                        "reason": "processing_timeout",
+                    },
+                    status="failure",
+                )
+                return
             raise HTTPException(status_code=409, detail="Agent Builder request pending")

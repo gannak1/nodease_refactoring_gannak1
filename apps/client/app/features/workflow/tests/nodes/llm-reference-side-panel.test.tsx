@@ -108,6 +108,64 @@ describe('LLMReferenceSidePanel Knowledge selection', () => {
     expect(JSON.stringify(onDataChange.mock.calls)).not.toContain('members');
   });
 
+  it('routes a matching Agent Builder Knowledge edit without changing node data first', async () => {
+    knowledgeApiMock.getLLMSelectableKnowledgeBases.mockResolvedValue([
+      {
+        id: '11111111-1111-1111-1111-111111111111',
+        name: '휴가 정책',
+        documents: [
+          {
+            id: 'document-1',
+            status: 'completed',
+            chunk_count: 1,
+          },
+        ],
+      },
+    ]);
+    knowledgeApiMock.getLLMSelectableKnowledgeCollections.mockResolvedValue(
+      { collections: [] },
+    );
+    const onDataChange = renderPanel(baseData());
+    const received: Array<Record<string, unknown>> = [];
+    const listener = (event: Event) => {
+      const detail = (
+        event as CustomEvent<Record<string, unknown> & { handled: boolean }>
+      ).detail;
+      detail.handled = true;
+      received.push(detail);
+    };
+    window.addEventListener(
+      'agent-builder:knowledge-selection-from-node',
+      listener,
+    );
+
+    try {
+      fireEvent.click(
+        await screen.findByRole('checkbox', { name: /휴가 정책/ }),
+      );
+    } finally {
+      window.removeEventListener(
+        'agent-builder:knowledge-selection-from-node',
+        listener,
+      );
+    }
+
+    expect(received).toEqual([
+      expect.objectContaining({
+        nodeId: 'llm-1',
+        knowledgeBases: [
+          {
+            id: '11111111-1111-1111-1111-111111111111',
+            name: '휴가 정책',
+          },
+        ],
+        knowledgeCollections: [],
+        handled: true,
+      }),
+    ]);
+    expect(onDataChange).not.toHaveBeenCalled();
+  });
+
   it('retains selections when either picker request fails', async () => {
     knowledgeApiMock.getLLMSelectableKnowledgeBases.mockRejectedValueOnce(
       new Error('private failure'),

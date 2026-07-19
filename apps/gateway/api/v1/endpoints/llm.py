@@ -31,6 +31,19 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _raise_internal_operation_error(
+    operation: str,
+    exc: Exception,
+    public_message: str,
+) -> None:
+    logger.error(
+        "LLM endpoint operation failed: operation=%s error_type=%s",
+        operation,
+        type(exc).__name__,
+    )
+    raise HTTPException(status_code=500, detail=public_message) from None
+
+
 def _require_system_admin(db: Session, current_user: User):
     if not TraceAccessService.is_system_admin(db, current_user):
         raise HTTPException(status_code=403, detail="system_admin_required")
@@ -49,7 +62,9 @@ def get_system_providers(
     try:
         return LLMService.get_system_providers(db)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        _raise_internal_operation_error(
+            "provider_lookup", exc, "LLM provider lookup failed."
+        )
 
 
 # --- Credentials (User) ---
@@ -65,7 +80,9 @@ def get_my_models(
     try:
         return LLMService.get_my_available_models(db, current_user.id)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        _raise_internal_operation_error(
+            "model_lookup", exc, "LLM model lookup failed."
+        )
 
 
 @router.get("/my-embedding-models", response_model=List[LLMModelResponse])
@@ -78,7 +95,9 @@ def get_my_embedding_models(
     try:
         return LLMService.get_my_embedding_models(db, current_user.id)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        _raise_internal_operation_error(
+            "embedding_model_lookup", exc, "LLM embedding model lookup failed."
+        )
 
 
 @router.get("/credentials", response_model=List[LLMCredentialResponse])
@@ -91,7 +110,9 @@ def get_my_credentials(
     try:
         return LLMService.get_user_credentials(db, current_user.id)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        _raise_internal_operation_error(
+            "credential_lookup", exc, "LLM credential lookup failed."
+        )
 
 
 @router.get(
@@ -274,7 +295,11 @@ def get_top_expensive_models(
         return response
 
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        _raise_internal_operation_error(
+            "usage_statistics_lookup",
+            exc,
+            "LLM usage statistics lookup failed.",
+        )
 
 
 # --- Pricing Management ---
@@ -294,7 +319,9 @@ def sync_system_pricing(
         result = LLMService.sync_system_prices(db)
         return result
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        _raise_internal_operation_error(
+            "pricing_sync", exc, "LLM pricing synchronization failed."
+        )
 
 
 @router.put("/models/{model_id}/pricing")
@@ -317,4 +344,6 @@ def update_model_pricing(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        _raise_internal_operation_error(
+            "pricing_update", exc, "LLM pricing update failed."
+        )

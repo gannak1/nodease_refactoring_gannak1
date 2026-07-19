@@ -8,10 +8,12 @@ from apps.shared.domain.workflow_graph import (
     MAX_WORKFLOW_GRAPH_NESTING_DEPTH,
 )
 from apps.shared.services.workflow_node_catalog import (
+    missing_required_configuration,
     node_definition,
     node_output_keys,
     node_parameter_definitions,
     node_parameter_is_configured,
+    stored_parameter_value_for_validation,
     validate_node_parameter_value,
 )
 
@@ -202,6 +204,11 @@ def workflow_configuration_issues(
                 missing_items: list[str] = []
                 for key in definition.get("required_configuration") or []:
                     parameter_key = str(key)
+                    validation_value = stored_parameter_value_for_validation(
+                        node_type,
+                        parameter_key,
+                        data,
+                    )
                     invalid = (
                         parameter_key in deferred
                         or not node_parameter_is_configured(
@@ -213,7 +220,7 @@ def workflow_configuration_issues(
                                 validate_node_parameter_value(
                                     node_type,
                                     parameter_key,
-                                    data.get(parameter_key),
+                                    validation_value,
                                 )
                             )
                         )
@@ -226,11 +233,11 @@ def workflow_configuration_issues(
                         ),
                         None,
                     )
-                    if (
-                        parameter
-                        and parameter.get("input_type") == "variable_selector"
-                    ):
-                        selectors = parameter_selectors(data.get(parameter_key))
+                    if parameter and parameter.get("input_type") in {
+                        "variable_selector",
+                        "variable_selector_list",
+                    }:
+                        selectors = parameter_selectors(validation_value)
                         invalid = invalid or not selectors or not all(
                             selector_valid(
                                 selector,
@@ -239,6 +246,9 @@ def workflow_configuration_issues(
                             for selector in selectors
                         )
                     if invalid:
+                        missing_items.append(parameter_key)
+                for parameter_key in missing_required_configuration(node_type, data):
+                    if parameter_key not in missing_items:
                         missing_items.append(parameter_key)
                 missing = tuple(missing_items)
                 if missing:

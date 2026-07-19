@@ -1,5 +1,6 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
+import { workflowApi } from '@/app/features/workflow/api/workflowApi';
 import { GithubNodeData } from '../../../../types/Nodes';
 import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
@@ -26,7 +27,16 @@ interface GithubNodePanelProps {
 // 4. PR 번호가 유효해야 함 (양수)
 
 export function GithubNodePanel({ nodeId, data }: GithubNodePanelProps) {
-  const { updateNodeData, nodes, edges } = useWorkflowStore();
+  const { activeWorkflowId, updateNodeData, nodes, edges } = useWorkflowStore();
+  const [tokenDraft, setTokenDraft] = useState('');
+  const [tokenStatus, setTokenStatus] = useState<string | null>(null);
+  const [tokenSaving, setTokenSaving] = useState(false);
+  const tokenRevisionRef = useRef(0);
+  const activeWorkflowIdRef = useRef(activeWorkflowId);
+
+  useEffect(() => {
+    activeWorkflowIdRef.current = activeWorkflowId;
+  }, [activeWorkflowId]);
 
   // 상위 노드 가져오기
   const upstreamNodes = useMemo(
@@ -69,6 +79,38 @@ export function GithubNodePanel({ nodeId, data }: GithubNodePanelProps) {
   const tokenMissing = useMemo(() => {
     return !data.api_token?.trim();
   }, [data.api_token]);
+
+  const storeToken = useCallback(async () => {
+    if (!activeWorkflowId || !tokenDraft.trim()) return;
+    const submittedWorkflowId = activeWorkflowId;
+    const submittedRevision = tokenRevisionRef.current;
+    setTokenSaving(true);
+    setTokenStatus(null);
+    try {
+      const result = await workflowApi.storeNodeSecret(activeWorkflowId, {
+        node_id: nodeId,
+        node_type: 'githubNode',
+        parameter_key: 'api_token',
+        secret_value: tokenDraft.trim(),
+      });
+      if (
+        activeWorkflowIdRef.current !== submittedWorkflowId ||
+        tokenRevisionRef.current !== submittedRevision
+      ) {
+        setTokenStatus(
+          '입력 또는 Workflow가 변경되어 저장 결과를 적용하지 않았습니다.',
+        );
+        return;
+      }
+      handleUpdateData('api_token', result.secret_reference);
+      setTokenDraft('');
+      setTokenStatus('GitHub Token이 저장되었습니다.');
+    } catch {
+      setTokenStatus('GitHub Token을 저장하지 못했습니다.');
+    } finally {
+      setTokenSaving(false);
+    }
+  }, [activeWorkflowId, handleUpdateData, nodeId, tokenDraft]);
 
   const ownerMissing = useMemo(() => {
     return !data.repo_owner?.trim();
@@ -118,9 +160,25 @@ export function GithubNodePanel({ nodeId, data }: GithubNodePanelProps) {
             type="password"
             className="h-8 w-full rounded border border-gray-300 px-2 text-sm font-mono focus:outline-none focus:border-blue-500"
             placeholder="ghp_xxxxxxxxxxxx"
-            value={data.api_token || ''}
-            onChange={(e) => handleUpdateData('api_token', e.target.value)}
+            value={tokenDraft}
+            onChange={(e) => {
+              tokenRevisionRef.current += 1;
+              setTokenDraft(e.target.value);
+            }}
           />
+          <button
+            type="button"
+            className="w-fit rounded border border-gray-300 px-3 py-1.5 text-xs font-medium disabled:opacity-60"
+            disabled={tokenSaving || !tokenDraft.trim()}
+            onClick={() => void storeToken()}
+          >
+            GitHub Token 적용
+          </button>
+          {tokenStatus ? (
+            <p className="text-xs text-gray-500" role="status">
+              {tokenStatus}
+            </p>
+          ) : null}
           <a
             href="https://github.com/settings/tokens/new?description=Moduly&scopes=repo"
             target="_blank"

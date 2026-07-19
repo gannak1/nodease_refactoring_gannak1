@@ -49,7 +49,7 @@ def test_rotation_cli_is_packaged_in_gateway_image_and_documented_after_startup(
         "COPY scripts/rotate_llm_credentials.py "
         "/app/scripts/rotate_llm_credentials.py" in dockerfile
     )
-    assert readme.index("### LLM credential rotation") > readme.index("### 2. 실행")
+    assert readme.index("### LLM credential rotation") > readme.index("### Setup & Run")
     assert "exec -T gateway" in readme
     assert "python /app/scripts/rotate_llm_credentials.py --batch-size 100" in readme
     assert "python /app/scripts/rotate_llm_credentials.py --check" in readme

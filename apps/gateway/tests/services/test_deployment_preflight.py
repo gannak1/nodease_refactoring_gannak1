@@ -2,6 +2,7 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from sqlalchemy.sql.operators import eq, in_op, is_, ne
 
@@ -20,14 +21,24 @@ from apps.shared.db.models.mail_credential import MailCredential
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
+from apps.shared.db.models.workflow_node_secret import WorkflowNodeSecret
 from apps.shared.domain.deployment_runtime_policy import (
     DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
 )
 from apps.shared.schemas.deployment import DeploymentCreate
+from apps.shared.services.credential_encryption import CredentialEncryptionService
 from apps.shared.services.workflow_configuration_preflight import (
     WorkflowConfigurationIssue,
     WorkflowConfigurationPreflightError,
 )
+
+
+def _workflow_node_secret_encryption() -> CredentialEncryptionService:
+    return CredentialEncryptionService(
+        {"v1": Fernet.generate_key().decode("utf-8")},
+        "v1",
+        subject_label="Workflow node secret",
+    )
 
 
 def test_preflight_blocks_private_kb_for_public_surface():
@@ -80,6 +91,129 @@ def test_unresolved_configuration_uses_workflow_409_preflight_envelope():
     assert blocked.detail["error"]["required_actions"] == [
         "complete_node_configuration"
     ]
+
+
+def test_deployment_snapshot_rejects_raw_workflow_node_secret() -> None:
+    with pytest.raises(HTTPException) as captured:
+        DeploymentService._enforce_node_secret_storage_boundary(
+            object(),
+            {
+                "nodes": [
+                    {
+                        "id": "slack-1",
+                        "type": "slackPostNode",
+                        "data": {
+                            "slackMode": "api",
+                            "authConfig": {"token": "synthetic-raw-value"},
+                        },
+                    }
+                ],
+                "edges": [],
+            },
+            workflow_id=uuid.uuid4(),
+            organization_id=uuid.uuid4(),
+        )
+
+    assert captured.value.status_code == 422
+    assert captured.value.detail == "workflow.node_secret_reference_required"
+
+
+def test_deployment_snapshot_rejects_secret_reference_owned_by_another_node() -> None:
+    workflow_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    secret_id = uuid.uuid4()
+    db = _Db(
+        {
+            WorkflowNodeSecret: [
+                _row(
+                    id=secret_id,
+                    workflow_id=workflow_id,
+                    organization_id=organization_id,
+                    node_id="original-slack",
+                    node_type="slackPostNode",
+                    parameter_key="bot_token",
+                    status="active",
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(HTTPException) as captured:
+        DeploymentService._enforce_node_secret_storage_boundary(
+            db,
+            {
+                "nodes": [
+                    {
+                        "id": "copied-slack",
+                        "type": "slackPostNode",
+                        "data": {
+                            "slackMode": "api",
+                            "authConfig": {
+                                "token": f"workflow-node-secret://{secret_id}"
+                            },
+                        },
+                    }
+                ],
+                "edges": [],
+            },
+            workflow_id=workflow_id,
+            organization_id=organization_id,
+        )
+
+    assert captured.value.status_code == 422
+    assert captured.value.detail == "workflow.node_secret_reference_invalid"
+
+
+def test_legacy_deployment_snapshot_is_migrated_before_reuse(monkeypatch) -> None:
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    deployment = _row(
+        id=uuid.uuid4(),
+        app_id=app_id,
+        created_by=actor_id,
+        graph_snapshot={
+            "nodes": [
+                {
+                    "id": "github-1",
+                    "type": "githubNode",
+                    "data": {"api_token": "synthetic-raw-value"},
+                }
+            ],
+            "edges": [],
+        },
+    )
+    db = _Db(
+        {
+            App: [_row(id=app_id, workflow_id=workflow_id)],
+            Workflow: [
+                _row(
+                    id=workflow_id,
+                    organization_id=organization_id,
+                    created_by=actor_id,
+                    updated_by=None,
+                )
+            ],
+            WorkflowDeployment: [deployment],
+        }
+    )
+    monkeypatch.setattr(
+        deployment_module,
+        "get_workflow_node_secret_encryption_service",
+        lambda: _workflow_node_secret_encryption(),
+    )
+
+    result = DeploymentService.migrate_legacy_node_secrets(
+        db,
+        deployment,
+        actor_id=actor_id,
+    )
+
+    stored = result.graph_snapshot["nodes"][0]["data"]["api_token"]
+    assert stored.startswith("workflow-node-secret://")
+    assert "synthetic-raw-value" not in str(result.graph_snapshot)
+    assert db.committed is True
 
 
 def test_inactive_preflight_preview_downgrades_public_blockers_to_warning():
@@ -1694,10 +1828,11 @@ def test_active_redeployment_creates_fresh_model_routing_policy_without_bootstra
             _node(
                 "llm-triage",
                 "llmNode",
-                {
-                    "auto_model_routing": True,
-                    "model_id": "test-model",
-                },
+                    {
+                        "auto_model_routing": True,
+                        "model_id": "test-model",
+                        "user_prompt": "{{result}}",
+                    },
             ),
         ],
         "edges": [_edge("trigger", "llm-triage", "trigger-llm")],
@@ -2100,6 +2235,7 @@ class _Db:
             KnowledgeCollection,
             KnowledgeCollectionItem,
             MailCredential,
+            WorkflowNodeSecret,
         }:
             return _Query(self.rows_by_model.setdefault(model, []))
         return _ScalarQuery(self.max_deployment_version)

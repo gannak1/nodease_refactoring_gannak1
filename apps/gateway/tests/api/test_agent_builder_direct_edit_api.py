@@ -1,3 +1,4 @@
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -358,7 +359,13 @@ def test_direct_session_rejects_legacy_selected_knowledge_before_request_row(
         )
 
     assert exc.value.status_code == 422
-    assert exc.value.detail == "legacy_knowledge_selection_not_supported"
+    assert exc.value.detail == {
+        "code": "invalid_request",
+        "message": (
+            "현재 Agent Builder에서는 대화 메시지로 Knowledge Base 선택을 "
+            "제출할 수 없습니다. 표시된 Knowledge Base 선택 화면에서 선택해주세요."
+        ),
+    }
     assert db.added == []
 
 
@@ -454,6 +461,8 @@ def test_direct_response_persists_knowledge_resolution_for_recovery():
     assert payload["clarification_options"] == [
         {"type": "target_node", "node_id": "node-1"}
     ]
+    assert isinstance(payload["knowledge_resolution"], dict)
+    json.dumps(payload)
 
 
 def test_direct_session_recovery_preserves_canonical_knowledge_candidates():
@@ -493,10 +502,20 @@ def test_direct_session_recovery_preserves_canonical_knowledge_candidates():
             }
         ],
     )
+    issued_kb_id = uuid.uuid4()
+    response._issued_knowledge_handle_bindings = {
+        "knowledge_bases": {"rec-safe-1": str(issued_kb_id)},
+        "collections": {},
+    }
     payload = service._stored_response_payload(  # noqa: SLF001
         response,
         direct_edit=True,
     )
+    assert payload["_issued_knowledge_handle_bindings"] == {
+        "resolution_id": "res-kb-1",
+        "knowledge_bases": {"rec-safe-1": str(issued_kb_id)},
+        "collections": {},
+    }
     request_row = SimpleNamespace(
         id=request_id,
         status="clarification_required",
@@ -515,6 +534,10 @@ def test_direct_session_recovery_preserves_canonical_knowledge_candidates():
     )
 
     recovered = service._session_response(session)  # noqa: SLF001
+
+    assert "_issued_knowledge_handle_bindings" not in str(
+        recovered.model_dump(mode="json")
+    )
 
     assistant = recovered.messages[-1]["response"]
     assert assistant["knowledge_resolution"]["resolution_id"] == "res-kb-1"

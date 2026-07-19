@@ -375,11 +375,16 @@ def create_browser_access_revision(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _, _, workflow_id = _deployment_app_and_workflow_id(
+    source_deployment, _, workflow_id = _deployment_app_and_workflow_id(
         db,
         str(source_deployment_id),
     )
     ensure_workflow_permission(db, current_user, workflow_id, "deploy")
+    DeploymentService.migrate_legacy_node_secrets(
+        db,
+        source_deployment,
+        actor_id=current_user.id,
+    )
     scheduler_service = None
     if revision_in.is_active:
         from apps.gateway.services.scheduler_service import get_scheduler_service

@@ -1048,6 +1048,8 @@ class AgentBuilderRepository:
         operation_id: UUID,
         timing: str,
         selected_candidate_ids: list[str],
+        selected_collection_handles: list[str] | None = None,
+        selected_kb_handles: list[str] | None = None,
         status: str = "pending_ack",
     ) -> dict[str, Any]:
         payload = self._payload(request_row)
@@ -1056,7 +1058,11 @@ class AgentBuilderRepository:
             "resolution_id": resolution_id,
             "operation_id": str(operation_id),
             "timing": timing,
-            "selected_candidate_ids": list(dict.fromkeys(selected_candidate_ids)),
+            "selected_candidate_ids": sorted(set(selected_candidate_ids)),
+            "selected_collection_handles": sorted(
+                set(selected_collection_handles or [])
+            ),
+            "selected_kb_handles": sorted(set(selected_kb_handles or [])),
             "status": status,
         }
         for index, item in enumerate(resolutions):
@@ -1068,9 +1074,16 @@ class AgentBuilderRepository:
                 return item
             if item.get("status") == "unapplied":
                 if (
-                    item.get("timing") != timing
-                    or list(item.get("selected_candidate_ids") or [])
-                    != serialized["selected_candidate_ids"]
+                    not item.get("selection_invalidated")
+                    and (
+                        item.get("timing") != timing
+                        or list(item.get("selected_candidate_ids") or [])
+                        != serialized["selected_candidate_ids"]
+                        or list(item.get("selected_collection_handles") or [])
+                        != serialized["selected_collection_handles"]
+                        or list(item.get("selected_kb_handles") or [])
+                        != serialized["selected_kb_handles"]
+                    )
                 ):
                     raise AgentBuilderRepositoryError(
                         "knowledge resolution retry payload differs"

@@ -85,7 +85,9 @@ def test_configure_and_generate_issues_initial_mutation_and_parameter_group():
     assert result.parameter_group is not None
     assert result.parameter_group.status == "pending_save"
     assert result.parameter_group.tasks
-    assert all(task.status == "pending" for task in result.parameter_group.tasks)
+    assert all(task.status != "active" for task in result.parameter_group.tasks)
+    assert any(task.status == "completed" for task in result.parameter_group.tasks)
+    assert any(task.status == "pending" for task in result.parameter_group.tasks)
     persisted = apply_graph_operations(workflow.graph, result.mutation.operations)
     assert persisted["nodes"]
     assert result.mutation.expected_result_graph_hash
@@ -240,6 +242,68 @@ def test_new_workflow_replaces_existing_graph_as_one_typed_mutation():
     assert {edge["id"] for edge in graph["edges"]} == {"e1", "e2"}
 
 
+def test_new_input_answer_workflow_replaces_a_single_existing_input_node():
+    existing = {
+        "nodes": [_node("old-input", "startNode")],
+        "edges": [],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+    workflow = SimpleNamespace(
+        id=uuid4(),
+        graph=existing,
+        updated_at=datetime.now(timezone.utc),
+    )
+    structured = AgentBuilderStructuredRequest.model_validate(
+        {
+            "request_type": "new_workflow",
+            "draft_mode": "new_workflow",
+            "intent_summary": "입력과 응답 노드를 생성합니다.",
+            "planned_steps": [
+                {
+                    "step_id": "step_input",
+                    "capability": "start_input",
+                    "purpose": "입력",
+                },
+                {
+                    "step_id": "step_answer",
+                    "capability": "answer",
+                    "purpose": "응답",
+                    "depends_on": ["step_input"],
+                },
+            ],
+            "required_capabilities": ["start_input", "answer"],
+        }
+    )
+    candidate = {
+        "nodes": [
+            _node("new-input", "startNode"),
+            _node("new-answer", "answerNode"),
+        ],
+        "edges": [
+            {"id": "new-edge", "source": "new-input", "target": "new-answer"}
+        ],
+        "viewport": existing["viewport"],
+    }
+
+    result = DirectEditOrchestrator().issue(
+        workflow=workflow,
+        structured_request=structured,
+        candidate_graph=candidate,
+        generation_mode="configure_and_generate",
+    )
+    graph = apply_graph_operations(existing, result.mutation.operations)
+
+    assert result.mutation.kind == "replace_workflow"
+    assert {node["id"] for node in graph["nodes"]} == {
+        "new-input",
+        "new-answer",
+    }
+    assert [
+        (edge["source"], edge["target"])
+        for edge in graph["edges"]
+    ] == [("new-input", "new-answer")]
+
+
 def test_explicit_safe_parameter_value_is_materialized_from_structured_request():
     workflow = SimpleNamespace(
         id=uuid4(),
@@ -308,7 +372,7 @@ def test_explicit_safe_parameter_value_is_materialized_from_structured_request()
         if task.parameter_key == "channel"
     )
     assert slack_data["channel"] == "C123"
-    assert channel_task.status == "pending"
+    assert channel_task.status == "completed"
     assert channel_task.resolution_source == "user_request"
 
 

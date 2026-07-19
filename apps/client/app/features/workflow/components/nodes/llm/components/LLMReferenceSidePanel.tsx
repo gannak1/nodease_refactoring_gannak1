@@ -18,6 +18,7 @@ import {
   isSameKnowledgeCollectionSelection,
   MAX_CONFIGURED_KNOWLEDGE_REFERENCES,
 } from '@/app/features/workflow/utils/llmKnowledgeBaseSelection';
+import { requestAgentBuilderNodeKnowledgeSelection } from '../../../agentBuilder/agentBuilderKnowledgeBridge';
 
 interface LLMReferenceSidePanelProps {
   nodeId: string;
@@ -232,6 +233,28 @@ export function LLMReferenceSidePanel({
     selectedKnowledgeCollections,
   ]);
 
+  const applyKnowledgeSelectionChange = useCallback(
+    (updates: Pick<LLMNodeData, 'knowledgeBases' | 'knowledgeCollections'>) => {
+      const nextKnowledgeBases =
+        updates.knowledgeBases ?? effectiveSelectedKnowledgeBases;
+      const nextKnowledgeCollections =
+        updates.knowledgeCollections ?? effectiveSelectedKnowledgeCollections;
+      const handled = requestAgentBuilderNodeKnowledgeSelection({
+        nodeId,
+        knowledgeBases: nextKnowledgeBases,
+        knowledgeCollections: nextKnowledgeCollections,
+      });
+      if (handled) return;
+      applyNodeData(updates);
+    },
+    [
+      applyNodeData,
+      effectiveSelectedKnowledgeBases,
+      effectiveSelectedKnowledgeCollections,
+      nodeId,
+    ],
+  );
+
   // Toggle selection
   const toggleKnowledgeBase = (kb: KnowledgeBaseResponse) => {
     if (readOnly) return;
@@ -247,13 +270,13 @@ export function LLMReferenceSidePanel({
       next = [...current, { id: kb.id, name: kb.name }];
     }
     setBaseLimitError(false);
-    applyNodeData({ knowledgeBases: next });
+    applyKnowledgeSelectionChange({ knowledgeBases: next });
   };
 
   const removeKnowledgeBase = (id: string) => {
     if (readOnly) return;
     setBaseLimitError(false);
-    applyNodeData({
+    applyKnowledgeSelectionChange({
       knowledgeBases: effectiveSelectedKnowledgeBases.filter(
         (item) => item.id !== id,
       ),
@@ -281,13 +304,13 @@ export function LLMReferenceSidePanel({
       ];
     }
     setCollectionLimitError(false);
-    applyNodeData({ knowledgeCollections: next });
+    applyKnowledgeSelectionChange({ knowledgeCollections: next });
   };
 
   const removeKnowledgeCollection = (id: string) => {
     if (readOnly) return;
     setCollectionLimitError(false);
-    applyNodeData({
+    applyKnowledgeSelectionChange({
       knowledgeCollections: effectiveSelectedKnowledgeCollections.filter(
         (item) => item.id !== id,
       ),

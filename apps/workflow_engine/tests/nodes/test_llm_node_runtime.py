@@ -4384,6 +4384,67 @@ def test_runtime_candidate_resolver_receives_authenticated_mixed_request_and_ord
     assert result.trace_summary["routing_mode"] == "mixed"
 
 
+def test_runtime_candidate_resolver_deduplicates_direct_and_collection_overlap(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    shared_kb_id = uuid.uuid4()
+    collection_id = uuid.uuid4()
+    resolver = CapturingRuntimeCandidateResolver(
+        KnowledgeRuntimeCandidateSnapshot(
+            eligible_direct_kb_ids=(shared_kb_id,),
+            collection_streams=(
+                KnowledgeCollectionCandidateStream(
+                    collection_id=collection_id,
+                    eligible_kb_ids=(shared_kb_id,),
+                ),
+            ),
+        )
+    )
+    captured_kb_ids = []
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="gpt-4o",
+            user_prompt="query",
+            knowledgeBases=[KnowledgeBaseRef(id=str(shared_kb_id), name="Direct")],
+            knowledgeCollections=[
+                KnowledgeCollectionRef(id=str(collection_id), safeLabel="Collection")
+            ],
+        ),
+        execution_context={
+            "user_id": str(user_id),
+            "organization_id": str(organization_id),
+            "execution_subject": {
+                "subject_type": "user",
+                "subject_id": str(user_id),
+            },
+            "knowledge_runtime_candidate_resolver": resolver,
+        },
+    )
+    monkeypatch.setattr(
+        node,
+        "_precompute_rag_query_vectors_by_kb",
+        lambda *args, **kwargs: ({}, 0, False),
+    )
+    monkeypatch.setattr(
+        node,
+        "_run_rag_retrieval_fanout",
+        lambda **kwargs: (
+            captured_kb_ids.extend(kwargs["knowledge_base_ids"])
+            or WorkflowRAGFanoutResult(results=[], failed_count=0)
+        ),
+    )
+
+    result = node._execute_knowledge_search("query", db_session=object())  # noqa: SLF001
+
+    assert captured_kb_ids == [str(shared_kb_id)]
+    assert result.trace_summary["routing_mode"] == "mixed"
+
+
 def test_collection_evidence_redacts_child_identity_and_aggregates_audit(monkeypatch):
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()

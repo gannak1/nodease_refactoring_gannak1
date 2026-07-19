@@ -14,3 +14,6 @@ local/
 *.pyc
 *.pyo
 *.pyd
+
+**/.mypy_cache/
+**/.coverage

@@ -46,6 +46,25 @@ class FakeDb:
         return FakeQuery(self.value)
 
 
+def test_get_my_credentials_does_not_expose_internal_database_error(monkeypatch):
+    leaked_detail = "SELECT llm_credentials.encryption_key_version"
+
+    def fail_lookup(*_args, **_kwargs):
+        raise RuntimeError(leaked_detail)
+
+    monkeypatch.setattr(LLMService, "get_user_credentials", fail_lookup)
+
+    with pytest.raises(HTTPException) as exc_info:
+        llm_endpoint.get_my_credentials(
+            db=FakeDb([]),
+            current_user=SimpleNamespace(id=uuid.uuid4()),
+        )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "LLM credential lookup failed."
+    assert leaked_detail not in str(exc_info.value.detail)
+
+
 def test_get_client_for_user_rejects_non_object_credential_config(monkeypatch):
     user_id = uuid.uuid4()
     model = SimpleNamespace(

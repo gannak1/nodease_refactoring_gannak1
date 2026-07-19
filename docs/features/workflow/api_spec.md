@@ -1,7 +1,6 @@
 # Workflow API Spec
 
 Status: Draft
-Verified Against: `feature/mba-283 @ a7dac2fe`
 
 ## Endpoints
 
@@ -121,7 +120,7 @@ private/source-public-exposure 위반은 active publish에서 non-downgradable b
 }
 ```
 
-Gateway는 모든 save에서 workflow row를 write lock으로 조회하고 active organization/write 권한을 재확인한다. Current canonical graph hash와 `updated_at`이 공통 기대값과 모두 일치해야 한다. Agent Builder save는 추가로 request graph의 canonical hash가 persisted safe operation envelope의 `expected_result_graph_hash`와 같은지 검증한 뒤 catalog/connection/schema validation을 확인한다. Full typed GraphMutation operations는 DB에 저장하거나 이 endpoint에서 재생하지 않는다. Graph write와 기존 `add_action_audit`의 canonical audit insert는 같은 SQLAlchemy session과 transaction에서 확정하며 둘 중 하나라도 실패하면 전체를 rollback한다. 이 경계에 신규 audit outbox나 worker를 추가하지 않는다.
+Gateway는 모든 save에서 workflow row를 write lock으로 조회하고 active organization/write 권한을 재확인한다. Endpoint 진입 시 권한을 통과했더라도 lock 뒤 권한이 회수되면 `403`으로 닫고 graph, features, task 상태와 audit을 변경하지 않는다. Current canonical graph hash와 `updated_at`이 공통 기대값과 모두 일치해야 한다. Agent Builder save는 추가로 request graph의 canonical hash가 persisted safe operation envelope의 `expected_result_graph_hash`와 같은지 검증한 뒤 catalog/connection/schema validation을 확인한다. Full typed GraphMutation operations는 DB에 저장하거나 이 endpoint에서 재생하지 않는다. Agent Builder GraphMutation graph write와 기존 `add_action_audit`의 canonical audit insert는 같은 SQLAlchemy session과 transaction에서 확정하며 둘 중 하나라도 실패하면 전체를 rollback한다. 일반 editor autosync는 공통 CAS를 통과하지만 이 계약만으로 autosync마다 신규 audit event를 만들지 않는다. 이 경계에 신규 audit outbox나 worker를 추가하지 않는다.
 
 성공 응답:
 
@@ -131,13 +130,25 @@ Gateway는 모든 save에서 workflow row를 write lock으로 조회하고 activ
   "workflow_id": "uuid",
   "operation_id": "uuid",
   "graph_hash": "sha256",
-  "updated_at": "ISO-8601"
+  "updated_at": "ISO-8601",
+  "canonical_deferred_parameters": [
+    {
+      "node_path": ["loop-node-id", "nested-node-id"],
+      "parameter_keys": ["parameter_key"]
+    }
+  ]
 }
 ```
+
+`canonical_deferred_parameters`는 저장된 전체 graph와 중첩 `subGraph`에서 서버 Catalog 검증 뒤 남은 deferred key를 graph root부터의 `node_path`별로 반환한다. 같은 node id가 서로 다른 subgraph scope에 있어도 path가 다르면 별도 node로 취급한다. Client는 일반 Node Detail 편집값이 비어 있지 않다는 이유만으로 marker를 제거하지 않고, 이 projection을 저장 응답의 canonical 결과로 반영한다. 특정 entry의 빈 `parameter_keys`는 해당 path node의 기존 marker를 제거한다.
+
+Client는 저장 응답의 `workflow_id`가 현재 active Workflow와 같을 때만 projection, dirty 상태와 live editor history를 현재 화면에 반영한다. 저장 도중 다른 Workflow로 전환되면 늦게 도착한 응답은 해당 Workflow의 canonical metadata와 cache에만 반영하고 새 active Workflow의 node, marker, dirty/history를 변경하지 않는다.
 
 Canonical graph hash는 persisted nodes/edges를 stable id와 object key 순으로 정렬한 JSON의 SHA-256이며 node position/data는 포함하고 viewport는 제외한다. 현재 Workflow model에 없는 version/revision 값을 응답에 추가하지 않는다. Expected hash 또는 `updated_at`이 다르면 graph를 쓰지 않고 `409 stale_graph`를 반환한다. Silent overwrite, 자동 merge와 강제 덮어쓰기는 허용하지 않는다. Mutation context 없는 일반 editor save도 같은 CAS를 통과하고 canonical metadata를 반환하지만 Agent Builder acknowledgement 대상은 아니다.
 
 Canonical draft GET 응답도 실제 persisted `workflow_id`, server-calculated `graph_hash`, DB `updated_at`을 반환한다. Agent Builder save/acknowledgement, 일반 autosync, version 복원, test 전 저장, Undo/Redo와 응답 유실 복구는 frontend의 같은 canonical metadata 상태를 공유하고 성공한 GET/POST마다 갱신한다. Canonical 재조회는 pending Agent Builder history를 초기화하지 않는 비파괴 동기화로 처리한다. Out-of-band 저장 뒤 stale metadata를 계속 사용하거나 일반 autosync의 `409 stale_graph`를 조용히 무시하지 않는다.
+
+Dirty editor의 test preflight GET은 local edit base의 canonical metadata를 대체하지 않는다. Server hash 또는 `updated_at`이 local edit base보다 앞서거나 canonical graph가 local snapshot과 다르면 draft POST와 test stream을 모두 시작하지 않는다. Graph와 `features.noteNodes`는 Agent Builder/일반 save 모두 같은 recursive canonical projection과 note schema 검증을 거치며 잘못된 `noteNodes`는 raw validation detail을 노출하지 않는 `422 workflow.features_invalid`로 반환한다.
 
 Graph를 변경하는 `POST /workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/bootstrap`, `PATCH .../model-routing/policy`, `PATCH .../cost-optimizer/apply`, `PATCH .../cost-optimizer/apply-recommendations`도 request body에 `expected_graph_hash`와 `expected_updated_at`을 필수로 포함한다. Gateway는 write lock 뒤 공통 CAS를 검증하고 graph와 연관 bootstrap/policy/candidate 상태를 한 transaction으로 저장한다. 각 API는 성공 응답에 canonical `graph_hash`와 `updated_at`을 반환하며 frontend와 실험 client는 직전 draft read/write 응답의 canonical metadata를 다음 mutation에 전달한다. 기대값이 다르면 부가 상태와 graph를 모두 쓰지 않고 `409 stale_graph`를 반환한다.
 
@@ -488,3 +499,12 @@ Blocking response:
 - Slack message template은 실제 전송 필드에서 사용한 등록 `referenced_variables`의 `{{name}}` 단순 치환만 지원한다. 미사용 reference는 input을 조회하지 않는다. `blocks`/`attachments`의 JSON template 값은 JSON 문맥에 맞게 escape한 뒤 strict parse하며, 동적 JSON key, Jinja expression, attribute access, filter, statement와 control flow는 `slack.template_render_failed`, `slack.template_value_invalid` 또는 `slack.payload_invalid`로 거부한다.
 - 성공 output은 공통 `status`, `delivery_status`, `delivery_mode`를 제공한다. API mode만 검증된 `message_ref`를 제공하며 Webhook mode에서는 `message_ref` selector를 제공하지 않는다. Legacy `data`와 `headers` output은 제공하지 않는다.
 - Slack API/Webhook은 각각 `slack.chat.post_message.v1`, `slack.incoming_webhook.post.v1` profile과 ADR-0035의 공통 `ExternalEffectExecutor`를 사용한다. 성공 시 safe output projection을 durable attempt에 저장해 동일 execution slot 재진입에서 provider 호출 없이 재사용한다. `429`와 확인된 rejection은 `failed_before_effect + stop`, 결과가 불명확한 응답/transport 실패는 `effect_outcome_unknown + stop`이며 `Retry-After`는 bounded trace hint일 뿐 generic workflow retry를 허용하지 않는다. 실패는 raw response 대신 공통 safe external-effect code로 반환한다.
+
+## Test 실행 전 canonical 계약
+
+- Test client는 execution stream을 열기 전에 canonical draft를 조회하고 local graph snapshot과 canonical hash를 비교한다. Editor dirty 여부와 관계없이 graph가 다르면 실행을 시작하지 않는다.
+- 필요한 draft save는 `expected_graph_hash`와 `expected_updated_at`을 사용하며, save 성공 뒤에도 저장 시작 시점 snapshot과 현재 editor graph가 같을 때만 해당 dirty 상태를 해제한다.
+- `409 operation envelope not found`는 Agent Builder session safe operation envelope와 canonical draft 확인 대상으로 분류한다. Client는 canonical hash가 acknowledged result hash와 같은 `applied`, base hash와 같은 terminal `unapplied`, save/ack 처리 중인 `pending`, 어느 쪽도 아닌 `stale`로 구분한다. `applied`에서만 test를 계속하며 typed operation을 재생하거나 `pending|unapplied|stale` graph를 자동 덮어쓰지 않는다.
+- Node root의 `width`, `height`, `measured`, `dragging`, `resizing`, `selected`, `positionAbsolute`, node data의 execution `status`, `observability`, editor-only `displayNumber`와 edge selection은 canonical draft request/response 및 graph hash data가 아니다. Client와 Gateway는 최상위 graph, 중첩 `subGraph.nodes`와 `features.noteNodes`에 같은 recursive canonical projection을 적용하며 node `position`과 business configuration은 보존한다.
+- Node `configuration_state`는 Client canonical request와 local/canonical comparison data가 아니다. Gateway는 이를 Catalog에서 재계산해 저장 graph와 canonical response에 materialize한다.
+- 일반 draft save의 중첩 `subGraph.nodes|edges`가 canonical node/edge schema를 위반하면 Gateway는 DB commit과 audit 전에 HTTP `422`, `workflow.graph_invalid`로 거부한다. Persisted graph의 canonical hash를 계산하는 draft GET에서도 같은 오류 코드를 사용하며 Pydantic detail과 raw graph를 응답하지 않는다.

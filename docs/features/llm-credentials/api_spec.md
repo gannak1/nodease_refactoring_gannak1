@@ -46,6 +46,7 @@ Option response는 전체 credential read schema가 아니라 실행 선택을 �
 
 ## 오류
 
+- LLM provider/model/credential 조회 중 예상하지 못한 DB 또는 내부 오류가 발생하면 `500`으로 실패하되 SQL, table/column 이름, credential config 또는 내부 예외 문자열을 응답에 포함하지 않는다. 서버 로그에는 operation과 예외 type 같은 안전한 진단 정보만 남긴다.
 - Credential 등록 요청자가 target organization manager가 아니면 `403 permission.denied`로 실패해야 한다.
 - Organization scope 밖 `organization_id` 또는 credential id는 resource hiding 정책에 따라 `404 resource.not_found`로 숨긴다.
 - Credential DELETE 성공은 revoke를 의미한다. 이미 기록된 usage/audit를 cascade delete하거나 secret이 물리 삭제됐다고 응답해서는 안 된다.

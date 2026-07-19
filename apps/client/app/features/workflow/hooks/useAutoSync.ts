@@ -14,9 +14,14 @@ import {
   cleanupInvalidEdges,
   formatGraphIssue,
 } from '../utils/validateWorkflowGraph';
-import { assignMissingNodeDisplayNumbers } from '../utils/nodeNumbering';
 import { toast } from 'sonner';
 import { buildWorkflowDraftPayload } from '../utils/workflowDraftPayload';
+import {
+  acquireWorkflowDraftSave,
+  tryAcquireWorkflowDraftSave,
+} from '../utils/workflowDraftSaveCoordinator';
+import { assignMissingNodeDisplayNumbers } from '../utils/nodeNumbering';
+import { workflowDraftSaveStateEqual } from '../utils/workflowDraftComparison';
 
 type CanonicalDraftMetadata = {
   graphHash: string;
@@ -44,11 +49,7 @@ const getHttpStatus = (error: unknown) =>
     : undefined;
 
 const getErrorCode = (error: unknown) => {
-  if (
-    typeof error !== 'object' ||
-    error === null ||
-    !('response' in error)
-  ) {
+  if (typeof error !== 'object' || error === null || !('response' in error)) {
     return undefined;
   }
   const data = (error as { response?: { data?: unknown } }).response?.data;
@@ -65,66 +66,9 @@ const getErrorCode = (error: unknown) => {
 const isStaleGraphError = (error: unknown) =>
   getHttpStatus(error) === 409 && getErrorCode(error) === 'stale_graph';
 
-const hydrateCanonicalDraftNonDestructively = (
-  canonical: any,
-  workflowId: string,
-) => {
-  useWorkflowStore
-    .getState()
-    .ingestCanonicalDraftMetadata(canonical, workflowId);
-  const canonicalNodes = Array.isArray(canonical?.nodes)
-    ? canonical.nodes
-    : [];
-  const noteNodes = Array.isArray(canonical?.features?.noteNodes)
-    ? canonical.features.noteNodes
-    : [];
-  // The server intentionally excludes displayNumber from canonical payloads.
-  // Restore this editor-only label after a non-destructive canonical reload.
-  const numbered = assignMissingNodeDisplayNumbers(
-    [...canonicalNodes, ...noteNodes],
-    canonical?.features ?? {},
-  );
-  const nodes = numbered.nodes;
-  const edges = Array.isArray(canonical?.edges) ? canonical.edges : [];
-  useWorkflowStore.setState((state) => {
-    const targetId = workflowId || state.activeWorkflowId;
-    const workflows = targetId
-      ? state.workflows.some((workflow) => workflow.id === targetId)
-        ? state.workflows.map((workflow) =>
-            workflow.id === targetId
-              ? {
-                  ...workflow,
-                  nodes,
-                  edges,
-                  features: numbered.features,
-                  ...(canonical?.viewport
-                    ? { viewport: canonical.viewport }
-                    : {}),
-                }
-              : workflow,
-          )
-        : [
-            ...state.workflows,
-            {
-              id: targetId,
-              appId: canonical?.appId ?? canonical?.app_id ?? '',
-              nodes,
-              edges,
-              features: numbered.features,
-              viewport: canonical?.viewport || { x: 0, y: 0, zoom: 1 },
-            },
-          ]
-      : state.workflows;
-    return {
-      nodes,
-      edges,
-      features: numbered.features,
-      envVariables: canonical?.envVariables ?? state.envVariables,
-      runtimeVariables: canonical?.runtimeVariables ?? state.runtimeVariables,
-      workflows,
-      hasUnsavedChanges: false,
-    };
-  });
+const isAmbiguousSaveFailure = (error: unknown) => {
+  const status = getHttpStatus(error);
+  return status === undefined || status >= 500;
 };
 
 export const useAutoSync = () => {
@@ -167,6 +111,7 @@ export const useAutoSync = () => {
       edges: typeof edges;
     };
   } | null>(null);
+  const pendingAutosyncWaitRef = useRef<string | null>(null);
 
   useEffect(() => {
     setViewportRef.current = setViewport;
@@ -234,7 +179,7 @@ export const useAutoSync = () => {
                   ...buildWorkflowDraftPayload(
                     cleanupResult.graph,
                     cleanupResult.graph.viewport ||
-                    data.viewport || { x: 0, y: 0, zoom: 1 },
+                      data.viewport || { x: 0, y: 0, zoom: 1 },
                   ),
                   expected_graph_hash: data.graph_hash,
                   expected_updated_at: data.updated_at,
@@ -270,6 +215,7 @@ export const useAutoSync = () => {
   }, [workflowId, setWorkflowData]);
 
   // 2. 자동 저장 (Debounce)
+  /* eslint-disable react-hooks/refs -- refs are read only when the debounced callback runs after render */
   const debouncedSync = useMemo(
     () =>
       debounce(
@@ -293,7 +239,11 @@ export const useAutoSync = () => {
           if (workflowAccess?.can_write === false) {
             return;
           }
-          const currentViewport = getViewport();
+          let nodesToSave = currentNodes;
+          let edgesToSave = currentEdges;
+          let featuresToSave = currentFeatures;
+          let envVariablesToSave = currentEnvVars;
+          let runtimeVariablesToSave = currentRuntimeVars;
 
           const pendingRevert =
             useWorkflowStore.getState().pendingAgentBuilderRevert;
@@ -308,368 +258,490 @@ export const useAutoSync = () => {
               pendingRedoRef.current = null;
             }
           }
-          const graphToSave = pendingRevert?.revertGraph ??
-            pendingRedo?.finalGraph ?? {
-              nodes: currentNodes,
-              edges: currentEdges,
-            };
-
-          // Note 노드와 일반 노드 분리
-          const realNodes = graphToSave.nodes.filter((n) => n.type !== 'note');
-          const noteNodes = currentNodes.filter((n) => n.type === 'note');
-
-          // features에 noteNodes 저장
-          const featuresToSave = {
-            ...currentFeatures,
-            noteNodes,
-          };
-
-          if (pendingRevert || pendingRedo) {
-            useWorkflowStore.getState().setAgentBuilderMutationSaving(true);
-          }
-
-          const mutationContext = pendingRevert
-            ? {
-                operation_id: pendingRevert.operationId,
-                action: 'revert' as const,
-                expected_base_graph_hash: pendingRevert.resultGraphHash,
-                expected_workflow_updated_at: pendingRevert.workflowUpdatedAt,
-                catalog_version: 3 as const,
+          const releaseWorkflowSave =
+            pendingRevert || pendingRedo
+              ? await acquireWorkflowDraftSave(workflowId, 'undo_redo')
+              : tryAcquireWorkflowDraftSave(workflowId, 'autosync');
+          let acquiredWorkflowSave = releaseWorkflowSave;
+          if (!acquiredWorkflowSave) {
+            if (pendingAutosyncWaitRef.current === workflowId) return;
+            pendingAutosyncWaitRef.current = workflowId;
+            try {
+              acquiredWorkflowSave = await acquireWorkflowDraftSave(
+                workflowId,
+                'autosync',
+              );
+            } finally {
+              if (pendingAutosyncWaitRef.current === workflowId) {
+                pendingAutosyncWaitRef.current = null;
               }
-            : pendingRedo
-              ? {
-                  operation_id: pendingRedo.operationId,
-                  action: 'redo' as const,
-                  expected_base_graph_hash: pendingRedo.baseGraphHash,
-                  expected_workflow_updated_at: pendingRedo.workflowUpdatedAt,
-                  catalog_version: 3 as const,
-                }
-              : undefined;
-          const canonicalMetadata = useWorkflowStore
-            .getState()
-            .getCanonicalDraftMetadata(workflowId);
-          const expectedMetadata = mutationContext
-            ? {
-                graphHash: mutationContext.expected_base_graph_hash,
-                updatedAt: mutationContext.expected_workflow_updated_at,
-              }
-            : canonicalMetadata;
-          if (!expectedMetadata) {
-            if (pendingRevert || pendingRedo) {
-              useWorkflowStore.getState().setAgentBuilderMutationSaving(false);
             }
-            toast.warning(
-              'Workflow 저장 기준을 확인하는 중입니다. 잠시 후 다시 시도해주세요.',
-            );
-            return;
+            const latest = useWorkflowStore.getState();
+            if (
+              latest.activeWorkflowId !== workflowId ||
+              latest.isAgentBuilderMutationSaving ||
+              !latest.hasUnsavedChanges ||
+              latest.pendingAgentBuilderRevert ||
+              pendingRedoRef.current
+            ) {
+              acquiredWorkflowSave();
+              return;
+            }
+            nodesToSave = latest.nodes;
+            edgesToSave = latest.edges;
+            featuresToSave = latest.features;
+            envVariablesToSave = latest.envVariables;
+            runtimeVariablesToSave = latest.runtimeVariables;
           }
-          const saveRequest = {
-            nodes: realNodes,
-            edges: graphToSave.edges,
-            viewport: currentViewport,
-            features: featuresToSave,
-            envVariables: currentEnvVars,
-            runtimeVariables: currentRuntimeVars,
-            mutation_context: mutationContext,
-            expected_graph_hash: expectedMetadata.graphHash,
-            expected_updated_at: expectedMetadata.updatedAt,
-          };
+          const currentViewport = getViewport();
 
           try {
-            // 서버에 저장 요청
-            const save = () =>
-              workflowApi.syncDraftWorkflow(workflowId, saveRequest);
-            let saveResponse;
-            try {
-              saveResponse = await save();
-            } catch (firstError) {
-              if (!pendingRevert && !pendingRedo) throw firstError;
-              try {
-                saveResponse = await save();
-              } catch (retryError) {
-                const [canonicalResult, sessionResult] =
-                  await Promise.allSettled([
-                    workflowApi.getDraftWorkflow(workflowId),
-                    agentBuilderApi.getSession(
-                      (pendingRevert ?? pendingRedo)!.sessionId,
-                    ),
-                  ]);
-                if (
-                  canonicalResult.status !== 'fulfilled' ||
-                  sessionResult.status !== 'fulfilled' ||
-                  !Array.isArray(canonicalResult.value?.nodes) ||
-                  !Array.isArray(canonicalResult.value?.edges)
-                ) {
-                  toast.warning(
-                    'Agent Builder history 저장 결과를 확인하는 중입니다. Undo/Redo 상태를 유지합니다.',
-                  );
-                  return;
-                }
+            const graphToSave = pendingRevert?.revertGraph ??
+              pendingRedo?.finalGraph ?? {
+                nodes: nodesToSave,
+                edges: edgesToSave,
+              };
 
-                const canonical = canonicalResult.value;
+            if (pendingRevert || pendingRedo) {
+              useWorkflowStore.getState().setAgentBuilderMutationSaving(true);
+            }
+
+            const mutationContext = pendingRevert
+              ? {
+                  operation_id: pendingRevert.operationId,
+                  action: 'revert' as const,
+                  expected_base_graph_hash: pendingRevert.resultGraphHash,
+                  expected_workflow_updated_at: pendingRevert.workflowUpdatedAt,
+                  catalog_version: 3 as const,
+                }
+              : pendingRedo
+                ? {
+                    operation_id: pendingRedo.operationId,
+                    action: 'redo' as const,
+                    expected_base_graph_hash: pendingRedo.baseGraphHash,
+                    expected_workflow_updated_at: pendingRedo.workflowUpdatedAt,
+                    catalog_version: 3 as const,
+                  }
+                : undefined;
+            const canonicalMetadata = useWorkflowStore
+              .getState()
+              .getCanonicalDraftMetadata(workflowId);
+            const expectedMetadata = mutationContext
+              ? {
+                  graphHash: mutationContext.expected_base_graph_hash,
+                  updatedAt: mutationContext.expected_workflow_updated_at,
+                }
+              : canonicalMetadata;
+            if (!expectedMetadata) {
+              if (pendingRevert || pendingRedo) {
                 useWorkflowStore
                   .getState()
-                  .ingestCanonicalDraftMetadata(canonical, workflowId);
-                const canonicalGraph = {
-                  nodes: canonical.nodes.filter(
-                    (node: AppNode) => node.type !== 'note',
-                  ),
-                  edges: canonical.edges,
-                };
-                const desiredGraph = {
-                  nodes: realNodes,
+                  .setAgentBuilderMutationSaving(false);
+              }
+              toast.warning(
+                'Workflow 저장 기준을 확인하는 중입니다. 잠시 후 다시 시도해주세요.',
+              );
+              return;
+            }
+            const saveRequest = {
+              ...buildWorkflowDraftPayload(
+                {
+                  nodes: graphToSave.nodes,
                   edges: graphToSave.edges,
-                };
-                const redoSnapshot = pendingRevert
-                  ? useWorkflowStore
-                      .getState()
-                      .redoStack.findLast(
-                        (snapshot) =>
-                          snapshot.agentBuilderOperation?.operationId ===
-                          pendingRevert.operationId,
-                      )
-                  : null;
-                const oppositeGraph = pendingRevert
-                  ? redoSnapshot
-                    ? {
-                        nodes: redoSnapshot.nodes.filter(
-                          (node) => node.type !== 'note',
-                        ),
-                        edges: redoSnapshot.edges,
-                      }
-                    : null
-                  : (pendingRedo?.baseGraph ?? null);
-                const activeMutation = sessionResult.value
-                  .active_graph_mutation as Record<string, unknown> | null;
-                const activeStatus = activeMutation?.status;
-                const sameOperation =
-                  !activeMutation ||
-                  activeMutation.operation_id ===
-                    (pendingRevert ?? pendingRedo)!.operationId;
-                const groupStatus = sessionResult.value.parameter_group?.status;
-                const canceledSession =
-                  sameOperation &&
-                  (activeStatus === 'reverted' ||
-                    groupStatus === 'canceled' ||
-                    (!activeMutation && !sessionResult.value.parameter_group));
-                const completedSession =
-                  sameOperation &&
-                  (activeStatus === 'acknowledged' ||
-                    groupStatus === 'completed' ||
-                    groupStatus === 'active');
+                  viewport: currentViewport,
+                  features: featuresToSave,
+                  envVariables: envVariablesToSave,
+                  runtimeVariables: runtimeVariablesToSave,
+                },
+                currentViewport,
+              ),
+              mutation_context: mutationContext,
+              expected_graph_hash: expectedMetadata.graphHash,
+              expected_updated_at: expectedMetadata.updatedAt,
+            };
 
+            try {
+              // 서버에 저장 요청
+              const save = () =>
+                workflowApi.syncDraftWorkflow(workflowId, saveRequest);
+              let saveResponse;
+              try {
+                saveResponse = await save();
+              } catch (firstError) {
                 if (
-                  isEqual(canonicalGraph, desiredGraph) &&
-                  canceledSession &&
-                  typeof canonical.graph_hash === 'string' &&
-                  typeof canonical.updated_at === 'string'
+                  (!pendingRevert && !pendingRedo) ||
+                  !isAmbiguousSaveFailure(firstError)
                 ) {
-                  saveResponse = {
-                    ...canonical,
-                    graph_hash: canonical.graph_hash,
-                    updated_at: canonical.updated_at,
-                    parameter_group:
-                      sessionResult.value.parameter_group ?? null,
+                  throw firstError;
+                }
+                try {
+                  saveResponse = await save();
+                } catch (retryError) {
+                  const [canonicalResult, sessionResult] =
+                    await Promise.allSettled([
+                      workflowApi.getDraftWorkflow(workflowId),
+                      agentBuilderApi.getSession(
+                        (pendingRevert ?? pendingRedo)!.sessionId,
+                      ),
+                    ]);
+                  if (
+                    canonicalResult.status !== 'fulfilled' ||
+                    sessionResult.status !== 'fulfilled' ||
+                    !Array.isArray(canonicalResult.value?.nodes) ||
+                    !Array.isArray(canonicalResult.value?.edges)
+                  ) {
+                    toast.warning(
+                      'Agent Builder history 저장 결과를 확인하는 중입니다. Undo/Redo 상태를 유지합니다.',
+                    );
+                    return;
+                  }
+
+                  const canonical = canonicalResult.value;
+                  const canonicalGraph = {
+                    nodes: canonical.nodes.filter(
+                      (node: AppNode) => node.type !== 'note',
+                    ),
+                    edges: canonical.edges,
                   };
-                } else if (
-                  oppositeGraph &&
-                  isEqual(canonicalGraph, oppositeGraph) &&
-                  (pendingRevert ? completedSession : canceledSession)
-                ) {
-                  const state = useWorkflowStore.getState();
-                  const canonicalNodes = canonical.nodes as typeof nodes;
-                  const canonicalEdges = canonical.edges as typeof edges;
-                  if (pendingRevert && redoSnapshot) {
-                    const restoredHistory = redoSnapshot.agentBuilderHistory
+                  const desiredGraph = {
+                    nodes: saveRequest.nodes,
+                    edges: graphToSave.edges,
+                  };
+                  const redoSnapshot = pendingRevert
+                    ? useWorkflowStore
+                        .getState()
+                        .redoStack.findLast(
+                          (snapshot) =>
+                            snapshot.agentBuilderOperation?.operationId ===
+                            pendingRevert.operationId,
+                        )
+                    : null;
+                  const oppositeGraph = pendingRevert
+                    ? redoSnapshot
                       ? {
-                          ...redoSnapshot.agentBuilderHistory,
-                          presentation: 'completed' as const,
+                          nodes: redoSnapshot.nodes.filter(
+                            (node) => node.type !== 'note',
+                          ),
+                          edges: redoSnapshot.edges,
                         }
-                      : undefined;
+                      : null
+                    : (pendingRedo?.baseGraph ?? null);
+                  const activeMutation = sessionResult.value
+                    .active_graph_mutation as Record<string, unknown> | null;
+                  const activeStatus = activeMutation?.status;
+                  const sameOperation =
+                    !activeMutation ||
+                    activeMutation.operation_id ===
+                      (pendingRevert ?? pendingRedo)!.operationId;
+                  const groupStatus =
+                    sessionResult.value.parameter_group?.status;
+                  const canceledSession =
+                    sameOperation &&
+                    (activeStatus === 'reverted' ||
+                      groupStatus === 'canceled' ||
+                      (!activeMutation &&
+                        !sessionResult.value.parameter_group));
+                  const completedSession =
+                    sameOperation &&
+                    (activeStatus === 'acknowledged' ||
+                      groupStatus === 'completed' ||
+                      groupStatus === 'active');
+
+                  if (
+                    isEqual(canonicalGraph, desiredGraph) &&
+                    canceledSession &&
+                    typeof canonical.graph_hash === 'string' &&
+                    typeof canonical.updated_at === 'string'
+                  ) {
+                    saveResponse = {
+                      ...canonical,
+                      graph_hash: canonical.graph_hash,
+                      updated_at: canonical.updated_at,
+                      parameter_group:
+                        sessionResult.value.parameter_group ?? null,
+                    };
+                  } else if (
+                    oppositeGraph &&
+                    isEqual(canonicalGraph, oppositeGraph) &&
+                    (pendingRevert ? completedSession : canceledSession)
+                  ) {
+                    useWorkflowStore
+                      .getState()
+                      .ingestCanonicalDraftMetadata(canonical, workflowId);
+                    const state = useWorkflowStore.getState();
+                    const canonicalNodes = canonical.nodes as typeof nodes;
+                    const canonicalEdges = canonical.edges as typeof edges;
+                    if (pendingRevert && redoSnapshot) {
+                      const restoredHistory = redoSnapshot.agentBuilderHistory
+                        ? {
+                            ...redoSnapshot.agentBuilderHistory,
+                            presentation: 'completed' as const,
+                          }
+                        : undefined;
+                      useWorkflowStore.setState({
+                        nodes: canonicalNodes,
+                        edges: canonicalEdges,
+                        workflows: state.workflows.map((workflow) =>
+                          workflow.id === state.activeWorkflowId
+                            ? {
+                                ...workflow,
+                                nodes: canonicalNodes,
+                                edges: canonicalEdges,
+                              }
+                            : workflow,
+                        ),
+                        undoStack: [
+                          ...state.undoStack,
+                          {
+                            nodes: structuredClone(graphToSave.nodes),
+                            edges: structuredClone(graphToSave.edges),
+                            agentBuilderOperation:
+                              redoSnapshot.agentBuilderOperation,
+                            agentBuilderHistory: restoredHistory,
+                          },
+                        ],
+                        redoStack: state.redoStack.filter(
+                          (snapshot) => snapshot !== redoSnapshot,
+                        ),
+                        pendingAgentBuilderRevert: null,
+                        recoveredAgentBuilderParameterGroup: {
+                          sessionId: pendingRevert.sessionId,
+                          parameterGroup:
+                            sessionResult.value.parameter_group ?? null,
+                        },
+                        hasUnsavedChanges: false,
+                      });
+                      pendingRedoRef.current = null;
+                    } else if (pendingRedo) {
+                      const boundary = state.undoStack.at(-1);
+                      useWorkflowStore.setState({
+                        nodes: canonicalNodes,
+                        edges: canonicalEdges,
+                        workflows: state.workflows.map((workflow) =>
+                          workflow.id === state.activeWorkflowId
+                            ? {
+                                ...workflow,
+                                nodes: canonicalNodes,
+                                edges: canonicalEdges,
+                              }
+                            : workflow,
+                        ),
+                        undoStack: state.undoStack.slice(0, -1),
+                        redoStack: [
+                          ...state.redoStack,
+                          {
+                            nodes: structuredClone(
+                              pendingRedo.finalGraph.nodes,
+                            ),
+                            edges: structuredClone(
+                              pendingRedo.finalGraph.edges,
+                            ),
+                            agentBuilderOperation:
+                              boundary?.agentBuilderOperation,
+                            agentBuilderHistory: boundary?.agentBuilderHistory,
+                          },
+                        ],
+                        hasUnsavedChanges: false,
+                      });
+                    }
+                    toast.error(
+                      'Agent Builder history 변경이 서버에 반영되지 않아 canonical 상태로 돌아왔습니다.',
+                    );
+                    return;
+                  } else if (
+                    !isEqual(canonicalGraph, desiredGraph) &&
+                    (!oppositeGraph || !isEqual(canonicalGraph, oppositeGraph))
+                  ) {
+                    const state = useWorkflowStore.getState();
+                    const canonicalMetadata = canonicalDraftMetadataFrom(canonical);
+                    const normalized = assignMissingNodeDisplayNumbers(
+                      canonical.nodes as typeof nodes,
+                      canonical.features ?? state.features,
+                    );
+                    const canonicalNodes = normalized.nodes;
+                    const canonicalEdges = canonical.edges as typeof edges;
                     useWorkflowStore.setState({
                       nodes: canonicalNodes,
                       edges: canonicalEdges,
+                      features: normalized.features,
                       workflows: state.workflows.map((workflow) =>
                         workflow.id === state.activeWorkflowId
                           ? {
                               ...workflow,
                               nodes: canonicalNodes,
                               edges: canonicalEdges,
+                              features: normalized.features,
                             }
                           : workflow,
                       ),
-                      undoStack: [
-                        ...state.undoStack,
-                        {
-                          nodes: structuredClone(graphToSave.nodes),
-                          edges: structuredClone(graphToSave.edges),
-                          agentBuilderOperation:
-                            redoSnapshot.agentBuilderOperation,
-                          agentBuilderHistory: restoredHistory,
-                        },
-                      ],
-                      redoStack: state.redoStack.filter(
-                        (snapshot) => snapshot !== redoSnapshot,
-                      ),
+                      undoStack: [],
+                      redoStack: [],
                       pendingAgentBuilderRevert: null,
-                      recoveredAgentBuilderParameterGroup: {
-                        sessionId: pendingRevert.sessionId,
-                        parameterGroup:
-                          sessionResult.value.parameter_group ?? null,
-                      },
+                      recoveredAgentBuilderParameterGroup: null,
+                      agentBuilderHistoryNotice: null,
+                      pendingAgentBuilderApplySnapshot: null,
+                      pendingAgentBuilderApplyCreatedBoundary: false,
                       hasUnsavedChanges: false,
+                      ...(canonicalMetadata
+                        ? {
+                            canonicalDraftMetadata: {
+                              ...state.canonicalDraftMetadata,
+                              [workflowId]: {
+                                workflowId,
+                                ...canonicalMetadata,
+                              },
+                            },
+                          }
+                        : {}),
                     });
                     pendingRedoRef.current = null;
-                  } else if (pendingRedo) {
-                    const boundary = state.undoStack.at(-1);
-                    useWorkflowStore.setState({
-                      nodes: canonicalNodes,
-                      edges: canonicalEdges,
-                      workflows: state.workflows.map((workflow) =>
-                        workflow.id === state.activeWorkflowId
-                          ? {
-                              ...workflow,
-                              nodes: canonicalNodes,
-                              edges: canonicalEdges,
-                            }
-                          : workflow,
-                      ),
-                      undoStack: state.undoStack.slice(0, -1),
-                      redoStack: [
-                        ...state.redoStack,
-                        {
-                          nodes: structuredClone(pendingRedo.finalGraph.nodes),
-                          edges: structuredClone(pendingRedo.finalGraph.edges),
-                          agentBuilderOperation:
-                            boundary?.agentBuilderOperation,
-                          agentBuilderHistory: boundary?.agentBuilderHistory,
-                        },
-                      ],
-                      hasUnsavedChanges: false,
-                    });
+                    toast.error(
+                      'Workflow가 다른 변경으로 갱신되어 서버의 최신 상태로 재동기화했습니다. 이전 Undo/Redo 기록은 사용할 수 없습니다.',
+                    );
+                    return;
+                  } else {
+                    toast.warning(
+                      'Agent Builder history 저장 결과를 확인하는 중입니다. Undo/Redo 상태를 유지합니다.',
+                    );
+                    return;
                   }
-                  toast.error(
-                    'Agent Builder history 변경이 서버에 반영되지 않아 canonical 상태로 돌아왔습니다.',
-                  );
-                  return;
-                } else if (
-                  !isEqual(canonicalGraph, desiredGraph) &&
-                  (!oppositeGraph || !isEqual(canonicalGraph, oppositeGraph))
-                ) {
-                  hydrateCanonicalDraftNonDestructively(
-                    canonical,
-                    workflowId,
-                  );
-                  pendingRedoRef.current = null;
-                  toast.error(
-                    'Workflow가 다른 변경으로 갱신되어 Agent Builder history 요청이 stale 상태가 됐습니다.',
-                  );
-                  return;
-                } else {
-                  toast.warning(
-                    'Agent Builder history 저장 결과를 확인하는 중입니다. Undo/Redo 상태를 유지합니다.',
-                  );
-                  return;
+                  if (!saveResponse) throw retryError;
                 }
-                if (!saveResponse) throw retryError;
               }
-            }
-            if (
-              typeof saveResponse?.graph_hash === 'string' &&
-              typeof saveResponse?.updated_at === 'string'
-            ) {
-              useWorkflowStore
-                .getState()
-                .ingestCanonicalDraftMetadata(saveResponse, workflowId);
-              useWorkflowStore
-                .getState()
-                .refreshNextAgentBuilderRevertBoundary({
-                  resultGraphHash: saveResponse.graph_hash,
-                  workflowUpdatedAt: saveResponse.updated_at,
-                });
-            }
-            if (pendingRevert) {
-              const redoSnapshot = useWorkflowStore
-                .getState()
-                .redoStack.findLast(
-                  (snapshot) =>
-                    snapshot.agentBuilderOperation?.operationId ===
-                    pendingRevert.operationId,
-                );
+              const responseWorkflowId =
+                typeof saveResponse?.workflow_id === 'string'
+                  ? saveResponse.workflow_id
+                  : workflowId;
+              if (responseWorkflowId !== workflowId) {
+                useWorkflowStore
+                  .getState()
+                  .ingestCanonicalDraftMetadata(saveResponse, workflowId);
+                return;
+              }
+              const latestState = useWorkflowStore.getState();
+              const ordinarySaveStillCurrent =
+                Boolean(pendingRevert || pendingRedo) ||
+                (latestState.activeWorkflowId === workflowId &&
+                  workflowDraftSaveStateEqual(
+                    {
+                      nodes: latestState.nodes,
+                      edges: latestState.edges,
+                      viewport: currentViewport,
+                      features: latestState.features,
+                      envVariables: latestState.envVariables,
+                      runtimeVariables: latestState.runtimeVariables,
+                    },
+                    saveRequest,
+                  ));
               if (
-                redoSnapshot &&
                 typeof saveResponse?.graph_hash === 'string' &&
                 typeof saveResponse?.updated_at === 'string'
               ) {
-                pendingRedoRef.current = {
-                  operationId: pendingRevert.operationId,
-                  sessionId: pendingRevert.sessionId,
-                  baseGraphHash: saveResponse.graph_hash,
-                  workflowUpdatedAt: saveResponse.updated_at,
-                  finalGraph: {
-                    nodes: structuredClone(redoSnapshot.nodes),
-                    edges: structuredClone(redoSnapshot.edges),
-                  },
-                  baseGraph: {
-                    nodes: structuredClone(graphToSave.nodes),
-                    edges: structuredClone(graphToSave.edges),
-                  },
-                };
-              }
-              const savedParameterGroup = saveResponse?.parameter_group as
-                | AgentBuilderParameterGroup
-                | null
-                | undefined;
-              if (savedParameterGroup !== undefined) {
                 useWorkflowStore
                   .getState()
-                  .setRecoveredAgentBuilderParameterGroup({
-                    sessionId: pendingRevert.sessionId,
-                    parameterGroup: savedParameterGroup ?? null,
+                  .ingestCanonicalDraftMetadata(saveResponse, workflowId, {
+                    applyDeferredProjection: ordinarySaveStillCurrent,
                   });
-              } else {
-                try {
-                  const session = await agentBuilderApi.getSession(
-                    pendingRevert.sessionId,
+                const activeWorkflowId =
+                  useWorkflowStore.getState().activeWorkflowId;
+                if (activeWorkflowId !== workflowId) {
+                  return;
+                }
+                useWorkflowStore
+                  .getState()
+                  .refreshNextAgentBuilderRevertBoundary({
+                    resultGraphHash: saveResponse.graph_hash,
+                    workflowUpdatedAt: saveResponse.updated_at,
+                  });
+              }
+              if (!ordinarySaveStillCurrent) {
+                return;
+              }
+              if (pendingRevert) {
+                const redoSnapshot = useWorkflowStore
+                  .getState()
+                  .redoStack.findLast(
+                    (snapshot) =>
+                      snapshot.agentBuilderOperation?.operationId ===
+                      pendingRevert.operationId,
                   );
+                if (
+                  redoSnapshot &&
+                  typeof saveResponse?.graph_hash === 'string' &&
+                  typeof saveResponse?.updated_at === 'string'
+                ) {
+                  pendingRedoRef.current = {
+                    operationId: pendingRevert.operationId,
+                    sessionId: pendingRevert.sessionId,
+                    baseGraphHash: saveResponse.graph_hash,
+                    workflowUpdatedAt: saveResponse.updated_at,
+                    finalGraph: {
+                      nodes: structuredClone(redoSnapshot.nodes),
+                      edges: structuredClone(redoSnapshot.edges),
+                    },
+                    baseGraph: {
+                      nodes: structuredClone(graphToSave.nodes),
+                      edges: structuredClone(graphToSave.edges),
+                    },
+                  };
+                }
+                const savedParameterGroup = saveResponse?.parameter_group as
+                  AgentBuilderParameterGroup | null | undefined;
+                if (savedParameterGroup !== undefined) {
                   useWorkflowStore
                     .getState()
                     .setRecoveredAgentBuilderParameterGroup({
                       sessionId: pendingRevert.sessionId,
-                      parameterGroup: session.parameter_group ?? null,
+                      parameterGroup: savedParameterGroup ?? null,
                     });
-                } catch {
-                  toast.warning(
-                    '변경은 되돌렸지만 Agent Builder 설정 상태를 새로고침하지 못했습니다.',
-                  );
+                } else {
+                  try {
+                    const session = await agentBuilderApi.getSession(
+                      pendingRevert.sessionId,
+                    );
+                    useWorkflowStore
+                      .getState()
+                      .setRecoveredAgentBuilderParameterGroup({
+                        sessionId: pendingRevert.sessionId,
+                        parameterGroup: session.parameter_group ?? null,
+                      });
+                  } catch {
+                    toast.warning(
+                      '변경은 되돌렸지만 Agent Builder 설정 상태를 새로고침하지 못했습니다.',
+                    );
+                  }
                 }
+                useWorkflowStore.getState().clearPendingAgentBuilderRevert();
               }
-              useWorkflowStore.getState().clearPendingAgentBuilderRevert();
-            }
-            if (pendingRedo) {
-              pendingRedoRef.current = null;
-            }
-            setHasUnsavedChanges(false);
-          } catch (error) {
-            if (pendingRevert || pendingRedo) {
-              toast.warning(
-                'Agent Builder history 저장 결과를 확인하지 못했습니다. Undo/Redo 상태를 유지합니다.',
-              );
-            } else if (isStaleGraphError(error)) {
-              toast.error('stale_graph: Workflow changed on the server.', {
-                description:
-                  '최신 draft를 다시 불러온 뒤 저장을 재시도해야 합니다.',
-              });
-            } else {
-              toast.error('Workflow draft save failed.', {
-                description:
-                  '변경 내용은 편집기에 남아 있습니다. 잠시 후 다시 저장됩니다.',
-              });
+              if (pendingRedo) {
+                pendingRedoRef.current = null;
+              }
+              setHasUnsavedChanges(false);
+            } catch (error) {
+              if (pendingRevert || pendingRedo) {
+                toast.warning(
+                  'Agent Builder history 저장 결과를 확인하지 못했습니다. Undo/Redo 상태를 유지합니다.',
+                );
+              } else if (isStaleGraphError(error)) {
+                toast.error('stale_graph: Workflow changed on the server.', {
+                  description:
+                    '최신 draft를 다시 불러온 뒤 저장을 재시도해야 합니다.',
+                });
+              } else {
+                toast.error('Workflow draft save failed.', {
+                  description:
+                    '변경 내용은 편집기에 남아 있습니다. 잠시 후 다시 저장됩니다.',
+                });
+              }
+            } finally {
+              if (pendingRevert || pendingRedo) {
+                useWorkflowStore
+                  .getState()
+                  .setAgentBuilderMutationSaving(false);
+              }
             }
           } finally {
-            if (pendingRevert || pendingRedo) {
-              useWorkflowStore.getState().setAgentBuilderMutationSaving(false);
-            }
+            acquiredWorkflowSave();
           }
         },
         1000, // 1초 동안 추가 입력이 없으면 저장
@@ -683,6 +755,7 @@ export const useAutoSync = () => {
       getViewport,
     ],
   );
+  /* eslint-enable react-hooks/refs */
 
   // debouncedSync가 변경되면 ref 업데이트
   const debouncedSyncRef = useRef(debouncedSync);

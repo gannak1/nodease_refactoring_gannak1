@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from apps.gateway.services.knowledge_candidate_resolver import (
+    DEFAULT_DIRECT_KB_CANDIDATE_RESERVE,
+    DEFAULT_MAX_CANDIDATE_KBS,
     KnowledgeCandidateResolver,
     bucket_count,
 )
@@ -153,6 +155,7 @@ class FakeResolver(KnowledgeCandidateResolver):
         self._fake_items = list(items or [])
         self._fake_kbs = {kb.id: kb for kb in (kbs or [])}
         self.requested_item_collection_ids = None
+        self.requested_item_limit = None
 
     def _collections(self, collection_ids, max_collections):
         if collection_ids is None:
@@ -167,11 +170,22 @@ class FakeResolver(KnowledgeCandidateResolver):
     def _collection_items(self, collection_ids, max_candidate_kbs):
         allowed_collection_ids = set(collection_ids)
         self.requested_item_collection_ids = allowed_collection_ids
-        return [
+        self.requested_item_limit = max_candidate_kbs
+        items = [
             item
             for item in self._fake_items
             if item.collection_id in allowed_collection_ids
-        ][:max_candidate_kbs]
+        ]
+        if max_candidate_kbs is None:
+            return items
+        selected_kb_ids = set()
+        for item in items:
+            if len(selected_kb_ids) >= max_candidate_kbs:
+                break
+            selected_kb_ids.add(item.knowledge_base_id)
+        return [
+            item for item in items if item.knowledge_base_id in selected_kb_ids
+        ]
 
     def _knowledge_bases_by_id(self, knowledge_base_ids):
         return {
@@ -180,8 +194,48 @@ class FakeResolver(KnowledgeCandidateResolver):
             if kb_id in self._fake_kbs
         }
 
-    def _direct_knowledge_bases(self, max_candidate_kbs):
-        return list(self._fake_kbs.values())[:max_candidate_kbs]
+    def _direct_knowledge_bases(
+        self,
+        max_candidate_kbs,
+        *,
+        offset=0,
+        excluded_kb_ids=None,
+        excluded_collection_ids=None,
+    ):
+        excluded = excluded_kb_ids or set()
+        excluded_collections = excluded_collection_ids or set()
+        collection_member_ids = {
+            item.knowledge_base_id
+            for item in self._fake_items
+            if item.collection_id in excluded_collections
+        }
+        values = [
+            kb
+            for kb in self._fake_kbs.values()
+            if kb.id not in excluded and kb.id not in collection_member_ids
+        ]
+        values = values[offset:]
+        return values if max_candidate_kbs is None else values[:max_candidate_kbs]
+
+
+def test_requested_collections_preserve_caller_order_before_limit():
+    collection_a = _collection()
+    collection_b = _collection()
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def all(self):
+            return [collection_a, collection_b]
+
+    resolver = KnowledgeCandidateResolver.__new__(KnowledgeCandidateResolver)
+    resolver.db = SimpleNamespace(query=lambda _model: Query())
+    resolver.organization_id = ORG_ID
+
+    result = resolver._collections([collection_b.id, collection_a.id], 1)
+
+    assert [collection.id for collection in result] == [collection_b.id]
 
 
 def test_collection_read_does_not_allow_route():
@@ -197,6 +251,26 @@ def test_collection_read_does_not_allow_route():
     assert route_decision.allowed is False
     assert route_decision.reason_code == "collection_route_denied"
     assert route_decision.external_reason_code == "permission.denied"
+
+
+def test_explicit_collection_revalidation_checks_route_without_loading_children():
+    allowed = _collection()
+    denied = _collection()
+    helper = FakePermissionHelper(
+        collection_actions={
+            allowed.id: {"route"},
+            denied.id: {"read"},
+        },
+    )
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[allowed, denied],
+    )
+
+    result = resolver.resolve_explicit_collections([denied.id, allowed.id])
+
+    assert [group.collection_id for group in result] == [allowed.id]
+    assert resolver.requested_item_collection_ids is None
 
 
 def test_explicit_kb_mode_does_not_require_collection_route():
@@ -246,6 +320,72 @@ def test_auto_collection_mode_uses_only_route_allowed_collections():
     assert result.unavailable_candidate_count_bucket == "1"
 
 
+def test_builder_hierarchy_filters_collection_route_and_child_kb_use_independently():
+    visible_collection = _collection(
+        safe_metadata={"safe_label": "사내 문서", "topics": ["인사"]}
+    )
+    denied_collection = _collection(
+        safe_metadata={"safe_label": "숨김 Collection"}
+    )
+    visible_child = _kb()
+    denied_child = _kb()
+    ungrouped_kb = _kb()
+
+    class PerKbPermissionHelper(FakePermissionHelper):
+        def _manual_kb_auth_state(self, kb):
+            return (
+                AUTH_STATE_OPERATOR
+                if kb.id in {visible_child.id, ungrouped_kb.id}
+                else "none"
+            )
+
+    helper = PerKbPermissionHelper(
+        collection_actions={visible_collection.id: {"route"}}
+    )
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[visible_collection, denied_collection],
+        items=[
+            SimpleNamespace(
+                collection_id=visible_collection.id,
+                knowledge_base_id=visible_child.id,
+            ),
+            SimpleNamespace(
+                collection_id=visible_collection.id,
+                knowledge_base_id=visible_child.id,
+            ),
+            SimpleNamespace(
+                collection_id=visible_collection.id,
+                knowledge_base_id=denied_child.id,
+            ),
+            SimpleNamespace(
+                collection_id=denied_collection.id,
+                knowledge_base_id=ungrouped_kb.id,
+            ),
+        ],
+        kbs=[visible_child, denied_child, ungrouped_kb],
+    )
+
+    result = resolver.resolve_builder_hierarchy()
+
+    assert [group.collection_id for group in result.collections] == [
+        visible_collection.id
+    ]
+    assert [
+        candidate.candidate_id for candidate in result.collections[0].candidates
+    ] == [visible_child.id]
+    assert [candidate.candidate_id for candidate in result.ungrouped_candidates] == [
+        ungrouped_kb.id
+    ]
+    assert denied_child.id not in {
+        candidate.candidate_id
+        for group in result.collections
+        for candidate in group.candidates
+    }
+    assert result.hidden_candidate_count_bucket == "0"
+    assert resolver.requested_item_collection_ids == {visible_collection.id}
+
+
 def test_auto_collection_candidate_carries_safe_collection_summary_metadata():
     collection = _collection(
         safe_metadata={
@@ -277,6 +417,31 @@ def test_auto_collection_candidate_carries_safe_collection_summary_metadata():
     assert candidate_metadata["route_scope_type"] == "auto_collection"
     assert candidate_metadata["linked_kb_count_bucket"] == "1"
     assert "raw_source_url" not in candidate_metadata
+
+
+def test_collection_safe_label_is_sanitized_before_candidate_projection():
+    collection = _collection(
+        safe_metadata={
+            "safe_label": "HR policy token=secret-value https://private.example/path",
+        }
+    )
+    kb = _kb()
+    helper = FakePermissionHelper(collection_actions={collection.id: {"route"}})
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=kb.id,
+            )
+        ],
+        kbs=[kb],
+    )
+
+    result = resolver.resolve_builder_hierarchy()
+
+    assert result.collections[0].safe_label == "HR policy"
 
 
 def test_auto_collection_without_collection_candidate_falls_back_to_direct_authorized_kb():
@@ -510,6 +675,282 @@ def test_explicit_collection_cap_applies_after_route_authorization():
     ]
     assert resolver.requested_item_collection_ids == {allowed_collection.id}
     assert result.unavailable_candidate_count_bucket == "1"
+
+
+def test_builder_hierarchy_can_defer_collection_limit_until_after_scoring():
+    collection_a = _collection()
+    collection_b = _collection()
+    kb_a = _kb()
+    kb_b = _kb()
+    helper = FakePermissionHelper(
+        collection_actions={
+            collection_a.id: {"route"},
+            collection_b.id: {"route"},
+        },
+    )
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection_a, collection_b],
+        items=[
+            SimpleNamespace(
+                collection_id=collection_a.id,
+                knowledge_base_id=kb_a.id,
+            ),
+            SimpleNamespace(
+                collection_id=collection_b.id,
+                knowledge_base_id=kb_b.id,
+            ),
+        ],
+        kbs=[kb_a, kb_b],
+    )
+
+    result = resolver.resolve_builder_hierarchy(
+        max_collections=1,
+        apply_collection_limit=False,
+    )
+
+    assert {group.collection_id for group in result.collections} == {
+        collection_a.id,
+        collection_b.id,
+    }
+
+
+def test_builder_hierarchy_defers_display_limit_but_keeps_internal_candidate_cap():
+    kbs = [_kb() for _ in range(DEFAULT_MAX_CANDIDATE_KBS + 1)]
+    resolver = FakeResolver(
+        helper=FakePermissionHelper(),
+        kbs=kbs,
+    )
+
+    result = resolver.resolve_builder_hierarchy(
+        max_candidate_kbs=DEFAULT_MAX_CANDIDATE_KBS,
+        apply_candidate_limit=False,
+    )
+
+    assert len(result.ungrouped_candidates) == DEFAULT_MAX_CANDIDATE_KBS
+
+
+def test_builder_hierarchy_keeps_internal_cap_for_collection_items():
+    collection = _collection()
+    kb = _kb()
+    resolver = FakeResolver(
+        helper=FakePermissionHelper(
+            collection_actions={collection.id: {"route"}},
+        ),
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=kb.id,
+            )
+        ],
+        kbs=[kb],
+    )
+
+    resolver.resolve_builder_hierarchy(
+        max_candidate_kbs=DEFAULT_MAX_CANDIDATE_KBS,
+        apply_candidate_limit=False,
+    )
+
+    assert resolver.requested_item_limit == DEFAULT_MAX_CANDIDATE_KBS
+
+
+def test_builder_hierarchy_internal_cap_counts_unique_kbs_not_membership_rows():
+    collection_a = _collection()
+    collection_b = _collection()
+    shared_kb = _kb()
+    second_kb = _kb()
+    resolver = FakeResolver(
+        helper=FakePermissionHelper(
+            collection_actions={
+                collection_a.id: {"route"},
+                collection_b.id: {"route"},
+            },
+        ),
+        collections=[collection_a, collection_b],
+        items=[
+            SimpleNamespace(
+                collection_id=collection_a.id,
+                knowledge_base_id=shared_kb.id,
+            ),
+            SimpleNamespace(
+                collection_id=collection_b.id,
+                knowledge_base_id=shared_kb.id,
+            ),
+            SimpleNamespace(
+                collection_id=collection_b.id,
+                knowledge_base_id=second_kb.id,
+            ),
+        ],
+        kbs=[shared_kb, second_kb],
+    )
+
+    result = resolver.resolve_builder_hierarchy(
+        max_candidate_kbs=2,
+        apply_candidate_limit=False,
+    )
+
+    children_by_collection = {
+        group.collection_id: {
+            candidate.candidate_id for candidate in group.candidates
+        }
+        for group in result.collections
+    }
+    assert children_by_collection == {
+        collection_a.id: {shared_kb.id},
+        collection_b.id: {shared_kb.id, second_kb.id},
+    }
+
+
+def test_builder_hierarchy_internal_cap_applies_to_linked_and_direct_kb_union():
+    collection = _collection()
+    direct_a = _kb()
+    direct_b = _kb()
+    linked_kb = _kb()
+    helper = FakePermissionHelper(
+        collection_actions={collection.id: {"route"}},
+    )
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=linked_kb.id,
+            )
+        ],
+        kbs=[direct_a, direct_b, linked_kb],
+    )
+
+    result = resolver.resolve_builder_hierarchy(
+        max_candidate_kbs=2,
+        apply_candidate_limit=False,
+    )
+
+    evaluated_kb_ids = {
+        kb_id for call in helper.bulk_kb_calls for kb_id in call
+    }
+    assert len(evaluated_kb_ids) <= 2
+    assert result.collections[0].candidates[0].candidate_id == linked_kb.id
+
+
+def test_builder_hierarchy_reserves_bounded_space_for_direct_kbs():
+    collection = _collection()
+    denied_linked_a = _kb()
+    denied_linked_b = _kb()
+    allowed_direct = _kb()
+
+    class PerKbPermissionHelper(FakePermissionHelper):
+        def _manual_kb_auth_state(self, kb):
+            return AUTH_STATE_OPERATOR if kb.id == allowed_direct.id else "none"
+
+    helper = PerKbPermissionHelper(
+        collection_actions={collection.id: {"route"}},
+    )
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=denied_linked_a.id,
+            ),
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=denied_linked_b.id,
+            ),
+        ],
+        kbs=[denied_linked_a, denied_linked_b, allowed_direct],
+    )
+
+    result = resolver.resolve_builder_hierarchy(
+        max_candidate_kbs=2,
+        apply_candidate_limit=False,
+    )
+
+    evaluated_kb_ids = {
+        kb_id for call in helper.bulk_kb_calls for kb_id in call
+    }
+    assert len(evaluated_kb_ids) <= 2
+    assert [
+        candidate.candidate_id for candidate in result.ungrouped_candidates
+    ] == [allowed_direct.id]
+
+
+def test_builder_hierarchy_pages_past_denied_direct_kbs_within_shared_budget():
+    collection = _collection()
+    denied_direct = [
+        _kb(name=f"Denied direct {index}")
+        for index in range(DEFAULT_DIRECT_KB_CANDIDATE_RESERVE)
+    ]
+    allowed_direct = _kb(name="Allowed direct")
+
+    class PerKbPermissionHelper(FakePermissionHelper):
+        def _manual_kb_auth_state(self, kb):
+            return AUTH_STATE_OPERATOR if kb.id == allowed_direct.id else "none"
+
+    helper = PerKbPermissionHelper(
+        collection_actions={collection.id: {"route"}},
+    )
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        kbs=[*denied_direct, allowed_direct],
+    )
+
+    result = resolver.resolve_builder_hierarchy(
+        max_candidate_kbs=50,
+        apply_candidate_limit=False,
+    )
+
+    evaluated_kb_ids = [
+        kb_id for call in helper.bulk_kb_calls for kb_id in call
+    ]
+    assert len(evaluated_kb_ids) == DEFAULT_DIRECT_KB_CANDIDATE_RESERVE + 1
+    assert len(evaluated_kb_ids) <= 50
+    assert [
+        candidate.candidate_id for candidate in result.ungrouped_candidates
+    ] == [allowed_direct.id]
+
+
+def test_direct_candidates_bulk_check_legacy_chunks_only_after_permission():
+    denied_kb = _kb(name="Denied legacy KB", version_status=None)
+    allowed_kb = _kb(name="Allowed legacy KB", version_status=None)
+
+    class PerKbPermissionHelper(FakePermissionHelper):
+        def _manual_kb_auth_state(self, kb):
+            return AUTH_STATE_OPERATOR if kb.id == allowed_kb.id else "none"
+
+    class LegacyLookupTrackingResolver(FakeResolver):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.bulk_legacy_lookups = []
+            self.per_item_legacy_lookups = []
+
+        def _legacy_retrieval_visible_kb_ids(self, kb_ids):
+            requested_ids = set(kb_ids)
+            self.bulk_legacy_lookups.append(requested_ids)
+            return {allowed_kb.id} & requested_ids
+
+        def _has_legacy_retrieval_visible_chunks(self, kb):
+            self.per_item_legacy_lookups.append(kb.id)
+            return kb.id == allowed_kb.id
+
+    resolver = LegacyLookupTrackingResolver(
+        helper=PerKbPermissionHelper(),
+        kbs=[denied_kb, allowed_kb],
+    )
+
+    result = resolver.resolve_builder_hierarchy(
+        max_candidate_kbs=2,
+        apply_candidate_limit=False,
+    )
+
+    assert [
+        candidate.candidate_id for candidate in result.ungrouped_candidates
+    ] == [allowed_kb.id]
+    assert resolver.bulk_legacy_lookups == [{allowed_kb.id}]
+    assert resolver.per_item_legacy_lookups == []
 
 
 def test_auto_collection_mode_buckets_missing_requested_collection():

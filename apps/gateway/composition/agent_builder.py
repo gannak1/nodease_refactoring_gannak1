@@ -80,7 +80,10 @@ class AgentBuilderComposition:
             self.db,
             user_id=self.user.id,
             organization_id=self.organization_id,
-            recommendation_resolver=bridge.resolve_knowledge_selection,
+            binding_materializer=bridge.materialize_knowledge_selection,
+            knowledge_selection_refresher=(
+                bridge.refresh_knowledge_selection_candidates
+            ),
             before_graph_builder=bridge.build_before_graph_knowledge_selection,
             no_knowledge_candidate_id=NO_KB_CANDIDATE_ID,
         )

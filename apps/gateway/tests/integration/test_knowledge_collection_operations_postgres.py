@@ -31,6 +31,10 @@ from apps.gateway.services.knowledge_collection_service import (
     KnowledgeCollectionService,
     KnowledgeCollectionServiceError,
 )
+from apps.gateway.services.knowledge_candidate_resolver import (
+    DEFAULT_MAX_CANDIDATE_KBS,
+    KnowledgeCandidateResolver,
+)
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.knowledge import (
     KnowledgeBase,
@@ -965,3 +969,82 @@ def test_delegation_subject_page_is_bounded_and_organization_scoped(postgres):
         assert removed_subject_id not in user_ids
         assert cross_subject_id not in user_ids
         assert "@" not in str(first_user_page.model_dump())
+
+
+def test_candidate_cap_preserves_caller_collection_order(postgres):
+    _, session_factory = postgres
+    with session_factory() as db:
+        actor_id, _, organization_id, _ = _seed_users_and_organizations(
+            db, "candidate-cap-order"
+        )
+        first_collection_id = uuid.uuid4()
+        second_collection_id = uuid.uuid4()
+        first_collection_kb_ids = [
+            uuid.uuid4() for _ in range(DEFAULT_MAX_CANDIDATE_KBS)
+        ]
+        second_collection_kb_id = uuid.uuid4()
+        all_kb_ids = [*first_collection_kb_ids, second_collection_kb_id]
+        db.add_all(
+            [
+                KnowledgeCollection(
+                    id=first_collection_id,
+                    organization_id=organization_id,
+                    name="Caller order first",
+                    created_by=actor_id,
+                ),
+                KnowledgeCollection(
+                    id=second_collection_id,
+                    organization_id=organization_id,
+                    name="Caller order second",
+                    created_by=actor_id,
+                ),
+            ]
+        )
+        db.add_all(
+            [
+                KnowledgeBase(
+                    id=kb_id,
+                    organization_id=organization_id,
+                    user_id=actor_id,
+                    name=f"Candidate cap KB {index}",
+                )
+                for index, kb_id in enumerate(all_kb_ids)
+            ]
+        )
+        db.flush()
+        db.add_all(
+            [
+                KnowledgeCollectionItem(
+                    organization_id=organization_id,
+                    collection_id=first_collection_id,
+                    knowledge_base_id=kb_id,
+                    rank=index,
+                )
+                for index, kb_id in enumerate(first_collection_kb_ids)
+            ]
+            + [
+                KnowledgeCollectionItem(
+                    organization_id=organization_id,
+                    collection_id=second_collection_id,
+                    knowledge_base_id=second_collection_kb_id,
+                    rank=0,
+                )
+            ]
+        )
+        db.commit()
+
+        resolver = KnowledgeCandidateResolver(
+            db,
+            user_id=actor_id,
+            organization_id=organization_id,
+        )
+        rows = resolver._collection_items(
+            [first_collection_id, second_collection_id],
+            DEFAULT_MAX_CANDIDATE_KBS,
+        )
+
+        assert len(rows) == DEFAULT_MAX_CANDIDATE_KBS
+        assert {row.collection_id for row in rows} == {first_collection_id}
+        assert second_collection_kb_id not in {
+            row.knowledge_base_id for row in rows
+        }

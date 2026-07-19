@@ -348,7 +348,7 @@ export const nodeRegistry: NodeDefinition[] = [
       api_token: '',
       repo_owner: '',
       repo_name: '',
-      pr_number: 0,
+      pr_number: '',
       comment_body: '',
       referenced_variables: [],
     }),

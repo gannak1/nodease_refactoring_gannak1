@@ -136,6 +136,7 @@ from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.workflow_node_effect_attempt import (
     WorkflowNodeEffectAttempt,
 )
+from apps.shared.db.models.workflow_node_secret import WorkflowNodeSecret
 from apps.shared.db.models.workflow_run import (
     TracePayload,
     TracePayloadAccessEvent,
@@ -249,6 +250,7 @@ __all__ = [
     "WorkflowNodeRun",
     "WorkflowRun",
     "WorkflowNodeEffectAttempt",
+    "WorkflowNodeSecret",
     "TracePayload",
     "TracePayloadAccessEvent",
     "TraceRedactionPolicy",

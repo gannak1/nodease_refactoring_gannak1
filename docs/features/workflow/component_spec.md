@@ -1,8 +1,6 @@
 # Workflow Component Spec
 
 Status: Draft
-Verified Against: `feature/mba-286 @ 1d7a2e12`
-
 ## Condition Exit Layout
 
 - Standard BaseNode input and output handles use the fixed vertical offset calculated from `WORKFLOW_NODE_SIZE.height / 2`, with their centers placed directly on the left and right node boundaries.
@@ -243,6 +241,8 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
 - `success`: 전체 실행 성공 상태. 테스트 실행 사이드바는 마지막 실행 결과와 전체 요약을 유지한다.
 - `failure`: 전체 실행 실패 상태. 실패한 노드가 식별되면 해당 노드를 실패로 표시하고, 전체 실패 상태를 함께 표시한다.
 - `uploading/preflight`: 파일 업로드, 그래프 검증, 드래프트 저장 중에는 테스트 실행 준비 상태로 본다.
+- `agent-builder-saving`: Agent Builder graph save 또는 acknowledgement 결과를 확인하는 동안 테스트 실행 버튼을 비활성화하고 `Agent Builder 변경사항 저장을 확인하는 중입니다.`를 표시한다. 클릭 의도를 queue에 저장해 자동 실행하지 않으며 저장 확정 뒤 사용자가 다시 실행한다.
+- Test preflight 저장의 `401`, `403`, `409 stale_graph`, `409 operation envelope not found`, 그 밖의 저장 실패는 서로 다른 안전한 안내를 표시한다. 충돌 중에는 draft를 자동 덮어쓰거나 test stream을 열지 않는다.
 - Configuration preflight 차단은 기존 failure 상태를 사용하되 서버가 제공한 safe 설정 보완 action을 오류 문구로 표시한다. Task/SSE가 시작된 것으로 표현하거나 별도 실행 결과를 만들지 않는다.
 
 ### 2. 노드 조작 편의성
@@ -359,3 +359,14 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
 - 실행 로그 row는 상태를 색상뿐 아니라 텍스트(`성공`, `실패`, `실행 중`)로 표시한다.
 - input/output block은 긴 텍스트가 패널 밖으로 넘치지 않고 스크롤 또는 줄바꿈으로 읽을 수 있어야 한다.
 - 패널 전환 시 focus가 예측 가능해야 한다. picker view 진입 시 검색 input 또는 뒤로가기 버튼에 focus를 둘 수 있다.
+
+### 5. Test preflight save coordinator
+
+- TestSidebar는 canonical GET부터 valid `workflow_start.run_id` 수신까지 `test_preflight` owner를 유지한다.
+- Stream 요청 직전에 owner 종류와 무관하게 저장 대기자가 하나라도 있으면 test stream을 열지 않고 lock을 해제해 대기 저장을 먼저 처리한 뒤 사용자의 재시도를 안내한다.
+- Stream 요청 뒤 도착한 autosync, Undo/Redo, Agent Builder와 version restore 저장은 `workflow_start.run_id`로 실행 snapshot이 확정될 때까지 기다린다. 실행 시작 실패·취소·timeout에서는 preflight owner를 해제하고, 실행 전체가 끝날 때까지 저장을 차단하지 않는다.
+- Clean editor라도 canonical graph 비교를 수행하고 불일치 시 metadata ingest와 실행을 차단한다. 이 실행 전 동일성 비교는 canonical graph hash에서 제외되는 viewport를 무시하며 pan/zoom만 다른 경우 테스트를 허용한다. 실제 draft 저장·조회와 version restore의 viewport 계약은 유지한다.
+- `401`, `403`, `409 stale_graph`, `409 operation envelope not found`와 일반 저장 실패를 서로 다른 안내로 표시한다. Stale canonical graph는 local snapshot 비교 전 metadata를 store에 반영하지 않고, operation envelope 복구는 `applied|unapplied|pending|stale` 상태별 안내를 사용한다.
+- 실행 중 node status/observability, editor-only `displayNumber`, React Flow measurement/selection field는 비영속 presentation state로 갱신하며 graph edit action을 사용하지 않는다. Agent Builder, autosync, version 복원, test preflight, Undo/Redo와 note 저장 payload는 공통 recursive canonical serializer를 사용한다.
+- Version restore는 선택한 workflow의 save lock을 획득한 직후 현재 active workflow를 다시 확인한다. 대기 중 다른 workflow로 전환됐다면 canonical GET/POST, metadata ingest와 editor/history 갱신을 수행하지 않는다.
+- Version restore serializer는 modern snapshot의 `features.noteNodes`를 우선하며 명시적 빈 배열을 보존한다. Field가 없는 legacy snapshot은 `nodes`의 Note로 fallback하고 두 표현이 모두 없으면 현재 editor Note를 유지한다. 복원한 Note 집합은 editor nodes와 save payload의 `features.noteNodes`에 동일하게 반영한다.

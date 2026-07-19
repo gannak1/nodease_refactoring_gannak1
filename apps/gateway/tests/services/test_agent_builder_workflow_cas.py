@@ -4,14 +4,19 @@ from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from apps.gateway.adapters.db.agent_builder_repository import (
     AgentBuilderRepository,
     AgentBuilderRepositoryError,
 )
 from apps.gateway.application.agent_builder.graph_mutation_builder import (
+    GraphMutationValidationError,
     GraphMutationBuilder,
     apply_graph_operations,
+    deferred_parameter_projection,
+    materialize_candidate_features,
+    materialize_candidate_graph,
 )
 from apps.gateway.application.agent_builder.workflow_cas import (
     WorkflowDraftCASService,
@@ -114,6 +119,14 @@ def _redo_request(mutation, result_graph, base_graph_hash, now):
     )
 
 
+@pytest.fixture(autouse=True)
+def _allow_workflow_write(monkeypatch):
+    monkeypatch.setattr(
+        "apps.gateway.services.workflow_service.has_workflow_permission",
+        lambda *args, **kwargs: True,
+    )
+
+
 def test_draft_save_refreshes_identity_map_before_row_lock(monkeypatch):
     now = datetime.now(timezone.utc)
     workflow = SimpleNamespace(
@@ -150,10 +163,500 @@ def test_draft_save_refreshes_identity_map_before_row_lock(monkeypatch):
     monkeypatch.setattr(WorkflowService, "validate_mail_credential_references", Mock())
     db.refresh = Mock()
 
-    WorkflowService.save_draft(db, str(workflow.id), request, user_id=str(uuid4()))
+    result = WorkflowService.save_draft(
+        db,
+        str(workflow.id),
+        request,
+        user_id=str(uuid4()),
+    )
 
     query.populate_existing.assert_called_once_with()
     query.with_for_update.assert_called_once_with()
+    assert result["canonical_deferred_parameters"] == []
+
+
+def test_deferred_parameter_projection_uses_scoped_node_paths():
+    graph = {
+        "nodes": [
+            {
+                **_node("shared-1", "githubNode"),
+                "data": {"_deferred_parameters": ["repo_owner"]},
+            },
+            {
+                **_node("loop-1", "loopNode"),
+                "data": {
+                    "subGraph": {
+                        "nodes": [
+                            {
+                                **_node("shared-1", "mailNode"),
+                                "data": {
+                                    "_deferred_parameters": ["credential_id"]
+                                },
+                            }
+                        ],
+                        "edges": [],
+                    }
+                },
+            },
+        ],
+        "edges": [],
+    }
+
+    assert deferred_parameter_projection(graph) == [
+        {"node_path": ["shared-1"], "parameter_keys": ["repo_owner"]},
+        {"node_path": ["loop-1"], "parameter_keys": []},
+        {
+            "node_path": ["loop-1", "shared-1"],
+            "parameter_keys": ["credential_id"],
+        },
+    ]
+
+
+def test_draft_save_rechecks_write_permission_after_row_lock(monkeypatch):
+    now = datetime.now(timezone.utc)
+    workflow = SimpleNamespace(
+        id=uuid4(),
+        organization_id=uuid4(),
+        graph={"nodes": [], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 1}},
+        features={},
+        env_variables=[],
+        runtime_variables=[],
+        updated_at=now,
+    )
+    request = WorkflowDraftRequest.model_validate(
+        {
+            "nodes": [],
+            "edges": [],
+            "viewport": {"x": 0, "y": 0, "zoom": 1},
+            "expected_graph_hash": "0" * 64,
+            "expected_updated_at": now,
+        }
+    )
+    query = Mock()
+    query.filter.return_value = query
+    query.populate_existing.return_value = query
+    query.with_for_update.return_value = query
+    query.first.return_value = workflow
+    db = Mock()
+    db.query.return_value = query
+    permission_check = Mock(return_value=False)
+    monkeypatch.setattr(
+        "apps.gateway.services.workflow_service.has_workflow_permission",
+        permission_check,
+    )
+    knowledge_validation = Mock()
+    monkeypatch.setattr(
+        WorkflowService,
+        "validate_knowledge_references",
+        knowledge_validation,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        WorkflowService.save_draft(
+            db,
+            str(workflow.id),
+            request,
+            user_id=str(uuid4()),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Forbidden"
+    permission_check.assert_called_once()
+    knowledge_validation.assert_not_called()
+    db.commit.assert_not_called()
+
+
+def test_ordinary_draft_save_removes_presentation_fields_recursively(monkeypatch):
+    now = datetime.now(timezone.utc)
+    workflow = SimpleNamespace(
+        id=uuid4(),
+        organization_id=uuid4(),
+        graph={"nodes": [], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 1}},
+        features={},
+        env_variables=[],
+        runtime_variables=[],
+        updated_at=now,
+    )
+    request = WorkflowDraftRequest.model_validate(
+        {
+            "nodes": [
+                {
+                    "id": "loop-1",
+                    "type": "loopNode",
+                    "position": {"x": 0, "y": 0},
+                    "width": 320,
+                    "height": 180,
+                    "measured": {"width": 320, "height": 180},
+                    "data": {
+                        "displayNumber": 1,
+                        "status": "success",
+                        "observability": {"latency_ms": 10},
+                        "subGraph": {
+                            "nodes": [
+                                {
+                                    "id": "nested-1",
+                                    "type": "codeNode",
+                                    "position": {"x": 0, "y": 0},
+                                    "width": 200,
+                                    "height": 96,
+                                    "measured": {"width": 200, "height": 96},
+                                    "data": {
+                                        "code": "return inputs",
+                                        "displayNumber": 2,
+                                        "status": "running",
+                                        "observability": {"latency_ms": 5},
+                                    },
+                                }
+                            ],
+                            "edges": [
+                                {
+                                    "id": "nested-edge",
+                                    "source": "nested-1",
+                                    "target": "nested-1",
+                                    "selected": True,
+                                }
+                            ],
+                        },
+                    },
+                }
+            ],
+            "edges": [],
+            "viewport": {"x": 0, "y": 0, "zoom": 1},
+            "features": {
+                "noteNodes": [
+                    {
+                        "id": "note-1",
+                        "type": "note",
+                        "position": {"x": 20, "y": 20},
+                        "width": 240,
+                        "height": 120,
+                        "measured": {"width": 240, "height": 120},
+                        "selected": True,
+                        "data": {
+                            "text": "server note",
+                            "displayNumber": 9,
+                            "status": "success",
+                        },
+                    }
+                ]
+            },
+            "expected_graph_hash": "0" * 64,
+            "expected_updated_at": now,
+        }
+    )
+    query = Mock()
+    query.filter.return_value = query
+    query.populate_existing.return_value = query
+    query.with_for_update.return_value = query
+    query.first.return_value = workflow
+    db = Mock()
+    db.query.return_value = query
+
+    monkeypatch.setattr(WorkflowService, "validate_knowledge_references", Mock())
+    monkeypatch.setattr(
+        "apps.gateway.services.workflow_service.WorkflowDraftCASService.validate_expected_draft_state",
+        Mock(),
+    )
+    monkeypatch.setattr(WorkflowService, "validate_mail_credential_references", Mock())
+
+    WorkflowService.save_draft(db, str(workflow.id), request, user_id=str(uuid4()))
+
+    root_data = workflow.graph["nodes"][0]["data"]
+    nested_data = root_data["subGraph"]["nodes"][0]["data"]
+    for field in ("displayNumber", "status", "observability"):
+        assert field not in root_data
+        assert field not in nested_data
+    for node in (
+        workflow.graph["nodes"][0],
+        root_data["subGraph"]["nodes"][0],
+    ):
+        assert "width" not in node
+        assert "height" not in node
+        assert "measured" not in node
+    nested_edge = root_data["subGraph"]["edges"][0]
+    assert nested_edge["id"] == "nested-edge"
+    assert nested_edge["source"] == "nested-1"
+    assert nested_edge["target"] == "nested-1"
+    assert "selected" not in nested_edge
+    note = workflow.features["noteNodes"][0]
+    assert note["data"] == {"text": "server note"}
+    for field in ("width", "height", "measured", "selected"):
+        assert field not in note
+
+
+@pytest.mark.parametrize(
+    "features",
+    [
+        {"noteNodes": "not-a-list"},
+        {
+            "noteNodes": [
+                {
+                    "id": "not-a-note",
+                    "type": "codeNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {"code": "return inputs"},
+                }
+            ]
+        },
+    ],
+)
+def test_feature_materializer_rejects_invalid_note_nodes(features):
+    with pytest.raises(GraphMutationValidationError, match="workflow.features_invalid"):
+        materialize_candidate_features(features)
+
+
+def test_draft_save_rejects_invalid_note_features_with_safe_422(monkeypatch):
+    now = datetime.now(timezone.utc)
+    workflow = SimpleNamespace(
+        id=uuid4(),
+        organization_id=uuid4(),
+        graph={"nodes": [], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 1}},
+        features={},
+        env_variables=[],
+        runtime_variables=[],
+        updated_at=now,
+    )
+    request = WorkflowDraftRequest.model_validate(
+        {
+            "nodes": [],
+            "edges": [],
+            "viewport": {"x": 0, "y": 0, "zoom": 1},
+            "features": {"noteNodes": "not-a-list"},
+            "expected_graph_hash": "0" * 64,
+            "expected_updated_at": now,
+        }
+    )
+    query = Mock()
+    query.filter.return_value = query
+    query.populate_existing.return_value = query
+    query.with_for_update.return_value = query
+    query.first.return_value = workflow
+    db = Mock()
+    db.query.return_value = query
+    monkeypatch.setattr(WorkflowService, "validate_knowledge_references", Mock())
+    monkeypatch.setattr(
+        "apps.gateway.services.workflow_service.WorkflowDraftCASService.validate_expected_draft_state",
+        Mock(),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        WorkflowService.save_draft(
+            db,
+            str(workflow.id),
+            request,
+            user_id=str(uuid4()),
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "workflow.features_invalid"
+    db.commit.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "subgraph",
+    [
+        {
+            "nodes": [
+                {
+                    "id": "nested-1",
+                    "type": "codeNode",
+                    "data": {"code": "return inputs"},
+                }
+            ],
+            "edges": [],
+        },
+        {
+            "nodes": [
+                {
+                    "id": "nested-1",
+                    "type": "codeNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {"code": "return inputs"},
+                }
+            ],
+            "edges": [{"id": "nested-edge", "source": "nested-1"}],
+        },
+    ],
+)
+def test_draft_save_rejects_invalid_nested_graph_with_safe_422(
+    monkeypatch,
+    subgraph,
+):
+    now = datetime.now(timezone.utc)
+    workflow = SimpleNamespace(
+        id=uuid4(),
+        organization_id=uuid4(),
+        graph={"nodes": [], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 1}},
+        features={},
+        env_variables=[],
+        runtime_variables=[],
+        updated_at=now,
+    )
+    request = WorkflowDraftRequest.model_validate(
+        {
+            "nodes": [
+                {
+                    "id": "loop-1",
+                    "type": "loopNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {"subGraph": subgraph},
+                }
+            ],
+            "edges": [],
+            "viewport": {"x": 0, "y": 0, "zoom": 1},
+            "expected_graph_hash": "0" * 64,
+            "expected_updated_at": now,
+        }
+    )
+    query = Mock()
+    query.filter.return_value = query
+    query.populate_existing.return_value = query
+    query.with_for_update.return_value = query
+    query.first.return_value = workflow
+    db = Mock()
+    db.query.return_value = query
+    monkeypatch.setattr(WorkflowService, "validate_knowledge_references", Mock())
+    monkeypatch.setattr(
+        "apps.gateway.services.workflow_service.WorkflowDraftCASService.validate_expected_draft_state",
+        Mock(),
+    )
+    monkeypatch.setattr(WorkflowService, "validate_mail_credential_references", Mock())
+
+    with pytest.raises(HTTPException) as exc_info:
+        WorkflowService.save_draft(
+            db,
+            str(workflow.id),
+            request,
+            user_id=str(uuid4()),
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "workflow.graph_invalid"
+    db.commit.assert_not_called()
+
+
+def test_graph_materializer_wraps_nested_schema_errors():
+    graph = {
+        "nodes": [
+            {
+                "id": "loop-1",
+                "type": "loopNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "subGraph": {
+                        "nodes": [
+                            {
+                                "id": "nested-1",
+                                "type": "codeNode",
+                                "data": {},
+                            }
+                        ],
+                        "edges": [],
+                    }
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    with pytest.raises(GraphMutationValidationError, match="workflow.graph_invalid"):
+        materialize_candidate_graph(graph)
+
+
+def test_graph_materializer_clears_only_catalog_valid_deferred_parameters():
+    graph = {
+        "nodes": [
+            {
+                "id": "github-1",
+                "type": "githubNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "title": "GitHub",
+                    "action": "get_pr",
+                    "repo_owner": "nodease",
+                    "repo_name": "mbased",
+                    "pr_number": 0,
+                    "_deferred_parameters": ["repo_owner", "pr_number"],
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    materialized = materialize_candidate_graph(graph)
+
+    assert materialized["nodes"][0]["data"]["_deferred_parameters"] == [
+        "pr_number"
+    ]
+
+
+def test_agent_builder_draft_save_materializes_note_features(monkeypatch):
+    now = datetime.now(timezone.utc)
+    base, mutation = _issued_mutation(now)
+    workflow = SimpleNamespace(
+        id=mutation.workflow_id,
+        organization_id=uuid4(),
+        graph=base,
+        features={},
+        env_variables=[],
+        runtime_variables=[],
+        updated_at=now,
+    )
+    request = _request(mutation, base).model_copy(
+        update={
+            "features": {
+                "noteNodes": [
+                    {
+                        "id": "note-1",
+                        "type": "note",
+                        "position": {"x": 10, "y": 10},
+                        "selected": True,
+                        "width": 200,
+                        "data": {
+                            "text": "safe note",
+                            "status": "success",
+                            "displayNumber": 7,
+                        },
+                    }
+                ]
+            }
+        }
+    )
+    query = Mock()
+    query.filter.return_value = query
+    query.populate_existing.return_value = query
+    query.with_for_update.return_value = query
+    query.first.return_value = workflow
+    db = Mock()
+    db.query.return_value = query
+    request_row = SimpleNamespace(response_payload={})
+    repository = Mock()
+    repository.load_request_for_operation.return_value = (
+        request_row,
+        GraphMutationSafeEnvelope.from_mutation(mutation).model_dump(mode="json"),
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.workflow_service.AgentBuilderRepository",
+        lambda: repository,
+    )
+    monkeypatch.setattr(WorkflowService, "validate_knowledge_references", Mock())
+    monkeypatch.setattr(WorkflowService, "validate_mail_credential_references", Mock())
+    monkeypatch.setattr(
+        "apps.gateway.services.workflow_service.add_action_audit",
+        Mock(),
+    )
+
+    WorkflowService.save_draft(
+        db,
+        str(workflow.id),
+        request,
+        user_id=str(uuid4()),
+    )
+
+    note = workflow.features["noteNodes"][0]
+    assert note["data"] == {"text": "safe note"}
+    assert "selected" not in note
+    assert "width" not in note
 
 
 def test_cas_validation_returns_canonical_graph_acknowledgement():

@@ -6,6 +6,9 @@ from uuid import UUID
 
 MAIL_CREDENTIAL_REFERENCE_REQUIRED = "mail.credential_reference_required"
 MAIL_PROCESSING_CONFIGURATION_INVALID = "mail.processing_configuration_invalid"
+MAIL_NODE_DEFERRED_PARAMETER_KEYS = frozenset({"credential_id"})
+GMAIL_DRAFT_NODE_DEFERRED_PARAMETER_KEYS = frozenset({"credential_id"})
+MAIL_ACKNOWLEDGE_NODE_DEFERRED_PARAMETER_KEYS = frozenset()
 
 MAIL_NODE_ALLOWED_DATA_FIELDS = frozenset(
     {
@@ -27,6 +30,7 @@ MAIL_NODE_ALLOWED_DATA_FIELDS = frozenset(
         "referenced_variables",
         "displayNumber",
         "visibleProperties",
+        "_deferred_parameters",
     }
 )
 
@@ -53,6 +57,7 @@ GMAIL_DRAFT_NODE_ALLOWED_DATA_FIELDS = frozenset(
         "reply_body_selector",
         "displayNumber",
         "visibleProperties",
+        "_deferred_parameters",
     }
 )
 MAIL_ACKNOWLEDGE_NODE_ALLOWED_DATA_FIELDS = frozenset(
@@ -62,8 +67,10 @@ MAIL_ACKNOWLEDGE_NODE_ALLOWED_DATA_FIELDS = frozenset(
         "parameters",
         "processing_ref_selector",
         "required_effect_ref_selectors",
+        "configuration_state",
         "displayNumber",
         "visibleProperties",
+        "_deferred_parameters",
     }
 )
 
@@ -89,6 +96,7 @@ def validate_mail_node_credential_boundary(data: Any) -> None:
         raise MailNodeCredentialBoundaryError()
     _validate_common_node_fields(data)
     _validate_credential_reference_state(data)
+    _validate_deferred_parameters(data, MAIL_NODE_DEFERRED_PARAMETER_KEYS)
 
     for field_name in MAIL_NODE_OPTIONAL_STRING_FIELDS:
         _validate_optional_string(data, field_name)
@@ -121,16 +129,21 @@ def validate_mail_processing_node_boundary(
     if node_type == "gmailDraftNode":
         allowed = GMAIL_DRAFT_NODE_ALLOWED_DATA_FIELDS
         selector_fields = ("processing_ref_selector", "reply_body_selector")
+        deferred_parameter_keys = GMAIL_DRAFT_NODE_DEFERRED_PARAMETER_KEYS
     elif node_type == "mailAcknowledgeNode":
         allowed = MAIL_ACKNOWLEDGE_NODE_ALLOWED_DATA_FIELDS
         selector_fields = ("processing_ref_selector",)
+        deferred_parameter_keys = MAIL_ACKNOWLEDGE_NODE_DEFERRED_PARAMETER_KEYS
     else:
         raise MailNodeCredentialBoundaryError()
     if set(data) - allowed:
         raise MailNodeCredentialBoundaryError()
     _validate_common_node_fields(data)
+    _validate_deferred_parameters(data, deferred_parameter_keys)
     if node_type == "gmailDraftNode":
         _validate_credential_reference_state(data)
+    else:
+        _validate_configuration_state(data)
     for field_name in selector_fields:
         selector = data.get(field_name)
         if not _valid_selector(selector) and not (
@@ -334,9 +347,7 @@ def _validate_common_node_fields(data: Mapping[str, Any]) -> None:
 
 def _validate_credential_reference_state(data: Mapping[str, Any]) -> None:
     credential_id = data.get("credential_id")
-    configuration_state = data.get("configuration_state")
-    if configuration_state not in (None, "resolved", "unresolved"):
-        raise MailNodeCredentialBoundaryError()
+    configuration_state = _validate_configuration_state(data)
     if credential_id is None:
         # Mail nodes created before configuration_state was introduced omitted
         # the field. Preserve that narrow draft compatibility as unresolved.
@@ -349,6 +360,29 @@ def _validate_credential_reference_state(data: Mapping[str, Any]) -> None:
         UUID(str(credential_id))
     except (TypeError, ValueError):
         raise MailNodeCredentialBoundaryError() from None
+
+
+def _validate_configuration_state(data: Mapping[str, Any]) -> Any:
+    configuration_state = data.get("configuration_state")
+    if configuration_state not in (None, "resolved", "unresolved"):
+        raise MailNodeCredentialBoundaryError()
+    return configuration_state
+
+
+def _validate_deferred_parameters(
+    data: Mapping[str, Any],
+    allowed_keys: frozenset[str],
+) -> None:
+    deferred_parameters = data.get("_deferred_parameters", [])
+    if not isinstance(deferred_parameters, list):
+        raise MailNodeCredentialBoundaryError()
+    normalized: list[str] = []
+    for item in deferred_parameters:
+        if not isinstance(item, str) or item not in allowed_keys:
+            raise MailNodeCredentialBoundaryError()
+        normalized.append(item)
+    if len(normalized) != len(set(normalized)):
+        raise MailNodeCredentialBoundaryError()
 
 
 def _validate_optional_string(data: Mapping[str, Any], field_name: str) -> None:

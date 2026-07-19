@@ -128,6 +128,22 @@ api.interceptors.response.use(
 );
 
 export const workflowApi = {
+  storeNodeSecret: async (
+    workflowId: string,
+    data: {
+      node_id: string;
+      node_type: 'slackPostNode' | 'githubNode';
+      parameter_key: 'bot_token' | 'url' | 'api_token';
+      secret_value: string;
+    },
+  ): Promise<{ secret_reference: string; configured: true }> => {
+    const response = await api.post(
+      `/workflows/${workflowId}/node-secrets`,
+      data,
+    );
+    return response.data;
+  },
+
   // 1. 드래프트 워크플로우 동기화 (저장)
   syncDraftWorkflow: async (
     workflowId: string,

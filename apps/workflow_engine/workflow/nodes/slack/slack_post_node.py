@@ -17,6 +17,10 @@ from apps.workflow_engine.adapters.providers.slack import (
 from apps.workflow_engine.composition.slack import build_slack_effect_adapter
 from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 from apps.workflow_engine.workflow.nodes.base.node import Node
+from apps.shared.services.workflow_node_secret_service import (
+    WorkflowNodeSecretError,
+    resolve_runtime_workflow_node_secret,
+)
 from apps.workflow_engine.workflow.nodes.slack.entities import SlackPostNodeData
 
 
@@ -374,6 +378,18 @@ class SlackPostNode(Node[SlackPostNodeData]):
             if mode is SlackDeliveryMode.API
             else self.data.url
         )
+        try:
+            value = resolve_runtime_workflow_node_secret(
+                reference=value,
+                execution_context=self.execution_context,
+                node_id=self.id,
+                node_type=self.node_type,
+                parameter_key=(
+                    "bot_token" if mode is SlackDeliveryMode.API else "url"
+                ),
+            )
+        except WorkflowNodeSecretError:
+            self._fail("slack.credential_invalid")
         limit = 4096 if mode is SlackDeliveryMode.API else 2048
         if (
             not isinstance(value, str)

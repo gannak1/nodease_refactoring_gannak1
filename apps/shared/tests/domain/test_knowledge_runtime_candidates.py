@@ -162,6 +162,32 @@ def test_duplicate_keeps_first_provenance_and_does_not_consume_round():
     assert result.candidates[2].provenance.collection_id == _id(102)
 
 
+def test_duplicate_candidate_records_all_direct_and_collection_provenance_once():
+    request = _request(
+        direct=(_id(1),),
+        collections=(_id(101), _id(102)),
+    )
+    snapshot = _snapshot(
+        direct=(_id(1),),
+        streams=(_stream(101, 1), _stream(102, 1)),
+    )
+
+    result = resolve_knowledge_runtime_candidates(request, snapshot)
+
+    assert len(result.candidates) == 1
+    assert [item.kind for item in result.candidates[0].provenances] == [
+        "direct",
+        "collection",
+        "collection",
+    ]
+    assert [item.collection_id for item in result.candidates[0].provenances] == [
+        None,
+        _id(101),
+        _id(102),
+    ]
+    assert result.routing_mode == "mixed"
+
+
 def test_unselected_collection_and_unconfigured_direct_fact_cannot_widen_scope():
     request = _request(
         direct=(_id(1), _id(2)),

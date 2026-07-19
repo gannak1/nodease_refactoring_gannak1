@@ -235,12 +235,20 @@ class KnowledgeRuntimeCandidateProvenance:
 class KnowledgeRuntimeCandidate:
     knowledge_base_id: UUID
     provenance: KnowledgeRuntimeCandidateProvenance
+    provenances: tuple[KnowledgeRuntimeCandidateProvenance, ...] = ()
 
     def __post_init__(self) -> None:
         _require_uuid(
             self.knowledge_base_id,
             reason_code="candidate_kb_reference_invalid",
         )
+        provenances = self.provenances or (self.provenance,)
+        if not all(
+            isinstance(item, KnowledgeRuntimeCandidateProvenance)
+            for item in provenances
+        ):
+            raise ValueError("candidate_provenance_invalid")
+        object.__setattr__(self, "provenances", tuple(dict.fromkeys(provenances)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,16 +304,34 @@ def _all_ordered_unique_candidates(
 ) -> list[KnowledgeRuntimeCandidate]:
     ordered: list[KnowledgeRuntimeCandidate] = []
     seen: set[UUID] = set()
+    provenance_by_kb_id: dict[
+        UUID, list[KnowledgeRuntimeCandidateProvenance]
+    ] = {}
+
+    def record(
+        knowledge_base_id: UUID,
+        provenance: KnowledgeRuntimeCandidateProvenance,
+    ) -> None:
+        values = provenance_by_kb_id.setdefault(knowledge_base_id, [])
+        if provenance not in values:
+            values.append(provenance)
 
     eligible_direct_ids = set(snapshot.eligible_direct_kb_ids)
     for knowledge_base_id in request.direct_kb_ids:
         if knowledge_base_id not in eligible_direct_ids or knowledge_base_id in seen:
+            if knowledge_base_id in eligible_direct_ids:
+                record(
+                    knowledge_base_id,
+                    KnowledgeRuntimeCandidateProvenance(kind="direct"),
+                )
             continue
+        direct_provenance = KnowledgeRuntimeCandidateProvenance(kind="direct")
+        record(knowledge_base_id, direct_provenance)
         seen.add(knowledge_base_id)
         ordered.append(
             KnowledgeRuntimeCandidate(
                 knowledge_base_id=knowledge_base_id,
-                provenance=KnowledgeRuntimeCandidateProvenance(kind="direct"),
+                provenance=direct_provenance,
             )
         )
 
@@ -321,29 +347,42 @@ def _all_ordered_unique_candidates(
                 knowledge_base_id = stream.eligible_kb_ids[item_index]
                 item_index += 1
                 stream_indexes[stream_index] = item_index
+                collection_provenance = KnowledgeRuntimeCandidateProvenance(
+                    kind="collection",
+                    collection_id=stream.collection_id,
+                )
+                record(knowledge_base_id, collection_provenance)
                 if knowledge_base_id in seen:
                     continue
                 seen.add(knowledge_base_id)
                 ordered.append(
                     KnowledgeRuntimeCandidate(
                         knowledge_base_id=knowledge_base_id,
-                        provenance=KnowledgeRuntimeCandidateProvenance(
-                            kind="collection",
-                            collection_id=stream.collection_id,
-                        ),
+                        provenance=collection_provenance,
                     )
                 )
                 added_in_round = True
                 break
         if not remaining or not added_in_round:
             break
-    return ordered
+    return [
+        KnowledgeRuntimeCandidate(
+            knowledge_base_id=candidate.knowledge_base_id,
+            provenance=candidate.provenance,
+            provenances=tuple(provenance_by_kb_id[candidate.knowledge_base_id]),
+        )
+        for candidate in ordered
+    ]
 
 
 def _routing_mode(
     candidates: tuple[KnowledgeRuntimeCandidate, ...],
 ) -> CandidateRoutingMode:
-    kinds = {candidate.provenance.kind for candidate in candidates}
+    kinds = {
+        provenance.kind
+        for candidate in candidates
+        for provenance in candidate.provenances
+    }
     if kinds == {"direct"}:
         return "direct"
     if kinds == {"collection"}:

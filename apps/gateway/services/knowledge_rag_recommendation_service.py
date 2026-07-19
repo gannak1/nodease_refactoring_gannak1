@@ -12,6 +12,11 @@ from apps.gateway.services.knowledge_candidate_resolver import (
 from apps.shared.schemas.knowledge import (
     KnowledgeBaseOptionRef,
     KnowledgeCandidate,
+    KnowledgeCandidateHierarchyResolution,
+    KnowledgeCandidateResolution,
+    KnowledgeSelection,
+    KnowledgeSelectionCollection,
+    KnowledgeSelectionKBCandidate,
     KnowledgeRAGRecommendedOptions,
     KnowledgeRAGRecommendation,
     KnowledgeRAGRecommendationProvenance,
@@ -47,6 +52,32 @@ _AVAILABILITY_ORDER = {
     "unavailable": 0,
 }
 _FRESH_SYNC_STATES = {"synced", "fresh", "ready"}
+
+
+def knowledge_base_recommendation_handle(
+    organization_id: uuid.UUID,
+    knowledge_base_id: uuid.UUID,
+) -> str:
+    stable_id = uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        (
+            f"{RECOMMENDATION_HANDLE_NAMESPACE}:"
+            f"{organization_id}:"
+            f"{knowledge_base_id}"
+        ),
+    )
+    return f"rec-{stable_id}"
+
+
+def knowledge_collection_selection_handle(
+    organization_id: uuid.UUID,
+    collection_id: uuid.UUID,
+) -> str:
+    stable_id = uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"knowledge-collection-selection:{organization_id}:{collection_id}",
+    )
+    return f"col-{stable_id}"
 _SAFE_QUERY_STOP_TERMS = frozenset(
     {
         "kb",
@@ -115,13 +146,43 @@ class KnowledgeRAGRecommendationService:
     ) -> KnowledgeRAGRecommendationResponse:
         resolver = self.resolver or self._resolver_for_request(request)
         recommendation_mode = self._resolved_mode(request)
+        hierarchy: KnowledgeCandidateHierarchyResolution | None = None
         try:
-            resolution = self._resolve_candidates(
-                resolver,
-                request,
-                recommendation_mode,
-                allow_unready_candidates=allow_unready_candidates,
-            )
+            if recommendation_mode == "auto_collection" and hasattr(
+                resolver, "resolve_builder_hierarchy"
+            ):
+                hierarchy = resolver.resolve_builder_hierarchy(
+                    collection_ids=self._collection_scope(request),
+                    max_collections=request.max_collections,
+                    max_candidate_kbs=min(
+                        request.max_candidate_kbs,
+                        DEFAULT_MAX_CANDIDATE_KBS,
+                    ),
+                    allow_unready_candidates=allow_unready_candidates,
+                    apply_collection_limit=False,
+                    apply_candidate_limit=False,
+                )
+                unique_candidates: dict[uuid.UUID, KnowledgeCandidate] = {}
+                for group in hierarchy.collections:
+                    for candidate in group.candidates:
+                        unique_candidates.setdefault(candidate.candidate_id, candidate)
+                for candidate in hierarchy.ungrouped_candidates:
+                    unique_candidates.setdefault(candidate.candidate_id, candidate)
+                resolution = KnowledgeCandidateResolution(
+                    candidates=list(unique_candidates.values()),
+                    # Hierarchical builder responses must not disclose how many
+                    # child KBs were hidden by permission filtering.
+                    hidden_candidate_count_bucket="0",
+                    unavailable_candidate_count_bucket="0",
+                    reason_code=hierarchy.reason_code,
+                )
+            else:
+                resolution = self._resolve_candidates(
+                    resolver,
+                    request,
+                    recommendation_mode,
+                    allow_unready_candidates=allow_unready_candidates,
+                )
         except Exception:
             return self._adapter_unavailable_response(request)
         try:
@@ -140,17 +201,38 @@ class KnowledgeRAGRecommendationService:
         clarification_options = self._clarification_options_from_recommendations(
             recommendations
         )
+        knowledge_selection = (
+            self._knowledge_selection(hierarchy, ranked, request)
+            if hierarchy is not None
+            else None
+        )
+        has_selectable_hierarchy = bool(
+            knowledge_selection
+            and (
+                knowledge_selection.collections
+                or knowledge_selection.ungrouped_kbs
+            )
+        )
 
         warning_count = sum(1 for item in recommendations if item.warnings)
-        return KnowledgeRAGRecommendationResponse(
-            status="recommended" if recommendations else "no_candidate",
+        response = KnowledgeRAGRecommendationResponse(
+            status=(
+                "recommended"
+                if recommendations or has_selectable_hierarchy
+                else "no_candidate"
+            ),
             resolution_id=request.pending_resolution_ref,
             requirement_id=(request.knowledge_requirement or {}).get("requirement_id")
             if request.knowledge_requirement
             else None,
             recommendations=recommendations,
             clarification_options=clarification_options,
-            fallback_reason=None if recommendations else "no_candidate",
+            knowledge_selection=knowledge_selection,
+            fallback_reason=(
+                None
+                if recommendations or has_selectable_hierarchy
+                else "no_candidate"
+            ),
             summary=KnowledgeRAGRecommendationSummary(
                 candidate_count_bucket=bucket_count(len(resolution.candidates)),
                 recommendation_count_bucket=bucket_count(len(recommendations)),
@@ -161,8 +243,42 @@ class KnowledgeRAGRecommendationService:
                 recommendation_strategy=RECOMMENDATION_STRATEGY,
                 warning_count_bucket=bucket_count(warning_count),
             ),
-            reason_code=None if recommendations else resolution.reason_code or "no_candidate",
+            reason_code=(
+                None
+                if recommendations or has_selectable_hierarchy
+                else resolution.reason_code or "no_candidate"
+            ),
         )
+        issued_kb_handles = {
+            self._recommendation_id(candidate): candidate.candidate_id
+            for candidate, _score, _matched_terms, _used_signals in limited
+        }
+        if knowledge_selection is not None and hierarchy is not None:
+            visible_kb_handles = {
+                child.kb_handle
+                for collection in knowledge_selection.collections
+                for child in collection.children
+            } | {item.kb_handle for item in knowledge_selection.ungrouped_kbs}
+            for group in hierarchy.collections:
+                for candidate in group.candidates:
+                    handle = self._recommendation_id(candidate)
+                    if handle in visible_kb_handles:
+                        issued_kb_handles[handle] = candidate.candidate_id
+            for candidate in hierarchy.ungrouped_candidates:
+                handle = self._recommendation_id(candidate)
+                if handle in visible_kb_handles:
+                    issued_kb_handles[handle] = candidate.candidate_id
+            visible_collection_handles = {
+                item.collection_handle for item in knowledge_selection.collections
+            }
+            response._issued_collection_resource_ids = {
+                self._collection_handle(group.collection_id): group.collection_id
+                for group in hierarchy.collections
+                if self._collection_handle(group.collection_id)
+                in visible_collection_handles
+            }
+        response._issued_kb_resource_ids = issued_kb_handles
+        return response
 
     def safe_intent_candidates_for_builder(
         self,
@@ -187,7 +303,11 @@ class KnowledgeRAGRecommendationService:
                 "auto_collection",
                 allow_unready_candidates=True,
             )
-            ranked = self._rank_candidates(resolution.candidates, request)[:limit]
+            ranked = [
+                item
+                for item in self._rank_candidates(resolution.candidates, request)
+                if item[1] > 0
+            ][:limit]
         except Exception:
             return []
 
@@ -232,6 +352,8 @@ class KnowledgeRAGRecommendationService:
         self,
         request: KnowledgeRAGRecommendationRequest,
         candidate_handles: set[str],
+        *,
+        issued_resource_ids: dict[str, uuid.UUID],
     ) -> list[dict[str, str]]:
         """Resolve previously issued safe handles to authorized runtime KB refs.
 
@@ -242,30 +364,114 @@ class KnowledgeRAGRecommendationService:
         if not candidate_handles:
             return []
         resolver = self.resolver or self._resolver_for_request(request)
-        recommendation_mode = self._resolved_mode(request)
+        bound_ids = {
+            handle: resource_id
+            for handle, resource_id in issued_resource_ids.items()
+            if handle in candidate_handles
+            and self._recommendation_handle_for_id(resource_id) == handle
+        }
+        if set(bound_ids) != candidate_handles:
+            return []
         try:
-            resolution = self._resolve_candidates(
-                resolver,
-                request,
-                recommendation_mode,
+            resolution = resolver.resolve_explicit_kbs(
+                bound_ids.values(),
                 allow_unready_candidates=True,
             )
         except Exception:
             return []
+        candidates_by_id = {
+            candidate.candidate_id: candidate
+            for candidate in resolution.candidates
+        }
+        return [
+            {
+                "safe_handle": handle,
+                "knowledge_base_id": str(resource_id),
+                "name": candidates_by_id[resource_id].safe_label
+                or GENERIC_KB_LABEL,
+            }
+            for handle, resource_id in sorted(bound_ids.items())
+            if resource_id in candidates_by_id
+        ]
 
-        materialized: list[dict[str, str]] = []
-        for candidate in resolution.candidates:
-            handle = self._recommendation_id(candidate)
-            if handle not in candidate_handles:
-                continue
-            materialized.append(
-                {
-                    "safe_handle": handle,
-                    "knowledge_base_id": str(candidate.candidate_id),
-                    "name": candidate.safe_label or GENERIC_KB_LABEL,
-                }
+    def materialize_legacy_candidate_handles_for_builder(
+        self,
+        request: KnowledgeRAGRecommendationRequest,
+        candidate_handles: set[str],
+    ) -> list[dict[str, str]]:
+        """Bounded compatibility lookup for superseded Preview drafts."""
+
+        if not candidate_handles:
+            return []
+        resolver = self.resolver or self._resolver_for_request(request)
+        try:
+            hierarchy = resolver.resolve_builder_hierarchy(
+                collection_ids=self._collection_scope(request),
+                max_collections=request.max_collections,
+                max_candidate_kbs=DEFAULT_MAX_CANDIDATE_KBS,
+                allow_unready_candidates=True,
+                apply_collection_limit=False,
+                apply_candidate_limit=False,
+                enforce_internal_candidate_limit=True,
             )
-        return materialized
+        except Exception:
+            return []
+        candidates_by_id = {
+            candidate.candidate_id: candidate
+            for group in hierarchy.collections
+            for candidate in group.candidates
+        }
+        candidates_by_id.update(
+            {
+                candidate.candidate_id: candidate
+                for candidate in hierarchy.ungrouped_candidates
+            }
+        )
+        return [
+            {
+                "safe_handle": handle,
+                "knowledge_base_id": str(candidate.candidate_id),
+                "name": candidate.safe_label or GENERIC_KB_LABEL,
+            }
+            for candidate in candidates_by_id.values()
+            if (handle := self._recommendation_id(candidate)) in candidate_handles
+        ]
+
+    def materialize_collection_handles_for_builder(
+        self,
+        request: KnowledgeRAGRecommendationRequest,
+        collection_handles: set[str],
+        *,
+        issued_resource_ids: dict[str, uuid.UUID],
+    ) -> list[dict[str, str]]:
+        """Revalidate opaque Collection handles without exposing child identities."""
+
+        if not collection_handles:
+            return []
+        resolver = self.resolver or self._resolver_for_request(request)
+        bound_ids = {
+            handle: resource_id
+            for handle, resource_id in issued_resource_ids.items()
+            if handle in collection_handles
+            and self._collection_handle(resource_id) == handle
+        }
+        if set(bound_ids) != collection_handles:
+            return []
+        try:
+            groups = resolver.resolve_explicit_collections(bound_ids.values())
+        except Exception:
+            return []
+        groups_by_id = {group.collection_id: group for group in groups}
+        return [
+            {
+                "safe_handle": handle,
+                "knowledge_collection_id": str(resource_id),
+                "name": groups_by_id[resource_id].safe_label
+                or "Knowledge Collection",
+            }
+            for handle, resource_id in sorted(bound_ids.items())
+            if resource_id in groups_by_id
+        ]
 
     def _adapter_unavailable_response(
         self,
@@ -395,10 +601,9 @@ class KnowledgeRAGRecommendationService:
             ranked,
             key=lambda item: (
                 -item[1],
-                -_AVAILABILITY_ORDER.get(item[0].runtime_availability, 1),
-                -self._source_tier_priority(item[0]),
                 0 if item[0].safe_label else 1,
-                str(item[0].candidate_id),
+                item[0].safe_label.casefold() if item[0].safe_label else "",
+                self._recommendation_id(item[0]),
             ),
         )
 
@@ -464,15 +669,146 @@ class KnowledgeRAGRecommendationService:
         # UUID remains available only in materialized_knowledge_bases.
         # Keep the handle namespace stable so existing preview drafts can still
         # materialize after ranking strategy changes.
+        return knowledge_base_recommendation_handle(
+            self.organization_id,
+            candidate.candidate_id,
+        )
+
+    def _recommendation_handle_for_id(self, knowledge_base_id: uuid.UUID) -> str:
+        return knowledge_base_recommendation_handle(
+            self.organization_id,
+            knowledge_base_id,
+        )
+
+    def _collection_handle(self, collection_id: uuid.UUID) -> str:
+        return knowledge_collection_selection_handle(
+            self.organization_id,
+            collection_id,
+        )
+
+    def _selection_key(self, candidate: KnowledgeCandidate) -> str:
         stable_id = uuid.uuid5(
             uuid.NAMESPACE_URL,
-            (
-                f"{RECOMMENDATION_HANDLE_NAMESPACE}:"
-                f"{self.organization_id}:"
-                f"{candidate.candidate_id}"
-            ),
+            f"knowledge-kb-selection:{self.organization_id}:{candidate.candidate_id}",
         )
-        return f"rec-{stable_id}"
+        return f"kbsel-{stable_id}"
+
+    def _knowledge_selection(
+        self,
+        hierarchy: KnowledgeCandidateHierarchyResolution,
+        ranked: list[tuple[KnowledgeCandidate, float, list[str], list[str]]],
+        request: KnowledgeRAGRecommendationRequest,
+    ) -> KnowledgeSelection:
+        ranked_by_id = {item[0].candidate_id: item for item in ranked}
+        visible_ids = {
+            candidate.candidate_id
+            for candidate, _score, _matched, _signals in ranked[
+                : request.max_recommendations
+            ]
+        }
+        shared_count: dict[uuid.UUID, int] = {}
+        for group in hierarchy.collections:
+            for candidate_id in {item.candidate_id for item in group.candidates}:
+                shared_count[candidate_id] = shared_count.get(candidate_id, 0) + 1
+
+        def project(candidate: KnowledgeCandidate) -> KnowledgeSelectionKBCandidate:
+            score = ranked_by_id.get(candidate.candidate_id, (candidate, 0.0, [], []))[1]
+            return KnowledgeSelectionKBCandidate(
+                kb_handle=self._recommendation_id(candidate),
+                selection_key=self._selection_key(candidate),
+                safe_label=candidate.safe_label,
+                score=round(score, 4),
+                shared_collection_count=shared_count.get(candidate.candidate_id, 0),
+            )
+
+        query_terms, _source = self._ranking_terms(
+            [item[0] for item in ranked],
+            request,
+        )
+        collections: list[KnowledgeSelectionCollection] = []
+        for group in hierarchy.collections:
+            unique_children: dict[uuid.UUID, KnowledgeCandidate] = {}
+            for candidate in group.candidates:
+                unique_children.setdefault(candidate.candidate_id, candidate)
+            children = [
+                project(candidate)
+                for candidate in unique_children.values()
+                if candidate.candidate_id in visible_ids
+            ]
+            children.sort(
+                key=lambda item: (
+                    -item.score,
+                    0 if item.safe_label else 1,
+                    item.safe_label.casefold() if item.safe_label else "",
+                    item.kb_handle,
+                )
+            )
+            child_scores = sorted(
+                (
+                    ranked_by_id.get(
+                        candidate.candidate_id,
+                        (candidate, 0.0, [], []),
+                    )[1]
+                    for candidate in unique_children.values()
+                ),
+                reverse=True,
+            )
+            top_score = child_scores[0] if child_scores else 0.0
+            top_three = child_scores[:3]
+            top_three_average = (
+                sum(top_three) / len(top_three) if top_three else 0.0
+            )
+            metadata_terms = set(
+                extract_safe_terms(
+                    group.safe_label,
+                    *((group.safe_metadata or {}).get("safe_topics") or []),
+                )
+            )
+            collection_metadata_score = (
+                len(metadata_terms.intersection(query_terms)) / len(set(query_terms))
+                if query_terms
+                else 0.0
+            )
+            collection_score = min(
+                1.0,
+                top_score * 0.60
+                + top_three_average * 0.30
+                + collection_metadata_score * 0.10,
+            )
+            collections.append(
+                KnowledgeSelectionCollection(
+                    collection_handle=self._collection_handle(group.collection_id),
+                    safe_label=group.safe_label,
+                    score=round(collection_score, 4),
+                    children=children,
+                )
+            )
+        collections.sort(
+            key=lambda item: (
+                -item.score,
+                0 if item.safe_label else 1,
+                item.safe_label.casefold() if item.safe_label else "",
+                item.collection_handle,
+            )
+        )
+        collections = collections[: request.max_collections]
+        ungrouped = [
+            project(candidate)
+            for candidate in hierarchy.ungrouped_candidates
+            if candidate.candidate_id in visible_ids
+        ]
+        ungrouped.sort(
+            key=lambda item: (
+                -item.score,
+                0 if item.safe_label else 1,
+                item.safe_label.casefold() if item.safe_label else "",
+                item.kb_handle,
+            )
+        )
+        return KnowledgeSelection(
+            collections=collections,
+            ungrouped_kbs=ungrouped,
+        )
 
     def _clarification_options_from_recommendations(
         self,

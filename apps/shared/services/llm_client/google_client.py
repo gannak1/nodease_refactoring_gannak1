@@ -47,6 +47,7 @@ class GoogleClient(BaseLLMClient):
         if not kwargs:
             return {}
         filtered = dict(kwargs)
+        filtered.pop("request_timeout_seconds", None)
         # Gemini OpenAI-compat endpoint rejects these fields.
         filtered.pop("frequency_penalty", None)
         filtered.pop("presence_penalty", None)
@@ -98,9 +99,16 @@ class GoogleClient(BaseLLMClient):
             "model": self.model_id,
             "messages": messages,
         }
+        request_timeout = kwargs.get("request_timeout_seconds", 60)
+        if (
+            isinstance(request_timeout, bool)
+            or not isinstance(request_timeout, (int, float))
+            or request_timeout <= 0
+        ):
+            request_timeout = 60
         payload.update(self._sanitize_kwargs(kwargs))
 
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=request_timeout) as client:
             try:
                 resp = await client.post(
                     self.chat_url, headers=self._build_headers(), json=payload

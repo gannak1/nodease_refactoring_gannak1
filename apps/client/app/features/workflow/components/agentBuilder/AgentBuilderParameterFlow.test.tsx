@@ -164,6 +164,46 @@ describe('Agent Builder parameter cards', () => {
     ).toBeInTheDocument();
   });
 
+  it.each([
+    ['Slack Bot Token', 'slackPostNode', 'bot_token'],
+    ['Slack Webhook URL', 'slackPostNode', 'url'],
+    ['GitHub API Token', 'githubNode', 'api_token'],
+  ] as const)(
+    '%s 필수 secret task는 나중에 설정으로 unresolved defer할 수 있다',
+    (label, nodeType, parameterKey) => {
+      const onDecision = vi.fn();
+      render(
+        <WorkflowResultGroup
+          tasks={[
+            {
+              ...tasks[0],
+              task_id: `task-${parameterKey}`,
+              node_id: nodeType === 'githubNode' ? 'github' : 'slack',
+              node_type: nodeType,
+              parameter_key: parameterKey,
+              label,
+              input_type: 'secret',
+              required: true,
+              defer_policy: 'allow_unresolved',
+            },
+          ]}
+          onFocusNode={vi.fn()}
+          onDecision={onDecision}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: '나중에 설정' }));
+
+      expect(onDecision).toHaveBeenCalledWith({
+        taskId: `task-${parameterKey}`,
+        action: 'defer',
+      });
+      expect(
+        screen.queryByRole('button', { name: '건너뛰기' }),
+      ).not.toBeInTheDocument();
+    },
+  );
+
   it('typed value를 제출한다', () => {
     const onDecision = vi.fn();
     render(
@@ -186,6 +226,72 @@ describe('Agent Builder parameter cards', () => {
         value: 'model-1',
       }),
     );
+  });
+
+  it('optional JSON을 빈 상태로 적용하면 invalid set 대신 skip을 제출한다', () => {
+    const onDecision = vi.fn();
+    const blocksTask: AgentBuilderParameterTask = {
+      ...tasks[0],
+      task_id: 'task-slack-blocks',
+      node_id: 'slack',
+      node_type: 'slackPostNode',
+      parameter_key: 'blocks',
+      label: 'Blocks',
+      input_type: 'json',
+      required: false,
+      defer_policy: 'forbidden',
+    };
+
+    render(
+      <WorkflowResultGroup
+        tasks={[blocksTask]}
+        onFocusNode={vi.fn()}
+        onDecision={onDecision}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+
+    expect(onDecision).toHaveBeenCalledWith({
+      taskId: 'task-slack-blocks',
+      action: 'skip',
+    });
+  });
+
+  it('clears an existing optional graph value instead of only skipping the task', () => {
+    const onDecision = vi.fn();
+    const messageTask: AgentBuilderParameterTask = {
+      ...tasks[0],
+      task_id: 'task-slack-message',
+      node_id: 'slack',
+      node_type: 'slackPostNode',
+      parameter_key: 'message',
+      label: 'Slack message',
+      input_type: 'textarea',
+      required: false,
+      defer_policy: 'forbidden',
+      status: 'active',
+      node_label: 'Slack',
+    };
+
+    render(
+      <WorkflowResultGroup
+        tasks={[messageTask]}
+        nodes={[{ id: 'slack', data: { message: 'existing' } } as Node]}
+        onFocusNode={vi.fn()}
+        onDecision={onDecision}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('Slack message'), {
+      target: { value: '' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+
+    expect(onDecision).toHaveBeenCalledWith({
+      taskId: 'task-slack-message',
+      action: 'clear',
+    });
   });
 
   it('resource reference는 검색 가능한 권한 후보에서만 선택한다', () => {
@@ -346,6 +452,58 @@ describe('Agent Builder parameter cards', () => {
       expect.objectContaining({ status: 'skipped', task_version: 8 }),
     );
     expect(scrollIntoView).toHaveBeenCalled();
+  });
+
+  it('previous로 표시한 값 없는 optional task에서도 건너뛰기를 유지한다', () => {
+    const onDecision = vi.fn();
+    render(
+      <WorkflowResultGroup
+        tasks={[
+          { ...tasks[1], status: 'skipped' },
+          { ...tasks[2], status: 'active', resolution_source: null },
+        ]}
+        presentationTaskId="task-kb"
+        onFocusNode={vi.fn()}
+        onDecision={onDecision}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '건너뛰기' }));
+    expect(onDecision).toHaveBeenCalledWith({
+      taskId: 'task-kb',
+      action: 'skip',
+    });
+  });
+
+  it('previous로 표시한 기존 optional 값은 값 지우고 건너뛰기로 clear한다', () => {
+    const onDecision = vi.fn();
+    render(
+      <WorkflowResultGroup
+        tasks={[
+          { ...tasks[1], status: 'completed' },
+          { ...tasks[2], status: 'active', resolution_source: null },
+        ]}
+        nodes={[
+          {
+            id: 'llm',
+            type: 'llmNode',
+            position: { x: 0, y: 0 },
+            data: { title: 'LLM', knowledgeBases: ['kb-1'] },
+          } as unknown as Node,
+        ]}
+        presentationTaskId="task-kb"
+        onFocusNode={vi.fn()}
+        onDecision={onDecision}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '값 지우고 건너뛰기' }),
+    );
+    expect(onDecision).toHaveBeenCalledWith({
+      taskId: 'task-kb',
+      action: 'clear',
+    });
   });
 
   it('canonical workflow node data에서 typed text/boolean/json 현재값을 hydrate한다', () => {
@@ -688,12 +846,12 @@ describe('Agent Builder parameter cards', () => {
     expect(onKnowledgeSubmit).toHaveBeenCalledWith([]);
   });
 
-  it('자동 추천값을 기본 선택한 입력 control과 다른 선택지로 보여주고 명시적 적용을 요구한다', () => {
+  it('자동 추천값은 완료로 접고 수정할 때 기존값과 다른 선택지를 보여준다', () => {
     const onDecision = vi.fn();
     const recommendedTask = {
       ...tasks[0],
       resolution_source: 'catalog_default' as const,
-      status: 'active' as const,
+      status: 'completed' as const,
       candidates: tasks[0].candidates?.map((candidate) => ({
         ...candidate,
         reference_value: 'gpt-5.5-mini',
@@ -715,29 +873,28 @@ describe('Agent Builder parameter cards', () => {
       <WorkflowResultGroup
         tasks={[recommendedTask]}
         nodes={[canonicalNode]}
-        setupStatus="awaiting_confirmation"
+        setupStatus="completed"
         onFocusNode={vi.fn()}
         onDecision={onDecision}
       />,
     );
 
-    expect(screen.getByText('자동 추천 · 확인 필요')).toBeInTheDocument();
+    expect(screen.getByText('Workflow 생성 완료')).toBeInTheDocument();
+    expect(screen.queryByLabelText('LLM model')).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('button', { name: '응답 생성 설정 보기' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'LLM model 수정' }));
     expect(screen.getByLabelText('LLM model')).toHaveValue('model-1');
     expect(screen.getByRole('option', { name: 'GPT Standard' })).toHaveValue(
       'model-2',
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '적용' }));
-    expect(onDecision).toHaveBeenCalledWith({
-      taskId: 'task-model',
-      action: 'confirm',
-    });
-
     fireEvent.change(screen.getByLabelText('LLM model'), {
       target: { value: 'model-2' },
     });
     fireEvent.click(screen.getByRole('button', { name: '적용' }));
-    expect(onDecision).toHaveBeenLastCalledWith({
+    expect(onDecision).toHaveBeenCalledWith({
       taskId: 'task-model',
       action: 'set',
       value: 'model-2',

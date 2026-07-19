@@ -5,17 +5,48 @@ import type {
   Edge,
   Node,
   Viewport,
+  WorkflowDraftRequest,
   WorkflowDraftSaveRequest,
 } from '../../types/Workflow';
-import type { AgentBuilderGraphMutation } from './agentBuilderGraphMutation';
+import {
+  applyAgentBuilderOperations,
+  type AgentBuilderGraphMutation,
+} from './agentBuilderGraphMutation';
+import { acquireWorkflowDraftSave } from '../../utils/workflowDraftSaveCoordinator';
+import { buildWorkflowDraftPayload } from '../../utils/workflowDraftPayload';
+import { workflowDraftTimestampsEqual } from '../../utils/workflowDraftCAS';
 
-const withoutEditorOnlyNodeData = (nodes: Node[]): Node[] =>
-  nodes.map((node) => {
-    const sanitized = structuredClone(node) as Node;
-    const data = { ...(sanitized.data as Record<string, unknown>) };
-    delete data.displayNumber;
-    return { ...sanitized, data } as Node;
-  });
+const payloadMatchesCurrentEditor = (
+  expectedPayload: WorkflowDraftRequest,
+  viewport: Viewport,
+) => {
+  const current = useWorkflowStore.getState();
+  const currentPayload = buildWorkflowDraftPayload(
+    {
+      nodes: current.nodes.filter((node) => node.type !== 'note'),
+      edges: current.edges,
+      viewport,
+      features: {
+        ...current.features,
+        noteNodes: current.nodes.filter((node) => node.type === 'note'),
+      },
+      envVariables: current.envVariables,
+      runtimeVariables: current.runtimeVariables,
+    },
+    viewport,
+    { noteNodesSource: 'features' },
+  );
+  return JSON.stringify(currentPayload) === JSON.stringify(expectedPayload);
+};
+
+const isAmbiguousSaveFailure = (error: unknown) => {
+  const status =
+    typeof (error as { response?: { status?: unknown } })?.response?.status ===
+    'number'
+      ? (error as { response: { status: number } }).response.status
+      : null;
+  return status === null || status >= 500;
+};
 
 export const applyAndSaveAgentBuilderMutation = async (input: {
   sessionId: string;
@@ -27,16 +58,40 @@ export const applyAndSaveAgentBuilderMutation = async (input: {
   };
 }) => {
   const store = useWorkflowStore.getState();
+  const assertActiveWorkflow = () => {
+    const activeWorkflowId = useWorkflowStore.getState().activeWorkflowId;
+    if (activeWorkflowId !== input.workflowId) {
+      throw Object.assign(new Error('workflow_context_changed'), {
+        code: 'workflow_context_changed',
+      });
+    }
+  };
   store.setAgentBuilderMutationSaving(true);
+  let releaseWorkflowSave: (() => void) | null = null;
   let applied = false;
   let persisted = false;
   let ambiguousSave = false;
   try {
+    releaseWorkflowSave = await acquireWorkflowDraftSave(
+      input.workflowId,
+      'agent_builder',
+    );
+    assertActiveWorkflow();
     const canonical = await workflowApi.getDraftWorkflow(input.workflowId);
-    store.ingestCanonicalDraftMetadata(canonical, input.workflowId);
+    assertActiveWorkflow();
     if (!Array.isArray(canonical?.nodes) || !Array.isArray(canonical?.edges)) {
       throw new Error('Agent Builder canonical base graph is unavailable');
     }
+    if (
+      canonical.graph_hash !== input.mutation.base_graph_hash ||
+      !workflowDraftTimestampsEqual(
+        canonical.updated_at,
+        input.mutation.expected_workflow_updated_at,
+      )
+    ) {
+      throw Object.assign(new Error('stale_graph'), { code: 'stale_graph' });
+    }
+    store.ingestCanonicalDraftMetadata(canonical, input.workflowId);
     const canonicalNodes = canonical.nodes as Node[];
     const canonicalEdges = canonical.edges as Edge[];
     const revertGraph = {
@@ -45,25 +100,34 @@ export const applyAndSaveAgentBuilderMutation = async (input: {
       ),
       edges: structuredClone(canonicalEdges),
     };
+    const mutationResult = applyAgentBuilderOperations(
+      revertGraph.nodes,
+      revertGraph.edges,
+      input.mutation.operations,
+    );
     store.applyAgentBuilderGraphMutation(input.mutation, input.sessionId, {
       nodes: revertGraph.nodes,
       edges: revertGraph.edges,
     });
     applied = true;
     const current = useWorkflowStore.getState();
-    const saveRequest: WorkflowDraftSaveRequest = {
-      // displayNumber is a screen-only label and must not affect CAS hashes.
-      nodes: withoutEditorOnlyNodeData(
-        current.nodes.filter((node) => node.type !== 'note'),
-      ),
-      edges: current.edges,
-      viewport: input.viewport,
-      features: {
-        ...current.features,
-        noteNodes: current.nodes.filter((node) => node.type === 'note'),
+    const canonicalPayload = buildWorkflowDraftPayload(
+      {
+        nodes: mutationResult.nodes.filter((node) => node.type !== 'note'),
+        edges: mutationResult.edges,
+        viewport: input.viewport,
+        features: {
+          ...current.features,
+          noteNodes: current.nodes.filter((node) => node.type === 'note'),
+        },
+        envVariables: current.envVariables,
+        runtimeVariables: current.runtimeVariables,
       },
-      envVariables: current.envVariables,
-      runtimeVariables: current.runtimeVariables,
+      input.viewport,
+      { noteNodesSource: 'features' },
+    );
+    const saveRequest: WorkflowDraftSaveRequest = {
+      ...canonicalPayload,
       expected_graph_hash: canonical.graph_hash,
       expected_updated_at: canonical.updated_at,
       mutation_context: {
@@ -80,76 +144,74 @@ export const applyAndSaveAgentBuilderMutation = async (input: {
     let saveResult: { graph_hash: string; updated_at: string } | null = null;
     try {
       saveResult = await save();
-    } catch {
+    } catch (saveError) {
+      if (!isAmbiguousSaveFailure(saveError)) throw saveError;
       try {
         saveResult = await save();
       } catch (retryError) {
         let confirmedUnsaved = false;
         let recoveredCanonical = false;
+        let recoverySession: Awaited<
+          ReturnType<typeof agentBuilderApi.getSession>
+        > | null = null;
+        let recoveryDraft: Awaited<
+          ReturnType<typeof workflowApi.getDraftWorkflow>
+        > | null = null;
         try {
-          const session = await agentBuilderApi.getSession(input.sessionId);
-          const active = session.active_graph_mutation as
-            | Record<string, unknown>
-            | null
-            | undefined;
-          const sameOperation =
-            active?.operation_id === input.mutation.operation_id;
-          const resultGraphHash = active?.result_graph_hash;
-          const savedWorkflowUpdatedAt = active?.saved_workflow_updated_at;
-          const expectedResultMatches =
-            !input.mutation.expected_result_graph_hash ||
-            resultGraphHash === input.mutation.expected_result_graph_hash;
-          if (
-            sameOperation &&
-            (active?.status === 'pending_ack' ||
-              active?.status === 'acknowledged') &&
-            typeof resultGraphHash === 'string' &&
-            typeof savedWorkflowUpdatedAt === 'string' &&
-            expectedResultMatches
-          ) {
-            saveResult = {
-              graph_hash: resultGraphHash,
-              updated_at: savedWorkflowUpdatedAt,
-            };
-            recoveredCanonical = true;
-          } else if (sameOperation && active?.status === 'blocked') {
-            confirmedUnsaved = true;
-          }
+          recoverySession = await agentBuilderApi.getSession(input.sessionId);
         } catch {
-          // The canonical workflow reload below is the remaining recovery path.
+          recoverySession = null;
         }
-        if (!recoveredCanonical && !confirmedUnsaved) {
-          try {
-            const canonical = await workflowApi.getDraftWorkflow(
-              input.workflowId,
-            );
-            useWorkflowStore
-              .getState()
-              .ingestCanonicalDraftMetadata(canonical, input.workflowId);
-            if (
-              canonical?.graph_hash ===
-                input.mutation.expected_result_graph_hash &&
-              typeof canonical.updated_at === 'string'
-            ) {
-              saveResult = {
-                graph_hash: canonical.graph_hash,
-                updated_at: canonical.updated_at,
-              };
-              recoveredCanonical = true;
-            } else if (
-              canonical?.graph_hash === input.mutation.base_graph_hash &&
-              canonical.updated_at === input.mutation.expected_workflow_updated_at
-            ) {
-              confirmedUnsaved = true;
-            } else if (canonical) {
-              useWorkflowStore
-                .getState()
-                .ingestCanonicalDraftMetadata(canonical, input.workflowId);
-              ambiguousSave = true;
-            }
-          } catch {
-            ambiguousSave = true;
-          }
+        try {
+          recoveryDraft = await workflowApi.getDraftWorkflow(input.workflowId);
+        } catch {
+          recoveryDraft = null;
+        }
+
+        const active = recoverySession?.active_graph_mutation as
+          | Record<string, unknown>
+          | null
+          | undefined;
+        const expectedResultGraphHash =
+          input.mutation.expected_result_graph_hash;
+        const savedWorkflowUpdatedAt = active?.saved_workflow_updated_at;
+        const envelopeMatchesExpectedResult =
+          active?.operation_id === input.mutation.operation_id &&
+          (active?.status === 'pending_ack' ||
+            active?.status === 'acknowledged') &&
+          typeof expectedResultGraphHash === 'string' &&
+          active?.result_graph_hash === expectedResultGraphHash &&
+          typeof savedWorkflowUpdatedAt === 'string';
+        const canonicalMatchesExpectedResult =
+          envelopeMatchesExpectedResult &&
+          recoveryDraft?.graph_hash === expectedResultGraphHash &&
+          workflowDraftTimestampsEqual(
+            recoveryDraft.updated_at,
+            savedWorkflowUpdatedAt,
+          );
+        const canonicalMatchesBase =
+          recoveryDraft?.graph_hash === input.mutation.base_graph_hash &&
+          workflowDraftTimestampsEqual(
+            recoveryDraft.updated_at,
+            input.mutation.expected_workflow_updated_at,
+          );
+
+        if (canonicalMatchesExpectedResult && recoveryDraft) {
+          useWorkflowStore
+            .getState()
+            .ingestCanonicalDraftMetadata(recoveryDraft, input.workflowId);
+          saveResult = {
+            graph_hash: expectedResultGraphHash,
+            updated_at: savedWorkflowUpdatedAt,
+          };
+          recoveredCanonical = true;
+        } else if (canonicalMatchesBase && recoveryDraft) {
+          useWorkflowStore
+            .getState()
+            .ingestCanonicalDraftMetadata(recoveryDraft, input.workflowId);
+          confirmedUnsaved = true;
+        } else {
+          ambiguousSave = true;
         }
         if (confirmedUnsaved) {
           useWorkflowStore.getState().rollbackLatestAgentBuilderGraphMutation();
@@ -172,7 +234,9 @@ export const applyAndSaveAgentBuilderMutation = async (input: {
       sessionId: input.sessionId,
       revertGraph,
     });
-    useWorkflowStore.getState().setHasUnsavedChanges(false);
+    if (payloadMatchesCurrentEditor(canonicalPayload, input.viewport)) {
+      useWorkflowStore.getState().setHasUnsavedChanges(false);
+    }
     const acknowledgementRequest = {
       operationId: input.mutation.operation_id,
       workflowId: input.workflowId,
@@ -188,13 +252,17 @@ export const applyAndSaveAgentBuilderMutation = async (input: {
         input.sessionId,
         acknowledgementRequest,
       );
-    } catch {
+    } catch (acknowledgementError) {
+      if (!isAmbiguousSaveFailure(acknowledgementError)) {
+        throw acknowledgementError;
+      }
       try {
         acknowledgement = await agentBuilderApi.acknowledgeMutation(
           input.sessionId,
           acknowledgementRequest,
         );
       } catch (retryError) {
+        if (!isAmbiguousSaveFailure(retryError)) throw retryError;
         const [sessionResult, canonicalResult] = await Promise.allSettled([
           agentBuilderApi.getSession(input.sessionId),
           workflowApi.getDraftWorkflow(input.workflowId),
@@ -208,25 +276,28 @@ export const applyAndSaveAgentBuilderMutation = async (input: {
           throw retryError;
         }
         const active = sessionResult.value.active_graph_mutation as
-          | Record<string, unknown>
-          | null
-          | undefined;
+          Record<string, unknown> | null | undefined;
         const canonical = canonicalResult.value;
-        useWorkflowStore
-          .getState()
-          .ingestCanonicalDraftMetadata(canonical, input.workflowId);
         const acknowledged =
           active?.operation_id === input.mutation.operation_id &&
           active?.status === 'acknowledged' &&
           active?.result_graph_hash === saveResult.graph_hash &&
-          active?.saved_workflow_updated_at === saveResult.updated_at &&
+          workflowDraftTimestampsEqual(
+            active?.saved_workflow_updated_at,
+            saveResult.updated_at,
+          ) &&
           canonical.graph_hash === saveResult.graph_hash &&
-          canonical.updated_at === saveResult.updated_at;
+          workflowDraftTimestampsEqual(
+            canonical.updated_at,
+            saveResult.updated_at,
+          );
         if (!acknowledged) throw retryError;
+        useWorkflowStore
+          .getState()
+          .ingestCanonicalDraftMetadata(canonical, input.workflowId);
         recoveredSession = sessionResult.value;
         const completionContext = active?.completion_context as
-          | Record<string, unknown>
-          | undefined;
+          Record<string, unknown> | undefined;
         acknowledgement = {
           operation_id: input.mutation.operation_id,
           operation_status: 'acknowledged' as const,
@@ -252,17 +323,25 @@ export const applyAndSaveAgentBuilderMutation = async (input: {
         recoveredSession = null;
       }
     }
-    useWorkflowStore.getState().markLatestAgentBuilderMutationAcknowledged(
-      input.mutation.operation_id,
-      recoveredSession?.status === 'completed',
-    );
+    useWorkflowStore
+      .getState()
+      .markLatestAgentBuilderMutationAcknowledged(
+        input.mutation.operation_id,
+        recoveredSession?.status === 'completed',
+      );
     return { ...saveResult, acknowledgement, session: recoveredSession };
   } catch (error) {
-    if (applied && !persisted && !ambiguousSave) {
+    if (
+      applied &&
+      !persisted &&
+      !ambiguousSave &&
+      useWorkflowStore.getState().activeWorkflowId === input.workflowId
+    ) {
       useWorkflowStore.getState().rollbackLatestAgentBuilderGraphMutation();
     }
     throw error;
   } finally {
+    releaseWorkflowSave?.();
     useWorkflowStore.getState().setAgentBuilderMutationSaving(false);
   }
 };

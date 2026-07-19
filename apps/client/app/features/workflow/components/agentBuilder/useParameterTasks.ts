@@ -12,6 +12,53 @@ import {
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import { applyAndSaveAgentBuilderMutation } from './useAgentBuilderEditor';
 
+const SAFE_PARAMETER_ERROR_CODE = /^[a-z][a-z0-9_]{0,79}$/;
+
+const parameterDecisionErrorCode = (error: unknown): string | null => {
+  if (!error || typeof error !== 'object') return null;
+  const clientCode = (error as { code?: unknown }).code;
+  if (
+    typeof clientCode === 'string' &&
+    SAFE_PARAMETER_ERROR_CODE.test(clientCode)
+  ) {
+    return clientCode;
+  }
+  const data = (error as { response?: { data?: unknown } }).response?.data;
+  if (!data || typeof data !== 'object') return null;
+  const detail = (data as { detail?: unknown }).detail;
+  if (typeof detail === 'string') {
+    return SAFE_PARAMETER_ERROR_CODE.test(detail) ? detail : null;
+  }
+  if (!detail || typeof detail !== 'object') return null;
+  const code = (detail as { code?: unknown }).code;
+  return typeof code === 'string' && SAFE_PARAMETER_ERROR_CODE.test(code)
+    ? code
+    : null;
+};
+
+export const parameterDecisionErrorMessage = (error: unknown): string => {
+  switch (parameterDecisionErrorCode(error)) {
+    case 'stale_graph':
+    case 'stale_workflow_updated_at':
+      return 'Workflow가 서버에서 변경되어 설정을 저장하지 못했습니다. 최신 상태를 확인한 뒤 다시 시도해주세요.';
+    case 'workflow_context_changed':
+      return 'Workflow가 전환되어 이전 Agent Builder 설정을 적용하지 않았습니다.';
+    case 'result_graph_hash_mismatch':
+      return '설정 결과가 서버 검증 결과와 일치하지 않아 저장하지 않았습니다.';
+    case 'invalid_decision':
+      return '입력한 값이 이 파라미터의 형식 또는 허용 범위와 맞지 않습니다.';
+    case 'task_conflict':
+      return '다른 설정 변경이 먼저 반영되었습니다. 최신 설정을 확인한 뒤 다시 시도해주세요.';
+    case 'permission_denied':
+      return '이 파라미터를 변경할 권한이 없습니다.';
+  }
+  const status = (error as { response?: { status?: unknown } } | null)?.response
+    ?.status;
+  return typeof status === 'number'
+    ? `파라미터 설정을 저장하지 못했습니다. (HTTP ${status})`
+    : '파라미터 설정을 저장하지 못했습니다.';
+};
+
 export const toParameterDecisionValue = (
   task: AgentBuilderParameterTask,
   value: unknown,
@@ -19,6 +66,7 @@ export const toParameterDecisionValue = (
   if (task.input_type === 'boolean') return { kind: 'boolean', value };
   if (task.input_type === 'number') return { kind: 'number', value };
   if (task.input_type === 'json') return { kind: 'json', value };
+  if (task.input_type === 'secret') return { kind: 'secret', value };
   if (task.input_type === 'variable_selector') {
     const suggestion = value as {
       suggestion_id: string;
@@ -28,6 +76,19 @@ export const toParameterDecisionValue = (
       kind: 'variable_selector',
       suggestion_id: suggestion.suggestion_id,
       value_selector: suggestion.value_selector,
+    };
+  }
+  if (task.input_type === 'variable_selector_list') {
+    const selections = value as Array<{
+      suggestion_id: string;
+      value_selector: string[];
+    }>;
+    return {
+      kind: 'variable_selector_list',
+      selections: selections.map((selection) => ({
+        suggestion_id: selection.suggestion_id,
+        value_selector: selection.value_selector,
+      })),
     };
   }
   if (task.input_type === 'resource_ref') {
@@ -166,7 +227,7 @@ export const useParameterTasks = ({
   const decideParameter = useCallback(
     async (input: {
       taskId: string;
-      action: 'confirm' | 'set' | 'defer' | 'skip' | 'previous';
+      action: 'confirm' | 'set' | 'clear' | 'defer' | 'skip' | 'previous';
       value?: unknown;
     }) => {
       if (!sessionId || !parameterGroup || isApplying) return;
@@ -228,7 +289,18 @@ export const useParameterTasks = ({
           if (applied.session?.status) {
             onRequestStatusChange?.(applied.session.status);
           } else {
-            onRequestStatusChange?.('completion_confirming');
+            const acknowledgedGroup =
+              applied.acknowledgement.parameter_group ?? null;
+            const hasInteractiveTask =
+              acknowledgedGroup?.status === 'active' &&
+              acknowledgedGroup.tasks.some((candidate) =>
+                ['active', 'invalid'].includes(candidate.status),
+              );
+            onRequestStatusChange?.(
+              hasInteractiveTask
+                ? 'parameter_configuration'
+                : 'completion_confirming',
+            );
           }
         } else {
           const restored = await agentBuilderApi.getSession(sessionId);
@@ -240,7 +312,7 @@ export const useParameterTasks = ({
           );
         }
         pendingDecisionRef.current = null;
-      } catch {
+      } catch (error) {
         if (input.action === 'previous') {
           toast.error('이전 설정 항목을 확인하지 못했습니다.');
           return;
@@ -266,7 +338,7 @@ export const useParameterTasks = ({
         } catch {
           // Keep the operation id while the server outcome remains unknown.
         }
-        toast.error('파라미터 설정을 저장하지 못했습니다.');
+        toast.error(parameterDecisionErrorMessage(error));
       } finally {
         setIsApplying(false);
       }

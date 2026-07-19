@@ -1,4 +1,5 @@
 import hashlib
+from unittest.mock import Mock
 import pytest
 
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
@@ -119,6 +120,35 @@ def test_node_uses_dedicated_output_and_resolves_only_referenced_template_values
     assert adapter.request is not None
     assert adapter.request.payload == {"text": "hello world", "channel": "C123"}
     assert "test-token" not in repr(adapter.request)
+
+
+def test_node_resolves_opaque_secret_reference_only_at_runtime() -> None:
+    node, adapter = _node(
+        authConfig={
+            "token": "workflow-node-secret://00000000-0000-4000-8000-000000000001"
+        }
+    )
+    resolver = Mock(return_value="resolved-runtime-token")
+    node.execution_context.update(
+        {
+            "workflow_id": "00000000-0000-4000-8000-000000000010",
+            "organization_id": "00000000-0000-4000-8000-000000000020",
+            "workflow_node_secret_resolver": resolver,
+        }
+    )
+
+    node.execute({})
+
+    resolver.assert_called_once_with(
+        reference="workflow-node-secret://00000000-0000-4000-8000-000000000001",
+        workflow_id="00000000-0000-4000-8000-000000000010",
+        organization_id="00000000-0000-4000-8000-000000000020",
+        node_id="slack-1",
+        node_type="slackPostNode",
+        parameter_key="bot_token",
+    )
+    assert adapter.request is not None
+    assert adapter.request.secret.reveal_for_adapter() == "resolved-runtime-token"
 
 
 def test_json_template_escapes_upstream_value_without_changing_structure() -> None:

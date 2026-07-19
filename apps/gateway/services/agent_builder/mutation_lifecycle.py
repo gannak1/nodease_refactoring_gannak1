@@ -30,6 +30,10 @@ from apps.gateway.application.agent_builder.parameter_tasks import (
     acknowledge_task_decision,
     refresh_parameter_group_configuration,
     refresh_parameter_group_suggestions,
+    reconcile_parameter_group_catalog_tasks,
+)
+from apps.gateway.application.agent_builder.service import (
+    plan_parameter_tasks_for_existing_graph,
 )
 from apps.gateway.services.agent_builder.parameter_candidates import (
     ParameterCandidateProvider,
@@ -40,6 +44,19 @@ from apps.gateway.application.agent_builder.condition_branches import (
 
 
 def _refresh_parameter_group(group, graph):
+    step_node_ids = {
+        str(task.step_id): str(task.node_id)
+        for task in group.tasks
+        if task.step_id and task.node_id
+    }
+    if step_node_ids:
+        catalog_tasks = plan_parameter_tasks_for_existing_graph(
+            graph=graph,
+            step_node_ids=step_node_ids,
+            group_id=group.group_id,
+            affected_node_ids=set(step_node_ids.values()),
+        )
+        group = reconcile_parameter_group_catalog_tasks(group, catalog_tasks)
     group = reconcile_condition_branch_tasks(group, graph)
     group = refresh_parameter_group_configuration(group, graph)
     return refresh_parameter_group_suggestions(group, graph)
@@ -335,7 +352,7 @@ class GraphMutationLifecycleService:
                     operation_id=operation_id,
                     task_id=UUID(str(parameter_task_id)),
                     action=cast(
-                        Literal["set", "defer", "skip", "previous"],
+                        Literal["set", "clear", "defer", "skip", "previous"],
                         str(pending["action"]),
                     ),
                     expected_task_version=int(pending["expected_task_version"]),

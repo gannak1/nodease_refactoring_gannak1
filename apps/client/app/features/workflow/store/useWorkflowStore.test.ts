@@ -19,6 +19,10 @@ import type { AnswerNode, CodeNode, Node, StartNode } from '../types/Workflow';
 import type { Edge, Connection } from '@xyflow/react';
 import { DEFAULT_NODES } from '../constants';
 import type { AgentBuilderParameterGroup } from '../api/agentBuilderApi';
+import {
+  clearWorkflowDraftSaveCoordinatorForTests,
+  tryAcquireWorkflowDraftSave,
+} from '../utils/workflowDraftSaveCoordinator';
 
 // API 모킹
 vi.mock('../api/workflowApi', () => ({
@@ -34,6 +38,7 @@ vi.mock('../api/workflowApi', () => ({
 const initialState = useWorkflowStore.getState();
 const resetStore = () => {
   vi.clearAllMocks();
+  clearWorkflowDraftSaveCoordinatorForTests();
   useWorkflowStore.setState(initialState, true);
 };
 
@@ -485,6 +490,24 @@ describe('Agent Builder GraphMutation transaction', () => {
     });
   });
 
+  it('keeps the global save guard active until every overlapping save finishes', () => {
+    const store = useWorkflowStore.getState();
+
+    store.setAgentBuilderMutationSaving(true);
+    store.setAgentBuilderMutationSaving(true);
+    store.setAgentBuilderMutationSaving(false);
+
+    expect(useWorkflowStore.getState().isAgentBuilderMutationSaving).toBe(
+      true,
+    );
+
+    store.setAgentBuilderMutationSaving(false);
+
+    expect(useWorkflowStore.getState().isAgentBuilderMutationSaving).toBe(
+      false,
+    );
+  });
+
   it('assigns display numbers to Agent Builder nodes so edge handles remain visible', () => {
     useWorkflowStore.getState().applyAgentBuilderGraphMutation({
       operation_id: 'operation-display-numbers',
@@ -508,9 +531,7 @@ describe('Agent Builder GraphMutation transaction', () => {
     });
 
     expect(
-      useWorkflowStore
-        .getState()
-        .nodes.map((node) => node.data.displayNumber),
+      useWorkflowStore.getState().nodes.map((node) => node.data.displayNumber),
     ).toEqual([1, 2, 3]);
   });
 
@@ -1394,6 +1415,62 @@ describe('canonical draft metadata', () => {
       updatedAt: '2026-07-13T00:00:01Z',
     });
   });
+
+  it('keeps the local workflow viewport equal to the saved version restore payload', async () => {
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      nodes: [],
+      edges: [],
+      viewport: { x: 320, y: -180, zoom: 1.75 },
+      workflow_id: 'wf-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-13T00:00:00Z',
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({
+      status: 'success',
+      workflow_id: 'wf-1',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:01Z',
+    });
+    useWorkflowStore.setState((state) => ({
+      workflows: state.workflows.map((workflow) =>
+        workflow.id === 'wf-1'
+          ? {
+              ...workflow,
+              viewport: { x: 320, y: -180, zoom: 1.75 },
+            }
+          : workflow,
+      ),
+      hasUnsavedChanges: true,
+    }));
+
+    await useWorkflowStore.getState().restoreVersion({
+      id: 'deployment-viewport',
+      app_id: 'app-1',
+      version: 1,
+      created_by: 'user-1',
+      created_at: '2026-07-01T00:00:00Z',
+      type: 'api',
+      is_active: false,
+      graph_snapshot: {
+        nodes: [createMockNode('restored', 'startNode')],
+        edges: [],
+        features: { nextNodeDisplayNumber: 1 },
+      },
+    } as DeploymentResponse);
+
+    expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledWith(
+      'wf-1',
+      expect.objectContaining({
+        viewport: { x: 0, y: 0, zoom: 1 },
+      }),
+    );
+    expect(
+      useWorkflowStore
+        .getState()
+        .workflows.find((workflow) => workflow.id === 'wf-1')?.viewport,
+    ).toEqual({ x: 0, y: 0, zoom: 1 });
+    expect(useWorkflowStore.getState().hasUnsavedChanges).toBe(false);
+  });
 });
 
 // ============================================================================
@@ -1527,6 +1604,77 @@ describe('캔버스 히스토리/클립보드 테스트', () => {
       pastedSource?.id,
       'output',
     ]);
+  });
+
+  it('노드 복제는 Slack과 GitHub secret reference만 제거하고 일반 설정은 보존한다', () => {
+    const slackReference =
+      'workflow-node-secret://00000000-0000-4000-8000-000000000001';
+    const webhookReference =
+      'workflow-node-secret://00000000-0000-4000-8000-000000000002';
+    const githubReference =
+      'workflow-node-secret://00000000-0000-4000-8000-000000000003';
+    useWorkflowStore.getState().setNodes([
+      {
+        ...createMockNode('slack-api'),
+        type: 'slackPostNode',
+        selected: true,
+        data: {
+          title: 'Slack API',
+          slackMode: 'api',
+          channel: 'C123',
+          message: 'hello',
+          authConfig: { token: slackReference },
+        },
+      } as Node,
+      {
+        ...createMockNode('slack-webhook'),
+        type: 'slackPostNode',
+        selected: true,
+        data: {
+          title: 'Slack Webhook',
+          slackMode: 'webhook',
+          url: webhookReference,
+          message: 'webhook message',
+        },
+      } as Node,
+      {
+        ...createMockNode('github'),
+        type: 'githubNode',
+        selected: true,
+        data: {
+          title: 'GitHub',
+          action: 'get_pr',
+          repo_owner: 'octo',
+          repo_name: 'repo',
+          pr_number: '15',
+          api_token: githubReference,
+        },
+      } as Node,
+    ]);
+
+    useWorkflowStore.getState().duplicateSelectedNodes();
+
+    const duplicates = useWorkflowStore
+      .getState()
+      .nodes.filter((node) => node.id.includes('-copy-'));
+    const slackApi = duplicates.find((node) =>
+      node.id.startsWith('slack-api-copy-'),
+    );
+    const slackWebhook = duplicates.find((node) =>
+      node.id.startsWith('slack-webhook-copy-'),
+    );
+    const github = duplicates.find((node) =>
+      node.id.startsWith('github-copy-'),
+    );
+
+    expect(slackApi?.data.authConfig).toEqual({});
+    expect(slackApi?.data.channel).toBe('C123');
+    expect(slackApi?.data.message).toBe('hello');
+    expect(slackWebhook?.data.url).toBeUndefined();
+    expect(slackWebhook?.data.message).toBe('webhook message');
+    expect(github?.data.api_token).toBeUndefined();
+    expect(github?.data.repo_owner).toBe('octo');
+    expect(github?.data.pr_number).toBe('15');
   });
 
   it('selector 배열은 첫 번째 슬롯만 새 ID로 재매핑하고 이후 key 값은 보존한다', () => {
@@ -1845,6 +1993,284 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
     expect(state.nodes[0].data.newField).toBe('newValue');
   });
 
+  it('clears only a server-validated deferred parameter after node detail save', () => {
+    const node = createMockNode('slack-1', 'slackPostNode');
+    node.data = {
+      ...node.data,
+      channel: 'old-channel',
+      message: 'hello',
+      _deferred_parameters: ['channel', 'message'],
+    } as Node['data'];
+    useWorkflowStore.setState({ activeWorkflowId: 'workflow-1', nodes: [node] });
+
+    useWorkflowStore.getState().updateNodeData('slack-1', {
+      channel: 'new-channel',
+    });
+
+    expect(
+      useWorkflowStore.getState().nodes[0].data._deferred_parameters,
+    ).toEqual(['channel', 'message']);
+
+    useWorkflowStore.getState().ingestCanonicalDraftMetadata({
+      workflow_id: 'workflow-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-19T00:00:00Z',
+      canonical_deferred_parameters: [
+        { node_path: ['slack-1'], parameter_keys: ['message'] },
+      ],
+    });
+
+    expect(useWorkflowStore.getState().nodes[0].data).toMatchObject({
+      channel: 'new-channel',
+      _deferred_parameters: ['message'],
+    });
+  });
+
+  it('keeps deferred markers for unrelated or empty node detail edits', () => {
+    const node = createMockNode('slack-1', 'slackPostNode');
+    node.data = {
+      ...node.data,
+      channel: 'old-channel',
+      _deferred_parameters: ['channel'],
+    } as Node['data'];
+    useWorkflowStore.getState().setNodes([node]);
+
+    useWorkflowStore.getState().updateNodeData('slack-1', {
+      title: 'Slack updated',
+    });
+    useWorkflowStore.getState().updateNodeData('slack-1', { channel: '   ' });
+
+    expect(
+      useWorkflowStore.getState().nodes[0].data._deferred_parameters,
+    ).toEqual(['channel']);
+  });
+
+  it('keeps a deferred marker when a non-empty node detail value violates catalog validation', () => {
+    const node = createMockNode('github-1', 'githubNode');
+    node.data = {
+      ...node.data,
+      pr_number: '',
+      _deferred_parameters: ['pr_number'],
+    } as Node['data'];
+    useWorkflowStore.getState().setNodes([node]);
+
+    useWorkflowStore.getState().updateNodeData('github-1', {
+      pr_number: 0,
+    });
+
+    useWorkflowStore.getState().ingestCanonicalDraftMetadata({
+      workflow_id: 'workflow-1',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-19T00:00:00Z',
+      canonical_deferred_parameters: [
+        { node_path: ['github-1'], parameter_keys: ['pr_number'] },
+      ],
+    });
+
+    expect(
+      useWorkflowStore.getState().nodes[0].data._deferred_parameters,
+    ).toEqual(['pr_number']);
+  });
+
+  it('reconciles a server-validated deferred parameter inside a nested subgraph', () => {
+    const nestedNode = createMockNode('mail-1', 'mailNode');
+    nestedNode.data = {
+      ...nestedNode.data,
+      credential_id: null,
+      _deferred_parameters: ['credential_id', 'query'],
+    } as Node['data'];
+    const parentNode = createMockNode('loop-1', 'loopNode');
+    parentNode.data = {
+      ...parentNode.data,
+      subGraph: { nodes: [nestedNode], edges: [] },
+    } as Node['data'];
+    useWorkflowStore.setState({
+      activeWorkflowId: 'workflow-1',
+      nodes: [parentNode],
+    });
+
+    useWorkflowStore
+      .getState()
+      .updateInnerNodeData('loop-1', 'mail-1', {
+        credential_id: 'credential-1',
+      });
+
+    useWorkflowStore.getState().ingestCanonicalDraftMetadata({
+      workflow_id: 'workflow-1',
+      graph_hash: 'c'.repeat(64),
+      updated_at: '2026-07-19T00:00:00Z',
+      canonical_deferred_parameters: [
+        { node_path: ['loop-1'], parameter_keys: [] },
+        {
+          node_path: ['loop-1', 'mail-1'],
+          parameter_keys: ['query'],
+        },
+      ],
+    });
+
+    const nestedData = (useWorkflowStore.getState().nodes[0].data.subGraph as {
+      nodes: Node[];
+    }).nodes[0].data;
+    expect(nestedData).toMatchObject({
+      credential_id: 'credential-1',
+      _deferred_parameters: ['query'],
+    });
+  });
+
+  it('reconciles duplicate node ids by their nested graph path', () => {
+    const topLevel = createMockNode('shared-1', 'githubNode');
+    topLevel.data = {
+      ...topLevel.data,
+      _deferred_parameters: ['repo_name'],
+    } as Node['data'];
+    const nested = createMockNode('shared-1', 'mailNode');
+    nested.data = {
+      ...nested.data,
+      _deferred_parameters: ['query'],
+    } as Node['data'];
+    const loop = createMockNode('loop-1', 'loopNode');
+    loop.data = {
+      ...loop.data,
+      subGraph: { nodes: [nested], edges: [] },
+    } as Node['data'];
+    useWorkflowStore.setState({
+      activeWorkflowId: 'workflow-1',
+      nodes: [topLevel, loop],
+    });
+
+    useWorkflowStore.getState().ingestCanonicalDraftMetadata({
+      workflow_id: 'workflow-1',
+      graph_hash: 'd'.repeat(64),
+      updated_at: '2026-07-19T00:00:00Z',
+      canonical_deferred_parameters: [
+        { node_path: ['shared-1'], parameter_keys: ['repo_owner'] },
+        { node_path: ['loop-1'], parameter_keys: [] },
+        {
+          node_path: ['loop-1', 'shared-1'],
+          parameter_keys: ['credential_id'],
+        },
+      ],
+    });
+
+    const state = useWorkflowStore.getState();
+    expect(state.nodes[0].data._deferred_parameters).toEqual(['repo_owner']);
+    const nestedData = (state.nodes[1].data.subGraph as { nodes: Node[] })
+      .nodes[0].data;
+    expect(nestedData._deferred_parameters).toEqual(['credential_id']);
+  });
+
+  it('keeps an inactive workflow projection out of the live editor', () => {
+    const workflowANode = createMockNode('shared-1', 'slackPostNode');
+    workflowANode.data = {
+      ...workflowANode.data,
+      _deferred_parameters: ['channel'],
+    } as Node['data'];
+    const workflowBNode = createMockNode('shared-1', 'githubNode');
+    workflowBNode.data = {
+      ...workflowBNode.data,
+      _deferred_parameters: ['repo_name'],
+    } as Node['data'];
+    useWorkflowStore.setState({
+      activeWorkflowId: 'workflow-b',
+      nodes: [workflowBNode],
+      workflows: [
+        {
+          id: 'workflow-a',
+          appId: 'app-1',
+          nodes: [workflowANode],
+          edges: [],
+          features: {},
+          viewport: { x: 0, y: 0, zoom: 1 },
+        },
+        {
+          id: 'workflow-b',
+          appId: 'app-1',
+          nodes: [workflowBNode],
+          edges: [],
+          features: {},
+          viewport: { x: 0, y: 0, zoom: 1 },
+        },
+      ],
+      hasUnsavedChanges: true,
+    });
+
+    useWorkflowStore.getState().ingestCanonicalDraftMetadata({
+      workflow_id: 'workflow-a',
+      graph_hash: 'e'.repeat(64),
+      updated_at: '2026-07-19T00:00:00Z',
+      canonical_deferred_parameters: [
+        { node_path: ['shared-1'], parameter_keys: [] },
+      ],
+    });
+
+    const state = useWorkflowStore.getState();
+    expect(state.activeWorkflowId).toBe('workflow-b');
+    expect(state.nodes[0].data._deferred_parameters).toEqual(['repo_name']);
+    expect(state.hasUnsavedChanges).toBe(true);
+    expect(
+      state.workflows.find((workflow) => workflow.id === 'workflow-a')?.nodes[0]
+        .data._deferred_parameters,
+    ).toBeUndefined();
+  });
+
+  it('treats the default editor as inactive for another workflow projection', () => {
+    const workflowANode = createMockNode('shared-1', 'slackPostNode');
+    workflowANode.data = {
+      ...workflowANode.data,
+      _deferred_parameters: ['channel'],
+    } as Node['data'];
+    const defaultNode = createMockNode('shared-1', 'githubNode');
+    defaultNode.data = {
+      ...defaultNode.data,
+      _deferred_parameters: ['repo_name'],
+    } as Node['data'];
+    useWorkflowStore.setState({
+      activeWorkflowId: 'default',
+      nodes: [defaultNode],
+      workflows: [
+        {
+          id: 'workflow-a',
+          appId: 'app-1',
+          nodes: [workflowANode],
+          edges: [],
+          features: {},
+          viewport: { x: 0, y: 0, zoom: 1 },
+        },
+        {
+          id: 'default',
+          appId: 'app-1',
+          nodes: [defaultNode],
+          edges: [],
+          features: {},
+          viewport: { x: 0, y: 0, zoom: 1 },
+        },
+      ],
+      hasUnsavedChanges: true,
+    });
+
+    useWorkflowStore.getState().ingestCanonicalDraftMetadata({
+      workflow_id: 'workflow-a',
+      graph_hash: 'f'.repeat(64),
+      updated_at: '2026-07-19T00:00:00Z',
+      canonical_deferred_parameters: [
+        { node_path: ['shared-1'], parameter_keys: [] },
+      ],
+    });
+
+    const state = useWorkflowStore.getState();
+    expect(state.activeWorkflowId).toBe('default');
+    expect(state.nodes[0].data._deferred_parameters).toEqual(['repo_name']);
+    expect(state.hasUnsavedChanges).toBe(true);
+    expect(
+      state.workflows.find((workflow) => workflow.id === 'workflow-a')?.nodes[0]
+        .data._deferred_parameters,
+    ).toBeUndefined();
+    expect(
+      state.workflows.find((workflow) => workflow.id === 'default')?.nodes[0]
+        .data._deferred_parameters,
+    ).toEqual(['repo_name']);
+  });
+
   it('노드 데이터를 수정하면 저장되지 않은 변경 상태로 표시한다', () => {
     const node = createMockNode('node-1');
     useWorkflowStore.getState().setNodes([node]);
@@ -1857,15 +2283,17 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
     expect(useWorkflowStore.getState().hasUnsavedChanges).toBe(true);
   });
 
-  it('테스트 실행 결과를 node data에 반영해도 기존 편집 설정값은 유지된다', () => {
+  it('테스트 실행 presentation은 설정값을 유지하고 dirty/history를 변경하지 않는다', () => {
     const node = createCodeNode('code-1', {
       title: '코드 실행',
       code: 'def main(inputs):\n    return {"ok": True}',
       timeout: 30,
     });
     useWorkflowStore.getState().setNodes([node]);
+    useWorkflowStore.getState().setHasUnsavedChanges(false);
+    const undoCount = useWorkflowStore.getState().undoStack.length;
 
-    useWorkflowStore.getState().updateNodeData('code-1', {
+    useWorkflowStore.getState().updateNodeExecutionData('code-1', {
       status: 'success',
       observability: {
         status: 'success',
@@ -1875,7 +2303,8 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
       },
     });
 
-    const updated = useWorkflowStore.getState().nodes[0];
+    const state = useWorkflowStore.getState();
+    const updated = state.nodes[0];
     expect(updated.data).toMatchObject({
       title: '코드 실행',
       code: 'def main(inputs):\n    return {"ok": True}',
@@ -1888,6 +2317,16 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
         total_cost: 0.001964,
       },
     });
+    expect(state.hasUnsavedChanges).toBe(false);
+    expect(state.undoStack).toHaveLength(undoCount);
+
+    useWorkflowStore.getState().resetNodeExecutionData();
+    expect(useWorkflowStore.getState().nodes[0].data).not.toHaveProperty(
+      'status',
+    );
+    expect(useWorkflowStore.getState().nodes[0].data).not.toHaveProperty(
+      'observability',
+    );
   });
 
   it('setWorkflowData로 전체 워크플로우 데이터를 설정할 수 있다', () => {
@@ -2083,7 +2522,9 @@ describe('워크플로우 관리 테스트', () => {
     const state = useWorkflowStore.getState();
     expect(state.isTestPanelOpen).toBe(true);
     expect(state.testExecutionStatus).toBe('success');
-    expect(state.testExecutionResult).toEqual({ answer: 'previous test result' });
+    expect(state.testExecutionResult).toEqual({
+      answer: 'previous test result',
+    });
     expect(state.testNodeResults).toEqual([
       { nodeId: 'n1', nodeType: 'llmNode', output: { text: 'done' } },
     ]);
@@ -2406,20 +2847,28 @@ describe('워크플로우 관리 테스트', () => {
         nodes: expect.arrayContaining([
           expect.objectContaining({
             id: 'n1',
-            data: expect.objectContaining({ displayNumber: 1 }),
+            data: expect.not.objectContaining({
+              displayNumber: expect.any(Number),
+            }),
           }),
           expect.objectContaining({
             id: 'n2',
-            data: expect.objectContaining({ displayNumber: 2 }),
-          }),
-          expect.objectContaining({
-            id: 'note-1',
             data: expect.not.objectContaining({
               displayNumber: expect.any(Number),
             }),
           }),
         ]),
-        features: expect.objectContaining({ nextNodeDisplayNumber: 3 }),
+        features: expect.objectContaining({
+          nextNodeDisplayNumber: 3,
+          noteNodes: expect.arrayContaining([
+            expect.objectContaining({
+              id: 'note-1',
+              data: expect.not.objectContaining({
+                displayNumber: expect.any(Number),
+              }),
+            }),
+          ]),
+        }),
       }),
     );
 
@@ -2430,6 +2879,307 @@ describe('워크플로우 관리 테스트', () => {
       undefined,
     ]);
     expect(state.features.nextNodeDisplayNumber).toBe(3);
+  });
+
+  it('restoreVersion restores canonical feature notes into the saved draft and editor', async () => {
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      workflow_id: 'wf-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-13T00:00:00Z',
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({
+      status: 'success',
+      workflow_id: 'wf-1',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:01Z',
+    });
+    useWorkflowStore.setState({
+      activeWorkflowId: 'wf-1',
+      workflows: [
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [],
+          edges: [],
+          features: { nextNodeDisplayNumber: 1 },
+        },
+      ],
+      nodes: [],
+      features: { nextNodeDisplayNumber: 1 },
+    });
+    const canonicalNote = createMockNode('feature-note', 'note');
+
+    await useWorkflowStore.getState().restoreVersion({
+      id: 'deployment-feature-note',
+      app_id: 'app-1',
+      version: 2,
+      created_by: 'user-1',
+      created_at: '2026-07-01T00:00:00Z',
+      type: 'api',
+      is_active: false,
+      graph_snapshot: {
+        nodes: [createMockNode('restored', 'startNode')],
+        edges: [],
+        features: {
+          nextNodeDisplayNumber: 1,
+          noteNodes: [canonicalNote],
+        },
+      },
+    } as DeploymentResponse);
+
+    expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledWith(
+      'wf-1',
+      expect.objectContaining({
+        features: expect.objectContaining({
+          noteNodes: [expect.objectContaining({ id: 'feature-note' })],
+        }),
+      }),
+    );
+    expect(useWorkflowStore.getState().nodes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'feature-note' })]),
+    );
+  });
+
+  it('restoreVersion preserves current notes when a legacy snapshot has no note representation', async () => {
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      workflow_id: 'wf-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-13T00:00:00Z',
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({
+      status: 'success',
+      workflow_id: 'wf-1',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:01Z',
+    });
+    const currentNote = createMockNode('current-note', 'note');
+    useWorkflowStore.setState({
+      activeWorkflowId: 'wf-1',
+      workflows: [
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [currentNote],
+          edges: [],
+          features: { nextNodeDisplayNumber: 1 },
+        },
+      ],
+      nodes: [currentNote],
+      features: { nextNodeDisplayNumber: 1 },
+    });
+
+    await useWorkflowStore.getState().restoreVersion({
+      id: 'deployment-legacy-without-notes',
+      app_id: 'app-1',
+      version: 3,
+      created_by: 'user-1',
+      created_at: '2026-07-01T00:00:00Z',
+      type: 'api',
+      is_active: false,
+      graph_snapshot: {
+        nodes: [createMockNode('restored', 'startNode')],
+        edges: [],
+        features: null,
+      },
+    } as DeploymentResponse);
+
+    expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledWith(
+      'wf-1',
+      expect.objectContaining({
+        features: expect.objectContaining({
+          noteNodes: [expect.objectContaining({ id: 'current-note' })],
+        }),
+      }),
+    );
+    expect(useWorkflowStore.getState().nodes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'current-note' })]),
+    );
+  });
+
+  it('restoreVersion treats an explicit empty feature note list as authoritative', async () => {
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      workflow_id: 'wf-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-13T00:00:00Z',
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({
+      status: 'success',
+      workflow_id: 'wf-1',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:01Z',
+    });
+    const currentNote = createMockNode('current-note', 'note');
+    useWorkflowStore.setState({
+      activeWorkflowId: 'wf-1',
+      workflows: [
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [currentNote],
+          edges: [],
+          features: { nextNodeDisplayNumber: 1 },
+        },
+      ],
+      nodes: [currentNote],
+      features: { nextNodeDisplayNumber: 1 },
+    });
+
+    await useWorkflowStore.getState().restoreVersion({
+      id: 'deployment-explicit-no-notes',
+      app_id: 'app-1',
+      version: 4,
+      created_by: 'user-1',
+      created_at: '2026-07-01T00:00:00Z',
+      type: 'api',
+      is_active: false,
+      graph_snapshot: {
+        nodes: [createMockNode('restored', 'startNode')],
+        edges: [],
+        features: { nextNodeDisplayNumber: 1, noteNodes: [] },
+      },
+    } as DeploymentResponse);
+
+    expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledWith(
+      'wf-1',
+      expect.objectContaining({
+        features: expect.objectContaining({ noteNodes: [] }),
+      }),
+    );
+    expect(
+      useWorkflowStore.getState().nodes.filter((node) => node.type === 'note'),
+    ).toEqual([]);
+  });
+
+  it('restoreVersion waits for an in-flight Agent Builder workflow save', async () => {
+    const releaseAgentBuilderSave = tryAcquireWorkflowDraftSave(
+      'wf-1',
+      'agent_builder',
+    );
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      workflow_id: 'wf-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-13T00:00:00Z',
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({
+      status: 'success',
+      workflow_id: 'wf-1',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:01Z',
+    });
+    useWorkflowStore.setState({
+      activeWorkflowId: 'wf-1',
+      workflows: [
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [],
+          edges: [],
+          features: {},
+        },
+      ],
+    });
+
+    const version = {
+      id: 'deployment-restore-wait',
+      app_id: 'app-1',
+      version: 1,
+      created_by: 'user-1',
+      created_at: '2026-06-25T00:00:00Z',
+      type: 'api',
+      is_active: false,
+      graph_snapshot: {
+        nodes: [createMockNode('n1', 'startNode')],
+        edges: [],
+        features: {},
+      },
+    } as DeploymentResponse;
+
+    const restoring = useWorkflowStore.getState().restoreVersion(version);
+    await Promise.resolve();
+    expect(workflowApi.getDraftWorkflow).not.toHaveBeenCalled();
+    expect(workflowApi.syncDraftWorkflow).not.toHaveBeenCalled();
+
+    releaseAgentBuilderSave?.();
+    await restoring;
+
+    expect(workflowApi.getDraftWorkflow).toHaveBeenCalledWith('wf-1');
+    expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledTimes(1);
+  });
+
+  it('restoreVersion aborts without mutation when the active workflow changes while waiting for the save lock', async () => {
+    const releaseAgentBuilderSave = tryAcquireWorkflowDraftSave(
+      'wf-1',
+      'agent_builder',
+    );
+    useWorkflowStore.setState({
+      activeWorkflowId: 'wf-1',
+      workflows: [
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [],
+          edges: [],
+          features: {},
+        },
+        {
+          id: 'wf-2',
+          appId: 'app-1',
+          nodes: [createMockNode('wf-2-node', 'startNode')],
+          edges: [],
+          features: {},
+        },
+      ],
+      nodes: [],
+      edges: [],
+      undoStack: [],
+      redoStack: [],
+      hasUnsavedChanges: false,
+    });
+    const version = {
+      id: 'deployment-aborted-after-switch',
+      app_id: 'app-1',
+      version: 1,
+      created_by: 'user-1',
+      created_at: '2026-06-25T00:00:00Z',
+      type: 'api',
+      is_active: false,
+      graph_snapshot: {
+        nodes: [createMockNode('restored-wf-1', 'answerNode')],
+        edges: [],
+        features: {},
+      },
+    } as DeploymentResponse;
+
+    const restoring = useWorkflowStore.getState().restoreVersion(version);
+    await Promise.resolve();
+    useWorkflowStore.setState({
+      activeWorkflowId: 'wf-2',
+      nodes: [createMockNode('wf-2-node', 'startNode')],
+      edges: [],
+    });
+    releaseAgentBuilderSave?.();
+    await restoring;
+
+    expect(workflowApi.getDraftWorkflow).not.toHaveBeenCalled();
+    expect(workflowApi.syncDraftWorkflow).not.toHaveBeenCalled();
+    expect(useWorkflowStore.getState().activeWorkflowId).toBe('wf-2');
+    expect(useWorkflowStore.getState().nodes).toEqual([
+      expect.objectContaining({ id: 'wf-2-node' }),
+    ]);
+    expect(useWorkflowStore.getState().undoStack).toEqual([]);
+    expect(useWorkflowStore.getState().redoStack).toEqual([]);
   });
 });
 

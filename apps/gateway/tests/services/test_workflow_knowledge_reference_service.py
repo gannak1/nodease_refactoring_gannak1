@@ -304,6 +304,10 @@ def test_save_draft_defers_readiness_only_for_agent_builder_mutation(monkeypatch
         "validate_knowledge_references",
         staticmethod(_capture_validation),
     )
+    monkeypatch.setattr(
+        "apps.gateway.services.workflow_service.has_workflow_permission",
+        lambda *args, **kwargs: True,
+    )
 
     with pytest.raises(RuntimeError, match="stop after validation policy"):
         WorkflowService.save_draft(
