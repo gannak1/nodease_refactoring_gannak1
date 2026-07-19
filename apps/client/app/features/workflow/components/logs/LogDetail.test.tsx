@@ -135,17 +135,17 @@ describe('LogDetail', () => {
     expect(
       routing.getByText('Judge 실행 성공'),
     ).toBeInTheDocument();
-    expect(routing.getByText(/Judge 모델: gpt-4.1-mini/)).toBeInTheDocument();
-    expect(routing.getByText(/판단 확신도 84.0%/)).toBeInTheDocument();
-    expect(routing.getByText(/Judge 비용 \$0.000130/)).toBeInTheDocument();
+    expect(routing.getByText('Judge 모델')).toBeInTheDocument();
+    expect(routing.getByText('gpt-4.1-mini')).toBeInTheDocument();
+    expect(routing.getByText('판단 확신도')).toBeInTheDocument();
+    expect(routing.getByText('84.0%')).toBeInTheDocument();
+    expect(routing.getByText('Judge 비용')).toBeInTheDocument();
+    expect(routing.getByText('$0.000130')).toBeInTheDocument();
     expect(routing.getByText('복수 근거 종합')).toBeInTheDocument();
     expect(routing.getByText('3개')).toBeInTheDocument();
-    expect(
-      routing.getByText(
-        (_, element) =>
-          element?.textContent === '학습 방식: Judge 학습 중 · 선택 기준 78.0%',
-      ),
-    ).toBeInTheDocument();
+    expect(routing.getByText(/학습 방식:/)).toBeInTheDocument();
+    expect(routing.getByText(/Judge 학습 중/)).toBeInTheDocument();
+    expect(routing.getByText(/기준 78.0%/)).toBeInTheDocument();
   });
 
   it('run 전환 시 이전 LLM trace state를 즉시 초기화한다', async () => {

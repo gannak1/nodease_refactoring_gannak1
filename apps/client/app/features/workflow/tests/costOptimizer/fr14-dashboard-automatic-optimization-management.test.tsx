@@ -179,7 +179,7 @@ describe('FR-014 워크플로우 화면 자동 최적화 관리', () => {
       within(optimization).getByRole('progressbar', {
         name: '자동 최적화 수집 진행률',
       }),
-    ).toHaveAttribute('aria-valuenow', '12');
+    ).toHaveAttribute('value', '12');
   });
 
   it('리스트 보기에서는 자동 최적화를 짧은 상태 요약과 설정 아이콘으로 표시한다', async () => {

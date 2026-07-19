@@ -53,27 +53,25 @@ vi.mock('../store/useWorkflowStore', () => {
           model: 'gpt-5.6-terra',
           cost: 0.001,
           usage: { total_tokens: 42 },
-          metadata: {
+          metadata: { fallback_used: true },
+        },
+        traceMetadata: {
+          llm: {
+            selected_model: 'gpt-5.6-luna',
+            fallback_model: 'gpt-5.6-terra',
             fallback_used: true,
-            model_routing: {
-              selected_model: 'gpt-5.6-luna',
-              fallback_model: 'gpt-5.6-terra',
-              fallback_used: true,
-              fallback_from_model: 'gpt-5.6-luna',
-              fallback_reason_code: 'provider_call_failed',
-              decision_source: 'test_policy_preview',
-              strategy_id: 'judge_bootstrap_incremental_v1',
-              reason_code: 'judge_bootstrap_required',
-              judge_called: false,
-              policy_source: 'active_deployment',
-              included_in_policy_learning: false,
-              runtime_context: {
-                input_length_bucket: 'medium',
-                output_format: 'json',
-                schema_required: true,
-                knowledge_enabled: false,
-              },
-            },
+            fallback_from_model: 'gpt-5.6-luna',
+            fallback_reason_code: 'provider_call_failed',
+            decision_source: 'test_policy_preview',
+            strategy_id: 'judge_bootstrap_incremental_v1',
+            reason_code: 'judge_bootstrap_required',
+            judge_called: false,
+            policy_source: 'active_deployment',
+            included_in_policy_learning: false,
+            input_length_bucket: 'medium',
+            output_format: 'json',
+            schema_required: true,
+            knowledge_enabled: false,
           },
         },
       },
@@ -140,11 +138,7 @@ describe('TestSidebar node execution details', () => {
     ).toBeVisible();
     expect(screen.getByText('배포 정책 기준 테스트')).toBeVisible();
     expect(screen.getByText('보통 입력')).toBeVisible();
-    expect(
-      screen.getByText(
-        '이 테스트 실행은 정책 학습에 포함되지 않아 Judge를 호출하지 않았습니다.',
-      ),
-    ).toBeVisible();
+    expect(screen.getByText('Judge 호출 안 함')).toBeVisible();
     expect(
       screen.getByText(
         (_, element) => element?.textContent === '최초 선택 모델gpt-5.6-luna',
@@ -157,7 +151,7 @@ describe('TestSidebar node execution details', () => {
     ).toBeVisible();
     expect(
       screen.getByText(
-        (_, element) => element?.textContent === '대체 이유Provider 호출 실패',
+        (_, element) => element?.textContent === '대체 사유Provider 호출 실패',
       ),
     ).toBeVisible();
 

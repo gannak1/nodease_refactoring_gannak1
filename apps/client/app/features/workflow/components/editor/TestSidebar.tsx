@@ -1073,7 +1073,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       hasLlmUsageMetrics &&
       (typeof outputMetadata?.model_routing === 'object' ||
         typeof traceMetadata?.model_routing === 'object' ||
-        typeof traceLlm?.model_routing === 'object');
+        typeof traceLlm?.model_routing === 'object' ||
+        typeof traceLlm?.selected_model === 'string' ||
+        typeof traceLlm?.decision_source === 'string' ||
+        typeof traceLlm?.reason_code === 'string');
 
     return (
       <div className="space-y-5">

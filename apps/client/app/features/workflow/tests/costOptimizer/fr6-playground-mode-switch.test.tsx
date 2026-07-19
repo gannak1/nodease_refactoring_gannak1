@@ -1308,7 +1308,7 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
     expect(screen.getByText(/HR Policy/)).toBeInTheDocument();
     expect(screen.getByText(/Billing Guide/)).toBeInTheDocument();
     expect(screen.getByText('A usage trace')).toBeInTheDocument();
-    expect(screen.getByText('B usage trace')).toBeInTheDocument();
+    expect(screen.getByText('B 후보 실행 정보')).toBeInTheDocument();
   });
 
   it('후속 노드 영향 탭은 downstream 상태와 side-effect 제외 안내를 표시한다', async () => {

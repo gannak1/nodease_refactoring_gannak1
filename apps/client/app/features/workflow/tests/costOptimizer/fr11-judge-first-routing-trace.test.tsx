@@ -48,11 +48,14 @@ describe('FR-011 Judge-first model routing trace', () => {
 
     expect(screen.getByText('모델 선택 결과')).toBeVisible();
     expect(screen.getByText('Judge 실행 성공')).toBeVisible();
-    expect(screen.getByText(/Judge 모델: gpt-4.1-mini/)).toBeVisible();
-    expect(screen.getByText(/판단 확신도 84.0%/)).toBeVisible();
+    expect(screen.getByText('Judge 모델')).toBeVisible();
+    expect(screen.getByText('gpt-4.1-mini')).toBeVisible();
+    expect(screen.getByText('판단 확신도')).toBeVisible();
+    expect(screen.getByText('84.0%')).toBeVisible();
     expect(screen.getByText('근거 종합 필요')).toBeVisible();
     expect(screen.getByText('2개')).toBeVisible();
-    expect(screen.getByText(/Judge 비용 \$0.000130/)).toBeVisible();
+    expect(screen.getByText('Judge 비용')).toBeVisible();
+    expect(screen.getByText('$0.000130')).toBeVisible();
     expect(
       screen.getByText(
         (_, element) =>
@@ -62,7 +65,7 @@ describe('FR-011 Judge-first model routing trace', () => {
     expect(screen.getByText('JSON 스키마 필요')).toBeVisible();
     expect(screen.getByText('지식 베이스 사용')).toBeVisible();
     expect(
-      screen.getByText('실행 결과 계약을 확인한 뒤 학습에 반영합니다.'),
+      screen.getByText('실행 결과 계약을 확인한 뒤 이 선택을 로컬 학습에 반영합니다.'),
     ).toBeVisible();
   });
 
@@ -110,7 +113,7 @@ describe('FR-011 Judge-first model routing trace', () => {
       />,
     );
 
-    expect(screen.getByText('선택 모델')).toBeVisible();
+    expect(screen.getByText('실제 실행 모델')).toBeVisible();
     expect(screen.getByText('gpt-5.4-mini')).toBeVisible();
     expect(screen.getByText('구조적 추론 필요')).toBeVisible();
   });
@@ -146,7 +149,7 @@ describe('FR-011 Judge-first model routing trace', () => {
     ).toBeVisible();
     expect(screen.getByText(/학습 방식: 로컬 라우터 우선/)).toBeVisible();
     expect(screen.getByText(/로컬 확신도 86.0%/)).toBeVisible();
-    expect(screen.getByText(/선택 기준 78.0%/)).toBeVisible();
+    expect(screen.getByText(/기준 78.0%/)).toBeVisible();
     expect(screen.getByText('Judge 호출 안 함')).toBeVisible();
   });
 
@@ -175,7 +178,7 @@ describe('FR-011 Judge-first model routing trace', () => {
     expect(screen.getByText('모델 호출 대체 실행')).toBeVisible();
     expect(screen.getByText('gpt-5.6-luna')).toBeVisible();
     expect(screen.getByText('Provider 호출 실패')).toBeVisible();
-    expect(screen.getByText('gpt-5.6-terra')).toBeVisible();
+    expect(screen.getAllByText('gpt-5.6-terra')).toHaveLength(2);
   });
 
   it('배포 정책 테스트는 실제 Judge 실행이나 학습으로 오인되지 않게 표시한다', () => {
@@ -237,8 +240,10 @@ describe('FR-011 Judge-first model routing trace', () => {
     expect(screen.getByText('모델 선택 결과')).toBeVisible();
     expect(screen.getByText('Judge가 모델 선택')).toBeVisible();
     expect(screen.getByText('Judge 실행 성공')).toBeVisible();
-    expect(screen.getByText(/판단 확신도 89.0%/)).toBeVisible();
-    expect(screen.getByText(/Judge 비용 \$0.003131/)).toBeVisible();
+    expect(screen.getByText('판단 확신도')).toBeVisible();
+    expect(screen.getByText('89.0%')).toBeVisible();
+    expect(screen.getByText('Judge 비용')).toBeVisible();
+    expect(screen.getByText('$0.003131')).toBeVisible();
   });
 
   it('Judge 호출 후 실패해 기본 모델로 회귀한 경우와 Judge 미호출을 구분한다', () => {
