@@ -1217,18 +1217,25 @@ def test_internal_it_helpdesk_routing_demo_matches_presentation_contract():
 def test_internal_it_helpdesk_routing_demo_seeds_all_presentation_logs():
     specs = demo_seed.INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS
 
-    assert len(specs) == 26
+    assert len(specs) == 10
     assert {spec.model_name for spec in specs} >= {
         "gpt-4o-mini",
         "gpt-4.1-mini",
+        "gpt-4.1",
         "gpt-5.4",
+        "gpt-5.6-terra",
     }
     assert all(spec.status == RunStatus.SUCCESS for spec in specs)
     assert all(spec.department and spec.message for spec in specs)
     assert all(spec.total_tokens > 0 and spec.total_cost > 0 for spec in specs)
-    assert specs[-1].run_id == uuid.UUID("754e8960-ecfa-4ff1-9538-45fd51ca0271")
-    assert specs[-1].model_name == "gpt-5.4"
-    assert specs[-1].request_type == "보안 사고 대응(퇴사자 권한 잔존 및 무단 접근 의심)"
+    assert specs[-1].run_id == uuid.UUID("5a699356-1c89-498f-8aa6-0922f8887f16")
+    assert specs[-1].model_name == "gpt-5.6-terra"
+    assert specs[-1].department == "정보보안팀"
+    assert specs[-1].message == (
+        "외부에서 접속한 것으로 보이는 계정이 운영 조회 권한을 사용했습니다. "
+        "MFA 재설정, VPN 세션 차단, Git 토큰 폐기 중 어떤 조치를 먼저 해야 하는지 "
+        "근거와 함께 판단해 주세요."
+    )
 
 
 def test_ticket_ops_input_schema_matches_webhook_mappings():

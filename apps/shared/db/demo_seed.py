@@ -481,61 +481,139 @@ IT_ADMIN_COMPROMISE = (
 )
 
 
-# 2026-07-20 시연 준비 때 실제로 실행한 26개 성공 기록을 재현한다. 중간
-# 튜닝 기록도 남겨 모델 선택이 점차 경제형/균형형/고성능형으로 안정되는
-# 과정을 실행 이력 화면에서 확인할 수 있다.
+# 2026-07-20 사내 IT 문의 자동 라우팅 시연에서 실제로 실행한 10개 성공
+# 기록을 재현한다. 단순 안내부터 계정 침해 의심까지 난이도가 달라질 때
+# 선택 모델이 달라지는 흐름을 실행 이력 화면에서 확인할 수 있다.
 INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS = (
-    _it_run_spec("5f60da30-30d7-474f-b373-139e4465d1e7", "전체", IT_VPN_GUIDE, "gpt-4o-mini", 9.107133, 3220, "0.002989", 723, 55, "0.00014145"),
-    _it_run_spec("4b4e540c-19ae-457b-b4a5-29a7678c04c5", "전체", IT_VPN_ONBOARDING, "gpt-4o-mini", 6.102559, 3648, "0.003110", 1102, 74, "0.0002097"),
-    _it_run_spec("d26f04ac-daf9-4774-80a2-05bbb0573664", "개발", IT_MFA_DIAGNOSIS, "gpt-4o-mini", 5.660688, 3647, "0.002665", 1110, 142, "0.0001749"),
-    _it_run_spec("c1121450-c763-4cd2-b9de-8f6abaf86a20", "플랫폼개발", IT_COMPOUND_ACCESS, "gpt-4o-mini", 5.775419, 4065, "0.003070", 1474, 89, "0.0002745"),
-    _it_run_spec("7ead86fc-4a27-4506-aeee-b299094f0084", "보안", IT_OFFBOARDING_INCIDENT, "gpt-5.4", 10.595579, 4144, "0.013826", 1147, 566, "0.0113575"),
-    _it_run_spec("5280d7ce-56d1-49a3-be2e-822e60ea33c1", "보안", IT_ADMIN_COMPROMISE, "gpt-4.1-mini", 7.173036, 4272, "0.004320", 1491, 110, "0.0007724"),
-    _it_run_spec("db2c06e9-d27f-4233-bde2-9e9b0d412792", "전체", IT_VPN_ONBOARDING, "gpt-4o-mini", 5.939823, 3695, "0.003217", 1102, 81, "0.0001371"),
-    _it_run_spec("6ce41bc8-7c7e-45fc-b350-ece8f458644a", "개발", IT_MFA_DIAGNOSIS, "gpt-4o-mini", 7.590929, 3830, "0.003227", 1110, 209, "0.0002151"),
-    _it_run_spec("28ab9135-cdfc-4d16-a812-98678b8ab720", "플랫폼개발", IT_COMPOUND_ACCESS, "gpt-5.4-mini", 8.795908, 4548, "0.006434", 1485, 472, "0.00323775"),
-    _it_run_spec("14e0f678-0285-4410-ab73-43a93d425adb", "보안", IT_OFFBOARDING_INCIDENT, "gpt-4o-mini", 6.174132, 3764, "0.003128", 1136, 102, "0.0002316"),
-    _it_run_spec("f38e070b-9518-430a-83a1-d0697a1349ad", "보안", IT_ADMIN_COMPROMISE, "gpt-4.1", 5.922401, 4172, "0.007314", 1491, 211, "0.00467"),
-    _it_run_spec("48c261a3-d5d9-415b-b356-f17b1ec1bcb0", "전체", IT_VPN_GUIDE, "gpt-4o-mini", 6.745534, 3208, "0.002920", 723, 59, "0.00014385"),
-    _it_run_spec("23c25362-4298-4979-9a22-0a1250ff04ee", "개발", "MFA 재등록 후에도 SSO 로그인이 안 됩니다. 원인을 확인해 주세요.", "gpt-4o-mini", 5.598987, 3580, "0.002529", 1102, 124, "0.0001629"),
-    _it_run_spec("ac4635fd-dafe-4f8b-9357-48ba5780b53f", "보안", "퇴사자 관리자 계정이 아직 활성화되어 있고 고객 정보에 접근한 흔적이 있습니다.", "gpt-4.1", 5.596836, 3692, "0.006024", 1108, 126, "0.003224"),
-    _it_run_spec("57135a0d-bb85-4a58-9dd2-168b6c1c4f4c", "개발", IT_MFA_DIAGNOSIS, "gpt-4o-mini", 9.957074, 3801, "0.003378", 1110, 137, "0.0001719"),
-    _it_run_spec("db896ef0-80fb-4063-9715-8aef7aafe880", "개발", IT_MFA_DIAGNOSIS, "gpt-4o-mini", 6.759056, 3694, "0.002986", 1110, 114, "0.0001581"),
-    _it_run_spec("9cbebe01-d601-4ed4-8236-8e343db71107", "전체", IT_VPN_GUIDE, "gpt-4o-mini", 5.806209, 3188, "0.002459", 723, 57, "0.00014265"),
-    _it_run_spec("c9d6ba48-85ce-4bb0-9808-634ebc342c07", "개발", IT_MFA_DIAGNOSIS, "gpt-4o-mini", 6.780191, 3850, "0.003313", 1110, 113, "0.0001575"),
-    _it_run_spec("bb85e0cf-bdfc-4a7a-aee0-ead170011a60", "보안", IT_OFFBOARDING_INCIDENT, "gpt-5.4", 11.898704, 4340, "0.014589", 1134, 579, "0.01152"),
-    _it_run_spec("614dda58-e48d-4def-a0b0-2c6900b68ad4", "전체", IT_VPN_GUIDE, "gpt-4o-mini", 6.711201, 3251, "0.002570", 723, 59, "0.00014385"),
-    _it_run_spec("3ecbf319-ca36-4222-a736-856eadd83b7c", "개발", IT_MFA_DIAGNOSIS, "gpt-4.1-mini", 6.895443, 3878, "0.003660", 1110, 141, "0.0006696"),
-    _it_run_spec("50345ba4-fbb1-404a-8d3e-bef182b7772d", "보안", IT_OFFBOARDING_INCIDENT, "gpt-5.4", 10.134884, 4229, "0.012780", 1134, 470, "0.009885"),
-    _it_run_spec("b320bba4-4ead-408d-818b-a2665ae5f14d", "개발", IT_MFA_DIAGNOSIS, "gpt-4.1-mini", 7.638235, 4114, "0.004373", 1157, 134, "0.0006772"),
-    _it_run_spec("e3a7c5f5-f36d-4d6f-ad53-1f8580cce333", "보안", IT_OFFBOARDING_INCIDENT, "gpt-4.1", 9.390942, 4077, "0.006804", 1170, 136, "0.003428"),
-    _it_run_spec("1c264e92-5c83-41b8-8232-3f908fc47702", "전체", IT_VPN_GUIDE, "gpt-4o-mini", 6.570640, 3345, "0.002608", 770, 60, "0.0001515"),
     _it_run_spec(
-        "754e8960-ecfa-4ff1-9538-45fd51ca0271",
-        "정보보안팀",
-        (
-            "지난주 퇴사한 외주 개발자의 관리자 계정이 아직 활성화되어 있으며, "
-            "퇴사 이후 운영 데이터베이스 백업 파일을 조회한 기록이 발견됐습니다. "
-            "추가 피해를 막으면서 증거를 훼손하지 않도록 즉시 수행할 접근 차단, "
-            "세션·토큰 폐기, 로그 보존, 영향 범위 조사와 내부 보고 순서를 정리해 주세요."
-        ),
+        "f79d3a83-59ce-4c6f-aa11-d6112ae275ab",
+        "전체",
+        "신규 입사자용 VPN 설치 가이드 문서와 설치 순서만 간단히 알려 주세요.",
+        "gpt-4o-mini",
+        5.502066,
+        4587,
+        "0.003605",
+        1153,
+        78,
+        "0.00014295",
+        request_type="VPN 설치 안내",
+    ),
+    _it_run_spec(
+        "a2897c47-101a-4121-a37f-e5b7b34d2d8d",
+        "전체",
+        "사내 SSO 계정을 처음 활성화하는 방법과 보안 교육을 확인할 위치를 알려 주세요.",
+        "gpt-4o-mini",
+        5.223074,
+        5076,
+        "0.004288",
+        1510,
+        68,
+        "0.0001905",
+        request_type="사내 SSO 계정 활성화 및 보안 교육 확인",
+    ),
+    _it_run_spec(
+        "9931acb4-d7e5-4b9a-aa35-de91b71582f7",
+        "플랫폼개발",
+        "Git 조직 초대를 받았는지 확인하고 저장소 접근 권한을 확인하는 방법을 알려 주세요.",
+        "gpt-4o-mini",
+        4.685946,
+        4219,
+        "0.003545",
+        786,
+        96,
+        "0.0001755",
+        request_type="팀별 업무 권한",
+    ),
+    _it_run_spec(
+        "2c5bea98-9184-4c6f-b387-8aeed6412da0",
+        "플랫폼개발",
+        "MFA 재등록 후 SSO 로그인이 되지 않습니다. 온보딩 문서를 기준으로 점검 순서를 알려 주세요.",
+        "gpt-4.1-mini",
+        5.68513,
+        4701,
+        "0.004389",
+        1159,
+        112,
+        "0.0006428",
+        request_type="계정과 인증",
+    ),
+    _it_run_spec(
+        "a5bee81b-a14b-4080-89d2-30a87a73760c",
+        "플랫폼개발",
+        "VPN은 연결됐지만 Git 저장소는 권한 거부가 나고 SSO 세션도 끊깁니다. 계정, MFA, VPN, Git 권한 중 무엇부터 확인해야 하나요?",
+        "gpt-4.1",
+        5.050837,
+        4765,
+        "0.007271",
+        1181,
+        175,
+        "0.003762",
+        request_type="접근 권한 및 인증 장애",
+    ),
+    _it_run_spec(
+        "880c0bd4-cd46-42f9-a555-fbb0d8e7db91",
+        "플랫폼개발",
+        "신입 개발자의 운영 조회 권한과 배포 권한 신청이 동시에 필요합니다. 업무 분리 원칙을 지키는 승인 순서를 정리해 주세요.",
+        "gpt-4.1",
+        6.815708,
+        5252,
+        "0.008704",
+        1509,
+        172,
+        "0.004394",
+        request_type="운영 권한 신청 절차",
+    ),
+    _it_run_spec(
+        "64940b85-0178-494c-a637-a92eda037354",
+        "보안",
+        "퇴사자의 관리자 계정이 아직 활성화되어 VPN과 Git 접근이 가능한 것으로 보입니다. 차단, 증거 보존, 에스컬레이션 순서를 판단해 주세요.",
         "gpt-5.4",
-        17.903081,
-        4636,
-        "0.019606",
-        897,
-        954,
-        "0.0165525",
-        request_type="보안 사고 대응(퇴사자 권한 잔존 및 무단 접근 의심)",
-        answer=(
-            "긴급 보안 사고로 판단됩니다. 먼저 현재 계정 상태와 조회 기록을 캡처하고 "
-            "인증·VPN·데이터베이스·백업 저장소 감사 로그를 보존하세요. 증거 보존 후 "
-            "해당 계정과 관리자·DB·백업·클라우드 권한을 즉시 차단하고, 활성 세션, "
-            "SSO·VPN 세션, API 토큰, SSH 키, MFA 복구 수단을 모두 폐기하세요. "
-            "퇴사일 이후의 로그인 위치·IP·권한 상승·백업 조회 및 다운로드·타 시스템 "
-            "접근 여부를 조사하고, 정보보안팀을 중심으로 IAM·인프라·DBA·HR·"
-            "개인정보 담당자에게 조치 시각과 증거 위치를 포함해 즉시 보고하세요."
-        ),
+        9.626818,
+        5447,
+        "0.015320",
+        1524,
+        537,
+        "0.011865",
+        request_type="퇴사자 권한 잔존 및 무단 접근 위험",
+    ),
+    _it_run_spec(
+        "2c19f120-02f7-4a6f-a983-a73c01bf425f",
+        "정보보안팀",
+        "운영 조회 권한이 외부 접속에서 사용된 정황이 있습니다. MFA, VPN 세션, Git 토큰 중 어떤 조치를 먼저 해야 하는지 근거와 함께 정리해 주세요.",
+        "gpt-5.6-terra",
+        11.921443,
+        5868,
+        "0.018618",
+        1528,
+        675,
+        "0.013945",
+        request_type="보안 사고 의심 - 운영 조회 권한의 외부 접속 정황",
+    ),
+    _it_run_spec(
+        "f4c671f9-5c32-4e00-95ca-e11f5fe560eb",
+        "플랫폼개발",
+        "보안 교육을 아직 완료하지 않은 신규 입사자가 운영 저장소 접근과 배포 권한을 요청했습니다. SSO, VPN, Git 권한, 승인 절차를 함께 고려해 허용 여부를 판단해 주세요.",
+        "gpt-5.6-terra",
+        6.93603,
+        5328,
+        "0.012234",
+        1549,
+        306,
+        "0.0084625",
+        request_type="계정·권한 관리 / 운영 저장소 및 배포 권한 요청",
+    ),
+    _it_run_spec(
+        "5a699356-1c89-498f-8aa6-0922f8887f16",
+        "정보보안팀",
+        "외부에서 접속한 것으로 보이는 계정이 운영 조회 권한을 사용했습니다. MFA 재설정, VPN 세션 차단, Git 토큰 폐기 중 어떤 조치를 먼저 해야 하는지 근거와 함께 판단해 주세요.",
+        "gpt-5.6-terra",
+        10.464614,
+        5652,
+        "0.016661",
+        1553,
+        592,
+        "0.0127625",
+        request_type="계정 보안 - 외부 접속 의심 및 운영 조회 권한 무단 사용",
     ),
 )
 
@@ -4968,6 +5046,44 @@ def _seed_runtime_llm_permissions(db: Session) -> None:
         )
 
 
+def _replace_internal_it_helpdesk_seed_runs(db: Session) -> None:
+    """Replace only this demo's historical seed logs with the canonical set.
+
+    The stable IDs in the current specs can also exist after a local manual
+    reproduction. Removing their dependent rows first prevents a default seed
+    run from leaving duplicated node-run details under the same workflow run.
+    """
+    current_run_ids = [spec.run_id for spec in INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS]
+    legacy_seeded_run_ids = [
+        row[0]
+        for row in (
+            db.query(WorkflowRun.id)
+            .filter(
+                WorkflowRun.workflow_id
+                == WORKFLOW_IDS["internal_it_helpdesk_routing"],
+                WorkflowRun.trace_metadata["demo_seed"].astext == "true",
+                WorkflowRun.trace_metadata["scenario"].astext
+                == "internal_it_helpdesk_model_routing",
+            )
+            .all()
+        )
+    ]
+    run_ids = list({*current_run_ids, *legacy_seeded_run_ids})
+    if not run_ids:
+        return
+
+    db.query(LLMUsageLog).filter(LLMUsageLog.workflow_run_id.in_(run_ids)).delete(
+        synchronize_session=False
+    )
+    db.query(WorkflowNodeRun).filter(
+        WorkflowNodeRun.workflow_run_id.in_(run_ids)
+    ).delete(synchronize_session=False)
+    db.query(WorkflowRun).filter(WorkflowRun.id.in_(run_ids)).delete(
+        synchronize_session=False
+    )
+    db.flush()
+
+
 def _seed_runs_and_usage(db: Session, models: dict[str, LLMModel]) -> None:
     now = _now()
     run_specs = [
@@ -5056,7 +5172,8 @@ def _seed_runs_and_usage(db: Session, models: dict[str, LLMModel]) -> None:
                 },
             )
 
-    internal_it_started_at = now - timedelta(minutes=25)
+    _replace_internal_it_helpdesk_seed_runs(db)
+    internal_it_started_at = now - timedelta(minutes=10)
     for index, spec in enumerate(INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS):
         _seed_internal_it_helpdesk_run(
             db,
