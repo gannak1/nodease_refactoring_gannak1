@@ -1,7 +1,7 @@
 # PR CI 품질 게이트
 
 Status: Draft
-Verified Against: feature/mba-328 @ fb430259
+Verified Against: feature/mba-328 @ 33a14c85
 
 ## 목적
 
@@ -35,7 +35,7 @@ PR 검증 진입점은 `.github/workflows/pr-quality-gate.yml`과 `.github/workf
 | `shared-tests` | Shared 영향 | 선택된 Shared pytest |
 | `log-system-tests` | Log System 영향 | 선택된 Log System pytest |
 | `sandbox-tests` | Sandbox 영향 | Sandbox pytest |
-| `deployment-config-validation` | Actions·Helm·Kubernetes·Terraform·Compose·Dockerfile 영향 | 변경된 배포 설정의 정적 검사 |
+| `deployment-config-validation` | Actions·Helm·Kubernetes·Terraform·Compose·Dockerfile 영향 | workflow·action metadata와 변경된 배포 설정의 정적 검사 |
 | `knowledge-postgres-contracts` | Knowledge runtime/ingestion/DB 영향 | 실제 PostgreSQL Knowledge 계약 검사 |
 | `workflow-postgres-contracts` | migration/schedule/external effect 영향 | 실제 PostgreSQL workflow 계약 검사 |
 | `agent-builder-postgres-contracts` | Agent Builder DB/CAS 영향 | 실제 PostgreSQL Agent Builder 계약 검사 |
@@ -51,6 +51,7 @@ PR workspace의 selector 결과만으로 required gate를 결정하지 않는다
 
 - 품질 게이트는 selector 실행 전에 `pr-quality-gate.yml`, `pr-ci-control-guard.yml`, 네 PostgreSQL 계약 workflow, `.github/actions/**`, `scripts/ci/**`, `tests/ci/**` 변경을 독립적으로 확인한다. 이 경로가 바뀌면 selector 출력과 무관하게 Client, Python service smoke, root, PostgreSQL 계약 검사와 Actions·Helm·Kubernetes·Terraform·Compose·Dockerfile 정적 검증을 모두 선택한다.
 - 동일한 독립 diff 단계가 `infra/terraform/**`와 Dockerfile 실변경 신호도 계산한다. CI 제어 파일과 실제 배포 설정을 함께 수정한 PR은 selector 출력이 잘못되어도 smoke fixture로 대체하지 않고 변경된 실제 구성을 검증한다.
+- GitHub workflow는 Actionlint로 검사하고, composite action metadata는 commit SHA로 고정한 action-validator와 저장소 fixture로 별도 검사한다.
 - 신뢰 가드는 base 브랜치에서 `.github/workflows/**`, `.github/actions/**`, `scripts/ci/**`, `tests/ci/**` 변경을 별도로 확인한다. rename은 이전 경로와 새 경로를 모두 검사하고, 변경 파일 전체를 열거하지 못하면 실패한다.
 - CI 제어 변경은 PR 작성자가 아닌 write 이상 권한 보유자가 현재 head commit에 남긴 `APPROVED` review가 있어야 통과한다. 이전 commit 승인은 재사용하지 않는다.
 - 승인 뒤 `/recheck-ci-control`을 PR conversation에 comment하면 base 브랜치 가드가 정책 status를 다시 계산한다.
@@ -73,13 +74,14 @@ PR workspace의 selector 결과만으로 required gate를 결정하지 않는다
 | Shared schema/DB model | Shared, Gateway, Workflow Engine, Log System, root 관련 test |
 | `apps/shared/alembic/**` | 위 Python 범위와 PostgreSQL 계약 test |
 | Knowledge runtime 경로 | Knowledge PostgreSQL 계약 test |
+| Durable Knowledge ingestion shared service | Knowledge PostgreSQL 계약 test |
 | schedule/external effect 경로 | Workflow PostgreSQL 계약 test |
 | Agent Builder DB/CAS 경로 | Agent Builder PostgreSQL 계약 test |
 | 품질 게이트 CI 제어 파일과 보호된 PostgreSQL workflow | 각 서비스 smoke, Client smoke, root CI 계약 test, PostgreSQL 계약 test, 전체 배포 정적 검증과 최신 독립 승인 |
 | 기타 GitHub Actions workflow | 기존 영향 범위 검사와 최신 독립 승인 |
 | 배포 workflow만 변경 | actionlint를 실행하고 runtime test는 선택하지 않음 |
 | Helm/Kubernetes/Terraform 변경 | 변경 종류에 맞는 lint, render, validate 실행 |
-| Docker Compose/Dockerfile 변경 | 변경 파일의 config 또는 build check 실행 |
+| Docker Compose/Dockerfile 변경 | 변경 파일의 config 또는 build check 실행, Docker check 경고도 오류 처리 |
 | 알 수 없는 실행 경로 | Client와 Python smoke 범위로 fail-closed 확장 |
 
 변경 경로가 없거나 분류할 수 없다고 해서 모든 도메인 검사를 생략하지 않는다.
