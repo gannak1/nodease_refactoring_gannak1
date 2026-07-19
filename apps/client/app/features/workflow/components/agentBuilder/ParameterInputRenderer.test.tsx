@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentBuilderParameterTask } from '../../api/agentBuilderApi';
@@ -40,9 +40,9 @@ const branchTask: AgentBuilderParameterTask = {
 };
 
 describe('ParameterInputRenderer condition branch target', () => {
-  it('collects supported node secrets in a masked control without routing to Node Detail', () => {
+  it('clears a supported node secret immediately after secure storage succeeds', async () => {
     const onSubmit = vi.fn();
-    const onSecretSubmit = vi.fn();
+    const onSecretSubmit = vi.fn().mockResolvedValue(true);
     const secretTask: AgentBuilderParameterTask = {
       ...branchTask,
       task_id: 'task-slack-token',
@@ -75,7 +75,39 @@ describe('ParameterInputRenderer condition branch target', () => {
       secretTask,
       'test-only-secret',
     );
+    await waitFor(() => expect(input).toHaveValue(''));
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('keeps a supported node secret available for retry when secure storage fails', async () => {
+    const onSecretSubmit = vi.fn().mockResolvedValue(false);
+    const secretTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-slack-token-retry',
+      node_id: 'slack',
+      node_type: 'slackPostNode',
+      parameter_key: 'bot_token',
+      label: 'Bot Token',
+      input_type: 'secret',
+      required: false,
+      sensitivity: 'secret_forbidden',
+    };
+
+    render(
+      <ParameterInputRenderer
+        task={secretTask}
+        hydration={{ state: 'unavailable' }}
+        onSubmit={vi.fn()}
+        onSecretSubmit={onSecretSubmit}
+      />,
+    );
+
+    const input = screen.getByLabelText('Bot Token');
+    fireEvent.change(input, { target: { value: 'test-only-secret' } });
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+
+    await waitFor(() => expect(onSecretSubmit).toHaveBeenCalledOnce());
+    expect(input).toHaveValue('test-only-secret');
   });
 
   it('detects an existing nested Slack token without hydrating its raw value', () => {

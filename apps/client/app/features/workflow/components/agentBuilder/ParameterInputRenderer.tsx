@@ -25,7 +25,7 @@ export const ParameterInputRenderer = ({
   onSecretSubmit?: (
     task: AgentBuilderParameterTask,
     value: string,
-  ) => void | Promise<void>;
+  ) => boolean | Promise<boolean>;
   disabled?: boolean;
 }) => {
   const hydratedValue =
@@ -260,7 +260,8 @@ export const ParameterInputRenderer = ({
             }
             setSecretSubmitting(true);
             try {
-              await onSecretSubmit(task, trimmed);
+              const stored = await onSecretSubmit(task, trimmed);
+              if (stored) setValue('');
             } finally {
               setSecretSubmitting(false);
             }

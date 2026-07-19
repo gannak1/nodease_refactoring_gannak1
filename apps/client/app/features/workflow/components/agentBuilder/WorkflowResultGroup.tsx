@@ -77,7 +77,7 @@ export const WorkflowResultGroup = ({
   onSecretSubmit?: (
     task: AgentBuilderParameterTask,
     value: string,
-  ) => void | Promise<void>;
+  ) => boolean | Promise<boolean>;
   onSecretClear?: (task: AgentBuilderParameterTask) => void;
   onKnowledgeSubmit?: (selectionIds: string[]) => void;
   onKnowledgeHierarchySubmit?: (

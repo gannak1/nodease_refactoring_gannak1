@@ -142,7 +142,7 @@ export const NodeParameterCard = ({
   onSecretSubmit?: (
     task: AgentBuilderParameterTask,
     value: string,
-  ) => void | Promise<void>;
+  ) => boolean | Promise<boolean>;
   onSecretClear?: (task: AgentBuilderParameterTask) => void;
   onDecision: (decision: ParameterDecisionInput) => void;
   hasPrevious?: boolean;

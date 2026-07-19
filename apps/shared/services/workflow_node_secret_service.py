@@ -16,6 +16,7 @@ from apps.shared.services.credential_encryption import (
 )
 
 WORKFLOW_NODE_SECRET_REFERENCE_PREFIX = "workflow-node-secret://"
+SLACK_API_DEFAULT_ENDPOINT = "https://slack.com/api/chat.postMessage"
 WORKFLOW_NODE_SECRET_PARAMETERS = {
     ("slackPostNode", "bot_token"),
     ("slackPostNode", "url"),
@@ -180,6 +181,15 @@ def migrate_legacy_workflow_graph_secrets(
         for container, key, parameter_key in slots:
             value = container.get(key)
             if value in (None, "") or is_workflow_node_secret_reference(value):
+                continue
+            if (
+                node_type == "slackPostNode"
+                and parameter_key == "url"
+                and str(data.get("slackMode", "api")) == "api"
+                and value == SLACK_API_DEFAULT_ENDPOINT
+            ):
+                container.pop(key, None)
+                changed = True
                 continue
             if not isinstance(value, str):
                 raise WorkflowNodeSecretError(

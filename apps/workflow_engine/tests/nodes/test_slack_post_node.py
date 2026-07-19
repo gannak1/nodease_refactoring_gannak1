@@ -148,7 +148,7 @@ def test_node_resolves_opaque_secret_reference_only_at_runtime() -> None:
         parameter_key="bot_token",
     )
     assert adapter.request is not None
-    assert adapter.request.secret.value == "resolved-runtime-token"
+    assert adapter.request.secret.reveal_for_adapter() == "resolved-runtime-token"
 
 
 def test_json_template_escapes_upstream_value_without_changing_structure() -> None:

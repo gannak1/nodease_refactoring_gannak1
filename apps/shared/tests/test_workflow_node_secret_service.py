@@ -203,6 +203,40 @@ def test_legacy_graph_migration_replaces_raw_values_without_returning_them() -> 
     assert graph["nodes"][0]["data"]["api_token"] == raw_token
 
 
+def test_legacy_slack_api_endpoint_is_removed_without_creating_secret() -> None:
+    db = Mock()
+    graph = {
+        "nodes": [
+            {
+                "id": "slack-1",
+                "type": "slackPostNode",
+                "data": {
+                    "slackMode": "api",
+                    "url": "https://slack.com/api/chat.postMessage",
+                    "authConfig": {},
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    migrated, changed = migrate_legacy_workflow_graph_secrets(
+        db,
+        graph=graph,
+        encryption=_encryption(),
+        workflow_id=uuid4(),
+        organization_id=uuid4(),
+        user_id=uuid4(),
+    )
+
+    assert changed is True
+    assert "url" not in migrated["nodes"][0]["data"]
+    assert graph["nodes"][0]["data"]["url"] == (
+        "https://slack.com/api/chat.postMessage"
+    )
+    db.add.assert_not_called()
+
+
 def test_response_redaction_keeps_references_and_drops_legacy_plaintext() -> None:
     reference = (
         "workflow-node-secret://00000000-0000-4000-8000-000000000001"

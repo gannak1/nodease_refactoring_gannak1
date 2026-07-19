@@ -1331,7 +1331,10 @@ def test_parameter_ack_reconciles_github_comment_task_from_canonical_graph(
                 "data": {
                     "title": "GitHub PR",
                     "action": "get_pr",
-                    "api_token": "configured",
+                    "api_token": (
+                        "workflow-node-secret://"
+                        "00000000-0000-4000-8000-000000000001"
+                    ),
                     "repo_owner": "octo",
                     "repo_name": "repo",
                     "pr_number": "15",
