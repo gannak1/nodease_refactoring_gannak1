@@ -76,6 +76,7 @@ def _request(
     *,
     payload: dict | None = None,
     secret: str | None = None,
+    authorization_guard=None,
 ) -> SlackEffectRequest:
     if payload is None:
         payload = (
@@ -89,7 +90,12 @@ def _request(
             if mode is SlackDeliveryMode.API
             else "https://hooks.slack.com/services/a/b/c"
         )
-    return SlackEffectRequest(mode, payload, SlackSecretMaterial(secret))
+    return SlackEffectRequest(
+        mode,
+        payload,
+        SlackSecretMaterial(secret),
+        authorization_guard,
+    )
 
 
 def _invoke(adapter: SlackEffectAdapter, request: SlackEffectRequest):
@@ -142,6 +148,31 @@ def test_webhook_success_has_no_authorization_or_message_reference() -> None:
         "delivery_status": "delivered",
         "delivery_mode": "webhook",
     }
+
+
+def test_authorization_failure_happens_before_dns_or_client_creation() -> None:
+    guard = Guard()
+    observed: dict = {}
+    adapter = _adapter(
+        SlackDeliveryMode.API,
+        lambda request: httpx.Response(200, json={"ok": True}),
+        guard=guard,
+        observed=observed,
+    )
+
+    def deny_use() -> None:
+        raise RuntimeError("permission revoked")
+
+    with pytest.raises(EffectInvocationFailure) as error:
+        _invoke(
+            adapter,
+            _request(SlackDeliveryMode.API, authorization_guard=deny_use),
+        )
+
+    assert error.value.outcome is EffectOutcome.FAILED_BEFORE_EFFECT
+    assert error.value.error_code == "credential_unavailable"
+    assert guard.urls == []
+    assert observed == {}
 
 
 @pytest.mark.parametrize(

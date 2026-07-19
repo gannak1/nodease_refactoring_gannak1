@@ -351,6 +351,22 @@ class SlackEffectAdapter:
         started = time.perf_counter()
         response: httpx.Response | None = None
         request_started = False
+        if request.authorization_guard is not None:
+            try:
+                request.authorization_guard()
+            except Exception:
+                self._set_trace(
+                    delivery_status="failed_before_effect",
+                    provider_reason="credential_unavailable",
+                    latency_ms=self._latency_ms(started),
+                    request_size=len(request.canonical_payload),
+                )
+                raise EffectInvocationFailure(
+                    outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
+                    error_code="credential_unavailable",
+                    retry_before_effect=False,
+                ) from None
+
         try:
             url = self._resolve_url_with_timeout(request)
             self.egress_guard.validate_method("POST")
@@ -385,21 +401,6 @@ class SlackEffectAdapter:
                 trust_env=False,
                 verify=True,
             ) as client:
-                if request.authorization_guard is not None:
-                    try:
-                        request.authorization_guard()
-                    except Exception:
-                        self._set_trace(
-                            delivery_status="failed_before_effect",
-                            provider_reason="credential_unavailable",
-                            latency_ms=self._latency_ms(started),
-                            request_size=len(request.canonical_payload),
-                        )
-                        raise EffectInvocationFailure(
-                            outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
-                            error_code="credential_unavailable",
-                            retry_before_effect=False,
-                        ) from None
                 request_started = True
                 with client.stream(
                     "POST", url, headers=headers, json=request.payload
