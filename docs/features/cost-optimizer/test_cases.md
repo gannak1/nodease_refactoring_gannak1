@@ -6,7 +6,10 @@ Verified Against: `feature/mba-247 @ 311a4bc2`
 ## Purpose
 
 이 문서는 `requirements.md`의 FR-001부터 FR-015까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
-FR-011은 `prior_guided_adaptive_v1`으로 다룬다. 모델 catalog와 운영 집계로 짧음/보통/긺 profile을 생성하고, runtime이 active policy만 평가하는지 검증한다. semantic embedding 호출, 입력군 matcher, 입력군 API, cohort validation batch가 없음을 회귀 조건으로 둔다.
+FR-011은 `judge_bootstrap_incremental_v1`으로 다룬다. 배포 실행 1~50회는 runtime Judge가
+현재 요청의 후보 모델을 선택하고, workflow 완료 뒤 schema·후속 노드·fallback 계약을 통과한
+label만 local router 학습에 반영한다. 50건 이상이면 local router가 먼저 선택하며 확신이 낮으면
+runtime Judge로 되돌아간다.
 
 테스트는 LLM 노드 단위 Cost Optimizer 흐름을 기준으로 한다. 모델 라우팅은 자동 라우팅 토글과 active policy 평가뿐 아니라, operational/replay evidence 출처 분리, Hard Gate, 적합성 분석, candidate 품질 gate, 결정론적 optimizer와 decision trace를 검증한다. 고정 20회는 호환 trigger 테스트일 뿐 adaptive routing 완료 기준이 아니다.
 
@@ -31,7 +34,7 @@ FR-011 Runtime Judge 테스트는 provider 공식 문서 기반 특화 태그와
 | FR-008 | Apply candidate action | PATCH apply | B 후보 설정을 current draft에 적용 | 작성 완료 | 통과 |
 | FR-009 | Cost/usage display | llm usage logging | 비교 실행 비용/토큰/latency 기록과 표시 | 작성 완료 | 통과 |
 | FR-010 | Permission-gated UI | builder permission enforcement | builder 이상 권한 강제 | 작성 완료 | 통과 |
-| FR-011 | Prior-guided routing controls / trace | Prior-guided Routing Contract | 모델 사전 지식·운영 집계 기반 profile 생성, runtime 일반 rule 평가, semantic embedding/입력군 API/validation task 미사용, trace의 strategy/profile 근거 | 작성 완료 | frontend 10개, Workflow Engine 집중 141개, Gateway Cost Optimizer 77개 통과 |
+| FR-011 | Judge-first routing / incremental learning | Runtime Judge, deferred label, local router | label 대기·계약 확정·50건 local 전환, 같은 feature의 accepted Judge cache, safe trace | 작성 완료 | `test_judge_first_model_routing_e2e.py`, `test_model_router.py`, `test_llm_node_runtime.py` 집중 통과 |
 | FR-012 | Optimization recommendation modal | Parameter recommendation API | 운영 로그 기반 추천 조회, `direct_policy_update` 적용, 일반 추천의 A/B 후보 실험 연결 | 작성 완료 | 부분 통과 |
 | FR-013 | Recommendation verification / compare quality row | Recommendation verification·compare API | 최신 성공 또는 사용자 선택 baseline, candidate 1회 실행, 품질 judge, schema/downstream gate, 품질 점수 이력, 적용/상세 분석 연결 | Gateway/frontend 테스트 작성 완료 | Gateway/frontend targeted test 통과 |
 | FR-014 | 배포별 자동 파라미터 최적화 | deployment config / operations summary | 배포 모달 설정, 대상 LLM node 검증, 배포 후 운영 실행 수집, 별도 예산/관리 UI | Gateway/frontend targeted test 작성 완료 | 통과 |
@@ -75,6 +78,8 @@ FR-011 Runtime Judge 테스트는 provider 공식 문서 기반 특화 태그와
 | FR-011 | Routing preview | `apps/gateway/tests/services/test_model_routing_preview_service.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/client/app/features/workflow/tests/costOptimizer/fr11-routing-preview.test.tsx`, `apps/client/app/features/workflow/tests/test-sidebar-routing-preview.test.tsx` | active deployment policy 평가, rule/default/fallback/no-model 상태, execute 권한, draft 불일치, 입력 변경 재평가, run/usage/policy event 무기록 | 작성 완료 | Gateway/Client targeted test | 통과 |
 | FR-011 | Frontend route | `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | `모델 라우팅 최적화` 버튼이 기존 A/B workspace가 아니라 전용 model-routing route로 이동 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 |
 | FR-011 | Workflow engine service | `apps/workflow_engine/tests/services/test_model_router.py` | `ModelRouter.resolve_policy()`가 저장된 policy의 일반 조건을 평가하고 canonical LLM trace의 terminal 성공/실패 품질 신호와 segment 성능을 profile로 만든다. | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/services/test_model_router.py` | 통과 |
+| FR-011 | Learning path E2E | `apps/workflow_engine/tests/e2e/test_judge_first_model_routing_e2e.py` | 첫 Judge label이 `accepted`로 확정돼 count 1이 되고, 서로 다른 계약 통과 label 50건 뒤 51회차가 `local_router` source로 선택되는지 확인한다. | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/e2e/test_judge_first_model_routing_e2e.py` | 통과 |
+| FR-011 | Judge learning observability | `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py`, `apps/workflow_engine/tests/services/test_model_router.py` | label queue 실패는 trace에 원인 코드로 남기며, HMAC hash가 같은 accepted 선택은 Judge 재호출 없이 재사용한다. | 작성 완료 | Workflow Engine 집중 pytest | 통과 |
 | FR-011 | Workflow runtime | `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py` | 자동 라우팅 ON 실행이 judge를 호출하지 않고 active policy rule로 모델을 선택하며 safe routing metadata를 남긴다. 배포 policy row가 없을 때는 legacy snapshot을 무시하고 저장 모델로 시작하며, 현재 사용자에게 사용할 모델이 없으면 provider 호출 전에 차단한다. | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/nodes/test_llm_node_runtime.py -k auto_model_routing` | 통과 |
 | FR-011 | Trace metadata | `apps/shared/tests/services/test_tracing_metadata.py` | model routing decision summary가 safe metadata allowlist로 보존되고 raw prompt/secret은 제거됨 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/shared/tests/services/test_tracing_metadata.py` | 통과 |
 | FR-011 | Policy lifecycle | `apps/workflow_engine/tests/services/test_model_routing_policy_lifecycle.py`, `apps/workflow_engine/tests/services/test_model_routing_policy_tasks.py`, `apps/workflow_engine/tests/services/test_model_routing_operational_performance.py`, `apps/log_system/tests/test_model_routing_policy_hook.py` | terminal workflow의 성공·실패 운영 표본을 중복 없이 모델별 누계에 반영하고, 최소 새 표본 이후 품질·비용·지연 변화가 의미 있을 때만 refresh task를 예약 | 작성 완료 | targeted pytest | 통과 |

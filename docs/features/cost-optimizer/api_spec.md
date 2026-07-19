@@ -261,6 +261,7 @@ reason code, runtime context, `decision_source`, `judge_called`를 남긴다. `j
 | `confidence`, `reason_code`, `reason_short`, `cost` | `status=selected`일 때의 선택 근거 |
 | `error_code` | `failed` 또는 `unavailable`일 때의 안전 오류 코드 |
 | `not_called_reason` | local router 선택, 정책 없음, 테스트 preview 등 미호출 이유 |
+| `learning_status`, `learning_not_queued_reason` | label이 `pending_contract`로 저장됐는지, 저장하지 못했다면 안전한 실패 코드 |
 
 따라서 `failed`는 “Judge를 호출했지만 결과를 사용할 수 없어 기본 모델로 회귀함”이고,
 `not_called`은 “이번 실행에서는 Judge 호출 자체가 없었음”이다. 이전 trace에 이 구조가
@@ -279,6 +280,10 @@ Judge가 선택한 실행은 처음에는 `learning_status=pending_contract`로 
 검사를 완료하지 못한 `schema_status=not_evaluated`는 `schema_failed` 학습 거절로 처리하고 schema 평가
 분모에는 포함하되 통과 건수에는 포함하지 않는다.
 
+`accepted` label에는 원문이 아닌 `routing_feature_hash`만 저장한다. 이를 이용해 같은 feature의
+계약 통과 Judge 선택을 재사용할 수 있으며, 모델 사용 권한이 바뀌었거나 hash key가 없으면
+cache hit로 처리하지 않는다.
+
 ### Persistence Model
 
 | 테이블 | 역할 |
@@ -289,7 +294,7 @@ Judge가 선택한 실행은 처음에는 `learning_status=pending_contract`로 
 | llm_node_model_routing_policy_updates | 정책 재평가의 trigger, 안전한 입력/출력 요약, 결과 |
 | llm_node_model_routing_policy_run_events | 배포 후 운영 실행의 중복 없는 점검 카운터 |
 | llm_node_model_routing_performances | 배포/node/model/입력 길이 profile별 운영 성적 |
-| llm_node_model_routing_learning_labels | Judge 선택의 안전한 vector와 완료 후 계약 기반 학습 확정 상태. 원문 prompt/input은 저장하지 않는다. |
+| llm_node_model_routing_learning_labels | Judge 선택의 안전한 vector, HMAC routing feature hash와 완료 후 계약 기반 학습 확정 상태. 원문 prompt/input은 저장하지 않는다. |
 | llm_model_routing_global_profiles | Judge-first runtime이 후보 모델의 초기 품질·지연·fallback 사전 정보를 읽는 전역 catalog profile. 실행 주체가 사용할 수 있으면서 명시적 catalog에 등록된 모델만 후보가 된다. |
 
 Test Sidebar 실행은 활성 배포 정책을 대상으로 runtime Judge를 호출할 수 있지만, Judge label·운영 정책 카운터·성적에는 포함하지 않는다. Cost Optimizer candidate 비교 실행도 운영 정책 카운터와 성적에 포함하지 않는다.

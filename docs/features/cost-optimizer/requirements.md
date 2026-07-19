@@ -35,6 +35,11 @@ schema/downstream 성공률, fallback 비율 기준을 통과하면 로컬
 경우에만 Judge를 다시 호출한다. prompt, 출력 schema, RAG, downstream 계약이 바뀌면
 기존 local artifact를 오래됨으로 표시하고 Judge-first로 다시 시작한다.
 
+계약을 통과한 Judge 선택은 원문 입력 대신 deployment secret으로 만든 HMAC feature hash로
+최대 128개까지 재사용할 수 있다. 같은 안전 feature가 다시 들어오고 해당 모델 권한이 여전히
+유효하면 Judge 호출 없이 기존 선택을 사용한다. hash key가 없는 환경에서는 이 최적화를
+비활성화하고 기존 Judge 경로를 유지한다.
+
 문장 품질을 평가하기 위한 별도 LLM Judge는 자동 모델 라우팅의 운영 성적에 사용하지 않는다.
 대신 완료된 배포 실행의 schema 통과, 후속 노드 성공, provider fallback, 실행 성공 신호를
 후보 모델별로 누적한다. 다음 Runtime Judge 호출에는 이 운영 계약 성적을 함께 전달하며,
