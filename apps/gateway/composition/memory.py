@@ -68,6 +68,9 @@ def build_public_conversation_application(
             "MEMORY_PUBLIC_ADMISSION_KEY_NAMESPACE",
             "nodease-memory-public",
         ),
+        request_deduplication_ttl_seconds=int(
+            policy.idempotency_retention.total_seconds()
+        ),
     )
     audit = SqlAlchemyPublicConversationAudit(db)
     kwargs = {
@@ -104,10 +107,15 @@ def validate_public_conversation_security_configuration(
         )
     public_conversation_policy_from_environment(values)
     public_conversation_admission_policy_from_environment(values)
-    HmacPublicSecretIssuer.from_environment(values)
-    FernetSecretReplayCipher.from_environment(values)
-    _admission_key(values)
-    _require_distinct_public_security_keys(values)
+    secrets = HmacPublicSecretIssuer.from_environment(values)
+    replay_cipher = FernetSecretReplayCipher.from_environment(values)
+    admission_key = _admission_key(values)
+    _require_distinct_public_security_keys(
+        *secrets.configuration_key_materials(),
+        *replay_cipher.configuration_key_materials(),
+        admission_key,
+    )
+    _require_public_purge_worker_ready(values)
 
 
 def public_conversation_enabled_from_environment(
@@ -266,21 +274,22 @@ def _admission_key(environ: Mapping[str, str]) -> bytes:
     return key
 
 
-def _require_distinct_public_security_keys(environ: Mapping[str, str]) -> None:
-    key_materials = tuple(
-        environ.get(name, "").encode("utf-8")
-        for name in (
-            "MEMORY_PUBLIC_CAPABILITY_HMAC_KEY",
-            "MEMORY_PUBLIC_REPLAY_ENCRYPTION_KEY",
-            "MEMORY_PUBLIC_ADMISSION_HMAC_KEY",
-        )
-    )
+def _require_distinct_public_security_keys(*key_materials: bytes) -> None:
     if any(
         hmac.compare_digest(left, right)
         for index, left in enumerate(key_materials)
         for right in key_materials[index + 1 :]
     ):
         raise RuntimeError("public conversation security keys must be distinct")
+
+
+def _require_public_purge_worker_ready(environ: Mapping[str, str]) -> None:
+    value = environ.get("MEMORY_PUBLIC_PURGE_WORKER_READY", "").strip().lower()
+    if value not in {"true", "1"}:
+        raise RuntimeError(
+            "MEMORY_PUBLIC_PURGE_WORKER_READY must be true before enabling "
+            "public conversation deletion"
+        )
 
 
 def _redis_client(environ: Mapping[str, str]):

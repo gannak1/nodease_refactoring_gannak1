@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, SessionTransaction
@@ -216,6 +216,28 @@ class SqlAlchemyConversationMemoryRepository:
         )
         return IdempotencyReservation(record=domain, created=False)
 
+    def find_idempotency(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        operation: str,
+        scope_digest: str,
+        idempotency_key_hash: str,
+    ) -> ConversationIdempotency | None:
+        statement = (
+            select(ConversationIdempotencyRecord)
+            .where(
+                ConversationIdempotencyRecord.organization_id == organization_id,
+                ConversationIdempotencyRecord.operation == operation,
+                ConversationIdempotencyRecord.scope_digest == scope_digest,
+                ConversationIdempotencyRecord.idempotency_key_hash
+                == idempotency_key_hash,
+            )
+            .execution_options(populate_existing=True)
+        )
+        record = _execute(self._session, statement).scalar_one_or_none()
+        return _idempotency_domain(record) if record is not None else None
+
     def save_idempotency(self, record: ConversationIdempotency) -> None:
         baseline = self._idempotency_baselines.get(record.id)
         if baseline is None:
@@ -241,22 +263,25 @@ class SqlAlchemyConversationMemoryRepository:
     def lock_access_grant(
         self,
         *,
-        verifier_key_version: str,
-        verifier_hash: str,
+        verifier_candidates: tuple[tuple[str, str], ...],
     ) -> ConversationAccessGrant | None:
+        if not verifier_candidates:
+            return None
         statement = (
             select(ConversationAccessGrantRecord)
             .where(
-                ConversationAccessGrantRecord.verifier_key_version
-                == verifier_key_version,
-                ConversationAccessGrantRecord.verifier_hash == verifier_hash,
+                tuple_(
+                    ConversationAccessGrantRecord.verifier_key_version,
+                    ConversationAccessGrantRecord.verifier_hash,
+                ).in_(verifier_candidates),
             )
             .with_for_update()
             .execution_options(populate_existing=True)
         )
-        record = _execute(self._session, statement).scalar_one_or_none()
-        if record is None:
+        records = list(_execute(self._session, statement).scalars().all())
+        if len(records) != 1:
             return None
+        record = records[0]
         domain = _access_grant_domain(record)
         self._access_grant_baselines[domain.id] = _AccessGrantBaseline(
             state=record.state
@@ -354,16 +379,18 @@ class SqlAlchemyConversationMemoryRepository:
     def find_purge_job(
         self,
         *,
-        verifier_key_version: str,
-        verifier_hash: str,
+        verifier_candidates: tuple[tuple[str, str], ...],
     ) -> ConversationPurgeJob | None:
+        if not verifier_candidates:
+            return None
         statement = select(ConversationPurgeJobRecord).where(
-            ConversationPurgeJobRecord.receipt_verifier_key_version
-            == verifier_key_version,
-            ConversationPurgeJobRecord.receipt_verifier_hash == verifier_hash,
+            tuple_(
+                ConversationPurgeJobRecord.receipt_verifier_key_version,
+                ConversationPurgeJobRecord.receipt_verifier_hash,
+            ).in_(verifier_candidates)
         )
-        record = _execute(self._session, statement).scalar_one_or_none()
-        return _purge_domain(record) if record is not None else None
+        records = list(_execute(self._session, statement).scalars().all())
+        return _purge_domain(records[0]) if len(records) == 1 else None
 
     def lock_purge_job_by_id(
         self,

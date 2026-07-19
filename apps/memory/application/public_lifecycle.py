@@ -107,11 +107,13 @@ class SecretCiphertext:
 class PublicSecretIssuerPort(Protocol):
     def issue_access_grant(self) -> IssuedSecret: ...
 
-    def access_grant_verifier(self, raw_value: str) -> tuple[str, str] | None: ...
+    def access_grant_verifiers(self, raw_value: str) -> tuple[tuple[str, str], ...]: ...
 
     def issue_purge_receipt(self) -> IssuedSecret: ...
 
-    def purge_receipt_verifier(self, raw_value: str) -> tuple[str, str] | None: ...
+    def purge_receipt_verifiers(
+        self, raw_value: str
+    ) -> tuple[tuple[str, str], ...]: ...
 
 
 class SecretReplayCipherPort(Protocol):
@@ -148,6 +150,8 @@ class PublicConversationAdmissionPort(Protocol):
         binding: "PublicDeploymentBinding",
         grant_id: uuid.UUID | None,
         network_address: str,
+        request_key_hash: str,
+        request_fingerprint: str,
     ) -> None: ...
 
 
@@ -164,6 +168,15 @@ class PublicConversationRepositoryPort(Protocol):
         self, record: ConversationIdempotency
     ) -> IdempotencyReservation: ...
 
+    def find_idempotency(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        operation: str,
+        scope_digest: str,
+        idempotency_key_hash: str,
+    ) -> ConversationIdempotency | None: ...
+
     def save_idempotency(self, record: ConversationIdempotency) -> None: ...
 
     def add_session(self, session: ConversationSession) -> None: ...
@@ -177,7 +190,7 @@ class PublicConversationRepositoryPort(Protocol):
     def add_access_grant(self, grant: ConversationAccessGrant) -> None: ...
 
     def lock_access_grant(
-        self, *, verifier_key_version: str, verifier_hash: str
+        self, *, verifier_candidates: tuple[tuple[str, str], ...]
     ) -> ConversationAccessGrant | None: ...
 
     def save_access_grant(self, grant: ConversationAccessGrant) -> None: ...
@@ -191,7 +204,7 @@ class PublicConversationRepositoryPort(Protocol):
     def add_purge_job(self, job: ConversationPurgeJob) -> None: ...
 
     def find_purge_job(
-        self, *, verifier_key_version: str, verifier_hash: str
+        self, *, verifier_candidates: tuple[tuple[str, str], ...]
     ) -> ConversationPurgeJob | None: ...
 
     def lock_purge_job_by_id(
@@ -309,18 +322,24 @@ class _TransactionalPublicUseCase:
         now: datetime,
         allow_expired_for_replay: bool = False,
     ) -> ConversationAccessGrant:
-        verifier = self.secrets.access_grant_verifier(raw_access_token)
-        if verifier is None:
+        verifiers = self.secrets.access_grant_verifiers(raw_access_token)
+        if not verifiers:
             raise AccessGrantNotUsableError()
         grant = self.repository.lock_access_grant(
-            verifier_key_version=verifier[0],
-            verifier_hash=verifier[1],
+            verifier_candidates=verifiers,
         )
         if grant is None:
             raise AccessGrantNotUsableError()
-        if (
-            grant.verifier_key_version != verifier[0]
-            or not hmac.compare_digest(grant.verifier_hash, verifier[1])
+        verifier_hash = next(
+            (
+                candidate_hash
+                for version, candidate_hash in verifiers
+                if version == grant.verifier_key_version
+            ),
+            None,
+        )
+        if verifier_hash is None or not hmac.compare_digest(
+            grant.verifier_hash, verifier_hash
         ):
             raise AccessGrantNotUsableError()
         if (
@@ -429,6 +448,8 @@ class _TransactionalPublicUseCase:
         binding: PublicDeploymentBinding,
         grant_id: uuid.UUID | None,
         network_address: str,
+        request_key_hash: str,
+        request_fingerprint: str,
     ) -> None:
         if self.admission is not None:
             self.admission.admit(
@@ -436,7 +457,78 @@ class _TransactionalPublicUseCase:
                 binding=binding,
                 grant_id=grant_id,
                 network_address=network_address,
+                request_key_hash=request_key_hash,
+                request_fingerprint=request_fingerprint,
             )
+
+    def _existing_idempotency(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        operation: str,
+        scope_digest: str,
+        idempotency_key_hash: str,
+        request_fingerprint: str,
+    ) -> ConversationIdempotency | None:
+        record = self.repository.find_idempotency(
+            organization_id=organization_id,
+            operation=operation,
+            scope_digest=scope_digest,
+            idempotency_key_hash=idempotency_key_hash,
+        )
+        if record is not None:
+            record.require_matching_fingerprint(request_fingerprint)
+        return record
+
+    def _lifecycle_preflight(
+        self,
+        *,
+        command: LifecycleCommand,
+        operation: str,
+        require_transcript: bool,
+    ) -> tuple[PublicDeploymentBinding, uuid.UUID, bool]:
+        binding = self._binding(command.url_slug)
+        grant = self._grant_for_mutation(
+            binding=binding,
+            raw_access_token=command.access_token,
+            now=command.now,
+            allow_expired_for_replay=True,
+        )
+        session = self._session_for_grant(
+            grant,
+            now=command.now,
+            allow_expired_for_replay=True,
+        )
+        scope_digest = _scope_digest(
+            operation=operation,
+            binding=binding,
+            grant=grant,
+            session=session,
+        )
+        existing = self._existing_idempotency(
+            organization_id=binding.organization_id,
+            operation=operation,
+            scope_digest=scope_digest,
+            idempotency_key_hash=command.idempotency_key_hash,
+            request_fingerprint=command.request_fingerprint,
+        )
+        if existing is None:
+            if require_transcript:
+                grant.require_transcript(
+                    deployment_id=binding.deployment_id,
+                    deployment_version=binding.deployment_version,
+                    audience_kind=AudienceKind.PUBLIC_CHATBOT,
+                    now=command.now,
+                )
+            else:
+                grant.require_active(
+                    deployment_id=binding.deployment_id,
+                    deployment_version=binding.deployment_version,
+                    audience_kind=AudienceKind.PUBLIC_CHATBOT,
+                    now=command.now,
+                )
+            self._require_unexpired_session(session, now=command.now)
+        return binding, grant.id, existing is None
 
     def _replay_secret(
         self,
@@ -490,6 +582,32 @@ class CreatePublicConversationUseCase(_TransactionalPublicUseCase):
     def execute(
         self, command: CreatePublicConversationCommand
     ) -> PublicConversationResult:
+        def preflight() -> tuple[PublicDeploymentBinding, bool]:
+            binding = self._binding(command.url_slug)
+            scope_digest = _scope_digest(
+                operation="conversation.create",
+                binding=binding,
+            )
+            existing = self._existing_idempotency(
+                organization_id=binding.organization_id,
+                operation="conversation.create",
+                scope_digest=scope_digest,
+                idempotency_key_hash=command.idempotency_key_hash,
+                request_fingerprint=command.request_fingerprint,
+            )
+            return binding, existing is None
+
+        admission_binding, should_admit = self._execute(preflight)
+        if should_admit:
+            self._admit(
+                operation="conversation.create",
+                binding=admission_binding,
+                grant_id=None,
+                network_address=command.network_address,
+                request_key_hash=command.idempotency_key_hash,
+                request_fingerprint=command.request_fingerprint,
+            )
+
         def operation() -> PublicConversationResult:
             binding = self._binding(command.url_slug)
             scope_digest = _scope_digest(
@@ -508,13 +626,6 @@ class CreatePublicConversationUseCase(_TransactionalPublicUseCase):
             if not reservation.created:
                 record.require_matching_fingerprint(command.request_fingerprint)
                 return self._replay_create(record=record, now=command.now)
-
-            self._admit(
-                operation="conversation.create",
-                binding=binding,
-                grant_id=None,
-                network_address=command.network_address,
-            )
 
             session = _new_session(
                 binding=binding,
@@ -601,6 +712,23 @@ class CreatePublicConversationUseCase(_TransactionalPublicUseCase):
 
 class ClosePublicConversationUseCase(_TransactionalPublicUseCase):
     def execute(self, command: LifecycleCommand) -> ClosePublicConversationResult:
+        admission_binding, admission_grant_id, should_admit = self._execute(
+            lambda: self._lifecycle_preflight(
+                command=command,
+                operation="conversation.close",
+                require_transcript=False,
+            )
+        )
+        if should_admit:
+            self._admit(
+                operation="conversation.close",
+                binding=admission_binding,
+                grant_id=admission_grant_id,
+                network_address=command.network_address,
+                request_key_hash=command.idempotency_key_hash,
+                request_fingerprint=command.request_fingerprint,
+            )
+
         def operation() -> ClosePublicConversationResult:
             binding = self._binding(command.url_slug)
             grant = self._grant_for_mutation(
@@ -640,12 +768,6 @@ class ClosePublicConversationUseCase(_TransactionalPublicUseCase):
                 now=command.now,
             )
             self._require_unexpired_session(session, now=command.now)
-            self._admit(
-                operation="conversation.close",
-                binding=binding,
-                grant_id=grant.id,
-                network_address=command.network_address,
-            )
             session.close(
                 expected_lifecycle_revision=command.expected_lifecycle_revision,
                 now=command.now,
@@ -678,6 +800,23 @@ class ClosePublicConversationUseCase(_TransactionalPublicUseCase):
 
 class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
     def execute(self, command: LifecycleCommand) -> PublicConversationResult:
+        admission_binding, admission_grant_id, should_admit = self._execute(
+            lambda: self._lifecycle_preflight(
+                command=command,
+                operation="conversation.reset",
+                require_transcript=False,
+            )
+        )
+        if should_admit:
+            self._admit(
+                operation="conversation.reset",
+                binding=admission_binding,
+                grant_id=admission_grant_id,
+                network_address=command.network_address,
+                request_key_hash=command.idempotency_key_hash,
+                request_fingerprint=command.request_fingerprint,
+            )
+
         def operation() -> PublicConversationResult:
             binding = self._binding(command.url_slug)
             old_grant = self._grant_for_mutation(
@@ -726,12 +865,6 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
                 now=command.now,
             )
             self._require_unexpired_session(old_session, now=command.now)
-            self._admit(
-                operation="conversation.reset",
-                binding=binding,
-                grant_id=old_grant.id,
-                network_address=command.network_address,
-            )
             old_session.close(
                 expected_lifecycle_revision=command.expected_lifecycle_revision,
                 now=command.now,
@@ -830,6 +963,23 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
 
 class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
     def execute(self, command: LifecycleCommand) -> DeletePublicConversationResult:
+        admission_binding, admission_grant_id, should_admit = self._execute(
+            lambda: self._lifecycle_preflight(
+                command=command,
+                operation="conversation.delete",
+                require_transcript=True,
+            )
+        )
+        if should_admit:
+            self._admit(
+                operation="conversation.delete",
+                binding=admission_binding,
+                grant_id=admission_grant_id,
+                network_address=command.network_address,
+                request_key_hash=command.idempotency_key_hash,
+                request_fingerprint=command.request_fingerprint,
+            )
+
         def operation() -> DeletePublicConversationResult:
             binding = self._binding(command.url_slug)
             grant = self._grant_for_mutation(
@@ -885,12 +1035,6 @@ class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
                 now=command.now,
             )
             self._require_unexpired_session(session, now=command.now)
-            self._admit(
-                operation="conversation.delete",
-                binding=binding,
-                grant_id=grant.id,
-                network_address=command.network_address,
-            )
             issued = self.secrets.issue_purge_receipt()
             purge_job = ConversationPurgeJob.pending(
                 purge_job_id=uuid.uuid4(),
@@ -1023,18 +1167,24 @@ class GetPublicPurgeStatusUseCase(_TransactionalPublicUseCase):
         def operation() -> PublicPurgeStatusResult:
             # Resolve first so a stale/unknown slug cannot become an oracle.
             binding = self._binding(url_slug)
-            verifier = self.secrets.purge_receipt_verifier(purge_receipt)
-            if verifier is None:
+            verifiers = self.secrets.purge_receipt_verifiers(purge_receipt)
+            if not verifiers:
                 raise PurgeReceiptNotUsableError()
             job = self.repository.find_purge_job(
-                verifier_key_version=verifier[0],
-                verifier_hash=verifier[1],
+                verifier_candidates=verifiers,
             )
             if job is None or now >= job.receipt_expires_at:
                 raise PurgeReceiptNotUsableError()
-            if (
-                job.receipt_verifier_key_version != verifier[0]
-                or not hmac.compare_digest(job.receipt_verifier_hash, verifier[1])
+            verifier_hash = next(
+                (
+                    candidate_hash
+                    for version, candidate_hash in verifiers
+                    if version == job.receipt_verifier_key_version
+                ),
+                None,
+            )
+            if verifier_hash is None or not hmac.compare_digest(
+                job.receipt_verifier_hash, verifier_hash
             ):
                 raise PurgeReceiptNotUsableError()
             if (

@@ -50,6 +50,8 @@ Public Conversation Access Grant V1 상태는 `active`, `transcript_only`, `revo
 - 별도 rotate endpoint, rotated-grant chain과 old/new grant 동시 유효 grace window는 제공하지 않는다.
 - create/reset 응답 유실은 bounded encrypted replay store로만 복구하며 replay 만료 후 새 grant를 임의 발급하지 않는다.
 
+이 제한은 bearer Access Grant 자체의 lifecycle/교체 정책에 관한 것이다. 서버의 HMAC verifier key 교체는 별도 운영 보안 경계이며 grant 권한이나 expiry를 연장하지 않는다. 새 grant/receipt는 active key로만 발급하고, 이미 발급된 값은 원래 state·scope·expiry 안에서만 검증할 수 있도록 active key와 최대 한 개의 previous key를 bounded keyring으로 유지할 수 있다. Previous key 제거 시점은 그 key로 발급된 live grant와 purge receipt가 모두 만료된 뒤여야 한다.
+
 Standalone rotation 또는 grace를 도입하려면 overlap abuse, replay, audit cardinality와 revocation propagation을 다루는 별도 ADR과 API/security review가 필요하다.
 
 ## 검토한 대안

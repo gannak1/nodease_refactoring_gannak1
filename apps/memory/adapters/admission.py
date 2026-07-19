@@ -21,20 +21,28 @@ _ADMIT_SCRIPT = r"""
 local time = redis.call('TIME')
 local now = tonumber(time[1]) + (tonumber(time[2]) / 1000000)
 local window_seconds = tonumber(ARGV[1])
+local deduplication_ttl_seconds = tonumber(ARGV[2])
 local window = math.floor(now / window_seconds)
 local window_end = (window + 1) * window_seconds
 
-for index, key in ipairs(KEYS) do
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  return {1, '0'}
+end
+
+for index = 2, #KEYS do
+  local key = KEYS[index]
   local current = tonumber(redis.call('GET', key) or '0')
   if current >= tonumber(ARGV[index + 1]) then
     return {0, tostring(math.max(1, math.ceil(window_end - now)))}
   end
 end
 
-for _, key in ipairs(KEYS) do
+for index = 2, #KEYS do
+  local key = KEYS[index]
   redis.call('INCR', key)
   redis.call('EXPIREAT', key, window_end + 60)
 end
+redis.call('SET', KEYS[1], '1', 'EX', deduplication_ttl_seconds)
 return {1, '0'}
 """
 
@@ -78,15 +86,19 @@ class RedisPublicConversationAdmission:
         hmac_key: bytes,
         policy: PublicConversationAdmissionPolicy,
         key_namespace: str = "nodease-memory-public",
+        request_deduplication_ttl_seconds: int = 86_400,
     ) -> None:
         if len(hmac_key) < 32:
             raise ValueError("public conversation admission HMAC key must be at least 32 bytes")
         if not _KEY_NAMESPACE_PATTERN.fullmatch(key_namespace):
             raise ValueError("public conversation admission key namespace is invalid")
+        if not 60 <= request_deduplication_ttl_seconds <= 86_400:
+            raise ValueError("public conversation request deduplication TTL is invalid")
         self._redis = redis_client
         self._hmac_key = hmac_key
         self._policy = policy
         self._key_prefix = f"{key_namespace}:{{admission-v1}}"
+        self._request_deduplication_ttl_seconds = request_deduplication_ttl_seconds
 
     def admit(
         self,
@@ -95,8 +107,14 @@ class RedisPublicConversationAdmission:
         binding: PublicDeploymentBinding,
         grant_id,
         network_address: str,
+        request_key_hash: str,
+        request_fingerprint: str,
     ) -> None:
         if not network_address or len(network_address) > 255:
+            raise MemoryAdapterUnavailableError()
+        if not re.fullmatch(r"[0-9a-f]{64}", request_key_hash):
+            raise MemoryAdapterUnavailableError()
+        if not re.fullmatch(r"[0-9a-f]{64}", request_fingerprint):
             raise MemoryAdapterUnavailableError()
         if operation == "conversation.create":
             if grant_id is not None:
@@ -141,13 +159,28 @@ class RedisPublicConversationAdmission:
             f"{self._key_prefix}:{operation}:{dimension}:{self._digest(dimension, value)}"
             for dimension, value, _limit in dimensions
         )
+        request_identity = ":".join(
+            (
+                str(binding.organization_id),
+                str(binding.deployment_id),
+                str(grant_id) if grant_id is not None else "create",
+                request_key_hash,
+                request_fingerprint,
+            )
+        )
+        request_marker = (
+            f"{self._key_prefix}:{operation}:request:"
+            f"{self._digest('request', request_identity)}"
+        )
         limits = tuple(limit for _dimension, _value, limit in dimensions)
         try:
             result = self._redis.eval(
                 _ADMIT_SCRIPT,
-                len(keys),
+                len(keys) + 1,
+                request_marker,
                 *keys,
                 window_seconds,
+                self._request_deduplication_ttl_seconds,
                 *limits,
             )
         except Exception as exc:

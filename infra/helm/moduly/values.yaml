@@ -39,7 +39,10 @@ connectorTest:
 # and an approved replay backup-erasure contract are provisioned.
 memoryPublicConversation:
   enabled: false
+  purgeWorkerReady: false
   replayBackupErasureMode: "unconfirmed"
+  capabilityHmacPrimaryVersion: ""
+  replayEncryptionPrimaryVersion: ""
 
 # =============================================================================
 # Application Services
@@ -360,7 +363,9 @@ secrets:
   connectorTestAdmissionHmacKey: ""
 
   memoryPublicCapabilityHmacKey: ""
+  memoryPublicCapabilityHmacKeys: ""
   memoryPublicReplayEncryptionKey: ""
+  memoryPublicReplayEncryptionKeys: ""
   memoryPublicAdmissionHmacKey: ""
 
   # Master encryption key (generate with: openssl rand -base64 32)

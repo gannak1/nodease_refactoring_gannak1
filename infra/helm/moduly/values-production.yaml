@@ -23,7 +23,10 @@ scheduleDispatch:
 
 memoryPublicConversation:
   enabled: false
+  purgeWorkerReady: false
   replayBackupErasureMode: "unconfirmed"
+  capabilityHmacPrimaryVersion: ""
+  replayEncryptionPrimaryVersion: ""
 
 # Gateway (API Server)
 gateway:
@@ -296,7 +299,9 @@ secrets:
   connectorTestAdmissionHmacKey: ""
 
   memoryPublicCapabilityHmacKey: ""
+  memoryPublicCapabilityHmacKeys: ""
   memoryPublicReplayEncryptionKey: ""
+  memoryPublicReplayEncryptionKeys: ""
   memoryPublicAdmissionHmacKey: ""
 
   # Master encryption keys

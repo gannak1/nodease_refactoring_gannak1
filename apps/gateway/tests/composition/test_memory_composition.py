@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import secrets
 from datetime import timedelta
 from unittest.mock import MagicMock
@@ -21,6 +22,7 @@ from apps.memory.domain.errors import PublicConversationFeatureDisabledError
 def _environment() -> dict[str, str]:
     return {
         "MEMORY_PUBLIC_CONVERSATION_ENABLED": "true",
+        "MEMORY_PUBLIC_PURGE_WORKER_READY": "true",
         "MEMORY_PUBLIC_REPLAY_BACKUP_ERASURE_MODE": "no_database_backups",
         "MEMORY_PUBLIC_CAPABILITY_HMAC_KEY": secrets.token_urlsafe(32),
         "MEMORY_PUBLIC_REPLAY_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
@@ -72,11 +74,39 @@ def test_enabled_composition_rejects_reused_memory_security_key_material(
         validate_public_conversation_security_configuration(environment)
 
 
+def test_enabled_composition_rejects_reused_previous_keyring_material():
+    environment = _environment()
+    environment["MEMORY_PUBLIC_CAPABILITY_HMAC_KEYS"] = json.dumps(
+        {
+            "hmac-v2": secrets.token_urlsafe(32),
+            "hmac-v1": environment["MEMORY_PUBLIC_ADMISSION_HMAC_KEY"],
+        }
+    )
+    environment["MEMORY_PUBLIC_CAPABILITY_HMAC_PRIMARY_VERSION"] = "hmac-v2"
+
+    with pytest.raises(RuntimeError, match="must be distinct"):
+        validate_public_conversation_security_configuration(environment)
+
+
 def test_enabled_composition_requires_an_approved_backup_erasure_contract():
     environment = _environment()
     environment["MEMORY_PUBLIC_REPLAY_BACKUP_ERASURE_MODE"] = "unconfirmed"
 
     with pytest.raises(RuntimeError):
+        validate_public_conversation_security_configuration(environment)
+
+
+@pytest.mark.parametrize("value", (None, "false", "invalid"))
+def test_enabled_composition_requires_physical_purge_worker_readiness(
+    value: str | None,
+):
+    environment = _environment()
+    if value is None:
+        environment.pop("MEMORY_PUBLIC_PURGE_WORKER_READY")
+    else:
+        environment["MEMORY_PUBLIC_PURGE_WORKER_READY"] = value
+
+    with pytest.raises(RuntimeError, match="MEMORY_PUBLIC_PURGE_WORKER_READY"):
         validate_public_conversation_security_configuration(environment)
 
 

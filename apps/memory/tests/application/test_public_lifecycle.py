@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from cryptography.fernet import Fernet, InvalidToken
 
+from apps.memory.adapters.security import HmacPublicSecretIssuer
 from apps.memory.application.public_lifecycle import (
     ClosePublicConversationUseCase,
     CreatePublicConversationCommand,
@@ -76,6 +77,18 @@ class _Repository:
         self.idempotency[key] = record
         return IdempotencyReservation(record, created=True)
 
+    def find_idempotency(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        operation: str,
+        scope_digest: str,
+        idempotency_key_hash: str,
+    ):
+        return self.idempotency.get(
+            (organization_id, operation, scope_digest, idempotency_key_hash)
+        )
+
     def save_idempotency(self, record: ConversationIdempotency) -> None:
         self.idempotency[
             (
@@ -101,8 +114,13 @@ class _Repository:
     def add_access_grant(self, grant: ConversationAccessGrant) -> None:
         self.grants[(grant.verifier_key_version, grant.verifier_hash)] = grant
 
-    def lock_access_grant(self, *, verifier_key_version: str, verifier_hash: str):
-        return self.grants.get((verifier_key_version, verifier_hash))
+    def lock_access_grant(self, *, verifier_candidates):
+        matches = [
+            self.grants[candidate]
+            for candidate in verifier_candidates
+            if candidate in self.grants
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     def save_access_grant(self, grant: ConversationAccessGrant) -> None:
         self.add_access_grant(grant)
@@ -119,12 +137,12 @@ class _Repository:
     def add_purge_job(self, job: ConversationPurgeJob) -> None:
         self.purge_jobs[job.id] = job
 
-    def find_purge_job(self, *, verifier_key_version: str, verifier_hash: str):
+    def find_purge_job(self, *, verifier_candidates):
         for job in self.purge_jobs.values():
             if (
-                job.receipt_verifier_key_version == verifier_key_version
-                and job.receipt_verifier_hash == verifier_hash
-            ):
+                job.receipt_verifier_key_version,
+                job.receipt_verifier_hash,
+            ) in verifier_candidates:
                 return job
         return None
 
@@ -167,6 +185,10 @@ class _UnitOfWork:
         ) = self._snapshot
         self._snapshot = None
 
+    @property
+    def is_active(self) -> bool:
+        return self._snapshot is not None
+
 
 class _Secrets:
     def __init__(self) -> None:
@@ -195,14 +217,16 @@ class _Secrets:
     def issue_access_grant(self) -> IssuedSecret:
         return self._issue("cag", "access")
 
-    def access_grant_verifier(self, raw_value: str):
-        return self._verify("cag", "access", raw_value)
+    def access_grant_verifiers(self, raw_value: str):
+        verifier = self._verify("cag", "access", raw_value)
+        return (verifier,) if verifier is not None else ()
 
     def issue_purge_receipt(self) -> IssuedSecret:
         return self._issue("cpr", "purge")
 
-    def purge_receipt_verifier(self, raw_value: str):
-        return self._verify("cpr", "purge", raw_value)
+    def purge_receipt_verifiers(self, raw_value: str):
+        verifier = self._verify("cpr", "purge", raw_value)
+        return (verifier,) if verifier is not None else ()
 
 
 class _Cipher:
@@ -278,12 +302,24 @@ def _use_case(cls, components, *, admission=None):
 
 
 class _Admission:
-    def __init__(self, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        error: Exception | None = None,
+        *,
+        uow: _UnitOfWork | None = None,
+        on_admit=None,
+    ) -> None:
         self.error = error
+        self.uow = uow
+        self.on_admit = on_admit
         self.calls: list[dict] = []
 
     def admit(self, **kwargs) -> None:
+        if self.uow is not None:
+            assert self.uow.is_active is False
         self.calls.append(kwargs)
+        if self.on_admit is not None:
+            self.on_admit()
         if self.error is not None:
             raise self.error
 
@@ -329,6 +365,69 @@ def test_create_replays_the_same_bounded_access_token_without_storing_raw_value(
     assert all(first.access_token.encode("utf-8") not in value.ciphertext for value in repository.replays.values())
     record = next(iter(repository.idempotency.values()))
     assert record.retention_expires_at == _now() + timedelta(hours=24)
+
+
+def test_previous_capability_key_remains_usable_after_bounded_rotation():
+    previous_key = secrets.token_bytes(32)
+    components = list(_application())
+    components[2] = HmacPublicSecretIssuer(previous_key, key_version="cap-v1")
+    previous_components = tuple(components)
+    created = _use_case(
+        CreatePublicConversationUseCase,
+        previous_components,
+    ).execute(_create_command())
+    components[2] = HmacPublicSecretIssuer(
+        {
+            "cap-v2": secrets.token_bytes(32),
+            "cap-v1": previous_key,
+        },
+        primary_key_version="cap-v2",
+    )
+
+    closed = _use_case(
+        ClosePublicConversationUseCase,
+        tuple(components),
+    ).execute(_lifecycle_command(created.access_token, suffix="rotated-close"))
+
+    assert closed.lifecycle.value == "closed"
+
+
+def test_previous_purge_receipt_remains_usable_after_bounded_rotation():
+    previous_key = secrets.token_bytes(32)
+    components = list(_application())
+    components[2] = HmacPublicSecretIssuer(previous_key, key_version="cap-v1")
+    previous_components = tuple(components)
+    created = _use_case(
+        CreatePublicConversationUseCase,
+        previous_components,
+    ).execute(_create_command(suffix="receipt-rotation"))
+    deleted = _use_case(
+        DeletePublicConversationUseCase,
+        previous_components,
+    ).execute(
+        _lifecycle_command(
+            created.access_token,
+            suffix="receipt-rotation",
+        )
+    )
+    components[2] = HmacPublicSecretIssuer(
+        {
+            "cap-v2": secrets.token_bytes(32),
+            "cap-v1": previous_key,
+        },
+        primary_key_version="cap-v2",
+    )
+
+    status = _use_case(
+        GetPublicPurgeStatusUseCase,
+        tuple(components),
+    ).execute(
+        url_slug="public-chatbot",
+        purge_receipt=deleted.purge_receipt,
+        now=_now(),
+    )
+
+    assert status.status.value == "pending"
 
 
 def test_create_replay_restores_the_initial_response_after_the_session_closes():
@@ -813,6 +912,61 @@ def test_mutation_admission_runs_once_for_new_request_not_for_idempotency_replay
 
     assert len(admission.calls) == 1
     assert admission.calls[0]["operation"] == "conversation.create"
+    assert admission.calls[0]["request_key_hash"] == command.idempotency_key_hash
+    assert admission.calls[0]["request_fingerprint"] == command.request_fingerprint
+
+
+def test_mutation_admission_runs_after_database_preflight_releases_locks():
+    components = _application()
+    admission = _Admission(uow=components[1])
+    create = _use_case(
+        CreatePublicConversationUseCase,
+        components,
+        admission=admission,
+    )
+
+    create.execute(_create_command())
+
+    assert len(admission.calls) == 1
+
+
+def test_lifecycle_admission_runs_after_grant_and_session_preflight_releases_locks():
+    components = _application()
+    created = _use_case(
+        CreatePublicConversationUseCase,
+        components,
+    ).execute(_create_command())
+    admission = _Admission(uow=components[1])
+    close = _use_case(
+        ClosePublicConversationUseCase,
+        components,
+        admission=admission,
+    )
+
+    close.execute(_lifecycle_command(created.access_token, suffix="unlocked-close"))
+
+    assert len(admission.calls) == 1
+
+
+def test_lifecycle_revalidates_revocation_after_external_admission():
+    components = _application()
+    repository = components[0]
+    created = _use_case(
+        CreatePublicConversationUseCase,
+        components,
+    ).execute(_create_command())
+    grant = next(iter(repository.grants.values()))
+    admission = _Admission(on_admit=lambda: grant.revoke(now=_now()))
+    close = _use_case(
+        ClosePublicConversationUseCase,
+        components,
+        admission=admission,
+    )
+
+    with pytest.raises(AccessGrantNotUsableError):
+        close.execute(_lifecycle_command(created.access_token, suffix="revoked-close"))
+
+    assert next(iter(repository.sessions.values())).lifecycle.value == "active"
 
 
 def test_admission_unavailable_rolls_back_pending_create_idempotency_record():

@@ -80,6 +80,12 @@ SECRET_VALUE_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     (
+        "public_conversation_access_grant",
+        re.compile(
+            r"(?<![A-Za-z0-9_-])cag_v1_[A-Za-z0-9_-]{43,128}(?![A-Za-z0-9_-])"
+        ),
+    ),
+    (
         "public_purge_receipt",
         re.compile(
             r"(?<![A-Za-z0-9_-])cpr_v1_[A-Za-z0-9_-]{43,128}(?![A-Za-z0-9_-])"

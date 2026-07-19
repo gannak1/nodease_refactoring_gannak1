@@ -59,6 +59,18 @@ def test_purge_receipt_key_and_free_text_value_are_always_redacted():
     assert receipt not in str(result.redacted_payload)
 
 
+def test_public_access_grant_free_text_value_is_always_redacted():
+    access_grant = f"cag_v1_{secrets.token_urlsafe(32)}"
+    result = TraceRedactionService.redact_payload(
+        {"note": f"conversation credential: {access_grant}"},
+        ResolvedRedactionPolicy(redaction_enabled=False, pii_detection_enabled=False),
+    )
+
+    assert result.secret_detected is True
+    assert access_grant not in str(result.redacted_payload)
+    assert result.redacted_payload["note"] == "conversation credential: [REDACTED]"
+
+
 def test_sensitive_json_path_redaction_records_metadata_without_values():
     result = TraceRedactionService.redact_payload(
         {"input": {"account": {"number": "1234567890"}}},

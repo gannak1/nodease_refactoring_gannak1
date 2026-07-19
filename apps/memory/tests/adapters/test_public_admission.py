@@ -57,6 +57,7 @@ def _admission(redis: _Redis) -> RedisPublicConversationAdmission:
             create_organization_rate_limit=7,
             create_deployment_network_rate_limit=8,
         ),
+        request_deduplication_ttl_seconds=86_400,
     )
 
 
@@ -71,13 +72,18 @@ def test_admission_uses_hashed_dimensions_not_network_or_grant_values_in_redis_k
         binding=_binding(),
         grant_id=grant_id,
         network_address=network,
+        request_key_hash="a" * 64,
+        request_fingerprint="b" * 64,
     )
 
     call = redis.calls[0]
-    keys = call[2:6]
+    assert call[1] == 5
+    request_marker = call[2]
+    keys = call[3:7]
+    assert "a" * 64 not in request_marker
     assert all(network not in key for key in keys)
     assert all(str(grant_id) not in key for key in keys)
-    assert call[-5:] == (60, 2, 3, 4, 5)
+    assert call[-6:] == (60, 86_400, 2, 3, 4, 5)
 
 
 def test_create_uses_deployment_network_bucket_without_a_global_grant_bucket():
@@ -93,15 +99,53 @@ def test_create_uses_deployment_network_bucket_without_a_global_grant_bucket():
             binding=binding,
             grant_id=None,
             network_address=network,
+            request_key_hash="a" * 64,
+            request_fingerprint="b" * 64,
         )
 
     first_call, second_call = redis.calls
-    first_keys = set(first_call[2:5])
-    second_keys = set(second_call[2:5])
+    first_keys = set(first_call[3:6])
+    second_keys = set(second_call[3:6])
     assert len(first_keys) == len(second_keys) == 3
     assert not first_keys & second_keys
-    assert first_call[-4:] == (600, 6, 7, 8)
-    assert second_call[-4:] == (600, 6, 7, 8)
+    assert first_call[-5:] == (600, 86_400, 6, 7, 8)
+    assert second_call[-5:] == (600, 86_400, 6, 7, 8)
+
+
+def test_same_logical_request_uses_one_hmac_marker_for_concurrent_admission():
+    redis = _Redis()
+    admission = _admission(redis)
+    binding = _binding()
+
+    for _ in range(2):
+        admission.admit(
+            operation="conversation.create",
+            binding=binding,
+            grant_id=None,
+            network_address="198.51.100.42",
+            request_key_hash="b" * 64,
+            request_fingerprint="c" * 64,
+        )
+
+    assert redis.calls[0][2] == redis.calls[1][2]
+
+
+def test_same_idempotency_key_with_a_different_fingerprint_uses_another_marker():
+    redis = _Redis()
+    admission = _admission(redis)
+    binding = _binding()
+
+    for fingerprint in ("c" * 64, "d" * 64):
+        admission.admit(
+            operation="conversation.create",
+            binding=binding,
+            grant_id=None,
+            network_address="198.51.100.42",
+            request_key_hash="b" * 64,
+            request_fingerprint=fingerprint,
+        )
+
+    assert redis.calls[0][2] != redis.calls[1][2]
 
 
 def test_create_admission_preserves_retry_after_within_the_create_window():
@@ -111,6 +155,8 @@ def test_create_admission_preserves_retry_after_within_the_create_window():
             binding=_binding(),
             grant_id=None,
             network_address="203.0.113.7",
+            request_key_hash="a" * 64,
+            request_fingerprint="b" * 64,
         )
 
     assert error.value.retry_after_seconds == 120
@@ -123,6 +169,8 @@ def test_lifecycle_admission_caps_retry_after_to_its_shorter_window():
             binding=_binding(),
             grant_id=uuid.uuid4(),
             network_address="203.0.113.7",
+            request_key_hash="a" * 64,
+            request_fingerprint="b" * 64,
         )
 
     assert error.value.retry_after_seconds == 60
@@ -135,4 +183,6 @@ def test_admission_backend_failure_is_fail_closed():
             binding=_binding(),
             grant_id=None,
             network_address="203.0.113.8",
+            request_key_hash="a" * 64,
+            request_fingerprint="b" * 64,
         )

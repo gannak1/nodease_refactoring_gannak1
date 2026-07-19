@@ -134,19 +134,41 @@ spec:
               key: SECRET_KEY
         - name: MEMORY_PUBLIC_CONVERSATION_ENABLED
           value: {{ .Values.memoryPublicConversation.enabled | quote }}
+        - name: MEMORY_PUBLIC_PURGE_WORKER_READY
+          value: {{ .Values.memoryPublicConversation.purgeWorkerReady | quote }}
         - name: MEMORY_PUBLIC_REPLAY_BACKUP_ERASURE_MODE
           value: {{ .Values.memoryPublicConversation.replayBackupErasureMode | quote }}
         {{- if .Values.memoryPublicConversation.enabled }}
+        {{- if .Values.secrets.memoryPublicCapabilityHmacKeys }}
+        - name: MEMORY_PUBLIC_CAPABILITY_HMAC_KEYS
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "moduly.secretName" . }}
+              key: MEMORY_PUBLIC_CAPABILITY_HMAC_KEYS
+        - name: MEMORY_PUBLIC_CAPABILITY_HMAC_PRIMARY_VERSION
+          value: {{ required "memoryPublicConversation.capabilityHmacPrimaryVersion is required when a capability keyring is configured" .Values.memoryPublicConversation.capabilityHmacPrimaryVersion | quote }}
+        {{- else }}
         - name: MEMORY_PUBLIC_CAPABILITY_HMAC_KEY
           valueFrom:
             secretKeyRef:
               name: {{ include "moduly.secretName" . }}
               key: MEMORY_PUBLIC_CAPABILITY_HMAC_KEY
+        {{- end }}
+        {{- if .Values.secrets.memoryPublicReplayEncryptionKeys }}
+        - name: MEMORY_PUBLIC_REPLAY_ENCRYPTION_KEYS
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "moduly.secretName" . }}
+              key: MEMORY_PUBLIC_REPLAY_ENCRYPTION_KEYS
+        - name: MEMORY_PUBLIC_REPLAY_ENCRYPTION_PRIMARY_VERSION
+          value: {{ required "memoryPublicConversation.replayEncryptionPrimaryVersion is required when a replay keyring is configured" .Values.memoryPublicConversation.replayEncryptionPrimaryVersion | quote }}
+        {{- else }}
         - name: MEMORY_PUBLIC_REPLAY_ENCRYPTION_KEY
           valueFrom:
             secretKeyRef:
               name: {{ include "moduly.secretName" . }}
               key: MEMORY_PUBLIC_REPLAY_ENCRYPTION_KEY
+        {{- end }}
         - name: MEMORY_PUBLIC_ADMISSION_HMAC_KEY
           valueFrom:
             secretKeyRef:
