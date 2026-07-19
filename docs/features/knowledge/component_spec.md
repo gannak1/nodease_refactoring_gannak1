@@ -1,7 +1,7 @@
 # Knowledge Component Spec
 
 Status: Draft
-Verified Against: feature/mba-302 @ b2d6467002b7becf1daa0badfe6fc155b3edaa57
+Verified Against: feature/mba-301 @ 27a12ce1a6ba7bcbdb80cad09a8206ca47a68a34
 MBA-105 구현 baseline, 운영 기본값, permission helper output, active version finalization, resource hiding matrix는 [implementation_baseline.md](implementation_baseline.md)를 따른다. Workflow RAG에서 `execution_subject`가 없는 MVP public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md)을 따른다. MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md)을 따른다. Direct KB와 명시 selected Collection의 Workflow runtime candidate 해석은 [ADR-0036](../../decisions/ADR-0036-knowledge-runtime-candidate-resolution.md)을 따른다. KC lifecycle, item 순서와 권한 운영 경계는 [ADR-0044](../../decisions/ADR-0044-knowledge-collection-operational-management-boundary.md)을 따른다.
 KC sync의 Gateway application, durable repository, Workflow executor와 Client polling 경계는 [ADR-0048](../../decisions/ADR-0048-knowledge-collection-sync-execution-boundary.md)을 따른다.
 
@@ -59,6 +59,7 @@ KC sync의 Gateway application, durable repository, Workflow executor와 Client 
 | Skill Evaluation/Regression Set | Golden question, eval result, freshness signal을 관리한다 | Eval fixture도 raw restricted content를 포함하지 않는다 |
 | Skill Governance/Publication | Skill publish, review, deprecate, approval workflow의 policy boundary 후보 | 구체적인 authoring UI, Workflow Playground 연결, 승인 UX는 아직 확정하지 않는다. Code-bearing skill은 별도 sandbox/approval gate 전까지 publish할 수 없다 |
 | Collection Router | Authorized safe candidate에서 collection/KB 후보를 선택한다 | Access control을 수행하지 않고 raw source ACL이나 hidden aggregate data를 받지 않는다 |
+| Retrieval Embedding Model Projection | 권한, organization, lifecycle을 통과한 KB의 distinct embedding model identifier를 한 번의 bounded query로 immutable scalar binding에 투영한다 | Invocation-local 최적화이며 permission, candidate, credential 결정을 소유하지 않는다. Missing, inactive, non-embedding, ambiguous identifier는 provider 호출 전에 fail-closed한다 |
 | Retrieval Orchestrator | 선택된 KB들에 대해 metadata/hierarchy retrieval을 실행하고 merge/rerank한다 | Authorized redacted evidence만 사용한다 |
 | Audit/Trace Summarizer | Redaction-safe audit/trace/answer summary를 만든다 | Raw content/title/path/url은 제외하고, raw/compliance audit은 safe reference, decision, reason만 저장한다 |
 | RAG Answer Retention Worker | Terminal answer run의 retention purge를 수행하고 aggregate audit을 남긴다 | requested/running row를 삭제하지 않고 동시 purge를 row lock/marker로 방지한다 |
@@ -293,6 +294,11 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 
 - Permission helper는 candidate resolution에서 per-KB query를 피하고 bulk evaluation을 지원해야 한다.
 - Candidate lookup에는 KB 중심 index와 user-candidate index가 모두 필요하다.
+- Public Gateway route는 Retrieval Orchestrator 호출 전에 KB `use`를 확인하고, Workflow runtime은 MBA-232 resolver가 반환한 authorized candidate만 전달한다. Retrieval Embedding Model Projection은 이 후보 선별 뒤에만 실행한다.
+- 일반 implicit-model retrieval의 `LLMModel` 조회는 authorized KB 수와 distinct model 수에 무관하게 invocation당 최대 1회다. Explicit verified model과 authorized candidate 0건 경로는 0회다.
+- Workflow fanout에는 query vector와 immutable scalar model binding만 전달한다. ORM row, credential, secret은 전달하지 않으며 runtime KB model과 binding identifier가 다르면 provider와 vector store 호출 전에 제외한다.
+- Projection은 invocation 사이에 cache하지 않는다. 다음 invocation은 model active/type/ambiguity 상태를 다시 읽으며, MBA-289 Authorized Retrieval Port 이관 시 같은 projection 계약을 adapter 내부로 흡수한다.
+- 쿼리 수 상한은 회귀 차단 기준이다. 지연 시간은 실제 PostgreSQL과 운영 환경에서 관찰하되 기능 완료를 단일 timing threshold에 결합하지 않는다.
 - 초기 candidate cap은 `max_candidate_kbs=5000`, `max_route_collections=20`, `max_retrieval_kbs=20`, `max_chunks_per_kb=8`, `max_total_chunks=50`이다. 이 값은 운영 baseline이며 제품의 고정 계약이 아니다.
 - Candidate cap, fanout concurrency, timeout, partial failure behavior는 [implementation_baseline.md](implementation_baseline.md)의 baseline을 시작점으로 삼고, operations policy로 조정 가능해야 하며 운영 배포 전에 load test를 거쳐야 한다.
 - 가능한 경우 KB/version filter를 포함한 단일 vector/keyword query를 우선한다. Backend가 지원하지 못하면 concurrency와 timeout cap이 있는 bounded per-KB fanout을 사용한다.

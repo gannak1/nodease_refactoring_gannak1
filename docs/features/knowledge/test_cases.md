@@ -1,7 +1,7 @@
 # Knowledge Test Cases
 
 Status: Draft
-Verified Against: feature/mba-302 @ b2d6467002b7becf1daa0badfe6fc155b3edaa57
+Verified Against: feature/mba-301 @ 27a12ce1a6ba7bcbdb80cad09a8206ca47a68a34
 이 문서는 현재 RAG 동작과 목표 KB 통합 모델에 필요한 테스트 범위를 함께 기록한다. MBA-105 목표 모델 테스트는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)과 [implementation_baseline.md](implementation_baseline.md)의 임시 baseline을 기준으로 구현 blocker가 된다.
 KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048](../../decisions/ADR-0048-knowledge-collection-sync-execution-boundary.md)을 따른다.
 
@@ -297,6 +297,10 @@ KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048]
 
 ## Retrieval And Agent Tests
 
+- Gateway public route는 KB `use` 확인 뒤 RetrievalService를 호출하고, Workflow runtime은 MBA-232 resolver가 반환한 authorized candidate만 model projection에 전달한다. Denied/noncandidate KB의 model identifier는 batch predicate, 결과, error, audit, trace에 나타나지 않아야 한다.
+- 같은 model과 여러 model을 사용하는 authorized KB를 조회해도 implicit path의 `LLMModel` query는 invocation당 최대 1회다. Explicit verified model과 authorized candidate 0건 경로는 0회다.
+- Missing, inactive, non-embedding, ambiguous model identifier와 runtime KB model이 binding과 불일치하는 후보는 LLM client, embedding provider, vector store 호출 전에 제외된다.
+- Workflow fanout은 query vector와 immutable scalar binding을 재사용해 per-KB model ORM 조회를 수행하지 않는다. Projection 저장소 장애는 per-KB fallback이나 provider 호출 없이 safe no-result 또는 정책에 따른 sanitized node failure로 닫힌다.
 - `internal_chatbot` 실행의 current user는 Runtime permission helper에 그대로 전달되고, 해당 user의 KB permission 또는 source ACL이 거부한 후보는 retrieval 전에 제외된다.
 - 공개 `chatbot`은 execution subject나 owner fallback 없이 anonymous public-only로 검색하며, `internal_chatbot`의 public surface 실행은 safe 404로 거부된다.
 - Auto mode는 collection route helper와 KB permission/source ACL helper 결과로 candidate set을 만든다.
@@ -500,6 +504,13 @@ KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048]
 - Demo fixture는 상담원 허용 문서와 제한 문서를 분리하고, 제한 문서가 모든 운영 RAG mode의 prompt/citation/trace에 포함되지 않는지 검증한다.
 
 ## Performance And Load Tests
+
+### MBA-301 Retrieval Embedding Model Batch Projection
+
+- Authorized KB 1개와 상한 20개, 동일 model과 mixed model 모두에서 implicit retrieval의 `LLMModel` query 상한은 1회로 유지되어야 한다.
+- Explicit verified model과 authorized candidate 0건은 model projection query를 실행하지 않아야 한다.
+- Query count는 회귀 차단 기준이며, 실제 PostgreSQL 환경에서는 변경 전 per-KB lookup 대비 query 수와 latency를 관찰한다. 환경 변동이 큰 단일 latency threshold는 merge gate로 사용하지 않는다.
+- MBA-289가 Authorized Retrieval Port를 도입할 때 projection은 권한 판정을 복제하지 않고 authorized candidate 이후 adapter 내부 단계로 이동해야 한다.
 
 ### MBA-288 Durable Document Ingestion
 
