@@ -816,6 +816,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Public Chatbot route에 login cookie가 있어도 anonymous public audience를 유지하고 private KB/Memory를 허용하지 않는다. Target authenticated internal Chatbot은 별도 access policy/runtime namespace가 구현된 경우에만 user execution subject를 사용한다.
 - Active deployment 변경과 queued old-session task 경합에서 Worker는 pinned deployment snapshot을 사용하거나 side effect 전에 version conflict로 닫고 current graph를 임의 실행하지 않는다.
 - LLM Credentials가 발급한 ProviderExecutionCapability identity/revision의 purpose, deployment/node/admission/provider-attempt binding 또는 current validity mismatch는 context materialization, provider call과 budget reservation 전에 fail-closed 한다.
+- Capability-required LLM node는 `n|best_of`가 정확한 정수 `1`이 아니면 provider 호출 전에 차단하고, Knowledge가 설정됐지만 embedding capability가 없으면 candidate resolution, legacy credential selection과 embedding/main provider 호출을 모두 수행하지 않는다.
 
 ## Edge Cases
 

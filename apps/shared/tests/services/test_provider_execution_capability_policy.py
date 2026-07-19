@@ -311,7 +311,10 @@ def test_admission_locks_policy_before_capability_record(monkeypatch):
         purpose=CapabilityPurpose.MAIN_GENERATION,
     )
     order: list[str] = []
+    validation_times: list[datetime] = []
     lock_modes: dict[str, bool | None] = {}
+    injected_now = datetime(2026, 7, 19, 1, 2, 2, tzinfo=timezone.utc)
+    database_now = datetime(2026, 7, 19, 1, 2, 3, tzinfo=timezone.utc)
     policy = SimpleNamespace(
         id=policy_id,
         policy_revision=2,
@@ -335,7 +338,7 @@ def test_admission_locks_policy_before_capability_record(monkeypatch):
         input_token_cap=100,
         output_token_cap=10,
         cost_cap_microusd=10_000,
-        require_usable=lambda **_kwargs: None,
+        require_usable=lambda **kwargs: validation_times.append(kwargs["now"]),
     )
     model = SimpleNamespace(
         id=model_id,
@@ -422,6 +425,12 @@ def test_admission_locks_policy_before_capability_record(monkeypatch):
             )
         ),
     )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_database_clock_now",
+        staticmethod(lambda _db: order.append("database_clock") or database_now),
+        raising=False,
+    )
 
     lease = ProviderExecutionCapabilityService.admit_capability(
         _Db(),
@@ -432,11 +441,32 @@ def test_admission_locks_policy_before_capability_record(monkeypatch):
             requested_input_tokens=10,
             requested_output_tokens=5,
         ),
+        now=injected_now,
     )
 
-    assert order == ["deployment", "policy", "capability"]
+    assert order == ["deployment", "policy", "capability", "database_clock"]
     assert lock_modes == {"selection": True, "permission": True}
+    assert validation_times == [injected_now, database_now]
     assert lease.credential is credential
+
+
+def test_database_clock_now_uses_wall_clock_timestamp():
+    statements: list[object] = []
+    database_now = datetime(2026, 7, 19, 1, 2, 3)
+
+    class _Result:
+        def scalar_one(self):
+            return database_now
+
+    class _Db:
+        def execute(self, statement):
+            statements.append(statement)
+            return _Result()
+
+    result = ProviderExecutionCapabilityService._database_clock_now(_Db())
+
+    assert "clock_timestamp" in str(statements[0])
+    assert result == database_now.replace(tzinfo=timezone.utc)
 
 
 def test_policy_selection_locks_runtime_authorization_rows(monkeypatch):

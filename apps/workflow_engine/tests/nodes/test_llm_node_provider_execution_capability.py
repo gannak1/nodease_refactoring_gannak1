@@ -19,7 +19,7 @@ from apps.workflow_engine.services.llm_service import (
     LLMRuntimeSelection,
     LLMService,
 )
-from apps.workflow_engine.workflow.nodes.llm.entities import LLMNodeData
+from apps.workflow_engine.workflow.nodes.llm.entities import KnowledgeBaseRef, LLMNodeData
 from apps.workflow_engine.workflow.nodes.llm.llm_node import (
     LLMNode,
     ProviderExecutionCapabilityConfigurationError,
@@ -209,6 +209,36 @@ def test_capability_required_llm_node_fails_before_client_when_trusted_control_m
         LLMService,
         "get_runtime_client_for_provider_execution",
         lambda *_args, **_kwargs: pytest.fail("provider client must not be created"),
+    )
+
+    with pytest.raises(ProviderExecutionCapabilityConfigurationError):
+        node.execute({})
+
+
+def test_capability_required_rag_fails_before_knowledge_or_provider_io(monkeypatch):
+    node = _node(
+        context={
+            "db": object(),
+            "provider_execution_capability_required": True,
+        }
+    )
+    node.data.knowledgeBases = [
+        KnowledgeBaseRef(id=str(uuid.uuid4()), name="Protected KB")
+    ]
+    monkeypatch.setattr(
+        node,
+        "_resolve_runtime_knowledge_candidates",
+        lambda: pytest.fail("knowledge resolution must not run"),
+    )
+    monkeypatch.setattr(
+        LLMService,
+        "get_runtime_client_for_provider_execution",
+        lambda *_args, **_kwargs: pytest.fail("provider client must not be created"),
+    )
+    monkeypatch.setattr(
+        LLMService,
+        "get_client_for_user",
+        lambda *_args, **_kwargs: pytest.fail("legacy embedding client must not run"),
     )
 
     with pytest.raises(ProviderExecutionCapabilityConfigurationError):
@@ -699,8 +729,18 @@ def test_capability_request_rejects_non_single_completion_count(completion_count
         )
 
 
+@pytest.mark.parametrize("best_of", [0, 2, 100, True, "1"])
+def test_capability_request_rejects_non_single_best_of(best_of):
+    with pytest.raises(ProviderExecutionCapabilityConfigurationError):
+        LLMNode._provider_execution_requested_usage(
+            messages=[{"role": "user", "content": "safe"}],
+            llm_params={"best_of": best_of, "max_tokens": 5},
+            issue_command=SimpleNamespace(output_token_cap=10),
+        )
+
+
 def test_capability_request_allows_explicit_single_completion():
-    params = {"n": 1, "max_tokens": 5}
+    params = {"n": 1, "best_of": 1, "max_tokens": 5}
 
     _, output_tokens = LLMNode._provider_execution_requested_usage(
         messages=[{"role": "user", "content": "safe"}],
@@ -710,6 +750,7 @@ def test_capability_request_allows_explicit_single_completion():
 
     assert output_tokens == 5
     assert params["n"] == 1
+    assert params["best_of"] == 1
 
 
 def test_capability_request_counts_provider_visible_parameters():

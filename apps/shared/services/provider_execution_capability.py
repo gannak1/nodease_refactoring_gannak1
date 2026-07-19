@@ -48,6 +48,7 @@ from apps.shared.services.permissions import (
     has_llm_credential_permission,
     has_organization_manager_permission,
 )
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 CAPABILITY_TTL = timedelta(minutes=5)
@@ -452,7 +453,7 @@ class ProviderExecutionCapabilityService:
         command: ProviderExecutionCapabilityAdmissionCommand,
         now: datetime | None = None,
     ) -> ProviderExecutionCredentialLease:
-        now = now or _utc_now()
+        admission_started_at = now or _utc_now()
         cls._validate_nonnegative_caps(
             command.requested_input_tokens,
             command.requested_output_tokens,
@@ -481,7 +482,7 @@ class ProviderExecutionCapabilityService:
             capability.require_usable(
                 binding=command.binding,
                 revision=command.capability_revision,
-                now=now,
+                now=admission_started_at,
             )
         except CapabilityBindingError as exc:
             raise ProviderExecutionPolicyError("capability_stale") from exc
@@ -537,6 +538,15 @@ class ProviderExecutionCapabilityService:
         )
         if requested_cost_microusd > capability.cost_cap_microusd:
             raise ProviderExecutionPolicyError("capability_stale")
+        final_now = cls._database_clock_now(db)
+        try:
+            capability.require_usable(
+                binding=command.binding,
+                revision=command.capability_revision,
+                now=final_now,
+            )
+        except CapabilityBindingError as exc:
+            raise ProviderExecutionPolicyError("capability_stale") from exc
         return ProviderExecutionCredentialLease(
             capability=capability,
             credential=credential,
@@ -560,6 +570,15 @@ class ProviderExecutionCapabilityService:
             created_at=policy.created_at,
             updated_at=policy.updated_at,
         )
+
+    @staticmethod
+    def _database_clock_now(db: Session) -> datetime:
+        value = db.execute(select(func.clock_timestamp())).scalar_one()
+        if not isinstance(value, datetime):
+            raise ProviderExecutionPolicyError("capability_stale")
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
     @staticmethod
     def _validate_nonnegative_caps(*caps: int) -> None:

@@ -1067,6 +1067,11 @@ class LLMNode(Node[LLMNodeData]):
         knowledge_enabled = bool(
             self.data.knowledgeBases or self.data.knowledgeCollections
         )
+        if capability_required and knowledge_enabled:
+            # RAG query embedding still uses the legacy user credential path.
+            # Until it has its own provider capability, fail before candidate
+            # resolution or any provider-backed knowledge operation.
+            raise ProviderExecutionCapabilityConfigurationError()
         if (
             capability_required
             or not client_override
@@ -3233,6 +3238,14 @@ class LLMNode(Node[LLMNodeData]):
             isinstance(completion_count, bool)
             or not isinstance(completion_count, int)
             or completion_count != 1
+        ):
+            raise ProviderExecutionCapabilityConfigurationError()
+
+        best_of = llm_params.get("best_of", 1)
+        if (
+            isinstance(best_of, bool)
+            or not isinstance(best_of, int)
+            or best_of != 1
         ):
             raise ProviderExecutionCapabilityConfigurationError()
 
