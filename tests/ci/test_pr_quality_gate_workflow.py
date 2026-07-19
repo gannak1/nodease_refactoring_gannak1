@@ -173,7 +173,10 @@ def test_trusted_diff_detects_real_terraform_and_dockerfile_changes():
     assert "terraform_config_changed=false" in trusted_diff_block
     assert "dockerfile_config_changed=false" in trusted_diff_block
     assert "infra/terraform/*)" in trusted_diff_block
-    assert "*/Dockerfile|Dockerfile|*.Dockerfile)" in trusted_diff_block
+    assert (
+        "*/Dockerfile|Dockerfile|*/Dockerfile.*|Dockerfile.*|*.Dockerfile)"
+        in trusted_diff_block
+    )
     assert (
         'echo "terraform_config_changed=$terraform_config_changed"'
         in trusted_diff_block
@@ -268,6 +271,7 @@ def test_dockerfile_validation_preserves_rename_source_paths():
         '--build-arg "BUILDKIT_DOCKERFILE_CHECK=error=true"'
         in dockerfile_block
     )
+    assert "Dockerfile|Dockerfile.*|*.Dockerfile)" in dockerfile_block
 
 
 def test_helm_validation_registers_chart_dependency_repositories():
@@ -299,6 +303,16 @@ def test_knowledge_postgres_workflow_runs_durable_ingestion_contract():
     ) in workflow
     assert ".venv-ci-knowledge-ingestion/bin/python -m pytest" in workflow
     assert '-e "apps/gateway[dev]"' in workflow
+
+
+def test_knowledge_postgres_dev_push_tracks_all_durable_ingestion_services():
+    workflow = KNOWLEDGE_POSTGRES_PATH.read_text(encoding="utf-8")
+    push_paths = workflow.split("  push:", maxsplit=1)[1].split(
+        "permissions:",
+        maxsplit=1,
+    )[0]
+
+    assert '- "apps/shared/services/knowledge_ingestion_*.py"' in push_paths
 
 
 def test_protected_ci_workflows_pin_external_actions_to_commit_shas():

@@ -297,6 +297,15 @@ def _is_ci_control_path(path: str) -> bool:
     )
 
 
+def _is_dockerfile_path(path: str) -> bool:
+    name = PurePosixPath(path).name
+    return (
+        name == "Dockerfile"
+        or name.startswith("Dockerfile.")
+        or name.endswith(".Dockerfile")
+    )
+
+
 def _select_deployment_validation(path: str, scope: ChangeScope) -> None:
     if path.startswith((".github/workflows/", ".github/actions/")):
         scope.actions_validation = True
@@ -309,7 +318,7 @@ def _select_deployment_validation(path: str, scope: ChangeScope) -> None:
         scope.terraform_config_changed = True
     if _COMPOSE_FILE_NAME_PATTERN.fullmatch(PurePosixPath(path).name):
         scope.compose_validation = True
-    if PurePosixPath(path).name == "Dockerfile" or path.endswith(".Dockerfile"):
+    if _is_dockerfile_path(path):
         scope.dockerfile_validation = True
         scope.dockerfile_config_changed = True
 

@@ -266,6 +266,7 @@ def test_deployment_workflow_selects_static_validation_without_runtime_tests():
         ("docker/docker-compose.yml", "compose_validation"),
         ("docker/docker-compose.connector-demo.yml", "compose_validation"),
         ("docker/gateway/Dockerfile", "dockerfile_validation"),
+        ("docker/gateway/Dockerfile.dev", "dockerfile_validation"),
     ],
 )
 def test_deployment_config_selects_only_its_static_validator(

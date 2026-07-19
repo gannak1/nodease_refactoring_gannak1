@@ -100,7 +100,7 @@ jobs:
                 ;;
             esac
             case "$path" in
-              */Dockerfile|Dockerfile|*.Dockerfile)
+              */Dockerfile|Dockerfile|*/Dockerfile.*|Dockerfile.*|*.Dockerfile)
                 dockerfile_config_changed=true
                 ;;
             esac
@@ -779,7 +779,7 @@ jobs:
           validated=0
           for path in "${dockerfile_paths[@]}"; do
             case "$(basename "$path")" in
-              Dockerfile|*.Dockerfile)
+              Dockerfile|Dockerfile.*|*.Dockerfile)
                 selected=$((selected + 1))
                 if [[ -f "$path" ]]; then
                   docker build --check \

@@ -18,6 +18,7 @@ on:
       - "apps/shared/domain/knowledge_document_ingestion.py"
       - "apps/shared/domain/knowledge_runtime_candidates.py"
       - "apps/shared/services/knowledge_document_ingestion_*.py"
+      - "apps/shared/services/knowledge_ingestion_*.py"
       - "apps/shared/services/knowledge_permission_service.py"
       - "apps/shared/tests/db/test_knowledge_runtime_snapshot_disposable_postgres.py"
       - "apps/shared/tests/domain/test_knowledge_runtime_candidates.py"
