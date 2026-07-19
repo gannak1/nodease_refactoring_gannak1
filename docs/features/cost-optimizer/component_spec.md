@@ -270,6 +270,9 @@ B 후보 재실행을 위해 baseline picker를 다시 열거나 workspace를 �
 Planner 실제 비용만 중앙 요약에 표시한다. 상세 Inspector는 payload 출처, 마스킹된 입력
 요약, 출력 형식, RAG 여부, 난이도 label/근거, 난이도별 모델, 실제 실행 confidence와
 fallback 여부를 표시한다. 원문 prompt/input/KB 본문은 어느 화면에도 표시하지 않는다.
+Runtime Judge가 남긴 0~3 범위의 `task_requirements`가 있으면 작업 복잡도·결정 영향도·근거 종합·
+출력 정밀도 판단 근거로 사용할 수 있다. 값이 없는 이전 실행이나 계약 밖 값은 임의 점수로
+대체하지 않는다.
 
 초안 artifact가 없거나 생성에 실패해도 workflow 편집과 수동 모델 실행은 막지 않는다.
 배포 preflight는 bootstrap 전략을 선택한 node의 artifact가 없거나 오래된 경우에만 배포를

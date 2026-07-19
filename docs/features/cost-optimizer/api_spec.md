@@ -192,7 +192,7 @@ Policy response는 다음 구조를 사용한다.
     "strategy_id": "judge_bootstrap_incremental_v1",
     "default_model_id": "gpt-4.1-mini",
     "fallback_model_id": "gpt-4.1",
-    "judge_model_id": "gpt-4.1-mini",
+    "judge_model_id": "gpt-5.4-mini",
     "learning": {
       "mode": "judge_first",
       "judged_request_count": 7,
@@ -217,6 +217,36 @@ Policy response는 다음 구조를 사용한다.
   },
 }
 ~~~
+
+`judge_model_id`는 `default_model_id`와 독립적으로 결정한다. 기존 정책처럼 두 값이 같으면
+runtime은 이를 레거시 결합으로 간주하고, 현재 실행 주체가 사용할 수 있는 동일 provider의
+Judge 선호 모델로 교체한다. 명시적으로 다른 Judge가 저장돼 있고 여전히 사용 가능하면 그 값을
+유지한다. 선호 Judge가 없을 때만 기본 모델을 Judge로 사용한다.
+
+Runtime Judge provider request는 외부 API 계약이 아니라 Workflow Engine 내부 계약이다. user content에는
+`request_feature`, `rag_context`, `candidate_models`만 보낸다. `request_feature`는 JSON 구조를 보존한
+`CURRENT_REQUEST_JSON`과 길이 제한된 세 prompt, 출력 계약을 포함한다. `rag_context`는 검색량과
+근거 충분성 같은 safe signal만 허용하며 chunk/document 원문은 금지한다. `candidate_models`에는 가격,
+운영 계약 성적, 공식 역할·특화 태그와 `context_window`를 포함할 수 있다. 정상 응답은 선택 결과 외에
+다음 선택적 요구 능력 요약을 반환할 수 있다.
+
+~~~json
+{
+  "selected_model_id": "gpt-5-mini",
+  "confidence": 0.86,
+  "reason_short": "근거 종합 필요",
+  "reason_code": "evidence_synthesis",
+  "task_requirements": {
+    "task_complexity": 2,
+    "decision_impact": 1,
+    "evidence_synthesis": 3,
+    "output_precision": 2
+  }
+}
+~~~
+
+각 요구 능력 점수는 0~3 정수이며, 계약 밖의 값은 trace에서 폐기한다. 정상 Judge 출력 한도는
+768 token이다.
 
 `last_decision`은 현재 active deployment에서 해당 LLM 노드가 마지막으로 완료한
 실행의 선택 결과다. 패널에서 실제 선택 모델과 판단 사유를 보여주기 위한 값이며,

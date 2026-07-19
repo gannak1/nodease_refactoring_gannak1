@@ -17,6 +17,13 @@ FR-011 Runtime Judge 테스트는 provider 공식 문서 기반 특화 태그와
 공식 별칭을 후보 하나로 정규화하며, Sol 같은 일반 전문 업무 모델과 o3 같은 전문 추론 모델이
 동일한 `advanced` 후보로 뭉개지지 않는지 검증한다. 특화 태그는 모델 선택을 확정하는 품질
 점수가 아니며 실제 운영 계약 성적이 충분하면 운영 증거가 우선한다.
+기본 처리 모델과 Judge 모델은 분리해 검증한다. 레거시 정책이 두 모델을 같은 값으로 저장했으면
+사용 가능한 provider별 Judge 선호 모델로 전환하고, 명시적으로 다른 Judge를 저장한 정책은 해당
+모델을 유지해야 한다.
+Judge 입력은 요청 JSON 구조와 type, 길이 제한된 세 prompt, output contract를 유지해야 한다.
+RAG는 문서 원문 없이 검색량·근거 충분성·부분 결과·query rewrite 같은 safe signal만 전달한다.
+후보 profile은 context window를 유지하고, Judge 요구 능력 4축은 0~3 정수일 때만 safe metadata에
+남긴다. 정상 호출과 incomplete retry의 출력 한도는 모두 768 token이다.
 
 현재 구현 기준으로 baseline 선택 UI는 최신 baseline을 자동 고정하지 않는다. 테스트는 baseline 목록에서 사용자가 row를 직접 선택한 뒤 B candidate 영역이 열리는 흐름을 기준으로 한다.
 
