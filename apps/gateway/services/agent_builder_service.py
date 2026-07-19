@@ -102,6 +102,7 @@ from apps.shared.services.workflow_node_catalog import (
     agent_builder_supported_node_types,
     capability_output_keys,
     node_definition,
+    node_required_configuration,
     node_type_for_capability,
     validate_workflow_graph_connections,
 )
@@ -5168,7 +5169,7 @@ class AgentBuilderService:
             definition = node_definition(node_type)
             if not definition or not definition.get("agent_builder_supported"):
                 continue
-            required_parameters = definition.get("required_configuration") or []
+            required_parameters = node_required_configuration(node_type, data)
             parameter_labels = definition.get("configuration_labels") or {}
             capabilities = definition.get("capabilities") or []
             if node_type == "githubNode":

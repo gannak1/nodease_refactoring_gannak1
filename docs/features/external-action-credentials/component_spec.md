@@ -17,6 +17,8 @@ Status: Draft
 - Legacy persisted graph response/copy 경계는 direct field와 GitHub allowlist 밖 field를 제거한 deep copy만 반환하고, `credential_id`가 없으면 unresolved로 표시한다.
 - Workflow Editor의 Slack/GitHub panel은 safe option picker만 렌더링한다. 선택 결과는 `credential_id`만 저장하고 기존 direct setting이 남아 있으면 제거 action과 validation state를 표시한다.
 - Admin permission 화면은 safe 관리 option으로 revoked 상태를 표시하고 기존 grant 회수 경로를 유지한다. 신규 grant 모달과 행위자 접근 관리의 grant catalog는 active credential만 선택할 수 있다.
+- Admin Credentials 화면은 manager 전용 등록·수정·revoke mutation을 제공한다. Secret input은 create/update 요청 동안만 유지하고 기존 값을 다시 표시하지 않으며, 성공한 mutation과 후속 목록 refresh의 실패 상태를 분리한다.
+- Shared catalog는 Slack Webhook mode에서 channel parameter를 적용 대상에서 제외한다. 동일 helper를 configuration state, preflight와 Agent Builder parameter task가 공유하며 Slack API mode에서는 channel 필수 계약을 유지한다.
 - Agent Builder는 typed GraphMutation에 unresolved `credential_id`를 남기고 credential 선택은 parameter task/editor에서 명시적으로 수행한다.
 
 ## Deployment And Runtime
@@ -24,7 +26,7 @@ Status: Draft
 - Deployment preflight repository는 credential secret을 읽지 않고 provider, active state, principal effective auth state만 `ExternalActionCredentialSnapshot`으로 반환한다.
 - Active deployment와 authenticated execution enforcement는 unresolved/invalid/unavailable credential을 task publish 전에 차단한다. Preview는 safe blocker/warning만 반환한다.
 - Workflow Engine Slack/GitHub node는 execution context의 canonical organization과 explicit user execution subject를 사용한다. app/workflow owner fallback은 허용하지 않는다.
-- Runtime은 resolver로 secret을 메모리에 투영한 뒤 provider request 바로 전에 fresh DB session에서 동일 credential id/provider/revision의 `use`를 재검증한다.
+- Runtime은 resolver로 secret을 메모리에 투영한 뒤 provider request 바로 전에 fresh DB session에서 동일 credential id/provider/revision의 `use`를 재검증한다. Slack adapter는 이 재검증을 URL 검증·DNS 조회와 HTTP client 생성보다 먼저 수행한다.
 - Provider adapter는 secret material의 `repr`/copy를 막고 trace에는 delivery outcome, status bucket, latency 같은 allowlisted metadata만 남긴다.
 
 ## Audit And Redaction

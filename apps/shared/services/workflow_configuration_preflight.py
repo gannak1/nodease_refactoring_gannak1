@@ -12,6 +12,7 @@ from apps.shared.services.workflow_node_catalog import (
     node_output_keys,
     node_parameter_definitions,
     node_parameter_is_configured,
+    node_required_configuration,
     validate_node_parameter_value,
 )
 
@@ -200,7 +201,7 @@ def workflow_configuration_issues(
                     if isinstance(key, str)
                 }
                 missing_items: list[str] = []
-                for key in definition.get("required_configuration") or []:
+                for key in node_required_configuration(node_type, data):
                     parameter_key = str(key)
                     invalid = (
                         parameter_key in deferred

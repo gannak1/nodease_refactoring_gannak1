@@ -334,12 +334,41 @@ def _configuration_value_is_present(value: Any) -> bool:
     return True
 
 
+def node_parameter_is_applicable(
+    node_type: str,
+    parameter_key: str,
+    node_data: dict[str, Any] | None,
+) -> bool:
+    data = node_data if isinstance(node_data, dict) else {}
+    return not (
+        node_type == "slackPostNode"
+        and parameter_key == "channel"
+        and data.get("slackMode") == "webhook"
+    )
+
+
+def node_required_configuration(
+    node_type: str,
+    node_data: dict[str, Any] | None,
+) -> list[str]:
+    definition = node_definition(node_type)
+    if definition is None:
+        return []
+    return [
+        str(key)
+        for key in definition.get("required_configuration") or []
+        if node_parameter_is_applicable(node_type, str(key), node_data)
+    ]
+
+
 def node_parameter_is_configured(
     node_type: str,
     parameter_key: str,
     node_data: dict[str, Any] | None,
 ) -> bool:
     data = node_data if isinstance(node_data, dict) else {}
+    if not node_parameter_is_applicable(node_type, parameter_key, data):
+        return True
     if node_type == "githubNode" and parameter_key == "credential":
         return _configuration_value_is_present(data.get("credential_id"))
     if node_type == "slackPostNode" and parameter_key == "credential":
@@ -379,7 +408,7 @@ def derive_node_configuration_state(
         for key in data.get("_deferred_parameters", [])
         if isinstance(key, str)
     }
-    for key in definition.get("required_configuration") or []:
+    for key in node_required_configuration(node_type, data):
         if (
             str(key) in deferred
             or not node_parameter_is_configured(node_type, str(key), data)

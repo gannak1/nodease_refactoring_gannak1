@@ -15,9 +15,10 @@ from apps.shared.schemas.agent_builder import (
 from apps.shared.services.workflow_node_catalog import (
     apply_node_parameter_value,
     derive_node_configuration_state,
+    node_parameter_definitions,
+    node_parameter_is_applicable,
     node_parameter_is_configured,
     parameter_definition,
-    node_parameter_definitions,
     validate_node_parameter_value,
 )
 from apps.shared.services.tracing.policy import TracePolicyService
@@ -218,9 +219,13 @@ class ParameterTaskPlanner:
             if not isinstance(data, dict):
                 raise ParameterTaskConflict("node data is invalid")
             for parameter in node_parameter_definitions(node_type):
+                parameter_key = str(parameter["key"])
+                if not node_parameter_is_applicable(
+                    node_type, parameter_key, data
+                ):
+                    continue
                 if parameter.get("agent_builder_task") is False:
                     continue
-                parameter_key = str(parameter["key"])
                 identity = (step_id, parameter_key)
                 if identity in externally_managed_parameters:
                     continue

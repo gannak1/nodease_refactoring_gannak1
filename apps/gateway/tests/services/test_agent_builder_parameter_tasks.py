@@ -114,6 +114,35 @@ def test_planner_omits_slack_credential_task_without_copying_values_into_tasks()
     assert result.tasks[0].sensitivity == "safe"
 
 
+def test_planner_omits_channel_task_for_slack_webhook_mode():
+    graph = {
+        "nodes": [
+            _node(
+                "slack",
+                "slackPostNode",
+                {
+                    "slackMode": "webhook",
+                    "credential_id": str(uuid4()),
+                    "channel": "",
+                    "message": "{{result}}",
+                },
+            )
+        ],
+        "edges": [],
+    }
+
+    result = ParameterTaskPlanner().plan(
+        graph=graph,
+        step_node_ids={"step_slack": "slack"},
+        explicit_values={},
+        upstream_candidates={},
+        step_purposes={"step_slack": "Slack Webhook으로 메시지를 전송합니다."},
+        guidance_hints=[],
+    )
+
+    assert result.tasks == []
+
+
 def test_legacy_direct_edit_knowledge_task_is_removed_and_the_group_completes():
     plan = ParameterTaskPlanner().plan(
         graph={

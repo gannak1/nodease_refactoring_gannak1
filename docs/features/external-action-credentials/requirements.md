@@ -25,6 +25,7 @@ External Action Credential은 GitHub PR 조회·댓글과 Slack API/Webhook 전�
 - EAC-REQ-014: Slack node output은 safe delivery 상태와 optional message reference만 제공한다. raw response headers/body selector는 legacy migration error로 차단한다.
 - EAC-REQ-015: Agent Builder는 credential을 자동 선택하거나 secret을 생성 결과에 넣지 않는다. Slack/GitHub node는 unresolved reference와 parameter task만 생성한다.
 - EAC-REQ-016: 실행용 picker는 active이고 `use` 가능한 credential만 반환한다. 권한 관리 화면은 active 또는 revoked 중 `manage` 가능한 safe option을 별도 조회하며, revoked credential은 기존 permission 조회·회수에만 사용하고 신규 grant 대상으로 노출하지 않는다.
+- EAC-REQ-017: Organization manager 화면은 외부 연동 Credential 등록, 이름·secret 교체와 revoke 경로를 제공한다. 기존 secret은 다시 표시하지 않고 mutation은 현재 revision을 사용하며, 서버 mutation 성공 뒤 목록 갱신 실패를 같은 mutation의 실패로 오인해 재제출하지 않는다.
 
 ## Out Of Scope
 
@@ -41,3 +42,4 @@ External Action Credential은 GitHub PR 조회·댓글과 Slack API/Webhook 전�
 - Revoked credential은 수정·신규 grant 대상이 될 수 없고, 관리용 목록을 통한 기존 permission 조회·회수만 가능하다.
 - Resource hiding reason은 provider, credential name, target URL, channel, repository, raw exception을 포함하지 않는다.
 - Runtime revalidation은 provider I/O 직전에 짧은 DB session으로 수행하며 DB transaction 또는 row lock을 provider network call 동안 유지하지 않는다.
+- Slack Webhook mode는 Credential에 목적지가 포함되므로 별도 channel 설정을 요구하지 않는다. Slack API mode만 channel을 필수로 사용한다.

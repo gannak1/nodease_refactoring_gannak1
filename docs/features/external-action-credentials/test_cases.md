@@ -25,6 +25,8 @@ Status: Draft
 - EAC-TC-022: legacy persisted graph는 response/copy/migration에서 direct field와 GitHub allowlist 밖 field를 제거하고 unresolved로 표시한다. `displayNumber`와 `visibleProperties` 같은 검증된 편집기 metadata는 migration에서도 보존한다. Slack의 legacy HTTP `headers`/`body`/auth configuration도 보존하지 않는다. rollback은 secret을 복원하지 않는다.
 - EAC-TC-023: picker는 active organization에서 `use` 가능한 safe option만 표시하고 direct token input을 렌더링하지 않는다.
 - EAC-TC-024: Slack catalog는 safe delivery output만 광고하며 raw headers/body selector는 migration error로 차단한다.
+- EAC-TC-025: Organization manager는 Admin Credentials 화면에서 외부 Credential을 등록하고 현재 revision으로 이름·secret을 교체하거나 revoke할 수 있다. 기존 secret은 렌더링하지 않고 revoked 항목은 수정·재폐기할 수 없다.
+- EAC-TC-026: lifecycle mutation 성공 뒤 목록 refresh가 실패해도 secret 입력과 mutation modal을 닫아 같은 요청을 중복 제출하지 않는다.
 
 ## Preflight And Runtime
 
@@ -34,6 +36,8 @@ Status: Draft
 - EAC-TC-033: runtime resolver는 explicit user execution subject, organization, active state, provider, `use`를 통과한 credential만 decrypt한다.
 - EAC-TC-034: 권한 회수, revoke 또는 revision rotation이 resolver 이후 발생해도 provider call 직전 revalidation이 외부 adapter를 호출하지 않고 fail-closed한다.
 - EAC-TC-035: Gateway와 Workflow Worker는 invalid keyring/active key version에서 startup fail-fast한다.
+- EAC-TC-036: Slack authorization revalidation 실패 시 URL guard, DNS 조회, HTTP client 생성과 provider request가 모두 실행되지 않는다.
+- EAC-TC-037: Slack Webhook mode는 channel 없이 configuration state, preflight와 Agent Builder parameter task를 통과하고 Slack API mode는 channel 필수 계약을 유지한다.
 
 ## Non-Exposure
 

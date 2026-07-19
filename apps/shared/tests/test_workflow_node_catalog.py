@@ -1,3 +1,6 @@
+from apps.shared.services.workflow_configuration_preflight import (
+    workflow_configuration_issues,
+)
 from apps.shared.services.workflow_node_catalog import (
     agent_builder_supported_node_types,
     capability_output_contract,
@@ -277,6 +280,28 @@ def test_external_node_configuration_uses_runtime_fields_not_virtual_task_keys()
             "pr_number": 1,
         },
     ) == "unresolved"
+
+
+def test_slack_webhook_configuration_does_not_require_channel() -> None:
+    graph = {
+        "nodes": [
+            {
+                "id": "slack",
+                "type": "slackPostNode",
+                "data": {
+                    "slackMode": "webhook",
+                    "credential_id": "credential-id",
+                    "channel": "",
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    assert derive_node_configuration_state(
+        "slackPostNode", graph["nodes"][0]["data"]
+    ) == "resolved"
+    assert workflow_configuration_issues(graph) == []
 
 
 def test_slack_catalog_exposes_only_safe_delivery_outputs():
