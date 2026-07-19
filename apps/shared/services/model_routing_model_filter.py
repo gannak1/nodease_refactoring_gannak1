@@ -2,7 +2,6 @@
 
 from typing import Any
 
-
 from apps.shared.services.model_routing_global_profile_catalog import (
     canonical_model_routing_id,
 )
