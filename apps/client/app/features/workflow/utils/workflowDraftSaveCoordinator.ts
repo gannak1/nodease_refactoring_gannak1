@@ -72,9 +72,9 @@ export const getWorkflowDraftSaveOwner = (
 export const startWorkflowExecutionFromPreflight = <T>(
   workflowId: string,
   releasePreflight: ReleaseWorkflowDraftSave,
-  start: () => T,
+  start: () => Promise<T>,
 ):
-  | { started: true; value: T }
+  | { started: true; value: Promise<T> }
   | { started: false; blockedBy: WorkflowDraftSaveOwner | null } => {
   const queue = queues.get(workflowId);
   if (!queue || queue.owner !== 'test_preflight') {
@@ -82,18 +82,21 @@ export const startWorkflowExecutionFromPreflight = <T>(
     return { started: false, blockedBy: queue?.owner ?? null };
   }
 
-  const queuedAgentBuilderSave = queue.waiters.some(
-    (waiter) => waiter.owner === 'agent_builder',
-  );
-  if (queuedAgentBuilderSave) {
+  const queuedSave = queue.waiters[0];
+  if (queuedSave) {
     releasePreflight();
-    return { started: false, blockedBy: 'agent_builder' };
+    return { started: false, blockedBy: queuedSave.owner };
   }
 
   try {
-    return { started: true, value: start() };
-  } finally {
+    const value = start().catch((error) => {
+      releasePreflight();
+      throw error;
+    });
+    return { started: true, value };
+  } catch (error) {
     releasePreflight();
+    throw error;
   }
 };
 

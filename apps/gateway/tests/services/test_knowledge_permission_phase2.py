@@ -913,6 +913,46 @@ def test_builder_hierarchy_pages_past_denied_direct_kbs_within_shared_budget():
     ] == [allowed_direct.id]
 
 
+def test_direct_candidates_bulk_check_legacy_chunks_only_after_permission():
+    denied_kb = _kb(name="Denied legacy KB", version_status=None)
+    allowed_kb = _kb(name="Allowed legacy KB", version_status=None)
+
+    class PerKbPermissionHelper(FakePermissionHelper):
+        def _manual_kb_auth_state(self, kb):
+            return AUTH_STATE_OPERATOR if kb.id == allowed_kb.id else "none"
+
+    class LegacyLookupTrackingResolver(FakeResolver):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.bulk_legacy_lookups = []
+            self.per_item_legacy_lookups = []
+
+        def _legacy_retrieval_visible_kb_ids(self, kb_ids):
+            requested_ids = set(kb_ids)
+            self.bulk_legacy_lookups.append(requested_ids)
+            return {allowed_kb.id} & requested_ids
+
+        def _has_legacy_retrieval_visible_chunks(self, kb):
+            self.per_item_legacy_lookups.append(kb.id)
+            return kb.id == allowed_kb.id
+
+    resolver = LegacyLookupTrackingResolver(
+        helper=PerKbPermissionHelper(),
+        kbs=[denied_kb, allowed_kb],
+    )
+
+    result = resolver.resolve_builder_hierarchy(
+        max_candidate_kbs=2,
+        apply_candidate_limit=False,
+    )
+
+    assert [
+        candidate.candidate_id for candidate in result.ungrouped_candidates
+    ] == [allowed_kb.id]
+    assert resolver.bulk_legacy_lookups == [{allowed_kb.id}]
+    assert resolver.per_item_legacy_lookups == []
+
+
 def test_auto_collection_mode_buckets_missing_requested_collection():
     existing_collection = _collection()
     kb = _kb()

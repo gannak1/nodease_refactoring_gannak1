@@ -72,9 +72,15 @@ def _node(node_id, node_type, data=None):
     }
 
 
-def test_planner_omits_existing_slack_secret_fields_from_agent_builder_tasks():
+def test_planner_includes_mode_relevant_slack_secret_field_in_agent_builder_tasks():
     graph = {
-        "nodes": [_node("slack", "slackPostNode", {"credential": "cred-existing"})],
+        "nodes": [
+            _node(
+                "slack",
+                "slackPostNode",
+                {"credential": "cred-existing", "slackMode": "api"},
+            )
+        ],
         "edges": [],
     }
     planner = ParameterTaskPlanner()
@@ -97,6 +103,8 @@ def test_planner_omits_existing_slack_secret_fields_from_agent_builder_tasks():
 
     assert [task.parameter_key for task in result.tasks] == [
         "slackMode",
+        "bot_token",
+        "url",
         "channel",
         "message",
         "blocks",
@@ -154,9 +162,11 @@ def test_slack_parameter_tasks_only_activate_fields_for_the_selected_delivery_mo
     )
     api_tasks = {task.parameter_key: task for task in api_plan.tasks}
 
-    assert "bot_token" not in api_tasks
-    assert api_tasks["channel"].status == "active"
-    assert "url" not in api_tasks
+    assert api_tasks["bot_token"].status == "active"
+    assert api_tasks["bot_token"].required is True
+    assert api_tasks["url"].status == "skipped"
+    assert api_tasks["url"].required is False
+    assert api_tasks["channel"].status == "pending"
     assert api_tasks["channel"].required is True
 
     webhook_plan = planner.plan(
@@ -178,9 +188,11 @@ def test_slack_parameter_tasks_only_activate_fields_for_the_selected_delivery_mo
     )
     webhook_tasks = {task.parameter_key: task for task in webhook_plan.tasks}
 
-    assert "bot_token" not in webhook_tasks
+    assert webhook_tasks["bot_token"].status == "skipped"
+    assert webhook_tasks["bot_token"].required is False
     assert webhook_tasks["channel"].status == "skipped"
-    assert "url" not in webhook_tasks
+    assert webhook_tasks["url"].status == "active"
+    assert webhook_tasks["url"].required is True
     assert webhook_tasks["channel"].required is False
 
 
@@ -216,7 +228,7 @@ def test_switching_slack_delivery_mode_removes_incompatible_secret_fields():
     assert "url" not in api_data
 
 
-def test_reconcile_closes_legacy_webhook_task_when_slack_api_mode_is_selected():
+def test_reconcile_skips_webhook_task_when_slack_api_mode_is_selected():
     plan = ParameterTaskPlanner().plan(
         graph={
             "nodes": [
@@ -270,7 +282,8 @@ def test_reconcile_closes_legacy_webhook_task_when_slack_api_mode_is_selected():
     )
     recovered_by_key = {task.parameter_key: task for task in recovered.tasks}
 
-    assert "url" not in recovered_by_key
+    assert recovered_by_key["url"].status == "skipped"
+    assert recovered_by_key["url"].required is False
     assert recovered_by_key["channel"].status == "active"
 
 
@@ -395,7 +408,11 @@ def test_external_secret_tasks_are_not_removed_as_legacy_credentials():
         for task in normalized.tasks
         if task.input_type == "secret"
     }
-    assert secret_tasks == set()
+    assert secret_tasks == {
+        ("slackPostNode", "bot_token", "secret"),
+        ("slackPostNode", "url", "secret"),
+        ("githubNode", "api_token", "secret"),
+    }
 
 
 def test_legacy_partial_group_recovers_all_current_catalog_tasks():
@@ -423,6 +440,8 @@ def test_legacy_partial_group_recovers_all_current_catalog_tasks():
     assert [task.parameter_key for task in recovered.tasks] == [
         "channel",
         "slackMode",
+        "bot_token",
+        "url",
         "message",
         "blocks",
         "attachments",
@@ -690,6 +709,8 @@ def test_planner_rejects_secret_explicit_values_from_planner_output():
 
     assert [task.parameter_key for task in result.tasks] == [
         "slackMode",
+        "bot_token",
+        "url",
         "channel",
         "message",
         "blocks",
@@ -731,6 +752,8 @@ def test_planner_uses_single_upstream_and_safe_default_but_not_multiple_candidat
     assert slack.tasks[1].status == "active"
     assert [task.parameter_key for task in slack.tasks] == [
         "slackMode",
+        "bot_token",
+        "url",
         "channel",
         "message",
         "blocks",
@@ -804,12 +827,14 @@ def test_slack_and_github_use_secret_tasks_instead_of_managed_credential_tasks()
     }
     assert ("slack", "credential") not in by_identity
     assert ("github", "credential") not in by_identity
-    assert ("slack", "bot_token") not in by_identity
-    assert ("slack", "url") not in by_identity
-    assert ("github", "api_token") not in by_identity
+    assert by_identity[("slack", "bot_token")].input_type == "secret"
+    assert by_identity[("slack", "bot_token")].required is True
+    assert by_identity[("slack", "url")].status == "skipped"
+    assert by_identity[("github", "api_token")].input_type == "secret"
+    assert by_identity[("github", "api_token")].required is True
     assert by_identity[("mail", "credential_id")].status == "pending"
     assert by_identity[("slack", "slackMode")].status == "completed"
-    assert by_identity[("slack", "channel")].status == "active"
+    assert by_identity[("slack", "channel")].status == "pending"
     assert by_identity[("slack", "channel")].configuration_state == "unresolved"
     assert "credential" not in plan.graph["nodes"][0]["data"]
     assert all(task.label not in {"Slack credential", "GitHub credential"} for task in plan.tasks)
@@ -1277,7 +1302,7 @@ def test_reconcile_never_reopens_canceled_group():
     ) == canceled_group
 
 
-def test_reconcile_removes_legacy_github_secret_task_from_completed_group():
+def test_reconcile_preserves_github_secret_task_in_completed_group():
     plan = ParameterTaskPlanner().plan(
         graph={
             "nodes": [
@@ -1320,7 +1345,12 @@ def test_reconcile_removes_legacy_github_secret_task_from_completed_group():
 
     recovered = reconcile_parameter_group_catalog_tasks(legacy_group, plan.tasks)
 
-    assert "api_token" not in {task.parameter_key for task in recovered.tasks}
+    token_tasks = [
+        task for task in recovered.tasks if task.parameter_key == "api_token"
+    ]
+    assert len(token_tasks) == 1
+    assert token_tasks[0].required is True
+    assert token_tasks[0].status == "active"
 
 def test_slack_parameter_flow_cannot_skip_every_payload_format():
     plan = ParameterTaskPlanner().plan(
@@ -1376,7 +1406,7 @@ def test_slack_parameter_flow_cannot_skip_every_payload_format():
         )
 
 
-def test_reconcile_removes_legacy_slack_secret_tasks_without_reading_graph_values():
+def test_reconcile_preserves_mode_relevant_slack_secret_tasks_without_hydrating_values():
     plan = ParameterTaskPlanner().plan(
         graph={
             "nodes": [
@@ -1423,9 +1453,16 @@ def test_reconcile_removes_legacy_slack_secret_tasks_without_reading_graph_value
 
     recovered = reconcile_parameter_group_catalog_tasks(legacy_group, plan.tasks)
 
-    parameter_keys = {task.parameter_key for task in recovered.tasks}
-    assert "bot_token" not in parameter_keys
-    assert "url" not in parameter_keys
+    secret_tasks = {
+        task.parameter_key: task
+        for task in recovered.tasks
+        if task.parameter_key in {"bot_token", "url"}
+    }
+    assert set(secret_tasks) == {"bot_token", "url"}
+    assert secret_tasks["bot_token"].required is True
+    assert secret_tasks["bot_token"].status == "completed"
+    assert secret_tasks["url"].required is False
+    assert secret_tasks["url"].status == "skipped"
 
 def test_reconcile_removes_agent_builder_hidden_routing_tasks_without_mutating_graph():
     plan = ParameterTaskPlanner().plan(

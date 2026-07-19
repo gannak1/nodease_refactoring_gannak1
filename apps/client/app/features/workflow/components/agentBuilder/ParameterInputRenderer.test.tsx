@@ -40,8 +40,9 @@ const branchTask: AgentBuilderParameterTask = {
 };
 
 describe('ParameterInputRenderer condition branch target', () => {
-  it('fails closed when a legacy Agent Builder secret task is restored', () => {
+  it('collects supported node secrets in a masked control without routing to Node Detail', () => {
     const onSubmit = vi.fn();
+    const onSecretSubmit = vi.fn();
     const secretTask: AgentBuilderParameterTask = {
       ...branchTask,
       task_id: 'task-slack-token',
@@ -59,15 +60,20 @@ describe('ParameterInputRenderer condition branch target', () => {
         task={secretTask}
         hydration={{ state: 'unavailable' }}
         onSubmit={onSubmit}
+        onSecretSubmit={onSecretSubmit}
       />,
     );
 
-    expect(screen.queryByLabelText('Bot Token')).not.toBeInTheDocument();
+    const input = screen.getByLabelText('Bot Token');
+    expect(input).toHaveAttribute('type', 'password');
     expect(
-      screen.queryByRole('button', { name: '적용' }),
+      screen.queryByRole('button', { name: '노드 설정 열기' }),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole('status')).toHaveTextContent(
-      'Agent Builder에서는 민감한 인증값을 입력하거나 저장하지 않습니다.',
+    fireEvent.change(input, { target: { value: 'test-only-secret' } });
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+    expect(onSecretSubmit).toHaveBeenCalledWith(
+      secretTask,
+      'test-only-secret',
     );
     expect(onSubmit).not.toHaveBeenCalled();
   });
@@ -96,10 +102,7 @@ describe('ParameterInputRenderer condition branch target', () => {
         onSubmit={vi.fn()}
       />,
     );
-    expect(screen.queryByLabelText('Bot Token')).not.toBeInTheDocument();
-    expect(screen.getByRole('status')).toHaveTextContent(
-      'Agent Builder에서는 민감한 인증값을 입력하거나 저장하지 않습니다.',
-    );
+    expect(screen.getByLabelText('Bot Token')).toHaveValue('');
   });
 
   it('parses a stored Slack JSON string before reapplying the typed array', () => {

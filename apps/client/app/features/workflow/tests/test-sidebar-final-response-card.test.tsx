@@ -16,6 +16,11 @@ import type { FinalResponsePreview } from '../utils/testExecutionFinalResponse';
 import { agentBuilderApi } from '../api/agentBuilderApi';
 import { workflowApi } from '../api/workflowApi';
 import { useWorkflowStore } from '../store/useWorkflowStore';
+import {
+  acquireWorkflowDraftSave,
+  clearWorkflowDraftSaveCoordinatorForTests,
+  getWorkflowDraftSaveOwner,
+} from '../utils/workflowDraftSaveCoordinator';
 
 vi.mock('../api/workflowApi', () => ({
   workflowApi: {
@@ -91,6 +96,7 @@ vi.mock('../store/useWorkflowStore', () => {
     currentExecutingNodeId: null,
     isTestUploading: false,
     beginTestExecution: vi.fn(),
+    setTestExecutionRunId: vi.fn(),
     setTestUploading: vi.fn(),
     setCurrentExecutingNode: vi.fn(),
     addTestNodeResult: vi.fn(),
@@ -124,6 +130,8 @@ vi.mock('../store/useWorkflowStore', () => {
 
 afterEach(() => {
   cleanup();
+  clearWorkflowDraftSaveCoordinatorForTests();
+  window.history.replaceState({}, '', window.location.pathname);
 });
 
 beforeEach(() => {
@@ -271,6 +279,55 @@ describe('TestSidebar final response card', () => {
     );
   });
 
+  it('workflow_start로 snapshot이 확정될 때까지 후속 autosync 저장을 대기시킨다', async () => {
+    const store = useWorkflowStore.getState();
+    store.hasUnsavedChanges = false;
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      workflow_id: 'workflow-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-14T00:00:00Z',
+      nodes: store.nodes,
+      edges: store.edges,
+      viewport: { x: 0, y: 0, zoom: 1 },
+      features: store.features,
+    });
+    vi.mocked(workflowApi.executeWorkflowStream).mockImplementation(
+      async (_workflowId, _inputs, onEvent) => {
+        expect(getWorkflowDraftSaveOwner('workflow-1')).toBe('test_preflight');
+        let autosyncAcquired = false;
+        const waitingAutosync = acquireWorkflowDraftSave(
+          'workflow-1',
+          'autosync',
+        ).then((release) => {
+          autosyncAcquired = true;
+          return release;
+        });
+
+        await Promise.resolve();
+        expect(autosyncAcquired).toBe(false);
+        await onEvent?.({
+          type: 'workflow_start',
+          data: { run_id: 'run-1' },
+        });
+
+        const releaseAutosync = await waitingAutosync;
+        expect(autosyncAcquired).toBe(true);
+        expect(getWorkflowDraftSaveOwner('workflow-1')).toBe('autosync');
+        releaseAutosync();
+      },
+    );
+
+    render(<TestSidebar />);
+    fireEvent.click(screen.getByRole('button', { name: /테스트 실행하기/ }));
+
+    await waitFor(() => {
+      expect(workflowApi.executeWorkflowStream).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(getWorkflowDraftSaveOwner('workflow-1')).toBeNull();
+    });
+  });
+
   it('dirty editor의 저장 기준점보다 서버가 앞서 있으면 로컬 graph를 저장하거나 실행하지 않는다', async () => {
     vi.mocked(
       useWorkflowStore.getState().getCanonicalDraftMetadata,
@@ -292,7 +349,9 @@ describe('TestSidebar final response card', () => {
     fireEvent.click(screen.getByRole('button', { name: /테스트 실행하기/ }));
 
     await waitFor(() => {
-      expect(useWorkflowStore.getState().failTestExecution).toHaveBeenCalledWith(
+      expect(
+        useWorkflowStore.getState().failTestExecution,
+      ).toHaveBeenCalledWith(
         '서버의 Workflow가 현재 편집 기준보다 앞서 있습니다. 최신 상태를 불러온 뒤 다시 시도해주세요.',
       );
     });
@@ -318,7 +377,9 @@ describe('TestSidebar final response card', () => {
     fireEvent.click(screen.getByRole('button', { name: /테스트 실행하기/ }));
 
     await waitFor(() => {
-      expect(useWorkflowStore.getState().failTestExecution).toHaveBeenCalledWith(
+      expect(
+        useWorkflowStore.getState().failTestExecution,
+      ).toHaveBeenCalledWith(
         '서버의 Workflow가 현재 화면과 다릅니다. 최신 상태를 불러온 뒤 다시 시도해주세요.',
       );
     });
@@ -342,7 +403,9 @@ describe('TestSidebar final response card', () => {
 
     render(<TestSidebar />);
     fireEvent.click(screen.getByRole('button', { name: /테스트 실행하기/ }));
-    await waitFor(() => expect(workflowApi.getDraftWorkflow).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(workflowApi.getDraftWorkflow).toHaveBeenCalled(),
+    );
 
     useWorkflowStore.getState().isAgentBuilderMutationSaving = true;
     const store = useWorkflowStore.getState();
@@ -359,7 +422,9 @@ describe('TestSidebar final response card', () => {
     });
 
     await waitFor(() => {
-      expect(useWorkflowStore.getState().failTestExecution).toHaveBeenCalledWith(
+      expect(
+        useWorkflowStore.getState().failTestExecution,
+      ).toHaveBeenCalledWith(
         'Agent Builder 저장이 시작되어 테스트 실행을 중단했습니다. 저장 완료 후 다시 시도해주세요.',
       );
     });

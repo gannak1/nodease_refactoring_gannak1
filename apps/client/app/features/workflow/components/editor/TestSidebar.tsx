@@ -1461,10 +1461,18 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             const { type, data } = event;
 
             if (type === 'workflow_start') {
-              if (typeof data?.run_id === 'string') {
-                setTestExecutionRunId(data.run_id);
-                replaceTestExecutionLocation(data.run_id, null);
+              if (
+                typeof data?.run_id !== 'string' ||
+                data.run_id.trim() === ''
+              ) {
+                throw new Error(
+                  '테스트 실행 식별자를 확인할 수 없습니다.',
+                );
               }
+              setTestExecutionRunId(data.run_id);
+              replaceTestExecutionLocation(data.run_id, null);
+              releaseTestPreflightSave?.();
+              releaseTestPreflightSave = null;
               return;
             } else if (type === 'node_start') {
               // 노드 상태 변화만 짧게 늦춰 시각적 피드백을 유지한다.
@@ -1562,10 +1570,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             );
           },
         );
-        releaseTestPreflightSave = null;
         if (!executionStart.started) {
+          releaseTestPreflightSave = null;
           const message =
-            'Agent Builder 저장이 시작되어 테스트 실행을 중단했습니다. 저장 완료 후 다시 시도해주세요.';
+            'Workflow 변경사항을 저장하는 중입니다. 저장 완료 후 다시 실행해주세요.';
           failTestExecution(message);
           toast.info(message);
           return;

@@ -24,7 +24,7 @@ Status: Draft
 - 동시성 처리: `apps/gateway/tests/integration/test_agent_builder_workflow_cas.py`에서 독립 PostgreSQL session/transaction으로 autosync 대 autosync 및 autosync 대 Agent Builder 저장 경쟁을 실행하고 한 요청만 성공하며 다른 요청이 `409 stale_graph`인지 검증한다.
 - 테스트 실행 전 저장: `TestSidebar` component test에서 canonical draft GET의 `graph_hash`/`updated_at`이 save request에 전달되고 성공 응답 metadata가 shared Workflow store에 반영되며 stale save는 실행을 시작하지 않는지 검증한다.
 - Agent Builder 저장 중 test preflight: 같은 workflow의 Agent Builder save/acknowledgement 중에는 TestSidebar 저장과 실행 API가 호출되지 않고, 확정 뒤 버튼이 다시 활성화되는지 검증한다.
-- Workflow save coordinator: test preflight, Agent Builder와 autosync가 같은 workflow에서 동시에 draft POST를 시작하지 않고 다른 workflow 저장은 독립적인지 검증한다.
+- Workflow save coordinator: test preflight, Agent Builder, autosync, Undo/Redo와 version restore가 같은 workflow에서 동시에 draft POST를 시작하지 않고 다른 workflow 저장은 독립적인지 검증한다. Execution stream 직전에 이 owner 중 하나라도 대기하면 실행을 시작하지 않으며, 대기자가 없으면 valid `workflow_start.run_id`까지 lock을 유지해 그 사이 도착한 저장이 snapshot 확정 뒤에만 시작되는지 검증한다. 실행 시작 실패·취소·timeout에서도 lock이 해제되는지 검증한다.
 - Autosync lock coalescing: test preflight 또는 Agent Builder가 lock을 보유한 동안 여러 autosync 회차가 발생해도 대기 작업은 하나이고, lock 해제 뒤 같은 active workflow의 최신 dirty graph만 한 번 저장하는지 검증한다. 대기 중 workflow가 바뀌면 이전 workflow와 새 workflow 모두에 저장하지 않는다.
 - Agent Builder workflow switch: Agent Builder가 save lock을 기다리거나 canonical draft를 조회하는 동안 active workflow가 바뀌면 mutation/save/acknowledgement/rollback을 수행하지 않고 새 workflow의 graph, metadata와 Undo/Redo history를 보존하는지 검증한다.
 - Version restore workflow switch: Agent Builder save lock을 기다리는 동안 active workflow가 바뀌면 version restore가 canonical draft GET/POST를 호출하지 않고 새 workflow의 graph, metadata와 Undo/Redo history를 보존하는지 검증한다.

@@ -1930,7 +1930,7 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
       message: 'hello',
       _deferred_parameters: ['channel', 'message'],
     } as Node['data'];
-    useWorkflowStore.getState().setNodes([node]);
+    useWorkflowStore.setState({ activeWorkflowId: 'workflow-1', nodes: [node] });
 
     useWorkflowStore.getState().updateNodeData('slack-1', {
       channel: 'new-channel',
@@ -2013,7 +2013,10 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
       ...parentNode.data,
       subGraph: { nodes: [nestedNode], edges: [] },
     } as Node['data'];
-    useWorkflowStore.getState().setNodes([parentNode]);
+    useWorkflowStore.setState({
+      activeWorkflowId: 'workflow-1',
+      nodes: [parentNode],
+    });
 
     useWorkflowStore
       .getState()
@@ -2059,7 +2062,10 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
       ...loop.data,
       subGraph: { nodes: [nested], edges: [] },
     } as Node['data'];
-    useWorkflowStore.getState().setNodes([topLevel, loop]);
+    useWorkflowStore.setState({
+      activeWorkflowId: 'workflow-1',
+      nodes: [topLevel, loop],
+    });
 
     useWorkflowStore.getState().ingestCanonicalDraftMetadata({
       workflow_id: 'workflow-1',
@@ -2134,6 +2140,64 @@ describe('Zustand 스토어 상태 관리 테스트', () => {
       state.workflows.find((workflow) => workflow.id === 'workflow-a')?.nodes[0]
         .data._deferred_parameters,
     ).toBeUndefined();
+  });
+
+  it('treats the default editor as inactive for another workflow projection', () => {
+    const workflowANode = createMockNode('shared-1', 'slackPostNode');
+    workflowANode.data = {
+      ...workflowANode.data,
+      _deferred_parameters: ['channel'],
+    } as Node['data'];
+    const defaultNode = createMockNode('shared-1', 'githubNode');
+    defaultNode.data = {
+      ...defaultNode.data,
+      _deferred_parameters: ['repo_name'],
+    } as Node['data'];
+    useWorkflowStore.setState({
+      activeWorkflowId: 'default',
+      nodes: [defaultNode],
+      workflows: [
+        {
+          id: 'workflow-a',
+          appId: 'app-1',
+          nodes: [workflowANode],
+          edges: [],
+          features: {},
+          viewport: { x: 0, y: 0, zoom: 1 },
+        },
+        {
+          id: 'default',
+          appId: 'app-1',
+          nodes: [defaultNode],
+          edges: [],
+          features: {},
+          viewport: { x: 0, y: 0, zoom: 1 },
+        },
+      ],
+      hasUnsavedChanges: true,
+    });
+
+    useWorkflowStore.getState().ingestCanonicalDraftMetadata({
+      workflow_id: 'workflow-a',
+      graph_hash: 'f'.repeat(64),
+      updated_at: '2026-07-19T00:00:00Z',
+      canonical_deferred_parameters: [
+        { node_path: ['shared-1'], parameter_keys: [] },
+      ],
+    });
+
+    const state = useWorkflowStore.getState();
+    expect(state.activeWorkflowId).toBe('default');
+    expect(state.nodes[0].data._deferred_parameters).toEqual(['repo_name']);
+    expect(state.hasUnsavedChanges).toBe(true);
+    expect(
+      state.workflows.find((workflow) => workflow.id === 'workflow-a')?.nodes[0]
+        .data._deferred_parameters,
+    ).toBeUndefined();
+    expect(
+      state.workflows.find((workflow) => workflow.id === 'default')?.nodes[0]
+        .data._deferred_parameters,
+    ).toEqual(['repo_name']);
   });
 
   it('노드 데이터를 수정하면 저장되지 않은 변경 상태로 표시한다', () => {

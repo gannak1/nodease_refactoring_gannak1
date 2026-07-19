@@ -60,11 +60,7 @@ export const applyAndSaveAgentBuilderMutation = async (input: {
   const store = useWorkflowStore.getState();
   const assertActiveWorkflow = () => {
     const activeWorkflowId = useWorkflowStore.getState().activeWorkflowId;
-    if (
-      activeWorkflowId &&
-      activeWorkflowId !== 'default' &&
-      activeWorkflowId !== input.workflowId
-    ) {
+    if (activeWorkflowId !== input.workflowId) {
       throw Object.assign(new Error('workflow_context_changed'), {
         code: 'workflow_context_changed',
       });
@@ -339,9 +335,7 @@ export const applyAndSaveAgentBuilderMutation = async (input: {
       applied &&
       !persisted &&
       !ambiguousSave &&
-      (!useWorkflowStore.getState().activeWorkflowId ||
-        useWorkflowStore.getState().activeWorkflowId === 'default' ||
-        useWorkflowStore.getState().activeWorkflowId === input.workflowId)
+      useWorkflowStore.getState().activeWorkflowId === input.workflowId
     ) {
       useWorkflowStore.getState().rollbackLatestAgentBuilderGraphMutation();
     }

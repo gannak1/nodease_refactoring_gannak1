@@ -226,7 +226,9 @@ describe('Agent Builder editor adapter', () => {
     );
   });
 
-  it('저장 잠금을 기다리는 동안 workflow가 바뀌면 이전 mutation을 적용하지 않는다', async () => {
+  it.each(['workflow-2', 'default'])(
+    'does not apply a waiting mutation after the active workflow changes to %s',
+    async (nextWorkflowId) => {
     const releaseTestSave = tryAcquireWorkflowDraftSave(
       'workflow-1',
       'test_preflight',
@@ -247,8 +249,8 @@ describe('Agent Builder editor adapter', () => {
 
     await Promise.resolve();
     useWorkflowStore.setState({
-      activeWorkflowId: 'workflow-2',
-      nodes: [{ id: 'workflow-2-node', data: {} } as Node],
+      activeWorkflowId: nextWorkflowId,
+      nodes: [{ id: 'next-workflow-node', data: {} } as Node],
       edges: [],
       undoStack: [],
       redoStack: [],
@@ -263,10 +265,11 @@ describe('Agent Builder editor adapter', () => {
     expect(workflowApi.syncDraftWorkflow).not.toHaveBeenCalled();
     expect(agentBuilderApi.acknowledgeMutation).not.toHaveBeenCalled();
     expect(useWorkflowStore.getState().nodes).toEqual([
-      { id: 'workflow-2-node', data: {} },
+      { id: 'next-workflow-node', data: {} },
     ]);
     expect(useWorkflowStore.getState().undoStack).toEqual([]);
-  });
+    },
+  );
 
   it('canonical graph 조회 중 workflow가 바뀌면 mutation 적용 전에 중단한다', async () => {
     let resolveCanonical!: (

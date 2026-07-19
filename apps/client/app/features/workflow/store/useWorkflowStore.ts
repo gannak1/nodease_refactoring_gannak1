@@ -2319,8 +2319,6 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       const projection = canonicalDeferredParametersFrom(value);
       set((state) => {
         const isActiveWorkflow =
-          !state.activeWorkflowId ||
-          state.activeWorkflowId === 'default' ||
           state.activeWorkflowId === metadata.workflowId;
         const nodes = projection && isActiveWorkflow
           ? reconcileCanonicalDeferredParameters(state.nodes, projection)

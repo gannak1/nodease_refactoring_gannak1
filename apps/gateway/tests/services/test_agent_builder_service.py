@@ -3727,6 +3727,8 @@ def test_direct_session_recovery_adds_catalog_tasks_missing_from_legacy_group(
     expected_keys = [
         "channel",
         "slackMode",
+        "bot_token",
+        "url",
         "message",
         "blocks",
         "attachments",
@@ -3742,10 +3744,10 @@ def test_direct_session_recovery_adds_catalog_tasks_missing_from_legacy_group(
     assert recovered_channel.stable_order == channel_task.stable_order
     stored_tasks = request_row.response_payload["parameter_groups"][0]["tasks"]
     assert [task["parameter_key"] for task in stored_tasks] == expected_keys
-    assert all(
-        task["parameter_key"] not in {"bot_token", "url"}
-        for task in stored_tasks
-    )
+    stored_by_key = {task["parameter_key"]: task for task in stored_tasks}
+    assert stored_by_key["bot_token"]["required"] is True
+    assert stored_by_key["url"]["required"] is False
+    assert stored_by_key["url"]["status"] == "skipped"
     recovered_channel = next(
         task for task in response.parameter_group.tasks if task.parameter_key == "channel"
     )

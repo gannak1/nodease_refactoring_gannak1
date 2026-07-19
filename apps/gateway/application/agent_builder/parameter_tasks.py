@@ -593,11 +593,17 @@ def reconcile_parameter_group_catalog_tasks(
         (task.node_id, task.parameter_key): task for task in catalog_tasks
     }
     planned_identities = set(catalog_tasks_by_identity)
-    existing_identities_in_order = [
-        (task.node_id, task.parameter_key)
-        for task in sorted(group.tasks, key=lambda task: task.stable_order)
-        if (task.node_id, task.parameter_key) in catalog_tasks_by_identity
-    ]
+    existing_identities_in_order: list[tuple[str, str]] = []
+    seen_existing_identities: set[tuple[str, str]] = set()
+    for task in sorted(group.tasks, key=lambda task: task.stable_order):
+        identity = (task.node_id, task.parameter_key)
+        if (
+            identity not in catalog_tasks_by_identity
+            or identity in seen_existing_identities
+        ):
+            continue
+        seen_existing_identities.add(identity)
+        existing_identities_in_order.append(identity)
     ordered_catalog_tasks = [
         catalog_tasks_by_identity[identity]
         for identity in existing_identities_in_order

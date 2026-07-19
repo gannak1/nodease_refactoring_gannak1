@@ -733,6 +733,7 @@ describe('AgentBuilderPanel', () => {
 
   it('structure-only direct mutation을 preview 없이 editor에 적용하고 저장한다', async () => {
     useWorkflowStore.setState({
+      activeWorkflowId: 'workflow-1',
       nodes: [],
       edges: [],
       undoStack: [],
@@ -1039,6 +1040,7 @@ describe('AgentBuilderPanel', () => {
     'after-graph Knowledge 선택은 %s에서 전용 endpoint를 사용하고 message를 재호출하지 않는다',
     async (selectionSource) => {
     useWorkflowStore.setState({
+      activeWorkflowId: 'workflow-1',
       nodes: [],
       edges: [],
       undoStack: [],
@@ -1324,6 +1326,7 @@ describe('AgentBuilderPanel', () => {
   );
 
   it('before-graph KB 선택도 message를 재전송하지 않고 전용 endpoint로 해결한다', async () => {
+    useWorkflowStore.setState({ activeWorkflowId: 'workflow-1' });
     vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
       session_id: 'session-before-graph-kb',
       workflow_id: 'workflow-1',
@@ -2925,6 +2928,7 @@ describe('AgentBuilderPanel', () => {
   });
 
   it('direct_edit_v1 Knowledge는 knowledge_resolution candidates와 전용 selection endpoint만 사용하고 저장 전 대화 결과를 추가하지 않는다', async () => {
+    useWorkflowStore.setState({ activeWorkflowId: 'workflow-old' });
     vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
       session_id: 'session-kb-direct',
       workflow_id: 'workflow-old',
@@ -4331,4 +4335,129 @@ describe('AgentBuilderPanel', () => {
       expect.stringContaining('HTTP 504'),
     );
   });
+
+  it.each([
+    {
+      caseId: 'slack-bot-token',
+      nodeId: 'slack',
+      nodeType: 'slackPostNode',
+      parameterKey: 'bot_token',
+      label: 'Bot Token',
+      nodeData: { title: 'Slack', authConfig: {} },
+      expectedData: { authConfig: { token: 'new-masked-input' } },
+    },
+    {
+      caseId: 'slack-webhook-url',
+      nodeId: 'slack',
+      nodeType: 'slackPostNode',
+      parameterKey: 'url',
+      label: 'Webhook URL',
+      nodeData: { title: 'Slack' },
+      expectedData: { url: 'new-masked-input' },
+    },
+    {
+      caseId: 'github-api-token',
+      nodeId: 'github',
+      nodeType: 'githubNode',
+      parameterKey: 'api_token',
+      label: 'GitHub API Token',
+      nodeData: { title: 'GitHub' },
+      expectedData: { api_token: 'new-masked-input' },
+    },
+  ])(
+    'sends $caseId through the workflow editor bridge',
+    async ({
+      caseId,
+      nodeId,
+      nodeType,
+      parameterKey,
+      label,
+      nodeData,
+      expectedData,
+    }) => {
+    const secretGroup: AgentBuilderParameterGroup = {
+      group_id: `group-${caseId}`,
+      status: 'active',
+      tasks: [
+        {
+          task_id: `task-${caseId}`,
+          group_id: `group-${caseId}`,
+          step_id: `step-${caseId}`,
+          node_id: nodeId,
+          node_type: nodeType,
+          parameter_key: parameterKey,
+          label,
+          input_type: 'secret',
+          required: true,
+          defer_policy: 'forbidden',
+          status: 'active',
+          task_version: 1,
+          stable_order: 0,
+          resolution_source: null,
+          sensitivity: 'secret_forbidden',
+          reason: 'Slack API 연결에 사용할 token입니다.',
+          input_guidance: '새 값을 입력하면 기존 값을 교체합니다.',
+        },
+      ],
+    };
+    const targetNode = {
+      ...node(nodeId, nodeType),
+      data: nodeData,
+    } as Node;
+    window.localStorage.setItem(
+      'agent-builder:workflow:workflow-1',
+      `session-${caseId}`,
+    );
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: `session-${caseId}`,
+      workflow_id: 'workflow-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'parameter_configuration',
+      messages: [
+        {
+          kind: 'assistant',
+          request_id: 'request-secret-bridge',
+          response: {
+            request_id: 'request-secret-bridge',
+            status: 'graph_mutation_ready',
+            clarification_questions: [],
+            clarification_options: [],
+            warnings: [],
+          },
+        },
+      ],
+      parameter_group: secretGroup,
+    });
+    useWorkflowStore.setState({
+      activeWorkflowId: 'workflow-1',
+      nodes: [targetNode],
+      edges: [],
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-1"
+        appId="app-1"
+        nodes={[targetNode]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+
+    const input = await screen.findByLabelText(label);
+    fireEvent.change(input, { target: { value: 'new-masked-input' } });
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+
+    await waitFor(() => {
+      const stored = useWorkflowStore.getState().nodes[0]?.data;
+      expect(stored).toMatchObject(expectedData);
+    });
+    expect(agentBuilderApi.decideParameterTask).not.toHaveBeenCalled();
+    },
+  );
 });

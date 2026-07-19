@@ -626,11 +626,7 @@ export const useAutoSync = () => {
                   .ingestCanonicalDraftMetadata(saveResponse, workflowId);
                 const activeWorkflowId =
                   useWorkflowStore.getState().activeWorkflowId;
-                if (
-                  activeWorkflowId &&
-                  activeWorkflowId !== 'default' &&
-                  activeWorkflowId !== workflowId
-                ) {
+                if (activeWorkflowId !== workflowId) {
                   return;
                 }
                 useWorkflowStore

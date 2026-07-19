@@ -664,20 +664,41 @@ class KnowledgeCandidateResolver:
             evaluated_count += len(kbs)
 
             kb_decisions = self.permission_helper.bulk_evaluate_kb_use(kbs)
+            permission_allowed_pairs: list[
+                tuple[KnowledgeBase, KnowledgePermissionDecision]
+            ] = []
             for kb in kbs:
-                if self._kb_candidate_exclusion_reason(
-                    kb,
-                    allow_unready_candidates=allow_unready_candidates,
-                ):
-                    unavailable_count += 1
-                    continue
                 decision = kb_decisions[kb.id]
                 if decision.allowed:
-                    allowed_pairs.append((kb, decision))
+                    permission_allowed_pairs.append((kb, decision))
                 elif decision.external_reason_code == "resource.hidden":
                     hidden_count += 1
                 else:
                     unavailable_count += 1
+
+            legacy_lookup_ids = [
+                kb.id
+                for kb, _decision in permission_allowed_pairs
+                if not allow_unready_candidates
+                and str(getattr(kb, "sync_state", "") or "").lower()
+                != "source_deleted"
+                and (
+                    getattr(kb, "active_document_version", None) is None
+                    or getattr(kb.active_document_version, "status", None) != "ready"
+                )
+            ]
+            legacy_visible_kb_ids = self._legacy_retrieval_visible_kb_ids(
+                legacy_lookup_ids
+            )
+            for kb, decision in permission_allowed_pairs:
+                if self._kb_candidate_exclusion_reason(
+                    kb,
+                    allow_unready_candidates=allow_unready_candidates,
+                    legacy_retrieval_visible_kb_ids=legacy_visible_kb_ids,
+                ):
+                    unavailable_count += 1
+                    continue
+                allowed_pairs.append((kb, decision))
 
             if page_limit is None or len(kbs) < page_limit:
                 break
@@ -810,6 +831,7 @@ class KnowledgeCandidateResolver:
         kb: KnowledgeBase,
         *,
         allow_unready_candidates: bool = False,
+        legacy_retrieval_visible_kb_ids: set[uuid.UUID] | None = None,
     ) -> str | None:
         sync_state = str(getattr(kb, "sync_state", "") or "").lower()
         if sync_state == "source_deleted":
@@ -818,10 +840,33 @@ class KnowledgeCandidateResolver:
         if version is None or getattr(version, "status", None) != "ready":
             if allow_unready_candidates:
                 return None
-            if self._has_legacy_retrieval_visible_chunks(kb):
+            if legacy_retrieval_visible_kb_ids is not None:
+                if kb.id in legacy_retrieval_visible_kb_ids:
+                    return None
+            elif self._has_legacy_retrieval_visible_chunks(kb):
                 return None
             return "no_active_ready_version"
         return None
+
+    def _legacy_retrieval_visible_kb_ids(
+        self,
+        knowledge_base_ids: Iterable[uuid.UUID],
+    ) -> set[uuid.UUID]:
+        requested_ids = list(dict.fromkeys(knowledge_base_ids))
+        if self.db is None or not requested_ids:
+            return set()
+        rows = (
+            self.db.query(DocumentChunk.knowledge_base_id)
+            .join(Document, Document.id == DocumentChunk.document_id)
+            .filter(
+                DocumentChunk.knowledge_base_id.in_(requested_ids),
+                DocumentChunk.document_version_id.is_(None),
+                Document.status == "completed",
+            )
+            .distinct()
+            .all()
+        )
+        return {row[0] for row in rows}
 
     def _has_legacy_retrieval_visible_chunks(self, kb: KnowledgeBase) -> bool:
         if self.db is None:

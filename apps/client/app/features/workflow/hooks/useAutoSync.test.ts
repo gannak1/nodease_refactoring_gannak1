@@ -75,6 +75,7 @@ describe('useAutoSync Hook', () => {
     resetStore();
     vi.clearAllMocks();
     vi.useFakeTimers(); // 시간 제어를 위해 타이머 모킹
+    useWorkflowStore.setState({ activeWorkflowId: 'test-workflow-id' });
   });
 
   afterEach(() => {
@@ -194,7 +195,9 @@ describe('useAutoSync Hook', () => {
     expect(nestedData).toEqual({ code: 'return inputs' });
   });
 
-  it('does not apply a late save response to the newly active workflow', async () => {
+  it.each(['workflow-b', 'default'])(
+    'does not apply a late save response to the newly active %s workflow',
+    async (nextWorkflowId) => {
     let resolveSave!: (value: ReturnType<typeof canonicalSave>) => void;
     vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue(canonicalDraft());
     vi.mocked(workflowApi.syncDraftWorkflow).mockReturnValue(
@@ -234,7 +237,7 @@ describe('useAutoSync Hook', () => {
             viewport: { x: 0, y: 0, zoom: 1 },
           },
           {
-            id: 'workflow-b',
+            id: nextWorkflowId,
             appId: 'app-1',
             nodes: [workflowBNode],
             edges: [],
@@ -255,7 +258,7 @@ describe('useAutoSync Hook', () => {
 
     act(() => {
       useWorkflowStore.setState({
-        activeWorkflowId: 'workflow-b',
+        activeWorkflowId: nextWorkflowId,
         nodes: [workflowBNode],
         hasUnsavedChanges: true,
       });
@@ -273,10 +276,11 @@ describe('useAutoSync Hook', () => {
     });
 
     const state = useWorkflowStore.getState();
-    expect(state.activeWorkflowId).toBe('workflow-b');
+    expect(state.activeWorkflowId).toBe(nextWorkflowId);
     expect(state.nodes[0].data._deferred_parameters).toEqual(['repo_name']);
     expect(state.hasUnsavedChanges).toBe(true);
-  });
+    },
+  );
 
   it('Agent Builder 저장 완료 플래그만 해제되면 같은 graph를 다시 저장하지 않는다', async () => {
     (workflowApi.getDraftWorkflow as any).mockResolvedValue({
