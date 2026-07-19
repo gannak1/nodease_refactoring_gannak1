@@ -8,6 +8,10 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
+from apps.shared.services.workflow_node_secret_service import (
+    is_workflow_node_secret_reference,
+)
+
 SLACK_GRAPH_CONFIGURATION_INVALID = "slack.graph_configuration_invalid"
 SLACK_LEGACY_SELECTOR_REQUIRES_MIGRATION = "slack.legacy_selector_requires_migration"
 _SLACK_WEBHOOK_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -242,7 +246,11 @@ def _validate_slack_data(data: Mapping[str, Any], *, require_resolved: bool) -> 
             raise SlackGraphBoundaryError()
         url = data.get("url")
         if require_resolved and (
-            not url or not is_valid_commercial_slack_webhook_url(url)
+            not url
+            or not (
+                is_workflow_node_secret_reference(url)
+                or is_valid_commercial_slack_webhook_url(url)
+            )
         ):
             raise SlackGraphBoundaryError()
     if require_resolved and not _has_delivery_payload(data):

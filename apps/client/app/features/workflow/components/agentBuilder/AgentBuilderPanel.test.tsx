@@ -63,6 +63,7 @@ vi.mock('../../api/workflowApi', () => ({
   workflowApi: {
     getDraftWorkflow: vi.fn(),
     syncDraftWorkflow: vi.fn(),
+    storeNodeSecret: vi.fn(),
   },
 }));
 
@@ -4344,7 +4345,9 @@ describe('AgentBuilderPanel', () => {
       parameterKey: 'bot_token',
       label: 'Bot Token',
       nodeData: { title: 'Slack', authConfig: {} },
-      expectedData: { authConfig: { token: 'new-masked-input' } },
+      expectedData: {
+        authConfig: { token: 'workflow-node-secret://00000000-0000-4000-8000-000000000001' },
+      },
     },
     {
       caseId: 'slack-webhook-url',
@@ -4353,7 +4356,9 @@ describe('AgentBuilderPanel', () => {
       parameterKey: 'url',
       label: 'Webhook URL',
       nodeData: { title: 'Slack' },
-      expectedData: { url: 'new-masked-input' },
+      expectedData: {
+        url: 'workflow-node-secret://00000000-0000-4000-8000-000000000001',
+      },
     },
     {
       caseId: 'github-api-token',
@@ -4362,7 +4367,9 @@ describe('AgentBuilderPanel', () => {
       parameterKey: 'api_token',
       label: 'GitHub API Token',
       nodeData: { title: 'GitHub' },
-      expectedData: { api_token: 'new-masked-input' },
+      expectedData: {
+        api_token: 'workflow-node-secret://00000000-0000-4000-8000-000000000001',
+      },
     },
   ])(
     'sends $caseId through the workflow editor bridge',
@@ -4437,6 +4444,11 @@ describe('AgentBuilderPanel', () => {
       configurable: true,
       value: vi.fn(),
     });
+    vi.mocked(workflowApi.storeNodeSecret).mockResolvedValue({
+      secret_reference:
+        'workflow-node-secret://00000000-0000-4000-8000-000000000001',
+      configured: true,
+    });
 
     render(
       <AgentBuilderPanel
@@ -4456,6 +4468,13 @@ describe('AgentBuilderPanel', () => {
     await waitFor(() => {
       const stored = useWorkflowStore.getState().nodes[0]?.data;
       expect(stored).toMatchObject(expectedData);
+      expect(JSON.stringify(stored)).not.toContain('new-masked-input');
+    });
+    expect(workflowApi.storeNodeSecret).toHaveBeenCalledWith('workflow-1', {
+      node_id: nodeId,
+      node_type: nodeType,
+      parameter_key: parameterKey,
+      secret_value: 'new-masked-input',
     });
     expect(agentBuilderApi.decideParameterTask).not.toHaveBeenCalled();
     },

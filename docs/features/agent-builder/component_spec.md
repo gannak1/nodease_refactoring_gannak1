@@ -683,7 +683,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 - GraphMutation 저장 payload는 canonical base에 typed operations를 재생해 구성한다. React Flow node instance에 뒤늦게 붙는 `width`, `height`, `measured`는 화면 배치용으로만 유지하고 저장 payload를 다시 만드는 입력으로 사용하지 않는다.
 ### MBA-275 Validation Boundaries
 
-- 일반 Parameter decision application은 Catalog parameter schema, sensitivity와 기존 fail-closed secret detector를 적용한 뒤에만 GraphMutationBuilder를 호출한다. detector 실패도 허용하지 않으며 값은 persistence/audit 경계에 도달하기 전에 폐기한다. `secret` task는 발급하지 않고 조작된 legacy decision도 이 경계에서 거부한다.
+- 일반 Parameter decision application은 Catalog parameter schema, sensitivity와 기존 fail-closed secret detector를 적용한 뒤에만 GraphMutationBuilder를 호출한다. detector 실패도 허용하지 않으며 값은 persistence/audit 경계에 도달하기 전에 폐기한다. Slack/GitHub `secret` task는 safe metadata와 masked control만 발급하며 조작된 raw ParameterDecision은 이 경계에서 거부한다.
 - `parameter_tasks.validate_direct_set_value`는 순수 Catalog/type/sensitivity 판정을 담당하고, `ParameterTaskService`는 DB-backed reference와 Workflow/App relation을 검증한다. resource resolver는 canonical opaque id만 graph patch에 전달하며 raw config/secret을 application model에 넣지 않는다.
 - `appId`는 WorkflowNode runtime target을 정하는 필수 reference이고 `workflowId`는 선택 metadata다. `appId` 직접 변경 시 service는 선택된 App과 canonical Workflow의 organization scope·양쪽 read 권한을 확인하고 `workflowId`를 정규화한다. `workflowId` 직접 변경과 이미 정합한 pair는 현재 node data와 patch의 합성 결과에서 `App.workflow_id == Workflow.id`를 강제한 뒤에만 task 완료와 graph patch를 원자적으로 확정한다.
 - WorkflowDraftCASService는 `populate_existing().with_for_update()`에 해당하는 locked refresh 계약으로 최신 row를 비교하며 stale conflict 시 graph/audit/task를 쓰지 않는다.
@@ -705,7 +705,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 
 ## Test preflight 연동과 secret 입력 경계
 
-- `ParameterInputRenderer`는 Catalog가 발급한 Slack/GitHub `secret` task에 기존 값을 비운 password input을 표시하고 새 입력을 editor save bridge로 전달한다. Required secret의 `나중에 설정`은 raw value 없는 typed `defer`를 보내고 node를 unresolved로 유지한다. Backend는 조작된 raw secret decision을 방어적으로 `secret_forbidden`으로 거부한다.
+- `ParameterInputRenderer`는 Catalog가 발급한 Slack/GitHub `secret` task에 기존 값을 비운 password input을 표시하고 새 입력을 Workflow node secret-write API로 전달한다. 성공 응답의 opaque reference만 editor graph에 반영한다. Required secret의 `나중에 설정`은 raw value 없는 typed `defer`를 보내고 node를 unresolved로 유지한다. Backend는 조작된 raw secret decision을 방어적으로 `secret_forbidden`으로 거부한다.
 - WorkflowResultGroup는 현재 active Slack Bot Token, Slack Incoming Webhook URL 또는 GitHub API Token task에서 masked 입력창과 `나중에 설정` 버튼을 함께 렌더링한다. 이 control을 Node Detail 이동 버튼, 안내 전용 card 또는 credential picker로 대체하거나 secret task 자체를 렌더링에서 제외하지 않는다.
 - TestSidebar는 canonical 확인부터 valid `workflow_start.run_id` 수신까지 test preflight owner를 유지한다. Persisted Agent Builder history boundary가 아직 acknowledgement되지 않았거나 Agent Builder를 포함한 어떤 저장 owner라도 stream 시작 시점에 대기 중이면 stream을 열지 않는다. Agent Builder acknowledgement에는 기존 전용 안내를, 일반 저장 대기에는 `Workflow 변경사항을 저장하는 중입니다. 저장 완료 후 다시 실행해주세요.`를 표시하며 자동 재실행하지 않는다.
 - Agent Builder editor bridge는 save coordinator lock 획득 직후와 canonical draft 조회 직후 active workflow id를 확인한다. Workflow가 바뀌면 이전 mutation/save/acknowledgement/rollback을 중단하고 `Workflow가 전환되어 이전 Agent Builder 작업을 적용하지 않았습니다.` 계열의 안전한 안내를 표시한다.
@@ -723,8 +723,15 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 - 활성 resolution이 없거나 target이 다른 일반 LLM 설정은 기존 Node Detail 저장 동작을 유지한다.
 ## Secret task와 이전 항목 action
 
-- `ParameterInputRenderer`는 Catalog `input_type=secret`을 password control로 렌더링하고 기존 raw 값은 hydrate하지 않는다. 새 입력은 `onSecretSubmit` editor save bridge로만 전달하며 일반 `onSubmit` ParameterDecision을 사용하지 않는다. Node Detail 강제 이동은 제공하지 않고 일반 Node Detail 기능과 LLM Routing 이동 action은 유지한다.
+- `ParameterInputRenderer`는 Catalog `input_type=secret`을 password control로 렌더링하고 기존 raw 값 또는 opaque reference는 hydrate하지 않는다. 새 입력은 `onSecretSubmit`에서 Workflow node secret-write API로만 전달하며 일반 `onSubmit` ParameterDecision을 사용하지 않는다. Node Detail 강제 이동은 제공하지 않고 일반 Node Detail 기능과 LLM Routing 이동 action은 유지한다.
 - `WorkflowResultGroup`의 presentation task가 `이전 항목`으로 바뀌면 `NodeParameterCard`는 canonical active task ID가 아니라 presentation task의 required/confirmation 상태와 canonical graph hydration 결과로 action을 계산한다.
 - Optional presentation task에 값이 없으면 `건너뛰기`, 값이 있으면 `값 지우고 건너뛰기`를 표시한다. 전자는 `skip`, 후자는 `clear`를 호출한다. Required 또는 confirmation-required task에는 표시하지 않는다.
 - Previous 이동, secret save 실패 또는 clear acknowledgement 실패 시 card와 입력값을 유지한다. 성공한 secret save는 canonical metadata를 반영한 뒤 configured/unconfigured session reconciliation만 수행한다.
 - 일반 Node Detail이 deferred parameter의 실제 값을 변경해 저장하면 해당 key의 deferred marker만 해제한다. 관련 없는 field 편집, 동일 값 재전송, 빈 값·invalid 값, viewport 변경은 marker를 유지하며 Loop 내부 Node Detail에도 같은 동작을 적용한다.
+## Workflow Node Secret Inputs
+
+- Agent Builder는 Slack Bot Token, Slack Incoming Webhook URL과 GitHub API Token을 password 형태의 빈 masked control로 표시한다. 기존 값과 opaque reference는 control value로 hydrate하지 않는다.
+- `적용`은 secret-write API가 성공해 opaque reference를 반환한 뒤 해당 graph field를 reference로 갱신한다. 저장 중에는 같은 control만 잠그고 실패하면 입력값과 현재 task를 유지한다.
+- `나중에 설정`은 Catalog가 허용한 active secret task에서 계속 표시한다. 이 control을 credential picker, Node Detail 이동 또는 안내 전용 버튼으로 바꾸지 않는다.
+- Node Detail의 동일 secret field도 같은 secret-write API를 사용한다. 이미 설정된 reference는 `설정됨`으로만 표시하고 새 값 입력으로 교체하며 plaintext/reference를 input value로 표시하지 않는다.
+- Secret-write 응답이 늦게 도착했는데 같은 field가 다시 편집됐다면 늦은 reference를 최신 입력 위에 적용하지 않는다.

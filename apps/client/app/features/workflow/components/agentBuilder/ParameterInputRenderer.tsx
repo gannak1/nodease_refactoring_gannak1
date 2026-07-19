@@ -22,7 +22,10 @@ export const ParameterInputRenderer = ({
   onSubmit: (value: unknown) => void;
   onSkip?: () => void;
   onClear?: () => void;
-  onSecretSubmit?: (task: AgentBuilderParameterTask, value: string) => void;
+  onSecretSubmit?: (
+    task: AgentBuilderParameterTask,
+    value: string,
+  ) => void | Promise<void>;
   disabled?: boolean;
 }) => {
   const hydratedValue =
@@ -34,6 +37,7 @@ export const ParameterInputRenderer = ({
     if (typeof hydratedValue === 'number') return String(hydratedValue);
     return typeof hydratedValue === 'string' ? hydratedValue : '';
   });
+  const [secretSubmitting, setSecretSubmitting] = useState(false);
   const [checked, setChecked] = useState(
     task.input_type === 'boolean' && hydratedValue === true,
   );
@@ -224,7 +228,7 @@ export const ParameterInputRenderer = ({
           type="password"
           value={value}
           onChange={(event) => setValue(event.target.value)}
-          disabled={disabled}
+          disabled={disabled || secretSubmitting}
           autoComplete="off"
           className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
         />
@@ -235,7 +239,7 @@ export const ParameterInputRenderer = ({
         ) : null}
         <button
           type="button"
-          onClick={() => {
+          onClick={async () => {
             setError(null);
             const trimmed = value.trim();
             if (!trimmed) {
@@ -254,9 +258,14 @@ export const ParameterInputRenderer = ({
               setError('보안 저장 경로를 사용할 수 없습니다.');
               return;
             }
-            onSecretSubmit(task, trimmed);
+            setSecretSubmitting(true);
+            try {
+              await onSecretSubmit(task, trimmed);
+            } finally {
+              setSecretSubmitting(false);
+            }
           }}
-          disabled={disabled}
+          disabled={disabled || secretSubmitting}
           className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
         >
           적용

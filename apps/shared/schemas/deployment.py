@@ -178,7 +178,13 @@ class DeploymentResponse(DeploymentBase):
 
     @field_serializer("graph_snapshot")
     def serialize_graph_snapshot(self, value: Dict[str, Any]) -> Dict[str, Any]:
-        return strip_workflow_node_bindings(value)
+        from apps.shared.services.workflow_node_secret_service import (
+            redact_legacy_workflow_node_secrets,
+        )
+
+        return redact_legacy_workflow_node_secrets(
+            strip_workflow_node_bindings(value)
+        )
 
 
 class DeploymentInfoResponse(BaseModel):

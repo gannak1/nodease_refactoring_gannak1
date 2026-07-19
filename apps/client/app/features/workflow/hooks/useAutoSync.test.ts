@@ -282,6 +282,81 @@ describe('useAutoSync Hook', () => {
     },
   );
 
+  it('keeps newer same-workflow edits when an older autosync response arrives', async () => {
+    let resolveSave!: (value: ReturnType<typeof canonicalSave>) => void;
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue(canonicalDraft());
+    vi.mocked(workflowApi.syncDraftWorkflow).mockReturnValue(
+      new Promise((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+    renderHook(() => useAutoSync());
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    act(() => {
+      useWorkflowStore.setState({
+        nodes: [
+          {
+            id: 'slack-1',
+            type: 'slackPostNode',
+            position: { x: 0, y: 0 },
+            data: { _deferred_parameters: ['channel'] },
+          } as unknown as Node,
+        ],
+        hasUnsavedChanges: true,
+      });
+    });
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      useWorkflowStore.setState({
+        nodes: [
+          {
+            id: 'slack-1',
+            type: 'slackPostNode',
+            position: { x: 0, y: 0 },
+            data: { _deferred_parameters: ['channel', 'message'] },
+          } as unknown as Node,
+        ],
+        hasUnsavedChanges: true,
+      });
+    });
+
+    await act(async () => {
+      resolveSave(
+        canonicalSave({
+          graph_hash: 'c'.repeat(64),
+          updated_at: '2026-07-13T00:00:02Z',
+          canonical_deferred_parameters: [
+            { node_path: ['slack-1'], parameter_keys: [] },
+          ],
+        }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const state = useWorkflowStore.getState();
+    expect(state.nodes[0].data._deferred_parameters).toEqual([
+      'channel',
+      'message',
+    ]);
+    expect(state.hasUnsavedChanges).toBe(true);
+    expect(state.getCanonicalDraftMetadata('test-workflow-id')).toEqual({
+      workflowId: 'test-workflow-id',
+      graphHash: 'c'.repeat(64),
+      updatedAt: '2026-07-13T00:00:02Z',
+    });
+  });
+
   it('Agent Builder 저장 완료 플래그만 해제되면 같은 graph를 다시 저장하지 않는다', async () => {
     (workflowApi.getDraftWorkflow as any).mockResolvedValue({
       nodes: [{ id: 'persisted', data: {} } as any],

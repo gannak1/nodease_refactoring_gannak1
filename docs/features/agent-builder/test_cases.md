@@ -667,7 +667,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Collection과 고유 KB 화면 후보가 각각 20개를 넘지 않고, 약 3개 행 높이의 내부 스크롤을 유지하는지 확인한다.
 - Canonical graph recovery after acknowledgement loss, persisted Undo, persisted Redo, and ambiguous save assigns editor-only edge display numbers without changing the serialized workflow graph or graph hash.
 - A Slack/GitHub direct-edit plan exposes every Catalog-declared Agent Builder parameter including safe token/URL secret task metadata. It exposes no `credential_ref` task, credential candidate, empty picker, credential defer control, or existing raw secret value. Mail/Gmail still expose only permitted managed credential candidates.
-- Slack mode와 parameter 설명은 Catalog의 한국어 문구를 유지한다. API mode는 Bot Token, channel과 payload를, Incoming Webhook mode는 Webhook URL과 payload를 표시한다. Existing Bot Token/Webhook URL 원문은 input에 표시하지 않고 새 입력만 editor save bridge로 전달한다. Mode 변경은 반대 mode의 기존 secret/channel 설정을 canonical node data에서 정리하고 현재 mode의 secret task를 활성화한다. 인증값이 없으면 node는 unresolved로 남아 test/run/deploy preflight에서 차단된다. `message`는 `{{result}}`와 이전 node output 연결 방법을 설명한다. 값이 없는 Optional Blocks/Attachments의 빈 `적용`은 `skip`으로 완료되고, 기존 optional text/JSON/select 값을 편집 중 비운 `적용`은 `clear` GraphMutation과 CAS/acknowledgement 뒤 graph 값을 제거하고 task를 `skipped`로 만든다.
+- Slack mode와 parameter 설명은 Catalog의 한국어 문구를 유지한다. API mode는 Bot Token, channel과 payload를, Incoming Webhook mode는 Webhook URL과 payload를 표시한다. Existing Bot Token/Webhook URL 원문/reference는 input에 표시하지 않고 새 입력은 secret-write API로 전달해 반환된 opaque reference만 graph에 반영한다. Mode 변경은 반대 mode의 기존 secret/channel 설정을 canonical node data에서 정리하고 현재 mode의 secret task를 활성화한다. 인증값이 없으면 node는 unresolved로 남아 test/run/deploy preflight에서 차단된다. `message`는 `{{result}}`와 이전 node output 연결 방법을 설명한다. 값이 없는 Optional Blocks/Attachments의 빈 `적용`은 `skip`으로 완료되고, 기존 optional text/JSON/select 값을 편집 중 비운 `적용`은 `clear` GraphMutation과 CAS/acknowledgement 뒤 graph 값을 제거하고 task를 `skipped`로 만든다.
 - GitHub PR 번호 `15`를 typed integer decision으로 제출하면 graph에는 runtime canonical 값인 문자열 `"15"`가 저장되고, browser JSON round-trip graph의 canonical hash가 같으며 Workflow Engine `GithubNodeData` validation을 통과하는지 검증한다.
 - Agent Builder allowlist의 모든 node type과 모든 user-configurable Catalog parameter에 대표 typed 값을 적용한 뒤 실제 Workflow Engine NodeData schema validation을 통과하는 contract test를 실행한다. File Extraction selector와 Slack Blocks/Attachments의 runtime 저장 형식을 이 검증에 포함한다.
 - A Mail terminal acknowledgement task renders all required upstream effect selectors in one typed `variable_selector_list`; an empty or duplicate selection is rejected.
@@ -851,7 +851,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 ## Secret 입력 경계와 이전 task action 회귀
 
 - Slack Bot Token, Slack Incoming Webhook URL과 GitHub API Token task가 direct-edit plan과 card의 mode별 masked control로 표시되는지 검증한다.
-- Secret task가 기존 원문이나 fingerprint를 hydrate하지 않고 새 입력만 editor save bridge로 전달하며, 조작된 raw ParameterDecision이 `secret_forbidden`으로 닫히고 API 응답·task/session·audit·trace·log에 원문 또는 값 파생 fingerprint가 남지 않는지 검증한다.
+- Secret task가 기존 원문, opaque reference나 fingerprint를 hydrate하지 않고 새 입력만 secret-write API로 전달하며, 반환된 reference만 graph에 저장되는지 검증한다. 조작된 raw ParameterDecision은 `secret_forbidden`으로 닫히고 API 응답·task/session·audit·trace·log에 원문 또는 값 파생 fingerprint가 남지 않아야 한다.
 - `이전 항목`으로 값 없는 optional task를 표시하면 canonical active task ID가 달라도 `건너뛰기`가 유지되고 `skip`이 호출되는지 검증한다.
 - `이전 항목`으로 기존 값이 있는 optional task를 표시하면 `값 지우고 건너뛰기`가 보이고 `clear -> CAS save -> acknowledgement` 뒤 graph 값이 제거되는지 검증한다.
 - Required task와 `confirmation_required=true` task에는 이전 화면에서도 skip/clear action이 표시되지 않는지 검증한다.
@@ -876,3 +876,12 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - 발급 뒤 새로운 후보가 추가되어 해당 KB가 추천 탐색의 5,000개 내부 상한 밖으로 밀려나도, resolution에 보존된 handle-to-resource binding으로 해당 KB 하나만 다시 검증해 적용되는지 확인한다.
 - 발급된 Collection handle 적용 시 하위 KB hierarchy를 다시 탐색하지 않고 해당 Collection의 organization, active 상태와 `route` 권한만 재검증하는지 확인한다.
 - server-only handle-to-resource binding의 실제 resource ID가 message/session API 응답, audit 또는 trace에 노출되지 않는지 확인한다.
+## Workflow Node Secret Reference Tests
+
+- Agent Builder와 Node Detail의 Slack Bot Token, Webhook URL, GitHub API Token 입력이 masked direct input으로 유지되고 허용된 task에 `나중에 설정`이 표시되는지 검증한다.
+- Secret-write 요청 뒤 persisted Workflow graph, draft read, version/deployment snapshot과 API 응답에 plaintext/ciphertext가 없고 opaque reference만 존재하는지 검증한다.
+- 같은 값 교체가 immutable 새 revision을 만들며 기존 deployment reference를 바꾸지 않는지 검증한다.
+- Runtime이 provider I/O 직전에 reference의 organization/workflow/node type/parameter key/status를 재검증하고, mismatch/revoked/missing/key-version 오류에서 외부 I/O 없이 실패하는지 검증한다.
+- 기존 plaintext draft graph가 read/deployment 경계에서 reference로 migration되고 신규 write가 plaintext를 다시 만들지 않는지 검증한다.
+- Secret-write 실패는 form과 입력을 유지하고 audit/error/log가 원문을 반사하지 않는지 검증한다.
+- 같은 Workflow의 autosync 응답이 늦게 도착한 경우 요청 당시 save-relevant snapshot과 최신 editor state가 같을 때만 canonical deferred/secret projection과 clean 처리를 적용한다. 최신 편집이 있으면 metadata만 갱신하고 graph와 dirty를 유지한다.

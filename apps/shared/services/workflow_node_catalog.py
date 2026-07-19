@@ -9,6 +9,10 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from apps.shared.services.workflow_node_secret_service import (
+    is_workflow_node_secret_reference,
+)
+
 _CATALOG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "workflow_node_catalog.json"
 )
@@ -371,6 +375,8 @@ def validate_node_parameter_value(
     if input_type in {"text", "textarea", "code", "secret"}:
         if not isinstance(value, str):
             return ["invalid_type"]
+        if input_type == "secret" and is_workflow_node_secret_reference(value):
+            return []
         if len(value) < int(validation.get("min_length", 0)):
             return ["too_short"]
         if len(value) > int(validation.get("max_length", 1_000_000)):

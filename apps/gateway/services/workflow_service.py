@@ -30,10 +30,24 @@ from apps.shared.domain.workflow_knowledge_references import (
 )
 from apps.shared.domain.slack_delivery import (
     SlackGraphBoundaryError,
+    is_valid_commercial_slack_webhook_url,
     validate_slack_graph_boundary,
 )
 from apps.shared.schemas.workflow import WorkflowCreateRequest, WorkflowDraftRequest
 from apps.shared.services.permission_audit import record_resource_permission_denied
+from apps.shared.services.credential_encryption import CredentialEncryptionError
+from apps.shared.services.workflow_node_secret_service import (
+    WorkflowNodeSecretError,
+    WorkflowNodeSecretService,
+    WorkflowNodeSecretStorageError,
+    get_workflow_node_secret_encryption_service,
+    is_workflow_node_secret_reference,
+    migrate_legacy_workflow_graph_secrets,
+    validate_workflow_node_secret_persistence_boundary,
+)
+from apps.shared.services.workflow_node_catalog import (
+    validate_node_parameter_value,
+)
 from apps.shared.services.permissions import (
     get_effective_mail_credential_auth_state,
     has_mail_credential_permission,
@@ -155,6 +169,79 @@ class WorkflowService:
         return workflow
 
     @staticmethod
+    def store_node_secret(
+        db: Session,
+        *,
+        workflow_id: str,
+        user_id: UUID,
+        node_id: str,
+        node_type: str,
+        parameter_key: str,
+        secret_value: str,
+    ) -> dict[str, Any]:
+        workflow = (
+            db.query(Workflow)
+            .filter(Workflow.id == workflow_id)
+            .with_for_update()
+            .first()
+        )
+        if workflow is None:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        if workflow.organization_id is None or not has_workflow_permission(
+            db,
+            user_id,
+            workflow.id,
+            "write",
+            organization_id=workflow.organization_id,
+        ):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        validation_issues = validate_node_parameter_value(
+            node_type,
+            parameter_key,
+            secret_value,
+        )
+        if (
+            validation_issues
+            or is_workflow_node_secret_reference(secret_value)
+            or (
+                node_type == "slackPostNode"
+                and parameter_key == "url"
+                and not is_valid_commercial_slack_webhook_url(secret_value)
+            )
+        ):
+            db.rollback()
+            raise HTTPException(
+                status_code=422,
+                detail="workflow.node_secret_invalid",
+            )
+        try:
+            reference = WorkflowNodeSecretService.create_reference(
+                db,
+                encryption=get_workflow_node_secret_encryption_service(),
+                workflow_id=workflow.id,
+                organization_id=workflow.organization_id,
+                user_id=user_id,
+                node_id=node_id,
+                node_type=node_type,
+                parameter_key=parameter_key,
+                secret_value=secret_value,
+            )
+        except (CredentialEncryptionError, WorkflowNodeSecretStorageError) as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=503,
+                detail="workflow.node_secret_storage_unavailable",
+            ) from exc
+        except WorkflowNodeSecretError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=422,
+                detail="workflow.node_secret_invalid",
+            ) from exc
+        db.commit()
+        return {"secret_reference": reference, "configured": True}
+
+    @staticmethod
     def save_draft(
         db: Session,
         workflow_id: str,
@@ -205,6 +292,19 @@ class WorkflowService:
             organization_id=workflow.organization_id,
         ):
             raise HTTPException(status_code=403, detail="Forbidden")
+
+        request_nodes = (
+            request.nodes
+            if isinstance(request, WorkflowDraftRequest)
+            else request.get("nodes", [])
+        )
+        try:
+            validate_workflow_node_secret_persistence_boundary(request_nodes)
+        except WorkflowNodeSecretError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="workflow.node_secret_reference_required",
+            ) from exc
 
         raw_features = (
             request.features
@@ -811,6 +911,35 @@ class WorkflowService:
 
         if not workflow:
             return None
+
+        needs_secret_migration = False
+        if isinstance(workflow.graph, Mapping):
+            try:
+                validate_workflow_node_secret_persistence_boundary(
+                    workflow.graph.get("nodes", [])
+                )
+            except WorkflowNodeSecretError:
+                needs_secret_migration = True
+        if needs_secret_migration and workflow.organization_id is not None:
+            try:
+                migrated_graph, changed = migrate_legacy_workflow_graph_secrets(
+                    db,
+                    graph=workflow.graph,
+                    encryption=get_workflow_node_secret_encryption_service(),
+                    workflow_id=workflow.id,
+                    organization_id=workflow.organization_id,
+                    user_id=workflow.updated_by or workflow.created_by,
+                )
+            except (WorkflowNodeSecretError, CredentialEncryptionError) as exc:
+                db.rollback()
+                raise HTTPException(
+                    status_code=503,
+                    detail="workflow.node_secret_migration_unavailable",
+                ) from exc
+            if changed:
+                workflow.graph = migrated_graph
+                db.commit()
+                db.refresh(workflow)
 
         # workflow.graph는 DB의 JSONB 타입 컬럼이며, 파이썬에서는 딕셔너리(dict)로 변환되어 반환됩니다.
         # 구조 예시: {"nodes": [...], "edges": [...], "viewport": {...}}

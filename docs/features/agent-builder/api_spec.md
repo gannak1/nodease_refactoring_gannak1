@@ -184,7 +184,7 @@ Selector suggestion은 backend가 발급하고 client가 임의로 구성하지 
 | kind | Required fields | Rule |
 |---|---|---|
 | `text` / `textarea` / `code` / `select` | `value: string` | catalog length/pattern/options 검증 |
-| `secret` | `value`를 ParameterDecision으로 제출하지 않음 | Slack/GitHub secret task는 safe metadata만 response에 포함한다. Masked control의 새 입력은 frontend editor draft save bridge로 전달하며 기존 원문은 hydrate하지 않는다. 조작된 raw ParameterDecision request는 `400 secret_forbidden`으로 거부한다. |
+| `secret` | `value`를 ParameterDecision으로 제출하지 않음 | Slack/GitHub secret task는 safe metadata만 response에 포함한다. Masked control의 새 입력은 Workflow node secret-write API로 제출하고 반환된 opaque reference만 graph에 반영한다. 기존 원문/reference는 hydrate하지 않으며 조작된 raw ParameterDecision request는 `400 secret_forbidden`으로 거부한다. |
 | `json` | `value: any` | catalog type/schema 검증 |
 | `number` | `value: number` | catalog min/max 검증 |
 | `boolean` | `value: boolean` | boolean만 허용 |
@@ -420,13 +420,7 @@ Success response:
     ],
     "knowledge_requirements": []
   },
-  "knowledge_resolution": {
-    "resolution_id": "opaque-id",
-    "timing": "after_graph",
-    "required": false,
-    "candidates": [],
-    "selected": []
-  },
+  "knowledge_resolution": null,
   "graph_mutation": {
     "operation_id": "uuid",
     "kind": "initial_graph",
@@ -448,6 +442,12 @@ Success response:
   "warnings": []
 }
 ```
+
+`structured_plan.knowledge_requirements=[]`인 응답은
+`knowledge_resolution=null`이다. Knowledge 선택이 필요한 응답은 아래의
+계층형 계약처럼 `collections`와 `ungrouped_kbs`를 포함한 별도
+`knowledge_resolution`을 반환한다. 최신 direct-edit success 응답은 flat
+`candidates`만으로 선택 UI를 구성하지 않는다.
 
 `generation_mode=structure_only`에서는 `parameter_group`이 `null`이고 unresolved configuration warning만 반환한다. Mutation kind는 빈 workflow의 새 graph면 `initial_graph`, 기존 workflow 부분 변경이면 `graph_edit`, 기존 workflow 전체 교체면 `replace_workflow`다. GraphMutation은 frontend 적용 전 `pending_apply`이며 local transaction 적용 뒤 `pending_save`, CDS workflow draft 저장 뒤 `pending_ack`, acknowledgement 뒤 `acknowledged`가 된다.
 `operations`를 포함한 `graph_mutation`은 이 API 응답에서만 전달한다. Server는 같은
@@ -1231,7 +1231,7 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 ## 2026-07-15 Direct-Edit Connection And Recovery Correction
 
 - `direct_edit_v1` response does not include a Slack or GitHub `credential_ref` ParameterTask, credential candidate, or managed-credential defer control. It does include safe Slack/GitHub `secret` task metadata for the current mode; the raw value is never included. These secret tasks may declare `defer_policy=allow_unresolved`. Mail/Gmail managed credential tasks remain permission-filtered.
-- Agent Builder renders a masked input for Slack Bot Token, Slack Incoming Webhook URL and GitHub API Token. It never hydrates the existing raw value. A new value is sent through the frontend editor draft save bridge, while a manipulated raw `secret` ParameterDecision is rejected with `secret_forbidden` before GraphMutation or persistence. `나중에 설정` submits the existing typed `defer` action without a raw value; missing authentication remains unresolved and is blocked by test/run/deployment preflight.
+- Agent Builder renders a masked input for Slack Bot Token, Slack Incoming Webhook URL and GitHub API Token. It never hydrates the existing raw value or opaque reference into the input. A new value is sent only through the Workflow node secret-write API; the returned opaque reference is then applied through the editor/autosync path. A manipulated raw `secret` ParameterDecision is rejected with `secret_forbidden` before GraphMutation or persistence. `나중에 설정` submits the existing typed `defer` action without a raw value; missing authentication remains unresolved and is blocked by test/run/deployment preflight.
 - A new optional JSON parameter with an empty client control is submitted as `skip`, not as `set` with invalid JSON. Clearing an existing optional JSON/text/select value submits `clear` so the canonical graph value is removed through CAS/acknowledgement. GitHub integer parameters retain their integer representation through typed request, GraphMutation and canonical graph hashing.
 - Planner structured output includes `requested_capabilities`. Each item is a canonical capability ID selected from Catalog-provided multilingual aliases. When the planner returns `unsupported`, the backend may request one semantic repair only if exactly one requested capability is supported and its Catalog `standalone_creation` policy is `allowed`. `requires_context`, `forbidden`, unknown, or multiple capabilities are not promoted by backend heuristics.
 - The backend does not select capabilities with a regular expression and does not overwrite planner output with a hard-coded node type. Catalog validation remains the authority after LLM structuring.
@@ -1264,7 +1264,36 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 - Catalog parameter의 `validation.required_when`은 같은 node의 canonical controlling parameter를 기준으로 조건부 필수 여부를 계산한다. Slack API mode의 `bot_token|channel`, Webhook mode의 `url`과 GitHub `action=comment_pr`의 `comment_body`가 이 계약을 사용한다. GitHub `api_token`은 action과 무관하게 required다. ParameterTask와 configuration preflight는 같은 조건 판정을 사용한다.
 - 조건을 제어하는 parameter의 GraphMutation 저장과 acknowledgement가 성공하면 Backend는 canonical graph로 Catalog task를 deterministic하게 재계획하고 `node_id + parameter_key`로 기존 group과 병합한 뒤 같은 acknowledgement 응답의 `parameter_group`과 `next_task_id`를 갱신한다. Planner LLM은 다시 호출하지 않으며 같은 operation acknowledgement 재조회는 task 상태, DB commit 또는 audit을 반복하지 않는다.
 - `request_timeout_seconds`는 provider payload field가 아닌 internal transport option이다. Google client는 이를 payload에서 제거한 뒤 chat HTTP client timeout으로 적용하고, 미지정 시 60초를 사용한다.
-- Agent Builder는 Slack/GitHub `secret` task의 safe metadata와 masked control을 제공하지만 raw 값을 ParameterDecision으로 발급하거나 제출하지 않는다. 기존 graph secret을 response, task, session 또는 hydration payload에 반환하지 않으며 새 입력은 frontend editor draft save bridge로만 전달한다. 조작된 ParameterDecision `set`은 `secret_forbidden`으로 거부한다.
+- Agent Builder는 Slack/GitHub `secret` task의 safe metadata와 masked control을 제공하지만 raw 값을 ParameterDecision으로 발급하거나 제출하지 않는다. 기존 graph secret/reference를 response, task, session 또는 hydration payload에 반환하지 않으며 새 입력은 Workflow node secret-write API로만 전달한다. 조작된 ParameterDecision `set`은 `secret_forbidden`으로 거부한다.
+
+### Workflow Node Secret Write
+
+`POST /api/v1/workflows/{workflow_id}/node-secrets`는 Agent Builder와 Node Detail이 공유하는 인증된 command endpoint다. Workflow `write` 권한과 active organization scope를 요구한다.
+
+```json
+{
+  "node_id": "slack-node-1",
+  "node_type": "slackPostNode",
+  "parameter_key": "bot_token",
+  "secret_value": "<masked control input>"
+}
+```
+
+성공 응답은 secret 원문, ciphertext, key version 또는 내부 row id를 포함하지 않는다.
+
+```json
+{
+  "secret_reference": "workflow-node-secret://00000000-0000-0000-0000-000000000000",
+  "configured": true
+}
+```
+
+- 허용 조합은 `slackPostNode.bot_token`, `slackPostNode.url`, `githubNode.api_token`이다.
+- 응답 reference는 요청 Workflow, organization, node id/type와 parameter key에 scope된 immutable encrypted revision을 가리킨다.
+- 일반 draft/version/deployment graph는 이 reference만 저장한다. 같은 위치의 raw value를 포함한 신규 save는 `422 workflow.node_secret_reference_required`로 거부한다.
+- `403`은 Workflow write 권한 부족, `404`는 Workflow 비공개/부재, `422 workflow.node_secret_invalid`는 지원하지 않는 node/parameter 또는 invalid input이다. `503 workflow.node_secret_storage_unavailable`은 신규 revision을 암호화할 keyring이 없거나 사용할 수 없는 경우이고, `503 workflow.node_secret_migration_unavailable`은 legacy plaintext를 안전하게 변환할 keyring이 없는 경우다.
+- Request body와 원문은 audit metadata, error detail, trace와 log에 포함하지 않는다.
+- 기존 plaintext draft/deployment는 bounded read/execution 경계에서 같은 scope의 encrypted revision으로 전환한다. 전환 전 응답은 원문을 redaction하고 keyring이 없으면 fail-closed한다.
 - `model_id`는 일반 LLM ParameterTask로 반환한다. `auto_model_routing`만 `task_group=model_routing`을 반환하고 node data에 직접 저장한다. 새 LLM node에서 Catalog 기본값이 `false`이면 task는 recommendation fingerprint와 `resolution_source=catalog_default`를 가진 `active` 상태로 반환한다. 같은 `false` 확인은 `action=confirm`으로 GraphMutation 없이 완료하고, `true` 변경은 `action=set`과 기존 CAS/acknowledgement 계약을 사용한다. 이 group metadata는 표시와 completeness 판정용이며 graph에는 저장하지 않는다.
 - `fallback_model_id`, `model_routing_refresh_every_runs`, `model_routing_validation_budget_usd`, `model_routing_max_cohorts`의 Catalog/runtime 정의는 유지하지만 `agent_builder_task=false`이므로 Agent Builder ParameterTask를 발급하지 않는다. Catalog reconciliation은 이전 session의 해당 task를 제거하되 canonical graph의 기존 값을 변경하지 않는다.
 - Fallback model과 상세 routing policy의 후보 선택, 검증과 저장은 기존 LLM Routing control의 API 계약을 따른다.

@@ -906,6 +906,27 @@ def test_catalog_parameter_validation_drives_configuration_state():
     ) == "resolved"
 
 
+def test_secret_reference_is_valid_after_server_side_secret_storage():
+    reference = (
+        "workflow-node-secret://00000000-0000-4000-8000-000000000001"
+    )
+
+    assert validate_node_parameter_value(
+        "slackPostNode", "url", reference
+    ) == []
+    assert derive_node_configuration_state(
+        "slackPostNode",
+        {
+            "slackMode": "webhook",
+            "url": reference,
+            "message": "hello",
+        },
+    ) == "resolved"
+    assert validate_node_parameter_value(
+        "slackPostNode", "url", "workflow-node-secret://invalid"
+    ) == ["pattern_mismatch"]
+
+
 def test_catalog_exposes_effective_validation_and_sensitivity_metadata():
     catalog_by_type = {
         node["node_type"]: node for node in load_workflow_node_catalog()["nodes"]

@@ -139,7 +139,10 @@ export const NodeParameterCard = ({
   focusHeading?: boolean;
   onHeadingFocused?: (taskId: string) => void;
   onEditingChange?: (taskId: string | null) => void;
-  onSecretSubmit?: (task: AgentBuilderParameterTask, value: string) => void;
+  onSecretSubmit?: (
+    task: AgentBuilderParameterTask,
+    value: string,
+  ) => void | Promise<void>;
   onSecretClear?: (task: AgentBuilderParameterTask) => void;
   onDecision: (decision: ParameterDecisionInput) => void;
   hasPrevious?: boolean;

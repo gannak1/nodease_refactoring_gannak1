@@ -21,6 +21,7 @@ import {
   tryAcquireWorkflowDraftSave,
 } from '../utils/workflowDraftSaveCoordinator';
 import { assignMissingNodeDisplayNumbers } from '../utils/nodeNumbering';
+import { workflowDraftSaveStateEqual } from '../utils/workflowDraftComparison';
 
 type CanonicalDraftMetadata = {
   graphHash: string;
@@ -617,13 +618,30 @@ export const useAutoSync = () => {
                   .ingestCanonicalDraftMetadata(saveResponse, workflowId);
                 return;
               }
+              const latestState = useWorkflowStore.getState();
+              const ordinarySaveStillCurrent =
+                Boolean(pendingRevert || pendingRedo) ||
+                (latestState.activeWorkflowId === workflowId &&
+                  workflowDraftSaveStateEqual(
+                    {
+                      nodes: latestState.nodes,
+                      edges: latestState.edges,
+                      viewport: currentViewport,
+                      features: latestState.features,
+                      envVariables: latestState.envVariables,
+                      runtimeVariables: latestState.runtimeVariables,
+                    },
+                    saveRequest,
+                  ));
               if (
                 typeof saveResponse?.graph_hash === 'string' &&
                 typeof saveResponse?.updated_at === 'string'
               ) {
                 useWorkflowStore
                   .getState()
-                  .ingestCanonicalDraftMetadata(saveResponse, workflowId);
+                  .ingestCanonicalDraftMetadata(saveResponse, workflowId, {
+                    applyDeferredProjection: ordinarySaveStillCurrent,
+                  });
                 const activeWorkflowId =
                   useWorkflowStore.getState().activeWorkflowId;
                 if (activeWorkflowId !== workflowId) {
@@ -635,6 +653,9 @@ export const useAutoSync = () => {
                     resultGraphHash: saveResponse.graph_hash,
                     workflowUpdatedAt: saveResponse.updated_at,
                   });
+              }
+              if (!ordinarySaveStillCurrent) {
+                return;
               }
               if (pendingRevert) {
                 const redoSnapshot = useWorkflowStore

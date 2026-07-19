@@ -22,6 +22,16 @@ const buildFullDraftPayload = (
   noteNodesSource?: 'nodes' | 'features',
 ) => buildWorkflowDraftPayload(draft, draft.viewport, { noteNodesSource });
 
+const buildSaveStatePayload = (
+  draft: WorkflowDraftRequest,
+  noteNodesSource?: 'nodes' | 'features',
+) => {
+  const payload = buildFullDraftPayload(draft, noteNodesSource);
+  const saveState = payload as Partial<typeof payload>;
+  delete saveState.viewport;
+  return saveState;
+};
+
 export const canonicalDraftMatchesSnapshot = (
   canonical: unknown,
   snapshot: WorkflowDraftRequest,
@@ -48,4 +58,13 @@ export const workflowDraftSnapshotsEqual = (
   isEqual(
     buildFullDraftPayload(latest, 'features'),
     buildFullDraftPayload(saved),
+  );
+
+export const workflowDraftSaveStateEqual = (
+  latest: WorkflowDraftRequest,
+  saved: WorkflowDraftRequest,
+) =>
+  isEqual(
+    buildSaveStatePayload(latest),
+    buildSaveStatePayload(saved, 'features'),
   );

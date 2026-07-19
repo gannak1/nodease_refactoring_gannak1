@@ -74,7 +74,10 @@ export const WorkflowResultGroup = ({
   onPresentationHeadingFocused?: (taskId: string) => void;
   onFocusNode: (nodeId: string) => void;
   onOpenNodeSettings?: (nodeId: string, section?: 'routing') => void;
-  onSecretSubmit?: (task: AgentBuilderParameterTask, value: string) => void;
+  onSecretSubmit?: (
+    task: AgentBuilderParameterTask,
+    value: string,
+  ) => void | Promise<void>;
   onSecretClear?: (task: AgentBuilderParameterTask) => void;
   onKnowledgeSubmit?: (selectionIds: string[]) => void;
   onKnowledgeHierarchySubmit?: (

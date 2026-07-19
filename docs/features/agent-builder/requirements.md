@@ -403,7 +403,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 ### MBA-275 Direct-Edit And Execution Consistency
 
 - `set` decision은 Catalog v3의 parameter type, validation, `sensitivity`와 `defer_policy`를 재조회한 뒤에만 graph patch를 만든다. `credential_ref`와 `resource_ref`는 서버가 현재 organization과 권한을 검증한 canonical reference만 저장한다.
-- 일반 text/JSON/reference decision이나 자연어 message에서 secret-like 값이 확인되거나 secret detector가 실패하면 fail-closed하고 기존 `400 invalid_decision`으로 거부한다. `secret` parameter는 Agent Builder task/control로 발급하지 않으며 조작된 raw secret decision은 `secret_forbidden`으로 거부한다. 거부된 입력의 원문은 graph, session/request payload, parameter task, audit, trace, log 또는 오류 message에 저장·반사하지 않는다. 일반 Catalog validation issue는 HTTP 거부가 아니라 `status=invalid`, `reason=catalog_validation_failed`인 task 결과로 저장·반환한다.
+- 일반 text/JSON/reference decision이나 자연어 message에서 secret-like 값이 확인되거나 secret detector가 실패하면 fail-closed하고 기존 `400 invalid_decision`으로 거부한다. Slack/GitHub `secret` parameter는 safe task metadata와 masked control로 발급하지만 원문을 ParameterDecision으로 제출하지 않는다. 조작된 raw secret decision은 `secret_forbidden`으로 거부한다. 거부된 입력의 원문은 graph, session/request payload, parameter task, audit, trace, log 또는 오류 message에 저장·반사하지 않는다. 일반 Catalog validation issue는 HTTP 거부가 아니라 `status=invalid`, `reason=catalog_validation_failed`인 task 결과로 저장·반환한다.
 - WorkflowNode의 실행 필수 reference는 runtime target을 선택하는 `appId`다. `workflowId`는 선택 metadata이며, `appId`를 직접 변경하면 서버는 선택된 App의 canonical Workflow로 이 metadata를 정규화한다. `workflowId`를 직접 변경하거나 이미 정합한 pair를 검증할 때는 같은 organization, 각 resource 권한, `App.workflow_id == Workflow.id` 관계를 모두 통과해야 저장된다. 실패 시 부분 mutation을 남기지 않는다.
 - Agent Builder draft CAS는 row lock을 획득한 뒤 DB 최신 Workflow row를 refresh하여 `updated_at`과 graph hash를 비교한다. stale이면 기존 `stale_graph` 409로 종료하고 최신 graph를 덮어쓰지 않는다.
 - Catalog required configuration의 server-derived preflight는 `external_read`, `external_write`, `local_execution`을 모두 포함한다. test, run, deployment와 schedule은 같은 unresolved 판정을 사용하며, client가 보낸 `configuration_state`는 권위로 사용하지 않는다.
@@ -426,7 +426,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 
 ## Test 실행 및 secret 경계 정합성
 
-- Slack/GitHub Catalog `secret` definition은 Agent Builder card와 response에 safe task metadata로 포함하고 masked input으로 새 값을 받는다. 기존 원문은 hydrate하지 않고 새 입력은 frontend editor draft save bridge로만 전달한다. Raw secret을 넣은 조작된 ParameterDecision 요청은 `secret_forbidden`으로 거부한다. Planner, 일반 chat, GraphMutation/Agent Builder API 응답, task/session, audit, trace와 log에는 원문을 저장하거나 반사해서는 안 된다.
+- Slack/GitHub Catalog `secret` definition은 Agent Builder card와 response에 safe task metadata로 포함하고 masked input으로 새 값을 받는다. 기존 원문과 opaque reference는 hydrate하지 않는다. 새 입력은 인증된 Workflow node secret-write API로만 보내며, 서버는 암호화된 immutable revision을 만든 뒤 opaque reference만 반환한다. Raw secret을 넣은 조작된 ParameterDecision 요청은 `secret_forbidden`으로 거부한다. Planner, 일반 chat, GraphMutation/Agent Builder API 응답, task/session, workflow graph, deployment/version snapshot, audit, trace와 log에는 원문 또는 ciphertext를 저장하거나 반사해서는 안 된다.
 - 일반 text/JSON/reference control과 자연어 message의 secret-like 값은 계속 fail-closed로 차단해야 한다.
 - Agent Builder save/acknowledgement와 Workflow test preflight는 같은 workflow save coordinator에서 직렬화되어야 하며, test stream 시작 전 Agent Builder 저장 대기 또는 persisted history boundary의 `acknowledged=false`가 감지되면 test를 자동 실행하지 않고 사용자의 재시도를 요구해야 한다.
 - Agent Builder save는 coordinator lock 획득 직후와 canonical draft 조회 직후 active workflow identity를 재검사해야 한다. 시작 workflow와 달라졌으면 mutation, save, acknowledgement와 rollback을 수행하지 않고 새 workflow 상태를 보존해야 한다. Lock 때문에 건너뛴 autosync는 최신 dirty snapshot 하나로 합쳐 같은 workflow가 active일 때만 lock 해제 뒤 한 번 저장해야 한다.
@@ -451,3 +451,10 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - Agent Builder provider timeout option은 외부 provider payload에서 제거하되 실제 transport timeout에 적용한다. Gemini intent 요청은 전달된 90초 제한을 사용하고 값이 없는 일반 Gemini chat 요청은 기존 60초 기본값을 유지한다.
 - Agent Builder 저장 또는 acknowledgement 확인 중에는 card와 node 설정 양쪽의 Knowledge 제출을 모두 차단해야 한다.
 - request 취소 payload에도 full typed operations, raw graph, parameter 원문, raw Knowledge metadata와 secret을 저장해서는 안 된다.
+## Workflow Node Secret Reference Boundary
+
+- Slack Bot Token, Slack Incoming Webhook URL과 GitHub API Token의 masked 직접 입력은 Agent Builder 제품 경로에 유지한다. `defer_policy=allow_unresolved`인 active task에는 `나중에 설정`을 유지하며 credential picker 또는 Node Detail 이동으로 대체하지 않는다.
+- 원문은 authenticated secret-write 요청에서만 Gateway로 전달한다. Workflow graph, draft/version/deployment snapshot, ParameterTask/session, GraphMutation, audit, trace와 log에는 `workflow-node-secret://<opaque-id>` reference만 저장한다.
+- Gateway는 active organization과 Workflow write 권한을 다시 확인하고 원문을 versioned keyring으로 암호화한 immutable revision을 만든다. 교체는 새 revision을 만들며 기존 deployment의 reference를 암묵적으로 바꾸지 않는다.
+- Runtime은 provider I/O 직전에 organization/workflow/node type/parameter key/status를 검증하고 짧은 DB session으로 reference를 해석한다. 실패 시 외부 I/O 전에 fail-closed한다.
+- 기존 plaintext graph는 legacy migration 대상이다. Draft read 또는 신규 deployment 전에 reference로 전환하며 신규 write는 plaintext 표현을 다시 만들지 않는다.

@@ -683,10 +683,38 @@ export function AgentBuilderPanel({
   );
 
   const submitSecretParameter = useCallback(
-    (task: AgentBuilderParameterTask, value: string) => {
-      updateSecretParameter(task, value);
+    async (task: AgentBuilderParameterTask, value: string) => {
+      if (
+        task.node_type !== 'slackPostNode' &&
+        task.node_type !== 'githubNode'
+      ) {
+        toast.error('지원하지 않는 보안 설정입니다.');
+        return;
+      }
+      try {
+        const result = await workflowApi.storeNodeSecret(workflowId, {
+          node_id: task.node_id,
+          node_type: task.node_type,
+          parameter_key: task.parameter_key as
+            | 'bot_token'
+            | 'url'
+            | 'api_token',
+          secret_value: value,
+        });
+        if (useWorkflowStore.getState().activeWorkflowId !== workflowId) {
+          toast.error(
+            'Workflow가 전환되어 이전 보안 설정 결과를 적용하지 않았습니다.',
+          );
+          return;
+        }
+        updateSecretParameter(task, result.secret_reference);
+      } catch {
+        toast.error(
+          '보안 설정을 저장하지 못했습니다. 입력값은 graph에 저장되지 않았습니다.',
+        );
+      }
     },
-    [updateSecretParameter],
+    [updateSecretParameter, workflowId],
   );
 
   const clearSecretParameter = useCallback(

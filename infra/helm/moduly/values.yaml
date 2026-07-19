@@ -358,6 +358,8 @@ secrets:
   encryptionKey: ""
   mailCredentialEncryptionKeys: ""
   mailCredentialActiveKeyVersion: "v1"
+  workflowNodeSecretEncryptionKeys: ""
+  workflowNodeSecretActiveKeyVersion: "v1"
   llmCredentialEncryptionKeys: ""
   llmCredentialActiveKeyVersion: "v1"
   # Versioned password-login fingerprint keyring JSON. Override via secret store.

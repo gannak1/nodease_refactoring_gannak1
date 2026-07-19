@@ -272,6 +272,7 @@ type WorkflowState = {
   ingestCanonicalDraftMetadata: (
     value: unknown,
     workflowId?: string,
+    options?: { applyDeferredProjection?: boolean },
   ) => CanonicalDraftMetadata | null;
   getCanonicalDraftMetadata: (
     workflowId?: string,
@@ -2313,10 +2314,13 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         [metadata.workflowId]: metadata,
       },
     })),
-  ingestCanonicalDraftMetadata: (value, workflowId) => {
+  ingestCanonicalDraftMetadata: (value, workflowId, options) => {
     const metadata = canonicalDraftMetadataFrom(value, workflowId);
     if (metadata) {
-      const projection = canonicalDeferredParametersFrom(value);
+      const projection =
+        options?.applyDeferredProjection === false
+          ? null
+          : canonicalDeferredParametersFrom(value);
       set((state) => {
         const isActiveWorkflow =
           state.activeWorkflowId === metadata.workflowId;

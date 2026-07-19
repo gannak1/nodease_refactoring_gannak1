@@ -10,6 +10,10 @@ from apps.workflow_engine.adapters.providers.github import (
     GithubCommentEffectAdapter,
     GithubCommentRequest,
 )
+from apps.shared.services.workflow_node_secret_service import (
+    WorkflowNodeSecretError,
+    resolve_runtime_workflow_node_secret,
+)
 
 _jinja_env = Environment(autoescape=False)
 
@@ -46,7 +50,17 @@ class GithubNode(Node[GithubNodeData]):
         data = self.data
 
         # 변수 치환 (referenced_variables 기반)
-        token = self._render_template(data.api_token, inputs)
+        try:
+            token_value = resolve_runtime_workflow_node_secret(
+                reference=data.api_token,
+                execution_context=self.execution_context,
+                node_id=self.id,
+                node_type=self.node_type,
+                parameter_key="api_token",
+            )
+        except WorkflowNodeSecretError as exc:
+            raise ValueError("github.credential_invalid") from exc
+        token = self._render_template(token_value, inputs)
         repo_owner = self._render_template(data.repo_owner, inputs)
         repo_name = self._render_template(data.repo_name, inputs)
         pr_number_str = self._render_template(str(data.pr_number), inputs)

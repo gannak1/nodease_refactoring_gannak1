@@ -207,6 +207,20 @@ def test_slack_graph_boundary_rejects_noncanonical_webhook_before_deployment(url
     assert error.value.reason_code == SLACK_GRAPH_CONFIGURATION_INVALID
 
 
+def test_slack_graph_boundary_accepts_opaque_webhook_reference_before_deployment():
+    node = _slack_node(
+        {
+            "slackMode": "webhook",
+            "url": "workflow-node-secret://00000000-0000-4000-8000-000000000001",
+            "authConfig": {},
+            "authType": "none",
+            "message": "hello",
+        }
+    )
+
+    validate_slack_graph_boundary([node], require_resolved=True)
+
+
 def test_commercial_slack_webhook_validator_accepts_exact_shape():
     assert is_valid_commercial_slack_webhook_url(
         "https://hooks.slack.com/services/T_1/B-2/secret_3"

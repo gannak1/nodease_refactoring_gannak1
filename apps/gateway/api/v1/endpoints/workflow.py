@@ -109,6 +109,8 @@ from apps.shared.schemas.permission import WorkflowPermissionResponse
 from apps.shared.schemas.workflow import (
     WorkflowCreateRequest,
     WorkflowDraftRequest,
+    WorkflowNodeSecretWriteRequest,
+    WorkflowNodeSecretWriteResponse,
     WorkflowResponse,
 )
 from apps.shared.services.permissions import (
@@ -5700,6 +5702,29 @@ def sync_draft_workflow(
 
     return WorkflowService.save_draft(
         db, workflow_id, request, user_id=str(current_user.id)
+    )
+
+
+@router.post(
+    "/{workflow_id}/node-secrets",
+    response_model=WorkflowNodeSecretWriteResponse,
+)
+@audit(AuditAction.WORKFLOW_UPDATE, target_param="workflow_id")
+def store_workflow_node_secret(
+    workflow_id: str,
+    request: WorkflowNodeSecretWriteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ensure_workflow_permission(db, current_user, workflow_id, "write")
+    return WorkflowService.store_node_secret(
+        db,
+        workflow_id=workflow_id,
+        user_id=current_user.id,
+        node_id=request.node_id,
+        node_type=request.node_type,
+        parameter_key=request.parameter_key,
+        secret_value=request.secret_value.get_secret_value(),
     )
 
 

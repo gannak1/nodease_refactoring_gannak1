@@ -1,6 +1,7 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
+import { workflowApi } from '@/app/features/workflow/api/workflowApi';
 import { SlackPostNodeData } from '../../../../types/Nodes';
 import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
@@ -19,6 +20,7 @@ import {
   isValidSlackJsonArrayTemplate,
   isValidCommercialSlackWebhookUrl,
 } from '../../../../utils/slackDelivery';
+import { isWorkflowNodeSecretReference } from '../../../../utils/workflowNodeSecret';
 
 interface SlackPostNodePanelProps {
   nodeId: string;
@@ -26,7 +28,19 @@ interface SlackPostNodePanelProps {
 }
 
 export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
-  const { updateNodeData, nodes, edges } = useWorkflowStore();
+  const { activeWorkflowId, updateNodeData, nodes, edges } = useWorkflowStore();
+  const [botTokenDraft, setBotTokenDraft] = useState('');
+  const [webhookUrlDraft, setWebhookUrlDraft] = useState('');
+  const [secretStatus, setSecretStatus] = useState<string | null>(null);
+  const [secretSaving, setSecretSaving] = useState(false);
+  const botTokenRevisionRef = useRef(0);
+  const webhookUrlRevisionRef = useRef(0);
+  const activeWorkflowIdRef = useRef(activeWorkflowId);
+
+  useEffect(() => {
+    activeWorkflowIdRef.current = activeWorkflowId;
+  }, [activeWorkflowId]);
+
   const mode = data.slackMode || 'api';
   const upstreamNodes = useMemo(
     () => getUpstreamNodes(nodeId, nodes, edges),
@@ -58,6 +72,61 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
       return name;
     },
     [data.referenced_variables, update],
+  );
+  const storeSecret = useCallback(
+    async (
+      parameterKey: 'bot_token' | 'url',
+      secretValue: string,
+    ) => {
+      if (!activeWorkflowId || !secretValue.trim()) return;
+      const submittedWorkflowId = activeWorkflowId;
+      const submittedRevision =
+        parameterKey === 'bot_token'
+          ? botTokenRevisionRef.current
+          : webhookUrlRevisionRef.current;
+      setSecretSaving(true);
+      setSecretStatus(null);
+      try {
+        const result = await workflowApi.storeNodeSecret(activeWorkflowId, {
+          node_id: nodeId,
+          node_type: 'slackPostNode',
+          parameter_key: parameterKey,
+          secret_value: secretValue.trim(),
+        });
+        const currentRevision =
+          parameterKey === 'bot_token'
+            ? botTokenRevisionRef.current
+            : webhookUrlRevisionRef.current;
+        if (
+          activeWorkflowIdRef.current !== submittedWorkflowId ||
+          currentRevision !== submittedRevision
+        ) {
+          setSecretStatus(
+            '입력 또는 Workflow가 변경되어 저장 결과를 적용하지 않았습니다.',
+          );
+          return;
+        }
+        if (parameterKey === 'bot_token') {
+          update({
+            authConfig: {
+              ...(data.authConfig || {}),
+              token: result.secret_reference,
+            },
+          });
+          setBotTokenDraft('');
+          setSecretStatus('Bot Token이 저장되었습니다.');
+        } else {
+          update({ url: result.secret_reference });
+          setWebhookUrlDraft('');
+          setSecretStatus('Webhook URL이 저장되었습니다.');
+        }
+      } catch {
+        setSecretStatus('보안 설정을 저장하지 못했습니다.');
+      } finally {
+        setSecretSaving(false);
+      }
+    },
+    [activeWorkflowId, data.authConfig, nodeId, update],
   );
   const missingVariables = useMemo(() => {
     const configured = new Set(
@@ -128,7 +197,8 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
                 channel: candidate === 'api' ? data.channel || '' : '',
                 url:
                   candidate === 'webhook' &&
-                  isValidCommercialSlackWebhookUrl(data.url)
+                  (isValidCommercialSlackWebhookUrl(data.url) ||
+                    isWorkflowNodeSecretReference(data.url))
                     ? data.url
                     : undefined,
                 authConfig: candidate === 'api' ? data.authConfig || {} : {},
@@ -170,12 +240,21 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
             <input
               type="password"
               className="h-9 rounded border border-border bg-background px-3 text-sm text-foreground"
-              value={data.authConfig?.token || ''}
-              onChange={(event) =>
-                update({ authConfig: { token: event.target.value } })
-              }
+              value={botTokenDraft}
+              onChange={(event) => {
+                botTokenRevisionRef.current += 1;
+                setBotTokenDraft(event.target.value);
+              }}
               autoComplete="off"
             />
+            <button
+              type="button"
+              className="w-fit rounded border border-border px-3 py-1.5 text-xs font-medium disabled:opacity-60"
+              disabled={secretSaving || !botTokenDraft.trim()}
+              onClick={() => void storeSecret('bot_token', botTokenDraft)}
+            >
+              Bot Token 적용
+            </button>
             <label className="text-xs font-medium">채널 ID</label>
             <input
               className="h-9 rounded border border-border bg-background px-3 text-sm text-foreground"
@@ -195,15 +274,32 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
           <input
             type="password"
             className="mt-1 h-9 w-full rounded border border-border bg-background px-3 text-sm text-foreground"
-            value={data.url || ''}
-            onChange={(event) => update({ url: event.target.value })}
+            value={webhookUrlDraft}
+            onChange={(event) => {
+              webhookUrlRevisionRef.current += 1;
+              setWebhookUrlDraft(event.target.value);
+            }}
             autoComplete="off"
           />
+          <button
+            type="button"
+            className="mt-2 w-fit rounded border border-border px-3 py-1.5 text-xs font-medium disabled:opacity-60"
+            disabled={secretSaving || !webhookUrlDraft.trim()}
+            onClick={() => void storeSecret('url', webhookUrlDraft)}
+          >
+            Webhook URL 적용
+          </button>
           <p className="mt-1 text-xs text-muted-foreground">
             `https://hooks.slack.com/services/` 형식만 허용됩니다.
           </p>
         </CollapsibleSection>
       )}
+
+      {secretStatus ? (
+        <p className="text-xs text-muted-foreground" role="status">
+          {secretStatus}
+        </p>
+      ) : null}
 
       <CollapsibleSection title="메시지" defaultOpen showDivider>
         <VariableTokenEditor
@@ -250,7 +346,9 @@ export function SlackPostNodePanel({ nodeId, data }: SlackPostNodePanelProps) {
       ) : null}
 
       {(mode === 'api' && (!data.authConfig?.token || !data.channel)) ||
-      (mode === 'webhook' && !isValidCommercialSlackWebhookUrl(data.url)) ? (
+      (mode === 'webhook' &&
+        !isValidCommercialSlackWebhookUrl(data.url) &&
+        !isWorkflowNodeSecretReference(data.url)) ? (
         <ValidationAlert message="Slack 전달 설정을 완료해야 실행할 수 있습니다." />
       ) : null}
     </div>

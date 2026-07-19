@@ -132,6 +132,8 @@ MBA-228은 하나의 기능 PR에서 nullable protocol migration, null/`direct_e
 
 ## 2026-07-19 Correction: Secret Input Boundary And Previous-Task Actions
 
+Secret persistence is governed by [ADR-0062](ADR-0062-workflow-node-secret-reference-boundary.md). The masked direct-input controls and `나중에 설정` action below remain mandatory, but any older wording that places plaintext in Workflow node data through the draft save bridge is superseded. Agent Builder submits the new value to the authenticated workflow-node secret boundary and stores only the returned opaque reference in the graph.
+
 - Slack Bot Token, Slack Incoming Webhook URL과 GitHub API Token처럼 Catalog가 `secret`으로 선언한 값은 direct-edit task와 masked password control로 제공한다. 기존 원문은 표시하지 않고 새 입력으로 교체하며, Node Detail 강제 이동 action으로 대체하지 않는다. 일반 Node Detail 진입 기능과 LLM Routing 설정 이동 action 자체는 이 결정의 삭제 대상이 아니다.
 - `이전 항목`은 canonical task 상태를 바꾸지 않는 presentation 이동이다. 따라서 이전 task의 control과 decision action은 server의 현재 `active` task ID가 아니라 화면에 표시 중인 presentation task와 canonical graph 값을 기준으로 계산한다.
 - 이전에 표시한 optional task의 canonical graph 값이 없으면 `건너뛰기`를 표시하고 기존 `skip` decision을 사용한다. 일반 parameter에 값이 있으면 `값 지우고 건너뛰기`와 `clear -> CAS save -> acknowledgement`를 사용한다. Secret task도 `이전 항목` presentation 대상이 될 수 있지만 기존 원문을 hydrate하지 않고 빈 masked control을 표시한다. Required task와 `confirmation_required=true` task에는 일반 `건너뛰기`와 clear를 표시하지 않는다. 다만 Catalog가 `allow_unresolved`로 선언한 required secret의 현재 active 입력에는 `나중에 설정`을 표시하고 `defer`로 처리한다.

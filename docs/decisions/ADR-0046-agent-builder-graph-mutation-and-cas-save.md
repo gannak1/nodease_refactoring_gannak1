@@ -20,6 +20,8 @@ MBA-228은 Agent Builder가 workflow graph를 실제 editor에 직접 적용하�
 
 ## Decision
 
+Workflow node secret persistence is governed by [ADR-0062](ADR-0062-workflow-node-secret-reference-boundary.md). CAS candidate graphs, history snapshots and deployment snapshots contain only opaque workflow-node secret references. Any older wording in this ADR that permits Slack/GitHub plaintext to be added through the editor draft save bridge is superseded; the direct masked input UX itself is unchanged.
+
 ### 1. Common Mutation Contract
 
 Agent Builder가 workflow graph를 바꾸는 모든 응답은 `GraphMutation`을 사용한다.
