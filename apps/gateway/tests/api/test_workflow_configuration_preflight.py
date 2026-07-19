@@ -94,8 +94,8 @@ def test_test_routing_policy_context_uses_deployment_policy_only_for_matching_no
     )
     monkeypatch.setattr(
         workflow_endpoint,
-        "_active_deployment_for_workflow",
-        lambda *_args, **_kwargs: deployment,
+        "_active_deployments_for_workflow",
+        lambda *_args, **_kwargs: [deployment],
     )
 
     context = workflow_endpoint._test_routing_policy_context(
@@ -103,9 +103,12 @@ def test_test_routing_policy_context_uses_deployment_policy_only_for_matching_no
     )
 
     assert context == {
-        "routing_policy_deployment_id": str(deployment.id),
         "routing_policy_preview_node_ids": ["llm-matching", "llm-changed"],
         "routing_policy_deployment_node_ids": ["llm-matching"],
+        "routing_policy_deployment_ids_by_node": {
+            "llm-matching": str(deployment.id),
+        },
+        "routing_policy_ambiguous_node_ids": [],
         "routing_policy_preview": True,
         "routing_policy_execute_judge": True,
     }
@@ -138,8 +141,8 @@ def test_test_routing_policy_context_enables_judge_without_active_deployment(
     }
     monkeypatch.setattr(
         workflow_endpoint,
-        "_active_deployment_for_workflow",
-        lambda *_args, **_kwargs: None,
+        "_active_deployments_for_workflow",
+        lambda *_args, **_kwargs: [],
     )
 
     context = workflow_endpoint._test_routing_policy_context(
@@ -149,6 +152,8 @@ def test_test_routing_policy_context_enables_judge_without_active_deployment(
     assert context == {
         "routing_policy_preview_node_ids": ["llm-router"],
         "routing_policy_deployment_node_ids": [],
+        "routing_policy_deployment_ids_by_node": {},
+        "routing_policy_ambiguous_node_ids": [],
         "routing_policy_preview": True,
         "routing_policy_execute_judge": True,
     }
