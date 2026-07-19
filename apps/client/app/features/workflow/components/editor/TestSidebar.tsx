@@ -1797,6 +1797,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               currentRunId={testExecutionRunId}
               currentExecutionStatus={testExecutionStatus}
               currentExecutionError={testExecutionError}
+              reloadRequestKey={testRunRestoreRetry}
               selectedNodeId={comparisonSelectedNodeId}
               onBaselineRunIdChange={handleComparisonBaselineRunIdChange}
               onSelectedNodeIdChange={handleComparisonSelectedNodeIdChange}

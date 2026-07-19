@@ -30,6 +30,7 @@ type ExecutionComparisonPanelProps = {
   currentRunId: string | null;
   currentExecutionStatus?: string | null;
   currentExecutionError?: string | null;
+  reloadRequestKey?: number;
   selectedNodeId?: string | null;
   onBaselineRunIdChange: (runId: string | null) => void;
   onSelectedNodeIdChange?: (nodeId: string | null) => void;
@@ -58,6 +59,7 @@ const PAGE_SIZE = 10;
 const CURRENT_RUN_COMPARISON_RETRY_DELAYS_MS = [
   400, 800, 1_200, 2_000, 3_000, 4_000,
 ] as const;
+const RUN_DETAIL_RETRY_DELAYS_MS = [200] as const;
 
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
@@ -222,6 +224,32 @@ const toRunBundle = (
 
 const wait = (durationMs: number) =>
   new Promise((resolve) => setTimeout(resolve, durationMs));
+
+const loadWorkflowRunDetail = async (
+  workflowId: string,
+  runId: string,
+): Promise<WorkflowRun> => {
+  let lastError: unknown;
+
+  for (
+    let attempt = 0;
+    attempt <= RUN_DETAIL_RETRY_DELAYS_MS.length;
+    attempt += 1
+  ) {
+    try {
+      return await workflowApi.getWorkflowRun(workflowId, runId);
+    } catch (error) {
+      lastError = error;
+      const retryDelay = RUN_DETAIL_RETRY_DELAYS_MS[attempt];
+      if (getHttpStatus(error) !== 404 || retryDelay === undefined) {
+        throw error;
+      }
+      await wait(retryDelay);
+    }
+  }
+
+  throw lastError;
+};
 
 const loadRunBundle = async (
   workflowId: string,
@@ -756,6 +784,7 @@ export function ExecutionComparisonPanel({
   currentRunId,
   currentExecutionStatus,
   currentExecutionError,
+  reloadRequestKey = 0,
   selectedNodeId: selectedNodeIdProp,
   onBaselineRunIdChange,
   onSelectedNodeIdChange,
@@ -769,12 +798,16 @@ export function ExecutionComparisonPanel({
   const [totalRuns, setTotalRuns] = useState(0);
   const [isListLoading, setIsListLoading] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
+  const [listReloadKey, setListReloadKey] = useState(0);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const [runDetails, setRunDetails] = useState<Record<string, WorkflowRun>>({});
   const [detailLoadingRunId, setDetailLoadingRunId] = useState<string | null>(
     null,
   );
   const [detailErrorRunId, setDetailErrorRunId] = useState<string | null>(null);
+  const [detailErrorStatus, setDetailErrorStatus] = useState<number | null>(
+    null,
+  );
   const [baselineBundle, setBaselineBundle] = useState<RunBundle | null>(null);
   const [currentBundle, setCurrentBundle] = useState<RunBundle | null>(null);
   const [isComparisonLoading, setIsComparisonLoading] = useState(false);
@@ -795,25 +828,31 @@ export function ExecutionComparisonPanel({
     onSelectedNodeIdChange?.(nodeId);
   };
 
-  const toggleRunDetails = async (run: WorkflowRun) => {
+  const loadRunDetails = async (run: WorkflowRun) => {
+    setDetailErrorRunId(null);
+    setDetailErrorStatus(null);
+
+    setDetailLoadingRunId(run.id);
+    try {
+      const detail = await loadWorkflowRunDetail(workflowId, run.id);
+      setRunDetails((current) => ({ ...current, [run.id]: detail }));
+    } catch (error) {
+      setDetailErrorRunId(run.id);
+      setDetailErrorStatus(getHttpStatus(error) ?? null);
+    } finally {
+      setDetailLoadingRunId((current) => (current === run.id ? null : current));
+    }
+  };
+
+  const toggleRunDetails = (run: WorkflowRun) => {
     if (expandedRunId === run.id) {
       setExpandedRunId(null);
       return;
     }
 
     setExpandedRunId(run.id);
-    setDetailErrorRunId(null);
     if (runDetails[run.id]) return;
-
-    setDetailLoadingRunId(run.id);
-    try {
-      const detail = await workflowApi.getWorkflowRun(workflowId, run.id);
-      setRunDetails((current) => ({ ...current, [run.id]: detail }));
-    } catch {
-      setDetailErrorRunId(run.id);
-    } finally {
-      setDetailLoadingRunId((current) => (current === run.id ? null : current));
-    }
+    void loadRunDetails(run);
   };
 
   useEffect(() => {
@@ -845,7 +884,15 @@ export function ExecutionComparisonPanel({
     return () => {
       cancelled = true;
     };
-  }, [baselineRunId, page, statusFilter, triggerFilter, workflowId]);
+  }, [
+    baselineRunId,
+    listReloadKey,
+    page,
+    reloadRequestKey,
+    statusFilter,
+    triggerFilter,
+    workflowId,
+  ]);
 
   useEffect(() => {
     if (!isSelectedNodeControlled) {
@@ -979,17 +1026,30 @@ export function ExecutionComparisonPanel({
           </select>
         </div>
 
-        {isListLoading ? (
+        {listError ? (
+          <div className="mt-4 flex items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+            <p>{listError}</p>
+            <button
+              type="button"
+              onClick={() => setListReloadKey((value) => value + 1)}
+              className="shrink-0 rounded-md border border-red-200 bg-white px-2.5 py-1.5 font-semibold hover:bg-red-100 dark:bg-gray-900"
+            >
+              다시 불러오기
+            </button>
+          </div>
+        ) : null}
+
+        {isListLoading && runs.length === 0 ? (
           <div className="mt-4 flex items-center gap-2 text-xs text-gray-600">
             <Loader2 className="h-4 w-4 animate-spin" /> 실행 기록을 불러오는
             중입니다.
           </div>
-        ) : listError ? (
-          <p className="mt-4 text-xs text-red-600">{listError}</p>
         ) : runs.length === 0 ? (
-          <p className="mt-4 rounded-md border border-dashed border-gray-300 bg-white p-3 text-xs text-gray-500 dark:border-gray-700 dark:bg-gray-900">
-            조건에 맞는 실행 기록이 없습니다.
-          </p>
+          listError ? null : (
+            <p className="mt-4 rounded-md border border-dashed border-gray-300 bg-white p-3 text-xs text-gray-500 dark:border-gray-700 dark:bg-gray-900">
+              조건에 맞는 실행 기록이 없습니다.
+            </p>
+          )
         ) : (
           <div className="mt-3 space-y-2">
             {runs.map((run) => {
@@ -1059,9 +1119,21 @@ export function ExecutionComparisonPanel({
                         불러오는 중입니다.
                       </div>
                     ) : detailErrorRunId === run.id ? (
-                      <p className="border-t border-gray-100 px-3 py-3 text-xs text-red-600 dark:border-gray-700">
-                        실행 상세를 불러오지 못했습니다. 다시 시도해 주세요.
-                      </p>
+                      <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-3 py-3 text-xs text-red-600 dark:border-gray-700">
+                        <p>
+                          {detailErrorStatus === 404
+                            ? '실행 기록이 아직 저장되지 않았거나 더 이상 존재하지 않습니다.'
+                            : '실행 상세를 불러오지 못했습니다.'}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => void loadRunDetails(run)}
+                          className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md border border-red-200 px-2 font-semibold hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-950/30"
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" />
+                          다시 불러오기
+                        </button>
+                      </div>
                     ) : detail ? (
                       <RunSelectionDetails run={detail} nodes={nodes} />
                     ) : null
