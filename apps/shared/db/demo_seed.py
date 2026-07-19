@@ -2511,6 +2511,9 @@ def _model_router_ticket_ops_graph() -> dict[str, Any]:
                 "description": "고객 문의, SLA, 보상 위험을 분류하고 처리 방향을 판단합니다.",
                 "model_id": DEMO_MODEL_ROUTER_FALLBACK_MODEL,
                 "fallback_model_id": DEMO_MODEL_ROUTER_BALANCED_MODEL,
+                # 모델 라우팅 검증은 티켓 내용의 난이도에 집중한다. 기반
+                # workflow의 비용 최적화 문서는 고객 문의 근거로 사용할 수 없다.
+                "knowledgeBases": [],
                 "auto_model_routing": True,
                 "model_routing_context": {
                     "customer_facing": True,

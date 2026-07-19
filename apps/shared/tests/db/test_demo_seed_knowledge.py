@@ -1172,6 +1172,7 @@ def test_model_router_demo_workflow_uses_current_routing_context():
         "validation_budget_usd": 3.0,
         "excluded_model_ids": ["gpt-5.6-sol"],
     }
+    assert data["knowledgeBases"] == []
 
 
 def test_ticket_ops_input_schema_matches_webhook_mappings():

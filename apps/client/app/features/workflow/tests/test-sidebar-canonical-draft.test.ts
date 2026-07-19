@@ -104,4 +104,28 @@ describe('TestSidebar canonical draft comparison', () => {
     expect(canonicalDraftMatchesSnapshot(canonical, snapshot)).toBe(true);
     expect(workflowDraftSnapshotsEqual(canonical, snapshot)).toBe(false);
   });
+
+  it('ignores the next node number derived while loading a legacy canonical draft', () => {
+    const canonical: WorkflowDraftRequest = {
+      nodes: [
+        {
+          id: 'input-1',
+          type: 'startNode',
+          position: { x: 0, y: 0 },
+          data: { displayNumber: 1 },
+        },
+      ],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      features: {},
+      envVariables: [],
+      runtimeVariables: [],
+    } as unknown as WorkflowDraftRequest;
+    const snapshot: WorkflowDraftRequest = {
+      ...canonical,
+      features: { nextNodeDisplayNumber: 2 },
+    };
+
+    expect(canonicalDraftMatchesSnapshot(canonical, snapshot)).toBe(true);
+  });
 });

@@ -1,6 +1,7 @@
 import { isEqual } from 'lodash';
 
 import type { WorkflowDraftRequest } from '../types/Workflow';
+import { NODE_NUMBER_FEATURE_KEY } from './nodeNumbering';
 import { buildWorkflowDraftPayload } from './workflowDraftPayload';
 
 const buildComparableDraftPayload = (
@@ -14,6 +15,9 @@ const buildComparableDraftPayload = (
   delete payload.runtimeVariables;
   const comparablePayload = payload as Partial<typeof payload>;
   delete comparablePayload.viewport;
+  if (comparablePayload.features) {
+    delete comparablePayload.features[NODE_NUMBER_FEATURE_KEY];
+  }
   return comparablePayload;
 };
 
