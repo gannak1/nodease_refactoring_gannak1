@@ -1,7 +1,7 @@
 """Add bounded public Conversation capability replay storage.
 
 Revision ID: ac1d2e3f4a50
-Revises: f4a5b6c7d8e9
+Revises: c3d4e5f6a7b8
 """
 
 from collections.abc import Sequence
@@ -12,7 +12,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "ac1d2e3f4a50"
-down_revision: str | Sequence[str] | None = "f4a5b6c7d8e9"
+down_revision: str | Sequence[str] | None = "c3d4e5f6a7b8"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
