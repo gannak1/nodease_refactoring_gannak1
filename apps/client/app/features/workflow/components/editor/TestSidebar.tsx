@@ -455,10 +455,16 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     canExecute,
   });
 
-  const maxTestSidebarWidth = Math.min(
-    TEST_SIDEBAR_MAX_WIDTH,
-    Math.max(0, viewportWidth - TEST_SIDEBAR_VIEWPORT_GUTTER),
+  const comparisonTestSidebarWidth = Math.max(
+    0,
+    viewportWidth - TEST_SIDEBAR_VIEWPORT_GUTTER,
   );
+  const maxTestSidebarWidth = isComparisonMode
+    ? comparisonTestSidebarWidth
+    : Math.min(
+        TEST_SIDEBAR_MAX_WIDTH,
+        Math.max(0, viewportWidth - TEST_SIDEBAR_VIEWPORT_GUTTER),
+      );
   const minTestSidebarWidth = Math.min(
     TEST_SIDEBAR_MIN_WIDTH,
     maxTestSidebarWidth,
@@ -1746,7 +1752,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 testSelectedNodeId,
                 { comparisonMode: true },
               );
-              setClampedTestSidebarWidth(maxTestSidebarWidth);
+              setTestSidebarWidth(comparisonTestSidebarWidth);
             }}
             className={`inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-semibold transition-colors ${
               isComparisonMode

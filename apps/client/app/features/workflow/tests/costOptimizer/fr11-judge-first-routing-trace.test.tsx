@@ -208,6 +208,14 @@ describe('FR-011 Judge-first model routing trace', () => {
       ),
     ).toBeVisible();
     expect(screen.getByText('Judge 호출 안 함')).toBeVisible();
+    expect(screen.getByTestId('judge-execution-details')).toHaveAccessibleName(
+      'Judge 실행',
+    );
+    expect(
+      screen.getByTestId('judge-execution-details').compareDocumentPosition(
+        screen.getByTestId('model-routing-policy-preview'),
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it('Judge 호출 성공이면 선택 근거, 확신도, 비용을 하나의 Judge 실행 영역에 표시한다', () => {

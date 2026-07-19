@@ -380,6 +380,12 @@ Frontend는 raw query, prompt, credential을 trace 화면에 노출하지 않는
 
 #### Test Sidebar 실행 노드 상세
 
+`실행 비교` 탭을 선택하면 Test Sidebar는 화면 우측 여백 24px을 제외한 최대 너비로
+확장한다. `단일 결과` 탭에서는 사용자가 조절한 일반 패널 최대 너비를 유지한다.
+
+LLM 노드 상세 비교는 `실행 상태(상태·비용·시간·토큰) → 실행 모델/자동 라우팅 → 입력 → 출력`
+순서로 표시한다. 기준 실행과 현재 실행의 같은 종류 정보가 항상 나란히 보이게 한다.
+
 테스트 실행 결과 목록의 각 완료 노드는 icon-only `상세 보기` 버튼을 제공한다. 버튼은
 페이지를 이동하지 않고 같은 Test Sidebar를 노드 실행 상세 상태로 전환한다.
 
@@ -401,6 +407,9 @@ Frontend는 raw query, prompt, credential을 trace 화면에 노출하지 않는
   `fallback_from_model`, `fallback_reason_code`, 실제 output model을 표시한다.
 - 자동 라우팅 trace가 있는 테스트 실행에는 `이 테스트 실행은 자동 라우팅 정책의 학습 및
   갱신 횟수에 포함되지 않습니다.`를 표시한다.
+- `배포 정책 기준 테스트` 안내는 모델 선택·Judge 실행·학습 상태를 읽은 뒤 상세 화면의
+  마지막에 표시한다. 비교 화면의 두 실행 패널에서 핵심 실행 정보가 같은 순서로 먼저
+  보이도록 한다.
 - trace의 `policy_source=active_deployment`와 `included_in_policy_learning=false`이면 공통
   상세 컴포넌트 header를 `배포 정책 기준 테스트`로 표시한다. 활성 배포 policy를 읽었지만
   테스트 결과는 운영 학습에 포함하지 않았다는 뜻이다.

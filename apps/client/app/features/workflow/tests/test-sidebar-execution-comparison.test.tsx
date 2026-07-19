@@ -409,6 +409,9 @@ describe('TestSidebar execution comparison', () => {
 
     expect(await screen.findByText('기준 실행 선택')).toBeVisible();
     expect(screen.getByTestId('test-execution-sidebar')).toBeVisible();
+    expect(screen.getByTestId('test-execution-sidebar')).toHaveStyle({
+      width: `${window.innerWidth - 24}px`,
+    });
     expect(screen.queryByText('노드별 실행 결과')).not.toBeInTheDocument();
   });
 
@@ -1119,6 +1122,20 @@ describe('TestSidebar execution comparison', () => {
     expect(screen.getByText('모델 라우팅 비교')).toBeVisible();
     expect(screen.getAllByText('gpt-4.1').length).toBeGreaterThan(0);
     expect(screen.getAllByText('gpt-4.1-mini').length).toBeGreaterThan(0);
+
+    const detailSections = [
+      screen.getByTestId('node-comparison-status-panels'),
+      screen.getByText('모델 라우팅 비교'),
+      screen.getByText('입력 비교'),
+      screen.getByText('출력 비교'),
+    ];
+    for (let index = 0; index < detailSections.length - 1; index += 1) {
+      expect(
+        detailSections[index].compareDocumentPosition(
+          detailSections[index + 1],
+        ) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    }
   });
 
   it('LLM 노드가 아닌 비교 카드에는 비용과 토큰을 표시하지 않는다', async () => {
