@@ -66,7 +66,6 @@ from apps.workflow_engine.services.model_routing_policy_store import (
 from apps.workflow_engine.services.model_routing_runtime_judge import (
     ModelRoutingRuntimeJudge,
 )
-from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 from scripts.model_routing_benchmark_cases_v22 import V22_HOLDOUT_CASE_POOLS
 
 
@@ -692,6 +691,10 @@ def synchronous_experiment_tasks():
 
 
 def _execute_case(arm: str, case: ExperimentCase) -> ArmResult:
+    # 이 스크립트의 데이터셋/설정 검증은 root CI에서도 실행된다. gevent가
+    # 필요한 실제 workflow 실행 엔진은 --execute 경로에서만 늦게 import한다.
+    from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
+
     graph = graph_for_arm(arm)
     run_id = _run_id(arm, case.case_id)
     engine = WorkflowEngine(

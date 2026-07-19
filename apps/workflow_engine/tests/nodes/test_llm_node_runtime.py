@@ -899,7 +899,7 @@ def test_llm_node_passes_json_response_format_to_client():
     assert dummy_client.calls[0]["kwargs"]["response_format"] == {"type": "json_object"}
 
 
-def test_llm_node_does_not_crash_when_jsonschema_is_unavailable():
+def test_llm_node_does_not_crash_when_jsonschema_is_unavailable(monkeypatch):
     """schema 검증 패키지가 없는 실행 환경에서도 provider 결과를 실패로 오염하지 않는다."""
     data = LLMNodeData(
         title="LLM",
@@ -915,6 +915,19 @@ def test_llm_node_does_not_crash_when_jsonschema_is_unavailable():
         },
     )
     node = LLMNode("llm-1", data)
+
+    # CI에는 jsonschema가 설치돼 있으므로, 선택 의존성이 없는 runtime을
+    # 명시적으로 재현한다.
+    import builtins
+
+    original_import = builtins.__import__
+
+    def import_without_jsonschema(name, *args, **kwargs):
+        if name == "jsonschema" or name.startswith("jsonschema."):
+            raise ModuleNotFoundError("No module named 'jsonschema'")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_jsonschema)
 
     assert node._schema_status('{"answer":"ok"}') == "not_evaluated"
 

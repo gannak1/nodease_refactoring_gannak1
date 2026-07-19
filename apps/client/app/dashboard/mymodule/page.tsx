@@ -34,7 +34,6 @@ import {
   moduleOperationsApi,
   type ModuleOperationRow,
   type ModuleAutomaticOptimizationStatus,
-  type ModuleOperationsCostSummary,
   type ModuleOperationsListParams,
   type ModuleRunState,
 } from '@/app/features/app/api/moduleOperationsApi';
