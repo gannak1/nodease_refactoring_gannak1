@@ -63,7 +63,7 @@ Status: Draft
 ### 4.2 실행 순서
 
 - 80개 요청의 순서는 고정 seed로 무작위화한다.
-- 같은 요청의 Arm 실행 순서도 고정 seed로 무작위화한다.
+- 같은 요청의 Arm 실행 순서도 case ID 기반 고정 seed로 무작위화한다. 따라서 재개해도 순서는 같지만 `automatic → mid → high → low`로 고정되지 않는다.
 - 자동 Arm의 학습 순서는 dataset 순서를 유지한다.
 - fixed Arm 결과는 자동 라우터 학습 데이터에 포함하지 않는다.
 - 재실행은 기존 결과를 덮어쓰지 않고 attempt 번호로 남긴다.
@@ -203,7 +203,7 @@ Webhook 또는 Start
 
 ## 9. 블라인드 품질 평가
 
-각 요청의 네 출력을 모델명과 Arm 이름을 제거한 뒤 무작위 ID로 바꾼다.
+각 요청의 네 출력을 모델명과 Arm 이름을 제거한 뒤 무작위 ID로 바꾼다. 품질 Judge 오류는 모델 품질 실패가 아니다. 해당 요청의 품질 평가만 최대 3회 재시도하며, 끝내 실패하면 실행 결과는 보존하고 품질 점수는 `평가 실패`로 별도 집계한다.
 
 ```text
 response_A7
@@ -281,7 +281,7 @@ response_R4
 
 ### 10.5 라우팅 품질과 다양성
 
-- 사전 허용 모델군 적중률
+- 사전 허용 모델군 적중률: 각 요청의 평가 metadata에 복수의 `acceptable_model_ids`, `underpowered_model_ids`, `overprovisioned_model_ids`를 둔다. 자동 선택을 `appropriate`, `underpowered`, `overprovisioned`, `unclassified`로 나눠 계산한다. 이 metadata는 Runtime Judge 입력에 전달하지 않는다.
 - 과소 선택률과 과잉 선택률
 - 작업군별 선택 모델 분포
 - 선택한 고유 모델 수
@@ -329,6 +329,7 @@ reports/model-routing/runs/judge-first/norag-80-blind-<run-id>/
   experiment-config.json
   dataset.json
   execution-schedule.json
+  execution-events.jsonl
   execution-results.json
   blind-quality-packets.json
   blind-quality-mapping.private.json
@@ -339,6 +340,8 @@ reports/model-routing/runs/judge-first/norag-80-blind-<run-id>/
     batch-71-80.md
   final-report.md
 ```
+
+`execution-events.jsonl`은 요청 하나의 네 Arm 실행과 해당 품질 평가가 끝날 때마다 append-only로 fsync 저장한다. Provider 비용이 발생한 직후 결과를 남기므로 process가 중단돼도 이미 끝난 요청을 식별할 수 있다. Markdown/JSON 누적 보고서는 10건마다 생성한다.
 
 `blind-quality-mapping.private.json`에는 익명 ID와 실제 Arm의 대응이 들어 있으므로 외부 Judge에 전달하지 않는다. secret과 raw credential은 어떤 산출물에도 기록하지 않는다.
 
