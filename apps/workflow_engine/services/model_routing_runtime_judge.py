@@ -203,8 +203,13 @@ class ModelRoutingRuntimeJudge:
             "충돌·누락 근거를 해석하면 높은 능력이 필요하고, 전문 주제라도 정해진 절차 안내·추출·분류면 낮을 수 있습니다. "
             "2단계로 필요한 능력을 안정적으로 충족하지 못하는 후보를 제외하세요. operational_run_count가 5건 이상이면 "
             "실제 배포 실행에서 나온 workflow 계약 성적인 schema·후속 노드 성공률과 fallback 비율을 "
-            "공식 카탈로그 설명보다 우선하세요. 표본이 부족하면 capability_tier, official_position, model_role, "
-            "specialization_tags 같은 공급자 공식 특화 태그는 약한 사전 정보로만 사용하세요. "
+            "공식 카탈로그 설명보다 우선하세요. 표본이 부족하면 capability_tier, reasoning_profile, "
+            "complexity_ceiling, task_affinities 같은 공급자 공식 설명 기반 정보를 약한 사전 정보로만 사용하세요. "
+            "공급자 공식 특화 태그는 약한 사전 정보이며 측정된 품질 점수가 아닙니다. "
+            "capability_tier 하나만으로 후보를 선택하거나 제외하지 마세요. cost_position은 비용 역할일 뿐 "
+            "작업 능력 등급이 아니며, complexity_ceiling은 공급자 설명을 Nodease 난이도로 정규화한 상한입니다. "
+            "요청에 복잡한 전문 판단이 필요하면 complexity_ceiling이 complex_professional인지 확인하고, "
+            "다단계 추론이 핵심이면 reasoning_profile과 task_affinities가 실제 요구에 맞는지 확인하세요. "
             "reasoning_specialist는 형식 논증·수학·과학·코드의 다단계 추론이 핵심일 때, frontier_generalist는 복합 전문 업무 "
             "완성도가 핵심일 때 우선 검토하세요. 일반 전문 업무 능력과 전문 추론 능력을 같은 것으로 취급하지 마세요. "
             "3단계로 남은 충분한 후보 사이에서만 가격·지연·fallback을 비교해 가장 합리적인 하나를 선택하세요. "
@@ -439,6 +444,24 @@ class ModelRoutingRuntimeJudge:
                 "general_purpose",
             }:
                 safe["model_role"] = model_role
+            reasoning_profile = raw.get("reasoning_profile")
+            if reasoning_profile in {
+                "non_reasoning",
+                "general_reasoning",
+                "specialized_reasoning",
+                "frontier_reasoning",
+            }:
+                safe["reasoning_profile"] = reasoning_profile
+            complexity_ceiling = raw.get("complexity_ceiling")
+            if complexity_ceiling in {
+                "routine",
+                "multi_constraint",
+                "complex_professional",
+            }:
+                safe["complexity_ceiling"] = complexity_ceiling
+            cost_position = raw.get("cost_position")
+            if cost_position in {"economy", "balanced", "premium"}:
+                safe["cost_position"] = cost_position
             canonical_model_id = raw.get("canonical_model_id")
             if isinstance(canonical_model_id, str) and canonical_model_id:
                 safe["canonical_model_id"] = canonical_model_id[:120]
@@ -454,6 +477,15 @@ class ModelRoutingRuntimeJudge:
                 ][:12]
                 if safe_tags:
                     safe["specialization_tags"] = safe_tags
+            task_affinities = raw.get("task_affinities")
+            if isinstance(task_affinities, list):
+                safe_affinities = [
+                    affinity[:80]
+                    for affinity in task_affinities
+                    if isinstance(affinity, str) and affinity
+                ][:12]
+                if safe_affinities:
+                    safe["task_affinities"] = safe_affinities
             catalog_lifecycle = raw.get("catalog_lifecycle")
             if catalog_lifecycle in {"listed", "preview"}:
                 safe["catalog_lifecycle"] = catalog_lifecycle
@@ -517,6 +549,9 @@ class ModelRoutingRuntimeJudge:
                 "capability_tier",
                 "official_position",
                 "model_role",
+                "reasoning_profile",
+                "complexity_ceiling",
+                "cost_position",
                 "catalog_lifecycle",
             ):
                 value = profile.get(key)
@@ -536,6 +571,11 @@ class ModelRoutingRuntimeJudge:
             if isinstance(specialization_tags, list) and specialization_tags:
                 row["specialization_tags"] = [
                     str(tag) for tag in specialization_tags[:3] if str(tag).strip()
+                ]
+            task_affinities = profile.get("task_affinities")
+            if isinstance(task_affinities, list) and task_affinities:
+                row["task_affinities"] = [
+                    str(tag) for tag in task_affinities[:4] if str(tag).strip()
                 ]
             quality = profile.get("quality_by_difficulty")
             if isinstance(quality, dict):

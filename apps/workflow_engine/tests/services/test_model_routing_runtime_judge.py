@@ -236,7 +236,15 @@ def test_runtime_judge_collapses_sol_alias_and_receives_source_backed_specializa
                 "model_id": "gpt-5.6-sol",
                 "canonical_model_id": "gpt-5.6-sol",
                 "evidence_type": "provider_documentation",
+                "capability_tier": "advanced",
+                "reasoning_profile": "frontier_reasoning",
+                "complexity_ceiling": "complex_professional",
+                "cost_position": "premium",
                 "model_role": "frontier_generalist",
+                "task_affinities": [
+                    "complex_professional_work",
+                    "complex_reasoning",
+                ],
                 "specialization_tags": [
                     "complex_professional_work",
                     "complex_reasoning",
@@ -270,6 +278,13 @@ def test_runtime_judge_collapses_sol_alias_and_receives_source_backed_specializa
     ]
     assert prompt_body["candidate_models"][0]["evidence_type"] == "provider_documentation"
     assert prompt_body["candidate_models"][0]["model_role"] == "frontier_generalist"
+    assert prompt_body["candidate_models"][0]["reasoning_profile"] == "frontier_reasoning"
+    assert prompt_body["candidate_models"][0]["complexity_ceiling"] == "complex_professional"
+    assert prompt_body["candidate_models"][0]["cost_position"] == "premium"
+    assert prompt_body["candidate_models"][0]["task_affinities"] == [
+        "complex_professional_work",
+        "complex_reasoning",
+    ]
     assert prompt_body["candidate_models"][1]["specialization_tags"] == [
         "multi_step_reasoning",
         "math_reasoning",
@@ -278,6 +293,8 @@ def test_runtime_judge_collapses_sol_alias_and_receives_source_backed_specializa
     assert prompt_body["candidate_models"][1]["model_role"] == "reasoning_specialist"
     instruction = client.calls[0]["messages"][0]["content"]
     assert "공급자 공식 특화 태그는 약한 사전 정보" in instruction
+    assert "capability_tier 하나만으로 후보를 선택하거나 제외하지 마세요" in instruction
+    assert "complexity_ceiling" in instruction
     assert "일반 전문 업무 능력과 전문 추론 능력을 같은 것으로 취급하지 마세요" in instruction
     assert "reasoning_specialist는 형식 논증·수학·과학·코드의 다단계 추론이 핵심일 때" in instruction
 
@@ -293,6 +310,21 @@ def test_llm_node_builds_distinct_source_backed_profiles_for_sol_and_o3():
     assert "complex_professional_work" in profiles[0]["specialization_tags"]
     assert "math_reasoning" in profiles[1]["specialization_tags"]
     assert profiles[0]["specialization_tags"] != profiles[1]["specialization_tags"]
+
+
+def test_llm_node_does_not_present_gpt_41_as_frontier_reasoning_peer():
+    profiles = LLMNode._routing_candidate_profiles(
+        object(),
+        ["gpt-4.1", "gpt-5.6-terra", "gpt-5.6-sol"],
+    )
+
+    assert profiles[0]["capability_tier"] == "balanced"
+    assert profiles[0]["reasoning_profile"] == "non_reasoning"
+    assert profiles[0]["complexity_ceiling"] == "multi_constraint"
+    assert profiles[1]["capability_tier"] == "advanced"
+    assert profiles[1]["cost_position"] == "balanced"
+    assert profiles[2]["reasoning_profile"] == "frontier_reasoning"
+    assert profiles[2]["cost_position"] == "premium"
 
 
 def test_runtime_judge_receives_operational_contract_evidence_as_stronger_than_catalog_prior():

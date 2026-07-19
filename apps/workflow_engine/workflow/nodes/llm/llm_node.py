@@ -69,6 +69,7 @@ from apps.workflow_engine.services.model_router import (
 )
 from apps.workflow_engine.services.model_routing_judge_first_policy import (
     JUDGE_FIRST_STRATEGY_ID,
+    build_judge_first_active_policy,
     select_runtime_judge_model_id,
 )
 from apps.workflow_engine.services.retrieval import RetrievalService
@@ -417,8 +418,17 @@ class LLMNode(Node[LLMNodeData]):
             and self.id in preview_node_ids
         )
         if is_policy_preview_node:
-            policy_deployment_id = self.execution_context.get(
-                "routing_policy_deployment_id"
+            deployment_policy_node_ids = self.execution_context.get(
+                "routing_policy_deployment_node_ids"
+            )
+            may_use_deployment_policy = (
+                not isinstance(deployment_policy_node_ids, list)
+                or self.id in deployment_policy_node_ids
+            )
+            policy_deployment_id = (
+                self.execution_context.get("routing_policy_deployment_id")
+                if may_use_deployment_policy
+                else None
             )
         preview_metadata = (
             {
@@ -428,6 +438,7 @@ class LLMNode(Node[LLMNodeData]):
             if is_policy_preview_node
             else {}
         )
+        persisted_policy_is_disabled = False
         if db_session is not None:
             from apps.workflow_engine.services.model_routing_policy_store import (
                 ModelRoutingPolicyStore,
@@ -450,11 +461,58 @@ class LLMNode(Node[LLMNodeData]):
                         "runs_since_last_refresh": persisted_policy.eligible_runs_since_last_refresh,
                     },
                 }
+            elif persisted_policy is not None:
+                persisted_policy_is_disabled = True
+                policy = {}
             elif is_deployed_execution:
                 # 배포 runtime의 source of truth는 policy table이다. 첫 성공 실행이
                 # policy row를 만들기 전까지 graph에 남은 legacy snapshot을 평가하면
                 # 저장 모델과 다른 과거 후보로 임의 라우팅될 수 있다.
                 policy = {}
+        active_policy = policy.get("active_policy") if isinstance(policy, dict) else None
+        should_build_ephemeral_policy = is_policy_preview_node or (
+            is_deployed_execution and not persisted_policy_is_disabled
+        )
+        if should_build_ephemeral_policy and not isinstance(active_policy, dict):
+            available_model_ids = self._available_routing_model_ids(db_session) or []
+            allowed_models = {
+                ModelRouter.normalize_model_id(model_id)
+                for model_id in available_model_ids
+            }
+            default_model_id = ModelRouter.first_available_model(
+                [self.data.model_id, *available_model_ids],
+                allowed_models,
+            )
+            if default_model_id is None:
+                raise LLMCredentialNotAvailableError(
+                    "model_routing_no_available_model",
+                    "자동 모델 라우팅에 사용할 수 있는 모델을 찾지 못했습니다.",
+                    model_id=self.data.model_id,
+                )
+            fallback_model_id = ModelRouter.first_available_model(
+                [self.data.fallback_model_id, *available_model_ids],
+                allowed_models,
+                exclude=default_model_id,
+            )
+            policy_version = (
+                "test-ephemeral-judge-first-v1"
+                if is_policy_preview_node
+                else "runtime-ephemeral-judge-first-v1"
+            )
+            policy = {
+                "status": "preview",
+                "policy_id": None,
+                "policy_version": policy_version,
+                "active_policy": build_judge_first_active_policy(
+                    policy_version=policy_version,
+                    default_model_id=default_model_id,
+                    fallback_model_id=fallback_model_id,
+                    candidate_model_ids=available_model_ids,
+                ),
+            }
+            preview_metadata["policy_source"] = (
+                "test_ephemeral" if is_policy_preview_node else "runtime_ephemeral"
+            )
         if not isinstance(policy, dict):
             return (
                 selected_model_id,
@@ -829,6 +887,10 @@ class LLMNode(Node[LLMNodeData]):
                 catalog_metadata = catalog_metadata_for_model_id(model_id)
                 profile["official_position"] = catalog_metadata["official_position"]
                 profile["model_role"] = catalog_metadata["model_role"]
+                profile["reasoning_profile"] = catalog_metadata["reasoning_profile"]
+                profile["complexity_ceiling"] = catalog_metadata["complexity_ceiling"]
+                profile["cost_position"] = catalog_metadata["cost_position"]
+                profile["task_affinities"] = catalog_metadata["task_affinities"]
                 profile["catalog_lifecycle"] = catalog_metadata["lifecycle"]
                 profile["canonical_model_id"] = catalog_metadata["canonical_model_id"]
                 profile["specialization_tags"] = catalog_metadata[
@@ -838,8 +900,11 @@ class LLMNode(Node[LLMNodeData]):
 
             global_profile = profile_by_llm_model_id.get(row.id) if row is not None else None
             if global_profile is not None:
-                profile["capability_tier"] = global_profile.capability_tier
                 prior_strength = float(global_profile.prior_strength or 0)
+                if prior_strength > 0:
+                    # 측정 증거가 없는 이전 seed row가 최신 공식 카탈로그의
+                    # 다차원 분류를 덮어쓰지 않게 한다.
+                    profile["capability_tier"] = global_profile.capability_tier
                 if prior_strength > 0 and isinstance(global_profile.quality_by_difficulty, dict):
                     profile["quality_by_difficulty"] = dict(
                         global_profile.quality_by_difficulty

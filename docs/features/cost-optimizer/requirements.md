@@ -61,7 +61,10 @@ schema/downstream 성공률, fallback 비율 기준을 통과하면 로컬
 정식 ID `gpt-5.6-sol`과 같은 후보로 취급한다. 공급자 설명은 실제 품질 측정값이 아니므로
 Judge는 이를 약한 사전 정보로만 사용하고, 동일 노드에서 충분한 schema·downstream·fallback
 운영 성적이 쌓이면 운영 증거를 우선한다. 출처가 없는 특화 태그나 측정하지 않은 품질·지연
-수치는 카탈로그에 넣지 않는다.
+수치는 카탈로그에 넣지 않는다. 단일 `capability_tier`는 비용 역할이나 특정 작업 적합성을
+대표하지 않는다. 카탈로그는 `reasoning_profile`, `complexity_ceiling`, `cost_position`,
+`task_affinities`를 분리하며, `complexity_ceiling`은 provider 설명을 Nodease 난이도 체계로
+정규화한 값임을 명시한다. Judge는 어느 한 축만으로 모델을 선택하지 않는다.
 
 배포 후 성공 운영 실행이 설정 주기만큼 쌓이면 Judge 선택 label 수와 모델별 품질·비용·지연을
 재평가한다. local router가 충분히 학습됐는지는 이 시점의 품질 gate로만 전환한다. 정책 갱신은

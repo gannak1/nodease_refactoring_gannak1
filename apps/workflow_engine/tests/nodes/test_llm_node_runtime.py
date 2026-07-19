@@ -605,6 +605,114 @@ def test_llm_node_auto_model_routing_without_policy_uses_stored_model(monkeypatc
     assert result["usage"] == {"prompt_tokens": 1, "completion_tokens": 1}
 
 
+def test_test_execution_without_active_policy_calls_runtime_judge(monkeypatch):
+    """테스트 실행은 정책 저장 전에도 임시 후보 정책으로 Judge를 호출한다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore,
+        "get_runtime_policy",
+        lambda *_args, **_kwargs: None,
+    )
+    learning_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore,
+        "queue_runtime_judge_label",
+        lambda *_args, **kwargs: learning_calls.append(kwargs),
+    )
+
+    class _JudgeClient:
+        def invoke_sync(self, *, messages, **kwargs):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"selected_model_id":"gpt-4.1-mini",'
+                                '"confidence":0.92,"reason_short":"간단한 분류 요청",'
+                                '"reason_code":"routine_classification"}'
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 8},
+            }
+
+    monkeypatch.setattr(
+        LLMService,
+        "get_runtime_client_for_user",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            client=_JudgeClient(),
+            credential_id=uuid.uuid4(),
+            model_id="gpt-4.1",
+        ),
+    )
+    monkeypatch.setattr(LLMService, "calculate_cost", lambda *_args, **_kwargs: 0.0001)
+    monkeypatch.setattr(LLMService, "log_usage", lambda *_args, **_kwargs: None)
+
+    user_id = uuid.uuid4()
+    node = LLMNode(
+        "llm-router",
+        LLMNodeData(
+            title="테스트 라우팅",
+            provider="openai",
+            model_id="gpt-4.1",
+            fallback_model_id="gpt-4.1-mini",
+            auto_model_routing=True,
+            system_prompt="고객 문의를 분류합니다.",
+            user_prompt="{{ message }}",
+            assistant_prompt=None,
+            referenced_variables=[],
+            context_variable=None,
+            parameters={},
+        ),
+        execution_context={
+            "workflow_id": str(uuid.uuid4()),
+            "organization_id": str(uuid.uuid4()),
+            "routing_policy_preview": True,
+            "routing_policy_preview_node_ids": ["llm-router"],
+            "routing_policy_deployment_node_ids": [],
+            "routing_policy_execute_judge": True,
+        },
+    )
+    monkeypatch.setattr(
+        node,
+        "_available_routing_model_ids",
+        lambda _db: ["gpt-4.1-mini", "gpt-4.1"],
+    )
+    monkeypatch.setattr(node, "_resolve_credential_principal_user", lambda: user_id)
+    monkeypatch.setattr(
+        node,
+        "_require_runtime_organization_id",
+        lambda *_args: uuid.uuid4(),
+    )
+    monkeypatch.setattr(
+        node,
+        "_routing_candidate_profiles",
+        lambda *_args, **_kwargs: [
+            {"model_id": "gpt-4.1-mini"},
+            {"model_id": "gpt-4.1"},
+        ],
+    )
+
+    selected, fallback, metadata = node._resolve_model_routing_policy(
+        {"message": "결제 상태를 분류해 주세요."},
+        object(),
+        routing_feature_text="결제 상태를 분류해 주세요.",
+    )
+
+    assert selected == "gpt-4.1-mini"
+    assert fallback == "gpt-4.1"
+    assert metadata["decision_source"] == "test_policy_preview"
+    assert metadata["policy_source"] == "test_ephemeral"
+    assert metadata["judge_called"] is True
+    assert metadata["judge"]["status"] == "selected"
+    assert metadata["included_in_policy_learning"] is False
+    assert learning_calls == []
+
+
 def test_system_schedule_uses_credential_principal_without_rag_subject(monkeypatch):
     credential_user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
@@ -4400,7 +4508,7 @@ def test_llm_node_output_repetition_rate_keeps_only_a_numeric_summary():
 def test_deployed_auto_routing_without_persisted_policy_ignores_legacy_snapshot(
     monkeypatch,
 ):
-    """첫 배포 실행은 legacy node JSON이 아니라 저장된 안정 모델로 시작한다."""
+    """정책 행 없는 배포는 legacy JSON 대신 일회성 Judge-first 정책을 사용한다."""
     from apps.workflow_engine.services.model_routing_policy_store import (
         ModelRoutingPolicyStore,
     )
@@ -4410,6 +4518,41 @@ def test_deployed_auto_routing_without_persisted_policy_ignores_legacy_snapshot(
         "get_runtime_policy",
         lambda *args, **kwargs: None,
     )
+    learning_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore,
+        "queue_runtime_judge_label",
+        lambda *_args, **kwargs: learning_calls.append(kwargs),
+    )
+
+    class _JudgeClient:
+        def invoke_sync(self, *, messages, **kwargs):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"selected_model_id":"gpt-4.1-mini",'
+                                '"confidence":0.9,"reason_short":"간단한 요청",'
+                                '"reason_code":"routine_request"}'
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 7},
+            }
+
+    monkeypatch.setattr(
+        LLMService,
+        "get_runtime_client_for_user",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            client=_JudgeClient(),
+            credential_id=uuid.uuid4(),
+            model_id="gpt-4.1",
+        ),
+    )
+    monkeypatch.setattr(LLMService, "calculate_cost", lambda *_args, **_kwargs: 0.0001)
+    monkeypatch.setattr(LLMService, "log_usage", lambda *_args, **_kwargs: None)
     data = LLMNodeData(
         title="bootstrap routing",
         model_id="gpt-4.1",
@@ -4441,24 +4584,43 @@ def test_deployed_auto_routing_without_persisted_policy_ignores_legacy_snapshot(
             "deployment_id": str(uuid.uuid4()),
         },
     )
+    monkeypatch.setattr(
+        node,
+        "_available_routing_model_ids",
+        lambda _db: ["gpt-4.1-mini", "gpt-4.1"],
+    )
+    monkeypatch.setattr(
+        node,
+        "_resolve_credential_principal_user",
+        lambda: uuid.uuid4(),
+    )
+    monkeypatch.setattr(
+        node,
+        "_require_runtime_organization_id",
+        lambda *_args: uuid.uuid4(),
+    )
+    monkeypatch.setattr(
+        node,
+        "_routing_candidate_profiles",
+        lambda *_args, **_kwargs: [
+            {"model_id": "gpt-4.1-mini"},
+            {"model_id": "gpt-4.1"},
+        ],
+    )
 
-    selected, fallback, metadata = node._resolve_model_routing_policy({}, object())
+    selected, fallback, metadata = node._resolve_model_routing_policy(
+        {"message": "사용 방법을 알려 주세요."},
+        object(),
+        routing_feature_text="사용 방법을 알려 주세요.",
+    )
 
-    assert selected == "gpt-4.1"
-    assert fallback == "gpt-4.1-mini"
-    assert metadata == {
-        "enabled": True,
-        "policy_id": None,
-        "policy_version": None,
-        "decision_source": "stored_model",
-        "reason_code": "active_policy_unavailable",
-        "judge_called": False,
-        "judge": {
-            "status": "not_called",
-            "attempted": False,
-            "not_called_reason": "active_policy_unavailable",
-        },
-    }
+    assert selected == "gpt-4.1-mini"
+    assert fallback == "gpt-4.1"
+    assert metadata["decision_source"] == "runtime_judge"
+    assert metadata["policy_source"] == "runtime_ephemeral"
+    assert metadata["judge_called"] is True
+    assert metadata["judge"]["status"] == "selected"
+    assert learning_calls == []
 
 
 def test_workflow_llm_service_uses_relation_priority_before_credential_created_at(
