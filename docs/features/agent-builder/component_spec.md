@@ -706,6 +706,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 ## Test preflight 연동과 secret 입력 경계
 
 - `ParameterInputRenderer`는 Catalog가 발급한 Slack/GitHub `secret` task에 기존 값을 비운 password input을 표시하고 새 입력을 editor save bridge로 전달한다. Required secret의 `나중에 설정`은 raw value 없는 typed `defer`를 보내고 node를 unresolved로 유지한다. Backend는 조작된 raw secret decision을 방어적으로 `secret_forbidden`으로 거부한다.
+- WorkflowResultGroup는 현재 active Slack Bot Token, Slack Incoming Webhook URL 또는 GitHub API Token task에서 masked 입력창과 `나중에 설정` 버튼을 함께 렌더링한다. 이 control을 Node Detail 이동 버튼, 안내 전용 card 또는 credential picker로 대체하거나 secret task 자체를 렌더링에서 제외하지 않는다.
 - TestSidebar는 canonical 확인부터 valid `workflow_start.run_id` 수신까지 test preflight owner를 유지한다. Persisted Agent Builder history boundary가 아직 acknowledgement되지 않았거나 Agent Builder를 포함한 어떤 저장 owner라도 stream 시작 시점에 대기 중이면 stream을 열지 않는다. Agent Builder acknowledgement에는 기존 전용 안내를, 일반 저장 대기에는 `Workflow 변경사항을 저장하는 중입니다. 저장 완료 후 다시 실행해주세요.`를 표시하며 자동 재실행하지 않는다.
 - Agent Builder editor bridge는 save coordinator lock 획득 직후와 canonical draft 조회 직후 active workflow id를 확인한다. Workflow가 바뀌면 이전 mutation/save/acknowledgement/rollback을 중단하고 `Workflow가 전환되어 이전 Agent Builder 작업을 적용하지 않았습니다.` 계열의 안전한 안내를 표시한다.
 - Autosync는 lock miss를 workflow별 하나의 대기 작업으로 합치고, lock 해제 뒤 store에서 다시 읽은 최신 dirty snapshot만 저장한다. 대기 중 workflow 전환 또는 clean 전환이 발생하면 저장하지 않는다.

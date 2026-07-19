@@ -104,6 +104,7 @@ MBA-228은 하나의 기능 PR에서 nullable protocol migration, null/`direct_e
 
 - Decision item 21의 Slack/GitHub `credential_ref` task와 빈 picker/defer presentation은 폐기한다. Mail/Gmail은 node runtime이 관리 credential reference를 요구하므로 기존 organization-scoped, use-permitted reference picker를 유지한다.
 - Slack/GitHub는 credential 후보를 만들지 않지만 Bot Token, Incoming Webhook URL과 GitHub API Token은 masked `secret` task로 직접 입력한다. 기존 원문을 조회하거나 hydrate하지 않고 새 입력으로만 교체하며 별도의 managed credential resource도 만들지 않는다.
+- 위 masked token 입력창과 현재 active token task의 `나중에 설정` 버튼은 Agent Builder의 필수 제품 경로다. Secret이라는 이유로 task/card를 숨기거나 제거해서는 안 되며, Node Detail 이동 버튼, 외부 설정 안내 또는 관리 credential picker로 대체해서도 안 된다. 이 계약을 바꾸려면 이 ADR을 대체하는 별도 Accepted ADR과 기존 직접 입력 회귀 검증이 필요하다.
 - Slack API mode에서는 Bot Token, channel과 payload를, Incoming Webhook mode에서는 Webhook URL과 payload를 Agent Builder task로 제공한다. 전송 방식 변경은 반대 mode의 기존 인증 field와 channel을 canonical node data에서 제거하고 현재 mode의 secret task를 활성화한다. Bot Token, Webhook URL 또는 channel의 `나중에 설정`은 명시적 defer이며 unresolved node 저장은 허용하지만 test/run/deploy는 차단한다.
 - Slack의 mode, message, Blocks, Attachments 안내는 Catalog의 한국어 문구를 사용한다. 생성 template이 `{{result}}`와 `referenced_variables`를 연결한 경우 이전 node 출력 사용법을 함께 표시한다. Optional JSON task에서 빈 `적용`은 parse failure가 아니라 명시적 `skip`이다.
 - Slack `blocks`와 `attachments`의 durable graph 표현은 runtime 호환 JSON 문자열을 유지한다. Agent Builder가 기존 값을 다시 편집할 때는 이 문자열을 JSON array로 정확히 한 번 파싱해 control을 hydrate하고, 제출된 array를 graph materializer가 정확히 한 번 문자열화한다. 파싱할 수 없거나 array가 아닌 기존 값은 자동 덮어쓰지 않고 unavailable로 표시한다.

@@ -437,6 +437,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 ## Secret 입력 경계와 이전 task action 정합성
 
 - Slack Bot Token, Slack Incoming Webhook URL과 GitHub API Token의 Catalog definition은 Agent Builder task/card와 mode별 masked input으로 제공해야 한다. 기존 원문은 표시하지 않고 새 입력으로 교체하며 Node Detail 강제 이동으로 대체하지 않는다. 일반 Node Detail 기능과 LLM Routing 설정 이동 자체는 유지한다.
+- Slack Bot Token, Slack Incoming Webhook URL과 GitHub API Token의 masked 입력창 및 현재 active token task의 `나중에 설정` 버튼은 삭제하거나 숨겨서는 안 된다. Secret 처리 정책 변경만으로 이 입력 흐름을 Node Detail 이동, 외부 설정 안내 또는 credential picker로 대체할 수 없다.
 - `이전 항목`으로 표시한 task는 canonical active task ID와 달라도 해당 task의 typed input과 허용 decision action을 제공해야 한다.
 - 이전 optional task에 canonical graph 값이 없으면 `건너뛰기`를 제공하고 `skip`으로 처리해야 한다. 기존 일반 값이 있으면 `값 지우고 건너뛰기`를 제공하고 `clear`의 CAS save와 acknowledgement가 끝난 뒤에만 task를 `skipped`로 전환해야 한다. Secret task는 이전 task presentation 대상이 될 수 있지만 raw 기존 값을 hydrate하지 않고 빈 masked control을 제공한다.
 - Required task와 `confirmation_required=true` task에는 일반 `건너뛰기` 또는 `값 지우고 건너뛰기`를 제공해서는 안 된다. Catalog가 `allow_unresolved`로 선언한 required task에는 별도 `나중에 설정` defer를 제공할 수 있으며, 이는 required 계약이나 preflight 차단을 해제하지 않는다. 이전 task로 이동하는 행위 자체는 graph, canonical task status/version, 다음 active task와 Workflow history를 변경해서는 안 된다.

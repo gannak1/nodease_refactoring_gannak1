@@ -871,6 +871,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - GitHub `get_pr` task/preflight에는 `comment_body`가 나타나지 않으며 `comment_pr`에서는 표시되고 required다. 빈 본문은 unresolved preflight로 외부 GitHub 호출 전에 차단된다.
 - Slack API mode의 Bot Token, channel과 payload, Webhook mode의 Webhook URL과 payload를 Agent Builder task로 제공한다. Bot Token/Webhook URL은 mode별 필수 masked input이지만 `나중에 설정`은 `defer`를 제출해 다음 task로 진행한다. Channel의 명시적 defer와 함께 미설정 인증값은 unresolved 저장 뒤 test/run/deploy를 차단한다.
 - GitHub API Token은 `get_pr|comment_pr` 모두 runtime/preflight 필수 masked Agent Builder task다. `나중에 설정`은 일반 skip이 아니라 unresolved defer이며 token 입력 전 test/run/deploy는 차단된다. Legacy session의 중복 token task는 current Catalog identity로 하나만 reconciliation한다.
+- Slack Bot Token, Slack Incoming Webhook URL과 GitHub API Token의 active task에는 masked 입력창과 `나중에 설정` 버튼이 함께 표시되고, Node Detail 이동 버튼이나 credential picker로 대체되지 않는지 component 회귀 테스트로 고정한다.
 - GitHub action을 `get_pr`에서 `comment_pr`로 set한 CAS 저장과 acknowledgement 응답은 Planner LLM 재호출 없이 `comment_body`를 required `pending|active`로 다시 열고 `next_task_id`를 갱신한다. 같은 acknowledgement 재조회는 task와 audit을 중복 변경하지 않는다.
 - 발급 뒤 새로운 후보가 추가되어 해당 KB가 추천 탐색의 5,000개 내부 상한 밖으로 밀려나도, resolution에 보존된 handle-to-resource binding으로 해당 KB 하나만 다시 검증해 적용되는지 확인한다.
 - 발급된 Collection handle 적용 시 하위 KB hierarchy를 다시 탐색하지 않고 해당 Collection의 organization, active 상태와 `route` 권한만 재검증하는지 확인한다.
