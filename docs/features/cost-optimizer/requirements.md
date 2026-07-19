@@ -19,13 +19,23 @@ FR-011의 현재 제품 계약은
 
 배포 시에는 실행 주체가 사용할 수 있는 후보 모델로 Judge-first policy를 저장한다. 정책 행이
 아직 없거나 삭제된 예외 상황에서도 runtime은 같은 후보 모델로 일회성 Judge-first policy를
-구성해 요청을 처리한다. 따라서 `기본 모델`은 Judge 자체를 호출할 판단 모델이며, 정책 부재의
-fallback이 아니다. `실행 실패 대체 모델`은 선택된 모델 호출이 실패했을 때만 사용한다.
+구성해 요청을 처리한다. `기본 모델`과 Runtime Judge 모델은 분리한다. 기본 모델은 Judge 판단이
+실패하거나 사용할 수 없을 때 요청을 처리하는 안전 복귀 모델이고, Judge는 실행 주체가 사용할 수
+있는 후보 중 provider별 평가 선호 모델을 별도로 선택한다. OpenAI 후보에는 이전 라우팅 실험에서
+검증한 `gpt-5.4-mini`를 우선 사용한다. `실행 실패 대체 모델`은 선택된 처리 모델 호출이 실패했을
+때만 사용한다.
 
 일반 실행은 현재 문의의 주제 키워드나 문장 유사도를 저장·검색하지 않는다. 초기 단계에서는
 **변수 치환이 끝난 prompt와 들어온 입력**을 Judge에 일시적으로 전달해, 실행 주체가 쓸 수
 있는 전체 후보 중 하나를 선택하게 한다. Judge 응답은 선택 모델·신뢰도·안전한 근거만 남기며,
 원문 prompt, 입력 payload, RAG 문서 원문은 정책 artifact나 API 응답에 저장하지 않는다.
+
+Runtime Judge 입력은 현재 요청의 JSON key와 scalar type을 보존하고, system/user/assistant prompt를
+각각 독립된 길이 예산으로 전달한다. RAG 문서 원문은 개인정보와 영업정보 노출 위험 때문에 전달하지
+않는다. 대신 검색 context 크기, chunk/source 수, 근거 충분 여부, 부분 결과 여부, query rewrite 여부와
+안전한 부족 사유를 전달한다. 후보 profile에는 context window를 포함한다. Judge는 작업 복잡도,
+결정 영향도, 근거 종합 범위, 출력 정밀도를 0~3으로 판단한 뒤 필요한 능력을 충족하는 후보 안에서만
+비용·지연·fallback을 비교한다.
 
 Judge 선택은 즉시 학습하지 않는다. 실행 중에는 원문 없는 숫자 vector·선택 모델만 대기 label로
 저장하고, workflow가 끝난 뒤 해당 node가 schema 통과, 후속 노드 성공, fallback 미발생 조건을
@@ -35,11 +45,23 @@ schema/downstream 성공률, fallback 비율 기준을 통과하면 로컬
 경우에만 Judge를 다시 호출한다. prompt, 출력 schema, RAG, downstream 계약이 바뀌면
 기존 local artifact를 오래됨으로 표시하고 Judge-first로 다시 시작한다.
 
+계약을 통과한 Judge 선택은 원문 입력 대신 deployment secret으로 만든 HMAC feature hash로
+최대 128개까지 재사용할 수 있다. 같은 안전 feature가 다시 들어오고 해당 모델 권한이 여전히
+유효하면 Judge 호출 없이 기존 선택을 사용한다. hash key가 없는 환경에서는 이 최적화를
+비활성화하고 기존 Judge 경로를 유지한다.
+
 문장 품질을 평가하기 위한 별도 LLM Judge는 자동 모델 라우팅의 운영 성적에 사용하지 않는다.
 대신 완료된 배포 실행의 schema 통과, 후속 노드 성공, provider fallback, 실행 성공 신호를
 후보 모델별로 누적한다. 다음 Runtime Judge 호출에는 이 운영 계약 성적을 함께 전달하며,
 같은 모델의 성적이 5건 이상 쌓인 경우에는 카탈로그 품질값보다 해당 성적을 우선 참고한다.
 표본이 부족할 때 카탈로그 값은 초기 선택을 위한 약한 사전 정보로만 사용한다.
+
+모델 카탈로그의 초기 정보는 provider 공식 모델 문서에서 확인한 정식 모델 ID, 별칭,
+제품 포지셔닝, 범용·추론 중심 역할과 특화 작업 태그만 포함한다. `gpt-5.6`처럼 provider가 공개한 별칭은
+정식 ID `gpt-5.6-sol`과 같은 후보로 취급한다. 공급자 설명은 실제 품질 측정값이 아니므로
+Judge는 이를 약한 사전 정보로만 사용하고, 동일 노드에서 충분한 schema·downstream·fallback
+운영 성적이 쌓이면 운영 증거를 우선한다. 출처가 없는 특화 태그나 측정하지 않은 품질·지연
+수치는 카탈로그에 넣지 않는다.
 
 배포 후 성공 운영 실행이 설정 주기만큼 쌓이면 Judge 선택 label 수와 모델별 품질·비용·지연을
 재평가한다. local router가 충분히 학습됐는지는 이 시점의 품질 gate로만 전환한다. 정책 갱신은
@@ -466,8 +488,8 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 
 #### 실행 시 모델 선택과 점진 전환
 
-- `judge_first`: local artifact가 준비되기 전에는 매 운영 요청에 Judge를 호출한다.
-- `local_first`: Judge 선택 label이 충분히 쌓이고 완료된 운영 품질 기준을 통과하면 로컬
+- `judge_first`: 계약을 통과한 성공 배포 실행 Judge label이 50건 미만이면 매 운영 요청에 Judge를 호출한다.
+- `local_first`: Judge 선택 label이 50건 이상 쌓이고 완료된 운영 품질 기준을 통과하면 로컬
   mDeBERTa 분류기가 전체 사용 가능 후보 중 하나를 먼저 선택한다.
 - `local_first` 상태에서 local prediction의 confidence가 기준 미만이거나 선택 모델이 현재
   실행 주체에게 허용되지 않으면 Judge를 호출한다. 별도 `hybrid` 상태값은 두지 않는다.
@@ -478,7 +500,7 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 
 #### 배포 후 재평가
 
-- Test Sidebar 실행은 활성 배포 정책과 같은 후보 목록으로 runtime Judge를 호출해 실제 실행 모델을 고른다. 다만 Judge usage는 해당 테스트 run에만 기록하고, Judge label·운영 성적·갱신 카운터에는 포함하지 않는다.
+- Test Sidebar 실행은 활성 배포 정책과 같은 후보 목록, 같은 Judge/local router 전환 기준으로 실제 실행 모델을 고른다. `judge_first` 또는 local router 저확신이면 Judge를 호출하며, 확신 있는 `local_first`면 Judge를 호출하지 않는다. Judge usage는 해당 테스트 run에만 기록하고, Judge label·운영 성적·갱신 카운터에는 포함하지 않는다.
 - 성공한 배포 후 운영 실행만 노드별 모델·입력 길이 profile별 성적에 반영한다.
 - 설정한 점검 주기에 도달하면 완료된 Judge 표본과 운영 성적을 다시 평가한다.
   최소 표본 수, 최소 두 개 이상의 선택 모델, schema/downstream 성공률, fallback 비율 기준을

@@ -11,7 +11,9 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 
-MIN_JUDGED_REQUESTS = 24
+# Local routing begins only after enough deployed, contract-passing Judge labels
+# have accumulated to make its first autonomous choice meaningful.
+MIN_JUDGED_REQUESTS = 50
 MIN_DISTINCT_SELECTED_MODELS = 2
 MIN_SUCCESS_RATE = 0.95
 MIN_SCHEMA_PASS_RATE = 0.95

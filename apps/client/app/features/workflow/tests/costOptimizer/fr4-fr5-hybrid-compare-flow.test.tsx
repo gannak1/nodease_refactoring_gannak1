@@ -322,10 +322,10 @@ describe('FR-004/FR-005 Cost Optimizer hybrid compare flow', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '근거/Trace' }));
 
-    expect(await screen.findByText('자동 라우팅')).toBeInTheDocument();
+    expect(await screen.findByText('모델 선택 결과')).toBeInTheDocument();
     expect(screen.getByText('gpt-5-mini')).toBeInTheDocument();
-    expect(screen.getByText('active_policy')).toBeInTheDocument();
-    expect(screen.getByText('policy_default')).toBeInTheDocument();
+    expect(screen.getByText('저장된 정책으로 모델 선택')).toBeInTheDocument();
+    expect(screen.getByText('기본 라우팅 규칙 일치')).toBeInTheDocument();
   });
 
   it('고급 설정에서 stop sequence를 모두 삭제하면 B 실행 request에도 빈 stop 배열을 보낸다', async () => {

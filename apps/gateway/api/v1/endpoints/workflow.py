@@ -849,7 +849,6 @@ def _default_cost_optimizer_model_routing_policy(
         fallback_model_id=fallback_model_id,
         candidate_model_ids=[model.model_id for model in candidate_models],
     )
-    active_policy["judge_model_id"] = default_model_id
     return {
         "status": "collecting",
         "policy_id": "cost-optimizer-judge-first-default",

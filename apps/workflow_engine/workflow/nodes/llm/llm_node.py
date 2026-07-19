@@ -68,6 +68,7 @@ from apps.workflow_engine.services.model_router import (
 )
 from apps.workflow_engine.services.model_routing_judge_first_policy import (
     JUDGE_FIRST_STRATEGY_ID,
+    select_runtime_judge_model_id,
 )
 from apps.workflow_engine.services.retrieval import RetrievalService
 from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
@@ -462,6 +463,11 @@ class LLMNode(Node[LLMNodeData]):
                     "decision_source": "stored_model",
                     "reason_code": "policy_unavailable",
                     "judge_called": False,
+                    "judge": {
+                        "status": "not_called",
+                        "attempted": False,
+                        "not_called_reason": "policy_unavailable",
+                    },
                     **preview_metadata,
                 },
             )
@@ -478,6 +484,11 @@ class LLMNode(Node[LLMNodeData]):
                     "decision_source": "stored_model",
                     "reason_code": "active_policy_unavailable",
                     "judge_called": False,
+                    "judge": {
+                        "status": "not_called",
+                        "attempted": False,
+                        "not_called_reason": "active_policy_unavailable",
+                    },
                     **preview_metadata,
                 },
             )
@@ -491,6 +502,11 @@ class LLMNode(Node[LLMNodeData]):
                 "decision_source": "stored_model",
                 "reason_code": "legacy_policy_ignored",
                 "judge_called": False,
+                "judge": {
+                    "status": "not_called",
+                    "attempted": False,
+                    "not_called_reason": "legacy_policy_ignored",
+                },
                 **preview_metadata,
             }
 
@@ -521,9 +537,22 @@ class LLMNode(Node[LLMNodeData]):
         if fallback_model_id == selected_model_id:
             fallback_model_id = None
 
-        judge_metadata: dict[str, Any] = {}
+        judge_metadata: dict[str, Any] = {
+            "status": "not_called",
+            "attempted": False,
+        }
         decision_source = decision.decision_source
-        if decision.requires_runtime_judge and not is_policy_preview_node:
+        execute_judge_for_preview = bool(
+            self.execution_context.get("routing_policy_execute_judge")
+        )
+        should_execute_runtime_judge = decision.requires_runtime_judge and (
+            not is_policy_preview_node or execute_judge_for_preview
+        )
+        if should_execute_runtime_judge:
+            judge_metadata = {
+                "status": "unavailable",
+                "attempted": False,
+            }
             try:
                 from apps.workflow_engine.services.model_routing_runtime_judge import (
                     ModelRoutingRuntimeJudge,
@@ -535,8 +564,12 @@ class LLMNode(Node[LLMNodeData]):
                 organization_id = self._require_runtime_organization_id(
                     user_id, selected_model_id
                 )
-                judge_model_id = str(
-                    active_policy.get("judge_model_id") or selected_model_id
+                judge_model_id = select_runtime_judge_model_id(
+                    available_model_ids or [],
+                    default_model_id=str(
+                        active_policy.get("default_model_id") or selected_model_id
+                    ),
+                    configured_judge_model_id=active_policy.get("judge_model_id"),
                 )
                 normalized_available = {
                     ModelRouter.normalize_model_id(model_id): model_id
@@ -558,6 +591,13 @@ class LLMNode(Node[LLMNodeData]):
                     candidate_model_ids,
                     policy_id=policy.get("policy_id"),
                 )
+                judge_metadata.update(
+                    {
+                        "model": judge_model_id,
+                        "candidate_model_count": len(candidate_model_ids),
+                        "attempted": True,
+                    }
+                )
                 judge_decision = ModelRoutingRuntimeJudge.decide(
                     client=judge_selection.client,
                     candidate_model_ids=candidate_model_ids,
@@ -573,11 +613,12 @@ class LLMNode(Node[LLMNodeData]):
                 # ProviderInvocationError처럼 이미 정규화한 reason_code가 있으면
                 # 운영 trace에서 재시도/토큰 한도/형식 실패를 구분할 수 있다. 원문
                 # provider 메시지는 민감 정보가 될 수 있으므로 남기지 않는다.
-                judge_metadata = {
-                    "error_code": str(
-                        getattr(exc, "reason_code", None) or type(exc).__name__
-                    )[:96]
-                }
+                judge_metadata["status"] = (
+                    "failed" if judge_metadata["attempted"] else "unavailable"
+                )
+                judge_metadata["error_code"] = str(
+                    getattr(exc, "reason_code", None) or type(exc).__name__
+                )[:96]
             else:
                 # Judge가 정상적으로 고른 모델은 usage 기록이나 학습 artifact 저장이
                 # 일시 실패하더라도 유지한다. 두 후속 작업은 관측성/학습 보조 경로다.
@@ -597,11 +638,14 @@ class LLMNode(Node[LLMNodeData]):
                     )
                 decision_source = "runtime_judge"
                 reason_code = judge_decision.reason_code
-                judge_metadata = judge_decision.safe_metadata()
+                judge_metadata = {
+                    **judge_decision.safe_metadata(),
+                    "status": "selected",
+                    "attempted": True,
+                }
                 judge_metadata["model"] = judge_model_id
                 judge_metadata["selection_source"] = "judge_candidate_selection"
                 judge_metadata["candidate_model_count"] = len(candidate_model_ids)
-
                 usage = judge_decision.usage
                 if usage:
                     try:
@@ -633,7 +677,9 @@ class LLMNode(Node[LLMNodeData]):
                         judge_metadata["usage_log_error"] = type(exc).__name__
 
                 policy_id = policy.get("policy_id")
-                if policy_id:
+                # Editor test runs must show the same model selection as a deployed
+                # run, but they must never become deployed learning samples.
+                if policy_id and not is_policy_preview_node:
                     try:
                         workflow_run_id = self.execution_context.get("workflow_run_id")
                         if workflow_run_id:
@@ -650,8 +696,16 @@ class LLMNode(Node[LLMNodeData]):
                             )
                             if queued_learning.get("learning_queued"):
                                 judge_metadata["learning_status"] = "pending_contract"
+                            else:
+                                judge_metadata["learning_status"] = "not_queued"
+                                judge_metadata["learning_not_queued_reason"] = str(
+                                    queued_learning.get("reason") or "unknown"
+                                )[:80]
                     except (RuntimeError, ValueError, TypeError, SQLAlchemyError) as exc:
                         judge_metadata["learning_error"] = type(exc).__name__
+
+        if not should_execute_runtime_judge:
+            judge_metadata["not_called_reason"] = reason_code
 
         metadata = {
             "enabled": True,
@@ -661,11 +715,13 @@ class LLMNode(Node[LLMNodeData]):
             "fallback_model": fallback_model_id,
             "decision_source": "test_policy_preview" if is_policy_preview_node else decision_source,
             "matched_rule_id": matched_rule_id,
-            "reason_code": reason_code,
-            "strategy_id": decision.strategy_id,
-            "runtime_context": routing_context,
-            "judge_called": bool(judge_metadata and decision_source == "runtime_judge"),
-        }
+                "reason_code": reason_code,
+                "strategy_id": decision.strategy_id,
+                "runtime_context": routing_context,
+                # `judge_called`은 실제 호출 시도 여부다. Judge가 실패해 기본 모델로
+                # 회귀한 실행도 True여야 UI가 미호출과 구분할 수 있다.
+                "judge_called": bool(judge_metadata.get("attempted")),
+            }
         if routing_rag_context is not None:
             metadata["rag_context"] = dict(routing_rag_context)
         if judge_metadata:
@@ -770,7 +826,13 @@ class LLMNode(Node[LLMNodeData]):
                 profile["capability_tier"] = catalog_entry.capability_tier
                 catalog_metadata = catalog_metadata_for_model_id(model_id)
                 profile["official_position"] = catalog_metadata["official_position"]
+                profile["model_role"] = catalog_metadata["model_role"]
                 profile["catalog_lifecycle"] = catalog_metadata["lifecycle"]
+                profile["canonical_model_id"] = catalog_metadata["canonical_model_id"]
+                profile["specialization_tags"] = catalog_metadata[
+                    "specialization_tags"
+                ]
+                profile["catalog_evidence_type"] = catalog_metadata["evidence_type"]
 
             global_profile = profile_by_llm_model_id.get(row.id) if row is not None else None
             if global_profile is not None:
@@ -1096,6 +1158,23 @@ class LLMNode(Node[LLMNodeData]):
                 "evidence_sufficient": bool(
                     knowledge_result is not None
                     and knowledge_result.evidence_decision.evidence_sufficient
+                ),
+                "partial_result": bool(
+                    knowledge_result is not None
+                    and knowledge_result.evidence_decision.partial_result
+                ),
+                "insufficiency_reason": (
+                    knowledge_result.evidence_decision.insufficiency_reason
+                    if knowledge_result is not None
+                    else None
+                ),
+                "source_tier_used": (
+                    knowledge_result.evidence_decision.source_tier_used
+                    if knowledge_result is not None
+                    else None
+                ),
+                "query_rewrite_applied": bool(
+                    rag_trace_summary.get("query_rewrite_applied")
                 ),
             }
             # 이 feature는 호출 중 메모리에만 있으며 trace나 DB artifact에 남기지 않는다.
@@ -1455,7 +1534,11 @@ class LLMNode(Node[LLMNodeData]):
         try:
             from jsonschema import Draft202012Validator
             from jsonschema.exceptions import SchemaError, ValidationError
-
+        except ModuleNotFoundError:
+            # 일부 로컬 실행 환경은 선택적 schema 검증 패키지가 빠져 있어도
+            # provider 호출과 workflow 실행 자체는 계속할 수 있어야 한다.
+            return "not_evaluated"
+        try:
             Draft202012Validator(schema).validate(payload)
         except ValidationError:
             return "failed"

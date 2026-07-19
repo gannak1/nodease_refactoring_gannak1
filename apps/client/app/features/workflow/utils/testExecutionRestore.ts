@@ -67,6 +67,7 @@ const toRestoredNodeResult = (
     title,
     status: restoredStatus(nodeRun.status),
     output,
+    traceMetadata: nodeRun.trace_metadata,
     latencyMs:
       typeof nodeRun.duration === 'number'
         ? Math.max(0, Math.round(nodeRun.duration * 1000))

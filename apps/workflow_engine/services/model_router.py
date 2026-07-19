@@ -17,12 +17,18 @@ from apps.shared.db.models.llm import (
     LLMModel,
     LLMRelCredentialModel,
 )
+from apps.shared.services.model_routing_global_profile_catalog import (
+    canonical_model_routing_id,
+)
 from apps.workflow_engine.services.llm_output_contract import (
     build_json_output_schema_instruction,
     response_format_requires_json_instruction,
 )
 from apps.workflow_engine.services.model_routing_judge_first_policy import (
     JUDGE_FIRST_STRATEGY_ID,
+)
+from apps.workflow_engine.services.model_routing_decision_cache import (
+    accepted_decision,
 )
 from apps.workflow_engine.services.model_routing_local_classifier import (
     MDebertaModelChoiceClassifier,
@@ -263,10 +269,10 @@ class ModelRouter:
 
     # Judge 입력에서 이번 요청은 매 실행 달라지는 핵심 신호다. 고정 노드 프롬프트가
     # 길어도 요청 원문이 잘리지 않도록 별도 예산을 둔다.
-    _JUDGE_REQUEST_CHAR_BUDGET = 1_650
-    _JUDGE_TASK_DESCRIPTION_CHAR_BUDGET = 420
-    _JUDGE_PROMPT_SECTION_CHAR_BUDGET = 180
-    _JUDGE_OUTPUT_CONTRACT_CHAR_BUDGET = 720
+    _JUDGE_REQUEST_CHAR_BUDGET = 2_200
+    _JUDGE_TASK_DESCRIPTION_CHAR_BUDGET = 600
+    _JUDGE_PROMPT_SECTION_CHAR_BUDGET = 480
+    _JUDGE_OUTPUT_CONTRACT_CHAR_BUDGET = 900
 
     @classmethod
     def resolve_policy(
@@ -305,18 +311,35 @@ class ModelRouter:
         )
         candidates = configured_candidates or executable_model_ids
         if availability_is_enforced:
-            executable_by_normalized_id = {
-                cls.normalize_model_id(model_id): model_id
-                for model_id in executable_model_ids
-            }
+            executable_by_canonical_id: dict[str, str] = {}
+            for model_id in executable_model_ids:
+                normalized_model_id = cls.normalize_model_id(model_id)
+                canonical_id = canonical_model_routing_id(model_id)
+                existing = executable_by_canonical_id.get(canonical_id)
+                # canonical ID와 별칭이 함께 있으면 canonical API ID를 우선한다.
+                # 단, 별칭만 credential에 연결된 경우에는 그 별칭을 보존한다.
+                if existing is None or normalized_model_id == canonical_id:
+                    executable_by_canonical_id[canonical_id] = model_id
+
+            def available_representative(model_id: str | None) -> str | None:
+                if not model_id:
+                    return model_id
+                return executable_by_canonical_id.get(
+                    canonical_model_routing_id(model_id), model_id
+                )
+
+            default_model_id = available_representative(default_model_id)
+            fallback_model_id = available_representative(fallback_model_id)
             candidates = [
-                executable_by_normalized_id[cls.normalize_model_id(model_id)]
+                executable_by_canonical_id[canonical_model_routing_id(model_id)]
                 for model_id in candidates
-                if cls.normalize_model_id(model_id) in executable_by_normalized_id
+                if canonical_model_routing_id(model_id) in executable_by_canonical_id
             ]
             if not candidates and executable_model_ids:
                 candidates = executable_model_ids
-            allowed_models: set[str] | None = set(executable_by_normalized_id)
+            allowed_models: set[str] | None = {
+                cls.normalize_model_id(model_id) for model_id in executable_model_ids
+            }
         else:
             allowed_models = None
 
@@ -337,6 +360,30 @@ class ModelRouter:
 
         learning = active_policy.get("learning")
         learning = learning if isinstance(learning, dict) else {}
+        cached_decision = accepted_decision(
+            learning,
+            feature_text=routing_feature_text or runtime_context.text,
+            available_model_ids=candidates,
+        )
+        if cached_decision:
+            cached_selected = cls.first_available_model(
+                [cached_decision.get("selected_model_id")], allowed_models
+            )
+            if cached_selected:
+                return ModelRoutingPolicyDecision(
+                    selected_model_id=cached_selected,
+                    fallback_model_id=resolved_fallback,
+                    matched_rule_id="accepted-judge-decision-cache",
+                    reason_code=str(cached_decision.get("reason_code") or "judge_selected"),
+                    runtime_context=runtime_context,
+                    decision_source="accepted_judge_cache",
+                    strategy_id=JUDGE_FIRST_STRATEGY_ID,
+                    decision_factors={
+                        "learning_mode": str(learning.get("mode") or "judge_first"),
+                        "cached_judge_confidence": cached_decision.get("confidence"),
+                        "candidate_model_count": len(candidates),
+                    },
+                )
         artifact = learning.get("local_router_artifact")
         min_confidence = cls._confidence(
             learning.get("local_confidence_threshold"),
@@ -447,7 +494,7 @@ class ModelRouter:
         if output_contract:
             task_contract_parts.append(f"OUTPUT_CONTRACT:\n{output_contract}")
 
-        request_text = cls._flatten_text(inputs)[: cls._JUDGE_REQUEST_CHAR_BUDGET]
+        request_json = cls._judge_request_json(inputs)
         safe_rag_metadata = {
             key: value
             for key, value in (rag_metadata or {}).items()
@@ -459,11 +506,15 @@ class ModelRouter:
                 "retrieved_chunk_count",
                 "source_count",
                 "evidence_sufficient",
+                "partial_result",
+                "query_rewrite_applied",
+                "insufficiency_reason",
+                "source_tier_used",
             }
             and isinstance(value, (bool, int, float, str))
         }
         parts = [
-            f"CURRENT_REQUEST:\n{request_text}" if request_text else "",
+            f"CURRENT_REQUEST_JSON:\n{request_json}" if request_json else "",
             "NODE_TASK_CONTRACT:\n" + "\n\n".join(task_contract_parts),
         ]
         if safe_rag_metadata:
@@ -472,6 +523,77 @@ class ModelRouter:
                 + json.dumps(safe_rag_metadata, ensure_ascii=False, sort_keys=True)
             )
         return "\n\n".join(part for part in parts if part)
+
+    @classmethod
+    def _judge_request_json(cls, inputs: dict[str, Any]) -> str:
+        """Preserve request keys and scalar types within the Judge budget."""
+
+        for string_limit, item_limit in ((900, 24), (360, 16), (160, 10)):
+            bounded = cls._bounded_judge_value(
+                inputs,
+                string_limit=string_limit,
+                item_limit=item_limit,
+            )
+            serialized = json.dumps(
+                bounded,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+            if len(serialized) <= cls._JUDGE_REQUEST_CHAR_BUDGET:
+                return serialized
+
+        preview_budget = max(cls._JUDGE_REQUEST_CHAR_BUDGET - 80, 0)
+        return json.dumps(
+            {
+                "_truncated": True,
+                "text_preview": cls._flatten_text(inputs)[:preview_budget],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    @classmethod
+    def _bounded_judge_value(
+        cls,
+        value: Any,
+        *,
+        string_limit: int,
+        item_limit: int,
+    ) -> Any:
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            if len(value) <= string_limit:
+                return value
+            return value[: string_limit - 1].rstrip() + "…"
+        if isinstance(value, dict):
+            items = list(value.items())
+            result = {
+                str(key): cls._bounded_judge_value(
+                    child,
+                    string_limit=string_limit,
+                    item_limit=item_limit,
+                )
+                for key, child in items[:item_limit]
+            }
+            if len(items) > item_limit:
+                result["_omitted_key_count"] = len(items) - item_limit
+            return result
+        if isinstance(value, (list, tuple, set)):
+            items = list(value)
+            result = [
+                cls._bounded_judge_value(
+                    child,
+                    string_limit=string_limit,
+                    item_limit=item_limit,
+                )
+                for child in items[:item_limit]
+            ]
+            if len(items) > item_limit:
+                result.append({"_omitted_item_count": len(items) - item_limit})
+            return result
+        return str(value)[:string_limit]
 
     @classmethod
     def _judge_prompt_excerpt(cls, value: Any) -> str:

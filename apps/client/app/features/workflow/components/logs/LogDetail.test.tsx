@@ -127,25 +127,25 @@ describe('LogDetail', () => {
     });
 
     const routingDetails = screen
-      .getByText('Judge-first + 점진적 로컬 학습')
-      .closest('dl');
+      .getByText('모델 선택 결과')
+      .closest('section');
     expect(routingDetails).not.toBeNull();
     const routing = within(routingDetails as HTMLElement);
     expect(routing.getByText('gpt-4.1')).toBeInTheDocument();
     expect(
-      routing.getByText('이번 Judge 판단'),
+      routing.getByText('Judge 실행 성공'),
     ).toBeInTheDocument();
-    expect(routing.getByText(/Judge 모델: gpt-4.1-mini/)).toBeInTheDocument();
-    expect(routing.getByText(/판단 확신도 84.0%/)).toBeInTheDocument();
-    expect(routing.getByText(/Judge 비용 \$0.000130/)).toBeInTheDocument();
-    expect(routing.getByText('사유: 복수 근거 종합')).toBeInTheDocument();
-    expect(routing.getByText('검토 후보 모델 3개')).toBeInTheDocument();
-    expect(
-      routing.getByText(
-        (_, element) =>
-          element?.textContent === '학습 방식: Judge 학습 중 · 선택 기준 78.0%',
-      ),
-    ).toBeInTheDocument();
+    expect(routing.getByText('Judge 모델')).toBeInTheDocument();
+    expect(routing.getByText('gpt-4.1-mini')).toBeInTheDocument();
+    expect(routing.getByText('판단 확신도')).toBeInTheDocument();
+    expect(routing.getByText('84.0%')).toBeInTheDocument();
+    expect(routing.getByText('Judge 비용')).toBeInTheDocument();
+    expect(routing.getByText('$0.000130')).toBeInTheDocument();
+    expect(routing.getByText('복수 근거 종합')).toBeInTheDocument();
+    expect(routing.getByText('3개')).toBeInTheDocument();
+    expect(routing.getByText(/학습 방식:/)).toBeInTheDocument();
+    expect(routing.getByText(/Judge 학습 중/)).toBeInTheDocument();
+    expect(routing.getByText(/기준 78.0%/)).toBeInTheDocument();
   });
 
   it('run 전환 시 이전 LLM trace state를 즉시 초기화한다', async () => {

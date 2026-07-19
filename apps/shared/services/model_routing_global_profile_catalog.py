@@ -12,7 +12,9 @@ from decimal import Decimal
 from typing import Any, Iterable
 
 CATALOG_SOURCE = "official_provider_catalog"
-CATALOG_PROFILE_VERSION = "official-provider-catalog-v1"
+CATALOG_PROFILE_VERSION = "official-provider-catalog-v2"
+CATALOG_EVIDENCE_TYPE = "provider_documentation"
+CATALOG_SOURCE_VERIFIED_ON = "2026-07-18"
 
 OPENAI_MODELS_URL = "https://developers.openai.com/api/docs/models"
 OPENAI_PRICING_URL = "https://developers.openai.com/api/docs/pricing"
@@ -27,8 +29,13 @@ class OfficialProviderCatalogEntry:
     """Provider-published positioning, not a Nodease performance measurement."""
 
     provider: str
+    canonical_model_id: str
     capability_tier: str
     official_position: str
+    model_role: str
+    specialization_tags: tuple[str, ...]
+    evidence_type: str
+    source_verified_on: str
     lifecycle: str
     model_source_url: str
     pricing_source_url: str
@@ -46,12 +53,54 @@ class ModelRoutingCatalogProfile:
     prior_strength: Decimal
 
 
+MODEL_ROUTING_MODEL_ALIASES = {
+    "gpt-5.6": "gpt-5.6-sol",
+}
+
+
+def normalize_model_id(value: object) -> str:
+    return str(value or "").strip().lower().removeprefix("models/")
+
+
+def canonical_model_routing_id(value: object) -> str:
+    normalized = normalize_model_id(value)
+    return MODEL_ROUTING_MODEL_ALIASES.get(normalized, normalized)
+
+
+def deduplicate_model_routing_ids(model_ids: Iterable[str]) -> list[str]:
+    """Collapse provider aliases while retaining an actually available ID.
+
+    When both an alias and its canonical ID are available, prefer the canonical
+    ID. If only an alias is available, preserve it so runtime credential lookup
+    can still execute that exact provider model ID.
+    """
+
+    positions: dict[str, int] = {}
+    result: list[str] = []
+    for model_id in model_ids:
+        executable_id = str(model_id or "").strip()
+        normalized = normalize_model_id(executable_id)
+        if not normalized:
+            continue
+        canonical_id = canonical_model_routing_id(normalized)
+        existing_position = positions.get(canonical_id)
+        if existing_position is None:
+            positions[canonical_id] = len(result)
+            result.append(executable_id)
+            continue
+        if normalized == canonical_id:
+            result[existing_position] = executable_id
+    return result
+
+
 def _entries(
     model_ids: tuple[str, ...],
     *,
     provider: str,
     capability_tier: str,
     official_position: str,
+    model_role: str = "general_purpose",
+    specialization_tags: tuple[str, ...],
     lifecycle: str = "listed",
     model_source_url: str,
     pricing_source_url: str,
@@ -59,8 +108,13 @@ def _entries(
     return {
         model_id: OfficialProviderCatalogEntry(
             provider=provider,
+            canonical_model_id=canonical_model_routing_id(model_id),
             capability_tier=capability_tier,
             official_position=official_position,
+            model_role=model_role,
+            specialization_tags=specialization_tags,
+            evidence_type=CATALOG_EVIDENCE_TYPE,
+            source_verified_on=CATALOG_SOURCE_VERIFIED_ON,
             lifecycle=lifecycle,
             model_source_url=model_source_url,
             pricing_source_url=pricing_source_url,
@@ -74,26 +128,82 @@ def _entries(
 # are not a quality score and must not override Nodease operational evidence.
 OFFICIAL_PROVIDER_CATALOG: dict[str, OfficialProviderCatalogEntry] = {
     **_entries(
-        ("gpt-4o-mini", "gpt-5-mini", "gpt-5-nano", "gpt-5.4-nano", "gpt-5.6-luna"),
+        ("gpt-4o-mini", "gpt-5-mini", "gpt-5-nano", "gpt-5.4-nano"),
         provider="openai",
         capability_tier="economy",
         official_position="cost_sensitive",
+        model_role="efficient_generalist",
+        specialization_tags=("well_defined_tasks", "cost_sensitive", "high_volume"),
         model_source_url=OPENAI_MODELS_URL,
         pricing_source_url=OPENAI_PRICING_URL,
     ),
     **_entries(
-        ("gpt-4o", "gpt-4.1-mini", "gpt-5", "gpt-5.1", "gpt-5.2", "gpt-5.4-mini", "gpt-5.6-terra"),
+        ("gpt-5.6-luna",),
+        provider="openai",
+        capability_tier="economy",
+        official_position="cost_sensitive_high_volume",
+        model_role="efficient_generalist",
+        specialization_tags=("cost_sensitive", "high_volume"),
+        model_source_url=OPENAI_MODELS_URL,
+        pricing_source_url=OPENAI_PRICING_URL,
+    ),
+    **_entries(
+        ("gpt-4o", "gpt-4.1-mini", "gpt-5", "gpt-5.1", "gpt-5.2", "gpt-5.4-mini"),
         provider="openai",
         capability_tier="balanced",
         official_position="balanced_capability_cost",
+        model_role="balanced_generalist",
+        specialization_tags=("general_work", "balanced_capability_cost"),
         model_source_url=OPENAI_MODELS_URL,
         pricing_source_url=OPENAI_PRICING_URL,
     ),
     **_entries(
-        ("gpt-4.1", "gpt-5.4", "gpt-5.4-pro", "gpt-5.5", "gpt-5.5-pro", "gpt-5.6", "gpt-5.6-sol", "o3", "o3-pro"),
+        ("gpt-5.6-terra",),
+        provider="openai",
+        capability_tier="balanced",
+        official_position="balanced_intelligence_cost",
+        model_role="balanced_generalist",
+        specialization_tags=("everyday_work", "balanced_intelligence_cost", "reasoning"),
+        model_source_url=OPENAI_MODELS_URL,
+        pricing_source_url=OPENAI_PRICING_URL,
+    ),
+    **_entries(
+        ("gpt-4.1",),
+        provider="openai",
+        capability_tier="advanced",
+        official_position="non_reasoning_instruction_following",
+        model_role="non_reasoning_generalist",
+        specialization_tags=("instruction_following", "tool_calling", "long_context", "low_latency_non_reasoning"),
+        model_source_url=OPENAI_MODELS_URL,
+        pricing_source_url=OPENAI_PRICING_URL,
+    ),
+    **_entries(
+        ("gpt-5.4", "gpt-5.4-pro", "gpt-5.5", "gpt-5.5-pro"),
         provider="openai",
         capability_tier="advanced",
         official_position="high_capability_reasoning",
+        model_role="frontier_generalist",
+        specialization_tags=("complex_professional_work", "reasoning", "coding"),
+        model_source_url=OPENAI_MODELS_URL,
+        pricing_source_url=OPENAI_PRICING_URL,
+    ),
+    **_entries(
+        ("gpt-5.6", "gpt-5.6-sol"),
+        provider="openai",
+        capability_tier="advanced",
+        official_position="frontier_complex_professional_work",
+        model_role="frontier_generalist",
+        specialization_tags=("complex_professional_work", "complex_reasoning", "coding"),
+        model_source_url=OPENAI_MODELS_URL,
+        pricing_source_url=OPENAI_PRICING_URL,
+    ),
+    **_entries(
+        ("o3", "o3-pro"),
+        provider="openai",
+        capability_tier="advanced",
+        official_position="specialized_complex_reasoning",
+        model_role="reasoning_specialist",
+        specialization_tags=("multi_step_reasoning", "math_reasoning", "scientific_reasoning", "code_reasoning", "visual_reasoning", "technical_writing", "instruction_following"),
         model_source_url=OPENAI_MODELS_URL,
         pricing_source_url=OPENAI_PRICING_URL,
     ),
@@ -102,6 +212,8 @@ OFFICIAL_PROVIDER_CATALOG: dict[str, OfficialProviderCatalogEntry] = {
         provider="anthropic",
         capability_tier="economy",
         official_position="fast_cost_efficient",
+        model_role="efficient_generalist",
+        specialization_tags=("low_latency", "high_volume", "cost_sensitive", "subagent_tasks"),
         model_source_url=ANTHROPIC_MODELS_URL,
         pricing_source_url=ANTHROPIC_PRICING_URL,
     ),
@@ -110,6 +222,8 @@ OFFICIAL_PROVIDER_CATALOG: dict[str, OfficialProviderCatalogEntry] = {
         provider="anthropic",
         capability_tier="balanced",
         official_position="balanced_capability_cost",
+        model_role="balanced_generalist",
+        specialization_tags=("coding", "agents", "enterprise_workflows", "balanced_capability_cost"),
         model_source_url=ANTHROPIC_MODELS_URL,
         pricing_source_url=ANTHROPIC_PRICING_URL,
     ),
@@ -118,6 +232,8 @@ OFFICIAL_PROVIDER_CATALOG: dict[str, OfficialProviderCatalogEntry] = {
         provider="anthropic",
         capability_tier="advanced",
         official_position="high_capability_reasoning",
+        model_role="frontier_generalist",
+        specialization_tags=("complex_reasoning", "agentic_coding", "enterprise_work", "advanced_research"),
         model_source_url=ANTHROPIC_MODELS_URL,
         pricing_source_url=ANTHROPIC_PRICING_URL,
     ),
@@ -126,6 +242,8 @@ OFFICIAL_PROVIDER_CATALOG: dict[str, OfficialProviderCatalogEntry] = {
         provider="google",
         capability_tier="economy",
         official_position="cost_efficient_high_volume",
+        model_role="efficient_generalist",
+        specialization_tags=("low_latency", "high_volume", "cost_sensitive"),
         model_source_url=GOOGLE_MODELS_URL,
         pricing_source_url=GOOGLE_PRICING_URL,
     ),
@@ -134,6 +252,8 @@ OFFICIAL_PROVIDER_CATALOG: dict[str, OfficialProviderCatalogEntry] = {
         provider="google",
         capability_tier="balanced",
         official_position="fast_general_capability",
+        model_role="balanced_generalist",
+        specialization_tags=("reasoning", "low_latency", "high_volume", "general_work"),
         model_source_url=GOOGLE_MODELS_URL,
         pricing_source_url=GOOGLE_PRICING_URL,
     ),
@@ -142,6 +262,8 @@ OFFICIAL_PROVIDER_CATALOG: dict[str, OfficialProviderCatalogEntry] = {
         provider="google",
         capability_tier="advanced",
         official_position="complex_problem_solving",
+        model_role="reasoning_generalist",
+        specialization_tags=("complex_problem_solving", "deep_reasoning", "coding", "long_context"),
         model_source_url=GOOGLE_MODELS_URL,
         pricing_source_url=GOOGLE_PRICING_URL,
     ),
@@ -150,6 +272,8 @@ OFFICIAL_PROVIDER_CATALOG: dict[str, OfficialProviderCatalogEntry] = {
         provider="google",
         capability_tier="advanced",
         official_position="preview_advanced_capability",
+        model_role="reasoning_generalist",
+        specialization_tags=("advanced_reasoning", "coding", "agentic_work"),
         lifecycle="preview",
         model_source_url=GOOGLE_MODELS_URL,
         pricing_source_url=GOOGLE_PRICING_URL,
@@ -172,32 +296,29 @@ SUPPORTED_MODEL_ROUTING_PROFILES: dict[str, ModelRoutingCatalogProfile] = {
 }
 
 
-def normalize_model_id(value: object) -> str:
-    return str(value or "").strip().lower().removeprefix("models/")
-
-
 def supported_model_routing_ids(model_ids: Iterable[str]) -> list[str]:
     """Preserve input order and retain only explicitly cataloged model IDs."""
 
-    seen: set[str] = set()
     supported: list[str] = []
-    for model_id in model_ids:
+    for model_id in deduplicate_model_routing_ids(model_ids):
         normalized = normalize_model_id(model_id)
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
         if normalized in SUPPORTED_MODEL_ROUTING_PROFILES:
             supported.append(str(model_id).strip())
     return supported
 
 
-def catalog_metadata_for_model_id(model_id: object) -> dict[str, str]:
+def catalog_metadata_for_model_id(model_id: object) -> dict[str, Any]:
     entry = OFFICIAL_PROVIDER_CATALOG.get(normalize_model_id(model_id))
     if entry is None:
         return {}
     return {
         "provider": entry.provider,
+        "canonical_model_id": entry.canonical_model_id,
         "official_position": entry.official_position,
+        "model_role": entry.model_role,
+        "specialization_tags": list(entry.specialization_tags),
+        "evidence_type": entry.evidence_type,
+        "source_verified_on": entry.source_verified_on,
         "lifecycle": entry.lifecycle,
         "model_source_url": entry.model_source_url,
         "pricing_source_url": entry.pricing_source_url,

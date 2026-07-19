@@ -1130,6 +1130,12 @@ def test_demo_runtime_credential_grants_agent_builder_user_permission(monkeypatc
 def test_demo_seed_chat_models_use_gpt_5_4_family():
     assert demo_seed.DEMO_CHAT_MODEL == "gpt-5.4"
     assert demo_seed.DEMO_CHAT_MINI_MODEL == "gpt-5.4-mini"
+    assert demo_seed.DEMO_MODEL_ROUTER_LATEST_ECONOMY_MODEL == "gpt-5.6-luna"
+    assert demo_seed.DEMO_MODEL_ROUTER_LATEST_BALANCED_MODEL == "gpt-5.6-terra"
+    assert demo_seed.DEMO_MODEL_ROUTER_LATEST_ADVANCED_MODEL == "gpt-5.6"
+    assert demo_seed.DEMO_MODEL_ROUTER_LATEST_SOL_MODEL == "gpt-5.6-sol"
+    assert demo_seed.DEMO_MODEL_ROUTER_OMNI_MODEL == "gpt-4o"
+    assert demo_seed.DEMO_MODEL_ROUTER_REASONING_MODEL == "o3"
     assert set(demo_seed.CREDENTIAL_MODEL_REL_IDS) == {
         demo_seed.DEMO_CHAT_MODEL,
         demo_seed.DEMO_CHAT_MINI_MODEL,
@@ -1137,6 +1143,12 @@ def test_demo_seed_chat_models_use_gpt_5_4_family():
         demo_seed.DEMO_MODEL_ROUTER_FALLBACK_MODEL,
         demo_seed.DEMO_MODEL_ROUTER_CHEAP_MODEL,
         demo_seed.DEMO_MODEL_ROUTER_BALANCED_MODEL,
+        demo_seed.DEMO_MODEL_ROUTER_LATEST_ECONOMY_MODEL,
+        demo_seed.DEMO_MODEL_ROUTER_LATEST_BALANCED_MODEL,
+        demo_seed.DEMO_MODEL_ROUTER_LATEST_ADVANCED_MODEL,
+        demo_seed.DEMO_MODEL_ROUTER_LATEST_SOL_MODEL,
+        demo_seed.DEMO_MODEL_ROUTER_OMNI_MODEL,
+        demo_seed.DEMO_MODEL_ROUTER_REASONING_MODEL,
         demo_seed.DEMO_ONBOARDING_ROUTER_MODEL,
         demo_seed.DEMO_EMBEDDING_MODEL,
     }
@@ -1353,6 +1365,7 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     routing_global_profiles_revision = script.get_revision("bd9e0f1a2b35")
     retired_input_cohort_cleanup_revision = script.get_revision("c6f8a1b2d3e4")
     workflow_node_secret_revision = script.get_revision("f5b6c7d8e9fa")
+    learning_label_feature_hash_revision = script.get_revision("c3d4e5f6a7b8")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -1420,7 +1433,8 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     assert "b0c1d2e3f4a5" in ancestry
     assert retired_input_cohort_cleanup_revision.down_revision == "bd9e0f1a2b35"
     assert workflow_node_secret_revision.down_revision == "f4a5b6c7d8e9"
-    assert script.get_heads() == ["f5b6c7d8e9fa"]
+    assert learning_label_feature_hash_revision.down_revision == "f5b6c7d8e9fa"
+    assert script.get_heads() == ["c3d4e5f6a7b8"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

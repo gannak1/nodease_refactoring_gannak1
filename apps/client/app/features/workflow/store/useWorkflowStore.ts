@@ -84,6 +84,7 @@ export type TestNodeResult = {
   nodeId: string;
   nodeType: string;
   output: unknown;
+  traceMetadata?: Record<string, unknown>;
   title?: string;
   status?: 'running' | 'success' | 'failure';
   latencyMs?: number;

@@ -202,7 +202,6 @@ class PersistedModelRoutingBootstrapStore:
             {
                 "bootstrap_id": str(bootstrap.id),
                 "task_fingerprint": bootstrap.task_fingerprint,
-                "judge_model_id": bootstrap.default_model_id,
             }
         )
         return policy

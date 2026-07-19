@@ -480,6 +480,28 @@ class TraceMetadataSanitizer:
                 "learning_error",
             },
         )
+        status = safe_value.get("status")
+        if status in {"selected", "failed", "unavailable", "not_called"}:
+            sanitized["status"] = status
+        attempted = safe_value.get("attempted")
+        if isinstance(attempted, bool):
+            sanitized["attempted"] = attempted
+        candidate_model_count = safe_value.get("candidate_model_count")
+        if (
+            not isinstance(candidate_model_count, bool)
+            and isinstance(candidate_model_count, int)
+            and 0 <= candidate_model_count <= 10_000
+        ):
+            sanitized["candidate_model_count"] = candidate_model_count
+        not_called_reason = safe_value.get("not_called_reason")
+        if isinstance(not_called_reason, str) and not_called_reason in {
+            "policy_unavailable",
+            "active_policy_unavailable",
+            "legacy_policy_ignored",
+            "test_policy_preview",
+            "judge_not_required",
+        }:
+            sanitized["not_called_reason"] = not_called_reason
         raw_reason_code = safe_value.get("reason_code")
         reason_code = raw_reason_code.strip() if isinstance(raw_reason_code, str) else ""
         if reason_code:

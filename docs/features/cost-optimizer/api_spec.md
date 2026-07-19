@@ -116,6 +116,13 @@ embedding vector, semantic cohort endpoint는 제공하지 않는다. 초기 운
 현재 후보 중 하나를 선택하고, 이후에는 Judge 선택 label과 완료된 운영 결과를 바탕으로 local
 router가 먼저 선택한다.
 
+Runtime Judge의 `candidate_models`에는 provider 공식 문서에서 확인한
+`canonical_model_id`, `model_role`, `specialization_tags`,
+`evidence_type=provider_documentation`을 포함한다.
+공식 별칭과 정식 ID가 동시에 실행 가능하면 정식 ID 하나만 전달하고, 별칭만 실행 가능하면
+credential 조회가 가능한 별칭을 유지한다. 공급자 특화 태그는 약한 사전 정보이며
+`operational_run_count`가 충분한 후보의 계약 성공·fallback 성적보다 우선하지 않는다.
+
 ### Legacy Bootstrap Contract
 
 이 API는 기존 bootstrap 데이터를 조회하는 호환 경로다. 신규 자동 라우팅은 이 artifact를 읽거나
@@ -185,7 +192,7 @@ Policy response는 다음 구조를 사용한다.
     "strategy_id": "judge_bootstrap_incremental_v1",
     "default_model_id": "gpt-4.1-mini",
     "fallback_model_id": "gpt-4.1",
-    "judge_model_id": "gpt-4.1-mini",
+    "judge_model_id": "gpt-5.4-mini",
     "learning": {
       "mode": "judge_first",
       "judged_request_count": 7,
@@ -210,6 +217,36 @@ Policy response는 다음 구조를 사용한다.
   },
 }
 ~~~
+
+`judge_model_id`는 `default_model_id`와 독립적으로 결정한다. 기존 정책처럼 두 값이 같으면
+runtime은 이를 레거시 결합으로 간주하고, 현재 실행 주체가 사용할 수 있는 동일 provider의
+Judge 선호 모델로 교체한다. 명시적으로 다른 Judge가 저장돼 있고 여전히 사용 가능하면 그 값을
+유지한다. 선호 Judge가 없을 때만 기본 모델을 Judge로 사용한다.
+
+Runtime Judge provider request는 외부 API 계약이 아니라 Workflow Engine 내부 계약이다. user content에는
+`request_feature`, `rag_context`, `candidate_models`만 보낸다. `request_feature`는 JSON 구조를 보존한
+`CURRENT_REQUEST_JSON`과 길이 제한된 세 prompt, 출력 계약을 포함한다. `rag_context`는 검색량과
+근거 충분성 같은 safe signal만 허용하며 chunk/document 원문은 금지한다. `candidate_models`에는 가격,
+운영 계약 성적, 공식 역할·특화 태그와 `context_window`를 포함할 수 있다. 정상 응답은 선택 결과 외에
+다음 선택적 요구 능력 요약을 반환할 수 있다.
+
+~~~json
+{
+  "selected_model_id": "gpt-5-mini",
+  "confidence": 0.86,
+  "reason_short": "근거 종합 필요",
+  "reason_code": "evidence_synthesis",
+  "task_requirements": {
+    "task_complexity": 2,
+    "decision_impact": 1,
+    "evidence_synthesis": 3,
+    "output_precision": 2
+  }
+}
+~~~
+
+각 요구 능력 점수는 0~3 정수이며, 계약 밖의 값은 trace에서 폐기한다. 정상 Judge 출력 한도는
+768 token이다.
 
 `last_decision`은 현재 active deployment에서 해당 LLM 노드가 마지막으로 완료한
 실행의 선택 결과다. 패널에서 실제 선택 모델과 판단 사유를 보여주기 위한 값이며,
@@ -240,13 +277,29 @@ Preview와 runtime은 같은 `ModelRouter.routing_feature_text()` builder와 sid
 `409 model_routing.prompt_render_failed`로 fail-closed하며 raw template/input을 응답에 포함하지 않는다.
 
 실행 trace의 `llm.model_routing`에는 정책 ID/version, 선택·대체 모델, strategy ID,
-reason code, runtime context, `decision_source`, `judge_called`를 남긴다. Judge가 호출된
-경우에만 `judge`에 Judge 모델, confidence, allowlisted reason code, reason code에서 파생한 고정 한국어
-`reason_short`, 토큰 usage와 비용의 안전 요약을
-남긴다. 로컬 라우터가 선택한 경우 `decision_factors`에는 learning mode, confidence,
-후보 확률의 요약만 남긴다. 원문 prompt/입력, 검색 문서 원문, embedding vector는
-반환하거나 저장하지 않는다. Judge가 생성한 자유형 `reason_short`는 durable trace에 저장하지 않으며,
-알 수 없는 reason code는 `judge_reason_unrecognized`로 일반화한다.
+reason code, runtime context, `decision_source`, `judge_called`를 남긴다. `judge_called`은
+**실제 Judge provider 호출을 시도했는지**만 뜻하며, 선택 성공 여부를 뜻하지 않는다.
+
+`judge`는 자동 라우팅 실행마다 다음 안전 요약을 남긴다.
+
+| 필드 | 의미 |
+| --- | --- |
+| `status` | `selected`, `failed`, `unavailable`, `not_called` 중 하나 |
+| `attempted` | Judge provider 호출을 실제로 시도했는지 |
+| `model` | 호출한 Judge 모델. 준비 전에 실패하면 없을 수 있음 |
+| `candidate_model_count` | Judge가 비교하려던 실행 가능 후보 수 |
+| `confidence`, `reason_code`, `reason_short`, `cost` | `status=selected`일 때의 선택 근거 |
+| `error_code` | `failed` 또는 `unavailable`일 때의 안전 오류 코드 |
+| `not_called_reason` | local router 선택, 정책 없음, 테스트 preview 등 미호출 이유 |
+| `learning_status`, `learning_not_queued_reason` | label이 `pending_contract`로 저장됐는지, 저장하지 못했다면 안전한 실패 코드 |
+
+따라서 `failed`는 “Judge를 호출했지만 결과를 사용할 수 없어 기본 모델로 회귀함”이고,
+`not_called`은 “이번 실행에서는 Judge 호출 자체가 없었음”이다. 이전 trace에 이 구조가
+없으면 UI는 실패로 추측하지 않고 `Judge 실행 정보 없음`으로 표시한다. 로컬 라우터가
+선택한 경우 `decision_factors`에는 learning mode, confidence, 후보 확률의 요약만 남긴다.
+원문 prompt/입력, 검색 문서 원문, embedding vector는 반환하거나 저장하지 않는다.
+Judge가 생성한 자유형 `reason_short`는 durable trace에 저장하지 않으며, 알 수 없는
+reason code는 `judge_reason_unrecognized`로 일반화한다.
 
 Judge가 선택한 실행은 처음에는 `learning_status=pending_contract`로 기록한다. workflow
 완료 후 node 성공, schema/downstream 계약, fallback 여부를 확인해 `accepted` 또는
@@ -256,6 +309,10 @@ Judge가 선택한 실행은 처음에는 `learning_status=pending_contract`로 
 거절 사유나 schema 평가·통과 집계의 분모에 포함하지 않는다. 반면 선언된 JSON schema가 유효하지 않아
 검사를 완료하지 못한 `schema_status=not_evaluated`는 `schema_failed` 학습 거절로 처리하고 schema 평가
 분모에는 포함하되 통과 건수에는 포함하지 않는다.
+
+`accepted` label에는 원문이 아닌 `routing_feature_hash`만 저장한다. 이를 이용해 같은 feature의
+계약 통과 Judge 선택을 재사용할 수 있으며, 모델 사용 권한이 바뀌었거나 hash key가 없으면
+cache hit로 처리하지 않는다.
 
 ### Persistence Model
 
@@ -267,7 +324,7 @@ Judge가 선택한 실행은 처음에는 `learning_status=pending_contract`로 
 | llm_node_model_routing_policy_updates | 정책 재평가의 trigger, 안전한 입력/출력 요약, 결과 |
 | llm_node_model_routing_policy_run_events | 배포 후 운영 실행의 중복 없는 점검 카운터 |
 | llm_node_model_routing_performances | 배포/node/model/입력 길이 profile별 운영 성적 |
-| llm_node_model_routing_learning_labels | Judge 선택의 안전한 vector와 완료 후 계약 기반 학습 확정 상태. 원문 prompt/input은 저장하지 않는다. |
+| llm_node_model_routing_learning_labels | Judge 선택의 안전한 vector, HMAC routing feature hash와 완료 후 계약 기반 학습 확정 상태. 원문 prompt/input은 저장하지 않는다. |
 | llm_model_routing_global_profiles | Judge-first runtime이 후보 모델의 초기 품질·지연·fallback 사전 정보를 읽는 전역 catalog profile. 실행 주체가 사용할 수 있으면서 명시적 catalog에 등록된 모델만 후보가 된다. |
 
 Test Sidebar 실행은 활성 배포 정책을 대상으로 runtime Judge를 호출할 수 있지만, Judge label·운영 정책 카운터·성적에는 포함하지 않는다. Cost Optimizer candidate 비교 실행도 운영 정책 카운터와 성적에 포함하지 않는다.

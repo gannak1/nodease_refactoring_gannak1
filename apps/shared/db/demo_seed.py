@@ -110,6 +110,14 @@ DEMO_MODEL_ROUTER_BASE_MODEL = "gpt-5-mini"
 DEMO_MODEL_ROUTER_FALLBACK_MODEL = "gpt-4.1"
 DEMO_MODEL_ROUTER_CHEAP_MODEL = "gpt-4o-mini"
 DEMO_MODEL_ROUTER_BALANCED_MODEL = "gpt-4.1-mini"
+# 최신 GPT-5.6 계열은 workflow 자동 라우팅 allowlist와 같은 범위로 runtime
+# credential에 연결한다. 특정 모델의 선택 여부는 seed가 아닌 정책/실행 단계가 결정한다.
+DEMO_MODEL_ROUTER_LATEST_ECONOMY_MODEL = "gpt-5.6-luna"
+DEMO_MODEL_ROUTER_LATEST_BALANCED_MODEL = "gpt-5.6-terra"
+DEMO_MODEL_ROUTER_LATEST_ADVANCED_MODEL = "gpt-5.6"
+DEMO_MODEL_ROUTER_LATEST_SOL_MODEL = "gpt-5.6-sol"
+DEMO_MODEL_ROUTER_OMNI_MODEL = "gpt-4o"
+DEMO_MODEL_ROUTER_REASONING_MODEL = "o3"
 # 이 RAG 실험은 낮은 비용 후보를 검증하는 흐름이 목적이다. Responses API의
 # reasoning token이 900 token 출력 예산을 먼저 소진하지 않는 안정적인 기준 모델로
 # 시작해, 후보 품질 gate와 입력군 routing 자체를 검증한다.
@@ -242,7 +250,13 @@ CREDENTIAL_MODEL_REL_IDS = {
     DEMO_MODEL_ROUTER_FALLBACK_MODEL: _uuid(925),
     DEMO_MODEL_ROUTER_CHEAP_MODEL: _uuid(926),
     DEMO_MODEL_ROUTER_BALANCED_MODEL: _uuid(927),
+    DEMO_MODEL_ROUTER_LATEST_ECONOMY_MODEL: _uuid(928),
     DEMO_ONBOARDING_ROUTER_MODEL: _uuid(929),
+    DEMO_MODEL_ROUTER_LATEST_BALANCED_MODEL: _uuid(942),
+    DEMO_MODEL_ROUTER_LATEST_ADVANCED_MODEL: _uuid(943),
+    DEMO_MODEL_ROUTER_LATEST_SOL_MODEL: _uuid(944),
+    DEMO_MODEL_ROUTER_OMNI_MODEL: _uuid(945),
+    DEMO_MODEL_ROUTER_REASONING_MODEL: _uuid(946),
 }
 
 TEAM_LLM_PERMISSION_IDS = {
@@ -3476,6 +3490,42 @@ def _ensure_openai_provider_and_models(db: Session) -> tuple[LLMProvider, dict[s
             Decimal("0.001600"),
             1000000,
         ),
+        DEMO_MODEL_ROUTER_LATEST_ECONOMY_MODEL: (
+            "chat",
+            Decimal("0.001000"),
+            Decimal("0.006000"),
+            400000,
+        ),
+        DEMO_MODEL_ROUTER_LATEST_BALANCED_MODEL: (
+            "chat",
+            Decimal("0.002500"),
+            Decimal("0.015000"),
+            400000,
+        ),
+        DEMO_MODEL_ROUTER_LATEST_ADVANCED_MODEL: (
+            "chat",
+            Decimal("0.005000"),
+            Decimal("0.030000"),
+            400000,
+        ),
+        DEMO_MODEL_ROUTER_LATEST_SOL_MODEL: (
+            "chat",
+            Decimal("0.005000"),
+            Decimal("0.030000"),
+            400000,
+        ),
+        DEMO_MODEL_ROUTER_OMNI_MODEL: (
+            "chat",
+            Decimal("0.002500"),
+            Decimal("0.010000"),
+            128000,
+        ),
+        DEMO_MODEL_ROUTER_REASONING_MODEL: (
+            "chat",
+            Decimal("0.002000"),
+            Decimal("0.008000"),
+            200000,
+        ),
         DEMO_ONBOARDING_ROUTER_MODEL: (
             "chat",
             Decimal("0.001000"),
@@ -4184,6 +4234,12 @@ def _seed_llm_credential(
         DEMO_MODEL_ROUTER_FALLBACK_MODEL,
         DEMO_MODEL_ROUTER_CHEAP_MODEL,
         DEMO_MODEL_ROUTER_BALANCED_MODEL,
+        DEMO_MODEL_ROUTER_LATEST_ECONOMY_MODEL,
+        DEMO_MODEL_ROUTER_LATEST_BALANCED_MODEL,
+        DEMO_MODEL_ROUTER_LATEST_ADVANCED_MODEL,
+        DEMO_MODEL_ROUTER_LATEST_SOL_MODEL,
+        DEMO_MODEL_ROUTER_OMNI_MODEL,
+        DEMO_MODEL_ROUTER_REASONING_MODEL,
         DEMO_ONBOARDING_ROUTER_MODEL,
     ]
     if runtime_credential_enabled:

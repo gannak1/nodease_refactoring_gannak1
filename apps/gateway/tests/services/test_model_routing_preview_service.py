@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -221,10 +222,20 @@ class TestModelRoutingPreviewService:
                         "format": "요약",
                     }
                 },
-            )
+        )
 
         feature = resolve_policy.call_args.kwargs["routing_feature_text"]
-        assert "CURRENT_REQUEST:" in feature
+        assert "CURRENT_REQUEST_JSON:" in feature
+        request_json = feature.split("CURRENT_REQUEST_JSON:\n", 1)[1].split(
+            "\n\nNODE_TASK_CONTRACT:", 1
+        )[0]
+        assert json.loads(request_json) == {
+            "start": {
+                "department": "개발팀",
+                "format": "요약",
+                "question": "휴가와 운영 규정을 비교해 주세요.",
+            }
+        }
         assert "휴가와 운영 규정" in feature
         assert "TASK_DESCRIPTION:\n회사 정책 근거를 비교해 답합니다." in feature
         assert "SYSTEM_PROMPT:\n개발팀 정책만 검토합니다." in feature

@@ -3,7 +3,8 @@
 같은 enterprise ticket workflow의 LLM 노드를 세 방식으로 실제 실행한다.
 
 * ``automatic``: 배포된 ``judge_bootstrap_incremental_v1`` 정책을 사용한다.
-* ``high_fixed``: 고가 모델 ``gpt-5.4``를 고정한다.
+* ``mid_fixed``: 중간 모델 ``gpt-5.4-mini``를 고정한다.
+* ``high_fixed``: 고가 모델 ``gpt-5.6-sol``를 고정한다.
 * ``low_fixed``: 저가 모델 ``gpt-4o-mini``를 고정한다.
 
 모든 실행은 실제 ``WorkflowEngine``과 provider credential을 사용한다. 품질은
@@ -65,7 +66,6 @@ from apps.workflow_engine.services.model_routing_policy_store import (
 from apps.workflow_engine.services.model_routing_runtime_judge import (
     ModelRoutingRuntimeJudge,
 )
-from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 from scripts.model_routing_benchmark_cases_v22 import V22_HOLDOUT_CASE_POOLS
 
 
@@ -76,16 +76,21 @@ WORKFLOW_ID = uuid.UUID("98000000-0000-0000-0000-000000000002")
 AUTO_DEPLOYMENT_ID = uuid.UUID("98000000-0000-0000-0000-000000000003")
 HIGH_DEPLOYMENT_ID = uuid.UUID("98000000-0000-0000-0000-000000000004")
 LOW_DEPLOYMENT_ID = uuid.UUID("98000000-0000-0000-0000-000000000005")
+MID_DEPLOYMENT_ID = uuid.UUID("98000000-0000-0000-0000-000000000006")
 NAMESPACE = uuid.UUID("98000000-0000-0000-0000-000000000100")
 NODE_ID = "llm-triage"
 
 AUTO_ARM = "automatic"
+MID_ARM = "mid_fixed"
 HIGH_ARM = "high_fixed"
 LOW_ARM = "low_fixed"
-ARMS = (AUTO_ARM, HIGH_ARM, LOW_ARM)
-HIGH_MODEL = "gpt-5.4"
+# 기본값은 기존 4-arm 경제성 실험과 호환된다. 필요한 비교 방식만 골라 실행할
+# 수 있도록 ``--arms``에서 이 값을 좁힌다.
+ARMS = (AUTO_ARM, MID_ARM, HIGH_ARM, LOW_ARM)
+MID_MODEL = "gpt-5.4-mini"
+HIGH_MODEL = "gpt-5.6-sol"
 LOW_MODEL = "gpt-4o-mini"
-ROUTING_JUDGE_MODEL = "gpt-5-mini"
+ROUTING_JUDGE_MODEL = "gpt-5.4-mini"
 # 품질 평가는 라우팅 Judge와 분리한다. 라우팅 Judge만 바꿔도 동일한 품질 평가
 # 기준으로 결과를 비교할 수 있어야 한다.
 QUALITY_JUDGE_MODEL = "gpt-5-mini"
@@ -293,6 +298,10 @@ def graph_for_arm(arm: str) -> dict[str, Any]:
                 node["data"].update(
                     _node_data(auto_routing=False, model_id=HIGH_MODEL, fallback_model_id=None)
                 )
+            elif arm == MID_ARM:
+                node["data"].update(
+                    _node_data(auto_routing=False, model_id=MID_MODEL, fallback_model_id=None)
+                )
             else:
                 node["data"].update(
                     _node_data(auto_routing=False, model_id=LOW_MODEL, fallback_model_id=None)
@@ -312,6 +321,7 @@ def graph_for_arm(arm: str) -> dict[str, Any]:
 def _deployment_id_for(arm: str) -> uuid.UUID:
     return {
         AUTO_ARM: AUTO_DEPLOYMENT_ID,
+        MID_ARM: MID_DEPLOYMENT_ID,
         HIGH_ARM: HIGH_DEPLOYMENT_ID,
         LOW_ARM: LOW_DEPLOYMENT_ID,
     }[arm]
@@ -329,12 +339,26 @@ def _ensure_runtime_models(db) -> list[str]:
         "gpt-4o-mini",
         "gpt-4.1-mini",
         "gpt-4.1",
+        "gpt-4o",
         "gpt-5-mini",
         "gpt-5.4-mini",
         "gpt-5.4",
+        "gpt-5.6-sol",
+        "gpt-5.6-luna",
+        "gpt-5.6-terra",
+        "o3",
     ]
     selected = [model_id for model_id in wanted if model_id in available]
-    required = {HIGH_MODEL, LOW_MODEL, ROUTING_JUDGE_MODEL, QUALITY_JUDGE_MODEL}
+    fixed_model_by_arm = {
+        MID_ARM: MID_MODEL,
+        HIGH_ARM: HIGH_MODEL,
+        LOW_ARM: LOW_MODEL,
+    }
+    required = {fixed_model_by_arm[arm] for arm in ARMS if arm in fixed_model_by_arm}
+    if AUTO_ARM in ARMS:
+        required.add(ROUTING_JUDGE_MODEL)
+    # 품질 Judge는 비교 arm 수와 무관하게 같은 기준으로 결과를 평가한다.
+    required.add(QUALITY_JUDGE_MODEL)
     missing = required - set(selected)
     if missing:
         raise RuntimeError(f"실험에 필요한 실행 가능 모델이 없습니다: {sorted(missing)}")
@@ -672,6 +696,10 @@ def synchronous_experiment_tasks():
 
 
 def _execute_case(arm: str, case: ExperimentCase) -> ArmResult:
+    # 이 스크립트의 데이터셋/설정 검증은 root CI에서도 실행된다. gevent가
+    # 필요한 실제 workflow 실행 엔진은 --execute 경로에서만 늦게 import한다.
+    from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
+
     graph = graph_for_arm(arm)
     run_id = _run_id(arm, case.case_id)
     engine = WorkflowEngine(
@@ -828,7 +856,7 @@ def _record_automatic_operational_result(case: ExperimentCase) -> None:
 
 
 def _quality_judge(case: ExperimentCase, results: dict[str, ArmResult]) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    """모델명을 숨긴 한 번의 비교 평가로 세 arm 품질을 공정하게 비교한다."""
+    """모델명과 Arm 이름을 숨긴 한 번의 비교 평가로 네 Arm 품질을 비교한다."""
 
     mapping = list(ARMS)
     random.Random(case.case_id).shuffle(mapping)
@@ -837,7 +865,7 @@ def _quality_judge(case: ExperimentCase, results: dict[str, ArmResult]) -> tuple
         for index, arm in enumerate(mapping)
     }
     prompt = {
-        "task": "기업 운영 요청 처리 workflow의 세 JSON 출력을 품질만으로 비교하세요.",
+        "task": "기업 운영 요청 처리 workflow의 네 JSON 출력을 품질만으로 비교하세요.",
         "input": {"customerTier": case.customer_tier, "message": case.message},
         "required_contract": {
             "fields": ["분류", "우선순위", "승인필요", "대응계획", "답변초안"],
@@ -1019,10 +1047,14 @@ def _percent(value: float | None) -> str:
 def render_markdown(report: dict[str, Any]) -> str:
     summary = report["arm_summary"]
     automatic = summary[AUTO_ARM]
-    high = summary[HIGH_ARM]
-    low = summary[LOW_ARM]
-    auto_vs_high = high["total_product_cost_usd"] - automatic["total_product_cost_usd"]
-    auto_vs_low_quality = automatic["quality_score_average"] - low["quality_score_average"]
+    mid = summary.get(MID_ARM)
+    high = summary.get(HIGH_ARM)
+    low = summary.get(LOW_ARM)
+    auto_vs_high = (
+        high["total_product_cost_usd"] - automatic["total_product_cost_usd"]
+        if high is not None
+        else None
+    )
     lines = [
         f"# Judge-first 자동 모델 라우팅 {report['case_count']}회 경제성 실험 보고서",
         "",
@@ -1031,9 +1063,25 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"이 실험은 같은 기업 요청 처리 워크플로우를 {report['case_count']}개의 서로 다른 요청으로 실행해, 자동 모델 라우팅이 비싼 모델만 고정하는 경우보다 돈을 아끼는지, 싼 모델만 고정하는 경우보다 결과 품질을 지키는지 확인한 결과입니다.",
         "",
         f"- 자동 라우팅 총 제품 비용: {_money(automatic['total_product_cost_usd'])}",
-        f"- 고가 고정 대비 자동 라우팅 순절감: {_money(auto_vs_high)} ({'절감' if auto_vs_high >= 0 else '추가 비용'})",
-        f"- 저가 고정 대비 자동 라우팅 평균 품질 차이: {auto_vs_low_quality:+.2f}점",
-        f"- 자동 라우팅에서 Runtime Judge가 실제 호출된 횟수: {automatic['runtime_judge_call_count']}/80",
+        (
+            f"- 고가 고정 대비 자동 라우팅 순절감: {_money(auto_vs_high)} "
+            f"({'절감' if auto_vs_high >= 0 else '추가 비용'})"
+            if auto_vs_high is not None
+            else "- 고가 고정 비교: 이번 실행에서 제외"
+        ),
+        (
+            f"- 중간 고정 모델: `{MID_MODEL}` / 중간 고정 대비 자동 품질 차이: "
+            f"{(automatic['quality_score_average'] - mid['quality_score_average']):+.2f}점"
+            if mid is not None
+            else "- 중간 고정 비교: 이번 실행에서 제외"
+        ),
+        (
+            f"- 저가 고정 대비 자동 라우팅 평균 품질 차이: "
+            f"{(automatic['quality_score_average'] - low['quality_score_average']):+.2f}점"
+            if low is not None
+            else "- 저가 고정 비교: 이번 실행에서 제외"
+        ),
+        f"- 자동 라우팅에서 Runtime Judge가 실제 호출된 횟수: {automatic['runtime_judge_call_count']}/{report['case_count']}",
         "",
         "자동 라우팅 비용에는 요청 처리 모델 비용과 Runtime Judge 비용을 모두 포함했습니다. 실험의 품질 평가 Judge 비용은 제품 기능의 런타임 비용이 아니므로 별도로 표시합니다.",
         "",
@@ -1044,7 +1092,13 @@ def render_markdown(report: dict[str, Any]) -> str:
         "- 실행 방식: 실제 WorkflowEngine, 실제 OpenAI provider 호출, 실제 배포 run/node run/usage log 기록",
         "- 자동 라우팅 전략: `judge_bootstrap_incremental_v1`",
         f"- 자동 라우팅 후보: {', '.join(report['available_models'])}",
-        f"- 고가 고정 모델: `{HIGH_MODEL}` / 저가 고정 모델: `{LOW_MODEL}`",
+        "- 고정 비교 모델: " + ", ".join(
+            label for arm, label in (
+                (HIGH_ARM, f"고가 `{HIGH_MODEL}`"),
+                (MID_ARM, f"중간 `{MID_MODEL}`"),
+                (LOW_ARM, f"저가 `{LOW_MODEL}`"),
+            ) if arm in ARMS
+        ),
         f"- 라우팅 Judge: `{report['routing_judge_model']}`",
         f"- 독립 품질 평가 Judge: `{report['quality_judge_model']}`",
         "- RAG: 미사용. 이번 비교에서는 KB 검색 품질 변수를 빼고 모델 라우팅 자체의 비용·속도·출력 품질만 측정했습니다.",
@@ -1066,7 +1120,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         "| 방식 | 처리 모델 비용 | 라우팅 Judge 비용 | 총 제품 비용 | 평균 LLM 노드 시간 | 평균 전체 시간 | 평균 품질 점수 | JSON 계약 통과 | 품질 통과 |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ])
-    labels = {AUTO_ARM: "자동 라우팅", HIGH_ARM: f"고가 고정 ({HIGH_MODEL})", LOW_ARM: f"저가 고정 ({LOW_MODEL})"}
+    labels = {
+        AUTO_ARM: "자동 라우팅",
+        MID_ARM: f"중간 고정 ({MID_MODEL})",
+        HIGH_ARM: f"고가 고정 ({HIGH_MODEL})",
+        LOW_ARM: f"저가 고정 ({LOW_MODEL})",
+    }
     for arm in ARMS:
         item = summary[arm]
         lines.append(
@@ -1107,24 +1166,49 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         f"- 독립 품질 Judge 총비용: {_money(report['quality_judge_total_cost_usd'])}",
         f"- 독립 품질 Judge 총호출: {report['quality_judge_call_count']}회",
-        "- 이 비용은 세 방식의 결과를 공정하게 비교하기 위한 측정 비용이며 제품 운영비 비교에는 포함하지 않았습니다.",
+        "- 이 비용은 네 방식의 결과를 공정하게 비교하기 위한 측정 비용이며 제품 운영비 비교에는 포함하지 않았습니다.",
         "",
         "## 요청별 결과",
         "",
-        "| # | 주제 | 예상 난이도 | 자동 선택 모델 | 자동 품질 | 고가 품질 | 저가 품질 | 자동 총비용 | 고가 비용 | 저가 비용 |",
-        "| ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| # | 주제 | 예상 난이도 | "
+        + " | ".join(
+            [
+                *(["자동 선택 모델", "자동 품질", "자동 총비용"] if AUTO_ARM in ARMS else []),
+                *(["중간 품질", "중간 비용"] if MID_ARM in ARMS else []),
+                *(["고가 품질", "고가 비용"] if HIGH_ARM in ARMS else []),
+                *(["저가 품질", "저가 비용"] if LOW_ARM in ARMS else []),
+            ]
+        )
+        + " |",
+        "| ---: | --- | --- | "
+        + " | ".join(
+            [
+                *( ["---", "---:", "---:"] if AUTO_ARM in ARMS else []),
+                *( ["---:", "---:"] if MID_ARM in ARMS else []),
+                *( ["---:", "---:"] if HIGH_ARM in ARMS else []),
+                *( ["---:", "---:"] if LOW_ARM in ARMS else []),
+            ]
+        )
+        + " |",
     ])
     for index, row in enumerate(report["runs"], start=1):
-        auto = row["arms"][AUTO_ARM]
-        high_row = row["arms"][HIGH_ARM]
-        low_row = row["arms"][LOW_ARM]
-        lines.append(
-            f"| {index} | {row['category']} | {row['expected_difficulty']} | {auto['selected_model'] or '-'} | "
-            f"{row['quality'][AUTO_ARM]['quality_score']:.1f} | {row['quality'][HIGH_ARM]['quality_score']:.1f} | "
-            f"{row['quality'][LOW_ARM]['quality_score']:.1f} | "
-            f"{_money(auto['task_cost_usd'] + auto['routing_judge_cost_usd'])} | "
-            f"{_money(high_row['task_cost_usd'])} | {_money(low_row['task_cost_usd'])} |"
-        )
+        cells = [str(index), row["category"], row["expected_difficulty"]]
+        if AUTO_ARM in ARMS:
+            auto = row["arms"][AUTO_ARM]
+            cells.extend([
+                auto["selected_model"] or "-",
+                f"{row['quality'][AUTO_ARM]['quality_score']:.1f}",
+                _money(auto["task_cost_usd"] + auto["routing_judge_cost_usd"]),
+            ])
+        for arm in (MID_ARM, HIGH_ARM, LOW_ARM):
+            if arm not in ARMS:
+                continue
+            fixed = row["arms"][arm]
+            cells.extend([
+                f"{row['quality'][arm]['quality_score']:.1f}",
+                _money(fixed["task_cost_usd"]),
+            ])
+        lines.append("| " + " | ".join(cells) + " |")
     lines.extend([
         "",
         "## 해석 시 주의점",
@@ -1171,14 +1255,23 @@ def _write_run_config(
             "gpt-4o-mini",
             "gpt-4.1-mini",
             "gpt-4.1",
+            "gpt-4o",
             "gpt-5-mini",
             "gpt-5.4-mini",
             "gpt-5.4",
+            "gpt-5.6-sol",
+            "gpt-5.6-luna",
+            "gpt-5.6-terra",
+            "o3",
         ],
         "comparison_arms": {
-            AUTO_ARM: "automatic routing",
-            HIGH_ARM: HIGH_MODEL,
-            LOW_ARM: LOW_MODEL,
+            arm: {
+                AUTO_ARM: "automatic routing",
+                MID_ARM: MID_MODEL,
+                HIGH_ARM: HIGH_MODEL,
+                LOW_ARM: LOW_MODEL,
+            }[arm]
+            for arm in ARMS
         },
         "dataset": {
             "name": "enterprise-ticket-80-v1",
@@ -1199,6 +1292,9 @@ def _write_run_config(
             "routing_judge_max_output_tokens",
             "quality_judge_model",
             "strategy_id",
+            "candidate_model_ids",
+            "comparison_arms",
+            "dataset",
         ):
             if previous.get(key) != config[key]:
                 raise RuntimeError(
@@ -1356,6 +1452,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Judge-first 자동 모델 라우팅 80회 경제성 실험")
     parser.add_argument("--execute", action="store_true", help="실제 provider 호출과 DB 로그 기록을 실행합니다.")
     parser.add_argument("--count", type=int, default=80, help="사전 검증용 실행 건수입니다. 기본값은 80입니다.")
+    parser.add_argument(
+        "--arms",
+        default=",".join(ARMS),
+        help=(
+            "실행할 비교 방식의 쉼표 구분 목록입니다. "
+            "automatic,mid_fixed,high_fixed,low_fixed 중 선택합니다."
+        ),
+    )
     parser.add_argument("--offset", type=int, default=0, help="80개 고정 데이터셋에서 시작할 0-base 위치입니다.")
     parser.add_argument("--resume", action="store_true", help="이전 10건 batch의 DB 정책과 보고서를 이어서 누적합니다.")
     parser.add_argument(
@@ -1384,9 +1488,21 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    global ROUTING_JUDGE_MODEL
+    global ROUTING_JUDGE_MODEL, ARMS
     args = parse_args()
     ROUTING_JUDGE_MODEL = str(args.routing_judge_model)
+    selected_arms = tuple(
+        arm.strip() for arm in str(args.arms).split(",") if arm.strip()
+    )
+    known_arms = {AUTO_ARM, MID_ARM, HIGH_ARM, LOW_ARM}
+    if not selected_arms or len(set(selected_arms)) != len(selected_arms):
+        raise SystemExit("--arms에는 중복 없이 하나 이상의 비교 방식을 넣어야 합니다.")
+    unknown_arms = set(selected_arms) - known_arms
+    if unknown_arms:
+        raise SystemExit(f"알 수 없는 --arms 값입니다: {sorted(unknown_arms)}")
+    if AUTO_ARM not in selected_arms:
+        raise SystemExit("이 실험은 automatic arm을 반드시 포함해야 합니다.")
+    ARMS = selected_arms
     output_dir, report_name = resolve_artifact_target(
         output_dir=str(args.output_dir),
         run_id=args.run_id,

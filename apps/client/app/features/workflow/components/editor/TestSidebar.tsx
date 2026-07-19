@@ -889,6 +889,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
           getNodeDisplayName(nodeId),
         status,
         output,
+        traceMetadata: storedResult?.traceMetadata,
         latencyMs: storedResult?.latencyMs ?? data.observability?.latency_ms,
         totalTokens:
           storedResult?.totalTokens ??
@@ -1044,13 +1045,38 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     summary: (typeof nodeExecutionSummaries)[number],
   ) => {
     const hasLlmUsageMetrics = summary.nodeType === 'llmNode';
+    const outputMetadata =
+      summary.output &&
+      typeof summary.output === 'object' &&
+      !Array.isArray(summary.output) &&
+      (summary.output as Record<string, unknown>).metadata &&
+      typeof (summary.output as Record<string, unknown>).metadata === 'object' &&
+      !Array.isArray((summary.output as Record<string, unknown>).metadata)
+        ? ((summary.output as Record<string, unknown>).metadata as Record<
+            string,
+            unknown
+          >)
+        : null;
+    const traceMetadata =
+      summary.traceMetadata &&
+      typeof summary.traceMetadata === 'object' &&
+      !Array.isArray(summary.traceMetadata)
+        ? (summary.traceMetadata as Record<string, unknown>)
+        : null;
+    const traceLlm =
+      traceMetadata?.llm &&
+      typeof traceMetadata.llm === 'object' &&
+      !Array.isArray(traceMetadata.llm)
+        ? (traceMetadata.llm as Record<string, unknown>)
+        : null;
     const hasRoutingTrace =
       hasLlmUsageMetrics &&
-      typeof summary.output === 'object' &&
-      summary.output !== null &&
-      !Array.isArray(summary.output) &&
-      typeof (summary.output as { metadata?: { model_routing?: unknown } })
-        .metadata?.model_routing === 'object';
+      (typeof outputMetadata?.model_routing === 'object' ||
+        typeof traceMetadata?.model_routing === 'object' ||
+        typeof traceLlm?.model_routing === 'object' ||
+        typeof traceLlm?.selected_model === 'string' ||
+        typeof traceLlm?.decision_source === 'string' ||
+        typeof traceLlm?.reason_code === 'string');
 
     return (
       <div className="space-y-5">
@@ -1114,7 +1140,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               이 테스트 실행은 자동 라우팅 정책의 학습 및 갱신 횟수에 포함되지
               않습니다.
             </p>
-            <ModelRoutingDecisionDetails output={summary.output} />
+            <ModelRoutingDecisionDetails
+              output={summary.output}
+              traceMetadata={summary.traceMetadata}
+            />
           </div>
         ) : null}
       </div>
@@ -1180,9 +1209,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     }
 
     selectExecutionNode(null);
+    setComparisonSelectedNodeId(null);
     restoredRunRef.current = null;
     setTestRunRestoreState('idle');
-    replaceTestExecutionLocation(null, null);
+    replaceTestExecutionLocation(null, null, { comparisonNodeId: null });
     setValidationErrors([]);
     setPreflightStatus('validating');
     let releaseTestPreflightSave: (() => void) | null = null;
@@ -1527,6 +1557,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 nodeId: data.node_id,
                 nodeType: data.node_type,
                 output: data.output,
+                traceMetadata:
+                  data.trace_metadata && typeof data.trace_metadata === 'object'
+                    ? data.trace_metadata
+                    : undefined,
                 title: getNodeDisplayName(data.node_id),
                 status: 'success',
                 latencyMs: metrics.latencyMs,
@@ -1617,9 +1651,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
 
   const handleReset = () => {
     selectExecutionNode(null);
+    setComparisonSelectedNodeId(null);
     restoredRunRef.current = null;
     setTestRunRestoreState('idle');
-    replaceTestExecutionLocation(null, null);
+    replaceTestExecutionLocation(null, null, { comparisonNodeId: null });
     setValidationErrors([]);
     setPreflightStatus('idle');
     resetTestExecution();
@@ -1771,10 +1806,6 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
         {isExecuting ? (
           /* Execution Progress - Show node results as they come in */
           <div className="space-y-4">
-            <div className="flex items-center gap-2 text-blue-600 mb-4">
-              <Loader2 className="w-5 h-5 animate-spin" />
-              <h3 className="text-sm font-medium">테스트 실행 중...</h3>
-            </div>
             {nodeExecutionSummaries.length > 0 ? (
               nodeExecutionSummaries.map(renderNodeExecutionSummary)
             ) : (

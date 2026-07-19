@@ -64,6 +64,9 @@ describe('test execution restore', () => {
             model_routing: { selected_model: 'gpt-5.6-mini' },
           },
         }),
+        traceMetadata: {
+          model_routing: { selected_model: 'gpt-5.6-mini' },
+        },
       }),
     ]);
   });

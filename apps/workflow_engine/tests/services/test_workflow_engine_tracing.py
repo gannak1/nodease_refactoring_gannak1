@@ -405,6 +405,12 @@ def test_llm_trace_metadata_preserves_canonical_routing_and_rag_summaries():
                         "candidate_model_count": 3,
                     },
                     "judge_called": False,
+                    "judge": {
+                        "status": "not_called",
+                        "attempted": False,
+                        "candidate_model_count": 3,
+                        "not_called_reason": "test_policy_preview",
+                    },
                     "runtime_context": {
                         "output_format": "json",
                         "schema_required": True,
@@ -437,6 +443,12 @@ def test_llm_trace_metadata_preserves_canonical_routing_and_rag_summaries():
         "local_confidence": 0.86,
         "local_confidence_threshold": 0.78,
         "candidate_model_count": 3,
+    }
+    assert metadata["llm"]["judge"] == {
+        "status": "not_called",
+        "attempted": False,
+        "candidate_model_count": 3,
+        "not_called_reason": "test_policy_preview",
     }
     assert metadata["rag"]["context_token_estimate"] == 123
     assert metadata["rag"]["evidence_sufficient"] is True

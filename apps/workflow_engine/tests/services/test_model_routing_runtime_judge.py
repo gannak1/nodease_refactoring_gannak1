@@ -6,6 +6,7 @@ from apps.workflow_engine.services.model_routing_runtime_judge import (
     RuntimeJudgeResponseError,
 )
 from apps.shared.services.llm_client.base import ProviderInvocationError
+from apps.workflow_engine.workflow.nodes.llm.llm_node import LLMNode
 
 
 class _JudgeClient:
@@ -46,11 +47,31 @@ class _IncompleteThenCompactJudgeClient(_JudgeClient):
         }
 
 
+def test_runtime_judge_normalizes_invalid_display_reason_without_discarding_selection():
+    client = _JudgeClient(
+        '{"selected_model_id":"gpt-4o-mini",'
+        '"confidence":0.91,'
+        '"reason_short":"simple request",'
+        '"reason_code":"simple_response"}'
+    )
+
+    decision = ModelRoutingRuntimeJudge.decide(
+        client=client,
+        candidate_model_ids=["gpt-4o-mini"],
+        routing_feature_text="짧은 상태 확인 요청",
+    )
+
+    assert decision.selected_model_id == "gpt-4o-mini"
+    assert decision.reason_short == "단순 응답 처리"
+
+
 def test_runtime_judge_accepts_only_current_execution_subject_candidates():
     client = _JudgeClient(
         '{"selected_model_id":"gpt-5-mini",'
         '"confidence":0.86,'
-        '"reason_short":"근거 종합 필요","reason_code":"advanced_quality"}'
+        '"reason_short":"근거 종합 필요","reason_code":"advanced_quality",'
+        '"task_requirements":{"task_complexity":2,"decision_impact":1,'
+        '"evidence_synthesis":3,"output_precision":2}}'
     )
 
     decision = ModelRoutingRuntimeJudge.decide(
@@ -89,6 +110,13 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
     assert decision.reason_short == "근거 종합 필요"
     assert decision.confidence == 0.86
     assert decision.reason_code == "advanced_quality"
+    assert decision.task_requirements == {
+        "task_complexity": 2,
+        "decision_impact": 1,
+        "evidence_synthesis": 3,
+        "output_precision": 2,
+    }
+    assert decision.safe_metadata()["task_requirements"] == decision.task_requirements
     assert decision.usage == {"prompt_tokens": 42, "completion_tokens": 18}
     rendered_prompt = client.calls[0]["messages"][1]["content"]
     prompt_body = __import__("json").loads(rendered_prompt)
@@ -97,6 +125,7 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
             "id": "gpt-4o-mini",
             "input_price_per_1k": 0.00015,
             "output_price_per_1k": 0.0006,
+            "context_window": 128000,
             "capability_tier": "economy",
             "quality_for_complex_reasoning": 0.62,
             "fallback_rate": 0.04,
@@ -105,6 +134,7 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
             "id": "gpt-5-mini",
             "input_price_per_1k": 0.00025,
             "output_price_per_1k": 0.002,
+            "context_window": 400000,
             "capability_tier": "balanced",
             "quality_for_complex_reasoning": 0.86,
             "fallback_rate": 0.01,
@@ -116,11 +146,11 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
     assert "candidate_profiles" not in prompt_body
     assert prompt_body["candidate_models"][0]["capability_tier"] == "economy"
     assert "작업 복잡도" in client.calls[0]["messages"][0]["content"]
-    assert "CURRENT_REQUEST는 이번 실행에서 달라지는 난이도 판단의 주된 근거" in client.calls[0]["messages"][0]["content"]
-    assert "economy·balanced·advanced 중 하나를 기계적으로 먼저 고르지 마세요" in client.calls[0]["messages"][0]["content"]
+    assert "CURRENT_REQUEST_JSON과 RAG_RUNTIME_SIGNALS는 이번 실행의 판단 자료" in client.calls[0]["messages"][0]["content"]
+    assert "주제 단어, 문장 길이, JSON 여부 하나만으로 수준을 결정하지 마세요" in client.calls[0]["messages"][0]["content"]
     assert "결정 영향도" in client.calls[0]["messages"][0]["content"]
     assert "근거 종합 범위" in client.calls[0]["messages"][0]["content"]
-    assert "특정 업무 분야의 단어만으로 고성능 모델을 고르면 안 됩니다" in client.calls[0]["messages"][0]["content"]
+    assert "짧아도 되돌리기 어려운 결정을 직접 내리거나" in client.calls[0]["messages"][0]["content"]
     assert "권한·개인정보·금전·보상" not in client.calls[0]["messages"][0]["content"]
     assert "가장 낮은 모델을 선택하세요" not in client.calls[0]["messages"][0]["content"]
     assert "cost" not in prompt_body["candidate_models"][0]
@@ -133,7 +163,7 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
     }
     assert "[파일:" not in rendered_prompt
     assert client.calls[0]["kwargs"]["response_format"] == {"type": "json_object"}
-    assert client.calls[0]["kwargs"]["max_tokens"] == 512
+    assert client.calls[0]["kwargs"]["max_tokens"] == 768
 
 
 def test_runtime_judge_marks_non_rag_request_without_inventing_retrieval_metrics():
@@ -152,6 +182,117 @@ def test_runtime_judge_marks_non_rag_request_without_inventing_retrieval_metrics
 
     prompt_body = __import__("json").loads(client.calls[0]["messages"][1]["content"])
     assert prompt_body["rag_context"] == {"used": False}
+
+
+def test_runtime_judge_receives_safe_rag_quality_signals_without_document_text():
+    client = _JudgeClient(
+        '{"selected_model_id":"gpt-5-mini","confidence":0.81,'
+        '"reason_short":"부분 근거 종합","reason_code":"evidence_synthesis"}'
+    )
+
+    ModelRoutingRuntimeJudge.decide(
+        client=client,
+        candidate_model_ids=["gpt-5-mini"],
+        routing_feature_text="근거를 종합해 판단합니다.",
+        rag_context={
+            "used": True,
+            "retrieved_chunk_count": 4,
+            "source_count": 2,
+            "evidence_sufficient": False,
+            "partial_result": True,
+            "insufficiency_reason": "partial_operational_failure",
+            "query_rewrite_applied": True,
+            "source_tier_used": "team",
+            "document_text": "절대 Judge에 보내면 안 되는 원문",
+        },
+    )
+
+    prompt_body = __import__("json").loads(client.calls[0]["messages"][1]["content"])
+    assert prompt_body["rag_context"] == {
+        "used": True,
+        "retrieved_chunk_count": 4,
+        "source_count": 2,
+        "evidence_sufficient": False,
+        "partial_result": True,
+        "insufficiency_reason": "partial_operational_failure",
+        "query_rewrite_applied": True,
+        "source_tier_used": "team",
+    }
+    assert "절대 Judge에 보내면 안 되는 원문" not in client.calls[0]["messages"][1]["content"]
+
+
+def test_runtime_judge_collapses_sol_alias_and_receives_source_backed_specializations():
+    client = _JudgeClient(
+        '{"selected_model_id":"gpt-5.6-sol","confidence":0.88,'
+        '"reason_short":"전문 업무 종합","reason_code":"professional_synthesis"}'
+    )
+
+    decision = ModelRoutingRuntimeJudge.decide(
+        client=client,
+        candidate_model_ids=["gpt-5.6", "gpt-5.6-sol", "o3"],
+        routing_feature_text="여러 부서 자료를 통합해 경영진 보고서를 작성합니다.",
+        candidate_profiles=[
+            {
+                "model_id": "gpt-5.6-sol",
+                "canonical_model_id": "gpt-5.6-sol",
+                "evidence_type": "provider_documentation",
+                "model_role": "frontier_generalist",
+                "specialization_tags": [
+                    "complex_professional_work",
+                    "complex_reasoning",
+                    "coding",
+                ],
+            },
+            {
+                "model_id": "o3",
+                "canonical_model_id": "o3",
+                "evidence_type": "provider_documentation",
+                "model_role": "reasoning_specialist",
+                "specialization_tags": [
+                    "multi_step_reasoning",
+                    "math_reasoning",
+                    "scientific_reasoning",
+                ],
+            },
+        ],
+    )
+
+    assert decision.selected_model_id == "gpt-5.6-sol"
+    prompt_body = __import__("json").loads(client.calls[0]["messages"][1]["content"])
+    assert [row["id"] for row in prompt_body["candidate_models"]] == [
+        "gpt-5.6-sol",
+        "o3",
+    ]
+    assert prompt_body["candidate_models"][0]["specialization_tags"] == [
+        "complex_professional_work",
+        "complex_reasoning",
+        "coding",
+    ]
+    assert prompt_body["candidate_models"][0]["evidence_type"] == "provider_documentation"
+    assert prompt_body["candidate_models"][0]["model_role"] == "frontier_generalist"
+    assert prompt_body["candidate_models"][1]["specialization_tags"] == [
+        "multi_step_reasoning",
+        "math_reasoning",
+        "scientific_reasoning",
+    ]
+    assert prompt_body["candidate_models"][1]["model_role"] == "reasoning_specialist"
+    instruction = client.calls[0]["messages"][0]["content"]
+    assert "공급자 공식 특화 태그는 약한 사전 정보" in instruction
+    assert "일반 전문 업무 능력과 전문 추론 능력을 같은 것으로 취급하지 마세요" in instruction
+    assert "reasoning_specialist는 형식 논증·수학·과학·코드의 다단계 추론이 핵심일 때" in instruction
+
+
+def test_llm_node_builds_distinct_source_backed_profiles_for_sol_and_o3():
+    profiles = LLMNode._routing_candidate_profiles(
+        object(),
+        ["gpt-5.6-sol", "o3"],
+    )
+
+    assert profiles[0]["canonical_model_id"] == "gpt-5.6-sol"
+    assert profiles[0]["catalog_evidence_type"] == "provider_documentation"
+    assert "complex_professional_work" in profiles[0]["specialization_tags"]
+    assert "math_reasoning" in profiles[1]["specialization_tags"]
+    assert profiles[0]["specialization_tags"] != profiles[1]["specialization_tags"]
 
 
 def test_runtime_judge_receives_operational_contract_evidence_as_stronger_than_catalog_prior():
@@ -197,6 +338,10 @@ def test_runtime_judge_diagnostic_mode_requests_and_keeps_candidate_comparison()
         '{"selected_model_id":"gpt-5.4","confidence":0.91,'
         '"reason_short":"복수 근거 종합","reason_code":"evidence_synthesis",'
         '"decision_detail":{"task_assessment":"충돌하는 정책 근거를 비교해야 합니다.",'
+        '"difficulty_analysis":{"overall_level":"high","task_complexity":3,'
+        '"decision_impact":2,"evidence_synthesis":3,'
+        '"reason":"복수 규정의 충돌과 예외를 함께 해석해야 합니다."},'
+        '"selection_explanation":"gpt-5.4가 필요한 근거 종합 능력을 가장 안정적으로 제공합니다.",'
         '"candidate_comparison":['
         '{"model_id":"gpt-4o-mini","decision":"not_selected",'
         '"reason":"복수 근거 충돌 판단에 보수적입니다."},'
@@ -213,6 +358,14 @@ def test_runtime_judge_diagnostic_mode_requests_and_keeps_candidate_comparison()
 
     assert decision.decision_detail == {
         "task_assessment": "충돌하는 정책 근거를 비교해야 합니다.",
+        "difficulty_analysis": {
+            "overall_level": "high",
+            "task_complexity": 3,
+            "decision_impact": 2,
+            "evidence_synthesis": 3,
+            "reason": "복수 규정의 충돌과 예외를 함께 해석해야 합니다.",
+        },
+        "selection_explanation": "gpt-5.4가 필요한 근거 종합 능력을 가장 안정적으로 제공합니다.",
         "candidate_comparison": [
             {
                 "model_id": "gpt-4o-mini",
@@ -229,7 +382,9 @@ def test_runtime_judge_diagnostic_mode_requests_and_keeps_candidate_comparison()
     instruction = client.calls[0]["messages"][0]["content"]
     assert "decision_detail" in instruction
     assert "candidate_comparison" in instruction
-    assert client.calls[0]["kwargs"]["max_tokens"] == 1024
+    assert "difficulty_analysis" in instruction
+    assert "selection_explanation" in instruction
+    assert client.calls[0]["kwargs"]["max_tokens"] == 2000
 
 
 def test_runtime_judge_retries_incomplete_response_with_compact_contract():
@@ -243,8 +398,8 @@ def test_runtime_judge_retries_incomplete_response_with_compact_contract():
     )
 
     assert len(client.calls) == 2
-    assert client.calls[0]["kwargs"]["max_tokens"] == 512
-    assert client.calls[1]["kwargs"]["max_tokens"] == 512
+    assert client.calls[0]["kwargs"]["max_tokens"] == 768
+    assert client.calls[1]["kwargs"]["max_tokens"] == 768
     assert decision.reason_short == "고위험 판단 필요"
     compact_instruction = client.calls[1]["messages"][0]["content"]
     assert "reason_short" not in compact_instruction
@@ -281,18 +436,20 @@ def test_runtime_judge_rejects_response_without_a_selected_candidate():
         )
 
 
-def test_runtime_judge_rejects_long_or_non_korean_reason():
+def test_runtime_judge_normalizes_long_or_non_korean_reason():
     client = _JudgeClient(
         '{"selected_model_id":"gpt-4o-mini","confidence":0.70,'
         '"reason_short":"this reason is too long","reason_code":"balanced_quality"}'
     )
 
-    with pytest.raises(RuntimeJudgeResponseError, match="reason"):
-        ModelRoutingRuntimeJudge.decide(
-            client=client,
-            candidate_model_ids=["gpt-4o-mini"],
-            routing_feature_text="조건을 확인해 주세요",
-        )
+    decision = ModelRoutingRuntimeJudge.decide(
+        client=client,
+        candidate_model_ids=["gpt-4o-mini"],
+        routing_feature_text="조건을 확인해 주세요",
+    )
+
+    assert decision.selected_model_id == "gpt-4o-mini"
+    assert decision.reason_short == "요청 적합성 판단"
 
 
 def test_runtime_judge_does_not_persist_raw_feature_text_in_decision():
