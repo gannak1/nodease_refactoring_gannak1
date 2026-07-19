@@ -14,7 +14,6 @@ from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Any, Mapping, Optional
 
-
 OPENAI_PRICING_URL = "https://developers.openai.com/api/docs/pricing"
 ANTHROPIC_PRICING_URL = "https://docs.anthropic.com/en/docs/about-claude/pricing"
 GOOGLE_PRICING_URL = "https://ai.google.dev/gemini-api/docs/pricing"
