@@ -274,6 +274,7 @@ def test_access_grant_and_purge_receipt_never_define_raw_secret_columns():
     assert {
         "receipt_verifier_hash",
         "receipt_verifier_key_version",
+        "app_id",
         "deployment_id",
         "deployment_version",
         "audience_kind",
@@ -322,6 +323,20 @@ def test_idempotency_record_stores_only_typed_safe_response_snapshot_fields():
         "response_payload",
         "raw_response",
     }.isdisjoint(columns.keys())
+
+    assert {
+        "authorization_app_id",
+        "authorization_verifier_key_version",
+        "authorization_verifier_hash",
+    } <= set(columns.keys())
+    assert "ck_conv_idempotency_authorization_scope" in _constraint_names(
+        ConversationIdempotencyRecord,
+        CheckConstraint,
+    )
+    assert "ck_conv_purge_scope_snapshot" in _constraint_names(
+        ConversationPurgeJobRecord,
+        CheckConstraint,
+    )
 
 
 def test_entry_and_summary_dependencies_preserve_composite_tenant_scope():
@@ -481,6 +496,37 @@ def test_public_idempotency_result_snapshot_migration_is_additive_and_reversible
     assert "purge_receipt" not in source
 
 
+def test_public_replay_authorization_scope_migration_is_additive_and_reversible():
+    migrations = list(
+        (
+            ROOT
+            / "apps"
+            / "shared"
+            / "alembic"
+            / "versions"
+        ).glob("*_add_public_replay_authorization_scope.py")
+    )
+
+    assert len(migrations) == 1
+    source = migrations[0].read_text(encoding="utf-8")
+    compact_source = "".join(source.split())
+    for table, columns in {
+        "conversation_purge_jobs": ("app_id",),
+        "conversation_idempotency_records": (
+            "authorization_app_id",
+            "authorization_verifier_key_version",
+            "authorization_verifier_hash",
+        ),
+    }.items():
+        for column in columns:
+            assert f'sa.Column("{column}"' in compact_source
+            assert f'op.drop_column("{table}","{column}"' in compact_source
+    assert "ck_conv_purge_scope_snapshot" in source
+    assert "ck_conv_idempotency_authorization_scope" in source
+    assert "ix_conv_idempotency_authorized_replay" in source
+    assert "down_revision ==" not in source
+
+
 class _Inspector:
     def __init__(self, schema: dict[str, set[str]]) -> None:
         self.schema = schema
@@ -526,3 +572,21 @@ def test_schema_readiness_requires_public_idempotency_result_snapshot_columns():
         "conversation_idempotency_records"
     ]
     assert snapshot_columns.isdisjoint(REQUIRED_MEMORY_SCHEMA["conversation_turns"])
+
+
+def test_schema_readiness_requires_stable_public_replay_scope_columns():
+    assert "app_id" in REQUIRED_MEMORY_SCHEMA["conversation_purge_jobs"]
+    assert {
+        "authorization_app_id",
+        "authorization_verifier_key_version",
+        "authorization_verifier_hash",
+    } <= REQUIRED_MEMORY_SCHEMA["conversation_idempotency_records"]
+
+    schema = {
+        name: set(columns) for name, columns in REQUIRED_MEMORY_SCHEMA.items()
+    }
+    schema["conversation_purge_jobs"].remove("app_id")
+    result = check_memory_schema_readiness_with_inspector(_Inspector(schema))
+
+    assert result.ready is False
+    assert result.missing_columns == {"conversation_purge_jobs": ["app_id"]}

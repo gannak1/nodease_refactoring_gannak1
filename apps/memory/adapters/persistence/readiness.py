@@ -108,6 +108,7 @@ REQUIRED_MEMORY_SCHEMA: dict[str, frozenset[str]] = {
         {
             "id",
             "session_reference_digest",
+            "app_id",
             "deployment_id",
             "deployment_version",
             "audience_kind",
@@ -121,6 +122,9 @@ REQUIRED_MEMORY_SCHEMA: dict[str, frozenset[str]] = {
             "scope_digest",
             "idempotency_key_hash",
             "request_fingerprint",
+            "authorization_app_id",
+            "authorization_verifier_key_version",
+            "authorization_verifier_hash",
             "status",
             "result_lifecycle",
             "result_lifecycle_revision",

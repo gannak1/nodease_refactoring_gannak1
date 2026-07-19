@@ -536,6 +536,7 @@ class RequestDeleteUseCase(_TransactionalUseCase):
                     command.organization_id,
                     command.session_id,
                 ),
+                app_id=session.app_id,
                 deployment_id=session.deployment_id,
                 deployment_version=session.deployment_version,
                 audience_kind=session.audience_kind,

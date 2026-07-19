@@ -12,6 +12,9 @@ from apps.memory.adapters.admission import (
     PublicConversationAdmissionPolicy,
     RedisPublicConversationAdmission,
 )
+from apps.memory.adapters.persistence.readiness import (
+    check_memory_schema_readiness,
+)
 from apps.memory.adapters.audit import SqlAlchemyPublicConversationAudit
 from apps.memory.adapters.persistence.repository import (
     SqlAlchemyConversationMemoryRepository,
@@ -116,6 +119,22 @@ def validate_public_conversation_security_configuration(
         admission_key,
     )
     _require_public_purge_worker_ready(values)
+
+
+def require_public_conversation_schema_ready(
+    db: Session,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    values = environ if environ is not None else os.environ
+    if not public_conversation_enabled_from_environment(values):
+        return
+    readiness = check_memory_schema_readiness(db)
+    if not readiness.ready:
+        raise RuntimeError(
+            "public conversation Memory schema is not ready; apply required "
+            "migrations before enabling the feature"
+        )
 
 
 def public_conversation_enabled_from_environment(
@@ -348,5 +367,6 @@ __all__ = [
     "public_conversation_enabled_from_environment",
     "public_conversation_admission_policy_from_environment",
     "public_conversation_policy_from_environment",
+    "require_public_conversation_schema_ready",
     "validate_public_conversation_security_configuration",
 ]

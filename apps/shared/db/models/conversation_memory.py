@@ -1535,7 +1535,7 @@ class ConversationPurgeJobRecord(_TimestampMixin, Base):
         ),
         CheckConstraint(
             "((deployment_id IS NULL AND deployment_version IS NULL "
-            "AND audience_kind IS NULL) OR "
+            "AND audience_kind IS NULL AND app_id IS NULL) OR "
             "(deployment_id IS NOT NULL AND audience_kind IS NOT NULL AND "
             "((audience_kind = 'public_chatbot' "
             "AND deployment_version IS NOT NULL AND deployment_version > 0) OR "
@@ -1577,6 +1577,10 @@ class ConversationPurgeJobRecord(_TimestampMixin, Base):
     session_reference_digest: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
+    )
+    app_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=True,
     )
     deployment_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True),
@@ -1689,7 +1693,27 @@ class ConversationIdempotencyRecord(_TimestampMixin, Base):
             "AND result_previous_lifecycle_revision > 0))))",
             name="ck_conv_idempotency_result_snapshot",
         ),
+        CheckConstraint(
+            "((authorization_app_id IS NULL "
+            "AND authorization_verifier_key_version IS NULL "
+            "AND authorization_verifier_hash IS NULL) OR "
+            "(authorization_app_id IS NOT NULL "
+            "AND authorization_verifier_key_version IS NOT NULL "
+            "AND authorization_verifier_hash IS NOT NULL "
+            "AND length(authorization_verifier_hash) = 64))",
+            name="ck_conv_idempotency_authorization_scope",
+        ),
         Index("ix_conv_idempotency_expiry", "retention_expires_at"),
+        Index(
+            "ix_conv_idempotency_authorized_replay",
+            "organization_id",
+            "authorization_app_id",
+            "operation",
+            "idempotency_key_hash",
+            "authorization_verifier_key_version",
+            "authorization_verifier_hash",
+            postgresql_where=text("authorization_app_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -1707,6 +1731,18 @@ class ConversationIdempotencyRecord(_TimestampMixin, Base):
     scope_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     idempotency_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    authorization_app_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=True,
+    )
+    authorization_verifier_key_version: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    authorization_verifier_hash: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
     status: Mapped[str] = mapped_column(
         String(24),
         nullable=False,

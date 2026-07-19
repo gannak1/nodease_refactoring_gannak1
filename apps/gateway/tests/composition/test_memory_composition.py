@@ -9,6 +9,7 @@ import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy.orm import Session
 
+from apps.gateway.composition import memory as memory_composition
 from apps.gateway.composition.memory import (
     build_public_conversation_application,
     public_conversation_admission_policy_from_environment,
@@ -16,6 +17,9 @@ from apps.gateway.composition.memory import (
     validate_public_conversation_security_configuration,
 )
 from apps.memory.adapters.admission import RedisPublicConversationAdmission
+from apps.memory.adapters.persistence.readiness import (
+    MemorySchemaReadinessResult,
+)
 from apps.memory.domain.errors import PublicConversationFeatureDisabledError
 
 
@@ -32,6 +36,51 @@ def _environment() -> dict[str, str]:
 
 def test_disabled_public_memory_does_not_require_security_keys():
     validate_public_conversation_security_configuration({})
+
+
+def test_disabled_public_memory_skips_schema_readiness(monkeypatch):
+    def unexpected_check(_db):
+        raise AssertionError("disabled feature must not inspect Memory schema")
+
+    monkeypatch.setattr(
+        memory_composition,
+        "check_memory_schema_readiness",
+        unexpected_check,
+    )
+
+    memory_composition.require_public_conversation_schema_ready(
+        MagicMock(spec=Session),
+        environ={"MEMORY_PUBLIC_CONVERSATION_ENABLED": "false"},
+    )
+
+
+def test_enabled_public_memory_fails_startup_when_schema_is_incomplete(monkeypatch):
+    monkeypatch.setattr(
+        memory_composition,
+        "check_memory_schema_readiness",
+        lambda _db: MemorySchemaReadinessResult(
+            missing_columns={"conversation_purge_jobs": ["app_id"]},
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="schema is not ready"):
+        memory_composition.require_public_conversation_schema_ready(
+            MagicMock(spec=Session),
+            environ={"MEMORY_PUBLIC_CONVERSATION_ENABLED": "true"},
+        )
+
+
+def test_enabled_public_memory_accepts_capability_complete_schema(monkeypatch):
+    monkeypatch.setattr(
+        memory_composition,
+        "check_memory_schema_readiness",
+        lambda _db: MemorySchemaReadinessResult(missing_columns={}),
+    )
+
+    memory_composition.require_public_conversation_schema_ready(
+        MagicMock(spec=Session),
+        environ={"MEMORY_PUBLIC_CONVERSATION_ENABLED": "true"},
+    )
 
 
 def test_enabled_composition_requires_three_independent_memory_security_keys():

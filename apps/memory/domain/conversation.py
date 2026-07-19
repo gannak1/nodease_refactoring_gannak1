@@ -759,6 +759,7 @@ class ConversationPurgeJob:
     organization_id: uuid.UUID
     session_id: uuid.UUID | None
     session_reference_digest: str
+    app_id: uuid.UUID | None
     deployment_id: uuid.UUID | None
     deployment_version: int | None
     audience_kind: AudienceKind | None
@@ -781,6 +782,7 @@ class ConversationPurgeJob:
         organization_id: uuid.UUID,
         session_id: uuid.UUID,
         session_reference_digest: str,
+        app_id: uuid.UUID,
         deployment_id: uuid.UUID,
         deployment_version: int | None,
         audience_kind: AudienceKind | str,
@@ -813,6 +815,7 @@ class ConversationPurgeJob:
             organization_id=organization_id,
             session_id=session_id,
             session_reference_digest=session_reference_digest,
+            app_id=app_id,
             deployment_id=deployment_id,
             deployment_version=deployment_version,
             audience_kind=canonical_audience,

@@ -11,8 +11,9 @@ import hashlib
 import hmac
 import json
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
 from apps.memory.application.ports import MemoryUnitOfWorkPort
@@ -38,6 +39,12 @@ from apps.memory.domain.public_access import (
     IdempotencyStatus,
 )
 from apps.shared.audit.actions import AuditAction
+
+
+@dataclass(frozen=True, slots=True)
+class PublicAppBinding:
+    organization_id: uuid.UUID
+    app_id: uuid.UUID
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,7 +169,11 @@ class IdempotencyReservation:
 
 
 class PublicConversationRepositoryPort(Protocol):
+    def resolve_public_app(self, url_slug: str) -> PublicAppBinding | None: ...
+
     def resolve_public_deployment(self, url_slug: str) -> PublicDeploymentBinding | None: ...
+
+    def lock_public_deployment(self, url_slug: str) -> PublicDeploymentBinding | None: ...
 
     def reserve_idempotency(
         self, record: ConversationIdempotency
@@ -175,6 +186,16 @@ class PublicConversationRepositoryPort(Protocol):
         operation: str,
         scope_digest: str,
         idempotency_key_hash: str,
+    ) -> ConversationIdempotency | None: ...
+
+    def find_authorized_idempotency(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        app_id: uuid.UUID,
+        operation: str,
+        idempotency_key_hash: str,
+        verifier_candidates: tuple[tuple[str, str], ...],
     ) -> ConversationIdempotency | None: ...
 
     def save_idempotency(self, record: ConversationIdempotency) -> None: ...
@@ -289,6 +310,7 @@ class _TransactionalPublicUseCase:
         audit: PublicConversationAuditPort,
         policy: PublicConversationPolicy,
         admission: PublicConversationAdmissionPort | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.repository = repository
         self.uow = uow
@@ -297,6 +319,7 @@ class _TransactionalPublicUseCase:
         self.audit = audit
         self.policy = policy
         self.admission = admission
+        self.clock = clock or _utc_now
 
     def _execute(self, operation):
         self.uow.begin()
@@ -308,8 +331,30 @@ class _TransactionalPublicUseCase:
             self.uow.rollback()
             raise
 
-    def _binding(self, url_slug: str) -> PublicDeploymentBinding:
-        binding = self.repository.resolve_public_deployment(url_slug)
+    def _current_time(self) -> datetime:
+        now = self.clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise MemoryAdapterUnavailableError()
+        return now
+
+    def _binding(
+        self,
+        url_slug: str,
+        *,
+        for_update: bool = False,
+    ) -> PublicDeploymentBinding:
+        resolver = (
+            self.repository.lock_public_deployment
+            if for_update
+            else self.repository.resolve_public_deployment
+        )
+        binding = resolver(url_slug)
+        if binding is None:
+            raise AccessGrantNotUsableError()
+        return binding
+
+    def _app_binding(self, url_slug: str) -> PublicAppBinding:
+        binding = self.repository.resolve_public_app(url_slug)
         if binding is None:
             raise AccessGrantNotUsableError()
         return binding
@@ -397,6 +442,9 @@ class _TransactionalPublicUseCase:
         idempotency_key_hash: str,
         request_fingerprint: str,
         now: datetime,
+        authorization_app_id: uuid.UUID | None = None,
+        authorization_verifier_key_version: str | None = None,
+        authorization_verifier_hash: str | None = None,
     ) -> IdempotencyReservation:
         return self.repository.reserve_idempotency(
             ConversationIdempotency.pending(
@@ -408,6 +456,9 @@ class _TransactionalPublicUseCase:
                 request_fingerprint=request_fingerprint,
                 retention_expires_at=now + self.policy.idempotency_retention,
                 now=now,
+                authorization_app_id=authorization_app_id,
+                authorization_verifier_key_version=authorization_verifier_key_version,
+                authorization_verifier_hash=authorization_verifier_hash,
             )
         )
 
@@ -577,6 +628,52 @@ class _TransactionalPublicUseCase:
             raise MemoryAdapterUnavailableError()
         return raw_secret
 
+    def _authorized_delete_replay(
+        self,
+        command: LifecycleCommand,
+    ) -> DeletePublicConversationResult | None:
+        app_binding = self._app_binding(command.url_slug)
+        verifiers = self.secrets.access_grant_verifiers(command.access_token)
+        if not verifiers:
+            return None
+        record = self.repository.find_authorized_idempotency(
+            organization_id=app_binding.organization_id,
+            app_id=app_binding.app_id,
+            operation="conversation.delete",
+            idempotency_key_hash=command.idempotency_key_hash,
+            verifier_candidates=verifiers,
+        )
+        if record is None:
+            return None
+        record.require_matching_fingerprint(command.request_fingerprint)
+        result_snapshot = _record_result_snapshot(
+            record,
+            expected_resource_type="conversation_purge_job",
+        )
+        purge_job = _record_purge_job(self.repository, record)
+        if (
+            purge_job.organization_id != app_binding.organization_id
+            or purge_job.app_id != app_binding.app_id
+            or purge_job.audience_kind is not AudienceKind.PUBLIC_CHATBOT
+        ):
+            raise AccessGrantNotUsableError()
+        receipt = self._replay_secret(
+            record=record,
+            purpose="purge_receipt",
+            now=command.now,
+        )
+        return DeletePublicConversationResult(
+            lifecycle=result_snapshot.lifecycle,
+            lifecycle_revision=result_snapshot.lifecycle_revision,
+            purge_job_id=purge_job.id,
+            purge_receipt=receipt,
+            replayed=True,
+        )
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
 
 class CreatePublicConversationUseCase(_TransactionalPublicUseCase):
     def execute(
@@ -609,7 +706,8 @@ class CreatePublicConversationUseCase(_TransactionalPublicUseCase):
             )
 
         def operation() -> PublicConversationResult:
-            binding = self._binding(command.url_slug)
+            now = self._current_time()
+            binding = self._binding(command.url_slug, for_update=True)
             scope_digest = _scope_digest(
                 operation="conversation.create",
                 binding=binding,
@@ -620,17 +718,17 @@ class CreatePublicConversationUseCase(_TransactionalPublicUseCase):
                 scope_digest=scope_digest,
                 idempotency_key_hash=command.idempotency_key_hash,
                 request_fingerprint=command.request_fingerprint,
-                now=command.now,
+                now=now,
             )
             record = reservation.record
             if not reservation.created:
                 record.require_matching_fingerprint(command.request_fingerprint)
-                return self._replay_create(record=record, now=command.now)
+                return self._replay_create(record=record, now=now)
 
             session = _new_session(
                 binding=binding,
                 policy=self.policy,
-                now=command.now,
+                now=now,
             )
             issued = self.secrets.issue_access_grant()
             grant = ConversationAccessGrant.issue(
@@ -644,15 +742,15 @@ class CreatePublicConversationUseCase(_TransactionalPublicUseCase):
                 verifier_key_version=issued.verifier_key_version,
                 expires_at=min(
                     session.absolute_expires_at,
-                    command.now + self.policy.access_grant_lifetime,
+                    now + self.policy.access_grant_lifetime,
                 ),
-                now=command.now,
+                now=now,
             )
             replay = self._add_secret_replay(
                 record=record,
                 purpose="access_grant",
                 raw_secret=issued.raw_value,
-                expires_at=command.now + self.policy.access_secret_replay_lifetime,
+                expires_at=now + self.policy.access_secret_replay_lifetime,
             )
             grant.replay_record_reference = str(replay.id)
             record.complete(
@@ -662,7 +760,7 @@ class CreatePublicConversationUseCase(_TransactionalPublicUseCase):
                 secret_replay_expires_at=replay.expires_at,
                 safe_result_code="created",
                 result_snapshot=_session_result_snapshot(session, grant=grant),
-                now=command.now,
+                now=now,
             )
             self.repository.add_session(session)
             self.repository.add_access_grant(grant)
@@ -730,16 +828,17 @@ class ClosePublicConversationUseCase(_TransactionalPublicUseCase):
             )
 
         def operation() -> ClosePublicConversationResult:
-            binding = self._binding(command.url_slug)
+            now = self._current_time()
+            binding = self._binding(command.url_slug, for_update=True)
             grant = self._grant_for_mutation(
                 binding=binding,
                 raw_access_token=command.access_token,
-                now=command.now,
+                now=now,
                 allow_expired_for_replay=True,
             )
             session = self._session_for_grant(
                 grant,
-                now=command.now,
+                now=now,
                 allow_expired_for_replay=True,
             )
             reservation = self._reserve(
@@ -753,7 +852,7 @@ class ClosePublicConversationUseCase(_TransactionalPublicUseCase):
                 ),
                 idempotency_key_hash=command.idempotency_key_hash,
                 request_fingerprint=command.request_fingerprint,
-                now=command.now,
+                now=now,
             )
             if not reservation.created:
                 reservation.record.require_matching_fingerprint(
@@ -765,14 +864,14 @@ class ClosePublicConversationUseCase(_TransactionalPublicUseCase):
                 deployment_id=binding.deployment_id,
                 deployment_version=binding.deployment_version,
                 audience_kind=AudienceKind.PUBLIC_CHATBOT,
-                now=command.now,
+                now=now,
             )
-            self._require_unexpired_session(session, now=command.now)
+            self._require_unexpired_session(session, now=now)
             session.close(
                 expected_lifecycle_revision=command.expected_lifecycle_revision,
-                now=command.now,
+                now=now,
             )
-            grant.restrict_to_transcript(now=command.now)
+            grant.restrict_to_transcript(now=now)
             reservation.record.complete(
                 resource_type="conversation_session",
                 resource_reference=str(session.id),
@@ -780,7 +879,7 @@ class ClosePublicConversationUseCase(_TransactionalPublicUseCase):
                 secret_replay_expires_at=None,
                 safe_result_code="closed",
                 result_snapshot=_session_result_snapshot(session, grant=grant),
-                now=command.now,
+                now=now,
             )
             self.repository.save_session(session)
             self.repository.save_access_grant(grant)
@@ -818,16 +917,17 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
             )
 
         def operation() -> PublicConversationResult:
-            binding = self._binding(command.url_slug)
+            now = self._current_time()
+            binding = self._binding(command.url_slug, for_update=True)
             old_grant = self._grant_for_mutation(
                 binding=binding,
                 raw_access_token=command.access_token,
-                now=command.now,
+                now=now,
                 allow_expired_for_replay=True,
             )
             old_session = self._session_for_grant(
                 old_grant,
-                now=command.now,
+                now=now,
                 allow_expired_for_replay=True,
             )
             reservation = self._reserve(
@@ -841,7 +941,7 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
                 ),
                 idempotency_key_hash=command.idempotency_key_hash,
                 request_fingerprint=command.request_fingerprint,
-                now=command.now,
+                now=now,
             )
             if not reservation.created:
                 reservation.record.require_matching_fingerprint(
@@ -850,7 +950,7 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
                 token = self._replay_secret(
                     record=reservation.record,
                     purpose="access_grant",
-                    now=command.now,
+                    now=now,
                 )
                 return _conversation_result_from_snapshot(
                     record=reservation.record,
@@ -862,18 +962,18 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
                 deployment_id=binding.deployment_id,
                 deployment_version=binding.deployment_version,
                 audience_kind=AudienceKind.PUBLIC_CHATBOT,
-                now=command.now,
+                now=now,
             )
-            self._require_unexpired_session(old_session, now=command.now)
+            self._require_unexpired_session(old_session, now=now)
             old_session.close(
                 expected_lifecycle_revision=command.expected_lifecycle_revision,
-                now=command.now,
+                now=now,
             )
-            old_grant.revoke(now=command.now)
+            old_grant.revoke(now=now)
             new_session = _new_session(
                 binding=binding,
                 policy=self.policy,
-                now=command.now,
+                now=now,
             )
             issued = self.secrets.issue_access_grant()
             new_grant = ConversationAccessGrant.issue(
@@ -887,15 +987,15 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
                 verifier_key_version=issued.verifier_key_version,
                 expires_at=min(
                     new_session.absolute_expires_at,
-                    command.now + self.policy.access_grant_lifetime,
+                    now + self.policy.access_grant_lifetime,
                 ),
-                now=command.now,
+                now=now,
             )
             replay = self._add_secret_replay(
                 record=reservation.record,
                 purpose="access_grant",
                 raw_secret=issued.raw_value,
-                expires_at=command.now + self.policy.access_secret_replay_lifetime,
+                expires_at=now + self.policy.access_secret_replay_lifetime,
             )
             new_grant.replay_record_reference = str(replay.id)
             reservation.record.complete(
@@ -910,7 +1010,7 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
                     previous_lifecycle=old_session.lifecycle,
                     previous_lifecycle_revision=old_session.lifecycle_revision,
                 ),
-                now=command.now,
+                now=now,
             )
             self.repository.save_session(old_session)
             self.repository.save_access_grant(old_grant)
@@ -963,6 +1063,10 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
 
 class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
     def execute(self, command: LifecycleCommand) -> DeletePublicConversationResult:
+        replay = self._execute(lambda: self._authorized_delete_replay(command))
+        if replay is not None:
+            return replay
+
         admission_binding, admission_grant_id, should_admit = self._execute(
             lambda: self._lifecycle_preflight(
                 command=command,
@@ -981,16 +1085,17 @@ class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
             )
 
         def operation() -> DeletePublicConversationResult:
-            binding = self._binding(command.url_slug)
+            now = self._current_time()
+            binding = self._binding(command.url_slug, for_update=True)
             grant = self._grant_for_mutation(
                 binding=binding,
                 raw_access_token=command.access_token,
-                now=command.now,
+                now=now,
                 allow_expired_for_replay=True,
             )
             session = self._session_for_grant(
                 grant,
-                now=command.now,
+                now=now,
                 allow_expired_for_replay=True,
             )
             reservation = self._reserve(
@@ -1004,7 +1109,10 @@ class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
                 ),
                 idempotency_key_hash=command.idempotency_key_hash,
                 request_fingerprint=command.request_fingerprint,
-                now=command.now,
+                now=now,
+                authorization_app_id=binding.app_id,
+                authorization_verifier_key_version=grant.verifier_key_version,
+                authorization_verifier_hash=grant.verifier_hash,
             )
             if not reservation.created:
                 reservation.record.require_matching_fingerprint(
@@ -1018,7 +1126,7 @@ class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
                 receipt = self._replay_secret(
                     record=reservation.record,
                     purpose="purge_receipt",
-                    now=command.now,
+                    now=now,
                 )
                 return DeletePublicConversationResult(
                     lifecycle=result_snapshot.lifecycle,
@@ -1032,9 +1140,9 @@ class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
                 deployment_id=binding.deployment_id,
                 deployment_version=binding.deployment_version,
                 audience_kind=AudienceKind.PUBLIC_CHATBOT,
-                now=command.now,
+                now=now,
             )
-            self._require_unexpired_session(session, now=command.now)
+            self._require_unexpired_session(session, now=now)
             issued = self.secrets.issue_purge_receipt()
             purge_job = ConversationPurgeJob.pending(
                 purge_job_id=uuid.uuid4(),
@@ -1043,27 +1151,28 @@ class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
                 session_reference_digest=hashlib.sha256(
                     str(session.id).encode("ascii")
                 ).hexdigest(),
+                app_id=binding.app_id,
                 deployment_id=binding.deployment_id,
                 deployment_version=binding.deployment_version,
                 audience_kind=AudienceKind.PUBLIC_CHATBOT,
                 receipt_verifier_hash=issued.verifier_hash,
                 receipt_verifier_key_version=issued.verifier_key_version,
-                receipt_expires_at=command.now + self.policy.purge_receipt_lifetime,
+                receipt_expires_at=now + self.policy.purge_receipt_lifetime,
                 max_attempts=self.policy.purge_max_attempts,
-                now=command.now,
+                now=now,
             )
             session.request_delete(
                 expected_lifecycle_revision=command.expected_lifecycle_revision,
-                now=command.now,
+                now=now,
             )
-            grant.revoke(now=command.now)
+            grant.revoke(now=now)
             replay = self._add_secret_replay(
                 record=reservation.record,
                 purpose="purge_receipt",
                 raw_secret=issued.raw_value,
                 expires_at=min(
                     purge_job.receipt_expires_at,
-                    command.now + self.policy.purge_secret_replay_lifetime,
+                    now + self.policy.purge_secret_replay_lifetime,
                 ),
             )
             reservation.record.complete(
@@ -1078,7 +1187,7 @@ class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
                     memory_contract_version=None,
                     expires_at=None,
                 ),
-                now=command.now,
+                now=now,
             )
             self.repository.save_session(session)
             self.repository.save_access_grant(grant)
@@ -1166,7 +1275,9 @@ class GetPublicPurgeStatusUseCase(_TransactionalPublicUseCase):
     ) -> PublicPurgeStatusResult:
         def operation() -> PublicPurgeStatusResult:
             # Resolve first so a stale/unknown slug cannot become an oracle.
-            binding = self._binding(url_slug)
+            binding = self.repository.resolve_public_app(url_slug)
+            if binding is None:
+                raise PurgeReceiptNotUsableError()
             verifiers = self.secrets.purge_receipt_verifiers(purge_receipt)
             if not verifiers:
                 raise PurgeReceiptNotUsableError()
@@ -1189,8 +1300,7 @@ class GetPublicPurgeStatusUseCase(_TransactionalPublicUseCase):
                 raise PurgeReceiptNotUsableError()
             if (
                 job.organization_id != binding.organization_id
-                or job.deployment_id != binding.deployment_id
-                or job.deployment_version != binding.deployment_version
+                or job.app_id != binding.app_id
                 or job.audience_kind is not AudienceKind.PUBLIC_CHATBOT
             ):
                 raise PurgeReceiptNotUsableError()

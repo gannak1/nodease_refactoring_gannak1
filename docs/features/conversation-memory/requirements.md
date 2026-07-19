@@ -128,7 +128,7 @@ Workflow와 Chatbot의 여러 turn에서 필요한 대화 맥락을 독립 Memor
 - MEM-REQ-066: Audit/Tracing은 safe session/entry reference, action, status, reason과 bucketed count만 기록하고 raw Memory content를 저장하지 않아야 한다. AuditLog는 `memory.session.*`/`memory.grant.*` 관리·보안 lifecycle에 제한하고 정상 turn/summary 상태는 operational trace/metric으로 기록해야 한다.
 - MEM-REQ-067: Memory content는 shared privacy classification/redaction capability를 사용해야 하며 Memory domain이 PII/secret 판별 규칙을 자체 복제하지 않아야 한다.
 - MEM-REQ-068: Close 후 transcript 허용 여부, reset 이후 이전 transcript 표시와 delete purge 상태는 runtime Memory Context 접근과 별도 정책으로 평가해야 한다.
-- MEM-REQ-069: Delete가 비동기 purge를 시작하면 caller가 raw session/grant 없이도 완료·실패·재시도 상태를 확인할 수 있는 scoped receipt를 제공해야 한다. Purge Job은 organization, deployment ID/version과 audience snapshot을 durable하게 보존해 Session/Grant row가 물리 삭제된 뒤에도 receipt scope를 검증해야 한다. Public purge는 발급 후 7일 안에 terminal 상태로 전이하고 receipt는 terminal 후 최소 24시간, 최대 발급 후 8일까지 유효해야 한다. `completed_with_hold`는 compliance 격리 완료이며 물리 삭제 완료로 표시해서는 안 된다. 이 terminal 전이를 수행할 physical purge worker가 배포에서 준비됐다는 명시적 activation gate가 확인되지 않으면 public lifecycle 전체를 fail-closed로 비활성화해야 한다.
+- MEM-REQ-069: Delete가 비동기 purge를 시작하면 caller가 raw session/grant 없이도 완료·실패·재시도 상태를 확인할 수 있는 scoped receipt를 제공해야 한다. Purge Job은 organization, stable App ID, 발급 시점 deployment ID/version과 audience snapshot을 durable하게 보존해 Session/Grant row가 물리 삭제된 뒤에도 receipt scope를 검증해야 한다. 같은 App의 재배포는 receipt를 무효화하지 않아야 하고 URL slug가 다른 App으로 재할당되면 조회를 resource-hiding으로 거부해야 한다. Delete exact replay는 최대 24시간 동안 stable App과 versioned access-token verifier에 결합된 content-free authorization tombstone을 사용할 수 있지만 raw token은 저장하지 않아야 한다. Public purge는 발급 후 7일 안에 terminal 상태로 전이하고 receipt는 terminal 후 최소 24시간, 최대 발급 후 8일까지 유효해야 한다. `completed_with_hold`는 compliance 격리 완료이며 물리 삭제 완료로 표시해서는 안 된다. 이 terminal 전이를 수행할 physical purge worker가 배포에서 준비됐다는 명시적 activation gate가 확인되지 않으면 public lifecycle 전체를 fail-closed로 비활성화해야 한다.
 
 ### Migration And Compatibility
 
@@ -142,6 +142,7 @@ Workflow와 Chatbot의 여러 turn에서 필요한 대화 맥락을 독립 Memor
 - MEM-REQ-077: Rolling migration 중 target Memory task는 capability가 확인된 versioned queue 또는 전용 worker pool만 소비해야 하며 activation preflight만으로 mixed worker compatibility를 가정하지 않아야 한다.
 - MEM-REQ-078: Dispatch claim/publish/admission observation/reconciliation은 Memory application command로만 전이해야 하며 persistence/Celery adapter가 state policy를 직접 결정하지 않아야 한다.
 - MEM-REQ-079: Workflow execution admission은 Workflow domain이 dispatch ID로 중복 제거하고 execution lease/heartbeat를 소유해야 한다. Memory acknowledgement 유실은 admission lookup/reconciliation으로 복구해야 한다.
+- MEM-REQ-079A: Public lifecycle feature를 활성화할 때 process는 route를 제공하기 전에 필요한 Memory table·column capability를 실제 DB schema에서 검증하고 누락 또는 introspection 실패를 fail-closed해야 한다. 준비 상태를 특정 Alembic revision 문자열이나 현재 head와의 일치로 판정해서는 안 된다.
 
 ### Provider Attempt Reliability And Summary Pricing
 

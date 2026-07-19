@@ -156,6 +156,7 @@ def test_purge_receipt_rejects_more_than_eight_days_from_issue_time():
         "organization_id": uuid.uuid4(),
         "session_id": uuid.uuid4(),
         "session_reference_digest": "a" * 64,
+        "app_id": uuid.uuid4(),
         "deployment_id": uuid.uuid4(),
         "deployment_version": 1,
         "audience_kind": AudienceKind.PUBLIC_CHATBOT,

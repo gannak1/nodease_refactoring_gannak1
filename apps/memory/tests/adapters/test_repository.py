@@ -159,6 +159,7 @@ def test_purge_receipt_lookup_accepts_a_bounded_versioned_verifier_set():
         organization_id=session.organization_id,
         session_id=session.id,
         session_reference_digest="d" * 64,
+        app_id=session.app_id,
         deployment_id=session.deployment_id,
         deployment_version=session.deployment_version,
         audience_kind=session.audience_kind,
@@ -182,6 +183,7 @@ def test_purge_receipt_lookup_accepts_a_bounded_versioned_verifier_set():
     compiled = db.execute.call_args.args[0].compile(dialect=postgresql.dialect())
     assert loaded is not None
     assert loaded.id == purge.id
+    assert loaded.app_id == purge.app_id
     assert "receipt_verifier_key_version" in str(compiled)
     assert list(candidates) in compiled.params.values()
 
@@ -355,6 +357,7 @@ def test_add_operations_map_domain_objects_without_committing():
         organization_id=session.organization_id,
         session_id=session.id,
         session_reference_digest="d" * 64,
+        app_id=session.app_id,
         deployment_id=session.deployment_id,
         deployment_version=session.deployment_version,
         audience_kind=session.audience_kind,

@@ -33,6 +33,7 @@ from apps.memory.domain.errors import (
     AccessGrantNotUsableError,
     DuplicateRequestConflictError,
     MemoryAdapterUnavailableError,
+    PurgeReceiptNotUsableError,
     SecretReplayExpiredError,
 )
 from apps.memory.domain.public_access import (
@@ -64,6 +65,12 @@ class _Repository:
     def resolve_public_deployment(self, url_slug: str):
         return self.binding if url_slug == "public-chatbot" else None
 
+    def lock_public_deployment(self, url_slug: str):
+        return self.resolve_public_deployment(url_slug)
+
+    def resolve_public_app(self, url_slug: str):
+        return self.binding if url_slug == "public-chatbot" else None
+
     def reserve_idempotency(self, record: ConversationIdempotency):
         key = (
             record.organization_id,
@@ -88,6 +95,30 @@ class _Repository:
         return self.idempotency.get(
             (organization_id, operation, scope_digest, idempotency_key_hash)
         )
+
+    def find_authorized_idempotency(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        app_id: uuid.UUID,
+        operation: str,
+        idempotency_key_hash: str,
+        verifier_candidates,
+    ):
+        matches = [
+            record
+            for record in self.idempotency.values()
+            if record.organization_id == organization_id
+            and record.authorization_app_id == app_id
+            and record.operation == operation
+            and record.idempotency_key_hash == idempotency_key_hash
+            and (
+                record.authorization_verifier_key_version,
+                record.authorization_verifier_hash,
+            )
+            in verifier_candidates
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     def save_idempotency(self, record: ConversationIdempotency) -> None:
         self.idempotency[
@@ -288,9 +319,9 @@ def _application(*, policy: PublicConversationPolicy | None = None):
     )
 
 
-def _use_case(cls, components, *, admission=None):
+def _use_case(cls, components, *, admission=None, clock=None):
     repository, uow, secrets_port, cipher, audit, policy = components
-    return cls(
+    kwargs = dict(
         repository=repository,
         uow=uow,
         secrets=secrets_port,
@@ -298,7 +329,9 @@ def _use_case(cls, components, *, admission=None):
         audit=audit,
         policy=policy,
         admission=admission,
+        clock=clock or _now,
     )
+    return cls(**kwargs)
 
 
 class _Admission:
@@ -814,6 +847,41 @@ def test_delete_replay_restores_the_initial_revision_after_terminal_progress():
     assert replay.purge_receipt == deleted.purge_receipt
 
 
+def test_delete_replays_after_physical_purge_removes_grant_and_session_rows():
+    components = _application()
+    repository = components[0]
+    create = _use_case(CreatePublicConversationUseCase, components)
+    delete = _use_case(DeletePublicConversationUseCase, components)
+    created = create.execute(_create_command(suffix="purged-delete-replay"))
+    command = _lifecycle_command(
+        created.access_token,
+        suffix="purged-delete-replay",
+    )
+    deleted = delete.execute(command)
+    record = next(
+        record
+        for record in repository.idempotency.values()
+        if record.operation == "conversation.delete"
+    )
+
+    repository.sessions.clear()
+    repository.grants.clear()
+    replay = delete.execute(command)
+
+    assert replay.replayed is True
+    assert replay.purge_job_id == deleted.purge_job_id
+    assert replay.purge_receipt == deleted.purge_receipt
+    assert record.authorization_app_id == repository.binding.app_id
+    assert record.authorization_verifier_hash != created.access_token
+    with pytest.raises(AccessGrantNotUsableError):
+        delete.execute(
+            replace(
+                command,
+                access_token=components[2].issue_access_grant().raw_value,
+            )
+        )
+
+
 def test_delete_revokes_conversation_grant_and_replays_receipt_only_until_ttl():
     components = _application(
         policy=replace(
@@ -866,6 +934,39 @@ def test_delete_revokes_conversation_grant_and_replays_receipt_only_until_ttl():
         "conversation_session",
         "conversation_access_grant",
     ]
+
+
+def test_purge_status_survives_redeployment_but_rejects_slug_reassignment():
+    components = _application()
+    repository = components[0]
+    create = _use_case(CreatePublicConversationUseCase, components)
+    delete = _use_case(DeletePublicConversationUseCase, components)
+    purge_status = _use_case(GetPublicPurgeStatusUseCase, components)
+    created = create.execute(_create_command(suffix="purge-redeploy"))
+    deleted = delete.execute(
+        _lifecycle_command(created.access_token, suffix="purge-redeploy")
+    )
+    original_binding = repository.binding
+    repository.binding = replace(
+        original_binding,
+        deployment_id=uuid.uuid4(),
+        deployment_version=original_binding.deployment_version + 1,
+    )
+
+    status = purge_status.execute(
+        url_slug="public-chatbot",
+        purge_receipt=deleted.purge_receipt,
+        now=_now(),
+    )
+
+    assert status.status.value == "pending"
+    repository.binding = replace(repository.binding, app_id=uuid.uuid4())
+    with pytest.raises(PurgeReceiptNotUsableError):
+        purge_status.execute(
+            url_slug="public-chatbot",
+            purge_receipt=deleted.purge_receipt,
+            now=_now(),
+        )
 
 
 def test_closed_conversation_can_request_privacy_delete_but_cannot_reset():
@@ -967,6 +1068,52 @@ def test_lifecycle_revalidates_revocation_after_external_admission():
         close.execute(_lifecycle_command(created.access_token, suffix="revoked-close"))
 
     assert next(iter(repository.sessions.values())).lifecycle.value == "active"
+
+
+@pytest.mark.parametrize(
+    "use_case_type",
+    (
+        ClosePublicConversationUseCase,
+        ResetPublicConversationUseCase,
+        DeletePublicConversationUseCase,
+    ),
+)
+def test_lifecycle_revalidates_expiry_using_fresh_time_after_admission(
+    use_case_type,
+):
+    policy = replace(
+        PublicConversationPolicy(),
+        idle_lifetime=timedelta(minutes=1),
+        access_grant_lifetime=timedelta(minutes=1),
+    )
+    components = _application(policy=policy)
+    created = _use_case(CreatePublicConversationUseCase, components).execute(
+        _create_command(suffix=f"fresh-clock-{use_case_type.__name__}")
+    )
+    current_time = [_now()]
+    admission = _Admission(
+        on_admit=lambda: current_time.__setitem__(
+            0,
+            _now() + timedelta(minutes=1),
+        )
+    )
+    use_case = _use_case(
+        use_case_type,
+        components,
+        admission=admission,
+        clock=lambda: current_time[0],
+    )
+
+    with pytest.raises(AccessGrantNotUsableError):
+        use_case.execute(
+            _lifecycle_command(
+                created.access_token,
+                suffix=f"fresh-clock-{use_case_type.__name__}",
+            )
+        )
+
+    assert next(iter(components[0].sessions.values())).lifecycle.value == "active"
+    assert len(admission.calls) == 1
 
 
 def test_admission_unavailable_rolls_back_pending_create_idempotency_record():

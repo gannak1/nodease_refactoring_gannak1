@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, SessionTransaction
 
 from apps.memory.application.public_lifecycle import (
     IdempotencyReservation,
+    PublicAppBinding,
     PublicDeploymentBinding,
 )
 from apps.memory.domain.conversation import (
@@ -120,7 +121,37 @@ class SqlAlchemyConversationMemoryRepository:
         self,
         url_slug: str,
     ) -> PublicDeploymentBinding | None:
-        """Resolve and lock the active public Chatbot binding in the UoW.
+        """Resolve the active public Chatbot binding without a row lock."""
+
+        return self._resolve_public_deployment(url_slug, lock_app=False)
+
+    def lock_public_deployment(
+        self,
+        url_slug: str,
+    ) -> PublicDeploymentBinding | None:
+        """Resolve the active public Chatbot binding and lock its App row."""
+
+        return self._resolve_public_deployment(url_slug, lock_app=True)
+
+    def resolve_public_app(self, url_slug: str) -> PublicAppBinding | None:
+        """Resolve stable App scope without requiring an active deployment."""
+
+        statement = select(App).where(App.url_slug == url_slug)
+        app = _execute(self._session, statement).scalar_one_or_none()
+        if app is None or app.organization_id is None:
+            return None
+        return PublicAppBinding(
+            organization_id=app.organization_id,
+            app_id=app.id,
+        )
+
+    def _resolve_public_deployment(
+        self,
+        url_slug: str,
+        *,
+        lock_app: bool,
+    ) -> PublicDeploymentBinding | None:
+        """Resolve the canonical deployment for one public request boundary.
 
         ``browser_access_policy`` is intentionally not selected as an API
         policy.  It remains an iframe CSP boundary owned by ADR-0043.
@@ -134,8 +165,9 @@ class SqlAlchemyConversationMemoryRepository:
                 WorkflowDeployment.id == App.active_deployment_id,
             )
             .where(App.url_slug == url_slug)
-            .with_for_update(of=App)
         )
+        if lock_app:
+            statement = statement.with_for_update(of=App)
         row = _execute(self._session, statement).one_or_none()
         if row is None:
             return None
@@ -237,6 +269,37 @@ class SqlAlchemyConversationMemoryRepository:
         )
         record = _execute(self._session, statement).scalar_one_or_none()
         return _idempotency_domain(record) if record is not None else None
+
+    def find_authorized_idempotency(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        app_id: uuid.UUID,
+        operation: str,
+        idempotency_key_hash: str,
+        verifier_candidates: tuple[tuple[str, str], ...],
+    ) -> ConversationIdempotency | None:
+        if not verifier_candidates:
+            return None
+        statement = (
+            select(ConversationIdempotencyRecord)
+            .where(
+                ConversationIdempotencyRecord.organization_id == organization_id,
+                ConversationIdempotencyRecord.authorization_app_id == app_id,
+                ConversationIdempotencyRecord.operation == operation,
+                ConversationIdempotencyRecord.idempotency_key_hash
+                == idempotency_key_hash,
+                tuple_(
+                    ConversationIdempotencyRecord.authorization_verifier_key_version,
+                    ConversationIdempotencyRecord.authorization_verifier_hash,
+                ).in_(verifier_candidates),
+            )
+            .execution_options(populate_existing=True)
+        )
+        records = list(_execute(self._session, statement).scalars().all())
+        if len(records) != 1:
+            return None
+        return _idempotency_domain(records[0])
 
     def save_idempotency(self, record: ConversationIdempotency) -> None:
         baseline = self._idempotency_baselines.get(record.id)
@@ -1015,6 +1078,7 @@ def _purge_record(job: ConversationPurgeJob) -> ConversationPurgeJobRecord:
         organization_id=job.organization_id,
         session_id=job.session_id,
         session_reference_digest=job.session_reference_digest,
+        app_id=job.app_id,
         deployment_id=job.deployment_id,
         deployment_version=job.deployment_version,
         audience_kind=(
@@ -1042,6 +1106,7 @@ def _purge_domain(record: ConversationPurgeJobRecord) -> ConversationPurgeJob:
         organization_id=record.organization_id,
         session_id=record.session_id,
         session_reference_digest=record.session_reference_digest,
+        app_id=record.app_id,
         deployment_id=record.deployment_id,
         deployment_version=record.deployment_version,
         audience_kind=(
@@ -1110,6 +1175,9 @@ def _idempotency_values(record: ConversationIdempotency) -> dict[str, object]:
         "scope_digest": record.scope_digest,
         "idempotency_key_hash": record.idempotency_key_hash,
         "request_fingerprint": record.request_fingerprint,
+        "authorization_app_id": record.authorization_app_id,
+        "authorization_verifier_key_version": record.authorization_verifier_key_version,
+        "authorization_verifier_hash": record.authorization_verifier_hash,
         "status": record.status.value,
         "resource_type": record.resource_type,
         "resource_reference": record.resource_reference,
@@ -1133,6 +1201,11 @@ def _idempotency_domain(
         scope_digest=record.scope_digest,
         idempotency_key_hash=record.idempotency_key_hash,
         request_fingerprint=record.request_fingerprint,
+        authorization_app_id=record.authorization_app_id,
+        authorization_verifier_key_version=(
+            record.authorization_verifier_key_version
+        ),
+        authorization_verifier_hash=record.authorization_verifier_hash,
         status=IdempotencyStatus(record.status),
         resource_type=record.resource_type,
         resource_reference=record.resource_reference,

@@ -217,6 +217,9 @@ class ConversationIdempotency:
     retention_expires_at: datetime
     safe_result_code: str | None
     result_snapshot: IdempotencyResultSnapshot | None
+    authorization_app_id: uuid.UUID | None
+    authorization_verifier_key_version: str | None
+    authorization_verifier_hash: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -232,6 +235,9 @@ class ConversationIdempotency:
         request_fingerprint: str,
         retention_expires_at: datetime,
         now: datetime,
+        authorization_app_id: uuid.UUID | None = None,
+        authorization_verifier_key_version: str | None = None,
+        authorization_verifier_hash: str | None = None,
     ) -> "ConversationIdempotency":
         if not _SAFE_OPERATION.fullmatch(operation):
             raise ValueError("operation is invalid")
@@ -243,6 +249,21 @@ class ConversationIdempotency:
             _require_sha256(value, name)
         if retention_expires_at <= now:
             raise ValueError("idempotency retention must be future-dated")
+        authorization_values = (
+            authorization_app_id,
+            authorization_verifier_key_version,
+            authorization_verifier_hash,
+        )
+        if any(value is None for value in authorization_values) and any(
+            value is not None for value in authorization_values
+        ):
+            raise ValueError("idempotency authorization scope must be complete")
+        if authorization_verifier_key_version is not None:
+            _require_safe_version(
+                authorization_verifier_key_version,
+                "authorization_verifier_key_version",
+            )
+            _require_sha256(authorization_verifier_hash or "", "authorization_verifier_hash")
         return cls(
             id=record_id,
             organization_id=organization_id,
@@ -258,6 +279,9 @@ class ConversationIdempotency:
             retention_expires_at=retention_expires_at,
             safe_result_code=None,
             result_snapshot=None,
+            authorization_app_id=authorization_app_id,
+            authorization_verifier_key_version=authorization_verifier_key_version,
+            authorization_verifier_hash=authorization_verifier_hash,
             created_at=now,
             updated_at=now,
         )

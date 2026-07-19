@@ -117,7 +117,7 @@ Public session bearer capability의 server-side hash와 lifecycle을 관리한�
 
 Authenticated session은 Access Grant가 아니라 current authentication/authorization과 session subject binding으로 접근한다.
 
-Public lifecycle composition은 명시적 feature activation boundary다. 기본 배포는 비활성이고, 활성화 시 capability verifier, replay encryption, admission HMAC의 독립 key material, 승인된 backup erasure/no-backup mode와 physical purge worker readiness를 startup에서 함께 검증한다. Capability와 replay keyring은 active+previous 최대 두 개로 제한하고 새 verifier/ciphertext는 active key만 사용한다. 기존 grant/receipt와 bounded replay ciphertext는 stored key version에 맞는 previous key로 각각 원래 expiry/TTL까지만 검증·복호화한다. Keyring 안과 세 용도 전체에서 하나의 material을 재사용하면 fail-closed한다. 누락되거나 재사용된 설정과 worker 미준비를 요청 시점의 임시 adapter 오류로 늦추지 않는다. Network admission은 Password Login·Connector와 같은 trusted-proxy resolver를 사용한다. 설정된 trusted proxy peer에서만 forwarded chain을 해석하고 direct/untrusted peer는 transport address를 canonical network로 정규화하며 unknown identity는 mutation 전에 fail-closed한다.
+Public lifecycle composition은 명시적 feature activation boundary다. 기본 배포는 비활성이고, 활성화 시 실제 DB introspection으로 필요한 Memory table·column capability를 확인한 뒤 capability verifier, replay encryption, admission HMAC의 독립 key material, 승인된 backup erasure/no-backup mode와 physical purge worker readiness를 startup에서 함께 검증한다. Schema readiness는 특정 Alembic revision이나 현재 head와의 문자열 일치가 아니라 이 surface가 소비하는 capability로 판정한다. Capability와 replay keyring은 active+previous 최대 두 개로 제한하고 새 verifier/ciphertext는 active key만 사용한다. 기존 grant/receipt와 bounded replay ciphertext는 stored key version에 맞는 previous key로 각각 원래 expiry/TTL까지만 검증·복호화한다. Keyring 안과 세 용도 전체에서 하나의 material을 재사용하면 fail-closed한다. Schema introspection 실패, 누락되거나 재사용된 설정과 worker 미준비를 요청 시점의 임시 adapter 오류로 늦추지 않는다. Network admission은 Password Login·Connector와 같은 trusted-proxy resolver를 사용한다. 설정된 trusted proxy peer에서만 forwarded chain을 해석하고 direct/untrusted peer는 transport address를 canonical network로 정규화하며 unknown identity는 mutation 전에 fail-closed한다.
 
 ### ConversationTurn
 
@@ -355,7 +355,7 @@ Window-only path는 read-only다. Summary path는 generation job, budget reserva
 
 Public close는 session lifecycle에서 current grant의 사용 범위를 transcript-only로 제한하되 새 grant issue audit을 만들지 않는다. Transcript-only grant는 run/reset에는 사용할 수 없지만 privacy delete에는 사용할 수 있다. Reset은 old grant를 즉시 revoke하고 새 session/grant를 원자 발급하며, delete는 active 또는 transcript-only old grant를 즉시 revoke한다. 이는 grace rotation이 아니며 delete status는 별도 purge receipt가 소유한다.
 
-Close/reset/delete는 짧은 DB preflight에서 token verifier, immutable deployment/grant/session scope와 exact existing idempotency를 확인한 뒤 transaction과 row lock을 해제한다. 새 logical request만 Redis admission을 수행하고, 같은 operation/scope/idempotency key/fingerprint의 concurrent retry는 HMAC request marker로 budget을 한 번만 소비한다. Admission 뒤 mutation transaction은 current binding, grant state, session expiry와 idempotency reservation을 다시 검증하므로 preflight와 외부 I/O 사이의 revoke/expiry/race를 fail-closed한다. 일치하는 completed record는 bounded response replay를 허용하므로 그 사이 grant/session이 temporal expiry를 지나도 기존 결과만 복구할 수 있다. 이때 mutable Session/Purge 상태를 response로 다시 투영하지 않고 최초 성공 시점의 lifecycle/revision, contract/expiry와 필요한 previous lifecycle/revision만 typed nullable column으로 저장한 content-free snapshot을 사용한다. Raw response와 capability는 snapshot에 포함하지 않으며 legacy/null/corrupt snapshot은 현재 상태로 추정하지 않고 fail-closed한다. Mutation 실패 시 pending record와 state 변경을 rollback한다.
+Close/reset/delete는 짧은 non-locking DB preflight에서 token verifier, immutable deployment/grant/session scope와 exact existing idempotency를 확인하고 transaction을 해제한다. Transcript와 public deployment lookup 같은 read-only 경로도 App row를 잠그지 않는다. 새 logical request만 Redis admission을 수행하고, 같은 operation/scope/idempotency key/fingerprint의 concurrent retry는 HMAC request marker로 budget을 한 번만 소비한다. Admission 완료 뒤 새 server time을 취득한 mutation transaction은 App row를 명시적으로 잠그고 current binding, grant state, session expiry와 idempotency reservation을 다시 검증하므로 대기 중 발생한 revoke/expiry/redeploy race를 fail-closed한다. 일치하는 completed delete record는 Grant/Session 물리 삭제 뒤에도 stable App과 versioned access-token verifier에 결합된 bounded authorization tombstone으로 식별하며, 다른 token·App·fingerprint에는 resource-hiding으로 실패한다. Bounded response replay는 최초 성공 시점의 lifecycle/revision, contract/expiry와 필요한 previous lifecycle/revision만 typed nullable column으로 저장한 content-free snapshot을 사용한다. Mutable Session/Purge 상태를 response로 다시 투영하지 않고 raw response와 capability도 snapshot에 포함하지 않으며 legacy/null/corrupt snapshot은 현재 상태로 추정하지 않고 fail-closed한다. Mutation 실패 시 pending record와 state 변경을 rollback한다.
 
 ## Ports And Adapters
 
@@ -381,14 +381,15 @@ Repository adapter는 commit/rollback을 소유하지 않는다. Mutation use ca
 
 Public grant/purge receipt 응답 유실 복구만 담당하는 bounded port다.
 
-- Idempotency record ID, organization, operation, scope digest, idempotency-key hash, request fingerprint와 replay purpose를 associated data로 사용하는 application-level envelope encryption
+- Idempotency record ID, organization, operation, stable App scope, idempotency-key identity, request fingerprint와 replay purpose를 associated data로 사용하는 application-level envelope encryption
 - 승인된 key-management capability와 key version
 - Access Grant token 최대 10분, Purge receipt 최대 24시간의 bounded TTL, read-on-replay와 irreversible delete
 - Stored associated-data digest가 현재 immutable idempotency identity에서 재계산한 digest와 같고 같은 scope/key/fingerprint인 경우에만 decrypt 가능
 - 일반 mutation idempotency record는 secret replay lifetime을 포괄하되 최대 24시간으로 제한하고 Purge Job/receipt의 최대 8일 lifecycle과 분리
 - 최초 성공 응답의 content-free typed lifecycle snapshot은 idempotency parent에 저장하고 raw response/capability는 별도 encrypted replay 외에는 저장하지 않음
+- Delete replay authorization tombstone은 organization, stable App ID, operation, idempotency identity와 versioned access-token HMAC verifier를 all-or-none으로 저장하고 raw token, session content 또는 private source를 저장하지 않음
 
-Access Grant/Purge Job table에는 verifier hash만 두고 ciphertext를 섞지 않는다. Memory application은 encryption algorithm이나 raw key를 직접 선택하지 않으며 replay store unavailable이면 새 secret을 중복 발급하지 않고 fail-closed 한다.
+Access Grant/Purge Job table에는 verifier hash만 두고 ciphertext를 섞지 않는다. Purge Job은 stable App ID와 발급 시점 deployment ID/version·audience snapshot을 함께 보존한다. Memory application은 encryption algorithm이나 raw key를 직접 선택하지 않으며 replay store unavailable이면 새 secret을 중복 발급하지 않고 fail-closed 한다.
 
 Access Grant token replay TTL이 끝난 same-key request는 `memory.secret_replay_expired`로 닫는다. Replay store가 만료 secret을 대신해 새 grant/receipt를 발급하거나 rotation하지 않는다.
 
