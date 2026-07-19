@@ -301,6 +301,8 @@ export function ModelRoutingDecisionDetails({
     summary.policySource === 'test_ephemeral' &&
     summary.includedInPolicyLearning === false;
   const judge = summary.judge;
+  const shortReason = reasonText(summary.reasonCode, judge.reasonShort);
+  const selectionReason = judge.selectionExplanation || shortReason;
 
   return (
     <section className="space-y-3 rounded-lg border border-slate-200 bg-white p-4 text-xs shadow-sm dark:border-slate-700 dark:bg-slate-900">
@@ -320,10 +322,18 @@ export function ModelRoutingDecisionDetails({
 
       <dl className="grid gap-2 sm:grid-cols-2">
         <Detail label="실제 실행 모델" value={summary.actualModel || summary.selectedModel || '-'} />
-        <Detail label="선택 근거" value={reasonText(summary.reasonCode, judge.reasonShort)} />
+        <Detail
+          label={judge.selectionExplanation ? 'Judge 선택 근거' : '선택 근거'}
+          value={selectionReason}
+        />
       </dl>
 
       <div className="flex flex-wrap gap-2">
+        {judge.selectionExplanation ? (
+          <span className="rounded border border-violet-200 bg-violet-50 px-2 py-1 text-violet-800">
+            판단 분류: {shortReason}
+          </span>
+        ) : null}
         <span className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-slate-700">
           {lengthBucketLabel(context.inputLengthBucket)}
         </span>
@@ -376,16 +386,6 @@ export function ModelRoutingDecisionDetails({
                 }
               />
             </dl>
-            {judge.selectionExplanation ? (
-              <div className="mt-3 rounded-md border border-violet-200 bg-white/70 px-3 py-2 text-slate-800 dark:border-violet-800 dark:bg-slate-900/40 dark:text-slate-100">
-                <p className="text-[11px] font-medium text-violet-800 dark:text-violet-200">
-                  Judge 판단 설명
-                </p>
-                <p className="mt-1 break-words leading-relaxed">
-                  {judge.selectionExplanation}
-                </p>
-              </div>
-            ) : null}
           </>
         ) : judge.status === 'failed' ? (
           <>
