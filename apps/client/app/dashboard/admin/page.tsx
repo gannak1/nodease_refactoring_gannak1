@@ -1078,7 +1078,7 @@ export default function AdminConsolePage() {
                   onClick={() => selectAdminTab(tab.key)}
                   className={`whitespace-nowrap border-b-2 px-1 pb-3 text-sm font-semibold ${
                     activeTab === tab.key
-                      ? 'border-slate-950 text-slate-950'
+                      ? 'border-blue-600 text-blue-600'
                       : 'border-transparent text-slate-500 hover:text-slate-800'
                   }`}
                 >

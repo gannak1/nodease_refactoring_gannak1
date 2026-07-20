@@ -213,6 +213,23 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('선택한 상위 탭을 파란 글자와 파란 밑줄로 표시한다', async () => {
+    render(<AdminConsolePage />);
+
+    const organizationTab = await screen.findByRole('button', {
+      name: '조직 구성',
+    });
+    const permissionsTab = screen.getByRole('button', { name: '권한' });
+    const usageTab = screen.getByRole('button', { name: '비용' });
+
+    expect(organizationTab).toHaveClass('border-blue-600', 'text-blue-600');
+    expect(permissionsTab).toHaveClass(
+      'border-transparent',
+      'text-slate-500',
+    );
+    expect(usageTab).toHaveClass('border-transparent', 'text-slate-500');
+  });
+
   it('한 줄 요약 카드에 현재 조직 지표를 전달한다', async () => {
     render(<AdminConsolePage />);
 
