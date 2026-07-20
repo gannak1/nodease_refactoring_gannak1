@@ -86,7 +86,15 @@ _UUID_RE = re.compile(
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 _SECRET_VALUE_RE = re.compile(
-    r"(?i)(?:api[_-]?key|token|secret|password|authorization|bearer)\s*[:=]"
+    r"(?:"
+    r"sk-[A-Za-z0-9_-]{8,}|"
+    r"ghp_[A-Za-z0-9_]{8,}|"
+    r"xox[baprs]-[A-Za-z0-9-]{8,}|"
+    r"bearer\s+[A-Za-z0-9._-]{8,}|"
+    r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|"
+    r"(?:api[_-]?key|token|secret|password|authorization|bearer)\s*[:=]"
+    r")",
+    re.IGNORECASE,
 )
 _URL_RE = re.compile(r"(?i)^(?:redis|rediss|https?|postgres(?:ql)?):/{1,2}")
 

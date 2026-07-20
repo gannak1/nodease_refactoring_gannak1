@@ -78,6 +78,9 @@ MBA-343은 이 위험을 막는 최소 spine만 정의한다.
   current Catalog drift test가 불일치를 fail-closed한다.
 - `canonical_text_registry_version=intent-text-v1`의 topic/guidance ref는 internal-document와 Slack channel
   회귀 fixture를 위한 명시된 최소 v1 member만 허용한다.
+- GitHub read/comment integration action과 대응 capability는 서로 존재 여부가 정확히 일치해야 한다.
+- 모든 Knowledge requirement는 같은 ref와 target을 가진 placement와 정확히 1:1 대응하고, before-graph의
+  knowledge step도 requirement target과 일치해야 한다.
 - semantic order가 있는 capability, topic reference와 guidance reference는 입력 순서를 보존한다.
 
 ### ABC343-FR-002 Minimal Cache Value
@@ -99,7 +102,8 @@ MBA-343은 이 위험을 막는 최소 spine만 정의한다.
 
 - graph, UUID version과 무관한 canonical UUID 문자열, node/edge UUID, 좌표, GraphMutation operation,
   workflow/request/session/operation ID를 금지한다.
-- credential, secret, token, API key, password, Redis URL과 raw provider/audit payload를 금지한다.
+- credential, secret, token, API key, password, Redis URL과 raw provider/audit payload를 금지한다. Token 검사는
+  key-value 표현뿐 아니라 `sk-`, `ghp_`, `xox[baprs]-`, whitespace `Bearer`와 JWT 형태를 포함한다.
 - 실제 parameter value와 explicit parameter value를 금지한다.
 - KB/Collection ID, 이름, candidate handle과 request-scoped opaque handle을 금지한다.
 - natural-language target 기반 modify는 exact alias 여부와 무관하게 strict plan schema가 거부한다.
@@ -185,6 +189,8 @@ MBA-343은 이 위험을 막는 최소 spine만 정의한다.
 - contract/codec 오류는 stable allowlisted code만 제공한다.
 - codec은 public typed `IntentPlanCodecError`만 발생시키고 closed code/path category 밖의 진단을 노출하지 않는다.
 - 오류 message, `repr`, test assertion output에 plan payload, safe request 또는 ephemeral identity를 포함하지 않는다.
+- strict DTO와 port result의 Pydantic `ValidationError.errors()`와 `.json()`도 validation input을 null로 만들고
+  allowlisted location과 고정 safe message만 제공하며 원본 exception chain을 보존하지 않는다.
 - schema 또는 codec 오류는 이 이슈에서 Planner 오류로 변환하지 않는다. 실제 fail-open 연결은 후속 integration 범위다.
 
 ## 6. Non-functional Requirements
@@ -205,7 +211,7 @@ composition, adapter, SQLAlchemy, FastAPI, provider SDK와 Redis library를 impo
 
 ### ABC343-NFR-004 Security
 
-forbidden-field 검증은 fail-closed이며 validation 자체가 원문을 log하거나 반환하지 않는다.
+forbidden-field 검증은 fail-closed이며 validation의 문자열·구조화 오류 view 모두 원문을 log하거나 반환하지 않는다.
 
 ### ABC343-NFR-005 Compatibility
 
@@ -216,6 +222,7 @@ forbidden-field 검증은 fail-closed이며 validation 자체가 원문을 log�
 - `CachedIntentPlanV1`과 모든 nested DTO가 strict/immutable contract test를 통과한다.
 - canonical codec의 round-trip, byte equality와 malformed input test가 통과한다.
 - original bytes의 strict Pydantic JSON-mode decode와 public codec error redaction test가 통과한다.
+- strict DTO/port validation의 문자열·구조화 오류 view가 입력값을 반사하지 않는 test가 통과한다.
 - Catalog parameter input type, request-specific summary projection descriptor 및 canonical purpose snapshot이 exact
   drift/membership test를 통과한다.
 - store load/save result가 miss, invalid와 unavailable을 손실 없이 구분한다.
@@ -233,5 +240,6 @@ MBA-343은 protected resource reference를 저장하거나 새로 사용하지 �
 Disabled seam은 기존 Planner closure를 동일하게 한 번 위임할 뿐 protected identity나 credential을
 관찰하지 않는다. 따라서 새 관리 UI, runtime/background, lifecycle, preflight와 audit persistence 경계는
 이 이슈에서 `해당 없음`이다. Cache value의 protected identity/secret 비포함과 redaction-safe validation
-test만 `완료 필요`다. 이후 serving cache가 permission, Knowledge 후보 또는 credential relation을 소비할 때는
+test는 MBA-343 contract/codec suite에서 완료했다. 이후 serving cache가 permission, Knowledge 후보 또는
+credential relation을 소비할 때는
 [보호 리소스 기능 완결성 기준](../../engineering/protected-resource-feature-completion.md)을 다시 전체 적용한다.
