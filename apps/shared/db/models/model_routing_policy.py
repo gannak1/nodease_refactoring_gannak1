@@ -353,6 +353,7 @@ class LLMNodeModelRoutingLearningLabel(Base):
     encoder_model_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     confidence: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 6), nullable=True)
     reason_code: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    task_requirements: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     outcome_reason: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

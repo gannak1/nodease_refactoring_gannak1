@@ -18,8 +18,10 @@ from apps.shared.db.models.llm import (
 )
 from apps.shared.services.model_routing_global_profile_catalog import (
     canonical_model_routing_id,
+    catalog_metadata_for_model_id,
     normalize_model_id as normalize_model_routing_id,
 )
+from apps.shared.services.llm_model_pricing import get_model_pricing
 from apps.workflow_engine.services.llm_output_contract import (
     build_json_output_schema_instruction,
     response_format_requires_json_instruction,
@@ -31,7 +33,7 @@ from apps.workflow_engine.services.model_routing_decision_cache import (
     accepted_decision,
 )
 from apps.workflow_engine.services.model_routing_local_classifier import (
-    MDebertaModelChoiceClassifier,
+    MDebertaTaskRequirementClassifier,
 )
 
 
@@ -282,6 +284,7 @@ class ModelRouter:
         node_data: Any,
         available_model_ids: Optional[Iterable[str]] = None,
         routing_feature_text: str | None = None,
+        learning_feature_text: str | None = None,
         node_profile: NodeRunProfile | None = None,
     ) -> ModelRoutingPolicyDecision:
         del node_profile  # 운영 품질은 refresh에서 학습 모드 전환에만 사용한다.
@@ -383,7 +386,7 @@ class ModelRouter:
                         "candidate_model_count": len(candidates),
                     },
                 )
-        artifact = learning.get("local_router_artifact")
+        artifact = learning.get("local_requirement_artifact")
         min_confidence = cls._confidence(
             learning.get("local_confidence_threshold"),
             default=0.78,
@@ -391,14 +394,13 @@ class ModelRouter:
         if learning.get("mode") == "local_first" and isinstance(artifact, dict):
             low_confidence: float | None = None
             try:
-                prediction = MDebertaModelChoiceClassifier.predict(
+                prediction = MDebertaTaskRequirementClassifier.predict(
                     artifact,
-                    text=routing_feature_text or runtime_context.text,
-                    available_model_ids=candidates,
+                    text=learning_feature_text or cls.learning_feature_text(inputs, node_data),
                 )
-                selected = cls.first_available_model(
-                    [prediction.selected_model_id],
-                    allowed_models,
+                selected = cls.select_candidate_for_requirements(
+                    candidate_model_ids=candidates,
+                    requirements=prediction.requirements,
                 )
                 if selected and prediction.confidence >= min_confidence:
                     return ModelRoutingPolicyDecision(
@@ -414,6 +416,8 @@ class ModelRouter:
                             "local_confidence": prediction.confidence,
                             "local_confidence_threshold": min_confidence,
                             "candidate_model_count": len(candidates),
+                            "task_requirements": prediction.requirements,
+                            "selection_method": "catalog_capability_then_price",
                         },
                     )
                 low_confidence = prediction.confidence
@@ -489,10 +493,6 @@ class ModelRouter:
         if task_description:
             task_contract_parts.append(f"TASK_DESCRIPTION:\n{task_description}")
         task_contract_parts.append(f"PROMPT_CONSTRAINTS:\n{prompt_feature}")
-        output_contract = cls._judge_output_contract(node_data)
-        if output_contract:
-            task_contract_parts.append(f"OUTPUT_CONTRACT:\n{output_contract}")
-
         request_json = cls._judge_request_json(inputs)
         safe_rag_metadata = {
             key: value
@@ -522,6 +522,126 @@ class ModelRouter:
                 + json.dumps(safe_rag_metadata, ensure_ascii=False, sort_keys=True)
             )
         return "\n\n".join(part for part in parts if part)
+
+    @classmethod
+    def learning_feature_text(
+        cls,
+        inputs: dict[str, Any],
+        node_data: Any,
+        *,
+        rendered_prompt_parts: Iterable[str] | None = None,
+        rag_metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """요청 난이도 학습용 feature를 만든다.
+
+        JSON Schema 같은 노드 고정 출력 계약은 모든 요청에 같으므로 모델별
+        capability filter로만 사용한다. 이 feature에는 넣지 않아 난이도 학습이
+        ``JSON이면 고난도`` 같은 잘못된 상관관계를 외우지 않게 한다.
+        """
+
+        if rendered_prompt_parts is None:
+            rendered_prompt_parts = cls.render_prompt_parts(inputs, node_data)
+        prompt_values = list(rendered_prompt_parts)[:3]
+        prompt_values.extend([""] * (3 - len(prompt_values)))
+        prompt_feature = "\n\n".join(
+            f"{label}:\n{cls._judge_prompt_excerpt(value)}"
+            for label, value in zip(
+                ("SYSTEM_PROMPT", "USER_PROMPT", "ASSISTANT_PROMPT"),
+                prompt_values,
+            )
+        )
+        task_parts = []
+        node_title = str(cls._node_data_value(node_data, "title") or "").strip()
+        if node_title:
+            task_parts.append(f"NODE_TITLE: {node_title[:120]}")
+        task_description = cls._judge_task_description(node_data)
+        if task_description:
+            task_parts.append(f"TASK_DESCRIPTION:\n{task_description}")
+        task_parts.append(f"PROMPT_CONTEXT:\n{prompt_feature}")
+        parts = [
+            f"CURRENT_REQUEST_JSON:\n{cls._judge_request_json(inputs)}",
+            "NODE_TASK_CONTEXT:\n" + "\n\n".join(task_parts),
+        ]
+        safe_rag_metadata = {
+            key: value
+            for key, value in (rag_metadata or {}).items()
+            if key
+            in {
+                "used",
+                "retrieved_context_token_estimate",
+                "retrieved_context_chars",
+                "retrieved_chunk_count",
+                "source_count",
+                "evidence_sufficient",
+                "partial_result",
+                "query_rewrite_applied",
+                "insufficiency_reason",
+                "source_tier_used",
+            }
+            and isinstance(value, (bool, int, float, str))
+        }
+        if safe_rag_metadata:
+            parts.append(
+                "RAG_RUNTIME_SIGNALS:\n"
+                + json.dumps(safe_rag_metadata, ensure_ascii=False, sort_keys=True)
+            )
+        return "\n\n".join(part for part in parts if part)
+
+    @classmethod
+    def select_candidate_for_requirements(
+        cls,
+        *,
+        candidate_model_ids: Iterable[str],
+        requirements: Mapping[str, Any],
+    ) -> str | None:
+        """요구 수준을 충족하는 후보 중 가장 경제적인 모델을 고른다.
+
+        catalog는 품질 점수가 아니라 공개된 capability 상한을 제공한다. 따라서
+        여기서는 후보 탈락과 동률 해소에만 쓰며, 실제 계약 성적은 학습 전환 gate가
+        별도로 검사한다.
+        """
+
+        complexity = cls._requirement_score(requirements.get("task_complexity"))
+        impact = cls._requirement_score(requirements.get("decision_impact"))
+        evidence = cls._requirement_score(requirements.get("evidence_synthesis"))
+        required_ceiling = max(complexity, impact, evidence)
+        ceiling_rank = {"routine": 1, "multi_constraint": 2, "complex_professional": 3}
+        reasoning_rank = {
+            "non_reasoning": 0,
+            "general_reasoning": 2,
+            "frontier_reasoning": 3,
+            "specialized_reasoning": 3,
+        }
+        eligible: list[tuple[float, str]] = []
+        for model_id in cls._unique_model_ids(candidate_model_ids):
+            metadata = catalog_metadata_for_model_id(model_id)
+            if not metadata:
+                continue
+            model_ceiling = ceiling_rank.get(str(metadata.get("complexity_ceiling")), 0)
+            reasoning = reasoning_rank.get(str(metadata.get("reasoning_profile")), 0)
+            if model_ceiling < required_ceiling:
+                continue
+            if evidence >= 2 and reasoning < 2:
+                continue
+            pricing = get_model_pricing(model_id)
+            price = (
+                float(pricing.standard_input_per_1k + pricing.standard_output_per_1k)
+                if pricing is not None
+                else float("inf")
+            )
+            eligible.append((price, model_id))
+        if not eligible:
+            return None
+        return min(eligible, key=lambda row: (row[0], row[1]))[1]
+
+    @staticmethod
+    def _requirement_score(value: Any) -> int:
+        if isinstance(value, bool):
+            return 0
+        try:
+            return max(0, min(3, int(value)))
+        except (TypeError, ValueError):
+            return 0
 
     @classmethod
     def _judge_request_json(cls, inputs: dict[str, Any]) -> str:

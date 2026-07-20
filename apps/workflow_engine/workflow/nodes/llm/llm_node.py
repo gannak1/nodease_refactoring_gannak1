@@ -586,6 +586,11 @@ class LLMNode(Node[LLMNodeData]):
                 node_data=self.data,
                 available_model_ids=available_model_ids,
                 routing_feature_text=routing_feature_text,
+                learning_feature_text=ModelRouter.learning_feature_text(
+                    inputs,
+                    self.data,
+                    rag_metadata=routing_rag_context,
+                ),
             )
             selected_model_id = decision.selected_model_id
             fallback_model_id = decision.fallback_model_id
@@ -762,10 +767,16 @@ class LLMNode(Node[LLMNodeData]):
                                 workflow_run_id=workflow_run_id,
                                 node_id=self.id,
                                 routing_feature_text=routing_feature_text or "",
+                                learning_feature_text=ModelRouter.learning_feature_text(
+                                    inputs,
+                                    self.data,
+                                    rag_metadata=routing_rag_context,
+                                ),
                                 selected_model_id=selected_model_id,
                                 candidate_model_ids=candidate_model_ids,
                                 confidence=judge_decision.confidence,
                                 reason_code=judge_decision.reason_code,
+                                task_requirements=judge_decision.task_requirements,
                             )
                             if queued_learning.get("learning_queued"):
                                 judge_metadata["learning_status"] = "pending_contract"

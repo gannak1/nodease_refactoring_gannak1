@@ -4094,7 +4094,7 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
                 "learning": {
                     "mode": "local_first",
                     "local_confidence_threshold": 0.78,
-                    "local_router_artifact": {"version": 1},
+                    "local_requirement_artifact": {"version": 1},
                 },
                 "rules": [
                     {
@@ -4123,9 +4123,13 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
     }
     monkeypatch.setattr(
         "apps.workflow_engine.services.model_router."
-        "MDebertaModelChoiceClassifier.predict",
+        "MDebertaTaskRequirementClassifier.predict",
         lambda *_args, **_kwargs: SimpleNamespace(
-            selected_model_id="gpt-4.1-mini",
+            requirements={
+                "task_complexity": 1,
+                "decision_impact": 0,
+                "evidence_synthesis": 0,
+            },
             confidence=0.92,
         ),
     )

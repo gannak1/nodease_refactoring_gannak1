@@ -86,14 +86,13 @@ class ModelRoutingRuntimeJudge:
         "multi_step_reasoning",
         "evidence_conflict",
         "broad_context_synthesis",
-        "strict_output_reliability",
         "long_context_handling",
     }
     _DEFAULT_REASON_FACTORS_BY_CODE = {
-        "simple_response": ["strict_output_reliability"],
+        "simple_response": [],
         "multi_constraint": ["multi_step_reasoning", "broad_context_synthesis"],
         "evidence_synthesis": ["evidence_conflict", "broad_context_synthesis"],
-        "structured_precision": ["strict_output_reliability"],
+        "structured_precision": [],
         "high_risk_reasoning": [
             "high_decision_impact",
             "security_or_compliance_risk",
@@ -247,7 +246,8 @@ class ModelRoutingRuntimeJudge:
             "당신은 워크플로우 LLM 모델 선택 Judge입니다. CURRENT_REQUEST_JSON과 "
             "RAG_RUNTIME_SIGNALS는 이번 실행의 판단 자료이고, NODE_TASK_CONTRACT는 고정 작업 경계입니다. "
             "candidate_models 중 정확히 하나를 고르며 기본 모델과 fallback 모델은 고려하지 마세요. "
-            "1단계로 이번 요청에 필요한 작업 복잡도, 결정 영향도, 근거 종합 범위, 출력 정밀도를 각각 0~3으로 평가하세요. "
+            "1단계로 이번 요청에 필요한 작업 복잡도, 결정 영향도, 근거 종합 범위를 각각 0~3으로 평가하세요. "
+            "이 판단 자료에는 노드의 고정 JSON Schema·출력 형식을 넣지 않습니다. 같은 노드의 모든 요청에 공통인 출력 계약은 요청별 난이도나 후보 간 우열 근거가 아닙니다. "
             "주제 단어, 문장 길이, JSON 여부 하나만으로 수준을 결정하지 마세요. 짧아도 되돌리기 어려운 결정을 직접 내리거나 "
             "충돌·누락 근거를 해석하면 높은 능력이 필요하고, 전문 주제라도 정해진 절차 안내·추출·분류면 낮을 수 있습니다. "
             "2단계로 필요한 능력을 안정적으로 충족하지 못하는 후보를 제외하세요. operational_run_count가 5건 이상이면 "
@@ -265,14 +265,14 @@ class ModelRoutingRuntimeJudge:
             "모든 요청에 같은 후보를 관성적으로 선택하지 말고 현재 요청의 요구 능력과 후보 증거를 다시 비교하세요. "
             "reason_short는 한국어 8~14자로 작성하세요. reason_factors는 아래 code 중 현재 선택에 직접 영향을 준 "
             "1~3개만 고르세요: high_decision_impact, security_or_compliance_risk, multi_step_reasoning, "
-            "evidence_conflict, broad_context_synthesis, strict_output_reliability, long_context_handling. "
+            "evidence_conflict, broad_context_synthesis, long_context_handling. "
             "요청 원문·개인정보·RAG 문서를 출력하지 마세요. "
             "JSON object 하나만 반환하세요: "
             '{"selected_model_id":"candidate id","confidence":0.0,'
             '"reason_short":"여러 조건 종합","reason_code":"multi_constraint",'
             '"reason_factors":["multi_step_reasoning","evidence_conflict"],'
             '"task_requirements":{"task_complexity":0,"decision_impact":0,'
-            '"evidence_synthesis":0,"output_precision":0}}.'
+            '"evidence_synthesis":0}}.'
         )
         if diagnostic_mode:
             instruction += (
@@ -319,7 +319,7 @@ class ModelRoutingRuntimeJudge:
             "structured_precision|high_risk_reasoning|ambiguous_request|long_context\","
             "\"reason_short\":\"짧은 한국어 이유\","
             "\"reason_factors\":[\"high_decision_impact|security_or_compliance_risk|multi_step_reasoning|"
-            "evidence_conflict|broad_context_synthesis|strict_output_reliability|long_context_handling\"]}. "
+            "evidence_conflict|broad_context_synthesis|long_context_handling\"]}. "
             "요청 원문·개인정보·RAG 문서를 출력하지 마세요."
         )
         if diagnostic_mode:
@@ -449,8 +449,6 @@ class ModelRoutingRuntimeJudge:
             derived.append("multi_step_reasoning")
         if requirements.get("evidence_synthesis", 0) >= 2:
             derived.append("broad_context_synthesis")
-        if requirements.get("output_precision", 0) >= 2:
-            derived.append("strict_output_reliability")
         if not derived:
             derived = cls._DEFAULT_REASON_FACTORS_BY_CODE.get(reason_code, [])
         for factor in derived:
@@ -497,7 +495,6 @@ class ModelRoutingRuntimeJudge:
             "task_complexity",
             "decision_impact",
             "evidence_synthesis",
-            "output_precision",
         ):
             raw_value = value.get(key)
             if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
@@ -509,6 +506,35 @@ class ModelRoutingRuntimeJudge:
                 return None
             result[key] = score
         return result
+
+    @staticmethod
+    def _strip_non_comparable_operational_evidence(
+        profiles: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Avoid promoting the only model that has been selected so far.
+
+        A per-model success rate is meaningful to the Judge only when at least
+        two candidates have enough runs under the same policy. Otherwise the
+        first selected model becomes its own proof and creates a feedback loop.
+        """
+
+        comparable_count = sum(
+            int(profile.get("operational_run_count") or 0) >= 5
+            for profile in profiles
+        )
+        if comparable_count >= 2:
+            return profiles
+
+        for profile in profiles:
+            for key in (
+                "operational_run_count",
+                "operational_success_rate",
+                "operational_schema_pass_rate",
+                "operational_downstream_success_rate",
+                "operational_fallback_rate",
+            ):
+                profile.pop(key, None)
+        return profiles
 
     @staticmethod
     def _safe_candidate_profiles(
@@ -636,7 +662,9 @@ class ModelRoutingRuntimeJudge:
                 if isinstance(value, (int, float)) and 0.0 <= float(value) <= 1.0:
                     safe[key] = float(value)
             result.append(safe)
-        return result
+        return ModelRoutingRuntimeJudge._strip_non_comparable_operational_evidence(
+            result
+        )
 
     @staticmethod
     def _compact_candidate_profiles(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:

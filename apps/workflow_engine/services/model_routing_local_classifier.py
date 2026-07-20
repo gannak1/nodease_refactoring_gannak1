@@ -30,6 +30,12 @@ class ModelChoicePrediction:
     probabilities: dict[str, float]
 
 
+@dataclass(frozen=True)
+class TaskRequirementPrediction:
+    requirements: dict[str, int]
+    confidence: float
+
+
 class MDebertaEmbedder:
     """동일 worker에서 공유하는 lazy-loaded mDeBERTa encoder."""
 
@@ -247,3 +253,54 @@ class MDebertaModelChoiceClassifier:
         if norm <= 0:
             raise ValueError("0 길이 embedding은 모델 선택에 사용할 수 없습니다.")
         return [value / norm for value in values]
+
+
+class MDebertaTaskRequirementClassifier:
+    """mDeBERTa vector에서 모델 ID가 아닌 요청 요구 능력을 학습한다."""
+
+    @classmethod
+    def update_from_vector(
+        cls,
+        artifact: dict[str, Any] | None,
+        *,
+        vector: Iterable[float],
+        encoder_model_id: str | None,
+        task_requirements: dict[str, Any],
+    ) -> dict[str, Any]:
+        from apps.workflow_engine.services.model_routing_incremental_learning import (
+            IncrementalTaskRequirementClassifier,
+        )
+
+        updated = IncrementalTaskRequirementClassifier.update(
+            artifact,
+            vector=vector,
+            task_requirements=task_requirements,
+        )
+        updated["encoder_model_id"] = str(encoder_model_id or "")
+        updated["classification_strategy"] = (
+            "frozen_mdeberta_online_task_requirements_v1"
+        )
+        return updated
+
+    @classmethod
+    def predict(
+        cls,
+        artifact: dict[str, Any],
+        *,
+        text: str,
+        embedder: TextEmbedder | None = None,
+    ) -> TaskRequirementPrediction:
+        from apps.workflow_engine.services.model_routing_incremental_learning import (
+            IncrementalTaskRequirementClassifier,
+        )
+
+        vector, _ = MDebertaModelChoiceClassifier._vector(
+            text,
+            artifact=artifact,
+            embedder=embedder,
+        )
+        result = IncrementalTaskRequirementClassifier.predict(artifact, vector=vector)
+        return TaskRequirementPrediction(
+            requirements=result.requirements,
+            confidence=result.confidence,
+        )

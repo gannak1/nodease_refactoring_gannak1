@@ -119,21 +119,24 @@ def test_policy_uses_runtime_judge_first_then_local_router(monkeypatch):
     assert first.decision_source == "runtime_judge_pending"
 
     class _Prediction:
-        selected_model_id = "gpt-4o-mini"
+        requirements = {
+            "task_complexity": 1,
+            "decision_impact": 0,
+            "evidence_synthesis": 0,
+        }
         confidence = 0.92
-        probabilities = {"gpt-4o-mini": 0.92, "gpt-5-mini": 0.08}
 
     from apps.workflow_engine.services.model_routing_local_classifier import (
-        MDebertaModelChoiceClassifier,
+        MDebertaTaskRequirementClassifier,
     )
 
     monkeypatch.setattr(
-        MDebertaModelChoiceClassifier, "predict", lambda *_args, **_kwargs: _Prediction()
+        MDebertaTaskRequirementClassifier, "predict", lambda *_args, **_kwargs: _Prediction()
     )
     policy["active_policy"]["learning"] = {
         "mode": "local_first",
         "local_confidence_threshold": 0.78,
-        "local_router_artifact": {"kind": "mdeberta_model_choice_online_v1"},
+        "local_requirement_artifact": {"kind": "mdeberta_task_requirements_online_v1"},
     }
     local = ModelRouter.resolve_policy(
         policy,

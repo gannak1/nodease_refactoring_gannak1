@@ -11,6 +11,7 @@ from apps.workflow_engine.services.model_routing_judge_first_policy import (
 )
 from apps.workflow_engine.services.model_routing_local_classifier import (
     MDebertaModelChoiceClassifier,
+    MDebertaTaskRequirementClassifier,
 )
 from apps.workflow_engine.services.model_routing_runtime_judge import (
     ModelRoutingRuntimeJudge,
@@ -33,7 +34,7 @@ class _JudgeClient:
         del kwargs
         body = json.loads(messages[1]["content"])
         is_simple = "간단" in body["request_feature"]
-        selected = "gpt-4o-mini" if is_simple else "gpt-5-mini"
+        selected = "gpt-4o-mini" if is_simple else "gpt-5.4"
         return {
             "choices": [
                 {
@@ -44,6 +45,12 @@ class _JudgeClient:
                                 "confidence": 0.92,
                                 "reason_short": "단순 안내 요청" if is_simple else "여러 조건 종합",
                                 "reason_code": "request_capability_match",
+                                "task_requirements": {
+                                    "task_complexity": 1 if is_simple else 3,
+                                    "decision_impact": 0 if is_simple else 2,
+                                    "evidence_synthesis": 0 if is_simple else 2,
+                                    "output_precision": 0,
+                                },
                             }
                         )
                     }
@@ -67,10 +74,10 @@ def _node_data():
 
 
 def test_judge_labels_gradually_enable_confident_local_routing(monkeypatch):
-    candidates = ["gpt-4o-mini", "gpt-5-mini"]
+    candidates = ["gpt-4o-mini", "gpt-5.4"]
     active_policy = build_judge_first_active_policy(
         policy_version="judge-first-e2e-v1",
-        default_model_id="gpt-5-mini",
+        default_model_id="gpt-5.4",
         fallback_model_id="gpt-4o-mini",
         candidate_model_ids=candidates,
     )
@@ -89,7 +96,7 @@ def test_judge_labels_gradually_enable_confident_local_routing(monkeypatch):
     embedder = _FeatureEmbedder()
     artifact = None
     selected_models: set[str] = set()
-    for index in range(24):
+    for index in range(50):
         feature = "간단 사용 안내" if index % 2 == 0 else "복잡 규정 종합 판단"
         judge_decision = ModelRoutingRuntimeJudge.decide(
             client=_JudgeClient(),
@@ -97,12 +104,16 @@ def test_judge_labels_gradually_enable_confident_local_routing(monkeypatch):
             routing_feature_text=feature,
         )
         selected_models.add(judge_decision.selected_model_id)
-        artifact = MDebertaModelChoiceClassifier.update(
-            artifact,
-            text=feature,
-            selected_model_id=judge_decision.selected_model_id,
-            candidate_model_ids=candidates,
+        vector, encoder_model_id = MDebertaModelChoiceClassifier.vectorize(
+            feature,
+            artifact=artifact,
             embedder=embedder,
+        )
+        artifact = MDebertaTaskRequirementClassifier.update_from_vector(
+            artifact,
+            vector=vector,
+            encoder_model_id=encoder_model_id,
+            task_requirements=judge_decision.task_requirements or {},
         )
 
     mode = learning_mode_for(
@@ -125,7 +136,7 @@ def test_judge_labels_gradually_enable_confident_local_routing(monkeypatch):
         "judged_request_count": 50,
         "selected_model_ids": sorted(selected_models),
         "local_confidence_threshold": 0.78,
-        "local_router_artifact": artifact,
+        "local_requirement_artifact": artifact,
     }
 
     simple = ModelRouter.resolve_policy(
@@ -144,7 +155,7 @@ def test_judge_labels_gradually_enable_confident_local_routing(monkeypatch):
     )
 
     assert simple.selected_model_id == "gpt-4o-mini"
-    assert complex_request.selected_model_id == "gpt-5-mini"
+    assert complex_request.selected_model_id == "gpt-5.4"
     assert simple.decision_source == "local_router"
     assert complex_request.decision_source == "local_router"
     assert simple.requires_runtime_judge is False
@@ -178,6 +189,11 @@ def test_fifty_accepted_labels_enable_local_router_on_fifty_first_request(monkey
         candidate_model_ids=candidates,
         confidence=0.94,
         reason_code="simple_response",
+        task_requirements={
+            "task_complexity": 1,
+            "decision_impact": 0,
+            "evidence_synthesis": 0,
+        },
         routing_feature_hash=None,
         outcome_reason=None,
     )
@@ -203,6 +219,11 @@ def test_fifty_accepted_labels_enable_local_router_on_fifty_first_request(monkey
             candidate_model_ids=candidates,
             confidence=0.94,
             reason_code="simple_response" if simple else "multi_constraint",
+            task_requirements={
+                "task_complexity": 1 if simple else 3,
+                "decision_impact": 0 if simple else 2,
+                "evidence_synthesis": 0 if simple else 2,
+            },
             routing_feature_hash=None,
             outcome_reason=None,
         )

@@ -88,10 +88,12 @@ class ModelRoutingPolicyStore:
         workflow_run_id: str | uuid.UUID,
         node_id: str,
         routing_feature_text: str,
+        learning_feature_text: str,
         selected_model_id: str,
         candidate_model_ids: list[str],
         confidence: float,
         reason_code: str,
+        task_requirements: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """Judge 선택을 실행 완료 뒤 학습할 수 있도록 안전한 vector로 보관한다."""
 
@@ -118,12 +120,14 @@ class ModelRoutingPolicyStore:
             )
 
             vector, encoder_model_id = MDebertaModelChoiceClassifier.vectorize(
-                routing_feature_text,
-                artifact=learning.get("local_router_artifact"),
+                learning_feature_text,
+                artifact=learning.get("local_requirement_artifact"),
             )
         except (RuntimeError, ValueError, OSError) as exc:
             return {"learning_queued": False, "reason": type(exc).__name__}
 
+        # 동일 요청 Judge 결과 cache는 전체 routing contract 기준으로만 재사용한다.
+        # 반면 vector는 고정 출력 계약을 뺀 learning feature로 만든다.
         feature_hash = routing_feature_hash(routing_feature_text)
 
         run_uuid = uuid.UUID(str(workflow_run_id))
@@ -148,6 +152,7 @@ class ModelRoutingPolicyStore:
                 encoder_model_id=encoder_model_id,
                 confidence=Decimal(str(confidence)),
                 reason_code=str(reason_code)[:128],
+                task_requirements=cls._safe_task_requirements(task_requirements),
             )
         )
         db.flush()
@@ -298,8 +303,9 @@ class ModelRoutingPolicyStore:
             outputs["metadata"] = metadata
             node_run.outputs = outputs
 
-    @staticmethod
+    @classmethod
     def _finalize_runtime_judge_label(
+        cls,
         *,
         policy: LLMNodeModelRoutingPolicy,
         label: LLMNodeModelRoutingLearningLabel,
@@ -329,16 +335,22 @@ class ModelRoutingPolicyStore:
         )
         try:
             from apps.workflow_engine.services.model_routing_local_classifier import (
-                MDebertaModelChoiceClassifier,
+                MDebertaTaskRequirementClassifier,
             )
 
-            learning["local_router_artifact"] = (
-                MDebertaModelChoiceClassifier.update_from_vector(
-                    learning.get("local_router_artifact"),
+            requirements = cls._safe_task_requirements(
+                getattr(label, "task_requirements", None)
+            )
+            if requirements is None:
+                label.status = "rejected"
+                label.outcome_reason = "task_requirements_missing"
+                return False
+            learning["local_requirement_artifact"] = (
+                MDebertaTaskRequirementClassifier.update_from_vector(
+                    learning.get("local_requirement_artifact"),
                     vector=label.feature_vector,
                     encoder_model_id=label.encoder_model_id,
-                    selected_model_id=label.selected_model_id,
-                    candidate_model_ids=label.candidate_model_ids,
+                    task_requirements=requirements,
                 )
             )
         except (RuntimeError, ValueError):
@@ -352,10 +364,19 @@ class ModelRoutingPolicyStore:
             if str(model_id).strip()
         }
         labels.add(str(label.selected_model_id))
+        selected_model_counts = (
+            dict(learning.get("selected_model_counts"))
+            if isinstance(learning.get("selected_model_counts"), dict)
+            else {}
+        )
+        selected_model_counts[str(label.selected_model_id)] = int(
+            selected_model_counts.get(str(label.selected_model_id)) or 0
+        ) + 1
         learning["judged_request_count"] = int(
             learning.get("judged_request_count") or 0
         ) + 1
         learning["selected_model_ids"] = sorted(labels)
+        learning["selected_model_counts"] = selected_model_counts
         learning["last_judge_confidence"] = round(float(label.confidence or 0), 4)
         learning["last_judge_reason_code"] = str(label.reason_code or "")[:80]
         remember_accepted_decision(
@@ -393,7 +414,7 @@ class ModelRoutingPolicyStore:
             if isinstance(active_policy.get("learning"), dict)
             else {}
         )
-        if not isinstance(learning.get("local_router_artifact"), dict):
+        if not isinstance(learning.get("local_requirement_artifact"), dict):
             learning["mode"] = "judge_first"
             active_policy["learning"] = learning
             policy.active_policy = active_policy
@@ -424,10 +445,34 @@ class ModelRoutingPolicyStore:
             schema_pass_rate=weighted_rate("schema_pass_rate"),
             downstream_success_rate=weighted_rate("downstream_success_rate"),
             fallback_rate=weighted_rate("fallback_rate"),
+            largest_selected_model_share=cls._largest_selected_model_share(learning),
         )
         learning["operational_run_count"] = total_runs
         active_policy["learning"] = learning
         policy.active_policy = active_policy
+
+    @staticmethod
+    def _safe_task_requirements(value: Any) -> dict[str, int] | None:
+        if not isinstance(value, dict):
+            return None
+        result: dict[str, int] = {}
+        for key in ("task_complexity", "decision_impact", "evidence_synthesis"):
+            raw = value.get(key)
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                return None
+            if isinstance(raw, float) and not raw.is_integer():
+                return None
+            result[key] = max(0, min(3, int(raw)))
+        return result
+
+    @staticmethod
+    def _largest_selected_model_share(learning: dict[str, Any]) -> float | None:
+        counts = learning.get("selected_model_counts")
+        if not isinstance(counts, dict):
+            return None
+        values = [int(value or 0) for value in counts.values()]
+        total = sum(value for value in values if value > 0)
+        return max(values) / total if total else None
 
     @staticmethod
     def _is_routing_evidence_eligible_node_run(node_run: WorkflowNodeRun) -> bool:
