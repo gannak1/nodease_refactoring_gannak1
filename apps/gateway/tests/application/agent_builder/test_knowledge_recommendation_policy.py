@@ -1,9 +1,12 @@
+from inspect import signature
+
 import pytest
 import uuid
 
 from apps.gateway.application.agent_builder.knowledge_recommendation import (
     CandidateSemanticScore,
     EmbeddingResolution,
+    RecommendationEmbeddingResolver,
     RecommendationDeadline,
     aggregate_parent_relevance,
     compose_final_recommendation_score,
@@ -12,6 +15,14 @@ from apps.gateway.application.agent_builder.knowledge_recommendation import (
     semantic_state_for_embedding_failure,
     select_parent_first_relevance,
 )
+
+
+def test_embedding_resolver_contract_accepts_absolute_deadline():
+    deadline = signature(RecommendationEmbeddingResolver.embed_query).parameters[
+        "deadline"
+    ]
+
+    assert deadline.default is None
 
 
 @pytest.mark.parametrize(

@@ -144,6 +144,7 @@ class RecommendationEmbeddingResolver(Protocol):
         embedding_model: str,
         safe_query: str,
         timeout_seconds: float,
+        deadline: RecommendationDeadline | None = None,
     ) -> EmbeddingResolution: ...
 
 
