@@ -1,4 +1,4 @@
-import { act, render, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const routerMock = vi.hoisted(() => ({
@@ -74,6 +74,9 @@ describe('DashboardHomePage active organization changes', () => {
     render(<DashboardHomePage />);
 
     await waitFor(() => expect(organizationListCalls()).toBe(1));
+
+    const title = screen.getByRole('heading', { level: 1, name: 'Nodease' });
+    expect(title.firstElementChild).toHaveClass('lucide-house');
 
     act(() => {
       window.dispatchEvent(new Event('nodease-active-organization-changed'));

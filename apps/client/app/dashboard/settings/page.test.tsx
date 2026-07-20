@@ -265,6 +265,7 @@ describe('SettingsPage tabs', () => {
     const title = screen.getByRole('heading', { level: 1, name: '설정' });
     const badge = screen.getByText('관리자');
 
+    expect(title.firstElementChild).toHaveClass('lucide-settings');
     expect(title.parentElement).toHaveClass('flex', 'items-center', 'gap-2');
     expect(badge.parentElement).toBe(title.parentElement);
     expect(badge).not.toHaveClass('mt-2');

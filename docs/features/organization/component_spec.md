@@ -20,7 +20,7 @@ Verified Against: feature/mba-127 @ 258b26a9
   - dashboard child route content
 - 시각 표면:
   - `/dashboard`, `/dashboard/mymodule`, `/dashboard/explore`, `/dashboard/statistics`, `/dashboard/knowledge`, `/dashboard/admin`, `/dashboard/settings`의 페이지 배경은 `rgb(255, 255, 255)`를 사용한다.
-  - 최상위 페이지 제목은 `text-2xl`(24px)로 통일하고 장식 아이콘 없이 텍스트로 표시한다. 카드, 패널, 버튼처럼 의미를 전달하는 아이콘은 유지한다.
+  - 최상위 페이지 제목은 `text-2xl`(24px)로 통일하고 제목 왼쪽에 해당 sidebar navigation과 같은 아이콘을 표시한다. 공용 `DashboardTitle`이 아이콘과 제목의 순서·간격을 담당한다.
 
 ### DashboardHomePage
 

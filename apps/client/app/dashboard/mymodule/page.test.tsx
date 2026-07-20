@@ -92,6 +92,12 @@ describe('워크플로우 운영 현황 보기 전환', () => {
       }),
     ).toBeInTheDocument();
     expect(
+      screen.getByRole('heading', {
+        level: 1,
+        name: '워크플로우 목록',
+      }).firstElementChild,
+    ).toHaveClass('lucide-workflow');
+    expect(
       screen.queryByRole('heading', { level: 1, name: '내 모듈' }),
     ).not.toBeInTheDocument();
     expect(

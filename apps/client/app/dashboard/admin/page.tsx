@@ -12,6 +12,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  ShieldCheck,
   Trash2,
   UserPlus,
   Users,
@@ -1672,6 +1673,7 @@ function AdminShell({
     <div className="min-h-full bg-white px-6 py-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
         <DashboardPageHeader
+          icon={ShieldCheck}
           title="관리"
           description="조직 멤버, 팀, 권한과 운영 리소스를 관리합니다."
           badge={badge}

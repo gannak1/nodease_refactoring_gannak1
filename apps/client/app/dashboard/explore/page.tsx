@@ -6,6 +6,7 @@ import { Search, Loader2, Copy, Maximize } from 'lucide-react';
 import { appApi, App } from '@/app/features/app/api/appApi';
 import { toast } from 'sonner';
 import { AppGraphModal } from './components/AppGraphModal';
+import { DashboardTitle } from '@/app/features/dashboard/components/DashboardSurface';
 
 interface AppWithStats extends App {
   rating: number;
@@ -79,7 +80,11 @@ export default function ExplorePage() {
       {/* Page Title */}
       <div className="mb-6 flex items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-black text-slate-950">마켓플레이스</h1>
+          <DashboardTitle
+            icon={Search}
+            title="마켓플레이스"
+            className="text-2xl font-black text-slate-950"
+          />
           <p className="mt-1 text-sm font-semibold text-slate-500">
             다른 사용자가 공개한 모듈을 탐색하고 복제합니다.
           </p>

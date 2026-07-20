@@ -4,7 +4,7 @@ Status: Draft
 
 ## Acceptance Criteria
 
-- Given 사용자가 `/dashboard/mymodule`에 진입한다, Then 사이드바 navigation과 페이지 제목은 `워크플로우 목록`, 생성 button은 `새 워크플로우`로 표시된다.
+- Given 사용자가 `/dashboard/mymodule`에 진입한다, Then 사이드바 navigation과 페이지 제목은 `워크플로우 목록`, 생성 button은 `새 워크플로우`로 표시되고 페이지 제목 왼쪽에는 사이드바와 같은 `Workflow` 아이콘이 표시된다.
 - Given 미배포 workflow에 테스트 실행 또는 Agent Builder 비용이 있다, When `/dashboard/mymodule`을 렌더링한다, Then `배포 후 표시`로 숨기지 않고 월 예상 총비용 아래에 `테스트 실행`과 `Agent Builder` 비용을 표시한다.
 - Given 당월 중 테스트 실행 또는 Agent Builder 비용이 발생한 workflow를 이후 배포했다, When `/dashboard/mymodule`을 렌더링한다, Then 배포 전 비용을 초기화하거나 제외하지 않고 `테스트/배포 실행`과 `Agent Builder` 비용 및 그 합계인 월 예상 총비용을 표시한다.
 

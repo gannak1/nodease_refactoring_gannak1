@@ -53,6 +53,12 @@ describe('KnowledgePage failure state', () => {
 
     render(<KnowledgePage />);
 
+    const title = screen.getByRole('heading', {
+      level: 1,
+      name: '지식 관리',
+    });
+    expect(title.firstElementChild).toHaveClass('lucide-book-open');
+
     expect(
       await screen.findByText('지식 베이스 목록을 불러오지 못했습니다.'),
     ).toBeVisible();

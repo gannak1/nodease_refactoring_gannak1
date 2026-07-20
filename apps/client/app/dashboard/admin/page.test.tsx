@@ -194,6 +194,8 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
     render(<AdminConsolePage />);
 
     expect(await screen.findByText('관리 권한 없음')).toBeInTheDocument();
+    const title = screen.getByRole('heading', { level: 1, name: '관리' });
+    expect(title.firstElementChild).toHaveClass('lucide-shield-check');
     expect(
       screen.queryByRole('group', { name: '조직 구성 보기' }),
     ).not.toBeInTheDocument();

@@ -15,6 +15,7 @@ import {
   RefreshCw,
   Search,
   SlidersHorizontal,
+  Workflow,
 } from 'lucide-react';
 
 import CreateAppModal from '@/app/features/app/components/create-app-modal';
@@ -662,6 +663,7 @@ export default function MyModulePage() {
     <div className="min-h-full bg-white px-6 py-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
         <DashboardPageHeader
+          icon={Workflow}
           title="워크플로우 목록"
           description="워크플로우 접근 권한, 배포 상태, 실행 흐름을 한 화면에서 확인합니다."
           meta={

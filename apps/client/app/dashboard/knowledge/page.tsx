@@ -12,12 +12,14 @@ import {
   FolderOpen,
   ChevronRight,
   Layers,
+  BookOpen,
 } from 'lucide-react';
 import CreateKnowledgeModal from '@/app/features/knowledge/components/create-knowledge-modal';
 import {
   knowledgeApi,
   KnowledgeBaseResponse,
 } from '@/app/features/knowledge/api/knowledgeApi';
+import { DashboardTitle } from '@/app/features/dashboard/components/DashboardSurface';
 
 export default function KnowledgePage() {
   const router = useRouter();
@@ -82,7 +84,11 @@ export default function KnowledgePage() {
   return (
     <div className="p-8 bg-white min-h-full">
       {/* Page Title */}
-      <h1 className="text-2xl font-bold text-gray-800 mb-6">지식 관리</h1>
+      <DashboardTitle
+        icon={BookOpen}
+        title="지식 관리"
+        className="mb-6 text-2xl font-bold text-gray-800"
+      />
       {/* Actions Section */}
       <div className="flex flex-col md:flex-row justify-end items-center gap-3 mb-6">
         {/* Search Bar */}
