@@ -2,6 +2,10 @@
 
 Status: Draft
 
+MBA-343에서 최초 구현하는 cache spine의 field-level strict schema와 disabled execution contract는
+[MBA-343 internal API](../agent-builder-cache-343/api_spec.md)가 이 문서를 구체화한다. Admission,
+rehydration과 serving 동작은 이 문서가 계속 소유한다.
+
 ## External API Boundary
 
 이 기능은 public HTTP endpoint를 추가하거나 기존 Agent Builder message response를 변경하지 않는다.
@@ -161,7 +165,7 @@ Redis value는 `CachedIntentPlan`만 직렬화하지 않고 다음 envelope로 �
 처리하고 best-effort로 삭제한다. Key HMAC과 value HMAC은 같은 secret을 사용할 수 있지만 반드시
 domain separation을 적용한다.
 
-## Canonical Topic and Guidance References
+## Canonical Topic, Guidance, Summary and Purpose Contracts
 
 `CachedIntentPlan`은 topic/guidance 문자열 대신 다음 safe reference를 사용한다.
 
@@ -171,7 +175,8 @@ domain separation을 적용한다.
 | `CachedParameterGuidanceRef` | `logical_step_ref`, Catalog `parameter_key`, closed `reason_template_ref`, closed `input_guidance_template_ref` | `AgentBuilderParameterGuidanceHint` |
 
 Reference namespace는 `topic.<slug>.v1`, `guidance.reason.<slug>.v1`,
-`guidance.input.<slug>.v1` 형식이다. 형식 일치만으로 ref를 허용하지 않고 `intent_cache.py`의
+`guidance.input.<slug>.v1` 형식이다. 형식 일치만으로 ref를 허용하지 않고
+`intent_cache/contracts.py`의
 `CachedIntentPlan` closed enum membership을 codec에서 검사한다. Registry manifest는 이 enum 집합을
 빠짐없이 한 번씩 구현해야 한다. `contract_versions.canonical_text_registry_version`은 manifest의
 `registry_version`과 같아야 한다.
@@ -180,13 +185,19 @@ Canonical text registry는 server-owned 정적 table이며 Planner prompt, provi
 동적으로 만들지 않는다. 각 `topic_ref`는 고정 `query_topic` 문자열 하나를, 각 guidance template ref는
 고정 template과 허용 가능한 Catalog `input_type` 집합을 소유한다. Template은 현재 Catalog의
 `parameter_key`, safe label과 input type만 사용할 수 있으며 자유 형식 argument를 받지 않는다.
+같은 registry version은 current `IntentPlanningContext.full_safe_message`를 사용하는 request-specific
+summary projection descriptor와 capability별 canonical step purpose도 소유한다. Exact `intent-text-v1`
+summary projection/purpose contract는
+[MBA-343 internal API](../agent-builder-cache-343/api_spec.md)의 contract snapshot을 따른다.
 Registry manifest는 다음 strict field만 가진다.
 
 | Entry | Required fields |
 |---|---|
-| manifest | `registry_version`, ordered `topics`, ordered `reason_templates`, ordered `input_guidance_templates` |
+| manifest | `registry_version`, `summary_projection`, ordered `topics`, ordered `reason_templates`, ordered `input_guidance_templates` |
 | topic | `ref`, `canonical_text`, ordered explicit `aliases` |
 | guidance template | `ref`, `canonical_template`, ordered explicit `aliases`, ordered `allowed_input_types` |
+| summary projection | `projection_id=summary.current_safe_message.v1`, `source=full_safe_message`, `max_codepoints=240`, `whitespace_profile=python-split-v1`, `redaction_profile=agent-builder-safe-summary-v1` |
+| capability purpose | exact Catalog capability, `canonical_text` |
 
 Closed enum 대비 누락·초과 ref, alias와 canonical text 중복, 지원하지 않는 placeholder, alias의 다중 ref
 매핑과 빈 `allowed_input_types`는 startup/static validation 실패다. Registry manifest 또는 enum 변경은
@@ -207,6 +218,28 @@ warm hit 모두 registry version과 현재 Catalog applicability를 검증한 �
 Unknown ref, registry version mismatch 또는 current Catalog incompatibility는 valid plan으로 보정하지 않는다.
 Registry version 변경은 namespace miss를 만들며 old entry를 migrate하지 않는다.
 
+### Request-specific `intent_summary`
+
+Cache-eligible request의 `intent_summary`는 cache value나 provider summary에서 복원하지 않는다. Cold miss와
+warm hit 모두 현재 요청의 transient `IntentPlanningContext.full_safe_message`를 다음
+`summary.current_safe_message.v1` contract로 projection한다.
+
+1. Python `" ".join(value.split())`과 같은 규칙으로 Unicode whitespace run을 ASCII space 하나로 합치고
+   양 끝 whitespace를 제거한다.
+2. 현재 Agent Builder `_safe_summary`가 사용하는 fail-closed trace redaction, auth/secret/URL/path pattern과
+   `[REDACTED]` → `[redacted]` canonical marker 규칙을 `agent-builder-safe-summary-v1` regression corpus로
+   고정한다.
+3. Redaction 뒤 첫 240 Unicode code point만 사용한다.
+4. 결과가 비어 있거나 `[redacted]` marker를 포함하면 cache admission 또는 rehydration을 fail-closed한다.
+
+Provider가 반환한 자유 형식 `intent_summary`는 projection 전 validation과 non-cache fallback에는 남아 있지만,
+cache-safe plan projection에 성공한 cold miss의 downstream structured request에는 사용하지 않는다. Rehydrator는
+plan의 request/draft pair로 공통 summary를 선택하지 않으며, 같은 safe request에는 같은 summary를 만들고
+서로 다른 safe request는 각 current context에서 독립적으로 summary를 만든다. Projection descriptor와
+redaction corpus가 바뀌면 `canonical_text_registry_version`을 올려 namespace miss를 만들어야 한다. Summary
+문자열, `full_safe_message`와 provider summary는 cache value, key plaintext, diagnostic, metric과 audit에
+저장하지 않는다.
+
 ## Cache Port
 
 Application layer는 concrete Redis 타입 대신 다음 의미 계약을 사용한다.
@@ -219,6 +252,10 @@ Application layer는 concrete Redis 타입 대신 다음 의미 계약을 사용
 | `complete_without_value(key, owner, lease_generation, ttl)` | signaled_and_released, ignored 또는 unavailable | owner/generation이 일치할 때만 짧은 완료 신호와 release를 원자적으로 수행 |
 | `wait_for_value(key, lease_generation, deadline, cancellation_fence)` | hit, owner_completed_without_value, canceled, stale, timeout 또는 unavailable | 관찰한 generation과 일치하는 완료 신호만 사용하고 짧은 bounded slice마다 fence 확인 |
 | `release_lease(key, owner)` | released 또는 ignored | owner token이 일치할 때만 release |
+
+MBA-343 spine의 typed `load/save` subset은 위 `get/put` 상태를 손실 없이 표현한다. Load result는
+`hit|miss|invalid|unavailable`, save result는 `stored|unavailable`을 closed DTO로 반환한다. `None`, boolean 또는
+자유 형식 exception으로 상태를 합치지 않는다. Lease와 waiter operation은 후속 adapter/concurrency 범위다.
 
 Value put과 lease release는 원자성 순서를 보장해야 한다. Follower가 partial payload를 읽을 수
 없도록 완성된 serialized value를 한 번에 기록한다.
@@ -245,16 +282,18 @@ lease TTL이 복구 경계다. 완료 신호는 cache value나 negative result c
 11. Planner 결과의 schema/semantic validation 뒤 모든 Knowledge topic과 parameter guidance의 canonical
     reference projection을 포함해 cache eligibility를 다시 판정한다. Reference로 완전히 표현할 수 없으면
     원본 extraction을 기존 non-cache downstream으로 전달하고 put하지 않는다.
-12. Eligible final plan을 `CachedIntentPlan`으로 projection하고 current request, canonical text registry와 Catalog에서 즉시 rehydrate한다.
+12. Eligible final plan을 `CachedIntentPlan`으로 projection하고 current request의 versioned safe-summary projection,
+    canonical text registry와 Catalog에서 즉시 rehydrate한다.
 13. Cold-miss rehydration이 실패하면 원본 LLM extraction을 사용하거나 Planner를 다시 호출하지 않는다.
     이미 발생한 provider/repair usage를 기록하고 cache put, GraphMutation과 save 없이 기존 terminal error로 닫는다.
-14. 성공한 miss downstream에는 원본 LLM extraction이 아니라 rehydrate된 canonical structured request를 전달한다.
+14. 성공한 miss downstream에는 provider summary를 포함한 원본 LLM extraction이 아니라 current safe request에서
+    summary를 재구성한 canonical structured request를 전달한다.
 15. 같은 plan을 best-effort로 put한다.
 
 Cache hit에서도 기존 structured request validation을 다시 실행한다. Cache가 반환한 plan을
 validation 없이 GraphMutation builder에 전달하지 않는다. Cache hit는 API/request rate limit,
 session의 단일 foreground request와 stale/canceled 판단을 생략하지 않는다.
-Cache eligible miss와 hit는 summary, logical step purpose, Knowledge recommendation `query_topics`,
+Cache eligible miss와 hit는 current safe request별 summary, logical step purpose, Knowledge recommendation `query_topics`,
 parameter guidance, ParameterTask와 graph materialization에 같은 canonical structured request를 사용한다.
 
 ## Knowledge Rehydration

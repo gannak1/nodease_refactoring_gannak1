@@ -89,8 +89,8 @@ PostgreSQL integration은 별도 환경에서 순차 실행한다.
 | ABC-T061 | hit 뒤 model relation invalid | 다른 model로 fallback하지 않고 차단 |
 | ABC-T062 | selected target 삭제/변경 | hit reject 후 Planner/clarification 경계 |
 | ABC-T063 | 동일 plan을 두 요청에서 materialize | 새 node/edge UUID와 operation ID |
-| ABC-T064 | registry manifest/version 또는 Catalog applicability validation 실패 | 보정하지 않고 저장하지 않음 |
-| ABC-T065 | canonical topic/guidance ref를 포함한 같은 logical plan의 cache hit와 miss | summary, step purpose, KB recommendation `query_topics`, response guidance, ParameterTask와 topology가 동일하고 current UUID만 다름 |
+| ABC-T064 | registry manifest/version, safe-summary projection descriptor·redaction corpus·provider-summary 비재사용·non-persistence, purpose membership 또는 Catalog parameter input-type applicability validation 실패 | 보정하지 않고 저장하지 않음 |
+| ABC-T065 | canonical topic/guidance ref와 같은 logical plan을 만드는 서로 다른 두 safe request의 cold miss와 warm hit | 각 request 안에서는 `summary.current_safe_message.v1` summary, step purpose, KB recommendation `query_topics`, response guidance, ParameterTask와 topology가 동일하고 current UUID만 다름; 두 request의 summary는 generic request/draft 문장으로 합쳐지지 않음 |
 | ABC-T066 | cache hit GraphMutation | current base hash/updated_at과 expected result hash 사용 |
 | ABC-T067 | stale CAS | 기존 stale_graph conflict, silent overwrite 없음 |
 | ABC-T068 | acknowledgement response loss | 기존 canonical recovery 사용, cache replay 없음 |

@@ -2,6 +2,11 @@
 
 Status: Draft
 
+MBA-343 cache spine의 내부 module 분리와 disabled runtime seam은
+[MBA-343 component specification](../agent-builder-cache-343/component_spec.md)이 이 문서의
+`intent_cache/` package 내부 소유권을 구체화한다. 전체 coordinator, Redis adapter와 rehydration의
+책임 경계는 이 문서가 계속 소유한다.
+
 ## Design Goals
 
 - Cache correctness를 자연어 의미 추론과 분리한다.
@@ -22,7 +27,8 @@ Status: Draft
 | `IntentPlanCachePort` | cache/lease 의미 계약 | Redis 타입 노출 |
 | `RedisIntentPlanCacheAdapter` | bounded Redis get/put/lease/wait | business validation |
 | `CachedIntentPlanCodec` | strict serialization, max size와 forbidden field validation | Pydantic validation 우회 |
-| `CanonicalTopicGuidanceRegistry` | provider text의 exact ref projection과 fixed canonical rendering | fuzzy/semantic mapping, 자유 형식 template argument |
+| `CanonicalIntentTextRegistry` | provider topic/guidance의 exact ref projection, request-specific safe-summary projection descriptor와 purpose fixed rendering | fuzzy/semantic mapping, 자유 형식 template argument |
+| `RequestIntentSummaryProjector` | current `full_safe_message`에서 versioned bounded `intent_summary` 생성 | provider summary 또는 request/draft 공통 문장 재사용 |
 | `CachedIntentPlanRehydrator` | current context와 canonical registry에서 structured request 재구성 | 과거 UUID/handle 또는 provider text 재사용 |
 | `AgentBuilderIntentCoordinator` | cache, Planner와 rehydration orchestration | GraphMutation/CAS 소유 |
 | Existing Planner Adapter | provider invoke, schema parse, semantic repair와 usage | cache policy 결정 |
@@ -55,16 +61,16 @@ provider invoke 직전에만 기존 usage reservation을 시작한다. Hit는 re
 | Path | Content |
 |---|---|
 | `apps/gateway/application/agent_builder/intent_normalization.py` | signature와 normalization policy |
-| `apps/gateway/application/agent_builder/intent_cache.py` | cache DTO, ports, eligibility/key policy와 no-op 경계 |
+| `apps/gateway/application/agent_builder/intent_cache/` | MBA-343의 `catalog_snapshot.py`, `contracts.py`, `codec.py`, `ports.py`, `disabled.py`; Catalog v3 node/capability/parameter key·input type, request-summary projection descriptor와 canonical purpose snapshot, cache DTO, strict codec, ports와 no-op 경계 |
 | `apps/gateway/application/agent_builder/intent_cache_coordinator.py` | cache hit/miss/bypass, Planner, rehydration과 usage orchestration |
 | `apps/gateway/application/agent_builder/intent_rehydration.py` | current-context rehydration |
-| `apps/gateway/application/agent_builder/intent_rehydration_registry.py` | versioned topic/guidance manifest, exact projection과 fixed template rendering |
+| `apps/gateway/application/agent_builder/intent_rehydration_registry.py` | versioned topic/guidance/purpose manifest, request-summary projection과 fixed template rendering |
 | `apps/gateway/adapters/cache/agent_builder_intent_plan.py` | Redis adapter와 codec boundary |
 | `apps/gateway/composition/agent_builder.py` | configuration, adapter와 service wiring |
 | `apps/gateway/services/agent_builder_service.py` | transient full safe planning context DTO와 coordinator seam |
 | `apps/gateway/services/agent_builder_intent_service.py` | provider-backed extraction과 repair 유지 |
 
-`intent_cache_coordinator.py`는 `intent_cache.py`의 DTO와 port를 의존할 수 있지만 반대 방향 import는
+`intent_cache_coordinator.py`는 `intent_cache/`의 DTO와 port를 의존할 수 있지만 반대 방향 import는
 허용하지 않는다. Redis client 타입은 adapter 밖의 application module에 노출하지 않는다.
 현재 분할 구현에서는 위 responsibility boundary를 가로질러 module을 합치지 않는다. 같은 responsibility
 안의 세부 helper만 합칠 수 있으며 normalization, cache adapter, provider invoke와 graph materialization
@@ -151,6 +157,13 @@ Cache admission을 통과한 miss도 valid extraction을 `CachedIntentPlan`으�
 자유 형식 summary/guidance를 cache-eligible miss에서만 직접 사용하는 별도 경로를 두지 않는다.
 Store-ineligible result는 기존 non-cache 경로이므로 이 제한의 대상이 아니다.
 
+`intent_summary`는 plan이나 request/draft 공통 template에서 만들지 않는다. Rehydrator는 매 요청의 transient
+`IntentPlanningContext.full_safe_message`를 `summary.current_safe_message.v1` descriptor에 따라 whitespace
+collapse, fail-closed redaction과 240-code-point 상한으로 projection한다. Empty 또는 redaction marker가 남으면
+rehydration을 fail-closed한다. Cache-eligible cold miss에서는 provider summary 대신 이 projection을 사용하므로
+같은 current request의 miss/hit는 같고, 같은 logical plan을 만든 서로 다른 safe request는 각 request-specific
+summary를 유지한다. Summary projection은 cache value, diagnostic, metric과 audit에 문자열을 남기지 않는다.
+
 Projection은 provider의 모든 `knowledge_topics`와 `parameter_guidance_hints`를 versioned registry의 closed
 reference로 표현할 수 있을 때만 cache-safe plan을 만든다. Topic은 순서 있는 `topic_ref`, guidance는
 logical step ref, Catalog `parameter_key`와 reason/input-guidance template ref로 투영한다. Exact alias/template
@@ -189,7 +202,9 @@ Catalog의 allowlisted key, safe label과 input type만 주입할 수 있고 자
 registry version mismatch와 Catalog incompatibility를 fallback text로 보정하지 않는다.
 
 Registry module은 `topic.<slug>.v1`, `guidance.reason.<slug>.v1`, `guidance.input.<slug>.v1` namespace와
-strict manifest를 소유한다. Closed ref enum은 `intent_cache.py`가 소유하고 codec가 unknown ref를 거부한다.
+strict manifest를 소유한다. 같은 version은 `summary.current_safe_message.v1` projection descriptor와
+capability별 step purpose의 exact table도 소유한다. Closed ref enum, summary projection descriptor와 purpose
+contract snapshot은 `intent_cache/` package가 소유하고 codec가 unknown ref를 거부한다.
 Startup/static validation은 enum 대비 누락·초과 ref, ref/alias/canonical text 중복, alias의 다중 ref 매핑,
 지원하지 않는 placeholder와 빈 input-type applicability를 거부한다. Manifest 또는 enum 변경은
 `canonical_text_registry_version`과 regression fixture를 함께 변경한다.

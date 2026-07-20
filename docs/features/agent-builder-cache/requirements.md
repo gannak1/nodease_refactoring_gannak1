@@ -13,6 +13,12 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
 ## Authority
 
 - 캐시의 목표 계약은 ADR-0063을 따른다.
+- MBA-343 cache spine의 strict DTO, codec, port, disabled runtime seam과 세부 파일 소유권은
+  [MBA-343 requirements](../agent-builder-cache-343/requirements.md),
+  [internal API](../agent-builder-cache-343/api_spec.md)와
+  [component specification](../agent-builder-cache-343/component_spec.md)이 이 문서를 구체화한다.
+  두 문서가 충돌하면 admission과 제품 동작은 이 문서를 따르고, MBA-343의 내부 module 분리는
+  MBA-343 component specification을 따른다.
 - Planner 호출과 semantic repair는 기존 Agent Builder intent 계약을 따른다.
 - Cache miss와 repair의 usage attribution은 ADR-0055를 따른다.
 - GraphMutation과 저장은 현재 Agent Builder direct-edit/CAS 권위 계약을 따른다.
@@ -55,8 +61,8 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
 - ABC-FR-013: Natural-language target만으로 수정 대상을 찾아야 하는 ambiguous modify 요청은 cache하지 않아야 한다.
 - ABC-FR-014: `new_workflow`, `replace_workflow`와 명시적인 selected node/edge 기반 modify만 admission 후보가 될 수 있다.
 - ABC-FR-015: Semantic repair 후 성공한 경우 최종 valid plan만 저장하고 invalid attempt는 저장하지 않아야 한다.
-- ABC-FR-016: Cache admission을 통과한 miss는 final valid extraction을 cache-safe plan으로 projection한 뒤 즉시 current request, canonical text registry와 Catalog에서 rehydrate해야 한다. Provider가 반환한 Knowledge topic 또는 parameter guidance를 모두 canonical reference로 표현할 수 없으면 해당 결과를 store-ineligible로 판정하고 저장하지 않은 채 기존 non-cache downstream에서 원본 extraction을 사용해야 한다.
-- ABC-FR-017: Cache eligible miss와 hit는 summary, step purpose, Knowledge recommendation `query_topics`, parameter guidance, ParameterTask와 graph materialization에서 같은 canonical structured request를 사용해야 한다.
+- ABC-FR-016: Cache admission을 통과한 miss는 final valid extraction을 cache-safe plan으로 projection한 뒤 즉시 current request, canonical text registry와 Catalog에서 rehydrate해야 한다. Provider가 반환한 Knowledge topic 또는 parameter guidance를 모두 canonical reference로 표현할 수 없으면 해당 결과를 store-ineligible로 판정하고 저장하지 않은 채 기존 non-cache downstream에서 원본 extraction을 사용해야 한다. Projection에 성공한 cache-eligible request의 provider `intent_summary`는 canonical downstream source로 사용하지 않아야 한다.
+- ABC-FR-017: Cache eligible miss와 hit는 현재 planning context의 `full_safe_message`에 versioned `summary.current_safe_message.v1`을 적용한 request-specific summary, step purpose, Knowledge recommendation `query_topics`, parameter guidance, ParameterTask와 graph materialization에서 같은 canonical structured request를 사용해야 한다. 서로 다른 safe request가 같은 request/draft type과 logical plan을 만들더라도 summary를 request/draft pair의 공통 문장으로 합치지 않아야 한다.
 - ABC-FR-018: `AgentBuilderService`는 cache coordinator용 transient planning context DTO를 소유하고,
   전체 safe request, 전체 logical topology, actor/organization scope, planner model/credential relation,
   generation mode, selected target, Knowledge candidate와 contract version fingerprint를 절단 없이 제공해야 한다.
@@ -99,7 +105,11 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
   embedding, fuzzy 또는 의미 유사도 매핑을 사용하지 않아야 한다. Rehydration은 `topic_ref`를 고정
   `query_topics` 문자열로, guidance ref를 registry의 고정 template과 현재 Catalog의 allowlisted
   parameter metadata만으로 렌더링해야 한다. 렌더링 문자열이나 자유 형식 template argument는 value에
-  저장하지 않아야 한다.
+  저장하지 않아야 한다. 같은 `canonical_text_registry_version`은 current `full_safe_message`를 입력으로 하는
+  `summary.current_safe_message.v1` projection descriptor와 capability별 canonical step purpose의 exact table도 함께
+  versioning해야 한다. Summary/purpose 문자열은 value에 저장하지 않는다. Summary는 plan의 request/draft
+  type이 아니라 매 요청의 transient safe context에서, purpose는 logical capability에서 파생해야 하며 exact
+  v1 descriptor와 membership은 MBA-343 internal API contract를 따라야 한다.
 - ABC-FR-034: Decode, schema, size, version, key binding 또는 payload MAC validation에 실패한 value는 삭제 가능한 miss로 처리해야 한다.
 - ABC-FR-035: Value에는 request/session ID와 raw audit payload 또는 audit metadata 원문을 포함하지 않아야 한다.
 - ABC-FR-036: Strict codec는 allowlisted schema 밖의 중첩 field와 forbidden key pattern을 decode와 encode 양쪽에서 거부해야 한다.
