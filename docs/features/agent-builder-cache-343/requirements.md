@@ -125,7 +125,8 @@ MBA-343은 이 위험을 막는 최소 spine만 정의한다.
 - duplicate key, non-UTF-8, non-finite number, 과도한 JSON 중첩, unknown schema version, unknown field와
   malformed reference를 closed codec error로 거부한다.
 - decode 후 같은 codec으로 encode한 bytes가 입력과 다르면 non-canonical payload로 거부한다.
-- payload size limit은 호출자가 제공하는 bounded 값으로 검사하되 운영 설정이나 Redis 정책은 소유하지 않는다.
+- payload size limit은 호출자가 제공하는 양의 strict integer로 검사한다. 타입이 다르거나 0 이하이면
+  `invalid_payload_limit/payload_size`로 거부하되 운영 설정이나 Redis 정책은 소유하지 않는다.
 
 ### ABC343-FR-005 Transient Planning Context
 
@@ -191,6 +192,9 @@ MBA-343은 이 위험을 막는 최소 spine만 정의한다.
 - 오류 message, `repr`, test assertion output에 plan payload, safe request 또는 ephemeral identity를 포함하지 않는다.
 - strict DTO와 port result의 Pydantic `ValidationError.errors()`와 `.json()`도 validation input을 null로 만들고
   allowlisted location과 고정 safe message만 제공하며 원본 exception chain을 보존하지 않는다.
+- model-level capability/action, guidance applicability와 topology membership 같은 의미 참조 위반은 원본
+  validator message나 input을 보존하지 않는 내부 표식으로만 구분하고 public location을 safe `reference`로
+  재구성한다. 일반 shape 위반과 의미 참조 위반은 각각 `payload_shape`와 `reference`로 결정적으로 분류한다.
 - schema 또는 codec 오류는 이 이슈에서 Planner 오류로 변환하지 않는다. 실제 fail-open 연결은 후속 integration 범위다.
 
 ## 6. Non-functional Requirements

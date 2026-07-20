@@ -110,7 +110,10 @@ exact alias가 있더라도 strict plan schema가 거부한다. 전체 요청의
 | `required` | strict boolean | required |
 | `evidence_kind` | literal `policy_or_reference` | required |
 | `target_step_ref` | `LogicalStepRef` | plan member |
-| `topic_refs` | tuple of `CanonicalKnowledgeTopicRef` | 1..20, 순서 보존, 첫 occurrence만 유지 |
+| `topic_refs` | tuple of `CanonicalKnowledgeTopicRef` | 1..20, 순서 보존, 중복 금지 |
+
+후속 projection은 provider topic의 첫 occurrence만 순서대로 남긴 뒤 이 strict DTO를 구성한다. DTO 자체는
+중복 입력을 조용히 정규화하지 않고 semantic reference 위반으로 거부한다.
 
 ### 3.5 `CachedKnowledgePlacement`
 
@@ -404,6 +407,7 @@ semantic plan의 bytes를 바꾸면 cache schema version을 올리지 않는 한
 
 | Code | Allowed path category | Meaning |
 | --- | --- | --- |
+| `invalid_payload_limit` | `payload_size` | 호출자가 제공한 max bytes가 양의 strict integer가 아님 |
 | `payload_too_large` | `payload_size` | parse 전 bounded size 초과 |
 | `invalid_utf8` | `root` | UTF-8 decode 실패 |
 | `invalid_json` | `root` | JSON object가 아니거나 syntax/duplicate key/non-finite number/과도한 중첩 오류 |
@@ -421,9 +425,12 @@ block에서는 closed code/category만 남기고 block을 빠져나온 뒤 publi
 `__cause__`와 `__context__`는 모두 null이어야 하며 traceback local에 parser/Pydantic failure를 연결하지 않는다.
 
 Strict cache DTO와 port result의 Pydantic `ValidationError`도 `str`, `repr`, `errors()`와 `json()`에서 입력값을
-반사하지 않는다. 구조화 오류의 `input`은 null이고, 위치는 allowlisted contract field 또는 일반
-`contract` category로 제한하며 원본 validation exception chain을 보존하지 않는다. Codec은 이 redacted
-location만 사용해 `reference|payload_shape`를 분류한다.
+반사하지 않는다. 구조화 오류의 `input`은 null이고, 위치는 allowlisted contract field, 의미 참조 위반용
+safe `reference` 또는 일반 `contract` category로 제한하며 원본 validation exception chain을 보존하지 않는다.
+Model-level 의미 참조 validator는 원본 message 대신 내부 전용 표식만 남기고 redaction 경계가 이를
+`reference` location으로 치환한다. Codec은 이 redacted location만 사용해 `reference|payload_shape`를
+분류한다. Reference 분류와 validation location 보존은 `contracts.py`의 동일한 canonical safe-location
+집합을 사용하며 별도 목록으로 복제하지 않는다.
 
 ### 6.1 `IntentCacheKey`
 

@@ -71,8 +71,8 @@ credential과 Knowledge candidate context를 내부에서 확정한다. MBA-343�
 - `contracts.py`의 공통 strict base는 constructor와 Pydantic `model_validate*` 경계에서 validation input을
   null로 재구성하되 JSON-mode strict tuple 동작은 변경하지 않는다. Port result도 같은 base를 재사용한다.
 - `codec.py`는 표준 라이브러리, `contracts.py`만 import한다.
-- `ports.py`는 `typing`, `contracts.py`와 기존 downstream 계약인
-  `apps.shared.schemas.agent_builder.AgentBuilderStructuredRequest`만 import할 수 있다.
+- `ports.py`는 표준 라이브러리 `collections.abc`·`typing`, Pydantic, `contracts.py`와 기존 downstream
+  계약인 `apps.shared.schemas.agent_builder.AgentBuilderStructuredRequest`만 import할 수 있다.
 - `disabled.py`는 `contracts.py`, `ports.py`만 import한다.
 - application package는 `apps.gateway.services`, `apps.gateway.adapters`, `apps.gateway.composition`,
   FastAPI, SQLAlchemy, Redis/provider library를 import하지 않는다.
@@ -96,6 +96,9 @@ Guard는 schema validation의 대체가 아니라 defense in depth다.
 - post-decode: typed model을 다시 검사하고 canonical re-encode equality를 확인한다.
 - error: category와 safe path class만 반환하며 value, 전체 path, payload excerpt와 underlying exception chain을
   보존하지 않는다.
+- semantic reference: capability/action membership, guidance applicability와 plan topology membership의
+  model-level 위반은 내부 전용 표식으로 구분한 뒤 public validation location을 safe `reference`로 치환한다.
+  원본 validator message, context와 input은 치환 결과에 포함하지 않는다.
 - strict tuple: duplicate/non-finite/raw guard용 object parse 뒤 같은 원본 bytes를 Pydantic JSON mode로 검증한다.
   Python `list`를 strict tuple field에 전달하거나 schema-aware coercion helper를 추가하지 않는다.
 
@@ -145,5 +148,5 @@ Knowledge identity와 opaque handle이 cache plan에 들어가지 않음을 검�
 - forbidden-content parameterized corpus 결과
 - `git diff --name-only`에 Redis/config/DB/Client/public API 변경이 없다는 범위 확인
 
-MBA-343 spine 구현과 로컬 필수 검증은 현재 evidence revision에서 완료됐다. 문서 `Draft`, Linear 상태,
+MBA-343 spine 구현과 로컬 필수 검증은 현재 locally verified worktree에서 완료됐다. 문서 `Draft`, Linear 상태,
 원격 CI와 merge 여부는 별도로 관리하며, enabled serving cache·Redis/config/coordinator는 여전히 후속 범위다.

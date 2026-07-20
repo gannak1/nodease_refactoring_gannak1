@@ -405,8 +405,151 @@ def test_codec_classifies_reference_schema_failure_without_input_echo():
     assert "INVALID NORMALIZER VALUE" not in str(error)
 
 
+def test_codec_classifies_input_guidance_reference_failure_as_reference():
+    codec = CanonicalIntentPlanCodec()
+    raw = json.loads(codec.encode(_plan("start_input", "slack_send"), 4096))
+    raw["parameter_guidance_refs"] = [
+        {
+            "logical_step_ref": {
+                "capability": "slack_send",
+                "occurrence": 1,
+            },
+            "parameter_key": "channel",
+            "reason_template_ref": (
+                "guidance.reason.delivery_destination_required.v1"
+            ),
+            "input_guidance_template_ref": "invalid guidance reference",
+        }
+    ]
+    payload = json.dumps(
+        raw,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    error = _assert_error(
+        lambda: codec.decode(payload, 4096),
+        "invalid_plan_schema",
+        "reference",
+    )
+    assert "invalid guidance reference" not in str(error)
+
+
+def test_codec_classifies_inapplicable_guidance_reference_as_reference():
+    codec = CanonicalIntentPlanCodec()
+    raw = json.loads(codec.encode(_plan("start_input", "slack_send"), 4096))
+    raw["parameter_guidance_refs"] = [
+        {
+            "logical_step_ref": {
+                "capability": "slack_send",
+                "occurrence": 1,
+            },
+            "parameter_key": "message",
+            "reason_template_ref": (
+                "guidance.reason.delivery_destination_required.v1"
+            ),
+            "input_guidance_template_ref": (
+                "guidance.input.select_slack_channel_id.v1"
+            ),
+        }
+    ]
+    payload = json.dumps(
+        raw,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    _assert_error(
+        lambda: codec.decode(payload, 4096),
+        "invalid_plan_schema",
+        "reference",
+    )
+
+
+def test_codec_classifies_integration_action_mismatch_as_reference():
+    codec = CanonicalIntentPlanCodec()
+    raw = json.loads(codec.encode(_plan("start_input", "answer"), 4096))
+    raw["integration_actions"] = ["github.pull_request.read"]
+    payload = json.dumps(
+        raw,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    _assert_error(
+        lambda: codec.decode(payload, 4096),
+        "invalid_plan_schema",
+        "reference",
+    )
+
+
+def test_codec_classifies_knowledge_target_mismatch_as_reference():
+    codec = CanonicalIntentPlanCodec()
+    raw = json.loads(
+        codec.encode(
+            _plan("start_input", "knowledge_backed_llm", "answer"),
+            4096,
+        )
+    )
+    raw["knowledge_requirements"] = [
+        {
+            "requirement_ref": "kr_1",
+            "required": True,
+            "evidence_kind": "policy_or_reference",
+            "target_step_ref": {
+                "capability": "knowledge_backed_llm",
+                "occurrence": 1,
+            },
+            "topic_refs": ["topic.internal_documents.v1"],
+        }
+    ]
+    raw["knowledge_placements"] = [
+        {
+            "requirement_ref": "kr_1",
+            "timing": "after_graph",
+            "effect_kind": "binding_only",
+            "target_step_ref": {
+                "capability": "answer",
+                "occurrence": 1,
+            },
+            "knowledge_step_ref": None,
+            "upstream_step_ref": None,
+            "downstream_step_ref": None,
+            "empty_selection_bridge": None,
+        }
+    ]
+    payload = json.dumps(
+        raw,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    _assert_error(
+        lambda: codec.decode(payload, 4096),
+        "invalid_plan_schema",
+        "reference",
+    )
+
+
+@pytest.mark.parametrize("invalid_limit", [None, True, 0, -1, "4096"])
+def test_codec_rejects_invalid_payload_limit_with_typed_error(invalid_limit):
+    codec = CanonicalIntentPlanCodec()
+    plan = _plan("start_input", "answer")
+
+    for operation in (
+        lambda: codec.encode(plan, invalid_limit),
+        lambda: codec.decode(MINIMAL_GOLDEN, invalid_limit),
+    ):
+        _assert_error(
+            operation,
+            "invalid_payload_limit",
+            "payload_size",
+        )
+
+
 def test_codec_error_rejects_unknown_code_path_pair_and_is_final():
     allowed_pairs = {
+        ("invalid_payload_limit", "payload_size"),
         ("payload_too_large", "payload_size"),
         ("invalid_utf8", "root"),
         ("invalid_json", "root"),
