@@ -400,6 +400,111 @@ def test_knowledge_and_guidance_refs_are_closed_and_context_applicable():
     assert guidance_plan.parameter_guidance_refs == ordered_guidance
 
 
+@pytest.mark.parametrize(
+    ("capabilities", "integration_actions"),
+    [
+        (("answer",), ("github.pull_request.comment",)),
+        (("github_pr_comment",), ()),
+        (("answer",), ("github.pull_request.read",)),
+        (("github_pr_read",), ()),
+    ],
+)
+def test_integration_actions_and_capabilities_require_bidirectional_membership(
+    capabilities,
+    integration_actions,
+):
+    with pytest.raises(ValidationError):
+        minimal_plan(
+            ordered_capabilities=capabilities,
+            logical_steps=_steps(*capabilities),
+            integration_actions=integration_actions,
+        )
+
+    valid = minimal_plan(
+        ordered_capabilities=("github_pr_read", "github_pr_comment"),
+        logical_steps=_steps("github_pr_read", "github_pr_comment"),
+        integration_actions=(
+            "github.pull_request.read",
+            "github.pull_request.comment",
+        ),
+    )
+    assert valid.integration_actions == (
+        "github.pull_request.read",
+        "github.pull_request.comment",
+    )
+
+
+def test_knowledge_requirements_and_placements_form_a_closed_target_mapping():
+    steps = _steps("start_input", "knowledge_backed_llm", "answer")
+    requirement = CachedKnowledgeRequirement(
+        requirement_ref="kr_1",
+        required=True,
+        evidence_kind="policy_or_reference",
+        target_step_ref=steps[1],
+        topic_refs=("topic.internal_documents.v1",),
+    )
+
+    with pytest.raises(ValidationError):
+        minimal_plan(
+            ordered_capabilities=tuple(step.capability for step in steps),
+            logical_steps=steps,
+            knowledge_requirements=(requirement,),
+        )
+
+    with pytest.raises(ValidationError):
+        minimal_plan(
+            ordered_capabilities=tuple(step.capability for step in steps),
+            logical_steps=steps,
+            knowledge_requirements=(requirement,),
+            knowledge_placements=(
+                CachedKnowledgePlacement(
+                    requirement_ref="kr_1",
+                    timing="after_graph",
+                    effect_kind="binding_only",
+                    target_step_ref=steps[2],
+                ),
+            ),
+        )
+
+    with pytest.raises(ValidationError):
+        minimal_plan(
+            ordered_capabilities=tuple(step.capability for step in steps),
+            logical_steps=steps,
+            knowledge_requirements=(requirement,),
+            knowledge_placements=(
+                CachedKnowledgePlacement(
+                    requirement_ref="kr_1",
+                    timing="before_graph",
+                    effect_kind="insert_step",
+                    target_step_ref=steps[1],
+                    knowledge_step_ref=steps[2],
+                    upstream_step_ref=steps[0],
+                    downstream_step_ref=steps[2],
+                    empty_selection_bridge="connect_upstream_to_downstream",
+                ),
+            ),
+        )
+
+    valid = minimal_plan(
+        ordered_capabilities=tuple(step.capability for step in steps),
+        logical_steps=steps,
+        knowledge_requirements=(requirement,),
+        knowledge_placements=(
+            CachedKnowledgePlacement(
+                requirement_ref="kr_1",
+                timing="before_graph",
+                effect_kind="insert_step",
+                target_step_ref=steps[1],
+                knowledge_step_ref=steps[1],
+                upstream_step_ref=steps[0],
+                downstream_step_ref=steps[2],
+                empty_selection_bridge="connect_upstream_to_downstream",
+            ),
+        ),
+    )
+    assert valid.knowledge_placements[0].requirement_ref == "kr_1"
+
+
 def test_catalog_snapshot_matches_current_catalog_v3_exactly():
     catalog = json.loads(
         (ROOT / "apps/shared/config/workflow_node_catalog.json").read_text(
@@ -746,15 +851,36 @@ def test_cache_key_and_boundary_decision_are_strict_closed_contracts():
             factory()
 
 
-def test_validation_errors_hide_sensitive_input_values():
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda unsafe: CachedIntentPlanV1(
+            **minimal_plan().model_dump(),
+            intent_summary=unsafe,
+        ),
+        lambda unsafe: IntentRehydrationResult(
+            status="failure",
+            structured_request=None,
+            reason="summary_projection_failed",
+            raw_payload=unsafe,
+        ),
+    ],
+)
+def test_validation_errors_hide_sensitive_input_values_in_all_public_views(factory):
     unsafe = "api_key=" + ("x" * 24)
 
     with pytest.raises(ValidationError) as captured:
-        CachedIntentPlanV1(
-            **minimal_plan().model_dump(),
-            intent_summary=unsafe,
-        )
+        factory(unsafe)
 
-    rendered = str(captured.value) + repr(captured.value)
+    errors = captured.value.errors()
+    rendered = (
+        str(captured.value)
+        + repr(captured.value)
+        + captured.value.json()
+        + repr(errors)
+    )
     assert unsafe not in rendered
     assert "x" * 24 not in rendered
+    assert all(error.get("input") is None for error in errors)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None

@@ -309,6 +309,47 @@ def test_codec_encode_rejects_constructed_secret_like_content_without_echo():
 
 
 @pytest.mark.parametrize(
+    "token_like_value",
+    [
+        "sk-synthetic-token-value",
+        "ghp_synthetic_token_value",
+        "xoxb-synthetic-token-value",
+        "Bearer synthetic-token-value",
+    ],
+)
+def test_codec_rejects_token_like_value_prefixes_on_encode_and_decode(
+    token_like_value,
+):
+    codec = CanonicalIntentPlanCodec()
+    raw = json.loads(MINIMAL_GOLDEN)
+    raw["contract_versions"]["normalizer_version"] = token_like_value
+    payload = json.dumps(
+        raw,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    plan = _plan("start_input", "answer")
+    unsafe_versions = plan.contract_versions.model_copy(
+        update={"normalizer_version": token_like_value}
+    )
+    unsafe_plan = plan.model_copy(
+        update={"contract_versions": unsafe_versions}
+    )
+
+    for call in (
+        lambda: codec.encode(unsafe_plan, 4096),
+        lambda: codec.decode(payload, 4096),
+    ):
+        error = _assert_error(
+            call,
+            "forbidden_cache_content",
+            "cache_content",
+        )
+        rendered = str(error) + repr(error)
+        assert token_like_value not in rendered
+
+
+@pytest.mark.parametrize(
     "plan",
     [
         _plan("start_input", "answer").model_copy(
