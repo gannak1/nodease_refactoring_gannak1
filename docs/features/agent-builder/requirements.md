@@ -40,7 +40,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 ### 3.2 Out Of Scope
 
 - 일반 chat/planner/typed ParameterDecision/GraphMutation을 통한 credential secret 수집과 신규 managed Slack/GitHub credential resource 또는 picker 추가. Slack/GitHub masked input은 예외적으로 ADR-0062의 인증된 Workflow node secret-write command를 사용하며 graph에는 opaque reference만 반영한다.
-- workflow 실행, retrieval 또는 외부 API action 실행
+- workflow 실행, 답변/evidence retrieval 또는 외부 API action 실행. 단, ADR-2000의 권한 확인 후보에 대한 score-only Knowledge recommendation retrieval은 CandidateResolver 이후 GraphMutation 이전의 좁은 예외다.
 - runtime에 존재하지 않는 node type 구현
 - 임의의 plugin parameter schema 추론
 - 일반 workflow의 기존 권한 모델 변경. 단, Agent Builder mutation의 CDS 저장과 unresolved 외부 action의 server-side 실행·배포 preflight 차단은 포함한다.
@@ -299,7 +299,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - 모든 Agent Builder CDS 저장은 final candidate graph에서 Catalog `resource_ref`/`credential_ref`, Knowledge/Collection binding, WorkflowNode `appId`/`workflowId`와 기타 resource-bearing field를 서버가 직접 추출해 `managed_reference|legacy_editor_connection|unknown`으로 분류한다. Server-owned policy registry는 field path·mutation kind·resource kind별 resolver, required relation과 최소 permission action을 정의한다. Workflow 저장에는 workflow `write`, Knowledge/Collection과 managed credential binding에는 대상 resource `use`를 요구하며 단순 reference에 대상 resource의 `read|write`를 일괄 요구하지 않는다. Target resource 자체를 변경하는 별도 operation만 그 resource의 `write`를 요구한다. Resolver는 같은 transaction에서 registry가 지정한 최소 action, 현재 organization, lifecycle과 relation을 재검증하며 client 목록이나 발급 시점 allow 결과를 권위로 사용하지 않는다. Policy/resolver 누락, 삭제·비활성·권한 회수·relation 변경과 unknown field는 graph와 audit 전체를 rollback한다. Slack/GitHub secret은 일반 ParameterDecision/GraphMutation이 아니라 기존 editor draft save adapter가 저장하며, Agent Builder operation envelope와 session/audit에는 원문을 포함하지 않는다.
 - Backend는 저장 graph의 required configuration 전체에서 `configuration_state`를 다시 계산해야 한다. 하나라도 missing/deferred/invalid인 외부 action node는 저장할 수 있어도 server-side 실행·배포 preflight에서 차단해야 한다. Preflight는 catalog와 저장 graph만 검사하며 credential provider나 외부 API를 호출하지 않는다.
 - `pending|active` ParameterTask 자체는 실행·배포 차단 근거가 아니다. 추천값이 canonical graph에 materialize돼 required configuration이 모두 유효하면 Agent Builder 사용자 확인이 남아 있어도 runtime readiness는 통과할 수 있다. 사용자 확인을 별도 admission gate로 만들려면 상위 실행·배포 정책을 별도로 변경해야 한다.
-- generation, suggestion, parameter submission 중 workflow 실행, retrieval, 외부 action, credential 사용·변경을 수행하지 않는다.
+- generation, suggestion, parameter submission 중 workflow 실행, 답변/evidence retrieval, 외부 action, credential 변경을 수행하지 않는다. ADR-2000의 score-only Knowledge recommendation retrieval만 CandidateResolver가 active organization, KB `use`, lifecycle과 source ACL을 통과시킨 뒤 GraphMutation 이전에 실행할 수 있다. 이 예외는 current actor가 `use`할 수 있는 embedding credential로 query embedding을 만들 수 있지만 Planner 입력, GraphMutation, session persistence, citation/audit trace에는 parent content나 document/chunk identity를 전달하지 않는다.
 
 ### DBP-FR-014 Audit And Sensitive Data
 

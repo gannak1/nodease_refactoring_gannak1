@@ -46,6 +46,7 @@ planner는 catalog와 graph policy를 우회할 수 없고, frontend는 node별 
 - 신규 session에 `direct_edit_v1` protocol을 기록하고 기존 null Preview session은 `stale_protocol`로 복구함. Preview fallback이나 자동 변환은 제공하지 않음
 - requested mode 정규화, quick eligibility, 명시적 guided transition과 남은 설정 quick-completion orchestration
 - planner, target resolver, catalog, GraphMutation builder, parameter planner 호출 순서 관리. Mode transition과 remaining quick completion에서는 전체 planner를 다시 호출하지 않음
+- KnowledgeCandidateResolver 이후 GraphMutation 이전에 ADR-2000 score-only recommendation port를 호출하고 stale request 결과가 최신 Knowledge resolution을 덮어쓰지 않게 조정
 - transaction, audit, idempotency 경계 관리
 - legacy Preview session을 `stale_protocol`로 복구하고 direct-edit operation 적용 차단
 
@@ -89,6 +90,14 @@ Transport adapter는 `X-Agent-Builder-Mode-Contract`를 읽어 legacy/canonical 
 - `LLMService._order_agent_builder_options()`는 중복 relation 중 가장 낮은 priority 하나를 남기고 공통 추천 정책 입력으로 변환한다.
 - `model_recommendation_policy.sort_model_candidates()`는 ADR-0040의 provider, generation, `general|mini|nano|pro`, suffix와 특수 목적 제외 정책을 결정론적으로 계산한다. 이름을 해석하지 못한 verified chat model은 provider 후순위 fallback으로 유지한다.
 - `AgentBuilderService._recommended_draft_model_id()`는 같은 권한 후보의 첫 model id를 새 generated LLM node에만 적용한다. Header 사용자 선택과 credential은 graph에 복사하지 않고 기존 node model은 보존한다.
+
+#### Knowledge score-only recommendation boundary
+
+- `KnowledgeCandidateResolver`가 active organization, effective KB `use`, lifecycle, source ACL과 5,000 candidate budget을 먼저 적용한다.
+- Application은 별도 `KnowledgeRecommendationRetrievalPort`에 authorized snapshot과 bounded safe query만 전달한다. Workflow runtime `RetrievalService`를 import하지 않는다.
+- Gateway adapter는 model/dimension cohort별 query embedding 1회와 cosine parent SQL 1회를 수행하고 KB ID, bounded score와 typed state만 반환한다.
+- `KnowledgeRAGRecommendationService`는 semantic available이면 parent relevance, unavailable이면 metadata relevance를 선택하고 기존 Collection aggregation과 stable ordering을 적용한다.
+- Parent content, document/chunk identity, embedding vector, raw distance, credential reference와 provider payload는 Planner, Client, audit, trace, log 또는 persistence로 전달하지 않는다.
 
 ### 2.3 IntentPlanningService
 

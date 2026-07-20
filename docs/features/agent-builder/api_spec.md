@@ -341,6 +341,7 @@ Session의 만료되지 않은 request 전체에서 redaction된 safe conversati
 - Intent planner provider 호출은 1회당 최대 90초로 제한한다. 첫 결과가 semantic repair 대상이면 한 번 더 호출할 수 있지만 각 호출에 동일한 상한을 적용한다.
 - Provider 응답이 완료되지 않아 request가 `processing`으로 남으면 session 조회가 같은 request를 계속 반환한다. Server는 request 생성 후 4분이 지나면 `REQUEST_PROCESSING_TIMEOUT` terminal 실패로 전환한다.
 - `direct_edit_v1`에서 Knowledge 추천 상태가 `recommended|clarification_required`이면 `collections`와 `ungrouped_kbs` 계층 계약을 반환해야 한다. Flat `candidates`만 있는 응답은 legacy UI로 fallback하지 않고 validation failure로 닫는다.
+- Knowledge candidate resolution 뒤 GraphMutation 전 내부 `KnowledgeRecommendationRetrievalPort`는 ADR-2000의 `parent_first_v1`을 사용할 수 있다. 이 port는 public endpoint가 아니며 권한 확인 KB ID, bounded score와 complete/degraded state만 application에 반환한다. Parent content, document/chunk identity, vector, raw distance와 provider payload는 message response, Planner, audit, trace 또는 log에 포함하지 않는다.
 
 Direct-edit session의 workflow graph가 비어 있지 않은데 structured request가 완결된 `new_workflow`이면 `replace_workflow` GraphMutation을 반환한다. 명시적 전체 교체는 `request_type=modify_workflow`, `draft_mode=replace_workflow`로 구조화하며 edit target을 요구하지 않는다. 둘 다 typed remove/add operation과 동일한 CDS/acknowledgement 경계를 사용한다.
 
@@ -1301,7 +1302,7 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 - Agent Builder는 Routing task decision에서 model-routing policy/refresh/cohort endpoint를 호출하지 않는다. Canonical graph 저장과 acknowledgement만 수행한다.
 - 완료 뒤 고급 Routing action은 기존 node settings navigation이며 Agent Builder API 요청이나 자동 policy mutation을 만들지 않는다.
 
-Knowledge 후보 응답은 use 권한을 통과한 active KB를 포함한다. 인덱싱 준비 상태는 candidate response 또는 knowledge-selection request의 유효성 조건이 아니며 run/deployment preflight의 조건이다. server-issued Agent Builder `mutation_context`가 있는 CAS 저장은 같은 권한/lifecycle 검사를 유지하되 retrieval readiness만 실행·배포 preflight로 미루며, 일반 Editor 저장은 retrieval-visible readiness를 계속 요구한다.
+Knowledge 후보 응답은 use 권한을 통과한 active KB를 포함한다. Score-only recommendation retrieval은 이 후보 snapshot의 active organization, KB `use`, lifecycle과 source ACL 검증 뒤에만 실행하고 실패한 authorization을 metadata fallback으로 낮추지 않는다. 외부 응답은 기존 opaque handle과 safe label에 bounded score, safe reason과 complete/degraded state만 추가할 수 있다. 인덱싱 준비 상태는 candidate response 또는 knowledge-selection request의 유효성 조건이 아니며 run/deployment preflight의 조건이다. server-issued Agent Builder `mutation_context`가 있는 CAS 저장은 같은 권한/lifecycle 검사를 유지하되 retrieval readiness만 실행·배포 preflight로 미루며, 일반 Editor 저장은 retrieval-visible readiness를 계속 요구한다.
 
 ### MBA-275 Direct-Edit Safety And Relation Contract
 

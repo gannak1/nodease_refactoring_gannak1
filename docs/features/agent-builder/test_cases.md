@@ -189,7 +189,10 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - `canonical-v2`의 `guided_generate` message submit이 validated GraphMutation과 parameter group을 반환한다. Mode가 없거나 legacy `configure_and_generate` 입력도 내부 guided로 정규화되며 외부 응답 mode는 negotiated contract 표현을 따른다.
 - 검증된 planner `reason`/`input_guidance`가 해당 parameter task description으로 전달되고 API 복구 뒤에도 같은 safe 설명을 반환한다.
 - Planner hint가 없거나 폐기되면 Catalog description으로 생성된 task를 반환한다.
-- GraphMutation 발급 과정에서 workflow run, retrieval, 외부 HTTP action을 호출하지 않는다.
+- GraphMutation 발급·local apply·save·acknowledgement 과정에서 workflow run, Knowledge retrieval, embedding credential 또는 외부 HTTP action을 호출하지 않는다. 별도 ADR-2000 recommendation 단계만 CandidateResolver 권한 성공 뒤 GraphMutation 이전에 score-only retrieval을 호출할 수 있다.
+- 권한 또는 active organization 검증 실패 시 recommendation embedding/cohort discovery/parent SQL은 모두 0회이고 metadata fallback으로 낮추지 않는다.
+- Score-only retrieval result에는 parent content, document/chunk identity, vector, raw distance, credential reference 또는 provider payload가 없으며 Planner·response·audit·trace·log에도 나타나지 않는다.
+- 늦게 완료된 recommendation response는 더 최신 Knowledge resolution의 후보·score·selection을 덮어쓰지 않는다.
 - GraphMutation 발급 audit를 기록한다.
 
 ### DBP-TC-I003 Structure Only
