@@ -144,6 +144,40 @@ describe('워크플로우 운영 현황 보기 전환', () => {
     );
   });
 
+  it('그리드 카드에서는 운영 지표와 자동 최적화 영역을 숨긴다', async () => {
+    render(<MyModulePage />);
+
+    await screen.findByRole('heading', {
+      level: 3,
+      name: '신입사원 온보딩',
+    });
+
+    expect(screen.queryByText('월 예상 비용')).not.toBeInTheDocument();
+    expect(screen.queryByText('증가 추세')).not.toBeInTheDocument();
+    expect(screen.queryByText('예산 사용률')).not.toBeInTheDocument();
+    expect(screen.queryByText('42%')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('자동 파라미터 최적화'),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '편집기 열기' })).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: '리스트 보기' }));
+
+    expect(
+      screen.getByRole('columnheader', { name: '월 예상 비용' }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole('columnheader', { name: '증가 추세' }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole('columnheader', { name: '예산 사용률' }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole('columnheader', { name: '자동 최적화' }),
+    ).toBeVisible();
+    expect(screen.getAllByText('42%').length).toBeGreaterThan(0);
+  });
+
   it('저장된 그리드 보기를 다음 방문에 복원한다', async () => {
     window.localStorage.setItem('mymodule:operations-view', 'grid');
 

@@ -183,7 +183,7 @@ Vitest 기준.
 
 - `BudgetStatusBadge` — status별 렌더링, 사용률 % 표시 반올림.
 - `BudgetEditModal` — 초기값 로드(404 → 신규 폼), 0 이하/비숫자/소수점 3자리 이상/`9999999999.99` 초과 입력 차단, 저장 성공 시 refetch 콜백, 422 필드 오류 표시, 403 권한 오류 표시.
-- 내 워크플로우 목록 — `budget_status` null이면 기존 렌더링 유지, 상태가 있으면 `BudgetStatusBadge` 표시, `exceeded`면 "실행 차단" 표시 + tooltip.
+- 내 워크플로우 목록 — 리스트 보기는 `budget_status` null이면 기존 렌더링 유지, 상태가 있으면 `BudgetStatusBadge` 표시. 그리드 카드는 예산 사용률과 상태 배지를 숨기며, 두 보기 모두 `exceeded`면 "실행 차단" 표시 + tooltip을 유지.
 - 테스트 실행 429 `budget.exceeded` 응답 → 예산 초과 안내 표시 (일반 오류와 구분).
 
 ## E2E / 시나리오 연결

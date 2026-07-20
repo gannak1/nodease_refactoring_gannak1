@@ -13,7 +13,7 @@ Status: Draft
 
 Budget Management 확장:
 
-- row의 `app.budget_status`가 있으면 모듈명/설명 아래에 `BudgetStatusBadge`를 표시한다.
+- 리스트 row의 `app.budget_status`가 있으면 모듈명/설명 아래에 `BudgetStatusBadge`를 표시한다. 그리드 카드는 예산 사용률을 표시하지 않는다.
 - `budget_status.status`가 `exceeded`면 실행 상태 영역에 "실행 차단" 표시를 추가하고, title/tooltip 문구는 "월 예산 초과로 실행이 차단되었습니다"를 사용한다.
 - `budget_status`가 null이면 기존 row 레이아웃을 유지하고 예산 관련 텍스트를 표시하지 않는다.
 - row의 `app.operation_metrics`가 있으면 월 예상 비용, 전월 대비 증가 추세, 최적화 권장 판단의 원천으로 사용한다. 월 예상 총비용 아래에는 `워크플로 실행`과 `Agent Builder` 예상 비용을 함께 표시한다.
@@ -27,12 +27,12 @@ Budget Management 확장:
 
 - 운영 현황 상단의 `리스트 보기`와 `그리드 보기` 버튼으로 표시 방식을 전환한다. 저장된 선택이 없을 때 기본값은 그리드 보기다.
 - 선택한 보기 방식은 브라우저 local storage에 저장하고 다음 방문 때 복원한다.
-- 그리드 카드는 App/Workflow 이름을 큰 제목으로 표시하고 설명, 수정 시각, 비용, 추세, 예산, 자동 최적화, 배포/실행 상태와 기존 작업 버튼을 함께 제공한다.
-- 보기 방식이 달라도 검색, 필터, 더 보기, 권한별 disabled 조건과 각 작업의 대상은 동일하다.
+- 그리드 카드는 App/Workflow 이름을 큰 제목으로 표시하고 설명, 수정 시각, 배포/실행 상태와 실행·열기·앱 설정·배포 상태 작업 버튼만 제공한다. 월 예상 비용, 증가 추세, 예산 사용률, 자동 파라미터 최적화 영역은 표시하지 않는다.
+- 보기 방식이 달라도 검색, 필터, 더 보기와 공통 작업의 권한별 disabled 조건·대상은 동일하다. 자동 최적화 관리는 리스트 보기에서만 제공한다.
 
 ## Components
 
-- `/dashboard/mymodule`의 월 예상 비용은 배포 상태와 관계없이 표시한다. 미배포 row는 `테스트 실행`과 `Agent Builder`로, 배포 이력이 있는 활성·비활성 row는 배포 전 비용을 포함한 `테스트/배포 실행`과 `Agent Builder`로 구분한다.
+- `/dashboard/mymodule` 리스트 보기의 월 예상 비용은 배포 상태와 관계없이 표시한다. 미배포 row는 `테스트 실행`과 `Agent Builder`로, 배포 이력이 있는 활성·비활성 row는 배포 전 비용을 포함한 `테스트/배포 실행`과 `Agent Builder`로 구분한다.
 
 - `BudgetStatusBadge`: Budget Management feature의 공용 배지를 재사용한다.
 

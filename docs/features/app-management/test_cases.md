@@ -20,7 +20,7 @@ Status: Draft
 - Given `/dashboard/mymodule`에 표시되는 App row의 primary workflow에 활성 예산이 있다, When `GET /apps/operations`를 호출한다, Then `row.app.budget_status`는 `GET /apps`와 동일한 shape로 반환된다.
 - Given `/dashboard/mymodule`에 표시되는 App row의 primary workflow에 당월/전월 `llm_usage_logs` 비용이 있다, When `GET /apps/operations`를 호출한다, Then `row.app.operation_metrics`는 당월 비용, 월 예상 비용, 전월 비용, 전월 대비 증감률을 반환한다.
 - Given primary workflow에 Agent Builder planner/repair usage가 있다, When `GET /apps`와 `GET /apps/operations`를 호출한다, Then 해당 비용은 예산 사용률, 당월 비용과 월 예상 총비용에 포함되고 `operation_metrics`의 Agent Builder 구분 필드에도 반환된다.
-- Given workflow 실행 usage와 Agent Builder usage가 함께 있다, When `/dashboard/mymodule`을 렌더링한다, Then workflow 비용 칸은 총비용 아래에 두 구분값을 표시하며 구분값의 합은 총비용과 같다.
+- Given workflow 실행 usage와 Agent Builder usage가 함께 있다, When `/dashboard/mymodule` 리스트 보기를 렌더링한다, Then workflow 비용 칸은 총비용 아래에 두 구분값을 표시하며 구분값의 합은 총비용과 같다.
 - Given `/dashboard/mymodule`을 열거나 새로고침한다, Then `예상 월 비용`, `평균 증가 추세`, `예산 위험`, `비용 위험 신호` 상단 카드는 표시하지 않고 `GET /apps/operations/cost-summary`를 호출하지 않는다.
 - Given App의 `active_deployment_id`가 다른 App의 활성 deployment를 가리킨다, When `GET /apps/operations/cost-summary`를 호출한다, Then 해당 App primary workflow는 활성 workflow 수와 비용 합계에서 제외된다.
 - Given App의 `active_deployment_id`가 다른 App의 활성 deployment를 가리킨다, When `GET /apps/operations`를 호출한다, Then 해당 row는 다른 App deployment를 `active`로 표시하지 않고 해당 App의 실제 배포 이력으로 `inactive` 또는 `undeployed`를 반환하며 `automatic_optimization`은 null이다.
@@ -30,7 +30,7 @@ Status: Draft
 - Given `/dashboard/mymodule`에 표시되는 App row의 `workflow_id`가 null이고 같은 `app_id`의 과거/보조 workflow에 활성 예산이 있다, When `GET /apps/operations`를 호출한다, Then `row.app.budget_status`는 null이다.
 - Given `row.app.budget_status.status`가 `exceeded`다, When 클라이언트가 `/dashboard/mymodule`을 렌더링한다, Then row는 예산 상태 badge와 "실행 차단" 표시를 보여준다.
 - Given `row.app.budget_status`가 null이다, When 클라이언트가 `/dashboard/mymodule`을 렌더링한다, Then 예산 관련 텍스트 없이 기존 row 레이아웃을 유지한다.
-- Given `row.app.operation_metrics`가 null이다, When 클라이언트가 `/dashboard/mymodule`을 렌더링한다, Then workflow별 월 예상 비용/증가 추세/최적화 권장 UI는 "운영 비용 없음" 또는 "비교 데이터 없음"을 표시하고 deterministic dummy 값을 생성하지 않는다.
+- Given `row.app.operation_metrics`가 null이다, When 클라이언트가 `/dashboard/mymodule` 리스트 보기를 렌더링한다, Then workflow별 월 예상 비용/증가 추세/최적화 권장 UI는 "운영 비용 없음" 또는 "비교 데이터 없음"을 표시하고 deterministic dummy 값을 생성하지 않는다.
 
 ### AC-3. 안전 요약 노출 제한
 
@@ -58,8 +58,10 @@ Status: Draft
 
 - Given 저장된 보기 설정이 없다, When `/dashboard/mymodule`을 연다, Then 운영 현황은 그리드 보기로 표시된다.
 - Given 사용자가 `그리드 보기`를 선택한다, When 운영 현황이 다시 렌더링된다, Then 같은 operations row가 카드로 표시되고 App/Workflow 이름은 카드의 큰 제목으로 보인다.
+- Given 사용자가 `그리드 보기`를 선택한다, Then 카드에는 월 예상 비용, 증가 추세, 예산 사용률, 자동 파라미터 최적화 영역을 표시하지 않고 배포/실행 상태와 공통 작업을 유지한다.
 - Given 사용자가 보기 방식을 선택했다, When 같은 브라우저에서 화면을 다시 연다, Then local storage에 저장된 보기 방식을 복원한다.
-- Given 리스트 또는 그리드 보기를 사용한다, When 실행·열기·앱 설정·배포 상태·자동 최적화 관리 작업을 선택한다, Then 기존 권한 조건과 대상 App/Workflow/Deployment를 그대로 사용한다.
+- Given 리스트 또는 그리드 보기를 사용한다, When 실행·열기·앱 설정·배포 상태 작업을 선택한다, Then 기존 권한 조건과 대상 App/Workflow/Deployment를 그대로 사용한다.
+- Given 리스트 보기를 사용한다, When 자동 최적화 관리 작업을 선택한다, Then 기존 권한 조건과 대상 Deployment를 그대로 사용한다.
 
 ## Unit Tests
 

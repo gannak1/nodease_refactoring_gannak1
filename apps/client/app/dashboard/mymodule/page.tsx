@@ -34,7 +34,6 @@ import {
 import {
   moduleOperationsApi,
   type ModuleOperationRow,
-  type ModuleAutomaticOptimizationStatus,
   type ModuleOperationsListParams,
   type ModuleRunState,
 } from '@/app/features/app/api/moduleOperationsApi';
@@ -135,121 +134,6 @@ const automaticOptimizationStatusLabel = {
   failed: '점검 실패',
   disabled: '미사용',
 } as const;
-
-const automaticOptimizationStatusDescription: Record<
-  ModuleAutomaticOptimizationStatus,
-  { title: string; description: string }
-> = {
-  disabled: {
-    title: '자동 최적화 꺼짐',
-    description: '응답 길이와 RAG 컨텍스트를 점검하지 않습니다.',
-  },
-  collecting: {
-    title: '운영 로그 수집 중',
-    description: '대상 LLM 노드 전체 기준으로 다음 점검에 필요한 실행을 모읍니다.',
-  },
-  ready: {
-    title: '다음 점검 준비 완료',
-    description: '수집된 운영 로그를 다음 파라미터 점검에 사용할 수 있습니다.',
-  },
-  paused: {
-    title: '자동 최적화 일시 중지',
-    description: '설정에서 다시 사용으로 바꾸면 운영 로그 수집을 재개합니다.',
-  },
-  budget_exhausted: {
-    title: '이번 달 검증 예산 사용 완료',
-    description: '다음 달이 되면 새 후보 설정을 다시 검증할 수 있습니다.',
-  },
-  failed: {
-    title: '자동 최적화 점검 실패',
-    description: '설정을 확인한 뒤 다음 운영 로그에서 다시 점검합니다.',
-  },
-};
-
-function AutomaticOptimizationCell({
-  summary,
-  hasDeployment,
-  canManage,
-  isLoading,
-  onManage,
-}: {
-  summary: ModuleOperationRow['automaticOptimization'];
-  hasDeployment: boolean;
-  canManage: boolean;
-  isLoading: boolean;
-  onManage: () => void;
-}) {
-  const isEnabled = Boolean(summary?.enabled);
-  const status = summary?.status || 'disabled';
-  const collectedRuns = summary?.collected_runs || 0;
-  const checkEveryRuns = summary?.check_every_runs || 50;
-  const spend = summary?.validation_spend_usd || 0;
-  const monthlyBudget = summary?.monthly_validation_budget_usd || 3;
-  const statusCopy = hasDeployment
-    ? automaticOptimizationStatusDescription[isEnabled ? status : 'disabled']
-    : {
-        title: '배포 후 자동 최적화 설정',
-        description: '배포를 완료하면 응답 길이와 RAG 컨텍스트 점검을 설정할 수 있습니다.',
-      };
-  const statusClassName =
-    !isEnabled
-      ? 'border-slate-200 bg-slate-50 text-slate-600'
-      : status === 'budget_exhausted' || status === 'failed'
-        ? 'border-amber-200 bg-amber-50 text-amber-700'
-        : 'border-emerald-200 bg-emerald-50 text-emerald-700';
-
-  return (
-    <div
-      aria-label="자동 파라미터 최적화 상태"
-      className="rounded-md border border-slate-200 bg-slate-50/70 p-3"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-sm font-semibold text-slate-900">
-              {statusCopy.title}
-            </p>
-            <Badge className={hasDeployment ? statusClassName : 'border-slate-200 bg-slate-50 text-slate-600'}>
-              {hasDeployment
-                ? automaticOptimizationStatusLabel[status]
-                : '배포 후 설정'}
-            </Badge>
-          </div>
-          <p className="mt-1 text-xs leading-5 text-slate-500">
-            {statusCopy.description}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onManage}
-          disabled={!hasDeployment || !canManage || isLoading}
-          className="shrink-0 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
-        >
-          {isLoading ? '불러오는 중' : '자동 최적화 설정'}
-        </button>
-      </div>
-      {hasDeployment && isEnabled && (
-        <div className="mt-3 space-y-2">
-          <div className="flex items-center justify-between gap-2 text-xs">
-            <span className="font-medium text-slate-700">
-              운영 로그 {Math.min(collectedRuns, checkEveryRuns)} / {checkEveryRuns}회
-            </span>
-            <span className="text-slate-500">
-              월 검증 {formatValidationBudget(spend)} /{' '}
-              {formatValidationBudget(monthlyBudget)}
-            </span>
-          </div>
-          <progress
-            aria-label="자동 최적화 수집 진행률"
-            className="h-1.5 w-full overflow-hidden rounded-full accent-emerald-600"
-            max={checkEveryRuns}
-            value={Math.min(collectedRuns, checkEveryRuns)}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
 
 function AutomaticOptimizationTableCell({
   summary,
@@ -862,12 +746,6 @@ export default function MyModulePage() {
                       onOpen={() => handleModuleClick(row)}
                       onEdit={() => handleEditApp(row)}
                       onToggleDeployment={() => handleToggleDeployment(row)}
-                      onManageAutomaticOptimization={() =>
-                        handleManageAutomaticOptimization(row)
-                      }
-                      isLoadingAutomaticOptimization={
-                        isLoadingAutomaticOptimizationId === row.app.id
-                      }
                       isOrgManager={isOrgManager}
                     />
                   ))}
@@ -1165,8 +1043,6 @@ function ModuleOperationGridCard({
   onOpen,
   onEdit,
   onToggleDeployment,
-  onManageAutomaticOptimization,
-  isLoadingAutomaticOptimization,
   isOrgManager,
 }: {
   row: ModuleOperationRow;
@@ -1174,8 +1050,6 @@ function ModuleOperationGridCard({
   onOpen: () => void;
   onEdit: () => void;
   onToggleDeployment: () => void;
-  onManageAutomaticOptimization: () => void;
-  isLoadingAutomaticOptimization: boolean;
   isOrgManager: boolean;
 }) {
   const deploymentState = row.deploymentState;
@@ -1183,17 +1057,9 @@ function ModuleOperationGridCard({
   const canToggle = canToggleDeployment(row);
   const runBlockMessage = budgetRunBlockMessage(row.app.budget_status);
   const runDisabledReason = getModuleRunDisabledReason(row);
-  const costSignal = costSignalOf(row);
-  const budgetPercent =
-    costSignal.budgetUsageRatio == null
-      ? null
-      : Math.round(costSignal.budgetUsageRatio * 100);
-  const budgetPresentation = costSignal.budgetStatus
-    ? budgetStatusPresentation[costSignal.budgetStatus]
-    : null;
 
   return (
-    <article className="flex h-full min-h-[31rem] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
+    <article className="flex h-full min-h-64 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
       <div className="border-b border-slate-100 p-5">
         <button
           type="button"
@@ -1220,93 +1086,6 @@ function ModuleOperationGridCard({
         <p className="mt-4 min-h-10 line-clamp-2 text-sm leading-5 text-slate-500">
           {row.app.description || '설명 없음'}
         </p>
-        {row.app.budget_status && (
-          <div className="mt-3">
-            <BudgetStatusBadge
-              status={row.app.budget_status.status}
-              usageRatio={row.app.budget_status.usage_ratio}
-            />
-          </div>
-        )}
-      </div>
-
-      <dl className="grid grid-cols-2 gap-px border-b border-slate-100 bg-slate-100">
-        <div className="min-h-24 bg-white p-4">
-          <dt className="text-xs font-medium text-slate-500">월 예상 비용</dt>
-          <dd className="mt-2">
-            <ModuleProjectedCost
-              appName={row.app.name}
-              deploymentState={deploymentState}
-              costSignal={costSignal}
-              valueClassName="text-base font-bold text-slate-950"
-            />
-          </dd>
-        </div>
-        <div className="min-h-24 bg-white p-4">
-          <dt className="text-xs font-medium text-slate-500">증가 추세</dt>
-          <dd className="mt-2">
-            {deploymentState === 'active' && costSignal.trendPercent != null ? (
-              <Badge
-                className={
-                  costSignal.trendPercent >= 20
-                    ? 'border-red-200 bg-red-50 text-red-700'
-                    : costSignal.trendPercent >= 10
-                      ? 'border-amber-200 bg-amber-50 text-amber-700'
-                      : 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                }
-              >
-                {costSignal.trendPercent > 0 ? '+' : ''}
-                {Math.round(costSignal.trendPercent)}%
-              </Badge>
-            ) : (
-              <span className="text-xs font-medium text-slate-400">
-                {deploymentState === 'active' ? '비교 데이터 없음' : '-'}
-              </span>
-            )}
-          </dd>
-        </div>
-        <div className="col-span-2 min-h-24 bg-white p-4">
-          <dt className="text-xs font-medium text-slate-500">예산 사용률</dt>
-          <dd className="mt-2">
-            {deploymentState === 'active' && budgetPercent != null ? (
-              <div>
-                <div className="flex items-center justify-between gap-2 text-sm font-semibold text-slate-700">
-                  <span>{budgetPercent}%</span>
-                  <span className={budgetPresentation?.textClassName}>
-                    {costSignal.budgetStatus
-                      ? budgetStatusLabel[costSignal.budgetStatus]
-                      : '확인 필요'}
-                  </span>
-                </div>
-                <div className="mt-2 h-2 rounded-full bg-slate-100">
-                  <div
-                    className={`h-2 rounded-full ${
-                      budgetPresentation?.barClassName ?? 'bg-slate-300'
-                    }`}
-                    style={{ width: `${Math.min(budgetPercent, 100)}%` }}
-                  />
-                </div>
-              </div>
-            ) : (
-              <span className="text-xs font-medium text-slate-400">
-                {deploymentState === 'active' ? '예산 없음' : '-'}
-              </span>
-            )}
-          </dd>
-        </div>
-      </dl>
-
-      <div className="border-b border-slate-100 p-4">
-        <p className="mb-2 text-xs font-medium text-slate-500">
-          자동 파라미터 최적화
-        </p>
-        <AutomaticOptimizationCell
-          summary={row.automaticOptimization}
-          hasDeployment={Boolean(row.deployment.deployment_id)}
-          canManage={canToggle}
-          isLoading={isLoadingAutomaticOptimization}
-          onManage={onManageAutomaticOptimization}
-        />
       </div>
 
       <footer className="mt-auto flex items-center justify-between gap-3 bg-slate-50/70 p-4">
@@ -1417,7 +1196,7 @@ function ModuleListSkeleton({ viewMode }: { viewMode: OperationsViewMode }) {
         {Array.from({ length: 6 }).map((_, index) => (
           <div
             key={index}
-            className="h-[31rem] animate-pulse rounded-xl border border-slate-200 bg-white"
+            className="h-64 animate-pulse rounded-xl border border-slate-200 bg-white"
           />
         ))}
       </div>
