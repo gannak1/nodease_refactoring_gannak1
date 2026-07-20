@@ -12,7 +12,7 @@ disabled boundary만 선택하도록 한다. Redis나 현재 Agent Builder servi
 
 | Path | Responsibility | Must Not Own |
 | --- | --- | --- |
-| `apps/gateway/application/agent_builder/intent_cache/catalog_snapshot.py` | Catalog v3 node type/role/capability/parameter key·input type와 `intent-text-v1` summary/purpose immutable snapshot | runtime Catalog load, structured request rendering, alias policy |
+| `apps/gateway/application/agent_builder/intent_cache/catalog_snapshot.py` | Catalog v3 node type/role/capability/parameter key·input type, `summary.current_safe_message.v1` descriptor와 `intent-text-v1` purpose immutable snapshot | runtime Catalog load, summary/structured request rendering, alias policy |
 | `apps/gateway/application/agent_builder/intent_cache/contracts.py` | strict DTO, enum/ref, safe decision/error | Pydantic JSON codec 세부 구현, Redis, service orchestration |
 | `apps/gateway/application/agent_builder/intent_cache/codec.py` | canonical encode/decode, duplicate-key와 forbidden-content guard | cache key/HMAC, Redis, metrics |
 | `apps/gateway/application/agent_builder/intent_cache/ports.py` | normalizer/store/rehydrator/boundary Protocol와 immutable `IntentPlanExecution` | concrete adapter, business fallback orchestration |
@@ -64,6 +64,9 @@ credential과 Knowledge candidate context를 내부에서 확정한다. MBA-343�
 
 - `catalog_snapshot.py`는 표준 라이브러리만 import하며 runtime Catalog file/service를 읽지 않는다. Static test만
   current Catalog의 node type/role/capability/parameter key·input type과 exact 비교한다.
+- Summary snapshot은 request/draft 공통 문자열을 소유하지 않고 current `full_safe_message`를 입력으로 하는
+  `summary.current_safe_message.v1` descriptor만 소유한다. 실제 request-specific projection은 후속
+  rehydration이 구현한다.
 - `contracts.py`는 표준 라이브러리, Pydantic과 `catalog_snapshot.py`만 import한다.
 - `codec.py`는 표준 라이브러리, `contracts.py`만 import한다.
 - `ports.py`는 `typing`, `contracts.py`와 기존 downstream 계약인
@@ -112,7 +115,8 @@ dependency graph는 변경하지 않는다. 신규 factory는 DB session, user�
 ## 7. Implementation Sequence
 
 1. strict DTO와 forbidden corpus의 실패 테스트를 먼저 작성한다.
-2. Catalog v3 snapshot drift test와 최소 closed-ref contract를 구현하고 schema invariant를 통과시킨다.
+2. Catalog v3 snapshot drift test, request-summary projection descriptor와 최소 closed-ref contract를 구현하고
+   schema invariant를 통과시킨다.
 3. codec round-trip/negative test를 먼저 작성한 뒤 canonical codec을 구현한다.
 4. port Protocol과 dependency-free disabled boundary behavior test를 작성하고 구현한다.
 5. composition factory, service no-op seam과 회귀 test를 추가한다.
@@ -134,7 +138,7 @@ Knowledge identity와 opaque handle이 cache plan에 들어가지 않음을 검�
 - application import-boundary 결과
 - canonical codec deterministic fixture 결과
 - Catalog v3 snapshot drift 결과
-- canonical summary/purpose snapshot과 parameter input-type applicability 결과
+- request-specific summary projection descriptor, canonical purpose snapshot과 parameter input-type applicability 결과
 - typed store result와 public codec error redaction 결과
 - forbidden-content parameterized corpus 결과
 - `git diff --name-only`에 Redis/config/DB/Client/public API 변경이 없다는 범위 확인

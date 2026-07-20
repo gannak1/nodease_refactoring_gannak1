@@ -81,7 +81,7 @@ snapshot, evidence 또는 log file에 기록하지 않는다.
 | ID | Scenario | Expected Result |
 | --- | --- | --- |
 | ABC343-T041 | natural-language node/edge target ref로 strict plan 생성 | schema 거부; runtime projection/bypass 구현은 호출하지 않음 |
-| ABC343-T042 | 모든 필드를 가진 valid `IntentPlanningContext` 구성 | 전체 safe message/topology, runtime·Knowledge fingerprint와 contract version 보존 |
+| ABC343-T042 | 같은 logical plan 입력이지만 서로 다른 `full_safe_message`를 가진 valid `IntentPlanningContext` 두 개 구성 | 전체 safe message가 절단·공통 summary 치환 없이 각각 보존되고 topology, runtime·Knowledge fingerprint와 contract version 보존 |
 | ABC343-T043 | context/scope `json.dumps`, `vars`, `dataclasses.asdict`, `pickle.dumps`, `model_dump`/`dict` 부재와 `repr` 검사 | 네 serialization API는 `TypeError`, dump method 없음, 고정 redacted repr에 identity/request 없음 |
 | ABC343-T044 | `modify_workflow/replace_workflow` plan과 잘못된 request/draft pair | replace는 target 없이 허용, 그 외 잘못된 pair와 replace target은 거부 |
 
@@ -93,7 +93,7 @@ snapshot, evidence 또는 log file에 기록하지 않는다.
 | ABC343-T046 | 형식은 맞지만 snapshot/registry에 없는 capability, parameter key와 topic/guidance ref | 모두 strict schema 또는 codec에서 거부 |
 | ABC343-T047 | 최소 plan canonical encode | 문서의 encoder option과 inline literal golden bytes가 exact match |
 | ABC343-T048 | eligible/bypass `IntentNormalizationResult`의 valid/invalid field 조합 | valid union만 허용하고 unknown reason 또는 모순 조합 거부 |
-| ABC343-T049 | success/failure `IntentRehydrationResult`의 valid/invalid field 조합 | valid union만 허용하고 unknown reason 또는 모순 조합 거부 |
+| ABC343-T049 | success/failure `IntentRehydrationResult`의 valid/invalid field 조합 | `summary_projection_failed`를 포함한 closed failure reason과 valid union만 허용하고 unknown reason 또는 모순 조합 거부 |
 | ABC343-T050 | invalid generation mode/provider/node role/edge branch와 dangling logical ref | transient context 생성 거부 |
 | ABC343-T051 | scope target type/id 중 하나만 제공하거나 public dump/property 접근 시도 | constructor invariant 거부, public identity view 없음 |
 | ABC343-T052 | strict `IntentCacheKey`와 hit/miss/bypass/error decision 조합 | malformed digest와 outcome별 plan/reason 모순 거부 |
@@ -101,7 +101,7 @@ snapshot, evidence 또는 log file에 기록하지 않는다.
 | ABC343-T054 | Catalog v3 snapshot의 parameter input type을 current Catalog와 비교 | capability별 parameter key/input type이 exact match하고 drift는 fail-closed |
 | ABC343-T055 | known topic ref를 `knowledge_backed_llm`이 아닌 target에 사용 | strict schema 거부 |
 | ABC343-T056 | known Slack guidance pair를 다른 capability/parameter/input type에 사용하거나 ref 한쪽만 사용 | strict schema 거부 |
-| ABC343-T057 | `intent-text-v1` summary와 19개 capability purpose snapshot | 세 request/draft pair와 모든 capability가 exact canonical text 한 개에 매핑되고 누락·초과 없음 |
+| ABC343-T057 | `intent-text-v1` request-summary projection descriptor와 19개 capability purpose snapshot | generic request/draft summary table이 없고 `summary.current_safe_message.v1`의 source/whitespace/redaction/240-code-point/failure/provider-summary 비재사용/non-persistence 계약과 모든 capability purpose가 exact match하며 누락·초과 없음 |
 | ABC343-T058 | load hit/miss/invalid/unavailable과 save stored/unavailable result 조합 | valid union만 허용하고 unknown status/reason 또는 plan/reason 모순 거부 |
 | ABC343-T059 | codec의 모든 failure code/path category와 string/repr/cause 검사 | public `IntentPlanCodecError`만 발생하고 payload/value/full path/chained parser error 없음 |
 | ABC343-T060 | duplicate guard parse 뒤 tuple plan decode | original bytes의 strict Pydantic JSON-mode 검증으로 성공하고 Python-mode list coercion helper 없음 |

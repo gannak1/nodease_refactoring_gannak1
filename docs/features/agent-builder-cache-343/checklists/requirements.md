@@ -12,7 +12,7 @@ Status: Draft
 ## Requirement Completeness
 
 - [x] strict plan, planning context, codec, forbidden field, port와 disabled composition을 모두 다룬다.
-- [x] Catalog v3 parameter input type과 canonical text v1 topic/guidance/summary/purpose의 exact member 및 drift 검증 소유권을 정의한다.
+- [x] Catalog v3 parameter input type, canonical text v1 topic/guidance/purpose와 request-specific safe-summary projection descriptor의 exact member 및 drift 검증 소유권을 정의한다.
 - [x] Linear MBA-343의 제외 범위인 normalization, Redis, rehydration과 실제 hit/miss를 구현 범위에서 제외한다.
 - [x] Graph Template RAG와 의미 유사도 검색을 명시적으로 제외한다.
 - [x] public API, DB, Client와 runtime 비변경을 명시한다.

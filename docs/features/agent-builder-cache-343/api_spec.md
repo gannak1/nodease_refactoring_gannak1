@@ -54,7 +54,8 @@ field alias 미사용과 coercion 금지를 적용한다. Tuple의 순서는 sem
 | `contract_versions` | `IntentPlanContractVersions` | required |
 
 Rendered `intent_summary`, step purpose, topic와 guidance text는 field로 존재하지 않는다. Rehydrator가
-request/draft type, ordered capability, logical step, current Catalog와 canonical registry에서 결정적으로 만든다.
+current `IntentPlanningContext.full_safe_message`, ordered capability, logical step, current Catalog와 canonical
+registry에서 결정적으로 만든다. Summary는 request/draft type의 공통 문장에서 파생하지 않는다.
 
 Valid `(request_type, draft_mode)` pair는 `(new_workflow, new_workflow)`,
 `(modify_workflow, modify_workflow)`와 `(modify_workflow, replace_workflow)`뿐이다. Selected-target
@@ -229,16 +230,26 @@ input_type=text)`일 때만 허용한다.
 이 세 member 밖의 provider text는 fuzzy, case correction 또는 의미 추론으로 보정하지 않고 후속 projection에서
 store-ineligible로 처리한다.
 
-### 4.3 Canonical Summary and Step Purpose v1
+### 4.3 Request Summary Projection and Step Purpose v1
 
-`intent-text-v1`은 저장되는 별도 ref 없이 `(request_type, draft_mode)`에서 선택하는 다음 canonical summary를
-exact immutable table로 소유한다.
+`intent-text-v1`은 summary 문자열이나 request별 ref를 plan에 저장하지 않는다. 대신 다음 exact immutable
+projection descriptor를 소유하며 future rehydrator가 매 요청의 current transient context에 적용한다.
 
-| Request/draft pair | Canonical `intent_summary` |
+| Property | Exact v1 value |
 | --- | --- |
-| `new_workflow/new_workflow` | `요청한 workflow를 생성합니다.` |
-| `modify_workflow/modify_workflow` | `선택한 workflow 대상을 수정합니다.` |
-| `modify_workflow/replace_workflow` | `현재 workflow를 요청한 구조로 교체합니다.` |
+| `projection_id` | `summary.current_safe_message.v1` |
+| `source` | `IntentPlanningContext.full_safe_message` |
+| `whitespace_profile` | `python-split-v1`: Python `" ".join(value.split())`과 같은 Unicode whitespace collapse와 trim |
+| `redaction_profile` | `agent-builder-safe-summary-v1`: 현재 `_safe_summary`의 fail-closed trace redaction, auth/secret/URL/path redaction과 lowercase `[redacted]` marker contract |
+| `max_codepoints` | redaction 뒤 첫 240 Unicode code point |
+| `failure` | empty 또는 `[redacted]` marker가 남으면 `summary_projection_failed` |
+| `provider_summary` | cache-eligible canonical rehydration에서는 사용하지 않음 |
+| `persistence` | summary, source message와 provider summary를 cache key/value/diagnostic/metric/audit에 저장하지 않음 |
+
+Cold miss와 warm hit는 모두 current `full_safe_message`에 위 projection을 적용한다. 같은 safe request에는 같은
+summary를 만들고, 같은 request/draft pair와 logical plan을 만들더라도 서로 다른 safe request는 각 current
+context에서 독립적으로 summary를 재구성한다. MBA-343은 descriptor snapshot만 구현하며 실제 projection과
+structured request rendering은 후속 rehydration 이슈가 소유한다.
 
 각 `LogicalStepRef.capability`의 canonical `purpose`는 다음 exact immutable table에서 가져온다.
 
@@ -265,9 +276,9 @@ exact immutable table로 소유한다.
 | `answer` | `이전 단계 결과를 응답으로 반환합니다.` |
 
 Summary/purpose text와 template argument는 plan value에 저장하지 않는다. Future
-`intent_rehydration_registry.py`는 topic/guidance와 함께 위 두 table을 exact 구현하고
-`canonical_text_registry_version=intent-text-v1`로 함께 versioning해야 한다. MBA-343은 table contract와
-exact membership test만 구현하며 structured request rendering은 구현하지 않는다.
+`intent_rehydration_registry.py`는 topic/guidance, summary projection과 purpose table을 exact 구현하고
+`canonical_text_registry_version=intent-text-v1`로 함께 versioning해야 한다. MBA-343은 descriptor/table
+contract와 exact membership test만 구현하며 structured request rendering은 구현하지 않는다.
 
 ## 5. `IntentPlanningContext`
 
@@ -457,10 +468,11 @@ fail-open orchestration은 후속 coordinator가 소유한다.
 `IntentRehydrationResult`는 strict immutable DTO이며 `status=success`일 때 기존
 `AgentBuilderStructuredRequest`가 required이고 reason은 null이다. `status=failure`일 때 structured request는
 null이고 reason은 `contract_version_mismatch|catalog_member_missing|canonical_reference_missing|
-guidance_input_type_incompatible|logical_reference_invalid|current_context_invalid` 중 하나다. 새 downstream DTO를
-복제하지 않는다.
+guidance_input_type_incompatible|logical_reference_invalid|summary_projection_failed|current_context_invalid` 중
+하나다. 새 downstream DTO를 복제하지 않는다.
 Resource resolution, permission과 lifecycle revalidation은 별도 현재-context port가 완료한 결과만
-입력받는다. 구현은 MBA-343 범위가 아니다.
+입력받는다. Success는 provider `intent_summary`가 아니라 current context의 `full_safe_message`와
+`summary.current_safe_message.v1`에서 request-specific summary를 만들어야 한다. 구현은 MBA-343 범위가 아니다.
 
 ## 8. Boundary Decision
 

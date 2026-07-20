@@ -87,8 +87,11 @@ MBA-343은 이 위험을 막는 최소 spine만 정의한다.
   최소 risk flag만 저장한다.
 - logical step은 실제 node ID가 아니라 `capability + 1-based occurrence`로 식별한다.
 - `intent_summary`, step purpose와 provider guidance의 rendered text는 저장하지 않는다. `intent-text-v1`은
-  request/draft pair별 canonical summary와 capability별 canonical purpose의 exact immutable table을 소유한다.
-  Summary와 purpose는 이 table, ordered capability와 logical step에서 결정적으로 파생한다.
+  current `IntentPlanningContext.full_safe_message`를 입력으로 하는 `summary.current_safe_message.v1` projection
+  descriptor와 capability별 canonical purpose의 exact immutable table을 소유한다.
+- Summary는 request/draft pair의 공통 문장이 아니라 매 요청의 current safe context에서 결정적으로
+  재구성하고, purpose는 ordered capability와 logical step에서 파생한다. Provider summary는 cache-eligible
+  canonical rehydration의 source가 아니다.
 - required capability, deterministic step ID, dependency, pending resolution과 Catalog purpose처럼
   현재 Catalog/registry에서 재생성할 수 있는 값은 중복 저장하지 않는다.
 
@@ -119,6 +122,8 @@ MBA-343은 이 위험을 막는 최소 spine만 정의한다.
 ### ABC343-FR-005 Transient Planning Context
 
 - `IntentPlanningContext`는 전체 safe request와 절단되지 않은 logical topology를 보유하는 transient 타입이다.
+- `full_safe_message`는 future rehydrator가 request-specific `intent_summary`를 만들기 위한 유일한 summary
+  source다. MBA-343은 message를 보존하고 projection descriptor를 고정하지만 실제 projection은 구현하지 않는다.
 - generation mode, 검증된 model/credential relation fingerprint, Knowledge candidate fingerprint와
   cache contract version 집합을 보유한다.
 - actor, organization과 selected target의 실제 identity는 `EphemeralCacheScope`에만 보유하며
@@ -139,7 +144,8 @@ MBA-343은 이 위험을 막는 최소 spine만 정의한다.
   `stored|unavailable`을 strict result DTO로 구분한다. Redis command, URL, connection pool과 transaction은
   노출하지 않는다.
 - rehydrator port는 cached plan과 현재 검증 context를 받아 strict `IntentRehydrationResult`를 반환하고
-  success/failure의 structured-request/reason invariant를 적용한다.
+  success/failure의 structured-request/reason invariant를 적용한다. Future success result는 provider summary나
+  request/draft 공통 문장이 아니라 current context의 versioned safe-summary projection을 사용해야 한다.
 - port는 서로를 import하지 않고 공통 contract만 import한다.
 
 ### ABC343-FR-007 Disabled Boundary
@@ -206,7 +212,8 @@ forbidden-field 검증은 fail-closed이며 validation 자체가 원문을 log�
 - `CachedIntentPlanV1`과 모든 nested DTO가 strict/immutable contract test를 통과한다.
 - canonical codec의 round-trip, byte equality와 malformed input test가 통과한다.
 - original bytes의 strict Pydantic JSON-mode decode와 public codec error redaction test가 통과한다.
-- Catalog parameter input type 및 canonical summary/purpose snapshot이 exact drift/membership test를 통과한다.
+- Catalog parameter input type, request-specific summary projection descriptor 및 canonical purpose snapshot이 exact
+  drift/membership test를 통과한다.
 - store load/save result가 miss, invalid와 unavailable을 손실 없이 구분한다.
 - 금지 field/value corpus가 root와 nested 위치 모두에서 거부된다.
 - disabled boundary가 context와 모든 port를 관찰하지 않고 Planner를 정확히 한 번 실행해 정해진 bypass를 반환한다.

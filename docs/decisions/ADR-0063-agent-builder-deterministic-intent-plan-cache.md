@@ -61,6 +61,14 @@ CAS 기준까지 과거 요청에서 재생하는 더 큰 위험이 생긴다.
    canonical topic/guidance 문자열로 렌더링한다. Registry version은 key namespace와 plan contract version에
    `canonical_text_registry_version`으로 포함하며 ref는 versioned namespace와 current manifest exact
    membership으로 검증한다.
+   Rendered `intent_summary`도 cache value에 저장하지 않는다. Cache-eligible request의 summary는 매 요청의
+   transient planning context에 있는 전체 `full_safe_message`를 `summary.current_safe_message.v1`로 projection해 만든다.
+   이 projection은 현재 `_safe_summary(request.message, limit=240)`의 whitespace collapse, fail-closed
+   redaction과 240-code-point 상한을 versioned regression contract로 고정한다. Empty 또는 redaction marker가
+   남은 결과는 cache admission을 통과할 수 없다. Provider가 반환한 자유 형식 `intent_summary`는
+   cache-eligible cold miss의 canonical downstream source로 사용하지 않으며, plan의 request/draft type만으로
+   고정 문장을 선택하지도 않는다. 같은 current safe request의 cold miss와 hit는 같은 summary를 만들고,
+   서로 다른 safe request는 각 current request에서 독립적으로 summary를 재구성한다.
 5. Cache key는 plaintext 요청이 아니라 canonical key material의 HMAC-SHA256이다.
    Key material에는 organization, user, 선택한 planner model, generation mode,
    safe workflow context, selected target, 현재 Knowledge 후보 집합과 contract version을
@@ -84,7 +92,9 @@ CAS 기준까지 과거 요청에서 재생하는 더 큰 위험이 생긴다.
    valid plan만 저장한다.
    Cache admission을 통과한 miss도 final valid extraction을 `CachedIntentPlan`으로
    projection한 뒤 즉시 현재 request, canonical text registry와 Catalog에서 rehydrate한 canonical structured
-   request를 downstream에 전달한다. 따라서 최초 miss와 이후 hit는 summary, step purpose,
+   request를 downstream에 전달한다. Summary는 저장된 plan이 아니라 현재 request의 versioned
+   `summary.current_safe_message.v1` projection에서 만들며 provider summary를 재사용하지 않는다. 따라서 최초 miss와 이후 hit는
+   request-specific summary, step purpose,
    Knowledge recommendation의 `query_topics`, parameter guidance와 task를 포함해 같은 canonical
    materialization 입력을 사용한다. Provider topic/guidance가 canonical reference로 완전히 projection되지
    않는 경우는 rehydration failure가 아니라 store-ineligible non-cache 결과다.
