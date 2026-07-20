@@ -8,8 +8,10 @@ Verified Against: `feature/mba-247 @ 311a4bc2`
 이 문서는 `requirements.md`의 FR-001부터 FR-015까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
 FR-011은 `judge_bootstrap_incremental_v1`으로 다룬다. 배포 실행 1~50회는 runtime Judge가
 현재 요청의 후보 모델을 선택하고, workflow 완료 뒤 schema·후속 노드·fallback 계약을 통과한
-label만 local router 학습에 반영한다. 50건 이상이면 local router가 먼저 선택하며 확신이 낮으면
-runtime Judge로 되돌아간다.
+label의 요청 요구 능력만 local router 학습에 반영한다. 50건 이상이고 선택 모델 분포가 한 모델에
+과도하게 쏠리지 않았을 때 local router가 먼저 요청 요구 능력을 예측한다. 서버는 capability를
+충족하는 후보 중 비용이 낮은 모델을 선택하며, 확신이 낮으면 runtime Judge로 되돌아간다. JSON
+Schema 같은 고정 출력 계약은 runtime Judge 및 local 난이도 학습 feature에 포함하지 않고 후보 capability 검사로만 쓴다.
 
 테스트는 LLM 노드 단위 Cost Optimizer 흐름을 기준으로 한다. 모델 라우팅은 자동 라우팅 토글과 active policy 평가뿐 아니라, operational/replay evidence 출처 분리, Hard Gate, 적합성 분석, candidate 품질 gate, 결정론적 optimizer와 decision trace를 검증한다. 고정 20회는 호환 trigger 테스트일 뿐 adaptive routing 완료 기준이 아니다.
 
@@ -24,7 +26,7 @@ Terra·Haiku·Gemini Flash처럼 가격 역할과 능력 위치가 다른 모델
 기본 처리 모델과 Judge 모델은 분리해 검증한다. 레거시 정책이 두 모델을 같은 값으로 저장했으면
 사용 가능한 provider별 Judge 선호 모델로 전환하고, 명시적으로 다른 Judge를 저장한 정책은 해당
 모델을 유지해야 한다.
-Judge 입력은 요청 JSON 구조와 type, 길이 제한된 세 prompt, output contract를 유지해야 한다.
+Judge 입력은 요청 JSON 구조와 type, 길이 제한된 세 prompt만 사용하며, 고정 output contract는 요청별 난이도 신호로 전달하지 않아야 한다.
 RAG는 문서 원문 없이 검색량·근거 충분성·부분 결과·query rewrite 같은 safe signal만 전달한다.
 후보 profile은 context window를 유지하고, Judge 요구 능력 4축은 0~3 정수일 때만 safe metadata에
 남긴다. 정상 호출과 incomplete retry의 출력 한도는 모두 768 token이다.
@@ -263,7 +265,7 @@ evidence pipeline이 없으면 Workflow-Aware Adaptive Routing 구현 완료로 
 | FR-011-R28 | stale refresh recovery | worker 종료나 task 유실로 policy가 갱신 제한 시간보다 오래 `refreshing` 상태에 남아 있다 | 다음 eligible 운영 run event를 반영한다 | 기존 active policy는 유지하면서 stale 요청 시각을 갱신하고 refresh task를 한 번 다시 예약한다. 제한 시간 안의 정상 갱신은 중복 예약하지 않는다. |
 | FR-011-P01 | preview matched rule | active deployment policy에 short 입력 rule이 있고 실행 주체가 rule model을 사용할 수 있다 | preview API를 호출한다 | runtime과 같은 `ModelRouter.resolve_policy()`가 rule model과 profile/rule/reason safe summary를 반환한다. |
 | FR-011-P05 | preview feature parity | 배포 node에 작업 설명, 변수 템플릿과 JSON output schema가 있고 preview 입력이 있다 | preview API를 호출한다 | runtime과 같은 side-effect 없는 prompt renderer와 `routing_feature_text()` builder가 치환된 system/user/assistant prompt, 독립 `OUTPUT_CONTRACT`의 JSON schema 지시, 현재 입력과 작업 계약을 resolver에 전달한다. 저장된 `{{variable}}` 원문을 feature로 사용하지 않으며 Preview는 실제 retrieval을 수행하거나 RAG runtime signal을 합성하지 않는다. |
-| FR-011-P13 | output contract budget isolation | system prompt가 prompt section 예산보다 길고 JSON schema가 설정되어 있다 | preview 또는 runtime routing feature를 생성한다 | system prompt는 제한되지만 별도 `OUTPUT_CONTRACT`의 JSON mode, schema 존재 여부, 최상위 property/required count와 예산 내 schema 지시는 유지된다. 긴 prompt가 구조화 출력 복잡도 신호를 제거하지 않는다. |
+| FR-011-P13 | fixed output contract isolation | system prompt가 prompt section 예산보다 길고 JSON schema가 설정되어 있다 | runtime routing feature를 생성한다 | system prompt는 제한되지만 고정 `OUTPUT_CONTRACT`와 JSON mode/schema 정보는 feature에 포함되지 않는다. 구조화 출력 계약이 요청별 난이도·모델 선택 신호가 되지 않는다. |
 | FR-011-P11 | invalid schema learning rejection | JSON schema 선언이 유효하지 않아 runtime trace가 `schema_status=not_evaluated`다 | 운영 성적과 학습 label을 확정한다 | 실행은 `schema_failed`로 거절되고 schema 평가 분모 1, 통과 건수 0으로 누적된다. Schema가 없는 `not_required`만 중립 처리한다. |
 | FR-011-P12 | preview prompt render failure | 배포 snapshot의 prompt template이 렌더링 불가능하다 | preview API를 호출한다 | 저장된 template 원문으로 fallback해 모델을 선택하지 않고 `model_routing.prompt_render_failed` safe blocked 상태로 종료한다. Raw template과 input은 응답에 포함하지 않는다. |
 | FR-011-P02 | preview default | active policy에 일치하는 rule이 없다 | preview API를 호출한다 | 규칙 미일치 시 active policy의 default model과 `default_model` source를 반환한다. |
