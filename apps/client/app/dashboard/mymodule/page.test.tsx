@@ -147,10 +147,14 @@ describe('워크플로우 운영 현황 보기 전환', () => {
   it('그리드 카드에서는 운영 지표와 자동 최적화 영역을 숨긴다', async () => {
     render(<MyModulePage />);
 
-    await screen.findByRole('heading', {
+    const cardTitle = await screen.findByRole('heading', {
       level: 3,
       name: '신입사원 온보딩',
     });
+    const card = cardTitle.closest('article');
+
+    expect(card).not.toBeNull();
+    expect(card?.firstElementChild).not.toHaveClass('border-b');
 
     expect(screen.queryByText('월 예상 비용')).not.toBeInTheDocument();
     expect(screen.queryByText('증가 추세')).not.toBeInTheDocument();

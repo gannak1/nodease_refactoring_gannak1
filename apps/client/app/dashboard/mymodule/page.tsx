@@ -1060,7 +1060,7 @@ function ModuleOperationGridCard({
 
   return (
     <article className="flex h-full min-h-64 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
-      <div className="border-b border-slate-100 p-5">
+      <div className="p-5">
         <button
           type="button"
           onClick={onOpen}
