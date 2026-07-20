@@ -31,6 +31,7 @@ from apps.workflow_engine.adapters.knowledge_runtime_candidates import (
     KnowledgeRuntimeCandidateSnapshotError,
     PostgresKnowledgeRuntimeCandidateSnapshotAdapter,
 )
+from apps.workflow_engine.application.provider_execution import ProviderExecutionPlan
 from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
     KnowledgeRuntimeCandidateResolver,
 )
@@ -951,6 +952,25 @@ class _ProviderMustNotRun:
         raise AssertionError("LLM provider must not run without usable evidence")
 
 
+class _ProviderRuntimeMustNotResolve:
+    def __init__(self) -> None:
+        self.preflight_calls = 0
+        self.resolve_calls = 0
+
+    def preflight(self, request):
+        self.preflight_calls += 1
+        assert request.client_override is not None
+        return ProviderExecutionPlan(
+            fixed_model_id=request.configured_model_id,
+            allow_legacy_memory_summary=False,
+            state=object(),
+        )
+
+    def resolve(self, _request):
+        self.resolve_calls += 1
+        raise AssertionError("provider resolution must not run without usable evidence")
+
+
 @pytest.mark.skipif(
     os.getenv(RUN_ENV) != "1",
     reason=f"set {RUN_ENV}=1 to run disposable Knowledge user matrix evidence",
@@ -1026,6 +1046,7 @@ def test_internal_chatbot_user_matrix_reaches_llm_node_with_authorized_candidate
     )
     for user_alias, expected_kb_ids in node_cases:
         provider = _ProviderMustNotRun()
+        provider_runtime = _ProviderRuntimeMustNotResolve()
         node = LLMNode(
             "llm-mba-238",
             LLMNodeData(
@@ -1062,6 +1083,7 @@ def test_internal_chatbot_user_matrix_reaches_llm_node_with_authorized_candidate
             },
         )
         node.bind_knowledge_runtime_candidate_resolver(resolver)
+        node.bind_provider_execution_runtime(provider_runtime)
         node._client_override = provider  # noqa: SLF001
         precompute_calls = []
         fanout_calls = []
@@ -1100,6 +1122,8 @@ def test_internal_chatbot_user_matrix_reaches_llm_node_with_authorized_candidate
         result = node._run({})  # noqa: SLF001
 
         assert provider.calls == 0
+        assert provider_runtime.preflight_calls == 1
+        assert provider_runtime.resolve_calls == 0
         assert result["text"] == RAG_NO_EVIDENCE_MESSAGE
         assert fanout_calls == (
             [tuple(str(kb_id) for kb_id in expected_kb_ids)]
