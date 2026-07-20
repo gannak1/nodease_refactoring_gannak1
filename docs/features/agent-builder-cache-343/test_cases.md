@@ -82,7 +82,7 @@ snapshot, evidence 또는 log file에 기록하지 않는다.
 | --- | --- | --- |
 | ABC343-T041 | natural-language node/edge target ref로 strict plan 생성 | schema 거부; runtime projection/bypass 구현은 호출하지 않음 |
 | ABC343-T042 | 같은 logical plan 입력이지만 서로 다른 `full_safe_message`를 가진 valid `IntentPlanningContext` 두 개 구성 | 전체 safe message가 절단·공통 summary 치환 없이 각각 보존되고 topology, runtime·Knowledge fingerprint와 contract version 보존 |
-| ABC343-T043 | context/scope `json.dumps`, `vars`, `dataclasses.asdict`, `pickle.dumps`, `model_dump`/`dict` 부재와 `repr` 검사 | 네 serialization API는 `TypeError`, dump method 없음, 고정 redacted repr에 identity/request 없음 |
+| ABC343-T043 | context/scope `json.dumps`, `vars`, `dataclasses.asdict`, `pickle.dumps`, `model_dump`/`dict`/`__getstate__` 부재와 `repr` 검사 | 네 serialization API는 `TypeError`, dump/state method 없음, 고정 redacted repr에 identity/request 없음 |
 | ABC343-T044 | `modify_workflow/replace_workflow` plan과 잘못된 request/draft pair | replace는 target 없이 허용, 그 외 잘못된 pair와 replace target은 거부 |
 
 ## 8. Closed Membership and Result Contract Tests

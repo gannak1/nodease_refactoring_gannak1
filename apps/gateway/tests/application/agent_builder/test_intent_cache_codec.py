@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from pydantic import create_model
 
 from apps.gateway.application.agent_builder.intent_cache import (
     CachedIntentPlanV1,
@@ -61,6 +62,44 @@ MINIMAL_GOLDEN = (
     b'"ordered_capabilities":["start_input","answer"],'
     b'"parameter_guidance_refs":[],"request_type":"new_workflow",'
     b'"risk_flags":[],"schema_version":1}'
+)
+
+FORBIDDEN_FIELDS = (
+    "graph",
+    "nodes",
+    "edges",
+    "position",
+    "viewport",
+    "workflow_id",
+    "node_id",
+    "edge_id",
+    "request_id",
+    "session_id",
+    "operation_id",
+    "credential",
+    "credential_id",
+    "credential_config",
+    "secret",
+    "token",
+    "api_key",
+    "password",
+    "redis_url",
+    "parameter_value",
+    "actual_parameter_value",
+    "explicit_parameter_value",
+    "knowledge_base_id",
+    "kb_id",
+    "collection_id",
+    "knowledge_base_name",
+    "candidate_handle",
+    "opaque_handle",
+    "raw_provider_response",
+    "raw_payload",
+    "audit_payload",
+    "intent_summary",
+    "purpose",
+    "reason",
+    "input_guidance",
 )
 
 
@@ -159,20 +198,21 @@ def test_codec_rejects_oversized_unknown_version_and_noncanonical_payload():
 
 @pytest.mark.parametrize(
     "field_name",
-    [
-        "graph",
-        "workflow_id",
-        "credential",
-        "actual_parameter_value",
-        "knowledge_base_id",
-        "raw_provider_response",
-    ],
+    FORBIDDEN_FIELDS,
 )
-def test_codec_decode_forbidden_field_corpus_is_fail_closed_and_redacted(field_name):
+@pytest.mark.parametrize(
+    "location",
+    ["root", "nested"],
+)
+def test_codec_decode_forbidden_field_corpus_is_fail_closed_and_redacted(
+    field_name,
+    location,
+):
     codec = CanonicalIntentPlanCodec()
     unsafe_value = "synthetic-" + ("z" * 32)
     raw = json.loads(MINIMAL_GOLDEN)
-    raw[field_name] = unsafe_value
+    target = raw if location == "root" else raw["contract_versions"]
+    target[field_name] = unsafe_value
     payload = json.dumps(
         raw,
         sort_keys=True,
@@ -188,6 +228,68 @@ def test_codec_decode_forbidden_field_corpus_is_fail_closed_and_redacted(field_n
     rendered = str(error) + repr(error)
     assert unsafe_value not in rendered
     assert field_name not in rendered
+
+
+@pytest.mark.parametrize("field_name", FORBIDDEN_FIELDS)
+def test_codec_encode_forbidden_field_corpus_is_fail_closed(field_name):
+    codec = CanonicalIntentPlanCodec()
+    unsafe_plan_type = create_model(
+        f"UnsafePlan_{field_name}",
+        __base__=CachedIntentPlanV1,
+        **{field_name: (str, ...)},
+    )
+    unsafe_plan = unsafe_plan_type(
+        **_plan("start_input", "answer").model_dump(),
+        **{field_name: "synthetic-forbidden-value"},
+    )
+
+    _assert_error(
+        lambda: codec.encode(unsafe_plan, 8192),
+        "forbidden_cache_content",
+        "cache_content",
+    )
+
+
+@pytest.mark.parametrize(
+    "uuid_value",
+    [
+        "123e4567-e89b-42d3-a456-426614174000",
+        "01890f9a-7bcd-7def-8123-456789abcdef",
+        "00000000-0000-0000-0000-000000000000",
+    ],
+)
+def test_codec_rejects_uuid_values_independent_of_version(uuid_value):
+    codec = CanonicalIntentPlanCodec()
+    raw = json.loads(MINIMAL_GOLDEN)
+    raw["contract_versions"]["normalizer_version"] = uuid_value
+    payload = json.dumps(
+        raw,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    plan = _plan("start_input", "answer").model_copy(
+        update={
+            "contract_versions": IntentPlanContractVersions(
+                normalizer_version=uuid_value,
+                cache_schema_version=1,
+                planner_contract_version="planner-v1",
+                catalog_version=3,
+                canonical_text_registry_version="intent-text-v1",
+                materializer_version="materializer-v1",
+            )
+        }
+    )
+
+    _assert_error(
+        lambda: codec.decode(payload, 4096),
+        "forbidden_cache_content",
+        "cache_content",
+    )
+    _assert_error(
+        lambda: codec.encode(plan, 4096),
+        "forbidden_cache_content",
+        "cache_content",
+    )
 
 
 def test_codec_encode_rejects_constructed_secret_like_content_without_echo():
@@ -206,6 +308,47 @@ def test_codec_encode_rejects_constructed_secret_like_content_without_echo():
     assert "q" * 32 not in repr(error)
 
 
+@pytest.mark.parametrize(
+    "plan",
+    [
+        _plan("start_input", "answer").model_copy(
+            update={"risk_flags": ("benign_unknown",)}
+        ),
+        create_model(
+            "ExtendedIntentPlan",
+            __base__=CachedIntentPlanV1,
+            extension=(str, ...),
+        )(
+            **_plan("start_input", "answer").model_dump(),
+            extension="unexpected-but-safe",
+        ),
+    ],
+)
+def test_codec_encode_rejects_typed_values_that_cannot_round_trip(plan):
+    _assert_error(
+        lambda: CanonicalIntentPlanCodec().encode(plan, 4096),
+        "invalid_plan_schema",
+        "payload_shape",
+    )
+
+
+def test_codec_converts_excessive_json_nesting_to_typed_failure():
+    depth = 500
+    payload = (
+        '{"schema_version":1,"unexpected":'
+        + ("[" * depth)
+        + "0"
+        + ("]" * depth)
+        + "}"
+    ).encode("utf-8")
+
+    _assert_error(
+        lambda: CanonicalIntentPlanCodec().decode(payload, 4096),
+        "invalid_json",
+        "root",
+    )
+
+
 def test_codec_classifies_reference_schema_failure_without_input_echo():
     codec = CanonicalIntentPlanCodec()
     payload = MINIMAL_GOLDEN.replace(
@@ -222,6 +365,23 @@ def test_codec_classifies_reference_schema_failure_without_input_echo():
 
 
 def test_codec_error_rejects_unknown_code_path_pair_and_is_final():
+    allowed_pairs = {
+        ("payload_too_large", "payload_size"),
+        ("invalid_utf8", "root"),
+        ("invalid_json", "root"),
+        ("unsupported_schema_version", "contract_version"),
+        ("forbidden_cache_content", "cache_content"),
+        ("invalid_plan_schema", "reference"),
+        ("invalid_plan_schema", "payload_shape"),
+        ("non_canonical_payload", "root"),
+    }
+    for code, path_category in allowed_pairs:
+        error = IntentPlanCodecError(code, path_category)
+        assert str(error) == f"{code}:{path_category}"
+        assert repr(error) == f"{code}:{path_category}"
+        assert error.__cause__ is None
+        assert error.__context__ is None
+
     with pytest.raises(ValueError):
         IntentPlanCodecError("invalid_utf8", "payload_size")
     with pytest.raises(TypeError):

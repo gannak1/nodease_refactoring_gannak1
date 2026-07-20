@@ -301,13 +301,29 @@ def test_service_routes_existing_structure_sequence_through_boundary_once():
 
 
 def test_direct_service_constructor_defaults_to_disabled_intent_plan_cache():
+    extractor = FakeIntentExtractor(
+        AgentBuilderIntentExtraction(
+            request_type="new_workflow",
+            draft_mode="new_workflow",
+            intent_summary="입력과 응답 workflow",
+            ordered_capabilities=["start_input", "answer"],
+        )
+    )
     service = AgentBuilderService(
         FakeDb(),
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
+        intent_extractor=extractor,
     )
 
     assert isinstance(service.intent_plan_cache, DisabledIntentPlanCacheBoundary)
+    structured = service._structure_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="입력과 응답 workflow를 만들어줘"),
+        workflow=None,
+    )
+    assert len(extractor.calls) == 1
+    assert structured.request_type == "new_workflow"
+    assert structured.required_capabilities == ["start_input", "answer"]
 
 
 def _knowledge_placement():
