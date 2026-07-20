@@ -21,6 +21,7 @@ FORBIDDEN_PREFIXES = (
     "apps.shared.services.credential_encryption",
     "apps.shared.services.llm_client",
     "apps.shared.services.llm_usage_context",
+    "apps.workflow_engine",
 )
 PURE_POLICY_FORBIDDEN_PREFIXES = FORBIDDEN_PREFIXES + (
     "pydantic",
@@ -86,6 +87,20 @@ def test_model_recommendation_policy_remains_framework_independent():
     )
 
 
+def test_knowledge_recommendation_contract_remains_framework_independent():
+    path = APPLICATION_ROOT / "knowledge_recommendation.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+    assert (
+        _find_import_violations(
+            tree,
+            str(path),
+            forbidden_prefixes=PURE_POLICY_FORBIDDEN_PREFIXES,
+        )
+        == []
+    )
+
+
 @pytest.mark.parametrize(
     "statement",
     [
@@ -96,6 +111,7 @@ def test_model_recommendation_policy_remains_framework_independent():
         "import httpx",
         "from apps.shared.services.llm_client import LLMClient",
         "from apps.shared.services.credential_encryption import decrypt_credential",
+        "from apps.workflow_engine.services.retrieval import RetrievalService",
         "from .. import shared_policy",
     ],
 )
