@@ -55,8 +55,8 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
 - ABC-FR-013: Natural-language target만으로 수정 대상을 찾아야 하는 ambiguous modify 요청은 cache하지 않아야 한다.
 - ABC-FR-014: `new_workflow`, `replace_workflow`와 명시적인 selected node/edge 기반 modify만 admission 후보가 될 수 있다.
 - ABC-FR-015: Semantic repair 후 성공한 경우 최종 valid plan만 저장하고 invalid attempt는 저장하지 않아야 한다.
-- ABC-FR-016: Cache admission을 통과한 miss는 final valid extraction을 cache-safe plan으로 projection한 뒤 즉시 current request와 Catalog에서 rehydrate해야 한다.
-- ABC-FR-017: Cache eligible miss와 hit는 summary, step purpose, parameter guidance, ParameterTask와 graph materialization에서 같은 canonical structured request를 사용해야 한다.
+- ABC-FR-016: Cache admission을 통과한 miss는 final valid extraction을 cache-safe plan으로 projection한 뒤 즉시 current request, canonical text registry와 Catalog에서 rehydrate해야 한다. Provider가 반환한 Knowledge topic 또는 parameter guidance를 모두 canonical reference로 표현할 수 없으면 해당 결과를 store-ineligible로 판정하고 저장하지 않은 채 기존 non-cache downstream에서 원본 extraction을 사용해야 한다.
+- ABC-FR-017: Cache eligible miss와 hit는 summary, step purpose, Knowledge recommendation `query_topics`, parameter guidance, ParameterTask와 graph materialization에서 같은 canonical structured request를 사용해야 한다.
 - ABC-FR-018: `AgentBuilderService`는 cache coordinator용 transient planning context DTO를 소유하고,
   전체 safe request, 전체 logical topology, actor/organization scope, planner model/credential relation,
   generation mode, selected target, Knowledge candidate와 contract version fingerprint를 절단 없이 제공해야 한다.
@@ -85,10 +85,21 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
 
 - ABC-FR-030: Cache value는 별도 version을 가진 strict `CachedIntentPlan` schema로 검증해야 한다.
 - ABC-FR-031: Value에는 request/draft type, ordered capability, deterministic logical step reference,
-  typed placement, closed integration action과 closed Knowledge requirement enum만 포함할 수 있다.
+  typed placement, closed integration action, closed Knowledge requirement enum, 순서 있는 canonical
+  `topic_ref`와 `parameter_guidance_refs`의 logical step/Catalog `parameter_key`/closed guidance template ref만 포함할 수 있다.
 - ABC-FR-032: Value에는 graph, 좌표, UUID, operation ID, credential, parameter value, raw prompt,
   raw provider response, 자유 형식 summary/topic/guidance, KB/Collection identity 또는 opaque handle을 포함하지 않아야 한다.
-- ABC-FR-033: 자유 형식 intent summary와 guidance는 저장하지 않고 현재 요청과 Catalog의 안전한 문구로 재구성해야 한다.
+- ABC-FR-033: Canonical topic/guidance registry는 server-owned versioned explicit alias/template table이어야 한다.
+  Ref는 `topic.<slug>.v1`, `guidance.reason.<slug>.v1`, `guidance.input.<slug>.v1` namespace를 사용하되
+  형식이 아니라 `CachedIntentPlan` closed enum membership으로 codec에서 검증해야 한다. Registry manifest는
+  이 enum을 빠짐없이 한 번씩 구현해야 하며 누락·초과 ref, ref/alias/canonical text 중복, alias의 다중 ref
+  매핑, 지원하지 않는 template placeholder와 빈 input-type applicability는 startup/static validation에서
+  거부해야 한다.
+  Projection은 provider의 모든 topic과 `reason`/`input_guidance`가 이 table에 정확히 매핑될 때만 성공하며
+  embedding, fuzzy 또는 의미 유사도 매핑을 사용하지 않아야 한다. Rehydration은 `topic_ref`를 고정
+  `query_topics` 문자열로, guidance ref를 registry의 고정 template과 현재 Catalog의 allowlisted
+  parameter metadata만으로 렌더링해야 한다. 렌더링 문자열이나 자유 형식 template argument는 value에
+  저장하지 않아야 한다.
 - ABC-FR-034: Decode, schema, size, version, key binding 또는 payload MAC validation에 실패한 value는 삭제 가능한 miss로 처리해야 한다.
 - ABC-FR-035: Value에는 request/session ID와 raw audit payload 또는 audit metadata 원문을 포함하지 않아야 한다.
 - ABC-FR-036: Strict codec는 allowlisted schema 밖의 중첩 field와 forbidden key pattern을 decode와 encode 양쪽에서 거부해야 한다.
@@ -98,7 +109,7 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
 - ABC-FR-040: Cache hit 전에 선택된 planner model과 credential의 현재 관계, 상태와 use 권한을 다시 검증해야 한다.
 - ABC-FR-041: Hit는 현재 server-loaded workflow context를 사용해 target을 다시 resolve해야 한다.
 - ABC-FR-042: Node/edge UUID와 GraphMutation operation ID는 현재 요청에서 새로 발급해야 한다.
-- ABC-FR-043: 현재 Catalog template과 schema로 materialize하고 graph validation을 다시 수행해야 한다.
+- ABC-FR-043: 현재 canonical text registry와 Catalog template/schema로 topic/guidance와 graph를 materialize하고 structured request와 graph validation을 다시 수행해야 한다.
 - ABC-FR-044: Cache hit와 miss는 동일한 GraphMutation, CAS save, acknowledgement와 audit 경계를 사용해야 한다.
 - ABC-FR-045: Context 또는 version이 key와 다르면 stale plan을 고쳐 쓰지 않고 miss 처리해야 한다.
 - ABC-FR-046: Warm hit의 canonical rehydration이 실패하면 hit를 폐기하고 기존 Planner 경로를 최대 한 번 수행해야 한다.
@@ -109,7 +120,7 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
 
 ### Knowledge and Protected Resources
 
-- ABC-FR-050: Cache는 Knowledge requirement와 typed timing/placement만 보존할 수 있다.
+- ABC-FR-050: Cache는 Knowledge requirement, 순서 있는 closed `topic_ref`와 typed timing/placement만 보존할 수 있으며 current resolver에는 registry가 렌더링한 `query_topics`만 전달해야 한다.
 - ABC-FR-051: Hit 시 현재 organization, Collection route, KB use 권한, lifecycle과 operational readiness로 후보를 다시 계산해야 한다.
 - ABC-FR-052: Candidate와 selection handle은 현재 resolution에서 새로 발급해야 한다.
 - ABC-FR-053: 현재 후보가 없어지거나 ambiguity가 생기면 cache plan을 강제 적용하지 않고 기존 empty/clarification 경계로 전환해야 한다.
@@ -151,7 +162,7 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
 
 - ABC-FR-080: Enabled flag, TTL, operation timeout, max payload, single-flight lease/wait와 HMAC key version을 환경 설정으로 제공해야 한다.
 - ABC-FR-081: TTL은 bounded range로 검증하고 Redis entry 자체의 expiry로 적용해야 한다.
-- ABC-FR-082: Normalizer, cache schema, Planner contract, Catalog와 materializer version 변경은 namespace miss를 만들어야 한다.
+- ABC-FR-082: Normalizer, cache schema, Planner contract, Catalog, `canonical_text_registry_version`와 materializer version 변경은 namespace miss를 만들어야 한다.
 - ABC-FR-083: Cache migration과 backfill은 수행하지 않아야 한다.
 - ABC-FR-084: Cache를 비활성화하거나 Redis 데이터를 삭제해도 기존 Planner 기능이 정상 동작해야 한다.
 - ABC-FR-085: Adapter는 cache 전용 Redis URL을 지원하고 production 운영 증거가 없는 설정에서는 cache serving을 비활성화해야 한다.

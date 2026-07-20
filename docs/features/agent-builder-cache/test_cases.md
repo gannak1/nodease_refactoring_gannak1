@@ -49,7 +49,7 @@ PostgreSQL integration은 별도 환경에서 순차 실행한다.
 | ABC-T030 | oversized, unknown version 또는 corrupt payload | safe miss, best-effort delete |
 | ABC-T031 | 한 key의 valid envelope를 다른 key로 이동 | payload MAC 실패, safe miss |
 | ABC-T032 | canonical payload 또는 MAC 한 byte 변조 | plan 미사용, safe miss |
-| ABC-T033 | 자유 형식 Knowledge topic/summary를 value에 삽입 | strict codec 거부 |
+| ABC-T033 | manifest member인 `topic_ref`/`parameter_guidance_refs` round-trip 후 unknown ref, 자유 형식 topic/summary/guidance 또는 template argument 삽입 | member ref는 canonical bytes 유지, unknown/자유 형식 field는 strict codec 거부 |
 | ABC-T034 | request/session/draft ID 또는 raw audit payload/metadata 삽입 | encode/decode codec 거부 |
 | ABC-T035 | nested object에 forbidden key 삽입 | strict codec 거부 |
 | ABC-T036 | 구조와 역할이 같은 서로 다른 selected edge/node | 실제 target identity를 HMAC input에만 사용해 다른 key, payload와 diagnostic에는 UUID 없음 |
@@ -61,7 +61,7 @@ PostgreSQL integration은 별도 환경에서 순차 실행한다.
 
 | ID | Case | Expected |
 |---|---|---|
-| ABC-T040 | valid actionable new workflow | store eligible |
+| ABC-T040 | 모든 provider topic/guidance가 exact canonical ref로 표현되는 valid actionable new workflow | store eligible |
 | ABC-T041 | valid replace workflow without explicit value | store eligible |
 | ABC-T042 | selected edge 기반 modify | matching context에서 eligible |
 | ABC-T043 | natural-language target modify | bypass |
@@ -76,7 +76,7 @@ PostgreSQL integration은 별도 환경에서 순차 실행한다.
 | ABC-T052 | 인증/조직/권한 또는 foreground admission 실패 | cache lookup과 provider 호출 모두 0회 |
 | ABC-T053 | lookup 전 request canceled/version stale | hit plan 미사용, 기존 terminal contract |
 | ABC-T054 | warm hit가 반복 rate limit을 초과 | 기존 request admission 정책 적용 |
-| ABC-T055 | cache eligible cold miss | projection 뒤 즉시 canonical rehydration 결과를 downstream에 사용 |
+| ABC-T055 | provider topic/guidance가 모두 exact ref로 표현되는 cold miss와 하나라도 표현되지 않는 cold miss | 전자는 ref projection 뒤 canonical `query_topics`/guidance를 즉시 downstream에 사용하고 put, 후자는 원본 extraction을 non-cache downstream에 사용하고 put 없음 |
 | ABC-T056 | warm hit canonical rehydration failure | hit 폐기, 기존 Planner 최대 1회, 성공 시 canonical result 사용 |
 | ABC-T057 | cold miss canonical rehydration failure | 원본 extraction 미사용, Planner 재호출·cache put·GraphMutation·save 0회, 기존 terminal error |
 | ABC-T058 | cold miss rehydration failure 전 provider/repair attempt | 이미 발생한 usage는 ADR-0055대로 기록, 실패 때문에 추가 attempt 없음 |
@@ -89,8 +89,8 @@ PostgreSQL integration은 별도 환경에서 순차 실행한다.
 | ABC-T061 | hit 뒤 model relation invalid | 다른 model로 fallback하지 않고 차단 |
 | ABC-T062 | selected target 삭제/변경 | hit reject 후 Planner/clarification 경계 |
 | ABC-T063 | 동일 plan을 두 요청에서 materialize | 새 node/edge UUID와 operation ID |
-| ABC-T064 | Catalog validation 실패 | 저장하지 않음 |
-| ABC-T065 | cache hit와 miss의 같은 logical plan | summary, step purpose, guidance, ParameterTask와 topology가 동일하고 current UUID만 다름 |
+| ABC-T064 | registry manifest/version 또는 Catalog applicability validation 실패 | 보정하지 않고 저장하지 않음 |
+| ABC-T065 | canonical topic/guidance ref를 포함한 같은 logical plan의 cache hit와 miss | summary, step purpose, KB recommendation `query_topics`, response guidance, ParameterTask와 topology가 동일하고 current UUID만 다름 |
 | ABC-T066 | cache hit GraphMutation | current base hash/updated_at과 expected result hash 사용 |
 | ABC-T067 | stale CAS | 기존 stale_graph conflict, silent overwrite 없음 |
 | ABC-T068 | acknowledgement response loss | 기존 canonical recovery 사용, cache replay 없음 |
@@ -99,7 +99,7 @@ PostgreSQL integration은 별도 환경에서 순차 실행한다.
 
 | ID | Case | Expected |
 |---|---|---|
-| ABC-T080 | cache value inspection | KB/Collection ID, 이름과 handle 없음 |
+| ABC-T080 | Knowledge cache value inspection | 순서 있는 closed `topic_ref`만 있고 rendered topic, KB/Collection ID, 이름과 handle 없음 |
 | ABC-T081 | hit 시 같은 권한 후보 | 새 opaque handle 발급 |
 | ABC-T082 | hit 전 KB use 권한 제거 | 후보에서 제외, 과거 추천 미복원 |
 | ABC-T083 | Collection lifecycle 변경 | 현재 hierarchy 결과 사용 |

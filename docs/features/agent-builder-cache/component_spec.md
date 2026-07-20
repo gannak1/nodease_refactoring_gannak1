@@ -22,7 +22,8 @@ Status: Draft
 | `IntentPlanCachePort` | cache/lease 의미 계약 | Redis 타입 노출 |
 | `RedisIntentPlanCacheAdapter` | bounded Redis get/put/lease/wait | business validation |
 | `CachedIntentPlanCodec` | strict serialization, max size와 forbidden field validation | Pydantic validation 우회 |
-| `CachedIntentPlanRehydrator` | current context에서 structured request 재구성 | 과거 UUID/handle 재사용 |
+| `CanonicalTopicGuidanceRegistry` | provider text의 exact ref projection과 fixed canonical rendering | fuzzy/semantic mapping, 자유 형식 template argument |
+| `CachedIntentPlanRehydrator` | current context와 canonical registry에서 structured request 재구성 | 과거 UUID/handle 또는 provider text 재사용 |
 | `AgentBuilderIntentCoordinator` | cache, Planner와 rehydration orchestration | GraphMutation/CAS 소유 |
 | Existing Planner Adapter | provider invoke, schema parse, semantic repair와 usage | cache policy 결정 |
 | Existing `AgentBuilderService` | full safe planning context DTO 생성, target resolve, Catalog materialization, validation | DTO 절단, Redis 직접 접근 |
@@ -57,6 +58,7 @@ provider invoke 직전에만 기존 usage reservation을 시작한다. Hit는 re
 | `apps/gateway/application/agent_builder/intent_cache.py` | cache DTO, ports, eligibility/key policy와 no-op 경계 |
 | `apps/gateway/application/agent_builder/intent_cache_coordinator.py` | cache hit/miss/bypass, Planner, rehydration과 usage orchestration |
 | `apps/gateway/application/agent_builder/intent_rehydration.py` | current-context rehydration |
+| `apps/gateway/application/agent_builder/intent_rehydration_registry.py` | versioned topic/guidance manifest, exact projection과 fixed template rendering |
 | `apps/gateway/adapters/cache/agent_builder_intent_plan.py` | Redis adapter와 codec boundary |
 | `apps/gateway/composition/agent_builder.py` | configuration, adapter와 service wiring |
 | `apps/gateway/services/agent_builder_service.py` | transient full safe planning context DTO와 coordinator seam |
@@ -146,7 +148,15 @@ raw configuration은 DTO에 넣지 않는다.
 
 Cache admission을 통과한 miss도 valid extraction을 `CachedIntentPlan`으로 projection한 직후 이 rehydration을
 거친다. 최초 miss와 이후 hit는 같은 canonical structured request를 downstream에 전달한다. LLM extraction의
-자유 형식 summary/guidance를 miss에서만 직접 사용하는 별도 경로를 두지 않는다.
+자유 형식 summary/guidance를 cache-eligible miss에서만 직접 사용하는 별도 경로를 두지 않는다.
+Store-ineligible result는 기존 non-cache 경로이므로 이 제한의 대상이 아니다.
+
+Projection은 provider의 모든 `knowledge_topics`와 `parameter_guidance_hints`를 versioned registry의 closed
+reference로 표현할 수 있을 때만 cache-safe plan을 만든다. Topic은 순서 있는 `topic_ref`, guidance는
+logical step ref, Catalog `parameter_key`와 reason/input-guidance template ref로 투영한다. Exact alias/template
+match만 허용하며 하나라도 매핑되지 않으면 전체 result를 store-ineligible로 분류한다. 이 경우 coordinator는
+원본 extraction을 기존 non-cache downstream에 전달하고 put하지 않는다. 이는 projection 성공 뒤의
+cold-miss rehydration failure와 구분한다.
 
 Warm hit의 rehydration failure는 해당 hit를 버리고 Planner를 최대 한 번 호출하는 miss로 전환한다.
 Cold miss의 rehydration failure는 이미 provider attempt가 발생한 terminal failure다. 원본 extraction을
@@ -166,9 +176,23 @@ Logical edit placement를 현재 selected node/edge와 server-loaded graph에 �
 
 ### Knowledge
 
-Cache에는 closed requirement와 placement만 둔다. Ranking용 safe summary/topic text는 현재 request에서
-transient하게 다시 산출한다. Collection/KB 권한, lifecycle, readiness와 score를 다시 계산하고 새로운
-handle을 발급한다. Cache 당시 추천 순서나 선택을 자동 복원하지 않는다.
+Cache에는 closed requirement, 순서 있는 `topic_ref`와 placement만 둔다. Rehydrator는 현재 registry version으로
+각 ref를 순서 있는 canonical `query_topics` 문자열로 렌더링한다. Collection/KB 권한, lifecycle, readiness와 score를
+다시 계산하고 새로운 handle을 발급한다. Cache 당시 추천 순서나 선택을 자동 복원하지 않는다.
+
+### Parameter Guidance
+
+Cache에는 logical step ref, Catalog `parameter_key`, `reason_template_ref`와
+`input_guidance_template_ref`만 둔다. Rehydrator는 현재 logical step을 bind하고 Catalog parameter 및
+template input-type applicability를 검증한 뒤 registry의 고정 template을 렌더링한다. Template에는 현재
+Catalog의 allowlisted key, safe label과 input type만 주입할 수 있고 자유 형식 argument는 없다. Unknown ref,
+registry version mismatch와 Catalog incompatibility를 fallback text로 보정하지 않는다.
+
+Registry module은 `topic.<slug>.v1`, `guidance.reason.<slug>.v1`, `guidance.input.<slug>.v1` namespace와
+strict manifest를 소유한다. Closed ref enum은 `intent_cache.py`가 소유하고 codec가 unknown ref를 거부한다.
+Startup/static validation은 enum 대비 누락·초과 ref, ref/alias/canonical text 중복, alias의 다중 ref 매핑,
+지원하지 않는 placeholder와 빈 input-type applicability를 거부한다. Manifest 또는 enum 변경은
+`canonical_text_registry_version`과 regression fixture를 함께 변경한다.
 
 ### Graph
 

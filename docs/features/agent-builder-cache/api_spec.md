@@ -24,7 +24,7 @@ port로만 제공한다.
 | `workflow_context` | 허용된 node type, safe label/role, 전체 logical topology와 selection projection |
 | `selected_target_scope` | 명시적 selected node/edge의 type과 실제 identity. Non-serializable이며 HMAC key 생성에만 사용하고 즉시 폐기 |
 | `knowledge_context_fingerprint` | 현재 권한·lifecycle을 통과한 후보의 canonical digest. 후보 원문은 포함하지 않음 |
-| `contract_versions` | normalizer/cache/planner/catalog/materializer version |
+| `contract_versions` | normalizer/cache/planner/catalog/`canonical_text_registry_version`/materializer version |
 
 Raw graph, credential config, parameter value와 hidden Knowledge metadata를 coordinator input으로
 전달하지 않는다. `full_safe_message`와 workflow topology projection은 중간 절단을 허용하지 않는다.
@@ -106,7 +106,7 @@ HMAC input은 다음 필드만 포함한다.
 | `workflow_context_fingerprint` | layout과 raw config를 제외한 safe structural digest |
 | `selection_fingerprint` | selected node/edge type과 실제 target identity를 ephemeral HMAC input으로 만든 digest |
 | `knowledge_context_fingerprint` | 현재 표시 가능한 후보 집합과 policy revision digest |
-| `versions` | normalizer/cache/planner/catalog/materializer/HMAC key version |
+| `versions` | normalizer/cache/planner/catalog/`canonical_text_registry_version`/materializer/HMAC key version |
 
 Timestamp, request/session ID와 workflow ID는 key material에 넣지 않는다. Workflow identity 대신
 현재 의미 구조 fingerprint를 사용한다.
@@ -127,7 +127,8 @@ Key HMAC은 `agent-builder-cache:key:<version>` domain을 사용한다. 같은 k
 | `logical_steps` | request-local UUID가 아닌 deterministic logical reference |
 | `edit_placement` | selected target 기반 typed placement. 실제 node/edge ID 없음 |
 | `integration_actions` | allowlisted provider/resource/action enum |
-| `knowledge_requirements` | `required`, evidence kind 등 closed enum과 logical target ref. 자유 형식 topic 없음 |
+| `parameter_guidance_refs` | logical step ref, Catalog `parameter_key`, closed `reason_template_ref`와 `input_guidance_template_ref`의 순서 있는 배열 |
+| `knowledge_requirements` | `required`, evidence kind, logical target ref와 순서 있는 closed `topic_refs`. 자유 형식 topic 없음 |
 | `knowledge_placements` | before/after graph typed placement와 logical refs |
 | `risk_flags` | allowlisted enum only |
 | `contract_versions` | 저장 당시 contract versions |
@@ -140,7 +141,7 @@ Key HMAC은 `agent-builder-cache:key:<version>` domain을 사용한다. 같은 k
 - candidate/collection/KB handle 또는 ID
 - credential ID/config
 - parameter value
-- raw prompt/summary/topic/guidance/provider payload
+- raw prompt/summary, rendered topic/guidance, 자유 형식 template argument 또는 provider payload
 - raw audit payload 또는 audit metadata 원문
 - URL, path와 secret-like key
 
@@ -159,6 +160,52 @@ Redis value는 `CachedIntentPlan`만 직렬화하지 않고 다음 envelope로 �
 다른 key에서 옮긴 valid envelope, payload 한 byte 변조와 이전 key version envelope는 invalid miss로
 처리하고 best-effort로 삭제한다. Key HMAC과 value HMAC은 같은 secret을 사용할 수 있지만 반드시
 domain separation을 적용한다.
+
+## Canonical Topic and Guidance References
+
+`CachedIntentPlan`은 topic/guidance 문자열 대신 다음 safe reference를 사용한다.
+
+| Reference | Fields | Rehydrated target |
+|---|---|---|
+| `CanonicalKnowledgeTopicRef` | closed `topic_ref` | registry의 고정 canonical string 한 개 |
+| `CachedParameterGuidanceRef` | `logical_step_ref`, Catalog `parameter_key`, closed `reason_template_ref`, closed `input_guidance_template_ref` | `AgentBuilderParameterGuidanceHint` |
+
+Reference namespace는 `topic.<slug>.v1`, `guidance.reason.<slug>.v1`,
+`guidance.input.<slug>.v1` 형식이다. 형식 일치만으로 ref를 허용하지 않고 `intent_cache.py`의
+`CachedIntentPlan` closed enum membership을 codec에서 검사한다. Registry manifest는 이 enum 집합을
+빠짐없이 한 번씩 구현해야 한다. `contract_versions.canonical_text_registry_version`은 manifest의
+`registry_version`과 같아야 한다.
+
+Canonical text registry는 server-owned 정적 table이며 Planner prompt, provider 응답 또는 UI 문구에서
+동적으로 만들지 않는다. 각 `topic_ref`는 고정 `query_topic` 문자열 하나를, 각 guidance template ref는
+고정 template과 허용 가능한 Catalog `input_type` 집합을 소유한다. Template은 현재 Catalog의
+`parameter_key`, safe label과 input type만 사용할 수 있으며 자유 형식 argument를 받지 않는다.
+Registry manifest는 다음 strict field만 가진다.
+
+| Entry | Required fields |
+|---|---|
+| manifest | `registry_version`, ordered `topics`, ordered `reason_templates`, ordered `input_guidance_templates` |
+| topic | `ref`, `canonical_text`, ordered explicit `aliases` |
+| guidance template | `ref`, `canonical_template`, ordered explicit `aliases`, ordered `allowed_input_types` |
+
+Closed enum 대비 누락·초과 ref, alias와 canonical text 중복, 지원하지 않는 placeholder, alias의 다중 ref
+매핑과 빈 `allowed_input_types`는 startup/static validation 실패다. Registry manifest 또는 enum 변경은
+`canonical_text_registry_version`을 올리고 namespace miss와 registry regression fixture 갱신을 요구한다.
+
+Projection은 NFKC, 공백과 case 정규화 뒤 명시적으로 등록된 exact alias만 canonical ref로 바꾼다.
+Embedding, fuzzy match 또는 의미 유사도는 사용하지 않는다. Provider가 반환한 topic 순서는 유지하고
+동일 ref는 첫 occurrence만 남긴다. Guidance는 `(logical_step_ref, parameter_key)` 순서를 유지한다.
+다음 중 하나이면 final extraction 전체가 store-ineligible이다.
+
+- `knowledge_required=true`인데 provider topic이 비어 있거나 모두 순서 있는 `topic_refs`로 표현되지 않음
+- guidance의 `reason` 또는 `input_guidance` 중 하나라도 등록된 template ref로 표현할 수 없음
+- guidance target이 logical step 또는 현재 Catalog parameter와 정확히 일치하지 않음
+
+Store-ineligible은 cold-miss rehydration failure가 아니다. Planner가 이미 만든 원본 extraction을 기존
+non-cache downstream에 전달하고 cache put을 수행하지 않는다. Projection이 성공한 경우에는 cold miss와
+warm hit 모두 registry version과 현재 Catalog applicability를 검증한 뒤 같은 canonical 문자열을 렌더링한다.
+Unknown ref, registry version mismatch 또는 current Catalog incompatibility는 valid plan으로 보정하지 않는다.
+Registry version 변경은 namespace miss를 만들며 old entry를 migrate하지 않는다.
 
 ## Cache Port
 
@@ -195,8 +242,10 @@ lease TTL이 복구 경계다. 완료 신호는 cache value나 negative result c
 8. Valid hit를 현재 context에 rehydrate한다.
 9. Warm-hit rehydration이 실패하면 hit를 폐기하고 miss로 전환해 Planner를 최대 한 번 호출한다.
 10. Miss는 single-flight admission 뒤 기존 Planner를 호출한다. 이때만 usage reservation을 시작한다.
-11. Planner 결과의 schema/semantic validation 뒤 cache eligibility를 다시 판정한다.
-12. Eligible final plan을 `CachedIntentPlan`으로 projection하고 current request와 Catalog에서 즉시 rehydrate한다.
+11. Planner 결과의 schema/semantic validation 뒤 모든 Knowledge topic과 parameter guidance의 canonical
+    reference projection을 포함해 cache eligibility를 다시 판정한다. Reference로 완전히 표현할 수 없으면
+    원본 extraction을 기존 non-cache downstream으로 전달하고 put하지 않는다.
+12. Eligible final plan을 `CachedIntentPlan`으로 projection하고 current request, canonical text registry와 Catalog에서 즉시 rehydrate한다.
 13. Cold-miss rehydration이 실패하면 원본 LLM extraction을 사용하거나 Planner를 다시 호출하지 않는다.
     이미 발생한 provider/repair usage를 기록하고 cache put, GraphMutation과 save 없이 기존 terminal error로 닫는다.
 14. 성공한 miss downstream에는 원본 LLM extraction이 아니라 rehydrate된 canonical structured request를 전달한다.
@@ -205,17 +254,25 @@ lease TTL이 복구 경계다. 완료 신호는 cache value나 negative result c
 Cache hit에서도 기존 structured request validation을 다시 실행한다. Cache가 반환한 plan을
 validation 없이 GraphMutation builder에 전달하지 않는다. Cache hit는 API/request rate limit,
 session의 단일 foreground request와 stale/canceled 판단을 생략하지 않는다.
-Cache eligible miss와 hit는 summary, logical step purpose, parameter guidance, ParameterTask와 graph
-materialization에 같은 canonical structured request를 사용한다.
+Cache eligible miss와 hit는 summary, logical step purpose, Knowledge recommendation `query_topics`,
+parameter guidance, ParameterTask와 graph materialization에 같은 canonical structured request를 사용한다.
 
 ## Knowledge Rehydration
 
 - Cache value의 closed Knowledge requirement는 current candidate resolver의 입력일 뿐 선택 결과가 아니다.
-- Ranking에 필요한 safe summary/topic text는 현재 `safe_message`에서 transient하게 다시 만들며 cache value에 저장하지 않는다.
+- Ranking용 `query_topics`는 순서 있는 `topic_refs`를 현재 registry version의 고정 canonical string으로 렌더링하며 cache value에는 문자열을 저장하지 않는다.
 - 현재 Collection/KB 권한과 lifecycle을 조회해 hierarchy와 score를 새로 계산한다.
 - Suggested handle이 필요하면 현재 resolution에서 새로 발급한다.
 - Cache 당시 candidate가 없어졌거나 순위가 바뀌어도 stale handle을 복원하지 않는다.
 - Knowledge 선택 뒤 Planner를 다시 호출하지 않는 기존 계약은 유지한다.
+
+## Parameter Guidance Rehydration
+
+- `logical_step_ref`를 현재 structured request의 step ID로 bind한다.
+- 현재 Catalog에서 `parameter_key`와 template의 허용 `input_type`을 다시 검증한다.
+- `reason_template_ref`와 `input_guidance_template_ref`를 registry의 고정 template으로 렌더링한다.
+- Cache value, diagnostic과 audit에는 렌더링된 reason/input guidance를 남기지 않는다.
+- Unknown ref, 사라진 parameter 또는 template applicability mismatch를 provider 자유 텍스트나 fallback 문구로 보정하지 않는다.
 
 ## Target Rehydration
 

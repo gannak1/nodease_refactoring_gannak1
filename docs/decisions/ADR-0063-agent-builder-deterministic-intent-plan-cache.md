@@ -47,12 +47,20 @@ CAS 기준까지 과거 요청에서 재생하는 더 큰 위험이 생긴다.
 3. 정규식이나 tokenizer는 LLM 결과를 수정하거나 모호한 표현을 capability로
    강제 변환하지 않는다. 의미 유사도와 Graph Template RAG는 별도 기능이다.
 4. Cache value는 자유 텍스트와 요청별 식별자를 제거한 versioned
-   `CachedIntentPlan`이다. Closed enum, 순서가 있는 capability와 deterministic
-   logical reference만 허용한다. 완성 graph, 좌표, workflow/node/edge UUID,
-   GraphMutation operation, request/session ID, credential, 실제 parameter 값,
-   Knowledge topic 문자열, raw provider 응답과 raw audit payload는 저장하지 않는다.
-   Knowledge ranking에 필요한 safe text는 현재 요청에서 매번 다시 산출하고 cache에
-   남기지 않는다.
+   `CachedIntentPlan`이다. Closed enum, 순서가 있는 capability, deterministic logical
+   reference와 versioned canonical text registry의 reference만 허용한다. Knowledge requirement는
+   순서 있는 `topic_ref`를, `parameter_guidance_refs`는 logical step, Catalog `parameter_key`,
+   `reason_template_ref`와 `input_guidance_template_ref`를 저장할 수 있다. Registry가 렌더링한
+   topic, reason과 input guidance 문자열 자체는 저장하지 않는다. 완성 graph, 좌표,
+   workflow/node/edge UUID, GraphMutation operation, request/session ID, credential, 실제 parameter 값,
+   raw provider 응답과 raw audit payload도 저장하지 않는다.
+   Projection은 provider가 반환한 모든 Knowledge topic과 guidance를 versioned explicit alias/template
+   table로 정확히 표현할 수 있을 때만 성공한다. Embedding, fuzzy 또는 의미 유사도 매핑은 사용하지 않는다.
+   하나라도 표현할 수 없으면 해당 Planner 결과는 store-ineligible이며 원본 extraction을 기존 non-cache
+   downstream으로 전달한다. 성공한 projection은 최초 miss와 hit 모두 현재 registry와 Catalog에서 같은
+   canonical topic/guidance 문자열로 렌더링한다. Registry version은 key namespace와 plan contract version에
+   `canonical_text_registry_version`으로 포함하며 ref는 versioned namespace와 current manifest exact
+   membership으로 검증한다.
 5. Cache key는 plaintext 요청이 아니라 canonical key material의 HMAC-SHA256이다.
    Key material에는 organization, user, 선택한 planner model, generation mode,
    safe workflow context, selected target, 현재 Knowledge 후보 집합과 contract version을
@@ -67,7 +75,7 @@ CAS 기준까지 과거 요청에서 재생하는 더 큰 위험이 생긴다.
 6. Cache hit 전에도 선택한 model/credential의 현재 사용 가능성과 사용자 권한을
    검증한다. Hit 뒤에는 현재 server-loaded graph에서 target을 다시 resolve하고
    Catalog로 새 node/edge UUID와 operation ID를 발급한다.
-7. Knowledge requirement와 typed placement만 cache할 수 있다. KB/Collection UUID,
+7. Knowledge requirement, closed `topic_ref`와 typed placement만 cache할 수 있다. KB/Collection UUID,
    이름과 request-scoped opaque handle은 cache하지 않는다. 현재 권한과 lifecycle로
    후보를 다시 계산하고 handle을 새로 발급한다.
 8. Schema와 semantic validation을 통과한 actionable plan만 저장한다. Clarification,
@@ -75,9 +83,11 @@ CAS 기준까지 과거 요청에서 재생하는 더 큰 위험이 생긴다.
    explicit parameter value가 있는 요청은 저장하지 않는다. Repair가 성공했다면 최종
    valid plan만 저장한다.
    Cache admission을 통과한 miss도 final valid extraction을 `CachedIntentPlan`으로
-   projection한 뒤 즉시 현재 request와 Catalog에서 rehydrate한 canonical structured
+   projection한 뒤 즉시 현재 request, canonical text registry와 Catalog에서 rehydrate한 canonical structured
    request를 downstream에 전달한다. 따라서 최초 miss와 이후 hit는 summary, step purpose,
-   parameter guidance와 task를 포함해 같은 canonical materialization 입력을 사용한다.
+   Knowledge recommendation의 `query_topics`, parameter guidance와 task를 포함해 같은 canonical
+   materialization 입력을 사용한다. Provider topic/guidance가 canonical reference로 완전히 projection되지
+   않는 경우는 rehydration failure가 아니라 store-ineligible non-cache 결과다.
    Warm hit rehydration이 실패하면 해당 hit를 버리고 정상 Planner 경로를 한 번 수행한다.
    반면 cold miss에서 provider 호출과 projection을 마친 뒤 canonical rehydration이 실패하면
    원본 LLM extraction을 우회 사용하거나 Planner를 다시 호출하지 않는다. 이 경우 cache put,
@@ -110,7 +120,7 @@ CAS 기준까지 과거 요청에서 재생하는 더 큰 위험이 생긴다.
     원자적으로 수행하며 follower는 자신이 관찰한 generation의 신호만 사용한다. Owner의 비정상 종료로
     완료 신호를 남길 수 없는 경우에만 lease TTL과 bounded wait를 복구 경계로 사용한다.
     DB transaction이나 workflow row lock을 잡은 채 Redis 또는 provider를 기다리지 않는다.
-12. Normalizer, cache schema, Planner contract, Catalog, materializer와 HMAC key version을
+12. Normalizer, cache schema, Planner contract, Catalog, canonical text registry, materializer와 HMAC key version을
     key namespace에 포함한다. Version 변경은 기존 entry를 읽지 않는 방식으로
     무효화하며 migration이나 cache backfill을 하지 않는다.
 13. 기존 Agent Builder message response와 direct-edit API 계약은 변경하지 않는다.
@@ -164,6 +174,8 @@ CAS 기준까지 과거 요청에서 재생하는 더 큰 위험이 생긴다.
 - 반복되는 명시적 요청은 provider 호출 없이도 같은 typed planning 계약으로 진입할 수 있다.
 - 모든 hit가 현재 권한과 graph를 다시 검증하므로 cache lookup 뒤에도 일정한 처리 비용은 남는다.
 - 사용자별 scope와 보수적인 eligibility 때문에 초기 hit ratio는 제한될 수 있다.
+- Provider topic/guidance가 canonical registry로 완전히 표현되지 않으면 기능 결과는 기존 non-cache 경로로
+  유지되지만 해당 요청의 cache hit ratio는 낮아진다.
 - Redis 데이터가 전부 사라져도 기능은 기존 Planner 경로로 정상 동작한다.
 - Strict schema뿐 아니라 authenticated envelope가 key/value 교체와 변조를 차단한다.
 - Production Redis 분리와 용량 검증은 후속 운영 이슈이며, 완료 전에는 cache를 비활성화한다.
@@ -176,6 +188,9 @@ CAS 기준까지 과거 요청에서 재생하는 더 큰 위험이 생긴다.
 
 - **완성 graph cache**: stale UUID, protected reference와 operation replay 위험 때문에 거부한다.
 - **Raw prompt를 Redis key/value에 저장**: secret과 내부 정보 노출 위험 때문에 거부한다.
+- **Sanitized topic/guidance 문자열을 value에 저장**: secret/PII 부재와 canonical parity를 증명할 수 없어 거부한다.
+- **Provider topic/guidance를 버리고 현재 request/Catalog에서만 추정**: provider가 만든 KB ranking·guidance
+  의미를 동일하게 복원할 수 없어 거부한다.
 - **Embedding 유사도만으로 direct hit 처리**: 의미 충돌을 cache correctness 문제로 숨기므로 거부한다.
 - **Redis fail-closed**: 비핵심 최적화 장애가 핵심 생성 흐름을 차단하므로 거부한다.
 - **사용자 간 cache 공유**: 권한 fingerprint가 완전히 검증되기 전에는 정보 경계가 넓어져 거부한다.
