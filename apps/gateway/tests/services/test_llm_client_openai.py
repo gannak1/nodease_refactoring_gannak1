@@ -362,6 +362,45 @@ def test_openai_embed_sync_request_error_is_wrapped(monkeypatch):
         client.embed_sync("hello")
 
 
+def test_openai_embed_sync_uses_caller_timeout(monkeypatch):
+    requested = {}
+
+    class MockResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"data": [{"embedding": [0.1, 0.2, 0.3]}]}
+
+    class MockClient:
+        def __init__(self, **kwargs):
+            requested.update(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, *_args, **_kwargs):
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.Client",
+        MockClient,
+    )
+    client = OpenAIClient(
+        model_id="text-embedding-3-small",
+        credentials={
+            "apiKey": "redacted-test-value",
+            "baseUrl": "https://api.openai.com/v1",
+        },
+    )
+
+    assert client.embed_sync("hello", timeout_seconds=3.5) == [0.1, 0.2, 0.3]
+    assert requested == {"timeout": 3.5}
+
+
 def test_openai_embed_sync_http_error_includes_status(monkeypatch):
     """동기 임베딩 HTTP 오류는 status를 포함해 호출 실패로 보고한다."""
 

@@ -198,7 +198,12 @@ class BaseLLMClient(ABC):
         """
         return [await self.embed(t) for t in texts]
 
-    def embed_sync(self, text: str) -> List[float]:
+    def embed_sync(
+        self,
+        text: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> List[float]:
         """
         단일 텍스트에 대한 임베딩 벡터를 반환합니다 (동기).
 
@@ -211,4 +216,17 @@ class BaseLLMClient(ABC):
         Returns:
             float 리스트 형태의 벡터
         """
-        return self._run_coroutine_sync(lambda: self.embed(text))
+        if timeout_seconds is None:
+            return self._run_coroutine_sync(lambda: self.embed(text))
+        if timeout_seconds <= 0:
+            raise TimeoutError("embedding deadline exceeded")
+
+        async def bounded_embed() -> List[float]:
+            import asyncio
+
+            return await asyncio.wait_for(
+                self.embed(text),
+                timeout=float(timeout_seconds),
+            )
+
+        return self._run_coroutine_sync(bounded_embed)

@@ -916,7 +916,12 @@ class OpenAIClient(BaseLLMClient):
         except ValueError as exc:
             raise ValueError(f"{self.provider_name} 임베딩 응답 파싱 실패") from exc
 
-    def embed_sync(self, text: str) -> List[float]:
+    def embed_sync(
+        self,
+        text: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> List[float]:
         """
         Embeddings API 호출 (동기).
 
@@ -926,9 +931,12 @@ class OpenAIClient(BaseLLMClient):
         직접 동기 httpx.Client를 사용한다.
         """
         payload = {"model": self.model_id, "input": text}
+        request_timeout = 30.0 if timeout_seconds is None else float(timeout_seconds)
+        if request_timeout <= 0:
+            raise TimeoutError("embedding deadline exceeded")
 
         try:
-            with httpx.Client(timeout=30) as client:
+            with httpx.Client(timeout=request_timeout) as client:
                 resp = client.post(
                     self.embedding_url,
                     headers=self._build_headers(),
