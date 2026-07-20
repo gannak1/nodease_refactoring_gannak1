@@ -38,6 +38,8 @@ Public token, transcript, turn status와 lifecycle response는 `Cache-Control: n
 
 Public conversation page는 `Referrer-Policy: no-referrer`와 strict Content Security Policy를 사용한다. Third-party script와 frame origin은 deployment embed 정책의 reviewed allowlist만 허용하며 inline/raw token telemetry를 금지한다.
 
+Canonical Public Conversation endpoint와 framework가 허용하는 trailing-slash redirect alias는 모두 같은 outer CORS boundary를 사용한다. Alias의 preflight나 redirect response도 전역 credentialed CORS header를 상속하지 않는다.
+
 ## HTTP Surface
 
 ### Public Conversation
@@ -91,6 +93,12 @@ Authenticated endpoint는 client-supplied subject, organization, workflow와 int
 Completed lifecycle replay는 최초 성공 시점의 lifecycle/revision, contract/expiry와 reset의 previous lifecycle/revision만 content-free typed snapshot으로 저장해 그대로 반환한다. 이후 Session 또는 Purge Job 상태를 다시 읽어 response/ETag를 재구성하지 않으며 raw response나 capability는 snapshot에 저장하지 않는다. Migration 전 completed record처럼 snapshot이 없으면 현재 mutable 상태로 추정하지 않고 adapter unavailable로 fail-closed한다.
 
 Public reset/delete의 `memory.secret_replay_expired`는 stored idempotency scope/fingerprint, request grant verifier relation과 high-entropy key가 모두 정확히 일치할 때만 반환한다. 하나라도 불일치하면 revoked/invalid grant와 동일한 resource-hidden 404로 닫아 session 존재나 token lifecycle을 추론하지 못하게 한다.
+
+### MBA-317 Operational Enforcement
+
+Same-key/same-fingerprint retry는 logical request quota를 다시 소비하지 않지만 finite per-request retry bucket을 적용한다. Fixed-window counter는 정확한 window boundary에서 만료하며 Gateway process는 같은 Redis connection 설정에 process-scoped client/pool을 재사용한다.
+
+Retention expiry에 도달한 idempotency row는 cleanup 완료 여부와 무관하게 lookup과 authorized replay에서 제외한다. 새 reservation은 동일 scope/key의 만료 claim을 row lock 아래 삭제·재삽입한다. Periodic cleanup은 parent/child별 bounded quota를 한 transaction에 유지하고 어느 quota든 포화되면 같은 cutoff의 다음 batch를 finite per-run budget까지 반복한다.
 
 ## Session Models
 

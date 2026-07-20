@@ -229,8 +229,7 @@ class SqlAlchemyConversationMemoryRepository:
         statement = (
             select(ConversationIdempotencyRecord)
             .where(
-                ConversationIdempotencyRecord.organization_id
-                == record.organization_id,
+                ConversationIdempotencyRecord.organization_id == record.organization_id,
                 ConversationIdempotencyRecord.operation == record.operation,
                 ConversationIdempotencyRecord.scope_digest == record.scope_digest,
                 ConversationIdempotencyRecord.idempotency_key_hash
@@ -242,6 +241,29 @@ class SqlAlchemyConversationMemoryRepository:
         existing = _execute(self._session, statement).scalar_one_or_none()
         if existing is None:
             raise MemoryAdapterUnavailableError()
+        if existing.retention_expires_at <= record.created_at:
+            delete_result = _execute(
+                self._session,
+                delete(ConversationIdempotencyRecord)
+                .where(
+                    ConversationIdempotencyRecord.id == existing.id,
+                    ConversationIdempotencyRecord.retention_expires_at
+                    <= record.created_at,
+                )
+                .execution_options(synchronize_session=False),
+            )
+            if delete_result.rowcount != 1:
+                raise MemoryAdapterUnavailableError()
+            replacement_id = _execute(
+                self._session,
+                insert_statement,
+            ).scalar_one_or_none()
+            if replacement_id != record.id:
+                raise MemoryAdapterUnavailableError()
+            self._idempotency_baselines[record.id] = _IdempotencyBaseline(
+                status=record.status.value
+            )
+            return IdempotencyReservation(record=record, created=True)
         domain = _idempotency_domain(existing)
         self._idempotency_baselines[domain.id] = _IdempotencyBaseline(
             status=existing.status
@@ -255,6 +277,7 @@ class SqlAlchemyConversationMemoryRepository:
         operation: str,
         scope_digest: str,
         idempotency_key_hash: str,
+        now: datetime,
     ) -> ConversationIdempotency | None:
         statement = (
             select(ConversationIdempotencyRecord)
@@ -264,6 +287,7 @@ class SqlAlchemyConversationMemoryRepository:
                 ConversationIdempotencyRecord.scope_digest == scope_digest,
                 ConversationIdempotencyRecord.idempotency_key_hash
                 == idempotency_key_hash,
+                ConversationIdempotencyRecord.retention_expires_at > now,
             )
             .execution_options(populate_existing=True)
         )
@@ -278,6 +302,7 @@ class SqlAlchemyConversationMemoryRepository:
         operation: str,
         idempotency_key_hash: str,
         verifier_candidates: tuple[tuple[str, str], ...],
+        now: datetime,
     ) -> ConversationIdempotency | None:
         if not verifier_candidates:
             return None
@@ -293,6 +318,7 @@ class SqlAlchemyConversationMemoryRepository:
                     ConversationIdempotencyRecord.authorization_verifier_key_version,
                     ConversationIdempotencyRecord.authorization_verifier_hash,
                 ).in_(verifier_candidates),
+                ConversationIdempotencyRecord.retention_expires_at > now,
             )
             .execution_options(populate_existing=True)
         )
@@ -1110,7 +1136,9 @@ def _purge_domain(record: ConversationPurgeJobRecord) -> ConversationPurgeJob:
         deployment_id=record.deployment_id,
         deployment_version=record.deployment_version,
         audience_kind=(
-            AudienceKind(record.audience_kind) if record.audience_kind is not None else None
+            AudienceKind(record.audience_kind)
+            if record.audience_kind is not None
+            else None
         ),
         receipt_verifier_hash=record.receipt_verifier_hash,
         receipt_verifier_key_version=record.receipt_verifier_key_version,
@@ -1202,9 +1230,7 @@ def _idempotency_domain(
         idempotency_key_hash=record.idempotency_key_hash,
         request_fingerprint=record.request_fingerprint,
         authorization_app_id=record.authorization_app_id,
-        authorization_verifier_key_version=(
-            record.authorization_verifier_key_version
-        ),
+        authorization_verifier_key_version=(record.authorization_verifier_key_version),
         authorization_verifier_hash=record.authorization_verifier_hash,
         status=IdempotencyStatus(record.status),
         resource_type=record.resource_type,

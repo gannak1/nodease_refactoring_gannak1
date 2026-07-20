@@ -159,8 +159,73 @@ def test_idempotency_reservation_uses_database_conflict_gate_before_secret_creat
     assert reservation.created is True
     statement = db.execute.call_args.args[0]
     compiled = str(statement.compile(dialect=postgresql.dialect()))
-    assert "ON CONFLICT ON CONSTRAINT uq_conv_idempotency_scope_key DO NOTHING" in compiled
+    assert (
+        "ON CONFLICT ON CONSTRAINT uq_conv_idempotency_scope_key DO NOTHING" in compiled
+    )
     assert "RETURNING conversation_idempotency_records.id" in compiled
+
+
+def test_expired_idempotency_claim_is_deleted_and_replaced_under_the_scope_lock():
+    record = ConversationIdempotency.pending(
+        record_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        operation="conversation.create",
+        scope_digest="a" * 64,
+        idempotency_key_hash="b" * 64,
+        request_fingerprint="c" * 64,
+        retention_expires_at=_now() + timedelta(days=1),
+        now=_now(),
+    )
+    expired = ConversationIdempotencyRecord(
+        id=uuid.uuid4(),
+        organization_id=record.organization_id,
+        operation=record.operation,
+        scope_digest=record.scope_digest,
+        idempotency_key_hash=record.idempotency_key_hash,
+        request_fingerprint="d" * 64,
+        status="pending",
+        retention_expires_at=_now() - timedelta(seconds=1),
+        created_at=_now() - timedelta(days=1),
+        updated_at=_now() - timedelta(days=1),
+    )
+    delete_result = MagicMock()
+    delete_result.rowcount = 1
+    db = MagicMock(spec=Session)
+    db.execute.side_effect = [
+        _query_result(None),
+        _query_result(expired),
+        delete_result,
+        _query_result(record.id),
+    ]
+    repository = SqlAlchemyConversationMemoryRepository(db)
+
+    reservation = repository.reserve_idempotency(record)
+
+    assert reservation.created is True
+    assert reservation.record is record
+    assert len(db.execute.call_args_list) == 4
+    delete_statement = db.execute.call_args_list[2].args[0]
+    delete_sql = str(delete_statement.compile(dialect=postgresql.dialect()))
+    assert "DELETE FROM conversation_idempotency_records" in delete_sql
+    assert "retention_expires_at" in delete_sql
+
+
+def test_idempotency_lookup_excludes_expired_records_at_the_query_boundary():
+    db = MagicMock(spec=Session)
+    db.execute.return_value = _query_result(None)
+    repository = SqlAlchemyConversationMemoryRepository(db)
+
+    repository.find_idempotency(
+        organization_id=uuid.uuid4(),
+        operation="conversation.create",
+        scope_digest="a" * 64,
+        idempotency_key_hash="b" * 64,
+        now=_now(),
+    )
+
+    compiled = db.execute.call_args.args[0].compile(dialect=postgresql.dialect())
+    assert "retention_expires_at" in str(compiled)
+    assert _now() in compiled.params.values()
 
 
 def test_authorized_idempotency_lookup_is_bound_to_app_key_and_verifier():
@@ -194,18 +259,19 @@ def test_authorized_idempotency_lookup_is_bound_to_app_key_and_verifier():
         operation="conversation.delete",
         idempotency_key_hash="b" * 64,
         verifier_candidates=candidates,
+        now=_now(),
     )
 
     assert loaded is not None
     assert loaded.authorization_app_id == app_id
     assert loaded.authorization_verifier_hash == "d" * 64
-    compiled = db.execute.call_args.args[0].compile(
-        dialect=postgresql.dialect()
-    )
+    compiled = db.execute.call_args.args[0].compile(dialect=postgresql.dialect())
     sql = str(compiled)
     assert "authorization_app_id" in sql
     assert "authorization_verifier_key_version" in sql
     assert "authorization_verifier_hash" in sql
+    assert "retention_expires_at" in sql
+    assert _now() in compiled.params.values()
     assert list(candidates) in compiled.params.values()
 
 

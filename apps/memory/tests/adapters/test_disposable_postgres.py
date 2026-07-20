@@ -42,9 +42,11 @@ from apps.memory.domain.conversation import (
     ProtectedEntryContent,
 )
 from apps.memory.domain.errors import MemoryDomainError
+from apps.memory.domain.public_access import ConversationIdempotency
 from apps.shared.db.models.audit_log import AuditEventOutbox
 from apps.shared.db.models.conversation_memory import (
     ConversationAccessGrantRecord,
+    ConversationIdempotencyRecord,
     ConversationMemoryEntryRecord,
     ConversationSessionRecord,
     ConversationTurnRecord,
@@ -698,12 +700,15 @@ def test_memory_migration_uow_and_concurrent_start_turn_contracts():
                         (),
                     )
                 ) == {"app_id"}
-                assert set(
-                    readiness.missing_columns.get(
-                        "conversation_idempotency_records",
-                        (),
+                assert (
+                    set(
+                        readiness.missing_columns.get(
+                            "conversation_idempotency_records",
+                            (),
+                        )
                     )
-                ) == PUBLIC_CONVERSATION_AUTHORIZATION_SCOPE_COLUMNS
+                    == PUBLIC_CONVERSATION_AUTHORIZATION_SCOPE_COLUMNS
+                )
 
             # The authorization-scope migration is the immediate additive
             # successor. Advance relatively so this contract does not pin a
@@ -716,6 +721,55 @@ def test_memory_migration_uow_and_concurrent_start_turn_contracts():
             )
             with Session(engine) as db:
                 assert check_memory_schema_readiness(db).ready is True
+                repository = SqlAlchemyConversationMemoryRepository(db)
+                replacement_now = datetime.now(timezone.utc)
+                expired_now = replacement_now - timedelta(days=2)
+                scope_digest = "9" * 64
+                key_hash = "8" * 64
+                expired = ConversationIdempotency.pending(
+                    record_id=uuid.uuid4(),
+                    organization_id=ids["organization"],
+                    operation="conversation.create",
+                    scope_digest=scope_digest,
+                    idempotency_key_hash=key_hash,
+                    request_fingerprint="7" * 64,
+                    retention_expires_at=expired_now + timedelta(days=1),
+                    now=expired_now,
+                )
+                assert repository.reserve_idempotency(expired).created is True
+                db.commit()
+
+                replacement = ConversationIdempotency.pending(
+                    record_id=uuid.uuid4(),
+                    organization_id=ids["organization"],
+                    operation="conversation.create",
+                    scope_digest=scope_digest,
+                    idempotency_key_hash=key_hash,
+                    request_fingerprint="6" * 64,
+                    retention_expires_at=replacement_now + timedelta(days=1),
+                    now=replacement_now,
+                )
+                reservation = repository.reserve_idempotency(replacement)
+                assert reservation.created is True
+                assert reservation.record.id == replacement.id
+                db.commit()
+
+                persisted = list(
+                    db.scalars(
+                        select(ConversationIdempotencyRecord).where(
+                            ConversationIdempotencyRecord.organization_id
+                            == ids["organization"],
+                            ConversationIdempotencyRecord.operation
+                            == "conversation.create",
+                            ConversationIdempotencyRecord.scope_digest == scope_digest,
+                            ConversationIdempotencyRecord.idempotency_key_hash
+                            == key_hash,
+                        )
+                    ).all()
+                )
+                assert len(persisted) == 1
+                assert persisted[0].id == replacement.id
+                assert persisted[0].request_fingerprint == "6" * 64
 
                 public_outbox = AuditEventOutbox(
                     payload={

@@ -8,6 +8,7 @@ import pytest
 from apps.memory.adapters.admission import (
     PublicConversationAdmissionPolicy,
     RedisPublicConversationAdmission,
+    _ADMIT_SCRIPT,
 )
 from apps.memory.application.public_lifecycle import PublicDeploymentBinding
 from apps.memory.domain.errors import (
@@ -77,13 +78,15 @@ def test_admission_uses_hashed_dimensions_not_network_or_grant_values_in_redis_k
     )
 
     call = redis.calls[0]
-    assert call[1] == 5
+    assert call[1] == 6
     request_marker = call[2]
-    keys = call[3:7]
+    request_retry_counter = call[3]
+    keys = call[4:8]
+    assert request_retry_counter == f"{request_marker}:retry"
     assert "a" * 64 not in request_marker
     assert all(network not in key for key in keys)
     assert all(str(grant_id) not in key for key in keys)
-    assert call[-6:] == (60, 86_400, 2, 3, 4, 5)
+    assert call[-8:] == (60, 86_400, 60, 10, 2, 3, 4, 5)
 
 
 def test_create_uses_deployment_network_bucket_without_a_global_grant_bucket():
@@ -104,12 +107,20 @@ def test_create_uses_deployment_network_bucket_without_a_global_grant_bucket():
         )
 
     first_call, second_call = redis.calls
-    first_keys = set(first_call[3:6])
-    second_keys = set(second_call[3:6])
+    first_keys = set(first_call[4:7])
+    second_keys = set(second_call[4:7])
     assert len(first_keys) == len(second_keys) == 3
     assert not first_keys & second_keys
-    assert first_call[-5:] == (600, 86_400, 6, 7, 8)
-    assert second_call[-5:] == (600, 86_400, 6, 7, 8)
+    assert first_call[-7:] == (600, 86_400, 60, 10, 6, 7, 8)
+    assert second_call[-7:] == (600, 86_400, 60, 10, 6, 7, 8)
+
+
+def test_retry_bucket_is_bounded_and_counters_expire_at_the_exact_window_boundary():
+    assert "if redis.call('EXISTS', KEYS[1]) == 1 then" in _ADMIT_SCRIPT
+    assert "redis.call('INCR', KEYS[2])" in _ADMIT_SCRIPT
+    assert "retry_window_end" in _ADMIT_SCRIPT
+    assert "redis.call('EXPIREAT', key, window_end)" in _ADMIT_SCRIPT
+    assert "window_end + 60" not in _ADMIT_SCRIPT
 
 
 def test_same_logical_request_uses_one_hmac_marker_for_concurrent_admission():

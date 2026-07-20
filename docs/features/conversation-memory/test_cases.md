@@ -305,6 +305,15 @@ MBA-317의 자동 검증은 public capability domain/application, encrypted repl
 - MEM-TC-API-039: Session-pinned deployment version과 요청 version이 다르면 authenticated route는 typed conflict/new-session action을 반환하고 public route는 동일한 safe 404를 반환한다.
 - MEM-TC-API-040: Deployment-owned parent allowlist는 `frame-ancestors` CSP에만 사용한다. 정책 부재·disabled·mismatch는 iframe embed를 fail-closed로 막지만 Public Conversation API의 CORS grant로 재해석하거나 client/env fallback으로 완화하지 않는다.
 
+### MBA-317 Review Regressions
+
+- MEM-TC-API-040A: Canonical conversation create와 trailing-slash redirect alias의 preflight 모두 outer same-origin boundary에서 404이며 global `Access-Control-Allow-*` header를 상속하지 않는다.
+- MEM-TC-API-040B: Same logical request는 primary quota를 한 번만 소비하되 별도 HMAC per-request retry bucket의 finite limit을 넘지 못한다. Fixed-window key는 정확한 boundary에서 만료되어 이전 window count를 이월하지 않는다.
+- MEM-TC-API-040C: Gateway가 요청별 admission adapter를 조립해도 같은 Redis 설정은 process-scoped client/pool 하나를 재사용한다.
+- MEM-TC-API-040D: Lifecycle mutation은 App/grant/session row lock을 모두 획득한 뒤 새 server time으로 grant/session expiry를 재검증한다.
+- MEM-TC-API-040E: Cleanup이 지연돼도 retention expiry에 도달한 idempotency row는 lookup/authorized replay에서 제외하며, reservation은 같은 scope/key의 만료 claim을 lock 아래 교체한다.
+- MEM-TC-API-040F: Retention task는 parent/child별 독립 batch quota를 유지하고 포화된 batch를 finite per-run budget까지 반복하며, budget 소진 시 남은 backlog를 표시한다.
+
 ## Workflow Runtime Tests
 
 - MEM-TC-RUN-001: Node Memory config가 graph save/load/copy/deployment snapshot round-trip을 보존한다.

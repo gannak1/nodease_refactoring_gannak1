@@ -13,34 +13,42 @@ from apps.memory.domain.errors import (
     PublicConversationRateLimitedError,
 )
 
-_KEY_NAMESPACE_PATTERN = re.compile(
-    r"[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?"
-)
+_KEY_NAMESPACE_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?")
 
 _ADMIT_SCRIPT = r"""
 local time = redis.call('TIME')
 local now = tonumber(time[1]) + (tonumber(time[2]) / 1000000)
 local window_seconds = tonumber(ARGV[1])
 local deduplication_ttl_seconds = tonumber(ARGV[2])
+local retry_window_seconds = tonumber(ARGV[3])
+local retry_limit = tonumber(ARGV[4])
 local window = math.floor(now / window_seconds)
 local window_end = (window + 1) * window_seconds
+local retry_window = math.floor(now / retry_window_seconds)
+local retry_window_end = (retry_window + 1) * retry_window_seconds
 
 if redis.call('EXISTS', KEYS[1]) == 1 then
+  local retry_count = tonumber(redis.call('GET', KEYS[2]) or '0')
+  if retry_count >= retry_limit then
+    return {0, tostring(math.max(1, math.ceil(retry_window_end - now)))}
+  end
+  redis.call('INCR', KEYS[2])
+  redis.call('EXPIREAT', KEYS[2], retry_window_end)
   return {1, '0'}
 end
 
-for index = 2, #KEYS do
+for index = 3, #KEYS do
   local key = KEYS[index]
   local current = tonumber(redis.call('GET', key) or '0')
-  if current >= tonumber(ARGV[index + 1]) then
+  if current >= tonumber(ARGV[index + 2]) then
     return {0, tostring(math.max(1, math.ceil(window_end - now)))}
   end
 end
 
-for index = 2, #KEYS do
+for index = 3, #KEYS do
   local key = KEYS[index]
   redis.call('INCR', key)
-  redis.call('EXPIREAT', key, window_end + 60)
+  redis.call('EXPIREAT', key, window_end)
 end
 redis.call('SET', KEYS[1], '1', 'EX', deduplication_ttl_seconds)
 return {1, '0'}
@@ -58,9 +66,15 @@ class PublicConversationAdmissionPolicy:
     create_deployment_rate_limit: int = 200
     create_organization_rate_limit: int = 1_000
     create_deployment_network_rate_limit: int = 10
+    retry_window_seconds: int = 60
+    request_retry_rate_limit: int = 10
 
     def __post_init__(self) -> None:
-        windows = (self.window_seconds, self.create_window_seconds)
+        windows = (
+            self.window_seconds,
+            self.create_window_seconds,
+            self.retry_window_seconds,
+        )
         rate_limits = (
             self.deployment_rate_limit,
             self.organization_rate_limit,
@@ -69,6 +83,7 @@ class PublicConversationAdmissionPolicy:
             self.create_deployment_rate_limit,
             self.create_organization_rate_limit,
             self.create_deployment_network_rate_limit,
+            self.request_retry_rate_limit,
         )
         if any(value < 1 for value in (*windows, *rate_limits)):
             raise ValueError("public conversation admission policy is invalid")
@@ -89,7 +104,9 @@ class RedisPublicConversationAdmission:
         request_deduplication_ttl_seconds: int = 86_400,
     ) -> None:
         if len(hmac_key) < 32:
-            raise ValueError("public conversation admission HMAC key must be at least 32 bytes")
+            raise ValueError(
+                "public conversation admission HMAC key must be at least 32 bytes"
+            )
         if not _KEY_NAMESPACE_PATTERN.fullmatch(key_namespace):
             raise ValueError("public conversation admission key namespace is invalid")
         if not 60 <= request_deduplication_ttl_seconds <= 86_400:
@@ -172,22 +189,29 @@ class RedisPublicConversationAdmission:
             f"{self._key_prefix}:{operation}:request:"
             f"{self._digest('request', request_identity)}"
         )
+        request_retry_counter = f"{request_marker}:retry"
         limits = tuple(limit for _dimension, _value, limit in dimensions)
         try:
             result = self._redis.eval(
                 _ADMIT_SCRIPT,
-                len(keys) + 1,
+                len(keys) + 2,
                 request_marker,
+                request_retry_counter,
                 *keys,
                 window_seconds,
                 self._request_deduplication_ttl_seconds,
+                self._policy.retry_window_seconds,
+                self._policy.request_retry_rate_limit,
                 *limits,
             )
         except Exception as exc:
             raise MemoryAdapterUnavailableError() from exc
         allowed, retry_after = self._parse_result(
             result,
-            max_retry_after_seconds=window_seconds,
+            max_retry_after_seconds=max(
+                window_seconds,
+                self._policy.retry_window_seconds,
+            ),
         )
         if not allowed:
             raise PublicConversationRateLimitedError(retry_after)

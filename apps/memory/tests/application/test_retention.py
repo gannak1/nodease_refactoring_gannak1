@@ -4,7 +4,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from apps.memory.application.retention import PurgeExpiredPublicSecretReplaysUseCase
+from apps.memory.application.retention import (
+    PublicReplayRetentionBatch,
+    PurgeExpiredPublicSecretReplaysUseCase,
+)
+from apps.memory.tasks import _drain_expired_public_replays
 from apps.shared.celery_app import celery_app
 
 
@@ -61,7 +65,11 @@ def test_public_replay_retention_gives_parent_and_secret_replay_independent_quot
         uow=uow,
     ).execute(now=now, limit=500)
 
-    assert deleted == 503
+    assert deleted == PublicReplayRetentionBatch(
+        idempotency_deleted_count=500,
+        secret_replay_deleted_count=3,
+    )
+    assert deleted.deleted_count == 503
     assert repository.calls == [
         ("idempotency", now, 500),
         ("secret_replay", now, 500),
@@ -83,6 +91,63 @@ def test_secret_replay_retention_rolls_back_and_rejects_unbounded_inputs():
 
     with pytest.raises(ValueError):
         use_case.execute(now=datetime.now(timezone.utc), limit=1001)
+
+
+class _RetentionUseCase:
+    def __init__(self, batches):
+        self.batches = iter(batches)
+        self.calls = []
+
+    def execute(self, *, now, limit):
+        self.calls.append((now, limit))
+        return next(self.batches)
+
+
+def test_retention_task_drains_saturated_batches_until_both_quotas_are_underfilled():
+    now = datetime(2026, 7, 18, tzinfo=timezone.utc)
+    use_case = _RetentionUseCase(
+        [
+            PublicReplayRetentionBatch(500, 3),
+            PublicReplayRetentionBatch(2, 0),
+        ]
+    )
+
+    result = _drain_expired_public_replays(
+        use_case,
+        now=now,
+        batch_limit=500,
+        max_batches=20,
+    )
+
+    assert result == {
+        "deleted_count": 505,
+        "batch_count": 2,
+        "has_more": False,
+    }
+    assert use_case.calls == [(now, 500), (now, 500)]
+
+
+def test_retention_task_stops_at_the_bounded_batch_budget():
+    now = datetime(2026, 7, 18, tzinfo=timezone.utc)
+    use_case = _RetentionUseCase(
+        [
+            PublicReplayRetentionBatch(500, 500),
+            PublicReplayRetentionBatch(500, 500),
+        ]
+    )
+
+    result = _drain_expired_public_replays(
+        use_case,
+        now=now,
+        batch_limit=500,
+        max_batches=2,
+    )
+
+    assert result == {
+        "deleted_count": 2_000,
+        "batch_count": 2,
+        "has_more": True,
+    }
 
 
 def test_secret_replay_retention_has_a_memory_owned_periodic_task():

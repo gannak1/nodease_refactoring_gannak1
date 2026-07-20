@@ -59,9 +59,11 @@ def _is_public_conversation_path(path: str) -> bool:
     _slug, separator, suffix = remainder.partition("/")
     if not _slug or not separator:
         return False
-    return suffix == "conversations" or suffix == "conversation" or suffix.startswith(
-        "conversation/"
-    )
+    return suffix in {
+        "conversations",
+        "conversations/",
+        "conversation",
+    } or suffix.startswith("conversation/")
 
 
 def _strip_cors_and_origin_vary(

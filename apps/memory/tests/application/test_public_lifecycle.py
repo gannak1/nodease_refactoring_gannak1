@@ -34,7 +34,6 @@ from apps.memory.domain.errors import (
     DuplicateRequestConflictError,
     MemoryAdapterUnavailableError,
     PurgeReceiptNotUsableError,
-    SecretReplayExpiredError,
 )
 from apps.memory.domain.public_access import (
     ConversationAccessGrant,
@@ -58,7 +57,9 @@ class _Repository:
     def __post_init__(self) -> None:
         self.sessions: dict[uuid.UUID, ConversationSession] = {}
         self.grants: dict[tuple[str, str], ConversationAccessGrant] = {}
-        self.idempotency: dict[tuple[uuid.UUID, str, str, str], ConversationIdempotency] = {}
+        self.idempotency: dict[
+            tuple[uuid.UUID, str, str, str], ConversationIdempotency
+        ] = {}
         self.replays: dict[uuid.UUID, EncryptedSecretReplay] = {}
         self.purge_jobs: dict[uuid.UUID, ConversationPurgeJob] = {}
 
@@ -79,8 +80,10 @@ class _Repository:
             record.idempotency_key_hash,
         )
         existing = self.idempotency.get(key)
-        if existing is not None:
+        if existing is not None and existing.retention_expires_at > record.created_at:
             return IdempotencyReservation(existing, created=False)
+        if existing is not None:
+            del self.idempotency[key]
         self.idempotency[key] = record
         return IdempotencyReservation(record, created=True)
 
@@ -91,10 +94,14 @@ class _Repository:
         operation: str,
         scope_digest: str,
         idempotency_key_hash: str,
+        now: datetime,
     ):
-        return self.idempotency.get(
+        record = self.idempotency.get(
             (organization_id, operation, scope_digest, idempotency_key_hash)
         )
+        if record is None or record.retention_expires_at <= now:
+            return None
+        return record
 
     def find_authorized_idempotency(
         self,
@@ -104,6 +111,7 @@ class _Repository:
         operation: str,
         idempotency_key_hash: str,
         verifier_candidates,
+        now: datetime,
     ):
         matches = [
             record
@@ -117,6 +125,7 @@ class _Repository:
                 record.authorization_verifier_hash,
             )
             in verifier_candidates
+            and record.retention_expires_at > now
         ]
         return matches[0] if len(matches) == 1 else None
 
@@ -264,7 +273,9 @@ class _Cipher:
     def __init__(self) -> None:
         self._fernet = Fernet(Fernet.generate_key())
 
-    def encrypt(self, raw_value: str, *, associated_data_digest: str) -> SecretCiphertext:
+    def encrypt(
+        self, raw_value: str, *, associated_data_digest: str
+    ) -> SecretCiphertext:
         payload = f"{associated_data_digest}:{raw_value}".encode("utf-8")
         return SecretCiphertext(self._fernet.encrypt(payload), "fernet-test-v1")
 
@@ -394,10 +405,39 @@ def test_create_replays_the_same_bounded_access_token_without_storing_raw_value(
 
     assert replay.replayed is True
     assert replay.access_token == first.access_token
-    assert all("token" not in grant.__dataclass_fields__ for grant in repository.grants.values())
-    assert all(first.access_token.encode("utf-8") not in value.ciphertext for value in repository.replays.values())
+    assert all(
+        "token" not in grant.__dataclass_fields__
+        for grant in repository.grants.values()
+    )
+    assert all(
+        first.access_token.encode("utf-8") not in value.ciphertext
+        for value in repository.replays.values()
+    )
     record = next(iter(repository.idempotency.values()))
     assert record.retention_expires_at == _now() + timedelta(hours=24)
+
+
+def test_expired_idempotency_record_is_not_replayed_or_left_as_a_unique_claim():
+    components = _application()
+    repository = components[0]
+    current_time = [_now()]
+    create = _use_case(
+        CreatePublicConversationUseCase,
+        components,
+        clock=lambda: current_time[0],
+    )
+    command = _create_command(suffix="expired-idempotency")
+    first = create.execute(command)
+    current_time[0] = _now() + timedelta(hours=24, seconds=1)
+
+    replacement = create.execute(replace(command, now=current_time[0]))
+
+    assert replacement.replayed is False
+    assert replacement.access_token != first.access_token
+    assert len(repository.sessions) == 2
+    assert len(repository.idempotency) == 1
+    record = next(iter(repository.idempotency.values()))
+    assert record.created_at == current_time[0]
 
 
 def test_previous_capability_key_remains_usable_after_bounded_rotation():
@@ -908,7 +948,8 @@ def test_delete_revokes_conversation_grant_and_replays_receipt_only_until_ttl():
     assert status.status.value == "pending"
     with pytest.raises(AccessGrantNotUsableError):
         delete.execute(_lifecycle_command(first.access_token, suffix="other"))
-    with pytest.raises(SecretReplayExpiredError):
+    # The 24-hour idempotency tombstone and replay expire together for delete.
+    with pytest.raises(AccessGrantNotUsableError):
         delete.execute(
             _lifecycle_command(
                 first.access_token,
@@ -1114,6 +1155,56 @@ def test_lifecycle_revalidates_expiry_using_fresh_time_after_admission(
 
     assert next(iter(components[0].sessions.values())).lifecycle.value == "active"
     assert len(admission.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "use_case_type",
+    (
+        ClosePublicConversationUseCase,
+        ResetPublicConversationUseCase,
+        DeletePublicConversationUseCase,
+    ),
+)
+def test_lifecycle_revalidates_expiry_after_waiting_for_mutation_row_locks(
+    use_case_type,
+):
+    policy = replace(
+        PublicConversationPolicy(),
+        idle_lifetime=timedelta(minutes=1),
+        access_grant_lifetime=timedelta(minutes=1),
+    )
+    components = _application(policy=policy)
+    repository = components[0]
+    created = _use_case(CreatePublicConversationUseCase, components).execute(
+        _create_command(suffix=f"lock-clock-{use_case_type.__name__}")
+    )
+    current_time = [_now()]
+    original_lock = repository.lock_session
+
+    def lock_after_wait(*, organization_id: uuid.UUID, session_id: uuid.UUID):
+        session = original_lock(
+            organization_id=organization_id,
+            session_id=session_id,
+        )
+        current_time[0] = _now() + timedelta(minutes=1)
+        return session
+
+    repository.lock_session = lock_after_wait
+    use_case = _use_case(
+        use_case_type,
+        components,
+        clock=lambda: current_time[0],
+    )
+
+    with pytest.raises(AccessGrantNotUsableError):
+        use_case.execute(
+            _lifecycle_command(
+                created.access_token,
+                suffix=f"lock-clock-{use_case_type.__name__}",
+            )
+        )
+
+    assert next(iter(repository.sessions.values())).lifecycle.value == "active"
 
 
 def test_admission_unavailable_rolls_back_pending_create_idempotency_record():

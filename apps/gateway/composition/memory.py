@@ -4,6 +4,7 @@ import hmac
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 
 import redis
 from sqlalchemy.orm import Session
@@ -278,6 +279,20 @@ def public_conversation_admission_policy_from_environment(
             1,
             100_000,
         ),
+        retry_window_seconds=_integer(
+            environ,
+            "MEMORY_PUBLIC_RETRY_WINDOW_SECONDS",
+            60,
+            1,
+            3600,
+        ),
+        request_retry_rate_limit=_integer(
+            environ,
+            "MEMORY_PUBLIC_REQUEST_RETRY_RATE_LIMIT",
+            10,
+            1,
+            100_000,
+        ),
     )
 
 
@@ -311,22 +326,39 @@ def _require_public_purge_worker_ready(environ: Mapping[str, str]) -> None:
         )
 
 
+@lru_cache(maxsize=1)
+def _process_redis_client(
+    host: str,
+    port: int,
+    database: int,
+    password: str | None,
+):
+    return redis.Redis(
+        host=host,
+        port=port,
+        db=database,
+        password=password,
+        socket_connect_timeout=0.5,
+        socket_timeout=0.5,
+        health_check_interval=30,
+    )
+
+
 def _redis_client(environ: Mapping[str, str]):
     try:
         port = int(environ.get("REDIS_PORT", "6379"))
         database = int(environ.get("REDIS_DB", "0"))
     except ValueError as exc:
-        raise RuntimeError("public conversation Redis configuration is invalid") from exc
+        raise RuntimeError(
+            "public conversation Redis configuration is invalid"
+        ) from exc
     if not 1 <= port <= 65535 or not 0 <= database <= 255:
         raise RuntimeError("public conversation Redis configuration is invalid")
-    return redis.Redis(
-        host=environ.get("REDIS_HOST", "localhost"),
-        port=port,
-        db=database,
-        password=environ.get("REDIS_PASSWORD") or None,
-        socket_connect_timeout=0.5,
-        socket_timeout=0.5,
-        health_check_interval=30,
+    return _process_redis_client(
+        environ.get("REDIS_HOST", "localhost"),
+        port,
+        database,
+        environ.get("REDIS_PASSWORD") or None,
     )
 
 

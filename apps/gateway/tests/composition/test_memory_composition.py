@@ -196,6 +196,31 @@ def test_composition_wires_one_shared_fail_closed_admission_adapter_per_request(
     assert application.create.admission._redis is fake_redis
 
 
+def test_composition_reuses_one_process_scoped_redis_pool(monkeypatch):
+    environment = _environment()
+    environment["REDIS_HOST"] = f"memory-{secrets.token_hex(8)}"
+    created_clients = []
+
+    def redis_factory(**_kwargs):
+        client = object()
+        created_clients.append(client)
+        return client
+
+    monkeypatch.setattr(memory_composition.redis, "Redis", redis_factory)
+
+    first = build_public_conversation_application(
+        MagicMock(spec=Session),
+        environ=environment,
+    )
+    second = build_public_conversation_application(
+        MagicMock(spec=Session),
+        environ=environment,
+    )
+
+    assert first.create.admission._redis is second.create.admission._redis
+    assert len(created_clients) == 1
+
+
 def test_composition_uses_documented_safe_defaults_for_public_session_create():
     policy = public_conversation_admission_policy_from_environment({})
 
@@ -203,6 +228,8 @@ def test_composition_uses_documented_safe_defaults_for_public_session_create():
     assert policy.create_deployment_network_rate_limit == 10
     assert policy.create_deployment_rate_limit == 200
     assert policy.create_organization_rate_limit == 1_000
+    assert policy.retry_window_seconds == 60
+    assert policy.request_retry_rate_limit == 10
 
 
 def test_composition_limits_general_idempotency_retention_to_twenty_four_hours():
