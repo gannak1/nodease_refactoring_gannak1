@@ -5,6 +5,7 @@ import pytest
 
 
 APPLICATION_ROOT = Path(__file__).resolve().parents[2] / "application" / "agent_builder"
+INTENT_CACHE_ROOT = APPLICATION_ROOT / "intent_cache"
 FORBIDDEN_PREFIXES = (
     "anthropic",
     "fastapi",
@@ -70,6 +71,64 @@ def test_agent_builder_application_allows_shared_pydantic_contracts():
     )
 
     assert _find_import_violations(tree, "synthetic.py") == []
+
+
+def test_intent_cache_modules_keep_their_documented_dependency_direction():
+    allowed_imports = {
+        "catalog_snapshot.py": {
+            "__future__",
+            "dataclasses",
+            "types",
+        },
+        "contracts.py": {
+            "__future__",
+            "re",
+            "typing",
+            "uuid",
+            "pydantic",
+            "apps.gateway.application.agent_builder.intent_cache.catalog_snapshot",
+        },
+        "codec.py": {
+            "__future__",
+            "json",
+            "re",
+            "typing",
+            "pydantic",
+            "apps.gateway.application.agent_builder.intent_cache.contracts",
+        },
+        "ports.py": {
+            "__future__",
+            "collections.abc",
+            "typing",
+            "pydantic",
+            "apps.gateway.application.agent_builder.intent_cache.contracts",
+            "apps.shared.schemas.agent_builder",
+        },
+        "disabled.py": {
+            "__future__",
+            "apps.gateway.application.agent_builder.intent_cache.contracts",
+            "apps.gateway.application.agent_builder.intent_cache.ports",
+        },
+    }
+
+    violations = []
+    for filename, allowed in allowed_imports.items():
+        path = INTENT_CACHE_ROOT / filename
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                modules = [node.module]
+            else:
+                modules = []
+            violations.extend(
+                f"{filename}:{node.lineno}: {module}"
+                for module in modules
+                if module not in allowed
+            )
+
+    assert violations == []
 
 
 def test_model_recommendation_policy_remains_framework_independent():

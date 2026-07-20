@@ -19,6 +19,10 @@ from apps.gateway.application.agent_builder.intent_usage import (
     AgentBuilderIntentUsageContext,
     AgentBuilderIntentUsageRecordingError,
 )
+from apps.gateway.application.agent_builder.intent_cache import (
+    DisabledIntentPlanCacheBoundary,
+    IntentPlanCacheBoundary,
+)
 from apps.gateway.application.agent_builder.knowledge_timing import (
     materialize_before_graph_plan,
 )
@@ -948,11 +952,17 @@ class AgentBuilderService:
         user: User,
         organization_id: uuid.UUID,
         intent_extractor: AgentBuilderIntentExtractor | None = None,
+        intent_plan_cache: IntentPlanCacheBoundary | None = None,
     ) -> None:
         self.db = db
         self.user = user
         self.organization_id = organization_id
         self.intent_extractor = intent_extractor
+        self.intent_plan_cache = (
+            intent_plan_cache
+            if intent_plan_cache is not None
+            else DisabledIntentPlanCacheBoundary()
+        )
 
     def create_or_restore_session(
         self,
@@ -2607,29 +2617,33 @@ class AgentBuilderService:
         *,
         usage_context: AgentBuilderIntentUsageContext | None = None,
     ) -> AgentBuilderStructuredRequest:
-        if self.intent_extractor is None:
-            raise AgentBuilderIntentRuntimeUnavailableError(
-                "Agent Builder intent extractor is not configured"
+        def planner_call() -> AgentBuilderStructuredRequest:
+            if self.intent_extractor is None:
+                raise AgentBuilderIntentRuntimeUnavailableError(
+                    "Agent Builder intent extractor is not configured"
+                )
+            workflow_context = self._safe_intent_workflow_context(workflow, request)
+            safe_message = _safe_summary(request.message, limit=2000)
+            extract_kwargs: dict[str, Any] = {
+                "safe_message": safe_message,
+                "workflow_context": workflow_context,
+            }
+            if usage_context is not None:
+                extract_kwargs["usage_context"] = usage_context
+            extraction = self.intent_extractor.extract(**extract_kwargs)
+            validate_intent_semantics(
+                extraction,
+                workflow_context,
+                safe_message=safe_message,
             )
-        workflow_context = self._safe_intent_workflow_context(workflow, request)
-        safe_message = _safe_summary(request.message, limit=2000)
-        extract_kwargs: dict[str, Any] = {
-            "safe_message": safe_message,
-            "workflow_context": workflow_context,
-        }
-        if usage_context is not None:
-            extract_kwargs["usage_context"] = usage_context
-        extraction = self.intent_extractor.extract(**extract_kwargs)
-        validate_intent_semantics(
-            extraction,
-            workflow_context,
-            safe_message=safe_message,
-        )
-        return self._normalize_intent_extraction(
-            extraction,
-            request=request,
-            workflow=workflow,
-        )
+            return self._normalize_intent_extraction(
+                extraction,
+                request=request,
+                workflow=workflow,
+            )
+
+        execution = self.intent_plan_cache.execute(planner_call)
+        return execution.structured_request
 
     def _primary_intent_usage_context(
         self,
