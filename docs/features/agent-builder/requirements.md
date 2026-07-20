@@ -2,7 +2,7 @@
 
 Status: Draft
 
-Related Features: Workflow Editor, Workflow Node Capability Catalog, Knowledge, LLM Credential, Mail Credential, Audit, Workflow Validation
+Related Features: Workflow Editor, Workflow Node Capability Catalog, Knowledge, LLM Credential, Mail Credential, Audit, Workflow Validation, Agent Builder Cache
 
 ## 1. Purpose
 
@@ -18,6 +18,8 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - credential 원문과 secret-like 값은 planner, 일반 chat, audit에 전달하지 않는다.
 - frontend는 UX를 제공하지만 node 지원 여부, 권한, graph validation의 최종 판단은 backend가 수행한다.
 - generated graph는 실행되지 않으며 외부 action node는 설정이 완료될 때까지 unresolved 상태를 유지한다.
+- Accepted ADR-0063의 optional intent plan cache는 provider 호출만 생략할 수 있고 planner 결과의 source of truth,
+  current permission, Knowledge resolution, GraphMutation, CAS와 acknowledgement 계약을 변경할 수 없다.
 
 ## 3. Scope
 
