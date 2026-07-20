@@ -34,6 +34,7 @@ from apps.memory.domain.errors import (
     DuplicateRequestConflictError,
     MemoryAdapterUnavailableError,
     PurgeReceiptNotUsableError,
+    SecretReplayExpiredError,
 )
 from apps.memory.domain.public_access import (
     ConversationAccessGrant,
@@ -862,6 +863,88 @@ def test_delete_replays_receipt_after_original_scope_expires():
 
     assert replay.replayed is True
     assert replay.purge_receipt == deleted.purge_receipt
+
+
+@pytest.mark.parametrize(
+    "blocking_call",
+    ("lock_purge_job_by_id", "get_secret_replay"),
+)
+def test_delete_replay_revalidates_expiry_after_each_replay_row_lock(
+    blocking_call: str,
+):
+    components = _application()
+    repository = components[0]
+    current_time = [_now()]
+    create = _use_case(
+        CreatePublicConversationUseCase,
+        components,
+        clock=lambda: current_time[0],
+    )
+    delete = _use_case(
+        DeletePublicConversationUseCase,
+        components,
+        clock=lambda: current_time[0],
+    )
+    created = create.execute(_create_command(suffix=f"delete-{blocking_call}"))
+    command = _lifecycle_command(
+        created.access_token,
+        suffix=f"delete-{blocking_call}",
+    )
+    delete.execute(command)
+    record = next(
+        record
+        for record in repository.idempotency.values()
+        if record.operation == "conversation.delete"
+    )
+    assert record.secret_replay_expires_at is not None
+    replay_boundary = min(
+        record.retention_expires_at,
+        record.secret_replay_expires_at,
+    )
+    current_time[0] = replay_boundary - timedelta(microseconds=1)
+    original_call = getattr(repository, blocking_call)
+
+    def complete_lock_wait(**kwargs):
+        result = original_call(**kwargs)
+        current_time[0] = replay_boundary
+        return result
+
+    setattr(repository, blocking_call, complete_lock_wait)
+
+    with pytest.raises(SecretReplayExpiredError):
+        delete.execute(replace(command, now=current_time[0]))
+
+
+def test_access_grant_replay_revalidates_expiry_after_secret_row_lock():
+    components = _application()
+    repository = components[0]
+    current_time = [_now()]
+    create = _use_case(
+        CreatePublicConversationUseCase,
+        components,
+        clock=lambda: current_time[0],
+    )
+    command = _create_command(suffix="create-replay-lock-wait")
+    create.execute(command)
+    record = next(
+        record
+        for record in repository.idempotency.values()
+        if record.operation == "conversation.create"
+    )
+    assert record.secret_replay_expires_at is not None
+    replay_boundary = record.secret_replay_expires_at
+    current_time[0] = replay_boundary - timedelta(microseconds=1)
+    original_get_secret_replay = repository.get_secret_replay
+
+    def get_secret_replay_after_wait(**kwargs):
+        replay = original_get_secret_replay(**kwargs)
+        current_time[0] = replay_boundary
+        return replay
+
+    repository.get_secret_replay = get_secret_replay_after_wait
+
+    with pytest.raises(SecretReplayExpiredError):
+        create.execute(replace(command, now=current_time[0]))
 
 
 def test_delete_replay_restores_the_initial_revision_after_terminal_progress():

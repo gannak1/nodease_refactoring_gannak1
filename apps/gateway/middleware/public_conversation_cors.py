@@ -4,11 +4,12 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 
 class PublicConversationCorsBoundaryMiddleware:
-    """Keep public Conversation API outside the legacy credentialed CORS mesh.
+    """Enforce the transport boundary for public Conversation API responses.
 
     Public parent origins authorize iframe embedding through CSP only.  The
     iframe document calls this API same-origin, so target lifecycle routes must
-    neither answer cross-origin preflight nor inherit global CORS headers.
+    never inherit CORS grants and every response remains non-cacheable and
+    non-referring, including framework and router failures.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -31,10 +32,7 @@ class PublicConversationCorsBoundaryMiddleware:
                 {
                     "type": "http.response.start",
                     "status": 404,
-                    "headers": [
-                        (b"cache-control", b"no-store"),
-                        (b"content-length", b"0"),
-                    ],
+                    "headers": _public_response_headers([(b"content-length", b"0")]),
                 }
             )
             await send({"type": "http.response.body", "body": b""})
@@ -43,7 +41,7 @@ class PublicConversationCorsBoundaryMiddleware:
         async def send_without_cors(message: Message) -> None:
             if message["type"] == "http.response.start":
                 message = dict(message)
-                message["headers"] = _strip_cors_and_origin_vary(
+                message["headers"] = _public_response_headers(
                     message.get("headers", [])
                 )
             await send(message)
@@ -66,13 +64,15 @@ def _is_public_conversation_path(path: str) -> bool:
     } or suffix.startswith("conversation/")
 
 
-def _strip_cors_and_origin_vary(
+def _public_response_headers(
     headers: list[tuple[bytes, bytes]],
 ) -> list[tuple[bytes, bytes]]:
     sanitized: list[tuple[bytes, bytes]] = []
     for name, value in headers:
         normalized_name = name.lower()
         if normalized_name.startswith(b"access-control-"):
+            continue
+        if normalized_name in {b"cache-control", b"referrer-policy"}:
             continue
         if normalized_name == b"vary":
             retained = [
@@ -84,6 +84,12 @@ def _strip_cors_and_origin_vary(
                 sanitized.append((name, ", ".join(retained).encode("latin-1")))
             continue
         sanitized.append((name, value))
+    sanitized.extend(
+        (
+            (b"cache-control", b"no-store"),
+            (b"referrer-policy", b"no-referrer"),
+        )
+    )
     return sanitized
 
 

@@ -313,6 +313,8 @@ MBA-317의 자동 검증은 public capability domain/application, encrypted repl
 - MEM-TC-API-040D: Lifecycle mutation은 App/grant/session row lock을 모두 획득한 뒤 새 server time으로 grant/session expiry를 재검증한다.
 - MEM-TC-API-040E: Cleanup이 지연돼도 retention expiry에 도달한 idempotency row는 lookup/authorized replay에서 제외하며, reservation은 같은 scope/key의 만료 claim을 lock 아래 교체한다.
 - MEM-TC-API-040F: Retention task는 parent/child별 독립 batch quota를 유지하고 포화된 batch를 finite per-run budget까지 반복하며, budget 소진 시 남은 backlog를 표시한다.
+- MEM-TC-API-040G: Public outer transport boundary는 success, explicit error, dependency Content-Type `415`, body validation `422`, router `404`/`405`, redirect alias와 preflight 모두에 `Cache-Control: no-store`와 `Referrer-Policy: no-referrer`를 적용하고 전역 CORS header와 `Vary: Origin`을 제거한다.
+- MEM-TC-API-040H: Access Grant와 purge receipt exact replay가 필요한 purge/replay row lock을 기다리는 동안 TTL boundary를 지나면, lock 뒤 fresh server time이 idempotency parent retention과 replay parent/child expiry를 다시 확인해 `memory.secret_replay_expired`로 닫고 request-start timestamp로 replay window를 연장하지 않는다.
 
 ## Workflow Runtime Tests
 

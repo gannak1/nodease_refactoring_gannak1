@@ -603,7 +603,6 @@ class _TransactionalPublicUseCase:
             record.status is not IdempotencyStatus.COMPLETED
             or record.replay_record_reference is None
             or record.secret_replay_expires_at is None
-            or now >= record.secret_replay_expires_at
         ):
             raise SecretReplayExpiredError()
         try:
@@ -614,11 +613,16 @@ class _TransactionalPublicUseCase:
             organization_id=record.organization_id,
             replay_id=replay_id,
         )
+        # A purge/replay row lock can wait past either replay boundary.  Never
+        # let the request-start timestamp extend a parent or child TTL.
+        replay_now = max(now, self._current_time())
         if (
             replay is None
             or replay.idempotency_record_id != record.id
             or replay.purpose != purpose
-            or now >= replay.expires_at
+            or replay_now >= record.retention_expires_at
+            or replay_now >= record.secret_replay_expires_at
+            or replay_now >= replay.expires_at
         ):
             raise SecretReplayExpiredError()
         expected_associated_data_digest = _secret_replay_associated_data_digest(

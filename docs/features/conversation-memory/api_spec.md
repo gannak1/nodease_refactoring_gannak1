@@ -34,11 +34,11 @@ Public Conversation API는 Nodease iframe document의 relative same-origin 호�
 
 Cookie 기반 authenticated mutation은 session-bound synchronizer token인 `X-CSRF-Token` header와 exact `Origin` 검증을 모두 요구한다. Token은 authenticated bootstrap/session response로 발급하고 authentication cookie 값에서 파생하거나 URL에 넣지 않는다. `Sec-Fetch-Site`가 제공되면 `same-origin` 또는 명시적으로 허용된 same-site 요청만 허용한다. State-changing endpoint는 simple cross-origin request로 호출할 수 없는 JSON contract를 유지한다.
 
-Public token, transcript, turn status와 lifecycle response는 `Cache-Control: no-store`를 반환한다. 인증 응답은 `Cache-Control: private, no-store`를 사용하며 public conversation response는 parent Origin에 따라 달라지지 않는다. Authorization 또는 Cookie에 따라 응답이 달라지는 인증 surface만 필요한 `Vary` 값을 적용한다.
+Public Conversation API의 outer transport boundary는 성공, 명시적 오류, dependency/body validation의 `415`/`422`, router의 `404`/`405`, redirect와 preflight를 포함한 모든 응답에 `Cache-Control: no-store`와 `Referrer-Policy: no-referrer`를 적용한다. 인증 응답은 `Cache-Control: private, no-store`를 사용하며 public conversation response는 parent Origin에 따라 달라지지 않는다. Authorization 또는 Cookie에 따라 응답이 달라지는 인증 surface만 필요한 `Vary` 값을 적용한다.
 
 Public conversation page는 `Referrer-Policy: no-referrer`와 strict Content Security Policy를 사용한다. Third-party script와 frame origin은 deployment embed 정책의 reviewed allowlist만 허용하며 inline/raw token telemetry를 금지한다.
 
-Canonical Public Conversation endpoint와 framework가 허용하는 trailing-slash redirect alias는 모두 같은 outer CORS boundary를 사용한다. Alias의 preflight나 redirect response도 전역 credentialed CORS header를 상속하지 않는다.
+Canonical Public Conversation endpoint와 framework가 허용하는 trailing-slash redirect alias는 모두 같은 outer transport/CORS boundary를 사용한다. 이 경계는 전역 `Access-Control-*` header와 `Vary: Origin`을 제거하며 alias의 preflight나 redirect response도 전역 credentialed CORS header를 상속하지 않는다.
 
 ## HTTP Surface
 
@@ -98,7 +98,7 @@ Public reset/delete의 `memory.secret_replay_expired`는 stored idempotency scop
 
 Same-key/same-fingerprint retry는 logical request quota를 다시 소비하지 않지만 finite per-request retry bucket을 적용한다. Fixed-window counter는 정확한 window boundary에서 만료하며 Gateway process는 같은 Redis connection 설정에 process-scoped client/pool을 재사용한다.
 
-Retention expiry에 도달한 idempotency row는 cleanup 완료 여부와 무관하게 lookup과 authorized replay에서 제외한다. 새 reservation은 동일 scope/key의 만료 claim을 row lock 아래 삭제·재삽입한다. Periodic cleanup은 parent/child별 bounded quota를 한 transaction에 유지하고 어느 quota든 포화되면 같은 cutoff의 다음 batch를 finite per-run budget까지 반복한다.
+Retention expiry에 도달한 idempotency row는 cleanup 완료 여부와 무관하게 lookup과 authorized replay에서 제외한다. 새 reservation은 동일 scope/key의 만료 claim을 row lock 아래 삭제·재삽입한다. Secret exact replay는 필요한 purge/replay row lock을 모두 획득한 뒤 새 server time으로 idempotency parent retention, secret replay parent TTL과 encrypted replay child expiry를 다시 검사하고 정확한 expiry boundary부터 `memory.secret_replay_expired`로 닫는다. 요청 시작 시각은 잠금 대기 중 경과한 TTL을 연장하지 않는다. Periodic cleanup은 parent/child별 bounded quota를 한 transaction에 유지하고 어느 quota든 포화되면 같은 cutoff의 다음 batch를 finite per-run budget까지 반복한다.
 
 ## Session Models
 
