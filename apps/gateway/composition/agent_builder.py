@@ -6,6 +6,12 @@ from uuid import UUID
 from fastapi import Request
 from sqlalchemy.orm import Session
 
+from apps.gateway.adapters.db.knowledge_recommendation import (
+    PostgresParentRecommendationAdapter,
+)
+from apps.gateway.application.agent_builder.knowledge_recommendation import (
+    KnowledgeRecommendationRetrievalPort,
+)
 from apps.gateway.services.agent_builder.intent_usage_service import (
     AgentBuilderIntentUsageService,
 )
@@ -26,8 +32,12 @@ from apps.gateway.services.agent_builder_service import (
     AgentBuilderService,
 )
 from apps.gateway.services.llm_service import LLMService
+from apps.gateway.services.knowledge_recommendation_credentials import (
+    RecommendationEmbeddingCredentialResolver,
+)
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.shared.db.models.user import User
+from apps.shared.db.session import SessionLocal
 
 
 @dataclass(frozen=True)
@@ -54,6 +64,20 @@ class AgentBuilderComposition:
                 model_id=intent_model_id,
                 usage_recorder=AgentBuilderIntentUsageService(),
             ),
+            knowledge_recommendation_retrieval_port=(
+                self._knowledge_recommendation_retrieval_port()
+            ),
+        )
+
+    def _knowledge_recommendation_retrieval_port(
+        self,
+    ) -> KnowledgeRecommendationRetrievalPort:
+        embedding_resolver = RecommendationEmbeddingCredentialResolver(
+            session_factory=SessionLocal,
+        )
+        return PostgresParentRecommendationAdapter(
+            self.db,
+            embedding_resolver=embedding_resolver,
         )
 
     def mutation_lifecycle(self) -> GraphMutationLifecycleService:
@@ -75,6 +99,9 @@ class AgentBuilderComposition:
             self.db,
             user=self.user,
             organization_id=self.organization_id,
+            knowledge_recommendation_retrieval_port=(
+                self._knowledge_recommendation_retrieval_port()
+            ),
         )
         return KnowledgeSelectionService(
             self.db,

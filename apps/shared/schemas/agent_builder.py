@@ -754,6 +754,7 @@ class AgentBuilderKnowledgeCandidateOption(BaseModel):
     confidence: Literal["high", "medium", "low"] | None = None
     score: float | None = Field(default=None, ge=0.0, le=1.0)
     reason_category: str | None = None
+    recommendation_state: Literal["complete", "degraded"] | None = None
     reason: str | None = None
     threshold_result: str | None = None
     runtime_availability: str | None = None

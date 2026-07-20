@@ -22,6 +22,9 @@ from apps.gateway.application.agent_builder.intent_usage import (
 from apps.gateway.application.agent_builder.knowledge_timing import (
     materialize_before_graph_plan,
 )
+from apps.gateway.application.agent_builder.knowledge_recommendation import (
+    KnowledgeRecommendationRetrievalPort,
+)
 from apps.gateway.application.agent_builder.parameter_tasks import (
     recovery_affected_node_ids,
     reconcile_parameter_group_catalog_tasks,
@@ -948,11 +951,17 @@ class AgentBuilderService:
         user: User,
         organization_id: uuid.UUID,
         intent_extractor: AgentBuilderIntentExtractor | None = None,
+        knowledge_recommendation_retrieval_port: (
+            KnowledgeRecommendationRetrievalPort | None
+        ) = None,
     ) -> None:
         self.db = db
         self.user = user
         self.organization_id = organization_id
         self.intent_extractor = intent_extractor
+        self.knowledge_recommendation_retrieval_port = (
+            knowledge_recommendation_retrieval_port
+        )
 
     def create_or_restore_session(
         self,
@@ -3791,10 +3800,17 @@ class AgentBuilderService:
                 "warnings": [],
             }
 
+        recommendation_service_kwargs: dict[str, Any] = {
+            "user_id": self.user.id,
+            "organization_id": self.organization_id,
+        }
+        if self.knowledge_recommendation_retrieval_port is not None:
+            recommendation_service_kwargs["retrieval_port"] = (
+                self.knowledge_recommendation_retrieval_port
+            )
         service = KnowledgeRAGRecommendationService(
             self.db,
-            user_id=self.user.id,
-            organization_id=self.organization_id,
+            **recommendation_service_kwargs,
         )
         bindings = []
         warnings = []
@@ -3831,6 +3847,11 @@ class AgentBuilderService:
                 include_materialized_refs=include_materialized_refs,
                 allow_unready_candidates=True,
             )
+            if (
+                response.user_safe_warning
+                and response.user_safe_warning not in warnings
+            ):
+                warnings.append(response.user_safe_warning)
             resolution_id = pending_by_step.get(requirement.target_step_ref)
             knowledge_selection = (
                 response.knowledge_selection.model_dump(mode="json")
@@ -4076,7 +4097,10 @@ class AgentBuilderService:
                     resolution_id=resolution_id,
                 ),
                 "knowledge_selection": knowledge_selection,
-                "warnings": ["Knowledge Base 후보를 확인하고 선택해주세요."],
+                "warnings": [
+                    *warnings,
+                    "Knowledge Base 후보를 확인하고 선택해주세요.",
+                ],
                 "_issued_knowledge_handle_bindings": issued_handle_bindings,
             }
         return {
@@ -4346,6 +4370,11 @@ class AgentBuilderService:
                     "confidence": item.confidence,
                     "score": item.score,
                     "reason_category": item.reason_category or item.safe_reason_code,
+                    **(
+                        {"recommendation_state": "degraded"}
+                        if item.recommendation_state == "degraded"
+                        else {}
+                    ),
                     "threshold_result": item.threshold_result,
                     "runtime_availability": item.runtime_availability,
                 }
@@ -4379,10 +4408,6 @@ class AgentBuilderService:
             {
                 "safe_handle": item.get("safe_handle"),
                 "name": _safe_display_label(item.get("name")),
-                "confidence": item.get("confidence"),
-                "score": item.get("score"),
-                "reason_category": item.get("reason_category"),
-                "threshold_result": item.get("threshold_result"),
             }
             for item in bindings
         ]
@@ -6480,7 +6505,49 @@ class AgentBuilderService:
             payload["parameter_groups"] = [
                 parameter_group.model_dump(mode="json")
             ]
+        self._redact_persisted_knowledge_recommendation(payload)
         return payload
+
+    @classmethod
+    def _redact_persisted_knowledge_recommendation(
+        cls,
+        payload: dict[str, Any],
+    ) -> None:
+        recommendation_keys = {
+            "confidence",
+            "parent_relevance",
+            "reason_category",
+            "recommendation_state",
+            "retrieval_state",
+            "safe_reason_code",
+            "score",
+            "semantic_state",
+            "threshold_result",
+        }
+
+        def redact_tree(value: Any) -> None:
+            if isinstance(value, dict):
+                for key in recommendation_keys:
+                    value.pop(key, None)
+                for child in value.values():
+                    redact_tree(child)
+            elif isinstance(value, list):
+                for child in value:
+                    redact_tree(child)
+
+        options = payload.get("clarification_options")
+        if isinstance(options, list):
+            for option in options:
+                if isinstance(option, dict) and option.get("type") == "knowledge_base":
+                    redact_tree(option)
+
+        for key in (
+            "knowledge_resolution",
+            "knowledge_resolutions",
+            "knowledge_selection",
+            "_issued_knowledge_handle_bindings",
+        ):
+            redact_tree(payload.get(key))
 
     def _session_or_404(self, session_id: uuid.UUID) -> AgentBuilderSession:
         session = (

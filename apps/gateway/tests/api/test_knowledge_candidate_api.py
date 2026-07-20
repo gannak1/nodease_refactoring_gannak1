@@ -6,6 +6,12 @@ from fastapi.testclient import TestClient
 from apps.gateway.api.v1.endpoints import knowledge as knowledge_endpoint
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.main import app
+from apps.gateway.adapters.db.knowledge_recommendation import (
+    PostgresParentRecommendationAdapter,
+)
+from apps.gateway.services.knowledge_recommendation_credentials import (
+    RecommendationEmbeddingCredentialResolver,
+)
 from apps.shared.schemas.knowledge import (
     KnowledgeCandidate,
     KnowledgeCandidateResolution,
@@ -117,6 +123,23 @@ def test_knowledge_rag_recommendation_route_uses_server_context(monkeypatch):
     user_id = uuid.uuid4()
     kb_id = uuid.uuid4()
     captured = {}
+    semantic_calls = []
+
+    monkeypatch.setattr(
+        RecommendationEmbeddingCredentialResolver,
+        "embed_query",
+        lambda *_args, **_kwargs: semantic_calls.append("embedding"),
+    )
+    monkeypatch.setattr(
+        PostgresParentRecommendationAdapter,
+        "retrieve",
+        lambda *_args, **_kwargs: semantic_calls.append("retrieve"),
+    )
+    monkeypatch.setattr(
+        PostgresParentRecommendationAdapter,
+        "_execute_parent_search",
+        lambda *_args, **_kwargs: semantic_calls.append("parent_search"),
+    )
 
     monkeypatch.setattr(
         knowledge_endpoint,
@@ -207,6 +230,7 @@ def test_knowledge_rag_recommendation_route_uses_server_context(monkeypatch):
     assert body["recommendations"][0]["materialized_knowledge_bases"] == []
     assert body["recommendations"][0]["safe_label"] is None
     assert "raw_source_url" not in str(body)
+    assert semantic_calls == []
 
 
 def test_knowledge_rag_recommendation_route_drops_unsafe_public_refs(monkeypatch):
