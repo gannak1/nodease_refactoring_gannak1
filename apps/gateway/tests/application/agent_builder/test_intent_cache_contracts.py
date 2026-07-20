@@ -2,6 +2,7 @@ import dataclasses
 import json
 import pickle
 import uuid
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -38,7 +39,9 @@ from apps.gateway.application.agent_builder.intent_cache.contracts import (
     PlannerRuntimeFingerprint,
 )
 from apps.shared.schemas.agent_builder import AgentBuilderStructuredRequest
-from apps.shared.services.workflow_node_catalog import load_workflow_node_catalog
+
+
+ROOT = Path(__file__).resolve().parents[5]
 
 
 _HEX_A = "a" * 64
@@ -303,7 +306,11 @@ def test_knowledge_and_guidance_refs_are_closed_and_context_applicable():
 
 
 def test_catalog_snapshot_matches_current_catalog_v3_exactly():
-    catalog = load_workflow_node_catalog()
+    catalog = json.loads(
+        (ROOT / "apps/shared/config/workflow_node_catalog.json").read_text(
+            encoding="utf-8"
+        )
+    )
     current = tuple(
         (
             str(node["node_type"]),
@@ -372,7 +379,10 @@ def test_transient_context_preserves_request_specific_messages_and_topology():
     assert first is not second
 
 
-@pytest.mark.parametrize("factory", [json.dumps, vars, dataclasses.asdict, pickle.dumps])
+@pytest.mark.parametrize(
+    "factory",
+    [json.dumps, vars, dataclasses.asdict, pickle.dumps],
+)
 def test_transient_context_and_scope_reject_accidental_serialization(factory):
     context = _context()
 
@@ -398,11 +408,17 @@ def test_transient_context_rejects_invalid_scope_topology_runtime_and_mode():
             selected_target_id=None,
         )
     with pytest.raises(ValidationError):
-        IntentLogicalNode(
-            logical_ref="n_2",
-            node_type="startNode",
-            safe_label="입력",
-            role="entry",
+        IntentLogicalTopology(
+            workflow_present=True,
+            nodes=(
+                IntentLogicalNode(
+                    logical_ref="n_2",
+                    node_type="startNode",
+                    safe_label="입력",
+                    role="entry",
+                ),
+            ),
+            edges=(),
         )
     with pytest.raises(ValidationError):
         PlannerRuntimeFingerprint(
