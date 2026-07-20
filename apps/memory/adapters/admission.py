@@ -7,7 +7,10 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from apps.memory.application.public_lifecycle import PublicDeploymentBinding
+from apps.memory.application.public_lifecycle import (
+    PublicConversationAdmissionDisposition,
+    PublicDeploymentBinding,
+)
 from apps.memory.domain.errors import (
     MemoryAdapterUnavailableError,
     PublicConversationRateLimitedError,
@@ -22,12 +25,13 @@ local window_seconds = tonumber(ARGV[1])
 local deduplication_ttl_seconds = tonumber(ARGV[2])
 local retry_window_seconds = tonumber(ARGV[3])
 local retry_limit = tonumber(ARGV[4])
+local exact_retry = ARGV[#ARGV] == 'exact_retry'
 local window = math.floor(now / window_seconds)
 local window_end = (window + 1) * window_seconds
 local retry_window = math.floor(now / retry_window_seconds)
 local retry_window_end = (retry_window + 1) * retry_window_seconds
 
-if redis.call('EXISTS', KEYS[1]) == 1 then
+if exact_retry or redis.call('EXISTS', KEYS[1]) == 1 then
   local retry_count = tonumber(redis.call('GET', KEYS[2]) or '0')
   if retry_count >= retry_limit then
     return {0, tostring(math.max(1, math.ceil(retry_window_end - now)))}
@@ -121,66 +125,77 @@ class RedisPublicConversationAdmission:
         self,
         *,
         operation: str,
-        binding: PublicDeploymentBinding,
+        binding: PublicDeploymentBinding | None,
         grant_id,
         network_address: str,
+        request_scope_digest: str,
         request_key_hash: str,
         request_fingerprint: str,
+        disposition: PublicConversationAdmissionDisposition,
     ) -> None:
-        if not network_address or len(network_address) > 255:
+        if not isinstance(disposition, PublicConversationAdmissionDisposition):
             raise MemoryAdapterUnavailableError()
-        if not re.fullmatch(r"[0-9a-f]{64}", request_key_hash):
-            raise MemoryAdapterUnavailableError()
-        if not re.fullmatch(r"[0-9a-f]{64}", request_fingerprint):
-            raise MemoryAdapterUnavailableError()
-        if operation == "conversation.create":
-            if grant_id is not None:
+        for value in (
+            request_scope_digest,
+            request_key_hash,
+            request_fingerprint,
+        ):
+            if not re.fullmatch(r"[0-9a-f]{64}", value):
                 raise MemoryAdapterUnavailableError()
-            window_seconds = self._policy.create_window_seconds
-            dimensions = [
-                (
-                    "deployment",
-                    str(binding.deployment_id),
-                    self._policy.create_deployment_rate_limit,
-                ),
-                (
-                    "organization",
-                    str(binding.organization_id),
-                    self._policy.create_organization_rate_limit,
-                ),
-                (
-                    "deployment_network",
-                    f"{binding.deployment_id}:{network_address}",
-                    self._policy.create_deployment_network_rate_limit,
-                ),
-            ]
+
+        dimensions: list[tuple[str, str, int]]
+        if disposition is PublicConversationAdmissionDisposition.EXACT_RETRY:
+            window_seconds = self._policy.retry_window_seconds
+            dimensions = []
         else:
-            if grant_id is None:
+            if binding is None or not network_address or len(network_address) > 255:
                 raise MemoryAdapterUnavailableError()
-            window_seconds = self._policy.window_seconds
-            dimensions = [
-                (
-                    "deployment",
-                    str(binding.deployment_id),
-                    self._policy.deployment_rate_limit,
-                ),
-                (
-                    "organization",
-                    str(binding.organization_id),
-                    self._policy.organization_rate_limit,
-                ),
-                ("network", network_address, self._policy.network_rate_limit),
-                ("grant", str(grant_id), self._policy.grant_rate_limit),
-            ]
+            if operation == "conversation.create":
+                if grant_id is not None:
+                    raise MemoryAdapterUnavailableError()
+                window_seconds = self._policy.create_window_seconds
+                dimensions = [
+                    (
+                        "deployment",
+                        str(binding.deployment_id),
+                        self._policy.create_deployment_rate_limit,
+                    ),
+                    (
+                        "organization",
+                        str(binding.organization_id),
+                        self._policy.create_organization_rate_limit,
+                    ),
+                    (
+                        "deployment_network",
+                        f"{binding.deployment_id}:{network_address}",
+                        self._policy.create_deployment_network_rate_limit,
+                    ),
+                ]
+            else:
+                if grant_id is None:
+                    raise MemoryAdapterUnavailableError()
+                window_seconds = self._policy.window_seconds
+                dimensions = [
+                    (
+                        "deployment",
+                        str(binding.deployment_id),
+                        self._policy.deployment_rate_limit,
+                    ),
+                    (
+                        "organization",
+                        str(binding.organization_id),
+                        self._policy.organization_rate_limit,
+                    ),
+                    ("network", network_address, self._policy.network_rate_limit),
+                    ("grant", str(grant_id), self._policy.grant_rate_limit),
+                ]
         keys = tuple(
             f"{self._key_prefix}:{operation}:{dimension}:{self._digest(dimension, value)}"
             for dimension, value, _limit in dimensions
         )
         request_identity = ":".join(
             (
-                str(binding.organization_id),
-                str(binding.deployment_id),
-                str(grant_id) if grant_id is not None else "create",
+                request_scope_digest,
                 request_key_hash,
                 request_fingerprint,
             )
@@ -203,6 +218,7 @@ class RedisPublicConversationAdmission:
                 self._policy.retry_window_seconds,
                 self._policy.request_retry_rate_limit,
                 *limits,
+                disposition.value,
             )
         except Exception as exc:
             raise MemoryAdapterUnavailableError() from exc

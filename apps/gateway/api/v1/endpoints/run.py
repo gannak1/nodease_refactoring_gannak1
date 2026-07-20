@@ -1,11 +1,23 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Response, status
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
 from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_deployment_runtime_policy
 from apps.shared.db.session import get_db
 from apps.gateway.services.deployment_service import DeploymentService
+from apps.gateway.middleware.public_conversation_cors import (
+    mark_public_conversation_transport_boundary,
+)
 from apps.shared.domain.deployment_runtime_policy import DeploymentRuntimePolicy
 
 router = APIRouter()
@@ -49,6 +61,7 @@ async def run_workflow(
 @router.post("/run-public/{url_slug}")
 async def run_workflow_public(
     url_slug: str,
+    request: Request,
     runtime_policy: Annotated[
         DeploymentRuntimePolicy,
         Depends(get_deployment_runtime_policy),
@@ -66,6 +79,7 @@ async def run_workflow_public(
     # not let a root-level conversation envelope reach the legacy runtime until
     # MBA-318 installs the verified vertical execution contract.
     if "conversation" in request_body:
+        mark_public_conversation_transport_boundary(request.scope)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={

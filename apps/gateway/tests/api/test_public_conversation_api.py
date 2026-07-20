@@ -5,11 +5,15 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
 from apps.gateway.adapters.authentication.client_network import ClientNetworkResolver
 from apps.gateway.api.deps import get_db
 from apps.gateway.api.v1.endpoints import public_conversation, run
+from apps.gateway.middleware.public_conversation_cors import (
+    PublicConversationCorsBoundaryMiddleware,
+)
 from apps.memory.application.public_lifecycle import (
     ClosePublicConversationResult,
     PublicConversationResult,
@@ -265,7 +269,9 @@ def test_transcript_uses_the_documented_public_response_shape(monkeypatch):
     assert application.transcript.queries[0]["access_token"] == access_token
 
 
-def test_non_conversation_authorization_uses_typed_resource_hidden_contract(monkeypatch):
+def test_non_conversation_authorization_uses_typed_resource_hidden_contract(
+    monkeypatch,
+):
     application = _Application()
     client = _client(monkeypatch, application)
     client.cookies.set("session", "authenticated-cookie-is-not-a-principal")
@@ -291,13 +297,27 @@ def test_non_conversation_authorization_uses_typed_resource_hidden_contract(monk
 
 def test_legacy_public_run_rejects_target_conversation_envelope_before_runtime():
     app = FastAPI()
-    app.include_router(run.router)
+    app.include_router(run.router, prefix="/api/v1")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["https://parent.example"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app.add_middleware(PublicConversationCorsBoundaryMiddleware)
     app.dependency_overrides[get_db] = lambda: object()
 
     response = TestClient(app).post(
-        "/run-public/public-chatbot",
+        "/api/v1/run-public/public-chatbot",
         json={"conversation": {}},
+        headers={"Origin": "https://parent.example"},
     )
 
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "memory.feature_unavailable"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert "access-control-allow-origin" not in response.headers
+    assert "access-control-allow-credentials" not in response.headers
+    assert "origin" not in response.headers.get("vary", "").lower()

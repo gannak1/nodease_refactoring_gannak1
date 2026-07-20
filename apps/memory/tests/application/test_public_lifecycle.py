@@ -824,7 +824,10 @@ def test_close_replays_after_original_grant_and_session_expire_but_new_key_fails
             )
         )
     assert len(repository.idempotency) == record_count
-    assert len(admission.calls) == 1
+    assert [call["disposition"].value for call in admission.calls] == [
+        "logical_request",
+        "exact_retry",
+    ]
 
 
 def test_reset_replays_replacement_secret_after_original_scope_expires():
@@ -974,7 +977,8 @@ def test_delete_replays_after_physical_purge_removes_grant_and_session_rows():
     components = _application()
     repository = components[0]
     create = _use_case(CreatePublicConversationUseCase, components)
-    delete = _use_case(DeletePublicConversationUseCase, components)
+    admission = _Admission()
+    delete = _use_case(DeletePublicConversationUseCase, components, admission=admission)
     created = create.execute(_create_command(suffix="purged-delete-replay"))
     command = _lifecycle_command(
         created.access_token,
@@ -996,11 +1000,22 @@ def test_delete_replays_after_physical_purge_removes_grant_and_session_rows():
     assert replay.purge_receipt == deleted.purge_receipt
     assert record.authorization_app_id == repository.binding.app_id
     assert record.authorization_verifier_hash != created.access_token
+    assert [call["disposition"].value for call in admission.calls] == [
+        "logical_request",
+        "exact_retry",
+    ]
     with pytest.raises(AccessGrantNotUsableError):
         delete.execute(
             replace(
                 command,
                 access_token=components[2].issue_access_grant().raw_value,
+            )
+        )
+    with pytest.raises(AccessGrantNotUsableError):
+        delete.execute(
+            replace(
+                command,
+                request_fingerprint=_hash("different-delete-fingerprint"),
             )
         )
 
@@ -1122,7 +1137,7 @@ def test_closed_conversation_can_request_privacy_delete_but_cannot_reset():
     assert result.lifecycle.value == "delete_pending"
 
 
-def test_mutation_admission_runs_once_for_new_request_not_for_idempotency_replay():
+def test_mutation_admission_separates_primary_request_from_exact_retry():
     components = _application()
     admission = _Admission()
     create = _use_case(
@@ -1135,10 +1150,39 @@ def test_mutation_admission_runs_once_for_new_request_not_for_idempotency_replay
     create.execute(command)
     create.execute(command)
 
-    assert len(admission.calls) == 1
+    assert len(admission.calls) == 2
     assert admission.calls[0]["operation"] == "conversation.create"
     assert admission.calls[0]["request_key_hash"] == command.idempotency_key_hash
     assert admission.calls[0]["request_fingerprint"] == command.request_fingerprint
+    assert admission.calls[0]["disposition"].value == "logical_request"
+    assert admission.calls[1]["disposition"].value == "exact_retry"
+
+
+def test_create_rejects_deployment_switch_after_admission():
+    components = _application()
+    repository = components[0]
+    original_binding = repository.binding
+
+    def switch_deployment() -> None:
+        repository.binding = replace(
+            original_binding,
+            deployment_id=uuid.uuid4(),
+            deployment_version=original_binding.deployment_version + 1,
+        )
+
+    admission = _Admission(on_admit=switch_deployment)
+    create = _use_case(
+        CreatePublicConversationUseCase,
+        components,
+        admission=admission,
+    )
+
+    with pytest.raises(AccessGrantNotUsableError):
+        create.execute(_create_command(suffix="deployment-switch"))
+
+    assert repository.sessions == {}
+    assert repository.grants == {}
+    assert repository.idempotency == {}
 
 
 def test_mutation_admission_runs_after_database_preflight_releases_locks():

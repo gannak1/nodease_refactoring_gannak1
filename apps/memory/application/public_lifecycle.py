@@ -14,6 +14,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from typing import Protocol
 
 from apps.memory.application.ports import MemoryUnitOfWorkPort
@@ -39,6 +40,11 @@ from apps.memory.domain.public_access import (
     IdempotencyStatus,
 )
 from apps.shared.audit.actions import AuditAction
+
+
+class PublicConversationAdmissionDisposition(str, Enum):
+    LOGICAL_REQUEST = "logical_request"
+    EXACT_RETRY = "exact_retry"
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,11 +162,13 @@ class PublicConversationAdmissionPort(Protocol):
         self,
         *,
         operation: str,
-        binding: "PublicDeploymentBinding",
+        binding: "PublicDeploymentBinding | None",
         grant_id: uuid.UUID | None,
         network_address: str,
+        request_scope_digest: str,
         request_key_hash: str,
         request_fingerprint: str,
+        disposition: PublicConversationAdmissionDisposition,
     ) -> None: ...
 
 
@@ -504,11 +512,13 @@ class _TransactionalPublicUseCase:
         self,
         *,
         operation: str,
-        binding: PublicDeploymentBinding,
+        binding: PublicDeploymentBinding | None,
         grant_id: uuid.UUID | None,
         network_address: str,
+        request_scope_digest: str,
         request_key_hash: str,
         request_fingerprint: str,
+        disposition: PublicConversationAdmissionDisposition,
     ) -> None:
         if self.admission is not None:
             self.admission.admit(
@@ -516,9 +526,19 @@ class _TransactionalPublicUseCase:
                 binding=binding,
                 grant_id=grant_id,
                 network_address=network_address,
+                request_scope_digest=request_scope_digest,
                 request_key_hash=request_key_hash,
                 request_fingerprint=request_fingerprint,
+                disposition=disposition,
             )
+
+    @staticmethod
+    def _require_admitted_binding(
+        current: PublicDeploymentBinding,
+        admitted: PublicDeploymentBinding,
+    ) -> None:
+        if current != admitted:
+            raise AccessGrantNotUsableError()
 
     def _existing_idempotency(
         self,
@@ -547,7 +567,12 @@ class _TransactionalPublicUseCase:
         command: LifecycleCommand,
         operation: str,
         require_transcript: bool,
-    ) -> tuple[PublicDeploymentBinding, uuid.UUID, bool]:
+    ) -> tuple[
+        PublicDeploymentBinding,
+        uuid.UUID,
+        str,
+        PublicConversationAdmissionDisposition,
+    ]:
         binding = self._binding(command.url_slug)
         grant = self._grant_for_mutation(
             binding=binding,
@@ -590,7 +615,12 @@ class _TransactionalPublicUseCase:
                     now=command.now,
                 )
             self._require_unexpired_session(session, now=command.now)
-        return binding, grant.id, existing is None
+        disposition = (
+            PublicConversationAdmissionDisposition.LOGICAL_REQUEST
+            if existing is None
+            else PublicConversationAdmissionDisposition.EXACT_RETRY
+        )
+        return binding, grant.id, scope_digest, disposition
 
     def _replay_secret(
         self,
@@ -646,7 +676,7 @@ class _TransactionalPublicUseCase:
     def _authorized_delete_replay(
         self,
         command: LifecycleCommand,
-    ) -> DeletePublicConversationResult | None:
+    ) -> tuple[DeletePublicConversationResult, str] | None:
         app_binding = self._app_binding(command.url_slug)
         verifiers = self.secrets.access_grant_verifiers(command.access_token)
         if not verifiers:
@@ -661,7 +691,10 @@ class _TransactionalPublicUseCase:
         )
         if record is None:
             return None
-        record.require_matching_fingerprint(command.request_fingerprint)
+        if not hmac.compare_digest(
+            record.request_fingerprint, command.request_fingerprint
+        ):
+            raise AccessGrantNotUsableError()
         result_snapshot = _record_result_snapshot(
             record,
             expected_resource_type="conversation_purge_job",
@@ -678,13 +711,14 @@ class _TransactionalPublicUseCase:
             purpose="purge_receipt",
             now=command.now,
         )
-        return DeletePublicConversationResult(
+        result = DeletePublicConversationResult(
             lifecycle=result_snapshot.lifecycle,
             lifecycle_revision=result_snapshot.lifecycle_revision,
             purge_job_id=purge_job.id,
             purge_receipt=receipt,
             replayed=True,
         )
+        return result, record.scope_digest
 
 
 def _utc_now() -> datetime:
@@ -695,7 +729,11 @@ class CreatePublicConversationUseCase(_TransactionalPublicUseCase):
     def execute(
         self, command: CreatePublicConversationCommand
     ) -> PublicConversationResult:
-        def preflight() -> tuple[PublicDeploymentBinding, bool]:
+        def preflight() -> tuple[
+            PublicDeploymentBinding,
+            str,
+            PublicConversationAdmissionDisposition,
+        ]:
             binding = self._binding(command.url_slug)
             scope_digest = _scope_digest(
                 operation="conversation.create",
@@ -709,21 +747,30 @@ class CreatePublicConversationUseCase(_TransactionalPublicUseCase):
                 request_fingerprint=command.request_fingerprint,
                 now=command.now,
             )
-            return binding, existing is None
-
-        admission_binding, should_admit = self._execute(preflight)
-        if should_admit:
-            self._admit(
-                operation="conversation.create",
-                binding=admission_binding,
-                grant_id=None,
-                network_address=command.network_address,
-                request_key_hash=command.idempotency_key_hash,
-                request_fingerprint=command.request_fingerprint,
+            disposition = (
+                PublicConversationAdmissionDisposition.LOGICAL_REQUEST
+                if existing is None
+                else PublicConversationAdmissionDisposition.EXACT_RETRY
             )
+            return binding, scope_digest, disposition
+
+        admission_binding, admission_scope_digest, disposition = self._execute(
+            preflight
+        )
+        self._admit(
+            operation="conversation.create",
+            binding=admission_binding,
+            grant_id=None,
+            network_address=command.network_address,
+            request_scope_digest=admission_scope_digest,
+            request_key_hash=command.idempotency_key_hash,
+            request_fingerprint=command.request_fingerprint,
+            disposition=disposition,
+        )
 
         def operation() -> PublicConversationResult:
             binding = self._binding(command.url_slug, for_update=True)
+            self._require_admitted_binding(binding, admission_binding)
             now = self._current_time()
             scope_digest = _scope_digest(
                 operation="conversation.create",
@@ -827,25 +874,29 @@ class CreatePublicConversationUseCase(_TransactionalPublicUseCase):
 
 class ClosePublicConversationUseCase(_TransactionalPublicUseCase):
     def execute(self, command: LifecycleCommand) -> ClosePublicConversationResult:
-        admission_binding, admission_grant_id, should_admit = self._execute(
-            lambda: self._lifecycle_preflight(
-                command=command,
-                operation="conversation.close",
-                require_transcript=False,
+        admission_binding, admission_grant_id, admission_scope_digest, disposition = (
+            self._execute(
+                lambda: self._lifecycle_preflight(
+                    command=command,
+                    operation="conversation.close",
+                    require_transcript=False,
+                )
             )
         )
-        if should_admit:
-            self._admit(
-                operation="conversation.close",
-                binding=admission_binding,
-                grant_id=admission_grant_id,
-                network_address=command.network_address,
-                request_key_hash=command.idempotency_key_hash,
-                request_fingerprint=command.request_fingerprint,
-            )
+        self._admit(
+            operation="conversation.close",
+            binding=admission_binding,
+            grant_id=admission_grant_id,
+            network_address=command.network_address,
+            request_scope_digest=admission_scope_digest,
+            request_key_hash=command.idempotency_key_hash,
+            request_fingerprint=command.request_fingerprint,
+            disposition=disposition,
+        )
 
         def operation() -> ClosePublicConversationResult:
             binding = self._binding(command.url_slug, for_update=True)
+            self._require_admitted_binding(binding, admission_binding)
             grant = self._grant_for_mutation(
                 binding=binding,
                 raw_access_token=command.access_token,
@@ -917,25 +968,29 @@ class ClosePublicConversationUseCase(_TransactionalPublicUseCase):
 
 class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
     def execute(self, command: LifecycleCommand) -> PublicConversationResult:
-        admission_binding, admission_grant_id, should_admit = self._execute(
-            lambda: self._lifecycle_preflight(
-                command=command,
-                operation="conversation.reset",
-                require_transcript=False,
+        admission_binding, admission_grant_id, admission_scope_digest, disposition = (
+            self._execute(
+                lambda: self._lifecycle_preflight(
+                    command=command,
+                    operation="conversation.reset",
+                    require_transcript=False,
+                )
             )
         )
-        if should_admit:
-            self._admit(
-                operation="conversation.reset",
-                binding=admission_binding,
-                grant_id=admission_grant_id,
-                network_address=command.network_address,
-                request_key_hash=command.idempotency_key_hash,
-                request_fingerprint=command.request_fingerprint,
-            )
+        self._admit(
+            operation="conversation.reset",
+            binding=admission_binding,
+            grant_id=admission_grant_id,
+            network_address=command.network_address,
+            request_scope_digest=admission_scope_digest,
+            request_key_hash=command.idempotency_key_hash,
+            request_fingerprint=command.request_fingerprint,
+            disposition=disposition,
+        )
 
         def operation() -> PublicConversationResult:
             binding = self._binding(command.url_slug, for_update=True)
+            self._require_admitted_binding(binding, admission_binding)
             old_grant = self._grant_for_mutation(
                 binding=binding,
                 raw_access_token=command.access_token,
@@ -1082,29 +1137,46 @@ class ResetPublicConversationUseCase(_TransactionalPublicUseCase):
 
 class DeletePublicConversationUseCase(_TransactionalPublicUseCase):
     def execute(self, command: LifecycleCommand) -> DeletePublicConversationResult:
-        replay = self._execute(lambda: self._authorized_delete_replay(command))
-        if replay is not None:
-            return replay
-
-        admission_binding, admission_grant_id, should_admit = self._execute(
-            lambda: self._lifecycle_preflight(
-                command=command,
-                operation="conversation.delete",
-                require_transcript=True,
-            )
+        authorized_replay = self._execute(
+            lambda: self._authorized_delete_replay(command)
         )
-        if should_admit:
+        if authorized_replay is not None:
+            result, replay_scope_digest = authorized_replay
             self._admit(
                 operation="conversation.delete",
-                binding=admission_binding,
-                grant_id=admission_grant_id,
+                binding=None,
+                grant_id=None,
                 network_address=command.network_address,
+                request_scope_digest=replay_scope_digest,
                 request_key_hash=command.idempotency_key_hash,
                 request_fingerprint=command.request_fingerprint,
+                disposition=PublicConversationAdmissionDisposition.EXACT_RETRY,
             )
+            return result
+
+        admission_binding, admission_grant_id, admission_scope_digest, disposition = (
+            self._execute(
+                lambda: self._lifecycle_preflight(
+                    command=command,
+                    operation="conversation.delete",
+                    require_transcript=True,
+                )
+            )
+        )
+        self._admit(
+            operation="conversation.delete",
+            binding=admission_binding,
+            grant_id=admission_grant_id,
+            network_address=command.network_address,
+            request_scope_digest=admission_scope_digest,
+            request_key_hash=command.idempotency_key_hash,
+            request_fingerprint=command.request_fingerprint,
+            disposition=disposition,
+        )
 
         def operation() -> DeletePublicConversationResult:
             binding = self._binding(command.url_slug, for_update=True)
+            self._require_admitted_binding(binding, admission_binding)
             grant = self._grant_for_mutation(
                 binding=binding,
                 raw_access_token=command.access_token,
@@ -1583,6 +1655,7 @@ __all__ = [
     "LifecycleCommand",
     "PublicConversationAuditPort",
     "PublicConversationAdmissionPort",
+    "PublicConversationAdmissionDisposition",
     "PublicConversationPolicy",
     "PublicConversationRepositoryPort",
     "PublicConversationResult",

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+_PUBLIC_CONVERSATION_BOUNDARY_STATE_KEY = "nodease.public_conversation_transport"
+
 
 class PublicConversationCorsBoundaryMiddleware:
     """Enforce the transport boundary for public Conversation API responses.
@@ -21,13 +23,18 @@ class PublicConversationCorsBoundaryMiddleware:
         receive: Receive,
         send: Send,
     ) -> None:
-        if scope["type"] != "http" or not _is_public_conversation_path(
-            scope.get("path", "")
-        ):
+        if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
-        if scope["method"] == "OPTIONS":
+        path = scope.get("path", "")
+        is_conversation_path = _is_public_conversation_path(path)
+        is_public_run_root = _is_public_run_root_path(path)
+        if not is_conversation_path and not is_public_run_root:
+            await self.app(scope, receive, send)
+            return
+
+        if is_conversation_path and scope["method"] == "OPTIONS":
             await send(
                 {
                     "type": "http.response.start",
@@ -39,7 +46,9 @@ class PublicConversationCorsBoundaryMiddleware:
             return
 
         async def send_without_cors(message: Message) -> None:
-            if message["type"] == "http.response.start":
+            if message["type"] == "http.response.start" and (
+                is_conversation_path or _is_marked_public_conversation_response(scope)
+            ):
                 message = dict(message)
                 message["headers"] = _public_response_headers(
                     message.get("headers", [])
@@ -47,6 +56,25 @@ class PublicConversationCorsBoundaryMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_without_cors)
+
+
+def mark_public_conversation_transport_boundary(scope: Scope) -> None:
+    """Mark a root public-run response as owned by Conversation transport."""
+
+    scope.setdefault("state", {})[_PUBLIC_CONVERSATION_BOUNDARY_STATE_KEY] = True
+
+
+def _is_marked_public_conversation_response(scope: Scope) -> bool:
+    state = scope.get("state", {})
+    return bool(state.get(_PUBLIC_CONVERSATION_BOUNDARY_STATE_KEY))
+
+
+def _is_public_run_root_path(path: str) -> bool:
+    prefix = "/api/v1/run-public/"
+    if not path.startswith(prefix):
+        return False
+    remainder = path[len(prefix) :]
+    return bool(remainder) and "/" not in remainder
 
 
 def _is_public_conversation_path(path: str) -> bool:
@@ -93,4 +121,7 @@ def _public_response_headers(
     return sanitized
 
 
-__all__ = ["PublicConversationCorsBoundaryMiddleware"]
+__all__ = [
+    "PublicConversationCorsBoundaryMiddleware",
+    "mark_public_conversation_transport_boundary",
+]
