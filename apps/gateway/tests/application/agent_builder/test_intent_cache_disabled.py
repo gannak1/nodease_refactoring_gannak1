@@ -1,15 +1,23 @@
 import inspect
+from typing import get_type_hints
 
 import pytest
 from pydantic import ValidationError
 
 from apps.gateway.application.agent_builder.intent_cache import (
+    CachedIntentPlanV1,
     DisabledIntentPlanCacheBoundary,
+    IntentCacheKey,
+    IntentNormalizationResult,
     IntentNormalizerPort,
     IntentPlanCacheBoundary,
     IntentPlanExecution,
+    IntentPlanLoadResult,
     IntentPlanRehydratorPort,
+    IntentPlanSaveResult,
     IntentPlanStorePort,
+    IntentPlanningContext,
+    IntentRehydrationResult,
 )
 from apps.shared.schemas.agent_builder import AgentBuilderStructuredRequest
 
@@ -99,3 +107,22 @@ def test_ports_are_runtime_checkable_narrow_protocols():
     assert isinstance(FakeStore(), IntentPlanStorePort)
     assert isinstance(FakeRehydrator(), IntentPlanRehydratorPort)
     assert isinstance(FakeBoundary(), IntentPlanCacheBoundary)
+
+    assert get_type_hints(IntentNormalizerPort.normalize) == {
+        "context": IntentPlanningContext,
+        "return": IntentNormalizationResult,
+    }
+    assert get_type_hints(IntentPlanStorePort.load) == {
+        "key": IntentCacheKey,
+        "return": IntentPlanLoadResult,
+    }
+    assert get_type_hints(IntentPlanStorePort.save) == {
+        "key": IntentCacheKey,
+        "plan": CachedIntentPlanV1,
+        "return": IntentPlanSaveResult,
+    }
+    assert get_type_hints(IntentPlanRehydratorPort.rehydrate) == {
+        "plan": CachedIntentPlanV1,
+        "context": IntentPlanningContext,
+        "return": IntentRehydrationResult,
+    }

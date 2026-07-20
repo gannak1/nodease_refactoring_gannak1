@@ -199,6 +199,27 @@ def test_plan_and_nested_contracts_forbid_unknown_fields():
         )
     with pytest.raises(ValidationError):
         LogicalStepRef(capability="answer", occurrence=1, node_id="node-1")
+    with pytest.raises(ValidationError):
+        CachedKnowledgeRequirement(
+            requirement_ref="kr_1",
+            required=True,
+            evidence_kind="policy_or_reference",
+            target_step_ref=_steps("knowledge_backed_llm")[0],
+            topic_refs=("topic.internal_documents.v1",),
+            provider_topic="internal documents",
+        )
+    with pytest.raises(ValidationError):
+        CachedParameterGuidanceRef(
+            logical_step_ref=_steps("slack_send")[0],
+            parameter_key="channel",
+            reason_template_ref=(
+                "guidance.reason.delivery_destination_required.v1"
+            ),
+            input_guidance_template_ref=(
+                "guidance.input.select_slack_channel_id.v1"
+            ),
+            rendered_reason="channel required",
+        )
 
 
 def test_modify_plan_accepts_only_selected_target_and_replace_has_no_target():
@@ -303,6 +324,80 @@ def test_knowledge_and_guidance_refs_are_closed_and_context_applicable():
                 "guidance.input.select_slack_channel_id.v1"
             ),
         )
+    with pytest.raises(ValidationError):
+        CachedKnowledgeRequirement(
+            requirement_ref="kr_1",
+            required=True,
+            evidence_kind="policy_or_reference",
+            target_step_ref=_steps("knowledge_backed_llm")[0],
+            topic_refs=("topic.unknown.v1",),
+        )
+    with pytest.raises(ValidationError):
+        CachedParameterGuidanceRef(
+            logical_step_ref=_steps("answer")[0],
+            parameter_key="outputs",
+            reason_template_ref=(
+                "guidance.reason.delivery_destination_required.v1"
+            ),
+            input_guidance_template_ref=(
+                "guidance.input.select_slack_channel_id.v1"
+            ),
+        )
+    with pytest.raises(ValidationError):
+        CachedParameterGuidanceRef(
+            logical_step_ref=_steps("slack_send")[0],
+            parameter_key="url",
+            reason_template_ref=(
+                "guidance.reason.delivery_destination_required.v1"
+            ),
+            input_guidance_template_ref=(
+                "guidance.input.select_slack_channel_id.v1"
+            ),
+        )
+    with pytest.raises(ValidationError):
+        IntentPlanContractVersions(
+            normalizer_version="normalizer-v1",
+            cache_schema_version=1,
+            planner_contract_version="planner-v1",
+            catalog_version=3,
+            canonical_text_registry_version="intent-text-v2",
+            materializer_version="materializer-v1",
+        )
+
+    ordered_guidance = (
+        CachedParameterGuidanceRef(
+            logical_step_ref=LogicalStepRef(
+                capability="slack_send",
+                occurrence=2,
+            ),
+            parameter_key="channel",
+            reason_template_ref=(
+                "guidance.reason.delivery_destination_required.v1"
+            ),
+            input_guidance_template_ref=(
+                "guidance.input.select_slack_channel_id.v1"
+            ),
+        ),
+        CachedParameterGuidanceRef(
+            logical_step_ref=LogicalStepRef(
+                capability="slack_send",
+                occurrence=1,
+            ),
+            parameter_key="channel",
+            reason_template_ref=(
+                "guidance.reason.delivery_destination_required.v1"
+            ),
+            input_guidance_template_ref=(
+                "guidance.input.select_slack_channel_id.v1"
+            ),
+        ),
+    )
+    guidance_plan = minimal_plan(
+        ordered_capabilities=("slack_send", "slack_send"),
+        logical_steps=_steps("slack_send", "slack_send"),
+        parameter_guidance_refs=ordered_guidance,
+    )
+    assert guidance_plan.parameter_guidance_refs == ordered_guidance
 
 
 def test_catalog_snapshot_matches_current_catalog_v3_exactly():
@@ -359,14 +454,35 @@ def test_canonical_text_and_purpose_snapshots_are_exact_and_complete():
         "provider_summary": "excluded",
         "persistence": "none",
     }
-    assert len(CAPABILITY_PURPOSES) == 19
-    assert CAPABILITY_PURPOSES["start_input"] == "사용자 입력을 받습니다."
-    assert CAPABILITY_PURPOSES["knowledge_backed_llm"] == (
-        "Knowledge Base 근거로 입력을 분석하고 결과를 생성합니다."
-    )
-    assert CAPABILITY_PURPOSES["answer"] == (
-        "이전 단계 결과를 응답으로 반환합니다."
-    )
+    assert CAPABILITY_PURPOSES == {
+        "start_input": "사용자 입력을 받습니다.",
+        "webhook_trigger": "Webhook payload를 받습니다.",
+        "schedule_trigger": "설정된 일정에 따라 workflow를 시작합니다.",
+        "file_extraction": "입력 파일에서 텍스트를 추출합니다.",
+        "variable_extraction": "입력 데이터에서 필요한 변수를 추출합니다.",
+        "github_pr_read": "GitHub Pull Request와 변경 파일을 조회합니다.",
+        "mail_search": "메일을 검색합니다.",
+        "gmail_reply_draft_create": (
+            "원본 메일 thread에 Gmail 답장 초안을 생성합니다."
+        ),
+        "mail_terminal_acknowledgement": (
+            "필수 작업 성공 후 원본 메일 처리를 완료합니다."
+        ),
+        "http_request": "외부 HTTP API를 호출합니다.",
+        "workflow_call": "다른 workflow를 호출합니다.",
+        "code_execution": "sandbox에서 코드를 실행합니다.",
+        "template_render": "입력값으로 템플릿을 렌더링합니다.",
+        "condition": "조건에 따라 흐름을 분기합니다.",
+        "llm": "입력을 분석하고 결과를 생성합니다.",
+        "knowledge_backed_llm": (
+            "Knowledge Base 근거로 입력을 분석하고 결과를 생성합니다."
+        ),
+        "github_pr_comment": (
+            "생성한 내용을 GitHub Pull Request 댓글로 등록합니다."
+        ),
+        "slack_send": "이전 단계 결과를 Slack 메시지로 전송합니다.",
+        "answer": "이전 단계 결과를 응답으로 반환합니다.",
+    }
 
 
 def test_transient_context_preserves_request_specific_messages_and_topology():
@@ -392,6 +508,8 @@ def test_transient_context_and_scope_reject_accidental_serialization(factory):
         factory(context.scope)
     assert not hasattr(context, "model_dump")
     assert not hasattr(context, "dict")
+    assert not hasattr(context, "__getstate__")
+    assert not hasattr(context.scope, "__getstate__")
     assert not hasattr(context.scope, "actor_id")
     assert repr(context) == "<IntentPlanningContext redacted>"
     assert repr(context.scope) == "<EphemeralCacheScope redacted>"
@@ -425,6 +543,63 @@ def test_transient_context_rejects_invalid_scope_topology_runtime_and_mode():
             provider_ref="unknown",
             model_relation_fingerprint=_HEX_A,
             credential_relation_fingerprint=_HEX_B,
+        )
+    with pytest.raises(ValidationError):
+        IntentLogicalNode(
+            logical_ref="n_1",
+            node_type="startNode",
+            safe_label="입력",
+            role="intermediate",
+        )
+    with pytest.raises(ValidationError):
+        IntentLogicalTopology(
+            workflow_present=True,
+            nodes=(
+                IntentLogicalNode(
+                    logical_ref="n_1",
+                    node_type="startNode",
+                    safe_label="입력",
+                    role="entry",
+                ),
+            ),
+            edges=(
+                IntentLogicalEdge(
+                    logical_ref="e_1",
+                    source_node_ref="n_1",
+                    target_node_ref="n_2",
+                    source_handle_kind="standard",
+                    source_handle_ordinal=None,
+                    target_handle_kind="standard",
+                ),
+            ),
+        )
+    with pytest.raises(ValidationError):
+        IntentLogicalTopology(
+            workflow_present=True,
+            nodes=(
+                IntentLogicalNode(
+                    logical_ref="n_1",
+                    node_type="startNode",
+                    safe_label="입력",
+                    role="entry",
+                ),
+                IntentLogicalNode(
+                    logical_ref="n_2",
+                    node_type="answerNode",
+                    safe_label="응답",
+                    role="terminal",
+                ),
+            ),
+            edges=(
+                IntentLogicalEdge(
+                    logical_ref="e_1",
+                    source_node_ref="n_1",
+                    target_node_ref="n_2",
+                    source_handle_kind="condition_default",
+                    source_handle_ordinal=None,
+                    target_handle_kind="standard",
+                ),
+            ),
         )
     context = _context()
     with pytest.raises((TypeError, ValueError)):
@@ -519,6 +694,56 @@ def test_cache_key_and_boundary_decision_are_strict_closed_contracts():
         CacheBoundaryDecision(
             outcome="error", plan=None, reason="not_found"
         )
+
+    valid_decisions = (
+        CacheBoundaryDecision(outcome="miss", plan=None, reason=None),
+        CacheBoundaryDecision(outcome="miss", plan=None, reason="not_found"),
+        CacheBoundaryDecision(
+            outcome="miss",
+            plan=None,
+            reason="invalid_cached_plan",
+        ),
+        CacheBoundaryDecision(
+            outcome="miss",
+            plan=None,
+            reason="rehydration_failed",
+        ),
+        CacheBoundaryDecision(
+            outcome="bypass",
+            plan=None,
+            reason="normalization_bypass",
+        ),
+        CacheBoundaryDecision(
+            outcome="error",
+            plan=None,
+            reason="cache_unavailable",
+        ),
+    )
+    assert tuple(decision.outcome for decision in valid_decisions) == (
+        "miss",
+        "miss",
+        "miss",
+        "miss",
+        "bypass",
+        "error",
+    )
+
+    invalid_decisions = (
+        lambda: CacheBoundaryDecision(outcome="miss", plan=plan, reason=None),
+        lambda: CacheBoundaryDecision(
+            outcome="bypass",
+            plan=None,
+            reason=None,
+        ),
+        lambda: CacheBoundaryDecision(
+            outcome="error",
+            plan=plan,
+            reason="cache_unavailable",
+        ),
+    )
+    for factory in invalid_decisions:
+        with pytest.raises(ValidationError):
+            factory()
 
 
 def test_validation_errors_hide_sensitive_input_values():
