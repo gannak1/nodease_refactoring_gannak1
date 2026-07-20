@@ -8,10 +8,12 @@ from pydantic import ValidationError
 
 from apps.gateway.application.agent_builder.intent_cache.contracts import (
     CachedIntentPlanV1,
+    _SAFE_REFERENCE_LOCATION_PARTS,
 )
 
 
 _ERROR_PATHS = {
+    "invalid_payload_limit": frozenset({"payload_size"}),
     "payload_too_large": frozenset({"payload_size"}),
     "invalid_utf8": frozenset({"root"}),
     "invalid_json": frozenset({"root"}),
@@ -60,27 +62,6 @@ _FORBIDDEN_FIELDS = frozenset(
         "input_guidance",
     }
 )
-_REFERENCE_FIELDS = frozenset(
-    {
-        "capability",
-        "ordered_capabilities",
-        "logical_steps",
-        "edit_placement",
-        "step_refs",
-        "integration_actions",
-        "parameter_key",
-        "reason_template_ref",
-        "input_guidance_template_ref",
-        "requirement_ref",
-        "target_step_ref",
-        "topic_refs",
-        "contract_versions",
-        "normalizer_version",
-        "planner_contract_version",
-        "canonical_text_registry_version",
-        "materializer_version",
-    }
-)
 _UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -126,6 +107,15 @@ class IntentPlanCodecError(ValueError):
 
     def __repr__(self) -> str:
         return str(self)
+
+
+def _validate_payload_limit(max_payload_bytes: int) -> int:
+    if type(max_payload_bytes) is not int or max_payload_bytes <= 0:
+        raise IntentPlanCodecError(
+            "invalid_payload_limit",
+            "payload_size",
+        )
+    return max_payload_bytes
 
 
 class _DuplicateKeyError(ValueError):
@@ -184,7 +174,10 @@ def _validation_path_category(error: ValidationError) -> str:
         include_context=False,
         include_input=False,
     ):
-        if any(str(part) in _REFERENCE_FIELDS for part in item.get("loc", ())):
+        if any(
+            str(part) in _SAFE_REFERENCE_LOCATION_PARTS
+            for part in item.get("loc", ())
+        ):
             return "reference"
     return "payload_shape"
 
@@ -195,6 +188,7 @@ class CanonicalIntentPlanCodec:
         plan: CachedIntentPlanV1,
         max_payload_bytes: int,
     ) -> bytes:
+        max_payload_bytes = _validate_payload_limit(max_payload_bytes)
         if not isinstance(plan, CachedIntentPlanV1):
             raise IntentPlanCodecError("invalid_plan_schema", "payload_shape")
         raw = None
@@ -256,6 +250,7 @@ class CanonicalIntentPlanCodec:
         payload: bytes,
         max_payload_bytes: int,
     ) -> CachedIntentPlanV1:
+        max_payload_bytes = _validate_payload_limit(max_payload_bytes)
         if not isinstance(payload, bytes):
             raise IntentPlanCodecError("invalid_utf8", "root")
         if len(payload) > max_payload_bytes:

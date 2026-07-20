@@ -333,6 +333,17 @@ def test_knowledge_and_guidance_refs_are_closed_and_context_applicable():
             topic_refs=("topic.unknown.v1",),
         )
     with pytest.raises(ValidationError):
+        CachedKnowledgeRequirement(
+            requirement_ref="kr_1",
+            required=True,
+            evidence_kind="policy_or_reference",
+            target_step_ref=_steps("knowledge_backed_llm")[0],
+            topic_refs=(
+                "topic.internal_documents.v1",
+                "topic.internal_documents.v1",
+            ),
+        )
+    with pytest.raises(ValidationError):
         CachedParameterGuidanceRef(
             logical_step_ref=_steps("answer")[0],
             parameter_key="outputs",
@@ -872,6 +883,14 @@ def test_cache_key_and_boundary_decision_are_strict_closed_contracts():
                     "intent_summary": unsafe,
                 }
             ),
+            strict=True,
+        ),
+        lambda unsafe: IntentCacheKey.model_validate_strings(
+            {
+                "namespace": "agent-builder:intent-plan",
+                "key_version": unsafe,
+                "digest": _HEX_A,
+            },
             strict=True,
         ),
         lambda unsafe: IntentRehydrationResult(

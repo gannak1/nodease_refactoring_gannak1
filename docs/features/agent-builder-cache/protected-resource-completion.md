@@ -8,16 +8,16 @@ Status: Draft
 Knowledge/Collection과 workflow graph에 영향을 줄 수 있으므로 protected-resource completion
 검토 대상이다. Cache 자체는 protected resource를 durable하게 저장하지 않는다.
 
-현재는 문서 설계 단계다. `후속 이슈` 행은 구현 완료를 뜻하지 않으며 해당 이슈의 필수 검증 전에는
-feature 문서와 기능 상태를 완료로 바꾸지 않는다. 구현 전 안전 상태는 cache feature flag 기본 비활성과
-기존 Planner 경로 유지다.
+MBA-343의 strict contract, codec, port와 disabled composition spine은 구현·로컬 검증됐지만 serving cache는
+아직 구현되지 않았다. `후속 이슈` 행은 구현 완료를 뜻하지 않으며 해당 이슈의 필수 검증 전에는 feature
+문서와 기능 상태를 완료로 바꾸지 않는다. 현재 안전 상태는 serving cache 비활성과 기존 Planner 경로 유지다.
 
 | Boundary | 현재 상태 | Decision and safe interim state | Evidence target |
 |---|---|---|---|
-| 정책·식별자 | 후속 이슈: MBA-343~346, MBA-348~349 | Organization/user scope, selected target과 Knowledge identity는 HMAC 경계 밖으로 노출하지 않는다. 구현 전 cache는 비활성이다. | ADR-0063, ABC-FR-018~026, ABC-T014, ABC-T020~039 |
+| 정책·식별자 | MBA-343 로컬 구현·검증; 후속 이슈: MBA-344~346, MBA-348~349 | MBA-343 plan은 protected identity를 저장하지 않는다. 후속 구현도 Organization/user scope, selected target과 Knowledge identity를 HMAC 경계 밖으로 노출하지 않으며 serving 전까지 cache는 비활성이다. | ADR-0063, ABC343-FR-002~005, ABC343-T011~018, ABC-FR-018~026, ABC-T020~039 |
 | 관리 API/UI | 해당 없음 | Cache는 관리 리소스가 아니며 public endpoint, picker, 권한 관리 UI와 client diagnostic을 추가하지 않는다. 기존 Agent Builder UI 계약을 유지한다. | `api_spec.md` External API Boundary, `component_spec.md` PRD and Core Document Impact |
-| Cache storage·GraphMutation | 후속 이슈: MBA-343, MBA-345, MBA-348, MBA-349 | Cache-safe typed plan만 TTL 저장한다. Resource ID, handle, credential, graph와 operation을 저장하지 않고 결과는 기존 GraphMutation/CAS로만 저장한다. | ABC-FR-030~036, ABC-FR-044, ABC-T028~035, ABC-T066~068 |
-| Cache integrity | 후속 이슈: MBA-343, MBA-345, MBA-349 | Key digest와 payload를 authenticated envelope로 묶고 MAC 확인 전 plan을 사용하지 않는다. 구현 전 cache는 비활성이다. | ABC-FR-026, ABC-FR-034~036, ABC-T031~035 |
+| Cache storage·GraphMutation | MBA-343 value contract 로컬 구현·검증; 후속 이슈: MBA-345, MBA-348, MBA-349 | MBA-343은 cache-safe typed plan과 forbidden-content 계약만 제공하고 저장하지 않는다. 후속 저장은 Resource ID, handle, credential, graph와 operation을 제외하고 결과를 기존 GraphMutation/CAS로만 저장한다. | ABC343-FR-001~004, ABC343-T001~028, ABC-FR-030~036, ABC-FR-044, ABC-T066~068 |
+| Cache integrity | MBA-343 codec 로컬 구현·검증; 후속 이슈: MBA-345, MBA-349 | MBA-343은 canonical codec·size·schema·forbidden-content 검증을 제공한다. 후속 adapter가 key digest와 payload를 authenticated envelope로 묶고 MAC 확인 전 plan을 사용하지 않으며 serving 전까지 cache는 비활성이다. | ABC343-FR-004, ABC343-T019~028, ABC343-T059~067, ABC-FR-026, ABC-FR-034~036, ABC-T031~035 |
 | HMAC secret | 후속 이슈: MBA-345, MBA-349 | 기존 untracked/production secret injection 경계만 사용하고 tracked env, repr, log, trace와 audit 노출을 금지한다. | ABC-FR-025, ABC-FR-087~089, ABC-T126~129 |
 | Redis connection secret | 후속 이슈: MBA-345, MBA-349 | URL password와 query credential을 configuration error와 diagnostic에 노출하지 않는다. | ABC-FR-087, ABC-T126, ABC-T129 |
 | Organization scope | 후속 이슈: MBA-345, MBA-348, MBA-349 | Active organization과 user를 HMAC key material에 포함하고 사용자 간 entry를 공유하지 않는다. | ABC-FR-020~024, ABC-T020~027 |
@@ -32,13 +32,13 @@ feature 문서와 기능 상태를 완료로 바꾸지 않는다. 구현 전 안
 | Background coordination | 해당 없음 | Lease는 foreground request의 bounded single-flight에만 사용하며 worker claim이나 durable background coordination을 만들지 않는다. | `component_spec.md` Single-Flight, ABC-T102~116 |
 | Lifecycle | 후속 이슈: MBA-346, MBA-349 | Revoked/deleted/stale resource는 hit revalidation에서 제외하거나 기존 permission/stale 계약으로 차단한다. | ABC-FR-040~048, ABC-FR-050~054, ABC-T060~068, ABC-T080~084 |
 | Cache key rotation·migration | 후속 이슈: MBA-345, MBA-349 | HMAC key/version 변경은 dual-read, migration과 backfill 없이 namespace miss를 만든다. | ABC-FR-082~083, ABC-FR-088, ABC-T125, ABC-T128 |
-| Legacy data | 해당 없음 | Cache는 현재 미구현이고 DB schema나 기존 cache data가 없다. 신규 namespace는 이전 value를 읽지 않는다. | ADR-0063 Decision 12~14 |
+| Legacy data | 해당 없음 | Serving cache, DB schema와 기존 cache data는 없다. MBA-343 spine은 value를 저장하지 않으며 신규 namespace는 이전 value를 읽지 않는다. | ADR-0063 Decision 12~14, ABC343-FR-007~009 |
 | 오류·resource hiding | 후속 이슈: MBA-345, MBA-346, MBA-348, MBA-349 | Redis 오류는 safe fail-open, protected-resource permission/CAS 오류는 기존 fail-closed 계약으로 처리하고 식별자를 diagnostic에 노출하지 않는다. | ABC-FR-060~061, ABC-FR-073, ABC-T100, ABC-T120~121 |
 | Audit | 후속 이슈: MBA-348, MBA-349 | Cache hit가 workflow mutation audit을 대체하지 않는다. Audit는 cache key/value/plan의 durable copy나 Redis 복구 replay source가 아니다. | ABC-FR-074, ABC-FR-077, ABC-T124, ABC-T130 |
 | Usage/cost | 후속 이슈: MBA-348, MBA-349 | Hit는 provider usage가 없고 miss/repair만 기존 recorder를 사용한다. | ABC-FR-070~071, ABC-T048~050, ABC-T122~123 |
-| Redaction | 후속 이슈: MBA-344~345, MBA-347~350 | Raw request, cache key digest 전체, protected identity, secret과 provider payload를 log, metric, audit와 artifact에 남기지 않는다. | ABC-FR-006, ABC-FR-032~036, ABC-FR-073, ABC-NFR-014~015, ABC-T008, ABC-T027~035, ABC-T121, ABC-T126~130, ABC-T158, ABC-T165~167 |
+| Redaction | MBA-343 contract/codec 로컬 구현·검증; 후속 이슈: MBA-344~345, MBA-347~350 | MBA-343은 cache DTO/codec validation input, 원본 validator context와 exception chain을 제거하고 의미 참조 실패를 safe category로만 노출한다. 후속 serving 경계는 raw request, cache key digest 전체, protected identity, secret과 provider payload를 log, metric, audit와 artifact에 남기지 않는다. | ABC343-FR-003, ABC343-FR-010, ABC343-T011~T018, ABC343-T056, ABC343-T059, ABC343-T063~T067; ABC-FR-006, ABC-FR-032~036, ABC-FR-073, ABC-NFR-014~015, ABC-T008, ABC-T027~035, ABC-T121, ABC-T126~130, ABC-T158, ABC-T165~167 |
 | Redis isolation·운영 serving | 후속 이슈: MBA-345, MBA-349 | MBA-345는 전용 URL, no-Celery-fallback과 `NODE_ENV=production|staging` readiness gate를, MBA-349는 운영 evidence 부재 시 fail-closed 통합 검증을 소유한다. 실제 instance/secret wiring/capacity·eviction/failure/network/monitoring/rollback은 별도 운영 범위이며 evidence 전 serving을 비활성으로 유지한다. | ABC-FR-085~094, ABC-T107, ABC-T117~119, 운영 serving 전 evidence |
-| 문서·테스트 | 후속 이슈: MBA-343~350 | MBA-339은 계약과 추적표만 확정한다. 구현 위치, 실행 명령, 결과와 revision은 각 이슈 및 PR/CI에 기록하고 MBA-349가 이 matrix의 실제 evidence를 갱신한다. | `requirements.md`, `api_spec.md`, `component_spec.md`, `test_cases.md`, `local/mba-339/test-matrix.md` |
+| 문서·테스트 | MBA-343 로컬 evidence 완료; 후속 이슈: MBA-344~350 | MBA-343 구현 위치와 로컬 검증은 하위 feature 문서와 `local/mba-343/evidence/`에 기록한다. 나머지 구현 결과와 revision은 각 이슈 및 PR/CI에 기록하고 MBA-349가 serving 통합 evidence로 이 matrix를 다시 갱신한다. | `requirements.md`, `api_spec.md`, `component_spec.md`, `test_cases.md`, `../agent-builder-cache-343/`, `local/mba-343/evidence/README.md` |
 
 ## Merge Blocking Conditions
 

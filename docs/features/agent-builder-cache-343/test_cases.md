@@ -100,7 +100,7 @@ snapshot, evidence 또는 log file에 기록하지 않는다.
 | ABC343-T053 | boundary 인수 없이 직접 `AgentBuilderService` 구성 후 valid intent 실행 | disabled 기본값 사용, Planner 1회와 baseline structured result 유지 |
 | ABC343-T054 | Catalog v3 snapshot의 parameter input type을 current Catalog와 비교 | capability별 parameter key/input type이 exact match하고 drift는 fail-closed |
 | ABC343-T055 | known topic ref를 `knowledge_backed_llm`이 아닌 target에 사용 | strict schema 거부 |
-| ABC343-T056 | known Slack guidance pair를 다른 capability/parameter/input type에 사용하거나 ref 한쪽만 사용 | strict schema 거부 |
+| ABC343-T056 | known Slack guidance pair를 다른 capability/parameter/input type에 사용하거나 ref 한쪽만 사용 | strict schema와 codec이 `invalid_plan_schema/reference`로 원문 없이 거부 |
 | ABC343-T057 | `intent-text-v1` request-summary projection descriptor와 19개 capability purpose snapshot | generic request/draft summary table이 없고 `summary.current_safe_message.v1`의 source/whitespace/redaction/240-code-point/failure/provider-summary 비재사용/non-persistence 계약과 모든 capability purpose가 exact match하며 누락·초과 없음 |
 | ABC343-T058 | load hit/miss/invalid/unavailable과 save stored/unavailable result 조합 | valid union만 허용하고 unknown status/reason 또는 plan/reason 모순 거부 |
 | ABC343-T059 | codec의 모든 failure code/path category와 string/repr/cause 검사 | public `IntentPlanCodecError`만 발생하고 payload/value/full path/chained parser error 없음 |
@@ -108,9 +108,10 @@ snapshot, evidence 또는 log file에 기록하지 않는다.
 | ABC343-T061 | unchecked model copy의 invalid member 또는 extra-field subclass plan encode | decoder와 round-trip할 수 없으므로 `invalid_plan_schema/payload_shape`로 거부 |
 | ABC343-T062 | configured byte limit 안의 과도하게 중첩된 JSON decode | raw `RecursionError` 대신 `invalid_json/root`로 거부 |
 | ABC343-T063 | `sk-`, `ghp_`, `xox[baprs]-`, whitespace `Bearer` token-like value를 encode/decode | 양쪽 모두 `forbidden_cache_content/cache_content`, 원문 반사 없음 |
-| ABC343-T064 | strict DTO/port의 constructor와 `model_validate*` validation failure를 모든 public error view로 검사 | `str`/`repr`/`errors()`/`json()`에 원문 없음, input null, exception chain 없음 |
-| ABC343-T065 | GitHub read/comment action 없이 대응 capability만 있거나 capability 없이 action만 존재 | 양방향 membership 불일치를 strict schema가 거부 |
-| ABC343-T066 | Knowledge requirement placement 누락, target 불일치 또는 before-graph knowledge step 불일치 | requirement/placement 1:1 target closure를 strict schema가 거부 |
+| ABC343-T064 | strict DTO/port의 constructor, `model_validate`, `model_validate_json`, `model_validate_strings` failure를 모든 public error view로 검사 | `str`/`repr`/`errors()`/`json()`에 원문 없음, input null, exception chain 없음 |
+| ABC343-T065 | GitHub read/comment action 없이 대응 capability만 있거나 capability 없이 action만 존재 | 양방향 membership 불일치를 strict schema와 codec이 `invalid_plan_schema/reference`로 원문 없이 거부 |
+| ABC343-T066 | Knowledge requirement placement 누락, target 불일치 또는 before-graph knowledge step 불일치 | requirement/placement 1:1 target closure를 strict schema가 거부하고 target 불일치 codec 경로는 `invalid_plan_schema/reference`로 분류 |
+| ABC343-T067 | malformed input-guidance ref와 `None`, boolean, 0 이하 또는 string max payload limit을 encode/decode에 전달 | guidance 오류는 `invalid_plan_schema/reference`, 잘못된 limit은 `invalid_payload_limit/payload_size`로 원문 없이 거부 |
 
 ## 9. Suggested Commands
 

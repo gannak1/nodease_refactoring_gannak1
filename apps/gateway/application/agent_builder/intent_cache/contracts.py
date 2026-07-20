@@ -25,41 +25,48 @@ from apps.gateway.application.agent_builder.intent_cache.catalog_snapshot import
 )
 
 
-_SAFE_VALIDATION_LOCATION_PARTS = frozenset(
+_SAFE_REFERENCE_LOCATION_PARTS = frozenset(
+    {
+        "reference",
+        "capability",
+        "ordered_capabilities",
+        "logical_steps",
+        "edit_placement",
+        "step_refs",
+        "integration_actions",
+        "parameter_key",
+        "reason_template_ref",
+        "input_guidance_template_ref",
+        "requirement_ref",
+        "target_step_ref",
+        "topic_refs",
+        "contract_versions",
+        "normalizer_version",
+        "planner_contract_version",
+        "canonical_text_registry_version",
+        "materializer_version",
+    }
+)
+
+_SAFE_VALIDATION_LOCATION_PARTS = _SAFE_REFERENCE_LOCATION_PARTS | frozenset(
     {
         "cache_schema_version",
-        "canonical_text_registry_version",
-        "capability",
-        "contract_versions",
         "draft_mode",
-        "edit_placement",
         "effect_kind",
         "empty_selection_bridge",
         "evidence_kind",
-        "integration_actions",
         "knowledge_placements",
         "knowledge_requirements",
         "knowledge_step_ref",
-        "logical_steps",
-        "materializer_version",
-        "normalizer_version",
         "occurrence",
-        "ordered_capabilities",
         "parameter_guidance_refs",
-        "parameter_key",
         "placement",
-        "planner_contract_version",
-        "reason_template_ref",
         "request_type",
-        "requirement_ref",
         "required",
         "risk_flags",
         "schema_version",
-        "step_refs",
         "target_reference_type",
-        "target_step_ref",
         "timing",
-        "topic_refs",
     }
 )
 _SAFE_VALIDATION_MESSAGE = "intent cache contract validation failed"
@@ -69,20 +76,28 @@ _INTEGRATION_CAPABILITY_BY_ACTION = {
 }
 
 
+class _ReferenceContractViolation(ValueError):
+    """Internal marker for a semantic reference contract violation."""
+
+
 def _redacted_validation_error(error: ValidationError) -> ValidationError:
     safe_lines = []
     for item in error.errors(
         include_url=False,
-        include_context=False,
+        include_context=True,
         include_input=False,
     ):
-        safe_location = tuple(
-            part
-            if isinstance(part, int)
-            or part in _SAFE_VALIDATION_LOCATION_PARTS
-            else "contract"
-            for part in item.get("loc", ())
-        )
+        context = item.get("ctx") or {}
+        if isinstance(context.get("error"), _ReferenceContractViolation):
+            safe_location = ("reference",)
+        else:
+            safe_location = tuple(
+                part
+                if isinstance(part, int)
+                or part in _SAFE_VALIDATION_LOCATION_PARTS
+                else "contract"
+                for part in item.get("loc", ())
+            )
         safe_lines.append(
             {
                 "type": "value_error",
@@ -245,9 +260,11 @@ class CachedEditPlacement(_StrictFrozenModel):
     def validate_target_kind(self):
         if self.placement in {"before", "after"}:
             if self.target_reference_type != "selected_node":
-                raise ValueError("selected node placement required")
+                raise _ReferenceContractViolation(
+                    "selected node placement required"
+                )
         elif self.target_reference_type != "selected_edge":
-            raise ValueError("selected edge placement required")
+            raise _ReferenceContractViolation("selected edge placement required")
         return self
 
 
@@ -264,9 +281,9 @@ class CachedKnowledgeRequirement(_StrictFrozenModel):
     @model_validator(mode="after")
     def validate_topic_refs(self):
         if len(self.topic_refs) != len(set(self.topic_refs)):
-            raise ValueError("duplicate topic reference")
+            raise _ReferenceContractViolation("duplicate topic reference")
         if not set(self.topic_refs).issubset(CANONICAL_KNOWLEDGE_TOPIC_REFS):
-            raise ValueError("unknown topic reference")
+            raise _ReferenceContractViolation("unknown topic reference")
         return self
 
 
@@ -325,17 +342,23 @@ class CachedParameterGuidanceRef(_StrictFrozenModel):
             {},
         )
         if self.parameter_key not in parameters:
-            raise ValueError("unknown capability parameter")
+            raise _ReferenceContractViolation("unknown capability parameter")
         if self.reason_template_ref not in CANONICAL_GUIDANCE_REASON_REFS:
-            raise ValueError("unknown guidance reason reference")
+            raise _ReferenceContractViolation(
+                "unknown guidance reason reference"
+            )
         if self.input_guidance_template_ref not in CANONICAL_INPUT_GUIDANCE_REFS:
-            raise ValueError("unknown input guidance reference")
+            raise _ReferenceContractViolation(
+                "unknown input guidance reference"
+            )
         if not (
             self.logical_step_ref.capability == "slack_send"
             and self.parameter_key == "channel"
             and parameters[self.parameter_key] == "text"
         ):
-            raise ValueError("guidance reference is not applicable")
+            raise _ReferenceContractViolation(
+                "guidance reference is not applicable"
+            )
         return self
 
 
@@ -398,7 +421,9 @@ class CachedIntentPlanV1(_StrictFrozenModel):
             raise ValueError("edit placement forbidden")
 
         if len(self.logical_steps) != len(self.ordered_capabilities):
-            raise ValueError("logical step cardinality mismatch")
+            raise _ReferenceContractViolation(
+                "logical step cardinality mismatch"
+            )
         occurrences: dict[str, int] = {}
         for capability, step in zip(
             self.ordered_capabilities,
@@ -410,7 +435,9 @@ class CachedIntentPlanV1(_StrictFrozenModel):
                 step.capability != capability
                 or step.occurrence != occurrences[capability]
             ):
-                raise ValueError("logical step sequence mismatch")
+                raise _ReferenceContractViolation(
+                    "logical step sequence mismatch"
+                )
 
         step_members = {
             (step.capability, step.occurrence) for step in self.logical_steps
@@ -419,15 +446,19 @@ class CachedIntentPlanV1(_StrictFrozenModel):
             (step.capability, step.occurrence) not in step_members
             for step in self.edit_placement.step_refs
         ):
-            raise ValueError("edit step reference is not a plan member")
+            raise _ReferenceContractViolation(
+                "edit step reference is not a plan member"
+            )
 
         if len(self.integration_actions) != len(set(self.integration_actions)):
-            raise ValueError("duplicate integration action")
+            raise _ReferenceContractViolation("duplicate integration action")
         action_members = set(self.integration_actions)
         capability_members = set(self.ordered_capabilities)
         for action, capability in _INTEGRATION_CAPABILITY_BY_ACTION.items():
             if (action in action_members) != (capability in capability_members):
-                raise ValueError("integration action and capability mismatch")
+                raise _ReferenceContractViolation(
+                    "integration action and capability mismatch"
+                )
         if len(self.risk_flags) != len(set(self.risk_flags)):
             raise ValueError("duplicate risk flag")
 
@@ -438,41 +469,59 @@ class CachedIntentPlanV1(_StrictFrozenModel):
                 guidance.logical_step_ref.occurrence,
             )
             if step_key not in step_members:
-                raise ValueError("guidance step reference is not a plan member")
+                raise _ReferenceContractViolation(
+                    "guidance step reference is not a plan member"
+                )
             key = (*step_key, guidance.parameter_key)
             if key in guidance_keys:
-                raise ValueError("duplicate parameter guidance")
+                raise _ReferenceContractViolation(
+                    "duplicate parameter guidance"
+                )
             guidance_keys.add(key)
 
         requirements: dict[str, CachedKnowledgeRequirement] = {}
         for requirement in self.knowledge_requirements:
             if requirement.requirement_ref in requirements:
-                raise ValueError("duplicate knowledge requirement")
+                raise _ReferenceContractViolation(
+                    "duplicate knowledge requirement"
+                )
             step_key = (
                 requirement.target_step_ref.capability,
                 requirement.target_step_ref.occurrence,
             )
             if step_key not in step_members:
-                raise ValueError("knowledge target is not a plan member")
+                raise _ReferenceContractViolation(
+                    "knowledge target is not a plan member"
+                )
             if requirement.target_step_ref.capability != "knowledge_backed_llm":
-                raise ValueError("knowledge topic target is not applicable")
+                raise _ReferenceContractViolation(
+                    "knowledge topic target is not applicable"
+                )
             requirements[requirement.requirement_ref] = requirement
 
         placement_refs: set[str] = set()
         for placement in self.knowledge_placements:
             if placement.requirement_ref not in requirements:
-                raise ValueError("knowledge placement requirement is missing")
+                raise _ReferenceContractViolation(
+                    "knowledge placement requirement is missing"
+                )
             if placement.requirement_ref in placement_refs:
-                raise ValueError("duplicate knowledge placement")
+                raise _ReferenceContractViolation(
+                    "duplicate knowledge placement"
+                )
             placement_refs.add(placement.requirement_ref)
             requirement = requirements[placement.requirement_ref]
             if placement.target_step_ref != requirement.target_step_ref:
-                raise ValueError("knowledge placement target mismatch")
+                raise _ReferenceContractViolation(
+                    "knowledge placement target mismatch"
+                )
             if (
                 placement.timing == "before_graph"
                 and placement.knowledge_step_ref != requirement.target_step_ref
             ):
-                raise ValueError("knowledge insertion step mismatch")
+                raise _ReferenceContractViolation(
+                    "knowledge insertion step mismatch"
+                )
             for step in (
                 placement.target_step_ref,
                 placement.knowledge_step_ref,
@@ -483,11 +532,13 @@ class CachedIntentPlanV1(_StrictFrozenModel):
                     step.capability,
                     step.occurrence,
                 ) not in step_members:
-                    raise ValueError(
+                    raise _ReferenceContractViolation(
                         "knowledge topology reference is not a plan member"
                     )
         if placement_refs != set(requirements):
-            raise ValueError("knowledge requirement placement is missing")
+            raise _ReferenceContractViolation(
+                "knowledge requirement placement is missing"
+            )
         return self
 
 
