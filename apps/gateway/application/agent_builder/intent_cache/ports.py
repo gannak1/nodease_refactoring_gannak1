@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import model_validator
 
 from apps.gateway.application.agent_builder.intent_cache.contracts import (
     CacheBoundaryDecision,
@@ -13,17 +13,13 @@ from apps.gateway.application.agent_builder.intent_cache.contracts import (
     IntentPlanLoadResult,
     IntentPlanSaveResult,
     IntentPlanningContext,
+    _StrictFrozenModel,
 )
 from apps.shared.schemas.agent_builder import AgentBuilderStructuredRequest
 
 
-class _StrictPortResult(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-        frozen=True,
-        strict=True,
-        hide_input_in_errors=True,
-    )
+class _StrictPortResult(_StrictFrozenModel):
+    pass
 
 
 class IntentRehydrationResult(_StrictPortResult):

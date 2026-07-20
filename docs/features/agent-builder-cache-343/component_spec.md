@@ -68,6 +68,8 @@ credential과 Knowledge candidate context를 내부에서 확정한다. MBA-343�
   `summary.current_safe_message.v1` descriptor만 소유한다. 실제 request-specific projection은 후속
   rehydration이 구현한다.
 - `contracts.py`는 표준 라이브러리, Pydantic과 `catalog_snapshot.py`만 import한다.
+- `contracts.py`의 공통 strict base는 constructor와 Pydantic `model_validate*` 경계에서 validation input을
+  null로 재구성하되 JSON-mode strict tuple 동작은 변경하지 않는다. Port result도 같은 base를 재사용한다.
 - `codec.py`는 표준 라이브러리, `contracts.py`만 import한다.
 - `ports.py`는 `typing`, `contracts.py`와 기존 downstream 계약인
   `apps.shared.schemas.agent_builder.AgentBuilderStructuredRequest`만 import할 수 있다.
@@ -143,4 +145,5 @@ Knowledge identity와 opaque handle이 cache plan에 들어가지 않음을 검�
 - forbidden-content parameterized corpus 결과
 - `git diff --name-only`에 Redis/config/DB/Client/public API 변경이 없다는 범위 확인
 
-문서 작성만 완료된 현재 상태는 구현 완료가 아니다.
+MBA-343 spine 구현과 로컬 필수 검증은 현재 evidence revision에서 완료됐다. 문서 `Draft`, Linear 상태,
+원격 CI와 merge 여부는 별도로 관리하며, enabled serving cache·Redis/config/coordinator는 여전히 후속 범위다.

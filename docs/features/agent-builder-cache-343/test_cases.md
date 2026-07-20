@@ -107,6 +107,10 @@ snapshot, evidence 또는 log file에 기록하지 않는다.
 | ABC343-T060 | duplicate guard parse 뒤 tuple plan decode | original bytes의 strict Pydantic JSON-mode 검증으로 성공하고 Python-mode list coercion helper 없음 |
 | ABC343-T061 | unchecked model copy의 invalid member 또는 extra-field subclass plan encode | decoder와 round-trip할 수 없으므로 `invalid_plan_schema/payload_shape`로 거부 |
 | ABC343-T062 | configured byte limit 안의 과도하게 중첩된 JSON decode | raw `RecursionError` 대신 `invalid_json/root`로 거부 |
+| ABC343-T063 | `sk-`, `ghp_`, `xox[baprs]-`, whitespace `Bearer` token-like value를 encode/decode | 양쪽 모두 `forbidden_cache_content/cache_content`, 원문 반사 없음 |
+| ABC343-T064 | strict DTO/port의 constructor와 `model_validate*` validation failure를 모든 public error view로 검사 | `str`/`repr`/`errors()`/`json()`에 원문 없음, input null, exception chain 없음 |
+| ABC343-T065 | GitHub read/comment action 없이 대응 capability만 있거나 capability 없이 action만 존재 | 양방향 membership 불일치를 strict schema가 거부 |
+| ABC343-T066 | Knowledge requirement placement 누락, target 불일치 또는 before-graph knowledge step 불일치 | requirement/placement 1:1 target closure를 strict schema가 거부 |
 
 ## 9. Suggested Commands
 

@@ -12,6 +12,7 @@ from pydantic import (
     StrictInt,
     StrictStr,
     StringConstraints,
+    ValidationError,
     model_validator,
 )
 
@@ -22,6 +23,108 @@ from apps.gateway.application.agent_builder.intent_cache.catalog_snapshot import
     CAPABILITY_PARAMETER_INPUT_TYPES,
     CATALOG_NODE_ROLES,
 )
+
+
+_SAFE_VALIDATION_LOCATION_PARTS = frozenset(
+    {
+        "cache_schema_version",
+        "canonical_text_registry_version",
+        "capability",
+        "contract_versions",
+        "draft_mode",
+        "edit_placement",
+        "effect_kind",
+        "empty_selection_bridge",
+        "evidence_kind",
+        "integration_actions",
+        "knowledge_placements",
+        "knowledge_requirements",
+        "knowledge_step_ref",
+        "logical_steps",
+        "materializer_version",
+        "normalizer_version",
+        "occurrence",
+        "ordered_capabilities",
+        "parameter_guidance_refs",
+        "parameter_key",
+        "placement",
+        "planner_contract_version",
+        "reason_template_ref",
+        "request_type",
+        "requirement_ref",
+        "required",
+        "risk_flags",
+        "schema_version",
+        "step_refs",
+        "target_reference_type",
+        "target_step_ref",
+        "timing",
+        "topic_refs",
+    }
+)
+_SAFE_VALIDATION_MESSAGE = "intent cache contract validation failed"
+_INTEGRATION_CAPABILITY_BY_ACTION = {
+    "github.pull_request.read": "github_pr_read",
+    "github.pull_request.comment": "github_pr_comment",
+}
+
+
+def _redacted_validation_error(error: ValidationError) -> ValidationError:
+    safe_lines = []
+    for item in error.errors(
+        include_url=False,
+        include_context=False,
+        include_input=False,
+    ):
+        safe_location = tuple(
+            part
+            if isinstance(part, int)
+            or part in _SAFE_VALIDATION_LOCATION_PARTS
+            else "contract"
+            for part in item.get("loc", ())
+        )
+        safe_lines.append(
+            {
+                "type": "value_error",
+                "loc": safe_location,
+                "input": None,
+                "ctx": {"error": ValueError(_SAFE_VALIDATION_MESSAGE)},
+            }
+        )
+    if not safe_lines:
+        safe_lines.append(
+            {
+                "type": "value_error",
+                "loc": (),
+                "input": None,
+                "ctx": {"error": ValueError(_SAFE_VALIDATION_MESSAGE)},
+            }
+        )
+    return ValidationError.from_exception_data(
+        error.title,
+        safe_lines,
+        input_type="python",
+        hide_input=True,
+    )
+
+
+def _call_with_redacted_validation_error(callback):
+    redacted_error = None
+    try:
+        return callback()
+    except ValidationError as error:
+        redacted_error = _redacted_validation_error(error)
+    raise redacted_error
+
+
+class _RedactingModelMetaclass(type(BaseModel)):
+    def __call__(cls, *args, **kwargs):
+        constructor = super().__call__
+        return _call_with_redacted_validation_error(
+            lambda: constructor(*args, **kwargs)
+        )
+
+
 VersionRef = Annotated[
     str,
     StringConstraints(
@@ -98,13 +201,34 @@ CacheRiskFlag = Literal[
 ]
 
 
-class _StrictFrozenModel(BaseModel):
+class _StrictFrozenModel(BaseModel, metaclass=_RedactingModelMetaclass):
     model_config = ConfigDict(
         extra="forbid",
         frozen=True,
         strict=True,
         hide_input_in_errors=True,
     )
+
+    @classmethod
+    def model_validate(cls, obj, **kwargs):
+        validator = super().model_validate
+        return _call_with_redacted_validation_error(
+            lambda: validator(obj, **kwargs)
+        )
+
+    @classmethod
+    def model_validate_json(cls, json_data, **kwargs):
+        validator = super().model_validate_json
+        return _call_with_redacted_validation_error(
+            lambda: validator(json_data, **kwargs)
+        )
+
+    @classmethod
+    def model_validate_strings(cls, obj, **kwargs):
+        validator = super().model_validate_strings
+        return _call_with_redacted_validation_error(
+            lambda: validator(obj, **kwargs)
+        )
 
 
 class LogicalStepRef(_StrictFrozenModel):
@@ -299,6 +423,11 @@ class CachedIntentPlanV1(_StrictFrozenModel):
 
         if len(self.integration_actions) != len(set(self.integration_actions)):
             raise ValueError("duplicate integration action")
+        action_members = set(self.integration_actions)
+        capability_members = set(self.ordered_capabilities)
+        for action, capability in _INTEGRATION_CAPABILITY_BY_ACTION.items():
+            if (action in action_members) != (capability in capability_members):
+                raise ValueError("integration action and capability mismatch")
         if len(self.risk_flags) != len(set(self.risk_flags)):
             raise ValueError("duplicate risk flag")
 
@@ -336,6 +465,14 @@ class CachedIntentPlanV1(_StrictFrozenModel):
             if placement.requirement_ref in placement_refs:
                 raise ValueError("duplicate knowledge placement")
             placement_refs.add(placement.requirement_ref)
+            requirement = requirements[placement.requirement_ref]
+            if placement.target_step_ref != requirement.target_step_ref:
+                raise ValueError("knowledge placement target mismatch")
+            if (
+                placement.timing == "before_graph"
+                and placement.knowledge_step_ref != requirement.target_step_ref
+            ):
+                raise ValueError("knowledge insertion step mismatch")
             for step in (
                 placement.target_step_ref,
                 placement.knowledge_step_ref,
@@ -349,6 +486,8 @@ class CachedIntentPlanV1(_StrictFrozenModel):
                     raise ValueError(
                         "knowledge topology reference is not a plan member"
                     )
+        if placement_refs != set(requirements):
+            raise ValueError("knowledge requirement placement is missing")
         return self
 
 

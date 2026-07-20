@@ -858,6 +858,22 @@ def test_cache_key_and_boundary_decision_are_strict_closed_contracts():
             **minimal_plan().model_dump(),
             intent_summary=unsafe,
         ),
+        lambda unsafe: CachedIntentPlanV1.model_validate(
+            {
+                **minimal_plan().model_dump(),
+                "intent_summary": unsafe,
+            },
+            strict=True,
+        ),
+        lambda unsafe: CachedIntentPlanV1.model_validate_json(
+            json.dumps(
+                {
+                    **minimal_plan().model_dump(mode="json"),
+                    "intent_summary": unsafe,
+                }
+            ),
+            strict=True,
+        ),
         lambda unsafe: IntentRehydrationResult(
             status="failure",
             structured_request=None,
