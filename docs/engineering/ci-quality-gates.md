@@ -1,7 +1,7 @@
 # PR CI 품질 게이트
 
 Status: Draft
-Verified Against: feature/mba-328 @ 0ad2bac9
+Verified Against: feature/mba-353 @ c64b063d
 
 ## 목적
 
@@ -41,7 +41,7 @@ PR 검증 진입점은 `.github/workflows/pr-quality-gate.yml`과 `.github/workf
 | `agent-builder-postgres-contracts` | Agent Builder DB/CAS 영향 | 실제 PostgreSQL Agent Builder 계약 검사 |
 | `memory-postgres-contracts` | Memory DB/adapter 영향 | 실제 PostgreSQL Memory 계약 검사 |
 | `ci-required` | 항상 | 필수 job 결과를 fail-closed로 집계 |
-| `ci-control-review` | PR 생성·동기화 또는 명시적 재검증 | base 브랜치 정책으로 CI 제어 변경과 최신 승인 검증 |
+| `ci-control-review` | PR 생성·동기화 또는 명시적 재검증 | base 브랜치 정책으로 CI 제어 변경과 current head 승인 검증 |
 
 `ci-required`는 선택된 job의 `success`만 허용한다. 선택된 job의 `failure`, `cancelled`, 비정상 `skipped`와 scope 결과 누락은 최종 실패다. 선택되지 않은 job의 의도된 `skipped`만 허용한다.
 
@@ -54,9 +54,12 @@ PR workspace의 selector 결과만으로 required gate를 결정하지 않는다
 - GitHub workflow는 Actionlint로 검사하고, composite action metadata는 commit SHA로 고정한 action-validator와 저장소 fixture로 별도 검사한다.
 - 신뢰 가드는 base 브랜치에서 `.github/workflows/**`, `.github/actions/**`, `scripts/ci/**`, `tests/ci/**` 변경을 별도로 확인한다. rename은 이전 경로와 새 경로를 모두 검사하고, 변경 파일 전체를 열거하지 못하면 실패한다.
 - CI 제어 변경은 PR 작성자가 아닌 write 이상 권한 보유자가 현재 head commit에 남긴 `APPROVED` review가 있어야 통과한다. 이전 commit 승인은 재사용하지 않는다.
-- 승인 뒤 `/recheck-ci-control`을 PR conversation에 comment하면 base 브랜치 가드가 정책 status를 다시 계산한다.
+- 승인 뒤 `/recheck-ci-control`을 PR conversation에 comment하면 base 브랜치 가드가 current head 정책 status를 다시 계산한다. GitHub API 운영 장애 복구 뒤 재평가할 때도 같은 fallback을 사용한다.
 - 동시성 제어는 이벤트와 comment body 조건을 통과한 `ci-control-review` job에만 적용한다. 일반 Linear/Codex/user comment는 기존 정책 검사를 취소하지 않으며, 새 PR head 또는 정확한 `/recheck-ci-control` 요청만 같은 PR의 이전 유효 검사를 교체한다.
-- 승인 부재나 변경 파일 열거 누락 같은 정책 미충족은 PR head의 `trusted-ci-control/base-policy` status를 실패로 기록하되 evaluator job 자체는 정상 완료한다. `/recheck-ci-control`은 같은 head status를 다시 계산하므로 최초 `pull_request_target`의 실패 check run이 남아 병합을 막지 않는다. PR 번호 확인이나 status 기록 자체가 실패한 운영 오류만 evaluator job을 실패시킨다.
+- GitHub API 호출은 `actions/github-script`에서 최대 3회 재시도한다. 400, 401, 403, 404, 422는 재시도하지 않으며, 짧은 5xx·429·network failure 같은 재시도 가능 오류만 bounded backoff로 흡수한다.
+- 승인 부재나 변경 파일 열거 누락 같은 정책 미충족은 PR head의 `trusted-ci-control/base-policy` status를 `failure`로 기록하되 evaluator job 자체는 정상 완료한다. 재시도 소진 같은 운영 오류도 current head를 알 수 있고 status 기록에 성공하면 `error`로 교체해 fail-closed한다. PR head를 알 수 없거나 authoritative status 기록 자체가 실패한 경우에만 evaluator job을 실패시킨다.
+- reviewer permission 조회의 404는 write 권한이 없는 reviewer로 처리한다. 그 밖의 permission API 오류는 승인 부재로 오인하지 않고 운영 오류로 분류한다.
+- ruleset의 authoritative required context는 `trusted-ci-control/base-policy` 하나다. raw `ci-control-review` job은 운영 진단용이며 required context로 중복 등록하지 않는다.
 - 신뢰 가드는 PR source, test, build script를 checkout하거나 실행하지 않으며 repository secret을 사용하지 않는다.
 
 가드를 최초로 추가하는 PR은 base 브랜치에 가드가 아직 없으므로 자기 자신을 보호할 수 없다. 최초 승격은 독립 review와 actionlint 결과를 수동으로 확인하고, 병합 뒤 probe PR에서 status 생성과 승인 재검증을 확인해야 한다.
@@ -224,6 +227,7 @@ CI 제어와 PostgreSQL workflow가 사용하는 공식 Action은 40자리 commi
 | `deployment-config-validation` | actionlint, Helm dependency/render, manifest, Terraform, Compose, Dockerfile 오류 |
 | `ci-required` | 선택된 하위 job의 실패, 취소 또는 비정상 skip |
 | `trusted-ci-control/base-policy` | CI 제어 경로 변경, 현재 head 승인 부재, reviewer 권한 확인 실패, 변경 파일 열거 누락 |
+| `ci-control-review` evaluator job | PR head 식별 불가, authoritative status 기록 실패, 재시도 소진 뒤 status 기록도 실패한 GitHub 운영 오류 |
 
 검사가 실패했을 때 required check를 해제해 우회하지 않는다. selector 누락이면 mapping과 해당 단위 테스트를 함께 보강한다.
 
