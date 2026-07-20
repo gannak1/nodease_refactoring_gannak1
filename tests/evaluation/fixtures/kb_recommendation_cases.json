@@ -1,0 +1,294 @@
+{
+  "schema_version": "mba-342-synthetic-v1",
+  "data_classification": "synthetic_non_secret",
+  "cases": [
+    {
+      "case_id": "mba342-syn-case-001",
+      "case_tags": ["metadata_poor", "korean"],
+      "metadata_poor": true,
+      "query": "합성 출장비 정산 기한 안내",
+      "candidate_labels": ["mba342-syn-kb-001-target", "mba342-syn-kb-001-distractor"],
+      "expected_relevant": ["mba342-syn-kb-001-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-002",
+      "case_tags": ["metadata_poor", "english"],
+      "metadata_poor": true,
+      "query": "synthetic parental leave eligibility",
+      "candidate_labels": ["mba342-syn-kb-002-target", "mba342-syn-kb-002-distractor"],
+      "expected_relevant": ["mba342-syn-kb-002-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-003",
+      "case_tags": ["metadata_poor", "flat", "korean"],
+      "metadata_poor": true,
+      "query": "합성 보안 교육 수료 절차",
+      "candidate_labels": ["mba342-syn-kb-003-target", "mba342-syn-kb-003-distractor"],
+      "expected_relevant": ["mba342-syn-kb-003-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-004",
+      "case_tags": ["metadata_poor", "duplicate_collection", "english"],
+      "metadata_poor": true,
+      "query": "synthetic laptop replacement procedure",
+      "candidate_labels": ["mba342-syn-kb-004-target", "mba342-syn-kb-004-distractor"],
+      "expected_relevant": ["mba342-syn-kb-004-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-005",
+      "case_tags": ["metadata_poor", "denied_distractor", "korean"],
+      "metadata_poor": true,
+      "query": "합성 회의실 예약 취소 규칙",
+      "candidate_labels": ["mba342-syn-kb-005-target", "mba342-syn-kb-005-distractor"],
+      "expected_relevant": ["mba342-syn-kb-005-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-006",
+      "case_tags": ["metadata_poor", "name_only_irrelevant", "english"],
+      "metadata_poor": true,
+      "query": "synthetic expense receipt exception",
+      "candidate_labels": ["mba342-syn-kb-006-target", "mba342-syn-kb-006-distractor"],
+      "expected_relevant": ["mba342-syn-kb-006-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-007",
+      "case_tags": ["metadata_poor", "korean"],
+      "metadata_poor": true,
+      "query": "합성 신규 입사자 계정 발급",
+      "candidate_labels": ["mba342-syn-kb-007-target", "mba342-syn-kb-007-distractor"],
+      "expected_relevant": ["mba342-syn-kb-007-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-008",
+      "case_tags": ["metadata_poor", "candidate_budget_5000", "english"],
+      "metadata_poor": true,
+      "query": "synthetic large-candidate travel approval policy",
+      "candidate_labels": ["mba342-syn-kb-008-target", "mba342-syn-kb-008-distractor"],
+      "expected_relevant": ["mba342-syn-kb-008-target"],
+      "authorized_candidate_count": 5000
+    },
+    {
+      "case_id": "mba342-syn-case-009",
+      "case_tags": ["metadata_poor", "korean"],
+      "metadata_poor": true,
+      "query": "합성 재택근무 장비 지원",
+      "candidate_labels": ["mba342-syn-kb-009-target", "mba342-syn-kb-009-distractor"],
+      "expected_relevant": ["mba342-syn-kb-009-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-010",
+      "case_tags": ["metadata_poor", "english"],
+      "metadata_poor": true,
+      "query": "synthetic incident escalation window",
+      "candidate_labels": ["mba342-syn-kb-010-target", "mba342-syn-kb-010-distractor"],
+      "expected_relevant": ["mba342-syn-kb-010-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-011",
+      "case_tags": ["metadata_poor", "korean"],
+      "metadata_poor": true,
+      "query": "합성 법인카드 분실 신고",
+      "candidate_labels": ["mba342-syn-kb-011-target", "mba342-syn-kb-011-distractor"],
+      "expected_relevant": ["mba342-syn-kb-011-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-012",
+      "case_tags": ["metadata_poor", "english"],
+      "metadata_poor": true,
+      "query": "synthetic vendor onboarding checklist",
+      "candidate_labels": ["mba342-syn-kb-012-target", "mba342-syn-kb-012-distractor"],
+      "expected_relevant": ["mba342-syn-kb-012-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-013",
+      "case_tags": ["name_only_irrelevant", "korean"],
+      "metadata_poor": false,
+      "query": "합성 데이터 보존 기간",
+      "candidate_labels": ["mba342-syn-kb-013-target", "mba342-syn-kb-013-distractor"],
+      "expected_relevant": ["mba342-syn-kb-013-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-014",
+      "case_tags": ["flat", "english"],
+      "metadata_poor": false,
+      "query": "synthetic office access hours",
+      "candidate_labels": ["mba342-syn-kb-014-target", "mba342-syn-kb-014-distractor"],
+      "expected_relevant": ["mba342-syn-kb-014-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-015",
+      "case_tags": ["duplicate_collection", "korean"],
+      "metadata_poor": false,
+      "query": "합성 복리후생 포인트 사용",
+      "candidate_labels": ["mba342-syn-kb-015-target", "mba342-syn-kb-015-distractor"],
+      "expected_relevant": ["mba342-syn-kb-015-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-016",
+      "case_tags": ["denied_distractor", "english"],
+      "metadata_poor": false,
+      "query": "synthetic password rotation schedule",
+      "candidate_labels": ["mba342-syn-kb-016-target", "mba342-syn-kb-016-distractor"],
+      "expected_relevant": ["mba342-syn-kb-016-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-017",
+      "case_tags": ["korean"],
+      "metadata_poor": false,
+      "query": "합성 교육비 환급 기준",
+      "candidate_labels": ["mba342-syn-kb-017-target", "mba342-syn-kb-017-distractor"],
+      "expected_relevant": ["mba342-syn-kb-017-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-018",
+      "case_tags": ["english"],
+      "metadata_poor": false,
+      "query": "synthetic procurement approval threshold",
+      "candidate_labels": ["mba342-syn-kb-018-target", "mba342-syn-kb-018-distractor"],
+      "expected_relevant": ["mba342-syn-kb-018-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-019",
+      "case_tags": ["korean"],
+      "metadata_poor": false,
+      "query": "합성 연차 이월 한도",
+      "candidate_labels": ["mba342-syn-kb-019-target", "mba342-syn-kb-019-distractor"],
+      "expected_relevant": ["mba342-syn-kb-019-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-020",
+      "case_tags": ["english"],
+      "metadata_poor": false,
+      "query": "synthetic conference attendance policy",
+      "candidate_labels": ["mba342-syn-kb-020-target", "mba342-syn-kb-020-distractor"],
+      "expected_relevant": ["mba342-syn-kb-020-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-021",
+      "case_tags": ["korean"],
+      "metadata_poor": false,
+      "query": "합성 고객 데이터 반출 승인",
+      "candidate_labels": ["mba342-syn-kb-021-target", "mba342-syn-kb-021-distractor"],
+      "expected_relevant": ["mba342-syn-kb-021-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-022",
+      "case_tags": ["english"],
+      "metadata_poor": false,
+      "query": "synthetic emergency contact update",
+      "candidate_labels": ["mba342-syn-kb-022-target", "mba342-syn-kb-022-distractor"],
+      "expected_relevant": ["mba342-syn-kb-022-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-023",
+      "case_tags": ["korean"],
+      "metadata_poor": false,
+      "query": "합성 야간 근무 교통비",
+      "candidate_labels": ["mba342-syn-kb-023-target", "mba342-syn-kb-023-distractor"],
+      "expected_relevant": ["mba342-syn-kb-023-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-024",
+      "case_tags": ["english"],
+      "metadata_poor": false,
+      "query": "synthetic code review requirement",
+      "candidate_labels": ["mba342-syn-kb-024-target", "mba342-syn-kb-024-distractor"],
+      "expected_relevant": ["mba342-syn-kb-024-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-025",
+      "case_tags": ["korean"],
+      "metadata_poor": false,
+      "query": "합성 휴대전화 요금 지원",
+      "candidate_labels": ["mba342-syn-kb-025-target", "mba342-syn-kb-025-distractor"],
+      "expected_relevant": ["mba342-syn-kb-025-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-026",
+      "case_tags": ["english"],
+      "metadata_poor": false,
+      "query": "synthetic accessibility accommodation request",
+      "candidate_labels": ["mba342-syn-kb-026-target", "mba342-syn-kb-026-distractor"],
+      "expected_relevant": ["mba342-syn-kb-026-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-027",
+      "case_tags": ["korean"],
+      "metadata_poor": false,
+      "query": "합성 사내 동호회 신청",
+      "candidate_labels": ["mba342-syn-kb-027-target", "mba342-syn-kb-027-distractor"],
+      "expected_relevant": ["mba342-syn-kb-027-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-028",
+      "case_tags": ["english"],
+      "metadata_poor": false,
+      "query": "synthetic document translation support",
+      "candidate_labels": ["mba342-syn-kb-028-target", "mba342-syn-kb-028-distractor"],
+      "expected_relevant": ["mba342-syn-kb-028-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-029",
+      "case_tags": ["no_result", "korean"],
+      "metadata_poor": false,
+      "query": "합성 조직에 존재하지 않는 달 기지 정책",
+      "candidate_labels": ["mba342-syn-kb-029-distractor"],
+      "expected_relevant": [],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-030",
+      "case_tags": ["no_result", "english"],
+      "metadata_poor": false,
+      "query": "synthetic policy for an unsupported orbital office",
+      "candidate_labels": ["mba342-syn-kb-030-distractor"],
+      "expected_relevant": [],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-031",
+      "case_tags": ["flat", "korean"],
+      "metadata_poor": false,
+      "query": "합성 사무용품 배송 일정",
+      "candidate_labels": ["mba342-syn-kb-031-target", "mba342-syn-kb-031-distractor"],
+      "expected_relevant": ["mba342-syn-kb-031-target"],
+      "authorized_candidate_count": 20
+    },
+    {
+      "case_id": "mba342-syn-case-032",
+      "case_tags": ["duplicate_collection", "denied_distractor", "english"],
+      "metadata_poor": false,
+      "query": "synthetic workspace relocation checklist",
+      "candidate_labels": ["mba342-syn-kb-032-target", "mba342-syn-kb-032-distractor"],
+      "expected_relevant": ["mba342-syn-kb-032-target"],
+      "authorized_candidate_count": 20
+    }
+  ]
+}
