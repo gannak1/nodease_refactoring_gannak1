@@ -82,8 +82,8 @@ _REFERENCE_FIELDS = frozenset(
     }
 )
 _UUID_RE = re.compile(
-    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
-    r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 _SECRET_VALUE_RE = re.compile(
     r"(?i)(?:api[_-]?key|token|secret|password|authorization|bearer)\s*[:=]"
@@ -189,8 +189,24 @@ class CanonicalIntentPlanCodec:
     ) -> bytes:
         if not isinstance(plan, CachedIntentPlanV1):
             raise IntentPlanCodecError("invalid_plan_schema", "payload_shape")
-        raw = plan.model_dump(mode="json", exclude_none=False)
-        if _has_forbidden_content(raw):
+        raw = None
+        dump_failed = False
+        try:
+            raw = plan.model_dump(mode="json", exclude_none=False)
+        except (TypeError, ValueError, RecursionError):
+            dump_failed = True
+        if dump_failed:
+            raise IntentPlanCodecError("invalid_plan_schema", "payload_shape")
+
+        forbidden_content = False
+        content_scan_failed = False
+        try:
+            forbidden_content = _has_forbidden_content(raw)
+        except RecursionError:
+            content_scan_failed = True
+        if content_scan_failed:
+            raise IntentPlanCodecError("invalid_plan_schema", "payload_shape")
+        if forbidden_content:
             raise IntentPlanCodecError(
                 "forbidden_cache_content",
                 "cache_content",
@@ -205,13 +221,26 @@ class CanonicalIntentPlanCodec:
                 ensure_ascii=False,
                 allow_nan=False,
             ).encode("utf-8")
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, RecursionError):
             encoding_failed = True
             payload = b""
         if encoding_failed:
             raise IntentPlanCodecError("invalid_plan_schema", "payload_shape")
         if len(payload) > max_payload_bytes:
             raise IntentPlanCodecError("payload_too_large", "payload_size")
+
+        validation_category = None
+        try:
+            CachedIntentPlanV1.model_validate_json(payload, strict=True)
+        except ValidationError as error:
+            validation_category = _validation_path_category(error)
+        except RecursionError:
+            validation_category = "payload_shape"
+        if validation_category is not None:
+            raise IntentPlanCodecError(
+                "invalid_plan_schema",
+                validation_category,
+            )
         return payload
 
     def decode(
@@ -244,13 +273,23 @@ class CanonicalIntentPlanCodec:
             json.JSONDecodeError,
             _DuplicateKeyError,
             _NonFiniteNumberError,
+            RecursionError,
             TypeError,
             ValueError,
         ):
             raw_json_failed = True
         if raw_json_failed or not isinstance(raw, dict):
             raise IntentPlanCodecError("invalid_json", "root")
-        if _has_forbidden_content(raw):
+
+        forbidden_content = False
+        content_scan_failed = False
+        try:
+            forbidden_content = _has_forbidden_content(raw)
+        except RecursionError:
+            content_scan_failed = True
+        if content_scan_failed:
+            raise IntentPlanCodecError("invalid_json", "root")
+        if forbidden_content:
             raise IntentPlanCodecError(
                 "forbidden_cache_content",
                 "cache_content",
@@ -267,6 +306,8 @@ class CanonicalIntentPlanCodec:
             plan = CachedIntentPlanV1.model_validate_json(payload, strict=True)
         except ValidationError as error:
             validation_category = _validation_path_category(error)
+        except RecursionError:
+            validation_category = "payload_shape"
         if validation_category is not None or plan is None:
             raise IntentPlanCodecError(
                 "invalid_plan_schema",

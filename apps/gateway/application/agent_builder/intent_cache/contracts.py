@@ -474,6 +474,11 @@ class EphemeralCacheScope:
     def __repr__(self) -> str:
         return "<EphemeralCacheScope redacted>"
 
+    def __getattribute__(self, name):
+        if name == "__getstate__":
+            raise AttributeError(name)
+        return object.__getattribute__(self, name)
+
     def __reduce_ex__(self, _protocol):
         raise TypeError("EphemeralCacheScope is not serializable")
 
@@ -543,6 +548,11 @@ class IntentPlanningContext:
 
     def __repr__(self) -> str:
         return "<IntentPlanningContext redacted>"
+
+    def __getattribute__(self, name):
+        if name == "__getstate__":
+            raise AttributeError(name)
+        return object.__getattribute__(self, name)
 
     def __reduce_ex__(self, _protocol):
         raise TypeError("IntentPlanningContext is not serializable")
