@@ -2,6 +2,10 @@ import uuid
 
 import pytest
 
+from apps.gateway.application.agent_builder.knowledge_recommendation import (
+    CandidateSemanticScore,
+    KnowledgeRecommendationRetrievalResult,
+)
 from apps.gateway.services.knowledge_rag_recommendation_service import (
     GENERIC_KB_LABEL,
     KnowledgeRAGRecommendationService,
@@ -103,6 +107,16 @@ class FailingResolver:
         raise RuntimeError("resolver unavailable")
 
 
+class RecordingRetrievalPort:
+    def __init__(self, result: KnowledgeRecommendationRetrievalResult):
+        self.result = result
+        self.requests = []
+
+    def retrieve(self, request):
+        self.requests.append(request)
+        return self.result
+
+
 def test_builder_recommendation_display_caps_default_to_twenty():
     request = KnowledgeRAGRecommendationRequest(
         workflow_intent="display cap",
@@ -119,13 +133,186 @@ def test_builder_recommendation_display_caps_default_to_twenty():
         )
 
 
-def _service(resolver: FakeResolver) -> KnowledgeRAGRecommendationService:
+def _service(
+    resolver: FakeResolver,
+    retrieval_port: RecordingRetrievalPort | None = None,
+) -> KnowledgeRAGRecommendationService:
     return KnowledgeRAGRecommendationService(
         None,
         user_id=uuid.uuid4(),
         organization_id=uuid.uuid4(),
         resolver=resolver,
+        retrieval_port=retrieval_port,
     )
+
+
+def test_retrieval_receives_only_resolver_authorized_candidate_ids_and_safe_topics():
+    authorized = _candidate(safe_label="Authorized KB")
+    port = RecordingRetrievalPort(
+        KnowledgeRecommendationRetrievalResult(
+            scores=(
+                CandidateSemanticScore(
+                    knowledge_base_id=authorized.candidate_id,
+                    semantic_state="available",
+                    parent_relevance=0.8,
+                    safe_reason_code="content_match",
+                ),
+            )
+        )
+    )
+    service = _service(
+        FakeResolver(KnowledgeCandidateResolution(candidates=[authorized])),
+        port,
+    )
+
+    result = service.recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="raw workflow text must not cross the port",
+            safe_query_topics=["approved topic", "second topic"],
+        )
+    )
+
+    assert len(port.requests) == 1
+    retrieval_request = port.requests[0]
+    assert retrieval_request.candidate_kb_ids == (authorized.candidate_id,)
+    assert retrieval_request.safe_query_topics == ("approved topic", "second topic")
+    assert not hasattr(retrieval_request, "workflow_intent")
+    recommendation = result.recommendations[0]
+    assert recommendation.reason_category == "content_match"
+    assert recommendation.recommendation_state == "complete"
+    assert recommendation.provenance.recommendation_strategy == "parent_first_v1"
+    serialized = recommendation.model_dump(mode="json")
+    assert "document_id" not in serialized
+    assert "chunk_id" not in serialized
+    assert "provider" not in serialized
+
+
+def test_available_parent_score_is_authoritative_even_when_it_is_zero():
+    candidate = _candidate(
+        safe_label="Tax filing",
+        runtime_availability="available",
+        safe_metadata={
+            "kb_safe_topics": ["tax filing"],
+            "source_tier": "company_policy",
+            "sync_state": "synced",
+        },
+    )
+    port = RecordingRetrievalPort(
+        KnowledgeRecommendationRetrievalResult(
+            scores=(
+                CandidateSemanticScore(
+                    knowledge_base_id=candidate.candidate_id,
+                    semantic_state="available",
+                    parent_relevance=0.0,
+                    safe_reason_code="content_match",
+                ),
+            )
+        )
+    )
+
+    result = _service(
+        FakeResolver(KnowledgeCandidateResolution(candidates=[candidate])),
+        port,
+    ).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="Tax filing",
+            safe_query_topics=["tax filing"],
+        )
+    )
+
+    recommendation = result.recommendations[0]
+    assert recommendation.score == 0.0
+    assert recommendation.recommendation_state == "complete"
+    assert recommendation.reason_category == "content_match"
+    assert result.user_safe_warning is None
+
+
+def test_semantic_unavailable_candidate_uses_metadata_fallback():
+    candidate = _candidate(
+        safe_label="Tax filing",
+        runtime_availability="available",
+        safe_metadata={
+            "kb_safe_topics": ["tax filing"],
+            "source_tier": "company_policy",
+            "sync_state": "synced",
+        },
+    )
+    port = RecordingRetrievalPort(
+        KnowledgeRecommendationRetrievalResult(
+            state="degraded",
+            scores=(
+                CandidateSemanticScore(
+                    knowledge_base_id=candidate.candidate_id,
+                    semantic_state="hierarchy_unavailable",
+                    parent_relevance=None,
+                    safe_reason_code="metadata_fallback",
+                ),
+            ),
+        )
+    )
+
+    result = _service(
+        FakeResolver(KnowledgeCandidateResolution(candidates=[candidate])),
+        port,
+    ).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="Tax filing",
+            safe_query_topics=["tax filing"],
+        )
+    )
+
+    assert result.recommendations[0].score == pytest.approx(0.98)
+    assert result.recommendations[0].reason_category == "metadata_match"
+    assert result.recommendations[0].recommendation_state == "degraded"
+    assert result.user_safe_warning
+    assert "credential" not in result.user_safe_warning.lower()
+    assert "provider" not in result.user_safe_warning.lower()
+
+
+def test_safe_intent_candidate_context_never_calls_semantic_retrieval():
+    candidate = _candidate(safe_label="Tax filing")
+    port = RecordingRetrievalPort(KnowledgeRecommendationRetrievalResult())
+    service = _service(
+        FakeResolver(KnowledgeCandidateResolution(candidates=[candidate])),
+        port,
+    )
+
+    service.safe_intent_candidates_for_builder("Tax filing")
+
+    assert port.requests == []
+
+
+def test_empty_safe_topics_use_metadata_without_embedding_request():
+    candidate = _candidate(safe_label="Tax filing")
+    port = RecordingRetrievalPort(KnowledgeRecommendationRetrievalResult())
+
+    result = _service(
+        FakeResolver(KnowledgeCandidateResolution(candidates=[candidate])),
+        port,
+    ).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(workflow_intent="Tax filing")
+    )
+
+    assert port.requests == []
+    assert result.recommendations[0].recommendation_state == "degraded"
+    assert result.user_safe_warning
+
+
+def test_safe_query_topics_are_bounded_to_one_thousand_characters():
+    candidate = _candidate(safe_label="Bounded query")
+    port = RecordingRetrievalPort(KnowledgeRecommendationRetrievalResult())
+
+    _service(
+        FakeResolver(KnowledgeCandidateResolution(candidates=[candidate])),
+        port,
+    ).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="Bounded query",
+            safe_query_topics=[str(index) + ("x" * 127) for index in range(20)],
+        )
+    )
+
+    assert sum(len(topic) for topic in port.requests[0].safe_query_topics) == 1000
 
 
 def test_hierarchical_selection_deduplicates_children_and_uses_stable_handles():
@@ -347,6 +534,42 @@ def test_issued_handle_materialization_revalidates_only_bound_kb():
     assert materialized[0]["safe_handle"] == handle
     assert resolver.explicit_calls == [[candidate.candidate_id]]
     assert resolver.auto_calls == []
+
+
+def test_successful_kb_and_collection_materialization_never_calls_semantic_retrieval():
+    candidate = _candidate(safe_label="Previously issued KB")
+    collection_id = uuid.uuid4()
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[candidate]))
+    resolver.hierarchy = KnowledgeCandidateHierarchyResolution(
+        collections=[
+            KnowledgeCandidateCollectionGroup(
+                collection_id=collection_id,
+                safe_label="Previously issued Collection",
+                candidates=[candidate],
+            )
+        ]
+    )
+    port = RecordingRetrievalPort(KnowledgeRecommendationRetrievalResult())
+    service = _service(resolver, port)
+    kb_handle = service._recommendation_id(candidate)  # noqa: SLF001
+    collection_handle = service._collection_handle(collection_id)  # noqa: SLF001
+    request = KnowledgeRAGRecommendationRequest(
+        workflow_intent="selection apply",
+        safe_query_topics=["selection apply"],
+        mode="auto",
+    )
+
+    assert service.materialize_candidate_handles_for_builder(
+        request,
+        {kb_handle},
+        issued_resource_ids={kb_handle: candidate.candidate_id},
+    )
+    assert service.materialize_collection_handles_for_builder(
+        request,
+        {collection_handle},
+        issued_resource_ids={collection_handle: collection_id},
+    )
+    assert port.requests == []
 
 
 def test_issued_handle_materialization_rejects_mismatched_resource_binding():
@@ -828,7 +1051,8 @@ def test_threshold_result_can_emit_all_documented_buckets():
 
 
 def test_recommendation_returns_unavailable_when_resolver_fails():
-    result = _service(FailingResolver()).recommend_for_builder(
+    port = RecordingRetrievalPort(KnowledgeRecommendationRetrievalResult())
+    result = _service(FailingResolver(), port).recommend_for_builder(
         KnowledgeRAGRecommendationRequest(
             intent_summary="휴가 정책",
             node_purpose_summary="정책 요약",
@@ -843,6 +1067,7 @@ def test_recommendation_returns_unavailable_when_resolver_fails():
     assert result.fallback_reason == "adapter_unavailable"
     assert result.recommendations == []
     assert result.user_safe_warning
+    assert port.requests == []
 
 
 def test_recommendation_falls_back_to_clarification_when_ranker_fails_with_candidates():

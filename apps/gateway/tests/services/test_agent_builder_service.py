@@ -10,13 +10,19 @@ from pydantic import ValidationError
 from apps.gateway.application.agent_builder.intent_usage import (
     AgentBuilderIntentUsageRecordingError,
 )
+from apps.gateway.application.agent_builder.knowledge_recommendation import (
+    CandidateSemanticScore,
+    KnowledgeRecommendationRetrievalResult,
+)
 from apps.gateway.services import agent_builder_service as service_module
 from apps.gateway.services.agent_builder_service import (
     AgentBuilderService,
     calculate_graph_hash,
 )
 from apps.gateway.services.knowledge_rag_recommendation_service import (
+    KnowledgeRAGRecommendationService,
     knowledge_base_recommendation_handle,
+    knowledge_collection_selection_handle,
 )
 from apps.gateway.application.agent_builder.graph_mutation_builder import (
     materialize_candidate_graph,
@@ -36,6 +42,12 @@ from apps.shared.schemas.agent_builder import (
     GraphMutation,
 )
 from apps.shared.schemas.knowledge import (
+    KnowledgeCandidate,
+    KnowledgeCandidateCollectionGroup,
+    KnowledgeCandidateHierarchyResolution,
+    KnowledgeCandidateResolution,
+    KnowledgePermissionDecision,
+    KnowledgeRAGRecommendationRequest,
     KnowledgeSelection,
     KnowledgeSelectionCollection,
     KnowledgeRAGRecommendation,
@@ -5853,3 +5865,326 @@ def test_agent_builder_session_restore_hides_cached_payload_when_scope_denied(
     assert response.messages == []
     assert response.pending_request is None
     assert "draft_preview" not in response.model_dump()
+
+
+def _mba_342_candidate(
+    *,
+    candidate_id: uuid.UUID | None = None,
+    safe_label: str = "Tax filing",
+) -> KnowledgeCandidate:
+    safe_metadata = {
+        "kb_safe_topics": ["tax filing"],
+        "source_tier": "company_policy",
+        "sync_state": "synced",
+    }
+    return KnowledgeCandidate(
+        candidate_id=candidate_id or uuid.uuid4(),
+        candidate_type="knowledge_base",
+        permission=KnowledgePermissionDecision(
+            allowed=True,
+            reason_code="allowed",
+            external_reason_code="allowed",
+        ),
+        runtime_availability="available",
+        safe_label=safe_label,
+        safe_metadata=safe_metadata,
+    )
+
+
+class _MBA342Resolver:
+    def __init__(
+        self,
+        candidates: list[KnowledgeCandidate],
+        *,
+        hierarchy: KnowledgeCandidateHierarchyResolution | None = None,
+    ):
+        self.candidates = candidates
+        self.hierarchy = hierarchy
+        self.explicit_ids: tuple[uuid.UUID, ...] = ()
+
+    def resolve_explicit_kbs(self, knowledge_base_ids, **_kwargs):
+        self.explicit_ids = tuple(knowledge_base_ids)
+        return KnowledgeCandidateResolution(candidates=self.candidates)
+
+    def resolve_auto_collection_candidates(self, **_kwargs):
+        return KnowledgeCandidateResolution(candidates=self.candidates)
+
+    def resolve_builder_hierarchy(self, **_kwargs):
+        return self.hierarchy or KnowledgeCandidateHierarchyResolution(
+            ungrouped_candidates=self.candidates
+        )
+
+
+class _MBA342RecordingPort:
+    def __init__(self, result: KnowledgeRecommendationRetrievalResult):
+        self.result = result
+        self.requests = []
+
+    def retrieve(self, request):
+        self.requests.append(request)
+        return self.result
+
+
+def _mba_342_service(
+    resolver,
+    port: _MBA342RecordingPort,
+    *,
+    db=None,
+    organization_id: uuid.UUID | None = None,
+) -> KnowledgeRAGRecommendationService:
+    return KnowledgeRAGRecommendationService(
+        db,
+        user_id=uuid.uuid4(),
+        organization_id=organization_id or uuid.uuid4(),
+        resolver=resolver,
+        retrieval_port=port,
+    )
+
+
+def test_mba_342_retrieval_request_uses_only_resolver_authorized_snapshot():
+    authorized = _mba_342_candidate()
+    denied_id = uuid.uuid4()
+    other_organization_id = uuid.uuid4()
+    resolver = _MBA342Resolver([authorized])
+    port = _MBA342RecordingPort(
+        KnowledgeRecommendationRetrievalResult(
+            scores=(
+                CandidateSemanticScore(
+                    knowledge_base_id=authorized.candidate_id,
+                    semantic_state="available",
+                    parent_relevance=0.8,
+                    safe_reason_code="content_match",
+                ),
+            )
+        )
+    )
+
+    _mba_342_service(resolver, port).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="Tax filing",
+            safe_query_topics=["tax filing"],
+            mode="explicit_kb",
+            knowledge_base_ids=[
+                authorized.candidate_id,
+                denied_id,
+                other_organization_id,
+            ],
+        )
+    )
+
+    assert resolver.explicit_ids == (
+        authorized.candidate_id,
+        denied_id,
+        other_organization_id,
+    )
+    assert port.requests[0].candidate_kb_ids == (authorized.candidate_id,)
+
+
+def test_mba_342_discards_port_scores_outside_authorized_snapshot():
+    authorized = _mba_342_candidate()
+    rogue_id = uuid.uuid4()
+    port = _MBA342RecordingPort(
+        KnowledgeRecommendationRetrievalResult(
+            scores=(
+                CandidateSemanticScore(
+                    knowledge_base_id=authorized.candidate_id,
+                    semantic_state="available",
+                    parent_relevance=0.2,
+                    safe_reason_code="content_match",
+                ),
+                CandidateSemanticScore(
+                    knowledge_base_id=rogue_id,
+                    semantic_state="available",
+                    parent_relevance=1.0,
+                    safe_reason_code="content_match",
+                ),
+            )
+        )
+    )
+
+    response = _mba_342_service(_MBA342Resolver([authorized]), port).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="Tax filing",
+            safe_query_topics=["tax filing"],
+        )
+    )
+
+    serialized = response.model_dump_json()
+    assert str(rogue_id) not in serialized
+    assert response.recommendations[0].score < 0.5
+
+
+def test_mba_342_non_recommendation_failure_paths_never_call_retrieval_port():
+    class FailingResolver:
+        def resolve_auto_collection_candidates(self, **_kwargs):
+            raise RuntimeError("safe intent resolution unavailable")
+
+        def resolve_builder_hierarchy(self, **_kwargs):
+            raise RuntimeError("hierarchy resolution unavailable")
+
+        def resolve_explicit_kbs(self, *_args, **_kwargs):
+            raise RuntimeError("KB materialization unavailable")
+
+        def resolve_explicit_collections(self, *_args, **_kwargs):
+            raise RuntimeError("Collection materialization unavailable")
+
+    port = _MBA342RecordingPort(KnowledgeRecommendationRetrievalResult())
+    organization_id = uuid.uuid4()
+    service = _mba_342_service(
+        FailingResolver(),
+        port,
+        organization_id=organization_id,
+    )
+    request = KnowledgeRAGRecommendationRequest(
+        workflow_intent="Tax filing",
+        safe_query_topics=["tax filing"],
+    )
+    kb_id = uuid.uuid4()
+    kb_handle = knowledge_base_recommendation_handle(organization_id, kb_id)
+    collection_id = uuid.uuid4()
+    collection_handle = knowledge_collection_selection_handle(
+        organization_id,
+        collection_id,
+    )
+
+    assert service.safe_intent_candidates_for_builder("Tax filing") == []
+    assert service.recommend_for_builder(request).status == "unavailable"
+    assert service.materialize_candidate_handles_for_builder(
+        request,
+        {kb_handle},
+        issued_resource_ids={kb_handle: kb_id},
+    ) == []
+    assert service.materialize_legacy_candidate_handles_for_builder(
+        request,
+        {kb_handle},
+    ) == []
+    assert service.materialize_collection_handles_for_builder(
+        request,
+        {collection_handle},
+        issued_resource_ids={collection_handle: collection_id},
+    ) == []
+    assert port.requests == []
+
+
+@pytest.mark.parametrize(
+    "semantic_state",
+    [
+        "flat",
+        "hierarchy_unavailable",
+        "artifact_inconsistent",
+        "model_ambiguous",
+        "credential_unavailable",
+        "provider_unavailable",
+        "retrieval_unavailable",
+        "parent_search_timeout",
+        "cohort_budget_exceeded",
+        "deadline_exceeded",
+    ],
+)
+def test_mba_342_all_semantic_unavailable_states_use_metadata_fallback(
+    semantic_state,
+):
+    candidate = _mba_342_candidate()
+    port = _MBA342RecordingPort(
+        KnowledgeRecommendationRetrievalResult(
+            state="degraded",
+            scores=(
+                CandidateSemanticScore(
+                    knowledge_base_id=candidate.candidate_id,
+                    semantic_state=semantic_state,
+                    parent_relevance=None,
+                    safe_reason_code=semantic_state,
+                ),
+            ),
+        )
+    )
+
+    response = _mba_342_service(_MBA342Resolver([candidate]), port).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="Tax filing",
+            safe_query_topics=["tax filing"],
+        )
+    )
+
+    recommendation = response.recommendations[0]
+    assert recommendation.score == pytest.approx(0.98)
+    assert recommendation.recommendation_state == "degraded"
+    assert recommendation.reason_category == "metadata_match"
+    assert response.user_safe_warning
+    assert semantic_state not in response.model_dump_json()
+
+
+def test_mba_342_duplicate_collection_kb_enters_semantic_request_once():
+    candidate = _mba_342_candidate()
+    hierarchy = KnowledgeCandidateHierarchyResolution(
+        collections=[
+            KnowledgeCandidateCollectionGroup(
+                collection_id=uuid.uuid4(),
+                candidates=[candidate],
+            ),
+            KnowledgeCandidateCollectionGroup(
+                collection_id=uuid.uuid4(),
+                candidates=[candidate],
+            ),
+        ]
+    )
+    port = _MBA342RecordingPort(
+        KnowledgeRecommendationRetrievalResult(
+            scores=(
+                CandidateSemanticScore(
+                    knowledge_base_id=candidate.candidate_id,
+                    semantic_state="available",
+                    parent_relevance=0.5,
+                    safe_reason_code="content_match",
+                ),
+            )
+        )
+    )
+
+    _mba_342_service(
+        _MBA342Resolver([candidate], hierarchy=hierarchy),
+        port,
+    ).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="Tax filing",
+            safe_query_topics=["tax filing"],
+            mode="auto_collection",
+        )
+    )
+
+    assert port.requests[0].candidate_kb_ids == (candidate.candidate_id,)
+
+
+def test_mba_342_parent_first_score_is_ephemeral_and_not_metadata_max():
+    db = FakeDb()
+    candidate = _mba_342_candidate()
+    port = _MBA342RecordingPort(
+        KnowledgeRecommendationRetrievalResult(
+            scores=(
+                CandidateSemanticScore(
+                    knowledge_base_id=candidate.candidate_id,
+                    semantic_state="available",
+                    parent_relevance=0.1,
+                    safe_reason_code="content_match",
+                ),
+            )
+        )
+    )
+
+    response = _mba_342_service(
+        _MBA342Resolver([candidate]),
+        port,
+        db=db,
+    ).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="Tax filing",
+            safe_query_topics=["tax filing"],
+        )
+    )
+
+    recommendation = response.recommendations[0]
+    assert recommendation.score == pytest.approx(0.35)
+    assert recommendation.provenance.recommendation_strategy == "parent_first_v1"
+    assert recommendation.recommendation_state == "complete"
+    assert db.added == []
+    assert db.commits == 0

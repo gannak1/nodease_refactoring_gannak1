@@ -133,14 +133,14 @@ class KnowledgeSelectionKBCandidate(BaseModel):
     kb_handle: str
     selection_key: str
     safe_label: str | None = None
-    score: float = Field(ge=0.0, le=1.0)
+    score: float | None = Field(default=None, ge=0.0, le=1.0)
     shared_collection_count: int = Field(default=0, ge=0)
 
 
 class KnowledgeSelectionCollection(BaseModel):
     collection_handle: str
     safe_label: str | None = None
-    score: float = Field(ge=0.0, le=1.0)
+    score: float | None = Field(default=None, ge=0.0, le=1.0)
     children: list[KnowledgeSelectionKBCandidate] = Field(default_factory=list)
 
 
@@ -503,7 +503,7 @@ class KnowledgeSourceCollectionSummary(BaseModel):
 
 
 class KnowledgeRAGRecommendationProvenance(BaseModel):
-    recommendation_strategy: str = "structured_kb_relevance_v2"
+    recommendation_strategy: str = "parent_first_v1"
     safe_reason_code: str
     used_signals: list[str] = Field(default_factory=list)
     matched_safe_terms: list[str] = Field(default_factory=list)
@@ -522,6 +522,7 @@ class KnowledgeRAGRecommendation(BaseModel):
     confidence_label: Literal["high", "medium", "low"] | None = None
     score: float | None = Field(default=None, ge=0.0, le=1.0)
     reason_category: str | None = None
+    recommendation_state: Literal["complete", "degraded"] = "complete"
     threshold_result: str | None = None
     safe_reason_code: str
     recommended_options: KnowledgeRAGRecommendedOptions
@@ -538,7 +539,7 @@ class KnowledgeRAGRecommendationSummary(BaseModel):
     candidate_count_bucket: str = "0"
     recommendation_count_bucket: str = "0"
     hidden_or_unavailable_count_bucket: str = "0"
-    recommendation_strategy: str = "structured_kb_relevance_v2"
+    recommendation_strategy: str = "parent_first_v1"
     warning_count_bucket: str = "0"
 
 

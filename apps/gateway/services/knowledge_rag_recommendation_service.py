@@ -4,6 +4,13 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from apps.gateway.application.agent_builder.knowledge_recommendation import (
+    CandidateSemanticScore,
+    KnowledgeRecommendationRetrievalPort,
+    KnowledgeRecommendationRetrievalRequest,
+    compose_final_recommendation_score,
+    select_parent_first_relevance,
+)
 from apps.gateway.services.knowledge_candidate_resolver import (
     DEFAULT_MAX_CANDIDATE_KBS,
     KnowledgeCandidateResolver,
@@ -30,7 +37,7 @@ from apps.shared.services.knowledge_safe_text import extract_safe_terms
 from apps.shared.services.rag_source_tier import source_tier_priority
 
 
-RECOMMENDATION_STRATEGY = "structured_kb_relevance_v2"
+RECOMMENDATION_STRATEGY = "parent_first_v1"
 RECOMMENDATION_HANDLE_NAMESPACE = "metadata_keyword_v1"
 GENERIC_KB_LABEL = "Knowledge Base"
 SAFE_TEMPLATE_FOR_POLICY = "{query} 관련 정책 근거 절차 기준"
@@ -131,11 +138,13 @@ class KnowledgeRAGRecommendationService:
         user_id: uuid.UUID,
         organization_id: uuid.UUID,
         resolver: KnowledgeCandidateResolver | None = None,
+        retrieval_port: KnowledgeRecommendationRetrievalPort | None = None,
     ) -> None:
         self.db = db
         self.user_id = user_id
         self.organization_id = organization_id
         self.resolver = resolver
+        self.retrieval_port = retrieval_port
 
     def recommend_for_builder(
         self,
@@ -185,8 +194,13 @@ class KnowledgeRAGRecommendationService:
                 )
         except Exception:
             return self._adapter_unavailable_response(request)
+        semantic_scores = self._semantic_scores(resolution.candidates, request)
         try:
-            ranked = self._rank_candidates(resolution.candidates, request)
+            ranked = self._rank_candidates(
+                resolution.candidates,
+                request,
+                semantic_scores=semantic_scores,
+            )
         except Exception:
             return self._adapter_unavailable_response(request, resolution.candidates)
 
@@ -214,7 +228,17 @@ class KnowledgeRAGRecommendationService:
             )
         )
 
-        warning_count = sum(1 for item in recommendations if item.warnings)
+        degraded = any(
+            item.recommendation_state == "degraded" for item in recommendations
+        )
+        degraded_warning = (
+            "Knowledge Base 내용 검색을 사용할 수 없어 일부 후보를 metadata 기준으로 정렬했습니다."
+            if degraded
+            else None
+        )
+        warning_count = sum(1 for item in recommendations if item.warnings) + int(
+            degraded
+        )
         response = KnowledgeRAGRecommendationResponse(
             status=(
                 "recommended"
@@ -248,6 +272,7 @@ class KnowledgeRAGRecommendationService:
                 if recommendations or has_selectable_hierarchy
                 else resolution.reason_code or "no_candidate"
             ),
+            user_safe_warning=degraded_warning,
         )
         issued_kb_handles = {
             self._recommendation_id(candidate): candidate.candidate_id
@@ -563,6 +588,8 @@ class KnowledgeRAGRecommendationService:
         self,
         candidates: list[KnowledgeCandidate],
         request: KnowledgeRAGRecommendationRequest,
+        *,
+        semantic_scores: dict[uuid.UUID, CandidateSemanticScore] | None = None,
     ) -> list[tuple[KnowledgeCandidate, float, list[str], list[str]]]:
         terms, query_source = self._ranking_terms(candidates, request)
         ranked: list[tuple[KnowledgeCandidate, float, list[str], list[str]]] = []
@@ -571,28 +598,46 @@ class KnowledgeRAGRecommendationService:
             source_priority = self._source_tier_priority(candidate)
             availability = _AVAILABILITY_ORDER.get(candidate.runtime_availability, 1)
             freshness = self._sync_freshness_score(candidate)
-            kb_relevance = self._kb_relevance(candidate, terms, matched_terms)
-            score = 0.0
-            if kb_relevance > 0:
-                score = (
-                    kb_relevance * 0.70
-                    + (source_priority / 100) * 0.10
-                    + (availability / 3) * 0.10
-                    + freshness * 0.10
-                )
+            metadata_relevance = self._kb_relevance(candidate, terms, matched_terms)
+            semantic_score = (
+                semantic_scores.get(candidate.candidate_id)
+                if semantic_scores is not None
+                else None
+            )
+            semantic_available = (
+                semantic_score is not None
+                and semantic_score.semantic_state == "available"
+            )
+            relevance = select_parent_first_relevance(
+                parent_relevance=(
+                    semantic_score.parent_relevance if semantic_available else None
+                ),
+                metadata_relevance=metadata_relevance,
+                semantic_available=semantic_available,
+            )
+            score = compose_final_recommendation_score(
+                relevance=relevance,
+                source_tier=source_priority / 100,
+                availability=availability / 3,
+                freshness=freshness,
+            )
             used_signals = self._used_signals(
-                matched_terms=matched_terms,
+                matched_terms=[] if semantic_available else matched_terms,
                 source_priority=source_priority,
                 availability=candidate.runtime_availability,
                 freshness=freshness,
                 structured_query=query_source == "structured",
                 fallback_query=query_source == "fallback",
             )
+            if semantic_available:
+                used_signals.append("parent_content_match")
+            elif semantic_scores is not None:
+                used_signals.append("metadata_fallback")
             ranked.append(
                 (
                     candidate,
-                    max(0.0, min(score, 0.99)),
-                    matched_terms,
+                    max(0.0, min(score, 1.0)),
+                    [] if semantic_available else matched_terms,
                     used_signals,
                 )
             )
@@ -606,6 +651,51 @@ class KnowledgeRAGRecommendationService:
                 self._recommendation_id(item[0]),
             ),
         )
+
+    def _semantic_scores(
+        self,
+        candidates: list[KnowledgeCandidate],
+        request: KnowledgeRAGRecommendationRequest,
+    ) -> dict[uuid.UUID, CandidateSemanticScore] | None:
+        if self.retrieval_port is None or not candidates:
+            return None
+        safe_topics = self._bounded_safe_query_topics(request.safe_query_topics)
+        if not safe_topics:
+            return {}
+        authorized_ids = tuple(dict.fromkeys(item.candidate_id for item in candidates))
+        retrieval_request = KnowledgeRecommendationRetrievalRequest(
+            organization_id=self.organization_id,
+            actor_id=self.user_id,
+            safe_query_topics=safe_topics,
+            candidate_kb_ids=authorized_ids,
+            candidate_snapshot_ref=(
+                request.authorized_safe_candidate_set_ref
+                or request.pending_resolution_ref
+                or f"request-{uuid.uuid4()}"
+            ),
+        )
+        try:
+            result = self.retrieval_port.retrieve(retrieval_request)
+        except Exception:
+            return {}
+        authorized_id_set = set(authorized_ids)
+        return {
+            item.knowledge_base_id: item
+            for item in result.scores
+            if item.knowledge_base_id in authorized_id_set
+        }
+
+    def _bounded_safe_query_topics(self, topics: list[str]) -> tuple[str, ...]:
+        bounded: list[str] = []
+        remaining = 1000
+        for topic in topics[:20]:
+            if remaining <= 0:
+                break
+            value = topic[:remaining]
+            if value:
+                bounded.append(value)
+                remaining -= len(value)
+        return tuple(bounded)
 
     def _recommendation(
         self,
@@ -625,11 +715,21 @@ class KnowledgeRAGRecommendationService:
                 name=kb_label,
             )
         ][:MAX_MATERIALIZED_KBS]
-        safe_reason_code = self._safe_reason_code(
-            matched_terms,
-            request,
-            structured_query="structured_safe_query" in used_signals,
+        recommendation_state = (
+            "degraded" if "metadata_fallback" in used_signals else "complete"
         )
+        if "parent_content_match" in used_signals:
+            safe_reason_code = "content_match"
+        elif recommendation_state == "degraded":
+            safe_reason_code = (
+                "metadata_match" if score > 0 and matched_terms else "operational_fallback"
+            )
+        else:
+            safe_reason_code = self._safe_reason_code(
+                matched_terms,
+                request,
+                structured_query="structured_safe_query" in used_signals,
+            )
         recommendation_id = self._recommendation_id(candidate)
         threshold_result = (
             "high_confidence" if score >= 0.65 else "close_score" if score >= 0.45 else "below_threshold"
@@ -647,6 +747,7 @@ class KnowledgeRAGRecommendationService:
             confidence_label=confidence_label,
             score=round(score, 4),
             reason_category=safe_reason_code,
+            recommendation_state=recommendation_state,
             threshold_result=threshold_result,
             safe_reason_code=safe_reason_code,
             recommended_options=options,
@@ -823,6 +924,11 @@ class KnowledgeRAGRecommendationService:
                 "confidence": item.confidence,
                 "score": item.score,
                 "reason_category": item.reason_category or item.safe_reason_code,
+                **(
+                    {"recommendation_state": "degraded"}
+                    if item.recommendation_state == "degraded"
+                    else {}
+                ),
                 "threshold_result": item.threshold_result,
                 "runtime_availability": item.runtime_availability,
             }
