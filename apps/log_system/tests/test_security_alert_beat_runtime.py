@@ -8,7 +8,7 @@ def test_dev_script_starts_and_stops_log_system_beat_process():
 
     assert "-A apps.log_system.main beat" in script
     assert "LOG_CELERY_BEAT_PID=$!" in script
-    assert "kill $LOG_CELERY_BEAT_PID" in script
+    assert 'stop_managed_process "$LOG_CELERY_BEAT_PID"' in script
 
 
 def test_docker_compose_runs_dedicated_log_system_beat_service():

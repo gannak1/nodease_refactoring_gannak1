@@ -1217,7 +1217,7 @@ def test_internal_it_helpdesk_routing_demo_matches_presentation_contract():
 def test_internal_it_helpdesk_routing_demo_seeds_all_presentation_logs():
     specs = demo_seed.INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS
 
-    assert len(specs) == 10
+    assert len(specs) == 9
     assert {spec.model_name for spec in specs} >= {
         "gpt-4o-mini",
         "gpt-4.1-mini",
@@ -1228,21 +1228,24 @@ def test_internal_it_helpdesk_routing_demo_seeds_all_presentation_logs():
     assert all(spec.status == RunStatus.SUCCESS for spec in specs)
     assert all(spec.department and spec.message for spec in specs)
     assert all(spec.total_tokens > 0 and spec.total_cost > 0 for spec in specs)
-    assert specs[-1].run_id == uuid.UUID("5a699356-1c89-498f-8aa6-0922f8887f16")
+    assert specs[-1].run_id == uuid.UUID("f4c671f9-5c32-4e00-95ca-e11f5fe560eb")
     assert specs[-1].model_name == "gpt-5.6-terra"
-    assert specs[-1].department == "정보보안팀"
+    assert specs[-1].department == "플랫폼개발"
     assert specs[-1].message == (
-        "외부에서 접속한 것으로 보이는 계정이 운영 조회 권한을 사용했습니다. "
-        "MFA 재설정, VPN 세션 차단, Git 토큰 폐기 중 어떤 조치를 먼저 해야 하는지 "
-        "근거와 함께 판단해 주세요."
+        "보안 교육을 아직 완료하지 않은 신규 입사자가 운영 저장소 접근과 배포 권한을 요청했습니다. "
+        "SSO, VPN, Git 권한, 승인 절차를 함께 고려해 허용 여부를 판단해 주세요."
     )
 
 
 def test_internal_it_helpdesk_seed_uses_catalog_tier_for_terra_security_reason():
-    last_spec = demo_seed.INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS[-1]
+    security_spec = next(
+        spec
+        for spec in demo_seed.INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS
+        if spec.run_id == uuid.UUID("2c19f120-02f7-4a6f-a983-a73c01bf425f")
+    )
 
     tier, reason_code, reason_short = demo_seed._internal_it_helpdesk_routing_reason(
-        last_spec,
+        security_spec,
         approval_required=True,
     )
 
@@ -1252,10 +1255,14 @@ def test_internal_it_helpdesk_seed_uses_catalog_tier_for_terra_security_reason()
 
 
 def test_internal_it_helpdesk_seed_exposes_safe_judge_reason_factors_for_high_risk_run():
-    last_spec = demo_seed.INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS[-1]
+    security_spec = next(
+        spec
+        for spec in demo_seed.INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS
+        if spec.run_id == uuid.UUID("2c19f120-02f7-4a6f-a983-a73c01bf425f")
+    )
 
     assert demo_seed._internal_it_helpdesk_reason_factors(
-        last_spec,
+        security_spec,
         approval_required=True,
     ) == [
         "high_decision_impact",
