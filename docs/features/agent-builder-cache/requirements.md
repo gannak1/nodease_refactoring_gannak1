@@ -13,6 +13,12 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
 ## Authority
 
 - 캐시의 목표 계약은 ADR-0063을 따른다.
+- MBA-343 cache spine의 strict DTO, codec, port, disabled runtime seam과 세부 파일 소유권은
+  [MBA-343 requirements](../agent-builder-cache-343/requirements.md),
+  [internal API](../agent-builder-cache-343/api_spec.md)와
+  [component specification](../agent-builder-cache-343/component_spec.md)이 이 문서를 구체화한다.
+  두 문서가 충돌하면 admission과 제품 동작은 이 문서를 따르고, MBA-343의 내부 module 분리는
+  MBA-343 component specification을 따른다.
 - Planner 호출과 semantic repair는 기존 Agent Builder intent 계약을 따른다.
 - Cache miss와 repair의 usage attribution은 ADR-0055를 따른다.
 - GraphMutation과 저장은 현재 Agent Builder direct-edit/CAS 권위 계약을 따른다.
@@ -99,7 +105,10 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
   embedding, fuzzy 또는 의미 유사도 매핑을 사용하지 않아야 한다. Rehydration은 `topic_ref`를 고정
   `query_topics` 문자열로, guidance ref를 registry의 고정 template과 현재 Catalog의 allowlisted
   parameter metadata만으로 렌더링해야 한다. 렌더링 문자열이나 자유 형식 template argument는 value에
-  저장하지 않아야 한다.
+  저장하지 않아야 한다. 같은 `canonical_text_registry_version`은 request/draft pair별 canonical
+  `intent_summary`와 capability별 canonical step purpose의 exact table도 함께 versioning해야 한다.
+  Summary/purpose 문자열은 value에 저장하지 않고 plan의 request/draft type과 logical capability에서만
+  파생해야 하며, exact v1 membership은 MBA-343 internal API contract를 따라야 한다.
 - ABC-FR-034: Decode, schema, size, version, key binding 또는 payload MAC validation에 실패한 value는 삭제 가능한 miss로 처리해야 한다.
 - ABC-FR-035: Value에는 request/session ID와 raw audit payload 또는 audit metadata 원문을 포함하지 않아야 한다.
 - ABC-FR-036: Strict codec는 allowlisted schema 밖의 중첩 field와 forbidden key pattern을 decode와 encode 양쪽에서 거부해야 한다.

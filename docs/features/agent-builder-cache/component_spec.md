@@ -2,6 +2,11 @@
 
 Status: Draft
 
+MBA-343 cache spine의 내부 module 분리와 disabled runtime seam은
+[MBA-343 component specification](../agent-builder-cache-343/component_spec.md)이 이 문서의
+`intent_cache/` package 내부 소유권을 구체화한다. 전체 coordinator, Redis adapter와 rehydration의
+책임 경계는 이 문서가 계속 소유한다.
+
 ## Design Goals
 
 - Cache correctness를 자연어 의미 추론과 분리한다.
@@ -22,7 +27,7 @@ Status: Draft
 | `IntentPlanCachePort` | cache/lease 의미 계약 | Redis 타입 노출 |
 | `RedisIntentPlanCacheAdapter` | bounded Redis get/put/lease/wait | business validation |
 | `CachedIntentPlanCodec` | strict serialization, max size와 forbidden field validation | Pydantic validation 우회 |
-| `CanonicalTopicGuidanceRegistry` | provider text의 exact ref projection과 fixed canonical rendering | fuzzy/semantic mapping, 자유 형식 template argument |
+| `CanonicalIntentTextRegistry` | provider topic/guidance의 exact ref projection과 summary/purpose를 포함한 fixed canonical rendering | fuzzy/semantic mapping, 자유 형식 template argument |
 | `CachedIntentPlanRehydrator` | current context와 canonical registry에서 structured request 재구성 | 과거 UUID/handle 또는 provider text 재사용 |
 | `AgentBuilderIntentCoordinator` | cache, Planner와 rehydration orchestration | GraphMutation/CAS 소유 |
 | Existing Planner Adapter | provider invoke, schema parse, semantic repair와 usage | cache policy 결정 |
@@ -55,16 +60,16 @@ provider invoke 직전에만 기존 usage reservation을 시작한다. Hit는 re
 | Path | Content |
 |---|---|
 | `apps/gateway/application/agent_builder/intent_normalization.py` | signature와 normalization policy |
-| `apps/gateway/application/agent_builder/intent_cache.py` | cache DTO, ports, eligibility/key policy와 no-op 경계 |
+| `apps/gateway/application/agent_builder/intent_cache/` | MBA-343의 `catalog_snapshot.py`, `contracts.py`, `codec.py`, `ports.py`, `disabled.py`; Catalog v3 node/capability/parameter key·input type와 canonical summary/purpose snapshot, cache DTO, strict codec, ports와 no-op 경계 |
 | `apps/gateway/application/agent_builder/intent_cache_coordinator.py` | cache hit/miss/bypass, Planner, rehydration과 usage orchestration |
 | `apps/gateway/application/agent_builder/intent_rehydration.py` | current-context rehydration |
-| `apps/gateway/application/agent_builder/intent_rehydration_registry.py` | versioned topic/guidance manifest, exact projection과 fixed template rendering |
+| `apps/gateway/application/agent_builder/intent_rehydration_registry.py` | versioned topic/guidance와 summary/purpose manifest, exact projection과 fixed template rendering |
 | `apps/gateway/adapters/cache/agent_builder_intent_plan.py` | Redis adapter와 codec boundary |
 | `apps/gateway/composition/agent_builder.py` | configuration, adapter와 service wiring |
 | `apps/gateway/services/agent_builder_service.py` | transient full safe planning context DTO와 coordinator seam |
 | `apps/gateway/services/agent_builder_intent_service.py` | provider-backed extraction과 repair 유지 |
 
-`intent_cache_coordinator.py`는 `intent_cache.py`의 DTO와 port를 의존할 수 있지만 반대 방향 import는
+`intent_cache_coordinator.py`는 `intent_cache/`의 DTO와 port를 의존할 수 있지만 반대 방향 import는
 허용하지 않는다. Redis client 타입은 adapter 밖의 application module에 노출하지 않는다.
 현재 분할 구현에서는 위 responsibility boundary를 가로질러 module을 합치지 않는다. 같은 responsibility
 안의 세부 helper만 합칠 수 있으며 normalization, cache adapter, provider invoke와 graph materialization
@@ -189,7 +194,9 @@ Catalog의 allowlisted key, safe label과 input type만 주입할 수 있고 자
 registry version mismatch와 Catalog incompatibility를 fallback text로 보정하지 않는다.
 
 Registry module은 `topic.<slug>.v1`, `guidance.reason.<slug>.v1`, `guidance.input.<slug>.v1` namespace와
-strict manifest를 소유한다. Closed ref enum은 `intent_cache.py`가 소유하고 codec가 unknown ref를 거부한다.
+strict manifest를 소유한다. 같은 version은 request/draft pair별 summary와 capability별 step purpose의 exact table도
+소유한다. Closed ref enum과 summary/purpose contract snapshot은 `intent_cache/` package가 소유하고 codec가
+unknown ref를 거부한다.
 Startup/static validation은 enum 대비 누락·초과 ref, ref/alias/canonical text 중복, alias의 다중 ref 매핑,
 지원하지 않는 placeholder와 빈 input-type applicability를 거부한다. Manifest 또는 enum 변경은
 `canonical_text_registry_version`과 regression fixture를 함께 변경한다.

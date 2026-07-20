@@ -2,6 +2,10 @@
 
 Status: Draft
 
+MBA-343에서 최초 구현하는 cache spine의 field-level strict schema와 disabled execution contract는
+[MBA-343 internal API](../agent-builder-cache-343/api_spec.md)가 이 문서를 구체화한다. Admission,
+rehydration과 serving 동작은 이 문서가 계속 소유한다.
+
 ## External API Boundary
 
 이 기능은 public HTTP endpoint를 추가하거나 기존 Agent Builder message response를 변경하지 않는다.
@@ -171,7 +175,8 @@ domain separation을 적용한다.
 | `CachedParameterGuidanceRef` | `logical_step_ref`, Catalog `parameter_key`, closed `reason_template_ref`, closed `input_guidance_template_ref` | `AgentBuilderParameterGuidanceHint` |
 
 Reference namespace는 `topic.<slug>.v1`, `guidance.reason.<slug>.v1`,
-`guidance.input.<slug>.v1` 형식이다. 형식 일치만으로 ref를 허용하지 않고 `intent_cache.py`의
+`guidance.input.<slug>.v1` 형식이다. 형식 일치만으로 ref를 허용하지 않고
+`intent_cache/contracts.py`의
 `CachedIntentPlan` closed enum membership을 codec에서 검사한다. Registry manifest는 이 enum 집합을
 빠짐없이 한 번씩 구현해야 한다. `contract_versions.canonical_text_registry_version`은 manifest의
 `registry_version`과 같아야 한다.
@@ -180,6 +185,9 @@ Canonical text registry는 server-owned 정적 table이며 Planner prompt, provi
 동적으로 만들지 않는다. 각 `topic_ref`는 고정 `query_topic` 문자열 하나를, 각 guidance template ref는
 고정 template과 허용 가능한 Catalog `input_type` 집합을 소유한다. Template은 현재 Catalog의
 `parameter_key`, safe label과 input type만 사용할 수 있으며 자유 형식 argument를 받지 않는다.
+같은 registry version은 request/draft pair별 canonical summary와 capability별 canonical step purpose도
+소유한다. Exact `intent-text-v1` summary/purpose membership은
+[MBA-343 internal API](../agent-builder-cache-343/api_spec.md)의 contract snapshot을 따른다.
 Registry manifest는 다음 strict field만 가진다.
 
 | Entry | Required fields |
@@ -187,6 +195,8 @@ Registry manifest는 다음 strict field만 가진다.
 | manifest | `registry_version`, ordered `topics`, ordered `reason_templates`, ordered `input_guidance_templates` |
 | topic | `ref`, `canonical_text`, ordered explicit `aliases` |
 | guidance template | `ref`, `canonical_template`, ordered explicit `aliases`, ordered `allowed_input_types` |
+| summary template | exact request/draft pair, `canonical_text` |
+| capability purpose | exact Catalog capability, `canonical_text` |
 
 Closed enum 대비 누락·초과 ref, alias와 canonical text 중복, 지원하지 않는 placeholder, alias의 다중 ref
 매핑과 빈 `allowed_input_types`는 startup/static validation 실패다. Registry manifest 또는 enum 변경은
@@ -219,6 +229,10 @@ Application layer는 concrete Redis 타입 대신 다음 의미 계약을 사용
 | `complete_without_value(key, owner, lease_generation, ttl)` | signaled_and_released, ignored 또는 unavailable | owner/generation이 일치할 때만 짧은 완료 신호와 release를 원자적으로 수행 |
 | `wait_for_value(key, lease_generation, deadline, cancellation_fence)` | hit, owner_completed_without_value, canceled, stale, timeout 또는 unavailable | 관찰한 generation과 일치하는 완료 신호만 사용하고 짧은 bounded slice마다 fence 확인 |
 | `release_lease(key, owner)` | released 또는 ignored | owner token이 일치할 때만 release |
+
+MBA-343 spine의 typed `load/save` subset은 위 `get/put` 상태를 손실 없이 표현한다. Load result는
+`hit|miss|invalid|unavailable`, save result는 `stored|unavailable`을 closed DTO로 반환한다. `None`, boolean 또는
+자유 형식 exception으로 상태를 합치지 않는다. Lease와 waiter operation은 후속 adapter/concurrency 범위다.
 
 Value put과 lease release는 원자성 순서를 보장해야 한다. Follower가 partial payload를 읽을 수
 없도록 완성된 serialized value를 한 번에 기록한다.
