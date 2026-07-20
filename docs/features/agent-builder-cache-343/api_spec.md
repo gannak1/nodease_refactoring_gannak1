@@ -375,6 +375,10 @@ encode한다. BOM, trailing newline과 trailing whitespace를 붙이지 않는�
 rendered user text가 plan에 없으므로 Unicode normalization은 codec 책임이 아니다. Decoder는 다음 순서를
 고정한다.
 
+Encoder는 금지 content 검사와 canonical encode 뒤 같은 bytes를
+`CachedIntentPlanV1.model_validate_json(payload, strict=True)`로 재검증한다. 따라서 unchecked model copy나
+subclass extension으로 만들어져 decoder와 round-trip할 수 없는 typed 입력은 `invalid_plan_schema`로 거부한다.
+
 1. byte size를 parse 전에 검사한다.
 2. UTF-8 strict mode로 decode한다.
 3. `object_pairs_hook`으로 duplicate key를, `parse_constant`로 non-finite number를 거부해 raw object tree를
@@ -393,7 +397,7 @@ semantic plan의 bytes를 바꾸면 cache schema version을 올리지 않는 한
 | --- | --- | --- |
 | `payload_too_large` | `payload_size` | parse 전 bounded size 초과 |
 | `invalid_utf8` | `root` | UTF-8 decode 실패 |
-| `invalid_json` | `root` | JSON object가 아니거나 syntax/duplicate key/non-finite number 오류 |
+| `invalid_json` | `root` | JSON object가 아니거나 syntax/duplicate key/non-finite number/과도한 중첩 오류 |
 | `unsupported_schema_version` | `contract_version` | 지원하지 않는 plan version |
 | `forbidden_cache_content` | `cache_content` | 금지 field/value 발견 |
 | `invalid_plan_schema` | `reference|payload_shape` | strict DTO의 ref 또는 일반 shape 검증 실패 |

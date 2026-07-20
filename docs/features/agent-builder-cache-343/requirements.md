@@ -97,7 +97,8 @@ MBA-343은 이 위험을 막는 최소 spine만 정의한다.
 
 ### ABC343-FR-003 Forbidden Cache Content
 
-- graph, node/edge UUID, 좌표, GraphMutation operation, workflow/request/session/operation ID를 금지한다.
+- graph, UUID version과 무관한 canonical UUID 문자열, node/edge UUID, 좌표, GraphMutation operation,
+  workflow/request/session/operation ID를 금지한다.
 - credential, secret, token, API key, password, Redis URL과 raw provider/audit payload를 금지한다.
 - 실제 parameter value와 explicit parameter value를 금지한다.
 - KB/Collection ID, 이름, candidate handle과 request-scoped opaque handle을 금지한다.
@@ -113,9 +114,12 @@ MBA-343은 이 위험을 막는 최소 spine만 정의한다.
 - codec은 하나의 canonical UTF-8 JSON byte representation을 만든다.
 - encoder는 `model_dump(mode=json, exclude_none=False)`, sorted key, compact separator, UTF-8 non-ASCII,
   non-finite-number rejection, no BOM/newline 규칙을 고정한다.
+- encoder는 생성한 bytes를 같은 strict `CachedIntentPlanV1` JSON-mode contract로 재검증하고, unchecked
+  model copy나 subclass extension처럼 decoder가 수용할 수 없는 typed 입력을 저장 전에 거부한다.
 - object key order, whitespace와 JSON encoder 기본값 차이가 canonical bytes에 영향을 주지 않는다.
 - list order는 semantic order이므로 변경하지 않는다.
-- duplicate key, non-UTF-8, non-finite number, unknown schema version, unknown field와 malformed reference를 거부한다.
+- duplicate key, non-UTF-8, non-finite number, 과도한 JSON 중첩, unknown schema version, unknown field와
+  malformed reference를 closed codec error로 거부한다.
 - decode 후 같은 codec으로 encode한 bytes가 입력과 다르면 non-canonical payload로 거부한다.
 - payload size limit은 호출자가 제공하는 bounded 값으로 검사하되 운영 설정이나 Redis 정책은 소유하지 않는다.
 

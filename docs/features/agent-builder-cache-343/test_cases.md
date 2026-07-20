@@ -28,7 +28,7 @@ payload를 포함하지 않는다.
 | ID | Scenario | Expected Result |
 | --- | --- | --- |
 | ABC343-T011 | graph/nodes/edges/position field를 root 또는 nested에 주입 | `forbidden_cache_content` |
-| ABC343-T012 | workflow/node/edge/request/session/operation UUID 주입 | `forbidden_cache_content` |
+| ABC343-T012 | workflow/node/edge/request/session/operation UUID와 version 4/7/nil UUID 문자열 주입 | UUID version과 무관하게 `forbidden_cache_content` |
 | ABC343-T013 | credential, token, API key, password, Redis URL category 주입 | `forbidden_cache_content` |
 | ABC343-T014 | explicit/actual parameter value 주입 | `forbidden_cache_content` |
 | ABC343-T015 | KB/Collection ID, label, candidate/opaque handle 주입 | `forbidden_cache_content` |
@@ -105,6 +105,8 @@ snapshot, evidence 또는 log file에 기록하지 않는다.
 | ABC343-T058 | load hit/miss/invalid/unavailable과 save stored/unavailable result 조합 | valid union만 허용하고 unknown status/reason 또는 plan/reason 모순 거부 |
 | ABC343-T059 | codec의 모든 failure code/path category와 string/repr/cause 검사 | public `IntentPlanCodecError`만 발생하고 payload/value/full path/chained parser error 없음 |
 | ABC343-T060 | duplicate guard parse 뒤 tuple plan decode | original bytes의 strict Pydantic JSON-mode 검증으로 성공하고 Python-mode list coercion helper 없음 |
+| ABC343-T061 | unchecked model copy의 invalid member 또는 extra-field subclass plan encode | decoder와 round-trip할 수 없으므로 `invalid_plan_schema/payload_shape`로 거부 |
+| ABC343-T062 | configured byte limit 안의 과도하게 중첩된 JSON decode | raw `RecursionError` 대신 `invalid_json/root`로 거부 |
 
 ## 9. Suggested Commands
 
