@@ -86,7 +86,10 @@ describe('워크플로우 운영 현황 보기 전환', () => {
     render(<MyModulePage />);
 
     expect(
-      await screen.findByRole('heading', { level: 1, name: '워크플로우' }),
+      await screen.findByRole('heading', {
+        level: 1,
+        name: '워크플로우 목록',
+      }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole('heading', { level: 1, name: '내 모듈' }),
@@ -96,6 +99,9 @@ describe('워크플로우 운영 현황 보기 전환', () => {
         level: 3,
         name: '신입사원 온보딩',
       }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '새 워크플로우' }),
     ).toBeInTheDocument();
     expect(screen.queryByText('예상 월 비용')).not.toBeInTheDocument();
     expect(screen.queryByText('평균 증가 추세')).not.toBeInTheDocument();

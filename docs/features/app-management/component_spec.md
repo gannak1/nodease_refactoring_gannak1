@@ -8,6 +8,9 @@ Status: Draft
 
 내가 운영할 수 있는 App/Workflow의 권한, 배포 상태, 최근 실행 상태를 표시한다. 목록 데이터 원천은 `GET /apps/operations`다. 이 화면은 작성자/관리자 운영 표면이며, 배포된 workflow를 실행만 하는 일반 사용자의 최종 실행 화면이 아니다.
 
+- 사이드바 navigation과 페이지 제목은 `워크플로우 목록`으로 표시한다.
+- 생성 action은 `새 워크플로우`로 표시하고 기존 CreateAppModal을 연다.
+
 Budget Management 확장:
 
 - row의 `app.budget_status`가 있으면 모듈명/설명 아래에 `BudgetStatusBadge`를 표시한다.

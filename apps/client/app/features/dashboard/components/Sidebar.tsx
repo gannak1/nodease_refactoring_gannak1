@@ -45,7 +45,7 @@ const navigationItems = [
     icon: Home,
   },
   {
-    name: '워크플로우',
+    name: '워크플로우 목록',
     href: '/dashboard/mymodule',
     icon: Workflow,
     operationsOnly: true,

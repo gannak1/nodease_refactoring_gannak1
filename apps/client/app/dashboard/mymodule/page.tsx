@@ -662,7 +662,7 @@ export default function MyModulePage() {
     <div className="min-h-full bg-white px-6 py-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
         <DashboardPageHeader
-          title="워크플로우"
+          title="워크플로우 목록"
           description="워크플로우 접근 권한, 배포 상태, 실행 흐름을 한 화면에서 확인합니다."
           meta={
             unavailableCount > 0 && (
@@ -686,7 +686,7 @@ export default function MyModulePage() {
                 onClick={() => setIsCreateModalOpen(true)}
                 className="inline-flex h-10 items-center gap-2 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800"
               >
-                <Plus className="h-4 w-4" />새 모듈
+                <Plus className="h-4 w-4" />새 워크플로우
               </button>
             </div>
           }

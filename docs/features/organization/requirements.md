@@ -73,7 +73,7 @@ Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organiza
 - ORG-REQ-044: dashboard layout은 active organization을 확인하고, 하나뿐이면 자동 선택하며, 여러 개면 사용자가 선택하도록 해야 한다.
 - ORG-REQ-045: dashboard sidebar는 현재 organization 이름과 manager 여부를 조회하고, manager가 아닌 사용자에게 관리 메뉴를 숨겨야 한다.
 - ORG-REQ-046: admin console은 manager에게 멤버/팀/workflow permission/KB permission/LLM credential permission 관리 UI를 제공하고, manager가 아닌 사용자에게 관리 권한 없음 상태를 표시해야 한다.
-- ORG-REQ-047: App 생성(`POST /apps`, "새 모듈")은 organization owner/manager 또는 `user_app_creation_permissions` row 보유자만 수행할 수 있어야 한다 ([ADR-0016](../../decisions/ADR-0016-permission-request-and-app-creation-permission.md)).
+- ORG-REQ-047: App 생성(`POST /apps`, "새 워크플로우")은 organization owner/manager 또는 `user_app_creation_permissions` row 보유자만 수행할 수 있어야 한다 ([ADR-0016](../../decisions/ADR-0016-permission-request-and-app-creation-permission.md)).
 - ORG-REQ-048: App 생성 권한이 없는 사용자의 App 생성 요청은 `403 permission.denied`로 차단하고, 클라이언트는 이 응답에서 권한 신청 UI로 연결해야 한다.
 - ORG-REQ-049: App 생성 권한 신청은 `permission_requests`에 요청 권한 `app.create`와 신청 사유를 저장해야 한다.
 - ORG-REQ-050: 같은 조직에 pending 신청이 있거나 이미 App 생성 권한을 보유한 사용자(`user_app_creation_permissions` row 보유 또는 owner/manager)의 App 생성 권한 신청은 거부해야 한다.
