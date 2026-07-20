@@ -265,7 +265,7 @@ def test_transcript_uses_the_documented_public_response_shape(monkeypatch):
     assert application.transcript.queries[0]["access_token"] == access_token
 
 
-def test_bearer_or_cookie_cannot_be_interpreted_as_public_conversation_grant(monkeypatch):
+def test_non_conversation_authorization_uses_typed_resource_hidden_contract(monkeypatch):
     application = _Application()
     client = _client(monkeypatch, application)
     client.cookies.set("session", "authenticated-cookie-is-not-a-principal")
@@ -280,7 +280,12 @@ def test_bearer_or_cookie_cannot_be_interpreted_as_public_conversation_grant(mon
     )
 
     assert response.status_code == 404
-    assert response.json() == {"detail": "Conversation not found"}
+    assert response.json() == {
+        "detail": {
+            "code": "memory.session_hidden",
+            "message": "Conversation not found",
+        }
+    }
     assert application.close.commands == []
 
 

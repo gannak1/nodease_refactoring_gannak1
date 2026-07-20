@@ -48,9 +48,9 @@ class _UnitOfWork:
         self.events.append("rollback")
 
 
-def test_public_replay_retention_deletes_expired_parent_and_child_state_in_one_batch():
+def test_public_replay_retention_gives_parent_and_secret_replay_independent_quotas():
     repository = _Repository(
-        idempotency_deleted_count=2,
+        idempotency_deleted_count=500,
         secret_replay_deleted_count=3,
     )
     uow = _UnitOfWork()
@@ -61,10 +61,10 @@ def test_public_replay_retention_deletes_expired_parent_and_child_state_in_one_b
         uow=uow,
     ).execute(now=now, limit=500)
 
-    assert deleted == 5
+    assert deleted == 503
     assert repository.calls == [
         ("idempotency", now, 500),
-        ("secret_replay", now, 498),
+        ("secret_replay", now, 500),
     ]
     assert uow.events == ["begin", "commit"]
 

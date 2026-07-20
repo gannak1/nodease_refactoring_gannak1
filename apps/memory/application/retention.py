@@ -37,12 +37,10 @@ class PurgeExpiredPublicSecretReplaysUseCase:
                 now=now,
                 limit=limit,
             )
-            remaining = limit - deleted_count
-            if remaining > 0:
-                deleted_count += self.repository.delete_expired_secret_replays(
-                    now=now,
-                    limit=remaining,
-                )
+            deleted_count += self.repository.delete_expired_secret_replays(
+                now=now,
+                limit=limit,
+            )
             self.uow.commit()
             return deleted_count
         except Exception:

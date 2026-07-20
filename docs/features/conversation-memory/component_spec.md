@@ -271,7 +271,7 @@ Public purge는 발급 후 7일 안에 completed/completed_with_hold/terminal_fa
 
 `completed`는 configured content-bearing live store/cache, conversation access-token replay와 backup/export retention contract가 삭제 또는 승인된 irreversible crypto-erasure marker를 모두 반환한 경우에만 허용한다. 위 표의 최소 purge-control tombstone, receipt verifier와 encrypted delete-response replay만 정해진 TTL/receipt expiry까지 예외로 남길 수 있으며 raw session content 접근에는 사용할 수 없다. Unknown/partial marker는 낙관적으로 완료 처리하지 않는다.
 
-MBA-317은 `conversation_idempotency_records.retention_expires_at`과 `conversation_secret_replays.expires_at` 기준의 Memory-owned periodic retention task를 제공한다. Gateway와 Log System runtime image는 이 업무 모듈을 import할 수 있도록 `apps/memory`를 포함한다. Helm의 기본 활성 singleton Beat는 shared Celery schedule을 발행하고 Log worker queue는 task 실행 host로 소비할 뿐, 정책 소유자는 Memory다. Task는 1분마다 하나의 최대 500개 logical candidate budget을 사용한다. 먼저 만료 idempotency parent를 `FOR UPDATE SKIP LOCKED`로 삭제해 FK cascade로 종속 replay와 uniqueness claim을 함께 제거하고, 남은 budget으로 더 짧은 TTL이 끝난 replay child를 같은 transaction에서 삭제한다. 이는 database backup의 즉시 crypto-erasure를 증명하지 않는다. Session/Turn/Summary를 지우고 purge terminal marker를 만드는 physical purge worker는 여전히 MBA-320 범위이므로 표준 배포의 `MEMORY_PUBLIC_PURGE_WORKER_READY`는 false다. 승인된 external crypto-erasure/database-backup 미사용 mode와 실제 worker readiness가 모두 확인되기 전에는 public lifecycle activation을 거부한다.
+MBA-317은 `conversation_idempotency_records.retention_expires_at`과 `conversation_secret_replays.expires_at` 기준의 Memory-owned periodic retention task를 제공한다. Gateway와 Log System runtime image는 이 업무 모듈을 import할 수 있도록 `apps/memory`를 포함한다. Helm의 기본 활성 singleton Beat는 shared Celery schedule을 발행하고 Log worker queue는 task 실행 host로 소비할 뿐, 정책 소유자는 Memory다. Task는 1분마다 만료 idempotency parent와 더 짧은 TTL의 replay child에 각각 최대 500개의 독립된 logical candidate quota를 보장한다. 같은 transaction에서 parent를 `FOR UPDATE SKIP LOCKED`로 삭제해 FK cascade로 종속 replay와 uniqueness claim을 함께 제거한 뒤, parent backlog와 무관하게 replay child도 별도 `FOR UPDATE SKIP LOCKED` quota로 삭제한다. 이는 database backup의 즉시 crypto-erasure를 증명하지 않는다. Session/Turn/Summary를 지우고 purge terminal marker를 만드는 physical purge worker는 여전히 MBA-320 범위이므로 표준 배포의 `MEMORY_PUBLIC_PURGE_WORKER_READY`는 false다. 승인된 external crypto-erasure/database-backup 미사용 mode와 실제 worker readiness가 모두 확인되기 전에는 public lifecycle activation을 거부한다.
 
 ## Application Use Cases
 
@@ -393,7 +393,7 @@ Access Grant/Purge Job table에는 verifier hash만 두고 ciphertext를 섞지 
 
 Access Grant token replay TTL이 끝난 same-key request는 `memory.secret_replay_expired`로 닫는다. Replay store가 만료 secret을 대신해 새 grant/receipt를 발급하거나 rotation하지 않는다.
 
-Live database의 만료 idempotency parent와 replay child는 Memory-owned periodic retention use case가 하나의 bounded batch budget과 transaction으로 삭제한다. Parent 삭제는 종속 replay를 cascade하고 scope/key uniqueness claim을 해제한다. Backup에서의 복구 불가능성은 replay store가 임의로 추정하지 않고 deployment activation 시 승인된 external crypto-erasure/no-backup contract로 확인한다.
+Live database의 만료 idempotency parent와 replay child는 Memory-owned periodic retention use case가 각각 독립된 bounded batch quota를 보장하고 하나의 transaction으로 삭제한다. Parent 삭제는 종속 replay를 cascade하고 scope/key uniqueness claim을 해제하며, parent backlog가 replay child 정리를 굶기지 못한다. Backup에서의 복구 불가능성은 replay store가 임의로 추정하지 않고 deployment activation 시 승인된 external crypto-erasure/no-backup contract로 확인한다.
 
 ### Source Authorization
 

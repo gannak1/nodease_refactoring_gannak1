@@ -110,10 +110,10 @@ def _set_public_headers(response: Response, *, lifecycle_revision: int | None = 
 
 
 def _hidden_error() -> HTTPException:
-    return HTTPException(
+    return _safe_error(
+        "memory.session_hidden",
+        "Conversation not found",
         status_code=status.HTTP_404_NOT_FOUND,
-        detail="Conversation not found",
-        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
     )
 
 
