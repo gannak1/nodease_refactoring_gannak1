@@ -319,7 +319,9 @@ class ModelRoutingRuntimeJudge:
             "structured_precision|high_risk_reasoning|ambiguous_request|long_context\","
             "\"reason_short\":\"짧은 한국어 이유\","
             "\"reason_factors\":[\"high_decision_impact|security_or_compliance_risk|multi_step_reasoning|"
-            "evidence_conflict|broad_context_synthesis|long_context_handling\"]}. "
+            "evidence_conflict|broad_context_synthesis|long_context_handling\"],"
+            "\"task_requirements\":{\"task_complexity\":0,\"decision_impact\":0,"
+            "\"evidence_synthesis\":0}}. "
             "요청 원문·개인정보·RAG 문서를 출력하지 마세요."
         )
         if diagnostic_mode:

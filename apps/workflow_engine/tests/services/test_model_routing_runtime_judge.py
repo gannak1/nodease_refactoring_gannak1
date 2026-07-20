@@ -39,7 +39,9 @@ class _IncompleteThenCompactJudgeClient(_JudgeClient):
                         "content": (
                             '{"selected_model_id":"gpt-4o-mini",'
                             '"confidence":0.81,'
-                            '"reason_code":"high_risk_reasoning"}'
+                            '"reason_code":"high_risk_reasoning",'
+                            '"task_requirements":{"task_complexity":3,'
+                            '"decision_impact":2,"evidence_synthesis":2}}'
                         )
                     }
                 }
@@ -469,9 +471,15 @@ def test_runtime_judge_retries_incomplete_response_with_compact_contract():
     assert client.calls[0]["kwargs"]["max_tokens"] == 768
     assert client.calls[1]["kwargs"]["max_tokens"] == 768
     assert decision.reason_short == "고위험 판단 필요"
+    assert decision.task_requirements == {
+        "task_complexity": 3,
+        "decision_impact": 2,
+        "evidence_synthesis": 2,
+    }
     compact_instruction = client.calls[1]["messages"][0]["content"]
     assert "reason_short" in compact_instruction
     assert "reason_code" in compact_instruction
+    assert "task_requirements" in compact_instruction
     assert "selection_explanation" not in compact_instruction
     compact_body = __import__("json").loads(client.calls[1]["messages"][1]["content"])
     assert compact_body["candidate_models"] == [{"id": "gpt-4o-mini"}]
