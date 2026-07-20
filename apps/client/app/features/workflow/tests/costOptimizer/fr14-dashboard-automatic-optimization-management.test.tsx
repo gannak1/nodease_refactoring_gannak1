@@ -107,6 +107,7 @@ describe('FR-014 워크플로우 화면 자동 최적화 관리', () => {
 
   it('배포된 workflow의 자동 최적화 관리는 해당 배포 설정을 불러온다', async () => {
     render(<MyModulePage />);
+    fireEvent.click(await screen.findByRole('button', { name: '리스트 보기' }));
 
     fireEvent.click(
       await screen.findByRole('button', { name: '자동 최적화 설정' }),
@@ -126,7 +127,7 @@ describe('FR-014 워크플로우 화면 자동 최적화 관리', () => {
     expect(routerMock.push).not.toHaveBeenCalled();
   });
 
-  it('자동 파라미터 최적화 수집 상태를 진행률과 검증 예산으로 표시한다', async () => {
+  it('그리드에서 자동 최적화 상세를 숨기고 리스트에서 요약을 표시한다', async () => {
     vi.mocked(moduleOperationsApi.listModuleOperations).mockResolvedValueOnce([
       {
         app: {
@@ -169,17 +170,16 @@ describe('FR-014 워크플로우 화면 자동 최적화 관리', () => {
 
     render(<MyModulePage />);
 
-    const optimization = await screen.findByLabelText(
-      '자동 파라미터 최적화 상태',
-    );
-    expect(optimization).toHaveTextContent('운영 로그 수집 중');
-    expect(optimization).toHaveTextContent('12 / 50회');
-    expect(optimization).toHaveTextContent('월 검증 $0.25 / $3.00');
     expect(
-      within(optimization).getByRole('progressbar', {
-        name: '자동 최적화 수집 진행률',
-      }),
-    ).toHaveAttribute('value', '12');
+      screen.queryByLabelText('자동 파라미터 최적화 상태'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('자동 파라미터 최적화')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '리스트 보기' }));
+
+    expect(
+      await screen.findByLabelText('자동 파라미터 최적화 요약'),
+    ).toBeVisible();
   });
 
   it('리스트 보기에서는 자동 최적화를 짧은 상태 요약과 설정 아이콘으로 표시한다', async () => {
@@ -229,11 +229,10 @@ describe('FR-014 워크플로우 화면 자동 최적화 관리', () => {
 
   it('자동 최적화를 사용하지 않으면 꺼진 상태와 설정 행동을 표시한다', async () => {
     render(<MyModulePage />);
+    fireEvent.click(await screen.findByRole('button', { name: '리스트 보기' }));
 
-    const optimization = await screen.findByLabelText(
-      '자동 파라미터 최적화 상태',
-    );
-    expect(optimization).toHaveTextContent('자동 최적화 꺼짐');
+    const optimization = await screen.findByLabelText('자동 파라미터 최적화 요약');
+    expect(optimization).toHaveTextContent('미사용');
     expect(
       within(optimization).getByRole('button', { name: '자동 최적화 설정' }),
     ).toBeEnabled();
@@ -304,6 +303,7 @@ describe('FR-014 워크플로우 화면 자동 최적화 관리', () => {
     ] as never);
 
     render(<MyModulePage />);
+    fireEvent.click(await screen.findByRole('button', { name: '리스트 보기' }));
 
     const usage = (await screen.findAllByText('81%')).at(-1)!;
     expect(usage.parentElement).toHaveTextContent('정상');
@@ -312,6 +312,7 @@ describe('FR-014 워크플로우 화면 자동 최적화 관리', () => {
 
   it('월 예상 총비용 아래에 테스트/배포 실행과 Agent Builder 비용을 구분한다', async () => {
     render(<MyModulePage />);
+    fireEvent.click(await screen.findByRole('button', { name: '리스트 보기' }));
 
     const breakdown = await screen.findByLabelText(
       '예산 위험 티켓 처리 예상 비용 구성',
@@ -352,6 +353,7 @@ describe('FR-014 워크플로우 화면 자동 최적화 관리', () => {
     ] as never);
 
     render(<MyModulePage />);
+    fireEvent.click(await screen.findByRole('button', { name: '리스트 보기' }));
 
     const breakdown = await screen.findByLabelText(
       '배포 전 워크플로우 예상 비용 구성',
@@ -360,8 +362,9 @@ describe('FR-014 워크플로우 화면 자동 최적화 관리', () => {
     expect(breakdown).toHaveTextContent('테스트 실행 $4.000');
     expect(breakdown).toHaveTextContent('Agent Builder $2.000');
     expect(screen.queryByText('배포 후 표시')).not.toBeInTheDocument();
-    const optimization = screen.getByLabelText('자동 파라미터 최적화 상태');
-    expect(optimization).toHaveTextContent('배포 후 자동 최적화 설정');
+    const optimization = screen.getByLabelText('자동 파라미터 최적화 요약');
+    expect(optimization).toHaveTextContent('배포 후 설정');
+    expect(optimization).toHaveTextContent('배포 후 설정할 수 있습니다.');
     expect(
       within(optimization).getByRole('button', { name: '자동 최적화 설정' }),
     ).toBeDisabled();

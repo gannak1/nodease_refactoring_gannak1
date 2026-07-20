@@ -30,6 +30,8 @@ Status: Draft
 
 `보안 알림` 탭은 `감사 로그` 앞에 두고 내부 key `security-alerts`를 사용한다. `/dashboard/admin?tab=security-alerts&alertId=<uuid>` deep link, 목록/filter/detail drawer, resolve dialog, 기존 ActorAccessDrawer handoff의 상세 계약은 [Security Alert component spec](../security-alert/component_spec.md)이 소유한다. Security Alert detail과 ActorAccessDrawer는 동시에 열지 않으며, 사용자 접근 조치 성공만으로 alert를 자동 resolve하지 않는다.
 
+선택된 상위 탭은 설정 화면과 동일하게 `border-blue-600 text-blue-600`으로 파란 글자와 파란 밑줄을 표시한다. 선택되지 않은 탭은 기존 중립 색상을 유지한다.
+
 별도 `조직 설정` 상위 탭은 제공하지 않는다. 기존 `/dashboard/admin?tab=organization` 주소는 `/dashboard/admin?tab=organization-structure&view=members`로 정규화한다. `/dashboard/settings`의 Access/LLM Credentials 화면은 이 변경과 무관하게 유지한다.
 
 - (후순위) `auditor`/`raw_auditor` 전용 사용자에게는 감사 로그 탭만 노출하고 기본 탭을 감사 로그로 한다. 요약 카드와 나머지 탭은 렌더링하지 않는다. 현재 데모 시나리오에서 auditor 전용 계정을 사용하지 않으므로 이 노출 제어는 후순위로 미룬다. 구현 전까지 admin 페이지 접근은 기존 organization manager 게이트를 유지한다.

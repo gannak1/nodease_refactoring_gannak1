@@ -9,6 +9,7 @@ import {
   Plus,
   RefreshCw,
   ShieldCheck,
+  Settings,
   Trash2,
   Users,
 } from 'lucide-react';
@@ -29,6 +30,7 @@ import {
   knowledgeApi,
   type KnowledgeBaseResponse,
 } from '@/app/features/knowledge/api/knowledgeApi';
+import { DashboardTitle } from '@/app/features/dashboard/components/DashboardSurface';
 
 type SettingsTab = 'access' | 'credentials';
 type ResourceType = 'workflow' | 'knowledge_base' | 'llm_credential';
@@ -575,7 +577,11 @@ export default function SettingsPage() {
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-2xl font-bold text-gray-900">설정</h1>
+            <DashboardTitle
+              icon={Settings}
+              title="설정"
+              className="text-2xl font-bold text-gray-900"
+            />
             {organization && (
               <OrganizationAuthBadge
                 state={organization.is_manager ? 'manager' : 'member'}

@@ -20,7 +20,7 @@ Verified Against: feature/mba-127 @ 258b26a9
   - dashboard child route content
 - 시각 표면:
   - `/dashboard`, `/dashboard/mymodule`, `/dashboard/explore`, `/dashboard/statistics`, `/dashboard/knowledge`, `/dashboard/admin`, `/dashboard/settings`의 페이지 배경은 `rgb(255, 255, 255)`를 사용한다.
-  - 최상위 페이지 제목은 `text-2xl`(24px)로 통일하고 장식 아이콘 없이 텍스트로 표시한다. 카드, 패널, 버튼처럼 의미를 전달하는 아이콘은 유지한다.
+  - 최상위 페이지 제목은 `text-2xl`(24px)로 통일하고 제목 왼쪽에 해당 sidebar navigation과 같은 아이콘을 표시한다. 공용 `DashboardTitle`이 아이콘과 제목의 순서·간격을 담당한다.
 
 ### DashboardHomePage
 
@@ -107,7 +107,7 @@ Verified Against: feature/mba-127 @ 258b26a9
   - organization이 1개뿐이면 switcher는 정보 표시만 하고 dropdown을 열지 않는다.
   - 펼친 sidebar의 `Nodease` brand header에는 장식 아이콘을 표시하지 않는다. 접힌 sidebar의 대시보드 홈 아이콘은 navigation affordance로 유지한다.
   - collapsed sidebar에서는 organization switcher를 표시하지 않는다.
-  - `워크플로우` navigation item은 노드 연결 흐름을 나타내는 `Workflow` 아이콘을 사용한다.
+  - `워크플로우 목록` navigation item은 노드 연결 흐름을 나타내는 `Workflow` 아이콘을 사용한다.
   - `isOrganizationManager`가 true일 때만 `관리` navigation item을 표시한다.
   - 사용자 프로필 드롭다운에는 `알림`, `로그아웃` action을 표시한다.
   - 조직 초대가 하나 이상 있거나 manager에게 열린 Security Alert가 하나 이상 있으면, 펼침 여부와 무관하게 프로필 원형 아이콘 우상단에 빨간 점을 표시한다. 시각적 점은 `aria-hidden`으로 숨기고 프로필 button 안의 `sr-only` 텍스트 `확인할 알림 있음`으로 상태를 전달한다. 두 source가 모두 비어 있으면 점과 텍스트를 숨긴다.
@@ -558,10 +558,10 @@ Verified Against: feature/mba-127 @ 258b26a9
 
 ### App Creation Permission Request
 
-- `/dashboard/mymodule`의 `새 모듈` button은 CreateAppModal을 연다.
+- `/dashboard/mymodule`의 `새 워크플로우` button은 CreateAppModal을 연다.
 - CreateAppModal에서 `POST /apps`가 `403 permission.denied`로 차단되면(현재 구현 응답 본문은 `{"detail": "Forbidden"}`이며, 클라이언트는 `POST /apps`의 `403` status를 권한 없음으로 판정한다) modal이 권한 신청 view로 전환된다 (ORG-REQ-048).
 - 권한 신청 view는 신청 사유를 입력받아 `permissionRequestApi.submitPermissionRequest`로 `POST /permission-requests`를 호출한다. 신청 권한은 `app.create`로 고정한다 (ORG-REQ-049).
-- `201` 성공 시 신청 완료 안내를 표시한다. 사용자는 관리자 승인 후 다시 `새 모듈`을 시도한다 (PRD 신입 사용자 시나리오).
+- `201` 성공 시 신청 완료 안내를 표시한다. 사용자는 관리자 승인 후 다시 `새 워크플로우`를 시도한다 (PRD 신입 사용자 시나리오).
 - `409` 응답은 `detail` 문자열로 이미 권한 보유와 pending 중복을 구분해 안내한다 (ORG-REQ-050).
 - validation 실패와 그 외 오류는 form 안에 inline error로 표시한다.
 - `취소`는 App 생성 입력 view로 돌아가고, 신청 완료 후 `닫기`는 modal을 닫는다.

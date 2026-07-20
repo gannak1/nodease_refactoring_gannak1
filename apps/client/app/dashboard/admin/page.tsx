@@ -12,6 +12,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  ShieldCheck,
   Trash2,
   UserPlus,
   Users,
@@ -1077,7 +1078,7 @@ export default function AdminConsolePage() {
                   onClick={() => selectAdminTab(tab.key)}
                   className={`whitespace-nowrap border-b-2 px-1 pb-3 text-sm font-semibold ${
                     activeTab === tab.key
-                      ? 'border-slate-950 text-slate-950'
+                      ? 'border-blue-600 text-blue-600'
                       : 'border-transparent text-slate-500 hover:text-slate-800'
                   }`}
                 >
@@ -1672,6 +1673,7 @@ function AdminShell({
     <div className="min-h-full bg-white px-6 py-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
         <DashboardPageHeader
+          icon={ShieldCheck}
           title="관리"
           description="조직 멤버, 팀, 권한과 운영 리소스를 관리합니다."
           badge={badge}

@@ -539,18 +539,18 @@ describe('Sidebar organization switcher', () => {
     expect(brandHeader?.querySelector('svg')).not.toBeInTheDocument();
   });
 
-  it('organization manager는 워크플로우 운영 메뉴를 볼 수 있다', async () => {
+  it('organization manager는 워크플로우 목록 메뉴를 볼 수 있다', async () => {
     render(<Sidebar />);
 
     const workflowLink = await screen.findByRole('link', {
-      name: '워크플로우',
+      name: '워크플로우 목록',
     });
 
     expect(workflowLink).toHaveAttribute('href', '/dashboard/mymodule');
     expect(workflowLink.querySelector('svg')).toHaveClass('lucide-workflow');
   });
 
-  it('운영 가능한 row가 없는 일반 멤버에게 워크플로우 운영 메뉴를 숨긴다', async () => {
+  it('운영 가능한 row가 없는 일반 멤버에게 워크플로우 목록 메뉴를 숨긴다', async () => {
     mockSidebarDefaults({ currentOrganization: memberOrganization });
 
     render(<Sidebar />);
@@ -558,12 +558,12 @@ describe('Sidebar organization switcher', () => {
     await screen.findByText('Beta');
     await waitFor(() => {
       expect(
-        screen.queryByRole('link', { name: '워크플로우' }),
+        screen.queryByRole('link', { name: '워크플로우 목록' }),
       ).not.toBeInTheDocument();
     });
   });
 
-  it('운영 가능한 row가 있는 일반 멤버에게 워크플로우 운영 메뉴를 표시한다', async () => {
+  it('운영 가능한 row가 있는 일반 멤버에게 워크플로우 목록 메뉴를 표시한다', async () => {
     mockSidebarDefaults({
       currentOrganization: memberOrganization,
       operationRows: [
@@ -581,7 +581,7 @@ describe('Sidebar organization switcher', () => {
     render(<Sidebar />);
 
     expect(
-      await screen.findByRole('link', { name: '워크플로우' }),
+      await screen.findByRole('link', { name: '워크플로우 목록' }),
     ).toHaveAttribute('href', '/dashboard/mymodule');
   });
 
