@@ -22,6 +22,25 @@ export DEV_GATEWAY_RELOAD_QUIET_SECONDS
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
+# 개발 환경은 Docker Compose와 고정 포트(3000, 8000)를 공유한다. 두 번째
+# dev.sh가 시작되면 기존 환경을 종료할 수 있으므로, 한 번에 하나만 실행한다.
+DEV_RUNTIME_LOCK_DIR="$PROJECT_ROOT/.nodease-dev.lock"
+DEV_RUNTIME_LOCK_HELD=false
+
+if ! mkdir "$DEV_RUNTIME_LOCK_DIR" 2> /dev/null; then
+    echo -e "${RED}이미 Nodease 개발 환경이 실행 중입니다.${NC}"
+    echo "기존 환경을 종료한 뒤 다시 실행하세요. 포트 3000/8000을 사용하는 dev.sh를 중복 실행할 수 없습니다."
+    exit 1
+fi
+DEV_RUNTIME_LOCK_HELD=true
+
+release_dev_runtime_lock() {
+    if [ "$DEV_RUNTIME_LOCK_HELD" = true ]; then
+        rmdir "$DEV_RUNTIME_LOCK_DIR" 2> /dev/null || true
+        DEV_RUNTIME_LOCK_HELD=false
+    fi
+}
+
 echo "🚀 Moduly 개발 환경 시작..."
 echo "프로젝트 루트: $PROJECT_ROOT"
 
@@ -50,6 +69,20 @@ if ! venv_uses_python_311 "apps/gateway" || \
     echo -e "${GREEN}✨ 초기 설정 완료! 서비스를 시작합니다.${NC}"
 fi
 
+# Windows의 npm/uvicorn은 자식 프로세스를 남길 수 있다. 부모 PID만 종료하면
+# 다음 실행에서 Next.js lock 또는 포트 충돌이 발생하므로 Windows에서는 트리 전체를 끝낸다.
+stop_managed_process() {
+    local pid="${1:-}"
+
+    [ -z "$pid" ] && return 0
+
+    if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]] || [[ "$OSTYPE" == "cygwin" ]]; then
+        taskkill.exe //PID "$pid" //T //F > /dev/null 2>&1 || true
+    else
+        kill "$pid" 2>/dev/null || true
+    fi
+}
+
 # 정리 함수 (Ctrl+C 시 모든 프로세스 종료)
 cleanup() {
     local exit_code="${1:-0}"
@@ -58,29 +91,30 @@ cleanup() {
     
     # 모든 백그라운드 프로세스 종료
     if [ ! -z "$DOCKER_LOG_PID" ]; then
-        kill $DOCKER_LOG_PID 2>/dev/null || true
+        stop_managed_process "$DOCKER_LOG_PID"
     fi
     if [ ! -z "$DOCKER_WATCHDOG_PID" ]; then
-        kill $DOCKER_WATCHDOG_PID 2>/dev/null || true
+        stop_managed_process "$DOCKER_WATCHDOG_PID"
     fi
     if [ ! -z "$LOG_CELERY_PID" ]; then
-        kill $LOG_CELERY_PID 2>/dev/null || true
+        stop_managed_process "$LOG_CELERY_PID"
     fi
     if [ ! -z "$LOG_CELERY_BEAT_PID" ]; then
-        kill $LOG_CELERY_BEAT_PID 2>/dev/null || true
+        stop_managed_process "$LOG_CELERY_BEAT_PID"
     fi
     if [ ! -z "$WORKFLOW_CELERY_PID" ]; then
-        kill $WORKFLOW_CELERY_PID 2>/dev/null || true
+        stop_managed_process "$WORKFLOW_CELERY_PID"
     fi
     if [ ! -z "$FASTAPI_PID" ]; then
-        kill $FASTAPI_PID 2>/dev/null || true
+        stop_managed_process "$FASTAPI_PID"
     fi
     if [ ! -z "$CLIENT_PID" ]; then
-        kill $CLIENT_PID 2>/dev/null || true
+        stop_managed_process "$CLIENT_PID"
     fi
     
     # Docker Compose 종료
     docker compose -f dev/docker-compose.yml down 2>/dev/null || true
+    release_dev_runtime_lock
     
     echo -e "${GREEN}✅ 모든 서비스 종료 완료${NC}"
     exit "$exit_code"
