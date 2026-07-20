@@ -83,6 +83,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0060](ADR-0060-my-module-cost-summary-presentation.md) | Accepted | 내 모듈 비용 요약 표시 경계 | 현재 워크플로우 화면은 page-level 비용·추세·위험 요약과 `cost-summary` 호출을 제거하고 workflow별 총비용과 실행/Agent Builder 구분값을 유지한다. `cost-summary` API와 Admin 조직 비용 요약은 호환성과 관리 용도로 유지한다. |
 | [ADR-0061](ADR-0061-agent-builder-hierarchical-knowledge-selection.md) | Accepted | Agent Builder 계층형 Knowledge 선택 | Collection 동적 routing과 직접 KB binding을 분리하고 opaque handle, 권한 필터, 안정 점수 정렬, 중복 KB 선택 동기화와 runtime 합집합 중복 제거를 정의한다. |
 | [ADR-0062](ADR-0062-workflow-node-secret-reference-boundary.md) | Accepted | Workflow node secret reference 경계 | Agent Builder와 Node Detail의 masked 직접 입력 및 `나중에 설정` UX를 유지하면서 Slack/GitHub 원문 secret을 서버 암호화 immutable revision으로 저장하고 graph/deployment에는 opaque reference만 보존한다. |
+| [ADR-0063](ADR-0063-agent-builder-deterministic-intent-plan-cache.md) | Accepted | Agent Builder 결정론적 intent plan cache | 채택된 목표 계약이며 현재 코드는 아직 구현되지 않았다. Feature flag는 기본 비활성이고 Production Redis 운영 증거 전에는 production/staging serving을 활성화하지 않는다. |
 
 ## 참고 보고서
 
