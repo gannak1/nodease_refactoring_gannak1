@@ -1823,7 +1823,7 @@ describe('AgentBuilderPanel', () => {
             resolution_id: 'resolve-kb-options',
             safe_label: '휴가 정책',
             score: 0.7,
-            reason_category: 'topic_keyword_match',
+            reason_category: 'content_match',
           },
           {
             candidate_id: 'safe-rec-2',
@@ -1837,7 +1837,15 @@ describe('AgentBuilderPanel', () => {
             resolution_id: 'resolve-kb-options',
             safe_label: '총무 정책',
             score: 0.58,
-            reason_category: 'metadata_match',
+            reason_category: 'operational_fallback',
+            recommendation_state: 'degraded',
+          },
+          {
+            candidate_id: 'safe-rec-4',
+            resolution_id: 'resolve-kb-options',
+            safe_label: '정보보안 정책',
+            score: 0.51,
+            reason_category: 'unknown_internal_reason',
           },
         ],
         selected: [],
@@ -1875,7 +1883,7 @@ describe('AgentBuilderPanel', () => {
         },
       ],
       validation_result: null,
-      warnings: ['Knowledge Base 후보가 비슷해 자동 선택하지 않았습니다.'],
+      warnings: [],
     });
 
     render(
@@ -1900,11 +1908,27 @@ describe('AgentBuilderPanel', () => {
     expect(await screen.findByText('휴가 정책')).toBeTruthy();
     expect(screen.getByText('인사 정책')).toBeTruthy();
     expect(screen.getByText('총무 정책')).toBeTruthy();
+    expect(screen.getByText('정보보안 정책')).toBeTruthy();
     expect(
       screen.queryByRole('checkbox', { name: 'Knowledge Base 없이 생성' }),
     ).toBeNull();
     expect(screen.getByText('0.70')).toBeTruthy();
     expect(screen.getByText('0.66')).toBeTruthy();
+    expect(
+      screen.getByText('Knowledge Base 문서 내용을 기준으로 평가했습니다.'),
+    ).toBeTruthy();
+    expect(
+      screen.getByText('KB 설명과 주제가 요청과 관련됩니다.'),
+    ).toBeTruthy();
+    expect(
+      screen.getByText('Knowledge Base 정보를 기준으로 추천했습니다.'),
+    ).toBeTruthy();
+    expect(screen.queryByText('unknown_internal_reason')).toBeNull();
+    expect(
+      screen.getByText(
+        'Knowledge Base 내용 검색을 사용할 수 없어 일부 후보를 metadata 기준으로 정렬했습니다.',
+      ),
+    ).toBeTruthy();
     const candidateList = screen.getByTestId('agent-builder-kb-candidate-list');
     const scrollList = Array.from(candidateList.querySelectorAll('div')).find(
       (element) => element.className.includes('max-h-[156px]'),

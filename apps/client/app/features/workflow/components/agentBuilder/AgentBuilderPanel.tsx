@@ -74,12 +74,15 @@ const PENDING_REQUEST_NORMAL_WINDOW_MS = 60_000;
 const PENDING_REQUEST_LONG_POLL_MS = 10_000;
 const PENDING_REQUEST_DEADLINE_MS = 4 * 60_000;
 const KNOWLEDGE_REASON_LABELS: Record<string, string> = {
+  content_match: 'Knowledge Base 문서 내용을 기준으로 평가했습니다.',
+  operational_fallback: 'Knowledge Base 정보를 기준으로 추천했습니다.',
   topic_keyword_match: '\uC694\uCCAD \uC8FC\uC81C\uC640 \uC77C\uCE58',
-  metadata_match:
-    '\uBB38\uC11C \uBA54\uD0C0\uB370\uC774\uD130\uC640 \uC77C\uCE58',
+  metadata_match: 'KB 설명과 주제가 요청과 관련됩니다.',
   semantic_similarity: '\uB0B4\uC6A9 \uC720\uC0AC\uB3C4\uAC00 \uB192\uC74C',
   recent_usage: '\uCD5C\uADFC \uC0AC\uC6A9\uB41C Knowledge Base',
 };
+const KNOWLEDGE_DEGRADED_WARNING =
+  'Knowledge Base 내용 검색을 사용할 수 없어 일부 후보를 metadata 기준으로 정렬했습니다.';
 
 const secretParameterPatch = (
   task: AgentBuilderParameterTask,
@@ -405,6 +408,23 @@ function formatClarificationOptionValue(value: unknown): string | null {
 
 const formatKnowledgeReasonLabel = (value: unknown): string | null =>
   typeof value === 'string' ? (KNOWLEDGE_REASON_LABELS[value] ?? null) : null;
+
+const knowledgeWarningsFromResponse = (
+  response: AgentBuilderMessageResponse,
+): string[] => {
+  const warnings = response.warnings ?? [];
+  const hasDegradedRecommendation =
+    response.knowledge_resolution?.candidates?.some(
+      (candidate) => candidate.recommendation_state === 'degraded',
+    ) ?? false;
+  if (
+    !hasDegradedRecommendation ||
+    warnings.includes(KNOWLEDGE_DEGRADED_WARNING)
+  ) {
+    return warnings;
+  }
+  return [...warnings, KNOWLEDGE_DEGRADED_WARNING];
+};
 
 const createLocalUserMessageId = () => {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -2742,7 +2762,7 @@ export function AgentBuilderPanel({
                       {issue.message}
                     </p>
                   ))}
-                  {response.warnings?.map((warning) => (
+                  {knowledgeWarningsFromResponse(response).map((warning) => (
                     <p key={warning} className="mt-2 text-xs text-slate-500">
                       {warning}
                     </p>

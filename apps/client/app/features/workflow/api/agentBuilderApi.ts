@@ -245,6 +245,7 @@ export type AgentBuilderKnowledgeCandidateOption = {
   confidence?: 'high' | 'medium' | 'low' | null;
   score?: number | null;
   reason_category?: string | null;
+  recommendation_state?: 'complete' | 'degraded' | null;
   reason?: string | null;
   threshold_result?: string | null;
   runtime_availability?: string | null;
