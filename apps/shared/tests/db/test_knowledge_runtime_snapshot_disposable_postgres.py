@@ -1073,7 +1073,7 @@ def test_internal_chatbot_user_matrix_reaches_llm_node_with_authorized_candidate
                 lambda *args, **kwargs: precompute_calls.append(
                     tuple(kwargs["knowledge_base_ids"])
                 )
-                or ({}, 0, False),
+                or ({}, {}, 0, False),
             )
 
             def capture_fanout(**kwargs):
