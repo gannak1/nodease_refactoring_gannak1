@@ -10,6 +10,11 @@ from apps.gateway.application.agent_builder.intent_usage import (
     AgentBuilderIntentUsageRecordingError,
     AgentBuilderIntentUsageReservation,
 )
+from apps.gateway.application.agent_builder.intent_cache import (
+    CacheBoundaryDecision,
+    DisabledIntentPlanCacheBoundary,
+    IntentPlanExecution,
+)
 from apps.gateway.services.agent_builder_intent_service import (
     AgentBuilderIntentExtraction,
     AgentBuilderIntentExtractionError,
@@ -248,6 +253,61 @@ def _service(extractor):
         organization_id=uuid.uuid4(),
         intent_extractor=extractor,
     )
+
+
+class CapturingIntentPlanCacheBoundary:
+    def __init__(self):
+        self.calls = []
+
+    def execute(self, planner_call, context=None):
+        self.calls.append(context)
+        return IntentPlanExecution(
+            structured_request=planner_call(),
+            decision=CacheBoundaryDecision(
+                outcome="bypass",
+                plan=None,
+                reason="feature_disabled",
+            ),
+        )
+
+
+def test_service_routes_existing_structure_sequence_through_boundary_once():
+    extractor = FakeIntentExtractor(
+        AgentBuilderIntentExtraction(
+            request_type="new_workflow",
+            draft_mode="new_workflow",
+            intent_summary="입력과 응답 workflow",
+            ordered_capabilities=["start_input", "answer"],
+        )
+    )
+    boundary = CapturingIntentPlanCacheBoundary()
+    service = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+        intent_extractor=extractor,
+        intent_plan_cache=boundary,
+    )
+
+    structured = service._structure_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="입력과 응답 workflow를 만들어줘"),
+        workflow=None,
+    )
+
+    assert boundary.calls == [None]
+    assert len(extractor.calls) == 1
+    assert structured.request_type == "new_workflow"
+    assert structured.required_capabilities == ["start_input", "answer"]
+
+
+def test_direct_service_constructor_defaults_to_disabled_intent_plan_cache():
+    service = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    assert isinstance(service.intent_plan_cache, DisabledIntentPlanCacheBoundary)
 
 
 def _knowledge_placement():
