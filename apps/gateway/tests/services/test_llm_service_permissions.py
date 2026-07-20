@@ -13,6 +13,9 @@ from apps.gateway.services.llm_service import (
 )
 from apps.shared.db.models.user import User
 from apps.shared.schemas.llm import LLMCredentialCreate, LLMModelPricingUpdate
+from apps.shared.services.retrieval_embedding_model_projection import (
+    EmbeddingModelBinding,
+)
 
 
 class FakeQuery:
@@ -600,6 +603,60 @@ def test_get_client_for_model_uses_model_db_id(monkeypatch):
     assert captured["organization_id"] == organization_id
     assert captured["refreshed"] is credential
     assert captured["has_api_key"] is True
+
+
+def test_get_client_for_model_binding_uses_preloaded_model_identity(monkeypatch):
+    binding = EmbeddingModelBinding(
+        model_id=uuid.uuid4(),
+        provider_id=uuid.uuid4(),
+        model_identifier="text-embedding-test",
+    )
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    captured = {}
+    expected_client = object()
+
+    def fake_get_client(
+        db,
+        *,
+        user_id,
+        model_db_id,
+        model_identifier,
+        organization_id,
+    ):
+        captured.update(
+            {
+                "db": db,
+                "user_id": user_id,
+                "model_db_id": model_db_id,
+                "model_identifier": model_identifier,
+                "organization_id": organization_id,
+            }
+        )
+        return expected_client
+
+    monkeypatch.setattr(
+        LLMService,
+        "_get_client_for_resolved_model",
+        staticmethod(fake_get_client),
+    )
+    db = object()
+
+    client = LLMService.get_client_for_model_binding(
+        db,
+        user_id,
+        binding,
+        organization_id=organization_id,
+    )
+
+    assert client is expected_client
+    assert captured == {
+        "db": db,
+        "user_id": user_id,
+        "model_db_id": binding.model_id,
+        "model_identifier": binding.model_identifier,
+        "organization_id": organization_id,
+    }
 
 
 def test_get_my_available_models_filters_by_credential_use_permission(monkeypatch):

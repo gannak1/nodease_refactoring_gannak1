@@ -389,8 +389,16 @@ def test_search_documents_threshold_uses_score_when_rerank_falls_back(monkeypatc
         def filter(self, *args, **kwargs):
             return self
 
-        def first(self):
-            return SimpleNamespace(type="embedding", is_active=True)
+        def all(self):
+            return [
+                SimpleNamespace(
+                    id=uuid.uuid4(),
+                    provider_id=uuid.uuid4(),
+                    model_id_for_api_call="text-embedding-test",
+                    type="embedding",
+                    is_active=True,
+                )
+            ]
 
     class FakeDb:
         def query(self, model):
@@ -417,7 +425,7 @@ def test_search_documents_threshold_uses_score_when_rerank_falls_back(monkeypatc
 
     monkeypatch.setattr(
         LLMService,
-        "get_client_for_user",
+        "get_client_for_model_binding",
         lambda *args, **kwargs: FakeClient(),
     )
 
@@ -480,8 +488,16 @@ def test_search_documents_rejects_non_embedding_model_before_search(monkeypatch)
         def filter(self, *args, **kwargs):
             return self
 
-        def first(self):
-            return SimpleNamespace(type="chat", is_active=True)
+        def all(self):
+            return [
+                SimpleNamespace(
+                    id=uuid.uuid4(),
+                    provider_id=uuid.uuid4(),
+                    model_id_for_api_call="gpt-5.4-mini",
+                    type="chat",
+                    is_active=True,
+                )
+            ]
 
     class FakeDb:
         def query(self, model):
@@ -494,6 +510,13 @@ def test_search_documents_rejects_non_embedding_model_before_search(monkeypatch)
     monkeypatch.setattr(
         LLMService,
         "get_client_for_user",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("non-embedding model must not request an embed client")
+        ),
+    )
+    monkeypatch.setattr(
+        LLMService,
+        "get_client_for_model_binding",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("non-embedding model must not request an embed client")
         ),
@@ -549,8 +572,16 @@ def test_search_documents_merges_multiple_authorized_kbs(monkeypatch):
         def filter(self, *args, **kwargs):
             return self
 
-        def first(self):
-            return SimpleNamespace(type="embedding", is_active=True)
+        def all(self):
+            return [
+                SimpleNamespace(
+                    id=uuid.uuid4(),
+                    provider_id=uuid.uuid4(),
+                    model_id_for_api_call="text-embedding-test",
+                    type="embedding",
+                    is_active=True,
+                )
+            ]
 
     class FakeDb:
         def query(self, model):
@@ -585,7 +616,7 @@ def test_search_documents_merges_multiple_authorized_kbs(monkeypatch):
 
     monkeypatch.setattr(
         LLMService,
-        "get_client_for_user",
+        "get_client_for_model_binding",
         lambda *args, **kwargs: FakeClient(),
     )
 

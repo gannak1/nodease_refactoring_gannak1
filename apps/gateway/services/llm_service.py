@@ -51,6 +51,9 @@ from apps.shared.services.permissions import (
     has_llm_credential_permission,
     has_organization_manager_permission,
 )
+from apps.shared.services.retrieval_embedding_model_projection import (
+    EmbeddingModelBinding,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -727,18 +730,48 @@ class LLMService:
         """
         if not model or not model.is_active:
             raise ValueError("Unknown model")
-
-        cred = LLMService._get_valid_credential_for_user(
+        return LLMService._get_client_for_resolved_model(
             db,
             user_id=user_id,
             model_db_id=model.id,
+            model_identifier=model.model_id_for_api_call,
+            organization_id=organization_id,
+        )
+
+    @staticmethod
+    def get_client_for_model_binding(
+        db: Session,
+        user_id: uuid.UUID,
+        binding: EmbeddingModelBinding,
+        organization_id: Optional[uuid.UUID] = None,
+    ):
+        """Create a client from a previously validated embedding model binding."""
+        return LLMService._get_client_for_resolved_model(
+            db,
+            user_id=user_id,
+            model_db_id=binding.model_id,
+            model_identifier=binding.model_identifier,
+            organization_id=organization_id,
+        )
+
+    @staticmethod
+    def _get_client_for_resolved_model(
+        db: Session,
+        *,
+        user_id: uuid.UUID,
+        model_db_id: uuid.UUID,
+        model_identifier: str,
+        organization_id: Optional[uuid.UUID],
+    ):
+        cred = LLMService._get_valid_credential_for_user(
+            db,
+            user_id=user_id,
+            model_db_id=model_db_id,
             organization_id=organization_id,
         )
         if not cred:
             logger.error(
-                "[LLMService] No valid credential found for user_id=%s, model_id=%s.",
-                user_id,
-                model.id,
+                "[LLMService] No valid credential found for a resolved model."
             )
             raise ValueError("유효한 API 키를 찾을 수 없습니다.")
 
@@ -750,10 +783,9 @@ class LLMService:
             raise ValueError("Invalid credential config") from exc
 
         db.refresh(cred)
-        provider_type = cred.provider.name
         return get_llm_client(
-            provider=provider_type,
-            model_id=model.model_id_for_api_call,
+            provider=cred.provider.name,
+            model_id=model_identifier,
             credentials={"apiKey": api_key, "baseUrl": base_url},
         )
 
