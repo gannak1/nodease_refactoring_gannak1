@@ -7,6 +7,7 @@ WorkflowEngine - Gevent-based Workflow Execution Engine
 import logging
 import time
 import uuid
+from dataclasses import replace
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
@@ -15,15 +16,11 @@ from gevent.pool import Pool
 from gevent.queue import Queue
 from sqlalchemy.orm import Session
 
-from apps.shared.pubsub import publish_workflow_event  # [GEVENT] Use sync version
-from apps.shared.schemas.workflow import EdgeSchema, NodeSchema
-from apps.shared.schemas.workflow_citation import (
-    MAX_WORKFLOW_CITATIONS,
-    WORKFLOW_CITATION_RESULT_KEY,
-    WorkflowCitationEnvelope,
-    WorkflowCitationItem,
-)
 from apps.shared.db.session import SessionLocal
+from apps.shared.domain.slack_delivery import (
+    SlackGraphBoundaryError,
+    validate_slack_graph_boundary,
+)
 from apps.shared.domain.workflow_execution_identity import (
     InvocationSegment,
     derive_node_invocation_id,
@@ -33,9 +30,13 @@ from apps.shared.domain.workflow_node_binding import (
     WorkflowNodeBinding,
     parse_workflow_node_bindings,
 )
-from apps.shared.domain.slack_delivery import (
-    SlackGraphBoundaryError,
-    validate_slack_graph_boundary,
+from apps.shared.pubsub import publish_workflow_event  # [GEVENT] Use sync version
+from apps.shared.schemas.workflow import EdgeSchema, NodeSchema
+from apps.shared.schemas.workflow_citation import (
+    MAX_WORKFLOW_CITATIONS,
+    WORKFLOW_CITATION_RESULT_KEY,
+    WorkflowCitationEnvelope,
+    WorkflowCitationItem,
 )
 from apps.shared.services.external_effect_trace_capture import (
     durable_provider_summary,
@@ -48,11 +49,11 @@ from apps.workflow_engine.domain.external_effect import (
     ExternalEffectError,
     ExternalEffectRetrySignal,
 )
-from apps.workflow_engine.workflow.core.workflow_logger import WorkflowLogger
-from apps.workflow_engine.workflow.core.workflow_node_factory import NodeFactory
 from apps.workflow_engine.workflow.core.runtime_dependencies import (
     WorkflowRuntimeDependencies,
 )
+from apps.workflow_engine.workflow.core.workflow_logger import WorkflowLogger
+from apps.workflow_engine.workflow.core.workflow_node_factory import NodeFactory
 from apps.workflow_engine.workflow.errors import (
     NonRetryableWorkflowError,
     WorkflowNodeConfigurationError,
@@ -227,9 +228,32 @@ class WorkflowEngine:
             )
             for schema in self.node_schemas.values()
         )
-        self.runtime_dependencies = (
-            runtime_dependencies or WorkflowRuntimeDependencies()
-        )
+        self.runtime_dependencies = runtime_dependencies or WorkflowRuntimeDependencies()
+        session_factory = self.execution_context["db_session_factory"]
+        if (
+            self.runtime_dependencies.provider_execution_runtime is None
+            or self.runtime_dependencies.provider_usage_recorder is None
+        ):
+            from apps.workflow_engine.composition.provider_execution import (
+                build_provider_execution_runtime,
+                build_provider_usage_recorder,
+            )
+
+            self.runtime_dependencies = replace(
+                self.runtime_dependencies,
+                provider_execution_runtime=(
+                    self.runtime_dependencies.provider_execution_runtime
+                    or build_provider_execution_runtime(
+                        session_factory=session_factory
+                    )
+                ),
+                provider_usage_recorder=(
+                    self.runtime_dependencies.provider_usage_recorder
+                    or build_provider_usage_recorder(
+                        session_factory=session_factory
+                    )
+                ),
+            )
         if (
             knowledge_enabled
             and self.runtime_dependencies.knowledge_runtime_candidate_resolver is None
@@ -238,12 +262,13 @@ class WorkflowEngine:
                 build_knowledge_runtime_candidate_resolver,
             )
 
-            self.runtime_dependencies = WorkflowRuntimeDependencies(
+            self.runtime_dependencies = replace(
+                self.runtime_dependencies,
                 knowledge_runtime_candidate_resolver=(
                     build_knowledge_runtime_candidate_resolver(
-                        session_factory=self.execution_context["db_session_factory"]
+                        session_factory=session_factory
                     )
-                )
+                ),
             )
 
         # [PERF] 그래프 구조 사전 계산

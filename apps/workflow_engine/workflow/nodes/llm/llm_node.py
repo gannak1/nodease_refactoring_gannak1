@@ -15,6 +15,7 @@ from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMModel
 from apps.shared.db.models.model_routing_policy import LLMModelRoutingGlobalProfile
 from apps.shared.db.models.workflow_run import RunStatus, WorkflowNodeRun, WorkflowRun
+from apps.shared.db.session import SessionLocal  # 임시 세션 생성용
 from apps.shared.domain.knowledge_runtime_candidates import (
     AnonymousPublicAudience,
     AuthenticatedAudience,
@@ -22,19 +23,9 @@ from apps.shared.domain.knowledge_runtime_candidates import (
     KnowledgeRuntimeCandidateRequest,
     KnowledgeRuntimeCandidateResolution,
 )
-from apps.shared.domain.provider_execution_capability import (
-    CapabilityPurpose,
-    ProviderExecutionBinding,
-    RuntimePrincipal,
-)
-from apps.shared.db.session import SessionLocal  # 임시 세션 생성용
 from apps.shared.schemas.rag import ChunkPreview
 from apps.shared.schemas.workflow_citation import (
     WorkflowCitationEnvelope,
-)
-from apps.shared.services.permission_audit import (
-    record_resource_permission_denied,
-    record_system_resource_permission_denied,
 )
 from apps.shared.services.llm_model_pricing import pricing_estimate_metadata
 from apps.shared.services.model_routing_global_profile_catalog import (
@@ -42,16 +33,14 @@ from apps.shared.services.model_routing_global_profile_catalog import (
     catalog_metadata_for_model_id,
     normalize_model_id,
 )
+from apps.shared.services.permission_audit import (
+    record_resource_permission_denied,
+    record_system_resource_permission_denied,
+)
 from apps.shared.services.rag_evidence_policy import (
     RAGEvidenceDecision,
     RAGEvidencePolicy,
     blocked_evidence_reason_for_chunks,
-)
-from apps.shared.services.security_alert_policy_reason import (
-    with_normalized_security_alert_policy_reason,
-)
-from apps.shared.services.provider_execution_capability import (
-    ProviderExecutionCapabilityIssueCommand,
 )
 from apps.shared.services.rag_source_tier import (
     chunk_source_tier_priority,
@@ -61,20 +50,40 @@ from apps.shared.services.retrieval_embedding_model_projection import (
     EmbeddingModelBinding,
     load_embedding_model_projection,
 )
+from apps.shared.services.security_alert_policy_reason import (
+    with_normalized_security_alert_policy_reason,
+)
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.shared.utils.prompt_injection_guard import (
     PLATFORM_UNTRUSTED_CONTEXT_GUARDRAIL_PROMPT,
     build_untrusted_context_block,
     stringify_untrusted_value,
 )
+from apps.workflow_engine.adapters.knowledge_runtime_citations import (
+    PromptEvidence,
+    WorkflowCitationProjector,
+)
+from apps.workflow_engine.application.provider_execution import (
+    LLMCredentialNotAvailableError,
+    ProviderExecutionAttribution,
+    ProviderExecutionConfigurationError,
+    ProviderExecutionPreflight,
+    ProviderExecutionRequest,
+    ProviderExecutionRuntime,
+)
+from apps.workflow_engine.application.provider_usage import (
+    ProviderUsageRecord,
+    ProviderUsageRecorder,
+)
+from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
+    KnowledgeRuntimeCandidateInfrastructureError,
+    KnowledgeRuntimeCandidateResolver,
+)
 from apps.workflow_engine.services.llm_output_contract import (
     build_json_output_schema_instruction,
     response_format_requires_json_instruction,
 )
-from apps.workflow_engine.services.llm_service import (
-    LLMCredentialNotAvailableError,
-    LLMService,
-)
+from apps.workflow_engine.services.llm_service import LLMService
 from apps.workflow_engine.services.model_router import (
     ModelRouter,
     ModelRoutingUnavailableError,
@@ -85,14 +94,6 @@ from apps.workflow_engine.services.model_routing_judge_first_policy import (
     select_runtime_judge_model_id,
 )
 from apps.workflow_engine.services.retrieval import RetrievalService
-from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
-    KnowledgeRuntimeCandidateInfrastructureError,
-    KnowledgeRuntimeCandidateResolver,
-)
-from apps.workflow_engine.adapters.knowledge_runtime_citations import (
-    PromptEvidence,
-    WorkflowCitationProjector,
-)
 from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 from ..base.node import Node
@@ -164,42 +165,8 @@ def _safe_provider_failure_metadata(error: Exception) -> dict[str, Any]:
     return metadata
 
 
-class ProviderExecutionCapabilityConfigurationError(ValueError):
-    """Safe fail-closed error for the opt-in capability runtime path."""
-
-    code = "provider_capability.configuration_required"
 
 
-def _build_json_output_schema_instruction(
-    output_format: Optional[Dict[str, Any]],
-    *,
-    force_json_object: bool = False,
-) -> Optional[str]:
-    if not force_json_object and not isinstance(output_format, dict):
-        return None
-    if isinstance(output_format, dict) and output_format.get("type") != "json":
-        return None
-
-    schema = output_format.get("schema") if isinstance(output_format, dict) else None
-    if not isinstance(schema, dict) or not schema:
-        return (
-            "응답은 반드시 json object 하나만 반환하세요. "
-            "설명 문장, markdown, code fence는 포함하지 마세요."
-        )
-
-    schema_text = json.dumps(schema, ensure_ascii=False, sort_keys=True)
-    return (
-        f"{JSON_OUTPUT_SCHEMA_SYSTEM_INSTRUCTION_PREFIX}\n"
-        "설명 문장, markdown, code fence는 포함하지 마세요.\n\n"
-        f"json schema:\n{schema_text}"
-    )
-
-
-def _response_format_requires_json_instruction(response_format: Any) -> bool:
-    if not isinstance(response_format, dict):
-        return False
-    response_format_type = response_format.get("type")
-    return response_format_type in {"json_object", "json_schema"}
 
 
 RAG_NO_EVIDENCE_MESSAGE = "요청하신 문서를 찾을 수 없거나 접근 권한이 없습니다."
@@ -443,6 +410,34 @@ class LLMNode(Node[LLMNodeData]):
     ) -> None:
         """Bind an in-memory resolver without serializing it in execution context."""
         self._knowledge_runtime_candidate_resolver = resolver
+
+    def bind_provider_execution_runtime(
+        self,
+        runtime: ProviderExecutionRuntime,
+    ) -> None:
+        """Bind the in-memory provider execution port."""
+
+        self._provider_execution_runtime = runtime
+
+    def bind_provider_usage_recorder(
+        self,
+        recorder: ProviderUsageRecorder,
+    ) -> None:
+        """Bind the replaceable usage projection port."""
+
+        self._provider_usage_recorder = recorder
+
+    def _get_provider_execution_runtime(self) -> ProviderExecutionRuntime:
+        runtime = getattr(self, "_provider_execution_runtime", None)
+        if runtime is None:
+            raise ProviderExecutionConfigurationError()
+        return runtime
+
+    def _get_provider_usage_recorder(self) -> ProviderUsageRecorder:
+        recorder = getattr(self, "_provider_usage_recorder", None)
+        if recorder is None:
+            raise ProviderExecutionConfigurationError()
+        return recorder
 
     def _resolve_model_routing_policy(
         self,
@@ -1056,28 +1051,43 @@ class LLMNode(Node[LLMNodeData]):
         self.data.validate()
 
         # STEP 2. 모델 준비 ----------------------------------------------------
-        # 노드 실행마다 짧은 독립 세션을 우선 사용해 병렬 greenlet 간 세션 공유를 피합니다.
+        # Provider 권한·credential·control UoW는 application port 뒤에서 처리한다.
         db_session = None
         temp_session = None
         client_override = getattr(self, "_client_override", None)
-        capability_required = self._provider_execution_capability_required()
-        selected_credential_id = None
-        capability_model_db_id = None
-        runtime_credential_principal_user_id = None
         knowledge_enabled = bool(
             self.data.knowledgeBases or self.data.knowledgeCollections
         )
-        if capability_required and knowledge_enabled:
-            # RAG query embedding still uses the legacy user credential path.
-            # Until it has its own provider capability, fail before candidate
-            # resolution or any provider-backed knowledge operation.
-            raise ProviderExecutionCapabilityConfigurationError()
-        if (
-            capability_required
-            or not client_override
-            or knowledge_enabled
-            or self.data.auto_model_routing
-        ):
+        provider_runtime = self._get_provider_execution_runtime()
+        try:
+            provider_plan = provider_runtime.preflight(
+                ProviderExecutionPreflight(
+                    node_id=self.id,
+                    configured_model_id=self.data.model_id,
+                    auto_model_routing=bool(self.data.auto_model_routing),
+                    fallback_model_id=self.data.fallback_model_id,
+                    knowledge_enabled=knowledge_enabled,
+                    memory_summary_requested=bool(
+                        self.execution_context.get("memory_mode")
+                    ),
+                    client_override=client_override,
+                    execution_context=self.execution_context,
+                    runtime_control=self._runtime_control,
+                )
+            )
+        except LLMCredentialNotAvailableError as exc:
+            user_id = self._resolve_credential_principal_user()
+            if user_id is not None:
+                self._record_llm_runtime_permission_denied(
+                    user_id=user_id,
+                    model_id=self.data.model_id,
+                    organization_id=self.execution_context.get("organization_id"),
+                    error=exc,
+                )
+            raise
+
+        provider_attribution: ProviderExecutionAttribution | None = None
+        if knowledge_enabled or self.data.auto_model_routing:
             db_session, should_close_session = self._borrow_db_session()
             if should_close_session:
                 temp_session = db_session
@@ -1126,7 +1136,11 @@ class LLMNode(Node[LLMNodeData]):
         try:
             memory_summary = None
             try:
-                memory_summary = self._build_memory_summary()
+                memory_summary = (
+                    self._build_memory_summary()
+                    if provider_plan.allow_legacy_memory_summary
+                    else None
+                )
             except Exception as exc:
                 # 기억 모드 실패는 실행을 막지 않음 (비용만 스킵)
                 logger.warning(
@@ -1346,12 +1360,10 @@ class LLMNode(Node[LLMNodeData]):
                 self.data,
                 rag_metadata=routing_rag_context,
             )
-            if capability_required:
-                selected_model_id = self.data.model_id
+            if provider_plan.fixed_model_id is not None:
+                selected_model_id = provider_plan.fixed_model_id
                 fallback_model_id = None
-                model_routing_metadata = {
-                    "provider_execution_capability": "required"
-                }
+                model_routing_metadata = dict(provider_plan.routing_metadata)
             else:
                 selected_model_id, fallback_model_id, model_routing_metadata = (
                     self._resolve_model_routing_policy(
@@ -1373,142 +1385,80 @@ class LLMNode(Node[LLMNodeData]):
             fallback_reason_code = None
             fallback_error_metadata: dict[str, Any] = {}
 
-            if capability_required:
-                if client_override is not None:
-                    raise PermissionError(
-                        "provider_capability.client_override_forbidden"
-                    )
-                if db_session is None:
-                    raise PermissionError("provider_capability.db_session_required")
-                issue_command = self._provider_execution_issue_command(
-                    selected_model_id=selected_model_id,
-                )
-                requested_input_tokens, requested_output_tokens = (
-                    self._provider_execution_requested_usage(
-                        messages=messages,
-                        llm_params=llm_params,
-                        issue_command=issue_command,
+            def resolve_provider_execution(model_id: str):
+                return provider_runtime.resolve(
+                    ProviderExecutionRequest(
+                        plan=provider_plan,
+                        model_id=model_id,
+                        messages=tuple(dict(message) for message in messages),
+                        parameters=dict(llm_params),
+                        shared_session=db_session,
                     )
                 )
-                provider_db_session = self._borrow_provider_execution_db_session(
-                    db_session
-                )
-                try:
-                    runtime_selection = (
-                        LLMService.get_runtime_client_for_provider_execution(
-                            provider_db_session,
-                            issue_command=issue_command,
-                            requested_input_tokens=requested_input_tokens,
-                            requested_output_tokens=requested_output_tokens,
-                        )
-                    )
-                finally:
-                    provider_db_session.close()
-                if (
-                    runtime_selection.model_id != selected_model_id
-                    or runtime_selection.model_db_id is None
-                ):
-                    raise LLMCredentialNotAvailableError(
-                        "provider_capability_model_mismatch",
-                        "Provider execution capability is not available.",
-                        organization_id=issue_command.binding.organization_id,
-                    )
-                client = runtime_selection.client
-                selected_credential_id = runtime_selection.credential_id
-                capability_model_db_id = runtime_selection.model_db_id
-                runtime_credential_principal_user_id = (
-                    runtime_selection.credential_principal_user_id
-                )
-            elif client_override:
-                client = client_override
-            else:
+
+            def audit_provider_resolution_failure(
+                model_id: str,
+                error: Exception,
+            ) -> None:
+                if provider_plan.fixed_model_id is not None:
+                    return
                 user_id = self._resolve_credential_principal_user()
                 if user_id is None:
-                    raise ValueError(
-                        "LLM 노드 실행에는 유효한 credential principal이 필요합니다."
-                    )
-                organization_id = self._require_runtime_organization_id(
-                    user_id, selected_model_id
+                    return
+                self._record_llm_runtime_permission_denied(
+                    user_id=user_id,
+                    model_id=model_id,
+                    organization_id=self.execution_context.get("organization_id"),
+                    error=error,
                 )
 
-                try:
-                    runtime_selection = LLMService.get_runtime_client_for_user(
-                        db_session,
-                        user_id=user_id,
-                        model_id=selected_model_id,
-                        organization_id=organization_id,
+            try:
+                provider_lease = resolve_provider_execution(selected_model_id)
+            except Exception as primary_resolution_error:
+                if fallback_model_id:
+                    logger.warning(
+                        "[LLMNode] Primary model client failed: "
+                        "error_type=%s fallback_model=%s",
+                        type(primary_resolution_error).__name__,
+                        fallback_model_id,
                     )
-                    client = runtime_selection.client
-                    selected_credential_id = runtime_selection.credential_id
-                    selected_model_id = runtime_selection.model_id
-                except Exception as primary_client_error:
-                    if (
-                        isinstance(
-                            primary_client_error, LLMCredentialNotAvailableError
+                    try:
+                        provider_lease = resolve_provider_execution(fallback_model_id)
+                    except Exception as fallback_resolution_error:
+                        logger.error(
+                            "[LLMNode] Fallback model client failed: error_type=%s",
+                            type(fallback_resolution_error).__name__,
                         )
-                        and primary_client_error.reason == "organization_scope_missing"
-                    ):
-                        self._record_llm_runtime_permission_denied(
-                            user_id=user_id,
-                            model_id=selected_model_id,
-                            organization_id=None,
-                            error=primary_client_error,
-                        )
-                        raise
-
-                    # API 키 조회 실패 시 fallback 모델로 시도한다.
-                    if fallback_model_id:
-                        logger.warning(
-                            "[LLMNode] Primary model client failed: "
-                            "error_type=%s fallback_model=%s",
-                            type(primary_client_error).__name__,
+                        audit_provider_resolution_failure(
                             fallback_model_id,
+                            fallback_resolution_error,
                         )
-                        try:
-                            runtime_selection = LLMService.get_runtime_client_for_user(
-                                db_session,
-                                user_id=user_id,
-                                model_id=fallback_model_id,
-                                organization_id=organization_id,
-                            )
-                            client = runtime_selection.client
-                            selected_credential_id = runtime_selection.credential_id
-                            selected_model_id = runtime_selection.model_id
-                            fallback_used = True
-                            fallback_reason_code = "runtime_client_unavailable"
-                            # The fallback is now the active client. Do not invoke
-                            # the same provider a second time if this call fails.
-                            fallback_model_id = None
-                        except Exception as fallback_client_error:
-                            logger.error(
-                                "[LLMNode] Fallback model client failed: error_type=%s",
-                                type(fallback_client_error).__name__,
-                            )
-                            self._record_llm_runtime_permission_denied(
-                                user_id=user_id,
-                                model_id=fallback_model_id,
-                                organization_id=organization_id,
-                                error=fallback_client_error,
-                            )
-                            raise primary_client_error
-                    else:
-                        logger.warning(
-                            "[LLMNode] Credential client unavailable: error_type=%s",
-                            type(primary_client_error).__name__,
-                        )
-                        self._record_llm_runtime_permission_denied(
-                            user_id=user_id,
-                            model_id=selected_model_id,
-                            organization_id=organization_id,
-                            error=primary_client_error,
-                        )
-                        raise
+                        raise primary_resolution_error
+                    selected_model_id = (
+                        provider_lease.attribution.model_id
+                        if provider_lease.attribution is not None
+                        else fallback_model_id
+                    )
+                    provider_attribution = provider_lease.attribution
+                    fallback_used = True
+                    fallback_reason_code = "runtime_client_unavailable"
+                    # The fallback is now the active provider lease.
+                    fallback_model_id = None
+                else:
+                    audit_provider_resolution_failure(
+                        selected_model_id,
+                        primary_resolution_error,
+                    )
+                    raise
+            else:
+                provider_attribution = provider_lease.attribution
+                if provider_attribution is not None:
+                    selected_model_id = provider_attribution.model_id
 
             # STEP 4. LLM 호출 ----------------------------------------------------
             used_model_id = selected_model_id
             try:
-                # [GEVENT] invoke_sync 사용
-                response = client.invoke_sync(messages=messages, **llm_params)
+                response = provider_lease.invoke()
             except Exception as primary_error:
                 if not fallback_model_id:
                     raise
@@ -1523,53 +1473,31 @@ class LLMNode(Node[LLMNodeData]):
                     fallback_error_metadata.get("fallback_provider_status_code"),
                     fallback_model_id,
                 )
-                fallback_client = None
-                if client_override:
-                    fallback_client = client_override
-                else:
-                    user_id = self._resolve_credential_principal_user()
-                    if user_id is None:
-                        raise ValueError(
-                            "폴백 모델 실행에는 유효한 credential principal이 필요합니다."
-                        )
-                    organization_id = self._require_runtime_organization_id(
-                        user_id, fallback_model_id
+                try:
+                    fallback_lease = resolve_provider_execution(fallback_model_id)
+                except Exception as fallback_resolution_error:
+                    logger.error(
+                        "[LLMNode] Fallback client load failed: error_type=%s",
+                        type(fallback_resolution_error).__name__,
                     )
-
-                    try:
-                        runtime_selection = LLMService.get_runtime_client_for_user(
-                            db_session,  # 같은 세션 사용
-                            user_id=user_id,
-                            model_id=fallback_model_id,
-                            organization_id=organization_id,
-                        )
-                        fallback_client = runtime_selection.client
-                        selected_credential_id = runtime_selection.credential_id
-                        runtime_credential_principal_user_id = user_id
-                    except Exception as exc:
-                        logger.error(
-                            "[LLMNode] Fallback client load failed: error_type=%s",
-                            type(exc).__name__,
-                        )
-                        self._record_llm_runtime_permission_denied(
-                            user_id=user_id,
-                            model_id=fallback_model_id,
-                            organization_id=organization_id,
-                            error=exc,
-                        )
-                        raise
+                    audit_provider_resolution_failure(
+                        fallback_model_id,
+                        fallback_resolution_error,
+                    )
+                    raise
 
                 try:
-                    # [GEVENT] invoke_sync 사용
-                    response = fallback_client.invoke_sync(
-                        messages=messages, **llm_params
-                    )
+                    response = fallback_lease.invoke()
                 except Exception as fallback_error:
                     raise fallback_error from primary_error
-                used_model_id = fallback_model_id
+                provider_attribution = fallback_lease.attribution
+                used_model_id = (
+                    provider_attribution.model_id
+                    if provider_attribution is not None
+                    else fallback_model_id
+                )
                 fallback_used = True
                 fallback_reason_code = "provider_call_failed"
-
             # OpenAI 응답 포맷에서 텍스트/usage 추출 (missing 시 안전하게 빈 값)
             text = ""
             try:
@@ -1592,31 +1520,15 @@ class LLMNode(Node[LLMNodeData]):
             # STEP 5. 결과 포맷팅 --------------------------------------------------
             cost = 0.0
             usage_for_log = usage or {}
-            prompt_tokens = usage_for_log.get("prompt_tokens", 0)
-            completion_tokens = usage_for_log.get("completion_tokens", 0)
-            try:
-                # 성공한 workflow LLM node 호출은 provider usage가 없어도 최소 row를 남깁니다. MBA-43
-                if db_session:
-                    cost = LLMService.calculate_cost(
-                        db_session,
-                        used_model_id,
-                        prompt_tokens,
-                        completion_tokens,
-                        usage=usage_for_log,
-                        model_db_id=(
-                            capability_model_db_id
-                            if capability_required
-                            else None
-                        ),
-                    )
-
-                    usage_user_id = (
-                        runtime_credential_principal_user_id
-                        if capability_required
-                        else self._resolve_credential_principal_user()
-                    )
-                    workflow_run_id_str = self.execution_context.get(
+            if provider_attribution is not None:
+                try:
+                    workflow_run_id_value = self.execution_context.get(
                         "workflow_run_id"
+                    )
+                    workflow_run_id = (
+                        uuid.UUID(str(workflow_run_id_value))
+                        if workflow_run_id_value
+                        else None
                     )
                     cost_optimizer_candidate_id = self.execution_context.get(
                         "cost_optimizer_candidate_id"
@@ -1630,55 +1542,30 @@ class LLMNode(Node[LLMNodeData]):
                         cost_optimizer_candidate_id = cost_optimizer_context.get(
                             "candidate_id"
                         )
-
-                    if usage_user_id is not None:
-                        try:
-                            # workflow_run_id는 engine에서 string으로 넘겨준다고 가정 (execute_stream 참조)
-                            wf_run_uuid = (
-                                uuid.UUID(workflow_run_id_str)
-                                if workflow_run_id_str
+                    candidate_id = (
+                        uuid.UUID(str(cost_optimizer_candidate_id))
+                        if cost_optimizer_candidate_id
+                        else None
+                    )
+                    cost = self._get_provider_usage_recorder().record(
+                        ProviderUsageRecord(
+                            attribution=provider_attribution,
+                            usage=usage_for_log,
+                            workflow_id=(
+                                uuid.UUID(str(self.execution_context["workflow_id"]))
+                                if self.execution_context.get("workflow_id")
                                 else None
-                            )
-                            candidate_uuid = (
-                                uuid.UUID(str(cost_optimizer_candidate_id))
-                                if cost_optimizer_candidate_id
-                                else None
-                            )
-
-                            LLMService.log_usage(
-                                db=db_session,
-                                # LLMUsageLog.user_id is the legacy billing/
-                                # credential principal FK, not WorkflowRun actor.
-                                user_id=usage_user_id,
-                                model_id=used_model_id,
-                                usage=usage_for_log,
-                                cost=cost,
-                                organization_id=self.execution_context.get(
-                                    "organization_id"
-                                ),
-                                workflow_id=self.execution_context.get("workflow_id"),
-                                workflow_run_id=wf_run_uuid,
-                                node_id=self.id,
-                                credential_id=selected_credential_id,
-                                cost_optimizer_candidate_id=candidate_uuid,
-                                model_db_id=(
-                                    capability_model_db_id
-                                    if capability_required
-                                    else None
-                                ),
-                            )
-                        except Exception as log_err:
-                            logger.error(
-                                "[LLMNode] Failed to save usage log: error_type=%s",
-                                type(log_err).__name__,
-                            )
-
-            except Exception as exc:
-                logger.error(
-                    "[LLMNode] Cost calculation/logging failed: error_type=%s",
-                    type(exc).__name__,
-                )
-
+                            ),
+                            workflow_run_id=workflow_run_id,
+                            node_id=self.id,
+                            cost_optimizer_candidate_id=candidate_id,
+                        )
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "[LLMNode] Cost calculation/logging failed: error_type=%s",
+                        type(exc).__name__,
+                    )
             self._trace_payloads = [
                 {
                     "payload_kind": "prompt",
@@ -1961,13 +1848,6 @@ class LLMNode(Node[LLMNodeData]):
         if not self.execution_context.get("memory_mode"):
             return None
 
-        if self._provider_execution_capability_required():
-            # The legacy inline summarizer reads WorkflowRun history without
-            # the Conversation Memory session/access-grant/lease contract.
-            # It must not become a target provider path merely because a main
-            # generation capability is active.  A future dedicated Memory
-            # adapter will issue its own `memory_summary` capability.
-            return None
 
         try:
             workflow_id = uuid.UUID(str(self.execution_context.get("workflow_id")))
@@ -2070,20 +1950,6 @@ class LLMNode(Node[LLMNodeData]):
         if legacy_session is not None:
             return legacy_session, False
         return SessionLocal(), True
-
-    def _borrow_provider_execution_db_session(self, workflow_db_session):
-        """Open an isolated UoW for the pre-provider capability commit."""
-
-        session_factory = self.execution_context.get("db_session_factory")
-        if callable(session_factory):
-            provider_db_session = session_factory()
-        else:
-            # Never reuse execution_context["db"] here. Committing that legacy
-            # session could persist unrelated runtime work with the capability.
-            provider_db_session = SessionLocal()
-        if provider_db_session is workflow_db_session:
-            raise ProviderExecutionCapabilityConfigurationError()
-        return provider_db_session
 
     def _shorten(self, payload: Any, limit: int = 360) -> str:
         """LLM 히스토리 문자열을 과하지 않게 자르는 헬퍼 (한국어 포함)"""
@@ -3120,196 +2986,6 @@ class LLMNode(Node[LLMNodeData]):
             raise PermissionError(
                 "RAG retrieval requires a valid credential user context."
             ) from exc
-
-    def _provider_execution_capability_required(self) -> bool:
-        """Return only an explicit server-supplied capability activation flag."""
-
-        return self.execution_context.get("provider_execution_capability_required") is True
-
-    def _provider_execution_issue_command(
-        self,
-        *,
-        selected_model_id: str,
-    ) -> ProviderExecutionCapabilityIssueCommand:
-        """Build a policy-only provider attempt from trusted runtime control.
-
-        This deliberately does not consult ``user_id`` or
-        ``credential_principal`` in execution context.  Those legacy fields
-        could otherwise turn a public request into the app owner's credential
-        principal.  The policy issuer derives the credential principal itself.
-        """
-
-        if (
-            self.data.auto_model_routing
-            or self.data.fallback_model_id
-            or selected_model_id != self.data.model_id
-        ):
-            raise ProviderExecutionCapabilityConfigurationError()
-        control = self._runtime_control
-        effect_context = (
-            control.external_effect_context if control is not None else None
-        )
-        if (
-            control is None
-            or not control.external_effect_enforced
-            or effect_context is None
-            or effect_context.node_id != self.id
-        ):
-            raise ProviderExecutionCapabilityConfigurationError()
-
-        try:
-            deployment_id = uuid.UUID(str(self.execution_context["deployment_id"]))
-            workflow_version = self.execution_context["workflow_version"]
-            if isinstance(workflow_version, bool):
-                raise ValueError
-            deployment_version = int(workflow_version)
-            context_organization_id = uuid.UUID(
-                str(self.execution_context["organization_id"])
-            )
-            context_workflow_id = uuid.UUID(str(self.execution_context["workflow_id"]))
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ProviderExecutionCapabilityConfigurationError() from exc
-        if (
-            deployment_version < 1
-            or context_organization_id != effect_context.organization_id
-            or context_workflow_id != effect_context.workflow_id
-        ):
-            raise ProviderExecutionCapabilityConfigurationError()
-
-        execution_subject, audit_actor = self._provider_execution_identities()
-        caps = self.execution_context.get("provider_execution_capability_limits")
-        if not isinstance(caps, dict):
-            raise ProviderExecutionCapabilityConfigurationError()
-        cap_values = (
-            caps.get("input_token_cap"),
-            caps.get("output_token_cap"),
-            caps.get("cost_cap_microusd"),
-        )
-        if any(
-            not isinstance(value, int) or isinstance(value, bool) or value < 0
-            for value in cap_values
-        ):
-            raise ProviderExecutionCapabilityConfigurationError()
-        input_token_cap, output_token_cap, cost_cap_microusd = cap_values
-        node_invocation_id = effect_context.node_invocation_id
-        provider_attempt_id = uuid.uuid5(
-            control.execution_id,
-            f"provider_execution:{node_invocation_id}:main_generation",
-        )
-        return ProviderExecutionCapabilityIssueCommand(
-            binding=ProviderExecutionBinding(
-                organization_id=effect_context.organization_id,
-                workflow_id=effect_context.workflow_id,
-                deployment_id=deployment_id,
-                deployment_version=deployment_version,
-                node_id=self.id,
-                node_invocation_id=node_invocation_id,
-                # The trusted execution identity is the admission fence for
-                # this first capability generation.  MBA-287 adds a durable
-                # provider-attempt ledger without widening this input surface.
-                execution_admission_id=control.execution_id,
-                provider_attempt_id=provider_attempt_id,
-                purpose=CapabilityPurpose.MAIN_GENERATION,
-            ),
-            execution_subject=execution_subject,
-            billing_principal=RuntimePrincipal.organization(
-                effect_context.organization_id
-            ),
-            audit_actor=audit_actor,
-            input_token_cap=input_token_cap,
-            output_token_cap=output_token_cap,
-            cost_cap_microusd=cost_cap_microusd,
-        )
-
-    @staticmethod
-    def _provider_execution_requested_usage(
-        *,
-        messages: list[dict[str, Any]],
-        llm_params: dict[str, Any],
-        issue_command: ProviderExecutionCapabilityIssueCommand,
-    ) -> tuple[int, int]:
-        """Build conservative request bounds before capability admission."""
-
-        if "model" in llm_params:
-            raise ProviderExecutionCapabilityConfigurationError()
-
-        completion_count = llm_params.get("n", 1)
-        if (
-            isinstance(completion_count, bool)
-            or not isinstance(completion_count, int)
-            or completion_count != 1
-        ):
-            raise ProviderExecutionCapabilityConfigurationError()
-
-        best_of = llm_params.get("best_of", 1)
-        if (
-            isinstance(best_of, bool)
-            or not isinstance(best_of, int)
-            or best_of != 1
-        ):
-            raise ProviderExecutionCapabilityConfigurationError()
-
-        provider_output_aliases = {"max_completion_tokens", "max_output_tokens"}
-        if provider_output_aliases.intersection(llm_params):
-            raise ProviderExecutionCapabilityConfigurationError()
-
-        output_tokens = llm_params.get("max_tokens")
-        if output_tokens is None:
-            output_tokens = issue_command.output_token_cap
-            if output_tokens <= 0:
-                raise ProviderExecutionCapabilityConfigurationError()
-            llm_params["max_tokens"] = output_tokens
-        if (
-            isinstance(output_tokens, bool)
-            or not isinstance(output_tokens, int)
-            or output_tokens <= 0
-        ):
-            raise ProviderExecutionCapabilityConfigurationError()
-
-        try:
-            serialized_provider_input = json.dumps(
-                {
-                    "messages": messages,
-                    "parameters": llm_params,
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-                allow_nan=False,
-            ).encode("utf-8")
-        except (TypeError, ValueError) as exc:
-            raise ProviderExecutionCapabilityConfigurationError() from exc
-
-        # Tools, response schemas and other request parameters can be billed as
-        # provider input. Every tokenizer token represents at least one encoded
-        # byte, so the complete provider-visible structure is a conservative
-        # provider-independent upper bound.
-        input_tokens = len(serialized_provider_input)
-        if input_tokens <= 0:
-            raise ProviderExecutionCapabilityConfigurationError()
-        return input_tokens, output_tokens
-
-    def _provider_execution_identities(
-        self,
-    ) -> tuple[RuntimePrincipal, RuntimePrincipal]:
-        subject = self.execution_context.get("execution_subject")
-        if isinstance(subject, dict):
-            subject_type = subject.get("subject_type") or subject.get("type")
-            subject_id = subject.get("subject_id") or subject.get("id")
-            if subject_type == "user":
-                try:
-                    user_id = uuid.UUID(str(subject_id))
-                except (TypeError, ValueError) as exc:
-                    raise ProviderExecutionCapabilityConfigurationError() from exc
-                user = RuntimePrincipal.user(user_id)
-                return user, user
-            raise ProviderExecutionCapabilityConfigurationError()
-
-        audience = self.execution_context.get("provider_execution_audience")
-        if audience == "anonymous_public":
-            return RuntimePrincipal.anonymous_public(), RuntimePrincipal.public_actor()
-        if audience == "system":
-            return RuntimePrincipal.system_actor(), RuntimePrincipal.system_actor()
-        raise ProviderExecutionCapabilityConfigurationError()
 
     def _is_system_schedule_execution(self) -> bool:
         trigger_mode = str(self.execution_context.get("trigger_mode") or "").lower()

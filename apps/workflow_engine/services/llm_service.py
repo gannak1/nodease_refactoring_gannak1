@@ -38,33 +38,12 @@ from apps.shared.services.permissions import has_llm_credential_permission
 from apps.shared.services.retrieval_embedding_model_projection import (
     EmbeddingModelBinding,
 )
-from apps.shared.services.provider_execution_capability import (
-    ProviderExecutionCapabilityAdmissionCommand,
-    ProviderExecutionCapabilityIssueCommand,
-    ProviderExecutionCapabilityService,
-    ProviderExecutionPolicyError,
+from apps.workflow_engine.application.provider_execution import (
+    LLMCredentialNotAvailableError,
 )
 
 logger = logging.getLogger(__name__)
 
-
-class LLMCredentialNotAvailableError(ValueError):
-    """LLM runtime credential 선택 실패 원인을 보존합니다. MBA-43"""
-
-    def __init__(
-        self,
-        reason: str,
-        message: str,
-        *,
-        credential_id: Optional[uuid.UUID] = None,
-        model_id: Optional[str] = None,
-        organization_id: Optional[uuid.UUID] = None,
-    ) -> None:
-        super().__init__(message)
-        self.reason = reason
-        self.credential_id = credential_id
-        self.model_id = model_id
-        self.organization_id = organization_id
 
 
 @dataclass(frozen=True)
@@ -76,8 +55,6 @@ class LLMRuntimeSelection:
     model_id: str
     organization_id: uuid.UUID
     model_db_id: uuid.UUID | None = None
-    capability_id: uuid.UUID | None = None
-    capability_revision: int | None = None
     credential_principal_user_id: uuid.UUID | None = None
 
 
@@ -757,93 +734,6 @@ class LLMService:
         )
 
     @staticmethod
-    def get_runtime_client_for_provider_execution(
-        db: Session,
-        *,
-        issue_command: ProviderExecutionCapabilityIssueCommand,
-        requested_input_tokens: int,
-        requested_output_tokens: int,
-    ) -> LLMRuntimeSelection:
-        """Materialize a client only after capability issue and admission.
-
-        The caller must provide an isolated unit-of-work because this method
-        commits the capability control fact before any provider network I/O.
-        This target-only path never accepts a credential principal or
-        credential selection from its caller.  The shared LLM Credentials
-        service derives both from the canonical deployment policy and repeats
-        the permission/relation checks immediately before client creation.
-        """
-
-        try:
-            capability = ProviderExecutionCapabilityService.issue_capability(
-                db,
-                command=issue_command,
-            )
-            lease = ProviderExecutionCapabilityService.admit_capability(
-                db,
-                command=ProviderExecutionCapabilityAdmissionCommand(
-                    capability_id=capability.id,
-                    capability_revision=capability.revision,
-                    binding=issue_command.binding,
-                    requested_input_tokens=requested_input_tokens,
-                    requested_output_tokens=requested_output_tokens,
-                ),
-            )
-        except ProviderExecutionPolicyError as exc:
-            raise LLMCredentialNotAvailableError(
-                f"provider_capability_{exc.code}",
-                "Provider execution capability is not available.",
-                model_id=None,
-                organization_id=issue_command.binding.organization_id,
-            ) from exc
-
-        try:
-            cfg = load_llm_credential_config(lease.credential)
-            api_key = cfg.get("apiKey")
-            base_url = lease.provider.base_url
-            if (
-                not isinstance(base_url, str)
-                or not base_url
-                or base_url != base_url.strip()
-            ):
-                raise ValueError("invalid canonical provider route")
-        except (LLMCredentialConfigError, TypeError, ValueError, AttributeError):
-            raise LLMCredentialNotAvailableError(
-                "credential_config_invalid",
-                "Provider execution capability is not available.",
-                organization_id=issue_command.binding.organization_id,
-            ) from None
-
-        try:
-            client = get_llm_client(
-                provider=lease.provider.name,
-                model_id=lease.model.model_id_for_api_call,
-                credentials={"apiKey": api_key, "baseUrl": base_url},
-            )
-        except Exception:
-            raise LLMCredentialNotAvailableError(
-                "provider_client_initialization_failed",
-                "Provider execution capability is not available.",
-                organization_id=issue_command.binding.organization_id,
-            ) from None
-        selection = LLMRuntimeSelection(
-            client=client,
-            credential_id=lease.credential.id,
-            model_id=lease.model.model_id_for_api_call,
-            organization_id=issue_command.binding.organization_id,
-            model_db_id=lease.model.id,
-            capability_id=capability.id,
-            capability_revision=capability.revision,
-            credential_principal_user_id=(
-                lease.capability.credential_principal.reference_id
-            ),
-        )
-        # Capability admission is a durable control fact and must survive a
-        # provider failure. No provider network I/O has occurred at this point.
-        db.commit()
-        return selection
-
-    @staticmethod
     def get_runtime_available_model_ids_for_user(
         db: Session,
         *,
@@ -1190,7 +1080,7 @@ class LLMService:
         """
         모델 가격 정보를 기반으로 비용을 계산합니다.
         DB에 가격 정보가 없으면 shared pricing catalog로 폴백합니다.
-        model_db_id가 주어진 capability 경로는 exact row의 가격만 사용합니다.
+        model_db_id가 주어지면 exact canonical row의 가격만 사용합니다.
         """
         model = None
         if model_db_id is not None:
@@ -1265,8 +1155,7 @@ class LLMService:
         """
         LLM 사용 로그를 DB에 저장합니다.
         """
-        # Capability 경로는 provider admission에서 확정한 model UUID를
-        # 그대로 사용한다. API identifier fallback은 legacy 경로에만 둔다.
+        # Canonical model UUID가 주어지면 API identifier로 다시 선택하지 않는다.
         if model_db_id is not None:
             try:
                 canonical_model_id = uuid.UUID(str(model_db_id))

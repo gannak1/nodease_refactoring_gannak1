@@ -28,9 +28,6 @@ from apps.shared.db.models.knowledge import (  # noqa: E402
     SourceType,
 )
 from apps.shared.db.models.llm import LLMModel  # noqa: E402
-from apps.shared.domain.workflow_knowledge_references import (  # noqa: E402
-    WorkflowKnowledgeReferenceError,
-)
 from apps.shared.domain.knowledge_runtime_candidates import (  # noqa: E402
     AnonymousPublicAudience,
     AuthenticatedAudience,
@@ -42,6 +39,9 @@ from apps.shared.domain.knowledge_runtime_candidates import (  # noqa: E402
     KnowledgeRuntimeCandidateSnapshot,
     resolve_knowledge_runtime_candidates,
 )
+from apps.shared.domain.workflow_knowledge_references import (  # noqa: E402
+    WorkflowKnowledgeReferenceError,
+)
 from apps.shared.schemas.rag import ChunkPreview  # noqa: E402
 from apps.shared.services.llm_client.base import ProviderInvocationError  # noqa: E402
 from apps.shared.services.rag_evidence_policy import RAGEvidenceDecision  # noqa: E402
@@ -49,6 +49,13 @@ from apps.shared.services.retrieval_embedding_model_projection import (  # noqa:
     EmbeddingModelBinding,
 )
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer  # noqa: E402
+from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (  # noqa: E402
+    KnowledgeRuntimeCandidateInfrastructureError,
+)
+from apps.workflow_engine.composition.provider_execution import (  # noqa: E402
+    build_provider_execution_runtime,
+    build_provider_usage_recorder,
+)
 from apps.workflow_engine.services import (  # noqa: E402
     llm_service as workflow_llm_service,
 )
@@ -62,6 +69,9 @@ from apps.workflow_engine.services.llm_service import (  # noqa: E402
 )
 from apps.workflow_engine.services.model_routing_incremental_learning import (  # noqa: E402
     TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
+)
+from apps.workflow_engine.workflow.errors import (  # noqa: E402
+    NonRetryableWorkflowError,
 )
 from apps.workflow_engine.workflow.nodes.llm.entities import (  # noqa: E402
     MAX_RAG_CHUNKS_PER_KB,
@@ -77,12 +87,6 @@ from apps.workflow_engine.workflow.nodes.llm.llm_node import (  # noqa: E402
     LLMNode,
     WorkflowRAGFanoutResult,
     WorkflowRAGSearchResult,
-)
-from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (  # noqa: E402
-    KnowledgeRuntimeCandidateInfrastructureError,
-)
-from apps.workflow_engine.workflow.errors import (  # noqa: E402
-    NonRetryableWorkflowError,
 )
 
 
@@ -180,6 +184,36 @@ class StaticTextClient:
             "choices": [{"message": {"content": self.text}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5},
         }
+
+
+@pytest.fixture(autouse=True)
+def _inject_default_provider_ports(monkeypatch):
+    def provider_runtime(node):
+        runtime = getattr(node, "_provider_execution_runtime", None)
+        if runtime is None:
+            session_factory = node.execution_context.get("db_session_factory")
+            runtime = build_provider_execution_runtime(
+                session_factory=(
+                    session_factory if callable(session_factory) else None
+                )
+            )
+            node.bind_provider_execution_runtime(runtime)
+        return runtime
+
+    def usage_recorder(node):
+        recorder = getattr(node, "_provider_usage_recorder", None)
+        if recorder is None:
+            session_factory = node.execution_context.get("db_session_factory")
+            recorder = build_provider_usage_recorder(
+                session_factory=(
+                    session_factory if callable(session_factory) else None
+                )
+            )
+            node.bind_provider_usage_recorder(recorder)
+        return recorder
+
+    monkeypatch.setattr(LLMNode, "_get_provider_execution_runtime", provider_runtime)
+    monkeypatch.setattr(LLMNode, "_get_provider_usage_recorder", usage_recorder)
 
 
 @pytest.fixture(autouse=True)
