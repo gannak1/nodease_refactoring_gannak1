@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any, Callable, Mapping
 
 from sqlalchemy.orm import Session
@@ -39,10 +40,23 @@ from apps.workflow_engine.application.provider_execution import (
 )
 
 
+class _SingleUseResolveGuard:
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._consumed = False
+
+    def consume(self) -> None:
+        with self._lock:
+            if self._consumed:
+                raise ProviderExecutionConfigurationError()
+            self._consumed = True
+
+
 @dataclass(frozen=True, slots=True)
 class _CapabilityPlanState:
     issue_command: ProviderExecutionCapabilityIssueCommand
     configured_model_id: str
+    resolve_guard: _SingleUseResolveGuard
 
 
 def provider_visible_request_bounds(
@@ -136,6 +150,7 @@ class CapabilityProviderExecutionAdapter:
             state=_CapabilityPlanState(
                 issue_command=command,
                 configured_model_id=request.configured_model_id,
+                resolve_guard=_SingleUseResolveGuard(),
             ),
         )
 
@@ -148,6 +163,7 @@ class CapabilityProviderExecutionAdapter:
             raise ProviderExecutionConfigurationError()
         if request.model_id != state.configured_model_id:
             raise ProviderExecutionConfigurationError()
+        state.resolve_guard.consume()
         issue_command = state.issue_command
         input_tokens, output_tokens, parameters = provider_visible_request_bounds(
             messages=request.messages,

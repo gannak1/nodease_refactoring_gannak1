@@ -50,10 +50,11 @@ class LegacyProviderExecutionAdapter:
         self,
         request: ProviderExecutionPreflight,
     ) -> ProviderExecutionPlan:
-        if (
-            request.execution_context.get("provider_execution_capability_required")
-            is True
-        ):
+        capability_required = request.execution_context.get(
+            "provider_execution_capability_required",
+            False,
+        )
+        if capability_required is not False:
             raise ProviderExecutionConfigurationError()
         if request.client_override is not None:
             state = _LegacyPlanState(None, None, request.client_override)

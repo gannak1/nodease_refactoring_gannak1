@@ -160,6 +160,17 @@ def test_capability_runtime_commits_and_closes_control_uow_before_provider_io():
         )
     )
 
+    with pytest.raises(ProviderExecutionConfigurationError):
+        runtime.resolve(
+            ProviderExecutionRequest(
+                plan=plan,
+                model_id="gpt-safe",
+                messages=({"role": "user", "content": "safe"},),
+                parameters={},
+                shared_session=object(),
+            )
+        )
+
     assert session.commits == 1
     assert session.closes == 1
     assert lease.attribution.model_db_id == model_db_id

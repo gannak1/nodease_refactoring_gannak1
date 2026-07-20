@@ -36,11 +36,14 @@ class ProviderExecutionRuntimeRouter:
         self,
         request: ProviderExecutionPreflight,
     ) -> ProviderExecutionPlan:
+        capability_required = request.execution_context.get(
+            "provider_execution_capability_required",
+            False,
+        )
+        if type(capability_required) is not bool:
+            raise ProviderExecutionConfigurationError()
         strategy = (
-            self._capability_strategy
-            if request.execution_context.get("provider_execution_capability_required")
-            is True
-            else self._legacy_strategy
+            self._capability_strategy if capability_required else self._legacy_strategy
         )
         strategy_plan = strategy.preflight(request)
         return replace(

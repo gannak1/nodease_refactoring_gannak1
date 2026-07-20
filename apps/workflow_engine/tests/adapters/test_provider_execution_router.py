@@ -106,3 +106,18 @@ def test_router_rejects_a_plan_not_created_by_it():
                 parameters={},
             )
         )
+
+
+@pytest.mark.parametrize("flag", [None, 0, 1, "false", "true"])
+def test_router_rejects_malformed_capability_activation_flag(flag):
+    router = ProviderExecutionRuntimeRouter(
+        legacy_strategy=_Strategy("legacy"),
+        capability_strategy=_Strategy("capability"),
+    )
+    request = replace(
+        _preflight(capability_required=False),
+        execution_context={"provider_execution_capability_required": flag},
+    )
+
+    with pytest.raises(ProviderExecutionConfigurationError):
+        router.preflight(request)
