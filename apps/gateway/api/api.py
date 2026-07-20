@@ -17,6 +17,7 @@ from apps.gateway.api.v1.endpoints import (
     permission_request,
     permissions,
     prompt_wizard,
+    public_conversation,
     rag,
     run,
     template_wizard,
@@ -85,6 +86,10 @@ api_router.include_router(connectors.router, prefix="/connectors", tags=["connec
 # Deployment & Run (Dev B)
 api_router.include_router(
     deployment.router, prefix="/deployments", tags=["deployments"]
+)
+api_router.include_router(
+    public_conversation.router,
+    tags=["public-conversation"],
 )
 api_router.include_router(run.router, tags=["run"])
 

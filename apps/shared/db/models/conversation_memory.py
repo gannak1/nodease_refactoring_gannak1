@@ -1534,6 +1534,16 @@ class ConversationPurgeJobRecord(_TimestampMixin, Base):
             name="ck_conv_purge_counters",
         ),
         CheckConstraint(
+            "((deployment_id IS NULL AND deployment_version IS NULL "
+            "AND audience_kind IS NULL AND app_id IS NULL) OR "
+            "(deployment_id IS NOT NULL AND audience_kind IS NOT NULL AND "
+            "((audience_kind = 'public_chatbot' "
+            "AND deployment_version IS NOT NULL AND deployment_version > 0) OR "
+            "(audience_kind = 'authenticated_internal_chatbot' AND "
+            "(deployment_version IS NULL OR deployment_version > 0)))))",
+            name="ck_conv_purge_scope_snapshot",
+        ),
+        CheckConstraint(
             "(status = 'running' AND claim_owner IS NOT NULL "
             "AND claim_deadline_at IS NOT NULL) OR "
             "(status <> 'running' AND claim_owner IS NULL)",
@@ -1568,6 +1578,16 @@ class ConversationPurgeJobRecord(_TimestampMixin, Base):
         String(64),
         nullable=False,
     )
+    app_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=True,
+    )
+    deployment_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=True,
+    )
+    deployment_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    audience_kind: Mapped[str | None] = mapped_column(String(48), nullable=True)
     receipt_verifier_hash: Mapped[str] = mapped_column(
         String(128),
         nullable=False,
@@ -1634,6 +1654,11 @@ class ConversationIdempotencyRecord(_TimestampMixin, Base):
     __tablename__ = "conversation_idempotency_records"
     __table_args__ = (
         UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_conv_idempotency_id_org",
+        ),
+        UniqueConstraint(
             "organization_id",
             "operation",
             "scope_digest",
@@ -1647,7 +1672,48 @@ class ConversationIdempotencyRecord(_TimestampMixin, Base):
             "AND length(request_fingerprint) = 64",
             name="ck_conv_idempotency_fields",
         ),
+        CheckConstraint(
+            "((result_lifecycle IS NULL "
+            "AND result_lifecycle_revision IS NULL "
+            "AND result_memory_contract_version IS NULL "
+            "AND result_expires_at IS NULL "
+            "AND result_previous_lifecycle IS NULL "
+            "AND result_previous_lifecycle_revision IS NULL) OR "
+            "(result_lifecycle IN "
+            "('active', 'closed', 'delete_pending', 'deleted', 'expired') "
+            "AND result_lifecycle_revision > 0 "
+            "AND ((result_memory_contract_version IS NULL "
+            "AND result_expires_at IS NULL) OR "
+            "(result_memory_contract_version IS NOT NULL "
+            "AND result_expires_at IS NOT NULL)) "
+            "AND ((result_previous_lifecycle IS NULL "
+            "AND result_previous_lifecycle_revision IS NULL) OR "
+            "(result_previous_lifecycle IN "
+            "('active', 'closed', 'delete_pending', 'deleted', 'expired') "
+            "AND result_previous_lifecycle_revision > 0))))",
+            name="ck_conv_idempotency_result_snapshot",
+        ),
+        CheckConstraint(
+            "((authorization_app_id IS NULL "
+            "AND authorization_verifier_key_version IS NULL "
+            "AND authorization_verifier_hash IS NULL) OR "
+            "(authorization_app_id IS NOT NULL "
+            "AND authorization_verifier_key_version IS NOT NULL "
+            "AND authorization_verifier_hash IS NOT NULL "
+            "AND length(authorization_verifier_hash) = 64))",
+            name="ck_conv_idempotency_authorization_scope",
+        ),
         Index("ix_conv_idempotency_expiry", "retention_expires_at"),
+        Index(
+            "ix_conv_idempotency_authorized_replay",
+            "organization_id",
+            "authorization_app_id",
+            "operation",
+            "idempotency_key_hash",
+            "authorization_verifier_key_version",
+            "authorization_verifier_hash",
+            postgresql_where=text("authorization_app_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -1665,6 +1731,18 @@ class ConversationIdempotencyRecord(_TimestampMixin, Base):
     scope_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     idempotency_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    authorization_app_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=True,
+    )
+    authorization_verifier_key_version: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    authorization_verifier_hash: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
     status: Mapped[str] = mapped_column(
         String(24),
         nullable=False,
@@ -1691,4 +1769,85 @@ class ConversationIdempotencyRecord(_TimestampMixin, Base):
     safe_result_code: Mapped[str | None] = mapped_column(
         String(64),
         nullable=True,
+    )
+    result_lifecycle: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    result_lifecycle_revision: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    result_memory_contract_version: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    result_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    result_previous_lifecycle: Mapped[str | None] = mapped_column(
+        String(24),
+        nullable=True,
+    )
+    result_previous_lifecycle_revision: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+
+class ConversationSecretReplayRecord(Base):
+    """Short-lived encrypted capability replay payload.
+
+    The raw access grant or purge receipt is never a column in this table.  A
+    record is bound to one idempotency result and removed by its expiry worker.
+    """
+
+    __tablename__ = "conversation_secret_replays"
+    __table_args__ = (
+        UniqueConstraint(
+            "idempotency_record_id",
+            name="uq_conv_secret_replay_idempotency",
+        ),
+        ForeignKeyConstraint(
+            ["idempotency_record_id", "organization_id"],
+            [
+                "conversation_idempotency_records.id",
+                "conversation_idempotency_records.organization_id",
+            ],
+            name="fk_conv_secret_replay_idempotency_org",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "purpose IN ('access_grant', 'purge_receipt') "
+            "AND length(associated_data_digest) = 64",
+            name="ck_conv_secret_replay_fields",
+        ),
+        Index("ix_conv_secret_replays_expiry", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        nullable=False,
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=False,
+    )
+    idempotency_record_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=False,
+    )
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    ciphertext: Mapped[bytes] = mapped_column(BYTEA, nullable=False)
+    key_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    associated_data_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utc_now,
+        server_default=text("now()"),
     )

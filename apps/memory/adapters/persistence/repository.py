@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, func, select, tuple_, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, SessionTransaction
 
+from apps.memory.application.public_lifecycle import (
+    IdempotencyReservation,
+    PublicAppBinding,
+    PublicDeploymentBinding,
+)
 from apps.memory.domain.conversation import (
     AudienceKind,
     ConversationMemoryEntry,
@@ -20,6 +28,7 @@ from apps.memory.domain.conversation import (
     MemoryTurnDispatchJob,
     ProtectedContent,
     ProtectedEntryContent,
+    PurgeStatus,
     RequestIdentity,
     SessionLifecycle,
     TurnStatus,
@@ -31,13 +40,27 @@ from apps.memory.domain.errors import (
     MemoryAdapterUnavailableError,
     StaleRevisionError,
 )
+from apps.memory.domain.public_access import (
+    AccessGrantState,
+    ConversationAccessGrant,
+    ConversationIdempotency,
+    EncryptedSecretReplay,
+    IdempotencyResultSnapshot,
+    IdempotencyStatus,
+)
+from apps.shared.db.models.app import App
 from apps.shared.db.models.conversation_memory import (
+    ConversationAccessGrantRecord,
+    ConversationIdempotencyRecord,
     ConversationMemoryEntryRecord,
     ConversationPurgeJobRecord,
+    ConversationSecretReplayRecord,
     ConversationSessionRecord,
     ConversationTurnRecord,
     MemoryTurnDispatchJobRecord,
 )
+from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +87,16 @@ class _DispatchBaseline:
     attempt_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class _AccessGrantBaseline:
+    state: str
+
+
+@dataclass(frozen=True, slots=True)
+class _IdempotencyBaseline:
+    status: str
+
+
 class SqlAlchemyConversationMemoryRepository:
     """Memory-owned persistence adapter over the shared SQLAlchemy registry."""
 
@@ -81,6 +114,390 @@ class SqlAlchemyConversationMemoryRepository:
         self._dispatch_baselines: dict[
             tuple[uuid.UUID, uuid.UUID], _DispatchBaseline
         ] = {}
+        self._access_grant_baselines: dict[uuid.UUID, _AccessGrantBaseline] = {}
+        self._idempotency_baselines: dict[uuid.UUID, _IdempotencyBaseline] = {}
+
+    def resolve_public_deployment(
+        self,
+        url_slug: str,
+    ) -> PublicDeploymentBinding | None:
+        """Resolve the active public Chatbot binding without a row lock."""
+
+        return self._resolve_public_deployment(url_slug, lock_app=False)
+
+    def lock_public_deployment(
+        self,
+        url_slug: str,
+    ) -> PublicDeploymentBinding | None:
+        """Resolve the active public Chatbot binding and lock its App row."""
+
+        return self._resolve_public_deployment(url_slug, lock_app=True)
+
+    def resolve_public_app(self, url_slug: str) -> PublicAppBinding | None:
+        """Resolve stable App scope without requiring an active deployment."""
+
+        statement = select(App).where(App.url_slug == url_slug)
+        app = _execute(self._session, statement).scalar_one_or_none()
+        if app is None or app.organization_id is None:
+            return None
+        return PublicAppBinding(
+            organization_id=app.organization_id,
+            app_id=app.id,
+        )
+
+    def _resolve_public_deployment(
+        self,
+        url_slug: str,
+        *,
+        lock_app: bool,
+    ) -> PublicDeploymentBinding | None:
+        """Resolve the canonical deployment for one public request boundary.
+
+        ``browser_access_policy`` is intentionally not selected as an API
+        policy.  It remains an iframe CSP boundary owned by ADR-0043.
+        """
+
+        statement = (
+            select(App, Workflow, WorkflowDeployment)
+            .join(Workflow, Workflow.id == App.workflow_id)
+            .join(
+                WorkflowDeployment,
+                WorkflowDeployment.id == App.active_deployment_id,
+            )
+            .where(App.url_slug == url_slug)
+        )
+        if lock_app:
+            statement = statement.with_for_update(of=App)
+        row = _execute(self._session, statement).one_or_none()
+        if row is None:
+            return None
+        app, workflow, deployment = row
+        if (
+            app.organization_id is None
+            or workflow.organization_id is None
+            or app.organization_id != workflow.organization_id
+            or workflow.app_id != app.id
+            or deployment.app_id != app.id
+            or deployment.id != app.active_deployment_id
+            or deployment.type != DeploymentType.CHATBOT
+            or not deployment.is_active
+            or deployment.version < 1
+        ):
+            return None
+        config = deployment.config if isinstance(deployment.config, dict) else {}
+        mapping_version = _safe_config_version(
+            config,
+            "conversation_mapping_version",
+            "mapping-v1",
+        )
+        memory_policy_version = _safe_config_version(
+            config,
+            "memory_policy_version",
+            "memory-v1",
+        )
+        if mapping_version is None or memory_policy_version is None:
+            return None
+        return PublicDeploymentBinding(
+            organization_id=workflow.organization_id,
+            app_id=app.id,
+            workflow_id=workflow.id,
+            deployment_id=deployment.id,
+            deployment_version=deployment.version,
+            mapping_version=mapping_version,
+            memory_policy_version=memory_policy_version,
+            memory_contract_version="conversation-memory-v1",
+            storage_generation=1,
+        )
+
+    def reserve_idempotency(
+        self,
+        record: ConversationIdempotency,
+    ) -> IdempotencyReservation:
+        insert_statement = (
+            pg_insert(ConversationIdempotencyRecord)
+            .values(**_idempotency_values(record))
+            .on_conflict_do_nothing(constraint="uq_conv_idempotency_scope_key")
+            .returning(ConversationIdempotencyRecord.id)
+        )
+        inserted_id = _execute(self._session, insert_statement).scalar_one_or_none()
+        if inserted_id is not None:
+            self._idempotency_baselines[record.id] = _IdempotencyBaseline(
+                status=record.status.value
+            )
+            return IdempotencyReservation(record=record, created=True)
+
+        statement = (
+            select(ConversationIdempotencyRecord)
+            .where(
+                ConversationIdempotencyRecord.organization_id == record.organization_id,
+                ConversationIdempotencyRecord.operation == record.operation,
+                ConversationIdempotencyRecord.scope_digest == record.scope_digest,
+                ConversationIdempotencyRecord.idempotency_key_hash
+                == record.idempotency_key_hash,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        existing = _execute(self._session, statement).scalar_one_or_none()
+        if existing is None:
+            raise MemoryAdapterUnavailableError()
+        if existing.retention_expires_at <= record.created_at:
+            delete_result = _execute(
+                self._session,
+                delete(ConversationIdempotencyRecord)
+                .where(
+                    ConversationIdempotencyRecord.id == existing.id,
+                    ConversationIdempotencyRecord.retention_expires_at
+                    <= record.created_at,
+                )
+                .execution_options(synchronize_session=False),
+            )
+            if delete_result.rowcount != 1:
+                raise MemoryAdapterUnavailableError()
+            replacement_id = _execute(
+                self._session,
+                insert_statement,
+            ).scalar_one_or_none()
+            if replacement_id != record.id:
+                raise MemoryAdapterUnavailableError()
+            self._idempotency_baselines[record.id] = _IdempotencyBaseline(
+                status=record.status.value
+            )
+            return IdempotencyReservation(record=record, created=True)
+        domain = _idempotency_domain(existing)
+        self._idempotency_baselines[domain.id] = _IdempotencyBaseline(
+            status=existing.status
+        )
+        return IdempotencyReservation(record=domain, created=False)
+
+    def find_idempotency(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        operation: str,
+        scope_digest: str,
+        idempotency_key_hash: str,
+        now: datetime,
+    ) -> ConversationIdempotency | None:
+        statement = (
+            select(ConversationIdempotencyRecord)
+            .where(
+                ConversationIdempotencyRecord.organization_id == organization_id,
+                ConversationIdempotencyRecord.operation == operation,
+                ConversationIdempotencyRecord.scope_digest == scope_digest,
+                ConversationIdempotencyRecord.idempotency_key_hash
+                == idempotency_key_hash,
+                ConversationIdempotencyRecord.retention_expires_at > now,
+            )
+            .execution_options(populate_existing=True)
+        )
+        record = _execute(self._session, statement).scalar_one_or_none()
+        return _idempotency_domain(record) if record is not None else None
+
+    def find_authorized_idempotency(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        app_id: uuid.UUID,
+        operation: str,
+        idempotency_key_hash: str,
+        verifier_candidates: tuple[tuple[str, str], ...],
+        now: datetime,
+    ) -> ConversationIdempotency | None:
+        if not verifier_candidates:
+            return None
+        statement = (
+            select(ConversationIdempotencyRecord)
+            .where(
+                ConversationIdempotencyRecord.organization_id == organization_id,
+                ConversationIdempotencyRecord.authorization_app_id == app_id,
+                ConversationIdempotencyRecord.operation == operation,
+                ConversationIdempotencyRecord.idempotency_key_hash
+                == idempotency_key_hash,
+                tuple_(
+                    ConversationIdempotencyRecord.authorization_verifier_key_version,
+                    ConversationIdempotencyRecord.authorization_verifier_hash,
+                ).in_(verifier_candidates),
+                ConversationIdempotencyRecord.retention_expires_at > now,
+            )
+            .execution_options(populate_existing=True)
+        )
+        records = list(_execute(self._session, statement).scalars().all())
+        if len(records) != 1:
+            return None
+        return _idempotency_domain(records[0])
+
+    def save_idempotency(self, record: ConversationIdempotency) -> None:
+        baseline = self._idempotency_baselines.get(record.id)
+        if baseline is None:
+            raise StaleRevisionError()
+        statement = (
+            update(ConversationIdempotencyRecord)
+            .where(
+                ConversationIdempotencyRecord.id == record.id,
+                ConversationIdempotencyRecord.organization_id == record.organization_id,
+                ConversationIdempotencyRecord.status == baseline.status,
+            )
+            .values(**_idempotency_mutable_values(record))
+            .execution_options(synchronize_session=False)
+        )
+        _require_single_row(_execute(self._session, statement))
+        self._idempotency_baselines[record.id] = _IdempotencyBaseline(
+            status=record.status.value
+        )
+
+    def add_access_grant(self, grant: ConversationAccessGrant) -> None:
+        self._session.add(_access_grant_record(grant))
+
+    def lock_access_grant(
+        self,
+        *,
+        verifier_candidates: tuple[tuple[str, str], ...],
+    ) -> ConversationAccessGrant | None:
+        if not verifier_candidates:
+            return None
+        statement = (
+            select(ConversationAccessGrantRecord)
+            .where(
+                tuple_(
+                    ConversationAccessGrantRecord.verifier_key_version,
+                    ConversationAccessGrantRecord.verifier_hash,
+                ).in_(verifier_candidates),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        records = list(_execute(self._session, statement).scalars().all())
+        if len(records) != 1:
+            return None
+        record = records[0]
+        domain = _access_grant_domain(record)
+        self._access_grant_baselines[domain.id] = _AccessGrantBaseline(
+            state=record.state
+        )
+        return domain
+
+    def save_access_grant(self, grant: ConversationAccessGrant) -> None:
+        baseline = self._access_grant_baselines.get(grant.id)
+        if baseline is None:
+            raise StaleRevisionError()
+        statement = (
+            update(ConversationAccessGrantRecord)
+            .where(
+                ConversationAccessGrantRecord.id == grant.id,
+                ConversationAccessGrantRecord.state == baseline.state,
+            )
+            .values(
+                state=grant.state.value,
+                replay_record_reference=grant.replay_record_reference,
+                revoked_at=grant.revoked_at,
+                updated_at=func.now(),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        _require_single_row(_execute(self._session, statement))
+        self._access_grant_baselines[grant.id] = _AccessGrantBaseline(
+            state=grant.state.value
+        )
+
+    def add_secret_replay(self, replay: EncryptedSecretReplay) -> None:
+        self._session.add(_secret_replay_record(replay))
+
+    def get_secret_replay(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        replay_id: uuid.UUID,
+    ) -> EncryptedSecretReplay | None:
+        statement = (
+            select(ConversationSecretReplayRecord)
+            .where(
+                ConversationSecretReplayRecord.organization_id == organization_id,
+                ConversationSecretReplayRecord.id == replay_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        record = _execute(self._session, statement).scalar_one_or_none()
+        return _secret_replay_domain(record) if record is not None else None
+
+    def delete_expired_secret_replays(self, *, now: datetime, limit: int) -> int:
+        statement = (
+            select(ConversationSecretReplayRecord.id)
+            .where(ConversationSecretReplayRecord.expires_at <= now)
+            .order_by(
+                ConversationSecretReplayRecord.expires_at,
+                ConversationSecretReplayRecord.id,
+            )
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        replay_ids = list(_execute(self._session, statement).scalars().all())
+        if not replay_ids:
+            return 0
+        _execute(
+            self._session,
+            delete(ConversationSecretReplayRecord)
+            .where(ConversationSecretReplayRecord.id.in_(replay_ids))
+            .execution_options(synchronize_session=False),
+        )
+        return len(replay_ids)
+
+    def delete_expired_idempotency_records(self, *, now: datetime, limit: int) -> int:
+        statement = (
+            select(ConversationIdempotencyRecord.id)
+            .where(ConversationIdempotencyRecord.retention_expires_at <= now)
+            .order_by(
+                ConversationIdempotencyRecord.retention_expires_at,
+                ConversationIdempotencyRecord.id,
+            )
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        record_ids = list(_execute(self._session, statement).scalars().all())
+        if not record_ids:
+            return 0
+        _execute(
+            self._session,
+            delete(ConversationIdempotencyRecord)
+            .where(ConversationIdempotencyRecord.id.in_(record_ids))
+            .execution_options(synchronize_session=False),
+        )
+        return len(record_ids)
+
+    def find_purge_job(
+        self,
+        *,
+        verifier_candidates: tuple[tuple[str, str], ...],
+    ) -> ConversationPurgeJob | None:
+        if not verifier_candidates:
+            return None
+        statement = select(ConversationPurgeJobRecord).where(
+            tuple_(
+                ConversationPurgeJobRecord.receipt_verifier_key_version,
+                ConversationPurgeJobRecord.receipt_verifier_hash,
+            ).in_(verifier_candidates)
+        )
+        records = list(_execute(self._session, statement).scalars().all())
+        return _purge_domain(records[0]) if len(records) == 1 else None
+
+    def lock_purge_job_by_id(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        purge_job_id: uuid.UUID,
+    ) -> ConversationPurgeJob | None:
+        statement = (
+            select(ConversationPurgeJobRecord)
+            .where(
+                ConversationPurgeJobRecord.organization_id == organization_id,
+                ConversationPurgeJobRecord.id == purge_job_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        record = _execute(self._session, statement).scalar_one_or_none()
+        return _purge_domain(record) if record is not None else None
 
     def add_session(self, session: ConversationSession) -> None:
         self._session.add(_session_record(session))
@@ -687,6 +1104,12 @@ def _purge_record(job: ConversationPurgeJob) -> ConversationPurgeJobRecord:
         organization_id=job.organization_id,
         session_id=job.session_id,
         session_reference_digest=job.session_reference_digest,
+        app_id=job.app_id,
+        deployment_id=job.deployment_id,
+        deployment_version=job.deployment_version,
+        audience_kind=(
+            job.audience_kind.value if job.audience_kind is not None else None
+        ),
         receipt_verifier_hash=job.receipt_verifier_hash,
         receipt_verifier_key_version=job.receipt_verifier_key_version,
         receipt_expires_at=job.receipt_expires_at,
@@ -701,3 +1124,238 @@ def _purge_record(job: ConversationPurgeJob) -> ConversationPurgeJobRecord:
         created_at=job.created_at,
         updated_at=job.updated_at,
     )
+
+
+def _purge_domain(record: ConversationPurgeJobRecord) -> ConversationPurgeJob:
+    return ConversationPurgeJob(
+        id=record.id,
+        organization_id=record.organization_id,
+        session_id=record.session_id,
+        session_reference_digest=record.session_reference_digest,
+        app_id=record.app_id,
+        deployment_id=record.deployment_id,
+        deployment_version=record.deployment_version,
+        audience_kind=(
+            AudienceKind(record.audience_kind)
+            if record.audience_kind is not None
+            else None
+        ),
+        receipt_verifier_hash=record.receipt_verifier_hash,
+        receipt_verifier_key_version=record.receipt_verifier_key_version,
+        receipt_expires_at=record.receipt_expires_at,
+        status=PurgeStatus(record.status),
+        claim_generation=record.claim_generation,
+        attempt_count=record.attempt_count,
+        max_attempts=record.max_attempts,
+        safe_failure_reason=record.safe_failure_reason,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def _access_grant_record(
+    grant: ConversationAccessGrant,
+) -> ConversationAccessGrantRecord:
+    return ConversationAccessGrantRecord(
+        id=grant.id,
+        organization_id=grant.organization_id,
+        session_id=grant.session_id,
+        deployment_id=grant.deployment_id,
+        deployment_version=grant.deployment_version,
+        audience_kind=grant.audience_kind.value,
+        verifier_hash=grant.verifier_hash,
+        verifier_key_version=grant.verifier_key_version,
+        state=grant.state.value,
+        replay_record_reference=grant.replay_record_reference,
+        issued_at=grant.issued_at,
+        expires_at=grant.expires_at,
+        revoked_at=grant.revoked_at,
+        created_at=grant.issued_at,
+        updated_at=grant.issued_at,
+    )
+
+
+def _access_grant_domain(
+    record: ConversationAccessGrantRecord,
+) -> ConversationAccessGrant:
+    return ConversationAccessGrant(
+        id=record.id,
+        organization_id=record.organization_id,
+        session_id=record.session_id,
+        deployment_id=record.deployment_id,
+        deployment_version=record.deployment_version,
+        audience_kind=AudienceKind(record.audience_kind),
+        verifier_hash=record.verifier_hash,
+        verifier_key_version=record.verifier_key_version,
+        state=AccessGrantState(record.state),
+        replay_record_reference=record.replay_record_reference,
+        issued_at=record.issued_at,
+        expires_at=record.expires_at,
+        revoked_at=record.revoked_at,
+    )
+
+
+def _idempotency_values(record: ConversationIdempotency) -> dict[str, object]:
+    return {
+        "id": record.id,
+        "organization_id": record.organization_id,
+        "operation": record.operation,
+        "scope_digest": record.scope_digest,
+        "idempotency_key_hash": record.idempotency_key_hash,
+        "request_fingerprint": record.request_fingerprint,
+        "authorization_app_id": record.authorization_app_id,
+        "authorization_verifier_key_version": record.authorization_verifier_key_version,
+        "authorization_verifier_hash": record.authorization_verifier_hash,
+        "status": record.status.value,
+        "resource_type": record.resource_type,
+        "resource_reference": record.resource_reference,
+        "replay_record_reference": record.replay_record_reference,
+        "secret_replay_expires_at": record.secret_replay_expires_at,
+        "retention_expires_at": record.retention_expires_at,
+        "safe_result_code": record.safe_result_code,
+        **_idempotency_result_snapshot_values(record.result_snapshot),
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+
+
+def _idempotency_domain(
+    record: ConversationIdempotencyRecord,
+) -> ConversationIdempotency:
+    return ConversationIdempotency(
+        id=record.id,
+        organization_id=record.organization_id,
+        operation=record.operation,
+        scope_digest=record.scope_digest,
+        idempotency_key_hash=record.idempotency_key_hash,
+        request_fingerprint=record.request_fingerprint,
+        authorization_app_id=record.authorization_app_id,
+        authorization_verifier_key_version=(record.authorization_verifier_key_version),
+        authorization_verifier_hash=record.authorization_verifier_hash,
+        status=IdempotencyStatus(record.status),
+        resource_type=record.resource_type,
+        resource_reference=record.resource_reference,
+        replay_record_reference=record.replay_record_reference,
+        secret_replay_expires_at=record.secret_replay_expires_at,
+        retention_expires_at=record.retention_expires_at,
+        safe_result_code=record.safe_result_code,
+        result_snapshot=_idempotency_result_snapshot_domain(record),
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def _idempotency_mutable_values(
+    record: ConversationIdempotency,
+) -> dict[str, object]:
+    return {
+        "status": record.status.value,
+        "resource_type": record.resource_type,
+        "resource_reference": record.resource_reference,
+        "replay_record_reference": record.replay_record_reference,
+        "secret_replay_expires_at": record.secret_replay_expires_at,
+        "retention_expires_at": record.retention_expires_at,
+        "safe_result_code": record.safe_result_code,
+        **_idempotency_result_snapshot_values(record.result_snapshot),
+        "updated_at": record.updated_at,
+    }
+
+
+def _idempotency_result_snapshot_values(
+    snapshot: IdempotencyResultSnapshot | None,
+) -> dict[str, object]:
+    return {
+        "result_lifecycle": snapshot.lifecycle.value if snapshot is not None else None,
+        "result_lifecycle_revision": (
+            snapshot.lifecycle_revision if snapshot is not None else None
+        ),
+        "result_memory_contract_version": (
+            snapshot.memory_contract_version if snapshot is not None else None
+        ),
+        "result_expires_at": snapshot.expires_at if snapshot is not None else None,
+        "result_previous_lifecycle": (
+            snapshot.previous_lifecycle.value
+            if snapshot is not None and snapshot.previous_lifecycle is not None
+            else None
+        ),
+        "result_previous_lifecycle_revision": (
+            snapshot.previous_lifecycle_revision if snapshot is not None else None
+        ),
+    }
+
+
+def _idempotency_result_snapshot_domain(
+    record: ConversationIdempotencyRecord,
+) -> IdempotencyResultSnapshot | None:
+    values = (
+        record.result_lifecycle,
+        record.result_lifecycle_revision,
+        record.result_memory_contract_version,
+        record.result_expires_at,
+        record.result_previous_lifecycle,
+        record.result_previous_lifecycle_revision,
+    )
+    if all(value is None for value in values):
+        return None
+    if record.result_lifecycle is None or record.result_lifecycle_revision is None:
+        raise MemoryAdapterUnavailableError()
+    try:
+        return IdempotencyResultSnapshot(
+            lifecycle=SessionLifecycle(record.result_lifecycle),
+            lifecycle_revision=record.result_lifecycle_revision,
+            memory_contract_version=record.result_memory_contract_version,
+            expires_at=record.result_expires_at,
+            previous_lifecycle=(
+                SessionLifecycle(record.result_previous_lifecycle)
+                if record.result_previous_lifecycle is not None
+                else None
+            ),
+            previous_lifecycle_revision=record.result_previous_lifecycle_revision,
+        )
+    except (TypeError, ValueError):
+        raise MemoryAdapterUnavailableError() from None
+
+
+def _secret_replay_record(
+    replay: EncryptedSecretReplay,
+) -> ConversationSecretReplayRecord:
+    return ConversationSecretReplayRecord(
+        id=replay.id,
+        organization_id=replay.organization_id,
+        idempotency_record_id=replay.idempotency_record_id,
+        purpose=replay.purpose,
+        ciphertext=replay.ciphertext,
+        key_version=replay.key_version,
+        associated_data_digest=replay.associated_data_digest,
+        expires_at=replay.expires_at,
+        created_at=replay.created_at,
+    )
+
+
+def _secret_replay_domain(
+    record: ConversationSecretReplayRecord,
+) -> EncryptedSecretReplay:
+    return EncryptedSecretReplay(
+        id=record.id,
+        organization_id=record.organization_id,
+        idempotency_record_id=record.idempotency_record_id,
+        purpose=record.purpose,
+        ciphertext=bytes(record.ciphertext),
+        key_version=record.key_version,
+        associated_data_digest=record.associated_data_digest,
+        expires_at=record.expires_at,
+        created_at=record.created_at,
+    )
+
+
+def _safe_config_version(
+    config: dict[str, object],
+    name: str,
+    default: str,
+) -> str | None:
+    value = config.get(name, default)
+    if not isinstance(value, str) or not value:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}", value):
+        return None
+    return value

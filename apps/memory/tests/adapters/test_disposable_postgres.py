@@ -21,6 +21,7 @@ from apps.memory.adapters.persistence.repository import (
     SqlAlchemyMemoryUnitOfWork,
 )
 from apps.memory.adapters.persistence.readiness import (
+    REQUIRED_MEMORY_SCHEMA,
     check_memory_schema_readiness,
 )
 from apps.memory.application.lifecycle import (
@@ -41,8 +42,11 @@ from apps.memory.domain.conversation import (
     ProtectedEntryContent,
 )
 from apps.memory.domain.errors import MemoryDomainError
+from apps.memory.domain.public_access import ConversationIdempotency
+from apps.shared.db.models.audit_log import AuditEventOutbox
 from apps.shared.db.models.conversation_memory import (
     ConversationAccessGrantRecord,
+    ConversationIdempotencyRecord,
     ConversationMemoryEntryRecord,
     ConversationSessionRecord,
     ConversationTurnRecord,
@@ -74,6 +78,40 @@ RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_memory"
 PARENT_REVISION = "aa0b1c2d3e4f"
 MEMORY_MERGE_REVISION = "ac2d3e4f5061"
+PUBLIC_CONVERSATION_PARENT_REVISION = "f4a5b6c7d8e9"
+PUBLIC_CONVERSATION_REPLAY_REVISION = "ac1d2e3f4a50"
+PUBLIC_CONVERSATION_SCOPE_REVISION = "ad2e3f4a5b61"
+PUBLIC_CONVERSATION_RESULT_SNAPSHOT_REVISION = "ae3f4a5b6c72"
+PUBLIC_CONVERSATION_RESULT_SNAPSHOT_COLUMNS = {
+    "result_lifecycle",
+    "result_lifecycle_revision",
+    "result_memory_contract_version",
+    "result_expires_at",
+    "result_previous_lifecycle",
+    "result_previous_lifecycle_revision",
+}
+PUBLIC_CONVERSATION_AUTHORIZATION_SCOPE_COLUMNS = {
+    "authorization_app_id",
+    "authorization_verifier_key_version",
+    "authorization_verifier_hash",
+}
+POST_FOUNDATION_COLUMNS = {
+    "conversation_purge_jobs": {
+        "deployment_id",
+        "deployment_version",
+        "audience_kind",
+        "app_id",
+    },
+    "conversation_idempotency_records": (
+        PUBLIC_CONVERSATION_RESULT_SNAPSHOT_COLUMNS
+        | PUBLIC_CONVERSATION_AUTHORIZATION_SCOPE_COLUMNS
+    ),
+}
+FOUNDATION_MEMORY_SCHEMA = {
+    table_name: columns - POST_FOUNDATION_COLUMNS.get(table_name, set())
+    for table_name, columns in REQUIRED_MEMORY_SCHEMA.items()
+    if table_name != "conversation_secret_replays"
+}
 
 
 def _run_alembic(
@@ -109,6 +147,36 @@ def _run_alembic(
             "alembic command failed; stdout/stderr omitted to avoid leaking "
             "local configuration"
         )
+
+
+def _assert_alembic_fails(
+    revision: str,
+    *,
+    operation: str,
+    database: str,
+    config: DisposablePostgresConfig,
+) -> None:
+    environment = config.subprocess_environment(database=database, root_dir=ROOT_DIR)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            "apps/shared/alembic.ini",
+            operation,
+            revision,
+        ],
+        cwd=ROOT_DIR,
+        env=environment,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=180,
+        check=False,
+    )
+    assert result.returncode != 0
 
 
 def _enable_vector_extension(database: str, config: DisposablePostgresConfig) -> None:
@@ -370,7 +438,13 @@ def test_memory_migration_uow_and_concurrent_start_turn_contracts():
             # migration 때문에 Memory rollback과 무관하게 실패한다.
             _assert_legacy_execution_survives(engine, ids)
             with Session(engine) as db:
-                assert check_memory_schema_readiness(db).ready is True
+                assert (
+                    check_memory_schema_readiness(
+                        db,
+                        required_schema=FOUNDATION_MEMORY_SCHEMA,
+                    ).ready
+                    is True
+                )
 
             binding_session_id = uuid.uuid4()
             _create_session(engine, ids, binding_session_id)
@@ -569,6 +643,166 @@ def test_memory_migration_uow_and_concurrent_start_turn_contracts():
                 config=config,
             )
             _assert_legacy_execution_survives(engine, ids)
+
+            # Verify the MBA-317 additive revision against its actual current
+            # parent without forcing unrelated later revisions through the
+            # Memory foundation rollback boundary above.
+            _run_alembic(
+                PUBLIC_CONVERSATION_PARENT_REVISION,
+                operation="upgrade",
+                database=database,
+                config=config,
+            )
+            _run_alembic(
+                PUBLIC_CONVERSATION_REPLAY_REVISION,
+                operation="upgrade",
+                database=database,
+                config=config,
+            )
+            _run_alembic(
+                PUBLIC_CONVERSATION_SCOPE_REVISION,
+                operation="upgrade",
+                database=database,
+                config=config,
+            )
+            _assert_legacy_execution_survives(engine, ids)
+            with Session(engine) as db:
+                readiness = check_memory_schema_readiness(db)
+                assert readiness.ready is False
+                assert set(
+                    readiness.missing_columns.get(
+                        "conversation_purge_jobs",
+                        (),
+                    )
+                ) == {"app_id"}
+                assert set(
+                    readiness.missing_columns.get(
+                        "conversation_idempotency_records",
+                        (),
+                    )
+                ) == (
+                    PUBLIC_CONVERSATION_RESULT_SNAPSHOT_COLUMNS
+                    | PUBLIC_CONVERSATION_AUTHORIZATION_SCOPE_COLUMNS
+                )
+
+            _run_alembic(
+                PUBLIC_CONVERSATION_RESULT_SNAPSHOT_REVISION,
+                operation="upgrade",
+                database=database,
+                config=config,
+            )
+            with Session(engine) as db:
+                readiness = check_memory_schema_readiness(db)
+                assert readiness.ready is False
+                assert set(
+                    readiness.missing_columns.get(
+                        "conversation_purge_jobs",
+                        (),
+                    )
+                ) == {"app_id"}
+                assert (
+                    set(
+                        readiness.missing_columns.get(
+                            "conversation_idempotency_records",
+                            (),
+                        )
+                    )
+                    == PUBLIC_CONVERSATION_AUTHORIZATION_SCOPE_COLUMNS
+                )
+
+            # The authorization-scope migration is the immediate additive
+            # successor. Advance relatively so this contract does not pin a
+            # repository-specific revision identifier.
+            _run_alembic(
+                "+1",
+                operation="upgrade",
+                database=database,
+                config=config,
+            )
+            with Session(engine) as db:
+                assert check_memory_schema_readiness(db).ready is True
+                repository = SqlAlchemyConversationMemoryRepository(db)
+                replacement_now = datetime.now(timezone.utc)
+                expired_now = replacement_now - timedelta(days=2)
+                scope_digest = "9" * 64
+                key_hash = "8" * 64
+                expired = ConversationIdempotency.pending(
+                    record_id=uuid.uuid4(),
+                    organization_id=ids["organization"],
+                    operation="conversation.create",
+                    scope_digest=scope_digest,
+                    idempotency_key_hash=key_hash,
+                    request_fingerprint="7" * 64,
+                    retention_expires_at=expired_now + timedelta(days=1),
+                    now=expired_now,
+                )
+                assert repository.reserve_idempotency(expired).created is True
+                db.commit()
+
+                replacement = ConversationIdempotency.pending(
+                    record_id=uuid.uuid4(),
+                    organization_id=ids["organization"],
+                    operation="conversation.create",
+                    scope_digest=scope_digest,
+                    idempotency_key_hash=key_hash,
+                    request_fingerprint="6" * 64,
+                    retention_expires_at=replacement_now + timedelta(days=1),
+                    now=replacement_now,
+                )
+                reservation = repository.reserve_idempotency(replacement)
+                assert reservation.created is True
+                assert reservation.record.id == replacement.id
+                db.commit()
+
+                persisted = list(
+                    db.scalars(
+                        select(ConversationIdempotencyRecord).where(
+                            ConversationIdempotencyRecord.organization_id
+                            == ids["organization"],
+                            ConversationIdempotencyRecord.operation
+                            == "conversation.create",
+                            ConversationIdempotencyRecord.scope_digest == scope_digest,
+                            ConversationIdempotencyRecord.idempotency_key_hash
+                            == key_hash,
+                        )
+                    ).all()
+                )
+                assert len(persisted) == 1
+                assert persisted[0].id == replacement.id
+                assert persisted[0].request_fingerprint == "6" * 64
+
+                public_outbox = AuditEventOutbox(
+                    payload={
+                        "id": str(uuid.uuid4()),
+                        "actor_id": None,
+                        "actor_type": "public",
+                        "action": "memory.session.created",
+                    },
+                    idempotency_key=f"memory-public-{uuid.uuid4()}",
+                )
+                db.add(public_outbox)
+                db.commit()
+
+            _assert_alembic_fails(
+                PUBLIC_CONVERSATION_PARENT_REVISION,
+                operation="downgrade",
+                database=database,
+                config=config,
+            )
+            with Session(engine) as db:
+                db.execute(text("DELETE FROM audit_event_outbox"))
+                db.commit()
+
+            _run_alembic(
+                PUBLIC_CONVERSATION_PARENT_REVISION,
+                operation="downgrade",
+                database=database,
+                config=config,
+            )
+            with Session(engine) as db:
+                readiness = check_memory_schema_readiness(db)
+                assert readiness.ready is False
+                assert "conversation_secret_replays" in readiness.missing_tables
         finally:
             engine.dispose()
     except OperationalError:

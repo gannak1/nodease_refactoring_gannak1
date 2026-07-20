@@ -16,6 +16,7 @@ from apps.shared.db.models.conversation_memory import (
     ConversationMemoryEntryRecord,
     ConversationMemorySummaryRecord,
     ConversationPurgeJobRecord,
+    ConversationSecretReplayRecord,
     ConversationSessionRecord,
     ConversationTurnRecord,
     MemoryContextLeaseRecord,
@@ -27,7 +28,6 @@ from apps.shared.db.models.conversation_memory import (
     MemorySummaryGenerationJobRecord,
     MemoryTurnDispatchJobRecord,
 )
-
 
 ROOT = Path(__file__).resolve().parents[4]
 
@@ -47,6 +47,7 @@ MODELS = {
     MemoryContextProviderAttemptRecord: "memory_context_provider_attempts",
     ConversationPurgeJobRecord: "conversation_purge_jobs",
     ConversationIdempotencyRecord: "conversation_idempotency_records",
+    ConversationSecretReplayRecord: "conversation_secret_replays",
 }
 
 
@@ -273,7 +274,69 @@ def test_access_grant_and_purge_receipt_never_define_raw_secret_columns():
     assert {
         "receipt_verifier_hash",
         "receipt_verifier_key_version",
+        "app_id",
+        "deployment_id",
+        "deployment_version",
+        "audience_kind",
     } <= set(ConversationPurgeJobRecord.__table__.c.keys())
+
+
+def test_secret_replay_is_encrypted_and_bound_to_one_idempotency_result():
+    columns = ConversationSecretReplayRecord.__table__.c
+    assert {
+        "raw_token",
+        "token",
+        "raw_receipt",
+        "receipt",
+        "secret",
+        "value",
+    }.isdisjoint(columns.keys())
+    assert isinstance(columns.ciphertext.type, BYTEA)
+    assert {
+        "idempotency_record_id",
+        "key_version",
+        "associated_data_digest",
+        "expires_at",
+    } <= set(columns.keys())
+    assert "uq_conv_secret_replay_idempotency" in _constraint_names(
+        ConversationSecretReplayRecord,
+        UniqueConstraint,
+    )
+    assert ("idempotency_record_id", "organization_id") in _composite_foreign_keys(
+        ConversationSecretReplayRecord
+    )
+
+
+def test_idempotency_record_stores_only_typed_safe_response_snapshot_fields():
+    columns = ConversationIdempotencyRecord.__table__.c
+    assert {
+        "result_lifecycle",
+        "result_lifecycle_revision",
+        "result_memory_contract_version",
+        "result_expires_at",
+        "result_previous_lifecycle",
+        "result_previous_lifecycle_revision",
+    } <= set(columns.keys())
+    assert {
+        "access_token",
+        "purge_receipt",
+        "response_payload",
+        "raw_response",
+    }.isdisjoint(columns.keys())
+
+    assert {
+        "authorization_app_id",
+        "authorization_verifier_key_version",
+        "authorization_verifier_hash",
+    } <= set(columns.keys())
+    assert "ck_conv_idempotency_authorization_scope" in _constraint_names(
+        ConversationIdempotencyRecord,
+        CheckConstraint,
+    )
+    assert "ck_conv_purge_scope_snapshot" in _constraint_names(
+        ConversationPurgeJobRecord,
+        CheckConstraint,
+    )
 
 
 def test_entry_and_summary_dependencies_preserve_composite_tenant_scope():
@@ -305,6 +368,7 @@ def test_operational_records_are_content_free_and_use_fencing_versions():
         MemoryContextProviderAttemptRecord,
         ConversationPurgeJobRecord,
         ConversationIdempotencyRecord,
+        ConversationSecretReplayRecord,
     )
     for model in operational:
         columns = model.__table__.c
@@ -352,11 +416,117 @@ def test_memory_migration_is_additive_reversible_and_descends_from_current_head(
     assert 'name="uq_conv_sessions_grant_binding"' in source
     assert 'name="fk_conv_grants_session_binding"' in source
     for table_name in MODELS.values():
+        if table_name == "conversation_secret_replays":
+            continue
         assert f'"{table_name}"' in source
         assert f'op.drop_table("{table_name}")' in source
     assert "workflow_runs" not in source
     assert "workflow_node_runs" not in source
     assert "op.drop_column" not in source
+
+
+def test_public_capability_replay_migration_contract():
+    migration = (
+        ROOT
+        / "apps"
+        / "shared"
+        / "alembic"
+        / "versions"
+        / "ac1d2e3f4a50_add_public_conversation_capability_replay.py"
+    )
+    source = migration.read_text(encoding="utf-8")
+
+    assert '"conversation_secret_replays"' in source
+    assert "uq_conv_idempotency_id_org" in source
+    assert "ALTER TYPE audit_actor_type ADD VALUE IF NOT EXISTS 'public'" in source
+    assert "audit_event_outbox" in source
+    assert "payload ->> 'actor_type' = 'public'" in source
+    assert source.index("audit_event_outbox") < source.index(
+        'op.drop_table("conversation_secret_replays")'
+    )
+    assert "raw_token" not in source
+
+
+def test_public_purge_scope_snapshot_migration_extends_the_replay_revision():
+    migration = (
+        ROOT
+        / "apps"
+        / "shared"
+        / "alembic"
+        / "versions"
+        / "ad2e3f4a5b61_add_public_purge_scope_snapshot.py"
+    )
+    source = migration.read_text(encoding="utf-8")
+
+    assert 'revision: str = "ad2e3f4a5b61"' in source
+    assert 'down_revision: str | Sequence[str] | None = "ac1d2e3f4a50"' in source
+    for column in ("deployment_id", "deployment_version", "audience_kind"):
+        assert f'sa.Column("{column}"' in source
+        assert f'op.drop_column("conversation_purge_jobs", "{column}")' in source
+    assert "ck_conv_purge_scope_snapshot" in source
+
+
+def test_public_idempotency_result_snapshot_migration_is_additive_and_reversible():
+    migration = (
+        ROOT
+        / "apps"
+        / "shared"
+        / "alembic"
+        / "versions"
+        / "ae3f4a5b6c72_add_public_idempotency_result_snapshot.py"
+    )
+    source = migration.read_text(encoding="utf-8")
+
+    assert 'revision: str = "ae3f4a5b6c72"' in source
+    assert 'down_revision: str | Sequence[str] | None = "ad2e3f4a5b61"' in source
+    for column in (
+        "result_lifecycle",
+        "result_lifecycle_revision",
+        "result_memory_contract_version",
+        "result_expires_at",
+        "result_previous_lifecycle",
+        "result_previous_lifecycle_revision",
+    ):
+        assert f'sa.Column("{column}"' in source
+        assert (
+            f'op.drop_column("conversation_idempotency_records", "{column}")'
+            in source
+        )
+    assert "access_token" not in source
+    assert "purge_receipt" not in source
+
+
+def test_public_replay_authorization_scope_migration_is_additive_and_reversible():
+    migrations = list(
+        (
+            ROOT
+            / "apps"
+            / "shared"
+            / "alembic"
+            / "versions"
+        ).glob("*_add_public_replay_authorization_scope.py")
+    )
+
+    assert len(migrations) == 1
+    source = migrations[0].read_text(encoding="utf-8")
+    compact_source = "".join(source.split())
+    for table, columns in {
+        "conversation_purge_jobs": ("app_id",),
+        "conversation_idempotency_records": (
+            "authorization_app_id",
+            "authorization_verifier_key_version",
+            "authorization_verifier_hash",
+        ),
+    }.items():
+        for column in columns:
+            assert f'sa.Column("{column}"' in compact_source
+            assert f'op.drop_column("{table}","{column}"' in compact_source
+    assert "ck_conv_purge_scope_snapshot" in source
+    assert "ck_conv_idempotency_authorization_scope" in source
+    assert "ix_conv_idempotency_authorized_replay" in source
+    assert "down_revision ==" not in source
+    assert "AS grant" not in source
+    assert "AS access_grant" in source
 
 
 class _Inspector:
@@ -388,3 +558,37 @@ def test_schema_readiness_requires_every_foundation_table_and_column():
     assert result.ready is False
     assert result.missing_tables == ["memory_context_leases"]
     assert result.reason is None
+
+
+def test_schema_readiness_requires_public_idempotency_result_snapshot_columns():
+    snapshot_columns = {
+        "result_lifecycle",
+        "result_lifecycle_revision",
+        "result_memory_contract_version",
+        "result_expires_at",
+        "result_previous_lifecycle",
+        "result_previous_lifecycle_revision",
+    }
+
+    assert snapshot_columns <= REQUIRED_MEMORY_SCHEMA[
+        "conversation_idempotency_records"
+    ]
+    assert snapshot_columns.isdisjoint(REQUIRED_MEMORY_SCHEMA["conversation_turns"])
+
+
+def test_schema_readiness_requires_stable_public_replay_scope_columns():
+    assert "app_id" in REQUIRED_MEMORY_SCHEMA["conversation_purge_jobs"]
+    assert {
+        "authorization_app_id",
+        "authorization_verifier_key_version",
+        "authorization_verifier_hash",
+    } <= REQUIRED_MEMORY_SCHEMA["conversation_idempotency_records"]
+
+    schema = {
+        name: set(columns) for name, columns in REQUIRED_MEMORY_SCHEMA.items()
+    }
+    schema["conversation_purge_jobs"].remove("app_id")
+    result = check_memory_schema_readiness_with_inspector(_Inspector(schema))
+
+    assert result.ready is False
+    assert result.missing_columns == {"conversation_purge_jobs": ["app_id"]}

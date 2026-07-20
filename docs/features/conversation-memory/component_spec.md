@@ -1,6 +1,6 @@
 # Conversation Memory Component Specification
 
-Status: Draft
+Status: Implemented public lifecycle foundation; runtime follow-up pending
 
 ## Architecture
 
@@ -26,7 +26,8 @@ FastAPI request/response, Celery task, SQLAlchemy expression와 provider SDK는 
 
 ## Session Surface Composition
 
-- 초기 Gateway composition은 public Chatbot adapter만 Conversation Session create/run/lifecycle port에 연결한다.
+- MBA-317 Gateway composition은 public Chatbot adapter를 Conversation Session create/close/reset/delete/transcript/purge-status port에 연결한다. public run/turn dispatch는 MBA-318 전 intentionally dormant이며 root-level `conversation` envelope을 fail-closed한다.
+- `PublicConversationCorsBoundaryMiddleware`는 public route prefix의 outer transport boundary를 소유한다. Endpoint 진입 전 dependency/body validation과 router/preflight 오류를 포함한 모든 응답에 `Cache-Control: no-store`, `Referrer-Policy: no-referrer`를 적용하고 전역 `Access-Control-*` header와 `Vary: Origin`을 제거한다.
 - Authenticated internal Chatbot adapter는 별도 access policy와 route/CSRF/session namespace 계약이 구현된 뒤 연결하는 후속 target이다.
 - Workflow Editor test adapter는 일반 test execution만 수행하고 Conversation Session port를 호출하지 않는다. Editor session은 별도 feature/security contract 전까지 composition allowlist에 등록하지 않는다.
 - Schedule, webhook, API batch와 subworkflow가 임의 public/authenticated adapter를 재사용해 session을 만들 수 없다.
@@ -42,7 +43,11 @@ apps/memory/
     ports.py
     lifecycle.py
     dispatch.py
+    public_lifecycle.py
   adapters/
+    admission.py
+    audit.py
+    security.py
     persistence/
       repository.py
       readiness.py
@@ -76,7 +81,7 @@ SQLAlchemy persistence model은 기존 Alembic metadata registry와의 호환을
 
 Persistence FK는 aggregate ID만 단독 신뢰하지 않고 가능한 모든 Memory-owned relation에 organization/session scope를 포함한다. Active Turn과 Purge tombstone처럼 대상 삭제 시 nullable reference만 `SET NULL`로 보존해야 하는 relation은 단일 `SET NULL` FK와 deferred composite scope FK를 함께 사용해 삭제 보존과 tenant 무결성을 동시에 유지한다.
 
-`StartTurn`은 single-active-turn claim, Turn, TurnDispatchJob과 required outbox가 함께 존재해야 하므로 명시적 cross-aggregate UoW다. `CompleteTurn`은 Turn terminal 전이, Session active-turn 해제/content revision, final entry/projection 승격과 required outbox를 같은 UoW에 둔다. Reset의 old close + new session/grant, Delete의 tombstone + grant revoke + purge job/outbox도 접근 차단 유실을 막는 lifecycle UoW다. 이 예외를 generic multi-aggregate transaction service로 확장하지 않는다. Summary 상태 전이는 각 root의 version/CAS와 process manager로 조정한다.
+`StartTurn`은 single-active-turn claim, Turn, TurnDispatchJob과 required outbox가 함께 존재해야 하므로 명시적 cross-aggregate UoW다. `CompleteTurn`은 Turn terminal 전이, Session active-turn 해제/content revision, final entry/projection 승격과 required outbox를 같은 UoW에 둔다. MBA-317의 Reset old close + old grant revoke + new session/grant/replay, Delete tombstone + grant revoke + purge job/replay/audit outbox도 하나의 lifecycle UoW다. 이 예외를 generic multi-aggregate transaction service로 확장하지 않는다. Summary 상태 전이는 각 root의 version/CAS와 process manager로 조정한다.
 
 ### ConversationSession Aggregate
 
@@ -112,6 +117,8 @@ Public session bearer capability의 server-side hash와 lifecycle을 관리한�
 - idempotency/replay record reference
 
 Authenticated session은 Access Grant가 아니라 current authentication/authorization과 session subject binding으로 접근한다.
+
+Public lifecycle composition은 명시적 feature activation boundary다. 기본 배포는 비활성이고, 활성화 시 실제 DB introspection으로 필요한 Memory table·column capability를 확인한 뒤 capability verifier, replay encryption, admission HMAC의 독립 key material, 승인된 backup erasure/no-backup mode와 physical purge worker readiness를 startup에서 함께 검증한다. Schema readiness는 특정 Alembic revision이나 현재 head와의 문자열 일치가 아니라 이 surface가 소비하는 capability로 판정한다. Capability와 replay keyring은 active+previous 최대 두 개로 제한하고 새 verifier/ciphertext는 active key만 사용한다. 기존 grant/receipt와 bounded replay ciphertext는 stored key version에 맞는 previous key로 각각 원래 expiry/TTL까지만 검증·복호화한다. Keyring 안과 세 용도 전체에서 하나의 material을 재사용하면 fail-closed한다. Schema introspection 실패, 누락되거나 재사용된 설정과 worker 미준비를 요청 시점의 임시 adapter 오류로 늦추지 않는다. Network admission은 Password Login·Connector와 같은 trusted-proxy resolver를 사용한다. 설정된 trusted proxy peer에서만 forwarded chain을 해석하고 direct/untrusted peer는 transport address를 canonical network로 정규화하며 unknown identity는 mutation 전에 fail-closed한다.
 
 ### ConversationTurn
 
@@ -246,6 +253,7 @@ Main provider usage와 `llm.call` 감사는 기존 LLM/Workflow 경계가 소유
 Delete tombstone 뒤 content-bearing record를 지우고 operational record를 content-free bounded 상태로 정리하는 durable process다.
 
 - purge request/session opaque reference
+- organization, deployment ID/version과 audience의 durable scope snapshot. Session FK가 `SET NULL`된 뒤에도 public receipt 검증에 사용
 - pending/running/completed/completed_with_hold/retryable_failure/terminal_failure 상태
 - monotonic claim generation, cursor, attempt와 next-attempt timestamp
 - legal-hold/backup erasure policy reference와 safe terminal reason
@@ -260,9 +268,11 @@ Delete tombstone 뒤 content-bearing record를 지우고 operational record를 c
 
 Legal hold는 runtime/session 접근을 되살리지 않는다. 보존이 강제된 content는 runtime query와 provider context에서 분리된 compliance boundary에 격리하고 public status에는 hold의 내부 사유를 노출하지 않는다. Purge receipt는 content access가 아니라 job status만 허용한다.
 
-Public purge는 발급 후 7일 안에 completed/completed_with_hold/terminal_failure 중 하나로 닫는다. Retryable failure가 7일을 넘으면 dead-letter와 운영 alert를 남기고 terminal failure로 승격한다. Receipt는 terminal 후 최소 24시간, 발급 후 최대 8일까지 유효하다. Legal hold는 compliance 격리가 durable해진 시점에 completed_with_hold로 terminal 처리하며 hold 해제까지 public job을 running으로 유지하지 않는다. `completed_with_hold`와 `terminal_failure`에는 `memory.session.purged`를 만들지 않는다. Hold 해제 후 별도 compliance erasure process가 실제 삭제를 완료한 시점에만 physical purge complete를 기록하고 public terminal status/receipt는 재개하지 않는다.
+Public purge는 발급 후 7일 안에 completed/completed_with_hold/terminal_failure 중 하나로 닫는다. Retryable failure가 7일을 넘으면 dead-letter와 운영 alert를 남기고 terminal failure로 승격한다. Receipt는 terminal 후 최소 24시간, 발급 후 최대 8일까지 유효하다. V1의 발급 시점 고정 receipt expiry는 정확히 8일이며 더 짧은 configuration을 허용하지 않는다. Legal hold는 compliance 격리가 durable해진 시점에 completed_with_hold로 terminal 처리하며 hold 해제까지 public job을 running으로 유지하지 않는다. `completed_with_hold`와 `terminal_failure`에는 `memory.session.purged`를 만들지 않는다. Hold 해제 후 별도 compliance erasure process가 실제 삭제를 완료한 시점에만 physical purge complete를 기록하고 public terminal status/receipt는 재개하지 않는다.
 
 `completed`는 configured content-bearing live store/cache, conversation access-token replay와 backup/export retention contract가 삭제 또는 승인된 irreversible crypto-erasure marker를 모두 반환한 경우에만 허용한다. 위 표의 최소 purge-control tombstone, receipt verifier와 encrypted delete-response replay만 정해진 TTL/receipt expiry까지 예외로 남길 수 있으며 raw session content 접근에는 사용할 수 없다. Unknown/partial marker는 낙관적으로 완료 처리하지 않는다.
+
+MBA-317은 `conversation_idempotency_records.retention_expires_at`과 `conversation_secret_replays.expires_at` 기준의 Memory-owned periodic retention task를 제공한다. Gateway와 Log System runtime image는 이 업무 모듈을 import할 수 있도록 `apps/memory`를 포함한다. Helm의 기본 활성 singleton Beat는 shared Celery schedule을 발행하고 Log worker queue는 task 실행 host로 소비할 뿐, 정책 소유자는 Memory다. Task는 1분마다 만료 idempotency parent와 더 짧은 TTL의 replay child에 각각 최대 500개의 독립된 logical candidate quota를 보장한다. 같은 transaction에서 parent를 `FOR UPDATE SKIP LOCKED`로 삭제해 FK cascade로 종속 replay와 uniqueness claim을 함께 제거한 뒤, parent backlog와 무관하게 replay child도 별도 `FOR UPDATE SKIP LOCKED` quota로 삭제한다. 이는 database backup의 즉시 crypto-erasure를 증명하지 않는다. Session/Turn/Summary를 지우고 purge terminal marker를 만드는 physical purge worker는 여전히 MBA-320 범위이므로 표준 배포의 `MEMORY_PUBLIC_PURGE_WORKER_READY`는 false다. 승인된 external crypto-erasure/database-backup 미사용 mode와 실제 worker readiness가 모두 확인되기 전에는 public lifecycle activation을 거부한다.
 
 ## Application Use Cases
 
@@ -344,7 +354,9 @@ Window-only path는 read-only다. Summary path는 generation job, budget reserva
 - Access Grant replacement/revoke
 - Source invalidation/revalidation
 
-Public close는 session lifecycle에서 current grant의 사용 범위를 transcript-only로 제한하되 새 grant issue audit을 만들지 않는다. Reset은 old grant를 즉시 revoke하고 새 session/grant를 원자 발급하며, delete는 old grant를 즉시 revoke한다. 이는 grace rotation이 아니며 delete status는 별도 purge receipt가 소유한다.
+Public close는 session lifecycle에서 current grant의 사용 범위를 transcript-only로 제한하되 새 grant issue audit을 만들지 않는다. Transcript-only grant는 run/reset에는 사용할 수 없지만 privacy delete에는 사용할 수 있다. Reset은 old grant를 즉시 revoke하고 새 session/grant를 원자 발급하며, delete는 active 또는 transcript-only old grant를 즉시 revoke한다. 이는 grace rotation이 아니며 delete status는 별도 purge receipt가 소유한다.
+
+Close/reset/delete는 짧은 non-locking DB preflight에서 token verifier, immutable deployment/grant/session scope와 exact existing idempotency를 확인하고 transaction을 해제한다. Transcript와 public deployment lookup 같은 read-only 경로도 App row를 잠그지 않는다. 새 logical request만 Redis admission을 수행하고, 같은 operation/scope/idempotency key/fingerprint의 concurrent retry는 HMAC request marker로 budget을 한 번만 소비한다. Admission 완료 뒤 새 server time을 취득한 mutation transaction은 App row를 명시적으로 잠그고 current binding, grant state, session expiry와 idempotency reservation을 다시 검증하므로 대기 중 발생한 revoke/expiry/redeploy race를 fail-closed한다. 일치하는 completed delete record는 Grant/Session 물리 삭제 뒤에도 stable App과 versioned access-token verifier에 결합된 bounded authorization tombstone으로 식별하며, 다른 token·App·fingerprint에는 resource-hiding으로 실패한다. Secret exact replay는 필요한 purge/replay row lock을 모두 획득한 뒤 중앙 replay helper가 fresh clock으로 idempotency parent와 encrypted child의 expiry를 다시 검증한다. 따라서 request-start timestamp는 잠금 대기로 이미 지난 replay window를 되살리지 못한다. Bounded response replay는 최초 성공 시점의 lifecycle/revision, contract/expiry와 필요한 previous lifecycle/revision만 typed nullable column으로 저장한 content-free snapshot을 사용한다. Mutable Session/Purge 상태를 response로 다시 투영하지 않고 raw response와 capability도 snapshot에 포함하지 않으며 legacy/null/corrupt snapshot은 현재 상태로 추정하지 않고 fail-closed한다. Mutation 실패 시 pending record와 state 변경을 rollback한다.
 
 ## Ports And Adapters
 
@@ -370,14 +382,19 @@ Repository adapter는 commit/rollback을 소유하지 않는다. Mutation use ca
 
 Public grant/purge receipt 응답 유실 복구만 담당하는 bounded port다.
 
-- Scope/idempotency fingerprint를 associated data로 사용하는 application-level envelope encryption
+- Idempotency record ID, organization, operation, stable App scope, idempotency-key identity, request fingerprint와 replay purpose를 associated data로 사용하는 application-level envelope encryption
 - 승인된 key-management capability와 key version
 - Access Grant token 최대 10분, Purge receipt 최대 24시간의 bounded TTL, read-on-replay와 irreversible delete
-- Same scope/fingerprint만 decrypt 가능
+- Stored associated-data digest가 현재 immutable idempotency identity에서 재계산한 digest와 같고 같은 scope/key/fingerprint인 경우에만 decrypt 가능
+- 일반 mutation idempotency record는 secret replay lifetime을 포괄하되 최대 24시간으로 제한하고 Purge Job/receipt의 최대 8일 lifecycle과 분리
+- 최초 성공 응답의 content-free typed lifecycle snapshot은 idempotency parent에 저장하고 raw response/capability는 별도 encrypted replay 외에는 저장하지 않음
+- Delete replay authorization tombstone은 organization, stable App ID, operation, idempotency identity와 versioned access-token HMAC verifier를 all-or-none으로 저장하고 raw token, session content 또는 private source를 저장하지 않음
 
-Access Grant/Purge Job table에는 verifier hash만 두고 ciphertext를 섞지 않는다. Memory application은 encryption algorithm이나 raw key를 직접 선택하지 않으며 replay store unavailable이면 새 secret을 중복 발급하지 않고 fail-closed 한다.
+Access Grant/Purge Job table에는 verifier hash만 두고 ciphertext를 섞지 않는다. Purge Job은 stable App ID와 발급 시점 deployment ID/version·audience snapshot을 함께 보존한다. Memory application은 encryption algorithm이나 raw key를 직접 선택하지 않으며 replay store unavailable이면 새 secret을 중복 발급하지 않고 fail-closed 한다.
 
-Access Grant token replay TTL이 끝난 same-key request는 `memory.secret_replay_expired`로 닫는다. Replay store가 만료 secret을 대신해 새 grant/receipt를 발급하거나 rotation하지 않는다.
+Access Grant token replay TTL이 끝난 same-key request는 `memory.secret_replay_expired`로 닫는다. Replay store 조회와 필요한 purge/replay row lock 뒤의 fresh clock이 idempotency parent retention, replay parent TTL과 child expiry를 판정하며 request-start timestamp는 TTL을 연장하지 않는다. Replay store가 만료 secret을 대신해 새 grant/receipt를 발급하거나 rotation하지 않는다.
+
+Live database의 만료 idempotency parent와 replay child는 Memory-owned periodic retention use case가 각각 독립된 bounded batch quota를 보장하고 하나의 transaction으로 삭제한다. Parent 삭제는 종속 replay를 cascade하고 scope/key uniqueness claim을 해제하며, parent backlog가 replay child 정리를 굶기지 못한다. Backup에서의 복구 불가능성은 replay store가 임의로 추정하지 않고 deployment activation 시 승인된 external crypto-erasure/no-backup contract로 확인한다.
 
 ### Source Authorization
 

@@ -21,6 +21,13 @@ global:
 scheduleDispatch:
   mode: "disabled"
 
+memoryPublicConversation:
+  enabled: false
+  purgeWorkerReady: false
+  replayBackupErasureMode: "unconfirmed"
+  capabilityHmacPrimaryVersion: ""
+  replayEncryptionPrimaryVersion: ""
+
 # Gateway (API Server)
 gateway:
   enabled: true
@@ -290,6 +297,12 @@ secrets:
   
   # Required HMAC key for connector test admission identity digests (32+ bytes).
   connectorTestAdmissionHmacKey: ""
+
+  memoryPublicCapabilityHmacKey: ""
+  memoryPublicCapabilityHmacKeys: ""
+  memoryPublicReplayEncryptionKey: ""
+  memoryPublicReplayEncryptionKeys: ""
+  memoryPublicAdmissionHmacKey: ""
 
   # Master encryption keys
   masterKey: ""

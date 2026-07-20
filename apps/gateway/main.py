@@ -50,6 +50,9 @@ from apps.gateway.application.resource_permissions.mutation import (
 from apps.gateway.composition.authentication import (
     validate_login_security_configuration,
 )
+from apps.gateway.composition.memory import (
+    validate_public_conversation_security_configuration,
+)
 from apps.gateway.core.http_security import (
     parse_credentialed_cors_origins,
     resolve_session_signing_secret,
@@ -57,6 +60,9 @@ from apps.gateway.core.http_security import (
 from apps.gateway.lifespan import lifespan  # Import lifespan from module
 from apps.gateway.middleware.webhook_query_redaction import (
     WebhookQueryRedactionMiddleware,
+)
+from apps.gateway.middleware.public_conversation_cors import (
+    PublicConversationCorsBoundaryMiddleware,
 )
 from apps.gateway.utils.api_errors import error_response
 from apps.shared.audit import record_audit
@@ -68,6 +74,7 @@ from apps.shared.audit.context import (
 )
 
 validate_login_security_configuration()
+validate_public_conversation_security_configuration()
 
 app = FastAPI(title="Moduly Gateway API", lifespan=lifespan)
 
@@ -188,8 +195,14 @@ app.add_middleware(
     https_only=os.getenv("NODE_ENV") == "production",  # 배포 환경에서는 Secure 쿠키
 )
 
-# Keep this transport sanitizer outermost so earlier middleware failures cannot
-# expose legacy webhook query credentials through the ASGI server access log.
+# Must be outer than the legacy credentialed CORS middleware.  Public
+# Conversation lifecycle calls are iframe-document same-origin only; the
+# deployment parent allowlist remains a CSP frame-ancestors policy.
+app.add_middleware(PublicConversationCorsBoundaryMiddleware)
+
+# Added last so this transport sanitizer remains outermost and earlier
+# middleware failures cannot expose legacy webhook query credentials through
+# the ASGI server access log.
 app.add_middleware(WebhookQueryRedactionMiddleware)
 
 # 정적 파일 서빙 (widget.js) - 옵션

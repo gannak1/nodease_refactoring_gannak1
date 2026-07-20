@@ -35,6 +35,15 @@ connectorTest:
   allowedPorts:
     - 5432
 
+# Public Conversation Memory remains unavailable until the independent keys
+# and an approved replay backup-erasure contract are provisioned.
+memoryPublicConversation:
+  enabled: false
+  purgeWorkerReady: false
+  replayBackupErasureMode: "unconfirmed"
+  capabilityHmacPrimaryVersion: ""
+  replayEncryptionPrimaryVersion: ""
+
 # =============================================================================
 # Application Services
 # =============================================================================
@@ -352,6 +361,12 @@ secrets:
   
   # Required HMAC key for connector test admission identity digests (32+ bytes).
   connectorTestAdmissionHmacKey: ""
+
+  memoryPublicCapabilityHmacKey: ""
+  memoryPublicCapabilityHmacKeys: ""
+  memoryPublicReplayEncryptionKey: ""
+  memoryPublicReplayEncryptionKeys: ""
+  memoryPublicAdmissionHmacKey: ""
 
   # Master encryption key (generate with: openssl rand -base64 32)
   masterKey: ""

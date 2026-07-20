@@ -759,6 +759,10 @@ class ConversationPurgeJob:
     organization_id: uuid.UUID
     session_id: uuid.UUID | None
     session_reference_digest: str
+    app_id: uuid.UUID | None
+    deployment_id: uuid.UUID | None
+    deployment_version: int | None
+    audience_kind: AudienceKind | None
     receipt_verifier_hash: str
     receipt_verifier_key_version: str
     receipt_expires_at: datetime
@@ -778,6 +782,10 @@ class ConversationPurgeJob:
         organization_id: uuid.UUID,
         session_id: uuid.UUID,
         session_reference_digest: str,
+        app_id: uuid.UUID,
+        deployment_id: uuid.UUID,
+        deployment_version: int | None,
+        audience_kind: AudienceKind | str,
         receipt_verifier_hash: str,
         receipt_verifier_key_version: str,
         receipt_expires_at: datetime,
@@ -790,8 +798,14 @@ class ConversationPurgeJob:
             receipt_verifier_key_version,
             "receipt_verifier_key_version",
         )
+        canonical_audience = AudienceKind(audience_kind)
         if (
-            receipt_expires_at <= now
+            (deployment_version is not None and deployment_version < 1)
+            or (
+                canonical_audience is AudienceKind.PUBLIC_CHATBOT
+                and deployment_version is None
+            )
+            or receipt_expires_at <= now
             or receipt_expires_at > now + MAX_PURGE_RECEIPT_LIFETIME
             or max_attempts < 1
         ):
@@ -801,6 +815,10 @@ class ConversationPurgeJob:
             organization_id=organization_id,
             session_id=session_id,
             session_reference_digest=session_reference_digest,
+            app_id=app_id,
+            deployment_id=deployment_id,
+            deployment_version=deployment_version,
+            audience_kind=canonical_audience,
             receipt_verifier_hash=receipt_verifier_hash,
             receipt_verifier_key_version=receipt_verifier_key_version,
             receipt_expires_at=receipt_expires_at,

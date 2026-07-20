@@ -28,6 +28,7 @@ from apps.memory.domain.errors import (
     MemoryAdapterUnavailableError,
     StaleRevisionError,
 )
+from apps.memory.domain.public_access import ConversationAccessGrant
 from apps.shared.db.models.conversation_memory import (
     ConversationMemoryEntryRecord,
     ConversationPurgeJobRecord,
@@ -109,6 +110,82 @@ def _rowcount_result(rowcount: int):
     result = MagicMock()
     result.rowcount = rowcount
     return result
+
+
+def _scalar_rows_result(rows):
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = rows
+    return result
+
+
+def test_access_grant_lookup_accepts_a_bounded_versioned_verifier_set():
+    session = _session()
+    grant = ConversationAccessGrant.issue(
+        grant_id=uuid.uuid4(),
+        organization_id=session.organization_id,
+        session_id=session.id,
+        deployment_id=session.deployment_id,
+        deployment_version=session.deployment_version,
+        audience_kind=session.audience_kind,
+        verifier_hash="e" * 64,
+        verifier_key_version="cap-v1",
+        expires_at=_now() + timedelta(hours=24),
+        now=_now(),
+    )
+    seed_db = MagicMock(spec=Session)
+    SqlAlchemyConversationMemoryRepository(seed_db).add_access_grant(grant)
+    record = seed_db.add.call_args.args[0]
+    db = MagicMock(spec=Session)
+    db.execute.return_value = _scalar_rows_result([record])
+    candidates = (("cap-v2", "f" * 64), ("cap-v1", "e" * 64))
+
+    loaded = SqlAlchemyConversationMemoryRepository(db).lock_access_grant(
+        verifier_candidates=candidates
+    )
+
+    statement = db.execute.call_args.args[0]
+    compiled = statement.compile(dialect=postgresql.dialect())
+    assert loaded is not None
+    assert loaded.id == grant.id
+    assert "verifier_key_version" in str(compiled)
+    assert list(candidates) in compiled.params.values()
+    assert "FOR UPDATE" in str(compiled)
+
+
+def test_purge_receipt_lookup_accepts_a_bounded_versioned_verifier_set():
+    session = _session()
+    purge = ConversationPurgeJob.pending(
+        purge_job_id=uuid.uuid4(),
+        organization_id=session.organization_id,
+        session_id=session.id,
+        session_reference_digest="d" * 64,
+        app_id=session.app_id,
+        deployment_id=session.deployment_id,
+        deployment_version=session.deployment_version,
+        audience_kind=session.audience_kind,
+        receipt_verifier_hash="e" * 64,
+        receipt_verifier_key_version="cap-v1",
+        receipt_expires_at=_now() + timedelta(days=8),
+        max_attempts=5,
+        now=_now(),
+    )
+    seed_db = MagicMock(spec=Session)
+    SqlAlchemyConversationMemoryRepository(seed_db).add_purge_job(purge)
+    record = seed_db.add.call_args.args[0]
+    db = MagicMock(spec=Session)
+    db.execute.return_value = _scalar_rows_result([record])
+    candidates = (("cap-v2", "f" * 64), ("cap-v1", "e" * 64))
+
+    loaded = SqlAlchemyConversationMemoryRepository(db).find_purge_job(
+        verifier_candidates=candidates
+    )
+
+    compiled = db.execute.call_args.args[0].compile(dialect=postgresql.dialect())
+    assert loaded is not None
+    assert loaded.id == purge.id
+    assert loaded.app_id == purge.app_id
+    assert "receipt_verifier_key_version" in str(compiled)
+    assert list(candidates) in compiled.params.values()
 
 
 def test_session_lock_is_tenant_scoped_and_save_uses_revision_cas():
@@ -280,6 +357,10 @@ def test_add_operations_map_domain_objects_without_committing():
         organization_id=session.organization_id,
         session_id=session.id,
         session_reference_digest="d" * 64,
+        app_id=session.app_id,
+        deployment_id=session.deployment_id,
+        deployment_version=session.deployment_version,
+        audience_kind=session.audience_kind,
         receipt_verifier_hash="e" * 64,
         receipt_verifier_key_version="key-v1",
         receipt_expires_at=_now() + timedelta(days=1),

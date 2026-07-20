@@ -25,6 +25,7 @@ class ActorType(str, Enum):
     USER = "user"
     ADMIN = "admin"
     SYSTEM = "system"
+    PUBLIC = "public"
 
 
 class AuditCategory(str, Enum):

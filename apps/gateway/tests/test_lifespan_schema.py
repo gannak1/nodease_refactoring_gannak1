@@ -13,6 +13,7 @@ def test_gateway_lifespan_does_not_apply_orm_or_enum_schema_ddl():
     assert "require_mail_credential_keyring_ready" in source
     assert "require_llm_credential_keyring_ready" in source
     assert "require_connector_test_security_ready" in source
+    assert "require_public_conversation_schema_ready" in source
 
     lifespan_source = inspect.getsource(lifespan_module.lifespan)
     assert lifespan_source.index("require_mail_credential_keyring_ready()") < (
@@ -23,4 +24,7 @@ def test_gateway_lifespan_does_not_apply_orm_or_enum_schema_ddl():
     )
     assert lifespan_source.index("require_connector_test_security_ready()") < (
         lifespan_source.index("require_schedule_dispatch_migration_ready(")
+    )
+    assert lifespan_source.index("require_public_conversation_schema_ready(db)") < (
+        lifespan_source.index("seed_placeholder_user(db)")
     )

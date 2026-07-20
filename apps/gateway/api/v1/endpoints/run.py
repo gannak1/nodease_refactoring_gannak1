@@ -1,11 +1,23 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, Header, Response
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
 from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_deployment_runtime_policy
 from apps.shared.db.session import get_db
 from apps.gateway.services.deployment_service import DeploymentService
+from apps.gateway.middleware.public_conversation_cors import (
+    mark_public_conversation_transport_boundary,
+)
 from apps.shared.domain.deployment_runtime_policy import DeploymentRuntimePolicy
 
 router = APIRouter()
@@ -49,6 +61,7 @@ async def run_workflow(
 @router.post("/run-public/{url_slug}")
 async def run_workflow_public(
     url_slug: str,
+    request: Request,
     runtime_policy: Annotated[
         DeploymentRuntimePolicy,
         Depends(get_deployment_runtime_policy),
@@ -62,6 +75,18 @@ async def run_workflow_public(
     - url_slug: workflow_deployments 생성시 만들어진 고유 주소
 
     """
+    # Target Conversation Memory uses its own lifecycle/grant endpoints.  Do
+    # not let a root-level conversation envelope reach the legacy runtime until
+    # MBA-318 installs the verified vertical execution contract.
+    if "conversation" in request_body:
+        mark_public_conversation_transport_boundary(request.scope)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "memory.feature_unavailable",
+                "message": "Conversation workflow execution is not available.",
+            },
+        )
     # 웹 앱/임베딩: 공개 접근 (인증 불필요)
     return await DeploymentService.run_deployment(
         db=db,

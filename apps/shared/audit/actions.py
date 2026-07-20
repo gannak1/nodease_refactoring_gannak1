@@ -85,6 +85,16 @@ class AuditAction:
     MODEL_PRICING_UPDATE = "model.pricing_update"
     LLM_CALL = "llm.call"
 
+    # Conversation Memory lifecycle. Public requests use actor_type="public";
+    # asynchronous physical purge completion uses actor_type="system".
+    MEMORY_SESSION_CREATED = "memory.session.created"
+    MEMORY_SESSION_CLOSED = "memory.session.closed"
+    MEMORY_SESSION_RESET = "memory.session.reset"
+    MEMORY_SESSION_DELETE_REQUESTED = "memory.session.delete_requested"
+    MEMORY_SESSION_PURGED = "memory.session.purged"
+    MEMORY_GRANT_ISSUED = "memory.grant.issued"
+    MEMORY_GRANT_REVOKED = "memory.grant.revoked"
+
     # 지식베이스와 문서 수명주기.
     KNOWLEDGE_CREATE = "knowledge.create"
     KNOWLEDGE_UPDATE = "knowledge.update"

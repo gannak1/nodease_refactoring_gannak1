@@ -65,20 +65,29 @@ async def lifespan(app: FastAPI):
 
     db = SessionLocal()
     try:
-        seed_placeholder_user(db)
-        seed_default_llm_providers(db)
-        seed_default_llm_models(db)
+        from apps.gateway.composition.memory import (
+            require_public_conversation_schema_ready,
+        )
 
-        from apps.gateway.services.llm_service import LLMService
+        require_public_conversation_schema_ready(db)
+        try:
+            seed_placeholder_user(db)
+            seed_default_llm_providers(db)
+            seed_default_llm_models(db)
 
-        result = LLMService.sync_system_prices(db)
-        if result["updated_models"] > 0:
-            logger.info(
-                "Default LLM prices synchronized: updated_count=%s",
-                result["updated_models"],
+            from apps.gateway.services.llm_service import LLMService
+
+            result = LLMService.sync_system_prices(db)
+            if result["updated_models"] > 0:
+                logger.info(
+                    "Default LLM prices synchronized: updated_count=%s",
+                    result["updated_models"],
+                )
+        except Exception as exc:
+            logger.error(
+                "Seed initialization failed: error_type=%s",
+                type(exc).__name__,
             )
-    except Exception as exc:
-        logger.error("Seed initialization failed: error_type=%s", type(exc).__name__)
     finally:
         db.close()
 

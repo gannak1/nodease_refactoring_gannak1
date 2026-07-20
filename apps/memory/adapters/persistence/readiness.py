@@ -105,7 +105,16 @@ REQUIRED_MEMORY_SCHEMA: dict[str, frozenset[str]] = {
         {"id", "lease_id", "status", "version", "provider_started_at"}
     ),
     "conversation_purge_jobs": frozenset(
-        {"id", "session_reference_digest", "status", "receipt_verifier_hash"}
+        {
+            "id",
+            "session_reference_digest",
+            "app_id",
+            "deployment_id",
+            "deployment_version",
+            "audience_kind",
+            "status",
+            "receipt_verifier_hash",
+        }
     ),
     "conversation_idempotency_records": frozenset(
         {
@@ -113,7 +122,28 @@ REQUIRED_MEMORY_SCHEMA: dict[str, frozenset[str]] = {
             "scope_digest",
             "idempotency_key_hash",
             "request_fingerprint",
+            "authorization_app_id",
+            "authorization_verifier_key_version",
+            "authorization_verifier_hash",
             "status",
+            "result_lifecycle",
+            "result_lifecycle_revision",
+            "result_memory_contract_version",
+            "result_expires_at",
+            "result_previous_lifecycle",
+            "result_previous_lifecycle_revision",
+        }
+    ),
+    "conversation_secret_replays": frozenset(
+        {
+            "id",
+            "organization_id",
+            "idempotency_record_id",
+            "purpose",
+            "ciphertext",
+            "key_version",
+            "associated_data_digest",
+            "expires_at",
         }
     ),
 }
