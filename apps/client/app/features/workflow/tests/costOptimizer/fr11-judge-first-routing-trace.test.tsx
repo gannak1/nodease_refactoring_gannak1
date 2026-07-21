@@ -200,7 +200,7 @@ describe('FR-011 Judge-first model routing trace', () => {
               execution_mode: 'test',
               reason_code: 'judge_bootstrap_required',
               policy_source: 'active_deployment',
-              included_in_policy_learning: false,
+              included_in_routing_learning: false,
               judge_called: false,
             },
           },
@@ -243,7 +243,7 @@ describe('FR-011 Judge-first model routing trace', () => {
               execution_mode: 'test',
               reason_code: 'routine_classification',
               policy_source: 'test_ephemeral',
-              included_in_policy_learning: false,
+              included_in_routing_learning: false,
               judge_called: true,
               judge: {
                 status: 'selected',

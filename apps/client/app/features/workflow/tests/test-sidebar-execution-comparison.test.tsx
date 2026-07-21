@@ -134,7 +134,7 @@ const runDetail = (
           matched_rule_id: id === 'baseline-run' ? 'high-risk' : 'general',
           policy_version: id === 'baseline-run' ? 'policy-v1' : 'policy-v2',
           policy_source: 'active_deployment',
-          included_in_policy_learning: false,
+          included_in_routing_learning: false,
           judge_called: false,
         },
         started_at: '2026-07-14T01:00:00Z',
