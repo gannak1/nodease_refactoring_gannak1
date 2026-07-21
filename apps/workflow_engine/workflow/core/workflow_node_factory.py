@@ -138,6 +138,10 @@ class NodeFactory:
         NodeClass, DataClass = NodeFactory.NODE_REGISTRY[schema.type]
         data = DataClass(**runtime_data)
         node = NodeClass(schema.id, data, execution_context=context)
+        if runtime_dependencies is not None and isinstance(
+            node, (WorkflowNode, LoopNode)
+        ):
+            node.bind_runtime_dependencies(runtime_dependencies)
         if schema.type == "llmNode" and runtime_dependencies is not None:
             resolver = runtime_dependencies.knowledge_runtime_candidate_resolver
             if resolver is not None:

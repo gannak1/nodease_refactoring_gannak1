@@ -16,6 +16,9 @@ from apps.shared.domain.workflow_node_binding import (
 )
 from apps.shared.schemas.workflow import NodeSchema
 from apps.workflow_engine.domain.execution import NodeExecutionControl
+from apps.workflow_engine.workflow.core.runtime_dependencies import (
+    WorkflowRuntimeDependencies,
+)
 from apps.workflow_engine.workflow.core.workflow_node_factory import NodeFactory
 from apps.workflow_engine.workflow.errors import WorkflowNodeConfigurationError
 from apps.workflow_engine.workflow.nodes.base.entities import NodeStatus
@@ -151,6 +154,11 @@ def test_bound_workflow_node_keeps_original_deployment_after_active_change() -> 
             "app_id": str(parent_app_id),
         },
     )
+    runtime_dependencies = WorkflowRuntimeDependencies(
+        provider_execution_runtime=object(),
+        provider_usage_recorder=object(),
+    )
+    node.bind_runtime_dependencies(runtime_dependencies)
 
     with patch(
         "apps.workflow_engine.workflow.core.workflow_engine.WorkflowEngine"
@@ -165,6 +173,10 @@ def test_bound_workflow_node_keeps_original_deployment_after_active_change() -> 
     assert engine_type.create_child.call_args.args[0] == bound_graph
     assert engine_type.create_child.call_args.args[0] != active_graph
     assert engine_type.create_child.call_args.kwargs["runtime_control"] is control
+    assert (
+        engine_type.create_child.call_args.kwargs["runtime_dependencies"]
+        is runtime_dependencies
+    )
 
 
 def test_bound_workflow_node_respects_broken_active_pointer_kill_switch() -> None:
