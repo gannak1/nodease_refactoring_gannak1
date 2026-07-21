@@ -84,10 +84,10 @@ def test_requirement_judge_does_not_receive_or_select_candidate_models():
     assert "0" in system_prompt and "3" in system_prompt
 
 
-def test_requirement_judge_marks_boundary_or_unknown_requests_for_adjudication():
+def test_requirement_judge_uses_safe_fallback_only_for_low_confidence():
     client = _JudgeClient(
         '{"task_complexity":1,"decision_impact":2,"evidence_synthesis":1,'
-        '"confidence":0.61,"ambiguity_flags":["boundary_score"],'
+        '"confidence":0.59,"ambiguity_flags":["boundary_score"],'
         '"reason_codes":["financial_action"]}'
     )
 
@@ -97,9 +97,25 @@ def test_requirement_judge_marks_boundary_or_unknown_requests_for_adjudication()
         structural_facts={"schema_required": False},
     )
 
-    assert assessment.requires_adjudication is True
+    assert assessment.requires_safe_fallback is True
     assert assessment.ambiguity_flags == ["boundary_score"]
-    assert assessment.rubric_version == "routing-requirements-v2"
+    assert assessment.rubric_version == "routing-requirements-v3"
+
+
+def test_requirement_judge_does_not_fallback_only_because_context_is_incomplete():
+    client = _JudgeClient(
+        '{"task_complexity":1,"decision_impact":1,"evidence_synthesis":1,'
+        '"confidence":0.72,"ambiguity_flags":["insufficient_context"],'
+        '"reason_codes":[]}'
+    )
+
+    assessment = ModelRoutingRuntimeJudge.assess_requirements(
+        client=client,
+        routing_feature_text="환불 정책을 설명해 주세요.",
+        structural_facts={"schema_required": False},
+    )
+
+    assert assessment.requires_safe_fallback is False
 
 
 def test_runtime_judge_records_total_provider_latency_in_usage(monkeypatch):

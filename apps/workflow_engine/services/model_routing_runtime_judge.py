@@ -69,8 +69,15 @@ class RuntimeRequirementAssessment:
     rubric_version: str
 
     @property
-    def requires_adjudication(self) -> bool:
-        return self.confidence < 0.75 or bool(self.ambiguity_flags)
+    def requires_safe_fallback(self) -> bool:
+        """한 번의 Judge 판정조차 실행 모델 선택에 쓰기 어려운지 판단한다.
+
+        ``ambiguity_flags``는 분석용 신호다. 요청에 필요한 정보가 부족하다는
+        이유만으로 더 비싼 Judge를 다시 호출하지 않는다. 요구 수준 분류 자체의
+        확신도가 매우 낮을 때만 사용자가 지정한 fallback 모델로 안전하게 닫는다.
+        """
+
+        return self.confidence < 0.60
 
     def to_decision(self, *, selected_model_id: str, reason_code: str) -> RuntimeJudgeDecision:
         return RuntimeJudgeDecision(
@@ -101,7 +108,7 @@ class ModelRoutingRuntimeJudge:
     DIAGNOSTIC_MAX_OUTPUT_TOKENS = 2_000
     _RETRY_FEATURE_CHARS = 1_200
     _RETRYABLE_PROVIDER_REASON_CODES = {"responses_incomplete"}
-    REQUIREMENT_RUBRIC_VERSION = "routing-requirements-v2"
+    REQUIREMENT_RUBRIC_VERSION = "routing-requirements-v3"
     _AMBIGUITY_FLAGS = {
         "boundary_score",
         "conflicting_evidence",
@@ -113,6 +120,9 @@ class ModelRoutingRuntimeJudge:
         "requirement_default_selected": "요구 수준에 맞는 기본 모델 선택",
         "requirements_candidate_selected": "요구 수준에 맞는 후보 선택",
         "requirement_judge_ambiguous": "요구 수준이 모호해 기본 모델 사용",
+        "requirement_judge_low_confidence_fallback": (
+            "요구 수준 판정 확신도가 낮아 대체 모델 사용"
+        ),
         "simple_response": "단순 응답 처리",
         "multi_constraint": "여러 조건 종합",
         "evidence_synthesis": "근거 종합 판단",
@@ -224,8 +234,12 @@ class ModelRoutingRuntimeJudge:
             "근거 종합도(evidence_synthesis): 0=외부 근거 불필요, 1=단일 사실 확인, "
             "2=여러 근거 결합·조건 비교, 3=충돌하는 근거를 해석해 결론 도출. "
             "코드가 계산한 STRUCTURAL_FACTS는 사실로 받아들이고 다시 추측하지 마세요. "
-            "경계가 모호하면 ambiguity_flags에 boundary_score, conflicting_evidence, "
-            "high_impact_uncertainty, insufficient_context, novel_request 중 해당 값을 넣으세요. "
+            "ambiguity_flags는 요구 수준 등급 자체를 확정하기 어려울 때만 사용하세요. "
+            "답변에 필요한 업무 정보가 부족해도 요청이 설명·승인·실행 중 무엇인지와 "
+            "요구 수준을 판정할 수 있으면 insufficient_context를 넣지 마세요. "
+            "confidence는 요청에 답할 자신감이 아니라 이 3개 요구 수준 등급을 "
+            "올바르게 분류했다는 자신감입니다. boundary_score, conflicting_evidence, "
+            "high_impact_uncertainty, insufficient_context, novel_request 중 필요한 값만 넣으세요. "
             "reason_codes는 high_decision_impact, security_or_compliance_risk, "
             "multi_step_reasoning, evidence_conflict, broad_context_synthesis, "
             "long_context_handling 중 최대 3개만 사용하세요. 요청 원문을 출력하지 마세요. "
@@ -256,6 +270,15 @@ class ModelRoutingRuntimeJudge:
             "output_format",
             "retrieved_source_count",
             "schema_required",
+            "customer_facing",
+            "external_write_reachable",
+            "external_read_reachable",
+            "local_execution_reachable",
+            "customer_output_reachable",
+            "control_gate_present",
+            "irreversible_effect_possible",
+            "reachable_effect_count",
+            "human_approval_required",
         }
         return {
             key: raw

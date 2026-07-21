@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -271,6 +272,8 @@ class ModelRoutingUnavailableError(ValueError):
 class ModelRouter:
     """Judge-first와 충분히 학습된 local-first 사이만 조정한다."""
 
+    LOCAL_ROUTER_AUDIT_RATE = 0.10
+
     # Judge 입력에서 이번 요청은 매 실행 달라지는 핵심 신호다. 고정 노드 프롬프트가
     # 길어도 요청 원문이 잘리지 않도록 별도 예산을 둔다.
     _JUDGE_REQUEST_CHAR_BUDGET = 2_200
@@ -375,6 +378,10 @@ class ModelRouter:
             allowed_models = None
 
         runtime_context = cls.infer_runtime_context(inputs, node_data)
+        structural_facts = cls.runtime_requirement_facts(
+            inputs=inputs,
+            node_data=node_data,
+        )
         default_selected = cls.first_available_model(
             [default_model_id, fallback_model_id, *candidates],
             allowed_models,
@@ -389,7 +396,8 @@ class ModelRouter:
             exclude=default_selected,
         )
 
-        learning = active_policy.get("learning")
+        # 학습 artifact는 배포 policy JSON이 아니라 독립 learner/version에서 온다.
+        learning = policy.get("learner")
         learning = learning if isinstance(learning, dict) else {}
         cached_decision = accepted_decision(
             learning,
@@ -432,12 +440,35 @@ class ModelRouter:
                     artifact,
                     text=learning_feature_text or cls.learning_feature_text(inputs, node_data),
                 )
+                if prediction is None:
+                    raise ValueError("local requirement prediction unavailable")
                 selected = cls.select_candidate_for_requirements(
                     candidate_model_ids=candidates,
                     requirements=prediction.requirements,
                     default_model_id=default_selected,
+                    structural_facts=structural_facts,
                 )
                 if selected and prediction.confidence >= min_confidence:
+                    if cls.should_audit_local_prediction(
+                        learning_feature_text
+                        or cls.learning_feature_text(inputs, node_data)
+                    ):
+                        return ModelRoutingPolicyDecision(
+                            selected_model_id=default_selected,
+                            fallback_model_id=resolved_fallback,
+                            matched_rule_id=None,
+                            reason_code="local_router_audit_sample",
+                            runtime_context=runtime_context,
+                            decision_source="local_router_audit",
+                            strategy_id=JUDGE_FIRST_STRATEGY_ID,
+                            decision_factors={
+                                "learning_mode": "local_first",
+                                "local_confidence": prediction.confidence,
+                                "local_prediction": prediction.requirements,
+                                "audit_rate": cls.LOCAL_ROUTER_AUDIT_RATE,
+                            },
+                            requires_runtime_judge=True,
+                        )
                     return ModelRoutingPolicyDecision(
                         selected_model_id=selected,
                         fallback_model_id=resolved_fallback,
@@ -490,6 +521,14 @@ class ModelRouter:
             },
             requires_runtime_judge=True,
         )
+
+    @classmethod
+    def should_audit_local_prediction(cls, feature_text: str) -> bool:
+        """재현 가능한 요청 표본 일부를 Judge 감사 대상으로 선택한다."""
+
+        digest = hashlib.sha256(str(feature_text or "").encode("utf-8")).digest()
+        bucket = int.from_bytes(digest[:4], "big") / float(2**32)
+        return bucket < cls.LOCAL_ROUTER_AUDIT_RATE
 
     @classmethod
     def routing_feature_text(
@@ -569,6 +608,7 @@ class ModelRouter:
         *,
         rendered_prompt_parts: Iterable[str] | None = None,
         rag_metadata: dict[str, Any] | None = None,
+        effect_profile: Mapping[str, Any] | None = None,
     ) -> str:
         """요청 난이도 학습용 feature를 만든다.
 
@@ -581,6 +621,13 @@ class ModelRouter:
         del rendered_prompt_parts  # routing_feature_text만 고정 prompt 계약을 사용한다.
         runtime_variables = cls._learning_runtime_variables(inputs, node_data)
         feature_groups = cls._learning_feature_groups(runtime_variables)
+        feature_groups["structured_features"]["routing_contract"] = (
+            cls._learning_routing_contract(
+                runtime_variables,
+                node_data,
+                effect_profile=effect_profile,
+            )
+        )
         safe_rag_metadata = {
             key: value
             for key, value in (rag_metadata or {}).items()
@@ -611,6 +658,90 @@ class ModelRouter:
             sort_keys=True,
             default=str,
         )
+
+    @classmethod
+    def _learning_routing_contract(
+        cls,
+        runtime_variables: dict[str, Any],
+        node_data: Any,
+        *,
+        effect_profile: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """임베딩하지 않고 숫자 특징으로 결합할 실행·노드 계약만 만든다."""
+
+        output_format = cls._node_data_value(node_data, "output_format", default={})
+        output_format = output_format if isinstance(output_format, dict) else {}
+        knowledge_bases = cls._node_data_value(node_data, "knowledgeBases", default=[])
+        knowledge_collections = cls._node_data_value(
+            node_data,
+            "knowledgeCollections",
+            default=[],
+        )
+        flattened_length = len(cls._flatten_text(runtime_variables))
+        if flattened_length < 256:
+            input_token_bucket = 0
+        elif flattened_length < 1024:
+            input_token_bucket = 1
+        elif flattened_length < 4096:
+            input_token_bucket = 2
+        else:
+            input_token_bucket = 3
+        routing_context = cls._node_data_value(
+            node_data,
+            "model_routing_context",
+            default={},
+        )
+        routing_context = routing_context if isinstance(routing_context, Mapping) else {}
+        effects = effect_profile if isinstance(effect_profile, Mapping) else {}
+        return {
+            "schema_required": bool(output_format.get("schema")),
+            "knowledge_enabled": bool(knowledge_bases or knowledge_collections),
+            "downstream_contract_required": bool(
+                effects.get("downstream_contract_required")
+                or cls._node_data_value(
+                    node_data, "downstream_contract_required", default=False
+                )
+            ),
+            "customer_facing": bool(
+                effects.get("customer_output_reachable")
+                or routing_context.get("customer_facing")
+            ),
+            "has_file_input": cls._contains_file_input(runtime_variables),
+            "input_token_bucket": input_token_bucket,
+            "external_write_reachable": bool(
+                effects.get("external_write_reachable")
+            ),
+            "external_read_reachable": bool(effects.get("external_read_reachable")),
+            "local_execution_reachable": bool(
+                effects.get("local_execution_reachable")
+            ),
+            "customer_output_reachable": bool(
+                effects.get("customer_output_reachable")
+            ),
+            "control_gate_present": bool(effects.get("control_gate_present")),
+            "irreversible_effect_possible": bool(
+                effects.get("irreversible_effect_possible")
+            ),
+            "reachable_effect_count": max(
+                0,
+                int(effects.get("reachable_effect_count") or 0),
+            ),
+            "human_approval_required": bool(
+                effects.get("human_approval_required")
+                or routing_context.get("human_approval_required")
+            ),
+        }
+
+    @classmethod
+    def _contains_file_input(cls, value: Any) -> bool:
+        if isinstance(value, dict):
+            lowered_keys = {str(key).lower() for key in value}
+            if lowered_keys & {"file", "files", "filename", "mime_type", "content_type"}:
+                return True
+            return any(cls._contains_file_input(item) for item in value.values())
+        if isinstance(value, (list, tuple, set)):
+            return any(cls._contains_file_input(item) for item in value)
+        return False
 
     @classmethod
     def _learning_feature_groups(
@@ -725,6 +856,8 @@ class ModelRouter:
             if isinstance(profile, Mapping) and profile.get("model_id")
         }
         normalized_default = cls.normalize_model_id(default_model_id or "")
+        facts = structural_facts if isinstance(structural_facts, Mapping) else {}
+        task_intent = str(facts.get("task_intent") or "").strip().lower()
         eligible: list[tuple[float, str]] = []
         for model_id in cls._unique_model_ids(candidate_model_ids):
             normalized_model_id = cls.normalize_model_id(model_id)
@@ -740,6 +873,16 @@ class ModelRouter:
             if model_ceiling < required_ceiling:
                 continue
             if evidence >= 2 and reasoning < 2:
+                continue
+            # 저가 추론 모델은 제한된 출력 예산을 내부 추론에 대부분 쓸 수 있다.
+            # 분류·추출에는 허용하되, 빈 응답이 곧 비싼 재호출로 이어지는 답변
+            # 생성 작업에서는 후보에서 제외한다.
+            if (
+                task_intent in {"generate", "generation", "respond", "response", "chat"}
+                and str(metadata.get("capability_tier") or "") == "economy"
+                and str(metadata.get("reasoning_profile") or "") != "non_reasoning"
+                and str(metadata.get("complexity_ceiling") or "") == "routine"
+            ):
                 continue
             input_price = profile.get("input_price_per_1k")
             output_price = profile.get("output_price_per_1k")
@@ -770,6 +913,7 @@ class ModelRouter:
         node_data: Any,
         rag_metadata: Mapping[str, Any] | None = None,
         downstream_contract_required: bool = False,
+        effect_profile: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """LLM이 추측할 필요가 없는 실행 구조 사실을 계산한다."""
 
@@ -789,7 +933,21 @@ class ModelRouter:
             node_data, "knowledgeBases", default=[]
         ) or cls._node_data_value(node_data, "knowledge_bases", default=[])
         rag = rag_metadata if isinstance(rag_metadata, Mapping) else {}
+        effects = effect_profile if isinstance(effect_profile, Mapping) else {}
+        routing_context = cls._node_data_value(
+            node_data,
+            "model_routing_context",
+            default={},
+        )
+        routing_context = routing_context if isinstance(routing_context, Mapping) else {}
+        task_intent = cls._first_non_empty(
+            routing_context.get("intent"),
+            routing_context.get("node_task"),
+            routing_context.get("category"),
+            cls._node_data_value(node_data, "task_type"),
+        ) or "generate"
         return {
+            "task_intent": task_intent,
             "input_token_bucket": input_bucket,
             "schema_required": bool(output_format.get("schema")),
             "knowledge_enabled": bool(knowledge_bases) or bool(rag.get("used")),
@@ -798,8 +956,37 @@ class ModelRouter:
                 int(rag.get("source_count") or rag.get("retrieved_chunk_count") or 0),
             ),
             "output_format": output_type,
-            "downstream_contract_required": bool(downstream_contract_required),
+            "downstream_contract_required": bool(
+                downstream_contract_required
+                or effects.get("downstream_contract_required")
+            ),
             "file_input_present": cls._contains_file_like_value(inputs),
+            "customer_facing": bool(
+                effects.get("customer_output_reachable")
+                or routing_context.get("customer_facing")
+            ),
+            "external_write_reachable": bool(
+                effects.get("external_write_reachable")
+            ),
+            "external_read_reachable": bool(effects.get("external_read_reachable")),
+            "local_execution_reachable": bool(
+                effects.get("local_execution_reachable")
+            ),
+            "customer_output_reachable": bool(
+                effects.get("customer_output_reachable")
+            ),
+            "control_gate_present": bool(effects.get("control_gate_present")),
+            "irreversible_effect_possible": bool(
+                effects.get("irreversible_effect_possible")
+            ),
+            "reachable_effect_count": max(
+                0,
+                int(effects.get("reachable_effect_count") or 0),
+            ),
+            "human_approval_required": bool(
+                effects.get("human_approval_required")
+                or routing_context.get("human_approval_required")
+            ),
         }
 
     @classmethod

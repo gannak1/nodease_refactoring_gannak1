@@ -144,23 +144,32 @@ class PersistedModelRoutingPolicyRefreshService:
         requested_at: datetime,
     ) -> LLMNodeModelRoutingPolicyUpdate:
         """Judge label과 완료된 운영 결과를 반영해 local-first 전환만 재평가한다."""
-        from apps.workflow_engine.services.model_routing_policy_store import (
-            ModelRoutingPolicyStore,
+        from apps.workflow_engine.services.model_routing_learner_store import (
+            ModelRoutingLearnerStore,
         )
 
-        ModelRoutingPolicyStore.reconcile_incremental_learning_mode(db, policy=policy)
         active_policy = (
             dict(policy.active_policy) if isinstance(policy.active_policy, dict) else {}
         )
-        learning = (
-            dict(active_policy.get("learning"))
-            if isinstance(active_policy.get("learning"), dict)
-            else {}
+        learning = ModelRoutingLearnerStore.runtime_snapshot(
+            db,
+            learner_id=policy.learner_id,
+            version_id=policy.active_learner_version_id,
         )
+        learning = learning if isinstance(learning, dict) else {}
         profile = ModelRoutingOperationalPerformanceService.profile_for_policy(
             db,
             policy_id=policy.id,
         )
+        operational_contract_healthy = cls._operational_contract_is_healthy(profile)
+        if (
+            policy.active_learner_version_id is not None
+            and not operational_contract_healthy
+        ):
+            # 학습 버전은 보존하되, 이 배포에서 관측한 계약 품질이 무너지면
+            # 해당 정책만 Judge-first로 되돌린다.
+            policy.active_learner_version_id = None
+            learning = {**learning, "mode": "judge_first", "active_version": None}
         ModelRoutingPolicyLifecycleService.apply_refresh_result(
             policy,
             status="kept_current",
@@ -193,10 +202,19 @@ class PersistedModelRoutingPolicyRefreshService:
         update.input_summary = {
             "strategy_id": JUDGE_FIRST_STRATEGY_ID,
             "judged_request_count": int(learning.get("judged_request_count") or 0),
-            "selected_model_count": len(learning.get("selected_model_ids") or []),
+            "learner_id": learning.get("id"),
         }
         update.output_summary = {
-            "reason": "Judge 선택과 운영 품질을 다시 확인했습니다. 모델은 이 갱신에서 임의로 바꾸지 않습니다.",
+            "reason": (
+                "운영 계약 품질이 기준 아래로 내려가 Judge 우선 선택으로 전환했습니다."
+                if not operational_contract_healthy
+                else "Judge 선택과 운영 품질을 다시 확인했습니다. 모델은 이 갱신에서 임의로 바꾸지 않습니다."
+            ),
+            "reason_code": (
+                "operational_contract_degraded"
+                if not operational_contract_healthy
+                else "operational_contract_healthy"
+            ),
             "learning_mode": learning.get("mode") or "judge_first",
             "local_router_ready": learning.get("mode") == "local_first",
         }
@@ -207,6 +225,55 @@ class PersistedModelRoutingPolicyRefreshService:
         update.new_policy_version = None
         db.flush()
         return update
+
+    @staticmethod
+    def _operational_contract_is_healthy(profile: Any) -> bool:
+        """충분한 운영 표본에서 local-first 안전 계약이 유지되는지 확인한다."""
+
+        model_performance = getattr(profile, "model_performance", None)
+        rows = (
+            list(model_performance.values())
+            if isinstance(model_performance, dict)
+            else []
+        )
+        total_runs = sum(int(getattr(row, "run_count", 0) or 0) for row in rows)
+        if total_runs < 20:
+            return True
+
+        success_count = sum(
+            int(getattr(row, "success_count", 0) or 0) for row in rows
+        )
+        schema_eval_count = sum(
+            int(getattr(row, "schema_eval_count", 0) or 0) for row in rows
+        )
+        schema_pass_count = sum(
+            int(getattr(row, "schema_pass_count", 0) or 0) for row in rows
+        )
+        downstream_eval_count = sum(
+            int(getattr(row, "downstream_eval_count", 0) or 0) for row in rows
+        )
+        downstream_success_count = sum(
+            int(getattr(row, "downstream_success_count", 0) or 0) for row in rows
+        )
+        fallback_count = sum(
+            int(getattr(row, "fallback_count", 0) or 0) for row in rows
+        )
+        success_rate = success_count / total_runs
+        schema_pass_rate = (
+            schema_pass_count / schema_eval_count if schema_eval_count else 1.0
+        )
+        downstream_success_rate = (
+            downstream_success_count / downstream_eval_count
+            if downstream_eval_count
+            else 1.0
+        )
+        fallback_rate = fallback_count / total_runs
+        return (
+            success_rate >= 0.95
+            and schema_pass_rate >= 0.95
+            and downstream_success_rate >= 0.95
+            and fallback_rate <= 0.05
+        )
 
     @classmethod
     def _migrate_legacy_policy(

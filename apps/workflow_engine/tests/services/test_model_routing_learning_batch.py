@@ -27,19 +27,16 @@ def _label(index: int, *, accepted: bool = True):
     )
 
 
-def test_async_batch_predicts_before_learning_and_processes_at_most_ten_labels():
+def test_async_first_batch_initializes_without_recording_fake_predictions():
     from apps.workflow_engine.services.model_routing_learning_batch import (
         ModelRoutingLearningBatchService,
     )
 
     labels = [_label(index) for index in range(12)]
-    active_policy = {
-        "strategy_id": "judge_bootstrap_incremental_v1",
-        "learning": {"mode": "judge_first"},
-    }
+    learner_state = {"mode": "judge_first"}
 
     result = ModelRoutingLearningBatchService.train_labels(
-        active_policy=deepcopy(active_policy),
+        learner_state=deepcopy(learner_state),
         labels=labels,
         batch_size=10,
     )
@@ -48,41 +45,36 @@ def test_async_batch_predicts_before_learning_and_processes_at_most_ten_labels()
     assert result.remaining_count == 2
     assert all(label.learning_processed_at is not None for label in labels[:10])
     assert all(label.learning_processed_at is None for label in labels[10:])
-    assert labels[0].local_prediction is not None
-    assert labels[1].local_prediction is not None
-    assert result.active_policy["learning"]["judged_request_count"] == 10
-    assert result.active_policy["learning"]["candidate_requirement_artifact"][
+    assert labels[0].local_prediction is None
+    assert labels[1].local_prediction is None
+    assert result.learner_state["judged_request_count"] == 10
+    assert result.learner_state["candidate_requirement_artifact"][
         "trained_example_count"
     ] == 10
-    assert result.active_policy["learning"]["candidate_requirement_artifact"][
+    assert result.learner_state["candidate_requirement_artifact"][
         "encoder_model_id"
     ] == "test-encoder"
+    assert result.learner_state["validation_window"] == []
+    assert result.learner_state["recent_evaluation"]["sample_count"] == 0
 
 
-def test_async_batch_uses_last_twenty_pre_learning_comparisons_for_readiness():
+def test_async_batch_uses_a_separate_validation_window_for_readiness():
     from apps.workflow_engine.services.model_routing_learning_batch import (
         ModelRoutingLearningBatchService,
     )
 
-    labels = [_label(index) for index in range(20)]
-    active_policy = {
-        "strategy_id": "judge_bootstrap_incremental_v1",
-        "learning": {"mode": "judge_first", "judged_request_count": 30},
-    }
+    labels = [_label(index) for index in range(55)]
+    state = {"mode": "judge_first", "judged_request_count": 45}
+    for _ in range(6):
+        result = ModelRoutingLearningBatchService.train_labels(
+            learner_state=state,
+            labels=labels,
+            batch_size=10,
+        )
+        state = result.learner_state
 
-    first = ModelRoutingLearningBatchService.train_labels(
-        active_policy=active_policy,
-        labels=labels,
-        batch_size=10,
-    )
-    second = ModelRoutingLearningBatchService.train_labels(
-        active_policy=first.active_policy,
-        labels=labels,
-        batch_size=10,
-    )
-
-    evaluation = second.active_policy["learning"]["recent_evaluation"]
-    assert evaluation["sample_count"] == 20
+    evaluation = state["recent_evaluation"]
+    assert evaluation["sample_count"] == 5
     assert set(evaluation["axis_mean_errors"]) == {
         "task_complexity",
         "decision_impact",
@@ -90,7 +82,34 @@ def test_async_batch_uses_last_twenty_pre_learning_comparisons_for_readiness():
     }
     assert evaluation["judge_label_diversity"] == 2
     assert evaluation["local_prediction_diversity"] >= 1
-    assert len(second.active_policy["learning"]["evaluation_window"]) == 20
+    assert set(evaluation["axis_accuracies"]) == {
+        "task_complexity",
+        "decision_impact",
+        "evidence_synthesis",
+    }
+    assert "high_risk_underestimation_count" in evaluation
+    assert len(state["validation_window"]) == 5
+
+
+def test_first_hundred_labels_use_fifty_for_training_and_fifty_for_validation():
+    from apps.workflow_engine.services.model_routing_learning_batch import (
+        ModelRoutingLearningBatchService,
+    )
+
+    labels = [_label(index) for index in range(100)]
+    state = {"mode": "judge_first"}
+    for _ in range(10):
+        result = ModelRoutingLearningBatchService.train_labels(
+            learner_state=state,
+            labels=labels,
+            batch_size=10,
+        )
+        state = result.learner_state
+
+    assert state["judged_request_count"] == 100
+    assert state["candidate_requirement_artifact"]["trained_example_count"] == 50
+    assert state["recent_evaluation"]["sample_count"] == 50
+    assert len(state["validation_window"]) == 50
 
 
 def test_async_batch_restarts_learning_when_feature_schema_changes():
@@ -101,32 +120,29 @@ def test_async_batch_restarts_learning_when_feature_schema_changes():
         ModelRoutingLearningBatchService,
     )
 
-    active_policy = {
-        "strategy_id": "judge_bootstrap_incremental_v1",
-        "learning": {
+    learner_state = {
             "mode": "local_first",
             "judged_request_count": 79,
-            "evaluation_window": [{"old": True}],
+            "validation_window": [{"old": True}],
             "local_requirement_artifact": {
                 "feature_schema_version": "prompt_context_v1",
                 "trained_example_count": 79,
                 "weights": {},
             },
-        },
     }
 
     result = ModelRoutingLearningBatchService.train_labels(
-        active_policy=active_policy,
+        learner_state=learner_state,
         labels=[_label(0)],
         batch_size=1,
     )
 
-    learning = result.active_policy["learning"]
+    learning = result.learner_state
     artifact = learning["candidate_requirement_artifact"]
     assert artifact["feature_schema_version"] == TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION
     assert artifact["trained_example_count"] == 1
     assert learning["judged_request_count"] == 1
-    assert learning["recent_evaluation"]["sample_count"] == 1
+    assert learning["recent_evaluation"]["sample_count"] == 0
 
 
 def test_batch_result_can_report_deferred_training():
@@ -135,7 +151,7 @@ def test_batch_result_can_report_deferred_training():
     )
 
     result = ModelRoutingLearningBatchResult(
-        active_policy={},
+        learner_state={},
         processed_count=0,
         remaining_count=3,
         deferred_seconds=300,
@@ -154,15 +170,32 @@ def test_batch_skips_an_invalid_rejected_label_without_blocking_other_learning()
     valid = _label(1)
 
     result = ModelRoutingLearningBatchService.train_labels(
-        active_policy={
-            "strategy_id": "judge_bootstrap_incremental_v1",
-            "learning": {"mode": "judge_first"},
-        },
+        learner_state={"mode": "judge_first"},
         labels=[invalid, valid],
     )
 
     assert result.processed_count == 2
     assert invalid.learning_processed_at is not None
     assert valid.learning_processed_at is not None
-    assert result.active_policy["learning"]["judged_request_count"] == 1
-    assert result.active_policy["learning"]["recent_evaluation"]["sample_count"] == 1
+    assert result.learner_state["judged_request_count"] == 1
+    assert result.learner_state["recent_evaluation"]["sample_count"] == 0
+
+
+def test_valid_rejected_label_still_trains_requirement_levels():
+    from apps.workflow_engine.services.model_routing_learning_batch import (
+        ModelRoutingLearningBatchService,
+    )
+
+    rejected = _label(0, accepted=False)
+    accepted = _label(1)
+
+    result = ModelRoutingLearningBatchService.train_labels(
+        learner_state={"mode": "judge_first"},
+        labels=[rejected, accepted],
+    )
+
+    assert result.learner_state["judged_request_count"] == 2
+    assert result.learner_state["candidate_requirement_artifact"][
+        "trained_example_count"
+    ] == 2
+    assert result.learner_state["recent_evaluation"]["sample_count"] == 0

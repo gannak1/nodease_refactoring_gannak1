@@ -193,6 +193,42 @@ class StaticTextClient:
         }
 
 
+def test_auto_model_routing_raises_small_output_budget_to_safe_minimum(monkeypatch):
+    client = StaticTextClient("자동 라우팅 응답")
+    node = LLMNode(
+        "llm-routing-budget",
+        LLMNodeData(
+            title="자동 라우팅 출력 예산",
+            model_id="gpt-5-mini",
+            fallback_model_id="gpt-4.1",
+            auto_model_routing=True,
+            user_prompt="환불 정책을 설명해 주세요.",
+            parameters={"max_tokens": 900},
+        ),
+    )
+    node._client_override = client  # noqa: SLF001
+    monkeypatch.setattr(
+        node,
+        "_resolve_model_routing_policy",
+        lambda *_args, **_kwargs: (
+            "gpt-5-mini",
+            "gpt-4.1",
+            {"enabled": True},
+        ),
+    )
+
+    node.execute({})
+
+    assert client.calls[0]["kwargs"]["max_tokens"] >= 1600
+
+
+def test_auto_routing_gives_reasoning_models_more_output_budget():
+    assert LLMNode._auto_routing_output_token_floor("gpt-5-nano") == 4000
+    assert LLMNode._auto_routing_output_token_floor("gpt-5-mini") == 4000
+    assert LLMNode._auto_routing_output_token_floor("gpt-5.4-mini") == 4000
+    assert LLMNode._auto_routing_output_token_floor("gpt-4o-mini") == 1600
+
+
 @pytest.fixture(autouse=True)
 def _inject_default_provider_ports(monkeypatch):
     def provider_runtime(node):
@@ -783,7 +819,7 @@ def test_test_execution_can_select_available_unvalidated_candidate(monkeypatch):
     assert metadata["judge_called"] is True
     assert metadata["judge"]["status"] == "selected"
     assert metadata["judge"]["reason_code"] == "requirements_candidate_selected"
-    assert metadata["included_in_policy_learning"] is False
+    assert metadata["included_in_routing_learning"] is False
     assert learning_calls == []
 
 
@@ -4142,21 +4178,22 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
         model_id="gpt-4.1",
         fallback_model_id="gpt-4.1",
         auto_model_routing=True,
-        model_routing_policy={
-            "policy_id": "policy-1",
-            "policy_version": "router-policy-v4",
-            "active_policy": {
+            model_routing_policy={
+                "policy_id": "policy-1",
+                "policy_version": "router-policy-v4",
+                "learner": {
+                    "id": str(uuid.uuid4()),
+                    "mode": "local_first",
+                    "local_confidence_threshold": 0.78,
+                    "local_requirement_artifact": {
+                        "feature_schema_version": TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
+                    },
+                },
+                "active_policy": {
                 "strategy_id": "judge_bootstrap_incremental_v1",
                 "default_model_id": "gpt-4.1-mini",
                 "fallback_model_id": "gpt-4.1",
                 "candidate_model_ids": ["gpt-4.1-mini", "gpt-4.1"],
-                "learning": {
-                    "mode": "local_first",
-                    "local_confidence_threshold": 0.78,
-                    "local_requirement_artifact": {
-                            "feature_schema_version": TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
-                    },
-                },
                 "rules": [
                     {
                         "id": "low-risk-json-triage",
@@ -4347,6 +4384,17 @@ def test_deployed_judge_bootstrap_uses_judge_and_queues_safe_learning_label(monk
         },
         refresh_every_runs=20,
         eligible_runs_since_last_refresh=0,
+        learner_id=uuid.uuid4(),
+        active_learner_version_id=None,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.services.model_routing_learner_store."
+        "ModelRoutingLearnerStore.runtime_snapshot",
+        lambda *_args, **_kwargs: {
+            "id": str(persisted.learner_id),
+            "mode": "judge_first",
+            "active_version": None,
+        },
     )
     monkeypatch.setattr(
         ModelRoutingPolicyStore, "get_runtime_policy", lambda *_args, **_kwargs: persisted
@@ -4449,7 +4497,8 @@ def test_deployed_judge_bootstrap_uses_judge_and_queues_safe_learning_label(monk
     assert metadata["judge"]["reason_short"] == "요구 수준에 맞는 후보 선택"
     assert metadata["judge"]["candidate_model_count"] == 2
     assert metadata["judge"]["usage_log_error"] == "RuntimeError"
-    assert captured["policy_id"] == str(policy_id)
+    assert captured["source_policy_id"] == str(policy_id)
+    assert captured["learner_id"] == str(persisted.learner_id)
     assert captured["selected_model_id"] == "gpt-4o-mini"
 
 
@@ -4473,6 +4522,17 @@ def test_deployed_judge_bootstrap_exposes_learning_queue_failure_reason(monkeypa
         },
         refresh_every_runs=20,
         eligible_runs_since_last_refresh=0,
+        learner_id=uuid.uuid4(),
+        active_learner_version_id=None,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.services.model_routing_learner_store."
+        "ModelRoutingLearnerStore.runtime_snapshot",
+        lambda *_args, **_kwargs: {
+            "id": str(persisted.learner_id),
+            "mode": "judge_first",
+            "active_version": None,
+        },
     )
     monkeypatch.setattr(
         ModelRoutingPolicyStore, "get_runtime_policy", lambda *_args, **_kwargs: persisted
@@ -4535,6 +4595,151 @@ def test_deployed_judge_bootstrap_exposes_learning_queue_failure_reason(monkeypa
     assert metadata["judge"]["status"] == "selected"
     assert metadata["judge"]["learning_status"] == "not_queued"
     assert metadata["judge"]["learning_not_queued_reason"] == "RuntimeError"
+
+
+def test_low_confidence_judge_uses_configured_fallback_without_adjudicator(
+    monkeypatch,
+):
+    """불확실한 1차 판정은 추가 Judge 없이 사용자 설정 fallback으로 닫는다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+    from apps.workflow_engine.services.model_routing_runtime_judge import (
+        ModelRoutingRuntimeJudge,
+    )
+
+    learner_id = uuid.uuid4()
+    persisted = SimpleNamespace(
+        id=uuid.uuid4(),
+        enabled=True,
+        status="active",
+        policy_version="judge-bootstrap-v1",
+        active_policy={
+            "strategy_id": "judge_bootstrap_incremental_v1",
+            "default_model_id": "gpt-5-mini",
+            "fallback_model_id": "gpt-4o-mini",
+        },
+        refresh_every_runs=20,
+        eligible_runs_since_last_refresh=0,
+        learner_id=learner_id,
+        active_learner_version_id=None,
+    )
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore,
+        "get_runtime_policy",
+        lambda *_args, **_kwargs: persisted,
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.services.model_routing_learner_store."
+        "ModelRoutingLearnerStore.runtime_snapshot",
+        lambda *_args, **_kwargs: {
+            "id": str(learner_id),
+            "mode": "judge_first",
+            "active_version": None,
+        },
+    )
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore,
+        "queue_runtime_judge_label",
+        lambda *_args, **kwargs: captured.update(kwargs)
+        or {"learning_queued": True},
+    )
+
+    class _Assessment:
+        requires_safe_fallback = True
+        usage: dict[str, int] = {}
+        rubric_version = "routing-requirements-v2"
+        ambiguity_flags = ["high_impact_uncertainty"]
+        task_requirements = {
+            "task_complexity": 2,
+            "decision_impact": 3,
+            "evidence_synthesis": 2,
+        }
+
+        def to_decision(self, *, selected_model_id, reason_code):
+            return SimpleNamespace(
+                selected_model_id=selected_model_id,
+                reason_code=reason_code,
+                confidence=0.7,
+                task_requirements=dict(self.task_requirements),
+                safe_metadata=lambda: {
+                    "confidence": 0.7,
+                    "reason_code": reason_code,
+                    "task_requirements": dict(self.task_requirements),
+                },
+            )
+
+    judge_call_count = 0
+
+    def assess_requirements(**_kwargs):
+        nonlocal judge_call_count
+        judge_call_count += 1
+        return _Assessment()
+
+    monkeypatch.setattr(
+        ModelRoutingRuntimeJudge,
+        "assess_requirements",
+        assess_requirements,
+    )
+    monkeypatch.setattr(
+        LLMService,
+        "get_runtime_client_for_user",
+        lambda *_args, **kwargs: SimpleNamespace(
+            client=object(),
+            credential_id=uuid.uuid4(),
+            model_id=kwargs.get("model_id"),
+        ),
+    )
+
+    node = LLMNode(
+        "llm-judge",
+        LLMNodeData(
+            title="judge bootstrap",
+            model_id="gpt-5-mini",
+            fallback_model_id="gpt-4o-mini",
+            auto_model_routing=True,
+            user_prompt="{{ message }}",
+            referenced_variables=[],
+            parameters={},
+        ),
+        execution_context={
+            "workflow_id": str(uuid.uuid4()),
+            "deployment_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+            "organization_id": str(uuid.uuid4()),
+        },
+    )
+    monkeypatch.setattr(
+        node,
+        "_available_routing_model_ids",
+        lambda _db: ["gpt-4o-mini", "gpt-5-mini", "gpt-5.4"],
+    )
+    monkeypatch.setattr(node, "_routing_candidate_profiles", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        node,
+        "_resolve_credential_principal_user",
+        lambda: uuid.uuid4(),
+    )
+    monkeypatch.setattr(
+        node,
+        "_require_runtime_organization_id",
+        lambda *_args: uuid.uuid4(),
+    )
+
+    selected, fallback, metadata = node._resolve_model_routing_policy(
+        {"message": "권한 변경의 영향 범위를 검토해 주세요."},
+        object(),
+        routing_feature_text="권한 변경 영향 검토",
+    )
+
+    assert selected == "gpt-4o-mini"
+    assert fallback == "gpt-5-mini"
+    assert captured == {}
+    assert metadata["included_in_routing_learning"] is False
+    assert metadata["judge"]["adjudication_attempted"] is False
+    assert metadata["judge"]["safe_fallback_used"] is True
+    assert judge_call_count == 1
 
 
 def test_runtime_judge_failure_is_recorded_separately_from_judge_not_called(
@@ -4729,7 +4934,7 @@ def test_test_execution_uses_newly_available_candidate_beyond_persisted_policy(
     assert metadata["judge_called"] is True
     assert metadata["judge"]["reason_short"] == "요구 수준에 맞는 후보 선택"
     assert metadata["policy_source"] == "active_deployment"
-    assert metadata["included_in_policy_learning"] is False
+    assert metadata["included_in_routing_learning"] is False
     assert learning_calls == []
 
 

@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
+import random
+import struct
 import threading
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Protocol
 
 
 DEFAULT_MULTILINGUAL_E5_MODEL_ID = "intfloat/multilingual-e5-base"
+DEFAULT_MULTILINGUAL_E5_REVISION = "d13f1b27baf31030b7fd040960d60d909913633f"
+E5_EMBEDDING_DIMENSION = 768
+E5_PROJECTION_DIMENSION = 128
+E5_PROJECTION_SEED = 1729
+E5_PROJECTION_VERSION = "e5-gaussian-projection-v1"
+E5_POOLING_STRATEGY = "attention-mask-mean-pooling-v1"
+E5_QUERY_PREFIX_VERSION = "e5-query-prefix-v1"
+STRUCTURED_FEATURE_VERSION = "routing-structure-v3-effect-and-request-intent"
 
 
 class TextEmbedder(Protocol):
@@ -40,11 +51,16 @@ class TaskRequirementPrediction:
 class MultilingualE5Embedder:
     """동일 worker에서 공유하는 lazy-loaded multilingual E5 encoder."""
 
-    def __init__(self, model_id: str | None = None):
+    def __init__(self, model_id: str | None = None, revision: str | None = None):
         self.model_id = (
             model_id
             or os.getenv("MODEL_ROUTING_EMBEDDING_MODEL_ID")
             or DEFAULT_MULTILINGUAL_E5_MODEL_ID
+        )
+        self.revision = (
+            revision
+            or os.getenv("MODEL_ROUTING_EMBEDDING_MODEL_REVISION")
+            or DEFAULT_MULTILINGUAL_E5_REVISION
         )
         self._tokenizer: Any | None = None
         self._model: Any | None = None
@@ -70,9 +86,13 @@ class MultilingualE5Embedder:
             self._torch = torch
             self._tokenizer = AutoTokenizer.from_pretrained(
                 self.model_id,
+                revision=self.revision,
                 use_fast=False,
             )
-            self._model = AutoModel.from_pretrained(self.model_id)
+            self._model = AutoModel.from_pretrained(
+                self.model_id,
+                revision=self.revision,
+            )
             self._model.eval()
 
     def encode(
@@ -107,16 +127,95 @@ class MultilingualE5Embedder:
         return pooled.cpu().tolist()
 
 
+class FixedGaussianRandomProjection:
+    """E5 의미 벡터를 재현 가능한 고정 행렬로 128차원화한다."""
+
+    _matrix_cache: dict[tuple[int, int, int], tuple[tuple[float, ...], ...]] = {}
+    _hash_cache: dict[tuple[int, int, int], str] = {}
+    _cache_lock = threading.Lock()
+
+    @classmethod
+    def project(cls, vector: Iterable[float]) -> list[float]:
+        values = [float(value) for value in vector]
+        if not values:
+            raise ValueError("projection input vector is required")
+        matrix = cls._matrix(len(values))
+        projected = [
+            sum(weight * value for weight, value in zip(row, values))
+            for row in matrix
+        ]
+        return cls._l2_normalize(projected)
+
+    @classmethod
+    def metadata(cls, *, input_dimension: int) -> dict[str, Any]:
+        key = (int(input_dimension), E5_PROJECTION_DIMENSION, E5_PROJECTION_SEED)
+        cls._matrix(int(input_dimension))
+        return {
+            "projection_type": "gaussian_random_projection",
+            "projection_input_dimension": int(input_dimension),
+            "projection_dimension": E5_PROJECTION_DIMENSION,
+            "projection_seed": E5_PROJECTION_SEED,
+            "projection_version": E5_PROJECTION_VERSION,
+            "projection_matrix_hash": cls._hash_cache[key],
+        }
+
+    @classmethod
+    def _matrix(cls, input_dimension: int) -> tuple[tuple[float, ...], ...]:
+        if input_dimension <= 0:
+            raise ValueError("projection input dimension must be positive")
+        key = (input_dimension, E5_PROJECTION_DIMENSION, E5_PROJECTION_SEED)
+        with cls._cache_lock:
+            cached = cls._matrix_cache.get(key)
+            if cached is not None:
+                return cached
+            generator = random.Random(E5_PROJECTION_SEED)
+            scale = 1.0 / math.sqrt(E5_PROJECTION_DIMENSION)
+            matrix = tuple(
+                tuple(generator.gauss(0.0, scale) for _ in range(input_dimension))
+                for _ in range(E5_PROJECTION_DIMENSION)
+            )
+            digest = hashlib.sha256()
+            for row in matrix:
+                for value in row:
+                    digest.update(struct.pack("!d", value))
+            cls._matrix_cache[key] = matrix
+            cls._hash_cache[key] = digest.hexdigest()
+            return matrix
+
+    @staticmethod
+    def _l2_normalize(vector: list[float]) -> list[float]:
+        norm = math.sqrt(sum(value * value for value in vector))
+        if norm <= 0:
+            raise ValueError("0 length vector cannot be projected")
+        return [value / norm for value in vector]
+
+
 class MultilingualE5ModelChoiceClassifier:
     """원문을 저장하지 않고 Judge label을 online classification head에 누적한다."""
 
-    _embedder_cache: dict[str, MultilingualE5Embedder] = {}
+    _embedder_cache: dict[tuple[str, str], MultilingualE5Embedder] = {}
     _embedder_cache_lock = threading.Lock()
-    _LEARNING_GROUP_WEIGHTS = {
+    _SEMANTIC_GROUP_WEIGHTS = {
         "primary_request": 0.75,
         "dynamic_context": 0.15,
-        "structured_features": 0.10,
     }
+    _STRUCTURED_FEATURE_KEYS = (
+        "schema_required",
+        "knowledge_enabled",
+        "retrieved_source_count",
+        "downstream_contract_required",
+        "customer_facing",
+        "input_token_bucket",
+        "has_file_input",
+        "external_write_reachable",
+        "external_read_reachable",
+        "local_execution_reachable",
+        "customer_output_reachable",
+        "control_gate_present",
+        "irreversible_effect_possible",
+        "reachable_effect_count",
+        "human_approval_required",
+    )
 
     @classmethod
     def update(
@@ -144,8 +243,9 @@ class MultilingualE5ModelChoiceClassifier:
             candidate_model_ids=candidate_model_ids,
         )
         updated["encoder_model_id"] = encoder_model_id
+        updated.update(cls._artifact_contract_metadata())
         updated["classification_strategy"] = (
-            "frozen_multilingual_e5_online_model_choice_v1"
+            "frozen_multilingual_e5_projection_128_online_model_choice_v2"
         )
         return updated
 
@@ -181,8 +281,9 @@ class MultilingualE5ModelChoiceClassifier:
             candidate_model_ids=candidate_model_ids,
         )
         updated["encoder_model_id"] = str(encoder_model_id or "")
+        updated.update(cls._artifact_contract_metadata())
         updated["classification_strategy"] = (
-            "frozen_multilingual_e5_online_model_choice_v1"
+            "frozen_multilingual_e5_projection_128_online_model_choice_v2"
         )
         return updated
 
@@ -221,31 +322,44 @@ class MultilingualE5ModelChoiceClassifier:
     ) -> tuple[list[float], str]:
         encoder_model_id = str((artifact or {}).get("encoder_model_id") or "")
         runtime_embedder = embedder or cls._shared_embedder(encoder_model_id or None)
-        grouped_texts = cls._grouped_learning_texts(text)
+        grouped_texts, structured_vector = cls._learning_inputs(text)
         vectors = cls._encode(
             runtime_embedder,
             [serialized for _group, serialized in grouped_texts],
         )
         if not vectors or len(vectors) != len(grouped_texts):
             raise ValueError("모델 선택 학습용 multilingual E5 벡터를 만들지 못했습니다.")
+        if isinstance(runtime_embedder, MultilingualE5Embedder) and any(
+            len(vector) != E5_EMBEDDING_DIMENSION for vector in vectors
+        ):
+            raise ValueError(
+                "multilingual E5 embedding은 "
+                f"{E5_EMBEDDING_DIMENSION}차원이어야 합니다."
+            )
         normalized_vectors = [cls._l2_normalize(vector) for vector in vectors]
         total_weight = sum(
-            cls._LEARNING_GROUP_WEIGHTS[group] for group, _text in grouped_texts
+            cls._SEMANTIC_GROUP_WEIGHTS[group] for group, _text in grouped_texts
         )
         combined = [0.0] * len(normalized_vectors[0])
         for (group, _text), vector in zip(grouped_texts, normalized_vectors):
             if len(vector) != len(combined):
                 raise ValueError("학습 feature group의 embedding 차원이 다릅니다.")
-            weight = cls._LEARNING_GROUP_WEIGHTS[group] / total_weight
+            weight = cls._SEMANTIC_GROUP_WEIGHTS[group] / total_weight
             combined = [
                 current + weight * value
                 for current, value in zip(combined, vector)
             ]
-        return cls._l2_normalize(combined), runtime_embedder.model_id
+        projected = FixedGaussianRandomProjection.project(
+            cls._l2_normalize(combined)
+        )
+        return [*projected, *structured_vector], runtime_embedder.model_id
 
     @classmethod
-    def _grouped_learning_texts(cls, text: str) -> list[tuple[str, str]]:
-        """v3 JSON feature를 그룹별 encoder 입력으로 바꾸고 레거시는 요청으로 취급한다."""
+    def _learning_inputs(
+        cls,
+        text: str,
+    ) -> tuple[list[tuple[str, str]], list[float]]:
+        """의미 텍스트와 명시적 구조 특징을 서로 다른 입력으로 만든다."""
 
         try:
             payload = json.loads(str(text or ""))
@@ -253,7 +367,7 @@ class MultilingualE5ModelChoiceClassifier:
             payload = None
         groups: list[tuple[str, str]] = []
         if isinstance(payload, Mapping):
-            for group in cls._LEARNING_GROUP_WEIGHTS:
+            for group in cls._SEMANTIC_GROUP_WEIGHTS:
                 value = payload.get(group)
                 if isinstance(value, Mapping) and value:
                     groups.append(
@@ -267,18 +381,78 @@ class MultilingualE5ModelChoiceClassifier:
                             ),
                         )
                     )
-        if groups:
-            return groups
+        if not groups:
+            groups = [
+                (
+                    "primary_request",
+                    "query: " + json.dumps(
+                        {
+                            "group": "primary_request",
+                            "value": str(text or "").strip(),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                )
+            ]
+        structured = payload.get("structured_features") if isinstance(payload, Mapping) else {}
+        return groups, cls._structured_vector(structured)
+
+    @classmethod
+    def _structured_vector(cls, value: Any) -> list[float]:
+        structured = value if isinstance(value, Mapping) else {}
+        contract = structured.get("routing_contract")
+        contract = contract if isinstance(contract, Mapping) else {}
+        rag = structured.get("rag")
+        rag = rag if isinstance(rag, Mapping) else {}
+        retrieved_count = rag.get("source_count", rag.get("retrieved_chunk_count", 0))
+        try:
+            normalized_retrieved_count = max(0.0, min(16.0, float(retrieved_count))) / 16.0
+        except (TypeError, ValueError):
+            normalized_retrieved_count = 0.0
+        try:
+            input_bucket = max(0.0, min(3.0, float(contract.get("input_token_bucket", 0)))) / 3.0
+        except (TypeError, ValueError):
+            input_bucket = 0.0
+        try:
+            effect_count = max(
+                0.0,
+                min(8.0, float(contract.get("reachable_effect_count", 0))),
+            ) / 8.0
+        except (TypeError, ValueError):
+            effect_count = 0.0
         return [
-            (
-                "primary_request",
-                "query: " + json.dumps(
-                    {"group": "primary_request", "value": str(text or "").strip()},
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-            )
+            float(bool(contract.get("schema_required"))),
+            float(bool(contract.get("knowledge_enabled") or rag.get("used"))),
+            normalized_retrieved_count,
+            float(bool(contract.get("downstream_contract_required"))),
+            float(bool(contract.get("customer_facing"))),
+            input_bucket,
+            float(bool(contract.get("has_file_input"))),
+            float(bool(contract.get("external_write_reachable"))),
+            float(bool(contract.get("external_read_reachable"))),
+            float(bool(contract.get("local_execution_reachable"))),
+            float(bool(contract.get("customer_output_reachable"))),
+            float(bool(contract.get("control_gate_present"))),
+            float(bool(contract.get("irreversible_effect_possible"))),
+            effect_count,
+            float(bool(contract.get("human_approval_required"))),
         ]
+
+    @staticmethod
+    def _artifact_contract_metadata() -> dict[str, Any]:
+        return {
+            "encoder_revision": (
+                os.getenv("MODEL_ROUTING_EMBEDDING_MODEL_REVISION")
+                or DEFAULT_MULTILINGUAL_E5_REVISION
+            ),
+            "pooling_strategy": E5_POOLING_STRATEGY,
+            "query_prefix_version": E5_QUERY_PREFIX_VERSION,
+            "structured_feature_version": STRUCTURED_FEATURE_VERSION,
+            **FixedGaussianRandomProjection.metadata(
+                input_dimension=E5_EMBEDDING_DIMENSION
+            ),
+        }
 
     @classmethod
     def _shared_embedder(cls, model_id: str | None = None) -> MultilingualE5Embedder:
@@ -287,11 +461,19 @@ class MultilingualE5ModelChoiceClassifier:
             or os.getenv("MODEL_ROUTING_EMBEDDING_MODEL_ID")
             or DEFAULT_MULTILINGUAL_E5_MODEL_ID
         )
+        resolved_revision = (
+            os.getenv("MODEL_ROUTING_EMBEDDING_MODEL_REVISION")
+            or DEFAULT_MULTILINGUAL_E5_REVISION
+        )
+        cache_key = (resolved_model_id, resolved_revision)
         with cls._embedder_cache_lock:
-            embedder = cls._embedder_cache.get(resolved_model_id)
+            embedder = cls._embedder_cache.get(cache_key)
             if embedder is None:
-                embedder = MultilingualE5Embedder(resolved_model_id)
-                cls._embedder_cache[resolved_model_id] = embedder
+                embedder = MultilingualE5Embedder(
+                    resolved_model_id,
+                    revision=resolved_revision,
+                )
+                cls._embedder_cache[cache_key] = embedder
             return embedder
 
     @staticmethod
@@ -334,11 +516,13 @@ class MultilingualE5TaskRequirementClassifier:
         updated = IncrementalTaskRequirementClassifier.update(
             artifact,
             vector=vector,
+            axis_vectors=cls._axis_vectors(vector),
             task_requirements=task_requirements,
         )
         updated["encoder_model_id"] = str(encoder_model_id or "")
+        updated.update(MultilingualE5ModelChoiceClassifier._artifact_contract_metadata())
         updated["classification_strategy"] = (
-            "frozen_multilingual_e5_online_task_requirements_v1"
+            "frozen_multilingual_e5_projection_128_ordinal_requirements_v3_effect_aware"
         )
         return updated
 
@@ -349,7 +533,7 @@ class MultilingualE5TaskRequirementClassifier:
         *,
         text: str,
         embedder: TextEmbedder | None = None,
-    ) -> TaskRequirementPrediction:
+    ) -> TaskRequirementPrediction | None:
         from apps.workflow_engine.services.model_routing_incremental_learning import (
             IncrementalTaskRequirementClassifier,
         )
@@ -359,7 +543,13 @@ class MultilingualE5TaskRequirementClassifier:
             artifact=artifact,
             embedder=embedder,
         )
-        result = IncrementalTaskRequirementClassifier.predict(artifact, vector=vector)
+        result = IncrementalTaskRequirementClassifier.predict(
+            artifact,
+            vector=vector,
+            axis_vectors=cls._axis_vectors(vector),
+        )
+        if result is None:
+            return None
         return TaskRequirementPrediction(
             requirements=result.requirements,
             confidence=result.confidence,
@@ -380,4 +570,48 @@ class MultilingualE5TaskRequirementClassifier:
         return IncrementalTaskRequirementClassifier.predict(
             artifact,
             vector=vector,
+            axis_vectors=cls._axis_vectors(vector),
         )
+
+    @staticmethod
+    def _axis_vectors(vector: Iterable[float]) -> dict[str, list[float]]:
+        """평가축마다 근거가 되는 특징만 남겨 의미 유사도의 과신을 줄인다."""
+
+        values = [float(value) for value in vector]
+        if len(values) <= E5_PROJECTION_DIMENSION:
+            return {
+                key: list(values)
+                for key in (
+                    "task_complexity",
+                    "decision_impact",
+                    "evidence_synthesis",
+                )
+            }
+        semantic = values[:E5_PROJECTION_DIMENSION]
+        structured = values[E5_PROJECTION_DIMENSION:]
+
+        def build(*, semantic_scale: float, structural_indexes: set[int]) -> list[float]:
+            return [
+                *(value * semantic_scale for value in semantic),
+                *(
+                    value if index in structural_indexes else 0.0
+                    for index, value in enumerate(structured)
+                ),
+            ]
+
+        return {
+            "task_complexity": build(
+                semantic_scale=1.0,
+                structural_indexes={0, 3, 5, 6, 9},
+            ),
+            "decision_impact": build(
+                # 같은 환불 주제라도 "정책 설명"과 "승인 실행"은 의미가 다르다.
+                # 요청 의도 의미와 실제 후속 동작 특징을 함께 사용한다.
+                semantic_scale=1.0,
+                structural_indexes={3, 4, 7, 9, 10, 11, 12, 13, 14},
+            ),
+            "evidence_synthesis": build(
+                semantic_scale=1.0,
+                structural_indexes={0, 1, 2, 3, 5, 6, 8},
+            ),
+        }

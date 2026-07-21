@@ -7,6 +7,7 @@ def test_operational_run_task_dispatches_refresh_for_due_policy():
     from apps.workflow_engine import tasks
 
     policy_id = uuid4()
+    learner_id = uuid4()
     session = MagicMock()
     sent = []
 
@@ -22,8 +23,8 @@ def test_operational_run_task_dispatches_refresh_for_due_policy():
             return_value=[policy_id],
         ),
         patch(
-            "apps.workflow_engine.services.model_routing_policy_store.ModelRoutingPolicyStore.pending_learning_policy_ids_for_run",
-            return_value=[policy_id],
+            "apps.workflow_engine.services.model_routing_policy_store.ModelRoutingPolicyStore.pending_learning_learner_ids_for_run",
+            return_value=[learner_id],
         ),
     ):
         result = tasks.record_model_routing_operational_run.__wrapped__(str(uuid4()))
@@ -34,7 +35,7 @@ def test_operational_run_task_dispatches_refresh_for_due_policy():
         (
             ("workflow.model_routing.train_local_router",),
             {
-                "args": [str(policy_id), False],
+                "args": [str(learner_id), False],
                 "kwargs": {},
                 "argsrepr": "[workflow arguments redacted]",
                 "kwargsrepr": "{workflow arguments redacted}",
@@ -59,11 +60,11 @@ def test_local_router_training_task_defers_a_small_batch_without_blocking_run():
         ModelRoutingLearningBatchService,
     )
 
-    policy_id = uuid4()
+    learner_id = uuid4()
     session = MagicMock()
     sent = []
     result = ModelRoutingLearningBatchResult(
-        active_policy={},
+        learner_state={},
         processed_count=0,
         remaining_count=4,
         deferred_seconds=300,
@@ -83,13 +84,13 @@ def test_local_router_training_task_defers_a_small_batch_without_blocking_run():
         ),
     ):
         task_result = tasks.train_model_routing_local_router.__wrapped__(
-            str(policy_id), False
+            str(learner_id), False
         )
 
     session.commit.assert_called_once()
     assert task_result["status"] == "deferred"
     assert sent[0][0] == ("workflow.model_routing.train_local_router",)
-    assert sent[0][1]["args"] == [str(policy_id), True]
+    assert sent[0][1]["args"] == [str(learner_id), True]
     assert sent[0][1]["countdown"] == 300
 
 

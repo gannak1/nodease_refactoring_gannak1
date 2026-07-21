@@ -1,5 +1,4 @@
 import json
-import math
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +7,7 @@ from apps.workflow_engine.services.model_routing_local_classifier import (
     DEFAULT_MULTILINGUAL_E5_MODEL_ID,
     MultilingualE5Embedder,
     MultilingualE5ModelChoiceClassifier,
+    MultilingualE5TaskRequirementClassifier,
 )
 from apps.workflow_engine.services.model_routing_incremental_learning import (
     IncrementalTaskRequirementClassifier,
@@ -128,6 +128,65 @@ def test_local_learning_feature_separates_primary_context_and_structured_values(
     assert payload["structured_features"] == {
         "customerTier": "enterprise",
         "outputMode": "analysis",
+        "routing_contract": {
+            "control_gate_present": False,
+            "customer_facing": False,
+            "customer_output_reachable": False,
+            "downstream_contract_required": False,
+            "external_read_reachable": False,
+            "external_write_reachable": False,
+            "has_file_input": False,
+            "human_approval_required": False,
+            "input_token_bucket": 0,
+            "irreversible_effect_possible": False,
+            "knowledge_enabled": False,
+            "local_execution_reachable": False,
+            "reachable_effect_count": 0,
+            "schema_required": False,
+        },
+    }
+
+
+def test_learning_feature_uses_nested_routing_context_and_graph_effect_profile():
+    node = SimpleNamespace(
+        referenced_variables=[
+            SimpleNamespace(name="request", value_selector=["webhook", "request"]),
+        ],
+        model_routing_context={"customer_facing": True},
+    )
+
+    payload = json.loads(
+        ModelRouter.learning_feature_text(
+            {"webhook": {"request": "이 고객의 환불을 승인해 주세요."}},
+            node,
+            effect_profile={
+                "control_gate_present": True,
+                "customer_output_reachable": True,
+                "downstream_contract_required": True,
+                "external_read_reachable": False,
+                "external_write_reachable": True,
+                "irreversible_effect_possible": True,
+                "local_execution_reachable": False,
+                "reachable_effect_count": 1,
+            },
+        )
+    )
+
+    assert payload["structured_features"]["routing_contract"] == {
+        "control_gate_present": True,
+        "customer_facing": True,
+        "customer_output_reachable": True,
+        "downstream_contract_required": True,
+        "external_read_reachable": False,
+        "external_write_reachable": True,
+        "has_file_input": False,
+        "human_approval_required": False,
+        "input_token_bucket": 0,
+        "irreversible_effect_possible": True,
+        "knowledge_enabled": False,
+        "local_execution_reachable": False,
+        "reachable_effect_count": 1,
+        "schema_required": False,
     }
 
 
@@ -168,13 +227,84 @@ def test_grouped_learning_vector_prioritizes_primary_request_without_dropping_co
         embedder=embedder,
     )
 
-    x_value = 0.75 + 0.10 / math.sqrt(2)
-    y_value = 0.15 + 0.10 / math.sqrt(2)
-    norm = math.sqrt(x_value**2 + y_value**2)
-    assert vector == pytest.approx([x_value / norm, y_value / norm])
+    assert len(vector) == 143
+    assert sum(value * value for value in vector[:128]) == pytest.approx(1.0)
+    assert vector[128:] == pytest.approx([0.0] * 15)
     assert model_id == "grouped-test-embedder"
-    assert len(embedder.texts) == 3
+    assert len(embedder.texts) == 2
     assert all(text.startswith("query: ") for text in embedder.texts)
+
+
+class _SameSemanticEmbedder:
+    model_id = "same-semantic-test-embedder"
+
+    def encode(self, texts, *, mode="plain"):
+        return [[1.0, 0.0] for _text in texts]
+
+
+def test_decision_impact_learns_graph_effects_even_when_semantic_vectors_are_equal():
+    def feature(*, external_write: bool) -> str:
+        return json.dumps(
+            {
+                "primary_request": {"request": "환불 요청을 처리해 주세요."},
+                "dynamic_context": {},
+                "structured_features": {
+                    "routing_contract": {
+                        "customer_facing": True,
+                        "external_write_reachable": external_write,
+                        "irreversible_effect_possible": external_write,
+                        "reachable_effect_count": int(external_write),
+                    }
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    low_vector, encoder_id = MultilingualE5ModelChoiceClassifier.vectorize(
+        feature(external_write=False),
+        artifact=None,
+        embedder=_SameSemanticEmbedder(),
+    )
+    high_vector, _ = MultilingualE5ModelChoiceClassifier.vectorize(
+        feature(external_write=True),
+        artifact=None,
+        embedder=_SameSemanticEmbedder(),
+    )
+    artifact = None
+    for _ in range(60):
+        artifact = MultilingualE5TaskRequirementClassifier.update_from_vector(
+            artifact,
+            vector=low_vector,
+            encoder_model_id=encoder_id,
+            task_requirements={
+                "task_complexity": 1,
+                "decision_impact": 0,
+                "evidence_synthesis": 1,
+            },
+        )
+        artifact = MultilingualE5TaskRequirementClassifier.update_from_vector(
+            artifact,
+            vector=high_vector,
+            encoder_model_id=encoder_id,
+            task_requirements={
+                "task_complexity": 1,
+                "decision_impact": 3,
+                "evidence_synthesis": 1,
+            },
+        )
+
+    low = MultilingualE5TaskRequirementClassifier.predict_from_vector(
+        artifact,
+        vector=low_vector,
+    )
+    high = MultilingualE5TaskRequirementClassifier.predict_from_vector(
+        artifact,
+        vector=high_vector,
+    )
+
+    assert low.requirements["decision_impact"] < high.requirements["decision_impact"]
+    assert low.requirements["task_complexity"] == high.requirements["task_complexity"]
+    assert low.requirements["evidence_synthesis"] == high.requirements["evidence_synthesis"]
 
 
 def test_local_router_uses_multilingual_e5_base_by_default(monkeypatch):
@@ -252,8 +382,13 @@ def test_local_mode_rejects_a_collapsed_judge_label_distribution():
 
 def test_local_mode_requires_recent_pre_learning_accuracy_and_contract_quality():
     healthy = {
-        "judged_request_count": 50,
-        "recent_judge_match_rate": 0.8,
+        "judged_request_count": 100,
+        "recent_judge_match_rate": 0.75,
+        "recent_axis_accuracies": {
+            "task_complexity": 0.9,
+            "decision_impact": 0.9,
+            "evidence_synthesis": 0.9,
+        },
         "recent_axis_mean_errors": {
             "task_complexity": 0.3,
             "decision_impact": 0.2,
@@ -262,7 +397,8 @@ def test_local_mode_requires_recent_pre_learning_accuracy_and_contract_quality()
         "recent_judge_label_diversity": 3,
         "recent_local_prediction_diversity": 3,
         "recent_contract_pass_rate": 0.95,
-        "recent_evaluation_sample_count": 20,
+        "recent_evaluation_sample_count": 50,
+        "high_risk_underestimation_count": 0,
         "success_rate": 0.98,
         "schema_pass_rate": 0.99,
         "downstream_success_rate": 0.99,
@@ -270,7 +406,7 @@ def test_local_mode_requires_recent_pre_learning_accuracy_and_contract_quality()
     }
 
     assert learning_mode_for(**healthy) == "local_first"
-    assert learning_mode_for(**{**healthy, "recent_judge_match_rate": 0.75}) == "judge_first"
+    assert learning_mode_for(**{**healthy, "recent_judge_match_rate": 0.74}) == "judge_first"
     assert learning_mode_for(
         **{
             **healthy,

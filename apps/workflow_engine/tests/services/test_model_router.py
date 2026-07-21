@@ -30,7 +30,7 @@ def _node(**overrides):
     return SimpleNamespace(**values)
 
 
-def _policy(**active_overrides):
+def _policy(*, learner=None, **active_overrides):
     active = build_judge_first_active_policy(
         policy_version="judge-first-v1",
         default_model_id="gpt-4.1",
@@ -38,7 +38,7 @@ def _policy(**active_overrides):
         candidate_model_ids=["gpt-4.1", "gpt-4.1-mini", "gpt-4o-mini"],
     )
     active.update(active_overrides)
-    return {"active_policy": active}
+    return {"active_policy": active, "learner": learner}
 
 
 def test_workflow_chat_model_allowlist_includes_gpt_56_aliases():
@@ -92,8 +92,9 @@ def test_confident_local_prediction_skips_runtime_judge(monkeypatch):
             confidence=0.91,
         ),
     )
+    monkeypatch.setattr(ModelRouter, "should_audit_local_prediction", lambda *_: False)
     policy = _policy(
-        learning={
+        learner={
             "mode": "local_first",
             "local_confidence_threshold": 0.78,
             "local_requirement_artifact": {
@@ -116,6 +117,43 @@ def test_confident_local_prediction_skips_runtime_judge(monkeypatch):
     assert decision.requires_runtime_judge is False
 
 
+def test_confident_local_prediction_audit_sample_returns_to_runtime_judge(monkeypatch):
+    monkeypatch.setattr(
+        "apps.workflow_engine.services.model_router."
+        "MultilingualE5TaskRequirementClassifier.predict",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            requirements={
+                "task_complexity": 1,
+                "decision_impact": 0,
+                "evidence_synthesis": 0,
+            },
+            confidence=0.91,
+        ),
+    )
+    monkeypatch.setattr(ModelRouter, "should_audit_local_prediction", lambda *_: True)
+
+    decision = ModelRouter.resolve_policy(
+        _policy(
+            learner={
+                "mode": "local_first",
+                "local_confidence_threshold": 0.78,
+                "local_requirement_artifact": {
+                    "feature_schema_version": TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
+                },
+            }
+        ),
+        inputs={"message": "비밀번호 변경 위치를 알려 주세요."},
+        node_data=_node(),
+        available_model_ids=["gpt-4.1", "gpt-4.1-mini", "gpt-4o-mini"],
+        routing_feature_text="CURRENT_REQUEST: 감사 표본",
+    )
+
+    assert decision.selected_model_id == "gpt-4.1"
+    assert decision.reason_code == "local_router_audit_sample"
+    assert decision.decision_source == "local_router_audit"
+    assert decision.requires_runtime_judge is True
+
+
 def test_uncertain_local_prediction_returns_to_runtime_judge(monkeypatch):
     monkeypatch.setattr(
         "apps.workflow_engine.services.model_router."
@@ -130,7 +168,7 @@ def test_uncertain_local_prediction_returns_to_runtime_judge(monkeypatch):
         ),
     )
     policy = _policy(
-        learning={
+        learner={
             "mode": "local_first",
             "local_confidence_threshold": 0.78,
             "local_requirement_artifact": {
@@ -182,6 +220,44 @@ def test_candidate_selection_considers_available_candidates_without_prior_valida
     assert selected == "gpt-4o-mini"
 
 
+def test_candidate_selection_excludes_routine_reasoning_model_for_generated_json_response():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=["gpt-5-nano", "gpt-4o-mini", "gpt-4.1"],
+        requirements={
+            "task_complexity": 1,
+            "decision_impact": 0,
+            "evidence_synthesis": 0,
+        },
+        default_model_id="gpt-4.1",
+        structural_facts={
+            "task_intent": "generate",
+            "output_format": "json",
+            "schema_required": True,
+        },
+    )
+
+    assert selected == "gpt-4o-mini"
+
+
+def test_candidate_selection_keeps_nano_for_structured_extraction():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=["gpt-5-nano", "gpt-4o-mini", "gpt-4.1"],
+        requirements={
+            "task_complexity": 1,
+            "decision_impact": 0,
+            "evidence_synthesis": 0,
+        },
+        default_model_id="gpt-4.1",
+        structural_facts={
+            "task_intent": "extract",
+            "output_format": "json",
+            "schema_required": True,
+        },
+    )
+
+    assert selected == "gpt-5-nano"
+
+
 def test_judge_first_adds_newly_available_models_to_a_narrow_persisted_pool():
     policy = _policy(candidate_model_ids=["gpt-4.1"])
 
@@ -230,6 +306,7 @@ def test_runtime_requirement_facts_are_computed_without_llm_guessing():
     )
 
     assert facts == {
+        "task_intent": "generate",
         "input_token_bucket": "short",
         "schema_required": True,
         "knowledge_enabled": True,
@@ -237,6 +314,15 @@ def test_runtime_requirement_facts_are_computed_without_llm_guessing():
         "output_format": "json",
         "downstream_contract_required": True,
         "file_input_present": True,
+        "customer_facing": False,
+        "external_write_reachable": False,
+        "external_read_reachable": False,
+        "local_execution_reachable": False,
+        "customer_output_reachable": False,
+        "control_gate_present": False,
+        "irreversible_effect_possible": False,
+        "reachable_effect_count": 0,
+        "human_approval_required": False,
     }
 
 
@@ -492,9 +578,10 @@ def test_resolve_policy_reuses_accepted_judge_decision_for_same_safe_feature(mon
 
     feature = "CURRENT_REQUEST:\nmessage: 동일한 안전 요청"
     policy = _policy()
-    learning = policy["active_policy"]["learning"]
+    learner = {}
+    policy["learner"] = learner
     remember_accepted_decision(
-        learning,
+        learner,
         feature_hash=routing_feature_hash(feature),
         selected_model_id="gpt-4o-mini",
         confidence=0.94,

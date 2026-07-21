@@ -10,19 +10,13 @@ from apps.workflow_engine.services.llm_service import LLMService
 
 
 def test_completed_judge_label_waits_for_async_batch_after_contract_passes(monkeypatch):
-    from apps.workflow_engine.services.model_routing_policy_store import (
-        ModelRoutingPolicyStore,
+    from apps.workflow_engine.services.model_routing_learner_store import (
+        ModelRoutingLearnerStore,
     )
     from apps.workflow_engine.services.model_routing_local_classifier import (
         MultilingualE5ModelChoiceClassifier,
     )
 
-    policy = SimpleNamespace(
-        active_policy={
-            "strategy_id": "judge_bootstrap_incremental_v1",
-            "learning": {"mode": "judge_first"},
-        }
-    )
     accepted = SimpleNamespace(
         status="pending",
         feature_vector=[0.2, 0.8],
@@ -46,15 +40,21 @@ def test_completed_judge_label_waits_for_async_batch_after_contract_passes(monke
         lambda artifact, **kwargs: updated.update(kwargs) or {"kind": "test"},
     )
 
-    assert ModelRoutingPolicyStore._finalize_runtime_judge_label(
-        policy=policy,
+    assert ModelRoutingLearnerStore._finalize_label(
         label=accepted,
         contract_passed=True,
-        outcome_reason="contract_passed",
+        reason="contract_passed",
+        execution_succeeded=True,
+        schema_status="passed",
+        downstream_status="passed",
+        fallback_used=False,
     ) is True
     assert accepted.status == "accepted"
     assert updated == {}
-    assert "judged_request_count" not in policy.active_policy["learning"]
+    assert accepted.execution_succeeded is True
+    assert accepted.schema_status == "passed"
+    assert accepted.downstream_status == "passed"
+    assert accepted.fallback_used is False
 
     rejected = SimpleNamespace(
         status="pending",
@@ -71,15 +71,19 @@ def test_completed_judge_label_waits_for_async_batch_after_contract_passes(monke
         },
         outcome_reason=None,
     )
-    assert ModelRoutingPolicyStore._finalize_runtime_judge_label(
-        policy=policy,
+    assert ModelRoutingLearnerStore._finalize_label(
         label=rejected,
         contract_passed=False,
-        outcome_reason="fallback_used",
+        reason="fallback_used",
+        execution_succeeded=True,
+        schema_status="passed",
+        downstream_status="passed",
+        fallback_used=True,
     ) is False
     assert rejected.status == "rejected"
     assert rejected.outcome_reason == "fallback_used"
-    assert "judged_request_count" not in policy.active_policy["learning"]
+    assert rejected.execution_succeeded is True
+    assert rejected.fallback_used is True
 
 
 class _Query:
@@ -106,6 +110,7 @@ class _Query:
         return self.first_value
 
     def all(self):
+        self.all_called = True
         return self.all_value
 
 
@@ -210,116 +215,48 @@ def test_runtime_judge_label_rolls_back_when_vectorization_is_skipped(monkeypatc
 
 
 def test_learning_label_summary_returns_counts_without_exposing_vectors():
-    from apps.workflow_engine.services.model_routing_policy_store import (
-        ModelRoutingPolicyStore,
+    from apps.workflow_engine.services.model_routing_learner_store import (
+        ModelRoutingLearnerStore,
     )
 
-    policy_id = uuid4()
+    learner_id = uuid4()
     db = MagicMock()
-    db.query.return_value = _Query(
-        all_value=[
-            SimpleNamespace(status="pending", outcome_reason=None),
-            SimpleNamespace(status="accepted", outcome_reason="contract_passed"),
-            SimpleNamespace(status="rejected", outcome_reason="schema_failed"),
-        ]
-    )
+    query = _Query(first_value=(1, 1, 1))
+    db.query.return_value = query
 
-    assert ModelRoutingPolicyStore.learning_label_summary(
+    assert ModelRoutingLearnerStore.label_summary(
         db,
-        policy_id=policy_id,
+        learner_id=learner_id,
     ) == {
         "pending_count": 1,
         "accepted_count": 1,
         "rejected_count": 1,
-        "last_outcome_reason": "contract_passed",
     }
+    assert not getattr(query, "all_called", False)
 
 
-def test_new_judge_contract_rejects_old_labels_and_resets_learning_artifact(monkeypatch):
-    from apps.workflow_engine.services.model_routing_local_classifier import (
-        MultilingualE5ModelChoiceClassifier,
-        MultilingualE5TaskRequirementClassifier,
-    )
-    from apps.workflow_engine.services.model_routing_policy_store import (
-        ModelRoutingPolicyStore,
+def test_new_judge_contract_creates_a_distinct_learner_lineage():
+    from apps.workflow_engine.services.model_routing_learner_store import (
+        ModelRoutingLearnerStore,
     )
 
-    policy = SimpleNamespace(
-        id=uuid4(),
-        active_policy={
-            "strategy_id": "judge_bootstrap_incremental_v1",
-            "learning": {
-                "mode": "local_first",
-                "judge_contract": {
-                    "judge_rubric_version": "routing-requirements-v1",
-                    "feature_schema_version": "old-schema",
-                    "judge_model_id": "gpt-4.1-mini",
-                },
-                "candidate_requirement_artifact": {"kind": "old"},
-                "local_requirement_artifact": {"kind": "old"},
-                "judged_request_count": 50,
-            },
-        },
+    old_hash = ModelRoutingLearnerStore.judge_contract_hash(
+        judge_rubric_version="routing-requirements-v1",
+        feature_schema_version="old-schema",
+        encoder_model_id="test-encoder",
     )
-    query = MagicMock()
-    query.filter.return_value = query
-    query.update.return_value = 2
-    query.first.return_value = None
-    db = MagicMock()
-    db.query.return_value = query
-    monkeypatch.setattr(
-        MultilingualE5ModelChoiceClassifier,
-        "vectorize",
-        lambda *_args, **_kwargs: ([0.1, 0.2], "test-encoder"),
-    )
-    monkeypatch.setattr(
-        MultilingualE5TaskRequirementClassifier,
-        "predict_from_vector",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("no artifact")),
+    new_hash = ModelRoutingLearnerStore.judge_contract_hash(
+        judge_rubric_version="routing-requirements-v2",
+        feature_schema_version="grouped_runtime_variables_v4_e5",
+        encoder_model_id="test-encoder",
     )
 
-    with patch.object(
-        ModelRoutingPolicyStore,
-        "_lock_policy_for_update",
-        return_value=policy,
-    ):
-        result = ModelRoutingPolicyStore.queue_runtime_judge_label(
-            db,
-            policy_id=policy.id,
-            workflow_run_id=uuid4(),
-            node_id="llm-1",
-            routing_feature_text="safe feature",
-            learning_feature_text="safe learning feature",
-            selected_model_id="gpt-4.1",
-            candidate_model_ids=["gpt-4.1"],
-            confidence=0.9,
-            reason_code="requirement_default_selected",
-            task_requirements={
-                "task_complexity": 1,
-                "decision_impact": 1,
-                "evidence_synthesis": 1,
-            },
-            judge_rubric_version="routing-requirements-v2",
-            judge_model_id="gpt-5.4-mini",
-        )
-
-    learning = policy.active_policy["learning"]
-    assert result["learning_queued"] is True
-    assert learning["mode"] == "judge_first"
-    assert learning["judged_request_count"] == 0
-    assert "candidate_requirement_artifact" not in learning
-    assert "local_requirement_artifact" not in learning
-    assert learning["judge_contract"] == {
-        "judge_rubric_version": "routing-requirements-v2",
-        "feature_schema_version": "grouped_runtime_variables_v4_e5",
-        "judge_model_id": "gpt-5.4-mini",
-    }
-    query.update.assert_called_once()
+    assert old_hash != new_hash
 
 
 def test_finalize_learning_outcome_updates_node_trace_without_storing_feature_vector():
-    from apps.workflow_engine.services.model_routing_policy_store import (
-        ModelRoutingPolicyStore,
+    from apps.workflow_engine.services.model_routing_learner_store import (
+        ModelRoutingLearnerStore,
     )
 
     node_run = SimpleNamespace(
@@ -331,10 +268,10 @@ def test_finalize_learning_outcome_updates_node_trace_without_storing_feature_ve
         },
     )
 
-    ModelRoutingPolicyStore._write_runtime_judge_learning_outcome(
+    ModelRoutingLearnerStore._write_learning_outcome(
         node_run=node_run,
         status="accepted",
-        outcome_reason="contract_passed",
+        reason="contract_passed",
     )
 
     assert node_run.trace_metadata["llm"]["learning_status"] == "accepted"
@@ -940,7 +877,8 @@ def test_bootstrap_policy_ignores_legacy_active_policy_and_preserves_node_models
         "gpt-4.1",
         "gpt-4.1-mini",
     ]
-    assert policy.active_policy["learning"]["mode"] == "judge_first"
+    assert "learning" not in policy.active_policy
+    assert policy.learner_id is not None
     assert "rules" not in policy.active_policy
     assert policy.policy_version == "deployment-judge-first-v2"
     assert policy.status == "active"
@@ -950,6 +888,64 @@ def test_bootstrap_policy_ignores_legacy_active_policy_and_preserves_node_models
         user_id=workflow_run.user_id,
         organization_id=organization_id,
     )
+
+
+def test_existing_deployed_policy_without_learner_is_backfilled():
+    """기존 policy도 첫 운영 실행 전에 독립 학습기와 연결한다."""
+    from apps.workflow_engine.services.model_routing_learner_store import (
+        ModelRoutingLearnerStore,
+    )
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    organization_id = uuid4()
+    learner = SimpleNamespace(id=uuid4())
+    existing = SimpleNamespace(
+        learner_id=None,
+        active_learner_version_id=None,
+    )
+    workflow_run = SimpleNamespace(
+        workflow_id=uuid4(),
+        deployment_id=uuid4(),
+        user_id=uuid4(),
+    )
+    deployment = SimpleNamespace(graph_snapshot={"nodes": [], "edges": []})
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = deployment
+
+    with (
+        patch.object(
+            ModelRoutingPolicyStore,
+            "get_runtime_policy",
+            return_value=existing,
+        ),
+        patch.object(
+            ModelRoutingPolicyStore,
+            "_organization_id_for_run",
+            return_value=organization_id,
+        ),
+        patch.object(
+            ModelRoutingLearnerStore,
+            "get_or_create",
+            return_value=learner,
+        ) as get_or_create,
+        patch.object(
+            ModelRoutingLearnerStore,
+            "latest_version",
+            return_value=None,
+        ),
+    ):
+        policy = ModelRoutingPolicyStore.ensure_policy_for_deployed_node(
+            db,
+            workflow_run=workflow_run,
+            node_id="llm-1",
+            node_data={"auto_model_routing": True, "model_id": "gpt-4.1"},
+        )
+
+    assert policy is existing
+    assert existing.learner_id == learner.id
+    get_or_create.assert_called_once()
 
 
 def test_bootstrap_policy_matches_google_catalog_ids_with_or_without_models_prefix():

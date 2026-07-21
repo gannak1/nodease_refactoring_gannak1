@@ -49,6 +49,9 @@ from apps.workflow_engine.domain.external_effect import (
     ExternalEffectError,
     ExternalEffectRetrySignal,
 )
+from apps.workflow_engine.services.model_routing_effect_profile import (
+    build_model_routing_effect_profiles,
+)
 from apps.workflow_engine.workflow.core.runtime_dependencies import (
     WorkflowRuntimeDependencies,
 )
@@ -282,6 +285,10 @@ class WorkflowEngine:
         self._control_edge_states: dict[int, _ControlEdgeState] = {}
         self._node_schedule_states: dict[str, _NodeScheduleState] = {}
         self._build_optimized_graph()
+        self._model_routing_effect_profiles = build_model_routing_effect_profiles(
+            self.node_schemas,
+            self.adjacency_list,
+        )
         self._mail_sensitive_node_ids = self._descendants_of_type("mailNode")
         direct_provider_node_ids = {
             node_id
@@ -344,6 +351,7 @@ class WorkflowEngine:
         self._outgoing_control_edges.clear()
         self._control_edge_states.clear()
         self._node_schedule_states.clear()
+        self._model_routing_effect_profiles.clear()
         self.nodes_by_type.clear()
         self.execution_context.clear()
         self.user_input = None
@@ -1559,9 +1567,18 @@ class WorkflowEngine:
                 continue
 
             try:
+                node_context = self.execution_context
+                if schema.type == "llmNode":
+                    node_context = {
+                        **self.execution_context,
+                        "model_routing_effect_profile": self._model_routing_effect_profiles.get(
+                            node_id,
+                            {},
+                        ),
+                    }
                 self.node_instances[node_id] = NodeFactory.create(
                     schema,
-                    context=self.execution_context,
+                    context=node_context,
                     runtime_dependencies=self.runtime_dependencies,
                 )
             except NotImplementedError as e:
