@@ -407,6 +407,9 @@ DEPLOYMENT_IDS = {
     "internal_it_helpdesk_routing": uuid.UUID(
         "94000000-0000-0000-0000-000000000003"
     ),
+    "new_employee_onboarding_chatbot": uuid.UUID(
+        "96000000-0000-0000-0000-000000000003"
+    ),
 }
 
 RETIRED_DEMO_DEPLOYMENT_IDS = {
@@ -3912,7 +3915,8 @@ def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
             "팀별 온보딩 문서를 RAG로 검색하는 신입 사원 안내 workflow",
             "admin",
             _new_employee_onboarding_chatbot_graph(),
-            deployed=False,
+            deployed=True,
+            deployment_type=DeploymentType.INTERNAL_CHATBOT,
             list_updated_at=list_updated_at - timedelta(seconds=2),
         ),
     }

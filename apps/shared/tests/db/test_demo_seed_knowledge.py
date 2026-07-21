@@ -617,7 +617,11 @@ def test_demo_seed_creates_requested_onboarding_workflows(monkeypatch):
     }
     new_employee_call = calls["new_employee_onboarding_chatbot"]
     assert new_employee_call["name"] == "신입 사원 온보딩 챗봇"
-    assert new_employee_call["deployed"] is False
+    assert new_employee_call["deployed"] is True
+    assert (
+        new_employee_call["deployment_type"]
+        is demo_seed.DeploymentType.INTERNAL_CHATBOT
+    )
     assert (
         onboarding_call["list_updated_at"]
         > calls["internal_it_helpdesk_routing"]["list_updated_at"]
@@ -633,7 +637,13 @@ def test_demo_seed_creates_requested_onboarding_workflows(monkeypatch):
         "onboarding_chatbot",
         "new_employee_onboarding_chatbot",
     }
-    assert set(demo_seed.DEPLOYMENT_IDS) == {"internal_it_helpdesk_routing"}
+    assert set(demo_seed.DEPLOYMENT_IDS) == {
+        "internal_it_helpdesk_routing",
+        "new_employee_onboarding_chatbot",
+    }
+    assert demo_seed.DEPLOYMENT_IDS["new_employee_onboarding_chatbot"] == uuid.UUID(
+        "96000000-0000-0000-0000-000000000003"
+    )
     assert set(demo_seed.RETIRED_DEMO_APP_IDS) == {
         "hr_bot_example",
         "ticket_ops",
