@@ -133,10 +133,16 @@ describe('TestSidebar node execution details', () => {
       screen.getByRole('heading', { name: '문의 분류 실행 상세' }),
     ).toBeVisible();
     expect(
-      screen.getByText(
+      screen.queryByText(
         '이 테스트 실행은 자동 라우팅 정책의 학습 및 갱신 횟수에 포함되지 않습니다.',
       ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        '이 테스트 실행은 배포 정책을 미리 적용한 결과이며, 정책 학습에는 포함되지 않습니다.',
+      ),
     ).toBeVisible();
+    expect(screen.getAllByText(/학습.*포함되지/)).toHaveLength(1);
     expect(screen.getByText('기본 모델로 실행')).toBeVisible();
     expect(screen.getByText('보통 입력')).toBeVisible();
     expect(screen.getByText('Judge 호출 안 함')).toBeVisible();

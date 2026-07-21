@@ -187,7 +187,7 @@ describe('FR-011 Judge-first model routing trace', () => {
     expect(screen.getAllByText('gpt-5.6-terra')).toHaveLength(2);
   });
 
-  it('배포 정책 테스트는 실제 Judge 실행이나 학습으로 오인되지 않게 표시한다', () => {
+  it('배포 정책 테스트는 중복 안내 카드 없이 실제 Judge 실행이나 학습으로 오인되지 않게 표시한다', () => {
     render(
       <ModelRoutingDecisionDetails
         output={{
@@ -210,8 +210,10 @@ describe('FR-011 Judge-first model routing trace', () => {
 
     expect(screen.getByText('기본 모델로 실행')).toBeVisible();
     expect(
-      screen.getByText('테스트 실행입니다. 이 결과는 자동 라우팅 학습에 포함되지 않습니다.'),
-    ).toBeVisible();
+      screen.queryByText(
+        '테스트 실행입니다. 이 결과는 자동 라우팅 학습에 포함되지 않습니다.',
+      ),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByText(
         '이 테스트 실행은 배포 정책을 미리 적용한 결과이며, 정책 학습에는 포함되지 않습니다.',
@@ -293,6 +295,16 @@ describe('FR-011 Judge-first model routing trace', () => {
     expect(screen.queryByText('Judge가 모델 선택')).not.toBeInTheDocument();
     expect(screen.getByText('보안 사고 판단에 적합')).toBeVisible();
     expect(screen.queryByText('선택 경로 정보 없음')).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        '이 테스트 실행 결과는 정책 학습에 포함되지 않습니다.',
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByTestId('judge-execution-details').compareDocumentPosition(
+        screen.getByTestId('model-routing-test-learning-exclusion'),
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it('Judge 호출 성공이면 선택 근거, 확신도, 비용을 하나의 Judge 실행 영역에 표시한다', () => {

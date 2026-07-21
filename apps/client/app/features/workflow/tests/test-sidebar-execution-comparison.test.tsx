@@ -933,6 +933,52 @@ describe('TestSidebar execution comparison', () => {
     ).toBe(false);
   });
 
+  it('노드 상세 비교를 열면 TestSidebar 본문을 맨 위로 올린다', async () => {
+    mocks.getWorkflowRuns.mockResolvedValue({
+      total: 1,
+      items: [runSummary('baseline-run', '2026-07-13T01:00:00Z')],
+    });
+    mocks.getWorkflowRun.mockImplementation(
+      (_workflowId: string, runId: string) =>
+        Promise.resolve(
+          runId === 'baseline-run'
+            ? runDetail('baseline-run', 'gpt-4.1', '기존 문의', '기존 답변')
+            : runDetail(
+                'current-run',
+                'gpt-4.1-mini',
+                '현재 문의',
+                '현재 답변',
+              ),
+        ),
+    );
+    mocks.getWorkflowRunLlmTraces.mockResolvedValue({
+      total: 0,
+      limit: 100,
+      offset: 0,
+      items: [],
+    });
+
+    render(<TestSidebar />);
+    fireEvent.click(screen.getByRole('button', { name: '실행 비교' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: '기준으로 고정' }),
+    );
+
+    const content = screen.getByTestId('test-execution-content');
+    content.scrollTop = 640;
+
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: '문의 분류 노드 상세 비교하기',
+      }),
+    );
+
+    expect(content.scrollTop).toBe(0);
+    expect(
+      screen.getByRole('heading', { name: '문의 분류 상세 비교' }),
+    ).toBeVisible();
+  });
+
   it('실시간 노드 상태 갱신으로 실행 비교를 다시 로드하지 않는다', async () => {
     mocks.getWorkflowRuns.mockResolvedValue({
       total: 1,
@@ -1120,13 +1166,18 @@ describe('TestSidebar execution comparison', () => {
     expect(screen.getByText('기존 답변')).toBeVisible();
     expect(screen.getByText('현재 답변')).toBeVisible();
     expect(screen.getByText('모델 라우팅 비교')).toBeVisible();
+    expect(
+      screen.queryByText(
+        '테스트 실행은 활성 배포 정책을 미리 보지만 정책 학습 횟수에는 포함되지 않습니다.',
+      ),
+    ).not.toBeInTheDocument();
     expect(screen.getAllByText('gpt-4.1').length).toBeGreaterThan(0);
     expect(screen.getAllByText('gpt-4.1-mini').length).toBeGreaterThan(0);
 
     const detailSections = [
       screen.getByTestId('node-comparison-status-panels'),
-      screen.getByText('모델 라우팅 비교'),
       screen.getByText('입력 비교'),
+      screen.getByText('모델 라우팅 비교'),
       screen.getByText('출력 비교'),
     ];
     for (let index = 0; index < detailSections.length - 1; index += 1) {

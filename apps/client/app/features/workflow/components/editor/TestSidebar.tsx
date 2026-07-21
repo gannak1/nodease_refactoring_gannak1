@@ -420,6 +420,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const nodeStartedAtRef = React.useRef<Record<string, number>>({});
   const restoredRunRef = React.useRef<string | null>(null);
   const historyLocationChangeRef = React.useRef(false);
+  const testExecutionContentRef = React.useRef<HTMLDivElement>(null);
   const latestNodesRef = React.useRef(nodes);
   const currentTestExecutionRef = React.useRef({
     runId: testExecutionRunId,
@@ -1143,16 +1144,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
         </section>
 
         {hasRoutingTrace ? (
-          <div className="space-y-3">
-            <p className="rounded-md border border-blue-200 bg-blue-50 p-3 text-xs leading-relaxed text-blue-800 dark:border-blue-900 dark:bg-blue-950/20 dark:text-blue-200">
-              이 테스트 실행은 자동 라우팅 정책의 학습 및 갱신 횟수에 포함되지
-              않습니다.
-            </p>
-            <ModelRoutingDecisionDetails
-              output={summary.output}
-              traceMetadata={summary.traceMetadata}
-            />
-          </div>
+          <ModelRoutingDecisionDetails
+            output={summary.output}
+            traceMetadata={summary.traceMetadata}
+          />
         ) : null}
       </div>
     );
@@ -1679,6 +1674,9 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   };
 
   const handleComparisonSelectedNodeIdChange = (nodeId: string | null) => {
+    if (nodeId && testExecutionContentRef.current) {
+      testExecutionContentRef.current.scrollTop = 0;
+    }
     setComparisonSelectedNodeId(nodeId);
     replaceTestExecutionLocation(testExecutionRunId, testSelectedNodeId, {
       comparisonNodeId: nodeId,
@@ -1768,7 +1766,11 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-6">
+      <div
+        ref={testExecutionContentRef}
+        data-testid="test-execution-content"
+        className="flex-1 overflow-y-auto p-6"
+      >
         {testRunRestoreState === 'restoring' && !isExecuting ? (
           <div className="mb-4 flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
             <Loader2 className="h-4 w-4 animate-spin" />
