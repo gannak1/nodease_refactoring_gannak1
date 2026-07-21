@@ -1543,7 +1543,7 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     assert workflow_node_secret_revision.down_revision == "f4a5b6c7d8e9"
     assert learning_label_feature_hash_revision.down_revision == "f5b6c7d8e9fa"
     assert routing_learning_task_requirements_revision.down_revision == "c3d4e5f6a7b8"
-    assert script.get_heads() == ["c4e5f6a7b8c9"]
+    assert script.get_heads() == ["b05c6d7e8f94"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
