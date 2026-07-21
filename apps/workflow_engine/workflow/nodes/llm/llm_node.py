@@ -3395,7 +3395,7 @@ class LLMNode(Node[LLMNodeData]):
             "reason": reason,
             "runtime_surface": "workflow_llm_node",
         }
-        control = self._runtime_control
+        control = getattr(self, "_runtime_control", None)
         if control is not None:
             try:
                 location = CanonicalWorkflowNodeLocation(
