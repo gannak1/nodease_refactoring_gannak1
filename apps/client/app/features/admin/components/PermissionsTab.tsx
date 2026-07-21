@@ -42,9 +42,9 @@ export type ResourceAuthState = 'viewer' | 'operator' | 'builder' | 'manager';
 
 export type PermissionGrantSelection = {
   resourceType: ResourceType;
-  resourceId: string;
+  resourceIds: string[];
   granteeType: GranteeType;
-  granteeId: string;
+  granteeIds: string[];
   authState: ResourceAuthState;
 };
 
@@ -71,6 +71,7 @@ const RESOURCE_AUTH_STATES: ResourceAuthState[] = [
   'builder',
   'manager',
 ];
+const MAX_BULK_PERMISSION_GRANTS = 50;
 
 const formatDateTime = (value?: string | null) =>
   value ? new Date(value).toLocaleString() : '-';
@@ -396,18 +397,22 @@ function PermissionGrantModal({
   const [granteeQuery, setGranteeQuery] = useState('');
   const [draftResourceType, setDraftResourceType] =
     useState<ResourceType>(resourceType);
-  const [draftResourceId, setDraftResourceId] = useState(
+  const initialResourceId =
     resourceType === 'workflow'
       ? selectedWorkflowId
       : resourceType === 'knowledge_base'
         ? selectedKnowledgeBaseId
         : resourceType === 'llm_credential'
           ? selectedCredentialId
-          : selectedMailCredentialId,
+          : selectedMailCredentialId;
+  const [draftResourceIds, setDraftResourceIds] = useState<string[]>(
+    initialResourceId ? [initialResourceId] : [],
   );
   const [draftGranteeType, setDraftGranteeType] =
     useState<GranteeType>(granteeType);
-  const [draftGranteeId, setDraftGranteeId] = useState(granteeId);
+  const [draftGranteeIds, setDraftGranteeIds] = useState<string[]>(
+    granteeId ? [granteeId] : [],
+  );
   const [draftAuthState, setDraftAuthState] =
     useState<ResourceAuthState>(authState);
 
@@ -448,24 +453,40 @@ function PermissionGrantModal({
       .toLowerCase()
       .includes(granteeQuery.trim().toLowerCase()),
   );
-  const hasVisibleResourceSelection = visibleResources.some(
-    (item) => item.id === draftResourceId,
-  );
-  const hasVisibleGranteeSelection = visibleGrantees.some(
-    (item) => item.id === draftGranteeId,
-  );
+  const visibleResourceIds = new Set(visibleResources.map((item) => item.id));
+  const visibleGranteeIds = new Set(visibleGrantees.map((item) => item.id));
+  const hasVisibleResourceSelection =
+    draftResourceIds.length > 0 &&
+    draftResourceIds.every((id) => visibleResourceIds.has(id));
+  const hasVisibleGranteeSelection =
+    draftGranteeIds.length > 0 &&
+    draftGranteeIds.every((id) => visibleGranteeIds.has(id));
+  const grantPairCount = draftResourceIds.length * draftGranteeIds.length;
+  const withinBulkLimit = grantPairCount <= MAX_BULK_PERMISSION_GRANTS;
+  const toggleSelection = (
+    id: string,
+    selectedIds: string[],
+    setSelectedIds: (ids: string[]) => void,
+  ) => {
+    setSelectedIds(
+      selectedIds.includes(id)
+        ? selectedIds.filter((selectedId) => selectedId !== id)
+        : [...selectedIds, id],
+    );
+  };
   const canSubmit =
     !actionPending &&
     hasVisibleResourceSelection &&
-    hasVisibleGranteeSelection;
+    hasVisibleGranteeSelection &&
+    withinBulkLimit;
 
   const submitGrant = async () => {
     if (!canSubmit) return;
     const success = await onGrant({
       resourceType: draftResourceType,
-      resourceId: draftResourceId,
+      resourceIds: draftResourceIds,
       granteeType: draftGranteeType,
-      granteeId: draftGranteeId,
+      granteeIds: draftGranteeIds,
       authState: draftAuthState,
     });
     if (success !== false) onClose();
@@ -520,10 +541,10 @@ function PermissionGrantModal({
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h3 className="text-sm font-semibold text-slate-950">
-                  1. 리소스 선택 {hasVisibleResourceSelection ? '(1)' : '(0)'}
+                  1. 리소스 선택 ({draftResourceIds.length})
                 </h3>
                 <p className="mt-1 text-xs text-slate-500">
-                  권한을 적용할 리소스를 하나 선택하세요.
+                  권한을 적용할 리소스를 하나 이상 선택하세요.
                 </p>
               </div>
               <RefreshCw className="h-4 w-4 text-blue-600" aria-hidden="true" />
@@ -551,7 +572,8 @@ function PermissionGrantModal({
                   onChange={(event) => {
                     const nextType = event.target.value as ResourceType;
                     setDraftResourceType(nextType);
-                    setDraftResourceId(getResourceOptions(nextType)[0]?.id || '');
+                    const nextResourceId = getResourceOptions(nextType)[0]?.id;
+                    setDraftResourceIds(nextResourceId ? [nextResourceId] : []);
                     setResourceQuery('');
                   }}
                   className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900"
@@ -579,7 +601,7 @@ function PermissionGrantModal({
                   ) : (
                     visibleResources.map((item) => (
                       <tr key={item.id}>
-                        <td className="px-3 py-3"><input type="radio" name="permission-resource" disabled={actionPending} checked={draftResourceId === item.id} onChange={() => setDraftResourceId(item.id)} aria-label={`${item.name} 선택`} /></td>
+                        <td className="px-3 py-3"><input type="checkbox" disabled={actionPending} checked={draftResourceIds.includes(item.id)} onChange={() => toggleSelection(item.id, draftResourceIds, setDraftResourceIds)} aria-label={`${item.name} 선택`} /></td>
                         <td className="px-3 py-3 font-medium text-blue-700">{item.name}</td>
                         <td className="px-3 py-3 text-slate-600">{resourceTypeLabel(draftResourceType)}</td>
                         <td className="px-3 py-3 text-slate-500">현재 조직에서 사용할 수 있는 리소스</td>
@@ -594,10 +616,10 @@ function PermissionGrantModal({
           <section className="mt-4 rounded-lg border border-slate-200 p-4">
             <div>
               <h3 className="text-sm font-semibold text-slate-950">
-                2. 부여 대상 선택 {hasVisibleGranteeSelection ? '(1)' : '(0)'}
+                2. 부여 대상 선택 ({draftGranteeIds.length})
               </h3>
               <p className="mt-1 text-xs text-slate-500">
-                팀 또는 사용자에게 직접 권한을 부여합니다.
+                팀 또는 사용자를 하나 이상 선택해 권한을 부여합니다.
               </p>
             </div>
             <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_200px]">
@@ -613,11 +635,10 @@ function PermissionGrantModal({
                 <select disabled={actionPending} value={draftGranteeType} onChange={(event) => {
                   const nextType = event.target.value as GranteeType;
                   setDraftGranteeType(nextType);
-                  setDraftGranteeId(
-                    nextType === 'team'
-                      ? activeTeams[0]?.id || ''
-                      : activeMembers[0]?.user_id || '',
-                  );
+                  const nextGranteeId = nextType === 'team'
+                    ? activeTeams[0]?.id
+                    : activeMembers[0]?.user_id;
+                  setDraftGranteeIds(nextGranteeId ? [nextGranteeId] : []);
                   setGranteeQuery('');
                 }} className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900">
                   <option value="team">Team</option>
@@ -639,7 +660,7 @@ function PermissionGrantModal({
                   ) : (
                     visibleGrantees.map((item) => (
                       <tr key={item.id}>
-                        <td className="px-3 py-3"><input type="radio" name="permission-grantee" disabled={actionPending} checked={draftGranteeId === item.id} onChange={() => setDraftGranteeId(item.id)} aria-label={`${item.name} 선택`} /></td>
+                        <td className="px-3 py-3"><input type="checkbox" disabled={actionPending} checked={draftGranteeIds.includes(item.id)} onChange={() => toggleSelection(item.id, draftGranteeIds, setDraftGranteeIds)} aria-label={`${item.name} 선택`} /></td>
                         <td className="px-3 py-3 font-medium text-blue-700">{item.name}</td>
                         <td className="px-3 py-3 text-slate-600">{draftGranteeType === 'team' ? 'Team' : 'User direct'}</td>
                         <td className="px-3 py-3 text-slate-500">{item.detail}</td>
@@ -667,7 +688,8 @@ function PermissionGrantModal({
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white px-6 py-4">
           <p className="text-sm text-slate-600">
-            리소스 {hasVisibleResourceSelection ? 1 : 0}개 · 대상 {hasVisibleGranteeSelection ? 1 : 0}개 · {resourcePermissionLabel(draftResourceType, draftAuthState)}
+            리소스 {draftResourceIds.length}개 · 대상 {draftGranteeIds.length}개 · 총 {grantPairCount}건 · {resourcePermissionLabel(draftResourceType, draftAuthState)}
+            {!withinBulkLimit && ` · 최대 ${MAX_BULK_PERMISSION_GRANTS}건`}
           </p>
           <div className="flex items-center gap-2">
             <button type="button" onClick={requestClose} disabled={actionPending} className="h-10 rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">취소</button>

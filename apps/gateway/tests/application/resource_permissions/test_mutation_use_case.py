@@ -61,6 +61,19 @@ class _FailingRepository:
         raise self.error
 
 
+class _SequenceRepository:
+    def __init__(self, results) -> None:
+        self.results = iter(results)
+        self.commands = []
+
+    def mutate(self, command: PermissionMutationCommand) -> PermissionMutationResult:
+        self.commands.append(command)
+        result = next(self.results)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
 class _Audit:
     def __init__(self, *, error: Exception | None = None) -> None:
         self.error = error
@@ -154,6 +167,62 @@ def test_unchanged_mutation_does_not_record_audit() -> None:
     assert unit_of_work.flush_count == 0
     assert unit_of_work.commit_count == 1
     assert unit_of_work.rollback_count == 0
+
+
+def test_execute_many_commits_all_permission_mutations_once() -> None:
+    commands = [_command(), _command()]
+    results = [
+        PermissionMutationResult(
+            status="created",
+            permission=_projection(command),
+            before=None,
+            after=_projection(command).safe_snapshot(),
+        )
+        for command in commands
+    ]
+    repository = _SequenceRepository(results)
+    audit = _Audit()
+    unit_of_work = _UnitOfWork()
+
+    actual = ResourcePermissionMutationUseCase(
+        repository,
+        audit,
+        unit_of_work,
+    ).execute_many(commands)
+
+    assert actual == results
+    assert repository.commands == commands
+    assert audit.records == list(zip(commands, results, strict=True))
+    assert unit_of_work.flush_count == 2
+    assert unit_of_work.commit_count == 1
+    assert unit_of_work.rollback_count == 0
+
+
+def test_execute_many_rolls_back_the_whole_batch_when_one_mutation_fails() -> None:
+    commands = [_command(), _command()]
+    first_result = PermissionMutationResult(
+        status="created",
+        permission=_projection(commands[0]),
+        before=None,
+        after=_projection(commands[0]).safe_snapshot(),
+    )
+    repository = _SequenceRepository(
+        [first_result, RuntimeError("second permission write failed")]
+    )
+    audit = _Audit()
+    unit_of_work = _UnitOfWork()
+
+    with pytest.raises(PermissionMutationPersistenceFailed):
+        ResourcePermissionMutationUseCase(
+            repository,
+            audit,
+            unit_of_work,
+        ).execute_many(commands)
+
+    assert repository.commands == commands
+    assert audit.records == [(commands[0], first_result)]
+    assert unit_of_work.commit_count == 0
+    assert unit_of_work.rollback_count == 1
 
 
 @pytest.mark.parametrize(

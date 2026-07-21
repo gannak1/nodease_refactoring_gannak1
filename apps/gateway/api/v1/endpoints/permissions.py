@@ -27,6 +27,10 @@ from apps.gateway.services.app_lifecycle_lock import (
     AppPrimaryChangedDuringMutationError,
     lock_app_for_workflow_mutation,
 )
+from apps.gateway.services.mail_credential_service import (
+    MailCredentialService,
+    MailCredentialServiceError,
+)
 from apps.gateway.services.resource_permission_registry import resource_permission_spec
 from apps.gateway.utils.api_errors import (
     auth_error_code,
@@ -47,8 +51,10 @@ from apps.shared.services.permissions import (
     has_organization_manager_permission,
     has_organization_scope_access,
 )
-from apps.shared.services.permission_enforcement import PermissionEnforcementService
+from apps.shared.schemas.mail_credential import MailCredentialPermissionGrant
 from apps.shared.schemas.permission import (
+    BulkPermissionGrantRequest,
+    BulkPermissionGrantResponse,
     KnowledgeDirectPermissionGrantRequest,
     LLMPermissionGrantRequest,
     PermissionGrantRequest,
@@ -60,6 +66,7 @@ from apps.shared.schemas.permission import (
     UserWorkflowPermissionResponse,
 )
 from apps.shared.schemas.team import ResourcePermissionListResponse
+from apps.shared.services.permission_enforcement import PermissionEnforcementService
 
 router = APIRouter()
 
@@ -364,6 +371,28 @@ def _execute_resource_permission_mutation(
         db,
         actor=current_user,
     ).execute(command)
+
+
+def _bulk_permission_pairs(
+    payload: BulkPermissionGrantRequest,
+) -> list[tuple[UUID, UUID]]:
+    return [
+        (resource_id, grantee_id)
+        for resource_id in sorted(payload.resource_ids, key=str)
+        for grantee_id in sorted(payload.grantee_ids, key=str)
+    ]
+
+
+def _bulk_permission_response(
+    payload: BulkPermissionGrantRequest,
+) -> BulkPermissionGrantResponse:
+    return BulkPermissionGrantResponse(
+        resource_type=payload.resource_type,
+        grantee_type=payload.grantee_type,
+        resource_count=len(payload.resource_ids),
+        grantee_count=len(payload.grantee_ids),
+        grant_count=len(payload.resource_ids) * len(payload.grantee_ids),
+    )
 
 
 def _record_team_knowledge_permission_audit(
@@ -1377,6 +1406,8 @@ def _upsert_team_knowledge_permission(
     auth_state: str,
     assigned_by: UUID,
     assigned_at: datetime,
+    *,
+    commit: bool = True,
 ) -> TeamKnowledgePermission:
     """team-KB 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
     _lock_permission_key(
@@ -1429,14 +1460,21 @@ def _upsert_team_knowledge_permission(
     if permission is None:
         permission = existing_permission
     after = _permission_audit_columns(permission)
-    _record_team_knowledge_permission_audit(
-        db,
-        current_user,
-        permission,
-        before,
-        after,
-    )
-    db.commit()
+
+    def record_permission_audit() -> None:
+        _record_team_knowledge_permission_audit(
+            db,
+            current_user,
+            permission,
+            before,
+            after,
+        )
+
+    if commit:
+        _commit_audited_permission_mutation(db, record_permission_audit)
+    else:
+        record_permission_audit()
+        db.flush()
     return permission
 
 
@@ -1499,9 +1537,13 @@ def _upsert_user_knowledge_permission(
     auth_state: str,
     assigned_by: UUID,
     assigned_at: datetime,
+    *,
+    commit: bool = True,
+    lock_subject: bool = True,
 ) -> UserKnowledgePermission:
     """user-KB 직접 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
-    _lock_active_direct_permission_subject(db, organization_id, user_id)
+    if lock_subject:
+        _lock_active_direct_permission_subject(db, organization_id, user_id)
     _lock_permission_key(
         db, "user_knowledge_permission", organization_id, knowledge_base_id, user_id
     )
@@ -1552,16 +1594,21 @@ def _upsert_user_knowledge_permission(
     if permission is None:
         permission = existing_permission
     after = _user_permission_audit_snapshot(permission, "knowledge_base_id")
-    _commit_audited_permission_mutation(
-        db,
-        lambda: _record_user_knowledge_permission_audit(
+
+    def record_permission_audit() -> None:
+        _record_user_knowledge_permission_audit(
             db,
             current_user,
             permission,
             before,
             after,
-        ),
-    )
+        )
+
+    if commit:
+        _commit_audited_permission_mutation(db, record_permission_audit)
+    else:
+        record_permission_audit()
+        db.flush()
     return permission
 
 
@@ -1794,6 +1841,253 @@ def list_llm_credential_permissions(
             for permission in user_permissions
         ],
     }
+
+
+def _grant_bulk_workflow_permissions(
+    request: Request,
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    payload: BulkPermissionGrantRequest,
+) -> None:
+    pairs = _bulk_permission_pairs(payload)
+    workflows: dict[UUID, Workflow] = {}
+    try:
+        for workflow_id, grantee_id in pairs:
+            if payload.grantee_type == "team":
+                _, workflow, _ = _authorize_team_workflow_permission_change(
+                    request,
+                    db,
+                    current_user,
+                    organization_id,
+                    workflow_id,
+                    grantee_id,
+                )
+            else:
+                _, workflow, _ = _authorize_user_workflow_permission_change(
+                    request,
+                    db,
+                    current_user,
+                    organization_id,
+                    workflow_id,
+                    grantee_id,
+                )
+            workflows[workflow_id] = workflow
+
+        if payload.grantee_type == "user":
+            for user_id in sorted(payload.grantee_ids, key=str):
+                _lock_active_direct_permission_subject(db, organization_id, user_id)
+        for workflow_id in sorted(payload.resource_ids, key=str):
+            _lock_workflow_mutation_app_scope(
+                request,
+                db,
+                organization_id=organization_id,
+                workflow=workflows[workflow_id],
+            )
+
+        assigned_at = datetime.now(timezone.utc)
+        commands = [
+            PermissionMutationCommand(
+                actor_id=current_user.id,
+                organization_id=organization_id,
+                resource_type="workflow",
+                resource_id=workflow_id,
+                grantee_type=payload.grantee_type,
+                grantee_id=grantee_id,
+                operation="upsert",
+                auth_state=payload.auth_state,
+                assigned_at=assigned_at,
+            )
+            for workflow_id, grantee_id in pairs
+        ]
+        build_resource_permission_mutation_use_case(
+            db,
+            actor=current_user,
+        ).execute_many(commands)
+    except Exception:
+        db.rollback()
+        raise
+
+
+def _grant_bulk_llm_permissions(
+    request: Request,
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    payload: BulkPermissionGrantRequest,
+) -> None:
+    pairs = _bulk_permission_pairs(payload)
+    try:
+        for credential_id, grantee_id in pairs:
+            if payload.grantee_type == "team":
+                _authorize_team_llm_permission_change(
+                    request,
+                    db,
+                    current_user,
+                    organization_id,
+                    credential_id,
+                    grantee_id,
+                )
+            else:
+                _authorize_user_llm_permission_change(
+                    request,
+                    db,
+                    current_user,
+                    organization_id,
+                    credential_id,
+                    grantee_id,
+                )
+
+        if payload.grantee_type == "user":
+            for user_id in sorted(payload.grantee_ids, key=str):
+                _lock_active_direct_permission_subject(db, organization_id, user_id)
+
+        assigned_at = datetime.now(timezone.utc)
+        commands = [
+            PermissionMutationCommand(
+                actor_id=current_user.id,
+                organization_id=organization_id,
+                resource_type="llm_credential",
+                resource_id=credential_id,
+                grantee_type=payload.grantee_type,
+                grantee_id=grantee_id,
+                operation="upsert",
+                auth_state=payload.auth_state,
+                assigned_at=assigned_at,
+            )
+            for credential_id, grantee_id in pairs
+        ]
+        build_resource_permission_mutation_use_case(
+            db,
+            actor=current_user,
+        ).execute_many(commands)
+    except Exception:
+        db.rollback()
+        raise
+
+
+def _grant_bulk_knowledge_permissions(
+    request: Request,
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    payload: BulkPermissionGrantRequest,
+) -> None:
+    pairs = _bulk_permission_pairs(payload)
+    try:
+        for knowledge_base_id, grantee_id in pairs:
+            if payload.grantee_type == "team":
+                _, _, _, authority = _authorize_team_knowledge_permission_change(
+                    request,
+                    db,
+                    current_user,
+                    organization_id,
+                    knowledge_base_id,
+                    grantee_id,
+                )
+                _block_domain_delegate_self_escalation(
+                    request,
+                    db,
+                    current_user,
+                    organization_id,
+                    knowledge_base_id,
+                    authority=authority,
+                    target_team_id=grantee_id,
+                )
+            else:
+                _, _, _, authority = _authorize_user_knowledge_permission_change(
+                    request,
+                    db,
+                    current_user,
+                    organization_id,
+                    knowledge_base_id,
+                    grantee_id,
+                )
+                _block_domain_delegate_self_escalation(
+                    request,
+                    db,
+                    current_user,
+                    organization_id,
+                    knowledge_base_id,
+                    authority=authority,
+                    target_user_id=grantee_id,
+                )
+
+        if payload.grantee_type == "user":
+            for user_id in sorted(payload.grantee_ids, key=str):
+                _lock_active_direct_permission_subject(db, organization_id, user_id)
+
+        assigned_at = datetime.now(timezone.utc)
+        for knowledge_base_id, grantee_id in pairs:
+            if payload.grantee_type == "team":
+                _upsert_team_knowledge_permission(
+                    db,
+                    current_user,
+                    organization_id,
+                    knowledge_base_id,
+                    grantee_id,
+                    payload.auth_state,
+                    current_user.id,
+                    assigned_at,
+                    commit=False,
+                )
+            else:
+                _upsert_user_knowledge_permission(
+                    db,
+                    current_user,
+                    organization_id,
+                    knowledge_base_id,
+                    grantee_id,
+                    payload.auth_state,
+                    current_user.id,
+                    assigned_at,
+                    commit=False,
+                    lock_subject=False,
+                )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
+@router.post("/bulk-grants", response_model=BulkPermissionGrantResponse)
+def grant_permissions_bulk(
+    payload: BulkPermissionGrantRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    auth_token: str | None = Cookie(default=None),
+):
+    current_user = _authenticate(request, db, auth_token)
+    organization_id = parse_organization_id(request, x_organization_id)
+
+    if payload.resource_type == "workflow":
+        _grant_bulk_workflow_permissions(
+            request, db, current_user, organization_id, payload
+        )
+    elif payload.resource_type == "knowledge_base":
+        _grant_bulk_knowledge_permissions(
+            request, db, current_user, organization_id, payload
+        )
+    elif payload.resource_type == "llm_credential":
+        _grant_bulk_llm_permissions(
+            request, db, current_user, organization_id, payload
+        )
+    else:
+        try:
+            MailCredentialService(db).grant_permissions_bulk(
+                current_user.id,
+                organization_id,
+                payload.resource_ids,
+                payload.grantee_type,
+                payload.grantee_ids,
+                MailCredentialPermissionGrant(auth_state=payload.auth_state),
+            )
+        except MailCredentialServiceError as exc:
+            db.rollback()
+            raise_api_error(request, exc.status_code, exc.code, exc.detail)
+
+    return _bulk_permission_response(payload)
 
 
 @router.put(
