@@ -69,6 +69,8 @@ Status: Draft
 ### AuditDetailDrawer (FR-011)
 
 - 화면 오른쪽 사이드 드로어. 목록 맥락을 유지한 채 상세를 보여준다.
+- `text-xs/sm/base/lg` 계층을 각각 한 단계 키우고 최대 폭은 `max-w-xl`로 확장해
+  actor 표시명·이메일·권한 문장이 좁은 폭 때문에 불필요하게 줄바꿈되지 않게 한다.
 - 표시 필드: actor, action(canonical 문자열과 파생 라벨), target, status, timestamp, allowlist metadata(`request_id`, sanitized `reason`, `requested_action`, `policy_reason` 등).
 - Actor/target과 `resolved_references`가 있는 allowlisted metadata/change summary UUID는 표시명을 먼저, UUID를 보조값으로 함께 표시한다. Resolver 실패는 상세 전체 오류가 아니라 ID-only fallback이다.
 - Security Alert 관리자 API 권한 거부는 safe metadata를 이용해 시도한 작업과 조직 관리자 권한 필요 사유를 사용자 문장과 한국어 라벨로 먼저 표시한다. 기존 기록처럼 정보가 없으면 일반 접근 거부 설명을 표시한다.
@@ -79,6 +81,8 @@ Status: Draft
 ### ActorAccessDrawer (FR-016, FR-017)
 
 - 오른쪽 side drawer로 audit list 맥락을 유지한다.
+- `text-xs/sm/base/lg` 계층을 각각 한 단계 키우고 최대 폭은 `max-w-4xl`로 확장해
+  4열 멤버십 지표와 actor·team·resource 정보를 읽기 쉽게 유지한다.
 - Organization member access semantics와 API contract는 [organization component spec](../organization/component_spec.md)의 `ActorAccessDrawer`와 [organization API spec](../organization/api_spec.md)을 따른다.
 - Summary 영역: actor name/email, global user active state, membership state, organization role, effective access, control block reason. Role set은 `member`/`manager` desired value별 control을 구분한다.
 - Source 영역: team membership count와 paginated active/inactive membership, App creation source, direct/team resource source counts.

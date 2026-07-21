@@ -214,6 +214,9 @@ Verified Against: feature/mba-127 @ 258b26a9
 
 - 출처: `apps/client/app/features/admin/components/ActorAccessDrawer.tsx`.
 - 책임: audit actor 또는 member row에서 current organization member의 membership, role, team, App 생성 권한, direct/team-inherited resource access를 user 중심으로 조회하고 항목별 관리 action을 제공한다.
+- 표시: 기존 `text-xs/sm/base/lg` 계층을 각각 한 단계 키우고 drawer 최대 폭을
+  `max-w-4xl`로 확장해 멤버십 4열 지표와 actor·team·resource 정보의 불필요한
+  줄바꿈을 줄인다.
 - 진입:
   - AuditSearchTab의 user actor button
   - 필요 시 MembersTab의 동일 member detail action

@@ -10,6 +10,7 @@ Security Alert FR-013의 상세 rule/worker/API/component/E2E matrix는 [Securit
 - Given audit `auditor`/`raw_auditor` only user, When Admin Dashboard를 열거나 Security Alert API를 호출하면, Then audit list/detail은 기존 권한대로 사용할 수 있지만 Security Alert 탭/API는 허용되지 않는다.
 - Given Security Alert deep link의 유효한 `alertId`, When 새로고침하면, Then 같은 tab/detail이 복원된다. Invalid/cross-org ID는 safe 404로 처리한다.
 - Given Alert detail에서 `사용자 접근 관리` 선택, When ActorAccessDrawer로 전환하면, Then 두 drawer가 겹치지 않고 기존 organization access-management 정책을 재사용하며 alert를 자동 resolve하지 않는다.
+- Given 보안 알림 상세, 감사 로그 상세 또는 ActorAccessDrawer를 열 때, When drawer content를 표시하면, Then 기존 text 계층보다 한 단계 큰 글꼴을 사용하고 최대 폭을 각각 `4xl`, `xl`, `4xl`로 확보한다.
 - Given Security Alert 기능 활성화, When audit/비용/권한 탭의 권한 신청·App 생성 권한 카드를 사용하면, Then 기존 API, 권한, pagination, drawer 흐름이 회귀하지 않는다.
 - Given 관리자가 상위 탭을 선택한다, When 조직 구성·권한·비용을 포함한 탭이 활성화되면, Then 선택된 탭은 설정 화면과 같은 파란 글자와 파란 밑줄로 표시되고 나머지 탭은 중립 색상을 유지한다.
 검증 값은 MBA-188 actor access와 audit detail 확장 case에 적용한다. 기존 비용/권한 신청 case의 기준은 해당 feature 문서와 git history를 따른다.

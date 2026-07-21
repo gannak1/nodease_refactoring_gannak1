@@ -191,6 +191,10 @@ Color만으로 severity나 status를 구분하지 않고 항상 text label을 �
 - Escape와 close button으로 닫을 수 있다.
 - Drawer가 열린 동안 background focus 이동을 막는다.
 - Organization이 바뀌거나 관리 권한이 사라지면 즉시 drawer를 닫고 cached detail을 제거한다.
+- 본문 typography는 기존 `text-xs → text-sm`, `text-sm → text-base`,
+  `text-base → text-lg`, `text-lg → text-xl`로 한 단계씩 키우고 최대 폭은
+  `max-w-4xl`로 확장한다. 연결된 감사 기록의 Audit detail drawer도 같은 typography를
+  사용하되 최대 폭은 `max-w-xl`로 유지해 actor·권한 문구의 불필요한 줄바꿈을 줄인다.
 
 ### Summary Content
 

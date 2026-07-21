@@ -172,6 +172,7 @@ Status: Draft
 | ORG-TC-E042 | 같은 조직의 Security Alert summary background refresh는 마지막 성공 상태를 유지해야 한다. | 재조회 시작 또는 일시적 실패만으로 기존 알림 점이 사라진다. | 조회 중과 non-403 실패에는 기존 summary 유지, 성공 시 교체, 조직 전환 또는 403에서 제거. |
 | ORG-TC-E043 | 펼친 Sidebar는 dashboard 본문 공간을 과도하게 차지하지 않아야 한다. | 펼친 상태의 너비가 `232px`가 아니거나 메뉴 문구가 잘린다. | 펼침 `232px`, 접힘 `80px` 유지, 모든 navigation 문구 표시. |
 | ORG-TC-E044 | 권한 부여 modal은 복수 resource와 복수 active grantee를 checkbox로 선택해 bulk grant로 제출해야 한다. | radio로 하나만 선택하거나 pair별 HTTP 요청을 보내 partial success가 가능하다. | `resource_ids`, `grantee_ids`를 `POST /permissions/bulk-grants`로 한 번 전송하고 50 pair 초과를 차단. |
+| ORG-TC-E045 | ActorAccessDrawer는 한 단계 큰 typography에서도 멤버십과 권한 정보를 읽기 쉽게 표시해야 한다. | 기존 text 계층이 유지되거나 최대 폭이 `2xl`이라 4열 지표·actor 정보가 불필요하게 줄바꿈된다. | `text-xs/sm/base/lg`를 한 단계씩 확대하고 최대 폭 `4xl` 유지. |
 
 ## Permission Tests
 
