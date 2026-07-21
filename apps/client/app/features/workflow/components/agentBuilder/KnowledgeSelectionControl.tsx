@@ -17,6 +17,12 @@ export type KnowledgeSelectionChild = {
   safe_label?: string | null;
   score?: number | null;
   shared_collection_count?: number;
+  reason_category?:
+    | 'content_match'
+    | 'metadata_match'
+    | 'operational_fallback'
+    | null;
+  recommendation_state?: 'complete' | 'degraded' | null;
 };
 
 export type KnowledgeSelectionCollection = {
@@ -33,6 +39,25 @@ export type KnowledgeHierarchySubmission = {
 
 const MAX_VISIBLE_COLLECTIONS = 20;
 const MAX_VISIBLE_KBS = 20;
+const HIERARCHY_REASON_LABELS = {
+  content_match: 'Knowledge Base 문서 내용을 기준으로 평가했습니다.',
+  metadata_match: 'KB 설명과 주제가 요청과 관련됩니다.',
+  operational_fallback: 'Knowledge Base 정보를 기준으로 추천했습니다.',
+} as const;
+
+const hierarchyReasonLabel = (
+  candidate: KnowledgeSelectionChild,
+): string | null => {
+  const reason = candidate.reason_category;
+  if (reason && reason in HIERARCHY_REASON_LABELS) {
+    return HIERARCHY_REASON_LABELS[
+      reason as keyof typeof HIERARCHY_REASON_LABELS
+    ];
+  }
+  return candidate.recommendation_state === 'degraded'
+    ? HIERARCHY_REASON_LABELS.operational_fallback
+    : null;
+};
 
 export const KnowledgeSelectionControl = ({
   candidates,
@@ -274,31 +299,41 @@ export const KnowledgeSelectionControl = ({
     onSubmitHierarchy(hierarchySubmission());
   };
 
-  const renderKb = (candidate: KnowledgeSelectionChild) => (
-    <label
-      key={`${candidate.selection_key}:${candidate.kb_handle}`}
-      className="flex min-h-[48px] items-center gap-3 border-t border-neutral-200 px-3 py-2 pl-8 dark:border-neutral-800"
-    >
-      <input
-        type="checkbox"
-        aria-label={candidate.safe_label ?? 'Knowledge Base'}
-        checked={effectiveSelectedKbKeys.has(candidate.selection_key)}
-        disabled={disabled}
-        onChange={() => toggleHierarchyKb(candidate.selection_key)}
-      />
-      <span className="min-w-0 flex-1 truncate text-sm">
-        {candidate.safe_label ?? 'Knowledge Base'}
-        {(candidate.shared_collection_count ?? 0) > 1 ? (
-          <span className="ml-2 text-xs text-neutral-500">[공유 KB]</span>
-        ) : null}
-      </span>
-      {typeof candidate.score === 'number' ? (
-        <span className="text-xs tabular-nums text-neutral-500">
-          {candidate.score.toFixed(2)}
+  const renderKb = (candidate: KnowledgeSelectionChild) => {
+    const reason = hierarchyReasonLabel(candidate);
+    return (
+      <label
+        key={`${candidate.selection_key}:${candidate.kb_handle}`}
+        className="flex min-h-[48px] items-center gap-3 border-t border-neutral-200 px-3 py-2 pl-8 dark:border-neutral-800"
+      >
+        <input
+          type="checkbox"
+          aria-label={candidate.safe_label ?? 'Knowledge Base'}
+          checked={effectiveSelectedKbKeys.has(candidate.selection_key)}
+          disabled={disabled}
+          onChange={() => toggleHierarchyKb(candidate.selection_key)}
+        />
+        <span className="min-w-0 flex-1 text-sm">
+          <span className="block truncate">
+            {candidate.safe_label ?? 'Knowledge Base'}
+            {(candidate.shared_collection_count ?? 0) > 1 ? (
+              <span className="ml-2 text-xs text-neutral-500">[공유 KB]</span>
+            ) : null}
+          </span>
+          {reason ? (
+            <span className="block truncate text-xs text-neutral-500">
+              {reason}
+            </span>
+          ) : null}
         </span>
-      ) : null}
-    </label>
-  );
+        {typeof candidate.score === 'number' ? (
+          <span className="text-xs tabular-nums text-neutral-500">
+            {candidate.score.toFixed(2)}
+          </span>
+        ) : null}
+      </label>
+    );
+  };
 
   return (
     <div className="space-y-3">

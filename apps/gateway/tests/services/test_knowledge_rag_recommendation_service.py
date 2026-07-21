@@ -1,4 +1,5 @@
 import uuid
+from dataclasses import asdict
 
 import pytest
 
@@ -117,6 +118,15 @@ class RecordingRetrievalPort:
         return self.result
 
 
+class FailingRetrievalPort:
+    def __init__(self):
+        self.requests = []
+
+    def retrieve(self, request):
+        self.requests.append(request)
+        raise RuntimeError("retrieval port unavailable")
+
+
 def test_builder_recommendation_display_caps_default_to_twenty():
     request = KnowledgeRAGRecommendationRequest(
         workflow_intent="display cap",
@@ -187,6 +197,190 @@ def test_retrieval_receives_only_resolver_authorized_candidate_ids_and_safe_topi
     assert "provider" not in serialized
 
 
+def test_retrieval_request_receives_live_cancellation_predicate():
+    candidate = _candidate()
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[candidate]))
+    port = RecordingRetrievalPort(KnowledgeRecommendationRetrievalResult())
+    cancellation_state = {"requested": False}
+
+    def cancellation_predicate():
+        return cancellation_state["requested"]
+
+    service = KnowledgeRAGRecommendationService(
+        None,
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        resolver=resolver,
+        retrieval_port=port,
+        cancellation_predicate=cancellation_predicate,
+    )
+
+    service.recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="휴가 규정",
+            safe_query_topics=["휴가"],
+        )
+    )
+
+    retrieval_request = port.requests[0]
+    assert retrieval_request.cancellation_predicate is cancellation_predicate
+    assert retrieval_request.is_cancellation_requested() is False
+    cancellation_state["requested"] = True
+    assert retrieval_request.is_cancellation_requested() is True
+
+
+def test_hierarchy_kb_projects_allowlisted_semantic_reason_and_state():
+    candidate = _candidate(safe_label="휴가 규정")
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[candidate]))
+    resolver.hierarchy = KnowledgeCandidateHierarchyResolution(
+        ungrouped_candidates=[candidate]
+    )
+    port = RecordingRetrievalPort(
+        KnowledgeRecommendationRetrievalResult(
+            scores=(
+                CandidateSemanticScore(
+                    knowledge_base_id=candidate.candidate_id,
+                    semantic_state="available",
+                    parent_relevance=0.82,
+                    safe_reason_code="content_match",
+                ),
+            )
+        )
+    )
+
+    result = _service(resolver, port).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="휴가 규정",
+            safe_query_topics=["휴가 규정"],
+        )
+    )
+
+    projected = result.knowledge_selection.ungrouped_kbs[0]
+    assert projected.reason_category == "content_match"
+    assert projected.recommendation_state == "complete"
+
+
+def test_ungrouped_hierarchy_candidate_is_not_inferred_as_flat_without_adapter_signal():
+    candidate = _candidate(safe_label="직접 연결 KB")
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[candidate]))
+    resolver.hierarchy = KnowledgeCandidateHierarchyResolution(
+        ungrouped_candidates=[candidate]
+    )
+
+    result = _service(resolver).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(workflow_intent="직접 연결 KB")
+    )
+
+    projected = result.knowledge_selection.ungrouped_kbs[0]
+    assert projected.reason_category is None
+    assert projected.recommendation_state is None
+
+
+def test_flat_adapter_signal_projects_generic_degraded_reason_and_safe_observation():
+    candidate = _candidate(safe_label="일반 문서")
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[candidate]))
+    resolver.hierarchy = KnowledgeCandidateHierarchyResolution(
+        ungrouped_candidates=[candidate]
+    )
+    port = RecordingRetrievalPort(
+        KnowledgeRecommendationRetrievalResult(
+            state="degraded",
+            scores=(
+                CandidateSemanticScore(
+                    knowledge_base_id=candidate.candidate_id,
+                    semantic_state="flat",
+                    parent_relevance=None,
+                    safe_reason_code="flat",
+                ),
+            ),
+            failed_cohort_count_bucket="one",
+            latency_bucket="1_to_3s",
+            candidate_count_bucket="one",
+            result_count_bucket="one",
+            cohort_count_bucket="one",
+            metadata_fallback_count_bucket="one",
+        )
+    )
+    observations = []
+    service = KnowledgeRAGRecommendationService(
+        None,
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        resolver=resolver,
+        retrieval_port=port,
+        observation_hook=observations.append,
+    )
+
+    result = service.recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="특정 내용과 일치하지 않는 요청",
+            safe_query_topics=["일치하지않는주제"],
+        )
+    )
+
+    projected = result.knowledge_selection.ungrouped_kbs[0]
+    assert projected.reason_category == "operational_fallback"
+    assert projected.recommendation_state == "degraded"
+    assert len(observations) == 1
+    payload = asdict(observations[0])
+    assert payload == {
+        "score_profile": "parent_first_v1",
+        "recommendation_state": "degraded",
+        "candidate_count_bucket": "one",
+        "result_count_bucket": "one",
+        "cohort_count_bucket": "one",
+        "metadata_fallback_count_bucket": "one",
+        "failed_cohort_count_bucket": "one",
+        "latency_bucket": "1_to_3s",
+    }
+    serialized = repr(payload)
+    assert str(candidate.candidate_id) not in serialized
+    assert "일치하지않는주제" not in serialized
+    assert "parent_relevance" not in payload
+
+
+def test_observation_hook_failure_is_isolated_and_unknown_latency_is_bounded():
+    candidate = _candidate()
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[candidate]))
+    port = RecordingRetrievalPort(
+        KnowledgeRecommendationRetrievalResult(
+            scores=(
+                CandidateSemanticScore(
+                    knowledge_base_id=candidate.candidate_id,
+                    semantic_state="available",
+                    parent_relevance=0.7,
+                    safe_reason_code="content_match",
+                ),
+            ),
+            latency_bucket="raw-provider-latency-marker",
+        )
+    )
+    observations = []
+
+    def failing_hook(observation):
+        observations.append(observation)
+        raise RuntimeError("observer unavailable")
+
+    service = KnowledgeRAGRecommendationService(
+        None,
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        resolver=resolver,
+        retrieval_port=port,
+        observation_hook=failing_hook,
+    )
+
+    result = service.recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="휴가 규정",
+            safe_query_topics=["휴가"],
+        )
+    )
+
+    assert result.status == "recommended"
+    assert observations[0].latency_bucket == "unknown"
+
+
 def test_available_parent_score_is_authoritative_even_when_it_is_zero():
     candidate = _candidate(
         safe_label="Tax filing",
@@ -225,6 +419,44 @@ def test_available_parent_score_is_authoritative_even_when_it_is_zero():
     assert recommendation.recommendation_state == "complete"
     assert recommendation.reason_category == "content_match"
     assert result.user_safe_warning is None
+
+
+def test_retrieval_port_exception_emits_one_bounded_degraded_observation():
+    candidate = _candidate(
+        safe_label="Tax filing",
+        safe_metadata={"kb_safe_topics": ["tax filing"]},
+    )
+    observations = []
+    port = FailingRetrievalPort()
+    service = KnowledgeRAGRecommendationService(
+        None,
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        resolver=FakeResolver(KnowledgeCandidateResolution(candidates=[candidate])),
+        retrieval_port=port,
+        observation_hook=observations.append,
+    )
+
+    result = service.recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="Tax filing",
+            safe_query_topics=["tax filing"],
+        )
+    )
+
+    assert result.recommendations[0].recommendation_state == "degraded"
+    assert len(port.requests) == 1
+    assert len(observations) == 1
+    assert asdict(observations[0]) == {
+        "score_profile": "parent_first_v1",
+        "recommendation_state": "degraded",
+        "candidate_count_bucket": "one",
+        "result_count_bucket": "zero",
+        "cohort_count_bucket": "zero",
+        "metadata_fallback_count_bucket": "one",
+        "failed_cohort_count_bucket": "many",
+        "latency_bucket": "unknown",
+    }
 
 
 def test_semantic_unavailable_candidate_uses_metadata_fallback():
@@ -618,6 +850,26 @@ def test_route_authorized_collection_remains_selectable_without_visible_children
     assert len(result.knowledge_selection.collections) == 1
     assert result.knowledge_selection.collections[0].children == []
     assert result.fallback_reason is None
+
+
+def test_non_hierarchical_response_does_not_expose_hidden_or_unavailable_kb_count_bucket():
+    resolver = FakeResolver(
+        KnowledgeCandidateResolution(
+            candidates=[],
+            hidden_candidate_count_bucket="2-10",
+            unavailable_candidate_count_bucket="1",
+        )
+    )
+
+    result = _service(resolver).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="사내 문서",
+            mode="explicit_kb",
+            knowledge_base_ids=[uuid.uuid4()],
+        )
+    )
+
+    assert result.summary.hidden_or_unavailable_count_bucket == "0"
 
 
 def test_hierarchical_response_does_not_expose_hidden_kb_count_bucket():

@@ -1,13 +1,17 @@
 import re
 import uuid
-from typing import Any
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
 from apps.gateway.application.agent_builder.knowledge_recommendation import (
     CandidateSemanticScore,
+    CountBucket,
     KnowledgeRecommendationRetrievalPort,
     KnowledgeRecommendationRetrievalRequest,
+    KnowledgeRecommendationRetrievalResult,
     compose_final_recommendation_score,
     select_parent_first_relevance,
 )
@@ -59,6 +63,36 @@ _AVAILABILITY_ORDER = {
     "unavailable": 0,
 }
 _FRESH_SYNC_STATES = {"synced", "fresh", "ready"}
+_OBSERVATION_LATENCY_BUCKETS = frozenset(
+    {"unknown", "under_1s", "1_to_3s", "3_to_8s", "over_8s"}
+)
+_OBSERVATION_COHORT_BUCKETS = frozenset({"zero", "one", "few", "many"})
+
+
+def _observation_count_bucket(count: int) -> CountBucket:
+    if count <= 0:
+        return "zero"
+    if count == 1:
+        return "one"
+    if count <= 4:
+        return "few"
+    return "many"
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeRecommendationObservation:
+    """Bounded operational projection with no KB identity, query or score."""
+
+    score_profile: Literal["parent_first_v1"]
+    recommendation_state: Literal["complete", "degraded"]
+    candidate_count_bucket: CountBucket
+    result_count_bucket: CountBucket
+    cohort_count_bucket: CountBucket
+    metadata_fallback_count_bucket: CountBucket
+    failed_cohort_count_bucket: CountBucket
+    latency_bucket: Literal[
+        "unknown", "under_1s", "1_to_3s", "3_to_8s", "over_8s"
+    ]
 
 
 def knowledge_base_recommendation_handle(
@@ -139,12 +173,17 @@ class KnowledgeRAGRecommendationService:
         organization_id: uuid.UUID,
         resolver: KnowledgeCandidateResolver | None = None,
         retrieval_port: KnowledgeRecommendationRetrievalPort | None = None,
+        observation_hook: Callable[[KnowledgeRecommendationObservation], None]
+        | None = None,
+        cancellation_predicate: Callable[[], bool] | None = None,
     ) -> None:
         self.db = db
         self.user_id = user_id
         self.organization_id = organization_id
         self.resolver = resolver
         self.retrieval_port = retrieval_port
+        self.observation_hook = observation_hook
+        self.cancellation_predicate = cancellation_predicate
 
     def recommend_for_builder(
         self,
@@ -216,7 +255,12 @@ class KnowledgeRAGRecommendationService:
             recommendations
         )
         knowledge_selection = (
-            self._knowledge_selection(hierarchy, ranked, request)
+            self._knowledge_selection(
+                hierarchy,
+                ranked,
+                request,
+                semantic_scores=semantic_scores,
+            )
             if hierarchy is not None
             else None
         )
@@ -260,10 +304,9 @@ class KnowledgeRAGRecommendationService:
             summary=KnowledgeRAGRecommendationSummary(
                 candidate_count_bucket=bucket_count(len(resolution.candidates)),
                 recommendation_count_bucket=bucket_count(len(recommendations)),
-                hidden_or_unavailable_count_bucket=self._merge_buckets(
-                    resolution.hidden_candidate_count_bucket,
-                    resolution.unavailable_candidate_count_bucket,
-                ),
+                # Never disclose that a hidden or unavailable KB exists, even
+                # through a bounded count bucket on explicit-KB requests.
+                hidden_or_unavailable_count_bucket="0",
                 recommendation_strategy=RECOMMENDATION_STRATEGY,
                 warning_count_bucket=bucket_count(warning_count),
             ),
@@ -673,17 +716,72 @@ class KnowledgeRAGRecommendationService:
                 or request.pending_resolution_ref
                 or f"request-{uuid.uuid4()}"
             ),
+            cancellation_predicate=self.cancellation_predicate,
         )
         try:
             result = self.retrieval_port.retrieve(retrieval_request)
         except Exception:
+            # The port failed before it could return its own bounded telemetry.
+            # Preserve the metadata fallback while recording one safe, aggregate
+            # observation for this semantic evaluation.
+            self._emit_observation(
+                result=KnowledgeRecommendationRetrievalResult(
+                    state="degraded",
+                    failed_cohort_count_bucket="many",
+                    candidate_count_bucket=_observation_count_bucket(
+                        len(authorized_ids)
+                    ),
+                    metadata_fallback_count_bucket=_observation_count_bucket(
+                        len(authorized_ids)
+                    ),
+                )
+            )
             return {}
         authorized_id_set = set(authorized_ids)
-        return {
+        filtered_scores = {
             item.knowledge_base_id: item
             for item in result.scores
             if item.knowledge_base_id in authorized_id_set
         }
+        self._emit_observation(
+            result=result,
+        )
+        return filtered_scores
+
+    def _emit_observation(
+        self,
+        *,
+        result: KnowledgeRecommendationRetrievalResult,
+    ) -> None:
+        if self.observation_hook is None:
+            return
+        latency_bucket = (
+            result.latency_bucket
+            if result.latency_bucket in _OBSERVATION_LATENCY_BUCKETS
+            else "unknown"
+        )
+        failed_cohort_count_bucket = (
+            result.failed_cohort_count_bucket
+            if result.failed_cohort_count_bucket in _OBSERVATION_COHORT_BUCKETS
+            else "many"
+        )
+        observation = KnowledgeRecommendationObservation(
+            score_profile=RECOMMENDATION_STRATEGY,
+            recommendation_state=(
+                "degraded" if result.state == "degraded" else "complete"
+            ),
+            candidate_count_bucket=result.candidate_count_bucket,
+            result_count_bucket=result.result_count_bucket,
+            cohort_count_bucket=result.cohort_count_bucket,
+            metadata_fallback_count_bucket=result.metadata_fallback_count_bucket,
+            failed_cohort_count_bucket=failed_cohort_count_bucket,
+            latency_bucket=latency_bucket,
+        )
+        try:
+            self.observation_hook(observation)
+        except Exception:
+            # Operational observation must never affect recommendation behavior.
+            return
 
     def _bounded_safe_query_topics(self, topics: list[str]) -> tuple[str, ...]:
         bounded: list[str] = []
@@ -799,6 +897,8 @@ class KnowledgeRAGRecommendationService:
         hierarchy: KnowledgeCandidateHierarchyResolution,
         ranked: list[tuple[KnowledgeCandidate, float, list[str], list[str]]],
         request: KnowledgeRAGRecommendationRequest,
+        *,
+        semantic_scores: dict[uuid.UUID, CandidateSemanticScore] | None = None,
     ) -> KnowledgeSelection:
         ranked_by_id = {item[0].candidate_id: item for item in ranked}
         visible_ids = {
@@ -813,13 +913,37 @@ class KnowledgeRAGRecommendationService:
                 shared_count[candidate_id] = shared_count.get(candidate_id, 0) + 1
 
         def project(candidate: KnowledgeCandidate) -> KnowledgeSelectionKBCandidate:
-            score = ranked_by_id.get(candidate.candidate_id, (candidate, 0.0, [], []))[1]
+            ranked_item = ranked_by_id.get(
+                candidate.candidate_id,
+                (candidate, 0.0, [], []),
+            )
+            score = ranked_item[1]
+            matched_terms = ranked_item[2]
+            reason_category = None
+            recommendation_state = None
+            if semantic_scores is not None:
+                semantic_score = semantic_scores.get(candidate.candidate_id)
+                if (
+                    semantic_score is not None
+                    and semantic_score.semantic_state == "available"
+                ):
+                    reason_category = "content_match"
+                    recommendation_state = "complete"
+                else:
+                    reason_category = (
+                        "metadata_match"
+                        if score > 0 and matched_terms
+                        else "operational_fallback"
+                    )
+                    recommendation_state = "degraded"
             return KnowledgeSelectionKBCandidate(
                 kb_handle=self._recommendation_id(candidate),
                 selection_key=self._selection_key(candidate),
                 safe_label=candidate.safe_label,
                 score=round(score, 4),
                 shared_collection_count=shared_count.get(candidate.candidate_id, 0),
+                reason_category=reason_category,
+                recommendation_state=recommendation_state,
             )
 
         query_terms, _source = self._ranking_terms(

@@ -54,6 +54,70 @@ describe('KnowledgeSelectionControl', () => {
     expect(screen.queryByLabelText('Knowledge 1')).toBeNull();
   });
 
+  it('renders only allowlisted Korean reasons for hierarchy KB candidates', () => {
+    render(
+      <KnowledgeSelectionControl
+        candidates={[]}
+        collections={[]}
+        ungroupedKbs={[
+          {
+            kb_handle: 'kb-content',
+            selection_key: 'kb-content',
+            safe_label: '내용 KB',
+            reason_category: 'content_match',
+            recommendation_state: 'complete',
+          },
+          {
+            kb_handle: 'kb-metadata',
+            selection_key: 'kb-metadata',
+            safe_label: '메타데이터 KB',
+            reason_category: 'metadata_match',
+            recommendation_state: 'degraded',
+          },
+          {
+            kb_handle: 'kb-fallback',
+            selection_key: 'kb-fallback',
+            safe_label: '대체 KB',
+            reason_category: 'operational_fallback',
+            recommendation_state: 'degraded',
+          },
+          {
+            kb_handle: 'kb-unknown',
+            selection_key: 'kb-unknown',
+            safe_label: '알 수 없는 KB',
+            reason_category: 'raw_internal_reason',
+            recommendation_state: 'complete',
+          } as never,
+          {
+            kb_handle: 'kb-legacy',
+            selection_key: 'kb-legacy',
+            safe_label: '기존 응답 KB',
+          },
+          {
+            kb_handle: 'kb-degraded-without-reason',
+            selection_key: 'kb-degraded-without-reason',
+            safe_label: '일반 대체 KB',
+            recommendation_state: 'degraded',
+          },
+        ]}
+        onSubmit={vi.fn()}
+        onSubmitHierarchy={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText('Knowledge Base 문서 내용을 기준으로 평가했습니다.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('KB 설명과 주제가 요청과 관련됩니다.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText('Knowledge Base 정보를 기준으로 추천했습니다.'),
+    ).toHaveLength(2);
+    expect(screen.queryByText('raw_internal_reason')).toBeNull();
+    expect(screen.getByLabelText('기존 응답 KB')).toBeInTheDocument();
+  });
+
   it('selects every child with a Collection and becomes partial when one child is cleared', () => {
     const onSubmit = vi.fn();
     render(

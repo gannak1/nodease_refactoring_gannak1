@@ -289,6 +289,12 @@ export type AgentBuilderKnowledgeKBCandidate = {
   safe_label?: string | null;
   score?: number | null;
   shared_collection_count?: number;
+  reason_category?:
+    | 'content_match'
+    | 'metadata_match'
+    | 'operational_fallback'
+    | null;
+  recommendation_state?: 'complete' | 'degraded' | null;
 };
 
 export type AgentBuilderKnowledgeCollection = {

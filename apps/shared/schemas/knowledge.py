@@ -46,6 +46,12 @@ KnowledgeRAGRecommendationMode = Literal["auto", "explicit_kb", "auto_collection
 KnowledgeRAGRecommendationResolvedMode = Literal["explicit_kb", "auto_collection"]
 KnowledgeRAGHighRiskDomain = Literal["none", "policy", "legal", "compliance"]
 KnowledgeRAGCandidateType = Literal["knowledge_base"]
+KnowledgeRecommendationReasonCategory = Literal[
+    "content_match",
+    "metadata_match",
+    "operational_fallback",
+]
+KnowledgeRecommendationState = Literal["complete", "degraded"]
 KnowledgeRAGQueryRewriteMode = Literal["off", "template"]
 KnowledgeRAGEvidenceSufficiencyPolicy = Literal["minimum_evidence", "strict_citation"]
 KnowledgeRAGFailurePolicy = Literal["safe_no_result", "fail_node"]
@@ -135,6 +141,8 @@ class KnowledgeSelectionKBCandidate(BaseModel):
     safe_label: str | None = None
     score: float | None = Field(default=None, ge=0.0, le=1.0)
     shared_collection_count: int = Field(default=0, ge=0)
+    reason_category: KnowledgeRecommendationReasonCategory | None = None
+    recommendation_state: KnowledgeRecommendationState | None = None
 
 
 class KnowledgeSelectionCollection(BaseModel):
