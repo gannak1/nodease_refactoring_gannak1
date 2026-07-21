@@ -159,7 +159,7 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
   - 서버 실행 시간은 주 지표로 표시한다.
   - 화면 완료 시간은 보조 지표로 표시하며, 네트워크/stream/UI 처리 시간이 포함될 수 있음을 tooltip 또는 보조 문구로 설명한다.
   - stream의 `workflow_start.run_id`를 받으면 Client는 실행 식별자와 선택한 노드 id만 URL query에 유지한다.
-  - 같은 workflow의 보고 화면을 거쳐 돌아오거나 새로고침하면, URL의 실행 식별자로 권한 확인된 workflow run 상세를 다시 읽어 마지막 실행의 결과·노드 카드·선택 상세를 복원한다. Editor store가 초기 placeholder workflow `default`만 가진 동안에는 복원 API를 호출하지 않고 URL의 persisted workflow가 활성화될 때까지 기다린다. 실행 기록이 아직 생성되지 않은 `404` 또는 `running`이면 실행 중 상태를 유지한 채 점차 길어지는 제한된 간격으로 다시 조회하며, 한도를 넘겨도 실패 결과로 바꾸지 않고 재시도 action을 표시한다. 브라우저 앞으로/뒤로가기로 URL의 `testRun`이 바뀌면 새 실행을 복원하고, `testRun`이 사라지면 이전 실행 결과를 초기화한다.
+  - 같은 workflow의 보고 화면을 거쳐 돌아오거나 새로고침하면, URL의 실행 식별자로 권한 확인된 workflow run 상세를 다시 읽어 마지막 실행의 결과·노드 카드·선택 상세를 복원한다. Editor store가 초기 placeholder workflow `default`만 가진 동안에는 복원 API를 호출하지 않고 테스트 실행 버튼을 비활성화한 채 URL의 persisted workflow가 활성화될 때까지 기다린다. 실행 기록이 아직 생성되지 않은 `404` 또는 `running`이면 실행 중 상태를 유지한 채 점차 길어지는 제한된 간격으로 다시 조회하며, 한도를 넘겨도 실패 결과로 바꾸지 않고 재시도 action을 표시한다. 브라우저 앞으로/뒤로가기로 URL의 `testRun`이 바뀌면 새 실행을 복원하고, `testRun`이 사라지면 이전 실행 결과를 초기화한다.
   - 복원 결과는 실행 당시 저장된 node run 상태, duration, output, safe trace metadata를 표시한다. 현재 draft 설정을 실행 당시 설정으로 덮어쓰지 않는다.
   - `다시 테스트하기`는 복원 식별자와 선택 상세를 함께 지우고 입력 폼으로 전환한다.
   - `실행 비교` segmented control을 켜면 기준 실행 선택 목록을 같은 사이드바에 표시한다. 목록은 어떤 실행도 자동 선택하지 않으며 상태는 `전체 상태`, 실행 방식은 `전체 방식`을 기본 필터로 사용한다.

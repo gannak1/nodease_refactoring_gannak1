@@ -451,12 +451,14 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const nodeResults = testNodeResults;
   const error = testExecutionError;
   const canExecute = workflowAccess?.can_execute !== false;
-  const isExecuteActionDisabled = isTestExecutionActionDisabled({
-    isExecuting,
-    isUploading: isTestUploading,
-    isPreparing: isPreparing || isAgentBuilderSaveBlocking,
-    canExecute,
-  });
+  const isExecuteActionDisabled =
+    !hasPersistedActiveWorkflow ||
+    isTestExecutionActionDisabled({
+      isExecuting,
+      isUploading: isTestUploading,
+      isPreparing: isPreparing || isAgentBuilderSaveBlocking,
+      canExecute,
+    });
 
   const maxTestSidebarWidth = Math.min(
     TEST_SIDEBAR_MAX_WIDTH,
