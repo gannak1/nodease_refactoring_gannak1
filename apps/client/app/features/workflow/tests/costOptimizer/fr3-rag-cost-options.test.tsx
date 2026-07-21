@@ -105,7 +105,7 @@ describe('FR-003 RAG cost optimization options', () => {
         retrievedContextMaxChars: undefined,
         retrievedContextCompression: 'off',
         answerGroundingCheck: 'basic',
-        citationDisplayMode: 'basic',
+        citationDisplayMode: 'detailed',
       }),
     );
   });
