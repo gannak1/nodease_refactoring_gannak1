@@ -5,4 +5,4 @@ from apps.shared.alembic.versions import (
 
 def test_provider_execution_capability_migration_follows_rebased_dev_head():
     assert migration.revision == "ad1e2f3a4b5c"
-    assert migration.down_revision == "af4a5b6c7d83"
+    assert migration.down_revision == "b05c6d7e8f94"
