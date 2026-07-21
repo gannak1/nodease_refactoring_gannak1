@@ -338,6 +338,8 @@ class ProviderExecutionCapabilityService:
             deployment=deployment,
             workflow=workflow,
         )
+        # The locked policy row serializes same-binding issue retries before
+        # capability lookup and insert.
         policy = cls._active_policy_for_binding(db, binding)
         cls._validate_issue_principals(
             command,

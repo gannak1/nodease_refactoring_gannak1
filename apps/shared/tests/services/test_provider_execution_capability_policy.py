@@ -488,7 +488,9 @@ def test_database_clock_now_uses_wall_clock_timestamp():
     assert result == database_now.replace(tzinfo=timezone.utc)
 
 
-def test_issue_capability_uses_database_clock_for_lifecycle_timestamps(monkeypatch):
+def test_issue_capability_locks_policy_before_attempt_lookup_and_uses_database_clock(
+    monkeypatch,
+):
     organization_id = uuid.uuid4()
     model_id = uuid.uuid4()
     credential_id = uuid.uuid4()
@@ -520,6 +522,22 @@ def test_issue_capability_uses_database_clock_for_lifecycle_timestamps(monkeypat
     provider = SimpleNamespace(id=provider_id)
     relation = SimpleNamespace()
 
+    class _PolicyQuery:
+        def filter(self, *_args):
+            return self
+
+        def populate_existing(self):
+            order.append("policy_refresh")
+            return self
+
+        def with_for_update(self):
+            order.append("policy_lock")
+            return self
+
+        def all(self):
+            order.append("policy_read")
+            return [policy]
+
     class _CapabilityQuery:
         def filter(self, *_args):
             return self
@@ -540,6 +558,8 @@ def test_issue_capability_uses_database_clock_for_lifecycle_timestamps(monkeypat
         added = None
 
         def query(self, entity):
+            if entity is LLMDeploymentCredentialPolicy:
+                return _PolicyQuery()
             assert entity is ProviderExecutionCapabilityRecord
             return _CapabilityQuery()
 
@@ -565,11 +585,6 @@ def test_issue_capability_uses_database_clock_for_lifecycle_timestamps(monkeypat
         ProviderExecutionCapabilityService,
         "_assert_binding_matches_deployment",
         staticmethod(lambda *_args, **_kwargs: None),
-    )
-    monkeypatch.setattr(
-        ProviderExecutionCapabilityService,
-        "_active_policy_for_binding",
-        classmethod(lambda _cls, *_args, **_kwargs: policy),
     )
     monkeypatch.setattr(
         ProviderExecutionCapabilityService,
@@ -629,6 +644,9 @@ def test_issue_capability_uses_database_clock_for_lifecycle_timestamps(monkeypat
     assert capability.updated_at == database_now
     assert capability.expires_at == database_now + CAPABILITY_TTL
     assert order == [
+        "policy_refresh",
+        "policy_lock",
+        "policy_read",
         "capability_refresh",
         "capability_lock",
         "capability_read",
