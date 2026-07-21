@@ -36,6 +36,7 @@ Runtime RAG search response, citation response 및 workflow graph schema는 변�
 | `candidate_kb_ids` | list[UUID] | CandidateResolver가 권한 검증한 내부 ID |
 | `candidate_snapshot_ref` | opaque string | 현재 request 범위의 authorization snapshot reference |
 | `deadline_ms` | int | 서버 상한 이하의 절대 실행 예산 |
+| `cancellation_predicate` | process-local callable | 동일 Gateway process의 bounded TTL/count cancel marker를 checkpoint에서 확인한다. DB/SQL을 사용하거나 직렬화하지 않으며 cross-process 늦은 적용은 request-status CAS가 차단한다 |
 
 Raw message, raw graph, Collection/KB label, document/chunk content와 credential value는 request에 포함하지 않는다.
 
@@ -56,9 +57,13 @@ KnowledgeRecommendationRetrievalResult
       safe_reason_code: fixed enum
   failed_cohort_count_bucket: zero | one | few | many
   latency_bucket: fixed enum
+  candidate_count_bucket: zero | one | few | many
+  result_count_bucket: zero | one | few | many
+  cohort_count_bucket: zero | one | few | many
+  metadata_fallback_count_bucket: zero | one | few | many
 ```
 
-이 result는 Gateway process 안에서만 사용한다. 다음 값은 금지한다.
+이 result는 Gateway process 안에서만 사용한다. `scores`만 KB별 score projection이며, 모든 count/latency bucket은 현재 authorization snapshot의 action audit observer를 위한 bounded aggregate telemetry다. 이 telemetry는 외부 response 또는 trace/log로 projection하지 않는다. 다음 값은 금지한다.
 
 - parent 또는 child chunk ID
 - document 및 document version ID
@@ -76,7 +81,7 @@ KnowledgeRecommendationRetrievalResult
 4. safe query를 cohort별로 한 번 embed한다.
 5. 하나의 bounded SQL query로 cohort의 parent chunk를 검색한다.
 6. SQL 또는 adapter 계층에서 KB별 top parent score를 집계한다.
-7. Application service에는 KB ID와 집계 입력 점수만 반환한다.
+7. Application service에는 KB별 ID와 집계 입력 점수, 그리고 action audit observer에만 전달할 allowlisted bounded aggregate telemetry만 반환한다.
 
 동일 model cohort 안에서 candidate별 embedding 호출이나 candidate별 SQL query를 수행하지 않는다.
 
@@ -201,6 +206,8 @@ Score는 요청 시 계산하며 DB, graph, Agent Builder session 또는 audit�
 }
 ```
 
+`flat`은 upstream adapter가 flat artifact임을 명시적으로 판정한 경우를 위한 내부 typed state다. 현재 PostgreSQL adapter는 usable parent row가 없다는 사실만으로 flat과 hierarchy 손실을 구분하지 않고 `hierarchy_unavailable`을 반환한다. 두 상태 모두 동일한 metadata fallback을 사용한다.
+
 허용 enum:
 
 | Field | Values |
@@ -231,17 +238,18 @@ Provider exception, raw query, model response와 hidden candidate distribution�
 ## 9. Persistence and Idempotency
 
 - Recommendation retrieval은 read-only다.
+- 정상 response 저장과 stale hierarchy refresh는 동일한 recursive recommendation-signal sanitizer를 거쳐 score, reason category와 recommendation/retrieval state를 durable request payload에서 제거한다.
 - 같은 request retry가 graph write, audit data-change event 또는 external side effect를 만들지 않는다.
 - Search score를 durable cache에 저장하지 않는다.
 - Selection submission은 기존 operation ID, CAS 및 acknowledgement 계약을 유지한다.
-- Knowledge 선택 뒤 recommendation retrieval과 Planner를 자동 재실행하지 않는다.
+- 정상 Knowledge 선택 materialization 뒤 recommendation retrieval과 Planner를 자동 재실행하지 않는다. Stale handle refresh도 권한/lifecycle metadata hierarchy만 갱신하며 semantic port를 구성하지 않는다.
 
 ## 10. Authorization and Redaction
 
 - HTTP endpoint가 전달한 candidate ID를 신뢰하지 않는다.
 - CandidateResolver의 current request snapshot만 internal request를 만들 수 있다.
 - Adapter는 defense in depth로 organization 및 retrieval-visible predicate를 다시 적용한다.
-- Audit에는 strategy, score profile, latency bucket, result count bucket, degraded 여부와 safe reason code만 기록한다.
+- Recommendation action audit에는 `score_only_parent_cosine` strategy, fixed score profile, latency bucket, candidate/result/cohort/metadata-fallback/failed-cohort count bucket과 complete/degraded 상태만 기록한다.
 - Trace에는 chunk, document 및 KB별 raw score를 저장하지 않는다.
 
 ## 11. Compatibility
