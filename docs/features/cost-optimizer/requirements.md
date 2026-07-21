@@ -164,7 +164,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | FR-008 | 후보 적용 | P1 | `구현 완료` | `테스트 통과` | 사용자가 성공한 B 후보 설정 전체를 현재 target LLM node draft에 적용한다. downstream warning 확인과 schema 실패 후보 차단을 제공한다. draft conflict 처리는 후속 보강 대상이다. |
 | FR-009 | 비용 기록 | P1 | `구현 완료` | `테스트 통과` | 결과 분석 화면은 A/B 비용, prompt/completion/total token, latency를 표시한다. 비교 실행은 전용 experiment/candidate row로 저장되고 usage row가 candidate를 직접 참조한다. 과거 결과 재조회 API와 trace metadata retention 기준 정리를 제공한다. |
 | FR-010 | 권한 | P1 | `구현 완료` | `UI/API 권한 기반 구현, 테스트 통과` | A/B 테스트와 후보 적용은 builder 이상 권한이 있는 사용자만 수행한다. compare/apply/history API와 모델/Knowledge 후보 사용 가능성 검증이 적용됐다. |
-| FR-011 | Judge Bootstrap 점진 학습 자동 모델 라우팅 | P1 | `진행중` | `Judge-first/local-first 요구 능력 학습 구조` | 초기 운영 요청은 Judge가 후보 모델을 선택하고, 계약을 통과한 요청의 요구 능력 label과 실제 운영 성과가 충분히 쌓이면 로컬 라우터가 요구 능력을 예측해 현재 후보 중 적합한 모델을 고른다. |
+| FR-011 | Judge Bootstrap 점진 학습 자동 모델 라우팅 | P1 | `진행중` | `Judge-first/local-first 요구 능력 학습 구조` | 초기 운영 요청은 Judge가 요구 수준을 판정하고, 서버가 현재 실행 가능한 전체 후보에서 capability와 비용을 비교해 모델을 고른다. 계약을 통과한 요청의 요구 능력 label과 실제 운영 성과가 충분히 쌓이면 로컬 라우터가 요구 능력을 예측해 같은 방식으로 후보를 고른다. |
 | FR-012 | LLM 파라미터 추천 룰셋 | P2 | `진행중` | `서비스/API/UI 일부 구현` | 운영 로그 기반 추천 API와 추천 모달이 있다. 모델 라우팅 enable/refresh 같은 `direct_policy_update`는 즉시 적용 가능하고, 일반 파라미터/RAG 조정은 A/B 후보 실험으로 검증한다. |
 | FR-013 | Cost Optimizer 후보 검증 및 출력 품질 평가 | P1 | `구현 완료` | `추천 빠른 검증·일반 compare quality judge·이력 저장·결과 분석 UI 및 targeted test 통과` | 추천 모달과 일반 비교 분석 테스트에서 동일 입력의 A/B 출력을 평가해 비용·속도·token·품질 점수·JSON schema·downstream 호환성을 보여주고, 같은 결과를 적용하거나 다시 조회한다. |
 | FR-014 | 배포별 자동 파라미터 최적화 | P2 | `진행중` | `배포 설정·운영 수집·상태/예산 UI 구현` | 배포 시 선택한 LLM 노드의 운영 실행을 수집하고, 점검 주기와 월간 검증 예산을 분리해 관리한다. 모델 라우팅·모델 선택·프롬프트 변경은 포함하지 않는다. |
