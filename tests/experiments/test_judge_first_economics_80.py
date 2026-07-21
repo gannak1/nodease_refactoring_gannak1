@@ -7,7 +7,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from scripts.experiment_judge_first_economics_80 import (
+    BENCHMARK_PHASE,
     HIGH_MODEL,
+    LEARNING_PHASE,
     LOW_MODEL,
     MID_MODEL,
     QUALITY_JUDGE_MODEL,
@@ -17,10 +19,15 @@ from scripts.experiment_judge_first_economics_80 import (
     _clear_prior_experiment_learning,
     _learner_report_payload,
     _learning_batch_due,
+    _quality_not_evaluated,
     _retry_quality_evaluation,
     _routing_accuracy,
     _write_run_config,
+    benchmark_readiness_error,
+    build_benchmark_cases,
     build_cases,
+    build_learning_cases,
+    build_phase_plan,
     graph_for_arm,
     resolve_artifact_target,
 )
@@ -33,11 +40,21 @@ from apps.workflow_engine.services.model_routing_runtime_judge import (
 )
 
 
-def test_economics_dataset_has_80_unique_diverse_cases():
+def test_two_stage_dataset_has_one_hundred_learning_and_twenty_unseen_benchmark_cases():
+    learning_cases = build_learning_cases()
+    benchmark_cases = build_benchmark_cases()
     cases = build_cases()
 
-    assert len(cases) == 80
-    assert len({case.message for case in cases}) == 80
+    assert len(learning_cases) == 100
+    assert len(benchmark_cases) == 20
+    assert len(cases) == 120
+    assert len({case.message for case in cases}) == 120
+    assert {case.case_id for case in learning_cases}.isdisjoint(
+        {case.case_id for case in benchmark_cases}
+    )
+    assert {case.message for case in learning_cases}.isdisjoint(
+        {case.message for case in benchmark_cases}
+    )
     assert {case.expected_difficulty for case in cases} == {
         "economy",
         "balanced",
@@ -47,6 +64,64 @@ def test_economics_dataset_has_80_unique_diverse_cases():
     assert all(case.context is not None for case in cases)
     assert all(case.constraints for case in cases)
     assert all(case.acceptable_model_ids for case in cases)
+
+
+def test_learning_phase_runs_only_automatic_without_independent_quality_judge():
+    plan = build_phase_plan(LEARNING_PHASE)
+
+    assert len(plan.cases) == 100
+    assert plan.arms == ("automatic",)
+    assert plan.evaluate_quality is False
+    assert plan.reset_learning is True
+    assert plan.requires_ready_learner is False
+
+
+def test_benchmark_phase_uses_unseen_holdout_for_three_blinded_arms():
+    plan = build_phase_plan(BENCHMARK_PHASE)
+
+    assert len(plan.cases) == 20
+    assert plan.arms == ("automatic", "mid_fixed", "high_fixed")
+    assert plan.evaluate_quality is True
+    assert plan.reset_learning is False
+    assert plan.requires_ready_learner is True
+
+
+def test_benchmark_requires_one_hundred_completed_runs_and_published_learner():
+    assert (
+        benchmark_readiness_error(
+            {"judged_request_count": 70, "active_version": None},
+            completed_learning_case_count=100,
+        )
+        == "active_learner_version_missing"
+    )
+    assert (
+        benchmark_readiness_error(
+            {"judged_request_count": 70, "active_version": 1},
+            completed_learning_case_count=99,
+        )
+        == "incomplete_learning_phase"
+    )
+    assert (
+        benchmark_readiness_error(
+            {"judged_request_count": 70, "active_version": 1},
+            completed_learning_case_count=100,
+        )
+        is None
+    )
+
+
+def test_learning_phase_marks_quality_as_not_evaluated_instead_of_failed():
+    quality, metadata = _quality_not_evaluated(
+        {"automatic": SimpleNamespace()}
+    )
+
+    assert quality["automatic"]["quality_score"] is None
+    assert quality["automatic"]["evaluation_status"] == "not_evaluated"
+    assert metadata == {
+        "evaluation_status": "not_requested",
+        "attempt_count": 0,
+        "cost_usd": 0.0,
+    }
 
 
 def test_first_thirty_cases_include_semantically_similar_refund_intents():
@@ -187,13 +262,21 @@ def test_run_config_records_models_and_rejects_a_different_judge(monkeypatch):
             config["routing_judge_max_output_tokens"]
             == ModelRoutingRuntimeJudge.MAX_OUTPUT_TOKENS
         )
-        assert config["artifact_files"]["result"] == "result.json"
+        assert config["artifact_files"]["learning"]["result"] == (
+            "learning/result.json"
+        )
+        assert config["artifact_files"]["benchmark"]["result"] == (
+            "benchmark/result.json"
+        )
         assert set(config["comparison_arms"]) == {
             "automatic",
             "mid_fixed",
             "high_fixed",
-            "low_fixed",
         }
+        assert config["phases"]["learning"]["case_count"] == 100
+        assert config["phases"]["learning"]["quality_judge"] is False
+        assert config["phases"]["benchmark"]["case_count"] == 20
+        assert config["phases"]["benchmark"]["quality_judge"] is True
 
         monkeypatch.setattr(
             "scripts.experiment_judge_first_economics_80.ROUTING_JUDGE_MODEL",

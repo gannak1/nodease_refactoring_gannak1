@@ -1,6 +1,7 @@
-"""Judge-first 자동 모델 라우팅의 80회 경제성 실험.
+"""Judge-first 자동 모델 라우팅의 2단계 학습·경제성 실험.
 
-같은 enterprise ticket workflow의 LLM 노드를 세 방식으로 실제 실행한다.
+첫 단계는 자동 라우팅만 100회 실행해 학습기를 만들고, 두 번째 단계는
+학습에 쓰지 않은 20개 요청을 자동·중간 고정·고가 고정 방식으로 실행한다.
 
 * ``automatic``: 배포된 ``judge_bootstrap_incremental_v1`` 정책을 사용한다.
 * ``mid_fixed``: 중간 모델 ``gpt-5.4-mini``를 고정한다.
@@ -101,8 +102,11 @@ AUTO_ARM = "automatic"
 MID_ARM = "mid_fixed"
 HIGH_ARM = "high_fixed"
 LOW_ARM = "low_fixed"
-# 기본값은 기존 4-arm 경제성 실험과 호환된다. 필요한 비교 방식만 골라 실행할
-# 수 있도록 ``--arms``에서 이 값을 좁힌다.
+LEARNING_PHASE = "learning"
+BENCHMARK_PHASE = "benchmark"
+LEARNING_CASE_COUNT = 100
+BENCHMARK_CASE_COUNT = 20
+# 현재 실행 단계가 사용하는 arm 목록이다. main에서 phase plan 기준으로 바꾼다.
 ARMS = (AUTO_ARM, MID_ARM, HIGH_ARM, LOW_ARM)
 MID_MODEL = "gpt-5.4-mini"
 HIGH_MODEL = "gpt-5.6-sol"
@@ -169,6 +173,16 @@ class ArmResult:
     routing_judge_latency_ms: int | None = None
 
 
+@dataclass(frozen=True)
+class ExperimentPhasePlan:
+    phase: str
+    cases: tuple[ExperimentCase, ...]
+    arms: tuple[str, ...]
+    evaluate_quality: bool
+    reset_learning: bool
+    requires_ready_learner: bool
+
+
 EXTRA_CASES: tuple[tuple[str, str, str, str], ...] = (
     ("service_reliability", "balanced", "enterprise", "배포 직후 일부 고객만 주문 조회 API에서 502를 받고 있습니다. 최근 설정 변경과 지역별 트래픽 차이를 함께 확인해 우선 조치를 정리해 주세요."),
     ("service_reliability", "advanced", "enterprise", "결제 승인 지연과 메시지 큐 적체가 동시에 발생했습니다. 데이터 정합성을 훼손하지 않는 복구 순서와 고객 공지 초안을 제안해 주세요."),
@@ -202,6 +216,54 @@ EXTRA_CASES: tuple[tuple[str, str, str, str], ...] = (
     ("risk_triage", "advanced", "enterprise", "한 고객의 데이터 삭제 요청과 법적 보존 명령이 충돌합니다. 자동 삭제를 중단해야 하는지와 담당 부서 승인 흐름을 정리해 주세요."),
     ("risk_triage", "balanced", "business", "계정 권한 변경 요청이 들어왔지만 요청자가 팀 리더인지 확인되지 않습니다. 필요한 확인 정보와 보류 안내를 작성해 주세요."),
     ("risk_triage", "advanced", "enterprise", "생산 환경에서 비정상적으로 많은 API 키가 발급됐고 같은 시간대에 대량 데이터 다운로드도 있었습니다. 즉시 대응과 증거 보존을 구분해 주세요."),
+)
+
+
+LEARNING_EXTENSION_CASES: tuple[tuple[str, str, str, str], ...] = (
+    ("customer_operations", "economy", "business", "지난주에 종료한 자동화 실행의 결과 파일을 다시 내려받는 위치를 알려 주세요."),
+    ("customer_operations", "balanced", "enterprise", "같은 문의가 여러 팀으로 중복 배정됐습니다. 기존 담당 기록을 보존하면서 하나의 처리 건으로 정리하는 절차를 제안해 주세요."),
+    ("customer_operations", "advanced", "enterprise", "고객에게 이미 잘못 안내된 환불 금액을 정정해야 합니다. 추가 피해를 막는 순서와 승인받아야 할 결정을 구분해 주세요."),
+    ("release_operations", "economy", "business", "게시한 모듈의 설명 문구만 수정했을 때 사용자에게 언제 반영되는지 알려 주세요."),
+    ("release_operations", "balanced", "business", "새 배포 뒤 일부 요청에서만 이전 프롬프트 결과가 나옵니다. 캐시와 배포 버전을 확인하는 순서를 정리해 주세요."),
+    ("release_operations", "advanced", "enterprise", "배포 직후 결제 승인 workflow가 두 번 실행된 정황이 있습니다. 중복 부수효과를 멈추고 데이터 정합성을 확인할 계획을 제시해 주세요."),
+    ("identity_operations", "economy", "business", "내 계정에 연결된 팀과 역할을 확인하는 화면 위치가 궁금합니다."),
+    ("identity_operations", "balanced", "enterprise", "조직 이동한 직원이 새 팀 workflow는 수정하되 이전 팀 자료는 읽지 못하도록 권한 변경안을 작성해 주세요."),
+    ("identity_operations", "advanced", "enterprise", "퇴사자 계정으로 운영 credential이 사용된 기록이 발견됐습니다. 즉시 차단과 영향 조사 순서를 제시해 주세요."),
+    ("billing_operations", "economy", "business", "월별 모델 사용 비용을 워크플로우별로 확인하는 방법을 알려 주세요."),
+    ("billing_operations", "balanced", "business", "예산 알림은 정상인데 실제 사용액이 한도를 넘었습니다. 집계 지연과 누락 로그를 확인할 항목을 정리해 주세요."),
+    ("billing_operations", "advanced", "enterprise", "잘못 적용된 요금제로 여러 고객에게 과금됐습니다. 환불 범위 산정과 회계 승인 전에 확인할 근거를 정리해 주세요."),
+    ("data_operations", "economy", "business", "지식 베이스 문서의 마지막 동기화 시간을 어디에서 확인하는지 알려 주세요."),
+    ("data_operations", "balanced", "enterprise", "같은 문서의 두 버전이 검색 결과에 함께 노출됩니다. 최신 버전을 유지하면서 출처 기록을 보존하는 방법을 제안해 주세요."),
+    ("data_operations", "advanced", "enterprise", "삭제 요청 데이터가 검색 인덱스와 백업에는 남아 있습니다. 보존 의무와 삭제 권리를 함께 고려한 처리 순서를 제시해 주세요."),
+    ("incident_response", "economy", "business", "실패한 webhook 요청의 재시도 횟수를 확인하는 방법을 알려 주세요."),
+    ("incident_response", "balanced", "business", "외부 API 지연으로 workflow가 간헐적으로 timeout 됩니다. 재시도와 fallback을 조정하기 전에 확인할 지표를 알려 주세요."),
+    ("incident_response", "advanced", "enterprise", "여러 리전에서 인증 실패율이 동시에 증가하고 관리자 로그 일부가 누락됐습니다. 고객 영향과 보안 사고 가능성을 나눠 조사해 주세요."),
+    ("compliance_operations", "balanced", "business", "감사 보고서에 사용자 이름 대신 식별자를 표시하려 합니다. 추적성을 유지하면서 노출을 줄이는 방법을 알려 주세요."),
+    ("compliance_operations", "advanced", "enterprise", "법적 보존 대상 로그와 고객 삭제 요청이 충돌합니다. 자동 삭제를 중단할 범위와 검토 주체를 제안해 주세요."),
+)
+
+
+BENCHMARK_HOLDOUT_CASES: tuple[tuple[str, str, str, str], ...] = (
+    ("holdout_product_help", "economy", "business", "실행 비교 화면에서 기준 실행을 바꾸는 방법을 알려 주세요."),
+    ("holdout_product_help", "economy", "business", "모듈 목록에서 오류가 난 실행만 찾아보려면 어떤 필터를 써야 하나요?"),
+    ("holdout_product_help", "economy", "business", "등록한 지식 문서의 처리 완료 여부를 확인하고 싶습니다."),
+    ("holdout_product_help", "economy", "business", "워크플로우 노드의 입력 변수 이름을 수정한 뒤 저장하는 절차가 궁금합니다."),
+    ("holdout_access", "balanced", "enterprise", "감사 담당자에게 이번 달 실행 로그만 읽을 수 있는 임시 권한을 부여하려 합니다."),
+    ("holdout_access", "balanced", "business", "프로젝트가 끝난 외부 사용자의 팀 접근을 회수하되 기존 감사 기록은 유지해 주세요."),
+    ("holdout_access", "balanced", "enterprise", "서비스 계정이 배포는 실행할 수 있지만 credential 설정은 바꾸지 못하도록 권한을 나누고 싶습니다."),
+    ("holdout_access", "advanced", "enterprise", "권한 회수 후에도 이전 토큰으로 관리자 API 호출이 성공했습니다. 차단과 조사 순서를 제시해 주세요."),
+    ("holdout_finance", "balanced", "business", "사용량 보고서와 청구서의 토큰 합계가 다릅니다. 고객에게 답하기 전 확인할 자료를 정리해 주세요."),
+    ("holdout_finance", "advanced", "enterprise", "중복 청구된 구독료를 여러 법인에 환불해야 합니다. 승인 범위와 회계 반영 순서를 제안해 주세요."),
+    ("holdout_finance", "advanced", "enterprise", "SLA 위반 보상액이 계약별 상한을 넘을 수 있습니다. 고객 안내 전에 필요한 판단 근거를 정리해 주세요."),
+    ("holdout_finance", "economy", "business", "이번 달 모델별 비용 합계를 내려받는 위치를 알려 주세요."),
+    ("holdout_security", "advanced", "enterprise", "운영 로그에 API 키 일부가 노출됐고 외부 접근 흔적도 있습니다. 즉시 조치와 사후 조사 단계를 나눠 주세요."),
+    ("holdout_security", "advanced", "enterprise", "고객 문서가 인증 없이 검색되는 링크를 발견했습니다. 공개 차단과 영향 통지 판단에 필요한 사실을 정리해 주세요."),
+    ("holdout_security", "balanced", "business", "MFA 재등록 요청이 본인 요청인지 확인하기 위한 안전한 절차를 알려 주세요."),
+    ("holdout_reliability", "balanced", "business", "특정 시간대에만 webhook 재시도가 늘어납니다. 원인을 좁힐 지표와 확인 순서를 제안해 주세요."),
+    ("holdout_reliability", "advanced", "enterprise", "장애 복구 중 동일 주문이 두 번 처리될 가능성이 있습니다. 데이터 손상을 막는 복구 순서를 정리해 주세요."),
+    ("holdout_data", "balanced", "business", "검색 결과에 폐기된 문서 조각이 섞여 있습니다. 현재 문서만 사용하도록 확인할 항목을 알려 주세요."),
+    ("holdout_data", "advanced", "enterprise", "개인정보 삭제가 완료됐지만 분석용 파생 데이터에서 다시 식별될 가능성이 있습니다. 검증과 대응 방안을 제시해 주세요."),
+    ("holdout_governance", "balanced", "enterprise", "AI 답변이 내부 정책과 다를 때 자동 발송을 막고 사람 검토로 넘기는 기준을 설계해 주세요."),
 )
 
 
@@ -262,8 +324,8 @@ def _experiment_case(
     )
 
 
-def build_cases() -> list[ExperimentCase]:
-    """80개 고정 데이터셋을 만들고 순서만 재현 가능하게 섞는다."""
+def _base_learning_cases() -> list[ExperimentCase]:
+    """기존 80개 데이터셋을 학습 표본으로 유지한다."""
 
     pool_specs = (
         ("routine_usage_guidance", "economy"),
@@ -294,12 +356,119 @@ def build_cases() -> list[ExperimentCase]:
             )
         )
     if len(cases) != 80:
-        raise AssertionError(f"expected 80 cases, got {len(cases)}")
+        raise AssertionError(f"expected 80 base learning cases, got {len(cases)}")
+    return cases
+
+
+def _cases_from_specs(
+    specs: Iterable[tuple[str, str, str, str]],
+    *,
+    id_prefix: str,
+) -> list[ExperimentCase]:
+    return [
+        _experiment_case(
+            case_id=f"{id_prefix}-{index:03d}",
+            category=category,
+            difficulty=difficulty,
+            customer_tier=customer_tier,
+            message=message,
+        )
+        for index, (category, difficulty, customer_tier, message) in enumerate(
+            specs,
+            start=1,
+        )
+    ]
+
+
+def build_learning_cases() -> list[ExperimentCase]:
+    """로컬 학습 50건과 독립 검증 50건에 사용할 고정 100건."""
+
+    cases = [
+        *_base_learning_cases(),
+        *_cases_from_specs(
+            LEARNING_EXTENSION_CASES,
+            id_prefix="learning-extension",
+        ),
+    ]
+    if len(cases) != LEARNING_CASE_COUNT:
+        raise AssertionError(
+            f"expected {LEARNING_CASE_COUNT} learning cases, got {len(cases)}"
+        )
     random.Random(20260717).shuffle(cases)
     # 같은 주제의 설명 요청과 실제 상태 변경 요청을 30건 smoke에서도 반드시
     # 비교해 decision_impact가 단순 의미 유사도에 끌려가지 않는지 확인한다.
     cases.sort(key=lambda case: 0 if case.category == "refund_intent" else 1)
     return cases
+
+
+def build_benchmark_cases() -> list[ExperimentCase]:
+    """학습에 노출하지 않고 세 arm에 똑같이 전달할 고정 holdout 20건."""
+
+    cases = _cases_from_specs(
+        BENCHMARK_HOLDOUT_CASES,
+        id_prefix="benchmark-holdout",
+    )
+    if len(cases) != BENCHMARK_CASE_COUNT:
+        raise AssertionError(
+            f"expected {BENCHMARK_CASE_COUNT} benchmark cases, got {len(cases)}"
+        )
+    random.Random(20260722).shuffle(cases)
+    return cases
+
+
+def build_cases() -> list[ExperimentCase]:
+    """실험 manifest 전체 120건. 실행 단계에서는 두 집합을 섞지 않는다."""
+
+    return [*build_learning_cases(), *build_benchmark_cases()]
+
+
+def build_phase_plan(phase: str) -> ExperimentPhasePlan:
+    normalized = str(phase or "").strip().lower()
+    if normalized == LEARNING_PHASE:
+        return ExperimentPhasePlan(
+            phase=LEARNING_PHASE,
+            cases=tuple(build_learning_cases()),
+            arms=(AUTO_ARM,),
+            evaluate_quality=False,
+            reset_learning=True,
+            requires_ready_learner=False,
+        )
+    if normalized == BENCHMARK_PHASE:
+        return ExperimentPhasePlan(
+            phase=BENCHMARK_PHASE,
+            cases=tuple(build_benchmark_cases()),
+            arms=(AUTO_ARM, MID_ARM, HIGH_ARM),
+            evaluate_quality=True,
+            reset_learning=False,
+            requires_ready_learner=True,
+        )
+    raise ValueError(f"알 수 없는 실험 단계입니다: {phase}")
+
+
+def benchmark_readiness_error(
+    learning_state: dict[str, Any],
+    *,
+    completed_learning_case_count: int,
+) -> str | None:
+    """학습되지 않은 자동 arm으로 경제성 비교를 시작하지 않게 한다."""
+
+    if completed_learning_case_count < LEARNING_CASE_COUNT:
+        return "incomplete_learning_phase"
+    if learning_state.get("active_version") is None:
+        return "active_learner_version_missing"
+    return None
+
+
+def _completed_learning_case_count(benchmark_output_dir: pathlib.Path) -> int:
+    """같은 run 폴더의 1단계 보고서에서 완료 요청 수를 읽는다."""
+
+    learning_result_path = benchmark_output_dir.parent / LEARNING_PHASE / "result.json"
+    if not learning_result_path.exists():
+        return 0
+    payload = json.loads(learning_result_path.read_text(encoding="utf-8"))
+    if payload.get("phase") != LEARNING_PHASE:
+        return 0
+    return int(payload.get("case_count") or 0)
 
 
 def _arm_execution_order(case_id: str) -> tuple[str, ...]:
@@ -543,7 +712,11 @@ def _run_id(arm: str, case_id: str) -> uuid.UUID:
     return uuid.uuid5(NAMESPACE, f"judge-first-economics:{arm}:{case_id}")
 
 
-def _ensure_runtime_models(db) -> list[str]:
+def _ensure_runtime_models(
+    db,
+    *,
+    include_quality_judge: bool,
+) -> list[str]:
     available = LLMService.get_runtime_available_model_ids_for_user(
         db, user_id=USER_ID, organization_id=ORG_ID
     )
@@ -569,8 +742,8 @@ def _ensure_runtime_models(db) -> list[str]:
     required = {fixed_model_by_arm[arm] for arm in ARMS if arm in fixed_model_by_arm}
     if AUTO_ARM in ARMS:
         required.add(ROUTING_JUDGE_MODEL)
-    # 품질 Judge는 비교 arm 수와 무관하게 같은 기준으로 결과를 평가한다.
-    required.add(QUALITY_JUDGE_MODEL)
+    if include_quality_judge:
+        required.add(QUALITY_JUDGE_MODEL)
     missing = required - set(selected)
     if missing:
         raise RuntimeError(f"실험에 필요한 실행 가능 모델이 없습니다: {sorted(missing)}")
@@ -579,7 +752,12 @@ def _ensure_runtime_models(db) -> list[str]:
     return selected
 
 
-def _upsert_workflow_and_deployments(db, available_models: list[str]) -> None:
+def _upsert_workflow_and_deployments(
+    db,
+    available_models: list[str],
+    *,
+    reset_policy_state: bool,
+) -> None:
     auto_graph = graph_for_arm(AUTO_ARM)
     app = db.get(App, APP_ID)
     if app is None:
@@ -639,7 +817,7 @@ def _upsert_workflow_and_deployments(db, available_models: list[str]) -> None:
                 config={"experiment": "judge-first-norag-blind-80", "arm": arm},
                 input_schema={"type": "object"},
                 output_schema={"type": "object"},
-            description=f"무RAG 80회 블라인드 경제성 실험: {arm}",
+                description=f"무RAG 2단계 블라인드 경제성 실험: {arm}",
                 created_by=USER_ID,
                 is_active=True,
             )
@@ -688,13 +866,14 @@ def _upsert_workflow_and_deployments(db, available_models: list[str]) -> None:
     else:
         policy.enabled = True
         policy.status = "active"
-        policy.policy_version = "judge-first-economics-v1"
-        policy.active_policy = active_policy
-        policy.eligible_runs_since_last_refresh = 0
-        policy.refresh_requested_at = None
-        policy.last_refresh_result = None
         policy.judge_user_id = USER_ID
         policy.execution_subject_user_id = USER_ID
+        if reset_policy_state:
+            policy.policy_version = "judge-first-economics-v1"
+            policy.active_policy = active_policy
+            policy.eligible_runs_since_last_refresh = 0
+            policy.refresh_requested_at = None
+            policy.last_refresh_result = None
 
     auto_node = next(
         node for node in auto_graph["nodes"] if str(node.get("id")) == NODE_ID
@@ -982,13 +1161,41 @@ def _train_automatic_learner() -> dict[str, Any]:
         db.close()
 
 
-def _execute_case(arm: str, case: ExperimentCase) -> ArmResult:
+def _execute_case(
+    arm: str,
+    case: ExperimentCase,
+    *,
+    include_in_learning: bool,
+) -> ArmResult:
     # 이 스크립트의 데이터셋/설정 검증은 root CI에서도 실행된다. gevent가
     # 필요한 실제 workflow 실행 엔진은 --execute 경로에서만 늦게 import한다.
     from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 
     graph = graph_for_arm(arm)
     run_id = _run_id(arm, case.case_id)
+    execution_context = {
+        "workflow_id": str(WORKFLOW_ID),
+        "workflow_run_id": str(run_id),
+        "app_id": str(APP_ID),
+        "deployment_id": str(_deployment_id_for(arm)),
+        "workflow_version": 1,
+        "user_id": str(USER_ID),
+        "organization_id": str(ORG_ID),
+        "trigger_mode": "webhook",
+        "execution_subject": {"subject_type": "user", "subject_id": str(USER_ID)},
+    }
+    if arm == AUTO_ARM and not include_in_learning:
+        # 경제성 holdout은 검증된 learner version을 읽되 새 학습 label이나 운영
+        # 성적을 만들지 않는다. benchmark 도중 라우터 자체가 바뀌면 세 arm 비교가
+        # 동일한 정책 snapshot을 비교한 것이 아니게 된다.
+        execution_context.update(
+            {
+                "routing_policy_preview": True,
+                "routing_policy_preview_node_ids": [NODE_ID],
+                "routing_policy_deployment_id": str(AUTO_DEPLOYMENT_ID),
+                "routing_policy_deployment_node_ids": [NODE_ID],
+            }
+        )
     engine = WorkflowEngine(
         graph=graph,
         user_input={
@@ -998,17 +1205,7 @@ def _execute_case(arm: str, case: ExperimentCase) -> ArmResult:
             "constraints": list(case.constraints),
             "outputMode": case.output_mode,
         },
-        execution_context={
-            "workflow_id": str(WORKFLOW_ID),
-            "workflow_run_id": str(run_id),
-            "app_id": str(APP_ID),
-            "deployment_id": str(_deployment_id_for(arm)),
-            "workflow_version": 1,
-            "user_id": str(USER_ID),
-            "organization_id": str(ORG_ID),
-            "trigger_mode": "webhook",
-            "execution_subject": {"subject_type": "user", "subject_id": str(USER_ID)},
-        },
+        execution_context=execution_context,
         is_deployed=True,
         workflow_timeout=120,
     )
@@ -1272,6 +1469,29 @@ def _quality_judge(case: ExperimentCase, results: dict[str, ArmResult]) -> tuple
     return judged, metadata
 
 
+def _quality_not_evaluated(
+    results: dict[str, ArmResult],
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    """학습 단계에서 독립 품질 Judge를 호출하지 않았음을 명시한다."""
+
+    return (
+        {
+            arm: {
+                "quality_score": None,
+                "contract_pass": None,
+                "reason": "학습 단계에서는 독립 품질 평가를 실행하지 않습니다.",
+                "evaluation_status": "not_evaluated",
+            }
+            for arm in results
+        },
+        {
+            "evaluation_status": "not_requested",
+            "attempt_count": 0,
+            "cost_usd": 0.0,
+        },
+    )
+
+
 def _mean(values: Iterable[float | int | None]) -> float | None:
     normalized = [float(value) for value in values if value is not None]
     return statistics.mean(normalized) if normalized else None
@@ -1312,7 +1532,11 @@ def _arm_summary(rows: list[dict[str, Any]], arm: str) -> dict[str, Any]:
             if completed_quality
             else None
         ),
-        "quality_evaluation_failure_count": len(rows) - len(completed_quality),
+        "quality_evaluation_failure_count": sum(
+            1
+            for row in rows
+            if row["quality"][arm].get("evaluation_status") == "failed"
+        ),
         "model_distribution": dict(Counter(item["selected_model"] or "unknown" for item in arm_rows)),
         "runtime_judge_call_count": sum(1 for item in arm_rows if item["routing_judge_tokens"] > 0),
     }
@@ -1469,8 +1693,15 @@ def _score(value: float | None) -> str:
     return "평가 실패" if value is None else f"{value:.1f}"
 
 
+def _quality_score_text(value: float | None, *, enabled: bool) -> str:
+    if not enabled:
+        return "미평가"
+    return _score(value)
+
+
 def render_markdown(report: dict[str, Any]) -> str:
     summary = report["arm_summary"]
+    phase = str(report.get("phase") or BENCHMARK_PHASE)
     automatic = summary[AUTO_ARM]
     mid = summary.get(MID_ARM)
     high = summary.get(HIGH_ARM)
@@ -1480,12 +1711,19 @@ def render_markdown(report: dict[str, Any]) -> str:
         if high is not None
         else None
     )
+    report_kind = "학습 검증" if phase == LEARNING_PHASE else "경제성 비교"
     lines = [
-        f"# Judge-first 자동 모델 라우팅 {report['case_count']}회 경제성 실험 보고서",
+        f"# Judge-first 자동 모델 라우팅 {report['case_count']}회 {report_kind} 보고서",
         "",
         "## 한눈에 보는 결론",
         "",
-        f"이 실험은 같은 기업 요청 처리 워크플로우를 {report['case_count']}개의 서로 다른 요청으로 실행해, 자동 모델 라우팅이 비싼 모델만 고정하는 경우보다 돈을 아끼는지, 싼 모델만 고정하는 경우보다 결과 품질을 지키는지 확인한 결과입니다.",
+        (
+            f"이 단계는 자동 라우팅만 {report['case_count']}회 실행해 첫 50건으로 학습하고 "
+            "다음 50건으로 일반화 성능과 학습 버전 발행 여부를 확인합니다."
+            if phase == LEARNING_PHASE
+            else f"이 단계는 학습에 쓰지 않은 {report['case_count']}개 요청을 자동 라우팅, "
+            "중간 모델 고정, 고가 모델 고정에 똑같이 보내 비용·속도·품질을 비교합니다."
+        ),
         "",
         f"- 자동 라우팅 총 제품 비용: {_money(automatic['total_product_cost_usd'])}",
         (
@@ -1525,13 +1763,17 @@ def render_markdown(report: dict[str, Any]) -> str:
             ) if arm in ARMS
         ),
         f"- 라우팅 Judge: `{report['routing_judge_model']}`",
-        f"- 독립 품질 평가 Judge: `{report['quality_judge_model']}`",
+        (
+            "- 독립 품질 평가 Judge: 학습 단계에서는 호출하지 않음"
+            if not report.get("quality_evaluation_enabled")
+            else f"- 독립 품질 평가 Judge: `{report['quality_judge_model']}`"
+        ),
         "- RAG: 미사용. 이번 비교에서는 KB 검색 품질 변수를 빼고 모델 라우팅 자체의 비용·속도·출력 품질만 측정했습니다.",
         f"- 정책 refresh: 100회. {report['case_count']}회 실험 동안 정책 교체를 막고, Judge label을 누적한 local router의 전환만 측정했습니다.",
         "",
         "## 데이터셋",
         "",
-        "80개 요청은 고객 사용 안내, 계정·접근 권한, 재무 결산·승인, 보안·개인정보 사고, 장애·신뢰성, 데이터 거버넌스, 계약·규정, 분석 보고, 연동 지원, 위험 분류를 섞었습니다. 동일 문장을 반복하지 않았고 실행 순서는 고정 난수로 섞어 특정 범주가 초반에 몰리지 않게 했습니다.",
+        f"이 단계의 {report['case_count']}개 요청은 여러 업무 유형과 난이도를 섞었고, 동일 문장을 반복하지 않았습니다.",
         "",
         "| 예상 난이도 | 건수 |",
         "| --- | ---: |",
@@ -1556,7 +1798,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.append(
             f"| {labels[arm]} | {_money(item['task_cost_usd'])} | {_money(item['routing_judge_cost_usd'])} | "
             f"{_money(item['total_product_cost_usd'])} | {item['average_task_latency_ms'] or 0:.0f}ms | "
-            f"{item['average_end_to_end_latency_ms'] or 0:.0f}ms | {_score(item['quality_score_average'])} | "
+            f"{item['average_end_to_end_latency_ms'] or 0:.0f}ms | "
+            f"{_quality_score_text(item['quality_score_average'], enabled=bool(report.get('quality_evaluation_enabled')))} | "
             f"{_percent(item['schema_pass_rate'])} | {_percent(item['quality_pass_rate'])} |"
         )
     lines.extend([
@@ -1599,7 +1842,11 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         f"- 독립 품질 Judge 총비용: {_money(report['quality_judge_total_cost_usd'])}",
         f"- 독립 품질 Judge 총호출: {report['quality_judge_call_count']}회",
-        f"- 이 비용은 {len(ARMS)}개 방식의 결과를 공정하게 비교하기 위한 측정 비용이며 제품 운영비 비교에는 포함하지 않았습니다.",
+        (
+            "- 학습 단계에는 품질 평가 비용이 발생하지 않습니다."
+            if not report.get("quality_evaluation_enabled")
+            else f"- 이 비용은 {len(ARMS)}개 방식의 결과를 공정하게 비교하기 위한 측정 비용이며 제품 운영비 비교에는 포함하지 않았습니다."
+        ),
         "",
         "## 요청별 결과",
         "",
@@ -1630,7 +1877,10 @@ def render_markdown(report: dict[str, Any]) -> str:
             auto = row["arms"][AUTO_ARM]
             cells.extend([
                 auto["selected_model"] or "-",
-                _score(row['quality'][AUTO_ARM]['quality_score']),
+                _quality_score_text(
+                    row['quality'][AUTO_ARM]['quality_score'],
+                    enabled=bool(report.get('quality_evaluation_enabled')),
+                ),
                 _money(auto["task_cost_usd"] + auto["routing_judge_cost_usd"]),
             ])
         for arm in (MID_ARM, HIGH_ARM, LOW_ARM):
@@ -1638,7 +1888,10 @@ def render_markdown(report: dict[str, Any]) -> str:
                 continue
             fixed = row["arms"][arm]
             cells.extend([
-                _score(row['quality'][arm]['quality_score']),
+                _quality_score_text(
+                    row['quality'][arm]['quality_score'],
+                    enabled=bool(report.get('quality_evaluation_enabled')),
+                ),
                 _money(fixed["task_cost_usd"]),
             ])
         lines.append("| " + " | ".join(cells) + " |")
@@ -1676,8 +1929,10 @@ def _write_run_config(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     config_path = output_dir / "run-config.json"
+    learning_plan = build_phase_plan(LEARNING_PHASE)
+    benchmark_plan = build_phase_plan(BENCHMARK_PHASE)
     config = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": run_id,
         "experiment": "judge-first-norag-blind-economics",
         "strategy_id": "judge_bootstrap_incremental_v1",
@@ -1704,18 +1959,39 @@ def _write_run_config(
                 HIGH_ARM: HIGH_MODEL,
                 LOW_ARM: LOW_MODEL,
             }[arm]
-            for arm in ARMS
+            for arm in benchmark_plan.arms
         },
         "dataset": {
-            "name": "enterprise-norag-routing-80-v2",
+            "name": "enterprise-norag-routing-two-stage-v3",
             "total_case_count": len(build_cases()),
+        },
+        "phases": {
+            LEARNING_PHASE: {
+                "case_count": len(learning_plan.cases),
+                "arms": list(learning_plan.arms),
+                "quality_judge": learning_plan.evaluate_quality,
+            },
+            BENCHMARK_PHASE: {
+                "case_count": len(benchmark_plan.cases),
+                "arms": list(benchmark_plan.arms),
+                "quality_judge": benchmark_plan.evaluate_quality,
+                "requires_ready_learner": True,
+            },
         },
         "batch_size": batch_size,
         "artifact_files": {
-            "report": "report.md" if report_name is None else f"{report_name}.md",
-            "result": "result.json" if report_name is None else f"{report_name}.json",
-            "batches": "batches/",
-            "append_only_events": "execution-events.jsonl",
+            LEARNING_PHASE: {
+                "report": "learning/report.md",
+                "result": "learning/result.json",
+                "batches": "learning/batches/",
+                "append_only_events": "learning/execution-events.jsonl",
+            },
+            BENCHMARK_PHASE: {
+                "report": "benchmark/report.md",
+                "result": "benchmark/result.json",
+                "batches": "benchmark/batches/",
+                "append_only_events": "benchmark/execution-events.jsonl",
+            },
         },
     }
     if config_path.exists():
@@ -1729,6 +2005,7 @@ def _write_run_config(
             "candidate_model_ids",
             "comparison_arms",
             "dataset",
+            "phases",
         ):
             if previous.get(key) != config[key]:
                 raise RuntimeError(
@@ -1795,6 +2072,7 @@ def _read_existing_report(output_dir: pathlib.Path, *, report_name: str | None) 
 
 def _experiment_report(
     *,
+    phase_plan: ExperimentPhasePlan,
     rows: list[dict[str, Any]],
     available_models: list[str],
     batch_offset: int,
@@ -1806,6 +2084,8 @@ def _experiment_report(
 ) -> dict[str, Any]:
     return {
         "executed_at": datetime.now(timezone.utc).isoformat(),
+        "phase": phase_plan.phase,
+        "quality_evaluation_enabled": phase_plan.evaluate_quality,
         "workflow_id": str(WORKFLOW_ID),
         "node_id": NODE_ID,
         "case_count": len(rows),
@@ -1839,32 +2119,61 @@ def run_experiment(
     cases: list[ExperimentCase],
     output_dir: pathlib.Path,
     *,
+    phase_plan: ExperimentPhasePlan,
     resume: bool,
     batch_offset: int,
     report_name: str | None,
 ) -> dict[str, Any]:
+    if tuple(ARMS) != phase_plan.arms:
+        raise RuntimeError("실행 arm과 phase plan이 일치하지 않습니다.")
+
     if resume:
         previous_report = _read_existing_report(output_dir, report_name=report_name)
+        if previous_report.get("phase") != phase_plan.phase:
+            raise RuntimeError("다른 실험 단계의 보고서는 이어서 실행할 수 없습니다.")
         rows = list(previous_report.get("runs") or [])
-        available_models = list(previous_report.get("available_models") or [])
         prior_quality_cost = float(previous_report.get("quality_judge_total_cost_usd") or 0)
         prior_quality_calls = int(previous_report.get("quality_judge_call_count") or 0)
         prior_quality_errors = list(previous_report.get("quality_judge_errors") or [])
         with SessionLocal() as db:
+            available_models = _ensure_runtime_models(
+                db,
+                include_quality_judge=phase_plan.evaluate_quality,
+            )
             _restore_policy_checkpoint(db, previous_report.get("policy_checkpoint") or {})
             _clear_case_runs(db, cases)
             db.commit()
     else:
         with SessionLocal() as db:
-            available_models = _ensure_runtime_models(db)
-            _clear_prior_experiment_learning(db)
-            _clear_prior_experiment_runs(db)
-            _upsert_workflow_and_deployments(db, available_models)
+            available_models = _ensure_runtime_models(
+                db,
+                include_quality_judge=phase_plan.evaluate_quality,
+            )
+            if phase_plan.reset_learning:
+                _clear_prior_experiment_learning(db)
+                _clear_prior_experiment_runs(db)
+            _upsert_workflow_and_deployments(
+                db,
+                available_models,
+                reset_policy_state=phase_plan.reset_learning,
+            )
+            _clear_case_runs(db, cases)
             db.commit()
         rows = []
         prior_quality_cost = 0.0
         prior_quality_calls = 0
         prior_quality_errors: list[dict[str, Any]] = []
+
+    if phase_plan.requires_ready_learner:
+        readiness_error = benchmark_readiness_error(
+            _persisted_learning_state(),
+            completed_learning_case_count=_completed_learning_case_count(output_dir),
+        )
+        if readiness_error is not None:
+            raise RuntimeError(
+                "경제성 비교를 시작할 수 없습니다. 먼저 learning 100건을 완료하고 "
+                f"학습 버전을 발행해야 합니다: {readiness_error}"
+            )
 
     quality_judge_metrics: list[dict[str, Any]] = []
     event_path = output_dir / "execution-events.jsonl"
@@ -1873,14 +2182,25 @@ def run_experiment(
     with synchronous_experiment_tasks():
         for index, case in enumerate(cases, start=1):
             execution_order = _arm_execution_order(case.case_id)
-            results = {arm: _execute_case(arm, case) for arm in execution_order}
-            _record_automatic_operational_result(case)
-            if _learning_batch_due(
+            results = {
+                arm: _execute_case(
+                    arm,
+                    case,
+                    include_in_learning=phase_plan.phase == LEARNING_PHASE,
+                )
+                for arm in execution_order
+            }
+            if phase_plan.phase == LEARNING_PHASE:
+                _record_automatic_operational_result(case)
+            if phase_plan.phase == LEARNING_PHASE and _learning_batch_due(
                 completed_case_count=index,
                 total_case_count=len(cases),
             ):
                 _train_automatic_learner()
-            quality, quality_meta = _quality_judge(case, results)
+            if phase_plan.evaluate_quality:
+                quality, quality_meta = _quality_judge(case, results)
+            else:
+                quality, quality_meta = _quality_not_evaluated(results)
             quality_judge_metrics.append(quality_meta)
             row = {
                 "case_id": case.case_id,
@@ -1912,6 +2232,7 @@ def run_experiment(
                 )
             if index % 10 == 0 or index == len(cases):
                 checkpoint = _experiment_report(
+                    phase_plan=phase_plan,
                     rows=rows,
                     available_models=available_models,
                     batch_offset=batch_offset + index - min(index, 10),
@@ -1924,6 +2245,7 @@ def run_experiment(
                 write_report(output_dir, checkpoint, report_name=report_name)
 
     report = _experiment_report(
+        phase_plan=phase_plan,
         rows=rows,
         available_models=available_models,
         batch_offset=batch_offset,
@@ -1939,18 +2261,28 @@ def run_experiment(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Judge-first 자동 모델 라우팅 80회 경제성 실험")
-    parser.add_argument("--execute", action="store_true", help="실제 provider 호출과 DB 로그 기록을 실행합니다.")
-    parser.add_argument("--count", type=int, default=80, help="사전 검증용 실행 건수입니다. 기본값은 80입니다.")
-    parser.add_argument(
-        "--arms",
-        default=",".join(ARMS),
-        help=(
-            "실행할 비교 방식의 쉼표 구분 목록입니다. "
-            "automatic,mid_fixed,high_fixed,low_fixed 중 선택합니다."
-        ),
+    parser = argparse.ArgumentParser(
+        description="Judge-first 자동 모델 라우팅 2단계 학습·경제성 실험"
     )
-    parser.add_argument("--offset", type=int, default=0, help="80개 고정 데이터셋에서 시작할 0-base 위치입니다.")
+    parser.add_argument("--execute", action="store_true", help="실제 provider 호출과 DB 로그 기록을 실행합니다.")
+    parser.add_argument(
+        "--phase",
+        choices=(LEARNING_PHASE, BENCHMARK_PHASE),
+        default=LEARNING_PHASE,
+        help="learning은 자동 100건, benchmark는 미사용 입력 20건의 3-arm 비교입니다.",
+    )
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=None,
+        help="선택 단계에서 실행할 건수입니다. 생략하면 단계 전체를 실행합니다.",
+    )
+    parser.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        help="선택 단계 데이터셋에서 시작할 0-base 위치입니다.",
+    )
     parser.add_argument("--resume", action="store_true", help="이전 10건 batch의 DB 정책과 보고서를 이어서 누적합니다.")
     parser.add_argument(
         "--routing-judge-model",
@@ -1981,34 +2313,38 @@ def main() -> None:
     global ROUTING_JUDGE_MODEL, ARMS
     args = parse_args()
     ROUTING_JUDGE_MODEL = str(args.routing_judge_model)
-    selected_arms = tuple(
-        arm.strip() for arm in str(args.arms).split(",") if arm.strip()
-    )
-    known_arms = {AUTO_ARM, MID_ARM, HIGH_ARM, LOW_ARM}
-    if not selected_arms or len(set(selected_arms)) != len(selected_arms):
-        raise SystemExit("--arms에는 중복 없이 하나 이상의 비교 방식을 넣어야 합니다.")
-    unknown_arms = set(selected_arms) - known_arms
-    if unknown_arms:
-        raise SystemExit(f"알 수 없는 --arms 값입니다: {sorted(unknown_arms)}")
-    if AUTO_ARM not in selected_arms:
-        raise SystemExit("이 실험은 automatic arm을 반드시 포함해야 합니다.")
-    ARMS = selected_arms
-    output_dir, report_name = resolve_artifact_target(
+    phase_plan = build_phase_plan(args.phase)
+    ARMS = phase_plan.arms
+    run_root, report_name = resolve_artifact_target(
         output_dir=str(args.output_dir),
         run_id=args.run_id,
     )
     if args.run_id and args.report_name:
         raise SystemExit("--run-id와 --report-name은 함께 사용할 수 없습니다.")
-    cases = build_cases()
-    if args.count < 1 or args.offset < 0 or args.offset + args.count > len(cases):
-        raise SystemExit(f"--offset/--count 범위는 0~{len(cases)} 안이어야 합니다.")
-    selected_cases = cases[args.offset : args.offset + args.count]
+    output_dir = run_root / phase_plan.phase
+    report_name = (
+        None
+        if args.run_id
+        else args.report_name or f"judge_first_economics_80_{phase_plan.phase}"
+    )
+    cases = list(phase_plan.cases)
+    count = len(cases) - args.offset if args.count is None else args.count
+    if count < 1 or args.offset < 0 or args.offset + count > len(cases):
+        raise SystemExit(
+            f"--offset/--count 범위는 {phase_plan.phase} 단계의 "
+            f"0~{len(cases)} 안이어야 합니다."
+        )
+    selected_cases = cases[args.offset : args.offset + count]
     if not args.execute:
         print(
             json.dumps(
                 {
                     "dry_run": True,
+                    "phase": phase_plan.phase,
+                    "arms": list(phase_plan.arms),
                     "case_count": len(selected_cases),
+                    "quality_evaluation": phase_plan.evaluate_quality,
+                    "requires_ready_learner": phase_plan.requires_ready_learner,
                     "categories": dict(Counter(case.category for case in selected_cases)),
                     "difficulty": dict(Counter(case.expected_difficulty for case in selected_cases)),
                     "message": "실제 호출은 --execute를 붙여야 시작합니다.",
@@ -2020,14 +2356,15 @@ def main() -> None:
         return
     if args.run_id:
         _write_run_config(
-            output_dir,
+            run_root,
             run_id=str(args.run_id).strip(),
-            report_name=report_name,
+            report_name=None,
             batch_size=len(selected_cases),
         )
     run_experiment(
         selected_cases,
         output_dir,
+        phase_plan=phase_plan,
         resume=args.resume,
         batch_offset=args.offset,
         report_name=report_name,
