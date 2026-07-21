@@ -67,3 +67,20 @@ def test_fetcher_removes_partial_file_when_downloader_reports_path(
         GuardedRemoteFileFetcher().fetch_to_temp("https://files.example/policy.pdf")
 
     assert not os.path.exists(partial)
+
+
+def test_fetcher_maps_http_error_status_to_safe_response_failure(monkeypatch) -> None:
+    monkeypatch.setattr(
+        remote_file_module,
+        "download_url_to_temp_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            EgressGuardError("egress.http_status_rejected")
+        ),
+    )
+
+    with pytest.raises(RemoteFileFetchError) as captured:
+        GuardedRemoteFileFetcher().fetch_to_temp(
+            "https://files.example/missing.txt?opaque=value"
+        )
+
+    assert captured.value.code == "remote_file.response_rejected"

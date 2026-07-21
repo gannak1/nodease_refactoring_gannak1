@@ -614,6 +614,8 @@ def download_url_to_temp_file(
                         current_url = guard.validate_redirect(current_url, next_url)
                         continue
 
+                    if not 200 <= response.status_code < 300:
+                        raise EgressGuardError("egress.http_status_rejected")
                     guard.validate_response_headers(response.headers)
                     temp_path: str | None = None
                     try:

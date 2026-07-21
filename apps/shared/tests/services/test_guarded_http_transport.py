@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import socket
+import threading
+import time
 
 import httpcore
 import httpx
@@ -147,6 +149,49 @@ async def test_async_backend_dials_only_the_validated_address(monkeypatch) -> No
     await guarded.connect_tcp("provider.example", 443)
 
     assert backend.targets == [("93.184.216.34", 443)]
+
+
+@pytest.mark.asyncio
+async def test_async_backend_resolves_dns_outside_the_event_loop_thread(
+    monkeypatch,
+) -> None:
+    event_loop_thread = threading.get_ident()
+    resolver_threads: list[int] = []
+    guard = _bound_operation().guard
+
+    def resolve(_host: str, _port: int):
+        resolver_threads.append(threading.get_ident())
+        return "provider.example", 443, ("93.184.216.34",)
+
+    monkeypatch.setattr(guard, "validate_host_port_addresses", resolve)
+    backend = _AsyncBackend("93.184.216.34")
+    guarded = GuardedAsyncNetworkBackend(guard, backend=backend)
+
+    await guarded.connect_tcp("provider.example", 443, timeout=1.0)
+
+    assert resolver_threads
+    assert resolver_threads[0] != event_loop_thread
+    assert backend.targets == [("93.184.216.34", 443)]
+
+
+@pytest.mark.asyncio
+async def test_async_backend_applies_connect_timeout_to_dns_resolution(
+    monkeypatch,
+) -> None:
+    guard = _bound_operation().guard
+
+    def slow_resolve(_host: str, _port: int):
+        time.sleep(0.05)
+        return "provider.example", 443, ("93.184.216.34",)
+
+    monkeypatch.setattr(guard, "validate_host_port_addresses", slow_resolve)
+    backend = _AsyncBackend("93.184.216.34")
+    guarded = GuardedAsyncNetworkBackend(guard, backend=backend)
+
+    with pytest.raises(httpcore.ConnectTimeout):
+        await guarded.connect_tcp("provider.example", 443, timeout=0.005)
+
+    assert backend.targets == []
 
 
 def test_bound_transport_rejects_another_origin_before_pool_call(monkeypatch) -> None:

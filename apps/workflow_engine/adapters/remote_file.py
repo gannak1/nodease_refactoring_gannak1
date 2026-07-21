@@ -46,6 +46,7 @@ class GuardedRemoteFileFetcher:
                 code = "remote_file.connection_failed"
             elif exc.reason_code in {
                 "egress.response_too_large",
+                "egress.http_status_rejected",
                 "egress.unsupported_content_type",
                 "egress.compressed_response_not_allowed",
             }:

@@ -648,6 +648,42 @@ def test_download_url_to_temp_file_removes_partial_file_at_size_cap(
     assert partial_path.exists() is False
 
 
+def test_download_url_to_temp_file_rejects_http_error_before_writing(
+    monkeypatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            headers={"content-type": "text/plain"},
+            content=b"synthetic upstream error",
+            request=request,
+        )
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: _fake_getaddrinfo("8.8.8.8"),
+    )
+    monkeypatch.setattr(
+        "apps.shared.services.guarded_http_transport.GuardedHttpTransport",
+        lambda *_args, **_kwargs: httpx.MockTransport(handler),
+    )
+    monkeypatch.setattr(
+        "apps.shared.services.egress_guard.tempfile.NamedTemporaryFile",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an unsuccessful response must not create a temporary file"
+        ),
+    )
+
+    with pytest.raises(EgressGuardError) as captured:
+        download_url_to_temp_file(
+            "https://example.com/missing.txt",
+            policy=EgressGuardPolicy(validate_peer_ip=False),
+        )
+
+    assert captured.value.reason_code == "egress.http_status_rejected"
+
+
 def test_protocol_adapter_guards_reject_dangerous_operations():
     with pytest.raises(EgressGuardError) as sql_exc:
         ensure_db_probe_allowed("DROP TABLE users")

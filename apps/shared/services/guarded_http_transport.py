@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 from collections.abc import Iterable
 from contextlib import suppress
@@ -105,10 +106,21 @@ class GuardedAsyncNetworkBackend(httpcore.AsyncNetworkBackend):
         local_address: str | None = None,
         socket_options: Iterable[httpcore.SOCKET_OPTION] | None = None,
     ) -> httpcore.AsyncNetworkStream:
-        _host, safe_port, target_ips = self._guard.validate_host_port_addresses(
-            host,
-            port,
-        )
+        try:
+            resolution = asyncio.to_thread(
+                self._guard.validate_host_port_addresses,
+                host,
+                port,
+            )
+            if timeout is None:
+                _host, safe_port, target_ips = await resolution
+            else:
+                _host, safe_port, target_ips = await asyncio.wait_for(
+                    resolution,
+                    timeout=timeout,
+                )
+        except TimeoutError as exc:
+            raise httpcore.ConnectTimeout from exc
         last_error: httpcore.ConnectError | httpcore.ConnectTimeout | None = None
         for target_ip in target_ips:
             try:
