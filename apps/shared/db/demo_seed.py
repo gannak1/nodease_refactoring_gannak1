@@ -33,6 +33,7 @@ from apps.shared.db.models.audit_log import (
     AuditLog,
     AuditStatus,
 )
+from apps.shared.db.models.conversation_memory import ConversationSessionRecord
 from apps.shared.db.models.knowledge import (
     Document,
     DocumentChunk,
@@ -127,10 +128,6 @@ DEMO_MODEL_ROUTER_REASONING_MODEL = "o3"
 DEMO_ONBOARDING_ROUTER_MODEL = "gpt-4.1"
 DEMO_EMBEDDING_MODEL = "text-embedding-3-small"
 DEMO_EMBEDDING_DIMENSION = 1536
-ENTERPRISE_REQUEST_ROUTING_NAME = "엔터프라이즈 통합 업무 요청 처리"
-ENTERPRISE_REQUEST_ROUTING_DESCRIPTION = (
-    "사내 문서 RAG와 난이도 기반 자동 모델 라우팅으로 다양한 업무 요청을 처리하는 workflow"
-)
 DEMO_REPO_ROOT = Path(__file__).resolve().parents[3]
 DEMO_LEGAL_DOCS_LABOR_DIR = DEMO_REPO_ROOT / "local" / "legal-docs-labor"
 DEMO_ONBOARDING_PDF_DIR = DEMO_REPO_ROOT / "demodata"
@@ -356,6 +353,12 @@ HR_POLICY_COLLECTION_ITEMS = (
 )
 
 APP_IDS = {
+    "internal_it_helpdesk_routing": uuid.UUID(
+        "94000000-0000-0000-0000-000000000001"
+    ),
+}
+
+RETIRED_DEMO_APP_IDS = {
     "hr_bot_example": _uuid(400),
     "ticket_ops": _uuid(401),
     "ticket_ops_warning": _uuid(402),
@@ -367,38 +370,59 @@ APP_IDS = {
     "model_router_ticket_ops": uuid.UUID("91000000-0000-0000-0000-000000000001"),
     "team_onboarding_adaptive_routing": _uuid(408),
     "enterprise_request_routing": _uuid(409),
-    "internal_it_helpdesk_routing": uuid.UUID(
-        "94000000-0000-0000-0000-000000000001"
-    ),
 }
 
 WORKFLOW_IDS = {
-    key: _uuid(500 + index)
-    for index, key in enumerate(APP_IDS.keys())
+    "internal_it_helpdesk_routing": uuid.UUID(
+        "94000000-0000-0000-0000-000000000002"
+    ),
 }
-WORKFLOW_IDS["model_router_ticket_ops"] = uuid.UUID(
-    "91000000-0000-0000-0000-000000000002"
-)
-WORKFLOW_IDS["team_onboarding_adaptive_routing"] = _uuid(508)
-WORKFLOW_IDS["internal_it_helpdesk_routing"] = uuid.UUID(
-    "94000000-0000-0000-0000-000000000002"
-)
+
+RETIRED_DEMO_WORKFLOW_IDS = {
+    "hr_bot_example": _uuid(500),
+    "ticket_ops": _uuid(501),
+    "ticket_ops_warning": _uuid(502),
+    "ticket_ops_risk": _uuid(503),
+    "ticket_ops_paused": _uuid(504),
+    "test_inquiry": _uuid(505),
+    "department_onboarding_chatbot": _uuid(506),
+    "team_onboarding_access_control": _uuid(507),
+    "model_router_ticket_ops": uuid.UUID(
+        "91000000-0000-0000-0000-000000000002"
+    ),
+    "team_onboarding_adaptive_routing": _uuid(508),
+    "enterprise_request_routing": _uuid(510),
+}
 
 DEPLOYMENT_IDS = {
-    key: _uuid(600 + index)
-    for index, key in enumerate(APP_IDS.keys())
+    "internal_it_helpdesk_routing": uuid.UUID(
+        "94000000-0000-0000-0000-000000000003"
+    ),
 }
-DEPLOYMENT_IDS["model_router_ticket_ops"] = uuid.UUID(
-    "91000000-0000-0000-0000-000000000003"
-)
-DEPLOYMENT_IDS["team_onboarding_adaptive_routing"] = _uuid(608)
-DEPLOYMENT_IDS["internal_it_helpdesk_routing"] = uuid.UUID(
-    "94000000-0000-0000-0000-000000000003"
-)
+
+RETIRED_DEMO_DEPLOYMENT_IDS = {
+    "hr_bot_example": _uuid(600),
+    "ticket_ops": _uuid(601),
+    "ticket_ops_warning": _uuid(602),
+    "ticket_ops_risk": _uuid(603),
+    "ticket_ops_paused": _uuid(604),
+    "test_inquiry": _uuid(605),
+    "department_onboarding_chatbot": _uuid(606),
+    "team_onboarding_access_control": _uuid(607),
+    "model_router_ticket_ops": uuid.UUID(
+        "91000000-0000-0000-0000-000000000003"
+    ),
+    "team_onboarding_adaptive_routing": _uuid(608),
+    "enterprise_request_routing": _uuid(610),
+}
 
 LEGACY_DEMO_LLM_CREDENTIAL_ID = _uuid(700)
 
 TEAM_PERMISSION_IDS = {
+    "internal_it_helpdesk_routing": _uuid(814),
+}
+
+RETIRED_DEMO_TEAM_WORKFLOW_PERMISSION_IDS = {
     "customer_ticket": _uuid(800),
     "hr_bot": _uuid(801),
     "test_builder": _uuid(802),
@@ -413,8 +437,15 @@ TEAM_PERMISSION_IDS = {
     "team_onboarding_adaptive_sales": _uuid(811),
     "team_onboarding_adaptive_people": _uuid(812),
     "enterprise_request_routing": _uuid(813),
-    "internal_it_helpdesk_routing": _uuid(814),
 }
+
+RETIRED_DEMO_USER_WORKFLOW_PERMISSION_IDS = {
+    "ticket_ops_warning": _uuid(830),
+    "ticket_ops_risk": _uuid(831),
+    "ticket_ops_paused": _uuid(832),
+}
+
+RETIRED_DEMO_RUN_IDS = tuple(_uuid(2000 + index) for index in range(12))
 
 
 @dataclass(frozen=True)
@@ -1055,14 +1086,7 @@ def demo_summary(profile: str = "demo") -> dict[str, Any]:
         "organization": "노디즈 데모 조직",
         "users": [spec.email for spec in USER_SPECS],
         "teams": [name for name, _ in TEAM_SPECS.values()],
-        "apps": [
-            "사내 문서 질문 응답 봇",
-            "부서별 온보딩 RAG 챗봇",
-            "팀별 온보딩 문서 접근 제어 데모",
-            ENTERPRISE_REQUEST_ROUTING_NAME,
-            "Enterprise 고객 티켓 처리",
-            "테스트용 문의 응답 워크플로우",
-        ],
+        "apps": ["사내 IT 문의 자동 처리"],
         "reset_scope": "demo seed fixed UUID rows only",
         "credentials": (
             "non-secret demo metadata row by default; pass "
@@ -3538,16 +3562,7 @@ def _upsert_app_workflow(
         "organization_id": ORG_ID,
         "name": name,
         "description": description,
-        "icon": _icon(
-            "🧭"
-            if key
-            in {
-                "ticket_ops",
-                "model_router_ticket_ops",
-                "internal_it_helpdesk_routing",
-            }
-            else "📘"
-        ),
+        "icon": _icon("🧭" if key == "internal_it_helpdesk_routing" else "📘"),
         "url_slug": (
             "internal-it-helpdesk-routing-demo"
             if key == "internal_it_helpdesk_routing"
@@ -3623,57 +3638,85 @@ def _upsert_app_workflow(
     return workflow
 
 
+def _delete_retired_demo_workflows(db: Session) -> None:
+    retired_app_ids = list(RETIRED_DEMO_APP_IDS.values())
+    retired_workflow_ids = list(RETIRED_DEMO_WORKFLOW_IDS.values())
+    retired_deployment_ids = list(RETIRED_DEMO_DEPLOYMENT_IDS.values())
+    retired_run_ids = {
+        *RETIRED_DEMO_RUN_IDS,
+        *(
+            row[0]
+            for row in db.query(WorkflowRun.id)
+            .filter(WorkflowRun.workflow_id.in_(retired_workflow_ids))
+            .all()
+        ),
+    }
+
+    if retired_run_ids:
+        db.query(TracePayloadAccessEvent).filter(
+            TracePayloadAccessEvent.workflow_run_id.in_(retired_run_ids)
+        ).delete(synchronize_session=False)
+        db.query(TracePayload).filter(
+            TracePayload.workflow_run_id.in_(retired_run_ids)
+        ).delete(synchronize_session=False)
+        db.query(WorkflowNodeRun).filter(
+            WorkflowNodeRun.workflow_run_id.in_(retired_run_ids)
+        ).delete(synchronize_session=False)
+    db.query(ConversationSessionRecord).filter(
+        or_(
+            ConversationSessionRecord.app_id.in_(retired_app_ids),
+            ConversationSessionRecord.workflow_id.in_(retired_workflow_ids),
+            ConversationSessionRecord.deployment_id.in_(retired_deployment_ids),
+        )
+    ).delete(synchronize_session=False)
+    db.query(LLMUsageLog).filter(
+        or_(
+            LLMUsageLog.workflow_id.in_(retired_workflow_ids),
+            LLMUsageLog.workflow_run_id.in_(retired_run_ids),
+        )
+    ).delete(synchronize_session=False)
+    db.query(WorkflowRun).filter(
+        WorkflowRun.workflow_id.in_(retired_workflow_ids)
+    ).delete(synchronize_session=False)
+    db.query(TeamWorkflowPermission).filter(
+        or_(
+            TeamWorkflowPermission.id.in_(
+                list(RETIRED_DEMO_TEAM_WORKFLOW_PERMISSION_IDS.values())
+            ),
+            TeamWorkflowPermission.workflow_id.in_(retired_workflow_ids),
+        )
+    ).delete(synchronize_session=False)
+    db.query(UserWorkflowPermission).filter(
+        or_(
+            UserWorkflowPermission.id.in_(
+                list(RETIRED_DEMO_USER_WORKFLOW_PERMISSION_IDS.values())
+            ),
+            UserWorkflowPermission.workflow_id.in_(retired_workflow_ids),
+        )
+    ).delete(synchronize_session=False)
+
+    db.query(App).filter(App.id.in_(retired_app_ids)).update(
+        {"workflow_id": None, "active_deployment_id": None},
+        synchronize_session=False,
+    )
+    db.flush()
+    db.query(WorkflowDeployment).filter(
+        or_(
+            WorkflowDeployment.id.in_(retired_deployment_ids),
+            WorkflowDeployment.app_id.in_(retired_app_ids),
+        )
+    ).delete(synchronize_session=False)
+    db.query(Workflow).filter(
+        Workflow.id.in_(retired_workflow_ids)
+    ).delete(synchronize_session=False)
+    db.query(App).filter(App.id.in_(retired_app_ids)).delete(
+        synchronize_session=False
+    )
+    db.flush()
+
+
 def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
-    workflows = {
-        "hr_bot_example": _upsert_app_workflow(
-            db,
-            "hr_bot_example",
-            "사내 문서 질문 응답 봇",
-            "신입사원 이서연이 권한 승인 후 직접 만들 workflow의 완성 예시",
-            "rookie",
-            _hr_bot_graph(),
-            deployed=False,
-        ),
-        "department_onboarding_chatbot": _upsert_app_workflow(
-            db,
-            "department_onboarding_chatbot",
-            "부서별 온보딩 RAG 챗봇",
-            "개발팀과 기획팀 사용자의 Knowledge 권한 차이를 확인하는 내부 챗봇",
-            "admin",
-            _department_onboarding_chatbot_graph(),
-            deployed=True,
-            deployment_type=DeploymentType.INTERNAL_CHATBOT,
-        ),
-        "team_onboarding_access_control": _upsert_app_workflow(
-            db,
-            "team_onboarding_access_control",
-            "팀별 온보딩 문서 접근 제어 데모",
-            "플랫폼개발팀·영업팀·People 팀 사용자의 Knowledge 권한 차이를 보여주는 내부 챗봇",
-            "onboarding_people_manager",
-            _team_onboarding_access_control_graph(),
-            deployed=True,
-            deployment_type=DeploymentType.INTERNAL_CHATBOT,
-        ),
-        "team_onboarding_adaptive_routing": _upsert_app_workflow(
-            db,
-            "team_onboarding_adaptive_routing",
-            "팀별 온보딩 자동 모델 라우팅 검증",
-            "팀 권한 RAG와 입력 추세 변화에 따른 자동 모델 라우팅을 검증하는 내부 챗봇",
-            "onboarding_people_manager",
-            _team_onboarding_adaptive_routing_graph(),
-            deployed=True,
-            deployment_type=DeploymentType.INTERNAL_CHATBOT,
-        ),
-        "enterprise_request_routing": _upsert_app_workflow(
-            db,
-            "enterprise_request_routing",
-            ENTERPRISE_REQUEST_ROUTING_NAME,
-            ENTERPRISE_REQUEST_ROUTING_DESCRIPTION,
-            "admin",
-            _enterprise_request_routing_graph(),
-            deployed=True,
-            deployment_type=DeploymentType.WEBHOOK,
-        ),
+    return {
         "internal_it_helpdesk_routing": _upsert_app_workflow(
             db,
             "internal_it_helpdesk_routing",
@@ -3684,261 +3727,24 @@ def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
             deployed=True,
             deployment_type=DeploymentType.WEBHOOK,
         ),
-        "ticket_ops": _upsert_app_workflow(
-            db,
-            "ticket_ops",
-            "Enterprise 고객 티켓 처리",
-            "비용 최적화 시연을 위한 고객지원 운영 workflow",
-            "author",
-            _ticket_ops_graph(),
-            deployed=True,
-            deployment_type=DeploymentType.WEBHOOK,
-        ),
-        "model_router_ticket_ops": _upsert_app_workflow(
-            db,
-            "model_router_ticket_ops",
-            "모델 라우팅 검증용 고객 티켓 처리",
-            "자동 모델 라우팅과 비용 최적화 A/B 검증을 시연하기 위한 고객지원 workflow",
-            "author",
-            _model_router_ticket_ops_graph(),
-            deployed=True,
-            deployment_type=DeploymentType.WEBHOOK,
-        ),
-        "test_inquiry": _upsert_app_workflow(
-            db,
-            "test_inquiry",
-            "테스트용 문의 응답 워크플로우",
-            "팀원이 자유롭게 기능을 확인하는 테스트 workflow",
-            "tester_builder",
-            _test_inquiry_graph(),
-            deployed=True,
-        ),
     }
-
-    # 운영 현황 상단 위험 패널 확인용 추가 앱.
-    for key, name, owner in [
-        ("ticket_ops_warning", "예산 80% 근접 티켓 처리 A", "author"),
-        ("ticket_ops_risk", "예산 80% 근접 티켓 처리 B", "author"),
-        ("ticket_ops_paused", "예산 초과로 정지된 워크플로우", "author"),
-    ]:
-        workflows[key] = _upsert_app_workflow(
-            db,
-            key,
-            name,
-            "운영 현황 비용 위험 표시용 데모 workflow",
-            owner,
-            _ticket_ops_graph(),
-            deployed=key != "ticket_ops_paused",
-            deployment_type=DeploymentType.WEBHOOK,
-        )
-
-    return workflows
 
 
 def _seed_permissions(db: Session) -> None:
-    permission_specs = [
-        (
-            TEAM_PERMISSION_IDS["customer_ticket"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["customer_support_ops"],
-                "workflow_id": WORKFLOW_IDS["ticket_ops"],
-                "auth_state": "manager",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-customer-ticket"),
-                "flags": 0,
-            },
-        ),
-        (
-            TEAM_PERMISSION_IDS["model_router_ticket"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["customer_support_ops"],
-                "workflow_id": WORKFLOW_IDS["model_router_ticket_ops"],
-                "auth_state": "manager",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-model-router-ticket"),
-                "flags": 0,
-            },
-        ),
-        (
-            TEAM_PERMISSION_IDS["enterprise_request_routing"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["platform_admin"],
-                "workflow_id": WORKFLOW_IDS["enterprise_request_routing"],
-                "auth_state": "manager",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-enterprise-request-routing"),
-                "flags": 0,
-            },
-        ),
-        (
-            TEAM_PERMISSION_IDS["internal_it_helpdesk_routing"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["platform_admin"],
-                "workflow_id": WORKFLOW_IDS["internal_it_helpdesk_routing"],
-                "auth_state": "manager",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-internal-it-helpdesk-routing"),
-                "flags": 0,
-            },
-        ),
-        (
-            TEAM_PERMISSION_IDS["hr_bot"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["hr_knowledge_users"],
-                "workflow_id": WORKFLOW_IDS["hr_bot_example"],
-                "auth_state": "operator",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-hr-bot"),
-                "flags": 0,
-            },
-        ),
-        (
-            TEAM_PERMISSION_IDS["department_onboarding_development"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["department_development"],
-                "workflow_id": WORKFLOW_IDS["department_onboarding_chatbot"],
-                "auth_state": "operator",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options(
-                    "permission-department-onboarding-development"
-                ),
-                "flags": 0,
-            },
-        ),
-        (
-            TEAM_PERMISSION_IDS["department_onboarding_planning"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["department_planning"],
-                "workflow_id": WORKFLOW_IDS["department_onboarding_chatbot"],
-                "auth_state": "operator",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-department-onboarding-planning"),
-                "flags": 0,
-            },
-        ),
-        (
-            TEAM_PERMISSION_IDS["team_onboarding_platform"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["onboarding_platform"],
-                "workflow_id": WORKFLOW_IDS["team_onboarding_access_control"],
-                "auth_state": "operator",
-                "assigned_by": USER_IDS["onboarding_people_manager"],
-                "options": _demo_options("permission-team-onboarding-platform"),
-                "flags": 0,
-            },
-        ),
-        (
-            TEAM_PERMISSION_IDS["team_onboarding_sales"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["onboarding_sales"],
-                "workflow_id": WORKFLOW_IDS["team_onboarding_access_control"],
-                "auth_state": "operator",
-                "assigned_by": USER_IDS["onboarding_people_manager"],
-                "options": _demo_options("permission-team-onboarding-sales"),
-                "flags": 0,
-            },
-        ),
-        (
-            TEAM_PERMISSION_IDS["team_onboarding_people"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["onboarding_people"],
-                "workflow_id": WORKFLOW_IDS["team_onboarding_access_control"],
-                "auth_state": "manager",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-team-onboarding-people"),
-                "flags": 0,
-            },
-        ),
-        *[
-            (
-                TEAM_PERMISSION_IDS[f"team_onboarding_adaptive_{team_suffix}"],
-                TeamWorkflowPermission,
-                {
-                    "grantee_organization_id": ORG_ID,
-                    "team_id": TEAM_IDS[f"onboarding_{team_suffix}"],
-                    "workflow_id": WORKFLOW_IDS[
-                        "team_onboarding_adaptive_routing"
-                    ],
-                    "auth_state": auth_state,
-                    "assigned_by": USER_IDS["onboarding_people_manager"],
-                    "options": _demo_options(
-                        f"permission-team-onboarding-adaptive-{team_suffix}"
-                    ),
-                    "flags": 0,
-                },
-            )
-            for team_suffix, auth_state in (
-                ("platform", "operator"),
-                ("sales", "operator"),
-                ("people", "manager"),
-            )
-        ],
-        (
-            TEAM_PERMISSION_IDS["test_builder"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["tester_builder"],
-                "workflow_id": WORKFLOW_IDS["test_inquiry"],
-                "auth_state": "manager",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-test-builder"),
-                "flags": 0,
-            },
-        ),
-        (
-            TEAM_PERMISSION_IDS["test_member"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["tester_member"],
-                "workflow_id": WORKFLOW_IDS["test_inquiry"],
-                "auth_state": "viewer",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-test-member"),
-                "flags": 0,
-            },
-        ),
-    ]
-    for row_id, model, values in permission_specs:
-        _upsert_by_id(db, model, row_id, values)
-
-    # 운영자에게 위험 패널용 workflow도 직접 manager 권한을 준다.
-    for index, workflow_key in enumerate(["ticket_ops_warning", "ticket_ops_risk", "ticket_ops_paused"]):
-        _upsert_by_id(
-            db,
-            UserWorkflowPermission,
-            _uuid(830 + index),
-            {
-                "grantee_organization_id": ORG_ID,
-                "user_id": USER_IDS["author"],
-                "workflow_id": WORKFLOW_IDS[workflow_key],
-                "auth_state": "manager",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options(f"direct-permission-{workflow_key}"),
-                "flags": 0,
-            },
-        )
+    _upsert_by_id(
+        db,
+        TeamWorkflowPermission,
+        TEAM_PERMISSION_IDS["internal_it_helpdesk_routing"],
+        {
+            "grantee_organization_id": ORG_ID,
+            "team_id": TEAM_IDS["platform_admin"],
+            "workflow_id": WORKFLOW_IDS["internal_it_helpdesk_routing"],
+            "auth_state": "manager",
+            "assigned_by": USER_IDS["admin"],
+            "options": _demo_options("permission-internal-it-helpdesk-routing"),
+            "flags": 0,
+        },
+    )
 
     for index, team_key in enumerate(["hr_knowledge_users", "platform_admin"]):
         _upsert_by_id(
@@ -4037,125 +3843,6 @@ def _seed_permissions(db: Session) -> None:
             "flags": 0,
         },
     )
-
-
-def _seed_run(
-    db: Session,
-    *,
-    run_id: uuid.UUID,
-    workflow_key: str,
-    user_key: str,
-    status: RunStatus,
-    started_at: datetime,
-    duration: float,
-    total_tokens: int,
-    total_cost: Decimal,
-    output_text: str | None,
-    error_message: str | None = None,
-    model_name: str = DEMO_CHAT_MODEL,
-    prompt_tokens: int = 0,
-    completion_tokens: int = 0,
-    latency_ms: int = 0,
-    node_prefix: int = 0,
-) -> None:
-    workflow_id = WORKFLOW_IDS[workflow_key]
-    app_id = APP_IDS[workflow_key]
-    app = db.get(App, app_id)
-    deployment_id = app.active_deployment_id if app else None
-    finished_at = started_at + timedelta(seconds=duration)
-    outputs = {"answer_text": output_text} if output_text else None
-    run = _upsert_by_id(
-        db,
-        WorkflowRun,
-        run_id,
-        {
-            "workflow_id": workflow_id,
-            "user_id": USER_IDS[user_key],
-            "app_id": app_id,
-            "deployment_id": deployment_id,
-            "workflow_version": 1,
-            "status": status,
-            "trigger_mode": RunTriggerMode.WEBHOOK,
-            "inputs": {
-                "customerTier": "enterprise",
-                "message": "결제 API 장애로 크레딧 보상 가능 여부를 확인해 주세요.",
-            },
-            "outputs": outputs,
-            "error_message": error_message,
-            "started_at": started_at,
-            "finished_at": finished_at if status != RunStatus.RUNNING else None,
-            "duration": duration,
-            "meta_info": _demo_options(f"run-{workflow_key}-{node_prefix}"),
-            "total_tokens": total_tokens,
-            "total_cost": total_cost,
-            "trace_metadata": {
-                "demo_seed": True,
-                "budget_ratio": 0.92 if workflow_key != "ticket_ops_paused" else 1.08,
-            },
-            "redaction_applied": False,
-            "pii_detected": False,
-            "payload_storage_mode": "redacted_only",
-        },
-    )
-    db.flush()
-
-    node_specs = [
-        ("webhook-ticket", "webhookTrigger", 0.02, {"message": run.inputs["message"]}),
-        (
-            "llm-triage",
-            "llmNode",
-            max(duration - 0.15, 0.5),
-            {
-                "text": output_text or "실행 실패",
-                "model": model_name,
-                "usage": {
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                },
-            },
-        ),
-        (
-            "extract-ticket",
-            "variableExtractionNode",
-            0.03,
-            {"approvalRequired": True, "mailDraft": output_text},
-        ),
-        ("condition-approval", "conditionNode", 0.01, {"selected_handle": "approval"}),
-        ("template-approval", "templateNode", 0.01, {"text": output_text}),
-        ("answer-approval", "answerNode", 0.01, outputs),
-    ]
-    for index, (node_id, node_type, node_duration, node_outputs) in enumerate(node_specs):
-        node_run_id = _uuid(3000 + node_prefix * 10 + index)
-        _upsert_by_id(
-            db,
-            WorkflowNodeRun,
-            node_run_id,
-            {
-                "workflow_run_id": run.id,
-                "node_id": node_id,
-                "node_type": node_type,
-                "status": NodeRunStatus.FAILED
-                if status == RunStatus.FAILED and node_id == "llm-triage"
-                else NodeRunStatus.SUCCESS,
-                "inputs": run.inputs if node_id == "webhook-ticket" else {"previous": "redacted"},
-                "process_data": _demo_options(f"node-run-{node_prefix}-{index}"),
-                "outputs": node_outputs,
-                "error_message": error_message if node_id == "llm-triage" else None,
-                "started_at": started_at + timedelta(milliseconds=100 * index),
-                "finished_at": started_at
-                + timedelta(milliseconds=100 * index)
-                + timedelta(seconds=node_duration),
-                "duration": node_duration,
-                "trace_metadata": {
-                    "demo_seed": True,
-                    "cost_hotspot": node_id == "llm-triage",
-                },
-                "redaction_applied": False,
-                "pii_detected": False,
-                "sequence": index + 1,
-                "retry_count": 0,
-            },
-        )
 
 
 def _internal_it_helpdesk_result(
@@ -4691,92 +4378,6 @@ def _replace_internal_it_helpdesk_seed_runs(db: Session) -> None:
 
 def _seed_runs_and_usage(db: Session, models: dict[str, LLMModel]) -> None:
     now = _now()
-    run_specs = [
-        ("ticket_ops", "author", RunStatus.SUCCESS, 4.8, 10120, Decimal("0.0820"), "CS 리드 승인 요청이 필요합니다.", DEMO_CHAT_MODEL, 8200, 1920, 4800),
-        ("ticket_ops", "author", RunStatus.SUCCESS, 4.1, 9800, Decimal("0.0780"), "Enterprise 고객 장애 티켓으로 우선 처리합니다.", DEMO_CHAT_MODEL, 7900, 1900, 4100),
-        ("ticket_ops", "author", RunStatus.SUCCESS, 1.9, 3280, Decimal("0.0220"), "권한 기반 RAG와 중간 모델로 처리했습니다.", DEMO_CHAT_MINI_MODEL, 2600, 680, 1900),
-        ("ticket_ops", "author", RunStatus.SUCCESS, 2.2, 3410, Decimal("0.0240"), "승인 필요 여부를 판단했습니다.", DEMO_CHAT_MINI_MODEL, 2700, 710, 2200),
-        ("ticket_ops", "author", RunStatus.SUCCESS, 2.4, 3650, Decimal("0.0260"), "고객 답변 초안을 생성했습니다.", DEMO_CHAT_MINI_MODEL, 2890, 760, 2400),
-        ("ticket_ops", "author", RunStatus.SUCCESS, 2.1, 3400, Decimal("0.0230"), "SLA 기준에 따라 기술지원팀으로 배정했습니다.", DEMO_CHAT_MINI_MODEL, 2720, 680, 2100),
-        ("ticket_ops", "author", RunStatus.FAILED, 1.3, 1200, Decimal("0.0060"), None, DEMO_CHAT_MINI_MODEL, 1000, 200, 1300),
-        ("ticket_ops_warning", "author", RunStatus.SUCCESS, 5.2, 11200, Decimal("0.0910"), "비용 위험 workflow 실행입니다.", DEMO_CHAT_MODEL, 9100, 2100, 5200),
-        ("ticket_ops_risk", "author", RunStatus.SUCCESS, 4.9, 10800, Decimal("0.0880"), "비용 위험 workflow 실행입니다.", DEMO_CHAT_MODEL, 8700, 2100, 4900),
-        ("ticket_ops_paused", "author", RunStatus.FAILED, 0.4, 0, Decimal("0.0000"), None, DEMO_CHAT_MODEL, 0, 0, 0),
-        (
-            "model_router_ticket_ops",
-            "author",
-            RunStatus.SUCCESS,
-            3.2,
-            1218,
-            Decimal("0.001920"),
-            '{"긴급도": true, "답변 초안": "먼저 불편을 드린 점 진심으로 사과드립니다. 현재 해당 장애가 SLA 위반 가능성이 있어 크레딧 보상 검토가 필요하며, 승인 결과는 48시간 내 안내드리겠습니다. 추가 영향 범위 확인을 위해 실패한 정산 파일 생성 시각과 요청 ID를 공유해 주세요."}',
-            DEMO_MODEL_ROUTER_BASE_MODEL,
-            295,
-            923,
-            3200,
-        ),
-        (
-            "model_router_ticket_ops",
-            "author",
-            RunStatus.SUCCESS,
-            2.7,
-            1045,
-            Decimal("0.001740"),
-            '{"긴급도": false, "답변 초안": "문의하신 정산 파일 재생성 방법과 다운로드 위치를 안내드리겠습니다. 관리자 페이지의 정산 메뉴에서 파일을 다시 생성한 뒤 완료 알림 후 다운로드할 수 있습니다. 추가 오류가 발생하면 요청 ID와 발생 시각을 함께 알려 주세요."}',
-            DEMO_MODEL_ROUTER_BASE_MODEL,
-            280,
-            765,
-            2700,
-        ),
-    ]
-
-    for index, spec in enumerate(run_specs):
-        workflow_key, user_key, status, duration, tokens, cost, output, model_name, prompt, completion, latency = spec
-        run_id = _uuid(2000 + index)
-        _seed_run(
-            db,
-            run_id=run_id,
-            workflow_key=workflow_key,
-            user_key=user_key,
-            status=status,
-            started_at=now - timedelta(hours=index + 1),
-            duration=duration,
-            total_tokens=tokens,
-            total_cost=cost,
-            output_text=output,
-            error_message="provider_timeout" if status == RunStatus.FAILED else None,
-            model_name=model_name,
-            prompt_tokens=prompt,
-            completion_tokens=completion,
-            latency_ms=latency,
-            node_prefix=index,
-        )
-
-        # 관리자 비용 탭/월간 요약(FR-012/FR-015)의 원천은 llm_usage_logs라
-        # run과 같은 시각/토큰/비용으로 usage row를 만든다. 실패 run은 provider
-        # 응답이 없어 usage를 기록하지 않는 실제 경로를 따른다.
-        if status == RunStatus.SUCCESS:
-            _upsert_by_id(
-                db,
-                LLMUsageLog,
-                _uuid(5000 + index),
-                {
-                    "user_id": USER_IDS[user_key],
-                    "organization_id": ORG_ID,
-                    "credential_id": LLM_CREDENTIAL_IDS["demo_openai"],
-                    "model_id": models[model_name].id,
-                    "workflow_id": WORKFLOW_IDS[workflow_key],
-                    "workflow_run_id": run_id,
-                    "node_id": "llm-triage",
-                    "prompt_tokens": prompt,
-                    "completion_tokens": completion,
-                    "total_cost": cost,
-                    "latency_ms": latency,
-                    "status": "success",
-                    "created_at": now - timedelta(hours=index + 1),
-                },
-            )
-
     _replace_internal_it_helpdesk_seed_runs(db)
     internal_it_started_at = now - timedelta(minutes=10)
     for index, spec in enumerate(INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS):
@@ -4786,7 +4387,6 @@ def _seed_runs_and_usage(db: Session, models: dict[str, LLMModel]) -> None:
             started_at=internal_it_started_at + timedelta(minutes=index),
             models=models,
         )
-
 
 def _seed_permission_requests(db: Session) -> None:
     """author의 승인된 App 생성 권한 신청과 부여 결과 (ADR-0016, FR-014)."""
@@ -4825,16 +4425,19 @@ def _seed_permission_requests(db: Session) -> None:
 
 def _seed_audit_logs(db: Session) -> None:
     now = _now()
+    db.query(AuditLog).filter(
+        AuditLog.audit_metadata["demo_seed"].astext == "true"
+    ).delete(synchronize_session=False)
     # ADR-0008 canonical action 기준. occurred_at은 index가 클수록 과거이므로
     # 최신 이벤트를 앞에 둔다 (신청 -> 승인 -> 권한 부여가 시간순이 되도록).
     logs = [
         (AuditAction.USER_LOGIN, "rookie", "user", USER_IDS["rookie"], "신입사원 로그인"),
-        (AuditAction.LLM_CALL, "author", "workflow", str(WORKFLOW_IDS["ticket_ops"]), "LLM 비용 사용 기록"),
-        (AuditAction.WORKFLOW_EXECUTE, "author", "workflow", str(WORKFLOW_IDS["ticket_ops"]), "고객 티켓 workflow 실행"),
-        (AuditAction.WORKFLOW_DEPLOY, "author", "workflow", str(WORKFLOW_IDS["ticket_ops"]), "Enterprise 고객 티켓 처리 배포"),
+        (AuditAction.LLM_CALL, "admin", "workflow", str(WORKFLOW_IDS["internal_it_helpdesk_routing"]), "사내 IT 문의 LLM 비용 사용 기록"),
+        (AuditAction.WORKFLOW_EXECUTE, "admin", "workflow", str(WORKFLOW_IDS["internal_it_helpdesk_routing"]), "사내 IT 문의 workflow 실행"),
+        (AuditAction.WORKFLOW_DEPLOY, "admin", "workflow", str(WORKFLOW_IDS["internal_it_helpdesk_routing"]), "사내 IT 문의 자동 처리 배포"),
         (AuditAction.POLICY_BLOCK, "admin", "knowledge", str(KB_IDS["finance"]), "민감 문서 접근 정책 차단"),
-        (AuditAction.PERMISSION_DENIED, "author", "workflow", str(WORKFLOW_IDS["ticket_ops"]), "권한 없는 workflow 접근 차단"),
-        (AuditAction.WORKFLOW_CREATE, "rookie", "workflow", str(WORKFLOW_IDS["hr_bot_example"]), "사내 문서 질문 응답 봇 생성"),
+        (AuditAction.PERMISSION_DENIED, "author", "workflow", str(WORKFLOW_IDS["internal_it_helpdesk_routing"]), "권한 없는 사내 IT workflow 접근 차단"),
+        (AuditAction.WORKFLOW_CREATE, "admin", "workflow", str(WORKFLOW_IDS["internal_it_helpdesk_routing"]), "사내 IT 문의 자동 처리 생성"),
         (AuditAction.USER_APP_CREATION_PERMISSION_CREATED, "admin", "user_app_creation_permission", str(APP_CREATION_PERMISSION_IDS["author"]), "운영자 App 생성 권한 부여"),
         (AuditAction.PERMISSION_REQUEST_APPROVED, "admin", "permission_request", str(PERMISSION_REQUEST_IDS["author_app_create"]), "운영자 권한 신청 승인"),
         (AuditAction.PERMISSION_REQUEST_CREATED, "author", "permission_request", str(PERMISSION_REQUEST_IDS["author_app_create"]), "운영자 workflow 생성/배포 권한 신청"),
@@ -5227,6 +4830,7 @@ def seed_demo_data(db: Session) -> None:
     )
 
     seed_model_routing_global_profiles(db)
+    _delete_retired_demo_workflows(db)
     _seed_apps_and_workflows(db)
     db.flush()
     _seed_permissions(db)
@@ -5242,8 +4846,12 @@ def reset_demo_data(db: Session) -> None:
     """Delete fixed demo rows, then recreate the final demo state."""
     validate_demo_seed_prerequisites()
     _adopt_existing_demo_user_ids(db)
-    app_ids = list(APP_IDS.values())
-    workflow_ids = list(WORKFLOW_IDS.values())
+    app_ids = [*APP_IDS.values(), *RETIRED_DEMO_APP_IDS.values()]
+    workflow_ids = [*WORKFLOW_IDS.values(), *RETIRED_DEMO_WORKFLOW_IDS.values()]
+    deployment_ids = [
+        *DEPLOYMENT_IDS.values(),
+        *RETIRED_DEMO_DEPLOYMENT_IDS.values(),
+    ]
     team_ids = list(TEAM_IDS.values())
     kb_ids = [*KB_IDS.values(), *RETIRED_INTERNAL_DOCUMENT_KB_IDS.values()]
     collection_ids = [
@@ -5263,12 +4871,22 @@ def reset_demo_data(db: Session) -> None:
         .all()
     ]
     user_ids = existing_demo_user_ids or list(USER_IDS.values())
+    workflow_run_ids = {
+        *[_uuid(2000 + i) for i in range(20)],
+        *(spec.run_id for spec in INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS),
+        *(
+            row[0]
+            for row in db.query(WorkflowRun.id)
+            .filter(WorkflowRun.workflow_id.in_(workflow_ids))
+            .all()
+        ),
+    }
 
     db.query(TracePayloadAccessEvent).filter(
-        TracePayloadAccessEvent.workflow_run_id.in_([_uuid(2000 + i) for i in range(20)])
+        TracePayloadAccessEvent.workflow_run_id.in_(workflow_run_ids)
     ).delete(synchronize_session=False)
     db.query(TracePayload).filter(
-        TracePayload.workflow_run_id.in_([_uuid(2000 + i) for i in range(20)])
+        TracePayload.workflow_run_id.in_(workflow_run_ids)
     ).delete(synchronize_session=False)
     db.query(LLMUsageLog).filter(
         (LLMUsageLog.workflow_id.in_(workflow_ids))
@@ -5276,11 +4894,18 @@ def reset_demo_data(db: Session) -> None:
         | (LLMUsageLog.credential_id.in_(credential_ids))
     ).delete(synchronize_session=False)
     db.query(WorkflowNodeRun).filter(
-        WorkflowNodeRun.workflow_run_id.in_([_uuid(2000 + i) for i in range(20)])
+        WorkflowNodeRun.workflow_run_id.in_(workflow_run_ids)
     ).delete(synchronize_session=False)
     db.query(WorkflowRun).filter(WorkflowRun.workflow_id.in_(workflow_ids)).delete(
         synchronize_session=False
     )
+    db.query(ConversationSessionRecord).filter(
+        or_(
+            ConversationSessionRecord.app_id.in_(app_ids),
+            ConversationSessionRecord.workflow_id.in_(workflow_ids),
+            ConversationSessionRecord.deployment_id.in_(deployment_ids),
+        )
+    ).delete(synchronize_session=False)
     db.query(AuditLog).filter(
         AuditLog.audit_metadata["demo_seed"].astext == "true"
     ).delete(synchronize_session=False)
@@ -5359,7 +4984,7 @@ def reset_demo_data(db: Session) -> None:
 
     db.query(WorkflowDeployment).filter(
         or_(
-            WorkflowDeployment.id.in_(list(DEPLOYMENT_IDS.values())),
+            WorkflowDeployment.id.in_(deployment_ids),
             WorkflowDeployment.app_id.in_(app_ids),
         )
     ).delete(synchronize_session=False)

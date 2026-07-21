@@ -374,43 +374,6 @@ def test_department_onboarding_knowledge_permissions_are_fail_closed_by_team():
     }
 
 
-def test_department_onboarding_app_is_active_internal_chatbot(monkeypatch):
-    calls = {}
-
-    def capture(
-        _db,
-        key,
-        name,
-        description,
-        owner_key,
-        graph,
-        *,
-        deployed,
-        deployment_type=demo_seed.DeploymentType.API,
-    ):
-        calls[key] = {
-            "name": name,
-            "description": description,
-            "owner_key": owner_key,
-            "graph": graph,
-            "deployed": deployed,
-            "deployment_type": deployment_type,
-        }
-        return key
-
-    monkeypatch.setattr(demo_seed, "_upsert_app_workflow", capture)
-
-    workflows = demo_seed._seed_apps_and_workflows(object())
-
-    assert workflows["department_onboarding_chatbot"] == (
-        "department_onboarding_chatbot"
-    )
-    call = calls["department_onboarding_chatbot"]
-    assert call["owner_key"] == "admin"
-    assert call["deployed"] is True
-    assert call["deployment_type"] is demo_seed.DeploymentType.INTERNAL_CHATBOT
-
-
 def test_team_onboarding_access_control_users_match_presentation_scenario():
     specs = {spec.key: spec for spec in demo_seed.USER_SPECS}
 
@@ -524,45 +487,6 @@ def test_team_onboarding_adaptive_routing_demo_only_changes_routing_settings():
     assert policy["excluded_model_ids"] == ["gpt-5.6-sol"]
 
 
-def test_team_onboarding_adaptive_routing_app_is_seeded_for_people_manager(
-    monkeypatch,
-):
-    calls = {}
-
-    def capture(
-        _db,
-        key,
-        name,
-        description,
-        owner_key,
-        graph,
-        *,
-        deployed,
-        deployment_type=demo_seed.DeploymentType.API,
-    ):
-        calls[key] = {
-            "name": name,
-            "owner_key": owner_key,
-            "graph": graph,
-            "deployed": deployed,
-            "deployment_type": deployment_type,
-        }
-        return key
-
-    monkeypatch.setattr(demo_seed, "_upsert_app_workflow", capture)
-
-    workflows = demo_seed._seed_apps_and_workflows(object())
-
-    assert workflows["team_onboarding_adaptive_routing"] == (
-        "team_onboarding_adaptive_routing"
-    )
-    call = calls["team_onboarding_adaptive_routing"]
-    assert call["name"] == "팀별 온보딩 자동 모델 라우팅 검증"
-    assert call["owner_key"] == "onboarding_people_manager"
-    assert call["deployed"] is True
-    assert call["deployment_type"] is demo_seed.DeploymentType.INTERNAL_CHATBOT
-
-
 def test_enterprise_request_routing_graph_uses_current_routing_context():
     """통합 업무 요청 workflow는 입력군 없이 현재 난이도 라우팅 설정을 제공한다."""
     graph = demo_seed._enterprise_request_routing_graph()
@@ -628,42 +552,7 @@ def test_enterprise_request_routing_graph_validates_and_maps_webhook_payload():
     }
 
 
-def test_enterprise_request_routing_app_is_seeded_as_deployed_webhook(monkeypatch):
-    calls = {}
-
-    def capture(
-        _db,
-        key,
-        name,
-        description,
-        owner_key,
-        graph,
-        *,
-        deployed,
-        deployment_type=demo_seed.DeploymentType.API,
-    ):
-        calls[key] = {
-            "name": name,
-            "owner_key": owner_key,
-            "graph": graph,
-            "deployed": deployed,
-            "deployment_type": deployment_type,
-        }
-        return key
-
-    monkeypatch.setattr(demo_seed, "_upsert_app_workflow", capture)
-
-    workflows = demo_seed._seed_apps_and_workflows(object())
-
-    assert workflows["enterprise_request_routing"] == "enterprise_request_routing"
-    call = calls["enterprise_request_routing"]
-    assert call["name"] == "엔터프라이즈 통합 업무 요청 처리"
-    assert call["owner_key"] == "admin"
-    assert call["deployed"] is True
-    assert call["deployment_type"] is demo_seed.DeploymentType.WEBHOOK
-
-
-def test_team_onboarding_access_control_app_is_active_internal_chatbot(monkeypatch):
+def test_demo_seed_creates_only_internal_it_helpdesk_workflow(monkeypatch):
     calls = {}
 
     def capture(
@@ -691,14 +580,68 @@ def test_team_onboarding_access_control_app_is_active_internal_chatbot(monkeypat
 
     workflows = demo_seed._seed_apps_and_workflows(object())
 
-    assert workflows["team_onboarding_access_control"] == (
-        "team_onboarding_access_control"
+    assert set(workflows) == {"internal_it_helpdesk_routing"}
+    assert calls["internal_it_helpdesk_routing"]["name"] == "사내 IT 문의 자동 처리"
+    assert calls["internal_it_helpdesk_routing"]["deployed"] is True
+    assert (
+        calls["internal_it_helpdesk_routing"]["deployment_type"]
+        is demo_seed.DeploymentType.WEBHOOK
     )
-    call = calls["team_onboarding_access_control"]
-    assert call["name"] == "팀별 온보딩 문서 접근 제어 데모"
-    assert call["owner_key"] == "onboarding_people_manager"
-    assert call["deployed"] is True
-    assert call["deployment_type"] is demo_seed.DeploymentType.INTERNAL_CHATBOT
+    assert set(demo_seed.APP_IDS) == {"internal_it_helpdesk_routing"}
+    assert set(demo_seed.WORKFLOW_IDS) == {"internal_it_helpdesk_routing"}
+    assert set(demo_seed.DEPLOYMENT_IDS) == {"internal_it_helpdesk_routing"}
+    assert set(demo_seed.RETIRED_DEMO_APP_IDS) == {
+        "hr_bot_example",
+        "ticket_ops",
+        "ticket_ops_warning",
+        "ticket_ops_risk",
+        "ticket_ops_paused",
+        "test_inquiry",
+        "department_onboarding_chatbot",
+        "team_onboarding_access_control",
+        "model_router_ticket_ops",
+        "team_onboarding_adaptive_routing",
+        "enterprise_request_routing",
+    }
+
+
+def test_demo_seed_grants_workflow_permission_only_for_internal_it(monkeypatch):
+    upserts = []
+
+    def capture_upsert(_db, model, row_id, values):
+        upserts.append((model, row_id, values))
+
+    monkeypatch.setattr(demo_seed, "_upsert_by_id", capture_upsert)
+
+    demo_seed._seed_permissions(object())
+
+    team_workflow_permissions = [
+        (row_id, values)
+        for model, row_id, values in upserts
+        if model is demo_seed.TeamWorkflowPermission
+    ]
+    assert team_workflow_permissions == [
+        (
+            demo_seed.TEAM_PERMISSION_IDS["internal_it_helpdesk_routing"],
+            {
+                "grantee_organization_id": demo_seed.ORG_ID,
+                "team_id": demo_seed.TEAM_IDS["platform_admin"],
+                "workflow_id": demo_seed.WORKFLOW_IDS[
+                    "internal_it_helpdesk_routing"
+                ],
+                "auth_state": "manager",
+                "assigned_by": demo_seed.USER_IDS["admin"],
+                "options": demo_seed._demo_options(
+                    "permission-internal-it-helpdesk-routing"
+                ),
+                "flags": 0,
+            },
+        )
+    ]
+    assert all(
+        model is not demo_seed.UserWorkflowPermission
+        for model, _row_id, _values in upserts
+    )
 
 
 def test_demo_summary_reports_seeded_knowledge_documents():
@@ -1158,6 +1101,42 @@ def test_demo_seed_cleanup_deletes_retired_internal_knowledge_rows():
     )
 
 
+def test_demo_seed_cleanup_deletes_retired_workflows_child_first():
+    db = ResetRecorderSession()
+
+    demo_seed._delete_retired_demo_workflows(db)
+
+    for model in (
+        demo_seed.TracePayloadAccessEvent,
+        demo_seed.TracePayload,
+        demo_seed.ConversationSessionRecord,
+        demo_seed.LLMUsageLog,
+        demo_seed.WorkflowNodeRun,
+        demo_seed.WorkflowRun,
+        demo_seed.TeamWorkflowPermission,
+        demo_seed.UserWorkflowPermission,
+        demo_seed.WorkflowDeployment,
+        demo_seed.Workflow,
+        demo_seed.App,
+    ):
+        assert model in db.deleted_targets
+    assert db.deleted_targets.index(
+        demo_seed.WorkflowNodeRun
+    ) < db.deleted_targets.index(demo_seed.WorkflowRun)
+    assert db.deleted_targets.index(
+        demo_seed.WorkflowDeployment
+    ) < db.deleted_targets.index(demo_seed.Workflow)
+    assert db.deleted_targets.index(demo_seed.Workflow) < db.deleted_targets.index(
+        demo_seed.App
+    )
+    assert set(demo_seed.APP_IDS.values()).isdisjoint(
+        demo_seed.RETIRED_DEMO_APP_IDS.values()
+    )
+    assert set(demo_seed.WORKFLOW_IDS.values()).isdisjoint(
+        demo_seed.RETIRED_DEMO_WORKFLOW_IDS.values()
+    )
+
+
 def test_demo_runtime_credential_grants_agent_builder_user_permission(monkeypatch):
     upserts = []
 
@@ -1298,6 +1277,30 @@ def test_internal_it_helpdesk_routing_demo_seeds_all_presentation_logs():
     assert specs[-1].message == (
         "보안 교육을 아직 완료하지 않은 신규 입사자가 운영 저장소 접근과 배포 권한을 요청했습니다. "
         "SSO, VPN, Git 권한, 승인 절차를 함께 고려해 허용 여부를 판단해 주세요."
+    )
+
+
+def test_demo_audit_logs_reference_only_active_workflow(monkeypatch):
+    upserts = []
+
+    def capture_upsert(_db, model, row_id, values):
+        upserts.append((model, row_id, values))
+
+    monkeypatch.setattr(demo_seed, "_upsert_by_id", capture_upsert)
+
+    demo_seed._seed_audit_logs(ResetRecorderSession())
+
+    workflow_target_ids = {
+        values["target_id"]
+        for model, _row_id, values in upserts
+        if model is demo_seed.AuditLog and values["target_type"] == "workflow"
+    }
+    assert workflow_target_ids == {
+        str(demo_seed.WORKFLOW_IDS["internal_it_helpdesk_routing"])
+    }
+    assert workflow_target_ids.isdisjoint(
+        str(workflow_id)
+        for workflow_id in demo_seed.RETIRED_DEMO_WORKFLOW_IDS.values()
     )
 
 
