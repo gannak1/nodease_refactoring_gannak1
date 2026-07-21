@@ -109,14 +109,13 @@ class RecommendationEmbeddingCredentialResolver:
                 failure_reason = "model_ambiguous"
             else:
                 model = min(models, key=lambda item: str(item.id))
-                candidates = sorted(
+                candidates = self._deduplicate_verified_credentials(
                     self._verified_credentials(
                         db,
                         model,
                         organization_id,
                         expires_at,
-                    ),
-                    key=self._credential_order_key,
+                    )
                 )
                 if not candidates:
                     failure_reason = "credential_unavailable"
@@ -258,6 +257,19 @@ class RecommendationEmbeddingCredentialResolver:
             for row in rows
         ]
 
+    def _deduplicate_verified_credentials(
+        self,
+        candidates: Sequence[_CredentialCandidate],
+    ) -> list[_CredentialCandidate]:
+        candidates_by_id: dict[UUID, _CredentialCandidate] = {}
+        for candidate in candidates:
+            current = candidates_by_id.get(candidate.id)
+            if current is None or self._credential_order_key(
+                candidate
+            ) < self._credential_order_key(current):
+                candidates_by_id[candidate.id] = candidate
+        return sorted(candidates_by_id.values(), key=self._credential_order_key)
+
     def _authorized_credential_ids(
         self,
         db: Session,
@@ -311,12 +323,16 @@ class RecommendationEmbeddingCredentialResolver:
             statement,
             actor_id=actor_id,
             organization_id=organization_id,
-        )
+        ).order_by(
+            LLMRelCredentialModel.priority.asc(),
+            LLMCredential.created_at.asc(),
+            LLMCredential.id.asc(),
+        ).limit(1)
         row = self._execute_select(
             db,
             statement,
             expires_at_monotonic,
-        ).one_or_none()
+        ).first()
         if row is None:
             return None
         return _CredentialConfigSnapshot(

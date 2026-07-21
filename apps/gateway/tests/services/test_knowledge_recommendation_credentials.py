@@ -235,6 +235,52 @@ def test_deterministic_order_selects_first_authorized_verified_credential():
     assert clients[0]["model_id"] == "embedding-model"
 
 
+def test_duplicate_verified_rows_are_deduplicated_before_authorization():
+    model = _model()
+    now = datetime.now(timezone.utc)
+    duplicate_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+    other_id = uuid.UUID("00000000-0000-0000-0000-000000000002")
+    duplicate_high_priority = _candidate(
+        priority=5,
+        created_at=now,
+        credential_id=duplicate_id,
+    )
+    duplicate_low_priority = _candidate(
+        priority=1,
+        created_at=now,
+        credential_id=duplicate_id,
+    )
+    other = _candidate(
+        priority=1,
+        created_at=now + timedelta(seconds=1),
+        credential_id=other_id,
+    )
+    resolver = StubResolver(
+        models=[model],
+        credential_rows=[duplicate_high_priority, other, duplicate_low_priority],
+        authorized_ids=[duplicate_id, other_id],
+        config_loader=lambda _credential: {
+            "apiKey": "not-returned",
+            "baseUrl": None,
+        },
+        client_factory=lambda **_kwargs: object(),
+        embedding_invoker=lambda *_args: [0.1, 0.2],
+        monotonic=lambda: 10.0,
+    )
+
+    result = resolver.embed_query(
+        organization_id=uuid.uuid4(),
+        actor_id=uuid.uuid4(),
+        embedding_model="embedding-model",
+        safe_query="approved query",
+        timeout_seconds=4.0,
+    )
+
+    assert result.vector == (0.1, 0.2)
+    assert resolver.authorization_calls == [(duplicate_id, other_id)]
+    assert resolver.selected_calls == [duplicate_id]
+
+
 def test_no_use_authorized_credential_returns_typed_unavailable_state():
     model = _model()
     candidate = _candidate(priority=0, created_at=datetime.now(timezone.utc))
@@ -384,6 +430,11 @@ class FakeResult:
         return self
 
     def one_or_none(self):
+        if len(self.rows) > 1:
+            raise RuntimeError("multiple rows returned for one_or_none")
+        return self.rows[0] if self.rows else None
+
+    def first(self):
         return self.rows[0] if self.rows else None
 
 
@@ -449,3 +500,50 @@ def test_many_credentials_use_four_selects_and_four_set_local_statements():
         for statement in session.set_local
     )
     assert loaded == [selected_id]
+
+
+def test_duplicate_verified_snapshot_rows_do_not_fail_final_selection():
+    model = _model(model_uuid=uuid.UUID(int=1))
+    now = datetime.now(timezone.utc)
+    selected_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+    duplicate_high_priority = _candidate(
+        priority=4,
+        created_at=now,
+        credential_id=selected_id,
+    )
+    duplicate_low_priority = _candidate(
+        priority=1,
+        created_at=now,
+        credential_id=selected_id,
+    )
+    selected = _selected_credential(selected_id)
+    selected.provider_name = "openai"
+    selected.model_id_for_api_call = "embedding-model"
+    session = QueryCountingSession(
+        results=[
+            [model],
+            [duplicate_high_priority, duplicate_low_priority],
+            [selected_id],
+            [selected, selected],
+        ]
+    )
+    loaded = []
+    resolver = RecommendationEmbeddingCredentialResolver(
+        session_factory=lambda: session,
+        config_loader=lambda credential: loaded.append(credential.id)
+        or {"apiKey": "not-returned", "baseUrl": None},
+        client_factory=lambda **_kwargs: object(),
+        embedding_invoker=lambda *_args: [0.1, 0.2],
+    )
+
+    result = resolver.embed_query(
+        organization_id=uuid.uuid4(),
+        actor_id=uuid.uuid4(),
+        embedding_model="embedding-model",
+        safe_query="approved query",
+        timeout_seconds=4.0,
+    )
+
+    assert result.vector == (0.1, 0.2)
+    assert loaded == [selected_id]
+    assert len(session.selects) == 4
