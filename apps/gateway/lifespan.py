@@ -39,7 +39,6 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    del app
     from apps.gateway.composition.connectors import (
         require_connector_test_security_ready,
     )
@@ -117,8 +116,17 @@ async def lifespan(app: FastAPI):
         )
     finally:
         scheduler_db.close()
+    from apps.gateway.composition.agent_builder_cache import (
+        initialize_agent_builder_intent_cache_application,
+        shutdown_agent_builder_intent_cache_application,
+    )
+
+    initialize_agent_builder_intent_cache_application(app)
+
 
     yield
+
+    shutdown_agent_builder_intent_cache_application(app)
 
     from apps.gateway.services.scheduler_service import get_scheduler_service
 

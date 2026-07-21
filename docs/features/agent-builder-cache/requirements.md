@@ -12,7 +12,7 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
 
 ## Authority
 
-- 캐시의 목표 계약은 ADR-0063을 따른다.
+- 캐시의 목표 계약은 ADR-0063을 따르며 normalization equality는 ADR-0073이 좁혀 소유한다.
 - MBA-343 cache spine의 strict DTO, codec, port, disabled runtime seam과 세부 파일 소유권은
   [MBA-343 requirements](../agent-builder-cache-343/requirements.md),
   [internal API](../agent-builder-cache-343/api_spec.md)와
@@ -41,16 +41,23 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
 ### Normalization
 
 - ABC-FR-001: Server는 cache lookup 전에 secret detection/redaction 결과와 safe request만 사용해야 한다.
-- ABC-FR-002: Normalizer는 versioned normalization profile에 정의된 Unicode NFKC, 연속 공백,
-  영문 case, 의미 없는 조사·정중 표현과 승인된 alias만 정규화해야 한다.
+- ABC-FR-002: Normalizer는 versioned normalization profile에 정의된 Unicode NFKC, CR/LF/tab의
+  ASCII space 변환, 연속 ASCII space 축소와 trim만 일반 표현 정리로 적용해야 한다. 임의 영문 case,
+  조사·정중 표현, 형태소와 위치/연결 표현을 canonicalize하지 않아야 한다.
 - ABC-FR-003: Normalizer는 위치, 단계 순서, 부정, 숫자, 인용문, node label과 parameter 값을 보존해야 한다.
-- ABC-FR-004: Alias와 허용 문장 요소는 Node Capability Catalog 또는 versioned server allowlist에서만
-  제공해야 하며 token/phrase boundary, 위치 표현과 보호 span 우선순위를 profile에 고정해야 한다.
-- ABC-FR-005: Versioned profile이 요청 전체를 설명하지 못하거나 미인식 잔여 표현이 남으면
-  `not_eligible`로 반환하고 Planner 결과를 덮어쓰지 않아야 한다.
+- ABC-FR-004: Canonicalization은 Node Capability Catalog v3가 소유한 단일 lexical-token exact alias와
+  exact node token에만 허용해야 한다. 해당 token의 case match 외에 번역, 일반 동의어, multi-token phrase alias,
+  어순 재구성, embedding과 semantic similarity를 사용하지 않아야 한다.
+- ABC-FR-005: Normalizer는 정리된 전체 요청을 순서 있는 typed Catalog/literal segment로 projection해야 한다.
+  Versioned exact eligibility vocabulary는 literal을 바꾸지 않는 admission membership만 제공해야 한다.
+  Catalog multi-token phrase alias, 미인식 표현 또는 지원하지 않는 node 표현이 하나라도 남으면
+  `unknown_token_sequence`로 lookup/store를 모두 bypass하고 capability만 남긴 부분 signature를 만들지 않아야 한다.
 - ABC-FR-006: Secret-like content나 redaction marker가 있으면 lookup과 store를 모두 우회해야 한다.
 - ABC-FR-007: Cache normalization은 API가 허용한 전체 safe request를 사용하고 Planner prompt용 truncated summary를 재사용하지 않아야 한다.
 - ABC-FR-008: 전체 safe request 또는 전체 logical graph topology의 canonical digest를 만들 수 없거나 projection이 잘리면 lookup과 store를 모두 우회해야 한다.
+
+
+**MBA-344 fail-closed clarification.** Secret/redaction/truncation gates inspect both the raw `full_safe_message` and its transient NFKC/whitespace cleanup form. The safety-gate match result is deny-only: it is neither persisted nor separately appended to signature material. The required NFKC/whitespace transformations still define the normalized request that ABC-FR-002/005 projects into the signature. A non-empty value after a Catalog parameter key/display label in a quoted span, or after a secret-like label, is a bypass signal only and never canonicalizes the label. A node token that collides with an alias for a capability not owned by that node is rejected during static initialization.
 
 ### Cache Admission
 
@@ -80,8 +87,11 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
   target 기반 modify는 실제 target identity를 HMAC input에만 포함해 서로 다른 target이 같은 key를 만들지
   않아야 한다. Knowledge candidate fingerprint는 권한과 lifecycle을 통과한 후보를 실제 resource identity로
   중복 제거하고, identity를 domain-separated HMAC으로 변환한 canonical projection을 안정 정렬해 계산해야
-  한다. Safe metadata, hierarchy, lifecycle 또는 policy revision 변경은 fingerprint를 변경해야 하며 UI 순서,
-  추천 순서와 request-scoped handle은 fingerprint에 영향을 주지 않아야 한다.
+  한다. Approved semantic safe metadata, hierarchy, lifecycle 또는 policy revision 변경은 fingerprint를 변경해야 하며 UI 순서,
+  추천 순서와 request-scoped handle은 fingerprint에 영향을 주지 않아야 한다. Safe label/name presentation
+  변경도 fingerprint에 영향을 주지 않아야 한다. 현재 safe policy revision을 만들 수 없으면 cache admission을
+  bypass해야 한다.
+  Cache-specific metadata is a closed, reviewed semantic allowlist. Nested protected-resource IDs and safe label/name/description presentation values must be excluded before the outer context HMAC projection; a new semantic metadata field requires an explicit contract and regression-test update.
 - ABC-FR-023: Timestamp와 request ID는 key material에서 제외해야 한다.
 - ABC-FR-024: 초기 cache entry는 organization+user scope를 넘어서 재사용하지 않아야 한다.
 - ABC-FR-025: HMAC key가 없거나 유효하지 않으면 cache를 비활성화하고 Planner 경로를 유지해야 한다.
@@ -140,6 +150,7 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
 
 - ABC-FR-060: Redis timeout, unavailable, decode error와 oversized payload는 safe miss로 처리해야 한다.
 - ABC-FR-061: Cache adapter 오류는 Agent Builder API의 실패 상태가 되어서는 안 된다.
+  Before a cache-induced fail-open fallback invokes the existing Planner, it must recheck the current cancellation/request-version fence; `canceled` or `stale` terminates through the existing terminal contract without Planner, provider, or usage work.
 - ABC-FR-062: 동일 key의 동시 miss는 bounded single-flight lease로 중복 호출을 제한해야 한다.
 - ABC-FR-063: Lease 대기 중 DB transaction과 workflow/session row lock을 유지하지 않아야 한다.
 - ABC-FR-064: Lease owner가 cache value 없이 정상 종료하면 lease를 즉시 해제하고 follower에
@@ -147,6 +158,8 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
   lease generation을 검증해 원자적으로 수행하고 follower는 자신이 관찰한 generation과 일치하는 신호만
   사용해야 한다. Owner가 비정상 종료해 신호를 남기지 못한 경우에는 TTL로 자동 해제되고 follower가 bounded
   wait 뒤 Planner로 진행할 수 있어야 한다.
+  If current-context rehydration leaves the service transaction open and the request-bound guard cannot establish the clean boundary, it must not attempt completion/release Redis I/O; the acquired lease expires through TTL and the follower retains its bounded fallback. This is cache-I/O fail-open rather than a negative cache result.
+
 - ABC-FR-065: Cache put 실패는 이미 검증된 현재 요청 결과를 실패시키지 않아야 한다.
 - ABC-FR-066: Follower wait는 설정값과 현재 request의 남은 deadline 중 짧은 값으로 제한하며 초기 기본값은 45초, 최대값은 60초여야 한다.
 - ABC-FR-067: Single-flight는 owner가 wait 안에 완료된 경우만 provider 단일 호출을 보장하고 timeout 뒤 중복 Planner 호출을 허용하는 best-effort 비용 최적화여야 한다.

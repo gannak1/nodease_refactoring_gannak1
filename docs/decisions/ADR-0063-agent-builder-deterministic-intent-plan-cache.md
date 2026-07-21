@@ -2,6 +2,8 @@
 
 Status: Accepted
 
+Amended by: [ADR-0073](ADR-0073-agent-builder-cache-exact-token-normalization-amendment.md)
+
 ## Context
 
 Agent Builder는 자연어 요청을 provider LLM으로 구조화하고, schema와 semantic
@@ -129,6 +131,8 @@ CAS 기준까지 과거 요청에서 재생하는 더 큰 위험이 생긴다.
     기존 Planner 경로로 진행한다. 완료 신호와 release는 owner token 및 lease generation을 검증해
     원자적으로 수행하며 follower는 자신이 관찰한 generation의 신호만 사용한다. Owner의 비정상 종료로
     완료 신호를 남길 수 없는 경우에만 lease TTL과 bounded wait를 복구 경계로 사용한다.
+    If current-context rehydration leaves the service Session transaction open and the request-bound guard cannot establish a clean boundary, it does not attempt completion signal, lease release, or any later Redis I/O.
+    Any already-acquired lease expires through TTL and followers retain their bounded fallback; this is cache-I/O fail-open rather than negative caching.
     DB transaction이나 workflow row lock을 잡은 채 Redis 또는 provider를 기다리지 않는다.
 12. Normalizer, cache schema, Planner contract, Catalog, canonical text registry, materializer와 HMAC key version을
     key namespace에 포함한다. Version 변경은 기존 entry를 읽지 않는 방식으로

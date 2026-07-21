@@ -19,7 +19,7 @@ MBA-343 cache spine의 내부 module 분리와 disabled runtime seam은
 
 | Component | Responsibility | Must not do |
 |---|---|---|
-| `DeterministicIntentNormalizer` | allowlist normalization, eligibility와 signature 생성 | capability 추론, LLM 결과 수정 |
+| `DeterministicIntentNormalizer` | 전체 표현 cleanup, Catalog exact-token segment projection, admission bypass와 versioned signature 생성 | phrase/semantic capability 추론, LLM 결과 수정 |
 | `IntentContextFingerprinter` | safe graph/selection/Knowledge context의 canonical digest | raw graph/config 저장 |
 | `IntentPlanCacheKeyBuilder` | versioned key material과 HMAC key 생성 | plaintext identity/key 노출 |
 | `IntentPlanCacheEnvelopeCodec` | canonical payload와 key를 인증하고 strict value를 decode | MAC 미검증 payload 반환 |
@@ -56,6 +56,22 @@ Cache coordinator는 기존 request admission과 cancellation/version fence 뒤�
 provider invoke 직전에만 기존 usage reservation을 시작한다. Hit는 request admission과 session 직렬화를
 우회하는 fast path가 아니다.
 
+**Lifecycle amendment.** Gateway lifespan constructs the enabled concrete Redis adapter and coordinator once,
+stores the boundary in FastAPI app state, and closes the owned client/pool once during shutdown. Request
+composition receives that shared boundary with its current user/organization and never calls Redis client
+construction. Disabled configuration constructs no adapter; initialization failure remains a safe
+fail-open to the existing Planner path, and shutdown errors are contained without configuration-secret disclosure.
+
+**Approved cross-cutting integration scope.** MBA-348 retains three minimal
+user-approved integration surfaces: the `from_url` adapter's idempotent app-owned
+pool close; the rehydrator's current-logical-topology validation input; and the
+opt-in, non-serialized Knowledge candidate/Collection projection used only to
+produce a current HMAC fingerprint and reissue handles. They do not redesign Redis
+codec/single-flight or rehydrator plan contracts, alter public API/durable schema/
+permission policy/GraphMutation/CAS, or retain protected identity outside the
+request. Actual protected-resource consumer-boundary and production-serving
+evidence remains MBA-349.
+
 ## Proposed File Ownership
 
 | Path | Content |
@@ -63,10 +79,17 @@ provider invoke 직전에만 기존 usage reservation을 시작한다. Hit는 re
 | `apps/gateway/application/agent_builder/intent_normalization.py` | signature와 normalization policy |
 | `apps/gateway/application/agent_builder/intent_cache/` | MBA-343의 `catalog_snapshot.py`, `contracts.py`, `codec.py`, `ports.py`, `disabled.py`; Catalog v3 node/capability/parameter key·input type, request-summary projection descriptor와 canonical purpose snapshot, cache DTO, strict codec, ports와 no-op 경계 |
 | `apps/gateway/application/agent_builder/intent_cache_coordinator.py` | cache hit/miss/bypass, Planner, rehydration과 usage orchestration |
+| `apps/gateway/services/agent_builder/intent_cache_integration.py` | request-transient planning context, safe Intent Plan projection, and rehydrator factory |
+| `apps/gateway/services/agent_builder/intent_cache_knowledge.py` | current Knowledge fingerprint, semantic metadata allowlist, and candidate-handle reissue |
+| `apps/gateway/services/knowledge_rag_recommendation_service.py` | cache-only request-transient current candidate/Collection projection; it remains outside API serialization |
+| `apps/shared/schemas/knowledge.py` | non-serialized private response attributes for the cache-only current Knowledge projection |
+| `apps/gateway/application/agent_builder/intent_cache_observability.py` | allowlisted cache metrics and safe diagnostic logging adapter |
 | `apps/gateway/application/agent_builder/intent_rehydration.py` | current-context rehydration |
 | `apps/gateway/application/agent_builder/intent_rehydration_registry.py` | versioned topic/guidance/purpose manifest, request-summary projection과 fixed template rendering |
-| `apps/gateway/adapters/cache/agent_builder_intent_plan.py` | Redis adapter와 codec boundary |
-| `apps/gateway/composition/agent_builder.py` | configuration, adapter와 service wiring |
+| `apps/gateway/adapters/cache/agent_builder_intent_plan.py` | Redis adapter/codec boundary and app-owned client/pool close |
+| `apps/gateway/composition/agent_builder_cache.py` | process-lifetime enabled cache construction, app-state ownership, safe close |
+| `apps/gateway/composition/agent_builder.py` | request composition of the shared cache boundary and service |
+| `apps/gateway/lifespan.py` | cache runtime initialization after startup and one-time shutdown close |
 | `apps/gateway/services/agent_builder_service.py` | transient full safe planning context DTO와 coordinator seam |
 | `apps/gateway/services/agent_builder_intent_service.py` | provider-backed extraction과 repair 유지 |
 
@@ -79,18 +102,26 @@ provider invoke 직전에만 기존 usage reservation을 시작한다. Hit는 re
 ## Normalization Pipeline
 
 1. 기존 secret 경계가 API에서 허용된 전체 요청을 검사하고 저장되지 않는 `full_safe_message`를 만든다.
-2. Unicode NFKC와 whitespace normalization을 적용한다.
-3. 영문 token에 casefold를 적용한다.
-4. Versioned alias table을 longest-token, boundary-aware 방식으로 적용한다.
-5. Versioned profile의 허용 조사·정중 표현과 위치/연결 표현만 canonicalize한다.
-6. 인용문, 숫자, 부정, node label과 parameter-like span을 alias 적용보다 먼저 보호한다.
-7. 위치/순서/부정/수량/인용 영역을 invariant로 검사한다.
-8. Planner prompt용 truncated summary와 분리된 전체 safe request를 안전하게 canonicalize할 수 있으면 signature를 반환한다.
-9. 입력 또는 graph topology projection이 잘렸거나 미인식 잔여 표현 또는 explicit value 가능성이 있으면 bypass한다.
+2. Unicode NFKC, CR/LF/tab 공백화, 연속 ASCII space 축소와 trim으로 저장하지 않는 cleanup detection form을 만든다.
+3. Raw message와 cleanup detection form 모두에서 secret/redaction marker와 input truncation 징후를 검사하고 closed reason으로 bypass한다. 이 검사는 deny-only이며 signature input을 추가하지 않는다.
+4. Explicit parameter value와 selected target 없는 ambiguous natural-language modify를 bypass한다. 인용문 안의 Catalog parameter key/display label 뒤 non-empty value는 value 감지에만 쓰며 label canonicalization을 허용하지 않는다.
+5. 인용문과 node label span을 exact token canonicalization에서 보호한다.
+6. Catalog v3의 단일 lexical-token exact alias와 exact node token만 boundary-aware typed segment로 바꾼다.
+   Case-insensitive canonicalization도 이 token에만 적용한다. Eligibility vocabulary는 case-insensitive admission membership을 사용할 수 있지만 원문 literal을 canonicalize하지 않는다.
+7. 위치, 순서, 부정과 숫자는 versioned exact eligibility vocabulary membership으로만 인정하고
+   원래 순서의 literal segment로 보존한다. 이 vocabulary는 alias나 canonicalization table이 아니다.
+8. Catalog multi-token phrase alias, 미인식 token, unsupported node 또는 닫히지 않은 인용문이 남으면
+   `unknown_token_sequence`로 lookup/store를 모두 bypass하고 partial signature를 만들지 않는다.
+9. `normalizer_version`과 전체 ordered segments를 domain-separated canonical JSON으로 만들고 SHA-256 signature를 반환한다.
 
-Alias table은 UI 설명이나 LLM prompt에서 파생하지 않는다. Catalog capability alias와 별도 server
-action alias를 정적 검증하고 중복 canonical target을 허용하지 않는다. Profile과 adversarial corpus는 같은
-`normalizer_version`으로 추적하며 profile 변경은 namespace miss를 만든다.
+Normalizer는 권위 Catalog v3 JSON의 alias/node metadata를 읽고 alias 충돌을 정적 초기화에서 거부한다.
+Catalog의 multi-token Planner alias, UI 설명과 Planner prompt에서 별도 cache alias를 파생하지 않는다.
+번역, 일반 동의어, phrase 재작성, 조사·형태소 제거, 어순 재구성, embedding과 semantic similarity는 적용하지
+않는다. Exact eligibility vocabulary는 literal을 바꾸지 않고 전체 projection 가능 여부만 판정한다. Profile과
+synthetic adversarial corpus는 같은 `normalizer_version`으로 추적하며 equality 규칙 변경은 namespace miss를 만든다.
+
+
+**MBA-344 pipeline clarification.** The numbered pipeline above is the executable order: create the transient NFKC/whitespace cleanup form, then inspect it and the raw safe message before any signature/projection. The safety-gate match result is deny-only and never persisted or added as separate signature material; the required cleanup transformations still feed the later normalized typed projection. Quoted Catalog display labels are inspected only to fail closed on an attached value, never canonicalized. Static initialization rejects a node-token/alias collision unless the alias resolves to a capability declared by the same node.
 
 ## Workflow Context Fingerprint
 
@@ -128,6 +159,13 @@ raw configuration은 DTO에 넣지 않는다.
 
 이 상태는 durable session 상태가 아니며 DB에 저장하지 않는다.
 
+Knowledge candidate fingerprint admission에는 explicit current safe policy revision이 필요하다. revision을
+만들 수 없으면 context/key를 만들지 않고 Planner로 bypass한다. Candidate와 Collection의 safe label/name은
+presentation 데이터이므로 HMAC projection에 넣지 않는다.
+- Cache-specific candidate, permission, and collection metadata uses a closed semantic allowlist before the outer context HMAC. Nested protected-resource IDs and safe label/name/description presentation values are omitted; adding a semantic field requires an explicit projection and contract test.
+
+- For cache-enabled eligible requests, the coordinator checks the request cancellation/version fence before normalizer/key lookup, after load before direct-hit rehydration, before every Planner entry (including normalizer bypass and cache I/O, lease, or follower-wait fail-open fallback), and before follower value use. `canceled` or `stale` aborts cache work rather than using a value or starting Planner work.
+
 ## Single-Flight
 
 - Lease key는 cache value key와 분리된 namespace를 사용한다.
@@ -149,6 +187,9 @@ raw configuration은 DTO에 넣지 않는다.
 - Owner가 wait 안에 value를 저장한 경우에만 provider 단일 호출을 보장한다. Timeout 뒤 follower는
   Planner를 호출할 수 있다. Lease가 correctness lock은 아니므로 요청 실패나 무한 대기를 만들지 않는다.
 - Provider 호출과 follower wait 동안 DB transaction/row lock을 유지하지 않는다.
+
+- A request-bound transaction guard ends only a clean service read transaction before every Redis I/O: lookup, lease, follower wait, and save/completion/release after current-context rehydration. If that boundary cannot be established, subsequent Redis I/O is skipped and the existing Planner or already canonical result path is preserved. An unavailable initial guard invokes the existing Planner once only; a Planner exception propagates without a cache-triggered retry.
+  If the guard becomes unavailable after owner lease acquisition, completion and release remain skipped under the dirty Session; that lease expires via TTL and followers use their bounded fallback rather than treating it as a no-value signal.
 
 ## Hit Rehydration
 
@@ -184,14 +225,19 @@ Cache hit도 active organization membership, credential status, model status, ve
 
 ### Target
 
-Logical edit placement를 현재 selected node/edge와 server-loaded graph에 다시 bind한다. Binding이 유일하지
-않으면 hit를 버리고 Planner 또는 clarification 경계로 진행한다. Cache plan 안에 target UUID를 넣지 않는다.
+Existing `AgentBuilderService` target resolver가 current selected node/edge identity를 server-loaded graph의
+logical ref에 bind한다. Rehydrator는 target kind에 맞는 current node/edge logical ref membership을 다시
+확인한다. Binding이 유일하지 않거나 membership이 없으면 hit를 버리고 Planner 또는 clarification 경계로
+진행한다. Cache plan이나 rehydrated output 안에 target UUID를 넣지 않는다.
 
 ### Knowledge
 
-Cache에는 closed requirement, 순서 있는 `topic_ref`와 placement만 둔다. Rehydrator는 현재 registry version으로
-각 ref를 순서 있는 canonical `query_topics` 문자열로 렌더링한다. Collection/KB 권한, lifecycle, readiness와 score를
-다시 계산하고 새로운 handle을 발급한다. Cache 당시 추천 순서나 선택을 자동 복원하지 않는다.
+Cache에는 closed requirement, 순서 있는 `topic_ref`와 placement만 둔다. Existing current candidate resolver가
+각 requirement별 Collection/KB 권한, lifecycle, readiness와 score를 다시 계산하고 request-current candidate
+handle과 resolution ID를 발급한다. Rehydrator는 requirement ref와 current resolution의 순서가 정확히 일치할
+때만 registry의 canonical `query_topics`와 해당 candidate handle을 structured request에 bind한다. Selection handle
+발급과 선택 materialization은 기존 downstream Knowledge selection 경계가 소유하며, cache 당시 추천 순서나
+선택을 자동 복원하지 않는다.
 
 ### Parameter Guidance
 

@@ -4,6 +4,8 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session
 
 from apps.gateway.application.agent_builder.intent_usage import (
     AgentBuilderIntentUsageContext,
@@ -14,6 +16,9 @@ from apps.gateway.application.agent_builder.intent_cache import (
     CacheBoundaryDecision,
     DisabledIntentPlanCacheBoundary,
     IntentPlanExecution,
+)
+from apps.gateway.application.agent_builder.intent_cache_coordinator import (
+    AgentBuilderIntentCacheCoordinator,
 )
 from apps.gateway.services.agent_builder_intent_service import (
     AgentBuilderIntentExtraction,
@@ -2704,3 +2709,177 @@ def test_natural_language_direct_edge_target_requires_one_edge(edges):
 
     assert resolution["status"] == "clarification_required"
     assert resolution["options"] == []
+
+
+def test_disabled_cache_does_not_build_context_or_touch_cache_dependencies(monkeypatch):
+    extractor = FakeIntentExtractor(
+        AgentBuilderIntentExtraction(
+            request_type="new_workflow",
+            draft_mode="new_workflow",
+            intent_summary="input and answer workflow",
+            ordered_capabilities=["start_input", "answer"],
+        )
+    )
+    service = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+        intent_extractor=extractor,
+    )
+
+    def unexpected_context_build(**_kwargs):
+        raise AssertionError("disabled cache must not build a planning context")
+
+    monkeypatch.setattr(
+        "apps.gateway.services.agent_builder_service.build_intent_planning_context",
+        unexpected_context_build,
+    )
+    structured = service._structure_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="Create an input and answer workflow"),
+        workflow=None,
+    )
+
+    assert structured.request_type == "new_workflow"
+    assert len(extractor.calls) == 1
+
+def test_cache_context_bypass_checks_request_cancellation_before_planner():
+    """A cache bypass must retain the request fence before any provider work."""
+    extractor = FakeIntentExtractor(
+        AgentBuilderIntentExtraction(
+            request_type="new_workflow",
+            draft_mode="new_workflow",
+            intent_summary="input and answer workflow",
+            ordered_capabilities=["start_input", "answer"],
+        )
+    )
+    coordinator = AgentBuilderIntentCacheCoordinator(
+        normalizer=object(),
+        store=object(),
+        rehydrator_factory=lambda: object(),
+        plan_projector=lambda _structured: object(),
+    )
+    service = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+        intent_extractor=extractor,
+        intent_plan_cache=coordinator,
+    )
+
+    with pytest.raises(AgentBuilderIntentExtractionError):
+        service._structure_request(  # noqa: SLF001
+            AgentBuilderMessageRequest(message="x" * 4000),
+            workflow=None,
+            cache_cancellation_fence=lambda: "canceled",
+        )
+
+    assert extractor.calls == []
+
+def test_cache_preflight_releases_read_transaction_before_cache_io():
+    db = Session(create_engine("sqlite://"))
+    db.execute(text("SELECT 1"))
+    service = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    assert db.in_transaction()
+    assert service._release_cache_read_transaction() is True  # noqa: SLF001
+    assert not db.in_transaction()
+
+
+def test_cache_fence_reads_request_status_without_opening_service_transaction(
+    monkeypatch,
+):
+    db = Session(create_engine("sqlite://"))
+    service = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    request_row = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="processing",
+        created_at=None,
+    )
+    monkeypatch.setattr(
+        service,
+        "_cache_request_status",
+        lambda _request_id: ("canceled", None),
+        raising=False,
+    )
+
+    assert service._intent_cache_cancellation_fence(request_row)() == "canceled"  # noqa: SLF001
+    assert not db.in_transaction()
+
+def test_cache_status_probe_uses_engine_when_service_session_is_connection_bound():
+    class ProbeResult:
+        def one_or_none(self):
+            return SimpleNamespace(status="processing", created_at=None)
+
+    class ProbeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execution_options(self, **_kwargs):
+            return self
+
+        def execute(self, _statement):
+            return ProbeResult()
+
+    probe_connection = ProbeConnection()
+    connection_bound_session = SimpleNamespace(
+        get_bind=lambda: SimpleNamespace(
+            engine=SimpleNamespace(connect=lambda: probe_connection)
+        )
+    )
+    service = AgentBuilderService(
+        connection_bound_session,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    assert service._cache_request_status(uuid.uuid4()) == ("processing", None)  # noqa: SLF001
+
+def test_service_binds_clean_transaction_guard_to_cache_coordinator(monkeypatch):
+    """The request coordinator must receive the service Session boundary guard."""
+    db = Session(create_engine("sqlite://"))
+    extractor = FakeIntentExtractor(
+        AgentBuilderIntentExtraction(
+            request_type="new_workflow",
+            draft_mode="new_workflow",
+            intent_summary="input and answer workflow",
+            ordered_capabilities=["start_input", "answer"],
+        )
+    )
+    coordinator = AgentBuilderIntentCacheCoordinator(
+        normalizer=object(),
+        store=object(),
+        rehydrator_factory=lambda: object(),
+        plan_projector=lambda _structured: object(),
+    )
+    bindings = []
+
+    def record_request_binding(**kwargs):
+        bindings.append(kwargs)
+        return coordinator
+
+    monkeypatch.setattr(coordinator, "for_request", record_request_binding)
+    service = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+        intent_extractor=extractor,
+        intent_plan_cache=coordinator,
+    )
+
+    service._structure_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="Create an input and answer workflow"),
+        workflow=None,
+    )
+
+    cache_io_guard = bindings[0]["cache_io_guard"]

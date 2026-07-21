@@ -143,6 +143,7 @@ class KnowledgeRAGRecommendationService:
         *,
         include_materialized_refs: bool = False,
         allow_unready_candidates: bool = False,
+        include_cache_fingerprint_projection: bool = False,
     ) -> KnowledgeRAGRecommendationResponse:
         resolver = self.resolver or self._resolver_for_request(request)
         recommendation_mode = self._resolved_mode(request)
@@ -278,6 +279,13 @@ class KnowledgeRAGRecommendationService:
                 in visible_collection_handles
             }
         response._issued_kb_resource_ids = issued_kb_handles
+        if include_cache_fingerprint_projection:
+            # These objects are request-transient and consumed only by the cache
+            # HMAC helper. PrivateAttrs keep identities out of API serialization.
+            response._cache_fingerprint_candidates = list(resolution.candidates)
+            response._cache_fingerprint_collections = (
+                list(hierarchy.collections) if hierarchy is not None else []
+            )
         return response
 
     def safe_intent_candidates_for_builder(

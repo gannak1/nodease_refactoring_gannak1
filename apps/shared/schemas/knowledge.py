@@ -547,6 +547,14 @@ class KnowledgeRAGRecommendationResponse(BaseModel):
     _issued_collection_resource_ids: dict[str, UUID] = PrivateAttr(
         default_factory=dict
     )
+    # Cache-only request-transient records. They are never serialized in API
+    # responses, drafts, cache values, logs, traces, or audit payloads.
+    _cache_fingerprint_candidates: list[KnowledgeCandidate] = PrivateAttr(
+        default_factory=list
+    )
+    _cache_fingerprint_collections: list[KnowledgeCandidateCollectionGroup] = (
+        PrivateAttr(default_factory=list)
+    )
 
     status: KnowledgeRAGRecommendationStatus = "recommended"
     resolution_id: str | None = None

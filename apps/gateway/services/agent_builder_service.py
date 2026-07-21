@@ -3,12 +3,13 @@ import hashlib
 import json
 import logging
 import re
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import or_
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from apps.gateway.adapters.db.agent_builder_repository import AgentBuilderRepository
@@ -22,6 +23,11 @@ from apps.gateway.application.agent_builder.intent_usage import (
 from apps.gateway.application.agent_builder.intent_cache import (
     DisabledIntentPlanCacheBoundary,
     IntentPlanCacheBoundary,
+)
+from apps.gateway.application.agent_builder.intent_cache_coordinator import (
+    AgentBuilderIntentCacheCoordinator,
+    ColdMissRehydrationError,
+    RequestFenceAbortedError,
 )
 from apps.gateway.application.agent_builder.knowledge_timing import (
     materialize_before_graph_plan,
@@ -44,6 +50,9 @@ from apps.gateway.auth.permissions import (
 )
 from apps.gateway.services.agent_builder.parameter_candidates import (
     ParameterCandidateProvider,
+)
+from apps.gateway.services.agent_builder.intent_cache_integration import (
+    build_intent_planning_context,
 )
 from apps.gateway.services.agent_builder_intent_service import (
     AgentBuilderIntentExtraction,
@@ -1202,6 +1211,12 @@ class AgentBuilderService:
                 else self._structure_request(
                     message_request,
                     workflow,
+                    cache_cancellation_fence=(
+                        self._intent_cache_cancellation_fence(request_row)
+                    ),
+                    cache_request_deadline_monotonic=(
+                        self._intent_cache_wait_deadline(request_row)
+                    ),
                     **(
                         {"usage_context": usage_context}
                         if usage_context is not None
@@ -2616,6 +2631,8 @@ class AgentBuilderService:
         workflow: Workflow | None,
         *,
         usage_context: AgentBuilderIntentUsageContext | None = None,
+        cache_cancellation_fence=None,
+        cache_request_deadline_monotonic: float | None = None,
     ) -> AgentBuilderStructuredRequest:
         def planner_call() -> AgentBuilderStructuredRequest:
             if self.intent_extractor is None:
@@ -2642,8 +2659,140 @@ class AgentBuilderService:
                 workflow=workflow,
             )
 
-        execution = self.intent_plan_cache.execute(planner_call)
+        context = None
+        cache_boundary = self.intent_plan_cache
+        if isinstance(cache_boundary, AgentBuilderIntentCacheCoordinator):
+            cache_boundary = cache_boundary.for_request(
+                cancellation_fence=cache_cancellation_fence,
+                request_deadline_monotonic=cache_request_deadline_monotonic,
+                cache_io_guard=self._release_cache_read_transaction,
+            )
+        if not isinstance(cache_boundary, DisabledIntentPlanCacheBoundary):
+            def current_workflow_loader():
+                if workflow is None:
+                    return None
+                current_workflow = self._workflow_in_active_org(workflow.id)
+                ensure_workflow_permission(
+                    self.db,
+                    self.user,
+                    current_workflow.id,
+                    "write",
+                )
+                return current_workflow
+
+            planning_inputs = build_intent_planning_context(
+                db=self.db,
+                user_id=self.user.id,
+                organization_id=self.organization_id,
+                extractor=self.intent_extractor,
+                request=request,
+                workflow=workflow,
+                safe_summary=_safe_summary,
+                safe_label=_safe_display_label,
+                current_workflow_loader=current_workflow_loader,
+                knowledge_context_fingerprint_factory=(
+                    cache_boundary.current_knowledge_context_fingerprint
+                    if isinstance(cache_boundary, AgentBuilderIntentCacheCoordinator)
+                    else None
+                ),
+            )
+            if planning_inputs is not None:
+                context = planning_inputs.context
+                if isinstance(cache_boundary, AgentBuilderIntentCacheCoordinator):
+                    cache_boundary = cache_boundary.for_request(
+                        rehydrator_factory=planning_inputs.rehydrator_factory,
+                    )
+                    if not self._release_cache_read_transaction():
+                        context = None
+        try:
+            execution = cache_boundary.execute(planner_call, context=context)
+        except ColdMissRehydrationError as exc:
+            # The provider attempt already owns its usage record. Reusing the raw
+            # extraction would create a cache-only downstream divergence.
+            raise AgentBuilderIntentExtractionError(
+                "Agent Builder intent cache rehydration failed"
+            ) from exc
+        except RequestFenceAbortedError as exc:
+            raise AgentBuilderIntentExtractionError(
+                "Agent Builder request changed before cache planning completed"
+            ) from exc
         return execution.structured_request
+
+    def _intent_cache_cancellation_fence(self, request_row: AgentBuilderRequest):
+        """Observe terminal request state before cache work and during follower waits."""
+        def fence():
+            status = request_row.status
+            created_at = getattr(request_row, "created_at", None)
+            if isinstance(self.db, Session):
+                current = self._cache_request_status(request_row.id)
+                if current is None:
+                    return "stale"
+                status, created_at = current
+            if status == "canceled":
+                return "canceled"
+            if status != "processing":
+                return "stale"
+            if (
+                created_at is not None
+                and created_at + AGENT_BUILDER_REQUEST_PROCESSING_TIMEOUT <= _now()
+            ):
+                return "stale"
+            return "active"
+
+        return fence
+
+    def _release_cache_read_transaction(self) -> bool:
+        """End clean request reads before each cache Redis I/O without discarding writes."""
+        if not isinstance(self.db, Session) or not self.db.in_transaction():
+            return True
+        if self.db.new or self.db.dirty or self.db.deleted:
+            return False
+        try:
+            self.db.rollback()
+        except Exception:
+            return False
+        return not self.db.in_transaction()
+
+    def _cache_request_status(
+        self,
+        request_id: uuid.UUID,
+    ) -> tuple[str, datetime | None] | None:
+        """Read terminal state without starting a transaction on the service Session."""
+        try:
+            bind = self.db.get_bind()
+            engine = (
+                bind
+                if callable(getattr(bind, "connect", None))
+                else getattr(bind, "engine", None)
+            )
+            if not callable(getattr(engine, "connect", None)):
+                return None
+            with engine.connect() as connection:
+                row = connection.execution_options(
+                    isolation_level="AUTOCOMMIT"
+                ).execute(
+                    select(
+                        AgentBuilderRequest.status,
+                        AgentBuilderRequest.created_at,
+                    ).where(AgentBuilderRequest.id == request_id)
+                ).one_or_none()
+        except Exception:
+            return None
+        if row is None:
+            return None
+        return row.status, row.created_at
+
+    def _intent_cache_wait_deadline(
+        self,
+        request_row: AgentBuilderRequest,
+    ) -> float | None:
+        created_at = getattr(request_row, "created_at", None)
+        if created_at is None:
+            return None
+        remaining = (
+            created_at + AGENT_BUILDER_REQUEST_PROCESSING_TIMEOUT - _now()
+        ).total_seconds()
+        return time.monotonic() + max(0.0, remaining)
 
     def _primary_intent_usage_context(
         self,

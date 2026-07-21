@@ -1109,3 +1109,37 @@ def test_auto_collection_omitted_scope_and_explicit_empty_scope_are_distinct():
     assert resolver.auto_calls[0]["max_collections"] == 20
     assert resolver.auto_calls[1]["collection_ids"] == []
     assert resolver.auto_calls[1]["max_collections"] == 10
+
+
+def test_cache_fingerprint_projection_is_private_and_contains_current_hierarchy():
+    first = _candidate(runtime_availability="available")
+    second = _candidate(runtime_availability="available")
+    collection_id = uuid.uuid4()
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[]))
+    resolver.hierarchy = KnowledgeCandidateHierarchyResolution(
+        collections=[
+            KnowledgeCandidateCollectionGroup(
+                collection_id=collection_id,
+                safe_label="Policy collection",
+                safe_metadata={"safe_topics": ["policy"]},
+                candidates=[first],
+            )
+        ],
+        ungrouped_candidates=[second],
+    )
+
+    result = _service(resolver).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(workflow_intent="policy workflow", mode="auto"),
+        include_cache_fingerprint_projection=True,
+    )
+
+    assert {item.candidate_id for item in result._cache_fingerprint_candidates} == {
+        first.candidate_id,
+        second.candidate_id,
+    }
+    assert [item.collection_id for item in result._cache_fingerprint_collections] == [
+        collection_id
+    ]
+    serialized = result.model_dump(mode="json")
+    assert str(first.candidate_id) not in str(serialized)
+    assert str(collection_id) not in str(serialized)
