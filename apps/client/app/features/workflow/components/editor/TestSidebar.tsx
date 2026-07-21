@@ -106,7 +106,7 @@ type ComparisonLocationUpdate = {
 
 export const TEST_INPUT_CLASS_NAME =
   'w-full px-3 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100 dark:placeholder:text-gray-500';
-const testTextAreaClassName = `${TEST_INPUT_CLASS_NAME} min-h-[100px]`;
+const testTextAreaClassName = `${TEST_INPUT_CLASS_NAME} min-h-[180px]`;
 const testJsonTextAreaClassName = `${TEST_INPUT_CLASS_NAME} min-h-[200px] font-mono text-sm`;
 
 const clamp = (value: number, min: number, max: number) =>
@@ -361,6 +361,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     features,
     envVariables,
     runtimeVariables,
+    canonicalDraftMetadata,
     isAgentBuilderMutationSaving,
     undoStack,
     testExecutionStatus,
@@ -396,6 +397,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const [isComparisonMode, setIsComparisonMode] = useState(false);
   const [hasOpenedComparisonPanel, setHasOpenedComparisonPanel] =
     useState(false);
+  const [comparisonListReloadKey, setComparisonListReloadKey] = useState(0);
   const [comparisonBaselineRunId, setComparisonBaselineRunId] = useState<
     string | null
   >(null);
@@ -420,7 +422,9 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const nodeStartedAtRef = React.useRef<Record<string, number>>({});
   const restoredRunRef = React.useRef<string | null>(null);
   const historyLocationChangeRef = React.useRef(false);
+  const testExecutionContentRef = React.useRef<HTMLDivElement>(null);
   const latestNodesRef = React.useRef(nodes);
+  const previousTestExecutionStatusRef = React.useRef(testExecutionStatus);
   const currentTestExecutionRef = React.useRef({
     runId: testExecutionRunId,
     status: testExecutionStatus,
@@ -430,6 +434,9 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const isExecuting = testExecutionStatus === 'running';
   const hasPersistedActiveWorkflow =
     Boolean(activeWorkflowId) && activeWorkflowId !== 'default';
+  const isActiveWorkflowDraftLoaded = Boolean(
+    activeWorkflowId && canonicalDraftMetadata?.[activeWorkflowId],
+  );
   const selectedTestNodeId = testSelectedNodeId ?? localSelectedTestNodeId;
   const selectExecutionNode = (nodeId: string | null) => {
     setLocalSelectedTestNodeId(nodeId);
@@ -531,8 +538,22 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   ]);
 
   useEffect(() => {
+    const previousStatus = previousTestExecutionStatusRef.current;
+    previousTestExecutionStatusRef.current = testExecutionStatus;
+    const isTerminalStatus =
+      testExecutionStatus === 'success' || testExecutionStatus === 'failure';
+    if (previousStatus === 'running' && isTerminalStatus) {
+      setComparisonListReloadKey((value) => value + 1);
+    }
+  }, [testExecutionStatus]);
+
+  useEffect(() => {
     const { runId, nodeId } = readTestExecutionLocation();
-    if (!runId || !hasPersistedActiveWorkflow || nodes.length === 0) {
+    if (
+      !runId ||
+      !hasPersistedActiveWorkflow ||
+      !isActiveWorkflowDraftLoaded
+    ) {
       if (!runId && historyLocationChangeRef.current) {
         historyLocationChangeRef.current = false;
         restoredRunRef.current = null;
@@ -636,7 +657,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   }, [
     activeWorkflowId,
     hasPersistedActiveWorkflow,
-    nodes.length,
+    isActiveWorkflowDraftLoaded,
     openTestPanel,
     restoreTestExecution,
     resetTestExecution,
@@ -867,7 +888,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       const node = nodes.find((item) => item.id === nodeId);
       const storedResult = nodeResultById.get(nodeId);
       if (!node && !storedResult) return null;
-      const data = node?.data as {
+      const data = (node?.data ?? {}) as {
         title?: string;
         name?: string;
         status?: string;
@@ -1143,16 +1164,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
         </section>
 
         {hasRoutingTrace ? (
-          <div className="space-y-3">
-            <p className="rounded-md border border-blue-200 bg-blue-50 p-3 text-xs leading-relaxed text-blue-800 dark:border-blue-900 dark:bg-blue-950/20 dark:text-blue-200">
-              이 테스트 실행은 자동 라우팅 정책의 학습 및 갱신 횟수에 포함되지
-              않습니다.
-            </p>
-            <ModelRoutingDecisionDetails
-              output={summary.output}
-              traceMetadata={summary.traceMetadata}
-            />
-          </div>
+          <ModelRoutingDecisionDetails
+            output={summary.output}
+            traceMetadata={summary.traceMetadata}
+          />
         ) : null}
       </div>
     );
@@ -1679,6 +1694,9 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   };
 
   const handleComparisonSelectedNodeIdChange = (nodeId: string | null) => {
+    if (nodeId && testExecutionContentRef.current) {
+      testExecutionContentRef.current.scrollTop = 0;
+    }
     setComparisonSelectedNodeId(nodeId);
     replaceTestExecutionLocation(testExecutionRunId, testSelectedNodeId, {
       comparisonNodeId: nodeId,
@@ -1750,6 +1768,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             onClick={() => {
               setHasOpenedComparisonPanel(true);
               setIsComparisonMode(true);
+              setComparisonListReloadKey((value) => value + 1);
               replaceTestExecutionLocation(
                 testExecutionRunId,
                 testSelectedNodeId,
@@ -1768,7 +1787,11 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-6">
+      <div
+        ref={testExecutionContentRef}
+        data-testid="test-execution-content"
+        className="flex-1 overflow-y-auto p-6"
+      >
         {testRunRestoreState === 'restoring' && !isExecuting ? (
           <div className="mb-4 flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -1805,7 +1828,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               currentRunId={testExecutionRunId}
               currentExecutionStatus={testExecutionStatus}
               currentExecutionError={testExecutionError}
-              reloadRequestKey={testRunRestoreRetry}
+              reloadRequestKey={testRunRestoreRetry + comparisonListReloadKey}
               selectedNodeId={comparisonSelectedNodeId}
               onBaselineRunIdChange={handleComparisonBaselineRunIdChange}
               onSelectedNodeIdChange={handleComparisonSelectedNodeIdChange}

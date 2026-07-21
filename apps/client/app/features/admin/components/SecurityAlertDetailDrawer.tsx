@@ -314,7 +314,7 @@ export function SecurityAlertDetailDrawer({
           aria-label="보안 알림 상세"
           tabIndex={-1}
           onKeyDown={handleKeyDown}
-          className="relative flex h-full w-full max-w-2xl flex-col overflow-y-auto bg-white shadow-xl outline-none"
+          className="relative flex h-full w-full max-w-4xl flex-col overflow-y-auto bg-white shadow-xl outline-none [&_.text-xs]:text-sm [&_.text-sm]:text-base [&_.text-base]:text-lg [&_.text-lg]:text-xl"
         >
           <header className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
             <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-950">
