@@ -288,6 +288,14 @@ class AgentBuilderMessageRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def reject_raw_client_graph_snapshot(cls, data: Any):
+        score_profile_keys = {
+            "score_profile",
+            "recommendation_score_profile",
+            "scoreProfile",
+            "recommendationScoreProfile",
+        }
+        if isinstance(data, dict) and score_profile_keys.intersection(data):
+            raise ValueError("client recommendation score profile is not accepted")
         raw_graph_keys = {
             "client_graph_snapshot",
             "clientGraphSnapshot",

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from apps.gateway.services import agent_builder_service as service_module
 from apps.gateway.services.agent_builder_service import AgentBuilderService
@@ -85,6 +86,39 @@ def test_message_request_defaults_to_configure_and_generate():
     request = AgentBuilderMessageRequest(message="workflow를 만들어줘")
 
     assert request.generation_mode == "configure_and_generate"
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "score_profile",
+        "recommendation_score_profile",
+        "scoreProfile",
+        "recommendationScoreProfile",
+    ],
+)
+def test_message_request_rejects_client_owned_recommendation_score_profile(
+    field_name,
+):
+    with pytest.raises(ValidationError, match="recommendation score profile"):
+        AgentBuilderMessageRequest.model_validate(
+            {
+                "message": "workflow를 만들어줘",
+                field_name: "client-selected-profile",
+            }
+        )
+
+
+def test_message_request_keeps_ignoring_other_legacy_extra_fields():
+    request = AgentBuilderMessageRequest.model_validate(
+        {
+            "message": "workflow를 만들어줘",
+            "legacy_client_hint": "still ignored",
+        }
+    )
+
+    assert request.message == "workflow를 만들어줘"
+    assert "legacy_client_hint" not in request.model_dump()
 
 
 def test_agent_builder_summary_redacts_known_provider_credentials():
