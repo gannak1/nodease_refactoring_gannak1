@@ -700,6 +700,8 @@ jobs:
 
       - name: Run Helm deployment contract tests
         if: needs.scope.outputs.helm_validation == 'true'
+        env:
+          NODEASE_RUN_HELM_INTEGRATION_TESTS: "1"
         run: >-
           .venv-ci-deployment/bin/python -m pytest
           tests/ci/test_supported_deployment_surface.py

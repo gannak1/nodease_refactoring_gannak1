@@ -244,6 +244,7 @@ def test_helm_validation_runs_targeted_deployment_contract_tests():
     )[0]
 
     assert helm_validation in contract_step
+    assert 'NODEASE_RUN_HELM_INTEGRATION_TESTS: "1"' in contract_step
     assert "tests/ci/test_supported_deployment_surface.py" in contract_step
     assert "tests/ci/test_storage_deployment_contract.py" in contract_step
     assert deployment_block.index("helm dependency build infra/helm/moduly") < (

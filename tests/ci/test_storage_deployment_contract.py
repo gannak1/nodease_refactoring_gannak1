@@ -1,3 +1,4 @@
+import os
 import re
 import shutil
 import subprocess
@@ -108,9 +109,12 @@ def test_rendered_storage_consumers_reference_existing_configmap_keys(
     values_files: tuple[str, ...],
     expected_cloud_env: bool,
 ):
+    if os.getenv("NODEASE_RUN_HELM_INTEGRATION_TESTS") != "1":
+        pytest.skip("Helm integration contract is owned by deployment validation")
+
     helm = shutil.which("helm")
     if helm is None:
-        pytest.skip("Helm integration contract runs in deployment validation")
+        pytest.fail("Deployment validation enabled the Helm contract without Helm")
 
     command = [
         helm,

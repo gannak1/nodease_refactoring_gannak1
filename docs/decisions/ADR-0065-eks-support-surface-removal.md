@@ -58,7 +58,7 @@ Option 3을 채택한다.
    - Allowlist 안의 workflow와 `.github/actions/**/action.yml|yaml` local composite action도 AWS credential/ECR/EKS/eksctl 같은 provider-specific 실행 신호가 있으면 실패한다. Workflow와 composite action은 같은 bounded UTF-8 fail-closed content reader를 사용한다. 이 내용 검사는 독립 write-maintainer 승인 정책을 대체하지 않는다.
    - Helm 기본/production values에 대해 lint와 render를 수행한다.
    - CLOUD storage의 unknown type, 빈 bucket, 빈 region은 각각 negative render로 실패함을 검증한다.
-   - Helm 변경은 deployment validation job에서 `tests/ci`가 소유하는 support-surface와 storage deployment 계약 pytest를 직접 실행한다. 이 계약은 runtime package를 import하지 않으며 전체 Shared/root 회귀를 선택하는 대신 두 exact 계약만 실행해 선택형 CI 비용을 제한한다.
+   - Helm 변경은 deployment validation job에서 `tests/ci`가 소유하는 support-surface와 storage deployment 계약 pytest를 직접 실행한다. 실제 Helm render test는 dependency build를 마친 이 step의 명시적 integration flag에서만 활성화하고 runner에 우연히 설치된 Helm binary를 실행 근거로 사용하지 않는다. 이 계약은 runtime package를 import하지 않으며 전체 Shared/root 회귀를 선택하는 대신 두 exact 계약만 실행해 선택형 CI 비용을 제한한다.
    - 렌더 결과는 kubeconform v0.7.0과 Kubernetes 1.31 compatibility baseline으로 검사한다. 이는 EKS 지원 선언이 아니다.
 9. EKS를 다시 지원하려면 새 ADR과 이슈에서 cloud ownership, OIDC/secret, cluster/CNI, migration, rollback, schedule coordinated rollout, 실제 environment integration evidence를 함께 제시해야 한다.
 
