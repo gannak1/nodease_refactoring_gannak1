@@ -33,8 +33,9 @@ async def test_google_client_applies_internal_timeout_to_http_transport(monkeypa
             return {"choices": [{"message": {"content": "ok"}}]}
 
     class FakeAsyncClient:
-        def __init__(self, *, timeout):
+        def __init__(self, *, timeout, **kwargs):
             captured["timeout"] = timeout
+            captured["client_kwargs"] = kwargs
 
         async def __aenter__(self):
             return self
@@ -65,6 +66,8 @@ async def test_google_client_applies_internal_timeout_to_http_transport(monkeypa
     )
 
     assert captured["timeout"] == 90
+    assert captured["client_kwargs"]["trust_env"] is False
+    assert captured["client_kwargs"]["follow_redirects"] is False
     assert captured["payload"] == {
         "model": "gemini-2.5-flash",
         "messages": [{"role": "user", "content": "hello"}],

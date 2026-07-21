@@ -5095,7 +5095,11 @@ def test_workflow_llm_service_uses_relation_priority_before_credential_created_a
     """Workflow runtime credential selection follows relation priority first. MBA-43"""
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
-    provider = SimpleNamespace(id=uuid.uuid4(), name="openai")
+    provider = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="openai",
+        base_url="https://catalog.example/v1",
+    )
     older_credential = SimpleNamespace(
         id=uuid.uuid4(),
         provider=provider,
@@ -5151,7 +5155,7 @@ def test_workflow_llm_service_uses_relation_priority_before_credential_created_a
 
     assert runtime.credential_id == priority_credential.id
     assert client_configs == [
-        {"apiKey": "priority-key", "baseUrl": "https://priority.example"}
+        {"apiKey": "priority-key", "baseUrl": "https://catalog.example/v1"}
     ]
 
 
@@ -5160,7 +5164,11 @@ def test_workflow_llm_service_uses_preloaded_model_binding_without_model_query(
 ):
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
-    provider = SimpleNamespace(id=uuid.uuid4(), name="openai")
+    provider = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="openai",
+        base_url="https://catalog.example/v1",
+    )
     credential = SimpleNamespace(
         id=uuid.uuid4(),
         provider=provider,
@@ -5189,8 +5197,11 @@ def test_workflow_llm_service_uses_preloaded_model_binding_without_model_query(
     )
     monkeypatch.setattr(
         workflow_llm_service,
-        "load_llm_credential_config",
-        lambda _credential: {"apiKey": api_key, "baseUrl": None},
+        "materialize_llm_client_credentials",
+        lambda *_args: {
+            "apiKey": api_key,
+            "baseUrl": "https://catalog.example/v1",
+        },
     )
     monkeypatch.setattr(
         workflow_llm_service,

@@ -8,6 +8,7 @@ BaseLLMClient를 직접 상속하여 독립적인 구현을 제공합니다.
 from typing import Any, Dict, List
 
 import httpx
+from apps.shared.services.egress_guard import EgressGuardError
 
 from .base import BaseLLMClient
 
@@ -34,6 +35,7 @@ class GoogleClient(BaseLLMClient):
         self.base_url = credentials.get("baseUrl") or credentials.get("base_url")
         if not self.api_key or not self.base_url:
             raise ValueError("Google Gemini credentials에 apiKey/baseUrl가 필요합니다.")
+        self._configure_provider_endpoint(self.base_url)
         self.chat_url = self.base_url.rstrip("/") + "/chat/completions"
         self.embedding_url = self.base_url.rstrip("/") + "/embeddings"
 
@@ -59,20 +61,21 @@ class GoogleClient(BaseLLMClient):
         """
         payload = {"model": self.model_id, "input": text}
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(
+            timeout=30,
+            **self._async_http_client_options(),
+        ) as client:
             try:
                 resp = await client.post(
                     self.embedding_url,
                     headers=self._build_headers(),
                     json=payload,
                 )
-            except httpx.RequestError as exc:
-                raise ValueError(f"Google Gemini 임베딩 호출 실패: {exc}") from exc
+            except (httpx.RequestError, EgressGuardError) as exc:
+                self._raise_provider_transport_error(exc)
 
         if resp.status_code >= 400:
-            raise ValueError(
-                f"Google Gemini 임베딩 호출 실패 (status {resp.status_code}): {resp.text[:200]}"
-            )
+            self._raise_provider_http_error(resp.status_code)
 
         try:
             data = resp.json()
@@ -108,17 +111,19 @@ class GoogleClient(BaseLLMClient):
             request_timeout = 60
         payload.update(self._sanitize_kwargs(kwargs))
 
-        async with httpx.AsyncClient(timeout=request_timeout) as client:
+        async with httpx.AsyncClient(
+            timeout=request_timeout,
+            **self._async_http_client_options(),
+        ) as client:
             try:
                 resp = await client.post(
                     self.chat_url, headers=self._build_headers(), json=payload
                 )
-            except httpx.RequestError as exc:
-                raise ValueError(f"Google Gemini 호출 실패: {exc}") from exc
+            except (httpx.RequestError, EgressGuardError) as exc:
+                self._raise_provider_transport_error(exc)
 
         if resp.status_code >= 400:
-            snippet = resp.text[:200] if resp.text else ""
-            raise ValueError(f"Google Gemini 호출 실패 (status {resp.status_code}): {snippet}")
+            self._raise_provider_http_error(resp.status_code)
 
         try:
             return resp.json()

@@ -49,6 +49,10 @@ from apps.shared.domain.workflow_node_location import (
     WorkflowNodeLocationError,
     find_workflow_node_at_location,
 )
+from apps.shared.services.outbound_operation_policy import (
+    LLM_PROVIDER_CALL,
+    require_outbound_operation_profile,
+)
 from apps.shared.services.permissions import (
     get_effective_llm_credential_auth_state,
     has_llm_credential_permission,
@@ -930,6 +934,9 @@ class ProviderExecutionCapabilityService:
                     "provider_name": provider.name,
                     "base_url": provider.base_url,
                     "updated_at": provider.updated_at,
+                    "transport_policy_revision": require_outbound_operation_profile(
+                        LLM_PROVIDER_CALL
+                    ).revision,
                 }
             ),
             "pricing": _revision_digest(

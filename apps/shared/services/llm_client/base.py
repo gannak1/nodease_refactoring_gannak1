@@ -7,6 +7,18 @@ LLM 클라이언트의 공통 인터페이스.
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
+import httpx
+from apps.shared.services.egress_guard import EgressGuardError
+from apps.shared.services.guarded_http_transport import (
+    GuardedAsyncHttpTransport,
+    GuardedHttpTransport,
+)
+from apps.shared.services.outbound_operation_policy import (
+    LLM_PROVIDER_CALL,
+    BoundOutboundOperation,
+    require_outbound_operation_profile,
+)
+
 
 def _safe_billing_usage(usage: Any) -> Dict[str, int] | None:
     if not isinstance(usage, dict):
@@ -73,6 +85,68 @@ class BaseLLMClient(ABC):
     def __init__(self, model_id: str, credentials: Optional[Dict[str, Any]] = None):
         self.model_id = model_id
         self.credentials = credentials or {}
+        self._provider_outbound_operation: BoundOutboundOperation | None = None
+
+    def _configure_provider_endpoint(self, base_url: str) -> None:
+        self._provider_outbound_operation = require_outbound_operation_profile(
+            LLM_PROVIDER_CALL
+        ).bind(base_url)
+
+    @property
+    def outbound_policy_revision(self) -> str:
+        if self._provider_outbound_operation is None:
+            raise RuntimeError("Provider endpoint is not configured")
+        return self._provider_outbound_operation.profile.revision
+
+    def _sync_http_client_options(self) -> Dict[str, Any]:
+        if self._provider_outbound_operation is None:
+            raise RuntimeError("Provider endpoint is not configured")
+        return {
+            "transport": GuardedHttpTransport(
+                operation=self._provider_outbound_operation
+            ),
+            "follow_redirects": False,
+            "trust_env": False,
+        }
+
+    def _async_http_client_options(self) -> Dict[str, Any]:
+        if self._provider_outbound_operation is None:
+            raise RuntimeError("Provider endpoint is not configured")
+        return {
+            "transport": GuardedAsyncHttpTransport(
+                operation=self._provider_outbound_operation
+            ),
+            "follow_redirects": False,
+            "trust_env": False,
+        }
+
+    @staticmethod
+    def _raise_provider_transport_error(exc: BaseException) -> None:
+        if isinstance(exc, EgressGuardError):
+            reason_code = "provider_egress_denied"
+        elif isinstance(exc, httpx.TimeoutException):
+            reason_code = "provider_timeout"
+        else:
+            reason_code = "provider_connection_failed"
+        raise ProviderInvocationError(
+            "Provider request failed.",
+            reason_code=reason_code,
+        ) from None
+
+    @staticmethod
+    def _raise_provider_http_error(
+        status_code: int,
+        *,
+        provider_error_code: str | None = None,
+        provider_error_param: str | None = None,
+    ) -> None:
+        raise ProviderInvocationError(
+            f"Provider request failed (status {status_code}).",
+            reason_code="provider_http_error",
+            status_code=status_code,
+            provider_error_code=provider_error_code,
+            provider_error_param=provider_error_param,
+        )
 
     @staticmethod
     def _run_coroutine_sync(
@@ -212,3 +286,8 @@ class BaseLLMClient(ABC):
             float 리스트 형태의 벡터
         """
         return self._run_coroutine_sync(lambda: self.embed(text))
+
+    def embed_batch_sync(self, texts: List[str]) -> List[List[float]]:
+        """Synchronous batch fallback for clients without a native batch API."""
+
+        return [self.embed_sync(text) for text in texts]

@@ -12,12 +12,11 @@ from starlette.responses import Response
 
 from apps.shared.db.models.knowledge import Document
 from apps.shared.services.egress_guard import (
-    DOCUMENT_RESPONSE_CONTENT_TYPES,
     EgressGuardError,
-    EgressGuardPolicy,
     safe_http_request,
     safe_quote_filename,
 )
+from apps.shared.services.outbound_operation_policy import KNOWLEDGE_DOCUMENT_FETCH
 
 logger = logging.getLogger(__name__)
 
@@ -136,11 +135,7 @@ class KnowledgeDocumentContentService:
         response = safe_http_request(
             "GET",
             file_path,
-            policy=EgressGuardPolicy(
-                timeout_seconds=30.0,
-                max_response_bytes=50 * 1024 * 1024,
-                allowed_content_types=DOCUMENT_RESPONSE_CONTENT_TYPES,
-            ),
+            operation_id=KNOWLEDGE_DOCUMENT_FETCH,
         )
         if response.status_code >= 400:
             raise RuntimeError("Remote file returned an error.")
@@ -230,11 +225,7 @@ class KnowledgeDocumentContentService:
             external_res = safe_http_request(
                 "GET",
                 file_path,
-                policy=EgressGuardPolicy(
-                    timeout_seconds=30.0,
-                    max_response_bytes=50 * 1024 * 1024,
-                    allowed_content_types=DOCUMENT_RESPONSE_CONTENT_TYPES,
-                ),
+                operation_id=KNOWLEDGE_DOCUMENT_FETCH,
             )
             if external_res.status_code >= 400:
                 raise RuntimeError("Remote file returned an error.")

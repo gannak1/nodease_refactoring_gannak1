@@ -125,7 +125,10 @@ def test_get_client_for_user_rejects_non_object_credential_config(monkeypatch):
     )
     credential = SimpleNamespace(
         encrypted_config="[]",
-        provider=SimpleNamespace(name="openai"),
+        provider=SimpleNamespace(
+            name="openai",
+            base_url="https://catalog.example/v1",
+        ),
     )
     db = FakeDb(model)
     monkeypatch.setattr(
@@ -584,8 +587,8 @@ def test_register_credential_uses_explicit_active_organization_before_manager_ch
 def test_provider_verification_does_not_expose_response_body(monkeypatch):
     sensitive_body = "provider payload with api_key=must-not-leak"
     monkeypatch.setattr(
-        llm_service.requests,
-        "get",
+        llm_service,
+        "safe_http_request",
         lambda *args, **kwargs: SimpleNamespace(
             status_code=500,
             text=sensitive_body,
@@ -609,7 +612,7 @@ def test_provider_verification_does_not_expose_network_error(monkeypatch):
     def fail_request(*args, **kwargs):
         raise RuntimeError(sensitive_detail)
 
-    monkeypatch.setattr(llm_service.requests, "get", fail_request)
+    monkeypatch.setattr(llm_service, "safe_http_request", fail_request)
 
     with pytest.raises(ValueError) as exc_info:
         LLMService._fetch_remote_models(
@@ -632,8 +635,8 @@ def test_provider_verification_does_not_expose_json_error(monkeypatch):
             raise ValueError(sensitive_detail)
 
     monkeypatch.setattr(
-        llm_service.requests,
-        "get",
+        llm_service,
+        "safe_http_request",
         lambda *args, **kwargs: InvalidJsonResponse(),
     )
 
@@ -811,7 +814,10 @@ def test_get_client_for_model_uses_model_db_id(monkeypatch):
     credential = SimpleNamespace(
         id=uuid.uuid4(),
         encrypted_config='{"apiKey":"redacted-test-key","baseUrl":"https://example.test"}',
-        provider=SimpleNamespace(name="openai"),
+        provider=SimpleNamespace(
+            name="openai",
+            base_url="https://catalog.example/v1",
+        ),
     )
     captured = {}
 
@@ -1479,7 +1485,11 @@ def test_wizard_runtime_uses_relation_priority_before_credential_created_at(
 ):
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
-    provider = SimpleNamespace(id=uuid.uuid4(), name="openai")
+    provider = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="openai",
+        base_url="https://catalog.example/v1",
+    )
     older_credential = SimpleNamespace(
         id=uuid.uuid4(),
         provider=provider,
@@ -1544,7 +1554,7 @@ def test_wizard_runtime_uses_relation_priority_before_credential_created_at(
 
     assert runtime.credential_id == priority_credential.id
     assert client_configs == [
-        {"apiKey": "priority-key", "baseUrl": "https://priority.example"}
+        {"apiKey": "priority-key", "baseUrl": "https://catalog.example/v1"}
     ]
 
 
@@ -1553,8 +1563,16 @@ def test_wizard_runtime_uses_provider_model_map_order_before_relation_priority(
 ):
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
-    openai_provider = SimpleNamespace(id=uuid.uuid4(), name="openai")
-    anthropic_provider = SimpleNamespace(id=uuid.uuid4(), name="anthropic")
+    openai_provider = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="openai",
+        base_url="https://openai-catalog.example/v1",
+    )
+    anthropic_provider = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="anthropic",
+        base_url="https://anthropic-catalog.example/v1",
+    )
     openai_credential = SimpleNamespace(
         id=uuid.uuid4(),
         provider=openai_provider,
@@ -1628,7 +1646,7 @@ def test_wizard_runtime_uses_provider_model_map_order_before_relation_priority(
 
     assert runtime.credential_id == openai_credential.id
     assert client_configs == [
-        {"apiKey": "openai-key", "baseUrl": "https://openai.example"}
+        {"apiKey": "openai-key", "baseUrl": "https://openai-catalog.example/v1"}
     ]
 
 
@@ -1637,7 +1655,11 @@ def test_agent_builder_runtime_revalidates_explicit_credential_model_selection(
 ):
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
-    provider = SimpleNamespace(id=uuid.uuid4(), name="openai")
+    provider = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="openai",
+        base_url="https://catalog.example/v1",
+    )
     credential = SimpleNamespace(
         id=uuid.uuid4(),
         provider=provider,
@@ -1701,7 +1723,7 @@ def test_agent_builder_runtime_revalidates_explicit_credential_model_selection(
             "model_id": "gpt-5.5-pro",
             "credentials": {
                 "apiKey": "selected-key",
-                "baseUrl": "https://example.com",
+                "baseUrl": "https://catalog.example/v1",
             },
         }
     ]

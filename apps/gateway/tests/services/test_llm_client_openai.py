@@ -14,7 +14,9 @@ from apps.shared.services.llm_client import OpenAIClient
 from apps.shared.services.llm_client.base import (
     BaseLLMClient,
     LLMResponseValidationError,
+    ProviderInvocationError,
 )
+from apps.shared.services.guarded_http_transport import GuardedHttpTransport
 
 
 @pytest.mark.asyncio
@@ -212,10 +214,12 @@ async def test_openai_invoke_does_not_fallback_to_completions_for_responses_mode
         credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
     )
 
-    with pytest.raises(ValueError, match="model not found"):
+    with pytest.raises(ProviderInvocationError) as captured:
         await client.invoke(messages)
 
     assert requested_urls == ["https://api.openai.com/v1/responses"]
+    assert captured.value.status_code == 404
+    assert "model not found" not in str(captured.value)
 
 
 @pytest.mark.asyncio
@@ -320,7 +324,10 @@ def test_openai_embed_sync_uses_sync_http_client(monkeypatch):
     )
 
     assert client.embed_sync("hello") == [0.1, 0.2, 0.3]
-    assert requested["client_kwargs"] == {"timeout": 30}
+    assert requested["client_kwargs"]["timeout"] == 30
+    assert requested["client_kwargs"]["trust_env"] is False
+    assert requested["client_kwargs"]["follow_redirects"] is False
+    assert isinstance(requested["client_kwargs"]["transport"], GuardedHttpTransport)
     assert requested["url"] == "https://api.openai.com/v1/embeddings"
     assert requested["payload"] == {"model": "text-embedding-3-small", "input": "hello"}
 
@@ -358,8 +365,9 @@ def test_openai_embed_sync_request_error_is_wrapped(monkeypatch):
         credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
     )
 
-    with pytest.raises(ValueError, match="OpenAI 임베딩 호출 실패"):
+    with pytest.raises(ProviderInvocationError) as captured:
         client.embed_sync("hello")
+    assert captured.value.reason_code == "provider_timeout"
 
 
 def test_openai_embed_sync_http_error_includes_status(monkeypatch):
@@ -392,8 +400,9 @@ def test_openai_embed_sync_http_error_includes_status(monkeypatch):
         credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
     )
 
-    with pytest.raises(ValueError, match=r"임베딩 호출 실패 \(status 401\)"):
+    with pytest.raises(ProviderInvocationError) as captured:
         client.embed_sync("hello")
+    assert captured.value.status_code == 401
 
 
 def test_openai_embed_sync_malformed_response_is_parse_error(monkeypatch):
@@ -487,7 +496,10 @@ def test_openai_invoke_sync_uses_responses_sync_client(monkeypatch):
         request_timeout_seconds=90,
     )
 
-    assert requested["client_kwargs"] == {"timeout": 60}
+    assert requested["client_kwargs"]["timeout"] == 60
+    assert requested["client_kwargs"]["trust_env"] is False
+    assert requested["client_kwargs"]["follow_redirects"] is False
+    assert isinstance(requested["client_kwargs"]["transport"], GuardedHttpTransport)
     assert requested["url"] == "https://api.openai.com/v1/responses"
     assert requested["payload"]["model"] == "gpt-5.4-mini"
     assert requested["payload"]["max_output_tokens"] == 10
@@ -851,10 +863,12 @@ def test_openai_invoke_sync_responses_error_body_is_wrapped(monkeypatch):
         credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
     )
 
-    with pytest.raises(ValueError, match="bad request"):
+    with pytest.raises(ProviderInvocationError) as captured:
         client.invoke_sync([{"role": "user", "content": "hi"}])
 
     assert requested_urls == ["https://api.openai.com/v1/responses"]
+    assert captured.value.status_code == 400
+    assert "bad request" not in str(captured.value)
 
 
 def test_openai_invoke_sync_responses_malformed_json_is_parse_error(monkeypatch):
