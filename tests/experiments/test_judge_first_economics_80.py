@@ -74,6 +74,7 @@ def test_learning_phase_runs_only_automatic_without_independent_quality_judge():
     assert plan.evaluate_quality is False
     assert plan.reset_learning is True
     assert plan.requires_ready_learner is False
+    assert plan.use_policy_preview is False
 
 
 def test_benchmark_phase_uses_unseen_holdout_for_three_blinded_arms():
@@ -84,6 +85,7 @@ def test_benchmark_phase_uses_unseen_holdout_for_three_blinded_arms():
     assert plan.evaluate_quality is True
     assert plan.reset_learning is False
     assert plan.requires_ready_learner is True
+    assert plan.use_policy_preview is True
 
 
 def test_benchmark_requires_one_hundred_completed_runs_and_published_learner():

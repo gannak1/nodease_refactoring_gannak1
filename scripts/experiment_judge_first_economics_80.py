@@ -117,6 +117,7 @@ ROUTING_JUDGE_MODEL = "gpt-5.4-mini"
 QUALITY_JUDGE_MODEL = "gpt-5-mini"
 LOCAL_CONFIDENCE_THRESHOLD = 0.78
 QUALITY_JUDGE_MAX_ATTEMPTS = 3
+QUALITY_JUDGE_REQUEST_TIMEOUT_SECONDS = 45
 
 
 MODEL_EXPECTATIONS_BY_DIFFICULTY: dict[str, dict[str, tuple[str, ...]]] = {
@@ -181,6 +182,7 @@ class ExperimentPhasePlan:
     evaluate_quality: bool
     reset_learning: bool
     requires_ready_learner: bool
+    use_policy_preview: bool
 
 
 EXTRA_CASES: tuple[tuple[str, str, str, str], ...] = (
@@ -432,6 +434,7 @@ def build_phase_plan(phase: str) -> ExperimentPhasePlan:
             evaluate_quality=False,
             reset_learning=True,
             requires_ready_learner=False,
+            use_policy_preview=False,
         )
     if normalized == BENCHMARK_PHASE:
         return ExperimentPhasePlan(
@@ -441,6 +444,7 @@ def build_phase_plan(phase: str) -> ExperimentPhasePlan:
             evaluate_quality=True,
             reset_learning=False,
             requires_ready_learner=True,
+            use_policy_preview=True,
         )
     raise ValueError(f"알 수 없는 실험 단계입니다: {phase}")
 
@@ -1166,6 +1170,7 @@ def _execute_case(
     case: ExperimentCase,
     *,
     include_in_learning: bool,
+    use_policy_preview: bool,
 ) -> ArmResult:
     # 이 스크립트의 데이터셋/설정 검증은 root CI에서도 실행된다. gevent가
     # 필요한 실제 workflow 실행 엔진은 --execute 경로에서만 늦게 import한다.
@@ -1184,7 +1189,7 @@ def _execute_case(
         "trigger_mode": "webhook",
         "execution_subject": {"subject_type": "user", "subject_id": str(USER_ID)},
     }
-    if arm == AUTO_ARM and not include_in_learning:
+    if arm == AUTO_ARM and not include_in_learning and use_policy_preview:
         # 경제성 holdout은 검증된 learner version을 읽되 새 학습 label이나 운영
         # 성적을 만들지 않는다. benchmark 도중 라우터 자체가 바뀌면 세 arm 비교가
         # 동일한 정책 snapshot을 비교한 것이 아니게 된다.
@@ -1412,6 +1417,7 @@ def _quality_judge(case: ExperimentCase, results: dict[str, ArmResult]) -> tuple
                 temperature=0,
                 max_tokens=800,
                 response_format={"type": "json_object"},
+                request_timeout_seconds=QUALITY_JUDGE_REQUEST_TIMEOUT_SECONDS,
             )
             elapsed_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
             payload = _json_from_text(str(response.get("choices", [{}])[0].get("message", {}).get("content", "")))
@@ -1711,6 +1717,13 @@ def render_markdown(report: dict[str, Any]) -> str:
         if high is not None
         else None
     )
+    comparison_labels = {
+        AUTO_ARM: "자동 라우팅",
+        MID_ARM: "중간 모델 고정",
+        HIGH_ARM: "고가 모델 고정",
+        LOW_ARM: "저가 모델 고정",
+    }
+    compared_methods = ", ".join(comparison_labels[arm] for arm in ARMS)
     report_kind = "학습 검증" if phase == LEARNING_PHASE else "경제성 비교"
     lines = [
         f"# Judge-first 자동 모델 라우팅 {report['case_count']}회 {report_kind} 보고서",
@@ -1721,8 +1734,8 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"이 단계는 자동 라우팅만 {report['case_count']}회 실행해 첫 50건으로 학습하고 "
             "다음 50건으로 일반화 성능과 학습 버전 발행 여부를 확인합니다."
             if phase == LEARNING_PHASE
-            else f"이 단계는 학습에 쓰지 않은 {report['case_count']}개 요청을 자동 라우팅, "
-            "중간 모델 고정, 고가 모델 고정에 똑같이 보내 비용·속도·품질을 비교합니다."
+            else f"이 단계는 학습에 쓰지 않은 {report['case_count']}개 요청을 "
+            f"{compared_methods}에 똑같이 보내 비용·속도·품질을 비교합니다."
         ),
         "",
         f"- 자동 라우팅 총 제품 비용: {_money(automatic['total_product_cost_usd'])}",
@@ -1769,7 +1782,11 @@ def render_markdown(report: dict[str, Any]) -> str:
             else f"- 독립 품질 평가 Judge: `{report['quality_judge_model']}`"
         ),
         "- RAG: 미사용. 이번 비교에서는 KB 검색 품질 변수를 빼고 모델 라우팅 자체의 비용·속도·출력 품질만 측정했습니다.",
-        f"- 정책 refresh: 100회. {report['case_count']}회 실험 동안 정책 교체를 막고, Judge label을 누적한 local router의 전환만 측정했습니다.",
+        (
+            f"- 학습 상태: {report['case_count']}회 동안 Judge label을 누적하고 local router 전환 가능성을 측정했습니다."
+            if phase == LEARNING_PHASE
+            else "- 정책·학습 상태: 비교 중에는 고정했습니다. 이 요청들은 학습 label이나 정책 갱신 횟수에 포함하지 않았습니다."
+        ),
         "",
         "## 데이터셋",
         "",
@@ -1824,7 +1841,11 @@ def render_markdown(report: dict[str, Any]) -> str:
     ])
     learning = report["learning_summary"]
     lines.extend([
-        f"- Judge label 누적: {learning['judge_label_count']}건",
+        (
+            f"- Judge 학습 label 누적: {learning['judge_label_count']}건"
+            if phase == LEARNING_PHASE
+            else f"- Runtime Judge 판단: {learning['judge_label_count']}건 (이번 비교에서는 학습 label로 저장하지 않음)"
+        ),
         f"- 실제 선택 모델 종류: {learning['distinct_selected_model_count']}개 ({learning['selected_models']})",
         f"- 처리 출처 분포: {learning['decision_source_distribution']}",
         f"- 로컬 라우터가 Judge 없이 직접 선택한 횟수: {learning['local_router_takeover_count']}회",
@@ -2187,6 +2208,7 @@ def run_experiment(
                     arm,
                     case,
                     include_in_learning=phase_plan.phase == LEARNING_PHASE,
+                    use_policy_preview=phase_plan.use_policy_preview,
                 )
                 for arm in execution_order
             }
