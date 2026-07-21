@@ -57,6 +57,9 @@ class AuditAction:
     AGENT_BUILDER_GRAPH_MUTATION_REVERTED = "agent_builder_graph_mutation.reverted"
     AGENT_BUILDER_PARAMETER_GROUP_CANCELED = "agent_builder_parameter_group.canceled"
     AGENT_BUILDER_KNOWLEDGE_MUTATION_ISSUED = "agent_builder_knowledge_mutation.issued"
+    AGENT_BUILDER_KNOWLEDGE_RECOMMENDATION_EVALUATED = (
+        "agent_builder_knowledge_recommendation.evaluated"
+    )
     AGENT_BUILDER_PARAMETER_DECISION_RECORDED = "agent_builder_parameter_decision.recorded"
     AGENT_BUILDER_PREVIEW_OPENED = "agent_builder_preview.opened"
     AGENT_BUILDER_PREVIEW_BLOCKED = "agent_builder_preview.blocked"

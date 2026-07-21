@@ -20,6 +20,7 @@ from apps.gateway.services.agent_builder_service import (
     calculate_graph_hash,
 )
 from apps.gateway.services.knowledge_rag_recommendation_service import (
+    KnowledgeRecommendationObservation,
     KnowledgeRAGRecommendationService,
     knowledge_base_recommendation_handle,
     knowledge_collection_selection_handle,
@@ -6188,3 +6189,173 @@ def test_mba_342_parent_first_score_is_ephemeral_and_not_metadata_max():
     assert recommendation.recommendation_state == "complete"
     assert db.added == []
     assert db.commits == 0
+
+
+def test_mba_342_runtime_context_propagates_cancellation_and_safe_audit(
+    monkeypatch,
+):
+    request_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    cancellation_calls = []
+    audit_calls = []
+
+    monkeypatch.setattr(
+        service_module,
+        "add_action_audit",
+        lambda *args, **kwargs: audit_calls.append((args, kwargs)),
+    )
+    service = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=user_id),
+        organization_id=organization_id,
+        knowledge_recommendation_retrieval_port=object(),
+        knowledge_recommendation_cancellation_probe=(
+            lambda observed_request_id: cancellation_calls.append(
+                observed_request_id
+            )
+            or True
+        ),
+    )
+
+    runtime_kwargs = service._knowledge_recommendation_runtime_kwargs(  # noqa: SLF001
+        request_id
+    )
+    assert runtime_kwargs["cancellation_predicate"]() is True
+    assert cancellation_calls == [request_id]
+
+    runtime_kwargs["observation_hook"](
+        KnowledgeRecommendationObservation(
+            score_profile="parent_first_v1",
+            recommendation_state="degraded",
+            candidate_count_bucket="many",
+            result_count_bucket="few",
+            cohort_count_bucket="one",
+            metadata_fallback_count_bucket="few",
+            failed_cohort_count_bucket="one",
+            latency_bucket="1_to_3s",
+        )
+    )
+
+    assert len(audit_calls) == 1
+    args, kwargs = audit_calls[0]
+    assert args[1] == "agent_builder_knowledge_recommendation.evaluated"
+    assert args[2] == user_id
+    assert args[3] == "agent_builder_request"
+    assert args[4] == request_id
+    assert kwargs == {
+        "organization_id": organization_id,
+        "metadata": {
+            "strategy": "score_only_parent_cosine",
+            "score_profile": "parent_first_v1",
+            "recommendation_state": "degraded",
+            "candidate_count_bucket": "many",
+            "result_count_bucket": "few",
+            "cohort_count_bucket": "one",
+            "metadata_fallback_count_bucket": "few",
+            "failed_cohort_count_bucket": "one",
+            "latency_bucket": "1_to_3s",
+        },
+    }
+    forbidden_keys = {
+        "knowledge_base_id",
+        "candidate_id",
+        "chunk_id",
+        "document_id",
+        "query",
+        "parent_relevance",
+        "score",
+        "provider_payload",
+    }
+    assert forbidden_keys.isdisjoint(kwargs["metadata"])
+
+
+def test_mba_342_default_cancellation_probe_uses_process_local_cancel_marker(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        service_module,
+        "add_action_audit",
+        lambda *_args, **_kwargs: None,
+    )
+    db = FakeDb()
+    request_id = uuid.uuid4()
+    request_row = SimpleNamespace(
+        id=request_id,
+        session_id=uuid.uuid4(),
+        status="processing",
+        canceled_at=None,
+        response_payload={},
+    )
+    service = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(service, "_request_or_404", lambda _request_id: request_row)
+
+    assert (
+        service._default_knowledge_recommendation_cancellation_probe(  # noqa: SLF001
+            request_id
+        )
+        is False
+    )
+    response = service.cancel_request(request_id)
+
+    assert response.status == "canceled"
+    assert request_row.status == "canceled"
+    assert (
+        service._default_knowledge_recommendation_cancellation_probe(  # noqa: SLF001
+            request_id
+        )
+        is True
+    )
+
+
+def test_mba_342_stale_refresh_never_injects_semantic_port(monkeypatch):
+    received_ports = []
+
+    class FakeRecommendationService:
+        def __init__(self, _db, *, user_id, organization_id, **kwargs):
+            _ = (user_id, organization_id)
+            received_ports.append(kwargs.get("retrieval_port"))
+
+        def recommend_for_builder(self, _request, **_kwargs):
+            return KnowledgeRAGRecommendationResponse(status="no_candidate")
+
+    monkeypatch.setattr(
+        service_module,
+        "KnowledgeRAGRecommendationService",
+        FakeRecommendationService,
+    )
+    semantic_port = object()
+    service = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+        knowledge_recommendation_retrieval_port=semantic_port,
+    )
+    structured = service_module.AgentBuilderStructuredRequest(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="Refresh a Knowledge selection.",
+        knowledge_requirements=[
+            service_module.AgentBuilderKnowledgeRequirement(
+                requirement_id="kr_1",
+                query_topics=["policy"],
+                target_step_ref="step_llm",
+            )
+        ],
+        pending_resolution=[
+            service_module.AgentBuilderPendingResolution(
+                resolution_id="res_kb_1",
+                slot_type="knowledge_base",
+                slot_key="llm.knowledgeBases",
+                target_step_ref="step_llm",
+            )
+        ],
+    )
+
+    service.refresh_knowledge_selection_candidates(structured)
+
+    assert received_ports == [None]

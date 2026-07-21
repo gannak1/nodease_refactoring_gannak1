@@ -13,6 +13,9 @@ from apps.gateway.adapters.db.agent_builder_repository import (
 from apps.gateway.application.agent_builder.knowledge_timing import (
     KnowledgeTimingResolver,
 )
+from apps.gateway.application.agent_builder.knowledge_recommendation import (
+    redact_persisted_knowledge_recommendation_tree,
+)
 from apps.gateway.services.audit_records import add_action_audit
 from apps.gateway.services.knowledge_rag_recommendation_service import (
     knowledge_base_recommendation_handle,
@@ -112,6 +115,7 @@ class KnowledgeSelectionService:
                 "selection_status": None,
             }
         )
+        redact_persisted_knowledge_recommendation_tree(updated_resolution)
         payload["knowledge_resolution"] = updated_resolution
         issued_handle_bindings = refreshed.get(
             "_issued_knowledge_handle_bindings"

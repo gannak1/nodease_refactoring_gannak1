@@ -1057,6 +1057,8 @@ def test_hierarchical_knowledge_selection_rejects_stale_handles_and_materializes
                                 "selection_key": "kbsel-safe-1",
                                 "safe_label": "휴가 정책 최신",
                                 "score": 0.9,
+                                "reason_category": "metadata_match",
+                                "recommendation_state": "degraded",
                                 "shared_collection_count": 1,
                             }
                         ],
@@ -1104,6 +1106,14 @@ def test_hierarchical_knowledge_selection_rejects_stale_handles_and_materializes
     assert request_row.response_payload["knowledge_resolution"]["collections"][0][
         "safe_label"
     ] == "사내 문서 최신"
+    stored_collection = request_row.response_payload["knowledge_resolution"][
+        "collections"
+    ][0]
+    stored_child = stored_collection["children"][0]
+    assert "score" not in stored_collection
+    assert "score" not in stored_child
+    assert "reason_category" not in stored_child
+    assert "recommendation_state" not in stored_child
     assert request_row.response_payload["knowledge_resolutions"][0][
         "selected_candidate_ids"
     ] == []

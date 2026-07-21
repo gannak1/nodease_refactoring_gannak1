@@ -3,8 +3,12 @@ import hashlib
 import json
 import logging
 import re
+import time
 import uuid
+from collections import OrderedDict
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from threading import Lock
 from typing import Any
 
 from fastapi import HTTPException
@@ -24,6 +28,7 @@ from apps.gateway.application.agent_builder.knowledge_timing import (
 )
 from apps.gateway.application.agent_builder.knowledge_recommendation import (
     KnowledgeRecommendationRetrievalPort,
+    redact_persisted_knowledge_recommendation_tree,
 )
 from apps.gateway.application.agent_builder.parameter_tasks import (
     recovery_affected_node_ids,
@@ -56,6 +61,7 @@ from apps.gateway.services.app_lifecycle_lock import lock_app_for_lifecycle
 from apps.gateway.services.app_service import AppService
 from apps.gateway.services.audit_records import add_action_audit
 from apps.gateway.services.knowledge_rag_recommendation_service import (
+    KnowledgeRecommendationObservation,
     KnowledgeRAGRecommendationService,
 )
 from apps.gateway.services.llm_service import LLMService
@@ -114,6 +120,48 @@ from apps.shared.services.workflow_node_catalog import (
 )
 
 logger = logging.getLogger(__name__)
+
+_KNOWLEDGE_RECOMMENDATION_CANCELLATION_TTL_SECONDS = 600.0
+_KNOWLEDGE_RECOMMENDATION_CANCELLATION_MAX_ENTRIES = 10_000
+_knowledge_recommendation_cancellation_lock = Lock()
+_knowledge_recommendation_cancellation_markers: OrderedDict[uuid.UUID, float] = (
+    OrderedDict()
+)
+
+
+def _mark_knowledge_recommendation_cancelled(request_id: uuid.UUID) -> None:
+    now = time.monotonic()
+    with _knowledge_recommendation_cancellation_lock:
+        _knowledge_recommendation_cancellation_markers.pop(request_id, None)
+        _knowledge_recommendation_cancellation_markers[request_id] = (
+            now + _KNOWLEDGE_RECOMMENDATION_CANCELLATION_TTL_SECONDS
+        )
+        while _knowledge_recommendation_cancellation_markers:
+            oldest_request_id, oldest_expiry = next(
+                iter(_knowledge_recommendation_cancellation_markers.items())
+            )
+            if (
+                oldest_expiry > now
+                and len(_knowledge_recommendation_cancellation_markers)
+                <= _KNOWLEDGE_RECOMMENDATION_CANCELLATION_MAX_ENTRIES
+            ):
+                break
+            _knowledge_recommendation_cancellation_markers.pop(
+                oldest_request_id,
+                None,
+            )
+
+
+def _is_knowledge_recommendation_cancelled(request_id: uuid.UUID) -> bool:
+    now = time.monotonic()
+    with _knowledge_recommendation_cancellation_lock:
+        expiry = _knowledge_recommendation_cancellation_markers.get(request_id)
+        if expiry is None:
+            return False
+        if expiry <= now:
+            _knowledge_recommendation_cancellation_markers.pop(request_id, None)
+            return False
+        return True
 
 
 SESSION_TTL = timedelta(hours=24)
@@ -954,6 +1002,9 @@ class AgentBuilderService:
         knowledge_recommendation_retrieval_port: (
             KnowledgeRecommendationRetrievalPort | None
         ) = None,
+        knowledge_recommendation_cancellation_probe: (
+            Callable[[uuid.UUID], bool] | None
+        ) = None,
     ) -> None:
         self.db = db
         self.user = user
@@ -961,6 +1012,10 @@ class AgentBuilderService:
         self.intent_extractor = intent_extractor
         self.knowledge_recommendation_retrieval_port = (
             knowledge_recommendation_retrieval_port
+        )
+        self.knowledge_recommendation_cancellation_probe = (
+            knowledge_recommendation_cancellation_probe
+            or self._default_knowledge_recommendation_cancellation_probe
         )
 
     def create_or_restore_session(
@@ -1249,6 +1304,7 @@ class AgentBuilderService:
             recommendations = self._resolve_knowledge_requirements(
                 structured,
                 require_hierarchical_selection=direct_edit_session,
+                request_context_id=request_row.id,
                 selected_candidate_handles=(
                     selected_kb_context["candidate_handles"]
                     if selected_kb_context
@@ -1747,6 +1803,7 @@ class AgentBuilderService:
     def cancel_request(self, request_id: uuid.UUID) -> AgentBuilderMessageResponse:
         request_row = self._request_or_404(request_id)
         if request_row.status == "canceled":
+            _mark_knowledge_recommendation_cancelled(request_row.id)
             return AgentBuilderMessageResponse(
                 request_id=request_row.id,
                 status="canceled",
@@ -1773,6 +1830,7 @@ class AgentBuilderService:
             if updated != 1:
                 self.db.refresh(request_row)
                 if request_row.status == "canceled":
+                    _mark_knowledge_recommendation_cancelled(request_row.id)
                     return AgentBuilderMessageResponse(
                         request_id=request_row.id,
                         status="canceled",
@@ -1785,6 +1843,7 @@ class AgentBuilderService:
         else:
             request_row.status = "canceled"
             request_row.canceled_at = canceled_at
+        _mark_knowledge_recommendation_cancelled(request_row.id)
         add_action_audit(
             self.db,
             AuditAction.AGENT_BUILDER_REQUEST_CANCELED,
@@ -3791,6 +3850,8 @@ class AgentBuilderService:
         include_materialized_refs: bool = False,
         selected_candidate_handles: set[str] | None = None,
         require_hierarchical_selection: bool = False,
+        request_context_id: uuid.UUID | None = None,
+        enable_semantic_retrieval: bool = True,
     ) -> dict[str, Any]:
         if not structured.knowledge_requirements:
             return {
@@ -3804,10 +3865,19 @@ class AgentBuilderService:
             "user_id": self.user.id,
             "organization_id": self.organization_id,
         }
-        if self.knowledge_recommendation_retrieval_port is not None:
+        if (
+            enable_semantic_retrieval
+            and self.knowledge_recommendation_retrieval_port is not None
+        ):
             recommendation_service_kwargs["retrieval_port"] = (
                 self.knowledge_recommendation_retrieval_port
             )
+            if request_context_id is not None:
+                recommendation_service_kwargs.update(
+                    self._knowledge_recommendation_runtime_kwargs(
+                        request_context_id
+                    )
+                )
         service = KnowledgeRAGRecommendationService(
             self.db,
             **recommendation_service_kwargs,
@@ -4111,6 +4181,59 @@ class AgentBuilderService:
             "warnings": warnings,
         }
 
+    def _knowledge_recommendation_runtime_kwargs(
+        self,
+        request_id: uuid.UUID,
+    ) -> dict[str, Any]:
+        return {
+            "cancellation_predicate": (
+                lambda: self.knowledge_recommendation_cancellation_probe(
+                    request_id
+                )
+            ),
+            "observation_hook": (
+                lambda observation: self._record_knowledge_recommendation_observation(
+                    request_id,
+                    observation,
+                )
+            ),
+        }
+
+    def _default_knowledge_recommendation_cancellation_probe(
+        self,
+        request_id: uuid.UUID,
+    ) -> bool:
+        return _is_knowledge_recommendation_cancelled(request_id)
+
+    def _record_knowledge_recommendation_observation(
+        self,
+        request_id: uuid.UUID,
+        observation: KnowledgeRecommendationObservation,
+    ) -> None:
+        add_action_audit(
+            self.db,
+            AuditAction.AGENT_BUILDER_KNOWLEDGE_RECOMMENDATION_EVALUATED,
+            self.user.id,
+            "agent_builder_request",
+            request_id,
+            organization_id=self.organization_id,
+            metadata={
+                "strategy": "score_only_parent_cosine",
+                "score_profile": observation.score_profile,
+                "recommendation_state": observation.recommendation_state,
+                "candidate_count_bucket": observation.candidate_count_bucket,
+                "result_count_bucket": observation.result_count_bucket,
+                "cohort_count_bucket": observation.cohort_count_bucket,
+                "metadata_fallback_count_bucket": (
+                    observation.metadata_fallback_count_bucket
+                ),
+                "failed_cohort_count_bucket": (
+                    observation.failed_cohort_count_bucket
+                ),
+                "latency_bucket": observation.latency_bucket,
+            },
+        )
+
     def resolve_knowledge_selection(
         self,
         structured: AgentBuilderStructuredRequest,
@@ -4132,6 +4255,7 @@ class AgentBuilderService:
         return self._resolve_knowledge_requirements(
             structured,
             require_hierarchical_selection=True,
+            enable_semantic_retrieval=False,
         )
 
     def materialize_knowledge_selection(
@@ -6513,33 +6637,11 @@ class AgentBuilderService:
         cls,
         payload: dict[str, Any],
     ) -> None:
-        recommendation_keys = {
-            "confidence",
-            "parent_relevance",
-            "reason_category",
-            "recommendation_state",
-            "retrieval_state",
-            "safe_reason_code",
-            "score",
-            "semantic_state",
-            "threshold_result",
-        }
-
-        def redact_tree(value: Any) -> None:
-            if isinstance(value, dict):
-                for key in recommendation_keys:
-                    value.pop(key, None)
-                for child in value.values():
-                    redact_tree(child)
-            elif isinstance(value, list):
-                for child in value:
-                    redact_tree(child)
-
         options = payload.get("clarification_options")
         if isinstance(options, list):
             for option in options:
                 if isinstance(option, dict) and option.get("type") == "knowledge_base":
-                    redact_tree(option)
+                    redact_persisted_knowledge_recommendation_tree(option)
 
         for key in (
             "knowledge_resolution",
@@ -6547,7 +6649,7 @@ class AgentBuilderService:
             "knowledge_selection",
             "_issued_knowledge_handle_bindings",
         ):
-            redact_tree(payload.get(key))
+            redact_persisted_knowledge_recommendation_tree(payload.get(key))
 
     def _session_or_404(self, session_id: uuid.UUID) -> AgentBuilderSession:
         session = (

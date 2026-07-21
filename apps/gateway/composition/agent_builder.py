@@ -99,9 +99,6 @@ class AgentBuilderComposition:
             self.db,
             user=self.user,
             organization_id=self.organization_id,
-            knowledge_recommendation_retrieval_port=(
-                self._knowledge_recommendation_retrieval_port()
-            ),
         )
         return KnowledgeSelectionService(
             self.db,
