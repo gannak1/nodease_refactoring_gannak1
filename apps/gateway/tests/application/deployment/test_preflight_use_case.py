@@ -982,6 +982,35 @@ def test_malformed_graph_fails_closed():
     assert result.safe_summary.blocked_reason == "workflow_graph_invalid"
 
 
+def test_unencodable_node_id_fails_closed_before_resource_lookup():
+    repository = _Repository()
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=uuid.uuid4(),
+        node_catalog_by_type={},
+    )
+
+    result = use_case.preview(
+        deployment_type="api",
+        graph_snapshot={
+            "nodes": [
+                {
+                    "id": "\ud800",
+                    "type": "startNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {},
+                }
+            ],
+            "edges": [],
+        },
+        is_active=False,
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "workflow_graph_invalid"
+    assert repository.calls == []
+
+
 def test_malformed_runtime_authoritative_node_data_fails_closed():
     use_case = DeploymentPreflightUseCase(
         _Repository(),

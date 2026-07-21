@@ -8,6 +8,7 @@ from typing import Any
 from apps.shared.domain.workflow_graph import (
     MAX_WORKFLOW_GRAPH_NESTING_DEPTH,
     MAX_WORKFLOW_NODE_ID_LENGTH,
+    is_valid_workflow_node_id,
 )
 
 CONTAINER_KIND_LOOP = "loop"
@@ -23,20 +24,6 @@ class WorkflowNodeLocationError(ValueError):
         self.code = code
 
 
-def _valid_node_id(value: object) -> bool:
-    if (
-        not isinstance(value, str)
-        or not value
-        or len(value) > MAX_CANONICAL_NODE_ID_LENGTH
-    ):
-        return False
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError:
-        return False
-    return True
-
-
 def _frame(value: str) -> bytes:
     encoded = value.encode("utf-8")
     return len(encoded).to_bytes(4, "big") + encoded
@@ -48,8 +35,9 @@ class CanonicalWorkflowNodeLocation:
     node_id: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.container_path, tuple) or not _valid_node_id(
-            self.node_id
+        if not (
+            isinstance(self.container_path, tuple)
+            and is_valid_workflow_node_id(self.node_id)
         ):
             raise WorkflowNodeLocationError("workflow_node_location.invalid")
         if len(self.container_path) > MAX_WORKFLOW_GRAPH_NESTING_DEPTH:
@@ -59,7 +47,7 @@ class CanonicalWorkflowNodeLocation:
                 not isinstance(segment, tuple)
                 or len(segment) != 2
                 or segment[0] != CONTAINER_KIND_LOOP
-                or not _valid_node_id(segment[1])
+                or not is_valid_workflow_node_id(segment[1])
             ):
                 raise WorkflowNodeLocationError("workflow_node_location.invalid")
 
@@ -125,7 +113,7 @@ def iter_workflow_node_locations(
                     "workflow_node_location.invalid_graph"
                 )
             node_id = node.get("id")
-            if not _valid_node_id(node_id):
+            if not is_valid_workflow_node_id(node_id):
                 raise WorkflowNodeLocationError(
                     "workflow_node_location.invalid_graph"
                 )
