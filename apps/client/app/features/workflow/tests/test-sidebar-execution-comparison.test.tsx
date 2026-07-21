@@ -282,6 +282,7 @@ afterEach(() => {
   window.history.replaceState({}, '', '/');
   mocks.workflowState.testExecutionStatus = 'success';
   mocks.workflowState.testExecutionResult = { answer: '현재 답변' };
+  mocks.workflowState.testNodeResults = [];
   mocks.workflowState.nodes = [
     {
       id: 'llm-triage',
@@ -293,6 +294,23 @@ afterEach(() => {
 });
 
 describe('TestSidebar execution comparison', () => {
+  it('현재 graph에 없는 과거 노드 실행 결과도 오류 없이 표시한다', () => {
+    mocks.workflowState.nodes = [];
+    mocks.workflowState.testNodeResults = [
+      {
+        nodeId: 'deleted-node',
+        nodeType: 'llmNode',
+        title: '삭제된 노드',
+        status: 'success',
+        latencyMs: 250,
+        output: { text: '과거 실행 결과' },
+      },
+    ];
+
+    expect(() => render(<TestSidebar />)).not.toThrow();
+    expect(screen.getByText('삭제된 노드')).toBeVisible();
+  });
+
   it('실행 중에는 노드 카드와 중복되는 전역 실행 중 제목을 표시하지 않는다', () => {
     mocks.workflowState.testExecutionStatus = 'running';
     mocks.workflowState.testExecutionResult = null;
@@ -414,6 +432,72 @@ describe('TestSidebar execution comparison', () => {
     });
     expect(screen.queryByText('노드별 실행 결과')).not.toBeInTheDocument();
   });
+
+  it('실행 비교 탭을 누를 때마다 최신 실행 목록을 다시 조회한다', async () => {
+    let listRequestCount = 0;
+    mocks.getWorkflowRuns.mockImplementation(() => {
+      listRequestCount += 1;
+      return Promise.resolve(
+        listRequestCount === 1
+          ? {
+              total: 1,
+              items: [runSummary('old-run', '2026-07-13T01:00:00Z')],
+            }
+          : {
+              total: 1,
+              items: [runSummary('latest-run', '2026-07-14T01:00:00Z')],
+            },
+      );
+    });
+
+    render(<TestSidebar />);
+    const comparisonTab = screen.getByRole('button', { name: '실행 비교' });
+
+    fireEvent.click(comparisonTab);
+    expect(await screen.findByText('old-run 고객 문의 내용')).toBeVisible();
+
+    fireEvent.click(comparisonTab);
+
+    expect(await screen.findByText('latest-run 고객 문의 내용')).toBeVisible();
+    expect(mocks.getWorkflowRuns).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['success', 'failure'])(
+    '새 테스트 실행이 %s 상태로 끝나면 열린 실행 비교 목록을 다시 조회한다',
+    async (terminalStatus) => {
+      mocks.workflowState.testExecutionStatus = 'running';
+      mocks.workflowState.testExecutionResult = null;
+      let listRequestCount = 0;
+      mocks.getWorkflowRuns.mockImplementation(() => {
+        listRequestCount += 1;
+        return Promise.resolve(
+          listRequestCount === 1
+            ? {
+                total: 1,
+                items: [runSummary('old-run', '2026-07-13T01:00:00Z')],
+              }
+            : {
+                total: 1,
+                items: [runSummary('completed-run', '2026-07-14T01:00:00Z')],
+              },
+        );
+      });
+
+      const { rerender } = render(<TestSidebar />);
+      fireEvent.click(screen.getByRole('button', { name: '실행 비교' }));
+      expect(await screen.findByText('old-run 고객 문의 내용')).toBeVisible();
+
+      mocks.workflowState.testExecutionStatus = terminalStatus;
+      mocks.workflowState.testExecutionResult =
+        terminalStatus === 'success' ? { answer: '새 실행 답변' } : null;
+      rerender(<TestSidebar />);
+
+      expect(
+        await screen.findByText('completed-run 고객 문의 내용'),
+      ).toBeVisible();
+      expect(mocks.getWorkflowRuns).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it('단일 결과로 전환해도 이전 실행 비교 분석을 유지한다', async () => {
     mocks.getWorkflowRuns.mockResolvedValue({

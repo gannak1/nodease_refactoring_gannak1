@@ -768,6 +768,7 @@ describe('TestSidebar final response card', () => {
 
     const textarea = screen.getByPlaceholderText('질문을 입력하세요');
 
+    expect(textarea).toHaveClass('min-h-[180px]');
     expect(textarea).toHaveClass('text-gray-900');
     expect(textarea).toHaveClass('dark:text-gray-100');
     expect(textarea).toHaveClass('placeholder:text-gray-400');
