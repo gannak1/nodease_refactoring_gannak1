@@ -17,6 +17,8 @@ LLM credential은 organization scope의 provider API 호출 권한과 모델 연
 
 ## Functional Requirements
 
+- Credential 목록은 `X-Organization-Id`로 서버가 검증한 active organization을 canonical scope로 사용한다. DB 후보 조회에서 같은 organization과 `is_valid=true`를 먼저 적용한 뒤 각 credential의 `read` 권한을 평가해야 하며, 다른 organization의 direct/team permission은 목록을 확장하지 않는다.
+- Credential 등록, revoke와 model relation sync는 모두 같은 active organization을 service에 명시적으로 전달한다. Request body에 organization id가 있으면 header와 일치해야 하며, 다른 organization의 credential id는 권한 행 존재 여부와 무관하게 숨긴다.
 - LLM credential 등록은 active organization scope 안에서만 가능해야 하며, 요청자는 해당 organization의 manager여야 한다. 일반 member는 credential `use` 또는 resource `manage` 권한을 갖고 있더라도 새 credential을 등록할 수 없다.
 - 등록된 LLM credential은 organization-scoped resource로 취급한다. 저장 schema의 `user_id`는 등록 행위자 또는 호환 owner reference로만 해석하고, 개인 사용자 전용 credential scope로 해석하지 않는다.
 - Agent answer generation은 explicit KB mode와 auto collection mode 모두에서 명시된 `generation_model_id`와 `credential_id`의 visibility, use permission, verified relation을 서버에서 다시 검증한다.
