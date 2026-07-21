@@ -14,10 +14,16 @@ import sys
 import uuid
 from typing import Any
 
+from dotenv import load_dotenv
+from sqlalchemy.exc import SQLAlchemyError
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
+
+# dev.sh가 시작하는 Worker와 같은 키링을 사용한다. 값은 출력하지 않는다.
+load_dotenv(ROOT / ".env", override=False)
 
 from apps.shared.db.session import SessionLocal  # noqa: E402
 from apps.workflow_engine.services.llm_service import LLMService  # noqa: E402
@@ -102,7 +108,15 @@ def main() -> None:
         )
         print(json.dumps({"output_path": str(output_path), **report}, ensure_ascii=False, indent=2))
     finally:
-        db.close()
+        try:
+            db.close()
+        except SQLAlchemyError as exc:
+            # 결과 파일을 이미 쓴 뒤 끊긴 읽기 전용 세션은 Judge 실험 성공 여부를
+            # 바꾸지 않는다. 다음 실행에서 새 세션을 만들 수 있도록 경고만 남긴다.
+            print(
+                f"warning: diagnostics DB session close failed: {type(exc).__name__}",
+                file=sys.stderr,
+            )
 
 
 if __name__ == "__main__":
