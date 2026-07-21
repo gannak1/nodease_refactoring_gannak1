@@ -74,7 +74,7 @@ Planner -> raw parent content
 Port implementation rules:
 
 - Input candidate IDs must originate from one current CandidateResolver snapshot.
-- The port accepts a deadline and cancellation context.
+- The port accepts an absolute deadline and a live cancellation predicate bound to the current Agent Builder request. Same-process cancellation is read from a bounded TTL/count process-local marker without DB pool checkout or SQL; request-status CAS rejects cross-process late application. Predicate failure is fail-closed and its callable or error detail is never serialized.
 - The port returns no ORM entity and no text.
 - Result order has no product meaning; RecommendationService owns stable sorting.
 - Partial cohort failures are represented as typed state, not exceptions containing provider details.
@@ -98,7 +98,7 @@ The adapter receives an already authorized credential selection from `Recommenda
 
 ### 6.3 Flat and unavailable candidates
 
-The adapter returns typed states for flat, hierarchy unavailable and provider unavailable candidates. It does not remove these candidates. RecommendationService applies metadata fallback.
+The adapter contract accepts typed states for flat, hierarchy unavailable and provider unavailable candidates. The current PostgreSQL adapter emits `hierarchy_unavailable` when no usable parent exists because absence alone cannot prove that the source artifact is flat; `flat` is reserved for an explicit upstream adapter signal. It does not remove these candidates. RecommendationService applies metadata fallback.
 
 ## 7. Recommendation Policy
 
@@ -167,18 +167,22 @@ authorizing
 - A stale response cannot replace a newer Knowledge resolution.
 - Selection always rechecks permission, lifecycle and handle ownership.
 - Candidate membership changes after rendering use the existing stale-handle refresh flow.
-- Scores are not refreshed on a timer and are not persisted.
+- Scores are not refreshed on a timer and are not persisted. The normal response path and stale hierarchy refresh share the same recursive recommendation-signal sanitizer.
 
 ## 11. Audit and Metrics
 
 Allowed metrics:
 
+- fixed strategy
 - score profile
 - candidate and result count bucket
 - embedding cohort count bucket
 - complete/degraded state
 - latency and timeout bucket
 - metadata fallback count bucket
+- failed cohort count bucket
+
+`AgentBuilderService` binds the observer to the current request and writes one action audit per semantic recommendation evaluation. The observer receives only these bounded fields. Candidate identity, query text, per-KB score and provider payload are not part of the observer type.
 
 Forbidden metrics:
 

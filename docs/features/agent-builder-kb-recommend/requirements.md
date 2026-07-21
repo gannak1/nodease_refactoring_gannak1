@@ -12,7 +12,7 @@ Agent Builder의 Knowledge 추천은 KB 이름과 안전한 설명만 비교하�
 
 > Agent Builder는 권한 검증된 후보 범위 안에서 원문을 반환하지 않는 recommendation retrieval을 수행할 수 있다. 검색 결과는 KB 단위 집계 점수로만 Recommendation Adapter에 전달하며 Planner, Client, audit, trace 및 log에 chunk 원문이나 identity를 전달하지 않는다.
 
-이 feature는 구현 전 계약 상태이며 P1-P8 통합과 실제 PostgreSQL/provider 및 정량 release evidence가 완료되지 않았으므로 `Draft`와 `Verification Blocked`를 유지한다.
+이 feature의 P1-P8 구현은 MBA-342 integration worktree에 통합되었고 선택 회귀 402건의 실행 기록이 있다. 실제 PostgreSQL/provider/browser/observability 및 정량 release evidence가 아직 없으므로 `Draft`와 `Verification Blocked`를 유지한다.
 
 ## 2. Problem
 
@@ -83,6 +83,8 @@ CandidateResolver 권한 검증이 완료된 뒤 authorized candidate ID 집합�
 2. 같은 model ID가 서로 다른 provider에 중복되어 parent provenance를 확정할 수 없으면 cohort를 model ambiguous로 분류한다.
 3. Active organization 소속, valid 상태, 해당 model과 verified relation, 현재 Agent Builder actor의 credential `use` 권한을 모두 만족하는 credential만 남긴다.
 4. Relation priority 오름차순, credential 생성 시각 오름차순, credential ID 오름차순으로 정렬해 첫 credential 하나를 선택한다.
+
+동일 credential/model verified relation row가 중복되어도 credential ID별 lowest relation priority 하나로 축약한 뒤 위 순서를 적용한다. 중복 row가 정상 credential을 provider unavailable로 낮추어서는 안 된다.
 
 선택 UI나 임의 provider fallback은 추가하지 않는다. Credential이 없거나 model이 모호하거나 복호화/provider 호출이 실패한 cohort는 metadata fallback한다. KB authorization 실패와 달리, 권한이 확인된 KB의 embedding credential unavailable은 해당 cohort의 degraded semantic-unavailable 상태다. 실제 provider 비용은 선택된 credential의 provider account에 귀속된다.
 
@@ -187,7 +189,7 @@ Collection 점수는 권한을 통과한 고유 하위 KB의 final score를 사�
 - Parent SQL은 처리 cohort당 한 번, 최대 4회이며 각 statement timeout은 남은 전체 deadline과 2초 중 작은 값이다.
 - Raw parent를 document order나 chunk identity로 먼저 제한하지 않는다. 이러한 선행 cap은 뒤쪽의 관련 내용을 영구 제외하므로 v1 exact top-3 의미와 맞지 않는다.
 - 현재 fixed-dimension ANN index와 migration을 이 이슈에 추가하지 않는다. Exact query가 statement timeout을 넘으면 해당 cohort를 metadata fallback한다.
-- timeout 또는 cancellation 뒤 실행 중인 provider 및 DB 작업을 가능한 범위에서 취소한다.
+- 현재 Agent Builder request의 cancellation predicate를 discovery 전후, provider 전후, parent SQL 전후와 cohort 사이에서 확인한다. 동일 Gateway process의 cancel API는 bounded TTL/count process-local marker를 기록하므로 이 predicate는 DB connection 또는 SQL을 소비하지 않는다. 다른 process에서 완료된 늦은 결과는 기존 request-status CAS가 최종 적용을 거부한다. timeout 또는 cancellation 뒤 아직 시작하지 않은 provider/DB 작업은 실행하지 않고, 이미 시작한 동기 provider/DB 작업의 늦은 결과는 적용하지 않는다.
 - candidate 수에 비례한 KB별 N+1 SQL을 허용하지 않는다.
 
 ### ABKR-FR-010 Failure semantics
@@ -196,7 +198,7 @@ Collection 점수는 권한을 통과한 고유 하위 KB의 final score를 사�
 - 일부 embedding cohort provider 장애: 성공 cohort 유지, 실패 cohort metadata fallback, safe partial marker
 - 전체 semantic retrieval 장애: metadata fallback과 safe degraded warning
 - 후보 없음: 정상 empty result
-- stale selection handle: 기존 Knowledge selection refresh 계약 사용
+- stale selection handle: 기존 Knowledge selection refresh 계약을 사용하되 refresh는 권한/lifecycle metadata hierarchy만 다시 계산하고 semantic recommendation retrieval 또는 Planner를 호출하지 않으며, refreshed hierarchy의 score/reason/state도 durable request payload에 저장하지 않음
 
 장애 원문, provider response, SQL, hidden KB 수와 candidate identity는 반환하지 않는다.
 
@@ -221,7 +223,7 @@ Recommendation retrieval은 workflow graph, Knowledge selection, ParameterTask, 
 - 5,000개 candidate budget에서도 query 수가 candidate 수에 선형으로 증가하지 않아야 한다.
 - 관련 parent content가 있는 KB는 metadata-only baseline보다 precision 또는 recall이 악화되지 않아야 한다.
 - Flat KB만 존재하는 조직에서 기존 추천 및 수동 선택 흐름이 유지되어야 한다.
-- Recommendation 단계의 audit, trace 및 log에는 safe strategy, latency bucket, candidate/result count bucket, degraded 여부만 남긴다.
+- Recommendation action audit에는 safe strategy/score profile, latency bucket, candidate/result/cohort/metadata-fallback/failed-cohort count bucket과 complete/degraded 상태만 남긴다. Trace와 log에는 이 allowlist보다 넓은 payload를 추가하지 않는다.
 
 ## 7. Protected Resource Completion
 

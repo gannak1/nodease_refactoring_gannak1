@@ -23,7 +23,7 @@ PostgreSQL-specific vector, permission and query-count behavior is not considere
 | ABKR-U-009 | Same KB appears in multiple Collections | KB score is calculated once and reused |
 | ABKR-U-010 | Collection children include duplicate KB | Collection aggregate deduplicates by KB ID |
 | ABKR-U-011 | Cosine similarity is 0.83 | Normalized parent score is exactly 0.83 within numeric tolerance |
-| ABKR-U-012 | Caller or transport supplies a score profile | Input is rejected as non-contract data and server-owned `parent_first_v1` remains fixed |
+| ABKR-U-012 | Caller or transport supplies snake_case or camelCase score profile | Input is rejected as non-contract data, unrelated legacy extra fields keep compatibility and server-owned `parent_first_v1` remains fixed |
 | ABKR-U-013 | Cosine similarity is zero or negative | Normalized parent score is 0 |
 | ABKR-U-014 | Floating-point result exceeds cosine upper bound | Normalized parent score is at most 1 |
 | ABKR-U-015 | Parent search succeeds and every normalized score is 0 | Semantic state remains available, parent relevance is 0 and metadata does not replace it |
@@ -70,7 +70,7 @@ PostgreSQL-specific vector, permission and query-count behavior is not considere
 | ABKR-F-001 | One cohort embedding provider fails | Other cohort results retained, failed cohort metadata fallback |
 | ABKR-F-002 | All providers fail | Metadata-only ranked response with degraded warning |
 | ABKR-F-003 | Deadline expires | Work stops within grace, no unbounded wait |
-| ABKR-F-004 | Request cancellation | Provider and DB work is not applied to a later request |
+| ABKR-F-004 | Request cancellation | Same-process bounded marker probe performs no DB/SQL work, stops not-yet-started provider/DB/cohort work, and request-status CAS prevents cross-process late result application |
 | ABKR-F-005 | Credential use denied | No provider call; affected cohort follows safe policy |
 | ABKR-F-006 | Provider returns malformed embedding | Safe degraded result without raw response leakage |
 | ABKR-F-007 | Authorization infrastructure fails after retry | No partial candidate response |
@@ -80,6 +80,7 @@ PostgreSQL-specific vector, permission and query-count behavior is not considere
 | ABKR-F-011 | Credential snapshot is ready before provider I/O | Retrieval transaction ends before the external embedding request starts |
 | ABKR-F-012 | Credential is valid and verified but belongs to another organization | Credential is excluded and never used for a provider call |
 | ABKR-F-013 | Credential exists but actor lacks `use` | Credential is excluded and its identity is absent from response, audit, trace and log |
+| ABKR-F-014 | One credential has duplicate verified model relation rows | Rows collapse by credential ID using the lowest relation priority before deterministic selection; the credential remains eligible |
 
 ## 6. Service and API Tests
 
@@ -95,6 +96,8 @@ PostgreSQL-specific vector, permission and query-count behavior is not considere
 | ABKR-S-008 | Response serialization | No KB UUID, chunk/document identity or raw text |
 | ABKR-S-009 | Knowledge selection submitted | Planner and recommendation retrieval are not called again |
 | ABKR-S-010 | Retry same request | No graph write, duplicate audit or durable score record |
+| ABKR-S-011 | Stale Knowledge selection handle refresh | Permission/lifecycle metadata hierarchy is refreshed without semantic port or Planner call, and its score/reason/state is not persisted |
+| ABKR-S-012 | Recommendation observation | Action audit contains only fixed strategy/profile, bounded count/latency buckets and complete/degraded state; no candidate ID, query, per-KB score or provider payload |
 
 ## 7. Frontend Tests
 
@@ -122,6 +125,11 @@ Inspect API response, error body, audit metadata, trace metadata and captured lo
 Tests must use synthetic non-secret markers and assert their absence. Real tokens or sensitive content are forbidden in fixtures.
 
 ## 9. Evaluation Tests
+
+| ID | Case | Expected |
+| --- | --- | --- |
+| ABKR-E-001 | Controlled aggregate dataset | At least 30 deterministic synthetic non-secret cases, including at least 10 metadata-poor cases; no production KB identity, raw query/content or ranked list is written |
+| ABKR-E-002 | Baseline and parent-first release evaluation | Aggregate-only Precision@5, Recall@5, MRR, no-result accuracy, latency and bounded-call/query evidence is compared against the stated release gate |
 
 Create an offline dataset containing:
 
