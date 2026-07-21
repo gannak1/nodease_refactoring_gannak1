@@ -63,12 +63,26 @@ describe('TestSidebar resize', () => {
     expect(() => render(<TestSidebar />)).not.toThrow();
   });
 
-  it('기본 너비를 기존보다 넓은 480px로 표시한다', () => {
+  it('기본 너비를 560px로 표시한다', () => {
     render(<TestSidebar />);
 
     expect(screen.getByTestId('test-execution-sidebar')).toHaveStyle({
-      width: '480px',
+      width: '560px',
     });
+  });
+
+  it('패널 안의 글자 크기를 기존보다 한 단계 키운다', () => {
+    render(<TestSidebar />);
+
+    expect(screen.getByTestId('test-execution-sidebar')).toHaveClass(
+      'text-lg',
+      '[&_.text-xs]:text-sm',
+      '[&_.text-sm]:text-base',
+      '[&_.text-base]:text-lg',
+      '[&_.text-lg]:text-xl',
+      '[&_.text-xl]:text-2xl',
+      '[&_.text-2xl]:text-3xl',
+    );
   });
 
   it('캔버스 상단에 맞춰 패널을 배치한다', () => {
@@ -80,7 +94,7 @@ describe('TestSidebar resize', () => {
     );
   });
 
-  it('왼쪽 handle을 드래그해 넓히되 최대 640px를 넘지 않는다', () => {
+  it('왼쪽 handle을 드래그해 넓히되 최대 720px를 넘지 않는다', () => {
     render(<TestSidebar />);
 
     const handle = screen.getByRole('separator', {
@@ -91,7 +105,7 @@ describe('TestSidebar resize', () => {
     fireEvent.pointerUp(window, { pointerId: 1 });
 
     expect(screen.getByTestId('test-execution-sidebar')).toHaveStyle({
-      width: '640px',
+      width: '720px',
     });
   });
 
@@ -104,7 +118,7 @@ describe('TestSidebar resize', () => {
     fireEvent.keyDown(handle, { key: 'Home' });
 
     expect(screen.getByTestId('test-execution-sidebar')).toHaveStyle({
-      width: '380px',
+      width: '440px',
     });
   });
 
@@ -122,7 +136,7 @@ describe('TestSidebar resize', () => {
     testStore.state!.isTestPanelOpen = true;
     rerender(<TestSidebar />);
     expect(screen.getByTestId('test-execution-sidebar')).toHaveStyle({
-      width: '640px',
+      width: '720px',
     });
   });
 });

@@ -141,7 +141,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 | 1 | 실행 편의성 | 서버 실행 시간과 화면 완료 시간을 서로 다른 라벨로 표시 | 통과 | `TestSidebar`가 `서버 실행`/`화면 완료` 라벨을 분리하고 summary unit test 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
 | 1 | 실행 편의성 | 테스트 실행 중복 클릭 방지 또는 기존 stream 정리 | 통과 | 실행 중/업로드/저장 중/권한 없음 disabled 조건 unit test 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
 | 1 | 실행 편의성 | stream 실패 시 사용자에게 실패 상태 표시 | 통과 | 실패 상태 store transition unit test와 `TestSidebar` 실패 UI 구현 완료 | `apps/client/app/features/workflow/store/useWorkflowStore.test.ts`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
-| 1 | 실행 편의성 | 테스트 실행 사이드바 기본 폭·드래그 최대 폭·키보드 최소 폭 제한 | 통과 | 기본 `480px`, `380px`~`640px` clamp, 왼쪽 handle pointer/keyboard 조작 unit test 완료 | `apps/client/app/features/workflow/tests/test-sidebar-resize.test.tsx`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
+| 1 | 실행 편의성 | 테스트 실행 사이드바 기본 폭·드래그 최대 폭·키보드 최소 폭·패널 글자 크기 | 통과 | 기본 `560px`, `440px`~`720px` clamp, 왼쪽 handle pointer/keyboard 조작과 패널 내 글자 한 단계 확대 unit test 완료 | `apps/client/app/features/workflow/tests/test-sidebar-resize.test.tsx`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
 | 1 | 실행 편의성 | 같은 workflow 재동기화 뒤 최신 테스트 실행 상태 유지 | 통과 | 같은 `activeWorkflowId` 재설정은 TestSidebar 실행 상태를 idle로 초기화하지 않는다 | `apps/client/app/features/workflow/store/useWorkflowStore.test.ts` |
 | 1 | 실행 편의성 | 저장된 workflow run을 TestSidebar 복원 상태로 변환 | 통과 | node run status/duration/usage/cost/safe trace metadata를 복원하고 duration을 ms로 변환한다. `running` run은 실패로 바꾸지 않는다. | `apps/client/app/features/workflow/tests/test-execution-restore.test.ts` |
 | 1 | 실행 편의성 | 실행 기록 생성 지연·브라우저 히스토리 중 TestSidebar 복원 | 통과 | 초기 `404`와 `running` run은 점차 긴 제한된 재조회 뒤 terminal 결과로 복원하며, 재시도 한도 전에는 오류를 표시하지 않는다. `testRun` URL 복원은 기록이 지연돼도 패널을 열고, `testNode`가 없으면 실행 전체 결과를 위해 선택 노드를 비운다. 앞으로/뒤로가기로 새 `testRun`을 복원하고 `testRun`이 사라지면 이전 결과를 초기화한다. | `apps/client/app/features/workflow/tests/test-sidebar-run-restore.test.tsx` |
@@ -385,7 +385,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - 서버 실행 시간과 화면 완료 시간은 `서버 실행`, `화면 완료`처럼 서로 다른 라벨로 구분된다.
 - 캔버스에는 별도 테스트 실행 요약 패널이 표시되지 않는다.
 - 다시 테스트하기를 누르면 이전 실행 요약이 초기화되고 새 실행 결과로 갱신된다.
-- 테스트 실행 사이드바는 기본 `480px`로 열리고, 왼쪽 handle을 드래그해 `380px`~`640px` 범위에서 폭을 조정할 수 있다.
+- 테스트 실행 사이드바는 기본 `560px`로 열리고, 왼쪽 handle을 드래그해 `440px`~`720px` 범위에서 폭을 조정할 수 있다. 패널 안의 글자는 기존보다 한 단계 크게 표시된다.
 - 테스트 실행 사이드바 폭은 keyboard `ArrowLeft`/`ArrowRight`와 `Home`/`End`로도 조정할 수 있으며, 패널을 닫고 다시 열어도 같은 편집 세션에서는 유지된다.
 
 ### 2. 노드 조작 편의성

@@ -142,7 +142,8 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
 
 - `TestSidebar`
   - 테스트 입력값을 받고 기존 workflow stream 실행을 시작한다.
-  - 오른쪽에 고정되며 기본 폭은 `480px`이다. 왼쪽 세로 handle을 드래그해 `380px`에서 `640px` 사이로 폭을 조정한다.
+  - 오른쪽에 고정되며 기본 폭은 `560px`이다. 왼쪽 세로 handle을 드래그해 `440px`에서 `720px` 사이로 폭을 조정한다.
+  - 패널 안의 글자는 기존 Tailwind 타이포그래피 단계보다 한 단계 크게 표시한다. 이 규칙은 TestSidebar 안에만 적용한다.
   - 화면 폭이 최소 sidebar 폭과 canvas 가시 영역을 동시에 보장하지 못하면 handle을 숨기고 현재 화면 안에 들어오는 폭으로 표시한다.
   - handle은 keyboard focus가 가능하며 `ArrowLeft`/`ArrowRight`로 `20px`씩, `Home`/`End`로 최소/최대 폭을 조절한다.
   - 조정 폭은 같은 편집 세션의 패널 close/open 동안 유지한다.
