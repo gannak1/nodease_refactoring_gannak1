@@ -231,6 +231,9 @@ class WorkflowEngine:
             )
             for schema in self.node_schemas.values()
         )
+        remote_file_enabled = any(
+            schema.type == "fileExtractionNode" for schema in self.node_schemas.values()
+        )
         self.runtime_dependencies = runtime_dependencies or WorkflowRuntimeDependencies()
         session_factory = self.execution_context["db_session_factory"]
         if (
@@ -272,6 +275,15 @@ class WorkflowEngine:
                         session_factory=session_factory
                     )
                 ),
+            )
+        if remote_file_enabled and self.runtime_dependencies.remote_file_fetcher is None:
+            from apps.workflow_engine.composition.remote_file import (
+                build_remote_file_fetcher,
+            )
+
+            self.runtime_dependencies = replace(
+                self.runtime_dependencies,
+                remote_file_fetcher=build_remote_file_fetcher(),
             )
 
         # [PERF] 그래프 구조 사전 계산
