@@ -428,6 +428,8 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     selectedNodeId: testSelectedNodeId,
   });
   const isExecuting = testExecutionStatus === 'running';
+  const hasPersistedActiveWorkflow =
+    Boolean(activeWorkflowId) && activeWorkflowId !== 'default';
   const selectedTestNodeId = testSelectedNodeId ?? localSelectedTestNodeId;
   const selectExecutionNode = (nodeId: string | null) => {
     setLocalSelectedTestNodeId(nodeId);
@@ -528,7 +530,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
 
   useEffect(() => {
     const { runId, nodeId } = readTestExecutionLocation();
-    if (!runId || !activeWorkflowId || nodes.length === 0) {
+    if (!runId || !hasPersistedActiveWorkflow || nodes.length === 0) {
       if (!runId && historyLocationChangeRef.current) {
         historyLocationChangeRef.current = false;
         restoredRunRef.current = null;
@@ -631,6 +633,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     };
   }, [
     activeWorkflowId,
+    hasPersistedActiveWorkflow,
     nodes.length,
     openTestPanel,
     restoreTestExecution,
@@ -1188,7 +1191,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   );
 
   const handleExecute = async () => {
-    if (!activeWorkflowId) return;
+    if (!hasPersistedActiveWorkflow) return;
     if (!canExecute) {
       failTestExecution('현재 권한으로는 실행할 수 없습니다.');
       return;
@@ -1791,7 +1794,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             </button>
           </div>
         ) : null}
-        {hasOpenedComparisonPanel && activeWorkflowId ? (
+        {hasOpenedComparisonPanel && hasPersistedActiveWorkflow ? (
           <div className={isComparisonMode ? undefined : 'hidden'}>
             <ExecutionComparisonPanel
               workflowId={activeWorkflowId}

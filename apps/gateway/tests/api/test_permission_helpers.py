@@ -31,6 +31,22 @@ class FakeDb:
         return FakeQuery(self.workflow)
 
 
+def test_malformed_workflow_id_is_hidden_before_database_query():
+    """UUID가 아닌 placeholder는 PostgreSQL cast 오류 대신 safe 404로 닫는다."""
+
+    class QueryMustNotRun:
+        def query(self, *_args, **_kwargs):
+            raise AssertionError("malformed workflow id reached the database")
+
+    user = SimpleNamespace(id=uuid.uuid4())
+
+    with pytest.raises(HTTPException) as exc_info:
+        ensure_workflow_permission(QueryMustNotRun(), user, "default", "read")
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Workflow not found"
+
+
 def test_workflow_permission_denied_records_permission_audit(monkeypatch):
     workflow = SimpleNamespace(id=uuid.uuid4(), organization_id=uuid.uuid4())
     user = SimpleNamespace(id=uuid.uuid4())
