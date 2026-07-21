@@ -6,8 +6,9 @@ import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
+import httpx
 import requests
 
 SENSITIVE_HEADER_NAMES = {
@@ -337,7 +338,12 @@ class OutboundEgressGuard:
             safe_headers[str(key)] = str(value)
         return safe_headers
 
-    def validate_response_headers(self, headers: Mapping[str, Any]) -> None:
+    def validate_response_headers(
+        self,
+        headers: Mapping[str, Any],
+        *,
+        enforce_content_type: bool = True,
+    ) -> None:
         content_encoding = str(headers.get("content-encoding", "")).strip().lower()
         if content_encoding and content_encoding != "identity":
             if not self.policy.allow_compressed_response:
@@ -351,7 +357,7 @@ class OutboundEgressGuard:
             except ValueError as exc:
                 raise EgressGuardError("egress.invalid_content_length") from exc
 
-        if self.policy.allowed_content_types is None:
+        if self.policy.allowed_content_types is None or not enforce_content_type:
             return
         content_type = str(headers.get("content-type", "")).split(";")[0].lower()
         if not _content_type_allowed(content_type, self.policy.allowed_content_types):
@@ -454,9 +460,24 @@ def safe_http_request(
     json_body: Any | None = None,
     data: Any | None = None,
     policy: EgressGuardPolicy | None = None,
+    operation_id: str | None = None,
 ) -> SafeHTTPResponse:
-    guard = OutboundEgressGuard(policy)
-    current_url = guard.validate_url(url)
+    from apps.shared.services.guarded_http_transport import GuardedHttpTransport
+    from apps.shared.services.outbound_operation_policy import (
+        require_outbound_operation_profile,
+    )
+
+    if operation_id is not None and policy is not None:
+        raise EgressGuardError("egress.ambiguous_policy")
+    operation = (
+        require_outbound_operation_profile(operation_id).bind(url)
+        if operation_id is not None
+        else None
+    )
+    guard = operation.guard if operation is not None else OutboundEgressGuard(policy)
+    current_url = (
+        operation.validate_url(url) if operation is not None else guard.validate_url(url)
+    )
     current_headers = guard.sanitize_request_headers(headers)
     method = guard.validate_method(method)
     if method == "GET":
@@ -466,25 +487,34 @@ def safe_http_request(
     if guard.policy.force_identity_encoding:
         current_headers["Accept-Encoding"] = "identity"
 
-    with requests.Session() as session:
-        # 환경 변수 기반 proxy는 connector별 승인 proxy 정책을 우회할 수 있으므로 기본 차단한다.
-        session.trust_env = False
+    transport = (
+        GuardedHttpTransport(operation=operation)
+        if operation is not None
+        else GuardedHttpTransport(guard)
+    )
+    with httpx.Client(
+        transport=transport,
+        timeout=guard.policy.timeout_seconds,
+        follow_redirects=False,
+        trust_env=False,
+    ) as client:
         for redirect_index in range(guard.policy.max_redirects + 1):
             try:
-                response = session.request(
-                    method=method,
-                    url=current_url,
-                    headers=current_headers,
-                    json=json_body if method != "GET" else None,
-                    data=data,
-                    timeout=guard.policy.timeout_seconds,
-                    stream=True,
-                    allow_redirects=False,
-                    verify=True,
+                request_kwargs: dict[str, Any] = {
+                    "method": method,
+                    "url": current_url,
+                    "headers": current_headers,
+                }
+                if method != "GET" and json_body is not None:
+                    request_kwargs["json"] = json_body
+                elif method != "GET" and data is not None:
+                    request_kwargs["content"] = data
+                response = client.request(
+                    **request_kwargs,
                 )
-            except requests.Timeout as exc:
+            except httpx.TimeoutException as exc:
                 raise EgressGuardError("egress.timeout") from exc
-            except requests.RequestException as exc:
+            except httpx.RequestError as exc:
                 raise EgressGuardError("egress.connection_failed") from exc
 
             if response.is_redirect:
@@ -495,7 +525,9 @@ def safe_http_request(
                 response.close()
                 if not location:
                     raise EgressGuardError("egress.invalid_redirect")
-                next_url = requests.compat.urljoin(current_url, location)
+                next_url = urljoin(current_url, location)
+                if operation is not None:
+                    operation.validate_origin(next_url)
                 next_url = guard.validate_redirect(current_url, next_url)
                 if _origin(current_url) != _origin(next_url):
                     current_headers = guard.sanitize_request_headers(
@@ -507,11 +539,9 @@ def safe_http_request(
 
             try:
                 guard.validate_response_headers(response.headers)
-                guard.validate_response_peer(response)
-                content = _read_capped_response(
-                    response,
-                    guard.policy.max_response_bytes,
-                )
+                content = response.content
+                if len(content) > guard.policy.max_response_bytes:
+                    raise EgressGuardError("egress.response_too_large")
             except Exception:
                 response.close()
                 raise
@@ -530,8 +560,14 @@ def download_url_to_temp_file(
     *,
     suffix: str = ".tmp",
     policy: EgressGuardPolicy | None = None,
+    operation_id: str | None = None,
 ) -> str:
-    response = safe_http_request("GET", url, policy=policy)
+    response = safe_http_request(
+        "GET",
+        url,
+        policy=policy,
+        operation_id=operation_id,
+    )
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(response.content)
         return tmp.name

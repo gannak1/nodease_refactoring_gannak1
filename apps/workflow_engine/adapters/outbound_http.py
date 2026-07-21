@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-import ipaddress
-from collections.abc import Callable, Iterable
-from contextlib import suppress
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlsplit
 
-import httpcore
 import httpx
 
 from apps.shared.services.egress_guard import (
     EgressGuardError,
     EgressGuardPolicy,
     OutboundEgressGuard,
+)
+from apps.shared.services.guarded_http_transport import (
+    GuardedHttpTransport,
+    GuardedNetworkBackend,
 )
 from apps.workflow_engine.application.outbound_http import (
     OutboundHttpError,
@@ -45,111 +46,6 @@ def generic_http_egress_policy() -> EgressGuardPolicy:
         allow_compressed_response=False,
         validate_peer_ip=True,
     )
-
-
-class GuardedNetworkBackend(httpcore.NetworkBackend):
-    """Resolve, validate and connect to the same IP address."""
-
-    def __init__(
-        self,
-        guard: OutboundEgressGuard,
-        *,
-        backend: httpcore.NetworkBackend | None = None,
-    ) -> None:
-        self._guard = guard
-        self._backend = backend or httpcore.SyncBackend()
-
-    def connect_tcp(
-        self,
-        host: str,
-        port: int,
-        timeout: float | None = None,
-        local_address: str | None = None,
-        socket_options: Iterable[httpcore.SOCKET_OPTION] | None = None,
-    ) -> httpcore.NetworkStream:
-        (
-            _canonical_host,
-            safe_port,
-            target_ips,
-        ) = self._guard.validate_host_port_addresses(
-            host,
-            port,
-            allowed_ports=_ALLOWED_PORTS,
-        )
-        last_connect_error: httpcore.ConnectError | httpcore.ConnectTimeout | None = (
-            None
-        )
-        for target_ip in target_ips:
-            try:
-                stream = self._backend.connect_tcp(
-                    host=target_ip,
-                    port=safe_port,
-                    timeout=timeout,
-                    local_address=local_address,
-                    socket_options=socket_options,
-                )
-            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
-                last_connect_error = exc
-                continue
-
-            try:
-                server_address = stream.get_extra_info("server_addr")
-                peer_ip = server_address[0] if server_address else None
-                self._guard.validate_response_peer_ip(peer_ip)
-                if ipaddress.ip_address(str(peer_ip)) != ipaddress.ip_address(
-                    target_ip
-                ):
-                    raise EgressGuardError("egress.peer_mismatch")
-            except Exception:
-                with suppress(Exception):
-                    stream.close()
-                raise
-            return stream
-
-        if last_connect_error is not None:
-            raise last_connect_error
-        raise EgressGuardError("egress.dns_resolution_failed")
-
-    def connect_unix_socket(
-        self,
-        path: str,
-        timeout: float | None = None,
-        socket_options: Iterable[httpcore.SOCKET_OPTION] | None = None,
-    ) -> httpcore.NetworkStream:
-        raise EgressGuardError("egress.unix_socket_not_allowed")
-
-    def sleep(self, seconds: float) -> None:
-        self._backend.sleep(seconds)
-
-
-class GuardedHttpTransport(httpx.HTTPTransport):
-    """HTTPX transport with a guard-aware httpcore network backend."""
-
-    def __init__(self, guard: OutboundEgressGuard) -> None:
-        limits = httpx.Limits(
-            max_connections=10,
-            max_keepalive_connections=5,
-            keepalive_expiry=5.0,
-        )
-        super().__init__(
-            verify=True,
-            trust_env=False,
-            http1=True,
-            http2=False,
-            limits=limits,
-            retries=0,
-        )
-        self._pool.close()
-        self._pool = httpcore.ConnectionPool(
-            ssl_context=httpx.create_ssl_context(verify=True, trust_env=False),
-            max_connections=limits.max_connections,
-            max_keepalive_connections=limits.max_keepalive_connections,
-            keepalive_expiry=limits.keepalive_expiry,
-            http1=True,
-            http2=False,
-            retries=0,
-            network_backend=GuardedNetworkBackend(guard),
-        )
 
 
 class GuardedHttpxOutboundAdapter:
@@ -279,3 +175,11 @@ class GuardedHttpxOutboundAdapter:
                 raise EgressGuardError("egress.response_too_large")
             chunks.append(chunk)
         return b"".join(chunks)
+
+
+__all__ = [
+    "GuardedHttpTransport",
+    "GuardedHttpxOutboundAdapter",
+    "GuardedNetworkBackend",
+    "generic_http_egress_policy",
+]
