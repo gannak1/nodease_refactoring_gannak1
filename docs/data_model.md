@@ -13,7 +13,7 @@ Status: Draft
 
 ## 도메인별 테이블
 
-현재 코드의 SQLAlchemy `__tablename__` 기준 활성 테이블은 98개다. 아래 목록은 공통 model registry와 Alembic head `c2e8f4a91d67`를 대조한 inventory다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 주석 처리된 호환 모델이므로 개수와 목록에서 제외한다. 테이블 추가·삭제 시 수동 개수만 바꾸지 말고 이 inventory와 해당 도메인 설명을 함께 갱신한다.
+현재 코드의 SQLAlchemy `__tablename__` 기준 활성 테이블은 100개다. 아래 목록은 공통 model registry와 Alembic head `ad1e2f3a4b5c`를 대조한 inventory다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 주석 처리된 호환 모델이므로 개수와 목록에서 제외한다. 테이블 추가·삭제 시 수동 개수만 바꾸지 말고 이 inventory와 해당 도메인 설명을 함께 갱신한다.
 
 | 도메인 | 테이블 |
 | --- | --- |
@@ -25,7 +25,7 @@ Status: Draft
 | 추적/감사 | `trace_payloads`, `trace_payload_access_events`, `trace_redaction_policies`, `trace_retention_policies`, `trace_visibility_policies`, `audit_logs`, `audit_event_outbox` |
 | 보안 알림 | `security_alerts`, `security_alert_audit_events`, `security_alert_reconciliation_watermarks`, `security_alert_reconciliation_receipts`, `security_alert_notification_outbox` |
 | Knowledge/RAG | `knowledge_bases`, `documents`, `document_versions`, `document_chunks`, `rag_answer_runs`, `knowledge_collections`, `knowledge_collection_items`, `knowledge_collection_sync_jobs`, `knowledge_collection_sync_job_items`, `knowledge_ingestion_outbox`, `knowledge_document_ingestion_jobs`, `knowledge_source_identities`, `source_authorization_provenance`, `source_policy_kb_use_grants` |
-| LLM | `llm_providers`, `llm_models`, `llm_credentials`, `llm_rel_credential_models`, `llm_usage_logs` |
+| LLM | `llm_providers`, `llm_models`, `llm_credentials`, `llm_rel_credential_models`, `llm_deployment_credential_policies`, `provider_execution_capabilities`, `llm_usage_logs` |
 | LLM routing/비용 | `llm_node_model_routing_cohort_examples`, `llm_node_model_routing_cohorts`, `llm_node_model_routing_model_evidence`, `llm_node_model_routing_observations`, `llm_node_model_routing_policies`, `llm_node_model_routing_policy_run_events`, `llm_node_model_routing_policy_updates`, `llm_node_model_routing_validation_batches`, `llm_node_model_routing_validation_budget_months`, `llm_node_model_routing_validation_cost_events`, `llm_node_model_routing_validation_items`, `cost_optimizer_candidates`, `cost_optimizer_experiments`, `cost_optimizer_recommendation_verifications` |
 | 외부 연동 | `connections`, `mail_credentials`, `mail_draft_effects`, `mail_message_processings` |
 
@@ -76,6 +76,10 @@ erDiagram
   llm_providers ||--o{ llm_credentials : has
   llm_credentials ||--o{ llm_rel_credential_models : enables
   llm_models ||--o{ llm_rel_credential_models : enabled_by
+  workflow_deployments ||--o{ llm_deployment_credential_policies : configures
+  llm_credentials ||--o{ llm_deployment_credential_policies : selected_by
+  llm_deployment_credential_policies ||--o{ provider_execution_capabilities : issues
+  workflow_deployments ||--o{ provider_execution_capabilities : scopes
   llm_credentials ||--o{ llm_usage_logs : logs
 
   mail_credentials ||--o{ team_mail_credential_permissions : grants
@@ -89,7 +93,7 @@ erDiagram
   audit_logs ||--o{ security_alert_audit_events : supports
 ```
 
-- 위 ER diagram은 핵심 관계만 표시하며 98개 전체 table inventory를 반복하지 않는다.
+- 위 ER diagram은 핵심 관계만 표시하며 100개 전체 table inventory를 반복하지 않는다.
 - `rag_answer_runs`와 trace/usage 테이블은 FK가 아니라 opaque `correlation_id`(application-level convention)로만 연결한다 ([ADR-0013](decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)). 다이어그램에 없는 이유다.
 - `apps.workflow_id`와 `workflows.app_id`는 상호 참조(순환 FK)다.
 - JSONB metadata에 id를 넣는 방식(`audit_metadata`, `meta_info` 등)은 관계가 아니라 application convention이다.
@@ -1106,6 +1110,57 @@ credential-model 사용 가능 관계.
 | is_verified | BOOLEAN | NOT NULL — 검증된 관계만 runtime 사용 |
 | priority | INTEGER | NOT NULL — fallback 순서 |
 | created_at | DATETIME | NOT NULL |
+
+#### `llm_deployment_credential_policies`
+
+Immutable deployment version의 LLM node에 사용할 credential과 server-derived credential principal을 graph 밖에서 고정하는 실행 제어 row다 ([ADR-0064](decisions/ADR-0064-provider-execution-capability-boundary.md)). Organization manager만 교체할 수 있고 graph에는 credential ID를 저장하지 않는다.
+
+| 컬럼 | 타입 | 제약 |
+| --- | --- | --- |
+| id | UUID | PK, UNIQUE `(id, organization_id)`의 일부 |
+| organization_id | UUID | NOT NULL, FK→organization.id (RESTRICT) |
+| workflow_id | UUID | NOT NULL, FK→workflows.id (CASCADE) |
+| deployment_id | UUID | NOT NULL, FK→workflow_deployments.id (CASCADE) |
+| deployment_version | INTEGER | NOT NULL, 1 이상 |
+| node_id | VARCHAR(255) | NOT NULL |
+| model_id | UUID | NOT NULL, FK→llm_models.id (RESTRICT) |
+| credential_id | UUID | NOT NULL, FK→llm_credentials.id (RESTRICT) |
+| credential_principal_user_id | UUID | NOT NULL, FK→users.id (RESTRICT) |
+| policy_revision | INTEGER | NOT NULL, 1 이상 |
+| is_active | BOOLEAN | NOT NULL |
+| created_at / updated_at | DATETIME | NOT NULL |
+
+- Partial UNIQUE `(organization_id, deployment_id, deployment_version, node_id) WHERE is_active`로 node당 active policy를 최대 한 개만 허용한다. Model UUID가 달라도 같은 node의 기존 active row를 먼저 비활성화한다.
+- Policy 교체는 canonical deployment row와 기존 active policy를 lock하고 새 revision을 같은 transaction에 저장한다.
+
+#### `provider_execution_capabilities`
+
+하나의 provider attempt에 대한 short-lived opaque 실행 권한과 admission snapshot이다. Secret, decrypted config, provider request/response 원문을 저장하지 않으며 provider 호출 전에 commit한다. 장기 usage·청구·감사 원장이 아니고 MBA-287의 durable usage ledger가 해당 이력을 소유한다.
+
+| 컬럼 | 타입 | 제약 |
+| --- | --- | --- |
+| id | UUID | PK, UNIQUE `(id, organization_id)`의 일부 |
+| organization_id | UUID | NOT NULL, FK→organization.id (RESTRICT) |
+| policy_id | UUID | NOT NULL, composite FK→llm_deployment_credential_policies `(id, organization_id)` (CASCADE) |
+| workflow_id | UUID | NOT NULL, FK→workflows.id (CASCADE) |
+| deployment_id | UUID | NOT NULL, FK→workflow_deployments.id (CASCADE) |
+| deployment_version / node_id | INTEGER / VARCHAR(255) | NOT NULL, immutable deployment node binding |
+| node_invocation_id / execution_admission_id / provider_attempt_id | UUID | NOT NULL, provider attempt binding |
+| purpose | VARCHAR(32) | NOT NULL, `main_generation` 또는 `memory_summary` |
+| provider_id / model_id / credential_id | UUID | NOT NULL, 각 catalog/resource FK (RESTRICT) |
+| credential_principal_user_id | UUID | NOT NULL, FK→users.id (RESTRICT) |
+| execution_subject_kind / execution_subject_id | VARCHAR(32) / UUID | user·anonymous_public·system typed identity |
+| billing_principal_kind / billing_principal_id | VARCHAR(32) / UUID | organization typed identity, row organization과 일치 |
+| audit_actor_kind / audit_actor_id | VARCHAR(32) / UUID | execution subject에 정합한 user·public·system actor |
+| capability_revision / policy_revision | INTEGER | NOT NULL, 1 이상 |
+| permission_revision / relation_revision / egress_revision / pricing_revision | VARCHAR(64) | NOT NULL, SHA-256 revision fingerprint |
+| input_token_cap / output_token_cap / cost_cap_microusd | INTEGER / INTEGER / BIGINT | NOT NULL, 0 이상 |
+| state / expires_at / revoked_at | VARCHAR(16) / DATETIME / DATETIME | active는 revoked_at NULL, revoked는 revoked_at NOT NULL |
+| created_at / updated_at | DATETIME | NOT NULL |
+
+- UNIQUE `(organization_id, provider_attempt_id, purpose)`로 같은 logical provider operation을 하나의 capability row에 수렴시킨다.
+- Admission은 실제 prompt UTF-8 byte upper bound, provider `max_tokens`와 canonical pricing의 최대 비용을 cap과 비교한다. Missing pricing과 provider별 output-limit alias는 capability-required path에서 fail-closed한다.
+- `egress_revision`은 현재 provider catalog routing fingerprint이며 중앙 egress authorization은 아니다. 실제 outbound guard 정책은 별도 경계가 소유한다.
 
 #### `llm_usage_logs`
 

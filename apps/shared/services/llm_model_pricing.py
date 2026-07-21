@@ -278,8 +278,8 @@ def calculate_text_token_cost(
 
 def calculate_text_token_cost_from_rates(
     *,
-    input_price_per_1k: float,
-    output_price_per_1k: float,
+    input_price_per_1k: float | Decimal,
+    output_price_per_1k: float | Decimal,
     prompt_tokens: int,
     completion_tokens: int,
 ) -> float:

@@ -1,5 +1,9 @@
 import pytest
 
+from apps.workflow_engine.workflow.core.runtime_dependencies import (
+    WorkflowRuntimeDependencies,
+)
+from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 from apps.workflow_engine.workflow.nodes.loop.loop_node import (
     LoopNode,
     LoopNodeData,
@@ -19,6 +23,46 @@ def _loop_node(
             subGraph=subgraph,
         ),
     )
+
+
+def test_loop_child_inherits_parent_runtime_dependencies(monkeypatch) -> None:
+    node = _loop_node(
+        subgraph={
+            "nodes": [{"id": "body", "type": "templateNode", "data": {}}],
+            "edges": [],
+        }
+    )
+    runtime_dependencies = WorkflowRuntimeDependencies(
+        provider_execution_runtime=object(),
+        provider_usage_recorder=object(),
+    )
+    node.bind_runtime_dependencies(runtime_dependencies)
+    captured: dict = {}
+
+    class _ChildEngine:
+        _external_effect_output_sensitive = False
+
+        def execute(self):
+            return {"result": "ok"}
+
+        def cleanup(self):
+            return None
+
+    def create_child(_cls, *args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return _ChildEngine()
+
+    monkeypatch.setattr(WorkflowEngine, "create_child", classmethod(create_child))
+
+    result = node._execute_subgraph_scoped(
+        {},
+        iteration_index=0,
+        entry_node_id="body",
+    )
+
+    assert result == {"result": "ok"}
+    assert captured["kwargs"]["runtime_dependencies"] is runtime_dependencies
 
 
 def test_loop_without_explicit_key_uses_first_mapped_array() -> None:

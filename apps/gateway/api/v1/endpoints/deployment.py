@@ -2,6 +2,7 @@ import uuid
 from typing import Annotated, List
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
@@ -57,12 +58,20 @@ from apps.shared.schemas.deployment import (
     DeploymentBrowserAccessProjection,
     DeploymentBrowserAccessRevisionCreate,
     DeploymentCreate,
+    DeploymentLLMCredentialPolicyResponse,
+    DeploymentLLMCredentialPolicyUpsert,
     DeploymentPreflightRequest,
     DeploymentPreflightResponse,
     DeploymentParameterOptimizationConfig,
     DeploymentParameterOptimizationStatus,
     DeploymentResponse,
     DeploymentRunInfoResponse,
+)
+from apps.shared.services.provider_execution_capability import (
+    DeploymentCredentialPolicyCommand,
+    DeploymentCredentialPolicyView,
+    ProviderExecutionCapabilityService,
+    ProviderExecutionPolicyError,
 )
 
 router = APIRouter()
@@ -219,6 +228,44 @@ def _deployment_response_from_browser_revision(
         browser_access_policy=revision.browser_access_policy,
         url_slug=revision.url_slug,
     )
+
+
+def _deployment_llm_credential_policy_response(
+    policy: DeploymentCredentialPolicyView,
+) -> DeploymentLLMCredentialPolicyResponse:
+    return DeploymentLLMCredentialPolicyResponse(
+        id=policy.id,
+        deployment_id=policy.deployment_id,
+        deployment_version=policy.deployment_version,
+        node_id=policy.node_id,
+        model_id=policy.model_id,
+        credential_id=policy.credential_id,
+        policy_revision=policy.policy_revision,
+        is_active=policy.is_active,
+        created_at=policy.created_at,
+        updated_at=policy.updated_at,
+    )
+
+
+def _raise_provider_execution_policy_error(
+    exc: ProviderExecutionPolicyError,
+) -> None:
+    if exc.code == "resource_not_found":
+        raise HTTPException(status_code=404, detail="Deployment not found") from None
+    if exc.code == "permission_denied":
+        raise HTTPException(status_code=403, detail="permission.denied") from None
+    status_code = 409 if exc.code in {
+        "selection_ambiguous",
+        "capability_attempt_reused",
+        "capability_stale",
+    } else 422
+    raise HTTPException(
+        status_code=status_code,
+        detail={
+            "code": exc.code,
+            "message": "LLM credential policy is not ready.",
+        },
+    ) from None
 
 
 @router.post("", response_model=DeploymentResponse)
@@ -445,6 +492,97 @@ def get_public_browser_access_policy(
             "frame_ancestors": list(projection.frame_ancestors),
         },
     )
+
+
+@router.get(
+    "/{deployment_id}/llm-credential-policies",
+    response_model=List[DeploymentLLMCredentialPolicyResponse],
+)
+def list_deployment_llm_credential_policies(
+    deployment_id: uuid.UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List manager-visible server-side policies without exposing a secret."""
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
+    try:
+        policies = ProviderExecutionCapabilityService.list_deployment_policies(
+            db,
+            actor_id=current_user.id,
+            organization_id=organization_id,
+            deployment_id=deployment_id,
+        )
+    except ProviderExecutionPolicyError as exc:
+        _raise_provider_execution_policy_error(exc)
+    return [_deployment_llm_credential_policy_response(policy) for policy in policies]
+
+
+@router.put(
+    "/{deployment_id}/llm-credential-policies/{node_id}",
+    response_model=DeploymentLLMCredentialPolicyResponse,
+)
+@audit(
+    AuditAction.DEPLOYMENT_LLM_CREDENTIAL_POLICY_UPSERT,
+    target_param="deployment_id",
+)
+def replace_deployment_llm_credential_policy(
+    deployment_id: uuid.UUID,
+    node_id: str,
+    policy_in: DeploymentLLMCredentialPolicyUpsert,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create a revisioned manager policy for one deployment snapshot LLM node."""
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
+    try:
+        policy = ProviderExecutionCapabilityService.replace_deployment_policy(
+            db,
+            actor_id=current_user.id,
+            command=DeploymentCredentialPolicyCommand(
+                organization_id=organization_id,
+                deployment_id=deployment_id,
+                node_id=node_id,
+                model_id=policy_in.model_id,
+                credential_id=policy_in.credential_id,
+            ),
+        )
+        db.commit()
+    except ProviderExecutionPolicyError as exc:
+        db.rollback()
+        _raise_provider_execution_policy_error(exc)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "selection_ambiguous",
+                "message": "LLM credential policy is not ready.",
+            },
+        ) from None
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "deployment.llm_credential_policy_failed",
+                "message": "LLM credential policy could not be updated.",
+            },
+        ) from None
+    return _deployment_llm_credential_policy_response(policy)
 
 
 @router.get("/{deployment_id}/run-info", response_model=DeploymentRunInfoResponse)

@@ -8,6 +8,9 @@ import pytest
 
 from apps.shared.schemas.workflow import NodeSchema, Position
 from apps.shared.services.workflow_node_catalog import implemented_node_types
+from apps.workflow_engine.workflow.core.runtime_dependencies import (
+    WorkflowRuntimeDependencies,
+)
 from apps.workflow_engine.workflow.core.workflow_node_factory import NodeFactory
 from apps.workflow_engine.workflow.nodes.base.entities import NodeStatus
 from apps.workflow_engine.workflow.nodes.start import StartNode, StartNodeData
@@ -176,3 +179,29 @@ def test_factory_creates_multiple_nodes():
     assert node1.id != node2.id
     assert node1.data.title != node2.data.title
     assert node1 is not node2  # 서로 다른 인스턴스
+
+
+@pytest.mark.parametrize(
+    ("node_type", "data"),
+    [
+        ("workflowNode", {"title": "Child", "appId": "app-1"}),
+        ("loopNode", {"title": "Loop"}),
+    ],
+)
+def test_factory_binds_runtime_dependencies_to_composite_nodes(node_type, data):
+    dependencies = WorkflowRuntimeDependencies(
+        provider_execution_runtime=object(),
+        provider_usage_recorder=object(),
+    )
+
+    node = NodeFactory.create(
+        NodeSchema(
+            id="composite-1",
+            type=node_type,
+            position=Position(x=0, y=0),
+            data=data,
+        ),
+        runtime_dependencies=dependencies,
+    )
+
+    assert node._runtime_dependencies is dependencies  # noqa: SLF001

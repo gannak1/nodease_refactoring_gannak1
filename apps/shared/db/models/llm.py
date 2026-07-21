@@ -12,6 +12,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -260,6 +261,287 @@ class LLMRelCredentialModel(Base):
         DateTime(timezone=True),
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class LLMDeploymentCredentialPolicy(Base):
+    """Server-owned credential selection for one deployed LLM node.
+
+    The workflow graph intentionally never stores ``credential_id``.  This
+    policy is separately versioned and is the only source an execution
+    capability issuer may use to select a generation credential.
+    """
+
+    __tablename__ = "llm_deployment_credential_policies"
+    __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_llm_deploy_credential_policy_id_org",
+        ),
+        CheckConstraint(
+            "deployment_version >= 1 AND policy_revision >= 1",
+            name="ck_llm_deploy_credential_policy_revision",
+        ),
+        Index(
+            "uq_llm_deploy_credential_policy_active",
+            "organization_id",
+            "deployment_id",
+            "deployment_version",
+            "node_id",
+            unique=True,
+            postgresql_where=text("is_active"),
+        ),
+        Index(
+            "ix_llm_deploy_credential_policy_lookup",
+            "organization_id",
+            "deployment_id",
+            "deployment_version",
+            "node_id",
+            "is_active",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("organization.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    workflow_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("workflows.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    deployment_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("workflow_deployments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    deployment_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    node_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    model_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("llm_models.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    credential_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("llm_credentials.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    credential_principal_user_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    policy_revision: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default=text("1"),
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+    )
+
+
+class ProviderExecutionCapabilityRecord(Base):
+    """Durable opaque scope of one provider attempt; never stores a secret."""
+
+    __tablename__ = "provider_execution_capabilities"
+    __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_provider_execution_capability_id_org",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "provider_attempt_id",
+            "purpose",
+            name="uq_provider_execution_capability_attempt_purpose",
+        ),
+        ForeignKeyConstraint(
+            ["policy_id", "organization_id"],
+            [
+                "llm_deployment_credential_policies.id",
+                "llm_deployment_credential_policies.organization_id",
+            ],
+            name="fk_provider_execution_capability_policy_org",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "deployment_version >= 1 AND capability_revision >= 1 "
+            "AND input_token_cap >= 0 AND output_token_cap >= 0 "
+            "AND cost_cap_microusd >= 0",
+            name="ck_provider_execution_capability_bounds",
+        ),
+        CheckConstraint(
+            "purpose IN ('main_generation', 'memory_summary') "
+            "AND state IN ('active', 'revoked') "
+            "AND execution_subject_kind IN ('user', 'anonymous_public', 'system') "
+            "AND billing_principal_kind = 'organization' "
+            "AND audit_actor_kind IN ('user', 'public', 'system') "
+            "AND length(permission_revision) = 64 "
+            "AND length(relation_revision) = 64 "
+            "AND length(egress_revision) = 64 "
+            "AND length(pricing_revision) = 64",
+            name="ck_provider_execution_capability_state",
+        ),
+        CheckConstraint(
+            "(execution_subject_kind = 'user' AND execution_subject_id IS NOT NULL) "
+            "OR (execution_subject_kind IN ('anonymous_public', 'system') "
+            "AND execution_subject_id IS NULL)",
+            name="ck_provider_execution_capability_execution_subject",
+        ),
+        CheckConstraint(
+            "(audit_actor_kind = 'user' AND audit_actor_id IS NOT NULL) "
+            "OR (audit_actor_kind IN ('public', 'system') AND audit_actor_id IS NULL)",
+            name="ck_provider_execution_capability_audit_actor",
+        ),
+        CheckConstraint(
+            "billing_principal_id = organization_id",
+            name="ck_provider_execution_capability_billing_scope",
+        ),
+        CheckConstraint(
+            "(execution_subject_kind = 'user' AND audit_actor_kind = 'user' "
+            "AND execution_subject_id = audit_actor_id) "
+            "OR (execution_subject_kind = 'anonymous_public' "
+            "AND audit_actor_kind = 'public') "
+            "OR (execution_subject_kind = 'system' AND audit_actor_kind = 'system')",
+            name="ck_provider_execution_capability_identity_alignment",
+        ),
+        CheckConstraint(
+            "(state = 'active' AND revoked_at IS NULL) "
+            "OR (state = 'revoked' AND revoked_at IS NOT NULL)",
+            name="ck_provider_execution_capability_revocation_state",
+        ),
+        Index(
+            "ix_provider_execution_capability_expiry",
+            "organization_id",
+            "state",
+            "expires_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("organization.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    policy_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    workflow_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("workflows.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    deployment_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("workflow_deployments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    deployment_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    node_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    node_invocation_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), nullable=False
+    )
+    execution_admission_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), nullable=False
+    )
+    provider_attempt_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), nullable=False
+    )
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    model_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("llm_models.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    credential_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("llm_credentials.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    credential_principal_user_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    execution_subject_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    execution_subject_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), nullable=True
+    )
+    billing_principal_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    billing_principal_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), nullable=False
+    )
+    audit_actor_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    audit_actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), nullable=True
+    )
+    capability_revision: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default=text("1"),
+    )
+    policy_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    permission_revision: Mapped[str] = mapped_column(String(64), nullable=False)
+    relation_revision: Mapped[str] = mapped_column(String(64), nullable=False)
+    egress_revision: Mapped[str] = mapped_column(String(64), nullable=False)
+    pricing_revision: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_token_cap: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_token_cap: Mapped[int] = mapped_column(Integer, nullable=False)
+    cost_cap_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    state: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="active",
+        server_default=text("'active'"),
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
     )
 
 

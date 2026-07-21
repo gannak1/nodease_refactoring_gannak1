@@ -84,6 +84,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0061](ADR-0061-agent-builder-hierarchical-knowledge-selection.md) | Accepted | Agent Builder 계층형 Knowledge 선택 | Collection 동적 routing과 직접 KB binding을 분리하고 opaque handle, 권한 필터, 안정 점수 정렬, 중복 KB 선택 동기화와 runtime 합집합 중복 제거를 정의한다. |
 | [ADR-0062](ADR-0062-workflow-node-secret-reference-boundary.md) | Accepted | Workflow node secret reference 경계 | Agent Builder와 Node Detail의 masked 직접 입력 및 `나중에 설정` UX를 유지하면서 Slack/GitHub 원문 secret을 서버 암호화 immutable revision으로 저장하고 graph/deployment에는 opaque reference만 보존한다. |
 | [ADR-0063](ADR-0063-agent-builder-deterministic-intent-plan-cache.md) | Accepted | Agent Builder 결정론적 intent plan cache | 채택된 목표 계약이며 현재 코드는 아직 구현되지 않았다. Feature flag는 기본 비활성이고 Production Redis 운영 증거 전에는 production/staging serving을 활성화하지 않는다. |
+| [ADR-0064](ADR-0064-provider-execution-capability-boundary.md) | Accepted | Provider 실행 capability와 deployment credential 정책 경계 | Deployment-version LLM node별 단일 server-owned credential policy, typed runtime principal, 실제 token/cost admission, provider 호출 전 capability commit과 Shared config materialization 경계를 확정한다. MBA-287 usage ledger와 MBA-320 activation은 후속 범위다. |
 
 ## 참고 보고서
 

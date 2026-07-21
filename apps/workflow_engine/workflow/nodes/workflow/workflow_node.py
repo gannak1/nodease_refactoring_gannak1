@@ -16,6 +16,9 @@ from apps.shared.domain.deployment_runtime_policy import (
     is_deployment_type_allowed_for_surface,
 )
 from apps.workflow_engine.runtime_policy import get_deployment_runtime_policy
+from apps.workflow_engine.workflow.core.runtime_dependencies import (
+    WorkflowRuntimeDependencies,
+)
 from apps.workflow_engine.workflow.errors import WorkflowNodeConfigurationError
 from apps.workflow_engine.workflow.nodes.base.node import Node
 
@@ -63,6 +66,16 @@ class WorkflowNode(Node[WorkflowNodeData]):
     """
 
     node_type = "workflowNode"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._runtime_dependencies: WorkflowRuntimeDependencies | None = None
+
+    def bind_runtime_dependencies(
+        self,
+        runtime_dependencies: WorkflowRuntimeDependencies,
+    ) -> None:
+        self._runtime_dependencies = runtime_dependencies
 
     def _run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
@@ -230,6 +243,7 @@ class WorkflowNode(Node[WorkflowNodeData]):
                 sub_workflow_inputs,
                 execution_context=sub_execution_context,
                 runtime_control=control,
+                runtime_dependencies=self._runtime_dependencies,
                 invocation_segment=InvocationSegment(
                     "subworkflow",
                     self.id,

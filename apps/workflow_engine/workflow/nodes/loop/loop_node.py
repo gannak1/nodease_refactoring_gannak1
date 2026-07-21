@@ -10,6 +10,9 @@ from apps.shared.domain.workflow_graph import (
     validate_loop_subgraph,
 )
 from apps.workflow_engine.domain.external_effect import ExternalEffectError
+from apps.workflow_engine.workflow.core.runtime_dependencies import (
+    WorkflowRuntimeDependencies,
+)
 from apps.workflow_engine.workflow.nodes.base.entities import BaseNodeData
 from apps.workflow_engine.workflow.nodes.base.node import Node
 
@@ -70,6 +73,13 @@ class LoopNode(Node[LoopNodeData]):
             autoescape=False,  # 자동 이스케이프 비활성화
         )
         self._subgraph_engine = None
+        self._runtime_dependencies: WorkflowRuntimeDependencies | None = None
+
+    def bind_runtime_dependencies(
+        self,
+        runtime_dependencies: WorkflowRuntimeDependencies,
+    ) -> None:
+        self._runtime_dependencies = runtime_dependencies
 
     def _render_template(self, template: str, context: Dict[str, Any]) -> Any:
         """
@@ -221,6 +231,7 @@ class LoopNode(Node[LoopNodeData]):
             user_input=context,
             execution_context=self.execution_context,
             runtime_control=control,
+            runtime_dependencies=self._runtime_dependencies,
             invocation_segment=InvocationSegment(
                 "loop",
                 self.id,

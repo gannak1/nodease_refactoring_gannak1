@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from apps.workflow_engine.application.provider_execution import (
+    ProviderExecutionRuntime,
+)
+from apps.workflow_engine.application.provider_usage import ProviderUsageRecorder
 from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
     KnowledgeRuntimeCandidateResolver,
 )
@@ -16,6 +20,8 @@ class WorkflowRuntimeDependencies:
     knowledge_runtime_candidate_resolver: KnowledgeRuntimeCandidateResolver | None = (
         None
     )
+    provider_execution_runtime: ProviderExecutionRuntime | None = None
+    provider_usage_recorder: ProviderUsageRecorder | None = None
 
 
 __all__ = ["WorkflowRuntimeDependencies"]

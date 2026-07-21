@@ -107,3 +107,26 @@ def record_system_resource_permission_denied(
         organization_id=organization_id,
         metadata=metadata,
     )
+
+
+def record_public_resource_permission_denied(
+    *,
+    resource_type: str,
+    resource_id: Any,
+    action: str,
+    effective_auth_state: str,
+    organization_id: Any = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Public execution denial을 synthetic user 없이 기록한다."""
+
+    _record_resource_permission_denied(
+        actor_id=None,
+        actor_type="public",
+        resource_type=resource_type,
+        resource_id=resource_id,
+        action=action,
+        effective_auth_state=effective_auth_state,
+        organization_id=organization_id,
+        metadata=metadata,
+    )
