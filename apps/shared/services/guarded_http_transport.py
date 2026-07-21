@@ -13,6 +13,10 @@ from apps.shared.services.egress_guard import (
 from apps.shared.services.outbound_operation_policy import BoundOutboundOperation
 
 
+class EgressResponseRejectedError(EgressGuardError):
+    """A sanitized guard rejection after the remote response was received."""
+
+
 def _same_address(left: str, right: str) -> bool:
     return ipaddress.ip_address(str(left)) == ipaddress.ip_address(str(right))
 
@@ -268,6 +272,9 @@ class GuardedHttpTransport(_GuardedTransportMixin, httpx.HTTPTransport):
                 response.headers,
                 enforce_content_type=not response.is_redirect,
             )
+        except EgressGuardError as exc:
+            response.close()
+            raise EgressResponseRejectedError(exc.reason_code) from exc
         except Exception:
             response.close()
             raise
@@ -318,6 +325,9 @@ class GuardedAsyncHttpTransport(_GuardedTransportMixin, httpx.AsyncHTTPTransport
                 response.headers,
                 enforce_content_type=not response.is_redirect,
             )
+        except EgressGuardError as exc:
+            await response.aclose()
+            raise EgressResponseRejectedError(exc.reason_code) from exc
         except Exception:
             await response.aclose()
             raise
@@ -329,6 +339,7 @@ class GuardedAsyncHttpTransport(_GuardedTransportMixin, httpx.AsyncHTTPTransport
 
 
 __all__ = [
+    "EgressResponseRejectedError",
     "GuardedAsyncHttpTransport",
     "GuardedAsyncNetworkBackend",
     "GuardedHttpTransport",

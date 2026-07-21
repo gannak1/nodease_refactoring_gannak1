@@ -11,6 +11,7 @@ from apps.shared.services.egress_guard import (
     EgressGuardError,
     OutboundEgressGuard,
 )
+from apps.shared.services.guarded_http_transport import EgressResponseRejectedError
 from apps.workflow_engine.adapters.outbound_http import (
     GuardedHttpTransport,
     GuardedHttpxOutboundAdapter,
@@ -370,6 +371,29 @@ def test_response_limit_after_request_is_outcome_unknown(monkeypatch) -> None:
         transport_factory=lambda _guard: httpx.MockTransport(
             lambda _request: httpx.Response(200, content=b"12345")
         ),
+    )
+
+    with pytest.raises(OutboundHttpError) as captured:
+        adapter.send(_request())
+
+    assert captured.value.code == "response_lost"
+    assert captured.value.phase is OutboundHttpFailurePhase.OUTCOME_UNKNOWN
+
+
+def test_transport_response_rejection_is_outcome_unknown(monkeypatch) -> None:
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [_address("93.184.216.34")],
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise EgressResponseRejectedError(
+            "egress.compressed_response_not_allowed"
+        )
+
+    adapter = GuardedHttpxOutboundAdapter(
+        transport_factory=lambda _guard: httpx.MockTransport(handler)
     )
 
     with pytest.raises(OutboundHttpError) as captured:

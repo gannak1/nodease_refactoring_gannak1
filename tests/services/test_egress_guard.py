@@ -1,5 +1,6 @@
 import socket
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -25,6 +26,7 @@ from apps.shared.services.egress_guard import (
     EgressGuardError,
     EgressGuardPolicy,
     OutboundEgressGuard,
+    download_url_to_temp_file,
     ensure_db_probe_allowed,
     ensure_network_target_allowed,
     ensure_object_listing_allowed,
@@ -559,6 +561,91 @@ def test_safe_http_request_disables_environment_proxy(monkeypatch):
     assert response.text == "ok"
     assert captured["trust_env"] is False
     assert captured["headers"]["accept-encoding"] == "identity"
+
+
+def test_download_url_to_temp_file_streams_without_buffered_helper(
+    monkeypatch,
+) -> None:
+    class ChunkedStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"chunk-one"
+            yield b"-chunk-two"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/octet-stream"},
+            stream=ChunkedStream(),
+            request=request,
+        )
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: _fake_getaddrinfo("8.8.8.8"),
+    )
+    monkeypatch.setattr(
+        "apps.shared.services.guarded_http_transport.GuardedHttpTransport",
+        lambda *_args, **_kwargs: httpx.MockTransport(handler),
+    )
+    monkeypatch.setattr(
+        "apps.shared.services.egress_guard.safe_http_request",
+        lambda *_args, **_kwargs: pytest.fail(
+            "download must not buffer through safe_http_request"
+        ),
+    )
+
+    path = download_url_to_temp_file(
+        "https://example.com/document.pdf",
+        suffix=".pdf",
+        policy=EgressGuardPolicy(
+            max_response_bytes=64,
+            validate_peer_ip=False,
+        ),
+    )
+    try:
+        assert Path(path).read_bytes() == b"chunk-one-chunk-two"
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+def test_download_url_to_temp_file_removes_partial_file_at_size_cap(
+    monkeypatch,
+) -> None:
+    class OversizedStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"1234"
+            yield b"5"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            stream=OversizedStream(),
+            request=request,
+        )
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: _fake_getaddrinfo("8.8.8.8"),
+    )
+    monkeypatch.setattr(
+        "apps.shared.services.guarded_http_transport.GuardedHttpTransport",
+        lambda *_args, **_kwargs: httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(EgressGuardError) as captured:
+        download_url_to_temp_file(
+            "https://example.com/document.pdf",
+            policy=EgressGuardPolicy(
+                max_response_bytes=4,
+                validate_peer_ip=False,
+            ),
+        )
+
+    partial_path = Path(captured.value.partial_file_path)
+    assert captured.value.reason_code == "egress.response_too_large"
+    assert partial_path.exists() is False
 
 
 def test_protocol_adapter_guards_reject_dangerous_operations():

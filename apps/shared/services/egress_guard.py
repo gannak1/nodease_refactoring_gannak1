@@ -1,5 +1,6 @@
 import ipaddress
 import json
+import os
 import re
 import socket
 import tempfile
@@ -562,15 +563,89 @@ def download_url_to_temp_file(
     policy: EgressGuardPolicy | None = None,
     operation_id: str | None = None,
 ) -> str:
-    response = safe_http_request(
-        "GET",
-        url,
-        policy=policy,
-        operation_id=operation_id,
+    from apps.shared.services.guarded_http_transport import GuardedHttpTransport
+    from apps.shared.services.outbound_operation_policy import (
+        require_outbound_operation_profile,
     )
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(response.content)
-        return tmp.name
+
+    if operation_id is not None and policy is not None:
+        raise EgressGuardError("egress.ambiguous_policy")
+    operation = (
+        require_outbound_operation_profile(operation_id).bind(url)
+        if operation_id is not None
+        else None
+    )
+    guard = operation.guard if operation is not None else OutboundEgressGuard(policy)
+    current_url = (
+        operation.validate_url(url) if operation is not None else guard.validate_url(url)
+    )
+    guard.validate_method("GET")
+    current_headers = guard.sanitize_request_headers(None)
+    if guard.policy.force_identity_encoding:
+        current_headers["Accept-Encoding"] = "identity"
+
+    transport = (
+        GuardedHttpTransport(operation=operation)
+        if operation is not None
+        else GuardedHttpTransport(guard)
+    )
+    with httpx.Client(
+        transport=transport,
+        timeout=guard.policy.timeout_seconds,
+        follow_redirects=False,
+        trust_env=False,
+    ) as client:
+        for redirect_index in range(guard.policy.max_redirects + 1):
+            try:
+                with client.stream(
+                    "GET",
+                    current_url,
+                    headers=current_headers,
+                ) as response:
+                    if response.is_redirect:
+                        if redirect_index >= guard.policy.max_redirects:
+                            raise EgressGuardError("egress.too_many_redirects")
+                        location = response.headers.get("location")
+                        if not location:
+                            raise EgressGuardError("egress.invalid_redirect")
+                        next_url = urljoin(current_url, location)
+                        if operation is not None:
+                            operation.validate_origin(next_url)
+                        current_url = guard.validate_redirect(current_url, next_url)
+                        continue
+
+                    guard.validate_response_headers(response.headers)
+                    temp_path: str | None = None
+                    try:
+                        with tempfile.NamedTemporaryFile(
+                            delete=False,
+                            suffix=suffix,
+                        ) as tmp:
+                            temp_path = tmp.name
+                            total = 0
+                            for chunk in response.iter_raw():
+                                total += len(chunk)
+                                if total > guard.policy.max_response_bytes:
+                                    raise EgressGuardError(
+                                        "egress.response_too_large"
+                                    )
+                                tmp.write(chunk)
+                        return temp_path
+                    except Exception as exc:
+                        if temp_path:
+                            try:
+                                os.remove(temp_path)
+                            except OSError:
+                                pass
+                            if isinstance(exc, EgressGuardError):
+                                exc.partial_file_path = temp_path
+                        raise
+            except httpx.TimeoutException as exc:
+                raise EgressGuardError("egress.timeout") from exc
+            except httpx.RequestError as exc:
+                raise EgressGuardError("egress.connection_failed") from exc
+
+    raise EgressGuardError("egress.connection_failed")
 
 
 def ensure_db_probe_allowed(query: str) -> None:

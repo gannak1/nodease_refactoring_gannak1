@@ -12,6 +12,7 @@ from apps.shared.services.egress_guard import (
     OutboundEgressGuard,
 )
 from apps.shared.services.guarded_http_transport import (
+    EgressResponseRejectedError,
     GuardedHttpTransport,
     GuardedNetworkBackend,
 )
@@ -95,6 +96,11 @@ class GuardedHttpxOutboundAdapter:
                     )
         except OutboundHttpError:
             raise
+        except EgressResponseRejectedError:
+            raise OutboundHttpError(
+                "response_lost",
+                phase=OutboundHttpFailurePhase.OUTCOME_UNKNOWN,
+            ) from None
         except EgressGuardError as exc:
             if response_received:
                 raise OutboundHttpError(

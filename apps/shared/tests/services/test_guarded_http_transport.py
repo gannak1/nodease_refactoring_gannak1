@@ -7,6 +7,7 @@ import httpx
 import pytest
 from apps.shared.services.egress_guard import EgressGuardError
 from apps.shared.services.guarded_http_transport import (
+    EgressResponseRejectedError,
     GuardedAsyncHttpTransport,
     GuardedAsyncNetworkBackend,
     GuardedHttpTransport,
@@ -193,6 +194,43 @@ def test_bound_transport_rejects_host_header_override_before_pool_call(
         transport.handle_request(request)
 
     assert captured.value.reason_code == "egress.host_header_mismatch"
+    transport.close()
+
+
+def test_sync_transport_marks_response_header_rejection_after_send(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [_address("93.184.216.34")],
+    )
+    transport = GuardedHttpTransport(operation=_bound_operation())
+    request = httpx.Request(
+        "POST",
+        "https://provider.example/v1/responses",
+        json={"input": "synthetic"},
+    )
+    response = httpx.Response(
+        200,
+        headers={
+            "content-encoding": "gzip",
+            "content-type": "application/json",
+        },
+        stream=httpx.ByteStream(b"synthetic"),
+        request=request,
+    )
+    monkeypatch.setattr(
+        httpx.HTTPTransport,
+        "handle_request",
+        lambda _self, _request: response,
+    )
+
+    with pytest.raises(EgressResponseRejectedError) as captured:
+        transport.handle_request(request)
+
+    assert captured.value.reason_code == "egress.compressed_response_not_allowed"
+    assert response.is_closed is True
     transport.close()
 
 

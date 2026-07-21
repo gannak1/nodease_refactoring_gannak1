@@ -475,7 +475,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 ## Edge Cases
 
 - LLM provider와 model discovery는 HTTP/non-443, current Provider origin 밖 redirect, private·metadata DNS result, peer mismatch와 ambient proxy에서 provider request를 보내지 않는다. Stored credential의 stale `baseUrl`은 current Provider endpoint를 덮어쓰지 못하고 transport profile revision 변경은 stale capability를 provider call 전에 거부한다.
-- FileExtraction remote URL은 injected fake port로 node behavior를 단위 검증하고 guarded adapter에서 public HTTPS success, HTTP/private/metadata/redirect denial, response/content type cap, timeout, partial temp cleanup과 raw URL/path/exception redaction을 검증한다. Node와 factory가 Requests/HTTPX concrete client를 직접 생성하면 architecture test가 실패한다.
+- FileExtraction remote URL은 injected fake port로 node behavior를 단위 검증하고 guarded adapter에서 public HTTPS success, HTTP/private/metadata/redirect denial, response/content type cap, chunk-to-temp streaming, timeout, partial temp cleanup과 raw URL/path/exception redaction을 검증한다. Remote response 전체를 buffered helper에 적재하거나 Node와 factory가 Requests/HTTPX concrete client를 직접 생성하면 architecture test가 실패한다.
 
 ### 1. 실행 편의성
 
