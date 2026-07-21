@@ -1,5 +1,6 @@
 from fastapi import HTTPException
 
+from apps.gateway.utils import audit as audit_module
 from apps.gateway.utils.audit import _safe_failure_metadata
 
 
@@ -29,4 +30,27 @@ def test_audit_failure_metadata_keeps_only_http_status():
     assert metadata == {
         "error_code": "http.request_failed",
         "status_code": 409,
+    }
+
+
+def test_audit_decorator_merges_only_the_domain_safe_metadata(monkeypatch):
+    events: list[dict] = []
+    monkeypatch.setattr(
+        audit_module,
+        "record_audit",
+        lambda **event: events.append(event),
+    )
+
+    @audit_module.audit(
+        "deployment.llm_credential_policy.upsert",
+        metadata_factory=lambda kwargs: {
+            "node_location_ref": kwargs["safe_reference"]
+        },
+    )
+    def handler(*, safe_reference: str) -> str:
+        return "ok"
+
+    assert handler(safe_reference="workflow-node-location:v1:opaque") == "ok"
+    assert events[0]["metadata"] == {
+        "node_location_ref": "workflow-node-location:v1:opaque"
     }

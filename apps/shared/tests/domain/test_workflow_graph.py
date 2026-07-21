@@ -3,6 +3,7 @@ from apps.shared.domain.workflow_graph import (
     MAX_WORKFLOW_GRAPH_EDGES,
     MAX_WORKFLOW_GRAPH_NESTING_DEPTH,
     MAX_WORKFLOW_GRAPH_NODES,
+    MAX_WORKFLOW_NODE_ID_LENGTH,
     WorkflowGraphValidationError,
     validate_loop_subgraph,
     validate_workflow_graph,
@@ -114,6 +115,18 @@ def test_invalid_structure_fails_closed(mutate, expected_code: str) -> None:
         validate_workflow_graph(graph)
 
     assert exc_info.value.code == expected_code
+
+
+def test_node_id_length_matches_durable_location_contract() -> None:
+    graph = _valid_graph()
+    graph["nodes"][1]["id"] = "n" * (MAX_WORKFLOW_NODE_ID_LENGTH + 1)
+    graph["edges"][0]["target"] = graph["nodes"][1]["id"]
+    graph["edges"][1]["source"] = graph["nodes"][1]["id"]
+
+    with pytest.raises(WorkflowGraphValidationError) as exc_info:
+        validate_workflow_graph(graph)
+
+    assert exc_info.value.code == "workflow_node_invalid"
 
 
 @pytest.mark.parametrize(

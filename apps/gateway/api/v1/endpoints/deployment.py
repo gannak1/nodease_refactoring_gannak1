@@ -51,6 +51,10 @@ from apps.shared.domain.deployment_runtime_policy import (
     DeploymentRuntimePolicy,
     is_deployment_type_allowed_for_surface,
 )
+from apps.shared.domain.workflow_node_location import (
+    CanonicalWorkflowNodeLocation,
+    WorkflowNodeLocationError,
+)
 from apps.shared.db.session import get_db
 from apps.shared.schemas.deployment import (
     AuthenticatedDeploymentRunRequest,
@@ -238,6 +242,10 @@ def _deployment_llm_credential_policy_response(
         deployment_id=policy.deployment_id,
         deployment_version=policy.deployment_version,
         node_id=policy.node_id,
+        container_path=[
+            {"kind": kind, "node_id": node_id}
+            for kind, node_id in policy.container_path
+        ],
         model_id=policy.model_id,
         credential_id=policy.credential_id,
         policy_revision=policy.policy_revision,
@@ -245,6 +253,26 @@ def _deployment_llm_credential_policy_response(
         created_at=policy.created_at,
         updated_at=policy.updated_at,
     )
+
+
+def _deployment_llm_policy_audit_metadata(kwargs: dict) -> dict[str, str]:
+    node_id = kwargs.get("node_id")
+    policy_in = kwargs.get("policy_in")
+    if not isinstance(node_id, str) or not isinstance(
+        policy_in, DeploymentLLMCredentialPolicyUpsert
+    ):
+        return {}
+    try:
+        location = CanonicalWorkflowNodeLocation(
+            tuple(
+                (segment.kind, segment.node_id)
+                for segment in policy_in.container_path
+            ),
+            node_id,
+        )
+    except WorkflowNodeLocationError:
+        return {}
+    return {"node_location_ref": location.safe_reference}
 
 
 def _raise_provider_execution_policy_error(
@@ -531,6 +559,7 @@ def list_deployment_llm_credential_policies(
 @audit(
     AuditAction.DEPLOYMENT_LLM_CREDENTIAL_POLICY_UPSERT,
     target_param="deployment_id",
+    metadata_factory=_deployment_llm_policy_audit_metadata,
 )
 def replace_deployment_llm_credential_policy(
     deployment_id: uuid.UUID,
@@ -558,6 +587,10 @@ def replace_deployment_llm_credential_policy(
                 node_id=node_id,
                 model_id=policy_in.model_id,
                 credential_id=policy_in.credential_id,
+                container_path=tuple(
+                    (segment.kind, segment.node_id)
+                    for segment in policy_in.container_path
+                ),
             ),
         )
         db.commit()

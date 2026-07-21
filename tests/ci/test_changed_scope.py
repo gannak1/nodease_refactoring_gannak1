@@ -172,6 +172,15 @@ def test_schedule_change_selects_workflow_postgres():
     assert scope.workflow_postgres is True
 
 
+def test_provider_node_location_migration_test_selects_workflow_postgres():
+    scope = classify_paths(
+        ["apps/shared/tests/db/test_provider_execution_node_location_migration.py"]
+    )
+
+    assert scope.shared_tests is True
+    assert scope.workflow_postgres is True
+
+
 @pytest.mark.parametrize(
     "path",
     [

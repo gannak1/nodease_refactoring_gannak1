@@ -288,7 +288,7 @@ class LLMDeploymentCredentialPolicy(Base):
             "organization_id",
             "deployment_id",
             "deployment_version",
-            "node_id",
+            "node_location_digest",
             unique=True,
             postgresql_where=text("is_active"),
         ),
@@ -297,8 +297,13 @@ class LLMDeploymentCredentialPolicy(Base):
             "organization_id",
             "deployment_id",
             "deployment_version",
-            "node_id",
+            "node_location_digest",
             "is_active",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(container_path) = 'array' "
+            "AND length(node_location_digest) = 64",
+            name="ck_llm_deploy_credential_policy_location",
         ),
     )
 
@@ -322,6 +327,12 @@ class LLMDeploymentCredentialPolicy(Base):
     )
     deployment_version: Mapped[int] = mapped_column(Integer, nullable=False)
     node_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    container_path: Mapped[list[dict[str, str]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
+    node_location_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     model_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("llm_models.id", ondelete="RESTRICT"),
@@ -435,6 +446,11 @@ class ProviderExecutionCapabilityRecord(Base):
             "OR (state = 'revoked' AND revoked_at IS NOT NULL)",
             name="ck_provider_execution_capability_revocation_state",
         ),
+        CheckConstraint(
+            "jsonb_typeof(container_path) = 'array' "
+            "AND length(node_location_digest) = 64",
+            name="ck_provider_execution_capability_location",
+        ),
         Index(
             "ix_provider_execution_capability_expiry",
             "organization_id",
@@ -464,6 +480,12 @@ class ProviderExecutionCapabilityRecord(Base):
     )
     deployment_version: Mapped[int] = mapped_column(Integer, nullable=False)
     node_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    container_path: Mapped[list[dict[str, str]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
+    node_location_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     node_invocation_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), nullable=False
     )

@@ -8,6 +8,7 @@ from typing import Any
 MAX_WORKFLOW_GRAPH_NODES = 1000
 MAX_WORKFLOW_GRAPH_EDGES = 5000
 MAX_WORKFLOW_GRAPH_NESTING_DEPTH = 16
+MAX_WORKFLOW_NODE_ID_LENGTH = 255
 
 SOURCE_ONLY_NODE_TYPES = frozenset({"startNode", "webhookTrigger", "scheduleTrigger"})
 TERMINAL_NODE_TYPES = frozenset({"answerNode", "mailAcknowledgeNode"})
@@ -21,6 +22,20 @@ class WorkflowGraphValidationError(ValueError):
 
     def __str__(self) -> str:
         return self.code
+
+
+def is_valid_workflow_node_id(value: object) -> bool:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > MAX_WORKFLOW_NODE_ID_LENGTH
+    ):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def validate_workflow_graph(graph: Any) -> None:
@@ -90,8 +105,7 @@ def _validate_single_graph(
         position = node.get("position")
         data = node.get("data")
         if (
-            not isinstance(node_id, str)
-            or not node_id
+            not is_valid_workflow_node_id(node_id)
             or node_id in node_by_id
             or not isinstance(node_type, str)
             or not node_type

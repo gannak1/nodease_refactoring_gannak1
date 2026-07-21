@@ -1518,6 +1518,7 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     routing_learning_task_requirements_revision = script.get_revision("c4e5f6a7b8c9")
     routing_prelearning_revision = script.get_revision("b05c6d7e8f94")
     provider_execution_revision = script.get_revision("ad1e2f3a4b5c")
+    canonical_node_location_revision = script.get_revision("ae2f3a4b5c6d")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -1592,9 +1593,11 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
         "c4e5f6a7b8c9",
     }
     assert provider_execution_revision.down_revision == "b05c6d7e8f94"
+    assert canonical_node_location_revision.down_revision == "ad1e2f3a4b5c"
     assert "b05c6d7e8f94" in ancestry
     assert "ad1e2f3a4b5c" in ancestry
-    assert script.get_heads() == ["ad1e2f3a4b5c"]
+    assert "ae2f3a4b5c6d" in ancestry
+    assert script.get_heads() == ["ae2f3a4b5c6d"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

@@ -66,6 +66,18 @@ def test_capability_requires_the_exact_issue_binding_and_purpose():
             now=now,
         )
 
+    with pytest.raises(CapabilityBindingError):
+        capability.require_usable(
+            binding=ProviderExecutionBinding(
+                **{
+                    **binding.as_kwargs(),
+                    "container_path": (("loop", "other-loop"),),
+                }
+            ),
+            revision=1,
+            now=now,
+        )
+
 
 def test_capability_expiry_and_revision_cannot_be_replayed():
     now = datetime(2026, 7, 18, tzinfo=timezone.utc)

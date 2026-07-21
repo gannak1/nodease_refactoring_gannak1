@@ -8,6 +8,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from apps.shared.domain.workflow_node_location import (
+    CanonicalWorkflowNodeLocation,
+    WorkflowNodeLocationError,
+    iter_workflow_node_locations,
+)
+
 RUNTIME_METADATA_KEY = "_nodease_runtime"
 BINDINGS_KEY = "workflow_node_bindings"
 BINDING_VERSION = "workflow-node-bindings.v1"
@@ -38,6 +44,15 @@ class WorkflowNodeBinding:
     deployment_id: uuid.UUID
     deployment_version: int
     snapshot_sha256: str
+
+    def __post_init__(self) -> None:
+        try:
+            CanonicalWorkflowNodeLocation(
+                self.container_path,
+                self.workflow_node_id,
+            )
+        except WorkflowNodeLocationError as exc:
+            raise WorkflowNodeBindingError("workflow_node.binding_invalid") from exc
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -99,37 +114,28 @@ def workflow_node_references(
     graph: dict[str, Any] | None,
 ) -> tuple[WorkflowNodeReference, ...]:
     references: list[WorkflowNodeReference] = []
-
-    def walk(current: dict[str, Any], path: tuple[tuple[str, str], ...]) -> None:
-        nodes = current.get("nodes")
-        if not isinstance(nodes, list):
-            return
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            node_id = node.get("id")
-            node_type = node.get("type")
-            data = node.get("data") if isinstance(node.get("data"), dict) else {}
-            if not isinstance(node_id, str) or not node_id:
-                if node_type in {"workflowNode", "loopNode"}:
-                    raise WorkflowNodeBindingError("workflow_node.invalid_graph")
-                continue
-            if node_type == "workflowNode":
-                try:
-                    target_app_id = uuid.UUID(str(data.get("appId")))
-                except (TypeError, ValueError):
-                    raise WorkflowNodeBindingError(
-                        "workflow_node.target_unavailable"
-                    ) from None
-                references.append(
-                    WorkflowNodeReference(path, node_id, target_app_id)
-                )
-            elif node_type == "loopNode":
-                subgraph = data.get("subGraph")
-                if isinstance(subgraph, dict):
-                    walk(subgraph, path + (("loop", node_id),))
-
-    walk(graph or {}, ())
+    if graph is None:
+        return ()
+    try:
+        located_nodes = iter_workflow_node_locations(graph)
+    except WorkflowNodeLocationError as exc:
+        raise WorkflowNodeBindingError("workflow_node.invalid_graph") from exc
+    for located in located_nodes:
+        node = located.node
+        if node.get("type") != "workflowNode":
+            continue
+        data = node.get("data") if isinstance(node.get("data"), Mapping) else {}
+        try:
+            target_app_id = uuid.UUID(str(data.get("appId")))
+        except (TypeError, ValueError):
+            raise WorkflowNodeBindingError("workflow_node.target_unavailable") from None
+        references.append(
+            WorkflowNodeReference(
+                located.location.container_path,
+                located.location.node_id,
+                target_app_id,
+            )
+        )
     return tuple(
         sorted(
             references,

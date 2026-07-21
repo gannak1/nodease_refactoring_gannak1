@@ -1230,7 +1230,7 @@ credential-model 사용 가능 관계.
 
 #### `llm_deployment_credential_policies`
 
-Immutable deployment version의 LLM node에 사용할 credential과 server-derived credential principal을 graph 밖에서 고정하는 실행 제어 row다 ([ADR-0064](decisions/ADR-0064-provider-execution-capability-boundary.md)). Organization manager만 교체할 수 있고 graph에는 credential ID를 저장하지 않는다.
+Immutable deployment version의 canonical LLM node location에 사용할 credential과 server-derived credential principal을 graph 밖에서 고정하는 실행 제어 row다 ([ADR-0064](decisions/ADR-0064-provider-execution-capability-boundary.md), [ADR-0066](decisions/ADR-0066-nested-llm-canonical-node-location.md)). Organization manager만 교체할 수 있고 graph에는 credential ID를 저장하지 않는다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
@@ -1240,6 +1240,8 @@ Immutable deployment version의 LLM node에 사용할 credential과 server-deriv
 | deployment_id | UUID | NOT NULL, FK→workflow_deployments.id (CASCADE) |
 | deployment_version | INTEGER | NOT NULL, 1 이상 |
 | node_id | VARCHAR(255) | NOT NULL |
+| container_path | JSONB | NOT NULL, root는 `[]`, V1 segment는 `{kind: "loop", node_id}` |
+| node_location_digest | VARCHAR(64) | NOT NULL, server-derived canonical location SHA-256 |
 | model_id | UUID | NOT NULL, FK→llm_models.id (RESTRICT) |
 | credential_id | UUID | NOT NULL, FK→llm_credentials.id (RESTRICT) |
 | credential_principal_user_id | UUID | NOT NULL, FK→users.id (RESTRICT) |
@@ -1247,7 +1249,8 @@ Immutable deployment version의 LLM node에 사용할 credential과 server-deriv
 | is_active | BOOLEAN | NOT NULL |
 | created_at / updated_at | DATETIME | NOT NULL |
 
-- Partial UNIQUE `(organization_id, deployment_id, deployment_version, node_id) WHERE is_active`로 node당 active policy를 최대 한 개만 허용한다. Model UUID가 달라도 같은 node의 기존 active row를 먼저 비활성화한다.
+- Partial UNIQUE `(organization_id, deployment_id, deployment_version, node_location_digest) WHERE is_active`로 canonical location당 active policy를 최대 한 개만 허용한다. Model UUID가 달라도 같은 location의 기존 active row를 먼저 비활성화한다.
+- Digest는 index projection이며 authorization의 단독 근거가 아니다. 조회 뒤 structured `container_path`와 `node_id`를 exact 비교하고 불일치하면 fail-closed한다.
 - Policy 교체는 canonical deployment row와 기존 active policy를 lock하고 새 revision을 같은 transaction에 저장한다.
 
 #### `provider_execution_capabilities`
@@ -1262,6 +1265,7 @@ Immutable deployment version의 LLM node에 사용할 credential과 server-deriv
 | workflow_id | UUID | NOT NULL, FK→workflows.id (CASCADE) |
 | deployment_id | UUID | NOT NULL, FK→workflow_deployments.id (CASCADE) |
 | deployment_version / node_id | INTEGER / VARCHAR(255) | NOT NULL, immutable deployment node binding |
+| container_path / node_location_digest | JSONB / VARCHAR(64) | NOT NULL, policy와 같은 canonical graph location binding |
 | node_invocation_id / execution_admission_id / provider_attempt_id | UUID | NOT NULL, provider attempt binding |
 | purpose | VARCHAR(32) | NOT NULL, `main_generation` 또는 `memory_summary` |
 | provider_id / model_id / credential_id | UUID | NOT NULL, 각 catalog/resource FK (RESTRICT) |
@@ -1276,6 +1280,7 @@ Immutable deployment version의 LLM node에 사용할 credential과 server-deriv
 | created_at / updated_at | DATETIME | NOT NULL |
 
 - UNIQUE `(organization_id, provider_attempt_id, purpose)`로 같은 logical provider operation을 하나의 capability row에 수렴시킨다.
+- 기존 MBA-249 row는 migration에서 root `container_path=[]`로 backfill한다. Nested policy/capability row가 있으면 node-ID-only downgrade를 중단한다.
 - Admission은 실제 prompt UTF-8 byte upper bound, provider `max_tokens`와 canonical pricing의 최대 비용을 cap과 비교한다. Missing pricing과 provider별 output-limit alias는 capability-required path에서 fail-closed한다.
 - `egress_revision`은 현재 provider catalog routing fingerprint이며 중앙 egress authorization은 아니다. 실제 outbound guard 정책은 별도 경계가 소유한다.
 

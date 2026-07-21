@@ -28,6 +28,7 @@ from apps.shared.domain.provider_execution_capability import (
     ProviderExecutionBinding,
     RuntimePrincipal,
 )
+from apps.shared.domain.workflow_node_location import CanonicalWorkflowNodeLocation
 from apps.shared.services import provider_execution_capability as capability_service
 from apps.shared.services.provider_execution_capability import (
     CAPABILITY_TTL,
@@ -55,6 +56,42 @@ def _graph(*, data: dict | None = None) -> dict:
 
 def test_policy_reads_only_the_model_identifier_from_an_llm_graph_node():
     assert deployment_llm_node_model_id(_graph(), "llm-1") == "gpt-safe"
+
+
+def test_policy_resolves_the_exact_nested_location_for_repeated_node_ids():
+    graph = {
+        "nodes": [
+            {
+                "id": "llm-1",
+                "type": "llmNode",
+                "data": {"model_id": "gpt-root"},
+            },
+            {
+                "id": "loop-a",
+                "type": "loopNode",
+                "data": {
+                    "subGraph": {
+                        "nodes": [
+                            {
+                                "id": "llm-1",
+                                "type": "llmNode",
+                                "data": {"model_id": "gpt-nested"},
+                            }
+                        ],
+                        "edges": [],
+                    }
+                },
+            },
+        ],
+        "edges": [],
+    }
+
+    assert deployment_llm_node_model_id(
+        graph,
+        "llm-1",
+        container_path=(("loop", "loop-a"),),
+    ) == "gpt-nested"
+    assert deployment_llm_node_model_id(graph, "llm-1") == "gpt-root"
 
 
 def test_policy_rejects_node_id_that_cannot_be_persisted():
@@ -150,7 +187,14 @@ def test_policy_replacement_flushes_superseded_active_row_before_insert(monkeypa
     model_id = uuid.uuid4()
     credential_id = uuid.uuid4()
     actor_id = uuid.uuid4()
-    old_policy = SimpleNamespace(is_active=True, policy_revision=7)
+    root_location = CanonicalWorkflowNodeLocation((), "llm-1")
+    old_policy = SimpleNamespace(
+        is_active=True,
+        policy_revision=7,
+        node_id="llm-1",
+        container_path=[],
+        node_location_digest=root_location.digest,
+    )
     db = _ReplacementDb([old_policy])
 
     canonical_calls: list[dict] = []
@@ -222,7 +266,7 @@ def test_policy_replacement_flushes_superseded_active_row_before_insert(monkeypa
     assert manager_checks == [actor_id, actor_id]
 
 
-def test_active_policy_unique_index_is_scoped_to_deployment_node():
+def test_active_policy_unique_index_is_scoped_to_canonical_node_location():
     index = next(
         index
         for index in LLMDeploymentCredentialPolicy.__table__.indexes
@@ -233,8 +277,37 @@ def test_active_policy_unique_index_is_scoped_to_deployment_node():
         "organization_id",
         "deployment_id",
         "deployment_version",
-        "node_id",
+        "node_location_digest",
     ]
+
+
+def test_stored_location_digest_mismatch_fails_closed() -> None:
+    row = SimpleNamespace(
+        node_id="llm-1",
+        container_path=[{"kind": "loop", "node_id": "loop-a"}],
+        node_location_digest="0" * 64,
+    )
+
+    with pytest.raises(ProviderExecutionPolicyError) as exc_info:
+        ProviderExecutionCapabilityService._stored_location(row)
+
+    assert exc_info.value.code == "selection_ambiguous"
+
+
+def test_policy_command_rejects_non_utf8_container_id_as_configuration_required():
+    command = DeploymentCredentialPolicyCommand(
+        organization_id=uuid.uuid4(),
+        deployment_id=uuid.uuid4(),
+        node_id="llm-1",
+        model_id=uuid.uuid4(),
+        credential_id=uuid.uuid4(),
+        container_path=(("loop", "\ud800"),),
+    )
+
+    with pytest.raises(ProviderExecutionPolicyError) as exc_info:
+        ProviderExecutionCapabilityService._command_location(command)
+
+    assert exc_info.value.code == "configuration_required"
 
 
 def test_request_cost_uses_canonical_pricing_and_rounds_up():
@@ -324,12 +397,16 @@ def test_admission_locks_policy_before_capability_and_uses_database_clock(monkey
     validation_times: list[datetime] = []
     lock_modes: dict[str, bool | None] = {}
     database_now = datetime(2026, 7, 19, 1, 2, 3, tzinfo=timezone.utc)
+    root_location = CanonicalWorkflowNodeLocation((), "llm-1")
     policy = SimpleNamespace(
         id=policy_id,
         policy_revision=2,
         model_id=model_id,
         credential_id=credential_id,
         credential_principal_user_id=principal_id,
+        node_id="llm-1",
+        container_path=[],
+        node_location_digest=root_location.digest,
     )
     record = SimpleNamespace(
         policy_id=policy_id,
@@ -510,12 +587,16 @@ def test_issue_capability_locks_policy_before_attempt_lookup_and_uses_database_c
     )
     database_now = datetime(2026, 7, 19, 2, 0, tzinfo=timezone.utc)
     order: list[str] = []
+    root_location = CanonicalWorkflowNodeLocation((), "llm-1")
     policy = SimpleNamespace(
         id=policy_id,
         policy_revision=1,
         model_id=model_id,
         credential_id=credential_id,
         credential_principal_user_id=principal_id,
+        node_id="llm-1",
+        container_path=[],
+        node_location_digest=root_location.digest,
     )
     model = SimpleNamespace(id=model_id)
     credential = SimpleNamespace(id=credential_id)

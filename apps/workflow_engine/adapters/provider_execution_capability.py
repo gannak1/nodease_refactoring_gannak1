@@ -368,8 +368,8 @@ class CapabilityProviderExecutionAdapter:
             control.execution_id,
             f"provider_execution:{effect_context.node_invocation_id}:main_generation",
         )
-        return ProviderExecutionCapabilityIssueCommand(
-            binding=ProviderExecutionBinding(
+        try:
+            binding = ProviderExecutionBinding(
                 organization_id=effect_context.organization_id,
                 workflow_id=effect_context.workflow_id,
                 deployment_id=deployment_id,
@@ -379,7 +379,12 @@ class CapabilityProviderExecutionAdapter:
                 execution_admission_id=control.execution_id,
                 provider_attempt_id=provider_attempt_id,
                 purpose=CapabilityPurpose.MAIN_GENERATION,
-            ),
+                container_path=control.binding_container_path,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ProviderExecutionConfigurationError() from exc
+        return ProviderExecutionCapabilityIssueCommand(
+            binding=binding,
             execution_subject=execution_subject,
             billing_principal=RuntimePrincipal.organization(
                 effect_context.organization_id

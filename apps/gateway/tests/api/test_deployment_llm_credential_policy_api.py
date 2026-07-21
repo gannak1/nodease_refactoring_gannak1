@@ -6,8 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from apps.gateway.api.v1.endpoints import deployment as deployment_endpoint
+from apps.shared.domain.workflow_node_location import CanonicalWorkflowNodeLocation
 from apps.shared.schemas.deployment import DeploymentLLMCredentialPolicyUpsert
 from apps.shared.services.provider_execution_capability import (
     DeploymentCredentialPolicyView,
@@ -47,6 +49,7 @@ def test_policy_write_uses_active_org_and_returns_safe_projection(monkeypatch):
         is_active=True,
         created_at=now,
         updated_at=now,
+        container_path=(("loop", "loop-a"),),
     )
 
     monkeypatch.setattr(
@@ -72,6 +75,7 @@ def test_policy_write_uses_active_org_and_returns_safe_projection(monkeypatch):
         DeploymentLLMCredentialPolicyUpsert(
             model_id=model_id,
             credential_id=credential_id,
+            container_path=[{"kind": "loop", "node_id": "loop-a"}],
         ),
         request=object(),
         x_organization_id=str(organization_id),
@@ -85,11 +89,13 @@ def test_policy_write_uses_active_org_and_returns_safe_projection(monkeypatch):
     assert captured["command"].organization_id == organization_id
     assert captured["command"].deployment_id == deployment_id
     assert captured["command"].node_id == "llm-1"
+    assert captured["command"].container_path == (("loop", "loop-a"),)
     assert result.model_dump() == {
         "id": policy.id,
         "deployment_id": deployment_id,
         "deployment_version": 3,
         "node_id": "llm-1",
+        "container_path": [{"kind": "loop", "node_id": "loop-a"}],
         "model_id": model_id,
         "credential_id": credential_id,
         "policy_revision": 2,
@@ -98,6 +104,60 @@ def test_policy_write_uses_active_org_and_returns_safe_projection(monkeypatch):
         "updated_at": now,
     }
     assert "credential_principal_user_id" not in result.model_dump()
+
+
+def test_policy_audit_metadata_uses_opaque_location_reference_only():
+    policy_in = DeploymentLLMCredentialPolicyUpsert(
+        model_id=uuid.uuid4(),
+        credential_id=uuid.uuid4(),
+        container_path=[{"kind": "loop", "node_id": "private-loop"}],
+    )
+
+    metadata = deployment_endpoint._deployment_llm_policy_audit_metadata(
+        {
+            "node_id": "private-llm",
+            "policy_in": policy_in,
+        }
+    )
+
+    expected = CanonicalWorkflowNodeLocation(
+        (("loop", "private-loop"),),
+        "private-llm",
+    )
+    assert metadata == {"node_location_ref": expected.safe_reference}
+    assert "private-loop" not in str(metadata)
+    assert "private-llm" not in str(metadata)
+
+
+def test_policy_request_without_container_path_keeps_root_compatibility():
+    policy_in = DeploymentLLMCredentialPolicyUpsert(
+        model_id=uuid.uuid4(),
+        credential_id=uuid.uuid4(),
+    )
+
+    assert policy_in.container_path == []
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"node_location_digest": "0" * 64},
+        {"container_path": [{"kind": "future", "node_id": "loop-a"}]},
+        {
+            "container_path": [
+                {"kind": "loop", "node_id": f"loop-{index}"}
+                for index in range(17)
+            ]
+        },
+    ],
+)
+def test_policy_request_rejects_client_owned_or_noncanonical_location(extra):
+    with pytest.raises(ValidationError):
+        DeploymentLLMCredentialPolicyUpsert(
+            model_id=uuid.uuid4(),
+            credential_id=uuid.uuid4(),
+            **extra,
+        )
 
 
 @pytest.mark.parametrize(

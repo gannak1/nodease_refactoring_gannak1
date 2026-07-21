@@ -11,15 +11,18 @@ Status: Draft
 - LlamaParse resolver는 허용 후보가 하나일 때만 parser 입력을 반환한다. 후보 없음 또는 둘 이상은 created_at/name/latest/default fallback 없이 fail-closed한다.
 - LlamaParse credential 후보가 존재하지만 모두 subject의 `use` 권한이 없으면 parser 호출 전에 `permission.denied` audit을 한 번 기록한다. 허용 candidate가 있는 요청에서 다른 후보의 거부 때문에 audit을 추가하지 않으며, audit에는 credential config/API key/provider raw payload를 남기지 않는다.
 - Generation credential preflight는 KB permission, collection route permission, source ACL authorization을 충족시키지 않는다.
-- ProviderExecutionCapability issuer는 opaque identity/revision, organization/workflow/deployment version, node invocation/execution admission/provider attempt, provider/model/credential, server-derived credential principal, credential permission decision, purpose, verified relation/provider-routing·pricing revision, token·cost cap과 expiry를 모두 고정한다.
+- ProviderExecutionCapability issuer는 opaque identity/revision, organization/workflow/deployment version, canonical `(container_path, node_id)`, node invocation/execution admission/provider attempt, provider/model/credential, server-derived credential principal, credential permission decision, purpose, verified relation/provider-routing·pricing revision, token·cost cap과 expiry를 모두 고정한다.
 - Capability response/trace에는 raw credential, encrypted config와 capability token/scope 원문을 노출하지 않는다.
 - Capability consumer가 client 값으로 credential principal 또는 permission revision을 덮어쓰려 하면 발급·사용을 거부한다.
 - Credential config service는 active key round trip, 구키 decrypt, canonical JSON과 required `apiKey` validation을 수행한다.
 - Encryption metadata가 모두 null인 legacy row만 평문 read를 허용한다. Metadata 일부 누락, unsupported algorithm, unknown key version, 손상 ciphertext 또는 invalid config는 평문 fallback 없이 실패한다.
 - Gateway와 Workflow Engine의 신규 credential 등록은 raw config와 다른 ciphertext, active key version과 algorithm을 저장한다.
 - Gateway·Workflow Engine·RAG answer·embedding·LlamaParse의 decrypt 실패 테스트는 provider/client mock 호출이 0회임을 검증한다.
-- Deployment policy resolver는 immutable deployment graph의 exact `llmNode.model_id`와 generation purpose의 active `chat` model type을 확인해 embedding 모델을 거부하고 `credential_id`/`credentialId`, fallback model, auto-routing이 있는 capability-required node를 거부한다. `node_id`는 255자까지 허용하고 256자 이상은 policy/capability row를 쓰기 전에 거부한다.
-- 같은 deployment version/node에 model UUID가 다른 두 active policy를 만들 수 없고, concurrent 최초 policy write는 canonical deployment와 active policy를 순서대로 lock한 뒤 authorization 근거를 잠가 하나의 active revision으로 수렴하거나 safe `409`로 종료한다.
+- Deployment policy resolver는 immutable deployment graph의 exact `(container_path, node_id)` `llmNode.model_id`와 generation purpose의 active `chat` model type을 확인해 embedding 모델을 거부하고 `credential_id`/`credentialId`, fallback model, auto-routing이 있는 capability-required node를 거부한다. Terminal/parent ID는 255자, Loop path는 깊이 16까지 허용하며 초과·unknown kind·missing location은 row를 쓰기 전에 거부한다.
+- 같은 deployment version/location에 model UUID가 다른 두 active policy를 만들 수 없고, 서로 다른 Loop의 동일 `node_id`에는 별도 active policy를 허용한다. Concurrent 최초 policy write는 canonical deployment와 active policy를 순서대로 lock한 뒤 authorization 근거를 잠가 하나의 active revision으로 수렴하거나 safe `409`로 종료한다.
+- Stored digest와 structured path/node가 일치하지 않거나 한 location의 capability를 다른 Loop에서 재사용하면 credential materialization과 provider/client 호출은 0회여야 한다.
+- Policy 변경과 runtime permission denial audit은 canonical location에서 계산한 bounded opaque reference만 기록하고 raw `container_path`, nested input, credential/capability 원문을 기록하지 않는다.
+- PostgreSQL migration 검증은 기존 row의 root digest backfill, 서로 다른 location의 동일 node ID 허용, 같은 location의 active row 중복 거부와 nested row downgrade 차단을 실행한다.
 - Deployment policy write는 manager actor를 server-derived credential principal으로만 사용하고, request의 credential config/principal override를 받지 않는다. Same organization, active credential/provider, verified single relation, credential `use`를 만족하지 않으면 policy row를 만들지 않는다.
 - Capability-required LLM node는 trusted node invocation control과 explicit token/cost cap이 없으면 provider client를 만들지 않으며, legacy user/app owner/default/name/order/fallback selection을 호출하지 않는다.
 - Capability-required LLM node는 messages와 tools·response schema 등 provider-visible parameter 구조 전체의 UTF-8 byte upper bound, `max_tokens`와 canonical pricing 최대 비용 중 하나라도 cap을 넘으면 provider client/SDK를 호출하지 않는다. Output limit이 없으면 server cap을 적용하고 직렬화 불가 parameter, provider-specific output-limit alias와 missing pricing은 fail-closed한다.
@@ -49,7 +52,7 @@ Status: Draft
 - DELETE의 legacy success message가 `deleted`를 사용하더라도 secret physical purge 완료로 해석하지 않는다. 응답, audit와 log에는 저장 secret 원문을 포함하지 않는다.
 - Knowledge target flow에서 `generation_model_id`/`credential_id`가 없거나 보이지 않으면 Knowledge API gate에 따라 answer-run 생성 전에 실패한다.
 - Credential `use` denial은 sanitized error/audit metadata에서 KB permission denial 및 source ACL denial과 구분된다.
-- `PUT /api/v1/deployments/{deployment_id}/llm-credential-policies/{node_id}`는 active organization manager만 성공하고, response에 credential principal, encrypted config, API key/token, raw capability scope를 포함하지 않는다.
+- `PUT /api/v1/deployments/{deployment_id}/llm-credential-policies/{node_id}`는 active organization manager만 성공한다. Path 생략은 root로 유지하고 nested request/response는 structured `container_path`를 사용하며, response에 digest, credential principal, encrypted config, API key/token, raw capability scope를 포함하지 않는다.
 - Policy endpoint는 다른 organization deployment를 `404`로 숨기고 manager denial은 `403 permission.denied`, invalid graph/relation은 safe `422`, concurrent/ambiguous selection은 safe `409`로 반환한다.
 
 ## E2E 테스트

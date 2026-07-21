@@ -16,6 +16,7 @@ from apps.shared.domain.workflow_node_binding import (
     apply_workflow_node_bindings,
     canonical_snapshot_sha256,
 )
+from apps.shared.domain.workflow_node_location import iter_workflow_node_locations
 
 
 class _Repository:
@@ -981,6 +982,35 @@ def test_malformed_graph_fails_closed():
     assert result.safe_summary.blocked_reason == "workflow_graph_invalid"
 
 
+def test_unencodable_node_id_fails_closed_before_resource_lookup():
+    repository = _Repository()
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=uuid.uuid4(),
+        node_catalog_by_type={},
+    )
+
+    result = use_case.preview(
+        deployment_type="api",
+        graph_snapshot={
+            "nodes": [
+                {
+                    "id": "\ud800",
+                    "type": "startNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {},
+                }
+            ],
+            "edges": [],
+        },
+        is_active=False,
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "workflow_graph_invalid"
+    assert repository.calls == []
+
+
 def test_malformed_runtime_authoritative_node_data_fails_closed():
     use_case = DeploymentPreflightUseCase(
         _Repository(),
@@ -1428,3 +1458,34 @@ def _catalog(**definitions: tuple[str, bool]) -> dict[str, NodeCatalogSnapshot]:
         implemented=True,
     )
     return snapshots
+
+
+def test_preflight_uses_the_shared_canonical_nested_node_locations() -> None:
+    graph = {
+        "nodes": [
+            _node(
+                "loop-a",
+                "loopNode",
+                {
+                    "subGraph": {
+                        "nodes": [_node("llm-1", "llmNode")],
+                        "edges": [],
+                    }
+                },
+            )
+        ],
+        "edges": [],
+    }
+
+    shared = [
+        (located.location.container_path, located.location.node_id)
+        for located in iter_workflow_node_locations(graph)
+    ]
+    preflight = [
+        (container_path, node["id"])
+        for node, container_path in DeploymentPreflightUseCase._iter_graph_nodes(
+            graph
+        )
+    ]
+
+    assert preflight == shared
