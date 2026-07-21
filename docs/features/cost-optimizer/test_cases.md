@@ -7,8 +7,10 @@ Verified Against: `feature/mba-247 @ 311a4bc2`
 
 이 문서는 `requirements.md`의 FR-001부터 FR-015까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
 FR-011은 `judge_bootstrap_incremental_v1`으로 다룬다. 배포 실행 1~50회는 runtime Judge가
-현재 요청의 후보 모델을 선택하고, workflow 완료 뒤 schema·후속 노드·fallback 계약을 통과한
-label의 요청 요구 능력만 local router 학습에 반영한다. 50건 이상이고 선택 모델 분포가 한 모델에
+현재 요청의 요구 수준을 판정하고, 서버가 실행 주체가 사용할 수 있는 전체 후보 중 capability와
+비용을 비교해 모델을 선택한다. 후보가 아직 운영 검증을 통과하지 않았다는 이유만으로 첫 사용을
+막지 않는다. workflow 완료 뒤 schema·후속 노드·fallback 계약을 통과한 label의 요청 요구 능력만
+local router 학습에 반영한다. 50건 이상이고 선택 모델 분포가 한 모델에
 과도하게 쏠리지 않았을 때 local router가 먼저 요청 요구 능력을 예측한다. 서버는 capability를
 충족하는 후보 중 비용이 낮은 모델을 선택하며, 확신이 낮으면 runtime Judge로 되돌아간다. JSON
 Schema 같은 고정 출력 계약은 후보 capability 검사로만 쓴다. Local 난이도 학습 feature는

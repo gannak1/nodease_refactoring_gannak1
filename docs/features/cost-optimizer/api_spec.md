@@ -7,7 +7,8 @@ Verified Against: feature/mba-270 @ d2d416b9
 
 이 문서는 `requirements.md`의 FR-001부터 FR-014까지를 API 계약 관점에서 정리한다.
 FR-011은 `judge_bootstrap_incremental_v1` strategy의 무수동-bootstrap 정책으로 다룬다. 초기 운영 요청은 runtime Judge가
-실행 주체가 사용할 수 있는 후보 중 모델을 선택하고, Judge 선택 label과 완료된 운영 결과가
+요구 수준을 판정하고, 서버가 실행 주체가 사용할 수 있는 전체 후보에서 capability와 가격을
+비교해 모델을 선택한다. Judge 요구 수준 label과 완료된 운영 결과가
 쌓이면 Celery가 정책별 10건 또는 최대 5분 batch로 candidate artifact를 학습한다. 최근
 20건의 학습 전 예측 정확도와 계약 품질을 통과한 artifact만 로컬 라우터로 승격한다. local prediction이 불확실하거나
 권한 모델이 바뀐 경우에는 Judge로 돌아간다. 원문 prompt/input/KB 내용은 API 응답, policy
@@ -115,16 +116,16 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 
 현재 자동 모델 라우팅은 `judge_bootstrap_incremental_v1` strategy의 무수동-bootstrap 경로를 사용한다. 입력군, 대표 예문,
 embedding vector, semantic cohort endpoint는 제공하지 않는다. 초기 운영 요청은 runtime Judge가
-현재 후보 중 하나를 선택하고, 이후에는 Judge 선택 label과 완료된 운영 결과를 바탕으로 local
-router가 먼저 선택한다.
+요구 수준만 판정하고, 서버가 현재 실행 주체가 사용할 수 있는 전체 후보 중 capability와 가격을
+비교해 처리 모델을 선택한다. 후보의 운영 검증 상태는 첫 사용을 막지 않으며, 이후 Judge 요구
+수준 label과 완료된 운영 결과를 바탕으로 local router가 먼저 요구 수준을 예측한다.
 
-Runtime Judge의 `candidate_models`에는 provider 공식 문서에서 확인한
-`canonical_model_id`, `model_role`, `reasoning_profile`, `complexity_ceiling`,
-`cost_position`, `task_affinities`, `specialization_tags`,
-`evidence_type=provider_documentation`을 포함한다.
-공식 별칭과 정식 ID가 동시에 실행 가능하면 정식 ID 하나만 전달하고, 별칭만 실행 가능하면
-credential 조회가 가능한 별칭을 유지한다. 공급자 특화 태그는 약한 사전 정보이며
-`operational_run_count`가 충분한 후보의 계약 성공·fallback 성적보다 우선하지 않는다.
+Runtime Judge 요청에는 후보 모델 목록을 넣지 않는다. Judge에는 현재 요청·노드 계약과
+`input_token_bucket`, `schema_required`, `knowledge_enabled`, `retrieved_source_count` 같은
+코드 계산 사실만 전달한다. 서버는 provider 공식 문서로 관리하는 `canonical_model_id`,
+`reasoning_profile`, `complexity_ceiling`, `cost_position`, `task_affinities`를 사용해 현재
+실행 가능한 후보를 비교한다. 공식 별칭과 정식 ID가 동시에 실행 가능하면 정식 ID 하나를
+선택하고, 별칭만 실행 가능하면 credential 조회가 가능한 별칭을 유지한다.
 
 ### Legacy Bootstrap Contract
 
