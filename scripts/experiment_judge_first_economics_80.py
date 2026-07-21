@@ -403,7 +403,26 @@ def _node_data(*, auto_routing: bool, model_id: str, fallback_model_id: str | No
             "type": "json",
             "schema": {
                 "type": "object",
-                "required": ["분류", "우선순위", "승인필요", "대응계획", "답변초안"],
+                "properties": {
+                    "분류": {"type": "string"},
+                    "우선순위": {
+                        "type": "string",
+                        "enum": ["low", "medium", "high", "critical"],
+                    },
+                    "승인필요": {"type": "boolean"},
+                    "대응계획": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "답변초안": {"type": "string"},
+                },
+                "required": [
+                    "분류",
+                    "우선순위",
+                    "승인필요",
+                    "대응계획",
+                    "답변초안",
+                ],
             },
         },
     }

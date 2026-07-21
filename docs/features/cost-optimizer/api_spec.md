@@ -8,7 +8,8 @@ Verified Against: feature/mba-270 @ d2d416b9
 이 문서는 `requirements.md`의 FR-001부터 FR-014까지를 API 계약 관점에서 정리한다.
 FR-011은 `judge_bootstrap_incremental_v1` strategy의 무수동-bootstrap 정책으로 다룬다. 초기 운영 요청은 runtime Judge가
 실행 주체가 사용할 수 있는 후보 중 모델을 선택하고, Judge 선택 label과 완료된 운영 결과가
-쌓이면 로컬 mDeBERTa 모델 선택 분류기가 Judge를 대체한다. local prediction이 불확실하거나
+쌓이면 Celery가 정책별 10건 또는 최대 5분 batch로 candidate artifact를 학습한다. 최근
+20건의 학습 전 예측 정확도와 계약 품질을 통과한 artifact만 로컬 라우터로 승격한다. local prediction이 불확실하거나
 권한 모델이 바뀐 경우에는 Judge로 돌아간다. 원문 prompt/input/KB 내용은 API 응답, policy
 artifact, 학습 이력에 저장하지 않는다.
 
@@ -83,6 +84,7 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-010 | builder permission enforcement | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/gateway/auth/permissions.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-011 | Judge-first policy persistence, event idempotency, refresh, credential guard, trace | `apps/shared/db/models/model_routing_policy.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/tasks.py`, `apps/workflow_engine/services/model_routing_policy_refresh_task.py`, `apps/workflow_engine/workflow/nodes/llm/llm_node.py` | 구현 완료 | FR-011 targeted tests | 통과 |
 | FR-011 | Runtime Judge, 점진 학습 local classifier, runtime candidate selection | `apps/workflow_engine/services/model_routing_runtime_judge.py`, `model_routing_incremental_learning.py`, `model_routing_local_classifier.py`, `model_router.py`, `llm_node.py` | 구현 완료 | `test_model_router.py`, `test_model_routing_incremental_learning.py`, `test_model_routing_policy_refresh_task.py`, `test_llm_node_runtime.py` | 집중 테스트 통과 |
+| FR-011 | 학습 전 예측 평가와 Celery batch 학습 | `apps/workflow_engine/services/model_routing_learning_batch.py`, `apps/workflow_engine/tasks.py`, `apps/shared/db/models/model_routing_policy.py` | 구현 완료 | `test_model_routing_learning_batch.py`, `test_model_routing_policy_tasks.py`, `test_model_routing_requirement_learning.py` | 집중 테스트 통과 |
 | FR-011 | 과거 정책 호환 경계 | refresh 시 Judge-first로 1회 이관하고 신규 runtime에서는 레거시 rule을 실행하지 않음 | 구현 완료 | `test_model_routing_policy_refresh_task.py`, `test_llm_node_runtime.py` | 통과 |
 | FR-012 | LLM parameter recommendation contract | `apps/gateway/services/cost_optimizer_parameter_recommendation_service.py`, `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 기록 있음 |
 | FR-013 | Recommendation/compare verification orchestration, quality judge, history summary, modal/result-analysis UI | `apps/gateway/services/cost_optimizer_recommendation_verification_service.py`, `apps/gateway/services/cost_optimizer_output_quality_service.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/shared/db/models/cost_optimizer.py`, `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, `apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | Gateway/frontend targeted test 통과 |
@@ -292,6 +294,7 @@ reason code, runtime context, `decision_source`, `judge_called`를 남긴다. `j
 | `model` | 호출한 Judge 모델. 준비 전에 실패하면 없을 수 있음 |
 | `candidate_model_count` | Judge가 비교하려던 실행 가능 후보 수 |
 | `confidence`, `reason_code`, `reason_short`, `cost` | `status=selected`일 때의 구조화된 선택 근거. `reason_short`은 사전 정의된 코드에 대응하는 짧은 안전 설명이며, Judge 자유 문장은 durable trace에 저장하지 않는다. |
+| `usage.latency_ms` | 첫 Judge provider 요청부터 재시도 응답까지의 총 대기 시간. Judge 전용 `llm_usage_logs` 행에도 같은 값이 저장되며 최종 작업 모델의 latency와 합치지 않는다. |
 | `error_code` | `failed` 또는 `unavailable`일 때의 안전 오류 코드 |
 | `not_called_reason` | local router 선택, 정책 없음, 테스트 preview 등 미호출 이유 |
 | `learning_status`, `learning_not_queued_reason` | label이 `pending_contract`로 저장됐는지, 저장하지 못했다면 안전한 실패 코드 |
@@ -305,7 +308,14 @@ Judge 자유형 설명은 원문 요청이나 개인정보를 반복할 수 있�
 
 Judge가 선택한 실행은 처음에는 `learning_status=pending_contract`로 기록한다. workflow
 완료 후 node 성공, schema/downstream 계약, fallback 여부를 확인해 `accepted` 또는
-`rejected`와 `learning_outcome_reason`으로 갱신한다. 이 학습 상태는 정책 갱신 경로에서만
+`rejected`와 `learning_outcome_reason`으로 갱신한다. 요청 중 계산한 로컬 예측과 confidence,
+학습 표본 거리, 예측 경계 여유도 함께 저장한다. Celery는 확정 label을 10건 또는 첫 label
+확정 후 최대 5분 단위로 직렬화해 학습하고 `learning_processed_at`으로 중복 처리를 막는다.
+학습용 vector는 원문을 저장하지 않고 `primary_request`, `dynamic_context`,
+`structured_features` 세 그룹을 각각 mDeBERTa로 인코딩한 뒤 `0.75 / 0.15 / 0.10`으로
+정규화 결합한다. `feature_schema_version=grouped_runtime_variables_v3`가 아닌 기존 artifact는
+실행에 사용하지 않고 새 label부터 다시 학습한다.
+이 학습 상태는 정책 갱신 경로에서만
 사용하며, 노드 상세 패널의 policy 조회 응답에는 feature vector나 원문, 집계값을 반환하지 않는다.
 `schema_status=not_required`는 schema 검사가 실패한 것이 아니라 수행되지 않은 상태이므로 학습
 거절 사유나 schema 평가·통과 집계의 분모에 포함하지 않는다. 반면 선언된 JSON schema가 유효하지 않아
@@ -326,7 +336,7 @@ cache hit로 처리하지 않는다.
 | llm_node_model_routing_policy_updates | 정책 재평가의 trigger, 안전한 입력/출력 요약, 결과 |
 | llm_node_model_routing_policy_run_events | 배포 후 운영 실행의 중복 없는 점검 카운터 |
 | llm_node_model_routing_performances | 배포/node/model/입력 길이 profile별 운영 성적 |
-| llm_node_model_routing_learning_labels | Judge 선택의 안전한 vector, HMAC routing feature hash와 완료 후 계약 기반 학습 확정 상태. 원문 prompt/input은 저장하지 않는다. |
+| llm_node_model_routing_learning_labels | Judge 선택의 안전한 vector, 학습 전 로컬 예측·confidence·거리·경계 여유, HMAC routing feature hash, 계약 확정과 비동기 학습 완료 상태. 원문 prompt/input은 저장하지 않는다. |
 | llm_model_routing_global_profiles | Judge-first runtime이 후보 모델의 초기 품질·지연·fallback 사전 정보를 읽는 전역 catalog profile. 실행 주체가 사용할 수 있으면서 명시적 catalog에 등록된 모델만 후보가 된다. |
 
 Test Sidebar 실행은 설정 지문이 같은 활성 배포 정책을 우선 사용한다. 활성 정책이 없거나 현재 draft와 다르면 실행 주체가 사용할 수 있는 모델로 일회성 Judge-first 정책을 구성해 runtime Judge를 호출한다. 두 경우 모두 Judge label·운영 정책 카운터·성적에는 포함하지 않는다. Cost Optimizer candidate 비교 실행도 운영 정책 카운터와 성적에 포함하지 않는다.

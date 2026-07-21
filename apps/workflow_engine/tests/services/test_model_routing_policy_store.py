@@ -9,12 +9,12 @@ from apps.shared.db.models.workflow_run import NodeRunStatus
 from apps.workflow_engine.services.llm_service import LLMService
 
 
-def test_completed_judge_label_updates_local_artifact_only_after_contract_passes(monkeypatch):
+def test_completed_judge_label_waits_for_async_batch_after_contract_passes(monkeypatch):
     from apps.workflow_engine.services.model_routing_policy_store import (
         ModelRoutingPolicyStore,
     )
     from apps.workflow_engine.services.model_routing_local_classifier import (
-        MDebertaModelChoiceClassifier,
+        MultilingualE5ModelChoiceClassifier,
     )
 
     policy = SimpleNamespace(
@@ -31,12 +31,17 @@ def test_completed_judge_label_updates_local_artifact_only_after_contract_passes
         candidate_model_ids=["gpt-4o-mini", "gpt-5-mini"],
         confidence=0.88,
         reason_code="multi_constraint",
+        task_requirements={
+            "task_complexity": 2,
+            "decision_impact": 2,
+            "evidence_synthesis": 2,
+        },
         feature_hash="safe-feature-hash",
         outcome_reason=None,
     )
     updated = {}
     monkeypatch.setattr(
-        MDebertaModelChoiceClassifier,
+        MultilingualE5ModelChoiceClassifier,
         "update_from_vector",
         lambda artifact, **kwargs: updated.update(kwargs) or {"kind": "test"},
     )
@@ -48,9 +53,8 @@ def test_completed_judge_label_updates_local_artifact_only_after_contract_passes
         outcome_reason="contract_passed",
     ) is True
     assert accepted.status == "accepted"
-    assert updated["selected_model_id"] == "gpt-5-mini"
-    assert policy.active_policy["learning"]["judged_request_count"] == 1
-    assert policy.active_policy["learning"]["accepted_decision_cache"]["safe-feature-hash"]["selected_model_id"] == "gpt-5-mini"
+    assert updated == {}
+    assert "judged_request_count" not in policy.active_policy["learning"]
 
     rejected = SimpleNamespace(
         status="pending",
@@ -60,6 +64,11 @@ def test_completed_judge_label_updates_local_artifact_only_after_contract_passes
         candidate_model_ids=["gpt-4o-mini", "gpt-5-mini"],
         confidence=0.72,
         reason_code="fallback",
+        task_requirements={
+            "task_complexity": 1,
+            "decision_impact": 1,
+            "evidence_synthesis": 1,
+        },
         outcome_reason=None,
     )
     assert ModelRoutingPolicyStore._finalize_runtime_judge_label(
@@ -70,7 +79,7 @@ def test_completed_judge_label_updates_local_artifact_only_after_contract_passes
     ) is False
     assert rejected.status == "rejected"
     assert rejected.outcome_reason == "fallback_used"
-    assert policy.active_policy["learning"]["judged_request_count"] == 1
+    assert "judged_request_count" not in policy.active_policy["learning"]
 
 
 class _Query:

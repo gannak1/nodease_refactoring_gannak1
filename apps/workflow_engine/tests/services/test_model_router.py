@@ -9,6 +9,9 @@ from apps.workflow_engine.services.model_router import (
 from apps.workflow_engine.services.model_routing_judge_first_policy import (
     build_judge_first_active_policy,
 )
+from apps.workflow_engine.services.model_routing_incremental_learning import (
+    TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
+)
 from apps.workflow_engine.workflow.nodes.llm.entities import LLMNodeData
 
 
@@ -79,9 +82,13 @@ def test_judge_first_requires_runtime_judge_before_local_learning():
 def test_confident_local_prediction_skips_runtime_judge(monkeypatch):
     monkeypatch.setattr(
         "apps.workflow_engine.services.model_router."
-        "MDebertaModelChoiceClassifier.predict",
+        "MultilingualE5TaskRequirementClassifier.predict",
         lambda *_args, **_kwargs: SimpleNamespace(
-            selected_model_id="gpt-4o-mini",
+            requirements={
+                "task_complexity": 1,
+                "decision_impact": 0,
+                "evidence_synthesis": 0,
+            },
             confidence=0.91,
         ),
     )
@@ -89,7 +96,9 @@ def test_confident_local_prediction_skips_runtime_judge(monkeypatch):
         learning={
             "mode": "local_first",
             "local_confidence_threshold": 0.78,
-            "local_router_artifact": {"version": 1},
+            "local_requirement_artifact": {
+                "feature_schema_version": TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
+            },
         }
     )
 
@@ -110,9 +119,13 @@ def test_confident_local_prediction_skips_runtime_judge(monkeypatch):
 def test_uncertain_local_prediction_returns_to_runtime_judge(monkeypatch):
     monkeypatch.setattr(
         "apps.workflow_engine.services.model_router."
-        "MDebertaModelChoiceClassifier.predict",
+        "MultilingualE5TaskRequirementClassifier.predict",
         lambda *_args, **_kwargs: SimpleNamespace(
-            selected_model_id="gpt-4o-mini",
+            requirements={
+                "task_complexity": 1,
+                "decision_impact": 0,
+                "evidence_synthesis": 0,
+            },
             confidence=0.55,
         ),
     )
@@ -120,7 +133,9 @@ def test_uncertain_local_prediction_returns_to_runtime_judge(monkeypatch):
         learning={
             "mode": "local_first",
             "local_confidence_threshold": 0.78,
-            "local_router_artifact": {"version": 1},
+            "local_requirement_artifact": {
+                "feature_schema_version": TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
+            },
         }
     )
 
@@ -132,6 +147,35 @@ def test_uncertain_local_prediction_returns_to_runtime_judge(monkeypatch):
     )
 
     assert decision.reason_code == "local_router_uncertain"
+    assert decision.requires_runtime_judge is True
+
+
+def test_stale_local_feature_artifact_returns_to_runtime_judge(monkeypatch):
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("이전 feature artifact로 local 예측하면 안 됩니다.")
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.services.model_router."
+        "MultilingualE5TaskRequirementClassifier.predict",
+        fail_if_called,
+    )
+    policy = _policy(
+        learning={
+            "mode": "local_first",
+            "local_requirement_artifact": {
+                "feature_schema_version": "prompt_context_v1",
+            },
+        }
+    )
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "VPN 연결 방법"},
+        node_data=_node(),
+        available_model_ids=["gpt-4.1", "gpt-4.1-mini", "gpt-4o-mini"],
+    )
+
+    assert decision.decision_source == "runtime_judge_pending"
     assert decision.requires_runtime_judge is True
 
 
@@ -228,7 +272,7 @@ def test_llm_node_data_preserves_bounded_model_routing_task_description():
         )
 
 
-def test_routing_feature_renders_variables_and_json_output_contract():
+def test_routing_feature_renders_variables_without_fixed_json_output_contract():
     node_data = _node(
         system_prompt="{{department}} 정책을 검토합니다.",
         user_prompt="질문: {{question}}",
@@ -261,9 +305,8 @@ def test_routing_feature_renders_variables_and_json_output_contract():
     assert "SYSTEM_PROMPT:\n개발팀 정책을 검토합니다." in feature
     assert "USER_PROMPT:\n질문: 휴가 규정을 알려 주세요." in feature
     assert "ASSISTANT_PROMPT:\n응답 형식: 요약" in feature
-    assert "OUTPUT_CONTRACT:\nOUTPUT_MODE: json_object" in feature
+    assert "OUTPUT_CONTRACT:" in feature
     assert "TOP_LEVEL_PROPERTY_COUNT: 1" in feature
-    assert "json schema:" in feature
     assert '"answer"' in feature
     assert "{{" not in feature
 
@@ -326,7 +369,7 @@ def test_routing_feature_preserves_request_types_and_more_prompt_constraints():
     assert important_tail in feature
 
 
-def test_routing_feature_preserves_json_contract_when_system_prompt_is_long():
+def test_routing_feature_keeps_json_contract_when_system_prompt_is_long():
     feature = ModelRouter.routing_feature_text(
         {"message": "판정 결과를 구조화해 주세요."},
         _node(
@@ -345,13 +388,9 @@ def test_routing_feature_preserves_json_contract_when_system_prompt_is_long():
         ),
     )
 
-    prompt_contract, output_contract = feature.split("\n\nOUTPUT_CONTRACT:\n", 1)
-    assert prompt_contract.count("…") == 1
-    assert '"decision"' not in prompt_contract
-    assert "OUTPUT_MODE: json_object" in output_contract
-    assert "TOP_LEVEL_PROPERTY_COUNT: 2" in output_contract
-    assert "REQUIRED_PROPERTY_COUNT: 2" in output_contract
-    assert '"decision"' in output_contract
+    assert feature.count("…") == 1
+    assert "OUTPUT_CONTRACT:" in feature
+    assert '"decision"' in feature
 
 
 def test_resolve_policy_reuses_accepted_judge_decision_for_same_safe_feature(monkeypatch):

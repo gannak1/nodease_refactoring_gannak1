@@ -206,6 +206,7 @@ def test_llm_span_metadata_preserves_safe_runtime_judge_summary_only():
                     "usage": {
                         "prompt_tokens": 120,
                         "completion_tokens": 30,
+                        "latency_ms": 1432,
                         "raw_content": "customer secret",
                     },
                     "raw_prompt": "sensitive prompt",
@@ -227,7 +228,11 @@ def test_llm_span_metadata_preserves_safe_runtime_judge_summary_only():
         "reason_short": "단순 요청 적합",
         "reason_code": "simple_request",
         "cost": 0.00012,
-        "usage": {"prompt_tokens": 120, "completion_tokens": 30},
+        "usage": {
+            "prompt_tokens": 120,
+            "completion_tokens": 30,
+            "latency_ms": 1432,
+        },
     }
     assert metadata["llm"]["decision_factors"] == {
         "learning_mode": "judge_first",

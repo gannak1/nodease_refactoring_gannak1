@@ -1473,6 +1473,7 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     retired_input_cohort_cleanup_revision = script.get_revision("c6f8a1b2d3e4")
     workflow_node_secret_revision = script.get_revision("f5b6c7d8e9fa")
     learning_label_feature_hash_revision = script.get_revision("c3d4e5f6a7b8")
+    routing_learning_task_requirements_revision = script.get_revision("c4e5f6a7b8c9")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -1541,7 +1542,8 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     assert retired_input_cohort_cleanup_revision.down_revision == "bd9e0f1a2b35"
     assert workflow_node_secret_revision.down_revision == "f4a5b6c7d8e9"
     assert learning_label_feature_hash_revision.down_revision == "f5b6c7d8e9fa"
-    assert script.get_heads() == ["c3d4e5f6a7b8"]
+    assert routing_learning_task_requirements_revision.down_revision == "c3d4e5f6a7b8"
+    assert script.get_heads() == ["b05c6d7e8f94"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

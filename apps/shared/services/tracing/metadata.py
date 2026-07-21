@@ -565,6 +565,14 @@ class TraceMetadataSanitizer:
                     and 0 <= float(token_count) <= 10_000_000
                 ):
                     safe_usage[key] = token_count
+            latency_ms = usage.get("latency_ms")
+            if (
+                not isinstance(latency_ms, bool)
+                and isinstance(latency_ms, (int, float))
+                and math.isfinite(float(latency_ms))
+                and 0 <= float(latency_ms) <= 86_400_000
+            ):
+                safe_usage["latency_ms"] = latency_ms
             if safe_usage:
                 sanitized["usage"] = safe_usage
         return sanitized

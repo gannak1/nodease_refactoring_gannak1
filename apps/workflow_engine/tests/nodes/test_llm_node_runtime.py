@@ -60,6 +60,9 @@ from apps.workflow_engine.services.llm_service import (  # noqa: E402
     LLMRuntimeSelection,
     LLMService,
 )
+from apps.workflow_engine.services.model_routing_incremental_learning import (  # noqa: E402
+    TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
+)
 from apps.workflow_engine.workflow.nodes.llm.entities import (  # noqa: E402
     MAX_RAG_CHUNKS_PER_KB,
     MAX_RAG_RETRIEVAL_KBS,
@@ -4094,7 +4097,9 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
                 "learning": {
                     "mode": "local_first",
                     "local_confidence_threshold": 0.78,
-                    "local_router_artifact": {"version": 1},
+                    "local_requirement_artifact": {
+                            "feature_schema_version": TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
+                    },
                 },
                 "rules": [
                     {
@@ -4123,9 +4128,13 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
     }
     monkeypatch.setattr(
         "apps.workflow_engine.services.model_router."
-        "MDebertaModelChoiceClassifier.predict",
+        "MultilingualE5TaskRequirementClassifier.predict",
         lambda *_args, **_kwargs: SimpleNamespace(
-            selected_model_id="gpt-4.1-mini",
+            requirements={
+                "task_complexity": 1,
+                "decision_impact": 0,
+                "evidence_synthesis": 0,
+            },
             confidence=0.92,
         ),
     )

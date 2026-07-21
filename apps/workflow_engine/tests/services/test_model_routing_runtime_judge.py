@@ -1,6 +1,7 @@
 
 import pytest
 
+import apps.workflow_engine.services.model_routing_runtime_judge as runtime_judge_module
 from apps.workflow_engine.services.model_routing_runtime_judge import (
     ModelRoutingRuntimeJudge,
     RuntimeJudgeResponseError,
@@ -39,13 +40,36 @@ class _IncompleteThenCompactJudgeClient(_JudgeClient):
                         "content": (
                             '{"selected_model_id":"gpt-4o-mini",'
                             '"confidence":0.81,'
-                            '"reason_code":"high_risk_reasoning"}'
+                            '"reason_code":"high_risk_reasoning",'
+                            '"task_requirements":{"task_complexity":3,'
+                            '"decision_impact":2,"evidence_synthesis":2}}'
                         )
                     }
                 }
             ],
             "usage": {"prompt_tokens": 26, "completion_tokens": 12},
         }
+
+
+def test_runtime_judge_records_total_provider_latency_in_usage(monkeypatch):
+    timestamps = iter((10.0, 10.125))
+    monkeypatch.setattr(
+        runtime_judge_module.time,
+        "perf_counter",
+        lambda: next(timestamps),
+    )
+    client = _JudgeClient(
+        '{"selected_model_id":"gpt-4o-mini","confidence":0.91,'
+        '"reason_short":"단순 응답 처리","reason_code":"simple_response"}'
+    )
+
+    decision = ModelRoutingRuntimeJudge.decide(
+        client=client,
+        candidate_model_ids=["gpt-4o-mini"],
+        routing_feature_text="짧은 상태 확인 요청",
+    )
+
+    assert decision.usage["latency_ms"] == 125
 
 
 def test_runtime_judge_normalizes_invalid_display_reason_without_discarding_selection():
@@ -71,7 +95,7 @@ def test_runtime_judge_derives_safe_reason_factors_when_optional_array_is_missin
         '{"selected_model_id":"gpt-5.4","confidence":0.91,'
         '"reason_short":"여러 조건 종합","reason_code":"multi_constraint",'
         '"task_requirements":{"task_complexity":3,"decision_impact":3,'
-        '"evidence_synthesis":2,"output_precision":1}}'
+        '"evidence_synthesis":2}}'
     )
 
     decision = ModelRoutingRuntimeJudge.decide(
@@ -95,7 +119,7 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
         '"reason_factors":["evidence_conflict","multi_step_reasoning"],'
         '"selection_explanation":"복수 근거의 충돌을 해석해야 하므로 근거 종합 능력이 높은 후보를 선택했습니다.",'
         '"task_requirements":{"task_complexity":2,"decision_impact":1,'
-        '"evidence_synthesis":3,"output_precision":2}}'
+        '"evidence_synthesis":3}}'
     )
 
     decision = ModelRoutingRuntimeJudge.decide(
@@ -138,7 +162,6 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
         "task_complexity": 2,
         "decision_impact": 1,
         "evidence_synthesis": 3,
-        "output_precision": 2,
     }
     assert decision.reason_factors == [
         "evidence_conflict",
@@ -147,7 +170,9 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
     assert decision.safe_metadata()["task_requirements"] == decision.task_requirements
     assert decision.safe_metadata()["reason_factors"] == decision.reason_factors
     assert "selection_explanation" not in decision.safe_metadata()
-    assert decision.usage == {"prompt_tokens": 42, "completion_tokens": 18}
+    assert decision.usage["prompt_tokens"] == 42
+    assert decision.usage["completion_tokens"] == 18
+    assert decision.usage["latency_ms"] >= 1
     rendered_prompt = client.calls[0]["messages"][1]["content"]
     prompt_body = __import__("json").loads(rendered_prompt)
     assert prompt_body["candidate_models"] == [
@@ -180,6 +205,8 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
     assert "주제 단어, 문장 길이, JSON 여부 하나만으로 수준을 결정하지 마세요" in client.calls[0]["messages"][0]["content"]
     assert "결정 영향도" in client.calls[0]["messages"][0]["content"]
     assert "근거 종합 범위" in client.calls[0]["messages"][0]["content"]
+    assert "출력 정밀도" not in client.calls[0]["messages"][0]["content"]
+    assert "strict_output_reliability" not in client.calls[0]["messages"][0]["content"]
     assert "짧아도 되돌리기 어려운 결정을 직접 내리거나" in client.calls[0]["messages"][0]["content"]
     assert "권한·개인정보·금전·보상" not in client.calls[0]["messages"][0]["content"]
     assert "가장 낮은 모델을 선택하세요" not in client.calls[0]["messages"][0]["content"]
@@ -460,17 +487,22 @@ def test_runtime_judge_retries_incomplete_response_with_compact_contract():
     )
 
     assert len(client.calls) == 2
-    assert decision.usage == {
-        "prompt_tokens": 106,
-        "completion_tokens": 52,
-        "total_tokens": 158,
-    }
+    assert decision.usage["prompt_tokens"] == 106
+    assert decision.usage["completion_tokens"] == 52
+    assert decision.usage["total_tokens"] == 158
+    assert decision.usage["latency_ms"] >= 1
     assert client.calls[0]["kwargs"]["max_tokens"] == 768
     assert client.calls[1]["kwargs"]["max_tokens"] == 768
     assert decision.reason_short == "고위험 판단 필요"
+    assert decision.task_requirements == {
+        "task_complexity": 3,
+        "decision_impact": 2,
+        "evidence_synthesis": 2,
+    }
     compact_instruction = client.calls[1]["messages"][0]["content"]
     assert "reason_short" in compact_instruction
     assert "reason_code" in compact_instruction
+    assert "task_requirements" in compact_instruction
     assert "selection_explanation" not in compact_instruction
     compact_body = __import__("json").loads(client.calls[1]["messages"][1]["content"])
     assert compact_body["candidate_models"] == [{"id": "gpt-4o-mini"}]
@@ -535,3 +567,34 @@ def test_runtime_judge_does_not_persist_raw_feature_text_in_decision():
 
     assert "SECRET-123" not in str(decision.safe_metadata())
     assert "customer@example.com" not in str(decision.safe_metadata())
+
+
+def test_runtime_judge_hides_one_model_operational_stats_to_prevent_self_reinforcement():
+    profiles = ModelRoutingRuntimeJudge._safe_candidate_profiles(
+        ["gpt-4.1", "gpt-5-mini"],
+        [
+            {
+                "model_id": "gpt-4.1",
+                "operational_run_count": 18,
+                "operational_success_rate": 1.0,
+                "operational_schema_pass_rate": 1.0,
+            },
+            {"model_id": "gpt-5-mini", "operational_run_count": 0},
+        ],
+    )
+
+    assert "operational_run_count" not in profiles[0]
+    assert "operational_success_rate" not in profiles[0]
+
+
+def test_runtime_judge_keeps_operational_stats_when_two_candidates_are_comparable():
+    profiles = ModelRoutingRuntimeJudge._safe_candidate_profiles(
+        ["gpt-4.1", "gpt-5-mini"],
+        [
+            {"model_id": "gpt-4.1", "operational_run_count": 5},
+            {"model_id": "gpt-5-mini", "operational_run_count": 5},
+        ],
+    )
+
+    assert profiles[0]["operational_run_count"] == 5
+    assert profiles[1]["operational_run_count"] == 5
