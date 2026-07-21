@@ -1,4 +1,4 @@
-import { act, cleanup, render, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TestSidebar } from '../components/editor/TestSidebar';
@@ -80,6 +80,8 @@ afterEach(() => {
   mocks.resetTestExecution.mockReset();
   mocks.selectTestExecutionNode.mockReset();
   Object.assign(useWorkflowStore.getState(), {
+    activeWorkflowId: 'workflow-1',
+    isTestPanelOpen: false,
     testExecutionStatus: 'idle',
     testExecutionRunId: null,
     testSelectedNodeId: null,
@@ -93,6 +95,26 @@ afterEach(() => {
 });
 
 describe('TestSidebar saved run restore', () => {
+  it('초기 placeholder workflow에는 저장된 실행 복원 API를 호출하지 않는다', async () => {
+    Object.assign(useWorkflowStore.getState(), {
+      activeWorkflowId: 'default',
+      isTestPanelOpen: true,
+    });
+    window.history.replaceState(
+      {},
+      '',
+      '/modules/workflow-1?testRun=11111111-1111-1111-1111-111111111111',
+    );
+
+    render(<TestSidebar />);
+
+    await act(async () => {});
+    expect(mocks.getWorkflowRun).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole('button', { name: '테스트 실행하기' }),
+    ).toBeDisabled();
+  });
+
   it('새로고침 URL의 testRun을 권한 있는 run 상세 조회로 복원한다', async () => {
     window.history.replaceState(
       {},

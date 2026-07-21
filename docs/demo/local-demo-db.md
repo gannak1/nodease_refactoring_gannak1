@@ -157,7 +157,7 @@ apps/gateway/.venv/Scripts/python.exe scripts/seed_demo.py --profile demo --rese
 
 demo seed는 기본적으로 precomputed Knowledge fixture를 사용해 법령 PDF와 사내문서를 `DocumentChunk`와 `text-embedding-3-small` 1536차원 embedding까지 생성한다. Fixed fixture는 독립 문서마다 별도 Knowledge Base를 사용하며 한 KB에 여러 Document를 넣지 않는다. 여러 문서를 함께 검색하는 범위는 Knowledge Collection 또는 명시된 여러 KB reference로 구성한다. `demodata/`의 팀별 온보딩 PDF 네 개도 각각 별도 Document-level KB로 등록하며, `--enable-runtime-openai-credential` 또는 fixture 재생성 옵션에서는 같은 실행에서 실제 파싱·embedding 생성까지 수행한다. 시연 workflow의 채팅 모델은 `gpt-5.4`와 `gpt-5.4-mini`를 사용한다.
 
-HR 온보딩 챗봇은 여러 사내문서/법령 KB를 동시에 검색한다. 사내문서는 시연용 단일 chunk가 많으므로, 기본 LLM 노드값보다 낮은 `scoreThreshold=0.3`과 `topK=4`를 seed graph에 명시해 데모 질문의 근거 문서가 안정적으로 선택되도록 한다.
+HR 온보딩 챗봇은 여러 사내문서/법령 KB를 동시에 검색한다. 사내문서는 시연용 단일 chunk가 많으므로 `scoreThreshold=0.3`, `topK=4`를 seed graph에 명시해 데모 질문의 근거 문서가 안정적으로 선택되도록 한다. 제품의 새 LLM 노드 기본값은 `scoreThreshold=0.3`, `topK=5`다.
 
 - 기본 reset에는 `apps/shared/db/fixtures/demo_knowledge_chunks.jsonl.gz` fixture를 사용한다.
 - 기본 reset에는 `OPENAI_API_KEY`와 법령 PDF 원본이 필요하지 않다.
@@ -276,6 +276,8 @@ Private 사내문서 자료:
 | `온보딩 문서: 플랫폼개발팀` | `platform_team_onboarding_v4.pdf` | 플랫폼개발팀, People 팀 |
 | `온보딩 문서: 영업팀` | `sales_team_onboarding_v2.pdf` | 영업팀, People 팀 |
 | `온보딩 문서: 재무팀` | `finance_team_onboarding_v3.pdf` | 재무팀, People 팀 |
+
+네 KB의 `safe_metadata.safe_label`에는 위 표의 Knowledge Base 이름을 저장한다. 따라서 direct KB로 사용된 근거의 사용자 Citation은 일반 `참조 문서` 대신 `온보딩 문서: 플랫폼개발팀`과 같은 KB 이름을 표시한다. Collection 경유 근거는 기존 보안 경계에 따라 하위 KB 이름이 아니라 Collection의 승인된 표시 라벨을 사용한다.
 
 현재 실행 권한 경계는 document-level KB다. 한 PDF 안의 일부 chunk만 `manager`에게 허용하는 동적 `role_acl`은 지원하지 않는다. 따라서 플랫폼 PDF 원본은 보존하되, 일반 플랫폼 KB에 저장·색인하는 복사본에서는 manager-only 마지막 페이지를 제외한다. 제외된 내용을 시연하려면 후속으로 manager 전용 KB/PDF를 별도 구성해야 한다.
 

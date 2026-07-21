@@ -257,7 +257,7 @@ describe('FR-011 Judge-first model routing trace', () => {
       />,
     );
 
-    expect(screen.getByText('Judge가 모델 선택')).toBeVisible();
+    expect(screen.queryByText('Judge가 모델 선택')).not.toBeInTheDocument();
     expect(screen.getByText('Judge 실행 성공')).toBeVisible();
     expect(
       screen.getByText(
@@ -290,7 +290,7 @@ describe('FR-011 Judge-first model routing trace', () => {
       />,
     );
 
-    expect(screen.getByText('Judge가 모델 선택')).toBeVisible();
+    expect(screen.queryByText('Judge가 모델 선택')).not.toBeInTheDocument();
     expect(screen.getByText('보안 사고 판단에 적합')).toBeVisible();
     expect(screen.queryByText('선택 경로 정보 없음')).not.toBeInTheDocument();
   });
@@ -323,7 +323,7 @@ describe('FR-011 Judge-first model routing trace', () => {
     );
 
     expect(screen.getByText('모델 선택 결과')).toBeVisible();
-    expect(screen.getByText('Judge가 모델 선택')).toBeVisible();
+    expect(screen.queryByText('Judge가 모델 선택')).not.toBeInTheDocument();
     expect(screen.getByText('Judge 실행 성공')).toBeVisible();
     expect(screen.getByText('판단 확신도')).toBeVisible();
     expect(screen.getByText('89.0%')).toBeVisible();

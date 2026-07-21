@@ -85,10 +85,10 @@ type TestSidebarProps = {
 };
 
 const STREAM_IDLE_TIMEOUT_MS = 60_000;
-const TEST_SIDEBAR_DEFAULT_WIDTH = 480;
-const TEST_SIDEBAR_COMPARISON_WIDTH = 640;
-const TEST_SIDEBAR_MIN_WIDTH = 380;
-const TEST_SIDEBAR_MAX_WIDTH = 640;
+const TEST_SIDEBAR_DEFAULT_WIDTH = 560;
+const TEST_SIDEBAR_COMPARISON_WIDTH = 720;
+const TEST_SIDEBAR_MIN_WIDTH = 440;
+const TEST_SIDEBAR_MAX_WIDTH = 720;
 const TEST_SIDEBAR_VIEWPORT_GUTTER = 24;
 const TEST_SIDEBAR_MIN_CANVAS_WIDTH = 420;
 const TEST_SIDEBAR_KEYBOARD_STEP = 20;
@@ -428,6 +428,8 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     selectedNodeId: testSelectedNodeId,
   });
   const isExecuting = testExecutionStatus === 'running';
+  const hasPersistedActiveWorkflow =
+    Boolean(activeWorkflowId) && activeWorkflowId !== 'default';
   const selectedTestNodeId = testSelectedNodeId ?? localSelectedTestNodeId;
   const selectExecutionNode = (nodeId: string | null) => {
     setLocalSelectedTestNodeId(nodeId);
@@ -449,12 +451,14 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const nodeResults = testNodeResults;
   const error = testExecutionError;
   const canExecute = workflowAccess?.can_execute !== false;
-  const isExecuteActionDisabled = isTestExecutionActionDisabled({
-    isExecuting,
-    isUploading: isTestUploading,
-    isPreparing: isPreparing || isAgentBuilderSaveBlocking,
-    canExecute,
-  });
+  const isExecuteActionDisabled =
+    !hasPersistedActiveWorkflow ||
+    isTestExecutionActionDisabled({
+      isExecuting,
+      isUploading: isTestUploading,
+      isPreparing: isPreparing || isAgentBuilderSaveBlocking,
+      canExecute,
+    });
 
   const maxTestSidebarWidth = Math.min(
     TEST_SIDEBAR_MAX_WIDTH,
@@ -528,7 +532,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
 
   useEffect(() => {
     const { runId, nodeId } = readTestExecutionLocation();
-    if (!runId || !activeWorkflowId || nodes.length === 0) {
+    if (!runId || !hasPersistedActiveWorkflow || nodes.length === 0) {
       if (!runId && historyLocationChangeRef.current) {
         historyLocationChangeRef.current = false;
         restoredRunRef.current = null;
@@ -631,6 +635,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     };
   }, [
     activeWorkflowId,
+    hasPersistedActiveWorkflow,
     nodes.length,
     openTestPanel,
     restoreTestExecution,
@@ -1188,7 +1193,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   );
 
   const handleExecute = async () => {
-    if (!activeWorkflowId) return;
+    if (!hasPersistedActiveWorkflow) return;
     if (!canExecute) {
       failTestExecution('현재 권한으로는 실행할 수 없습니다.');
       return;
@@ -1686,7 +1691,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   return (
     <div
       data-testid="test-execution-sidebar"
-      className="absolute top-2 right-2 bottom-2 z-50 flex min-w-0 flex-col rounded-xl border-l border-gray-200 bg-white shadow-xl animate-in slide-in-from-right duration-200 dark:border-gray-800 dark:bg-gray-900"
+      className="absolute top-2 right-2 bottom-2 z-50 flex min-w-0 flex-col rounded-xl border-l border-gray-200 bg-white text-lg shadow-xl animate-in slide-in-from-right duration-200 [&_.text-2xl]:text-3xl [&_.text-base]:text-lg [&_.text-lg]:text-xl [&_.text-sm]:text-base [&_.text-xl]:text-2xl [&_.text-xs]:text-sm dark:border-gray-800 dark:bg-gray-900"
       style={{ width: `${renderedTestSidebarWidth}px` }}
     >
       {canResizeTestSidebar && (
@@ -1791,7 +1796,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             </button>
           </div>
         ) : null}
-        {hasOpenedComparisonPanel && activeWorkflowId ? (
+        {hasOpenedComparisonPanel && hasPersistedActiveWorkflow ? (
           <div className={isComparisonMode ? undefined : 'hidden'}>
             <ExecutionComparisonPanel
               workflowId={activeWorkflowId}

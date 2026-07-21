@@ -4709,9 +4709,9 @@ class AgentBuilderService:
                 "parameters": {},
                 "output_format": {"type": "text"},
                 "knowledgeBases": kb_refs,
-                "scoreThreshold": 0.5,
-                "topK": 3,
-                "citationDisplayMode": "basic",
+                "scoreThreshold": 0.3,
+                "topK": 5,
+                "citationDisplayMode": "detailed",
             }
         elif capability == "workflow_call":
             data = {

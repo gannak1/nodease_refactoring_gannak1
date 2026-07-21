@@ -7,6 +7,7 @@ KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048]
 
 ## Unit Tests
 
+- 새 LLM node, Agent Builder LLM node 초안, Knowledge RAG 추천 옵션과 runtime missing-value fallback은 `scoreThreshold=0.3`, `topK=5`를 사용하고, 명시된 기존 값은 덮어쓰지 않는다.
 - Metadata filter는 allowlist된 key/operator만 허용하고 free-form dict, JSONPath, raw SQL fragment, secret/header/prompt/completion/raw response field를 거부한다.
 - Classification metadata가 없으면 [ADR-0007](../../decisions/ADR-0007-mvp2-classification-metadata-storage.md)에 따라 `internal`로 처리한다.
 - 목표 cutover 전 `document_chunks.metadata`와 현재 `documents.meta_info`가 충돌하면 document metadata를 우선한다.
@@ -540,7 +541,8 @@ KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048]
 
 ## Workflow User Citation Tests
 
-- `hidden`, `basic`, `detailed` mode와 legacy missing-value=`hidden`, new-node=`basic` 기본값을 검증한다.
+- `hidden`, `basic`, `detailed` mode와 legacy missing-value=`hidden`, new-node=`detailed` 기본값을 검증한다.
+- 팀별 온보딩 demo의 네 document-level KB는 정제 가능한 KB 이름을 `safe_metadata.safe_label`로 seed하며, direct KB Citation에서 일반 `참조 문서` 대신 해당 KB 이름을 표시한다.
 - 최종 prompt char cap과 압축 이후 실제 포함된 evidence만 Citation이 되는지 검증한다.
 - denied/revoked/source-deleted/archived 후보, no-evidence 결과와 control-only LLM node가 Citation을 만들지 않는지 검증한다.
 - Collection evidence에서 child KB/document/chunk id, raw filename/path/URL, child section과 child-local rank가 제거되고 전역 evidence rank만 남는지 검증한다.

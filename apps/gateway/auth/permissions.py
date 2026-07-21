@@ -1,4 +1,5 @@
 from typing import Any
+from uuid import UUID
 
 from fastapi import Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -60,7 +61,14 @@ def ensure_workflow_permission(
     workflow_id: Any,
     action: str,
 ) -> Workflow:
-    workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
+    try:
+        workflow_uuid = UUID(str(workflow_id))
+    except (TypeError, ValueError):
+        # Workflow identity는 UUID다. Placeholder나 malformed 값은 DB UUID cast까지
+        # 보내지 않고 존재하지 않는 리소스와 같은 응답으로 닫는다.
+        raise HTTPException(status_code=404, detail="Workflow not found") from None
+
+    workflow = db.query(Workflow).filter(Workflow.id == workflow_uuid).first()
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
 

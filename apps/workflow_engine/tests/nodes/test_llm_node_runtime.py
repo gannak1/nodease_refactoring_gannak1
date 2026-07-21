@@ -96,6 +96,13 @@ def test_llm_node_answer_grounding_check_defaults_to_basic():
     assert data.answerGroundingCheck == "basic"
 
 
+def test_llm_node_rag_options_default_to_permissive_retrieval():
+    data = LLMNodeData(title="LLM", model_id="gpt-4o-mini")
+
+    assert data.scoreThreshold == 0.3
+    assert data.topK == 5
+
+
 @pytest.mark.parametrize(
     "details_key",
     ["prompt_tokens_details", "input_tokens_details"],

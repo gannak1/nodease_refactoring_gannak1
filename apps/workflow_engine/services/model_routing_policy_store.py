@@ -95,109 +95,133 @@ class ModelRoutingPolicyStore:
         reason_code: str,
         task_requirements: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        """Judge 선택을 실행 완료 뒤 학습할 수 있도록 안전한 vector로 보관한다."""
+        """Judge 선택을 안전한 vector로 보관하고 policy row lock을 끝낸다.
 
-        policy = cls._lock_policy_for_update(db, policy_id=uuid.UUID(str(policy_id)))
-        if policy is None:
-            return {"learning_queued": False, "reason": "policy_not_found"}
-        stored_active_policy = getattr(policy, "active_policy", None)
-        active_policy = (
-            dict(stored_active_policy)
-            if isinstance(stored_active_policy, dict)
-            else {}
-        )
-        if active_policy.get("strategy_id") != JUDGE_FIRST_STRATEGY_ID:
-            return {"learning_queued": False, "reason": "strategy_not_supported"}
+        이 메서드 뒤에는 provider 네트워크 호출이 이어진다. 따라서 성공 label은
+        즉시 commit하고, 저장하지 않는 경로와 예외는 rollback하여 DB transaction을
+        외부 I/O 구간까지 유지하지 않는다.
+        """
 
-        learning = (
-            dict(active_policy.get("learning"))
-            if isinstance(active_policy.get("learning"), dict)
-            else {}
-        )
         try:
+            policy = cls._lock_policy_for_update(
+                db,
+                policy_id=uuid.UUID(str(policy_id)),
+            )
+            if policy is None:
+                db.rollback()
+                return {"learning_queued": False, "reason": "policy_not_found"}
+            stored_active_policy = getattr(policy, "active_policy", None)
+            active_policy = (
+                dict(stored_active_policy)
+                if isinstance(stored_active_policy, dict)
+                else {}
+            )
+            if active_policy.get("strategy_id") != JUDGE_FIRST_STRATEGY_ID:
+                db.rollback()
+                return {
+                    "learning_queued": False,
+                    "reason": "strategy_not_supported",
+                }
+
+            learning = (
+                dict(active_policy.get("learning"))
+                if isinstance(active_policy.get("learning"), dict)
+                else {}
+            )
             from apps.workflow_engine.services.model_routing_local_classifier import (
                 MultilingualE5ModelChoiceClassifier,
                 MultilingualE5TaskRequirementClassifier,
             )
 
-            vector, encoder_model_id = MultilingualE5ModelChoiceClassifier.vectorize(
-                learning_feature_text,
-                artifact=learning.get("local_requirement_artifact"),
-            )
-        except (RuntimeError, ValueError, OSError) as exc:
-            return {"learning_queued": False, "reason": type(exc).__name__}
+            try:
+                vector, encoder_model_id = MultilingualE5ModelChoiceClassifier.vectorize(
+                    learning_feature_text,
+                    artifact=learning.get("local_requirement_artifact"),
+                )
+            except (RuntimeError, ValueError, OSError) as exc:
+                db.rollback()
+                return {"learning_queued": False, "reason": type(exc).__name__}
 
-        stored_artifact = (
-            learning.get("candidate_requirement_artifact")
-            or learning.get("local_requirement_artifact")
-            or {}
-        )
-        artifact = (
-            stored_artifact
-            if stored_artifact.get("feature_schema_version")
-            == TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION
-            else {}
-        )
-        try:
-            pre_learning = MultilingualE5TaskRequirementClassifier.predict_from_vector(
-                artifact,
-                vector=vector,
+            stored_artifact = (
+                learning.get("candidate_requirement_artifact")
+                or learning.get("local_requirement_artifact")
+                or {}
             )
-        except (RuntimeError, ValueError):
-            pre_learning = None
-
-        # 동일 요청 Judge 결과 cache는 전체 routing contract 기준으로만 재사용한다.
-        # 반면 vector는 고정 출력 계약을 뺀 learning feature로 만든다.
-        feature_hash = routing_feature_hash(routing_feature_text)
-
-        run_uuid = uuid.UUID(str(workflow_run_id))
-        existing = (
-            db.query(LLMNodeModelRoutingLearningLabel)
-            .filter(LLMNodeModelRoutingLearningLabel.policy_id == policy.id)
-            .filter(LLMNodeModelRoutingLearningLabel.workflow_run_id == run_uuid)
-            .filter(LLMNodeModelRoutingLearningLabel.node_id == str(node_id))
-            .first()
-        )
-        if existing is not None:
-            return {"learning_queued": False, "reason": "already_queued"}
-        db.add(
-            LLMNodeModelRoutingLearningLabel(
-                policy_id=policy.id,
-                workflow_run_id=run_uuid,
-                node_id=str(node_id),
-                selected_model_id=str(selected_model_id),
-                candidate_model_ids=[str(model_id) for model_id in candidate_model_ids],
-                feature_vector=[float(value) for value in vector],
-                routing_feature_hash=feature_hash,
-                encoder_model_id=encoder_model_id,
-                confidence=Decimal(str(confidence)),
-                reason_code=str(reason_code)[:128],
-                task_requirements=cls._safe_task_requirements(task_requirements),
-                local_prediction=(
-                    dict(pre_learning.requirements) if pre_learning is not None else None
-                ),
-                local_confidence=(
-                    Decimal(str(pre_learning.confidence))
-                    if pre_learning is not None
-                    else None
-                ),
-                local_distance_score=(
-                    Decimal(str(pre_learning.distance_score))
-                    if pre_learning is not None
-                    else None
-                ),
-                local_margin=(
-                    Decimal(str(pre_learning.margin))
-                    if pre_learning is not None
-                    else None
-                ),
+            artifact = (
+                stored_artifact
+                if stored_artifact.get("feature_schema_version")
+                == TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION
+                else {}
             )
-        )
-        db.flush()
-        return {
-            "learning_queued": True,
-            "learning_mode": learning.get("mode") or "judge_first",
-        }
+            try:
+                pre_learning = MultilingualE5TaskRequirementClassifier.predict_from_vector(
+                    artifact,
+                    vector=vector,
+                )
+            except (RuntimeError, ValueError):
+                pre_learning = None
+
+            # 동일 요청 Judge 결과 cache는 전체 routing contract 기준으로만 재사용한다.
+            # 반면 vector는 고정 출력 계약을 뺀 learning feature로 만든다.
+            feature_hash = routing_feature_hash(routing_feature_text)
+
+            run_uuid = uuid.UUID(str(workflow_run_id))
+            existing = (
+                db.query(LLMNodeModelRoutingLearningLabel)
+                .filter(LLMNodeModelRoutingLearningLabel.policy_id == policy.id)
+                .filter(LLMNodeModelRoutingLearningLabel.workflow_run_id == run_uuid)
+                .filter(LLMNodeModelRoutingLearningLabel.node_id == str(node_id))
+                .first()
+            )
+            if existing is not None:
+                db.rollback()
+                return {"learning_queued": False, "reason": "already_queued"}
+            db.add(
+                LLMNodeModelRoutingLearningLabel(
+                    policy_id=policy.id,
+                    workflow_run_id=run_uuid,
+                    node_id=str(node_id),
+                    selected_model_id=str(selected_model_id),
+                    candidate_model_ids=[
+                        str(model_id) for model_id in candidate_model_ids
+                    ],
+                    feature_vector=[float(value) for value in vector],
+                    routing_feature_hash=feature_hash,
+                    encoder_model_id=encoder_model_id,
+                    confidence=Decimal(str(confidence)),
+                    reason_code=str(reason_code)[:128],
+                    task_requirements=cls._safe_task_requirements(task_requirements),
+                    local_prediction=(
+                        dict(pre_learning.requirements)
+                        if pre_learning is not None
+                        else None
+                    ),
+                    local_confidence=(
+                        Decimal(str(pre_learning.confidence))
+                        if pre_learning is not None
+                        else None
+                    ),
+                    local_distance_score=(
+                        Decimal(str(pre_learning.distance_score))
+                        if pre_learning is not None
+                        else None
+                    ),
+                    local_margin=(
+                        Decimal(str(pre_learning.margin))
+                        if pre_learning is not None
+                        else None
+                    ),
+                )
+            )
+            db.flush()
+            db.commit()
+            return {
+                "learning_queued": True,
+                "learning_mode": learning.get("mode") or "judge_first",
+            }
+        except Exception:
+            db.rollback()
+            raise
 
     @staticmethod
     def learning_label_summary(

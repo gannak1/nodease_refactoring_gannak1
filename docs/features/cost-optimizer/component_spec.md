@@ -396,6 +396,7 @@ LLM 노드 상세 비교는 `실행 상태(상태·비용·시간·토큰) → �
 - LLM node output에 `metadata.model_routing`이 있으면 `ModelRoutingDecisionDetails`를
   재사용한다. 화면은 `모델 선택 결과`를 첫 영역으로 두고, 실제 실행 모델, 선택 경로,
   선택 근거를 먼저 표시한다.
+- Runtime/Test Judge가 모델을 선택한 경우 header의 `Judge가 모델 선택` 배지는 표시하지 않는다. 바로 아래 `Judge 실행` 영역에서 같은 사실을 중복 없이 확인하며, local router·저장 정책·기본 모델 선택 경로 배지는 유지한다.
 - 이어지는 `Judge 실행` 영역은 항상 같은 위치에 표시한다. `Judge 실행 성공`이면 Judge 모델,
   확신도, 검토 후보 수, Judge 비용과 safe `Judge 판단 설명`을 보여준다. 판단 설명은 선택 모델이
   필요한 능력과 후보 증거에 맞는 이유만 240자 이하로 표시하며 요청 원문·RAG 문서 원문은 표시하지 않는다. `Judge 호출 실패`이면 기본 모델 회귀 사실,

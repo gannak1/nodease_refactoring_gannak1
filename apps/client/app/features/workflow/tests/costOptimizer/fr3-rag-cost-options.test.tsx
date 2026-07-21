@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getNodeDefinition } from '../../config/nodeRegistry';
 import { NodeSettingsComparisonPanel } from '../../components/costOptimizer/NodeSettingsComparisonPanel';
 import { LLMReferenceSidePanel } from '../../components/nodes/llm/components/LLMReferenceSidePanel';
+import { candidateFromOptions } from '../../components/costOptimizer/costOptimizerPlaygroundModel';
 import { fetchEligibleKnowledgeBases } from '@/app/features/workflow/utils/llmKnowledgeBaseSelection';
 import type { CandidateDraft } from '../../components/costOptimizer/costOptimizerPlaygroundModel';
 import type { LLMNodeData } from '../../types/Nodes';
@@ -98,13 +99,36 @@ describe('FR-003 RAG cost optimization options', () => {
 
     expect(defaultData).toEqual(
       expect.objectContaining({
+        scoreThreshold: 0.3,
+        topK: 5,
         dedupeRetrievedContext: false,
         retrievedContextMaxChars: undefined,
         retrievedContextCompression: 'off',
         answerGroundingCheck: 'basic',
-        citationDisplayMode: 'basic',
+        citationDisplayMode: 'detailed',
       }),
     );
+  });
+
+  it('값이 없는 기존 LLM 노드와 비용 최적화 후보는 새 검색 기본값을 사용한다', async () => {
+    render(
+      <LLMReferenceSidePanel
+        nodeId="llm-legacy-rag"
+        data={{ ...baseData, scoreThreshold: undefined, topK: undefined }}
+        onClose={vi.fn()}
+        embedded
+      />,
+    );
+
+    await waitFor(() => {
+      const sliders = screen.getAllByRole('slider');
+      expect(sliders[0]).toHaveValue('0.3');
+      expect(sliders[1]).toHaveValue('5');
+    });
+
+    const draft = candidateFromOptions({});
+    expect(draft.scoreThreshold).toBe(0.3);
+    expect(draft.topK).toBe(5);
   });
 
   it('어휘 일치도 값이 없는 기존 LLM 노드는 기본을 선택한다', async () => {

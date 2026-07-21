@@ -157,7 +157,7 @@ FR-048 기존 실행 계약 보존: Draft/test·Compare·stream publisher는 DB 
 - 최종 요약에서는 서버 실행 시간을 주 지표로, 화면 완료 시간을 보조 지표로 표시해야 한다.
 - 테스트 실행 사이드바 요약은 A/B 테스트 구현을 대체하지 않는다. 단일 테스트 실행 결과를 명확히 확인하는 UI이며, 이후 variant 비교 UI의 기반 정보로 사용할 수 있어야 한다.
 - 테스트 실행 사이드바는 오른쪽에 고정하고, 왼쪽 경계를 드래그해 가로 폭을 조정할 수 있어야 한다.
-- 기본 폭은 `480px`, 최소 폭은 `380px`, 최대 폭은 `640px`이다. 화면 폭이 충분하지 않으면 화면 안에 표시 가능한 폭을 우선하고 리사이즈 조작은 숨긴다.
+- 기본 폭은 `560px`, 최소 폭은 `440px`, 최대 폭은 `720px`이다. 화면 폭이 충분하지 않으면 화면 안에 표시 가능한 폭을 우선하고 리사이즈 조작은 숨긴다. 패널 안의 글자는 기존 크기보다 한 단계 크게 표시한다.
 - 사용자가 조정한 테스트 실행 사이드바 폭은 같은 편집 세션에서 패널을 닫고 다시 열어도 유지한다. 새로고침 이후 영구 저장은 이번 범위가 아니다.
 
 ### 2. 노드 조작 편의성
@@ -309,7 +309,7 @@ FR-048 기존 실행 계약 보존: Draft/test·Compare·stream publisher는 DB 
 
 - `answerGroundingCheck`는 `off|basic|strict` lexical overlap metadata를 계산하는 옵션이며, 사용자 Citation 표시나 답변 차단을 의미하지 않는다. UI 명칭은 `답변·검색 문서 어휘 일치도`로 표시한다.
 - `citationDisplayMode`는 사용자 응답에서 Citation을 표시하는 독립 옵션이며 `hidden|basic|detailed`를 사용한다.
-- 저장된 기존 node에 `citationDisplayMode`가 없으면 `hidden`으로 해석해 응답 계약을 보존한다. 새 수동 node와 Agent Builder 생성 node는 `basic`을 명시적으로 저장한다.
+- 저장된 기존 node에 `citationDisplayMode`가 없으면 `hidden`으로 해석해 응답 계약을 보존한다. 새 수동 node와 Agent Builder 생성 node는 `detailed`를 명시적으로 저장한다.
 - Citation은 Answer node의 data dependency ancestry에 있는 LLM node에서만 모은다. 연결되지 않은 control branch와 subworkflow output의 Citation을 자동 승격하지 않는다.
 
 ## Open Questions

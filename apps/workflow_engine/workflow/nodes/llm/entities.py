@@ -98,8 +98,8 @@ class LLMNodeData(BaseNodeData):
         default_factory=list,
         description="실행 시점에 멤버십을 해석할 지식 컬렉션 목록",
     )
-    scoreThreshold: float = Field(default=0.5, description="유사도 점수 임계값")
-    topK: int = Field(default=3, description="상위 K개 문서 반환")
+    scoreThreshold: float = Field(default=0.3, description="유사도 점수 임계값")
+    topK: int = Field(default=5, description="상위 K개 문서 반환")
     dedupeRetrievedContext: bool = Field(
         default=False, description="검색된 문서 조각의 중복 근거 제거 여부"
     )
