@@ -1,7 +1,7 @@
 """Separate model routing learners from deployment policies.
 
 Revision ID: c06d7e8f9a15
-Revises: b05c6d7e8f94
+Revises: ae2f3a4b5c6d
 """
 
 from collections.abc import Sequence
@@ -12,7 +12,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "c06d7e8f9a15"
-down_revision: str | Sequence[str] | None = "b05c6d7e8f94"
+down_revision: str | Sequence[str] | None = "ae2f3a4b5c6d"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

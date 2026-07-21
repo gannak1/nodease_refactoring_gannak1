@@ -49,6 +49,8 @@ from apps.shared.db.demo_seed import _ticket_ops_graph
 from apps.shared.db.models.app import App
 from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.model_routing_policy import (
+    LLMNodeModelRoutingLearner,
+    LLMNodeModelRoutingLearnerVersion,
     LLMNodeModelRoutingPerformance,
     LLMNodeModelRoutingPolicy,
     LLMNodeModelRoutingPolicyRunEvent,
@@ -58,8 +60,22 @@ from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
 from apps.shared.db.models.workflow_run import WorkflowNodeRun, WorkflowRun
 from apps.shared.db.session import SessionLocal
+from apps.shared.services.model_routing_global_profile_catalog import (
+    CATALOG_SOURCE,
+    canonical_model_routing_id,
+    catalog_metadata_for_model_id,
+)
 from apps.workflow_engine.services.llm_service import (
     LLMService,
+)
+from apps.workflow_engine.services.model_routing_bootstrap import (
+    downstream_contract_from_graph,
+)
+from apps.workflow_engine.services.model_routing_learner_store import (
+    ModelRoutingLearnerStore,
+)
+from apps.workflow_engine.services.model_routing_learning_batch import (
+    ModelRoutingLearningBatchService,
 )
 from apps.workflow_engine.services.model_routing_policy_store import (
     ModelRoutingPolicyStore,
@@ -178,8 +194,8 @@ EXTRA_CASES: tuple[tuple[str, str, str, str], ...] = (
     ("concurrency_code_review", "advanced", "enterprise", "다음 의사코드는 잔액을 읽고 차감한 뒤 저장합니다. 동시에 두 요청이 오면 잔액이 음수가 될 수 있습니다. 경쟁 조건의 원인과 트랜잭션 또는 낙관적 잠금으로 고치는 방법을 설명해 주세요."),
     ("formal_policy_reasoning", "advanced", "enterprise", "규정상 EU 고객 데이터는 EU 리전에서만 처리해야 하지만 장애 대응을 위해 미국 리전 로그를 30분 조회해야 할 수 있습니다. 사실 확인, 승인 조건, 금지되는 조치를 구분한 결정을 제시해 주세요."),
     ("data_reconciliation", "balanced", "business", "주문 120건, 승인 118건, 취소 3건, 환불 2건이라는 집계가 있습니다. 서로 동시에 성립할 수 있는지 먼저 검산하고, 불일치가 있으면 확인 순서를 작성해 주세요."),
-    ("product_guidance", "economy", "startup", "워크플로우 캔버스 확대 비율을 기본값으로 되돌리는 방법만 알려 주세요."),
-    ("product_guidance", "economy", "business", "사용하지 않는 초안 워크플로우를 삭제하기 전에 확인할 점이 있나요?"),
+    ("refund_intent", "economy", "business", "환불 정책과 신청 가능한 기간을 설명해 주세요. 실제 환불 처리는 하지 마세요."),
+    ("refund_intent", "advanced", "enterprise", "고객의 결제 건을 확인하고 환불을 지금 승인해 주세요. 승인 결과를 고객에게 전송해야 합니다."),
     ("product_guidance", "economy", "startup", "실행 로그에서 성공한 결과만 필터링하는 메뉴가 어디인지 알려 주세요."),
     ("product_guidance", "economy", "business", "LLM credential 동기화 상태가 실패로 보일 때 가장 먼저 무엇을 확인하나요?"),
     ("risk_triage", "advanced", "enterprise", "의심스러운 파일이 지식 베이스에 업로드된 뒤 여러 워크플로우가 해당 문서를 참조했습니다. 실행 중지 여부, 영향 범위, 고객 공지를 동시에 결정해야 합니다."),
@@ -280,6 +296,9 @@ def build_cases() -> list[ExperimentCase]:
     if len(cases) != 80:
         raise AssertionError(f"expected 80 cases, got {len(cases)}")
     random.Random(20260717).shuffle(cases)
+    # 같은 주제의 설명 요청과 실제 상태 변경 요청을 30건 smoke에서도 반드시
+    # 비교해 decision_impact가 단순 의미 유사도에 끌려가지 않는지 확인한다.
+    cases.sort(key=lambda case: 0 if case.category == "refund_intent" else 1)
     return cases
 
 
@@ -303,17 +322,49 @@ def _append_jsonl(path: pathlib.Path, row: dict[str, Any]) -> None:
 
 def _routing_accuracy(case: ExperimentCase, selected_model: str | None) -> dict[str, Any]:
     model_id = str(selected_model or "")
-    if model_id in case.acceptable_model_ids:
+    canonical_model_id = canonical_model_routing_id(model_id)
+    capability = catalog_metadata_for_model_id(model_id)
+    ceiling_rank = {
+        "routine": 1,
+        "multi_constraint": 2,
+        "complex_professional": 3,
+    }
+    required_rank = {"economy": 1, "balanced": 2, "advanced": 3}.get(
+        case.expected_difficulty
+    )
+    model_rank = ceiling_rank.get(str(capability.get("complexity_ceiling") or ""))
+    acceptable = {canonical_model_routing_id(item) for item in case.acceptable_model_ids}
+    underpowered = {
+        canonical_model_routing_id(item) for item in case.underpowered_model_ids
+    }
+    overprovisioned = {
+        canonical_model_routing_id(item) for item in case.overprovisioned_model_ids
+    }
+    if model_rank is not None and required_rank is not None:
+        if model_rank < required_rank:
+            classification = "underpowered"
+        elif (
+            model_rank > required_rank
+            and str(capability.get("cost_position") or "") == "premium"
+        ):
+            classification = "overprovisioned"
+        else:
+            classification = "appropriate"
+    elif canonical_model_id in acceptable:
         classification = "appropriate"
-    elif model_id in case.underpowered_model_ids:
+    elif canonical_model_id in underpowered:
         classification = "underpowered"
-    elif model_id in case.overprovisioned_model_ids:
+    elif canonical_model_id in overprovisioned:
         classification = "overprovisioned"
     else:
         classification = "unclassified"
     return {
         "classification": classification,
         "selected_model": model_id or None,
+        "canonical_model_id": canonical_model_id or None,
+        "capability_source": CATALOG_SOURCE if capability else None,
+        "capability_tier": capability.get("capability_tier"),
+        "complexity_ceiling": capability.get("complexity_ceiling"),
         "acceptable_model_ids": list(case.acceptable_model_ids),
         "underpowered_model_ids": list(case.underpowered_model_ids),
         "overprovisioned_model_ids": list(case.overprovisioned_model_ids),
@@ -617,12 +668,6 @@ def _upsert_workflow_and_deployments(db, available_models: list[str]) -> None:
         "global_profile_catalog": {
             "candidates": [{"model_id": model_id} for model_id in available_models]
         },
-        "learning": {
-            "mode": "judge_first",
-            "judged_request_count": 0,
-            "selected_model_ids": [],
-            "local_confidence_threshold": LOCAL_CONFIDENCE_THRESHOLD,
-        },
     }
     if policy is None:
         policy = LLMNodeModelRoutingPolicy(
@@ -650,6 +695,46 @@ def _upsert_workflow_and_deployments(db, available_models: list[str]) -> None:
         policy.last_refresh_result = None
         policy.judge_user_id = USER_ID
         policy.execution_subject_user_id = USER_ID
+
+    auto_node = next(
+        node for node in auto_graph["nodes"] if str(node.get("id")) == NODE_ID
+    )
+    learner = ModelRoutingLearnerStore.get_or_create(
+        db,
+        organization_id=ORG_ID,
+        workflow_id=WORKFLOW_ID,
+        node_id=NODE_ID,
+        node_data=dict(auto_node.get("data") or {}),
+        downstream_contract=downstream_contract_from_graph(auto_graph, NODE_ID),
+    )
+    learner_version = ModelRoutingLearnerStore.latest_version(
+        db,
+        learner_id=learner.id,
+    )
+    policy.learner_id = learner.id
+    policy.active_learner_version_id = (
+        learner_version.id if learner_version is not None else None
+    )
+    db.flush()
+
+
+def _clear_prior_experiment_learning(db) -> None:
+    """실험 workflow의 기존 학습 계보를 제거해 새 비교에 섞이지 않게 한다."""
+
+    policies = (
+        db.query(LLMNodeModelRoutingPolicy)
+        .filter(LLMNodeModelRoutingPolicy.workflow_id == WORKFLOW_ID)
+        .all()
+    )
+    for policy in policies:
+        policy.learner_id = None
+        policy.active_learner_version_id = None
+    db.flush()
+    (
+        db.query(LLMNodeModelRoutingLearner)
+        .filter(LLMNodeModelRoutingLearner.workflow_id == WORKFLOW_ID)
+        .delete(synchronize_session=False)
+    )
     db.flush()
 
 
@@ -856,6 +941,47 @@ def synchronous_experiment_tasks():
         celery_app.send_task = original_send_task
 
 
+def _learning_batch_due(*, completed_case_count: int, total_case_count: int) -> bool:
+    """운영과 같은 10건 batch를 쓰되 마지막 불완전 batch도 처리한다."""
+
+    return completed_case_count % 10 == 0 or completed_case_count == total_case_count
+
+
+def _train_automatic_learner() -> dict[str, Any]:
+    """완료된 auto arm 라벨을 새 learner에 동기 학습한다."""
+
+    db = SessionLocal()
+    try:
+        policy = (
+            db.query(LLMNodeModelRoutingPolicy)
+            .filter(LLMNodeModelRoutingPolicy.deployment_id == AUTO_DEPLOYMENT_ID)
+            .filter(LLMNodeModelRoutingPolicy.node_id == NODE_ID)
+            .first()
+        )
+        if policy is None or policy.learner_id is None:
+            raise RuntimeError("자동 라우팅 실험 policy에 learner가 연결되지 않았습니다.")
+
+        processed_count = 0
+        while True:
+            result = ModelRoutingLearningBatchService.train_pending(
+                db,
+                learner_id=str(policy.learner_id),
+                force=True,
+            )
+            processed_count += result.processed_count
+            db.commit()
+            if result.remaining_count <= 0 or result.processed_count <= 0:
+                return {
+                    "processed_count": processed_count,
+                    "remaining_count": result.remaining_count,
+                }
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def _execute_case(arm: str, case: ExperimentCase) -> ArmResult:
     # 이 스크립트의 데이터셋/설정 검증은 root CI에서도 실행된다. gevent가
     # 필요한 실제 workflow 실행 엔진은 --execute 경로에서만 늦게 import한다.
@@ -963,10 +1089,12 @@ def _execute_case(arm: str, case: ExperimentCase) -> ArmResult:
             if workflow_run is not None and workflow_run.duration is not None
             else None
         )
+        # trace 모델명은 날짜 suffix가 redaction될 수 있다. 실제 실행 모델은
+        # 안전한 catalog FK가 있는 usage log를 우선해 비교 집계의 정확도를 지킨다.
         selected_model = str(
-            routing.get("selected_model")
+            (task_usage.model.model_id_for_api_call if task_usage and task_usage.model else "")
             or (outputs.get("model") if isinstance(outputs, dict) else "")
-            or (task_usage.model.model_id_for_api_call if task_usage and task_usage.model else "")
+            or routing.get("selected_model")
         ) or None
         success = engine_error is None and node_run is not None and str(node_run.status).lower().endswith("success")
         return ArmResult(
@@ -1048,7 +1176,7 @@ def _quality_judge(case: ExperimentCase, results: dict[str, ArmResult]) -> tuple
         for index, arm in enumerate(mapping)
     }
     prompt = {
-        "task": "무RAG 기업 요청 처리 workflow의 네 JSON 출력을 품질만으로 비교하세요.",
+        "task": "무RAG 기업 요청 처리 workflow의 여러 JSON 출력을 품질만으로 비교하세요.",
         "input": {
             "customerTier": case.customer_tier,
             "request": case.message,
@@ -1219,8 +1347,79 @@ def _learning_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _learner_report_payload(
+    *,
+    policy: Any,
+    learner: Any,
+    version: Any,
+    label_summary: dict[str, Any],
+) -> dict[str, Any]:
+    """민감한 vector와 가중치를 제외한 learner 보고서 값을 만든다."""
+
+    if policy is None or learner is None:
+        return {
+            "policy_status": getattr(policy, "status", None),
+            "policy_version": getattr(policy, "policy_version", None),
+            "learner_id": None,
+            "learning_mode": "judge_first",
+            "judged_request_count": 0,
+            "operational_run_count": 0,
+            "selected_model_ids": [],
+            "selected_model_counts": {},
+            "active_version": None,
+            "pending_count": 0,
+            "accepted_count": 0,
+            "rejected_count": 0,
+            "artifact_kind": None,
+            "artifact_encoder": None,
+            "artifact_label_models": [],
+            "artifact_trained_example_count": 0,
+            "recent_evaluation": {},
+            "last_learning_error": None,
+        }
+
+    artifact = dict(getattr(learner, "candidate_artifact", None) or {})
+    selected_model_counts = dict(
+        getattr(learner, "selected_model_counts", None) or {}
+    )
+    accepted_count = int(label_summary.get("accepted_count") or 0)
+    rejected_count = int(label_summary.get("rejected_count") or 0)
+    return {
+        "policy_status": getattr(policy, "status", None),
+        "policy_version": getattr(policy, "policy_version", None),
+        "learner_id": str(getattr(learner, "id", "") or "") or None,
+        "learner_status": getattr(learner, "status", None),
+        "task_fingerprint": getattr(learner, "task_fingerprint", None),
+        "learning_mode": "local_first" if version is not None else "judge_first",
+        "judged_request_count": int(
+            getattr(learner, "judged_request_count", 0) or 0
+        ),
+        "operational_run_count": accepted_count + rejected_count,
+        "selected_model_ids": sorted(selected_model_counts),
+        "selected_model_counts": selected_model_counts,
+        "active_version": (
+            int(getattr(version, "version", 0) or 0) if version is not None else None
+        ),
+        "pending_count": int(label_summary.get("pending_count") or 0),
+        "accepted_count": accepted_count,
+        "rejected_count": rejected_count,
+        "artifact_kind": artifact.get("kind"),
+        "artifact_encoder": artifact.get("encoder_model_id"),
+        "artifact_label_models": sorted(selected_model_counts),
+        "artifact_trained_example_count": int(
+            artifact.get("trained_example_count")
+            or getattr(learner, "judged_request_count", 0)
+            or 0
+        ),
+        "recent_evaluation": dict(
+            getattr(learner, "recent_evaluation", None) or {}
+        ),
+        "last_learning_error": artifact.get("last_learning_error"),
+    }
+
+
 def _persisted_learning_state() -> dict[str, Any]:
-    """실행별 trace가 아닌 policy row의 최종 학습 상태도 보고서에 남긴다."""
+    """policy와 분리된 learner/label/version의 최종 상태를 보고서에 남긴다."""
 
     db = SessionLocal()
     try:
@@ -1230,26 +1429,30 @@ def _persisted_learning_state() -> dict[str, Any]:
             .filter(LLMNodeModelRoutingPolicy.node_id == NODE_ID)
             .first()
         )
-        active_policy = policy.active_policy if policy is not None else {}
-        learning = (
-            active_policy.get("learning")
-            if isinstance(active_policy, dict) and isinstance(active_policy.get("learning"), dict)
+        learner = (
+            db.get(LLMNodeModelRoutingLearner, policy.learner_id)
+            if policy is not None and policy.learner_id is not None
+            else None
+        )
+        version = (
+            db.get(
+                LLMNodeModelRoutingLearnerVersion,
+                policy.active_learner_version_id,
+            )
+            if policy is not None and policy.active_learner_version_id is not None
+            else None
+        )
+        label_summary = (
+            ModelRoutingLearnerStore.label_summary(db, learner_id=learner.id)
+            if learner is not None
             else {}
         )
-        artifact = learning.get("local_router_artifact") if isinstance(learning, dict) else {}
-        return {
-            "policy_status": policy.status if policy is not None else None,
-            "policy_version": policy.policy_version if policy is not None else None,
-            "learning_mode": learning.get("mode"),
-            "judged_request_count": learning.get("judged_request_count"),
-            "operational_run_count": learning.get("operational_run_count"),
-            "selected_model_ids": learning.get("selected_model_ids") or [],
-            "artifact_kind": artifact.get("kind") if isinstance(artifact, dict) else None,
-            "artifact_encoder": artifact.get("encoder_model_id") if isinstance(artifact, dict) else None,
-            "artifact_label_models": artifact.get("selected_model_ids") if isinstance(artifact, dict) else [],
-            "artifact_trained_example_count": artifact.get("trained_example_count") if isinstance(artifact, dict) else 0,
-            "last_learning_error": learning.get("last_learning_error"),
-        }
+        return _learner_report_payload(
+            policy=policy,
+            learner=learner,
+            version=version,
+            label_summary=label_summary,
+        )
     finally:
         db.close()
 
@@ -1396,7 +1599,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         f"- 독립 품질 Judge 총비용: {_money(report['quality_judge_total_cost_usd'])}",
         f"- 독립 품질 Judge 총호출: {report['quality_judge_call_count']}회",
-        "- 이 비용은 네 방식의 결과를 공정하게 비교하기 위한 측정 비용이며 제품 운영비 비교에는 포함하지 않았습니다.",
+        f"- 이 비용은 {len(ARMS)}개 방식의 결과를 공정하게 비교하기 위한 측정 비용이며 제품 운영비 비교에는 포함하지 않았습니다.",
         "",
         "## 요청별 결과",
         "",
@@ -1654,6 +1857,7 @@ def run_experiment(
     else:
         with SessionLocal() as db:
             available_models = _ensure_runtime_models(db)
+            _clear_prior_experiment_learning(db)
             _clear_prior_experiment_runs(db)
             _upsert_workflow_and_deployments(db, available_models)
             db.commit()
@@ -1664,11 +1868,18 @@ def run_experiment(
 
     quality_judge_metrics: list[dict[str, Any]] = []
     event_path = output_dir / "execution-events.jsonl"
+    if not resume:
+        event_path.unlink(missing_ok=True)
     with synchronous_experiment_tasks():
         for index, case in enumerate(cases, start=1):
             execution_order = _arm_execution_order(case.case_id)
             results = {arm: _execute_case(arm, case) for arm in execution_order}
             _record_automatic_operational_result(case)
+            if _learning_batch_due(
+                completed_case_count=index,
+                total_case_count=len(cases),
+            ):
+                _train_automatic_learner()
             quality, quality_meta = _quality_judge(case, results)
             quality_judge_metrics.append(quality_meta)
             row = {

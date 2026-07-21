@@ -4257,7 +4257,7 @@ def _seed_internal_it_helpdesk_run(
         "fallback_model": DEMO_MODEL_ROUTER_BALANCED_MODEL,
         "reason_code": reason_code,
         "judge_called": True,
-        "included_in_policy_learning": False,
+        "included_in_routing_learning": False,
         "judge": {
             "attempted": True,
             "status": "selected",
