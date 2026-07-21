@@ -1,7 +1,6 @@
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import CheckConstraint
 from apps.shared.db.models.knowledge import RAGAnswerRun
 from apps.shared.schemas.knowledge import KnowledgeRAGRecommendedOptions
 from apps.shared.schemas.rag import (
@@ -17,6 +16,7 @@ from apps.shared.services.rag_filters import (
     normalize_metadata_filter,
 )
 from pydantic import ValidationError
+from sqlalchemy import CheckConstraint
 
 
 def test_knowledge_rag_recommended_options_use_retrieval_defaults():
