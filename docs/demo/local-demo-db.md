@@ -218,6 +218,8 @@ Demo 주요 workflow:
 
 - `사내 IT 문의 자동 처리`
 
+초기 캔버스 노드 좌표에는 편집 화면의 `레이아웃 최적화` 버튼과 동일한 canonical 좌→우 자동 레이아웃이 적용되어 있다.
+
 이전에 seed하던 나머지 workflow 11개와 해당 App, Deployment, 실행·권한·사용량 데이터는 일반 demo seed와 `--reset` 모두에서 retired cleanup 대상으로 삭제한다.
 
 ## Demo Knowledge / RAG 데이터

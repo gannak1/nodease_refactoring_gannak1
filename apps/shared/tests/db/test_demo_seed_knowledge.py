@@ -14,6 +14,7 @@ from apps.shared.domain.app_auth_secret import (
     app_auth_secret_verifier,
 )
 from apps.shared.domain.workflow_graph import validate_workflow_graph
+from apps.shared.services.workflow_layout import calculate_workflow_auto_layout
 from apps.workflow_engine.workflow.nodes.webhook.entities import WebhookTriggerNodeData
 from apps.workflow_engine.workflow.nodes.webhook.webhook_node import WebhookTriggerNode
 from scripts import seed_demo as seed_demo_script
@@ -1255,6 +1256,40 @@ def test_internal_it_helpdesk_routing_demo_matches_presentation_contract():
     assert "경제형" in llm_data["model_routing_task_description"]
     assert "균형형" in llm_data["model_routing_task_description"]
     assert "고성능형" in llm_data["model_routing_task_description"]
+
+
+def test_internal_it_helpdesk_routing_demo_starts_with_optimized_layout():
+    graph = demo_seed._internal_it_helpdesk_routing_graph()
+    positions = {
+        node["id"]: node["position"]
+        for node in graph["nodes"]
+    }
+
+    assert positions == {
+        "webhook-ticket": {"x": 0, "y": 0},
+        "llm-triage": {"x": 580, "y": 0},
+        "extract-ticket": {"x": 1160, "y": 0},
+        "condition-approval": {"x": 1740, "y": 0},
+        "template-approval": {"x": 2320, "y": 300},
+        "template-reply": {"x": 2320, "y": 0},
+        "answer-approval": {"x": 2900, "y": 300},
+        "answer-reply": {"x": 2900, "y": 0},
+    }
+    assert calculate_workflow_auto_layout(graph) == graph
+
+
+def test_internal_it_helpdesk_routing_demo_orders_it_result_before_security_result():
+    graph = demo_seed._internal_it_helpdesk_routing_graph()
+    ordered_node_ids = [node["id"] for node in graph["nodes"]]
+    nodes = {node["id"]: node for node in graph["nodes"]}
+
+    assert nodes["answer-reply"]["data"]["title"] == "IT 안내 결과"
+    assert nodes["answer-reply"]["data"]["displayNumber"] == 7
+    assert nodes["answer-approval"]["data"]["title"] == "보안 대응 결과"
+    assert nodes["answer-approval"]["data"]["displayNumber"] == 8
+    assert ordered_node_ids.index("answer-reply") < ordered_node_ids.index(
+        "answer-approval"
+    )
 
 
 def test_internal_it_helpdesk_routing_demo_seeds_all_presentation_logs():

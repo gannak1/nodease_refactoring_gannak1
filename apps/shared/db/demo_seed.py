@@ -102,6 +102,7 @@ from apps.shared.services.model_routing_global_profile_catalog import (
     catalog_metadata_for_model_id,
 )
 from apps.shared.services.password_hashing import hash_password
+from apps.shared.services.workflow_layout import calculate_workflow_auto_layout
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
@@ -2503,15 +2504,18 @@ def _internal_it_helpdesk_routing_graph() -> dict[str, Any]:
         {
             "title": "보안 대응 결과",
             "description": "보안 에스컬레이션 결과를 반환합니다.",
+            "displayNumber": 8,
         }
     )
     nodes["answer-reply"]["data"].update(
         {
             "title": "IT 안내 결과",
             "description": "일반 IT 안내 결과를 반환합니다.",
+            "displayNumber": 7,
         }
     )
-    return graph
+    graph["nodes"].sort(key=lambda node: node["data"]["displayNumber"])
+    return calculate_workflow_auto_layout(graph)
 
 
 
