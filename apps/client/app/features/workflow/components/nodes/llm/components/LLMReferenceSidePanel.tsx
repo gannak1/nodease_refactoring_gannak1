@@ -140,8 +140,8 @@ export function LLMReferenceSidePanel({
   );
 
   // Search settings
-  const scoreThreshold = data.scoreThreshold ?? 0.5;
-  const topK = data.topK ?? 3;
+  const scoreThreshold = data.scoreThreshold ?? 0.3;
+  const topK = data.topK ?? 5;
   const dedupeRetrievedContext = data.dedupeRetrievedContext ?? false;
   const retrievedContextMaxChars = data.retrievedContextMaxChars ?? '';
   const retrievedContextCompression = data.retrievedContextCompression ?? 'off';

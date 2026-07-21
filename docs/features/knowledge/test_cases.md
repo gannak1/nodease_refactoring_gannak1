@@ -7,6 +7,7 @@ KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048]
 
 ## Unit Tests
 
+- 새 LLM node, Agent Builder LLM node 초안, Knowledge RAG 추천 옵션과 runtime missing-value fallback은 `scoreThreshold=0.3`, `topK=5`를 사용하고, 명시된 기존 값은 덮어쓰지 않는다.
 - Metadata filter는 allowlist된 key/operator만 허용하고 free-form dict, JSONPath, raw SQL fragment, secret/header/prompt/completion/raw response field를 거부한다.
 - Classification metadata가 없으면 [ADR-0007](../../decisions/ADR-0007-mvp2-classification-metadata-storage.md)에 따라 `internal`로 처리한다.
 - 목표 cutover 전 `document_chunks.metadata`와 현재 `documents.meta_info`가 충돌하면 document metadata를 우선한다.

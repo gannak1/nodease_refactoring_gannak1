@@ -451,7 +451,7 @@ Apply/save 직전 materialization은 recommendation list의 현재 top-N 결과�
 | `confidence` | `high`, `medium`, `low` 중 하나. 추천 강도를 표시하며 Agent Builder는 이 값만으로 KB를 자동 선택하지 않는다 |
 | `reason_category` | 추천 근거의 safe category. 예: topic keyword match, metadata match, collection context match |
 | `threshold_result` | `high_confidence`, `close_score`, `below_threshold` 등 추천 강도, warning, failure 분기를 설명하는 safe 결과 |
-| `recommended_options` | `queryRewriteMode`, `queryRewriteTemplate`, `evidenceSufficiencyPolicy`, `ragFailurePolicy`, `sourceTierPolicy`, `scoreThreshold`, `topK` allowlist만 허용 |
+| `recommended_options` | `queryRewriteMode`, `queryRewriteTemplate`, `evidenceSufficiencyPolicy`, `ragFailurePolicy`, `sourceTierPolicy`, `scoreThreshold`, `topK` allowlist만 허용. 검색 기본값은 `scoreThreshold=0.3`, `topK=5` |
 | `source_collection_summary` | Safe collection id/label, route scope type, bucketed linked KB count 정도만 허용 |
 | `provenance` | `recommendation_strategy`, `safe_reason_code`, `used_signals`, `matched_safe_terms`, bucketed counts 같은 redaction-safe summary |
 | `runtime_availability` | `available`, `warning`, `unavailable`, `unknown`. Intended subject가 없으면 private 후보를 `available`로 올리지 않는다 |

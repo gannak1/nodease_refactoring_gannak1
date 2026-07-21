@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import CheckConstraint
 from apps.shared.db.models.knowledge import RAGAnswerRun
+from apps.shared.schemas.knowledge import KnowledgeRAGRecommendedOptions
 from apps.shared.schemas.rag import (
     DocumentPreviewRequest,
     MetadataFilter,
@@ -16,6 +17,13 @@ from apps.shared.services.rag_filters import (
     normalize_metadata_filter,
 )
 from pydantic import ValidationError
+
+
+def test_knowledge_rag_recommended_options_use_retrieval_defaults():
+    options = KnowledgeRAGRecommendedOptions()
+
+    assert options.scoreThreshold == 0.3
+    assert options.topK == 5
 
 
 def test_search_query_accepts_metadata_filter_contract():

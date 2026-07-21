@@ -2214,11 +2214,11 @@ def _cost_optimizer_candidate_data_from_node_data(
         "knowledge": {
             "knowledge_base_ids": knowledge_base_ids,
             "top_k": (
-                node_data.get("topK") if node_data.get("topK") is not None else 3
+                node_data.get("topK") if node_data.get("topK") is not None else 5
             ),
             "score_threshold": node_data.get("scoreThreshold")
             if node_data.get("scoreThreshold") is not None
-            else 0.5,
+            else 0.3,
             "dedupe_retrieved_context": bool(node_data.get("dedupeRetrievedContext")),
             "retrieved_context_max_chars": node_data.get("retrievedContextMaxChars"),
             "retrieved_context_compression": node_data.get(

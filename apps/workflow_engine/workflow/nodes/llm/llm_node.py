@@ -2044,9 +2044,9 @@ class LLMNode(Node[LLMNodeData]):
         kb_ids = list(candidate_kind_by_kb_id)
         if not kb_ids:
             return self._knowledge_candidate_safe_no_result(resolution)
-        top_k = min(self.data.topK or 3, MAX_RAG_CHUNKS_PER_KB)
+        top_k = min(self.data.topK or 5, MAX_RAG_CHUNKS_PER_KB)
         threshold = (
-            0.5 if self.data.scoreThreshold is None else self.data.scoreThreshold
+            0.3 if self.data.scoreThreshold is None else self.data.scoreThreshold
         )
         search_query, query_rewrite_applied, query_rewrite_strategy = (
             self._rewrite_rag_query(query)

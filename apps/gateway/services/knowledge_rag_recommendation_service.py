@@ -845,8 +845,8 @@ class KnowledgeRAGRecommendationService:
             else "minimum_evidence",
             ragFailurePolicy="safe_no_result",
             sourceTierPolicy="tie_break",
-            scoreThreshold=0.5,
-            topK=5 if high_risk else 3,
+            scoreThreshold=0.3,
+            topK=5,
         )
 
     def _warnings(
