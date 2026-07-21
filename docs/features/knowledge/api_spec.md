@@ -106,10 +106,1172 @@ Redis progress는 `indexing`/`processing`에서만 사용하며 `pending`과
 | Raw/compliance view | `/api/v1/knowledge/kbs/{kb_id}/raw-artifacts/*` | Raw/compliance gate 이후 선택적 protected raw content access. RAG answer API에서 사용하지 않음 |
 | Source connectors | `/api/v1/knowledge/sources/*` | Source connection, sync, tombstone, ACL status, remediation |
 | Knowledge skills | `/api/v1/knowledge/skills/*` | Provider-neutral skill registry, version, freshness/eval status, safe metadata. 주 사용처는 빌더 단계 LLM node의 RAG 옵션 구성 |
+| Document type registry | `/api/v1/knowledge/document-types` | Platform-supported type definition과 exact published registry version의 safe projection |
+| Organization taxonomy | `/api/v1/organizations/{organization_id}/knowledge-taxonomies/*` | Draft/validate/publish/impact-preview와 current/draft/history version list/detail 조회 |
+| Processing profile policy | `/api/v1/organizations/{organization_id}/knowledge-processing-profile-policies/*` | Immutable profile mapping policy draft/validate/publish와 current/draft/history version list/detail 조회 |
+| Document classification | `/api/v1/knowledge/kbs/{kb_id}/classification/*` | Effective assignment 조회, atomic replacement, lock/unlock과 suggestion review |
+| Processing profile | `/api/v1/knowledge/kbs/{kb_id}/processing-profile/*` | Explicit override options/read/set/clear, deterministic preview와 create-only reindex admission |
 | 실행 시점 RAG candidate resolution/retrieval | 내부 service call | MBA-232는 direct KB + 명시 selected Collection을 current audience로 재평가하는 Workflow Engine internal resolver contract만 제공한다. Builder/preflight `/api/v1/knowledge/candidates/resolve`, public API, graph/LLM/retrieval wiring은 분리하며 실제 연결은 MBA-233 범위다 |
 | Knowledge domain permissions | `/api/v1/knowledge/domain-permissions`, `/api/v1/knowledge/domain-capabilities` | Organization manager가 Team/User 관리 action을 위임하고 caller의 safe capability를 조회 |
 
 공개 HTTP path가 필요한 경우에는 별도 API gate review에서 path 이름과 JSON/SSE shape를 확정한다. MBA-105의 필수 계약은 collection listing(`collection.read`), collection routing(`collection.route`), KB content permission, source ACL state, document version citation identity의 분리다. Skill authoring, test, submit-for-review, publish/deprecate, Workflow Playground skill binding API는 아직 승인된 계약이 아니다.
+
+### MBA-305 Classification And Profile Target Contract
+
+이 subsection은 [ADR-0065](../../decisions/ADR-0065-knowledge-classification-taxonomy-and-processing-profile.md)이
+승인한 목표 API다. 현재 endpoint가 구현됐다는 뜻은 아니며 physical schema와 최종 route
+registration은 taxonomy/manual classification 구현 PR에서 확정한다. 구현 PR은 아래 권한,
+atomic replacement, safe projection과 오류 의미를 바꾸지 않는다.
+
+#### Registry And Taxonomy
+
+```text
+GET    /api/v1/knowledge/document-types
+GET    /api/v1/organizations/{organization_id}/knowledge-taxonomies/current
+GET    /api/v1/organizations/{organization_id}/knowledge-taxonomies/versions
+GET    /api/v1/organizations/{organization_id}/knowledge-taxonomies/versions/{version_id}
+POST   /api/v1/organizations/{organization_id}/knowledge-taxonomies/versions
+PATCH  /api/v1/organizations/{organization_id}/knowledge-taxonomies/versions/{version_id}
+POST   /api/v1/organizations/{organization_id}/knowledge-taxonomies/versions/{version_id}/validate
+POST   /api/v1/organizations/{organization_id}/knowledge-taxonomies/versions/{version_id}/impact-preview
+POST   /api/v1/organizations/{organization_id}/knowledge-taxonomies/versions/{version_id}/publish
+```
+
+- Document type 목록은 stable type ID, bounded display label, capability flags, state와 exact
+  registry version만 반환한다. Runtime implementation detail과 arbitrary organization extension은
+  반환하지 않는다.
+- Taxonomy path의 organization은 active `X-Organization-Id`와 일치해야 한다. Full taxonomy
+  version/history와 author/publish surface는 Organization manager만 사용할 수 있다. KB 편집자는
+  organization-wide management projection 대신 아래 KB-scoped `classification/options`의 bounded
+  current picker projection만 사용한다.
+- Version list는 bounded cursor pagination과 stable `created_at DESC, version_id DESC` tie-break를
+  사용하고 state, exact version, safe validation/publish summary만 반환한다. Version detail은 manager가
+  기존 draft를 다시 열거나 immutable published/superseded snapshot을 검사할 수 있는 bounded authoring
+  projection과 server-owned `label_normalization_contract_version`을 반환한다. Client가 보낸 comparison key는
+  저장하거나 authority로 사용하지 않는다. List/detail은 impact 대상 KB identity와 exact count를 포함하지 않는다.
+- Draft만 PATCH할 수 있다. Published version은 immutable하다.
+- Draft create response와 list/detail의 draft projection은 `draft_revision`을 반환한다. Published와
+  superseded projection은 immutable version을 반환하고 mutable draft revision을 authority로 제공하지
+  않는다. PATCH는
+  `expected_draft_revision`을 요구하고 material change마다 revision을 증가시킨다. Current revision과
+  normalized payload가 같으면 `status=unchanged`이며 revision/audit를 만들지 않고, stale expected
+  revision은 payload가 같아도 `409 knowledge.taxonomy_draft_revision_conflict`다.
+- V1 version create/PATCH는 `topics` complete array 하나를 사용하고 detail도 topic pagination 없이 complete
+  forest를 반환한다. Topic definition은 최대 1,000개, 모든 topic의 candidate replacement reference 합계는
+  최대 2,000개다. Server는 duplicate 제거와 normalization 전에 raw array count와 각 raw label의 UTF-8
+  512 byte bound를 검사한다. Pinned normalization 직후 normalized comparison key의 non-empty와 UTF-8
+  512 byte bound를 검사하고 그 뒤에만 sibling uniqueness, graph traversal과 DB/provider/mutation을 수행한다.
+  각 초과 입력은 `422 knowledge.taxonomy_topic_count_limit_exceeded`,
+  `422 knowledge.taxonomy_replacement_edge_limit_exceeded` 또는
+  `422 knowledge.taxonomy_label_invalid`이며 draft revision과 audit를 만들지 않는다.
+- Stable `topic_id`는 server-issued다. Existing topic entry는 `topic_id`를 요구하고, 새 topic entry는
+  `topic_id` 없이 draft 안에서 unique한 UUID `draft_topic_key`를 요구한다. `parent_topic_ref`와
+  `replacement_topic_refs` element는 `{"topic_id": "opaque"}` 또는
+  `{"draft_topic_key": "uuid"}` 중 정확히 하나인 discriminated reference다.
+  새 key는 같은 allocation request의 relation에서만 반복 참조할 수 있다. Allocation 성공 뒤 subsequent
+  mutation은 detail mapping으로 복구한 server `topic_id`를 사용한다.
+- Successful create/PATCH response와 mutable draft detail은 `created_topic_mappings`의
+  `{"draft_topic_key": "uuid", "topic_id": "opaque"}` pair와 각 새 topic entry의 server-issued `topic_id`를
+  반환한다. Mapping은 current complete-tree topic에 한정해 보존하고 수는 current topic 수 이하, 최대 1,000개다.
+  Complete PATCH가 topic을 제거하면 mapping도 같은 CAS transaction에서 제거한다. 이후 같은 key를 다시 제출하면
+  새 stable ID를 발급하고 제거된 ID를 재사용하지 않는다. Topic definition key는 allocation request 안에서 unique하다.
+- Missing/invalid/non-unique/out-of-draft key, key와 existing `topic_id` 동시 지정 또는 잘못된 discriminated
+  reference shape는 mutation 없이 `422 knowledge.taxonomy_draft_topic_reference_invalid`다. Current-mapped key를
+  이후 mutation의 topic definition 또는 relation reference로 다시 제출하면
+  `409 knowledge.taxonomy_draft_topic_key_conflict`이며 ID/mapping/revision partial write가 없다. 응답 유실 뒤
+  old revision retry는 unchanged 성공이 아니라 stale conflict이고 Client는 detail에서 current revision과 mapping을
+  복구한다. Published/superseded version은 `draft_topic_key`와 `created_topic_mappings`를 반환하지 않는다.
+- Topic 0개인 draft는 valid empty forest다. Validate/publish는 empty를 별도 schema error로 거부하지 않고
+  cycle, orphan, duplicate stable ID, invalid parent/replacement, deprecated reference와 current profile-policy
+  compatibility를 검사한다. Published history에서 deprecated 또는 제거되어 tombstone이 된 stable ID를
+  active topic이나 다른 logical identity로 재사용하면
+  `409 knowledge.taxonomy_topic_id_reuse_conflict`다. Current policy에 topic rule이 남아 있으면 empty
+  taxonomy publish는 conflict다.
+- Server는 Unicode Character Database 14.0.0을 고정한 `unicode_14_0_nfkc_casefold_ws_v1` contract의
+  NFKC, full Unicode case-fold, 재-NFKC와 Unicode
+  whitespace trim/collapse로 label comparison key를 만든다. 같은 direct parent의 key는 유일하며 root topic은
+  implicit parent를 공유한다. Empty key는 `knowledge.taxonomy_label_invalid`, sibling collision은
+  `knowledge.taxonomy_sibling_label_conflict` fixed safe violation이고 unresolved violation이 있는 draft는 publish할
+  수 없다. 다른 parent 아래의 같은 key는 유효하다.
+- Deprecated topic request의 `replacement_topic_refs`는 같은 Organization의 candidate version에서 active인 topic만
+  resolve하며 persisted/published projection은 server-issued `replacement_topic_ids`만 사용한다.
+  Existing published replacement edge와 candidate edge를 합친 graph는 self-reference, missing/cross-organization target,
+  cycle과 8 edge 초과 path를 거부한다. Safe violation code는
+  `knowledge.taxonomy_replacement_invalid` 또는 `knowledge.taxonomy_replacement_depth_exceeded`이며 replacement는
+  review hint일 뿐 assignment를 자동 변경하지 않는다.
+- First-published identity와 terminal topic tombstone append는 taxonomy version/current pointer/canonical
+  audit와 같은 publish transaction이다. Ledger write 또는 audit 실패는 version/pointer/tombstone을 모두
+  rollback한다.
+- Validate와 impact preview는 `expected_draft_revision`을 요구하고 검사한 exact draft revision과
+  compatibility snapshot인 nullable current taxonomy/profile-policy version, document-type registry version,
+  Organization/Platform profile catalog revision을 각각 반환한다. Impact preview는 추가로 server-owned
+  `assignment_impact_snapshot_revision`, bounded affected/reindex bucket, 최대 10분 수명의 opaque
+  `impact_preview_revision`과 expiry를 반환한다. Token은 Organization/actor/candidate/draft 및 전체 snapshot에
+  bind된 non-capability이고 response는 `no-store`다. Publish는 `expected_draft_revision`, nullable
+  `expected_current_taxonomy_version`, nullable `expected_current_profile_policy_version`,
+  `expected_document_type_registry_version`, `expected_organization_profile_catalog_revision`,
+  `expected_platform_profile_catalog_revision`,
+  `expected_impact_bucket_contract_version`,
+  `expected_impact_preview_revision`과 literal `impact_acknowledged=true`를 모두 요구한다.
+- 최초 publish의 `expected_current_taxonomy_version=null`은 current taxonomy pointer가 실제로 없다는 exact
+  precondition이다. Publish transaction은 pointer absence를 잠그거나 conditional CAS해 null에서 candidate로
+  전환한다. 이미 current가 있는데 null을 보내거나 current가 없는데 non-null version을 보내면 아래 snapshot
+  conflict이며, 최초 profile-policy publish의 nullable current policy pointer에도 같은 규칙을 적용한다.
+- Publish transaction은 candidate taxonomy에 대해 current profile policy를 다시 validate하고 위 pointer/
+  revision을 conditional CAS 또는 동등한 serializable boundary로 검증한다. 어느 하나라도 stale이면
+  mutation/audit 없이 `409 knowledge.taxonomy_publish_snapshot_conflict`이며 last-write-wins로 current
+  version을 교체하지 않는다.
+- Taxonomy와 profile-policy publish는 같은 Organization classification-policy coordination row 또는 동등한
+  shared serialization primitive를 사용한다. 각 endpoint가 자기 nullable current pointer만 CAS해서는 안 된다.
+  Catalog lifecycle/reference race를 포함한 lock order는 applicable Organization catalog, Platform catalog,
+  coordination, taxonomy current, profile-policy current 순서이며 사용하지 않는 catalog row만 생략한다.
+- Impact preview는 affected assignment/reindex 수를 bounded bucket으로 반환하고 hidden KB,
+  document, source identity와 exact denied count를 노출하지 않는다. Impact가 0개이거나 candidate가 non-empty여도
+  publish precondition을 생략하지 않는다. Publish transaction은 permission, token scope/actor/expiry,
+  exact draft/current compatibility와 assignment impact snapshot revision을 다시 검증한다. Missing, false,
+  expired 또는 stale acknowledgement는 mutation/audit 없이
+  `409 knowledge.taxonomy_impact_preview_stale`다.
+- Impact bucket contract는 `taxonomy_impact_bucket_v1`이다. 두 count를 같은 authoritative snapshot에서
+  독립 계산하고 `none=0`, `small=1..10`, `medium=11..100`, `large=101+`로 변환한다.
+  `affected_assignment_count`는 같은 Organization의 processing-eligible active KB/document current
+  assignment 중 candidate와 current taxonomy의 topic-axis projection tuple이 다른 row를 하나씩 센다. Tuple은
+  freshness와 resolver-eligible topic ID set/primary다. Exact taxonomy version
+  ID 차이만으로 세지 않고 이미 stale인 assignment가 candidate에서도 같은 tuple을 유지하면 제외한다.
+  Null-taxonomy empty assignment의 first-publish 또는 prior-version empty assignment의 current-validation처럼
+  tuple이 바뀌는 영향은 포함하고 assignment가 없는 KB는 제외한다.
+  `reindex_candidate_count`는 affected subset 중 current active-ready artifact가 있는 row만 평가한다. Current
+  Processing Decision과 비교 가능한 `materialization_input_fingerprint`가 있으면 topic replacement나 human
+  confirmation을 가정하지 않은 candidate fingerprint가 다른 row만 센다. Active-ready legacy artifact는 있지만
+  current decision 또는 비교 가능한 fingerprint가 없으면 동일 materialization을 증명할 수 없으므로
+  보수적으로 포함한다. Resolved scoped profile ref revision/source/status만 바뀌고 normalized materialization
+  fingerprint가 같음이 증명되면 제외하며 새 Decision Manifest와 `satisfied_existing`으로 처리한다. 항상
+  affected count 이하다.
+  Archived/deleted KB/document 또는 processing-ineligible target은 두 count에서 제외한다. Artifact availability
+  `purging|purged`는 assignment projection 차이가 있으면 affected에는 포함하지만 active-ready artifact가 아니므로
+  reindex candidate에서는 제외한다. Response/publish
+  precondition과 opaque token은 `impact_bucket_contract_version`을 bind하고, threshold/predicate가 바뀌면
+  새 contract version을 사용해 old token을 stale 처리한다. Exact count와 hidden identity는 response,
+  token plaintext와 audit에 넣지 않으며 publish는 assignment 변경이나 reindex job 생성을 뜻하지 않는다.
+- Assignment current pointer, canonical content 또는 아래 processing impact basis를 바꾸는 mutation은 같은
+  transaction에서 `assignment_impact_snapshot_revision`을 전진시킨다. 비동기 projection이나 우연히 같은 impact
+  bucket은 old acknowledgement를 유효하게 만들지 않는다.
+- 증가 집합은 normalized no-op을 제외한 assignment create/replace/delete, manual takeover, suggestion accept,
+  current-validation, axis lock/unlock, 새 canonical materialization input, impact scope를 바꾸는 KB/document lifecycle,
+  explicit profile override set/change/clear, current Processing Decision pointer와 active artifact pointer 또는
+  `ready|purging|purged` availability 전이를 포함한다. Suggestion create/reject/expire, read/preview, 같은 canonical input의
+  source generation, staging build/job/manifest 생성과 current pointer/availability no-op은 증가시키지 않는다.
+  일반 authoritative mutation은 revision 증가, pointer/availability mutation과 canonical audit를 같은 Unit of
+  Work에서 commit 또는 rollback한다. Artifact purge는 pre-delete transaction에서 `purging`, durable intent와
+  첫 impact revision을 함께 확정한 뒤 external delete를 수행한다. Physical deletion 확인 뒤 completion
+  transaction에서 tombstone, `purged`, 다음 impact revision과
+  `knowledge.processing_artifact.purged` audit를 함께 확정한다. Completion이 실패하면 삭제된 artifact를
+  `ready`로 rollback하지 않고 non-retrievable `purging`으로 유지해 reconciler가 같은 generation으로
+  idempotent하게 완성한다.
+
+Impact preview response와 publish request의 contract shape는 다음 필드를 포함한다.
+
+```json
+{
+  "draft_revision": 7,
+  "current_taxonomy_version": "opaque-version-or-null",
+  "current_profile_policy_version": "opaque-version-or-null",
+  "document_type_registry_version": "opaque-version",
+  "organization_profile_catalog_revision": "opaque-revision",
+  "platform_profile_catalog_revision": "opaque-revision",
+  "assignment_impact_snapshot_revision": "opaque-revision",
+  "impact_bucket_contract_version": "taxonomy_impact_bucket_v1",
+  "affected_assignment_bucket": "none|small|medium|large",
+  "reindex_candidate_bucket": "none|small|medium|large",
+  "impact_preview_revision": "opaque-token",
+  "expires_at": "RFC3339"
+}
+```
+
+```json
+{
+  "expected_draft_revision": 7,
+  "expected_current_taxonomy_version": "opaque-version-or-null",
+  "expected_current_profile_policy_version": "opaque-version-or-null",
+  "expected_document_type_registry_version": "opaque-version",
+  "expected_organization_profile_catalog_revision": "opaque-revision",
+  "expected_platform_profile_catalog_revision": "opaque-revision",
+  "expected_impact_bucket_contract_version": "taxonomy_impact_bucket_v1",
+  "expected_impact_preview_revision": "opaque-token",
+  "impact_acknowledged": true
+}
+```
+
+- Version create/PATCH는 각각 `knowledge.taxonomy_draft.created`, `knowledge.taxonomy_draft.updated`, publish는
+  `knowledge.taxonomy.published` canonical audit와 같은 transaction이다. Normalized no-op, list/detail,
+  validate와 impact preview는 mutation audit를 만들지 않으며 manager authoring response는 `Cache-Control:
+  no-store`를 사용한다.
+
+#### Effective Classification
+
+```text
+GET   /api/v1/knowledge/kbs/{kb_id}/classification
+GET   /api/v1/knowledge/kbs/{kb_id}/classification/options
+PUT   /api/v1/knowledge/kbs/{kb_id}/classification
+POST  /api/v1/knowledge/kbs/{kb_id}/classification/validate-current
+POST  /api/v1/knowledge/kbs/{kb_id}/classification/lock
+POST  /api/v1/knowledge/kbs/{kb_id}/classification/unlock
+GET   /api/v1/knowledge/kbs/{kb_id}/classification/suggestions
+POST  /api/v1/knowledge/kbs/{kb_id}/classification/suggestions/{suggestion_id}/accept-preview
+POST  /api/v1/knowledge/kbs/{kb_id}/classification/suggestions/{suggestion_id}/accept
+POST  /api/v1/knowledge/kbs/{kb_id}/classification/suggestions/{suggestion_id}/reject
+```
+
+`classification` GET은 KB `read`, `classification/options`는 KB `write` 또는 각각의 Organization manager
+override를 요구한다. Source-managed KB의 모든 classification read/mutation은 parent ownership과 required KB
+action을 확인한 뒤 assignment/lock row의 lookup, effective axis/security projection 또는 mutation 전에 fresh
+requester source authorization과 applicable display policy를 통과해야 한다. GET/options뿐 아니라 assignment PUT,
+current-validation과 lock/unlock에도 같은 gate를 적용한다. Missing/revoked/stale/denied는
+`404 resource.hidden`이며 assignment 존재, stable ID, axis source/lock과 security classification을 반환하거나
+변경하지 않는다. Mutation은 external authorization session을 종료한 뒤 bounded revision/watermark를 commit
+직전에 current KB authority와 함께 다시 검증하고 revoke winner는 assignment/lock, impact snapshot, audit와
+reindex projection을 만들지 않는다. Manual KB에는 이 source gate를 적용하지 않는다.
+
+Target `PUT`은 partial topic merge가 아니라 complete effective set과 변경할 axis를 함께 제출해 server가
+atomic assignment revision을 만드는 command다. Request 후보는 다음 필드를 가진다.
+
+```json
+{
+  "canonical_content_revision_id": "opaque-uuid",
+  "expected_assignment_revision": null,
+  "manual_axes": ["document_type", "topics"],
+  "document_type_registry_version": "opaque-version",
+  "document_type_id": "opaque-type-id",
+  "taxonomy_version_id": "opaque-version",
+  "topic_ids": ["opaque-topic-id"],
+  "primary_topic_id": "opaque-topic-id-or-null"
+}
+```
+
+Current taxonomy pointer가 없는 Organization의 type-only candidate는
+`taxonomy_version_id=null`, `topic_ids=[]`, `primary_topic_id=null`을 사용한다. Current taxonomy가
+존재하면 topic set이 비어 있더라도 exact current taxonomy version을 사용해야 한다.
+
+`expected_assignment_revision`은 nullable이지만 생략할 수 없는 exact precondition이다. Current assignment가
+없는 최초 PUT은 `null`을 보내고 server는 KB-scoped current assignment 부재를 잠그거나 conditional
+insert/CAS해 revision 1을 만든다. Current가 있는데 null을 보내거나 current가 없는데 non-null revision을
+보내면 `409 knowledge.classification_assignment_revision_conflict`다. Sentinel revision과 read 뒤 무조건
+insert를 사용하지 않으며 같은 부재를 관찰한 first PUT과 suggestion accept는 하나만 commit한다.
+
+- Server는 request의 organization, display label, path, confidence와 client-supplied resolved profile ref를 authority로
+  사용하지 않는다.
+- Manual assignment request는 `reason_code` 또는 free-text reason을 받지 않는다. First create 또는 selected
+  axis 중 하나라도 normalized value가 바뀌면 server가 fixed `manual_assignment`, selected value는 모두 같고
+  non-manual source만 `manual`로 바뀌면 fixed `manual_takeover`를 파생한다. Value와 authority가 함께 바뀌면
+  `manual_assignment`가 우선한다. `reason_code`를 포함한 unknown top-level field는 DB 조회와
+  assignment/audit mutation 전에 `422 knowledge.classification_request_invalid`로 거부하고 canonical audit에는
+  server-derived reason만 기록한다.
+Successful first manual PUT은 `knowledge.classification_assignment.created`, existing assignment replace/takeover는
+`knowledge.classification_assignment.updated`를 사용한다. Lock/unlock은 각각
+`knowledge.classification_assignment.locked`, `knowledge.classification_assignment.unlocked`, current-validation은
+`knowledge.classification.revalidated`, suggestion accept/reject는 각각
+`knowledge.classification_suggestion.accepted`, `knowledge.classification_suggestion.rejected`를 사용한다. 각 action은 authoritative assignment/outcome과
+같은 transaction에서 한 번만 기록하며 normalized unchanged 또는 exact terminal retry는 새 action을 만들지 않는다.
+
+
+- GET response는 ADR-0007의 `security_classification`을 read-only로 포함할 수 있지만 이 `PUT`,
+  lock/unlock과 suggestion review는 security classification을 변경하지 않는다.
+- `topic_ids`는 중복 없는 최대 32개 배열이고 `primary_topic_id`는 null이거나 같은 set의 member다. 배열 길이는
+  중복 제거 전에 검사하며 duplicate를 자동 제거하지 않는다. 33개 이상은 DB/provider 조회 전에
+  `422 knowledge.classification_topic_limit_exceeded`다. Server는 유효한 배열만 unordered canonical set으로
+  정규화한다.
+- `taxonomy_version_id`는 nullable이지만 생략할 수 없는 required field다. Null인데 topic set이 non-empty이거나
+  primary가 non-null이면 `422 knowledge.classification_taxonomy_shape_invalid`다.
+- Request taxonomy version은 nullable current pointer의 exact snapshot이다. Current taxonomy가 없을 때만
+  null + empty topic set + null primary를 허용하고, current pointer가 존재하면 empty taxonomy version을
+  포함해 exact version을 요구한다. Request version과 current taxonomy/registry/assignment가 다르면
+  mutation/audit 없이 `409 knowledge.classification_taxonomy_snapshot_conflict`다. Cross-organization 또는
+  hidden version은 snapshot 비교 전에 ownership-first safe `404`다.
+- `manual_axes`는 non-empty, duplicate 없는
+  `document_type|topics` subset이다. 선택한 axis만 unlocked manual replacement/takeover 대상이고, 선택하지 않은
+  axis의 normalized request value는 current effective value와 같아야 하며 server가 value/source/lock과 최초
+  assigned snapshot을 그대로 보존한다. `document_type` axis value는 `document_type_id`, `topics` axis value는
+  unordered `topic_ids`와 `primary_topic_id` tuple이다. Registry/taxonomy revision fields는 두 axis의 current
+  validation precondition이며 unselected axis provenance를 다시 쓰라는 뜻이 아니다. Current assignment가 없는
+  first create는 두 axis를 모두 선택해야 한다.
+  Empty/duplicate/unknown axis 또는 incomplete first create는
+  `422 knowledge.classification_manual_axes_invalid`, unselected axis value mismatch는
+  `409 knowledge.classification_unselected_axis_conflict`, selected locked axis는
+  `409 knowledge.classification_manual_authority_conflict`이며 assignment/audit가 없다.
+- Current expected revision, normalized complete set과 selected axes가 current state와 같고 selected axis source가
+  모두 이미 `manual`이면 `200 status=unchanged`로 current result를 반환하고 revision/audit/reindex를 만들지
+  않는다. Selected axis에 deterministic rule, `accepted_suggestion`, fallback 등 non-manual source가 있으면
+  같은 value의 명시적 `PUT`도 그 axis의 manual takeover이므로 새 complete assignment revision과 canonical
+  audit를 만들고 selected source만 `manual`로 바꾼다. Unselected non-manual 또는 locked axis는 보존한다. Current
+  resolver state와 `reindex_required` projection을 다시 계산하지만 durable reindex job이나 active pointer를
+  자동 변경하지 않는다. 이후 명시적 admission에서 materialization input이 같으면
+  `satisfied_existing`이다. Expected revision이 stale하면 desired set이 같아도 `409`다.
+  Canonical audit는 동일 effective IDs와 assignment revision, before/after axis별 authority source 및 fixed manual
+  takeover reason을 저장하되 raw labels/content를 포함하지 않는다.
+- Suggestion candidate는 `proposed_axes`를 가진다. Accept request는 required nullable
+  `expected_assignment_revision`과 non-empty `accepted_axes`를 보내며, accepted axes는 candidate의 subset이어야
+  한다. Server는 선택하지 않은 axis의 value/source/lock을 보존하고 immutable candidate의 선택 axis를 적용한
+  complete assignment를 materialize해 한 revision으로 commit한다. 이는 Client-supplied partial merge가 아니다.
+  `accepted_axes`의 값은 `document_type|topics`이고 empty, duplicate, unknown 또는 candidate 밖 axis는
+  `422 knowledge.classification_suggestion_axes_invalid`다. Current assignment가 없으면 selected candidate로
+  required document type과 유효한 complete assignment를 만들 수 있어야 하며 그렇지 않으면 같은 fixed error다.
+  성공한 subset accept도 suggestion row 전체를 terminal `accepted`로 바꾸고 provenance에 `accepted_axes`를
+  저장한다. 선택하지 않은 proposed axis는 적용하지 않고 폐기하며 이후 retry나 별도 reviewable child로 남기지
+  않는다. Suggestion candidate의 topic axis와 accept 결과도 최대 32개 bound를 적용한다.
+  Expired/rejected/abstained suggestion은 accept할 수 없다. 선택한 current axis가 locked 또는 unlocked manual assignment이면
+  `409 knowledge.classification_manual_authority_conflict`이며 assignment와 suggestion state를 모두
+  유지한다. 선택하지 않은 manual axis는 그대로 보존할 수 있다. Blocked candidate를 의도적으로 채택하려면
+  일반 `PUT`의 complete set과 blocked candidate axis를 `manual_axes`로 제출한다. Selected source만 `manual`로
+  전환하고 unselected value/source/lock은 보존한다.
+- Suggestion accept transaction은 assignment revision, suggestion `accepted` outcome과 canonical audit를
+  함께 확정한다. Assignment/audit에는 opaque suggestion ref, canonical content/taxonomy/registry refs,
+  accepted axes와 tagged `generator_kind=deterministic_rule|ai_classifier` provenance를 남긴다. 두 kind 모두
+  immutable `generator_contract_ref`가 필수다. Deterministic kind는 approved rule-set/version만 저장하고
+  provider model, prompt-template, calibration 및 confidence field는 absent다. AI kind는 classifier policy,
+  prompt-template contract, model catalog/effective model, calibration revision/state와 bounded confidence bucket이
+  필수다. Kind와 맞지 않는 fake/non-applicable ref를 만들지 않는다. Raw prompt/completion/rationale, raw score,
+  provider response와 content는 저장하지 않으며 suggestion row purge가 snapshot을 cascade 삭제하지 않는다.
+- Reject는 current `suggested` row와 fresh source authorization을 다시 검증하고 assignment/reindex를 변경하지
+  않은 채 `rejected` outcome, bounded fixed `reason_code`와
+  `knowledge.classification_suggestion.rejected` canonical audit를 같은 transaction에서 확정한다. Audit failure는
+  outcome을 rollback하고 exact terminal retry는 기존 safe result를 반환하며 새 audit를 만들지 않는다.
+- Current taxonomy가 없을 때 suggestion의 taxonomy version도 null이고 topic candidate는 empty여야 한다.
+  최초 taxonomy publish를 포함해 current pointer가 바뀌면 아직 `suggested`인 type-only candidate는
+  expired가 되며 새 taxonomy version으로 자동 승계하거나 topic을 보충하지 않는다. 이미 accepted/rejected/
+  abstained인 terminal outcome은 다시 쓰지 않는다.
+- Suggestion accept는 nullable current taxonomy pointer와 candidate snapshot을 assignment revision, terminal
+  outcome과 canonical audit를 확정하는 transaction 안에서 다시 검증한다. Null-to-version race loser는
+  assignment/outcome/audit를 남기지 않는다. Accept가 먼저 commit되면 뒤의 taxonomy publish는 accepted
+  outcome/provenance를 유지하고 assignment만 current-validation-required로 projection한다.
+- Lock/unlock은 KB `manage` 또는 ADR-0034 Organization manager override가 필요하다. Lock request는 target
+  `axis`, non-null `expected_assignment_revision`과 `expected_canonical_content_revision_id`를 요구한다. Server는
+  current assignment와 canonical content pointer를 같은 transaction에서 잠그거나 동등한 CAS로 다시 검증하고
+  mismatch를 `409 knowledge.classification_lock_snapshot_conflict`로 닫는다. Unlocked axis의 실제
+  `false -> true` 전이는 target freshness가 `current`일 때만 허용한다. `current_validation_required`는
+  `validate-current`, `review_required`는 current option을 사용하고 target axis를 `manual_axes`에 넣은 complete
+  assignment `PUT`을 먼저 요구하고
+  invalid axis가 이미 locked이면 `unlock` 뒤 complete `PUT` 순서로 복구한다. Write-only actor에게 unlock을
+  허용하지 않는다. 그렇지 않으면 `409 knowledge.classification_lock_not_current`이며 assignment/audit를 변경하지 않는다. 이미
+  locked인 exact-state request는 `status=unchanged`일 수 있다. Unlock request는 target `axis`와 non-null
+  `expected_assignment_revision`만 요구한다. Unlock은 authority-reduction recovery이므로 stale content 또는
+  missing/deprecated reference에서도 허용하되 current assignment를 transaction 안에서 다시 검증하고 complete
+  revision의 freshness/resolver projection을 server current state로 재계산한다. Locked axis를 일반 `PUT` 또는
+  suggestion accept로 덮어쓰면 `409`다.
+- Current canonical materialization input hash가 assignment의 last-validated content와 다르면 GET은 axis별
+  `freshness=current|review_recommended|current_validation_required|review_required`와 `resolver_eligible`을
+  반환한다. Locked axis는 `review_recommended`, eligible이고 unlocked axis는 source가 manual/rule/
+  accepted-suggestion/fallback인지와 무관하게 `current_validation_required`, ineligible이다. Ineligible value는
+  provenance/display에는 남지만 hard filter, ranking, profile mapping과 materialized assignment field에 사용하지
+  않는다. Resolver는 eligible axis 또는 general profile로 fallback한다. Canonical input hash가 같은 source
+  generation/profile-only output 변화는 freshness를 바꾸지 않는다.
+- `POST .../classification/validate-current`는 assignment replacement가 아니다. Request는
+  `canonical_content_revision_id`, `expected_assignment_revision`,
+  `expected_document_type_registry_version`, nullable `expected_taxonomy_version_id`와
+  `validation_reason_code`를 요구한다. Reason은
+  `content_reviewed|taxonomy_updated|registry_updated|combined_review` bounded enum이다.
+  Server는 current canonical content revision/hash와 current pointers 및 assignment를 다시 읽고 last-validated
+  snapshot 대비 changed dimensions를 `content|taxonomy|document_type_registry` 집합으로 계산한다. 정확히 하나만
+  바뀌면 각각 `content_reviewed|taxonomy_updated|registry_updated`, 둘 이상이면 `combined_review`만 허용한다.
+  Changed dimension이 없으면 request reason을 해석하거나 audit에 저장하지 않고 `status=unchanged`로 종료한다.
+  Content가 바뀌었는데 content-confirming reason이 아니면
+  `422 knowledge.classification_content_confirmation_required`, 그 밖의 reason/change-set mismatch는
+  `422 knowledge.classification_validation_reason_mismatch`이며 revision/audit/projection이 없다.
+  Content-confirming은 server-computed set에 `content`가 포함된 validation만 뜻하며 KB `write`와 별도로 effective
+  `content_read` 및 applicable current display/raw policy를 요구한다.
+  Source-managed KB는 changed dimension과 무관하게 assignment lookup/mutation 전에 fresh source
+  authorization/display gate를 평가하고 authoritative revision/watermark를 validation commit과 직렬화한다.
+  Taxonomy/registry-only validation은 `content_read`와 raw policy를 요구하지 않지만 이 resource-hiding gate는
+  생략하지 않는다. Organization manager도 이를 우회하지 않으며 revoked/stale/denied는
+  `404 resource.hidden`으로 content와 validation 결과를 숨긴다.
+  Stable IDs가 모두 유효하면 effective set,
+  axis별 source/lock, effective-from과 최초 assigned snapshot을 보존한 새 revision으로
+  `last_validated_*`만 전진시키고 `validation_source=manual_confirmation`을 기록한다. Original axis source를
+  manual로 변경하지 않는다. 성공은
+  `knowledge.classification.revalidated` canonical audit와 같은 transaction에서 확정하고 current resolver
+  state와 `reindex_required` projection을 다시 계산한다. Validation 자체는 reindex job 또는 active pointer
+  변경을 시작하지 않는다. 이미 current면 `status=unchanged`이고 revision/audit/reindex projection을
+  바꾸지 않는다. Missing/deprecated reference는
+  `200 status=review_required`로 assignment와 last-validated refs를 유지한다. 이 결과는 같은 validation 재시도를
+  권장하지 않으며 Client는 current option과 invalid axis의 `manual_axes`를 사용한 complete assignment
+  replacement를 제공하고 반대 axis의 value/source/lock을 보존한다. Invalid axis가
+  locked이면 KB `manage` 또는 Organization manager의 unlock이 먼저 필요하다. Stale expected
+  revision/version은 값이 여전히 유효해 보여도 `409`다.
+- Empty-topic assignment 뒤 assigned taxonomy snapshot보다 새 taxonomy가 publish된 상태는 invalid topic이
+  아니므로 GET은 topic axis를 `freshness=current_validation_required`, `resolver_eligible=false`,
+  `review_required=false`로 구분하고 document-type axis freshness는 독립적으로 유지한다. 여기에는
+  null-taxonomy assignment 뒤 최초 empty/non-empty publish와 prior-taxonomy empty-topic assignment 뒤 empty
+  successor가 포함된다. Assignment-level
+  `current_validation_required=true`는 UI용 derived summary일 뿐 resolver 판단을 대체하지 않는다. Explicit
+  current-validation은 effective set과 axis별 source/lock/최초 assigned snapshot을 보존하고 last-validated
+  taxonomy ref만 전진시킨다.
+
+```json
+{
+  "canonical_content_revision_id": "opaque-uuid",
+  "expected_assignment_revision": 4,
+  "expected_document_type_registry_version": "opaque-version",
+  "expected_taxonomy_version_id": "opaque-version-or-null",
+  "validation_reason_code": "content_reviewed"
+}
+```
+
+- Target document-level KB cutover 전 여러 Document가 있는 legacy KB에는 canonical route를
+  사용하지 않는다. Transitional API는 exact
+  `/api/v1/knowledge/{kb_id}/documents/{document_id}/classification`과
+  `POST /api/v1/knowledge/{kb_id}/documents/{document_id}/classification/validate-current` 및
+  legacy `document_version_id`를 요구한다. Server는 이를 canonical content revision/hash에 매핑하고
+  대상이 모호하면 `409 knowledge.classification_migration_required`다.
+
+Safe response는 다음 범위로 제한한다.
+
+- Stable type/topic IDs와 bounded approved labels
+- Nullable exact taxonomy pointer와 registry/assignment revision. Current taxonomy가 없으면 options response는
+  taxonomy version `null`과 empty topic options를 반환한다.
+- Assignment의 effective-from/last-validated canonical content safe refs
+- `authority.document_type`과 `authority.topics` 각각의
+  `source=manual|rule|accepted_suggestion|fallback`, `locked`,
+  `freshness=current|review_recommended|current_validation_required|review_required`, `resolver_eligible`.
+  단일 합성 `source`나 assignment-level freshness로 mixed authority를 축약하지 않는다.
+- Assignment-level `reindex_required` boolean
+- Axis freshness의 OR projection인 derived `current_validation_required` boolean. Resolver와 권한 판정은 이
+  summary가 아니라 각 axis의 `freshness`와 `resolver_eligible`을 사용한다. Assigned taxonomy snapshot이
+  current보다 뒤처졌지만 invalid topic reference가 없는 경우와 null-taxonomy empty set 뒤 최초 publish도
+  summary에 포함한다.
+- Profile safe ID/revision은 profile preview 또는 effective manifest projection에서만 제공
+- Suggestion의 bounded state, calibrated 여부/confidence bucket과 fixed safe reason
+
+Raw document excerpt, source title/path/URL, prompt/completion/rationale, model raw response,
+credential, hidden candidate ID와 exact denied count는 반환하지 않는다. Classification 응답은
+`Cache-Control: no-store`를 사용한다.
+
+`GET .../classification/options`는 target KB `write` 또는 같은 active organization의 Organization manager
+override를 요구하고 current platform document type
+registry와 organization taxonomy에서 신규 assignment에 사용할 수 있는 bounded option만 반환한다.
+Deprecated/hidden topic, authoring metadata, impact count와 다른 KB assignment를 반환하지 않는다.
+Response는 exact registry/taxonomy version과 stable ID, bounded approved label/path, disabled reason만
+포함하며 Client는 이 version을 mutation request에 그대로 돌려보낸다. Existing assignment가
+`current_validation_required`이면 options response는 server-computed bounded
+`current_validation_changed_dimensions: content|taxonomy|document_type_registry[]`와 generic
+`can_confirm_current_content` boolean도 반환한다. 이 값은 raw content/hash/source identity를 포함하지 않고
+submit capability가 아니며 validation transaction이 current snapshot과 authorization을 다시 계산한다.
+
+`GET .../classification/suggestions`는 optional
+`state=suggested|accepted|rejected|abstained|expired`, 기본 `suggested`, 기본 `limit=25`, 최대 `limit=50`과
+opaque `cursor`를 받는다. Ordering은 stable `created_at DESC, suggestion_id DESC` keyset이고 cursor는
+organization, KB, state filter와 ordering tuple에 bind된다. 동일 timestamp, purge/expiry 사이의 page에서도
+duplicate/skip을 만들지 않으며 `total_count`와 hidden/denied count를 반환하지 않는다. Malformed 또는 다른
+scope/filter cursor는 입력을 echo하지 않는 `422 knowledge.classification_suggestion_cursor_invalid`다.
+
+List response는 `items`와 nullable `next_cursor`만 가진다. 각 item은 opaque `suggestion_id`, state,
+`proposed_axes`, allowlisted candidate stable IDs와 bounded labels, created/expires timestamp, fixed safe reason,
+`generator_kind`와 opaque `generator_contract_ref`를 공통으로 포함한다. Deterministic item에는 approved
+rule-set/version safe projection만, AI item에는 calibrated 여부와 bounded confidence bucket만 추가하고
+non-applicable provider field는 absent다. `total_count`, raw score, content excerpt, source identity,
+prompt/rationale와 provider payload는 포함하지 않는다.
+
+Accept-preview는 accept와 같은 `expected_assignment_revision` 및 non-empty `accepted_axes` request shape를
+사용한다.
+
+```json
+{
+  "expected_assignment_revision": null,
+  "accepted_axes": ["document_type", "topics"]
+}
+```
+
+Response는 다음 bounded safe projection이다.
+
+```json
+{
+  "accept_preview_revision": "opaque-preview-revision",
+  "expires_at": "2026-01-01T00:10:00Z",
+  "assignment_effect": {
+    "document_type": "authority_changed",
+    "topics": "value_changed"
+  },
+  "profile_resolution_changed": true,
+  "reindex_required": true,
+  "active_ready_available": true
+}
+```
+
+`assignment_effect` 값은 `unchanged|value_changed|authority_changed` enum이다. Value가 바뀌면 source/authority도
+함께 바뀌는지와 무관하게 `value_changed`, value는 같고 source/authority만 바뀌면 `authority_changed`, 둘 다
+같으면 `unchanged`다. `accepted_axes`에 없는 axis도 `unchanged`로 반환한다.
+
+Preview는 parent/KB permission과 applicable fresh source authorization/display gate를 통과한 뒤 immutable
+candidate를 hypothetically 적용한다. Organization/KB/actor, suggestion/state/candidate snapshot,
+accepted axes, current canonical content, nullable assignment/taxonomy, registry, profile policy/catalog,
+override, resolved scoped profile ref, nullable current Processing Decision Manifest ref와
+resolver/materialization input fingerprints, nullable active Artifact Build Manifest ref·generation·availability와
+build materialization/integrity fingerprints를 최대 10분 opaque token의 server-side validation state에 bind한다.
+Raw content, hidden identity, exact count/cost와 내부 fingerprint는 response 또는 token plaintext에 포함하지 않고
+`Cache-Control: no-store`를 사용한다. Token은 capability가 아니다.
+
+Accept는 `expected_accept_preview_revision`을 필수로 보낸다. Server는 fresh source/display gate를 candidate와
+token lookup보다 먼저 재평가하고 외부 authorization session을 닫은 뒤 bounded revision/watermark만 mutation
+transaction에 전달한다. 같은 transaction에서 scope, expiry, 전체 preview vector와 authorization
+revision/watermark를 commit 직전에 다시 검증한다. Candidate/state, accepted axes, assignment,
+content/taxonomy/registry, resolver/materialization input, current decision 또는 active artifact identity/state가
+바뀌면 response boolean이 같아도 mutation/audit 없이
+`409 knowledge.classification_suggestion_accept_preview_stale`다. Fresh authorization을 통과한 exact terminal
+retry는 terminal outcome에 저장한 non-reversible accept request fingerprint가 같을 때 preview expiry보다
+먼저 기존 safe result를 반환하고 assignment/audit/reindex intent를 반복하지 않는다. 다른 terminal request는
+기존 outcome을 변경하지 않는다. Raw preview token/digest는 assignment, audit, log와 trace에 저장하지 않는다.
+Accept와 reject request는 다음 shape를 사용한다.
+
+```json
+{
+  "expected_assignment_revision": null,
+  "expected_accept_preview_revision": "opaque-preview-revision",
+  "accepted_axes": ["document_type", "topics"]
+}
+```
+
+```json
+{
+  "reason_code": "incorrect_topics"
+}
+```
+
+Reject `reason_code`는 `incorrect_type|incorrect_topics|ambiguous|outdated|other_safe` bounded enum이고
+free-text reason을 받지 않는다.
+
+Source-managed KB에서는 suggestion list의 각 page와 accept-preview/accept/reject가 parent ownership 및 KB permission을
+확인한 뒤 suggestion row를 scan/lookup하거나 candidate를 projection하기 전에 fresh source authorization과
+display policy를 다시 평가한다. Review mutation은 source authorization revision/watermark를 commit 직전에
+다시 검증한다. Revoked/stale/denied이면 `404 resource.hidden`이고 candidate identity/state/count/confidence,
+terminal outcome, assignment와 audit를 반환하거나 변경하지 않는다. Organization manager, KB `manage`, cursor와
+suggestion ID는 source gate를 우회하는 capability가 아니다.
+
+#### Organization Processing Profile Catalog Lifecycle
+
+```text
+GET    /api/v1/knowledge/processing-profiles/platform-options
+GET    /api/v1/organizations/{organization_id}/knowledge-processing-profiles
+GET    /api/v1/organizations/{organization_id}/knowledge-processing-profiles/{profile_id}
+GET    /api/v1/organizations/{organization_id}/knowledge-processing-profiles/{profile_id}/revisions
+GET    /api/v1/organizations/{organization_id}/knowledge-processing-profiles/{profile_id}/revisions/{revision_id}
+POST   /api/v1/organizations/{organization_id}/knowledge-processing-profiles
+POST   /api/v1/organizations/{organization_id}/knowledge-processing-profiles/{profile_id}/revisions
+PATCH  /api/v1/organizations/{organization_id}/knowledge-processing-profiles/{profile_id}/revisions/{revision_id}
+POST   /api/v1/organizations/{organization_id}/knowledge-processing-profiles/{profile_id}/revisions/{revision_id}/validate
+POST   /api/v1/organizations/{organization_id}/knowledge-processing-profiles/{profile_id}/revisions/{revision_id}/publish
+POST   /api/v1/organizations/{organization_id}/knowledge-processing-profiles/{profile_id}/revisions/{revision_id}/deprecate
+```
+
+Organization path는 active organization과 일치해야 하고 모든 catalog read/author/lifecycle operation은
+Organization manager 전용이다. Organization catalog list/detail/lifecycle response는
+`organization_profile_catalog_revision`을 반환한다. `platform-options`는 current authenticated Organization
+manager에게 approved published platform revision의 stable safe ID, bounded label, compatibility/selectability,
+non-null exact `platform_default_profile_revision`과 `platform_profile_catalog_revision`을 반환하는 read-only
+authoring option endpoint다. Organization API로 platform identity/revision/default pointer를 수정하거나
+deprecate할 수 없다.
+
+Platform default pointer 변경은 Organization API가 아닌 platform registry control-plane command다. Platform
+registry owner/system actor만 required exact `expected_platform_profile_catalog_revision`과 `target_profile_revision_id`를
+제출할 수 있다. Command는 같은 Platform catalog serialization boundary에서 target의 approved
+published/selectable 상태를 다시 확인하고 pointer, incremented catalog revision과 canonical
+`knowledge.processing_profile_default.changed` audit를 한 Unit of Work에서 확정한다. Stale expected revision은
+`409 knowledge.processing_profile_catalog_revision_conflict`로 pointer/catalog/audit 없이 종료하고 audit 실패도
+전체 mutation을 rollback한다. Audit metadata는 safe actor와 before/after Platform profile revision 및 resulting
+catalog revision만 포함하며 raw profile config를 포함하지 않는다.
+
+`POST .../knowledge-processing-profiles`는 required body로 exact empty JSON object만 받는다.
+
+```json
+{}
+```
+
+성공은 `201 Created`와 정확히 다음 first-draft projection을 반환한다.
+
+```json
+{
+  "profile_id": "opaque-profile-id",
+  "organization_profile_catalog_revision": "opaque-revision",
+  "draft": {
+    "profile_revision_id": "opaque-profile-revision-id",
+    "revision_state": "draft",
+    "base_revision_id": null,
+    "draft_revision": 0,
+    "config": null
+  }
+}
+```
+
+Server는 stable identity, incomplete first-draft shell과
+`knowledge.processing_profile_draft.created` audit를 한 transaction에서 만든다. Draft는 selectable하지 않으므로
+response의 current `organization_profile_catalog_revision`을 전진시키지 않는다. Missing body, `null`, array,
+scalar 또는 어떤 unknown field라도 포함한 object는 profile repository 조회 전에
+`422 knowledge.processing_profile_invalid`이며 identity/draft/audit가 0개다. First draft는 첫 successful complete
+config PATCH 전까지 list/detail로 복구할 수 있지만 validate/publish할 수 없다. 첫 PATCH와 이후 PATCH는 모두
+complete `processing_profile_schema_v1` config 및 `expected_draft_revision`을 요구하고 partial merge를 하지 않는다.
+
+Successor `POST .../{profile_id}/revisions` request body는 정확히 다음 shape다.
+
+```json
+{
+  "base_revision_id": "opaque-profile-revision-id"
+}
+```
+
+`base_revision_id`는 path의 same-organization profile identity에 속한 immutable `published` revision이어야 한다.
+Server는 지정된 revision의 allowlisted normalized config만 복제하고 새 draft에 immutable lineage로
+`base_revision_id`를 기록하며 위 first-draft response와 같은 envelope에 cloned config, `draft_revision=0`과
+non-null base ID를 반환한다. Missing/malformed/extra request
+field는 DB 조회 전 `422 knowledge.processing_profile_invalid`, cross-organization 또는 다른 profile identity의
+base는 ownership-first safe `404`, same-scope draft/deprecated/non-published base는
+`409 knowledge.processing_profile_successor_base_invalid`로 draft, catalog revision과 audit 없이 닫는다. Draft
+detail은 manager가 편집할 수 있는 allowlisted normalized fields만 반환한다.
+
+- Required config는 tokenizer stable ID/version, `chunk_unit=tokens`, bounded `chunk_size_tokens`,
+  `chunk_overlap_tokens`, boundary/parser contract, retrieval representation, embedding/model catalog reference와
+  algorithm version이다. Overlap은 size보다 작아야 하고 legacy character 숫자를 token 값으로 변환하지 않는다.
+- V1 config는 required `profile_schema_version="processing_profile_schema_v1"`을 가진다.
+  `chunk_size_tokens`는 strict integer `64..8192` inclusive,
+  `chunk_overlap_tokens`는 strict integer `0..floor(chunk_size_tokens / 2)` inclusive다. Boolean, string,
+  float, null, 음수와 범위 밖 값은 coercion하지 않고 `422 knowledge.processing_profile_invalid`로 닫는다.
+  Selected tokenizer/parser/representation/embedding catalog capability가 더 작은 current published limit를
+  가지면 validate/publish는 그 limit를 추가 적용하고 V1 envelope을 넓히지 않는다. 이 transport safety bound는
+  품질 default가 아니며 변경은 새 schema version으로만 도입한다.
+- Credential ID/value, endpoint/secret, arbitrary provider config, executable parser option과 raw implementation
+  payload는 request/response/profile/audit에서 허용하지 않는다.
+- Draft PATCH/validate는 `expected_draft_revision`을 요구한다. Normalized no-op은 `status=unchanged`이고 stale
+  request는 `409 knowledge.processing_profile_draft_revision_conflict`다.
+- Publish는 `expected_draft_revision`과 `expected_organization_profile_catalog_revision`을 요구한다. Config schema,
+  current tokenizer/parser/embedding/model capability와 owner scope를 transaction 안에서 다시 검증하고 immutable
+  published revision, incremented Organization catalog revision과
+  `knowledge.processing_profile.published` canonical audit를 함께 확정한다. Stale catalog는
+  `409 knowledge.processing_profile_catalog_revision_conflict`다.
+- Published config는 PATCH/hard-delete할 수 없다. Deprecate는 published revision과
+  `expected_organization_profile_catalog_revision`을 요구하고 selectability lifecycle event, catalog revision과
+  `knowledge.processing_profile.deprecated` audit를 같은 transaction에서 확정한다. Current mapping policy 또는
+  current KB override direct reference가 하나라도 있으면 bounded existence만 보고
+  `409 knowledge.processing_profile_in_use`로 거부한다. Historical reference와 active-ready artifact는 삭제하지
+  않지만 deprecated revision은 신규 policy/override option과 `satisfied_existing` 후보에서 제외한다.
+- Policy publish, override set/clear와 Platform default pointer 변경도 적용되는 exact Organization/Platform
+  catalog revision을 검증한다. 이 mutation들과 deprecate는 각 catalog serialization boundary를 공유하고 두 row가
+  모두 필요하면 Organization 뒤 Platform의 deterministic lock order를 사용해 deprecated revision을 가리키는
+  새 current reference/default와 deprecate가 동시에 commit되지 않게 한다. Platform deprecate는 current
+  policy/override direct reference뿐 아니라 current default pointer도 in-use로 취급한다. Default pointer 변경은
+  새 target selectability를 같은 transaction에서 검증하고 `platform_profile_catalog_revision`을 전진시킨다.
+  Deprecate가 먼저 commit되어 mandatory profile-policy preview의 catalog snapshot을 바꾸면 policy publish는
+  `knowledge.processing_profile_policy_impact_preview_stale`, override set/default mutation은 각 snapshot
+  conflict로 닫힌다. 새 current reference/default가 먼저 commit되면
+  deprecate는 `knowledge.processing_profile_in_use`로 닫히며 어느 순서도 partial lifecycle/reference/audit를 남기지 않는다.
+- Profile identity list는 `created_at DESC, profile_id DESC`, revision list는
+  `created_at DESC, revision_id DESC`의 bounded cursor pagination과 stable tie-break를 사용한다. Safe list/detail은
+  hidden KB/ref exact count와 raw profile config를 반환하지 않고 manager response는
+  `Cache-Control: no-store`다. Version create/PATCH는 각각
+  `knowledge.processing_profile_draft.created`, `knowledge.processing_profile_draft.updated`, publish/deprecate는 각각
+  `knowledge.processing_profile.published`, `knowledge.processing_profile.deprecated` canonical audit와 같은 transaction이고 normalized no-op,
+  read/validate는 mutation audit를 만들지 않는다.
+
+#### Processing Profile Policy Lifecycle
+
+```text
+GET    /api/v1/organizations/{organization_id}/knowledge-processing-profile-policies/current
+GET    /api/v1/organizations/{organization_id}/knowledge-processing-profile-policies/versions
+GET    /api/v1/organizations/{organization_id}/knowledge-processing-profile-policies/versions/{version_id}
+POST   /api/v1/organizations/{organization_id}/knowledge-processing-profile-policies/versions
+PATCH  /api/v1/organizations/{organization_id}/knowledge-processing-profile-policies/versions/{version_id}
+POST   /api/v1/organizations/{organization_id}/knowledge-processing-profile-policies/versions/{version_id}/validate
+POST   /api/v1/organizations/{organization_id}/knowledge-processing-profile-policies/versions/{version_id}/impact-preview
+POST   /api/v1/organizations/{organization_id}/knowledge-processing-profile-policies/versions/{version_id}/publish
+```
+
+Draft create `POST` body는 정확히 `{"policy": <processing_profile_policy_v1-document>}`이고 성공 response는
+server-issued version ID와 `draft_revision=0`을 반환한다. Server가 omitted field를 default/merge하지 않으며
+두 nullable general field가 포함된 incomplete document도 만들 수 있다. Unknown wrapper field 또는
+`expected_draft_revision`이 들어오면 `422 knowledge.processing_profile_policy_invalid`다.
+
+Draft PATCH body는 다음 complete request shape를 사용한다.
+
+```json
+{
+  "expected_draft_revision": 3,
+  "policy": {
+    "policy_schema_version": "processing_profile_policy_v1",
+    "rules": [
+      {
+        "match": {
+          "kind": "type_primary",
+          "document_type_id": "opaque-type-id",
+          "primary_topic_id": "opaque-topic-id"
+        },
+        "profile_revision_ref": {
+          "catalog_scope": "organization",
+          "profile_revision_id": "opaque-profile-revision-id"
+        }
+      }
+    ],
+    "organization_general_profile": null,
+    "platform_general_profile": {
+      "catalog_scope": "platform",
+      "profile_revision_id": "opaque-profile-revision-id"
+    }
+  }
+}
+```
+
+`match`는 다음 strict discriminated union이다.
+
+- `type_primary`: `document_type_id`, `primary_topic_id`만 required
+- `type`: `document_type_id`만 required
+- `primary`: `primary_topic_id`만 required
+
+`rules` raw array는 duplicate 제거 전에 `0..2000`개다. Server는 matcher kind와 exact ID tuple을
+normalization key로 사용하고 같은 specificity의 duplicate/conflict를 허용하지 않는다.
+`profile_revision_ref`는 `catalog_scope=organization|platform`과 exact `profile_revision_id`만 가진다.
+General fallback도 같은 shape지만 `organization_general_profile`은 organization scope,
+`platform_general_profile`은 platform scope만 허용한다. 두 field는 required nullable이라 incomplete draft를
+null로 복구할 수 있지만 validate/impact-preview/publish는 non-null Platform general을 필수로 요구한다.
+PATCH wrapper는 `expected_draft_revision`과 `policy`만 허용한다. PATCH는 policy 전체 replacement이고 omitted
+rule merge, JSON Patch와 per-rule partial operation을 지원하지
+않는다. First draft는 `rules=[]`와 두 null general을 반환할 수 있다.
+Unknown field, kind와 맞지 않는 field, invalid/missing ID shape는
+`422 knowledge.processing_profile_policy_invalid`, raw 2,001번째 rule은
+`422 knowledge.processing_profile_policy_rule_limit_exceeded`, normalized duplicate matcher는
+`422 knowledge.processing_profile_policy_rule_conflict`다. Cross-organization/hidden reference는 safe `404`,
+same-scope deprecated/incompatible reference와 publish-time Platform general null은 fixed validation failure이며
+Full policy read/author/publish는 Organization manager만 가능하다. Draft rule은 stable
+document-type/topic ID와 exact profile revision만 참조하고 동일 specificity duplicate/conflict,
+missing required platform general fallback, deprecated/incompatible profile과 cross-organization reference를
+validate에서 거부한다. Organization general fallback은 optional이며 부재 자체는 validation error가 아니다.
+Validate/impact preview는 exact draft revision과 current taxonomy,
+document-type registry, Organization/Platform profile catalog 및 current policy version의 compatibility snapshot을
+반환하며 catalog fields는 `organization_profile_catalog_revision`과
+`platform_profile_catalog_revision`으로 분리한다.
+Publish는 `expected_draft_revision`, nullable `expected_current_profile_policy_version`, nullable
+`expected_current_taxonomy_version`, `expected_document_type_registry_version`과
+`expected_organization_profile_catalog_revision`, `expected_platform_profile_catalog_revision`을 모두 요구한다.
+모든 publish는 추가로 `expected_impact_bucket_contract_version="profile_policy_impact_bucket_v1"`,
+`expected_impact_preview_revision`과 literal `impact_acknowledged=true`를 요구한다. 이 세 field는 compatibility
+snapshot을 대체하지 않는다.
+Publish transaction은 Organization catalog row 뒤 Platform catalog row, coordination/current pointer의 deterministic
+lock order 또는 동등한 serializable CAS 아래 current snapshot의 모든 rule/general fallback reference를 다시
+validate한다. Preview-bound expected field/token claim이 request와 current snapshot에서 다르면 mutation/audit 없이
+`409 knowledge.processing_profile_policy_impact_preview_stale`다. Fresh token과 전체 snapshot을 검증하고
+serialization boundary를 획득한 뒤 coordination/current policy pointer CAS 경합을 잃은 경우에만
+`409 knowledge.processing_profile_policy_publish_snapshot_conflict`를 사용한다.
+`expected_current_profile_policy_version=null`은 current policy pointer가 실제로 없는 최초 publish에서만 유효하며
+null-to-candidate 전환을 CAS한다.
+Publish는 기존 KB reindex를 자동 시작하지 않는다. Impact preview request body는 정확히 다음 shape다.
+
+```json
+{
+  "expected_draft_revision": 3
+}
+```
+
+Fresh response는 다음 필드를 반환하고 `Cache-Control: no-store`를 사용한다.
+
+```json
+{
+  "draft_revision": 3,
+  "current_profile_policy_version": null,
+  "current_taxonomy_version": null,
+  "document_type_registry_version": "opaque-version",
+  "organization_profile_catalog_revision": "opaque-revision",
+  "platform_profile_catalog_revision": "opaque-revision",
+  "assignment_impact_snapshot_revision": "opaque-revision",
+  "impact_bucket_contract_version": "profile_policy_impact_bucket_v1",
+  "affected_resolution_bucket": "none|small|medium|large",
+  "reindex_candidate_bucket": "none|small|medium|large",
+  "impact_preview_revision": "opaque-token",
+  "expires_at": "RFC3339"
+}
+```
+
+Current policy/taxonomy가 존재하면 위 nullable field는 exact opaque version을 반환한다. Publish request body는
+preview의 client-echo compatibility field를 다음 exact shape로 제출한다.
+
+```json
+{
+  "expected_draft_revision": 3,
+  "expected_current_profile_policy_version": null,
+  "expected_current_taxonomy_version": null,
+  "expected_document_type_registry_version": "opaque-version",
+  "expected_organization_profile_catalog_revision": "opaque-revision",
+  "expected_platform_profile_catalog_revision": "opaque-revision",
+  "expected_impact_bucket_contract_version": "profile_policy_impact_bucket_v1",
+  "expected_impact_preview_revision": "opaque-token",
+  "impact_acknowledged": true
+}
+```
+
+Nullable current field는 preview가 반환한 null 또는 exact opaque version을 그대로 사용한다. Unknown field와
+preview snapshot에서 유래하지 않은 fallback value는 허용하지 않는다.
+`assignment_impact_snapshot_revision`은 opaque preview token에 bind되는 server-owned precondition이며 별도
+publish request field로 받지 않는다. Server는 token claim과 current revision을 transaction 안에서 비교한다.
+
+`profile_policy_impact_bucket_v1`은 두 internal count를 같은 authoritative snapshot에서 계산하고 각각
+`none=0`, `small=1..10`, `medium=11..100`, `large=101+`로 변환한다.
+
+- `affected_resolution_count`는 같은 Organization의 processing-eligible active KB/document를 current resolver와
+  candidate resolver로 평가해 `effective_resolution_status`, `resolution_source` 또는 strict scoped
+  `resolved_profile_revision_ref`가 달라지는 target을 하나씩 센다. 두 resolver는 같은 current assignment 또는
+  assignment 부재, taxonomy/registry, profile catalog, override와 canonical input을 사용한다. Assignment가 없는
+  target도 current Platform default/current policy general과 candidate policy general fallback으로 resolve하므로
+  포함한다. Valid explicit override가 두 resolver에서 계속 우선하거나 invalid override가 계속
+  `review_required`로 candidate policy 선택을 막으면 제외한다.
+- `reindex_candidate_count`는 affected subset 중 current active-ready artifact가 있는 target만 평가한다. Current
+  Processing Decision과 비교 가능한 `materialization_input_fingerprint`가 있으면 candidate fingerprint가 다른
+  target만 세고, active-ready legacy artifact는 있지만 current decision 또는 비교 가능한 fingerprint가 없으면
+  동일 materialization을 증명할 수 없으므로 보수적으로 포함한다. Active artifact가 없는 target은 affected에는
+  포함될 수 있지만 reindex candidate에서는 제외한다.
+- Archived/deleted KB/document 또는 processing-ineligible target은 두 count에서 제외한다. Artifact availability
+  `purging|purged`는 resolver 차이를 지우지 않으므로 active·processing-eligible target이면 affected count에는
+  포함할 수 있지만 active-ready artifact가 아니므로 reindex candidate에서는 제외한다. Exact count, KB/document/
+  source identity와 exact denied count는 response, token plaintext와 audit에 넣지 않는다.
+
+Opaque preview token은 최대 10분이고 Organization/actor/candidate/draft/current policy/taxonomy/registry, 두
+catalog revision, assignment impact snapshot과 bucket contract version을 bind한 non-capability다. Publish는 위
+request shape의 client-echo compatibility field와 acknowledgement를 제출하고 server-owned assignment impact
+snapshot은 token claim으로 전달한다. Transaction 안에서 permission, token scope/expiry와
+snapshot을 다시 검증한다. Missing/expired/wrong actor·scope·candidate, changed snapshot 또는 contract mismatch는
+`409 knowledge.processing_profile_policy_impact_preview_stale`로 policy version/current pointer/audit 없이 닫는다.
+Valid token 검증 뒤 commit CAS에서 경합을 잃은 경우는
+`409 knowledge.processing_profile_policy_publish_snapshot_conflict`다. Impact가 `none`이어도 preview와
+acknowledgement를 생략하지 않으며 preview/publish는 assignment 또는 reindex job을 만들지 않는다.
+
+Draft create response와 list/detail의 draft projection은 `draft_revision`을 반환한다. Published와
+superseded projection은 immutable version만 반환한다. PATCH, validate와 impact preview는
+`expected_draft_revision`을 요구한다. Publish는 위 compatibility snapshot 전체를 함께 CAS한다. Current
+normalized no-op PATCH는 revision/audit를 만들지 않으며 stale PATCH는 payload가 같아도
+`409 knowledge.processing_profile_policy_draft_revision_conflict`다.
+
+Version list/detail은 taxonomy lifecycle과 같은 bounded cursor pagination, stable tie-break와
+ownership-first safe hiding을 사용한다. List는 safe state/version/publish summary만, detail은 기존
+draft를 재개하거나 immutable published/superseded mapping을 검사하는 bounded authoring projection만
+반환한다. Profile implementation config, hidden KB identity와 exact impact count는 반환하지 않는다.
+Version create/PATCH는 각각 `knowledge.processing_profile_policy_draft.created`, `knowledge.processing_profile_policy_draft.updated`, publish는
+`knowledge.processing_profile_policy.published` canonical audit와 같은 transaction이다. Publish audit은 safe
+preview digest, acknowledged flag, bounded impact bucket과 impact snapshot revision만 기록한다. Normalized no-op,
+list/detail, validate와 impact preview는 mutation audit를 만들지 않으며 manager authoring response는
+`Cache-Control: no-store`를 사용한다.
+
+#### Processing Profile Override, Preview And Reindex
+
+```text
+GET  /api/v1/knowledge/kbs/{kb_id}/processing-profile/options
+GET  /api/v1/knowledge/kbs/{kb_id}/processing-profile/override
+PUT  /api/v1/knowledge/kbs/{kb_id}/processing-profile/override
+POST /api/v1/knowledge/kbs/{kb_id}/processing-profile/override/clear
+POST /api/v1/knowledge/kbs/{kb_id}/processing-profile/resolve-preview
+POST /api/v1/knowledge/kbs/{kb_id}/processing-profile/reindex
+```
+
+Source-managed KB의 override GET/options/set/clear와 resolve-preview는 parent ownership과 required KB action을
+확인한 뒤 override/profile/resolver-specific row lookup 또는 projection 전에 fresh requester source authorization과
+applicable display policy를 통과해야 한다. Missing/revoked/stale/denied는 `404 resource.hidden`이며 override 존재,
+profile option, resolver status/revision과 bounded estimate를 반환하거나 변경하지 않는다. Set/clear는 external
+authorization session을 종료한 뒤 bounded revision/watermark를 transaction에 전달하고 commit 직전에 current KB
+authority와 함께 다시 검증한다. Revoke winner는 override, impact snapshot, audit와 `reindex_required` projection을
+만들지 않는다. Manual KB에는 source gate를 적용하지 않는다.
+
+Options는 KB `manage` 또는 같은 active organization의 Organization manager actor에게 current
+organization/platform catalog에서 override로 선택 가능한 immutable profile revision의 strict
+`profile_revision_ref={catalog_scope: organization|platform, profile_revision_id}`, bounded label,
+compatibility flags와 Organization/Platform catalog revision을 `organization_profile_catalog_revision`,
+`platform_profile_catalog_revision`으로 각각 반환한다. 두 catalog에 같은 opaque revision ID가 있어도
+`catalog_scope`가 option과 set target을 결정한다. Null-policy
+resolver가 사용하는 non-null exact `platform_default_profile_revision`도 read-only로 반환한다. Raw
+parser/provider config와 다른 organization profile identity는 반환하지 않는다.
+
+Override `GET`은 nullable current override, `override_revision`, nullable current `profile_policy_version`,
+valid override일 때의 strict scoped `profile_revision_ref`와
+`override_status=absent|valid|missing|deprecated|incompatible`를 반환한다. Invalid current override에서는
+scoped/raw profile identity 대신 generic unavailable state를 사용하되 clear에 필요한 KB-owned
+override revision은 유지한다. Response는 target profile row 존재를 clear precondition으로 만들지 않는다.
+Effective projection은 `effective_resolution_status=resolved|review_required|platform_default_unavailable`과 nullable
+strict scoped `resolved_profile_revision_ref={catalog_scope, profile_revision_id}`를 반환한다. Null-policy이고 valid
+override가 없는 default-required branch가
+unavailable이어도 GET/options는 `200`을 유지해 selectable override set/change recovery를 허용하고 clear는
+아래 fixed `503`을 따른다. 또한 current canonical content, nullable assignment, registry/nullable taxonomy,
+nullable mapping policy, nullable override, Platform default ref, Organization/Platform profile
+catalog/selectability와 nullable resolved scoped profile ref/status를 organization/KB/actor scope와 함께
+non-reversible하게 bind한 opaque `override_resolver_revision`을 반환한다. 이 token은 capability가 아니며 response는
+`no-store`다.
+
+Override `PUT`은 profile-policy와 같은 strict
+`profile_revision_ref={catalog_scope: organization|platform, profile_revision_id}`, required nullable
+`expected_assignment_revision`, required nullable `expected_profile_policy_version`,
+`expected_override_revision`과 `expected_override_resolver_revision`을 요구한다. Ref 자체가 null 또는 object가
+아니거나, `catalog_scope`가 missing/unknown/non-string이거나, `profile_revision_id`가 empty/non-string이거나,
+bare `profile_revision_id` 또는 extra field가 있으면 DB 조회 전에
+`422 knowledge.processing_profile_override_invalid`로 거부한다. Organization scope는 active Organization
+소유 published/selectable revision을 ownership-first로 resolve하고 cross-organization ref는 safe `404`다. Platform scope는 approved
+published/selectable registry revision만 허용한다. 최초 set에서만 current override가 없음을 나타내는 null
+revision을 허용한다. Clear도 required nullable
+`expected_assignment_revision`, required nullable `expected_profile_policy_version`과 non-null
+`expected_override_revision`, `expected_override_resolver_revision`을 요구하며 현재 override가 missing/deprecated/incompatible여도 target
+profile row를 먼저 조회하지 않고 KB-owned override를 잠가 복구할 수 있어야 한다. Set/clear는 KB
+`manage` 또는 same-organization Organization manager override와 active organization을 다시 확인한다. Server는
+전체 resolver input vector를 transaction 안에서
+다시 resolve하고 pointer/revision row lock, conditional CAS 또는 동등한 serializable validation을 사용한다.
+
+Override set/clear의 `expected_assignment_revision`과 `expected_profile_policy_version`은 nullable required exact
+snapshot이다. Assignment 또는 current profile-policy가 없는 platform-default resolver 상태에서는 각 null이
+유효하고, command 사이에 pointer가 생기거나 사라지거나 Platform default ref/catalog revision이 바뀌면 full
+resolver snapshot conflict다. Opaque resolver token이 이 명시적 precondition을 대체하지 않으며 null은
+permission이나 resolver validation을 생략하는 신호가 아니다.
+
+Set/clear 성공은 새 override revision과 canonical
+`knowledge.processing_profile_override.set` 또는 `knowledge.processing_profile_override.clear` audit를
+같은 transaction에서 확정한다. Set audit에는 새 target의 safe scoped profile reference와 before/after state를
+포함한다. Clear audit은 이전 override가 valid하고 caller에게 visible할 때만 그 safe scoped ref를 포함한다.
+Missing/deprecated/incompatible/cross-organization 등 generic unavailable state를 clear할 때는 KB-owned override
+revision과 fixed unavailable state만 기록하고 hidden target profile identity와 raw profile config를 저장하지
+않는다. Mutation은 검증한 같은 resolver snapshot의 provenance와 materialization-input-fingerprint로
+`reindex_required`를 갱신하지만 reindex를 자동 시작하거나 active pointer를 변경하지 않는다. Canonical
+content, assignment, registry/taxonomy, mapping policy, Platform default ref, Organization/Platform profile
+catalog/selectability, resolved scoped profile ref 또는 override 중 하나라도 expected vector와 다르면
+override/audit/projection 전체를 rollback하고
+`409 knowledge.processing_profile_override_snapshot_conflict`다.
+
+Preview는 nullable current assignment, nullable taxonomy/registry, nullable profile mapping policy와 exact profile
+revision을 서버가 다시 resolve한다. Valid explicit override는 current profile-policy 존재 여부와 무관하게 항상
+먼저 평가한다. Explicit override가 missing/deprecated/incompatible이면 fallback하지 않고
+`review_required`로 차단한다. Override가 없을 때 current profile-policy가 null이면 exact
+`platform_default_profile_revision`을 사용하고, current policy가 있으면 그 policy의 rule/general chain을
+사용하며 Platform default를 policy fallback으로 혼합하지 않는다. Client-supplied profile 결과는 authority가
+아니다. Response에는 resolution source
+(`override/type_primary/type/primary/org_general/platform_general/platform_default`), fallback, exact safe
+revisions, reindex-required, current active-ready 존재 여부와 bounded chunk/token/cost estimate 및 opaque
+`resolution_revision`만 포함한다. Null-policy이고 valid explicit override가 없어 default branch가 필요한데
+target이 missing/deprecated/incompatible이면 `503 knowledge.processing_platform_default_unavailable`로
+mutation/token 없이 닫고 기존 active-ready artifact를 유지한다. Selectable explicit override가 있으면 이 오류를
+적용하지 않는다. Resolution revision은 organization/KB/actor, current canonical content ref, nullable policy pointer,
+Platform default ref/catalog revision과 내부 두 input fingerprint를 non-reversible하게 bind하는 최대 10분 수명의
+server-issued validation token이다. Raw content/hash와 내부 fingerprint는 반환하지 않는다. Preview 성공과 token은 reindex 또는 activation capability가 아니다.
+
+Reindex wire request는 다음처럼 idempotency key를 header에만 둔다.
+
+```http
+POST /api/v1/knowledge/kbs/{kb_id}/processing-profile/reindex
+Idempotency-Key: 00000000-0000-4000-8000-000000000000
+Content-Type: application/json
+
+{
+  "expected_assignment_revision": null,
+  "expected_profile_policy_version": null,
+  "expected_resolution_revision": "opaque-resolution-revision"
+}
+```
+
+`Idempotency-Key` 값은 ASCII lower-case hyphenated canonical UUID 36자
+`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`와 정확히 같아야 한다. Header name은 case-insensitive지만 nil UUID,
+upper-case, leading/trailing whitespace, braces/URN, malformed/다른 길이, comma-joined 값, duplicate 또는 missing
+header는 trim/case-fold/coercion 없이 `422 knowledge.processing_idempotency_key_invalid`다. Body의
+idempotency key field도 허용하지 않고 같은 fixed code로 거부한다.
+
+Server는 canonical ASCII 36 byte의 SHA-256 digest만 organization/KB/actor/operation receipt key로 저장한다.
+Raw header는 response, application/access log, audit와 trace에 반사하지 않는다. Typed body tuple의 canonical
+request digest는 key digest와 분리한다. 같은 scoped key와 exact body tuple만 token expiry보다 먼저 replay하고
+같은 key의 다른 tuple은 `409 knowledge.processing_idempotency_conflict`다. Upper-case나 brace 형식을 받아
+canonical key로 바꾸지 않으므로 textual alias가 같은 receipt에 합쳐지는 동작도 없다. Header shape validation은
+resource existence와 무관한 transport validation이고, valid request의 receipt lookup/result projection 전
+parent/KB/source authorization 순서는 아래 계약대로 유지한다.
+
+Reindex admission은 KB `write` 또는 same-organization Organization manager override, nullable required current
+expected assignment/profile-policy revision,
+`expected_resolution_revision`과 durable idempotency key를 요구한다. Server는 parent ownership, current
+KB `write` 또는 Organization manager authority와 applicable fresh source authorization을
+organization/KB/actor/operation-scoped receipt 조회보다 먼저 평가한다. Manual KB는 source gate가
+`not_applicable`이다. Source-managed KB의 denied/revoked/stale/unknown gate는
+`404 resource.hidden`이며 receipt/decision/satisfaction/job identity와 기존 result status를 반환하거나
+변경하지 않는다.
+
+위 gate를 통과한 뒤에만 protected key digest로 Processing Admission Receipt를 조회한다. Existing receipt의
+canonical request digest가 exact request와 같으면 token expiry보다 먼저
+`unchanged/satisfied_existing/job_created/job_reused`의 기존 safe result를 반환하고 mutation을 반복하지
+않는다. 같은 key의 다른 request는 `409 knowledge.processing_idempotency_conflict`다. Receipt가 없을
+때만 token scope/expiry/current input을 검증한다. External source check가 필요하면 authorization
+session/transaction을 mutation 전에 종료하고 nullable bounded revision/watermark만 전달한다. Replay return과
+fresh admission commit 직전에 current permission과 그 revision/watermark를 authoritative CAS 또는 동등한
+serialization으로 다시 검증하며 revoke winner는 safe `404`로 닫는다.
+
+Fresh admission에서 Server는 canonical content revision ref/hash와 nullable assignment, current
+registry/nullable taxonomy, nullable mapping policy, nullable override, Platform default ref,
+Organization/Platform profile catalog/selectability revision과 resolved exact scoped profile ref를
+`resolver_input_fingerprint`로 고정한다. Null-policy이고 valid explicit override가 없어 Platform default가
+필요한데 unavailable이면 receipt, decision, satisfaction, job 또는 success audit를 만들기 전에
+`503 knowledge.processing_platform_default_unavailable`로 닫고 기존 active-ready artifact를 유지한다.
+Server는 canonical materialization input hash, immutable materialization configuration과 output에
+materialize되는 normalized assignment-derived field로 `materialization_input_fingerprint`를 admission
+전에 계산한다. Output DocumentVersion/index ID와 생성 결과 bytes는 input fingerprint에 포함하지
+않는다. Receipt가 없는 fresh admission에서 Client token은 authority가 아니며
+scope/expiry/current recomputation 중 하나라도 다르면 mutation/job 없이
+`409 knowledge.processing_preview_stale`다.
+
+Admission 결과는 job 생성 여부와 무관하게 같은 transaction의 durable receipt에 기록한다. Receipt는 raw
+token 대신 token digest와 canonical request digest, safe result ref만 저장하며 연결된 job/result retention과
+같은 기본 30일 동안 유지한다. Receipt의 actor ref와 nullable safe source authorization revision/watermark는
+worker가 current execution authorization을 다시 평가할 provenance이며 capability가 아니다. Current permission
+또는 applicable source authorization을 잃은 actor는 receipt 존재 여부와 무관하게 replay result를 조회할 수
+없다. Revoke가 replay/fresh-admission serialization winner이면 receipt, decision, satisfaction, current
+decision pointer, job과 success audit를 만들거나 반환하지 않는다.
+
+Admission은 immutable Processing Decision Manifest를 만든다. Current active Artifact Build Manifest의
+materialization input fingerprint가 같고 stored integrity가 valid하면 `satisfied_existing` Decision
+Satisfaction과 current decision pointer만 같은 CAS transaction에서 확정하고
+`status=satisfied_existing`을 반환한다. 새 job, DocumentVersion/index와 active artifact pointer
+변경은 없다. Physical build가 필요하면 durable job identity는 canonical content revision ref와 두 input
+fingerprint를 모두 사용한다. 셋이 모두 같은 active job만 dedupe하고 일부만 같은 job을 current
+decision으로 재사용하지 않는다. 최초 `job_created` receipt actor를 job execution actor로 불변 bind한다.
+다른 authorized actor의 `job_reused` receipt는 이 actor를 교체하지 않는다. Original actor의 authorization
+loss로 job이 terminal cancel되면 다른 actor에게 승계하지 않고, 현재 authorized actor가 fresh preview와
+새 idempotency request로 새 generation을 admission해야 한다.
+
+Physical embedding build가 필요한 fresh `job_created` admission은 LLM Credentials authoritative port에서
+resolved profile의 exact embedding model/provider, active Organization과 job execution actor를 기준으로 현재
+active credential, verified model relation과 credential `use`를 평가한다. Eligible credential이 정확히 하나일
+때만 safe credential/model/provider refs, credential lifecycle revision, relation revision, permission decision
+revision과 provider-routing revision을 immutable Knowledge processing embedding binding으로 job/attempt에 저장한다.
+후보 0개 또는 복수는 name/order/priority/owner/default/preset fallback 없이
+`409 knowledge.processing_embedding_credential_unavailable`로 receipt, decision, job과 success audit 없이
+종료한다. Binding issue 뒤 fresh job commit 직전 lifecycle/relation/permission/provider-routing revision을 row
+lock/CAS 또는 동등한 serializable validation으로 다시 확인하고 revoke/change winner도 같은 fixed 409
+zero-write로 닫는다. `job_reused` admission은 caller credential을 선택하지 않고 original actor와 binding을
+그대로 반환하며 다음 worker gate가 invalid binding을 terminal cancellation으로 수렴시킨다. Profile, request/response,
+receipt, task payload, audit와 trace에는 credential value, encrypted config와 provider raw config를 넣지 않는다.
+
+Worker는 claim과 각 source/provider external I/O batch 직전에 job execution actor의 current active
+organization membership, effective KB `write` 또는 Organization manager authority와 applicable source
+authorization 및 bound embedding credential의 active lifecycle, exact model/provider relation, current `use`와
+binding revisions를 짧은 session에서 다시 평가하고 외부 I/O 전에 session/transaction을 종료한다. 어느
+revoke/change가 gate 전에 commit되면 해당 batch adapter를 호출하지 않는다. Gate 뒤 commit된 revoke는 이미 시작한 bounded
+call을 강제 중단하지 않지만 다음 external batch와 finalization을 차단한다. Receipt, job ID, preview token,
+owner/fencing token과 admission 당시 authorization/binding 결과는 capability가 아니다.
+
+Reindex admission의 public `status` enum은 `unchanged`, `satisfied_existing`, `job_created`, `job_reused`로
+고정한다. Decision Satisfaction 내부 link는 `satisfied_existing|satisfied_new`이며 public admission status에
+별도 `*_artifact` alias를 만들지 않는다. Durable receipt replay는 최초 응답의 같은 public status를 그대로
+반환한다.
+
+최초 successful admission은 public result 네 종류 모두 canonical
+`knowledge.processing_reindex.admitted`, `audit_logs.status="success"`를 사용하고 allowlisted
+`audit_metadata.result_status`로 구분한다. `unchanged`도 durable receipt와 이 audit 한 건을 같은 Unit of
+Work에서 만들며, `satisfied_existing`, `job_created`, `job_reused`는 각 result에 필요한
+decision/satisfaction/job/current-pointer mutation, receipt와 audit를 원자 commit한다. Audit 실패는 모든
+admission write를 rollback한다. Exact authorized receipt replay는 read-only recovery이므로 새 audit를 만들지
+않고 최초 result를 반환한다. Source-hidden, idempotency conflict와 preview stale은 이 success action을 만들지
+않는다. Embedding credential unavailable도 이 success action을 만들지 않는다. Audit metadata에는
+organization/KB/safe actor, opaque receipt/result/job ref와 safe revision만 허용한다.
+Idempotency key, token digest, internal fingerprint, raw source identity, source capability, credential identity/
+candidate count와 revoked membership/grant/credential relation·permission detail은 저장하지 않는다.
+
+같은 canonical content ref와 두 input fingerprint의 decision이 이미 current면 `status=unchanged`를
+반환하고 새 manifest/satisfaction/job을 만들지 않는다. Durable idempotency retry와 concurrent same-
+decision admission은 같은 result로 수렴하며 duplicate satisfaction을 만들지 않는다.
+
+Build completion은 normalized chunk/representation/index manifest와 embedding completeness로
+`artifact_integrity_hash`를 계산한다. 이 output hash는 job identity나 admission dedupe 입력이 아니다.
+Finalization 직전 applicable source authorization과 bound embedding credential lifecycle/relation/permission을
+fresh gate로 평가하고 외부 호출/session을 종료한 뒤
+bounded decision revision/watermark만 finalizer에 전달한다. Finalizer는 current execution actor
+membership/effective authority, canonical content, 전체 resolver input revision vector와 current profile
+selectability 및 embedding binding revisions를 짧은 transaction boundary에서 다시 확인하고 두 input
+fingerprint를 재계산한다. Fresh source authorization 결과의 revision/watermark, current permission revision과
+embedding binding revisions는 revoke와 직렬화되는 authoritative CAS 또는 동등한
+serializable validation으로 pointer swap까지 current임을 확인한다. Pointer/revision row lock, conditional
+CAS 또는 동등한 serializable validation으로 compare와 pointer swap 사이의 변경도 차단한다. Admission
+snapshot과 하나라도 다르면 `knowledge.processing_decision_stale`로 attempt를 닫고, authorization을 잃으면
+fixed `knowledge.processing_execution_not_authorized`, embedding binding을 잃으면 fixed
+`knowledge.processing_embedding_credential_unavailable` reason의 terminal `cancelled`로 닫으며 어느 경우에도
+active pointer와 Decision Satisfaction을 commit하지 않는다. Current job fence/lease가 유효한 stale/cancelled
+finalizer는 terminal attempt와 해당 attempt가 소유한 staging artifact의 idempotent cleanup outbox intent만
+같은 transaction에서 확정한다. Fence를 잃은 worker는 commit하지 않으며 reconciler가 terminal/orphan
+attempt에 누락되거나 미완료된 cleanup intent를 생성·재시도한다. Cleanup handler는 generation/fence와
+current active/decision reference 부재를 다시 확인하고 참조 중인 artifact를 삭제하지 않는다. Current하고
+authorized된 attempt만 immutable Artifact Build Manifest와 `satisfied_new` link를 만들고 current
+decision/active artifact pointer를 함께 교체한다.
+
+#### Permission And Error Matrix
+
+| 조건 | HTTP / 결과 |
+| --- | --- |
+| Missing/cross-organization/hidden KB 또는 organization-scoped taxonomy/policy version, assignment/suggestion, profile/override, reindex reference | Parent ownership을 semantic state보다 먼저 확인하고 ADR-0010 safe `404` |
+| Unknown/hidden platform document-type 또는 profile registry reference | Fixed `404 knowledge.classification_reference_unavailable`; registry catalog 내부 상태를 반환하지 않음 |
+| Scope 안 classification read 권한 부족 | Existing Knowledge permission contract의 `403` |
+| Unlocked mutation, current-validation, suggestion review, preview/reindex 권한 부족 | KB `write` 또는 같은 active organization의 Organization manager override 기준 `403` |
+| Lock/unlock 또는 override options/read/set/clear 권한 부족 | KB `manage` 또는 같은 active organization의 Organization manager override 기준 `403` |
+| Full taxonomy/profile catalog/profile policy current/history read, author, publish 또는 profile deprecate 권한 부족 | Organization manager 기준 `403` |
+| Source-managed classification/override/resolve operation의 fresh source authorization denied/revoked/stale | Assignment/lock/override/resolver row lookup·projection·mutation 전에 `404 resource.hidden`; assignment/override/profile/resolver identity와 status 비노출, mutation/impact snapshot/audit/reindex projection 없음. Manual KB는 비적용 |
+| Source-managed suggestion list/accept/reject의 fresh source authorization denied/revoked/stale | Candidate row 조회·projection·mutation 전에 `404 resource.hidden`; suggestion identity/state/count/confidence 및 outcome 비노출 |
+| Source-managed suggestion accept-preview의 fresh source authorization denied/revoked/stale | Candidate projection/hypothetical resolve 전에 `404 resource.hidden`; preview token, candidate identity/confidence와 impact 비노출 |
+| Source-managed reindex admission/receipt replay의 fresh source authorization denied/revoked/stale/unknown | Receipt lookup/result projection과 admission mutation 전에 `404 resource.hidden`; receipt/result/job identity 비노출, decision/satisfaction/pointer와 `knowledge.processing_reindex.admitted` success audit 없음. ADR-0017의 target/source 비노출 request-scoped security audit는 admission result audit와 별도로 허용 |
+| Malformed ID, topic set, primary 또는 schema | `422` |
+| Manual PUT의 `reason_code`, free-text reason 또는 unknown top-level field | DB/assignment/audit 전에 `422 knowledge.classification_request_invalid`; 입력값 비반사·비저장 |
+| Client assignment/review topic array 33개 이상 | DB/provider 호출 전 `422 knowledge.classification_topic_limit_exceeded`; duplicate 제거로 limit을 우회하지 않음 |
+| Rule/classifier adapter output topic 33개 이상 | `knowledge.classification_topic_limit_exceeded` safe suggestion failure; durable suggestion/assignment/audit 없음 |
+| Malformed 또는 scope/filter가 다른 suggestion cursor | `422 knowledge.classification_suggestion_cursor_invalid`; cursor 원문 비반사 |
+| Empty/duplicate/unknown/candidate 밖 accepted axis 또는 absent assignment를 complete하게 만들 수 없는 accept | `422 knowledge.classification_suggestion_axes_invalid`; assignment/outcome/audit 없음 |
+| Suggestion accept preview 누락/expired/wrong actor·scope 또는 candidate/assignment/content/taxonomy/registry/resolver vector stale | `409 knowledge.classification_suggestion_accept_preview_stale`; assignment/outcome/audit/reindex intent 없음 |
+| Required `taxonomy_version_id` 누락 또는 null taxonomy와 non-empty topic/primary 조합 | 누락은 schema `422`, 잘못된 조합은 `422 knowledge.classification_taxonomy_shape_invalid` |
+| Content가 바뀐 current-validation에 taxonomy/registry-only reason 사용 | `422 knowledge.classification_content_confirmation_required`; assignment/audit/reindex projection 없음 |
+| Current-validation reason이 server-computed changed dimension set과 다름 | `422 knowledge.classification_validation_reason_mismatch`; last-validated refs/audit/reindex projection 없음 |
+| Current-validation의 source/display gate 실패 또는 content changed set의 `content_read`/raw policy 실패 | Source-managed denied/revoked/stale은 changed set과 무관하게 `404 resource.hidden`; content-plane action 부족은 content가 포함될 때만 `403`; validation result/mutation 비노출 |
+| Lock request의 expected assignment 또는 canonical content revision mismatch | `409 knowledge.classification_lock_snapshot_conflict`; lock/audit 없음 |
+| Unlocked target axis가 `current_validation_required` 또는 `review_required`인 lock request | `409 knowledge.classification_lock_not_current`; 각각 current-validation 또는 complete assignment replacement를 먼저 요구 |
+| Manual PUT의 empty/duplicate/unknown `manual_axes` 또는 first create의 incomplete axes | `422 knowledge.classification_manual_axes_invalid`; assignment/audit 없음 |
+| Manual PUT의 unselected axis request value가 current effective value와 다름 | `409 knowledge.classification_unselected_axis_conflict`; server는 unselected value/source/lock을 보존하고 partial mutation 없음 |
+| Manual PUT이 selected locked axis를 변경 또는 takeover | `409 knowledge.classification_manual_authority_conflict`; unlock 없이 assignment/audit 없음 |
+| Stale assignment/draft/resolver/preview/compatibility snapshot, locked/manual authority axis, same-scope deprecated/incompatible new mutation candidate, publish conflict | `409` + fixed domain code. Existing assignment current-validation의 deprecated/missing ref는 위 `200 review_required` |
+| Nullable assignment 부재/current revision mismatch | `409 knowledge.classification_assignment_revision_conflict`; first mutation partial write/audit 없음 |
+| Override set/clear의 full resolver vector mismatch | `409 knowledge.processing_profile_override_snapshot_conflict`; override/audit/reindex projection 전체 rollback |
+| Override set의 null/non-object ref, missing/unknown/non-string catalog scope, empty/non-string profile revision ID, bare revision ID 또는 extra ref field | DB 조회 전 `422 knowledge.processing_profile_override_invalid`; override/audit/reindex projection 없음 |
+| Same-scope nullable taxonomy current pointer mismatch | `409 knowledge.classification_taxonomy_snapshot_conflict` |
+| Published/tombstoned topic stable ID를 active topic 또는 다른 identity로 재사용 | `409 knowledge.taxonomy_topic_id_reuse_conflict` |
+| Taxonomy version topic raw array 1,001개 이상, candidate replacement ref 합계 2,001개 이상, raw label 또는 normalized comparison key UTF-8 512 byte 초과 | Raw count/label은 dedupe·normalization 전, normalized key는 normalization 직후 sibling/graph/DB 전에 각각 `422 knowledge.taxonomy_topic_count_limit_exceeded`, `422 knowledge.taxonomy_replacement_edge_limit_exceeded`, `422 knowledge.taxonomy_label_invalid`; draft/audit 없음 |
+| New topic의 missing/invalid/non-unique/out-of-draft `draft_topic_key`, key와 existing ID 동시 지정 또는 current-mapped key의 subsequent mutation 재제출 | Shape/reference는 `422 knowledge.taxonomy_draft_topic_reference_invalid`, consumed current key 재제출은 `409 knowledge.taxonomy_draft_topic_key_conflict`; server ID/mapping/revision partial write 없음. Topic 제거는 mapping도 같은 CAS에서 제거하고 이후 같은 key에는 새 server ID를 발급 |
+| Taxonomy empty canonical label, sibling collision 또는 invalid replacement graph | Validate는 `knowledge.taxonomy_label_invalid`, `knowledge.taxonomy_sibling_label_conflict`, `knowledge.taxonomy_replacement_invalid` 또는 `knowledge.taxonomy_replacement_depth_exceeded` safe violation을 반환하고 unresolved draft publish는 `409 knowledge.taxonomy_publish_validation_failed`; raw comparison key 비반사 |
+| Taxonomy impact preview 누락/false acknowledgement/expired/wrong actor·scope/stale snapshot 또는 bucket contract version mismatch | `409 knowledge.taxonomy_impact_preview_stale`; version/current pointer/ledger/audit 없음 |
+| Organization profile malformed config 또는 unsupported capability | `422 knowledge.processing_profile_invalid`; raw provider/parser detail 비반사 |
+| First profile create의 missing/non-object/non-empty body | DB 조회 전 `422 knowledge.processing_profile_invalid`; identity/draft/audit 및 catalog revision 변경 없음 |
+| Successor profile의 missing/malformed/extra `base_revision_id`, wrong owner/identity 또는 non-published base | Shape는 DB 조회 전 `422 knowledge.processing_profile_invalid`, cross-organization/wrong identity는 safe `404`, same-scope draft/deprecated/non-published는 `409 knowledge.processing_profile_successor_base_invalid`; draft/catalog/audit 없음 |
+| Profile-policy unknown/mismatched field 또는 invalid ID/ref shape | `422 knowledge.processing_profile_policy_invalid`; draft/current/audit 없음 |
+| Profile-policy raw rule 2,001개 또는 normalized duplicate matcher | 각각 `422 knowledge.processing_profile_policy_rule_limit_exceeded`, `422 knowledge.processing_profile_policy_rule_conflict`; dedupe/partial draft로 우회하지 않음 |
+| Organization profile stale draft/catalog revision | `409 knowledge.processing_profile_draft_revision_conflict` 또는 `409 knowledge.processing_profile_catalog_revision_conflict`; revision/catalog/audit 없음 |
+| Platform default pointer command의 stale `expected_platform_profile_catalog_revision` | `409 knowledge.processing_profile_catalog_revision_conflict`; pointer/catalog/audit 없음 |
+| Profile-policy impact preview/token 누락, false acknowledgement, expiry, wrong actor·scope·candidate, Organization/Platform catalog를 포함한 token-bound snapshot 변경 또는 request/token/contract mismatch | `409 knowledge.processing_profile_policy_impact_preview_stale`; policy version/current pointer/audit 없음 |
+| Fresh profile-policy preview와 snapshot 검증 뒤 coordination/current policy pointer CAS loser | `409 knowledge.processing_profile_policy_publish_snapshot_conflict`; policy/current pointer/audit 없음 |
+| Current policy/override가 참조하는 Organization/Platform profile 또는 current Platform default target deprecate | `409 knowledge.processing_profile_in_use`; referring organization/KB identity와 exact count 비노출 |
+| Null-policy이고 valid explicit override가 없는 default-required resolver의 Platform default missing/deprecated/incompatible | `503 knowledge.processing_platform_default_unavailable`; preview/reindex admission과 override clear의 token·mutation·receipt·audit 없음, valid selectable override set/change는 recovery 허용, 기존 active-ready artifact 유지, mutable latest/env/legacy fallback 금지 |
+| 기존 receipt가 없는 expired preview token | `409 knowledge.processing_preview_stale`; current KB authority와 applicable source gate를 통과한 exact idempotency replay만 token expiry보다 먼저 기존 safe result 반환 |
+| Reindex `Idempotency-Key` missing, duplicate, nil, non-canonical case/whitespace/braces/URN, comma-joined, malformed/다른 길이 또는 body-only field | `422 knowledge.processing_idempotency_key_invalid`; receipt lookup/write와 audit 없음, raw value 비반사 |
+| 같은 idempotency key의 다른 canonical request | `409 knowledge.processing_idempotency_conflict`; 기존 receipt/result identity 비노출 |
+| Reindex worker/finalizer의 current organization membership, KB authority 또는 applicable source authorization 회수 | Gate 뒤 새 external batch를 호출하지 않고 terminal `cancelled` + fixed `knowledge.processing_execution_not_authorized`; current unauthorized requester에게 job/receipt identity 비노출, active pointer/Satisfaction 없음 |
+| Physical build admission의 embedding credential 후보 0개/복수 또는 worker/finalizer의 bound credential lifecycle/relation/`use`/revision 상실 | Admission은 `409 knowledge.processing_embedding_credential_unavailable`과 zero receipt/decision/job/audit, runtime은 다음 provider batch 0회 및 같은 fixed reason의 terminal `cancelled`; credential identity/count/detail 비노출, active pointer/Satisfaction 없음, fallback/rebinding 없음 |
+| Ambiguous legacy multi-document target | `409 knowledge.classification_migration_required` |
+| Classifier/provider unavailable | Authoritative assignment mutation 없음. Suggestion unavailable safe result/error |
+| Reindex infrastructure failure | Safe retryable error, 기존 active ready version 유지 |
+
+#### Classification And Profile Contract Trace
+
+| Operation | Actor와 fresh gate | Required precondition/snapshot | Commit/result | Audit |
+| --- | --- | --- | --- | --- |
+| Classification GET/options | GET은 KB `read`, options는 KB `write`; 각각 Organization manager override 허용. Source-managed는 assignment lookup 전 fresh source/display gate 필수 | Current canonical content, nullable assignment, registry/taxonomy, source authorization freshness | Axis별 authority와 bounded safe projection, `no-store`; source gate 실패는 assignment/type/topic/security 비노출 `404` | Read audit 없음 |
+| Assignment PUT | KB `write` 또는 Organization manager override; source-managed는 row lookup 전과 commit 직전 fresh source/display gate | Required nullable assignment revision, canonical content, registry/taxonomy, complete effective set, non-empty unique `manual_axes`, topic limit 32와 source revision/watermark; Client reason/unknown field 금지 | Selected unlocked axis만 manual replace/takeover하고 unselected value/source/lock 보존; first create는 두 axis 필수, stale/locked/mismatch/oversized/revoked는 전체 rollback | First create `knowledge.classification_assignment.created`, replace/takeover `knowledge.classification_assignment.updated`와 mutation 원자적; revoke는 audit 없음 |
+| Current validation | KB `write` 또는 Organization manager override; source-managed는 changed set과 무관하게 lookup 전/commit 직전 fresh source/display gate, content가 포함되면 추가 `content_read`/raw policy | Non-null assignment revision, canonical content, registry/taxonomy, server-computed changed dimension set, exact fixed reason와 source revision/watermark | Effective set/axis authority 보존, reviewed dimension의 current snapshot으로 last-validated refs와 manual-confirmation provenance 전진; reason/gate mismatch 전체 rollback | `knowledge.classification.revalidated`와 성공 revision 원자적; revoke는 audit 없음 |
+| Lock | KB `manage` 또는 Organization manager override; source-managed는 row lookup 전과 commit 직전 fresh source/display gate | Non-null assignment revision, exact current canonical content revision, target axis `current` freshness와 source revision/watermark | Complete locked revision 또는 exact-state unchanged; stale/non-current/revoked는 전체 rollback | `knowledge.classification_assignment.locked`와 transition 원자적; revoke는 audit 없음 |
+| Unlock | KB `manage` 또는 Organization manager override; source-managed는 row lookup 전과 commit 직전 fresh source/display gate | Non-null assignment revision, target axis와 source revision/watermark; content freshness는 recovery blocker가 아님 | Complete unlocked revision; 다른 axis 보존, current projection 재계산; revoke는 전체 rollback | `knowledge.classification_assignment.unlocked`와 transition 원자적; revoke는 audit 없음 |
+| Suggestion list | KB `write` 또는 Organization manager override + page마다 fresh source authorization/display gate | State-bound cursor, limit 1..50 | Stable keyset page, total/hidden count 없음 | Read audit 없음 |
+| Suggestion accept preview | KB `write` 또는 Organization manager override + candidate projection 전 fresh source/display gate | Required nullable assignment revision, non-empty candidate axis subset, current candidate/content/taxonomy/registry/resolver vector | Opaque max-10-minute `accept_preview_revision`, bounded axis/profile/reindex booleans, `no-store`; accept가 exact token을 소비하며 stale vector는 전체 rollback | Preview/read audit 없음, raw token/digest 비저장 |
+| Suggestion accept/reject | KB `write` 또는 Organization manager override + candidate lookup 전과 commit 전 fresh source gate | Suggestion state/snapshot, accept의 required nullable assignment revision과 non-empty candidate axis subset | Accept는 complete assignment revision+terminal outcome, reject는 terminal outcome만 확정; stale/denied 전체 rollback | 각각 `knowledge.classification_suggestion.accepted`, `knowledge.classification_suggestion.rejected`와 outcome 원자적 |
+| Taxonomy impact preview/publish | Organization manager | Exact draft/current policy/registry, Organization/Platform catalog, assignment-impact snapshot, `taxonomy_impact_bucket_v1`, opaque preview revision와 acknowledgement | Processing-eligible current assignment predicate의 versioned bounded preview 또는 immutable publish; stale/missing acknowledgement 전체 rollback, publish 자체는 assignment/job을 만들지 않음 | Preview audit 없음, publish와 `knowledge.taxonomy.published` 원자적 |
+| Organization profile config authoring | Organization manager | `processing_profile_schema_v1`, strict size `64..8192`, overlap `0..floor(size/2)`, current capability limits | Bound/capability-valid draft 또는 fixed validation; no coercion | Read/validate audit 없음, lifecycle mutation audit는 아래 행 |
+| Profile-policy draft authoring | Organization manager | `processing_profile_policy_v1` complete document, raw rules `0..2000`, strict matcher union, required nullable general fields | Complete draft revision 또는 shape/cap/conflict 전체 rollback | `knowledge.processing_profile_policy_draft.created`, `knowledge.processing_profile_policy_draft.updated`와 draft mutation 원자적 |
+| Organization profile draft/publish/deprecate | Organization manager | First create의 exact `{}`, complete config PATCH, successor의 exact same-identity published `base_revision_id`, draft revision 또는 Organization catalog revision CAS, owner/capability/current-reference gate | First create는 null config/base의 revision 0 draft shell과 unchanged catalog revision, 이후 base lineage를 가진 draft/immutable published/selectability lifecycle; wrong shape/base는 zero write | `knowledge.processing_profile_draft.created`, `knowledge.processing_profile_draft.updated`, `knowledge.processing_profile.published`, `knowledge.processing_profile.deprecated` 중 해당 action과 mutation 원자적 |
+| Platform profile options/default projection | Organization manager | Current Platform catalog revision과 non-null exact default pointer | Approved options, `platform_default_profile_revision`과 catalog revision의 read-only safe projection | Read audit 없음, Organization mutation API 없음 |
+| Platform default pointer control-plane mutation | Platform registry owner/system actor | Required exact `expected_platform_profile_catalog_revision`과 approved published/selectable `target_profile_revision_id` | Pointer와 incremented catalog revision 또는 stale/audit-failure 전체 rollback | `knowledge.processing_profile_default.changed`와 pointer/catalog mutation이 같은 Unit of Work; safe before/after revision과 resulting catalog revision만 기록 |
+| Profile-policy impact preview/publish | Organization manager | Exact draft/current policy/taxonomy/registry, Organization/Platform catalog, assignment-impact snapshot, `profile_policy_impact_bucket_v1`, opaque preview revision와 acknowledgement | Versioned bounded resolution/reindex preview 또는 immutable policy/current pointer; stale/missing acknowledgement 전체 rollback, publish 자체는 assignment/job을 만들지 않음 | Preview audit 없음, publish와 `knowledge.processing_profile_policy.published` 원자적 |
+| Override GET/options | KB `manage` 또는 Organization manager override; source-managed는 override/resolver lookup 전 fresh source/display gate | Current full resolver vector, null-policy Platform default ref/catalog revision과 source authorization freshness | Options, valid override와 nullable resolved profile은 strict scoped `profile_revision_ref`, effective status와 opaque resolver revision, `no-store`; source-hidden은 identity/status 비노출, invalid override identity는 generic이고 default unavailable도 200 recovery projection | Read audit 없음 |
+| Override set/clear | KB `manage` 또는 Organization manager override; source-managed는 lookup 전과 commit 직전 fresh source/display gate | Set의 strict scoped `profile_revision_ref`, required nullable assignment/profile-policy, nullable override, Platform default ref, opaque full resolver revision과 source revision/watermark | Override revision과 같은 snapshot의 `reindex_required`; invalid ref shape는 422, stale/revoked는 전체 rollback, default unavailable clear는 fixed 503, selectable set/change는 recovery 허용 | 성공 Override와 canonical audit 같은 transaction; revoke는 audit 없음 |
+| Resolve preview | KB `write` 또는 Organization manager override; source-managed는 resolver lookup 전 fresh source/display gate | Server-resolved current full vector, null-policy Platform default ref와 source authorization freshness | Source에 `platform_default`를 포함한 opaque short-lived resolution revision과 bounded estimate; source-hidden/default-required unavailable은 zero token/write | Mutation audit 없음 |
+| Reindex idempotency transport | Schema validation; valid key 뒤 admission actor/gate 적용 | Single canonical lower-case UUID `Idempotency-Key` header, duplicate/body key 금지 | Invalid/missing은 fixed 422와 zero receipt; canonical bytes SHA-256 digest만 저장, same key/different typed tuple은 409 | Raw key/digest 비감사·비로그 |
+| Reindex admission | KB `write` 또는 Organization manager override + applicable fresh source authorization; receipt lookup/replay 전과 return/commit 직전 gate | Receipt digest 또는 current resolution revision/full vector, nullable source authorization revision/watermark; physical build는 exact-one current embedding credential/model binding | `unchanged`, `satisfied_existing`, `job_created`, `job_reused` 중 하나의 durable result; revoke winner는 safe 404와 zero write, ambiguous credential은 fixed 409 zero write | 최초 result의 receipt/decision/satisfaction/job/current pointer와 `knowledge.processing_reindex.admitted` success audit 원자 commit; exact replay는 중복 audit 없음 |
+| Reindex worker/finalizer | `job_created` receipt에 불변 bind된 execution actor와 embedding binding의 current active membership, effective KB `write`/Organization manager, source authorization, credential lifecycle/relation/`use` | 각 external batch 전 fresh gate, finalization authorization/binding revision, resolver vector와 job fence/lease | Authorized current attempt만 `satisfied_new`와 pointer swap; actor/source/credential revoke는 cancelled+cleanup으로 수렴하고 cross-actor/credential reuse는 binding을 교체하지 않음 | Fixed safe reason만 기록하고 hidden resource/source/credential detail 비노출 |
 
 ### MBA-232 Workflow Runtime Candidate Resolver
 

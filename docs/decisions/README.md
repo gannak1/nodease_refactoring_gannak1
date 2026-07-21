@@ -85,6 +85,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0062](ADR-0062-workflow-node-secret-reference-boundary.md) | Accepted | Workflow node secret reference 경계 | Agent Builder와 Node Detail의 masked 직접 입력 및 `나중에 설정` UX를 유지하면서 Slack/GitHub 원문 secret을 서버 암호화 immutable revision으로 저장하고 graph/deployment에는 opaque reference만 보존한다. |
 | [ADR-0063](ADR-0063-agent-builder-deterministic-intent-plan-cache.md) | Accepted | Agent Builder 결정론적 intent plan cache | 채택된 목표 계약이며 현재 코드는 아직 구현되지 않았다. Feature flag는 기본 비활성이고 Production Redis 운영 증거 전에는 production/staging serving을 활성화하지 않는다. |
 | [ADR-0064](ADR-0064-provider-execution-capability-boundary.md) | Accepted | Provider 실행 capability와 deployment credential 정책 경계 | Deployment-version LLM node별 단일 server-owned credential policy, typed runtime principal, 실제 token/cost admission, provider 호출 전 capability commit과 Shared config materialization 경계를 확정한다. MBA-287 usage ledger와 MBA-320 activation은 후속 범위다. |
+| [ADR-0065](ADR-0065-knowledge-classification-taxonomy-and-processing-profile.md) | Accepted | Knowledge 분류, 조직 taxonomy와 processing profile 경계 | Security classification, platform document type, organization taxonomy와 immutable processing profile을 분리한다. Manual lock과 accepted assignment가 우선하고 AI는 suggestion-only다. 현재는 목표 정책만 승인됐으며 registry, assignment API, profile infrastructure와 classifier는 아직 구현되지 않았다. |
 
 ## 참고 보고서
 

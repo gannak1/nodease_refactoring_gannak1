@@ -14,6 +14,7 @@ Status: Draft
 - `CredentialRegistrationGate`: active organization manager 여부를 확인하고 credential 등록 control 노출을 결정한다.
 - `CredentialPermissionService`: credential visibility와 `use` permission을 평가한다.
 - `CredentialModelRelationResolver`: credential-model pair가 active이고 verified 상태인지 확인한다.
+- `KnowledgeProcessingEmbeddingBindingIssuer`: ADR-0065 physical reindex admission에서 exact profile model/provider, Organization과 immutable job execution actor를 받아 active credential, verified relation과 current `use` 후보가 정확히 하나일 때만 safe credential/model/provider refs 및 lifecycle/relation/permission/provider-routing revision binding을 발급한다. Fresh job commit 직전 같은 revisions를 serializable하게 재검증하고 worker/finalizer에도 authoritative revalidation을 제공한다. Raw config/client를 반환하거나 0/복수 후보를 name/order/default로 선택하지 않는다.
 - `LlamaParseCredentialResolver`: document parsing 직전에 execution subject, active organization, `llamaparse` provider 호환성, valid 상태와 credential `use` 권한을 확인하고 단일 허용 credential의 parser 입력만 반환한다. FileProcessor는 ORM row나 저장 config를 직접 해석하지 않는다.
 - `AgentAnswerOptionProvider`: credential secret이나 전체 owner metadata를 반환하지 않고 standalone RAG answer flow용 safe option schema를 만든다.
 - `DeploymentCredentialPolicyService`: manager-only deployment policy write/read boundary다. Canonical deployment row를 lock하고 immutable deployment graph의 exact LLM node/model과 organization-scoped credential, verified relation, credential `use`를 server-side에서 대조해 node당 단일 active revisioned policy row를 만든다. Graph, request body, public runtime actor가 credential principal을 선택하지 못하게 한다.
@@ -44,6 +45,7 @@ Status: Draft
 - Standalone RAG answer는 answer-run 생성 전에 credential/model preflight를 호출한다.
 - Auto collection mode는 explicit KB mode와 같은 generation credential/model preflight를 사용한다.
 - Embedding credential readiness는 generation credential selection과 별개이며 `credential_id`에서 추론하면 안 된다.
+- Knowledge processing embedding binding은 profile/request credential field가 아니라 LLM Credentials-owned server port가 발급하고 durable job에 고정한다. `job_reused`는 original actor/binding을 교체하지 않으며 revoke/relation/permission revision 변경 뒤 다음 provider batch와 finalization은 fail-closed한다.
 - LlamaParse parsing은 provider 호출 전에 credential resolver를 통과해야 한다. 후보 없음/복수, revoke/invalid, 권한 상실, provider 불일치 또는 context 누락은 safe reason으로 종료하며 전역/환경 변수 fallback을 사용하지 않는다.
 - Main generation과 Memory summary는 각각 purpose가 고정된 ProviderExecutionCapability를 사용한다. Summary는 `inherit_node`에서 별도 capability를 발급하고 organization default/owner credential을 추론하지 않는다.
 - Capability identity/revision은 Memory lease, Budget reservation, provider attempt와 usage reconciliation에 전달한다. Credential revoke/permission revision 변경과 scope/admission/attempt/expiry mismatch는 새 claim·reservation·provider SDK 호출 전에 거부한다. Consumer는 credential principal이나 capability revision을 자체 합성하지 않는다.

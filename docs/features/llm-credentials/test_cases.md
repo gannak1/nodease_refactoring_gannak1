@@ -66,13 +66,14 @@ Status: Draft
 - Credential read/list 권한만 있고 credential `use` 권한이 없는 사용자는 해당 credential로 Agent answer generation을 실행할 수 없다.
 - 사용 가능한 credential이라도 요청 model과 verified relation이 없으면 Agent answer generation을 실행할 수 없다.
 - Credential revoke/permission decision revision 변경/model relation 또는 provider-routing fingerprint 변경 뒤 stale capability는 새 Memory context claim, budget reservation, provider attempt admission과 provider 호출에 사용할 수 없다. 실제 egress policy 변경 검증은 authoritative LLM outbound guard가 연결된 뒤 해당 revision으로 대체한다.
+- Knowledge physical reindex binding 후보를 0/1/2개로 만든다. Exact profile model/provider, same Organization, active credential, verified relation과 immutable job actor `use`를 모두 만족하는 후보 1개만 safe revision binding을 발급한다. 0/2개는 같은 fixed `knowledge.processing_embedding_credential_unavailable`로 provider/job write 없이 닫고 candidate count/credential identity를 노출하지 않는다. Binding 뒤 credential revoke, relation/permission/provider-routing revision 변경은 다음 provider batch와 finalization을 차단하며 existing job을 다른 actor/credential로 rebind하지 않는다.
 - Policy write와 final admission은 credential, verified relation, User/Organization 상태와 현재 `use` 판정의 organization membership/direct/team permission 근거 row를 잠근 상태에서 manager/permission 및 revision을 다시 검증한다. Concurrent revoke, 사용자·조직 비활성화 또는 권한 회수가 먼저 commit되면 provider materialization이 0회이고, admission이 먼저 commit되면 해당 provider attempt만 변경보다 앞선 유효 실행으로 직렬화된다.
 - Credential principal, billing principal, execution subject와 audit actor가 서로 다른 fixture에서도 credential owner가 private KB subject/public actor로 승격되지 않는다.
 
 ## Edge Case
 
 - 여러 credential 또는 model이 있어도 name/order fallback selection을 하지 않는다.
-- Default credential/preset ambiguity는 향후 ADR이 selection priority를 정의하기 전까지 gated/unsupported condition으로 반환한다.
+- Default credential/preset ambiguity는 향후 ADR이 selection priority를 정의하기 전까지 gated/unsupported condition으로 반환한다. ADR-0065 Knowledge processing exact-one binding도 복수 후보를 선택하지 않고 fixed unavailable로 닫는다.
 - LlamaParse processing failure response, processing metadata, audit/trace/log fixture에는 credential ID, config 원문, API key, decrypted value 또는 provider raw payload가 없어야 한다.
 - Capability의 deployment version, node invocation, model, pricing revision, token/cost cap 또는 expiry 중 하나가 mismatch이면 raw secret/provider call 없이 fail-closed한다.
 - Capability의 execution admission 또는 provider attempt binding을 다른 run/attempt에서 재사용하면 provider SDK 호출 전에 fail-closed한다.
