@@ -20,11 +20,7 @@ import {
 
 import CreateAppModal from '@/app/features/app/components/create-app-modal';
 import EditAppModal from '@/app/features/app/components/edit-app-modal';
-import {
-  appApi,
-  type App,
-  type AppIcon,
-} from '@/app/features/app/api/appApi';
+import { appApi, type App, type AppIcon } from '@/app/features/app/api/appApi';
 import { BudgetStatusBadge } from '@/app/features/budget/components/BudgetStatusBadge';
 import { budgetRunBlockMessage } from '@/app/features/budget/utils/budgetGuard';
 import {
@@ -154,12 +150,11 @@ function AutomaticOptimizationTableCell({
   const checkEveryRuns = summary?.check_every_runs || 50;
   const spend = summary?.validation_spend_usd || 0;
   const monthlyBudget = summary?.monthly_validation_budget_usd || 3;
-  const statusClassName =
-    !isEnabled
-      ? 'border-slate-200 bg-slate-50 text-slate-600'
-      : status === 'budget_exhausted' || status === 'failed'
-        ? 'border-amber-200 bg-amber-50 text-amber-700'
-        : 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  const statusClassName = !isEnabled
+    ? 'border-slate-200 bg-slate-50 text-slate-600'
+    : status === 'budget_exhausted' || status === 'failed'
+      ? 'border-amber-200 bg-amber-50 text-amber-700'
+      : 'border-emerald-200 bg-emerald-50 text-emerald-700';
   const statusLabel = hasDeployment
     ? automaticOptimizationStatusLabel[status]
     : '배포 후 설정';
@@ -206,7 +201,9 @@ function AutomaticOptimizationTableCell({
         </>
       ) : (
         <p className="whitespace-nowrap text-xs text-slate-500">
-          {hasDeployment ? '설정에서 사용 여부를 변경합니다.' : '배포 후 설정할 수 있습니다.'}
+          {hasDeployment
+            ? '설정에서 사용 여부를 변경합니다.'
+            : '배포 후 설정할 수 있습니다.'}
         </p>
       )}
     </div>
@@ -737,7 +734,7 @@ export default function MyModulePage() {
                   </table>
                 </div>
               ) : (
-                <div className="grid gap-4 bg-slate-50/70 p-5 md:grid-cols-2 xl:grid-cols-3">
+                <div className="grid gap-x-4 gap-y-3 bg-slate-100/50 p-5 md:grid-cols-2 lg:grid-cols-3">
                   {rows.map((row) => (
                     <ModuleOperationGridCard
                       key={row.app.id}
@@ -1059,22 +1056,22 @@ function ModuleOperationGridCard({
   const runDisabledReason = getModuleRunDisabledReason(row);
 
   return (
-    <article className="flex h-full min-h-64 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
-      <div className="p-5">
+    <article className="flex h-full min-h-72 flex-col overflow-hidden rounded-3xl bg-white shadow-lg shadow-slate-300/40 transition-all hover:-translate-y-0.5 hover:shadow-xl">
+      <div className="relative px-6 pb-5 pt-6">
         <button
           type="button"
           onClick={onOpen}
           disabled={!canOpenModule(row)}
-          className="flex w-full items-start gap-3 text-left disabled:cursor-not-allowed"
+          className="block w-full text-left disabled:cursor-not-allowed"
         >
           <span
-            className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-xl text-xl leading-none shadow-sm"
+            className="grid h-12 w-12 place-items-center overflow-hidden rounded-full border border-slate-200 text-xl leading-none shadow-sm"
             style={{ backgroundColor: row.app.icon?.background_color }}
             aria-hidden="true"
           >
             {displayAppIcon(row.app.icon)}
           </span>
-          <span className="min-w-0 flex-1">
+          <span className="mt-5 block min-w-0 pr-2">
             <h3 className="line-clamp-2 text-xl font-bold leading-7 text-slate-950">
               {row.app.name}
             </h3>
@@ -1082,31 +1079,35 @@ function ModuleOperationGridCard({
               마지막 수정 {formatDate(row.app.updated_at)}
             </span>
           </span>
+          <span className="mt-4 min-h-10 line-clamp-2 block text-sm leading-5 text-slate-500">
+            {row.app.description || '설명 없음'}
+          </span>
         </button>
-        <p className="mt-4 min-h-10 line-clamp-2 text-sm leading-5 text-slate-500">
-          {row.app.description || '설명 없음'}
-        </p>
-      </div>
-
-      <footer className="mt-auto flex items-center justify-between gap-3 bg-slate-50/70 p-4">
-        <div className="flex min-w-0 flex-wrap gap-2">
+        <div className="absolute right-6 top-6">
           <Badge className={deploymentTone[deploymentState]}>
             {deploymentLabels[deploymentState]}
           </Badge>
-          {row.latestRun.state !== 'success' && (
-            <Badge className={runTone[row.latestRun.state]}>
-              {runLabels[row.latestRun.state]}
-            </Badge>
-          )}
-          {runBlockMessage && (
-            <span
-              title={runBlockMessage}
-              className="inline-flex items-center rounded bg-red-100 px-2 py-1 text-[10px] font-bold text-red-700"
-            >
-              실행 차단
-            </span>
-          )}
         </div>
+        {(row.latestRun.state !== 'success' || runBlockMessage) && (
+          <div className="mt-4 flex min-w-0 flex-wrap gap-2">
+            {row.latestRun.state !== 'success' && (
+              <Badge className={runTone[row.latestRun.state]}>
+                {runLabels[row.latestRun.state]}
+              </Badge>
+            )}
+            {runBlockMessage && (
+              <span
+                title={runBlockMessage}
+                className="inline-flex items-center rounded bg-red-100 px-2 py-1 text-[10px] font-bold text-red-700"
+              >
+                실행 차단
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
+      <footer className="mx-6 mt-auto flex items-center justify-end border-t border-slate-200 py-5">
         <div className="flex shrink-0 gap-1.5">
           <IconButton
             label={runDisabledReason || '배포 실행'}
@@ -1192,11 +1193,11 @@ function IconButton({
 function ModuleListSkeleton({ viewMode }: { viewMode: OperationsViewMode }) {
   if (viewMode === 'grid') {
     return (
-      <div className="grid gap-4 bg-slate-50/70 p-5 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid gap-x-4 gap-y-3 bg-white p-5 md:grid-cols-2 lg:grid-cols-3">
         {Array.from({ length: 6 }).map((_, index) => (
           <div
             key={index}
-            className="h-64 animate-pulse rounded-xl border border-slate-200 bg-white"
+            className="h-72 animate-pulse rounded-3xl bg-white shadow-lg shadow-slate-300/40"
           />
         ))}
       </div>
