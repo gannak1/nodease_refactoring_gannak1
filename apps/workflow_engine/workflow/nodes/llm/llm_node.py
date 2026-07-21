@@ -724,7 +724,11 @@ class LLMNode(Node[LLMNodeData]):
                 judge_metadata["selection_source"] = "judge_candidate_selection"
                 judge_metadata["candidate_model_count"] = len(candidate_model_ids)
                 usage = judge_decision.usage
-                if usage:
+                has_billable_usage = any(
+                    int(usage.get(key) or 0) > 0
+                    for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                )
+                if has_billable_usage:
                     try:
                         judge_cost = LLMService.calculate_cost(
                             db_session,

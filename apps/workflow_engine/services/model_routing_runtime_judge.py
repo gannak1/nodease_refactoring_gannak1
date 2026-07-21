@@ -8,6 +8,7 @@ Judge는 실제 요청을 실행하기 전에 현재 실행 주체가 사용할 
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -126,6 +127,7 @@ class ModelRoutingRuntimeJudge:
             "response_format": {"type": "json_object"},
         }
         attempt_usages: list[dict[str, Any]] = []
+        provider_started_at = time.perf_counter()
         try:
             response = client.invoke_sync(
                 messages=cls._messages(
@@ -155,6 +157,10 @@ class ModelRoutingRuntimeJudge:
                 ),
                 **request_kwargs,
             )
+        provider_latency_ms = max(
+            1,
+            int(round((time.perf_counter() - provider_started_at) * 1_000)),
+        )
         content = cls._response_content(response)
         try:
             payload = json.loads(content)
@@ -210,19 +216,22 @@ class ModelRoutingRuntimeJudge:
             task_requirements=task_requirements,
         )
 
+        usage = cls._aggregate_usages(
+            [
+                *attempt_usages,
+                cls._safe_usage(
+                    response.get("usage") if isinstance(response, dict) else None
+                ),
+            ]
+        )
+        usage["latency_ms"] = provider_latency_ms
+
         return RuntimeJudgeDecision(
             selected_model_id=selected_model_id,
             confidence=confidence,
             reason_short=reason_short,
             reason_code=reason_code,
-            usage=cls._aggregate_usages(
-                [
-                    *attempt_usages,
-                    cls._safe_usage(
-                        response.get("usage") if isinstance(response, dict) else None
-                    ),
-                ]
-            ),
+            usage=usage,
             reason_factors=reason_factors,
             selection_explanation=selection_explanation,
             decision_detail=decision_detail,

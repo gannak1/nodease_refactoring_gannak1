@@ -1,6 +1,7 @@
 
 import pytest
 
+import apps.workflow_engine.services.model_routing_runtime_judge as runtime_judge_module
 from apps.workflow_engine.services.model_routing_runtime_judge import (
     ModelRoutingRuntimeJudge,
     RuntimeJudgeResponseError,
@@ -48,6 +49,27 @@ class _IncompleteThenCompactJudgeClient(_JudgeClient):
             ],
             "usage": {"prompt_tokens": 26, "completion_tokens": 12},
         }
+
+
+def test_runtime_judge_records_total_provider_latency_in_usage(monkeypatch):
+    timestamps = iter((10.0, 10.125))
+    monkeypatch.setattr(
+        runtime_judge_module.time,
+        "perf_counter",
+        lambda: next(timestamps),
+    )
+    client = _JudgeClient(
+        '{"selected_model_id":"gpt-4o-mini","confidence":0.91,'
+        '"reason_short":"단순 응답 처리","reason_code":"simple_response"}'
+    )
+
+    decision = ModelRoutingRuntimeJudge.decide(
+        client=client,
+        candidate_model_ids=["gpt-4o-mini"],
+        routing_feature_text="짧은 상태 확인 요청",
+    )
+
+    assert decision.usage["latency_ms"] == 125
 
 
 def test_runtime_judge_normalizes_invalid_display_reason_without_discarding_selection():
@@ -148,7 +170,9 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
     assert decision.safe_metadata()["task_requirements"] == decision.task_requirements
     assert decision.safe_metadata()["reason_factors"] == decision.reason_factors
     assert "selection_explanation" not in decision.safe_metadata()
-    assert decision.usage == {"prompt_tokens": 42, "completion_tokens": 18}
+    assert decision.usage["prompt_tokens"] == 42
+    assert decision.usage["completion_tokens"] == 18
+    assert decision.usage["latency_ms"] >= 1
     rendered_prompt = client.calls[0]["messages"][1]["content"]
     prompt_body = __import__("json").loads(rendered_prompt)
     assert prompt_body["candidate_models"] == [
@@ -463,11 +487,10 @@ def test_runtime_judge_retries_incomplete_response_with_compact_contract():
     )
 
     assert len(client.calls) == 2
-    assert decision.usage == {
-        "prompt_tokens": 106,
-        "completion_tokens": 52,
-        "total_tokens": 158,
-    }
+    assert decision.usage["prompt_tokens"] == 106
+    assert decision.usage["completion_tokens"] == 52
+    assert decision.usage["total_tokens"] == 158
+    assert decision.usage["latency_ms"] >= 1
     assert client.calls[0]["kwargs"]["max_tokens"] == 768
     assert client.calls[1]["kwargs"]["max_tokens"] == 768
     assert decision.reason_short == "고위험 판단 필요"
