@@ -96,7 +96,6 @@ def test_confident_local_prediction_skips_runtime_judge(monkeypatch):
         learning={
             "mode": "local_first",
             "local_confidence_threshold": 0.78,
-            "validated_model_ids": ["gpt-4o-mini"],
             "local_requirement_artifact": {
                 "feature_schema_version": TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
             },
