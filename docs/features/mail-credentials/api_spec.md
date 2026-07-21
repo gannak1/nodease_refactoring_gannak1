@@ -24,6 +24,7 @@ Status: Draft
 | DELETE | `/api/v1/mail/credentials/{credential_id}/permissions/users/{user_id}` | User direct 권한 회수 | `manage` 또는 manager |
 | PUT | `/api/v1/mail/credentials/{credential_id}/permissions/teams/{team_id}` | Team 권한 부여·변경 | `manage` 또는 manager |
 | DELETE | `/api/v1/mail/credentials/{credential_id}/permissions/teams/{team_id}` | Team 권한 회수 | `manage` 또는 manager |
+| POST | `/api/v1/permissions/bulk-grants` | 복수 Mail credential×User/Team 권한 원자 부여·변경 | 모든 credential의 `manage` 또는 manager |
 | POST | `/api/v1/mail/credentials/oauth/google/start` | Gmail OAuth authorization 시작 | Organization manager |
 | GET | `/api/v1/mail/credentials/oauth/google/callback` | State/PKCE 검증, Gmail credential 생성 후 safe redirect | Pending flow actor |
 

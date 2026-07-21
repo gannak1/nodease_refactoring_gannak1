@@ -119,13 +119,14 @@ Security Alert FR-013의 상세 rule/worker/API/component/E2E matrix는 [Securit
 - Given permission card를 확인했을 때, Then modal을 여는 action은 `권한 부여` 하나만 표시되고 selected resource 영역에 같은 역할의 중복 button이 없다.
 - Given 관리자가 기존 권한을 조회하거나 회수하려 할 때, When 본문의 `리소스 필터 변경`을 펼치면, Then 리소스 유형과 이름 검색 결과가 현재 선택 조건 아래에 넓게 표시된다.
 - Given 본문 리소스 필터에서 결과를 선택했을 때, Then 별도 저장이나 권한 부여 없이 selected resource와 permission 목록이 즉시 해당 리소스로 바뀐다.
-- Given resource table에서 이름을 검색하거나 resource type을 변경했을 때, Then 일치하는 현재 organization resource만 표시되고 하나를 선택할 수 있다.
-- Given grantee table에서 team/user direct 유형을 변경하거나 이름을 검색했을 때, Then active team 또는 active organization member만 표시되고 하나를 선택할 수 있다.
+- Given resource table에서 이름을 검색하거나 resource type을 변경했을 때, Then 일치하는 현재 organization resource만 표시되고 checkbox로 하나 이상을 선택할 수 있다.
+- Given grantee table에서 team/user direct 유형을 변경하거나 이름을 검색했을 때, Then active team 또는 active organization member만 표시되고 checkbox로 하나 이상을 선택할 수 있다.
 - Given 이미 선택한 resource 또는 grantee가 검색 결과에서 숨겨졌을 때, Then 숨겨진 선택값으로 권한을 저장할 수 없고 다시 표시하거나 새 항목을 선택해야 한다.
 - Given resource 또는 grantee 결과가 많을 때, Then 각 table은 modal 전체 높이를 늘리지 않고 제한된 내부 영역에서 독립적으로 스크롤하며 header를 고정한다.
 - Given modal에서 다른 resource/grantee/auth state를 선택하거나 취소했을 때, Then 바깥 page의 selected resource와 permission 목록은 바뀌지 않는다.
-- Given 권한 PUT 요청이 진행 중일 때, When 배경/X/취소/Escape로 닫기를 시도하거나 resource/grantee/auth state 입력을 조작하면, Then modal은 닫히지 않고 모든 입력은 disabled 상태를 유지한다.
-- Given resource, grantee, permission을 선택해 저장했을 때, Then 기존 단일 PUT permission endpoint를 호출하고 성공한 경우에만 modal을 닫고 selected resource permission 목록을 갱신한다.
+- Given bulk grant POST 요청이 진행 중일 때, When 배경/X/취소/Escape로 닫기를 시도하거나 resource/grantee/auth state 입력을 조작하면, Then modal은 닫히지 않고 모든 입력은 disabled 상태를 유지한다.
+- Given 복수 resource, 복수 grantee, permission을 선택해 저장했을 때, Then `POST /permissions/bulk-grants`를 한 번 호출하고 성공한 경우에만 modal을 닫고 첫 번째 selected resource permission 목록을 갱신한다.
+- Given resource×grantee 선택이 50건을 초과했을 때, Then 저장 action을 비활성화하고 API도 422로 거부한다.
 
 ## Unit Tests
 

@@ -417,3 +417,141 @@ def test_grant_user_permission_rejects_deactivated_active_member():
     membership_query.join.assert_called_once()
     membership_query.with_for_update.assert_called_once_with()
     db.commit.assert_not_called()
+
+
+def test_bulk_mail_permission_grant_commits_all_pairs_once():
+    db = MagicMock()
+    service = MailCredentialService(db, encryption=MagicMock())
+    service._get_scoped = MagicMock(
+        side_effect=lambda organization_id, credential_id, **_: _credential(
+            id=credential_id,
+            organization_id=organization_id,
+        )
+    )
+    service._require = MagicMock()
+    service.grant_team_permission = MagicMock()
+    credential_ids = [uuid.uuid4(), uuid.uuid4()]
+    team_ids = [uuid.uuid4(), uuid.uuid4()]
+    payload = MailCredentialPermissionGrant(auth_state="operator")
+
+    service.grant_permissions_bulk(
+        uuid.uuid4(),
+        uuid.uuid4(),
+        credential_ids,
+        "team",
+        team_ids,
+        payload,
+    )
+
+    assert service.grant_team_permission.call_count == 4
+    assert all(
+        call.kwargs["commit"] is False
+        for call in service.grant_team_permission.call_args_list
+    )
+    db.commit.assert_called_once_with()
+
+
+def test_bulk_mail_permission_grant_rolls_back_when_one_pair_fails():
+    db = MagicMock()
+    service = MailCredentialService(db, encryption=MagicMock())
+    service._get_scoped = MagicMock(
+        side_effect=lambda organization_id, credential_id, **_: _credential(
+            id=credential_id,
+            organization_id=organization_id,
+        )
+    )
+    service._require = MagicMock()
+    service.grant_team_permission = MagicMock(
+        side_effect=[None, MailCredentialRevoked()]
+    )
+
+    with pytest.raises(MailCredentialRevoked):
+        service.grant_permissions_bulk(
+            uuid.uuid4(),
+            uuid.uuid4(),
+            [uuid.uuid4()],
+            "team",
+            [uuid.uuid4(), uuid.uuid4()],
+            MailCredentialPermissionGrant(auth_state="operator"),
+        )
+
+    db.commit.assert_not_called()
+    db.rollback.assert_called_once_with()
+
+
+def test_bulk_mail_permission_grant_rolls_back_unexpected_persistence_failure():
+    db = MagicMock()
+    service = MailCredentialService(db, encryption=MagicMock())
+    service._get_scoped = MagicMock(
+        side_effect=lambda organization_id, credential_id, **_: _credential(
+            id=credential_id,
+            organization_id=organization_id,
+        )
+    )
+    service._require = MagicMock()
+    service.grant_team_permission = MagicMock(
+        side_effect=[None, RuntimeError("permission insert failed")]
+    )
+
+    with pytest.raises(RuntimeError, match="permission insert failed"):
+        service.grant_permissions_bulk(
+            uuid.uuid4(),
+            uuid.uuid4(),
+            [uuid.uuid4()],
+            "team",
+            [uuid.uuid4(), uuid.uuid4()],
+            MailCredentialPermissionGrant(auth_state="operator"),
+        )
+
+    db.commit.assert_not_called()
+    db.rollback.assert_called_once_with()
+
+
+def test_bulk_mail_permission_grant_locks_all_resources_before_grantees():
+    db = MagicMock()
+    service = MailCredentialService(db, encryption=MagicMock())
+    events: list[tuple[str, uuid.UUID]] = []
+    credential_ids = [uuid.UUID(int=2), uuid.UUID(int=1)]
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+
+    def lock_credential(
+        scoped_organization_id: uuid.UUID,
+        credential_id: uuid.UUID,
+        **_: object,
+    ):
+        events.append(("lock", credential_id))
+        return _credential(
+            id=credential_id,
+            organization_id=scoped_organization_id,
+        )
+
+    def grant_user(
+        _actor_id: uuid.UUID,
+        _organization_id: uuid.UUID,
+        credential_id: uuid.UUID,
+        _user_id: uuid.UUID,
+        _payload: MailCredentialPermissionGrant,
+        **_: object,
+    ) -> None:
+        events.append(("grant", credential_id))
+
+    service._get_scoped = MagicMock(side_effect=lock_credential)
+    service._require = MagicMock()
+    service.grant_user_permission = MagicMock(side_effect=grant_user)
+
+    service.grant_permissions_bulk(
+        uuid.uuid4(),
+        organization_id,
+        credential_ids,
+        "user",
+        [user_id],
+        MailCredentialPermissionGrant(auth_state="operator"),
+    )
+
+    assert events == [
+        ("lock", uuid.UUID(int=1)),
+        ("lock", uuid.UUID(int=2)),
+        ("grant", uuid.UUID(int=1)),
+        ("grant", uuid.UUID(int=2)),
+    ]

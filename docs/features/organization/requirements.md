@@ -105,6 +105,7 @@ Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organiza
 - ORG-REQ-076 (Target Runtime Contract): User active state, organization lifecycle, membership 생성/상태/role, team membership과 relevant direct/team permission처럼 authorization 결과에 영향을 주는 변경은 decision revision을 바꿔야 한다. Stale revision은 current allow 근거로 재사용할 수 없어야 한다.
 - ORG-REQ-077 (Target Runtime Contract): Authorization decision revision은 client가 제공하거나 Memory가 조합하는 값이 아니라 source-owning adapter가 발급하는 opaque value여야 한다. Email, name, raw permission row, team 목록과 secret을 포함하지 않아야 한다.
 - ORG-REQ-078 (Target Runtime Contract): Conversation Access Grant, credential principal과 billing principal은 organization membership을 증명하지 않는다. Authenticated internal Chatbot은 current user의 active membership과 별도 access permission을 통과해야 하며 public route는 anonymous audience로 평가해야 한다.
+- ORG-REQ-079: Resource permission bulk grant는 하나의 resource type, 하나의 grantee type, unique resource/grantee ID 목록과 canonical `viewer|operator|builder|manager`를 받아 Cartesian product 전체에 적용해야 한다. 한 요청은 최대 50개 resource-grantee pair로 제한하고, 모든 resource scope/manage, active grantee, lifecycle과 Knowledge self-escalation 규칙을 mutation 전에 재검증해야 한다. Permission row와 row별 canonical audit은 하나의 transaction에서 전체 commit하거나 한 target이라도 실패하면 전체 rollback해야 한다.
 
 ## Policies And Edge Cases
 

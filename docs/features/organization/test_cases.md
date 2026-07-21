@@ -60,6 +60,7 @@ Status: Draft
 | ORG-TC-U028 | Sidebar Security Alert badge는 open만 세야 한다. | acknowledged/resolved alert가 badge에 포함된다. | Manager summary의 open count만 badge 표시. |
 | ORG-TC-U029 | Workflow user direct permission mutation은 중앙·legacy 경로 모두 access subject → App lifecycle → permission scope 순서를 사용하고 primary 교체를 재검증해야 한다. | 한 경로는 subject를 잡고 App을 기다리며 다른 경로는 App을 잡고 subject를 기다리거나, old primary만 변경하고 성공한다. | Deadlock 경로 없음. Primary 변경 시 `409 workflow.primary_changed`, permission/audit 불변. |
 | ORG-TC-U030 | 멤버 제거와 primary Workflow 권한 승계가 겹치면 제거 transaction이 승계된 target grant까지 회수해야 한다. | `FOR UPDATE` subject lock과 permission FK `KEY SHARE`가 scope 대기와 순환해 deadlock 나거나, 새 primary grant가 제거 후 남는다. | FK-compatible subject lock을 유지한 채 Workflow scope 집합을 재조회·잠그고 old/target direct grant를 모두 삭제. |
+| ORG-TC-U031 | Resource bulk grant는 최대 50개 resource×grantee pair와 row별 audit을 한 transaction에서 적용해야 한다. | 두 번째 pair의 scope, active state, lifecycle, audit 또는 persistence가 실패했는데 첫 pair이 commit된다. | Permission/audit 전체 rollback, partial success 없음. |
 
 ## API Tests
 
@@ -170,6 +171,7 @@ Status: Draft
 | ORG-TC-E041 | Sidebar 프로필 아이콘은 조직 초대 또는 권한 있는 열린 Security Alert가 있으면 알림 점을 표시하고 그 상태를 접근 가능하게 전달해야 한다. | 알림 source가 있는데 점이 없거나, 두 source가 비었는데 점이 남거나, 일반 member가 Security Alert source만으로 점을 보거나, 일반 `span`의 금지된 `aria-label`에 접근성 이름을 의존한다. | 프로필 우상단에 `aria-hidden` 빨간 점을 표시하고 프로필 button 이름에 `sr-only` 텍스트 `확인할 알림 있음`을 포함, source 0개면 둘 다 숨김. |
 | ORG-TC-E042 | 같은 조직의 Security Alert summary background refresh는 마지막 성공 상태를 유지해야 한다. | 재조회 시작 또는 일시적 실패만으로 기존 알림 점이 사라진다. | 조회 중과 non-403 실패에는 기존 summary 유지, 성공 시 교체, 조직 전환 또는 403에서 제거. |
 | ORG-TC-E043 | 펼친 Sidebar는 dashboard 본문 공간을 과도하게 차지하지 않아야 한다. | 펼친 상태의 너비가 `232px`가 아니거나 메뉴 문구가 잘린다. | 펼침 `232px`, 접힘 `80px` 유지, 모든 navigation 문구 표시. |
+| ORG-TC-E044 | 권한 부여 modal은 복수 resource와 복수 active grantee를 checkbox로 선택해 bulk grant로 제출해야 한다. | radio로 하나만 선택하거나 pair별 HTTP 요청을 보내 partial success가 가능하다. | `resource_ids`, `grantee_ids`를 `POST /permissions/bulk-grants`로 한 번 전송하고 50 pair 초과를 차단. |
 
 ## Permission Tests
 
