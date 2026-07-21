@@ -265,12 +265,11 @@ const judgeErrorText = (errorCode?: string): string => {
   return errorCode ? 'Judge 실행 중 처리 실패' : '실패 원인 정보 없음';
 };
 
-const decisionSourceLabel = (source?: string): string => {
+const decisionSourceLabel = (source?: string): string | null => {
   switch (source) {
     case 'runtime_judge':
-      return 'Judge가 모델 선택';
     case 'test_policy_preview':
-      return '테스트 Judge가 모델 선택';
+      return null;
     case 'local_router':
       return '로컬 라우터가 모델 선택';
     case 'active_policy':
@@ -327,6 +326,7 @@ export function ModelRoutingDecisionDetails({
   const shortReason = reasonText(summary.reasonCode, judge.reasonShort);
   // 자유형 Judge 설명은 저장하지 않는다. 정해진 reason code로만 표시한다.
   const selectionReason = shortReason;
+  const sourceLabel = decisionSourceLabel(summary.decisionSource);
 
   return (
     <section className="space-y-3 rounded-lg border border-slate-200 bg-white p-4 text-xs shadow-sm dark:border-slate-700 dark:bg-slate-900">
@@ -339,9 +339,11 @@ export function ModelRoutingDecisionDetails({
             이 실행에서 실제로 어떤 경로로 모델을 골랐는지 보여줍니다.
           </p>
         </div>
-        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
-          {decisionSourceLabel(summary.decisionSource)}
-        </span>
+        {sourceLabel ? (
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
+            {sourceLabel}
+          </span>
+        ) : null}
       </header>
 
       {summary.executionMode === 'test' && (
