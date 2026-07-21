@@ -499,6 +499,9 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
   후속 노드 성공, fallback 미발생을 확인해 label을 확정한다. 실제 가중치 학습은 Celery가
   정책별 10건 또는 최대 5분 단위로 처리한다. RAG 문서 원문은 Judge와
   artifact에 넣지 않고 retrieval 사용 여부·문맥 길이·출처 수 같은 구조 정보만 쓴다.
+- 대기 label 저장 transaction은 최종 작업 모델의 provider 호출 전에 commit 또는 rollback한다.
+  같은 정책을 사용하는 동시 실행이 policy row lock을 외부 네트워크 I/O 구간까지 유지하거나
+  서로의 최종 모델 실행과 timeout 처리를 막아서는 안 된다.
 - prompt, 입력 매핑, 출력 schema, RAG 또는 downstream 계약이 바뀌면 bootstrap은 오래됨
   상태가 되며 다시 생성해야 한다. 수동 모델만 바뀐 경우에는 재사용할 수 있다.
 
