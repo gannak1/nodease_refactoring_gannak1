@@ -848,7 +848,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 
 ### MBA-322 Workflow Citation Regression
 
-- 새 LLM node와 Agent Builder node는 `citationDisplayMode=basic`, legacy missing field는 `hidden`인지 검증한다.
+- 새 LLM node와 Agent Builder node는 `citationDisplayMode=detailed`, legacy missing field는 `hidden`인지 검증한다.
 - Grounding lexical metadata 옵션과 Citation 표시 옵션을 서로 독립적으로 변경할 수 있는지 검증한다.
 - Answer data ancestry에 있는 LLM Citation만 최종 응답에 병합하고 control-only node와 subworkflow reserved key를 제외하는지 검증한다.
 - `LLM -> CodeNode inputs[].source -> Answer` data path도 Citation lineage에 포함되는지 검증한다.

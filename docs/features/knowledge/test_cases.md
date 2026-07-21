@@ -541,7 +541,7 @@ KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048]
 
 ## Workflow User Citation Tests
 
-- `hidden`, `basic`, `detailed` mode와 legacy missing-value=`hidden`, new-node=`basic` 기본값을 검증한다.
+- `hidden`, `basic`, `detailed` mode와 legacy missing-value=`hidden`, new-node=`detailed` 기본값을 검증한다.
 - 팀별 온보딩 demo의 네 document-level KB는 정제 가능한 KB 이름을 `safe_metadata.safe_label`로 seed하며, direct KB Citation에서 일반 `참조 문서` 대신 해당 KB 이름을 표시한다.
 - 최종 prompt char cap과 압축 이후 실제 포함된 evidence만 Citation이 되는지 검증한다.
 - denied/revoked/source-deleted/archived 후보, no-evidence 결과와 control-only LLM node가 Citation을 만들지 않는지 검증한다.

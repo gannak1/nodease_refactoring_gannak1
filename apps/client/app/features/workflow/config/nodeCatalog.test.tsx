@@ -56,4 +56,12 @@ describe('workflow node capability catalog', () => {
       configuration_state: 'unresolved',
     });
   });
+
+  it('creates a new LLM node with detailed citation previews enabled', () => {
+    const data = getNodeDefinition('llm')?.defaultData();
+
+    expect(data).toMatchObject({
+      citationDisplayMode: 'detailed',
+    });
+  });
 });
