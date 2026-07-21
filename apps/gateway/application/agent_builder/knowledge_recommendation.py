@@ -2,13 +2,28 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Iterable
-from dataclasses import dataclass
-from typing import Literal, Protocol, cast
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
+from typing import Any, Literal, Protocol, cast
 from uuid import UUID
 
 
 MAX_RECOMMENDATION_DEADLINE_MS = 10_000
+CountBucket = Literal["zero", "one", "few", "many"]
+_COUNT_BUCKETS = frozenset({"zero", "one", "few", "many"})
+_PERSISTED_RECOMMENDATION_KEYS = frozenset(
+    {
+        "confidence",
+        "parent_relevance",
+        "reason_category",
+        "recommendation_state",
+        "retrieval_state",
+        "safe_reason_code",
+        "score",
+        "semantic_state",
+        "threshold_result",
+    }
+)
 
 
 EmbeddingFailureReason = Literal[
@@ -218,6 +233,11 @@ class KnowledgeRecommendationRetrievalRequest:
     candidate_snapshot_ref: str
     deadline_ms: int = MAX_RECOMMENDATION_DEADLINE_MS
     deadline: RecommendationDeadline | None = None
+    cancellation_predicate: Callable[[], bool] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if not 1 <= len(self.safe_query_topics) <= 20:
@@ -238,6 +258,10 @@ class KnowledgeRecommendationRetrievalRequest:
             raise ValueError("semantic deadline is out of bounds")
         if not self.candidate_snapshot_ref or len(self.candidate_snapshot_ref) > 255:
             raise ValueError("candidate snapshot reference is invalid")
+        if self.cancellation_predicate is not None and not callable(
+            self.cancellation_predicate
+        ):
+            raise ValueError("recommendation cancellation predicate is invalid")
         if self.deadline is None:
             object.__setattr__(
                 self,
@@ -254,6 +278,16 @@ class KnowledgeRecommendationRetrievalRequest:
         ):
             raise ValueError("relative and absolute recommendation deadlines differ")
         object.__setattr__(self, "deadline_ms", absolute_budget_ms)
+
+    def is_cancellation_requested(self) -> bool:
+        predicate = self.cancellation_predicate
+        if predicate is None:
+            return False
+        try:
+            result = predicate()
+        except Exception:
+            return True
+        return result if isinstance(result, bool) else True
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,11 +329,23 @@ class KnowledgeRecommendationRetrievalResult:
     scores: tuple[CandidateSemanticScore, ...] = ()
     failed_cohort_count_bucket: Literal["zero", "one", "few", "many"] = "zero"
     latency_bucket: str = "unknown"
+    candidate_count_bucket: CountBucket = "zero"
+    result_count_bucket: CountBucket = "zero"
+    cohort_count_bucket: CountBucket = "zero"
+    metadata_fallback_count_bucket: CountBucket = "zero"
 
     def __post_init__(self) -> None:
         candidate_ids = [score.knowledge_base_id for score in self.scores]
         if len(candidate_ids) != len(set(candidate_ids)):
             raise ValueError("semantic result contains duplicate knowledge base IDs")
+        for bucket in (
+            self.candidate_count_bucket,
+            self.result_count_bucket,
+            self.cohort_count_bucket,
+            self.metadata_fallback_count_bucket,
+        ):
+            if bucket not in _COUNT_BUCKETS:
+                raise ValueError("semantic result contains an invalid count bucket")
 
 
 class KnowledgeRecommendationRetrievalPort(Protocol):
@@ -307,6 +353,19 @@ class KnowledgeRecommendationRetrievalPort(Protocol):
         self,
         request: KnowledgeRecommendationRetrievalRequest,
     ) -> KnowledgeRecommendationRetrievalResult: ...
+
+
+def redact_persisted_knowledge_recommendation_tree(value: Any) -> None:
+    """Remove request-scoped recommendation signals from a durable subtree."""
+
+    if isinstance(value, dict):
+        for key in _PERSISTED_RECOMMENDATION_KEYS:
+            value.pop(key, None)
+        for child in value.values():
+            redact_persisted_knowledge_recommendation_tree(child)
+    elif isinstance(value, list):
+        for child in value:
+            redact_persisted_knowledge_recommendation_tree(child)
 
 
 def normalize_cosine_similarity(cosine_similarity: float) -> float:

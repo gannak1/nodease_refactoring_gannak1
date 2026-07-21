@@ -57,9 +57,9 @@ class PostgresParentRecommendationAdapter:
         started_at = self._monotonic()
         candidate_ids = list(request.candidate_kb_ids)
         deadline = request.deadline
-        if deadline is None or deadline.remaining_seconds(
-            now_monotonic=started_at
-        ) <= 0:
+        if request.is_cancellation_requested() or deadline is None or (
+            deadline.remaining_seconds(now_monotonic=started_at) <= 0
+        ):
             return self._all_unavailable(
                 candidate_ids,
                 state="deadline_exceeded",
@@ -78,7 +78,8 @@ class PostgresParentRecommendationAdapter:
         except Exception as exc:
             state: SemanticState = (
                 "deadline_exceeded"
-                if self._deadline_expired(request)
+                if request.is_cancellation_requested()
+                or self._deadline_expired(request)
                 else (
                     "deadline_exceeded"
                     if self._is_timeout(exc)
@@ -88,13 +89,6 @@ class PostgresParentRecommendationAdapter:
             return self._all_unavailable(
                 candidate_ids,
                 state=state,
-                started_at=started_at,
-            )
-
-        if not deadline.accepts_result(completed_at_monotonic=self._monotonic()):
-            return self._all_unavailable(
-                candidate_ids,
-                state="deadline_exceeded",
                 started_at=started_at,
             )
 
@@ -138,6 +132,17 @@ class PostgresParentRecommendationAdapter:
             cohorts.items(),
             key=lambda item: (-len(item[1]), item[0][0], item[0][1]),
         )
+        cohort_count = len(ordered_cohorts)
+        if request.is_cancellation_requested() or not deadline.accepts_result(
+            completed_at_monotonic=self._monotonic()
+        ):
+            return self._all_unavailable(
+                candidate_ids,
+                state="deadline_exceeded",
+                started_at=started_at,
+                cohort_count=cohort_count,
+            )
+
         failed_cohort_count = len(ordered_cohorts[MAX_COHORTS:])
         for _cohort, skipped_ids in ordered_cohorts[MAX_COHORTS:]:
             scores.extend(
@@ -146,17 +151,22 @@ class PostgresParentRecommendationAdapter:
             )
 
         safe_query = "\n".join(request.safe_query_topics)
-        for (embedding_model, dimension), cohort_ids in ordered_cohorts[:MAX_COHORTS]:
+        active_cohorts = ordered_cohorts[:MAX_COHORTS]
+        for cohort_index, (
+            (embedding_model, dimension),
+            cohort_ids,
+        ) in enumerate(active_cohorts):
             remaining_seconds = deadline.remaining_seconds(
                 now_monotonic=self._monotonic()
             )
-            if remaining_seconds <= 0:
-                failed_cohort_count += 1
-                scores.extend(
-                    self._fallback_score(candidate_id, "deadline_exceeded")
-                    for candidate_id in cohort_ids
+            if request.is_cancellation_requested() or remaining_seconds <= 0:
+                remaining_cohorts = active_cohorts[cohort_index:]
+                failed_cohort_count += self._append_unavailable_cohorts(
+                    scores,
+                    remaining_cohorts,
+                    "deadline_exceeded",
                 )
-                continue
+                break
 
             try:
                 embedding = self._embedding_resolver.embed_query(
@@ -171,6 +181,14 @@ class PostgresParentRecommendationAdapter:
                     deadline=deadline,
                 )
             except Exception:
+                if request.is_cancellation_requested():
+                    remaining_cohorts = active_cohorts[cohort_index:]
+                    failed_cohort_count += self._append_unavailable_cohorts(
+                        scores,
+                        remaining_cohorts,
+                        "deadline_exceeded",
+                    )
+                    break
                 failed_cohort_count += 1
                 state = (
                     "deadline_exceeded"
@@ -183,15 +201,16 @@ class PostgresParentRecommendationAdapter:
                 )
                 continue
 
-            if not deadline.accepts_result(
+            if request.is_cancellation_requested() or not deadline.accepts_result(
                 completed_at_monotonic=self._monotonic()
             ):
-                failed_cohort_count += 1
-                scores.extend(
-                    self._fallback_score(candidate_id, "deadline_exceeded")
-                    for candidate_id in cohort_ids
+                remaining_cohorts = active_cohorts[cohort_index:]
+                failed_cohort_count += self._append_unavailable_cohorts(
+                    scores,
+                    remaining_cohorts,
+                    "deadline_exceeded",
                 )
-                continue
+                break
             if embedding.vector is None:
                 failed_cohort_count += 1
                 state = semantic_state_for_embedding_failure(
@@ -213,13 +232,14 @@ class PostgresParentRecommendationAdapter:
             remaining_seconds = deadline.remaining_seconds(
                 now_monotonic=self._monotonic()
             )
-            if remaining_seconds <= 0:
-                failed_cohort_count += 1
-                scores.extend(
-                    self._fallback_score(candidate_id, "deadline_exceeded")
-                    for candidate_id in cohort_ids
+            if request.is_cancellation_requested() or remaining_seconds <= 0:
+                remaining_cohorts = active_cohorts[cohort_index:]
+                failed_cohort_count += self._append_unavailable_cohorts(
+                    scores,
+                    remaining_cohorts,
+                    "deadline_exceeded",
                 )
-                continue
+                break
             parent_timeout_seconds = min(
                 MAX_PARENT_TIMEOUT_SECONDS,
                 remaining_seconds,
@@ -236,6 +256,14 @@ class PostgresParentRecommendationAdapter:
                     ),
                 )
             except Exception as exc:
+                if request.is_cancellation_requested():
+                    remaining_cohorts = active_cohorts[cohort_index:]
+                    failed_cohort_count += self._append_unavailable_cohorts(
+                        scores,
+                        remaining_cohorts,
+                        "deadline_exceeded",
+                    )
+                    break
                 failed_cohort_count += 1
                 state = (
                     "deadline_exceeded"
@@ -252,15 +280,16 @@ class PostgresParentRecommendationAdapter:
                 )
                 continue
 
-            if not deadline.accepts_result(
+            if request.is_cancellation_requested() or not deadline.accepts_result(
                 completed_at_monotonic=self._monotonic()
             ):
-                failed_cohort_count += 1
-                scores.extend(
-                    self._fallback_score(candidate_id, "deadline_exceeded")
-                    for candidate_id in cohort_ids
+                remaining_cohorts = active_cohorts[cohort_index:]
+                failed_cohort_count += self._append_unavailable_cohorts(
+                    scores,
+                    remaining_cohorts,
+                    "deadline_exceeded",
                 )
-                continue
+                break
 
             returned_ids: set[Any] = set()
             cohort_id_set = set(cohort_ids)
@@ -307,6 +336,15 @@ class PostgresParentRecommendationAdapter:
             scores=ordered_scores,
             failed_cohort_count_bucket=self._count_bucket(failed_cohort_count),
             latency_bucket=self._latency_bucket(started_at),
+            candidate_count_bucket=self._count_bucket(len(candidate_ids)),
+            result_count_bucket=self._count_bucket(len(ordered_scores)),
+            cohort_count_bucket=self._count_bucket(cohort_count),
+            metadata_fallback_count_bucket=self._count_bucket(
+                sum(
+                    score.semantic_state != "available"
+                    for score in ordered_scores
+                )
+            ),
         )
 
     def _execute_discovery(
@@ -400,22 +438,12 @@ class PostgresParentRecommendationAdapter:
     def _parent_statement():
         statement = text(
             """
-            WITH ranked_parents AS (
-                SELECT
+            WITH eligible_parents AS (
+                SELECT DISTINCT ON (dc.id)
+                    dc.id AS parent_chunk_id,
                     dc.knowledge_base_id,
-                    GREATEST(
-                        0.0,
-                        LEAST(
-                            1.0,
-                            1.0 - (dc.embedding <=> CAST(:query_vector AS vector))
-                        )
-                    ) AS parent_score,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY dc.knowledge_base_id
-                        ORDER BY
-                            dc.embedding <=> CAST(:query_vector AS vector),
-                            dc.id
-                    ) AS parent_rank
+                    dc.embedding <=> CAST(:query_vector AS vector)
+                        AS parent_distance
                 FROM document_chunks AS dc
                 JOIN knowledge_bases AS kb
                   ON kb.id = dc.knowledge_base_id
@@ -441,6 +469,23 @@ class PostgresParentRecommendationAdapter:
                          AND dc.document_version_id = kb.active_document_version_id
                          AND dv.status = 'ready')
                   )
+                ORDER BY dc.id, parent_distance
+            ),
+            ranked_parents AS (
+                SELECT
+                    knowledge_base_id,
+                    GREATEST(
+                        0.0,
+                        LEAST(
+                            1.0,
+                            1.0 - parent_distance
+                        )
+                    ) AS parent_score,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY knowledge_base_id
+                        ORDER BY parent_distance, parent_chunk_id
+                    ) AS parent_rank
+                FROM eligible_parents
             ),
             top_parents AS (
                 SELECT knowledge_base_id, parent_score
@@ -533,21 +578,41 @@ class PostgresParentRecommendationAdapter:
             safe_reason_code=cast(SafeReasonCode, state),
         )
 
+    @classmethod
+    def _append_unavailable_cohorts(
+        cls,
+        scores: list[CandidateSemanticScore],
+        cohorts: list[tuple[tuple[str, int], list[Any]]],
+        state: SemanticState,
+    ) -> int:
+        for _cohort, candidate_ids in cohorts:
+            scores.extend(
+                cls._fallback_score(candidate_id, state)
+                for candidate_id in candidate_ids
+            )
+        return len(cohorts)
+
     def _all_unavailable(
         self,
         candidate_ids: list[Any],
         *,
         state: SemanticState,
         started_at: float,
+        cohort_count: int = 0,
     ) -> KnowledgeRecommendationRetrievalResult:
+        scores = tuple(
+            self._fallback_score(candidate_id, state)
+            for candidate_id in candidate_ids
+        )
         return KnowledgeRecommendationRetrievalResult(
             state="degraded",
-            scores=tuple(
-                self._fallback_score(candidate_id, state)
-                for candidate_id in candidate_ids
-            ),
+            scores=scores,
             failed_cohort_count_bucket="zero",
             latency_bucket=self._latency_bucket(started_at),
+            candidate_count_bucket=self._count_bucket(len(candidate_ids)),
+            result_count_bucket=self._count_bucket(len(scores)),
+            cohort_count_bucket=self._count_bucket(cohort_count),
+            metadata_fallback_count_bucket=self._count_bucket(len(scores)),
         )
 
     @staticmethod
@@ -556,7 +621,7 @@ class PostgresParentRecommendationAdapter:
             return "zero"
         if count == 1:
             return "one"
-        if count <= 3:
+        if count <= 4:
             return "few"
         return "many"
 

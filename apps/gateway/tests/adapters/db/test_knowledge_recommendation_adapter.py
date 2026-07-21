@@ -122,10 +122,23 @@ class FakeClock:
         self.now += seconds
 
 
-def _request(*candidate_ids, deadline=None):
+class ScriptedCancellation:
+    def __init__(self, *states):
+        self.states = list(states)
+        self.checks = 0
+
+    def __call__(self):
+        index = min(self.checks, len(self.states) - 1)
+        self.checks += 1
+        return self.states[index]
+
+
+def _request(*candidate_ids, deadline=None, cancellation_predicate=None):
     kwargs = {}
     if deadline is not None:
         kwargs["deadline"] = deadline
+    if cancellation_predicate is not None:
+        kwargs["cancellation_predicate"] = cancellation_predicate
     return KnowledgeRecommendationRetrievalRequest(
         organization_id=uuid.uuid4(),
         actor_id=uuid.uuid4(),
@@ -190,6 +203,10 @@ def test_one_discovery_and_one_parent_query_score_a_whole_cohort():
     assert {item.knowledge_base_id for item in result.scores} == {first, second}
     assert {item.parent_relevance for item in result.scores} == {0.91, 0.64}
     assert all(item.semantic_state == "available" for item in result.scores)
+    assert result.candidate_count_bucket == "few"
+    assert result.result_count_bucket == "few"
+    assert result.cohort_count_bucket == "one"
+    assert result.metadata_fallback_count_bucket == "zero"
 
     parent_sql = db.executions[1][0].lower()
     assert "chunk_level = 'parent'" in parent_sql
@@ -204,6 +221,18 @@ def test_one_discovery_and_one_parent_query_score_a_whole_cohort():
         ].type,
         Vector,
     )
+
+
+def test_parent_statement_deduplicates_chunk_id_before_top_three_ranking():
+    parent_sql = str(
+        PostgresParentRecommendationAdapter._parent_statement()  # noqa: SLF001
+    ).lower()
+
+    dedup_position = parent_sql.index("distinct on (dc.id)")
+    ranking_position = parent_sql.index("row_number() over")
+    assert "dc.id as parent_chunk_id" in parent_sql
+    assert "from eligible_parents" in parent_sql
+    assert dedup_position < ranking_position
 
 
 def test_missing_or_inconsistent_parent_artifacts_never_call_provider():
@@ -385,6 +414,10 @@ def test_processing_is_capped_at_four_stably_ordered_cohorts():
     assert len(db.executions) == 5
     by_id = {item.knowledge_base_id: item for item in result.scores}
     assert by_id[candidate_ids[4]].semantic_state == "cohort_budget_exceeded"
+    assert result.candidate_count_bucket == "many"
+    assert result.result_count_bucket == "many"
+    assert result.cohort_count_bucket == "many"
+    assert result.metadata_fallback_count_bucket == "one"
 
 
 def test_five_thousand_candidates_do_not_create_candidate_level_queries():
@@ -511,6 +544,222 @@ def test_parent_rows_observed_after_absolute_deadline_are_discarded():
 
     assert result.scores[0].semantic_state == "deadline_exceeded"
     assert result.scores[0].parent_relevance is None
+
+
+def test_cancellation_before_discovery_skips_all_external_work():
+    candidate = uuid.uuid4()
+    db = FakeDB([])
+    embedding = FakeEmbeddingResolver()
+
+    result = _adapter(db, embedding).retrieve(
+        _request(candidate, cancellation_predicate=lambda: True)
+    )
+
+    assert result.scores[0].semantic_state == "deadline_exceeded"
+    assert result.scores[0].safe_reason_code == "deadline_exceeded"
+    assert db.executions == []
+    assert embedding.calls == []
+    assert result.candidate_count_bucket == "one"
+    assert result.result_count_bucket == "one"
+    assert result.cohort_count_bucket == "zero"
+    assert result.metadata_fallback_count_bucket == "one"
+
+
+def test_cancellation_after_discovery_skips_provider():
+    candidate = uuid.uuid4()
+    cancelled = False
+
+    def discovery_rows():
+        nonlocal cancelled
+        cancelled = True
+        return [
+            {
+                "knowledge_base_id": candidate,
+                "embedding_model": "model-a",
+                "embedding_dimension": 3,
+            }
+        ]
+
+    db = FakeDB([discovery_rows])
+    embedding = FakeEmbeddingResolver()
+
+    result = _adapter(db, embedding).retrieve(
+        _request(candidate, cancellation_predicate=lambda: cancelled)
+    )
+
+    assert result.scores[0].semantic_state == "deadline_exceeded"
+    assert len(db.executions) == 1
+    assert embedding.calls == []
+    assert result.cohort_count_bucket == "one"
+
+
+def test_discovery_failure_populates_safe_aggregate_buckets():
+    candidates = (uuid.uuid4(), uuid.uuid4())
+    result = _adapter(
+        FakeDB([RuntimeError("protected database detail")]),
+        FakeEmbeddingResolver(),
+    ).retrieve(_request(*candidates))
+
+    assert result.candidate_count_bucket == "few"
+    assert result.result_count_bucket == "few"
+    assert result.cohort_count_bucket == "zero"
+    assert result.metadata_fallback_count_bucket == "few"
+    assert {score.semantic_state for score in result.scores} == {
+        "retrieval_unavailable"
+    }
+    assert "protected database detail" not in repr(result)
+
+
+def test_cancellation_is_checked_immediately_before_provider():
+    candidate = uuid.uuid4()
+    cancellation = ScriptedCancellation(False, False, True)
+    db = FakeDB(
+        [
+            [
+                {
+                    "knowledge_base_id": candidate,
+                    "embedding_model": "model-a",
+                    "embedding_dimension": 3,
+                }
+            ]
+        ]
+    )
+    embedding = FakeEmbeddingResolver()
+
+    result = _adapter(db, embedding).retrieve(
+        _request(candidate, cancellation_predicate=cancellation)
+    )
+
+    assert result.scores[0].semantic_state == "deadline_exceeded"
+    assert len(db.executions) == 1
+    assert embedding.calls == []
+
+
+def test_cancellation_after_provider_discards_embedding_and_skips_parent_sql():
+    candidate = uuid.uuid4()
+    cancelled = False
+
+    def cancel_after_provider():
+        nonlocal cancelled
+        cancelled = True
+
+    db = FakeDB(
+        [
+            [
+                {
+                    "knowledge_base_id": candidate,
+                    "embedding_model": "model-a",
+                    "embedding_dimension": 3,
+                }
+            ]
+        ]
+    )
+    embedding = FakeEmbeddingResolver(after_call=cancel_after_provider)
+
+    result = _adapter(db, embedding).retrieve(
+        _request(candidate, cancellation_predicate=lambda: cancelled)
+    )
+
+    assert result.scores[0].semantic_state == "deadline_exceeded"
+    assert len(db.executions) == 1
+    assert len(embedding.calls) == 1
+
+
+def test_cancellation_is_checked_immediately_before_parent_sql():
+    candidate = uuid.uuid4()
+    cancellation = ScriptedCancellation(False, False, False, False, True)
+    db = FakeDB(
+        [
+            [
+                {
+                    "knowledge_base_id": candidate,
+                    "embedding_model": "model-a",
+                    "embedding_dimension": 3,
+                }
+            ]
+        ]
+    )
+
+    result = _adapter(db, FakeEmbeddingResolver()).retrieve(
+        _request(candidate, cancellation_predicate=cancellation)
+    )
+
+    assert result.scores[0].semantic_state == "deadline_exceeded"
+    assert len(db.executions) == 1
+
+
+def test_cancellation_after_parent_sql_discards_raw_rows():
+    candidate = uuid.uuid4()
+    cancelled = False
+
+    def parent_rows():
+        nonlocal cancelled
+        cancelled = True
+        return [{"knowledge_base_id": candidate, "parent_relevance": 0.99}]
+
+    db = FakeDB(
+        [
+            [
+                {
+                    "knowledge_base_id": candidate,
+                    "embedding_model": "model-a",
+                    "embedding_dimension": 3,
+                }
+            ],
+            parent_rows,
+        ]
+    )
+
+    result = _adapter(db, FakeEmbeddingResolver()).retrieve(
+        _request(candidate, cancellation_predicate=lambda: cancelled)
+    )
+
+    assert result.scores[0].semantic_state == "deadline_exceeded"
+    assert result.scores[0].parent_relevance is None
+    assert len(db.executions) == 2
+
+
+def test_cancellation_between_cohorts_preserves_only_completed_safe_score():
+    first = uuid.uuid4()
+    second = uuid.uuid4()
+    cancellation = ScriptedCancellation(
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        True,
+    )
+    db = FakeDB(
+        [
+            [
+                {
+                    "knowledge_base_id": first,
+                    "embedding_model": "model-a",
+                    "embedding_dimension": 3,
+                },
+                {
+                    "knowledge_base_id": second,
+                    "embedding_model": "model-b",
+                    "embedding_dimension": 3,
+                },
+            ],
+            [{"knowledge_base_id": first, "parent_relevance": 0.81}],
+        ]
+    )
+    embedding = FakeEmbeddingResolver()
+
+    result = _adapter(db, embedding).retrieve(
+        _request(first, second, cancellation_predicate=cancellation)
+    )
+
+    by_id = {score.knowledge_base_id: score for score in result.scores}
+    assert by_id[first].semantic_state == "available"
+    assert by_id[second].semantic_state == "deadline_exceeded"
+    assert [call["embedding_model"] for call in embedding.calls] == ["model-a"]
+    assert len(db.executions) == 2
+    assert result.metadata_fallback_count_bucket == "one"
 
 
 def test_retrieval_sessions_never_touch_the_caller_transaction():

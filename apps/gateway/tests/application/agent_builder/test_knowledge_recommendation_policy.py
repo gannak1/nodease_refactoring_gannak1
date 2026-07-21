@@ -11,6 +11,7 @@ from apps.gateway.application.agent_builder.knowledge_recommendation import (
     aggregate_parent_relevance,
     compose_final_recommendation_score,
     KnowledgeRecommendationRetrievalRequest,
+    KnowledgeRecommendationRetrievalResult,
     normalize_cosine_similarity,
     semantic_state_for_embedding_failure,
     select_parent_first_relevance,
@@ -239,3 +240,84 @@ def test_request_carries_the_precomputed_absolute_deadline():
 
     assert request.deadline is deadline
     assert request.deadline_ms == 4_000
+
+
+def test_request_cancellation_predicate_is_explicit_and_bounded():
+    request = KnowledgeRecommendationRetrievalRequest(
+        organization_id=uuid.uuid4(),
+        actor_id=uuid.uuid4(),
+        safe_query_topics=("topic",),
+        candidate_kb_ids=(uuid.uuid4(),),
+        candidate_snapshot_ref="snapshot-1",
+        cancellation_predicate=lambda: False,
+    )
+
+    assert request.is_cancellation_requested() is False
+
+
+@pytest.mark.parametrize("unsafe_result", [None, 0, 1, "cancelled"])
+def test_request_cancellation_predicate_fails_closed_on_non_boolean_result(
+    unsafe_result,
+):
+    request = KnowledgeRecommendationRetrievalRequest(
+        organization_id=uuid.uuid4(),
+        actor_id=uuid.uuid4(),
+        safe_query_topics=("topic",),
+        candidate_kb_ids=(uuid.uuid4(),),
+        candidate_snapshot_ref="snapshot-1",
+        cancellation_predicate=lambda: unsafe_result,
+    )
+
+    assert request.is_cancellation_requested() is True
+
+
+def test_request_cancellation_predicate_fails_closed_without_exposing_detail():
+    unsafe_detail = "cancel check failed with protected marker"
+
+    class UnsafeCancellationPredicate:
+        def __call__(self):
+            raise RuntimeError(unsafe_detail)
+
+        def __repr__(self):
+            return unsafe_detail
+
+    request = KnowledgeRecommendationRetrievalRequest(
+        organization_id=uuid.uuid4(),
+        actor_id=uuid.uuid4(),
+        safe_query_topics=("topic",),
+        candidate_kb_ids=(uuid.uuid4(),),
+        candidate_snapshot_ref="snapshot-1",
+        cancellation_predicate=UnsafeCancellationPredicate(),
+    )
+
+    assert request.is_cancellation_requested() is True
+    assert unsafe_detail not in repr(request)
+
+
+def test_retrieval_result_safe_aggregate_buckets_are_backward_compatible():
+    candidate_ids = tuple(uuid.uuid4() for _ in range(5))
+    result = KnowledgeRecommendationRetrievalResult(
+        state="degraded",
+        scores=tuple(
+            CandidateSemanticScore(
+                knowledge_base_id=candidate_id,
+                semantic_state=("available" if index == 0 else "deadline_exceeded"),
+                parent_relevance=(0.8 if index == 0 else None),
+                safe_reason_code=("content_match" if index == 0 else "deadline_exceeded"),
+            )
+            for index, candidate_id in enumerate(candidate_ids)
+        ),
+        failed_cohort_count_bucket="one",
+        latency_bucket="under_2s",
+        candidate_count_bucket="many",
+        result_count_bucket="many",
+        cohort_count_bucket="few",
+        metadata_fallback_count_bucket="few",
+    )
+
+    assert result.failed_cohort_count_bucket == "one"
+    assert result.latency_bucket == "under_2s"
+    assert result.candidate_count_bucket == "many"
+    assert result.result_count_bucket == "many"
+    assert result.cohort_count_bucket == "few"
+    assert result.metadata_fallback_count_bucket == "few"
