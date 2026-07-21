@@ -227,6 +227,30 @@ def test_helm_validation_requires_tracked_lock_before_dependency_build():
     assert helm_block.index(tracked_lock_guard) < helm_block.index(dependency_build)
 
 
+def test_helm_validation_runs_targeted_deployment_contract_tests():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+    deployment_block = workflow.split(
+        "deployment_validation:",
+        maxsplit=1,
+    )[1].split("ci_required:", maxsplit=1)[0]
+
+    helm_validation = "needs.scope.outputs.helm_validation == 'true'"
+    contract_step = deployment_block.split(
+        "- name: Run Helm deployment contract tests",
+        maxsplit=1,
+    )[1].split(
+        "- name: Reject unsupported or unapproved deployment surface",
+        maxsplit=1,
+    )[0]
+
+    assert helm_validation in contract_step
+    assert "tests/ci/test_supported_deployment_surface.py" in contract_step
+    assert "tests/ci/test_storage_deployment_contract.py" in contract_step
+    assert deployment_block.index("helm dependency build infra/helm/moduly") < (
+        deployment_block.index("- name: Run Helm deployment contract tests")
+    )
+
+
 def test_unsupported_deployment_surface_guard_is_wired_into_quality_gate():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
 

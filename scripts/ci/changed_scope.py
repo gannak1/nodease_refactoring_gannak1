@@ -149,6 +149,8 @@ _UNSUPPORTED_DEPLOYMENT_PREFIXES = (
 
 _GITHUB_WORKFLOW_SUFFIXES = frozenset({".yml", ".yaml"})
 
+_GITHUB_COMPOSITE_ACTION_NAMES = frozenset({"action.yml", "action.yaml"})
+
 _PROTECTED_CI_WORKFLOW_PATHS = {
     ".github/workflows/pr-ci-control-guard.yml",
     ".github/workflows/pr-quality-gate.yml",
@@ -323,6 +325,15 @@ def is_github_workflow_path(raw_path: str) -> bool:
     )
 
 
+def is_github_composite_action_path(raw_path: str) -> bool:
+    path = PurePosixPath(normalize_repo_path(raw_path))
+    return (
+        len(path.parts) >= 3
+        and path.parts[:2] == (".github", "actions")
+        and path.name.lower() in _GITHUB_COMPOSITE_ACTION_NAMES
+    )
+
+
 def is_unsupported_deployment_path(raw_path: str) -> bool:
     path = normalize_repo_path(raw_path)
     workflow_path = PurePosixPath(path)
@@ -344,6 +355,10 @@ def _select_deployment_validation(path: str, scope: ChangeScope) -> None:
         scope.actions_validation = True
         # The support-surface guard owns an allowlist and content inspection,
         # so every executable workflow change must select it regardless of name.
+        scope.support_surface_validation = True
+    elif is_github_composite_action_path(path):
+        scope.actions_validation = True
+        # A workflow can delegate its provider-specific steps to a local action.
         scope.support_surface_validation = True
     elif path.startswith((".github/workflows/", ".github/actions/")):
         scope.actions_validation = True

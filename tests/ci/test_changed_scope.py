@@ -281,6 +281,21 @@ def test_every_workflow_change_selects_support_boundary_guard(path: str):
 
 
 @pytest.mark.parametrize(
+    "path",
+    [
+        ".github/actions/deploy/action.yml",
+        ".github/actions/release/action.yaml",
+    ],
+)
+def test_every_composite_action_change_selects_support_boundary_guard(path: str):
+    scope = classify_paths([path])
+
+    assert scope.deployment_validation is True
+    assert scope.actions_validation is True
+    assert scope.support_surface_validation is True
+
+
+@pytest.mark.parametrize(
     ("path", "selected_output"),
     [
         ("infra/helm/moduly/values-production.yaml", "helm_validation"),

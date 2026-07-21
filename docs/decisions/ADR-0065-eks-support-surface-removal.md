@@ -10,6 +10,8 @@ Nodease 저장소에는 AWS EKS 전용 GitHub Actions workflow, raw Kubernetes m
 
 Helm chart와 GHCR image publisher는 서로 연결된 실제 소비 경로다. 반면 checked-in Helm render snapshot은 source of truth가 아니며 현재 values/template과 쉽게 어긋난다.
 
+배포 경계는 파일 존재 여부만으로 완결되지 않는다. ConfigMap 생성 조건과 Pod 소비 조건이 다르면 schema-valid manifest도 `CreateContainerConfigError`로 실패하고, 승인 workflow가 local composite action으로 실행을 위임하면 workflow 파일만 읽는 content guard를 우회할 수 있다. 선택형 CI가 Helm lint/schema만 실행하고 이를 검증하는 계약 테스트를 선택하지 않으면 같은 drift가 다시 병합될 수 있다.
+
 ## Options considered
 
 ### 1. 기존 EKS 구성을 즉시 복구해 공식 지원한다
@@ -24,7 +26,7 @@ Helm chart와 GHCR image publisher는 서로 연결된 실제 소비 경로다. 
 
 ### 3. EKS 전용 표면을 제거하고 지원 경계를 좁힌다
 
-- 장점: 실제 검증 가능한 Docker Compose와 공급자 중립 Helm만 source of truth로 유지한다. 재도입 조건을 명확히 할 수 있다.
+- 장점: 실제 검증 가능한 Docker Compose와 공급자 중립 Helm만 source of truth로 유지한다. 생성부-소비부 reference closure와 위임된 GitHub executable metadata까지 한 계약으로 검사하고 재도입 조건을 명확히 할 수 있다.
 - 단점: provider-neutral coordinated CD가 추가되기 전까지 non-disabled schedule 운영 활성화는 지원할 수 없다.
 
 ## Decision
@@ -45,6 +47,7 @@ Option 3을 채택한다.
    - secret 값은 저장소에 두지 않으며 외부 secret manager 또는 배포 시 주입을 요구한다.
    - workload identity는 chart root `serviceAccount` 한 곳에서만 설정하며 Gateway, Workflow Worker와 Knowledge Worker가 같은 ServiceAccount를 명시적으로 사용한다.
    - 문서 저장소 설정은 chart root `storage` 한 곳만 source of truth로 사용한다. `CLOUD`는 bucket과 region이 모두 있어야 렌더되며 Gateway 설정도 provider client 생성 전에 같은 계약을 검증한다. 이전 component별 storage key는 조용히 무시하지 않고 root 설정으로 이관하라는 safe render error로 거부한다.
+   - Gateway, Workflow Worker와 Knowledge Worker는 `LOCAL`에서 cloud 전용 key를 참조하지 않고 `CLOUD`에서만 bucket과 region을 함께 참조한다. CI는 실제 기본/production render에서 필수 ConfigMap reference가 같은 render의 key로 모두 해석되는지 검사한다.
 6. Helm과 Compose의 schedule dispatch 기본값은 disabled다. 현재 지원 표면에는 안전한 coordinated CD가 없으므로 claim/drain 활성화는 fail-closed한다.
    - Helm은 non-disabled 값을 render 단계에서 거부하고 Compose는 mode와 fingerprint를 `disabled`로 고정해 shell 또는 `.env` 값으로 활성화하지 못하게 한다.
    - runtime ledger, readiness, transition preflight와 drain domain 코드는 삭제하지 않는다.
@@ -52,9 +55,10 @@ Option 3을 채택한다.
 7. Knowledge ingestion worker는 본 결정에서 활성화하지 않는다. production knowledgeWorker.enabled: false를 유지하고 활성화 완결성은 MBA-359가 소유한다.
 8. PR 품질 게이트는 legacy dev namespace workflow, `deploy-eks-*` workflow와 `infra/k8s/**`, `infra/terraform/**`의 재도입을 거부한다.
    - 모든 executable GitHub workflow 변경은 support-surface validation을 선택한다. 현재 승인된 workflow path allowlist 밖의 파일은 이름과 확장자에 관계없이 실패하고, 삭제된 workflow의 stale allowlist entry도 허용하지 않으므로 이름 변경이나 나중 재추적으로 배포 표면을 재도입할 수 없다.
-   - Allowlist 안의 workflow도 AWS credential/ECR/EKS/eksctl 같은 provider-specific 실행 신호가 있으면 실패한다. 이 내용 검사는 독립 write-maintainer 승인 정책을 대체하지 않는다.
+   - Allowlist 안의 workflow와 `.github/actions/**/action.yml|yaml` local composite action도 AWS credential/ECR/EKS/eksctl 같은 provider-specific 실행 신호가 있으면 실패한다. Workflow와 composite action은 같은 bounded UTF-8 fail-closed content reader를 사용한다. 이 내용 검사는 독립 write-maintainer 승인 정책을 대체하지 않는다.
    - Helm 기본/production values에 대해 lint와 render를 수행한다.
    - CLOUD storage의 unknown type, 빈 bucket, 빈 region은 각각 negative render로 실패함을 검증한다.
+   - Helm 변경은 deployment validation job에서 `tests/ci`가 소유하는 support-surface와 storage deployment 계약 pytest를 직접 실행한다. 이 계약은 runtime package를 import하지 않으며 전체 Shared/root 회귀를 선택하는 대신 두 exact 계약만 실행해 선택형 CI 비용을 제한한다.
    - 렌더 결과는 kubeconform v0.7.0과 Kubernetes 1.31 compatibility baseline으로 검사한다. 이는 EKS 지원 선언이 아니다.
 9. EKS를 다시 지원하려면 새 ADR과 이슈에서 cloud ownership, OIDC/secret, cluster/CNI, migration, rollback, schedule coordinated rollout, 실제 environment integration evidence를 함께 제시해야 한다.
 
@@ -62,7 +66,7 @@ Option 3을 채택한다.
 
 | Boundary | Result | Evidence |
 | --- | --- | --- |
-| 정책·설정 식별자 | 완료 | Root `storage`와 `serviceAccount`만 chart 권위로 정의한다. `test_storage_deployment_contract.py`, `test_supported_deployment_surface.py`가 중복 설정·workflow allowlist를 검증한다. |
+| 정책·설정 식별자 | 완료 | Root `storage`와 `serviceAccount`만 chart 권위로 정의한다. `test_storage_deployment_contract.py`, `test_supported_deployment_surface.py`가 중복 설정, render reference closure와 workflow/composite action 경계를 검증한다. |
 | 관리 API·UI | 해당 없음 | 이 결정은 제품 사용자가 관리하는 resource가 아니라 operator-owned Helm/process 설정을 변경한다. |
 | 저장·GraphMutation | 해당 없음 | Graph나 durable DB에 provider reference 또는 credential을 새로 저장하지 않는다. |
 | Deployment preflight | 완료 | `moduly.validateStorage`와 PR Helm negative render가 unknown/missing/legacy storage 값을 배포 전에 거부한다. |
@@ -75,7 +79,7 @@ Option 3을 채택한다.
 | Secret/credential·redaction | 완료 | Production values에는 secret/provider account/ARN을 두지 않는다. 설정 ValidationError와 storage operation log test가 credential/provider 원문 비노출을 검증한다. |
 | Authorization/RBAC | 해당 없음 | 애플리케이션 resource permission 또는 actor scope를 변경하지 않는다. |
 | Legacy/migration | 완료 | Durable schema migration은 없다. 기존 component별 Helm storage override는 silent fallback 대신 render 실패로 식별되며 운영자가 root `storage`로 명시 이관해야 한다. |
-| 문서·테스트 | 완료 | 본 ADR, architecture, deployment requirements/component/test cases와 CI·Gateway·deployment contract test를 함께 갱신한다. |
+| 문서·테스트 | 완료 | 본 ADR, architecture, deployment requirements/component/test cases와 CI·Gateway·deployment contract test를 함께 갱신한다. Helm 변경은 전용 job에서 두 exact 계약 test를 실행한다. |
 | Knowledge worker activation | 후속 이슈 | MBA-359. 현재 production default는 비활성이다. |
 | Provider-neutral coordinated CD | 후속 이슈 | 별도 ADR/이슈와 실제 운영 증거가 필요하다. 현재 schedule mode는 disabled로 안전하게 고정된다. |
 
@@ -85,6 +89,7 @@ Option 3을 채택한다.
 - Helm을 특정 managed Kubernetes에 설치하는 것은 가능하지만, 해당 cloud의 provisioning·ingress·identity·storage는 저장소가 공식 지원하거나 자동 구성하지 않는다.
 - non-disabled distributed schedule 실행을 production에서 활성화할 공식 경로가 당분간 없다. 이를 수동 kubectl 절차로 우회해서는 안 된다.
 - CI는 제거된 표면의 삭제 PR에서도 guard를 실행한다. 새 workflow는 명시적 allowlist 변경과 독립 승인이 필요하고, 기존 승인 workflow도 provider-specific 실행 신호를 포함할 수 없다.
+- 승인 workflow가 local composite action에 provider-specific 실행을 숨기는 경로도 같은 guard에서 차단된다.
 - Production reference의 CLOUD storage placeholder는 그대로 배포할 수 없다. 운영자가 root storage bucket/region을 공급해야 Helm render와 Gateway startup을 통과한다.
 - provider-specific 운영 배포를 추가할 때는 dormant sample이 아니라 소유권과 검증 증거를 갖춘 별도 기능으로 도입해야 한다.
 
@@ -94,10 +99,16 @@ Option 3을 채택한다.
 - .github/workflows/publish-images.yml
 - scripts/ci/changed_scope.py
 - scripts/ci/check_supported_deployment_surface.py
+- tests/ci/test_supported_deployment_surface.py
+- tests/ci/test_pr_quality_gate_workflow.py
+- tests/ci/test_storage_deployment_contract.py
 - apps/gateway/core/config.py
 - apps/gateway/services/storage.py
 - infra/helm/moduly/values.yaml
 - infra/helm/moduly/values-production.yaml
+- infra/helm/moduly/templates/gateway-deployment.yaml
+- infra/helm/moduly/templates/worker-deployment.yaml
+- infra/helm/moduly/templates/knowledge-worker-deployment.yaml
 - docs/architecture.md
 - docs/engineering/ci-quality-gates.md
 - docs/features/deployment/*

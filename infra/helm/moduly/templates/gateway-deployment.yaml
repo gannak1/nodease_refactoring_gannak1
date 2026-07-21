@@ -251,12 +251,12 @@ spec:
             configMapKeyRef:
               name: {{ include "moduly.configMapName" . }}
               key: S3_BUCKET_NAME
-        {{- end }}
         - name: AWS_REGION
           valueFrom:
             configMapKeyRef:
               name: {{ include "moduly.configMapName" . }}
               key: AWS_REGION
+        {{- end }}
         
         # Google OAuth (optional)
         {{- if .Values.secrets.googleClientId }}

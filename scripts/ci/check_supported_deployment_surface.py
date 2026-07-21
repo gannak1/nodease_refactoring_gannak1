@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 from typing import Iterable
 
 from scripts.ci.changed_scope import (
+    is_github_composite_action_path,
     is_github_workflow_path,
     is_unsupported_deployment_path,
     normalize_repo_path,
@@ -25,7 +26,7 @@ _APPROVED_WORKFLOW_PATHS = frozenset(
     }
 )
 
-_PROVIDER_SPECIFIC_WORKFLOW_PATTERNS = tuple(
+_PROVIDER_SPECIFIC_EXECUTABLE_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
         r"aws-actions\s*/\s*configure-aws-credentials",
@@ -37,10 +38,10 @@ _PROVIDER_SPECIFIC_WORKFLOW_PATTERNS = tuple(
     )
 )
 
-_MAX_WORKFLOW_BYTES = 1024 * 1024
+_MAX_GITHUB_EXECUTABLE_BYTES = 1024 * 1024
 
 
-def _workflow_content_is_unsupported(repo_root: Path, path: str) -> bool:
+def _github_executable_content_is_unsupported(repo_root: Path, path: str) -> bool:
     root = repo_root.resolve()
     candidate = root.joinpath(*PurePosixPath(path).parts)
     if candidate.is_symlink() or not candidate.is_file():
@@ -48,7 +49,7 @@ def _workflow_content_is_unsupported(repo_root: Path, path: str) -> bool:
 
     try:
         candidate.resolve().relative_to(root)
-        if candidate.stat().st_size > _MAX_WORKFLOW_BYTES:
+        if candidate.stat().st_size > _MAX_GITHUB_EXECUTABLE_BYTES:
             return True
         content = candidate.read_text(encoding="utf-8")
     except (OSError, UnicodeError, ValueError):
@@ -56,7 +57,7 @@ def _workflow_content_is_unsupported(repo_root: Path, path: str) -> bool:
 
     return any(
         pattern.search(content) is not None
-        for pattern in _PROVIDER_SPECIFIC_WORKFLOW_PATTERNS
+        for pattern in _PROVIDER_SPECIFIC_EXECUTABLE_PATTERNS
     )
 
 
@@ -78,8 +79,15 @@ def find_unsupported_deployment_paths(
             path not in _APPROVED_WORKFLOW_PATHS
             or (
                 repo_root is not None
-                and _workflow_content_is_unsupported(repo_root, path)
+                and _github_executable_content_is_unsupported(repo_root, path)
             )
+        ):
+            unsupported.append(path)
+            continue
+        if (
+            is_github_composite_action_path(path)
+            and repo_root is not None
+            and _github_executable_content_is_unsupported(repo_root, path)
         ):
             unsupported.append(path)
 

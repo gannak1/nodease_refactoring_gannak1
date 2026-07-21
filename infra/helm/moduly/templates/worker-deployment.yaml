@@ -97,12 +97,12 @@ spec:
             configMapKeyRef:
               name: {{ include "moduly.configMapName" . }}
               key: S3_BUCKET_NAME
-        {{- end }}
         - name: AWS_REGION
           valueFrom:
             configMapKeyRef:
               name: {{ include "moduly.configMapName" . }}
               key: AWS_REGION
+        {{- end }}
         
         # Encryption key (from K8s worker config)
         {{- if .Values.secrets.encryptionKey }}

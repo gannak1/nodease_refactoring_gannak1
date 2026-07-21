@@ -34,7 +34,7 @@ PR 검증 진입점은 `.github/workflows/pr-quality-gate.yml`과 `.github/workf
 | `shared-tests` | Shared 영향 | 선택된 Shared pytest |
 | `log-system-tests` | Log System 영향 | 선택된 Log System pytest |
 | `sandbox-tests` | Sandbox 영향 | Sandbox pytest |
-| deployment-config-validation | Actions·Helm·지원 표면·Compose·Dockerfile 영향 | workflow·action metadata, Helm render/schema·CLOUD 필수값과 승인 workflow/provider-specific content를 포함한 배포 설정 정적 검사 |
+| deployment-config-validation | Actions·Helm·지원 표면·Compose·Dockerfile 영향 | workflow·composite action metadata, Helm render/schema·ConfigMap reference closure·CLOUD 필수값과 승인 executable/provider-specific content를 포함한 배포 설정 계약 검사 |
 | `knowledge-postgres-contracts` | Knowledge runtime/ingestion/DB 영향 | 실제 PostgreSQL Knowledge 계약 검사 |
 | `workflow-postgres-contracts` | migration/schedule/external effect 영향 | 실제 PostgreSQL workflow 계약 검사 |
 | `agent-builder-postgres-contracts` | Agent Builder DB/CAS 영향 | 실제 PostgreSQL Agent Builder 계약 검사 |
@@ -82,7 +82,7 @@ PR workspace의 selector 결과만으로 required gate를 결정하지 않는다
 | 품질 게이트 CI 제어 파일과 보호된 PostgreSQL workflow | 각 서비스 smoke, Client smoke, root CI 계약 test, PostgreSQL 계약 test, 전체 배포 정적 검증과 최신 독립 승인 |
 | 기타 GitHub Actions workflow | actionlint, 승인 workflow/provider-specific content 검사와 최신 독립 승인 |
 | 배포 workflow만 변경 | actionlint와 지원 표면 검사를 실행하고 runtime test는 선택하지 않음 |
-| Helm 변경 | dependency lock, lint, 기본/production render, CLOUD storage negative render와 Kubernetes schema 검사 |
+| Helm 변경 | dependency lock, lint, 기본/production render, CLOUD storage negative render, ConfigMap reference closure, targeted support-surface/storage pytest와 Kubernetes schema 검사 |
 | 지원 종료한 EKS/Terraform 경로 변경 | 현재 추적 파일과 승인 workflow 내용에 해당 운영 표면이 남지 않았는지 fail-closed 검사 |
 | Docker Compose/Dockerfile 변경 | 변경 파일의 config 또는 build check 실행, Docker check 경고도 오류 처리 |
 | 알 수 없는 실행 경로 | Client와 Python smoke 범위로 fail-closed 확장 |
@@ -197,8 +197,8 @@ actionlint .github/workflows/pr-quality-gate.yml .github/workflows/pr-ci-control
 deployment-config-validation은 일반 배포 설정 변경에서는 변경된 종류만 검사한다. 품질 게이트 CI 제어 파일이 바뀌면 검증 명령 자체의 회귀를 놓치지 않도록 다섯 배포 검증기를 모두 실행한다.
 
 - GitHub Actions: 일반 변경에서는 추가·수정·이름 변경된 workflow를 검사한다. CI 제어 변경에서는 기존 배포 workflow의 ShellCheck 부채와 분리된 안정적 smoke 대상인 품질 게이트, 신뢰 가드와 네 PostgreSQL 계약 workflow에 PR에서 실제 변경한 workflow를 합치고 중복을 제거해 고정 버전 actionlint로 검사한다.
-- Helm: dependency build 전에 Chart.lock이 tracked regular file인지 확인하고 build 뒤 내용 불변을 검사한다. 기본/production values를 lint·render하고 CLOUD storage의 unknown type, 빈 bucket, 빈 region과 legacy component storage key를 각각 거부한 뒤 kubeconform v0.7.0으로 Kubernetes 1.31 compatibility schema를 검사한다. 이 baseline은 EKS 지원 선언이 아니다.
-- 지원 표면: 모든 executable workflow 변경에서 검사를 선택한다. 승인 path allowlist 밖의 workflow, 삭제된 workflow의 stale allowlist entry, 승인 workflow 내부의 AWS credential/ECR/EKS/eksctl 실행 신호, legacy dev/EKS path와 `infra/k8s`, `infra/terraform` prefix가 있으면 실패한다. 삭제 PR과 파일 이름 변경도 같은 검사를 거치며 정적 신호 검사는 current-head 독립 승인을 대체하지 않는다.
+- Helm: dependency build 전에 Chart.lock이 tracked regular file인지 확인하고 build 뒤 내용 불변을 검사한다. 기본/production values를 lint·render하고 CLOUD storage의 unknown type, 빈 bucket, 빈 region과 legacy component storage key를 각각 거부한 뒤 kubeconform v0.7.0으로 Kubernetes 1.31 compatibility schema를 검사한다. 이어서 exact support-surface/storage 계약 pytest를 실행해 `LOCAL`/`CLOUD`의 Pod env와 ConfigMap key reference closure를 확인한다. 이 baseline은 EKS 지원 선언이 아니다.
+- 지원 표면: 모든 executable workflow와 composite action metadata 변경에서 검사를 선택한다. 승인 path allowlist 밖의 workflow, 삭제된 workflow의 stale allowlist entry, 승인 workflow 또는 local composite action 내부의 AWS credential/ECR/EKS/eksctl 실행 신호, legacy dev/EKS path와 `infra/k8s`, `infra/terraform` prefix가 있으면 실패한다. 삭제 PR과 파일 이름 변경도 같은 검사를 거치며 정적 신호 검사는 current-head 독립 승인을 대체하지 않는다.
 - Docker Compose: Compose 변경 또는 CI 제어 변경 시 tracked Compose 구성을 모두 해석한다. `compose.<variant>.yml`과 `docker-compose.<variant>.yml`은 같은 디렉터리의 기본 Compose 파일과 합성하고 선언된 profile을 활성화해 검사한다.
 - Dockerfile: `Dockerfile`, `Dockerfile.*`, `*.Dockerfile` 이름을 지원한다. 실제 Dockerfile 변경에서는 rename을 delete+add로 해석해 이전 경로를 선택 근거로 보존하고, 현재 존재하는 변경 파일에 BuildKit check를 실행한다. 삭제 또는 비지원 이름으로의 rename은 검증 대상이 존재하지 않는 상태로 허용한다. CI 제어만 변경된 경우에는 기존 Dockerfile의 lint 부채와 분리된 `tests/ci/fixtures/dockerfile-smoke/Dockerfile`로 같은 명령 계약을 검증한다.
 

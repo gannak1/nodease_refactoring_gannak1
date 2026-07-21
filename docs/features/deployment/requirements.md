@@ -129,6 +129,8 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-099 (MBA-337): 모든 executable GitHub workflow 변경은 support-surface validation을 선택해야 한다. 현재 승인된 workflow path allowlist 밖의 파일, 삭제 뒤 남은 stale allowlist entry와 allowlist 안에서 AWS credential/ECR/EKS/eksctl 실행 신호를 포함한 파일은 fail-closed해야 하며, `.yml`/`.yaml` 변경·이름 변경·나중 재추적으로 이를 우회할 수 없어야 한다. 이 정적 검사는 current-head 독립 write-maintainer 승인을 대체하지 않는다.
 - DEP-REQ-100 (MBA-337): Provider-neutral Helm workload identity는 root `serviceAccount`를 단일 권위로 사용해야 한다. Object storage를 소비하는 Gateway, Workflow Worker와 Knowledge Worker는 모두 해당 ServiceAccount를 Pod spec에 명시하고 component별 사용되지 않는 중첩 ServiceAccount 설정을 두지 않아야 한다.
 - DEP-REQ-101 (MBA-337): Helm 문서 저장소 설정은 root `storage`를 단일 권위로 사용해야 하며 component별 storage 값을 중복하지 않아야 한다. `LOCAL`은 cloud 좌표 없이 렌더할 수 있지만 `CLOUD`는 non-empty bucket과 region이 모두 있어야 한다. Unknown type, 누락 또는 legacy component storage key는 Helm render와 Gateway startup에서 provider client 생성 전에 safe하게 실패하고 LOCAL로 fallback하지 않아야 한다. Provider upload/presign 실패는 raw exception, bucket, object detail을 로그나 caller exception에 전달하지 않고 stable safe code로 정규화해야 한다.
+- DEP-REQ-102 (MBA-337): Helm의 storage 설정 생성부와 Gateway, Workflow Worker, Knowledge Worker의 소비부는 같은 mode 조건을 사용해야 한다. `LOCAL` Pod는 `S3_BUCKET_NAME`과 `AWS_REGION`을 참조하지 않고, `CLOUD` Pod가 필수로 참조하는 ConfigMap key는 같은 render에 모두 존재해야 한다. CI는 기본/production 실제 render의 ConfigMap reference closure를 검사해야 한다.
+- DEP-REQ-103 (MBA-337): Support-surface validation은 승인 workflow뿐 아니라 `.github/actions/**/action.yml|yaml` composite action metadata의 AWS credential/ECR/EKS/eksctl 신호도 같은 fail-closed reader로 검사해야 한다. Helm 변경은 lint/schema 검사에 더해 support-surface와 storage deployment 계약 테스트를 전용 deployment job에서 직접 실행해야 한다.
 
 ## Runtime Audience Matrix
 

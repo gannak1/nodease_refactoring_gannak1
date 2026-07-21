@@ -59,6 +59,22 @@ def test_support_guard_accepts_allowlisted_provider_neutral_workflow(tmp_path):
     )
 
 
+def test_support_guard_accepts_provider_neutral_composite_action(tmp_path):
+    action_path = ".github/actions/deploy/action.yml"
+    target = tmp_path / action_path
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "name: Deploy helper\nruns:\n  using: composite\n  steps:\n"
+        "    - shell: bash\n      run: echo provider-neutral\n",
+        encoding="utf-8",
+    )
+
+    assert find_unsupported_deployment_paths(
+        [action_path],
+        repo_root=tmp_path,
+    ) == []
+
+
 def test_support_guard_rejects_stale_allowlist_entry_after_workflow_removal():
     tracked_approved_workflows = [
         ".github/workflows/pr-ci-control-guard.yml",
@@ -85,6 +101,18 @@ def test_support_guard_fails_closed_for_non_utf8_allowlisted_workflow(tmp_path):
         [workflow_path],
         repo_root=tmp_path,
     ) == [workflow_path]
+
+
+def test_support_guard_fails_closed_for_non_utf8_composite_action(tmp_path):
+    action_path = ".github/actions/deploy/action.yaml"
+    target = tmp_path / action_path
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"\xff\xfe")
+
+    assert find_unsupported_deployment_paths(
+        [action_path],
+        repo_root=tmp_path,
+    ) == [action_path]
 
 
 @pytest.mark.parametrize(
@@ -114,6 +142,36 @@ def test_support_guard_rejects_provider_specific_content_in_allowlisted_workflow
         [workflow_path],
         repo_root=tmp_path,
     ) == [workflow_path]
+
+
+@pytest.mark.parametrize(
+    "provider_specific_step",
+    [
+        "uses: aws-actions/configure-aws-credentials@v4",
+        "uses: aws-actions/amazon-ecr-login@v2",
+        "run: aws eks update-kubeconfig --name example",
+        "run: eksctl create cluster --name example",
+        "run: docker push account.dkr.ecr.region.amazonaws.com/image",
+        "run: echo eks.amazonaws.com/role-arn",
+    ],
+)
+def test_support_guard_rejects_provider_specific_content_in_composite_action(
+    tmp_path,
+    provider_specific_step,
+):
+    action_path = ".github/actions/deploy/action.yml"
+    target = tmp_path / action_path
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "name: Deploy helper\nruns:\n  using: composite\n  steps:\n"
+        f"    - shell: bash\n      {provider_specific_step}\n",
+        encoding="utf-8",
+    )
+
+    assert find_unsupported_deployment_paths(
+        [action_path],
+        repo_root=tmp_path,
+    ) == [action_path]
 
 
 def test_production_values_are_provider_neutral():
