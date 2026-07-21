@@ -43,6 +43,12 @@ from apps.shared.domain.provider_execution_capability import (
     RuntimeIdentityContext,
     RuntimePrincipal,
 )
+from apps.shared.domain.workflow_node_location import (
+    CanonicalWorkflowNodeLocation,
+    ContainerPath,
+    WorkflowNodeLocationError,
+    find_workflow_node_at_location,
+)
 from apps.shared.services.permissions import (
     get_effective_llm_credential_auth_state,
     has_llm_credential_permission,
@@ -77,6 +83,7 @@ class DeploymentCredentialPolicyCommand:
     node_id: str
     model_id: uuid.UUID
     credential_id: uuid.UUID
+    container_path: ContainerPath = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,9 +132,15 @@ class DeploymentCredentialPolicyView:
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    container_path: ContainerPath = ()
 
 
-def deployment_llm_node_model_id(graph_snapshot: Any, node_id: str) -> str:
+def deployment_llm_node_model_id(
+    graph_snapshot: Any,
+    node_id: str,
+    *,
+    container_path: ContainerPath = (),
+) -> str:
     """Return the only graph-owned LLM selection: its model API identifier.
 
     The policy layer does not silently normalize legacy direct credential
@@ -142,19 +155,13 @@ def deployment_llm_node_model_id(graph_snapshot: Any, node_id: str) -> str:
         or len(node_id) > _MAX_POLICY_NODE_ID_LENGTH
     ):
         raise ProviderExecutionPolicyError("configuration_required")
-    nodes = graph_snapshot.get("nodes")
-    if not isinstance(nodes, list):
+    try:
+        location = CanonicalWorkflowNodeLocation(container_path, node_id)
+        node = find_workflow_node_at_location(graph_snapshot, location)
+    except WorkflowNodeLocationError as exc:
+        raise ProviderExecutionPolicyError("configuration_required") from exc
+    if not isinstance(node, dict):
         raise ProviderExecutionPolicyError("configuration_required")
-
-    candidates = [
-        node
-        for node in nodes
-        if isinstance(node, dict) and str(node.get("id") or "") == node_id
-    ]
-    if len(candidates) != 1:
-        raise ProviderExecutionPolicyError("configuration_required")
-
-    node = candidates[0]
     node_type = str(node.get("type") or "").strip().lower()
     data = node.get("data")
     if node_type not in _LLM_NODE_TYPES or not isinstance(data, dict):
@@ -225,6 +232,8 @@ class ProviderExecutionCapabilityService:
         ):
             raise ProviderExecutionPolicyError("permission_denied")
 
+        location = cls._command_location(command)
+
         active_rows = (
             db.query(LLMDeploymentCredentialPolicy)
             .filter(
@@ -232,7 +241,8 @@ class ProviderExecutionCapabilityService:
                 == command.organization_id,
                 LLMDeploymentCredentialPolicy.deployment_id == deployment.id,
                 LLMDeploymentCredentialPolicy.deployment_version == deployment.version,
-                LLMDeploymentCredentialPolicy.node_id == command.node_id,
+                LLMDeploymentCredentialPolicy.node_location_digest
+                == location.digest,
                 LLMDeploymentCredentialPolicy.is_active.is_(True),
             )
             .populate_existing()
@@ -240,6 +250,8 @@ class ProviderExecutionCapabilityService:
             .all()
         )
         if len(active_rows) > 1:
+            raise ProviderExecutionPolicyError("selection_ambiguous")
+        if active_rows and cls._stored_location(active_rows[0]) != location:
             raise ProviderExecutionPolicyError("selection_ambiguous")
 
         model, credential, _provider, _relation = cls._resolve_policy_selection(
@@ -249,6 +261,7 @@ class ProviderExecutionCapabilityService:
             workflow=workflow,
             organization_id=command.organization_id,
             node_id=command.node_id,
+            container_path=command.container_path,
             model_id=command.model_id,
             credential_id=command.credential_id,
             credential_principal_user_id=actor_id,
@@ -275,6 +288,8 @@ class ProviderExecutionCapabilityService:
             deployment_id=deployment.id,
             deployment_version=deployment.version,
             node_id=command.node_id,
+            container_path=location.to_container_path_payload(),
+            node_location_digest=location.digest,
             model_id=model.id,
             credential_id=credential.id,
             credential_principal_user_id=actor_id,
@@ -310,7 +325,7 @@ class ProviderExecutionCapabilityService:
                 LLMDeploymentCredentialPolicy.deployment_version == deployment.version,
                 LLMDeploymentCredentialPolicy.is_active.is_(True),
             )
-            .order_by(LLMDeploymentCredentialPolicy.node_id.asc())
+            .order_by(LLMDeploymentCredentialPolicy.node_location_digest.asc())
             .all()
         )
         return [cls._policy_view(row) for row in rows]
@@ -352,6 +367,7 @@ class ProviderExecutionCapabilityService:
             workflow=workflow,
             organization_id=binding.organization_id,
             node_id=binding.node_id,
+            container_path=binding.container_path,
             model_id=policy.model_id,
             credential_id=policy.credential_id,
             credential_principal_user_id=policy.credential_principal_user_id,
@@ -414,6 +430,10 @@ class ProviderExecutionCapabilityService:
                 raise ProviderExecutionPolicyError("capability_stale")
             return existing_capability
 
+        binding_location = CanonicalWorkflowNodeLocation(
+            binding.container_path,
+            binding.node_id,
+        )
         record = ProviderExecutionCapabilityRecord(
             organization_id=binding.organization_id,
             policy_id=policy.id,
@@ -421,6 +441,8 @@ class ProviderExecutionCapabilityService:
             deployment_id=binding.deployment_id,
             deployment_version=binding.deployment_version,
             node_id=binding.node_id,
+            container_path=binding_location.to_container_path_payload(),
+            node_location_digest=binding_location.digest,
             node_invocation_id=binding.node_invocation_id,
             execution_admission_id=binding.execution_admission_id,
             provider_attempt_id=binding.provider_attempt_id,
@@ -511,6 +533,7 @@ class ProviderExecutionCapabilityService:
             workflow=workflow,
             organization_id=command.binding.organization_id,
             node_id=command.binding.node_id,
+            container_path=command.binding.container_path,
             model_id=policy.model_id,
             credential_id=policy.credential_id,
             credential_principal_user_id=policy.credential_principal_user_id,
@@ -563,6 +586,35 @@ class ProviderExecutionCapabilityService:
         )
 
     @staticmethod
+    def _command_location(
+        command: DeploymentCredentialPolicyCommand,
+    ) -> CanonicalWorkflowNodeLocation:
+        try:
+            return CanonicalWorkflowNodeLocation(
+                command.container_path,
+                command.node_id,
+            )
+        except WorkflowNodeLocationError as exc:
+            raise ProviderExecutionPolicyError("configuration_required") from exc
+
+    @staticmethod
+    def _stored_location(
+        row: LLMDeploymentCredentialPolicy | ProviderExecutionCapabilityRecord,
+        *,
+        error_code: str = "selection_ambiguous",
+    ) -> CanonicalWorkflowNodeLocation:
+        try:
+            location = CanonicalWorkflowNodeLocation.from_container_path_payload(
+                container_path=row.container_path,
+                node_id=row.node_id,
+            )
+        except (AttributeError, WorkflowNodeLocationError) as exc:
+            raise ProviderExecutionPolicyError(error_code) from exc
+        if row.node_location_digest != location.digest:
+            raise ProviderExecutionPolicyError(error_code)
+        return location
+
+    @staticmethod
     def _policy_view(
         policy: LLMDeploymentCredentialPolicy,
     ) -> DeploymentCredentialPolicyView:
@@ -571,6 +623,9 @@ class ProviderExecutionCapabilityService:
             deployment_id=policy.deployment_id,
             deployment_version=policy.deployment_version,
             node_id=policy.node_id,
+            container_path=ProviderExecutionCapabilityService._stored_location(
+                policy
+            ).container_path,
             model_id=policy.model_id,
             credential_id=policy.credential_id,
             policy_revision=policy.policy_revision,
@@ -702,6 +757,10 @@ class ProviderExecutionCapabilityService:
         db: Session,
         binding: ProviderExecutionBinding,
     ) -> LLMDeploymentCredentialPolicy:
+        location = CanonicalWorkflowNodeLocation(
+            binding.container_path,
+            binding.node_id,
+        )
         rows = (
             db.query(LLMDeploymentCredentialPolicy)
             .filter(
@@ -711,7 +770,8 @@ class ProviderExecutionCapabilityService:
                 LLMDeploymentCredentialPolicy.deployment_version
                 == binding.deployment_version,
                 LLMDeploymentCredentialPolicy.workflow_id == binding.workflow_id,
-                LLMDeploymentCredentialPolicy.node_id == binding.node_id,
+                LLMDeploymentCredentialPolicy.node_location_digest
+                == location.digest,
                 LLMDeploymentCredentialPolicy.is_active.is_(True),
             )
             .populate_existing()
@@ -721,6 +781,8 @@ class ProviderExecutionCapabilityService:
         if not rows:
             raise ProviderExecutionPolicyError("configuration_required")
         if len(rows) != 1:
+            raise ProviderExecutionPolicyError("selection_ambiguous")
+        if cls._stored_location(rows[0]) != location:
             raise ProviderExecutionPolicyError("selection_ambiguous")
         return rows[0]
 
@@ -734,6 +796,7 @@ class ProviderExecutionCapabilityService:
         workflow: Workflow,
         organization_id: uuid.UUID,
         node_id: str,
+        container_path: ContainerPath = (),
         model_id: uuid.UUID,
         credential_id: uuid.UUID,
         credential_principal_user_id: uuid.UUID,
@@ -749,6 +812,7 @@ class ProviderExecutionCapabilityService:
         graph_model_id = deployment_llm_node_model_id(
             deployment.graph_snapshot,
             node_id,
+            container_path=container_path,
         )
         model_query = db.query(LLMModel).filter(LLMModel.id == model_id)
         if lock_authorization_rows:
@@ -1030,6 +1094,10 @@ class ProviderExecutionCapabilityService:
                     execution_admission_id=record.execution_admission_id,
                     provider_attempt_id=record.provider_attempt_id,
                     purpose=purpose,
+                    container_path=ProviderExecutionCapabilityService._stored_location(
+                        record,
+                        error_code="capability_stale",
+                    ).container_path,
                 ),
                 policy_id=record.policy_id,
                 credential_id=record.credential_id,

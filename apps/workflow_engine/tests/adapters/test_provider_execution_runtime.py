@@ -16,6 +16,7 @@ from apps.workflow_engine.adapters.provider_execution_capability import (
     provider_visible_request_bounds,
 )
 from apps.workflow_engine.application.provider_execution import (
+    LLMCredentialNotAvailableError,
     ProviderExecutionAuditActorKind,
     ProviderExecutionConfigurationError,
     ProviderExecutionPreflight,
@@ -52,7 +53,12 @@ class _Client:
         }
 
 
-def _control(*, organization_id: uuid.UUID, workflow_id: uuid.UUID):
+def _control(
+    *,
+    organization_id: uuid.UUID,
+    workflow_id: uuid.UUID,
+    binding_container_path: tuple[tuple[str, str], ...] = (),
+):
     execution_id = uuid.uuid4()
     return NodeExecutionControl(
         execution_id=execution_id,
@@ -66,6 +72,7 @@ def _control(*, organization_id: uuid.UUID, workflow_id: uuid.UUID):
             node_id="llm-1",
         ),
         external_effect_enforced=True,
+        binding_container_path=binding_container_path,
     )
 
 
@@ -152,6 +159,7 @@ def test_capability_runtime_commits_and_closes_control_uow_before_provider_io():
             runtime_control=_control(
                 organization_id=organization_id,
                 workflow_id=workflow_id,
+                binding_container_path=(("loop", "loop-a"),),
             ),
         )
     )
@@ -190,9 +198,40 @@ def test_capability_runtime_commits_and_closes_control_uow_before_provider_io():
     assert lease.attribution.pricing_snapshot.input_price_per_1k == Decimal("0.001")
     assert lease.attribution.pricing_snapshot.output_price_per_1k == Decimal("0.002")
     assert captured["issue"].binding.node_id == "llm-1"
+    assert captured["issue"].binding.container_path == (("loop", "loop-a"),)
     assert captured["admission"].requested_output_tokens == 100
     assert lease.invoke()["choices"][0]["message"]["content"] == "ok"
     assert client.calls == 1
+
+
+def test_capability_preflight_rejects_malformed_trusted_container_path() -> None:
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    runtime = CapabilityProviderExecutionAdapter(
+        session_factory=lambda: pytest.fail("invalid path must fail before DB access")
+    )
+
+    with pytest.raises(ProviderExecutionConfigurationError):
+        runtime.preflight(
+            ProviderExecutionPreflight(
+                node_id="llm-1",
+                configured_model_id="gpt-safe",
+                auto_model_routing=False,
+                fallback_model_id=None,
+                knowledge_enabled=False,
+                memory_summary_requested=False,
+                client_override=None,
+                execution_context=_capability_context(
+                    organization_id=organization_id,
+                    workflow_id=workflow_id,
+                ),
+                runtime_control=_control(
+                    organization_id=organization_id,
+                    workflow_id=workflow_id,
+                    binding_container_path=(("future", "container"),),
+                ),
+            )
+        )
 
 
 @pytest.mark.parametrize(
@@ -295,6 +334,71 @@ def test_capability_runtime_does_not_materialize_client_after_admission_failure(
     assert getattr(exc_info.value, "reason", None) == (
         "provider_capability_capability_stale"
     )
+    assert session.commits == 0
+    assert session.closes == 1
+
+
+def test_wrong_nested_location_fails_before_provider_client_materialization():
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    session = _Session()
+    approved_path = (("loop", "loop-a"),)
+    attempted_path = (("loop", "loop-b"),)
+    observed_paths: list[tuple[tuple[str, str], ...]] = []
+
+    class _CapabilityService:
+        @staticmethod
+        def issue_capability(_db, *, command):
+            observed_paths.append(command.binding.container_path)
+            if command.binding.container_path != approved_path:
+                raise ProviderExecutionPolicyError("configuration_required")
+            return SimpleNamespace(id=uuid.uuid4(), revision=1)
+
+        @staticmethod
+        def admit_capability(_db, *, command):
+            pytest.fail("wrong location must fail before capability admission")
+
+    runtime = CapabilityProviderExecutionAdapter(
+        session_factory=lambda: session,
+        capability_service=_CapabilityService,
+        client_factory=lambda **_kwargs: pytest.fail(
+            "provider client must not be materialized for another Loop location"
+        ),
+    )
+    plan = runtime.preflight(
+        ProviderExecutionPreflight(
+            node_id="llm-1",
+            configured_model_id="gpt-safe",
+            auto_model_routing=False,
+            fallback_model_id=None,
+            knowledge_enabled=False,
+            memory_summary_requested=False,
+            client_override=None,
+            execution_context=_capability_context(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+            ),
+            runtime_control=_control(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                binding_container_path=attempted_path,
+            ),
+        )
+    )
+
+    with pytest.raises(LLMCredentialNotAvailableError) as exc_info:
+        runtime.resolve(
+            ProviderExecutionRequest(
+                plan=plan,
+                model_id="gpt-safe",
+                messages=({"role": "user", "content": "safe"},),
+                parameters={"max_tokens": 5},
+                shared_session=object(),
+            )
+        )
+
+    assert exc_info.value.reason == "provider_capability_configuration_required"
+    assert observed_paths == [attempted_path]
     assert session.commits == 0
     assert session.closes == 1
 

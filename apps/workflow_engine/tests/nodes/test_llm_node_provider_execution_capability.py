@@ -131,7 +131,12 @@ def _node(*, context: dict) -> LLMNode:
     )
 
 
-def _control(*, organization_id: uuid.UUID, workflow_id: uuid.UUID):
+def _control(
+    *,
+    organization_id: uuid.UUID,
+    workflow_id: uuid.UUID,
+    binding_container_path: tuple[tuple[str, str], ...] = (),
+):
     app_id = uuid.uuid4()
     execution_id = uuid.uuid4()
     effect = ExternalEffectContext(
@@ -147,6 +152,7 @@ def _control(*, organization_id: uuid.UUID, workflow_id: uuid.UUID):
         invocation_path_prefix=(InvocationSegment("root", "", "workflow"),),
         external_effect_context=effect,
         external_effect_enforced=True,
+        binding_container_path=binding_container_path,
     )
 
 
@@ -252,10 +258,12 @@ def test_capability_resolution_denial_uses_typed_audit_actor(
             reference_id=actor_id,
         )
     )
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
     node = _node(
         context={
-            "organization_id": str(uuid.uuid4()),
-            "workflow_id": str(uuid.uuid4()),
+            "organization_id": str(organization_id),
+            "workflow_id": str(workflow_id),
         }
     )
     node.bind_provider_execution_runtime(runtime)
@@ -277,7 +285,14 @@ def test_capability_resolution_denial_uses_typed_audit_actor(
     )
 
     with pytest.raises(LLMCredentialNotAvailableError):
-        node.execute({})
+        node.execute(
+            {},
+            runtime_control=_control(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                binding_container_path=(("loop", "private-loop"),),
+            ),
+        )
 
     assert len(calls) == 1
     recorder, audit = calls[0]
@@ -285,6 +300,10 @@ def test_capability_resolution_denial_uses_typed_audit_actor(
     if actor_kind is ProviderExecutionAuditActorKind.USER:
         assert audit["user_id"] == actor_id
     assert audit["metadata"]["reason"] == "provider_capability_permission_denied"
+    location_ref = audit["metadata"]["node_location_ref"]
+    assert location_ref.startswith("workflow-node-location:v1:")
+    assert "private-loop" not in location_ref
+    assert "llm-1" not in location_ref
 
 
 def test_capability_required_rag_fails_before_knowledge_or_provider_io(monkeypatch):

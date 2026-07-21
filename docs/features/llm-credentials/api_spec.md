@@ -50,14 +50,15 @@ Secret physical purge 또는 crypto-shred는 이 endpoint의 현재 계약이 �
 
 - `model_id`: LLM catalog UUID
 - `credential_id`: active organization의 LLM credential UUID
+- `container_path`: optional ordered Loop segment 배열. 생략 또는 `[]`는 root이며 각 entry는 `{kind: "loop", node_id: <1~255자>}`다. 최대 깊이는 16이다.
 
-Path의 `node_id`는 policy/capability 영속 컬럼과 동일하게 1~255자로 제한한다. 이를 초과하거나 immutable graph에서 정확히 하나의 node와 일치하지 않으면 row를 쓰기 전에 `422 configuration_required`로 거부한다.
+Path의 terminal `node_id`와 각 parent Loop ID는 1~255자로 제한한다. Server는 `container_path + node_id`를 immutable graph에서 exact lookup하며, 초과·unknown kind·잘못된 순서·missing location이면 row를 쓰기 전에 `422 configuration_required`로 거부한다. Client가 `node_location_digest`, credential principal 또는 capability scope를 보내면 strict request schema가 거부한다.
 
 `credential_principal_user_id`, credential config, API key, provider request option은 request에 포함할 수 없다. Server는 policy write actor가 organization manager인지 확인하고, 그 actor를 credential principal으로 server-side 파생한다. 이어서 대상 deployment의 immutable `graph_snapshot`에서 정확히 하나의 `llmNode`와 graph-owned `model_id`를 확인하며, selected model/provider, credential valid state, same-organization scope, verified credential-model relation, credential `use`를 검증한다.
 
 Capability-required policy는 direct `credential_id`/`credentialId` graph field, `fallback_model_id`, `auto_model_routing`을 허용하지 않는다. 이들은 현재 target policy의 명시 model/credential binding을 흐리므로 `422 configuration_required`로 fail-closed한다.
 
-같은 `(organization, deployment, deployment_version, node_id)` active policy를 교체하면 model UUID와 관계없이 기존 row를 inactive로 두고 새 row를 생성하며 `policy_revision`을 증가시킨다. GET은 현재 deployment version의 active row만 반환한다. Response에는 `id`, `deployment_id`, `deployment_version`, `node_id`, `model_id`, `credential_id`, `policy_revision`, `is_active`, timestamps만 포함하며 credential principal, encrypted config, API key/token, raw capability scope는 포함하지 않는다.
+같은 `(organization, deployment, deployment_version, container_path, node_id)` active policy를 교체하면 model UUID와 관계없이 기존 row를 inactive로 두고 새 row를 생성하며 `policy_revision`을 증가시킨다. 다른 container의 동일 `node_id`는 별도 policy다. GET은 현재 deployment version의 active row만 반환한다. Response에는 `id`, `deployment_id`, `deployment_version`, canonical `container_path`, `node_id`, `model_id`, `credential_id`, `policy_revision`, `is_active`, timestamps만 포함하며 digest, credential principal, encrypted config, API key/token, raw capability scope는 포함하지 않는다.
 
 오류는 `404 Deployment not found`(다른 organization 포함 resource hiding), `403 permission.denied`, `409 selection_ambiguous`, `422 configuration_required|relation_unavailable`의 safe code로 제한한다.
 

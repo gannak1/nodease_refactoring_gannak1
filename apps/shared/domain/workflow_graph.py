@@ -8,6 +8,7 @@ from typing import Any
 MAX_WORKFLOW_GRAPH_NODES = 1000
 MAX_WORKFLOW_GRAPH_EDGES = 5000
 MAX_WORKFLOW_GRAPH_NESTING_DEPTH = 16
+MAX_WORKFLOW_NODE_ID_LENGTH = 255
 
 SOURCE_ONLY_NODE_TYPES = frozenset({"startNode", "webhookTrigger", "scheduleTrigger"})
 TERMINAL_NODE_TYPES = frozenset({"answerNode", "mailAcknowledgeNode"})
@@ -92,6 +93,7 @@ def _validate_single_graph(
         if (
             not isinstance(node_id, str)
             or not node_id
+            or len(node_id) > MAX_WORKFLOW_NODE_ID_LENGTH
             or node_id in node_by_id
             or not isinstance(node_type, str)
             or not node_type

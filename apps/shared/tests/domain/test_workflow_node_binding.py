@@ -66,6 +66,45 @@ def test_loop_aware_reference_and_binding_round_trip() -> None:
     assert "_nodease_runtime" not in strip_workflow_node_bindings(bound)
 
 
+def test_binding_parser_rejects_noncanonical_container_path() -> None:
+    payload = {
+        "_nodease_runtime": {
+            "workflow_node_bindings": {
+                "version": "workflow-node-bindings.v1",
+                "entries": [
+                    {
+                        "container_path": [{"kind": "loop", "node_id": ""}],
+                        "workflow_node_id": "child-1",
+                        "target_app_id": str(uuid.uuid4()),
+                        "deployment_id": str(uuid.uuid4()),
+                        "deployment_version": 1,
+                        "snapshot_sha256": "a" * 64,
+                    }
+                ],
+            }
+        }
+    }
+
+    with pytest.raises(WorkflowNodeBindingError) as exc_info:
+        parse_workflow_node_bindings(payload)
+
+    assert exc_info.value.code == "workflow_node.binding_invalid"
+
+
+def test_binding_constructor_rejects_noncanonical_location() -> None:
+    with pytest.raises(WorkflowNodeBindingError) as exc_info:
+        WorkflowNodeBinding(
+            container_path=(("loop", ""),),
+            workflow_node_id="child-1",
+            target_app_id=uuid.uuid4(),
+            deployment_id=uuid.uuid4(),
+            deployment_version=1,
+            snapshot_sha256="a" * 64,
+        )
+
+    assert exc_info.value.code == "workflow_node.binding_invalid"
+
+
 def test_snapshot_hash_rejects_nan() -> None:
     with pytest.raises(WorkflowNodeBindingError):
         canonical_snapshot_sha256({"value": float("nan")})

@@ -17,7 +17,8 @@
 import asyncio
 import functools
 import logging
-from typing import Optional
+from collections.abc import Callable, Mapping
+from typing import Any, Optional
 
 from fastapi import HTTPException, Request
 
@@ -79,12 +80,16 @@ def audit(
     *,
     target_param: Optional[str] = None,
     target_type: Optional[str] = None,
+    metadata_factory: Optional[
+        Callable[[dict[str, Any]], Mapping[str, Any]]
+    ] = None,
 ):
     """
     Args:
         action: 기록할 행동 타입. AuditAction 상수를 넘긴다(예: AuditAction.WORKFLOW_DEPLOY).
         target_param: target_id를 담은 핸들러 인자 이름(예: "workflow_id").
         target_type: 대상 리소스 타입(예: "workflow"). 생략 시 action의 접두사를 사용한다.
+        metadata_factory: handler 인자에서 domain-safe metadata만 만드는 함수.
     """
 
     def decorator(func):
@@ -95,6 +100,17 @@ def audit(
             metadata = _request_metadata(_find_request(kwargs))
             if actor is not None:
                 metadata["actor"] = actor.snapshot
+            if metadata_factory is not None:
+                try:
+                    domain_metadata = metadata_factory(kwargs)
+                except Exception:
+                    logger.warning(
+                        "Audit metadata factory failed: action=%s",
+                        action,
+                    )
+                else:
+                    if isinstance(domain_metadata, Mapping):
+                        metadata.update(domain_metadata)
             if extra_meta:
                 metadata.update(extra_meta)
 

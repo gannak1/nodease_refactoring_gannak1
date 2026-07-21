@@ -12,6 +12,11 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 
+from apps.shared.domain.workflow_node_location import (
+    CanonicalWorkflowNodeLocation,
+    ContainerPath,
+)
+
 
 class CapabilityPurpose(str, Enum):
     MAIN_GENERATION = "main_generation"
@@ -115,12 +120,14 @@ class ProviderExecutionBinding:
     execution_admission_id: uuid.UUID
     provider_attempt_id: uuid.UUID
     purpose: CapabilityPurpose
+    container_path: ContainerPath = ()
 
     def __post_init__(self) -> None:
         if self.deployment_version < 1:
             raise ValueError("deployment version must be positive")
         if not self.node_id or len(self.node_id) > 255:
             raise ValueError("node id is invalid")
+        CanonicalWorkflowNodeLocation(self.container_path, self.node_id)
 
     def as_kwargs(self) -> dict[str, object]:
         return {
@@ -133,6 +140,7 @@ class ProviderExecutionBinding:
             "execution_admission_id": self.execution_admission_id,
             "provider_attempt_id": self.provider_attempt_id,
             "purpose": self.purpose,
+            "container_path": self.container_path,
         }
 
 

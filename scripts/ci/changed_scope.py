@@ -52,6 +52,7 @@ _WORKFLOW_POSTGRES_PATTERNS = (
     "apps/shared/services/schedule_dispatch_*.py",
     "apps/shared/tests/db/test_schedule_dispatch_disposable_postgres.py",
     "apps/shared/tests/db/test_external_effect_disposable_postgres.py",
+    "apps/shared/tests/db/test_provider_execution_node_location_migration.py",
     "apps/workflow_engine/adapters/db/external_effect_repository.py",
     "apps/workflow_engine/application/external_effect.py",
     "apps/workflow_engine/composition/external_effect_readiness.py",

@@ -16,6 +16,7 @@ from apps.shared.domain.workflow_node_binding import (
     apply_workflow_node_bindings,
     canonical_snapshot_sha256,
 )
+from apps.shared.domain.workflow_node_location import iter_workflow_node_locations
 
 
 class _Repository:
@@ -1428,3 +1429,34 @@ def _catalog(**definitions: tuple[str, bool]) -> dict[str, NodeCatalogSnapshot]:
         implemented=True,
     )
     return snapshots
+
+
+def test_preflight_uses_the_shared_canonical_nested_node_locations() -> None:
+    graph = {
+        "nodes": [
+            _node(
+                "loop-a",
+                "loopNode",
+                {
+                    "subGraph": {
+                        "nodes": [_node("llm-1", "llmNode")],
+                        "edges": [],
+                    }
+                },
+            )
+        ],
+        "edges": [],
+    }
+
+    shared = [
+        (located.location.container_path, located.location.node_id)
+        for located in iter_workflow_node_locations(graph)
+    ]
+    preflight = [
+        (container_path, node["id"])
+        for node, container_path in DeploymentPreflightUseCase._iter_graph_nodes(
+            graph
+        )
+    ]
+
+    assert preflight == shared

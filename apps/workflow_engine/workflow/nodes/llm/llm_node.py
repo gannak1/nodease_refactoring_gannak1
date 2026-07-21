@@ -11,6 +11,10 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
+from apps.shared.domain.workflow_node_location import (
+    CanonicalWorkflowNodeLocation,
+    WorkflowNodeLocationError,
+)
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMModel
 from apps.shared.db.models.model_routing_policy import LLMModelRoutingGlobalProfile
@@ -3391,6 +3395,17 @@ class LLMNode(Node[LLMNodeData]):
             "reason": reason,
             "runtime_surface": "workflow_llm_node",
         }
+        control = self._runtime_control
+        if control is not None:
+            try:
+                location = CanonicalWorkflowNodeLocation(
+                    control.binding_container_path,
+                    self.id,
+                )
+            except WorkflowNodeLocationError:
+                pass
+            else:
+                metadata["node_location_ref"] = location.safe_reference
         if error is not None:
             metadata["error_type"] = type(error).__name__
         if credential_id is None:
