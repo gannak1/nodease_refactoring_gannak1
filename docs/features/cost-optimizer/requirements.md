@@ -14,8 +14,9 @@ FR-011의 현재 제품 계약은
 [ADR-0059](../../decisions/ADR-0059-judge-bootstrap-incremental-routing.md)를 따르는
 `judge_bootstrap_incremental_v1`의 무수동-bootstrap 경로다. 새 workflow가
 "정책이 없어서 routing을 시작할 수 없는" 상태에 머물지 않게, 자동 라우팅을 켠 테스트와
-배포 실행은 첫 요청부터 runtime Judge가 현재 요청에 맞는 모델을 선택한다. 정상 실행 결과가
-쌓일수록 로컬 라우터가 Judge를 대신한다.
+배포 실행은 첫 요청부터 runtime Judge가 현재 요청의 요구 수준을 판정하고, 서버가 현재
+실행 주체가 사용할 수 있는 후보 중 capability와 비용을 비교해 모델을 선택한다. 정상 실행
+결과가 쌓일수록 로컬 라우터가 Judge를 대신한다.
 
 배포 시에는 실행 주체가 사용할 수 있는 후보 모델로 Judge-first policy를 저장한다. 정책 행이
 아직 없거나 삭제된 예외 상황에서도 runtime은 같은 후보 모델로 일회성 Judge-first policy를
@@ -27,16 +28,19 @@ FR-011의 현재 제품 계약은
 
 일반 실행은 현재 문의의 주제 키워드나 문장 유사도를 저장·검색하지 않는다. 초기 단계에서는
 **변수 치환이 끝난 prompt와 들어온 입력**을 Judge에 일시적으로 전달해, 실행 주체가 쓸 수
-있는 전체 후보 중 하나를 선택하게 한다. Judge 응답은 선택 모델·신뢰도·안전한 근거만 남기며,
-원문 prompt, 입력 payload, RAG 문서 원문은 정책 artifact나 API 응답에 저장하지 않는다.
+있는 전체 후보의 요구 수준을 판정하게 한다. 서버는 그 판정과 모델 catalog를 사용해 실제
+처리 모델을 고른다. 검증되지 않은 후보도 현재 credential과 capability 조건을 충족하면 첫
+요청부터 선택할 수 있으며, 운영 결과는 이후 정책·학습 품질을 판단하는 근거로만 쓴다. Judge
+응답은 요구 수준·신뢰도·안전한 근거만 남기며, 원문 prompt, 입력 payload, RAG 문서 원문은
+정책 artifact나 API 응답에 저장하지 않는다.
 
 Runtime Judge 입력은 현재 요청의 JSON key와 scalar type을 보존하고, system/user/assistant prompt를
 각각 독립된 길이 예산으로 전달한다. RAG 문서 원문은 개인정보와 영업정보 노출 위험 때문에 전달하지
 않는다. 대신 검색 context 크기, chunk/source 수, 근거 충분 여부, 부분 결과 여부, query rewrite 여부와
 안전한 부족 사유를 전달한다. 후보 profile에는 context window를 포함한다. 고정 JSON Schema와 출력
 형식은 요청별 Judge 입력에서 제외한다. Judge는 작업 복잡도, 결정 영향도, 근거 종합 범위만 0~3으로
-판단한 뒤 필요한 능력을 충족하는 후보 안에서만
-비용·지연·fallback을 비교한다.
+판단한다. 서버는 필요한 능력을 충족하는 현재 사용 가능 후보 안에서 비용·지연·fallback을
+비교한다.
 
 Judge 선택은 즉시 학습하지 않는다. 실행 중에는 학습 전 로컬 예측을 먼저 계산하고 원문 없는 숫자 vector, Judge가 판단한
 `task_complexity`·`decision_impact`·`evidence_synthesis`, 선택 모델만 대기 label로 저장하고,
@@ -483,8 +487,9 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 ### FR-011. Judge Bootstrap 점진 학습 자동 모델 라우팅
 
 자동 모델 라우팅은 입력 문장을 입력군으로 저장하거나 주제 키워드 rule을 하드코딩하지
-않는다. 초기에는 Judge가 현재 요청과 노드 계약을 읽어 후보 모델을 선택하고, 이후에는
-그 선택과 실제 실행 결과로 학습한 로컬 라우터가 먼저 모델을 고른다.
+않는다. 초기에는 Judge가 현재 요청과 노드 계약을 읽어 요구 수준을 판정하고, 서버가
+현재 사용 가능한 전체 후보에서 처리 모델을 선택한다. 이후에는 그 판단과 실제 실행
+결과로 학습한 로컬 라우터가 먼저 요구 수준을 예측한다.
 
 #### 초기 정책 생성
 
@@ -492,8 +497,10 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 - bootstrap은 system/user/assistant prompt, 입력 매핑, 출력 형식과 schema, RAG 설정,
   후속 노드 계약을 읽어 Judge 요청 계약과 로컬 router artifact 초기 상태를 만든다.
 - bootstrap 생성은 외부 LLM을 호출하지 않으며 즉시 `ready` 상태가 된다.
-- 초기 Judge는 현재 요청별로 `selected_model_id`, `confidence`, `reason_code`를 반환한다.
-  Judge label은 로컬 모델 선택 분류기의 학습 데이터이며 runtime keyword rule이 아니다.
+- 초기 Judge는 현재 요청별로 세 요구 축, `confidence`, `reason_code`를 반환한다. 모델 ID는
+  반환하지 않는다. 서버는 catalog capability·가격과 현재 credential 조건을 적용해 전체
+  후보에서 선택한다. 후보가 아직 운영 검증을 통과하지 않았다는 이유만으로 제외하지 않는다.
+  Judge label은 로컬 요구 수준 분류기의 학습 데이터이며 runtime keyword rule이 아니다.
 - 실행 중 메모리에 있는 rendered prompt로 mDeBERTa feature와 **학습 전 예측**을 만든 뒤,
   원문 대신 숫자 vector·예측·Judge 선택만 대기 저장한다. workflow 완료 뒤 schema 통과,
   후속 노드 성공, fallback 미발생을 확인해 label을 확정한다. 실제 가중치 학습은 Celery가
@@ -508,7 +515,7 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 #### 실행 시 모델 선택과 점진 전환
 
 - `judge_first`: 계약을 통과한 성공 배포 실행 Judge label이 50건 미만이면 매 운영 요청에 Judge를 호출한다.
-- `local_first`: Judge 선택 label이 50건 이상 쌓이고 최근 20건의 학습 전 예측 일치율 80%,
+- `local_first`: Judge 요구 수준 label이 50건 이상 쌓이고 최근 20건의 학습 전 예측 일치율 80%,
   축별 평균 오차 0.5 이하, 계약 통과율 95%와 완료된 운영 품질 기준을 통과하면 로컬
   mDeBERTa 분류기가 전체 사용 가능 후보 중 하나를 먼저 선택한다.
 - `local_first` 상태에서 local prediction의 confidence가 기준 미만이거나 선택 모델이 현재
