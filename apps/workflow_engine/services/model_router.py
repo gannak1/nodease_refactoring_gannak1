@@ -522,6 +522,9 @@ class ModelRouter:
         if task_description:
             task_contract_parts.append(f"TASK_DESCRIPTION:\n{task_description}")
         task_contract_parts.append(f"PROMPT_CONSTRAINTS:\n{prompt_feature}")
+        output_contract = cls._judge_output_contract(node_data)
+        if output_contract:
+            task_contract_parts.append(f"OUTPUT_CONTRACT:\n{output_contract}")
         request_json = cls._judge_request_json(inputs)
         safe_rag_metadata = {
             key: value
