@@ -301,7 +301,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      NODE_ENV: test
       PYTHONPATH: ${{ github.workspace }}
     steps:
       - name: Checkout pull request merge
