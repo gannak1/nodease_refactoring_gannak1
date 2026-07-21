@@ -446,6 +446,8 @@ class ProviderExecutionCapabilityService:
             output_token_cap=command.output_token_cap,
             cost_cap_microusd=command.cost_cap_microusd,
             state="active",
+            created_at=issue_now,
+            updated_at=issue_now,
             expires_at=issue_now + CAPABILITY_TTL,
         )
         db.add(record)

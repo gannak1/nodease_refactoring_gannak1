@@ -489,7 +489,7 @@ def test_database_clock_now_uses_wall_clock_timestamp():
     assert result == database_now.replace(tzinfo=timezone.utc)
 
 
-def test_issue_capability_uses_database_clock_for_expiry(monkeypatch):
+def test_issue_capability_uses_database_clock_for_lifecycle_timestamps(monkeypatch):
     organization_id = uuid.uuid4()
     model_id = uuid.uuid4()
     credential_id = uuid.uuid4()
@@ -628,6 +628,8 @@ def test_issue_capability_uses_database_clock_for_expiry(monkeypatch):
     )
 
     assert capability is db.added
+    assert capability.created_at == database_now
+    assert capability.updated_at == database_now
     assert capability.expires_at == database_now + CAPABILITY_TTL
     assert order == [
         "capability_refresh",
