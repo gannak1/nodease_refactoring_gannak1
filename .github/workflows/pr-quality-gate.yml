@@ -659,8 +659,26 @@ jobs:
           validate_rendered_chart \
             -f infra/helm/moduly/values-production.yaml \
             -f tests/ci/fixtures/helm-values-ci.yaml
+          assert_invalid_storage_configuration() {
+            local invalid_override="$1"
+            local safe_field="$2"
+            if helm template nodease-invalid-storage infra/helm/moduly \
+              -f infra/helm/moduly/values-production.yaml \
+              -f tests/ci/fixtures/helm-values-ci.yaml \
+              --set-string "$invalid_override" > /dev/null 2>&1; then
+              echo "::error::Helm accepted invalid cloud storage field: $safe_field"
+              exit 1
+            fi
+          }
+          assert_invalid_storage_configuration "storage.type=REMOTE" "storage.type"
+          assert_invalid_storage_configuration "storage.bucketName=" "storage.bucketName"
+          assert_invalid_storage_configuration "storage.region=" "storage.region"
+          assert_invalid_storage_configuration \
+            "gateway.env.STORAGE_TYPE=CLOUD" "gateway.env.STORAGE_TYPE"
+          assert_invalid_storage_configuration \
+            "worker.env.S3_BUCKET_NAME=legacy-bucket" "worker.env.S3_BUCKET_NAME"
 
-      - name: Reject unsupported EKS deployment surface
+      - name: Reject unsupported or unapproved deployment surface
         if: needs.scope.outputs.support_surface_validation == 'true'
         run: python -m scripts.ci.check_supported_deployment_surface
 

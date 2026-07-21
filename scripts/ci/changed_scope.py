@@ -147,6 +147,8 @@ _UNSUPPORTED_DEPLOYMENT_PREFIXES = (
     "infra/terraform/",
 )
 
+_GITHUB_WORKFLOW_SUFFIXES = frozenset({".yml", ".yaml"})
+
 _PROTECTED_CI_WORKFLOW_PATHS = {
     ".github/workflows/pr-ci-control-guard.yml",
     ".github/workflows/pr-quality-gate.yml",
@@ -312,12 +314,20 @@ def _is_dockerfile_path(path: str) -> bool:
     )
 
 
+def is_github_workflow_path(raw_path: str) -> bool:
+    path = normalize_repo_path(raw_path)
+    workflow_path = PurePosixPath(path)
+    return (
+        workflow_path.parent == PurePosixPath(".github/workflows")
+        and workflow_path.suffix.lower() in _GITHUB_WORKFLOW_SUFFIXES
+    )
+
+
 def is_unsupported_deployment_path(raw_path: str) -> bool:
     path = normalize_repo_path(raw_path)
     workflow_path = PurePosixPath(path)
     if (
-        workflow_path.parent == PurePosixPath(".github/workflows")
-        and workflow_path.suffix.lower() in {".yml", ".yaml"}
+        is_github_workflow_path(path)
         and (
             workflow_path.stem in _UNSUPPORTED_DEPLOYMENT_WORKFLOW_STEMS
             or workflow_path.stem.startswith(
@@ -330,7 +340,12 @@ def is_unsupported_deployment_path(raw_path: str) -> bool:
 
 
 def _select_deployment_validation(path: str, scope: ChangeScope) -> None:
-    if path.startswith((".github/workflows/", ".github/actions/")):
+    if is_github_workflow_path(path):
+        scope.actions_validation = True
+        # The support-surface guard owns an allowlist and content inspection,
+        # so every executable workflow change must select it regardless of name.
+        scope.support_surface_validation = True
+    elif path.startswith((".github/workflows/", ".github/actions/")):
         scope.actions_validation = True
     if path.startswith("infra/helm/") or path == "tests/ci/fixtures/helm-values-ci.yaml":
         scope.helm_validation = True

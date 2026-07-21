@@ -1,4 +1,4 @@
-{{- $storageType := upper (default "LOCAL" .Values.gateway.env.STORAGE_TYPE) -}}
+{{- $storageType := include "moduly.storageType" . -}}
 {{- if and .Values.knowledgeWorker.enabled (eq $storageType "LOCAL") .Values.knowledgeWorker.localStorage.enabled (not .Values.knowledgeWorker.localStorage.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim

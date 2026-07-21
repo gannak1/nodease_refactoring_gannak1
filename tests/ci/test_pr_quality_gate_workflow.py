@@ -215,7 +215,10 @@ def test_helm_validation_requires_tracked_lock_before_dependency_build():
     helm_block = workflow.split(
         "- name: Validate Helm chart",
         maxsplit=1,
-    )[1].split("- name: Reject unsupported EKS deployment surface", maxsplit=1)[0]
+    )[1].split(
+        "- name: Reject unsupported or unapproved deployment surface",
+        maxsplit=1,
+    )[0]
 
     tracked_lock_guard = 'git ls-files --error-unmatch -- "$chart_lock"'
     dependency_build = "helm dependency build infra/helm/moduly"
@@ -224,7 +227,7 @@ def test_helm_validation_requires_tracked_lock_before_dependency_build():
     assert helm_block.index(tracked_lock_guard) < helm_block.index(dependency_build)
 
 
-def test_unsupported_eks_surface_guard_is_wired_into_quality_gate():
+def test_unsupported_deployment_surface_guard_is_wired_into_quality_gate():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
 
     assert "support_surface_validation" in workflow

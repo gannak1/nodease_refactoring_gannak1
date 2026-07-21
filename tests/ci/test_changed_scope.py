@@ -259,9 +259,25 @@ def test_deployment_workflow_selects_static_validation_without_runtime_tests():
 
     assert scope.deployment_validation is True
     assert scope.actions_validation is True
+    assert scope.support_surface_validation is True
     assert scope.client is False
     assert scope.gateway_tests is False
     assert scope.broad_python is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/workflows/deploy-prod.yml",
+        ".github/workflows/release-renamed.yaml",
+    ],
+)
+def test_every_workflow_change_selects_support_boundary_guard(path: str):
+    scope = classify_paths([path])
+
+    assert scope.deployment_validation is True
+    assert scope.actions_validation is True
+    assert scope.support_surface_validation is True
 
 
 @pytest.mark.parametrize(

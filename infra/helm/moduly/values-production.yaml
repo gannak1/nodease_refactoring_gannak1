@@ -5,12 +5,20 @@
 # storage, ingress, network, image, and secret values before deployment.
 #
 # Usage:
-#   helm install moduly ./infra/helm/moduly -f values-production.yaml
+#   helm install moduly ./infra/helm/moduly \
+#     -f values-production.yaml -f operator-values.yaml
 
 # Global settings
 global:
   imagePullPolicy: Always  # Always pull latest images in production
   storageClass: ""  # Use the cluster default unless the operator selects one.
+
+# Intentionally incomplete until the operator supplies both coordinates.
+# CLOUD renders fail closed when bucketName or region is empty.
+storage:
+  type: "CLOUD"
+  bucketName: ""
+  region: ""
 
 # =============================================================================
 # Application Services
@@ -78,11 +86,6 @@ gateway:
     # Encryption keys for external DB connections
     # MASTER_KEY and ENCRYPTION_KEY are in secrets
     
-    # Configure the application object-storage provider before deployment.
-    STORAGE_TYPE: "CLOUD"
-    S3_BUCKET_NAME: ""
-    AWS_REGION: ""
-
     # Google OAuth (optional)
     # GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are in secrets
     
@@ -129,10 +132,6 @@ worker:
     # Sandbox configuration
     SANDBOX_URL: "http://{{ .Release.Name }}-sandbox:8194"
     
-    # Storage configuration
-    S3_BUCKET_NAME: ""
-    AWS_REGION: ""
-
   networkPolicy:
     enabled: true
     # Replace with the actual external dependency CIDR before deployment.

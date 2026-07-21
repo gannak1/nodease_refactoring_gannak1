@@ -1,5 +1,6 @@
 {{- if .Values.worker.enabled }}
 {{- include "moduly.validateScheduleDispatchMode" . }}
+{{- $storageType := include "moduly.storageType" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -90,7 +91,7 @@ spec:
             configMapKeyRef:
               name: {{ include "moduly.configMapName" . }}
               key: STORAGE_TYPE
-        {{- if .Values.worker.env.S3_BUCKET_NAME }}
+        {{- if eq $storageType "CLOUD" }}
         - name: S3_BUCKET_NAME
           valueFrom:
             configMapKeyRef:

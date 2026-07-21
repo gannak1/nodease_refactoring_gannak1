@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 import yaml
 
 from scripts.ci.check_supported_deployment_surface import (
@@ -11,12 +12,18 @@ from scripts.ci.check_supported_deployment_surface import (
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_repository_contains_no_unsupported_eks_deployment_surface():
+def test_repository_contains_only_approved_deployment_surfaces():
+    assert (
+        find_unsupported_deployment_paths(
+            tracked_paths(REPOSITORY_ROOT),
+            repo_root=REPOSITORY_ROOT,
+            require_complete_workflow_allowlist=True,
+        )
+        == []
+    )
 
-    assert find_unsupported_deployment_paths(tracked_paths(REPOSITORY_ROOT)) == []
 
-
-def test_support_guard_matches_only_removed_eks_surfaces():
+def test_support_guard_rejects_legacy_and_unapproved_surfaces():
     paths = [
         ".github/workflows/deploy-dev-namespace.yml",
         ".github/workflows/deploy-dev-namespace.yaml",
@@ -28,13 +35,85 @@ def test_support_guard_matches_only_removed_eks_surfaces():
         ".github/workflows/deploy-eks-worker.yml",
         ".github/workflows/deploy-eks-schedule-coordinated.yml",
         ".github/workflows/deploy-eks-reintroduced.yml",
+        ".github/workflows/deploy-prod.yml",
+        ".github/workflows/release-renamed.yaml",
         "infra/k8s/namespaces/default/gateway.yaml",
         "infra/terraform/eks.tf",
         "infra/helm/moduly/values.yaml",
         "docker/docker-compose.yml",
     ]
 
-    assert find_unsupported_deployment_paths(paths) == paths[:12]
+    assert find_unsupported_deployment_paths(paths) == paths[:14]
+
+
+def test_support_guard_accepts_allowlisted_provider_neutral_workflow(tmp_path):
+    workflow_path = ".github/workflows/publish-images.yml"
+    target = tmp_path / workflow_path
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "name: Publish\nsteps:\n  - run: echo provider-neutral\n",
+        encoding="utf-8",
+    )
+    assert (
+        find_unsupported_deployment_paths([workflow_path], repo_root=tmp_path) == []
+    )
+
+
+def test_support_guard_rejects_stale_allowlist_entry_after_workflow_removal():
+    tracked_approved_workflows = [
+        ".github/workflows/pr-ci-control-guard.yml",
+        ".github/workflows/pr-quality-gate.yml",
+        ".github/workflows/test-agent-builder-postgres.yml",
+        ".github/workflows/test-knowledge-runtime-postgres.yml",
+        ".github/workflows/test-memory-postgres.yml",
+        ".github/workflows/test-schedule-dispatch-postgres.yml",
+    ]
+
+    assert find_unsupported_deployment_paths(
+        tracked_approved_workflows,
+        require_complete_workflow_allowlist=True,
+    ) == [".github/workflows/publish-images.yml"]
+
+
+def test_support_guard_fails_closed_for_non_utf8_allowlisted_workflow(tmp_path):
+    workflow_path = ".github/workflows/publish-images.yml"
+    target = tmp_path / workflow_path
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"\xff\xfe")
+
+    assert find_unsupported_deployment_paths(
+        [workflow_path],
+        repo_root=tmp_path,
+    ) == [workflow_path]
+
+
+@pytest.mark.parametrize(
+    "provider_specific_step",
+    [
+        "uses: aws-actions/configure-aws-credentials@v4",
+        "uses: aws-actions/amazon-ecr-login@v2",
+        "run: aws eks update-kubeconfig --name example",
+        "run: eksctl create cluster --name example",
+        "run: docker push account.dkr.ecr.region.amazonaws.com/image",
+        "run: echo eks.amazonaws.com/role-arn",
+    ],
+)
+def test_support_guard_rejects_provider_specific_content_in_allowlisted_workflow(
+    tmp_path,
+    provider_specific_step,
+):
+    workflow_path = ".github/workflows/publish-images.yml"
+    target = tmp_path / workflow_path
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        f"name: Publish\nsteps:\n  - {provider_specific_step}\n",
+        encoding="utf-8",
+    )
+
+    assert find_unsupported_deployment_paths(
+        [workflow_path],
+        repo_root=tmp_path,
+    ) == [workflow_path]
 
 
 def test_production_values_are_provider_neutral():

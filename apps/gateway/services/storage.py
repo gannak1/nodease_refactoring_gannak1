@@ -1,5 +1,4 @@
 import errno
-import logging
 import os
 import shutil
 import tempfile
@@ -21,13 +20,19 @@ from apps.gateway.services.storage_reference import (
     resolve_s3_delete_key,
 )
 
-logger = logging.getLogger(__name__)
-
 DEFAULT_LOCAL_UPLOAD_DIR = "/app/uploads"
 FALLBACK_LOCAL_UPLOAD_DIR = str(Path(__file__).resolve().parents[3] / "uploads")
 _LOCAL_STORAGE_FALLBACK_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 _local_storage_root_lock = threading.Lock()
 _resolved_default_local_upload_dir: str | None = None
+
+
+class StorageConfigurationError(RuntimeError):
+    """Safe failure for an unsupported or incomplete storage configuration."""
+
+
+class StorageOperationError(RuntimeError):
+    """Safe failure for a provider-backed storage operation."""
 
 
 def _prepare_writable_directory(directory: str) -> str:
@@ -133,15 +138,15 @@ class S3StorageService(StorageService):
     def __init__(self):
         self.bucket_name = settings.S3_BUCKET_NAME
         self.region = settings.AWS_REGION
+        if not self.bucket_name or not self.region:
+            raise StorageConfigurationError("storage_configuration_invalid")
+
         self.s3_client = boto3.client(
             "s3",
             aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
             aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
             region_name=self.region,
         )
-
-        if not self.bucket_name:
-            raise ValueError("S3_BUCKET_NAME is not set. ")
 
     def upload(self, file: UploadFile) -> str:
         s3_key = build_upload_object_key(file.filename)
@@ -156,9 +161,8 @@ class S3StorageService(StorageService):
                     "ContentDisposition": "inline",
                 },
             )
-        except Exception as e:
-            logger.error(f"S3 Upload failed: {e}")
-            raise e
+        except Exception:
+            raise StorageOperationError("storage_upload_failed") from None
         finally:
             # 포인터 초기화
             try:
@@ -213,9 +217,8 @@ class S3StorageService(StorageService):
                 "key": s3_key,
                 "method": "PUT",
             }
-        except Exception as e:
-            logger.error(f"Presigned URL generation failed: {e}")
-            raise e
+        except Exception:
+            raise StorageOperationError("storage_presign_failed") from None
 
     def delete(self, file_path: str):
         key = resolve_s3_delete_key(
@@ -233,14 +236,10 @@ class S3StorageService(StorageService):
 
 
 def get_storage_service() -> StorageService:
-    # 환경변수가 없거나 None일 경우 기본값 LOCAL로 처리
-    mode = (settings.STORAGE_TYPE or "LOCAL").upper()
+    mode = settings.STORAGE_TYPE
 
     if mode == "LOCAL":
         return LocalStorageService()
-    elif mode == "CLOUD":
+    if mode == "CLOUD":
         return S3StorageService()
-    else:
-        # 지원되지 않는 모드인 경우 경고 후 기본값(LOCAL) 사용
-        logger.warning(f"Unknown STORAGE_TYPE '{mode}', falling back to LOCAL")
-        return LocalStorageService()
+    raise StorageConfigurationError("storage_configuration_invalid")

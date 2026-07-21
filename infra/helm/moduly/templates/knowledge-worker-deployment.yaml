@@ -1,5 +1,5 @@
 {{- if .Values.knowledgeWorker.enabled }}
-{{- $storageType := upper (default "LOCAL" .Values.gateway.env.STORAGE_TYPE) }}
+{{- $storageType := include "moduly.storageType" . }}
 {{- if and (eq $storageType "LOCAL") (not .Values.knowledgeWorker.localStorage.enabled) }}
 {{- fail "knowledgeWorker.localStorage.enabled must be true when Knowledge worker uses LOCAL storage" }}
 {{- end }}
@@ -150,7 +150,7 @@ spec:
             configMapKeyRef:
               name: {{ include "moduly.configMapName" . }}
               key: STORAGE_TYPE
-        {{- if .Values.gateway.env.S3_BUCKET_NAME }}
+        {{- if eq $storageType "CLOUD" }}
         - name: S3_BUCKET_NAME
           valueFrom:
             configMapKeyRef:

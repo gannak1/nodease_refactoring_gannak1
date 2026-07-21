@@ -17,6 +17,34 @@ network. Direct gateway deployments may intentionally keep the list empty.
 {{- end -}}
 
 {{/*
+Normalize and validate the chart-wide document storage contract. CLOUD must
+never render without both coordinates; provider credentials remain external.
+*/}}
+{{- define "moduly.storageType" -}}
+{{- upper (trim (default "LOCAL" .Values.storage.type)) -}}
+{{- end -}}
+
+{{- define "moduly.validateStorage" -}}
+{{- $legacyGatewayStorage := or (hasKey .Values.gateway.env "STORAGE_TYPE") (hasKey .Values.gateway.env "S3_BUCKET_NAME") (hasKey .Values.gateway.env "AWS_REGION") -}}
+{{- $legacyWorkerStorage := or (hasKey .Values.worker.env "S3_BUCKET_NAME") (hasKey .Values.worker.env "AWS_REGION") -}}
+{{- if or $legacyGatewayStorage $legacyWorkerStorage -}}
+{{- fail "legacy component storage keys are unsupported; use the root storage block" -}}
+{{- end -}}
+{{- $storageType := include "moduly.storageType" . -}}
+{{- if not (has $storageType (list "LOCAL" "CLOUD")) -}}
+{{- fail "storage.type must be LOCAL or CLOUD" -}}
+{{- end -}}
+{{- if eq $storageType "CLOUD" -}}
+{{- if empty (trim (default "" .Values.storage.bucketName)) -}}
+{{- fail "storage.bucketName is required when storage.type is CLOUD" -}}
+{{- end -}}
+{{- if empty (trim (default "" .Values.storage.region)) -}}
+{{- fail "storage.region is required when storage.type is CLOUD" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Create a default fully qualified app name.
 We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
 If release name contains chart name it will be used as a full name.

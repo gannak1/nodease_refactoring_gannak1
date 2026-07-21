@@ -12,6 +12,13 @@ global:
   # Storage class (use default for most environments)
   storageClass: ""
 
+# Shared document object-storage contract. Gateway, Workflow Worker and
+# Knowledge Worker consume this one root block through the shared ConfigMap.
+storage:
+  type: "LOCAL"
+  bucketName: ""
+  region: ""
+
 # Durable distributed schedule dispatch. Keep disabled until the migration-first
 # rollout has completed and the legacy dispatcher has been drained.
 scheduleDispatch:
@@ -104,11 +111,6 @@ gateway:
     # Encryption keys for external DB connections
     # MASTER_KEY and ENCRYPTION_KEY are in secrets
     
-    # Storage configuration
-    STORAGE_TYPE: "LOCAL"
-    S3_BUCKET_NAME: ""
-    AWS_REGION: "ap-northeast-2"
-
     # Google OAuth (optional)
     # GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are in secrets
     
@@ -180,10 +182,6 @@ worker:
     SANDBOX_URL: "http://{{ .Release.Name }}-sandbox:8194"
     # SANDBOX_API_KEY is in secrets
     
-    # Storage configuration (for file processing)
-    S3_BUCKET_NAME: ""
-    AWS_REGION: "ap-northeast-2"
-
   # Worker outbound defense-in-depth. External dependency CIDRs are allowed
   # only on their service ports; generic public egress remains port-limited.
   networkPolicy:
