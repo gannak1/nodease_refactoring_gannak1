@@ -164,6 +164,13 @@ describe('AuditSearchTab', () => {
     const drawer = await screen.findByRole('dialog', {
       name: '감사 로그 상세',
     });
+    expect(drawer).toHaveClass(
+      'max-w-xl',
+      '[&_.text-xs]:text-sm',
+      '[&_.text-sm]:text-base',
+      '[&_.text-base]:text-lg',
+      '[&_.text-lg]:text-xl',
+    );
     expect(
       within(drawer).getByText('감사 당시 이름 (historical@example.com)'),
     ).toBeInTheDocument();

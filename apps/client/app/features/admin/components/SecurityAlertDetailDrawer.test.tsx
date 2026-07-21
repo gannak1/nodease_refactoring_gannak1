@@ -147,6 +147,13 @@ describe('SecurityAlertDetailDrawer', () => {
     );
 
     const drawer = await screen.findByRole('dialog', { name: '보안 알림 상세' });
+    expect(drawer).toHaveClass(
+      'max-w-4xl',
+      '[&_.text-xs]:text-sm',
+      '[&_.text-sm]:text-base',
+      '[&_.text-base]:text-lg',
+      '[&_.text-lg]:text-xl',
+    );
     expect(await within(drawer).findByText('반복된 정책 차단')).toBeInTheDocument();
     expect(within(drawer).getByText('개인정보 포함 근거 감지')).toBeInTheDocument();
     expect(within(drawer).getByText('오탐')).toBeInTheDocument();

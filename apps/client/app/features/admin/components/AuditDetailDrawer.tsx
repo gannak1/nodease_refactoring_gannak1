@@ -111,7 +111,7 @@ export function AuditDetailDrawer({
         aria-label="감사 로그 상세"
         tabIndex={-1}
         onKeyDown={handleKeyDown}
-        className="relative flex h-full w-full max-w-md flex-col overflow-y-auto bg-white shadow-xl outline-none"
+        className="relative flex h-full w-full max-w-xl flex-col overflow-y-auto bg-white shadow-xl outline-none [&_.text-xs]:text-sm [&_.text-sm]:text-base [&_.text-base]:text-lg [&_.text-lg]:text-xl"
       >
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
           <h2 className="text-sm font-semibold text-slate-950">

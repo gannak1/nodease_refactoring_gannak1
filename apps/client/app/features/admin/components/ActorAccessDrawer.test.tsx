@@ -126,6 +126,15 @@ describe('ActorAccessDrawer', () => {
     );
 
     await screen.findByText('김멤버 · member@example.com');
+    expect(
+      screen.getByRole('dialog', { name: '행위자 접근 관리' }),
+    ).toHaveClass(
+      'max-w-4xl',
+      '[&_.text-xs]:text-sm',
+      '[&_.text-sm]:text-base',
+      '[&_.text-base]:text-lg',
+      '[&_.text-lg]:text-xl',
+    );
     fireEvent.click(
       screen.getByRole('button', { name: '보안 알림 상세로 돌아가기' }),
     );
