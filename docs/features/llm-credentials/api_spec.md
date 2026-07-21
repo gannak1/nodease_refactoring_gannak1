@@ -7,14 +7,22 @@ Status: Draft
 | --- | --- | --- | --- |
 | GET | `/api/v1/llm/agent-answer-options` | RAG Agent answer generation에 사용할 수 있는 safe model/credential pair를 반환한다 | Active organization scope, credential `use`, verified credential-model relation |
 | GET | `/api/v1/llm/my-models` | 현재 model listing surface | 현재 동작 |
-| GET | `/api/v1/llm/credentials` | 현재 credential listing surface | 현재 동작. 목표 Agent answer option 계약이 아니다 |
+| GET | `/api/v1/llm/credentials` | active organization에서 읽을 수 있는 valid credential 목록을 반환한다 | Active organization scope, credential `read` |
 | POST | `/api/v1/llm/credentials` | active organization에 LLM credential을 등록하고 provider 모델 relation을 동기화한다 | Organization manager only |
 | DELETE | `/api/v1/llm/credentials/{credential_id}` | active organization의 LLM credential을 revoke한다. Current 구현은 `is_valid=false`이며 row를 hard delete하지 않는다 | Organization manager 또는 credential `manage` |
+| POST | `/api/v1/llm/credentials/{credential_id}/sync-models` | active organization credential의 provider model relation을 재동기화한다 | Credential `manage`/`write` |
 | GET | `/api/v1/deployments/{deployment_id}/llm-credential-policies` | immutable deployment version의 active LLM credential policy를 safe projection으로 조회한다 | Active organization manager only |
 | PUT | `/api/v1/deployments/{deployment_id}/llm-credential-policies/{node_id}` | immutable deployment LLM node/model에 대한 server-owned credential policy revision을 생성한다 | Active organization manager only |
 
 ## 요청과 응답 모델
 
+### Credential Listing And Active Organization
+
+`GET /api/v1/llm/credentials`는 `X-Organization-Id`를 필수 active organization context로 사용한다. Gateway는 header UUID와 active membership을 검증하고, service에는 이 canonical organization id를 명시적으로 전달한다.
+
+Database 후보는 `(organization_id = active organization, is_valid = true)`로 먼저 제한한다. 그 뒤 같은 organization 안에서 credential `read` 권한을 평가한다. 다른 organization에 대한 direct permission 또는 Team permission이 있어도 현재 목록에 합쳐지지 않으며, revoked credential도 반환하지 않는다. 응답은 `LLMCredentialResponse`의 safe projection만 사용하고 raw API key, `encrypted_config` 또는 provider raw payload를 포함하지 않는다.
+
+Header 누락은 `400 organization.required`, 잘못된 UUID는 `422 validation.failed`, active membership 밖 organization은 `404 resource.not_found`로 처리한다.
 ### Credential Registration
 
 Credential registration은 개인 사용자 credential 생성 API가 아니다. 요청은 active organization context에서 처리되며, 요청자는 해당 organization manager여야 한다. 일반 member는 credential `use` 또는 기존 credential `manage` 권한을 갖고 있어도 새 credential을 등록할 수 없다.
@@ -22,7 +30,7 @@ Credential registration은 개인 사용자 credential 생성 API가 아니다. 
 Request:
 
 - `provider_id`
-- `organization_id`: 대상 organization. header 기반 active organization과 일치해야 한다. legacy fallback을 허용하는 구현에서도 결과 credential은 organization-scoped resource로 해석한다.
+- `organization_id`: optional compatibility field다. 값이 있으면 header 기반 active organization과 반드시 일치해야 한다. 저장 대상은 body가 아니라 server-validated active organization이며 default organization fallback을 사용하지 않는다.
 - `credential_name`
 - `api_key`: raw secret. 저장 직후 응답, audit, trace, usage metadata에 원문을 반환하지 않는다.
 
@@ -30,7 +38,7 @@ Response는 `LLMCredentialResponse`를 사용할 수 있지만, `encrypted_confi
 
 ### Credential Revocation
 
-현재 `DELETE /api/v1/llm/credentials/{credential_id}`는 이름과 legacy 성공 message에 `delete/deleted`를 사용하지만 의미는 revoke다. Service는 `llm_credentials.is_valid=false`만 commit하며 credential row, credential-model relation, 기존 `llm_usage_logs`와 저장된 secret material을 삭제하지 않는다. Revoke 뒤 신규 option 선택, capability 발급과 provider 호출은 fail-closed해야 한다.
+현재 `DELETE /api/v1/llm/credentials/{credential_id}`는 이름과 legacy 성공 message에 `delete/deleted`를 사용하지만 의미는 revoke다. DELETE와 model sync는 모두 server-validated active organization 안에서 credential을 먼저 찾고 다른 organization id는 `404`로 숨긴다. Service는 `llm_credentials.is_valid=false`만 commit하며 credential row, credential-model relation, 기존 `llm_usage_logs`와 저장된 secret material을 삭제하지 않는다. Revoke 뒤 신규 option 선택, capability 발급과 provider 호출은 fail-closed해야 한다.
 
 Secret physical purge 또는 crypto-shred는 이 endpoint의 현재 계약이 아니다. 이를 추가할 때는 historical usage/audit 보존, FK nullability 또는 tombstone/snapshot, retention/legal-hold와 실패 복구를 함께 정의해야 하며, 단순 hard delete로 현재 DELETE의 의미를 바꾸지 않는다.
 
@@ -118,6 +126,7 @@ Policy write와 capability issue/admission에서 잠근 ORM row는 현재 Sessio
 
 - Credential 등록은 organization manager 전용이다. Credential `use`, credential `manage`, workflow manager, builder/operator 권한은 새 credential 등록 권한을 부여하지 않는다.
 - 등록된 credential은 active organization scope에 속한다. 개인 사용자 credential scope를 만들지 않는다.
+- Credential 목록은 active organization의 valid row만 DB에서 먼저 제한한 뒤 `read` 권한을 적용한다. Cross-organization direct/team grant는 현재 목록을 확장하지 않는다.
 - Agent answer generation preflight는 active organization scope, model visibility, credential visibility, credential `use`, verified credential-model relation을 검증해야 한다.
 - UI option API는 현재 active organization context에서 실행 가능한 safe pair만 보여줄 수 있다.
 - Credential 존재 또는 사용 가능 상태는 KB content permission, collection routing permission, source ACL authorization을 부여하지 않는다.

@@ -35,8 +35,13 @@ Status: Draft
 - User/anonymous-public/system execution subject는 각각 동일 user/public/system audit actor와만 결합되고 organization billing principal은 capability organization과 일치해야 한다. Capability resolve 권한 거부는 이 typed actor로 `permission.denied`를 한 번 기록하며 synthetic user나 raw credential/provider payload를 남기지 않는다.
 - Capability-required LLM node가 legacy `memory_mode`를 만나면 inline summary helper를 skip하고 history query 또는 legacy `get_client_for_user` provider call을 만들지 않는다. Main capability를 summary purpose로 재사용하지 않으며, dedicated Conversation Memory summarizer가 없는 상태에서 summary provider 호출을 추가하지 않는다.
 
+- Credential list repository fake는 SQLAlchemy filter 조건을 실제로 적용해야 한다. `organization_id` 또는 `is_valid` predicate를 구현에서 제거하면 cross-organization/revoked fixture가 결과에 들어와 테스트가 실패해야 한다.
+- Credential permission helper는 active organization과 credential id를 한 query에 적용하고, 다른 organization row는 organization/resource RBAC 평가 전에 `404`로 종료해야 한다.
 ## API 테스트
 
+- `GET /api/v1/llm/credentials`는 header로 검증한 active organization의 valid row 중 `read` 가능한 credential만 반환한다. 다른 organization direct/team grant, revoked row와 권한 없는 same-organization row는 포함하지 않는다.
+- `GET /api/v1/llm/credentials`의 header 누락/invalid/membership 밖 organization은 canonical `400/422/404`로 종료하며 내부 query 또는 credential 존재를 노출하지 않는다.
+- Memory와 Knowledge의 raw fetch client는 credential 목록 요청에 현재 `X-Organization-Id`를 포함한다. 공용 Axios client 경로도 interceptor 계약을 유지한다.
 - `POST /api/v1/llm/credentials`는 active organization manager만 성공해야 하며, 일반 member는 `403 permission.denied`로 실패해야 한다.
 - `POST /api/v1/llm/credentials`는 organization scope 밖 `organization_id`를 resource hiding 정책에 따라 거부해야 하며, 성공 응답과 audit metadata에 raw API key 또는 `encrypted_config` 원문을 포함하지 않아야 한다.
 - `GET /api/v1/llm/agent-answer-options`는 active organization context에서 보이고 verified 상태인 model/credential pair만 반환한다.
@@ -57,6 +62,7 @@ Status: Draft
 ## 권한 테스트
 
 - Credential 등록 권한은 organization manager 전용이며, credential `use`/`manage` 권한은 등록 권한으로 승격되지 않는다.
+- 같은 credential id에 다른 organization의 direct permission 또는 Team permission이 있어도 active organization 목록, revoke와 sync 범위를 확장하지 않는다.
 - Credential read/list 권한만 있고 credential `use` 권한이 없는 사용자는 해당 credential로 Agent answer generation을 실행할 수 없다.
 - 사용 가능한 credential이라도 요청 model과 verified relation이 없으면 Agent answer generation을 실행할 수 없다.
 - Credential revoke/permission decision revision 변경/model relation 또는 provider-routing fingerprint 변경 뒤 stale capability는 새 Memory context claim, budget reservation, provider attempt admission과 provider 호출에 사용할 수 없다. 실제 egress policy 변경 검증은 authoritative LLM outbound guard가 연결된 뒤 해당 revision으로 대체한다.
@@ -75,3 +81,19 @@ Status: Draft
 - Malformed row가 포함된 rotation batch는 전체 rollback되고 운영 출력에는 config, API key, ciphertext, key 또는 원본 예외가 없어야 한다.
 - Gateway, Workflow Worker와 Knowledge Worker는 missing/invalid keyring, active version 누락 또는 64자를 초과하는 active version에서 시작을 거부한다. Knowledge Worker는 init container와 Celery parent/child process에 같은 keyring을 주입받고, Log System deployment에는 LLM keyring이 주입되지 않는다.
 - Encrypted metadata row가 존재하면 schema downgrade는 metadata 유실 전에 fail-closed한다.
+
+## MBA-358 보호 리소스 완료 매트릭스
+
+| 경계 | 상태 | 계약·구현·검증 증거 | 해당 없음 또는 후속 |
+| --- | --- | --- | --- |
+| 정책·organization scope | 완료 | ADR-0009, ADR-0010; Gateway endpoint가 active organization을 해석하고 service/query/helper에 전달 | - |
+| 관리 API query/command | 완료 | 목록은 organization+valid 선필터 후 read 평가; 등록·revoke·sync는 canonical organization 사용 | - |
+| 관리 UI·picker | 완료 | 공용 Axios interceptor와 두 raw fetch hook이 `X-Organization-Id` 전달 | UI 구조 변경 없음 |
+| 저장 schema·migration | 해당 없음 | 기존 `organization_id`, `is_valid` 사용 | 신규 column/index 없음 |
+| Runtime/background | 해당 없음 | Workflow Engine의 동명 관리 메서드는 runtime 호출부가 없고 provider execution은 기존 capability 계약이 소유 | MBA-358은 Gateway 관리 API 격리 수정 |
+| Transaction·retry·lease | 해당 없음 | read query와 동기 HTTP command의 기존 transaction 유지 | 신규 background effect 없음 |
+| Revoke lifecycle | 완료 | revoke query와 권한 판정이 active organization에 고정되고 `is_valid=false` 의미 유지 | secret purge는 기존 후속 계약 |
+| 오류·resource hiding | 완료 | body/header mismatch와 cross-organization credential은 `404` | - |
+| Audit·redaction | 완료 | 기존 audit decorator/permission audit 유지, response schema에 secret/config/raw payload 없음 | 목록 성공 audit 추가는 계약 대상 아님 |
+| 검증 | 완료 | filter-aware service test, helper predicate test, endpoint scope tests, raw fetch header tests | 실제 provider 호출/E2E는 동작 변경 대상 아님 |
+| 공식 문서 | 완료 | requirements, API, component, test case 정합화 | - |

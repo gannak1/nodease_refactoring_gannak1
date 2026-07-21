@@ -4,6 +4,7 @@ Status: Draft
 ## 화면
 
 - Credential management/listing surface는 active organization의 credential 상태를 표시한다. 개인 사용자 credential 등록 화면을 제공하지 않는다.
+- Axios `apiClient`를 우회해 credential 목록을 호출하는 Memory/Knowledge fetch hook도 저장된 active organization을 읽어 `X-Organization-Id`를 명시한다. Header가 없을 때 이전 조직이나 개인 기본 조직으로 추론하지 않는다.
 - Credential 제거 action은 물리 삭제로 오해되지 않도록 revoke/사용 중지 의미와 기존 usage·audit 이력 보존을 안내한다. Current API의 legacy `deleted` message를 secret purge 완료로 표시하지 않는다.
 - Credential 등록 UI는 organization manager에게만 노출한다. 일반 member, builder/operator, credential `use` 권한자에게는 등록 control을 숨기고 서버 403을 최종 경계로 둔다.
 - Agent answer option surface는 실행 가능한 safe model/credential pair만 표시한다.
@@ -36,6 +37,7 @@ Status: Draft
 
 ## 상호작용
 
+- Active organization을 전환하면 credential 목록은 새 organization header로 다시 조회하며 이전 organization의 direct/team 권한 credential을 화면에 유지하지 않는다.
 - Organization manager가 credential을 등록하면 provider key 검증과 credential-model relation sync가 수행되고, UI는 raw key를 다시 표시하지 않는다.
 - Credential revoke 성공 뒤 UI는 해당 credential을 실행 가능한 option에서 제거하고 상태를 다시 조회한다. Secret physical purge가 완료됐다는 문구는 표시하지 않는다.
 - 일반 member가 직접 credential 등록 endpoint를 호출하면 UI 노출 여부와 무관하게 서버가 거부해야 한다.

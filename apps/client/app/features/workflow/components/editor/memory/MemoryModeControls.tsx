@@ -5,6 +5,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { HelpCircle } from 'lucide-react';
 import { isMockWorkflowPath } from '@/app/features/workflow/utils/mockMode';
+import {
+  activeOrganizationHeaders,
+  getStoredActiveOrganizationId,
+} from '@/lib/activeOrganization';
 
 type MemoryModeModalsProps = {
   showMemoryConfirm: boolean;
@@ -213,6 +217,7 @@ export function useMemoryMode(
       try {
         const res = await fetch('/api/v1/llm/credentials', {
           credentials: 'include',
+          headers: activeOrganizationHeaders(getStoredActiveOrganizationId()),
           signal: controller.signal,
         });
         if (!res.ok) {

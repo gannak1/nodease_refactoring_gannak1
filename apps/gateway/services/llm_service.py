@@ -448,16 +448,30 @@ class LLMService:
 
     @staticmethod
     def get_user_credentials(
-        db: Session, user_id: uuid.UUID
+        db: Session,
+        user_id: uuid.UUID,
+        organization_id: uuid.UUID,
     ) -> List[LLMCredentialResponse]:
-        """사용자의 유효한 크리덴셜 목록 조회."""
+        """Active organization 안에서 읽을 수 있는 유효 credential을 조회합니다."""
+
         valid_credentials = (
-            db.query(LLMCredential).filter(LLMCredential.is_valid.is_(True)).all()
+            db.query(LLMCredential)
+            .filter(
+                LLMCredential.organization_id == organization_id,
+                LLMCredential.is_valid.is_(True),
+            )
+            .all()
         )
         readable_credentials = [
             credential
             for credential in valid_credentials
-            if has_llm_credential_permission(db, user_id, credential.id, "read")
+            if has_llm_credential_permission(
+                db,
+                user_id,
+                credential.id,
+                "read",
+                organization_id=organization_id,
+            )
         ]
         return [
             LLMCredentialResponse.model_validate(c) for c in readable_credentials
@@ -465,7 +479,10 @@ class LLMService:
 
     @staticmethod
     def register_credential(
-        db: Session, user_id: uuid.UUID, request: LLMCredentialCreate
+        db: Session,
+        user_id: uuid.UUID,
+        request: LLMCredentialCreate,
+        organization_id: uuid.UUID,
     ) -> LLMCredentialResponse:
         """
         사용자의 새 크리덴셜을 등록합니다.
@@ -492,9 +509,11 @@ class LLMService:
                 "입력하신 키는 Anthropic 형식을 따르고 있습니다. OpenAI가 아닌 Anthropic을 선택했는지 확인해주세요."
             )
 
-        organization_id = request.organization_id or ensure_user_default_organization(
-            db, user_id
-        )
+        if (
+            request.organization_id is not None
+            and request.organization_id != organization_id
+        ):
+            raise ValueError("Credential organization does not match active organization")
         if not has_organization_manager_permission(db, user_id, organization_id):
             raise PermissionError("Credential creation requires organization manager")
 
@@ -544,18 +563,31 @@ class LLMService:
 
     @staticmethod
     def delete_credential(
-        db: Session, credential_id: uuid.UUID, user_id: uuid.UUID
+        db: Session,
+        credential_id: uuid.UUID,
+        user_id: uuid.UUID,
+        organization_id: uuid.UUID,
     ) -> bool:
-        """크리덴셜을 실제 삭제하지 않고 비활성화 처리."""
+        """Active organization의 credential을 실제 삭제하지 않고 비활성화합니다."""
+
         cred = (
             db.query(LLMCredential)
-            .filter(LLMCredential.id == credential_id)
+            .filter(
+                LLMCredential.id == credential_id,
+                LLMCredential.organization_id == organization_id,
+            )
             .first()
         )
 
         if not cred:
             return False
-        if not has_llm_credential_permission(db, user_id, cred.id, "write"):
+        if not has_llm_credential_permission(
+            db,
+            user_id,
+            cred.id,
+            "write",
+            organization_id=organization_id,
+        ):
             return False
 
         cred.is_valid = False
@@ -567,6 +599,7 @@ class LLMService:
         db: Session,
         user_id: uuid.UUID,
         credential_id: uuid.UUID,
+        organization_id: uuid.UUID,
         purge_unverified: bool = False,
     ) -> Dict[str, Any]:
         """
@@ -580,13 +613,20 @@ class LLMService:
             .options(joinedload(LLMCredential.provider))
             .filter(
                 LLMCredential.id == credential_id,
+                LLMCredential.organization_id == organization_id,
             )
             .first()
         )
 
         if not cred:
             raise ValueError("Credential not found")
-        if not has_llm_credential_permission(db, user_id, cred.id, "write"):
+        if not has_llm_credential_permission(
+            db,
+            user_id,
+            cred.id,
+            "write",
+            organization_id=organization_id,
+        ):
             raise ValueError("Credential not found")
 
         if not cred.is_valid:
