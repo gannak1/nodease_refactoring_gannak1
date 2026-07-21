@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -305,6 +306,63 @@ class ModelRouter:
         "evidence",
         "history",
     }
+    _NON_EVIDENCE_CONTEXT_NAMES = {
+        "constraint",
+        "constraints",
+        "instruction",
+        "instructions",
+        "outputmode",
+        "rule",
+        "rules",
+    }
+    _INFORMATION_REQUEST_PATTERNS = (
+        r"설명(?:해|하|을|이)",
+        r"알려\s*(?:줘|주세요|주십시오)",
+        r"(?:조회|확인|요약|정리|검색|찾아)\s*(?:해|하|해줘|해주세요)",
+        r"\b(?:explain|describe|summarize|show|check|lookup|find)\b",
+    )
+    _INFORMATION_SCOPE_PATTERNS = (
+        r"(?:방법|절차|정책|기준|조건|여부|가능한지|할\s*수\s*있는지)",
+        r"\b(?:how|what|why|whether|procedure|policy|guide)\b",
+    )
+    _RECOMMENDATION_PATTERNS = (
+        r"(?:추천|비교|제안|대안|선택지)",
+        r"\b(?:recommend|compare|suggest|advise|options?)\b",
+    )
+    _APPROVAL_PATTERNS = (
+        r"(?:승인|거절|허가|판정|판단|결정)(?:을|를)?\s*(?:해|하|내려)",
+        r"(?:^|\bplease\s+)(?:approve|reject|authorize|decide|determine)\b",
+    )
+    _STATE_CHANGE_PATTERNS = (
+        r"(?:처리|실행|변경|수정|삭제|생성|등록|적용|취소|차단|지급|환불)\s*(?:해|하|해줘|해주세요|해\s*주세요)",
+        r"(?:^|\bplease\s+)(?:execute|run|change|update|delete|create|register|apply|cancel|block|pay|refund)\b",
+    )
+    _EXTERNAL_SEND_PATTERNS = (
+        r"(?:전송|발송)\s*(?:해|하|해줘|해주세요|해\s*주세요)",
+        r"보내\s*(?:줘|주세요|주십시오|세요)",
+        r"(?:^|\bplease\s+)(?:send|dispatch|publish|notify)\b",
+    )
+    _NEGATED_ACTION_PATTERNS = (
+        r"(?:하지|처리하지|실행하지|변경하지|삭제하지|승인하지|전송하지)\s*(?:마|말|않)",
+        r"(?:안|못)\s*(?:해|하|처리|실행|변경|승인|전송)",
+        r"\b(?:do\s+not|don't|never)\b",
+    )
+    _COMPARISON_REQUEST_PATTERNS = (
+        r"(?:비교|대조|차이|각각|장단점)",
+        r"\b(?:compare|contrast|difference|versus|pros\s+and\s+cons)\b",
+    )
+    _SYNTHESIS_REQUEST_PATTERNS = (
+        r"(?:종합|결합|교차\s*검증|상충|모순|근거를\s*(?:바탕|토대))",
+        r"\b(?:synthesize|combine|reconcile|cross-check|based\s+on\s+the\s+evidence)\b",
+    )
+    _COMPARISON_CRITERION_PATTERNS = (
+        r"(?:비용|가격|원가|cost|price)",
+        r"(?:속도|지연|응답\s*시간|latency|speed)",
+        r"(?:품질|정확도|quality|accuracy)",
+        r"(?:성능|처리량|performance|throughput)",
+        r"(?:안정성|신뢰성|stability|reliability)",
+        r"(?:보안|위험|security|risk)",
+    )
 
     @classmethod
     def resolve_policy(
@@ -630,11 +688,16 @@ class ModelRouter:
         del rendered_prompt_parts  # routing_feature_text만 고정 prompt 계약을 사용한다.
         runtime_variables = cls._routing_runtime_variables(inputs, node_data)
         feature_groups = cls._learning_feature_groups(runtime_variables)
-        feature_groups["structured_features"]["routing_contract"] = (
-            cls._learning_routing_contract(
-                runtime_variables,
-                node_data,
-                effect_profile=effect_profile,
+        routing_contract = cls._learning_routing_contract(
+            runtime_variables,
+            node_data,
+            effect_profile=effect_profile,
+        )
+        feature_groups["structured_features"]["routing_contract"] = routing_contract
+        feature_groups["structured_features"]["requested_action"] = (
+            cls._requested_action_features(
+                feature_groups["primary_request"],
+                routing_contract=routing_contract,
             )
         )
         safe_rag_metadata = {
@@ -657,6 +720,13 @@ class ModelRouter:
         }
         if safe_rag_metadata:
             feature_groups["structured_features"]["rag"] = safe_rag_metadata
+        feature_groups["structured_features"]["request_evidence"] = (
+            cls._request_evidence_features(
+                feature_groups["primary_request"],
+                feature_groups["dynamic_context"],
+                rag_metadata=safe_rag_metadata,
+            )
+        )
         bounded_groups = {
             group_name: json.loads(cls._judge_request_json(group_values))
             for group_name, group_values in feature_groups.items()
@@ -667,6 +737,152 @@ class ModelRouter:
             sort_keys=True,
             default=str,
         )
+
+    @classmethod
+    def _requested_action_features(
+        cls,
+        primary_request: Mapping[str, Any],
+        *,
+        routing_contract: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """명확한 요청 행위만 추출하고 모호한 문장은 보수적으로 남긴다."""
+
+        text = re.sub(r"\s+", " ", cls._flatten_text(primary_request)).casefold()
+
+        def matches(patterns: Iterable[str]) -> bool:
+            return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+        negated = matches(cls._NEGATED_ACTION_PATTERNS)
+        information_signal = matches(cls._INFORMATION_REQUEST_PATTERNS)
+        informational_scope = matches(cls._INFORMATION_SCOPE_PATTERNS)
+        recommendation_signal = matches(cls._RECOMMENDATION_PATTERNS)
+        approval_signal = matches(cls._APPROVAL_PATTERNS)
+        state_change_signal = matches(cls._STATE_CHANGE_PATTERNS)
+        external_send_signal = matches(cls._EXTERNAL_SEND_PATTERNS)
+
+        # 실행 동사가 설명·절차·가능 여부의 목적어인 경우에는 실제 실행 요청으로
+        # 보지 않는다. 부정 요청도 실행 특징으로 학습하지 않는다.
+        action_suppressed = negated or information_signal or informational_scope
+        approval_decision = approval_signal and not action_suppressed
+        state_change_requested = state_change_signal and not action_suppressed
+        external_send_requested = external_send_signal and not action_suppressed
+        information_request = information_signal or informational_scope
+        recommendation_request = recommendation_signal and not negated
+
+        workflow_effect_match = bool(
+            (approval_decision and routing_contract.get("control_gate_present"))
+            or (
+                state_change_requested
+                and (
+                    routing_contract.get("external_write_reachable")
+                    or routing_contract.get("local_execution_reachable")
+                    or routing_contract.get("irreversible_effect_possible")
+                )
+            )
+            or (
+                external_send_requested
+                and routing_contract.get("customer_output_reachable")
+            )
+        )
+        explicit_signals = sum(
+            bool(value)
+            for value in (
+                information_request,
+                recommendation_request,
+                approval_decision,
+                state_change_requested,
+                external_send_requested,
+            )
+        )
+        confidence = 0.0 if not explicit_signals else (0.65 if negated else 1.0)
+        return {
+            "information_request": information_request,
+            "recommendation_request": recommendation_request,
+            "approval_decision": approval_decision,
+            "state_change_requested": state_change_requested,
+            "external_send_requested": external_send_requested,
+            "negated_action": negated,
+            "informational_scope": informational_scope,
+            "workflow_effect_match": workflow_effect_match,
+            "confidence": confidence,
+        }
+
+    @classmethod
+    def _request_evidence_features(
+        cls,
+        primary_request: Mapping[str, Any],
+        dynamic_context: Mapping[str, Any],
+        *,
+        rag_metadata: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """요청마다 달라지는 근거의 양과 결합 요구만 안전한 숫자로 만든다."""
+
+        request_text = re.sub(
+            r"\s+",
+            " ",
+            cls._flatten_text(primary_request),
+        ).casefold()
+
+        def matches(patterns: Iterable[str]) -> bool:
+            return any(
+                re.search(pattern, request_text, flags=re.IGNORECASE)
+                for pattern in patterns
+            )
+
+        evidence_context = {
+            name: value
+            for name, value in dynamic_context.items()
+            if "".join(char for char in str(name).lower() if char.isalnum())
+            not in cls._NON_EVIDENCE_CONTEXT_NAMES
+        }
+        context_value_count = cls._meaningful_leaf_count(evidence_context)
+        context_chars = len(cls._flatten_text(evidence_context))
+        if context_chars < 64:
+            context_char_bucket = 0
+        elif context_chars < 256:
+            context_char_bucket = 1
+        elif context_chars < 1024:
+            context_char_bucket = 2
+        else:
+            context_char_bucket = 3
+        raw_source_count = rag_metadata.get(
+            "source_count",
+            rag_metadata.get("retrieved_chunk_count", 0),
+        )
+        try:
+            retrieved_source_count = max(0, min(16, int(raw_source_count or 0)))
+        except (TypeError, ValueError):
+            retrieved_source_count = 0
+        return {
+            "context_field_count": min(8, len(evidence_context)),
+            "context_value_count": min(16, context_value_count),
+            "context_char_bucket": context_char_bucket,
+            "comparison_requested": matches(cls._COMPARISON_REQUEST_PATTERNS),
+            "synthesis_requested": matches(cls._SYNTHESIS_REQUEST_PATTERNS),
+            "retrieved_source_count": retrieved_source_count,
+            "multi_source_context": max(
+                context_value_count,
+                retrieved_source_count,
+            )
+            >= 2,
+            "comparison_criterion_count": min(
+                8,
+                sum(
+                    int(re.search(pattern, request_text, flags=re.IGNORECASE) is not None)
+                    for pattern in cls._COMPARISON_CRITERION_PATTERNS
+                ),
+            ),
+        }
+
+    @classmethod
+    def _meaningful_leaf_count(cls, value: Any) -> int:
+        if isinstance(value, Mapping):
+            return sum(cls._meaningful_leaf_count(item) for item in value.values())
+        if isinstance(value, (list, tuple, set)):
+            return sum(cls._meaningful_leaf_count(item) for item in value)
+        if value is None or value is False or value == "":
+            return 0
+        return 1
 
     @classmethod
     def _learning_routing_contract(

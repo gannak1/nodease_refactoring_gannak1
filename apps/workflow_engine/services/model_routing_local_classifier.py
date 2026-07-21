@@ -21,7 +21,7 @@ E5_PROJECTION_SEED = 1729
 E5_PROJECTION_VERSION = "e5-gaussian-projection-v1"
 E5_POOLING_STRATEGY = "attention-mask-mean-pooling-v1"
 E5_QUERY_PREFIX_VERSION = "e5-query-prefix-v1"
-STRUCTURED_FEATURE_VERSION = "routing-structure-v3-effect-and-request-intent"
+STRUCTURED_FEATURE_VERSION = "routing-structure-v4-axis-specific-dynamic-signals"
 
 
 class TextEmbedder(Protocol):
@@ -215,6 +215,23 @@ class MultilingualE5ModelChoiceClassifier:
         "irreversible_effect_possible",
         "reachable_effect_count",
         "human_approval_required",
+        "information_request",
+        "recommendation_request",
+        "approval_decision",
+        "state_change_requested",
+        "external_send_requested",
+        "negated_action",
+        "informational_scope",
+        "workflow_effect_match",
+        "action_confidence",
+        "context_field_count",
+        "context_value_count",
+        "context_char_bucket",
+        "comparison_requested",
+        "synthesis_requested",
+        "request_retrieved_source_count",
+        "multi_source_context",
+        "comparison_criterion_count",
     )
 
     @classmethod
@@ -405,6 +422,14 @@ class MultilingualE5ModelChoiceClassifier:
         contract = contract if isinstance(contract, Mapping) else {}
         rag = structured.get("rag")
         rag = rag if isinstance(rag, Mapping) else {}
+        requested_action = structured.get("requested_action")
+        requested_action = (
+            requested_action if isinstance(requested_action, Mapping) else {}
+        )
+        request_evidence = structured.get("request_evidence")
+        request_evidence = (
+            request_evidence if isinstance(request_evidence, Mapping) else {}
+        )
         retrieved_count = rag.get("source_count", rag.get("retrieved_chunk_count", 0))
         try:
             normalized_retrieved_count = max(0.0, min(16.0, float(retrieved_count))) / 16.0
@@ -437,7 +462,49 @@ class MultilingualE5ModelChoiceClassifier:
             float(bool(contract.get("irreversible_effect_possible"))),
             effect_count,
             float(bool(contract.get("human_approval_required"))),
+            float(bool(requested_action.get("information_request"))),
+            float(bool(requested_action.get("recommendation_request"))),
+            float(bool(requested_action.get("approval_decision"))),
+            float(bool(requested_action.get("state_change_requested"))),
+            float(bool(requested_action.get("external_send_requested"))),
+            float(bool(requested_action.get("negated_action"))),
+            float(bool(requested_action.get("informational_scope"))),
+            float(bool(requested_action.get("workflow_effect_match"))),
+            cls._bounded_ratio(
+                requested_action.get("confidence"),
+                maximum=1.0,
+            ),
+            cls._bounded_ratio(
+                request_evidence.get("context_field_count"),
+                maximum=8.0,
+            ),
+            cls._bounded_ratio(
+                request_evidence.get("context_value_count"),
+                maximum=16.0,
+            ),
+            cls._bounded_ratio(
+                request_evidence.get("context_char_bucket"),
+                maximum=3.0,
+            ),
+            float(bool(request_evidence.get("comparison_requested"))),
+            float(bool(request_evidence.get("synthesis_requested"))),
+            cls._bounded_ratio(
+                request_evidence.get("retrieved_source_count"),
+                maximum=16.0,
+            ),
+            float(bool(request_evidence.get("multi_source_context"))),
+            cls._bounded_ratio(
+                request_evidence.get("comparison_criterion_count"),
+                maximum=8.0,
+            ),
         ]
+
+    @staticmethod
+    def _bounded_ratio(value: Any, *, maximum: float) -> float:
+        try:
+            return max(0.0, min(maximum, float(value or 0.0))) / maximum
+        except (TypeError, ValueError):
+            return 0.0
 
     @staticmethod
     def _artifact_contract_metadata() -> dict[str, Any]:
@@ -522,7 +589,7 @@ class MultilingualE5TaskRequirementClassifier:
         updated["encoder_model_id"] = str(encoder_model_id or "")
         updated.update(MultilingualE5ModelChoiceClassifier._artifact_contract_metadata())
         updated["classification_strategy"] = (
-            "frozen_multilingual_e5_projection_128_ordinal_requirements_v3_effect_aware"
+            "frozen_multilingual_e5_projection_128_ordinal_requirements_v4_axis_specific"
         )
         return updated
 
@@ -608,10 +675,45 @@ class MultilingualE5TaskRequirementClassifier:
                 # 같은 환불 주제라도 "정책 설명"과 "승인 실행"은 의미가 다르다.
                 # 요청 의도 의미와 실제 후속 동작 특징을 함께 사용한다.
                 semantic_scale=1.0,
-                structural_indexes={3, 4, 7, 9, 10, 11, 12, 13, 14},
+                structural_indexes={
+                    3,
+                    4,
+                    7,
+                    9,
+                    10,
+                    11,
+                    12,
+                    13,
+                    14,
+                    15,
+                    16,
+                    17,
+                    18,
+                    19,
+                    20,
+                    21,
+                    22,
+                    23,
+                },
             ),
             "evidence_synthesis": build(
                 semantic_scale=1.0,
-                structural_indexes={0, 1, 2, 3, 5, 6, 8},
+                structural_indexes={
+                    0,
+                    1,
+                    2,
+                    3,
+                    5,
+                    6,
+                    8,
+                    24,
+                    25,
+                    26,
+                    27,
+                    28,
+                    29,
+                    30,
+                    31,
+                },
             ),
         }

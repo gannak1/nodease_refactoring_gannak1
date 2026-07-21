@@ -154,7 +154,7 @@ def test_learner_contract_tracks_encoder_projection_and_ordinal_versions():
     assert contract["pooling_strategy"] == "attention-mask-mean-pooling-v1"
     assert contract["projection_metadata"]["projection_dimension"] == 128
     assert contract["structured_feature_version"] == (
-        "routing-structure-v3-effect-and-request-intent"
+        "routing-structure-v4-axis-specific-dynamic-signals"
     )
     assert contract["ordinal_head_version"] == "coral-linear-ordinal-9-output-v2"
 
@@ -227,6 +227,23 @@ def test_vectorizer_projects_semantics_then_appends_explicit_structural_features
             1.0,
             1.0,
             2.0 / 3.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
             0.0,
             0.0,
             0.0,

@@ -24,7 +24,7 @@ MIN_SCHEMA_PASS_RATE = 0.95
 MIN_DOWNSTREAM_SUCCESS_RATE = 0.95
 MAX_FALLBACK_RATE = 0.05
 TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION = (
-    "grouped_runtime_variables_v7_e5_projection_128_ordinal_effect_and_intent"
+    "grouped_runtime_variables_v8_e5_projection_128_axis_specific_dynamic_signals"
 )
 
 

@@ -91,7 +91,7 @@ def test_async_batch_uses_a_separate_validation_window_for_readiness():
     assert len(state["validation_window"]) == 5
 
 
-def test_first_hundred_labels_use_fifty_for_training_and_fifty_for_validation():
+def test_first_hundred_labels_are_evaluated_before_each_is_trained_once():
     from apps.workflow_engine.services.model_routing_learning_batch import (
         ModelRoutingLearningBatchService,
     )
@@ -107,9 +107,83 @@ def test_first_hundred_labels_use_fifty_for_training_and_fifty_for_validation():
         state = result.learner_state
 
     assert state["judged_request_count"] == 100
-    assert state["candidate_requirement_artifact"]["trained_example_count"] == 50
+    assert state["candidate_requirement_artifact"]["trained_example_count"] == 100
     assert state["recent_evaluation"]["sample_count"] == 50
     assert len(state["validation_window"]) == 50
+    assert all(label.learning_processed_at is not None for label in labels)
+
+
+def test_validation_prediction_uses_axis_specific_requirement_classifier(monkeypatch):
+    from apps.workflow_engine.services.model_routing_incremental_learning import (
+        TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
+        IncrementalTaskRequirementClassifier,
+    )
+    from apps.workflow_engine.services.model_routing_learning_batch import (
+        ModelRoutingLearningBatchService,
+    )
+    from apps.workflow_engine.services.model_routing_local_classifier import (
+        MultilingualE5TaskRequirementClassifier,
+    )
+
+    artifact = IncrementalTaskRequirementClassifier.initialize_from_requirements(
+        [
+            {
+                "task_complexity": 1,
+                "decision_impact": 2,
+                "evidence_synthesis": 1,
+            }
+        ],
+        dimensions=2,
+    )
+    artifact.update(
+        {
+            "encoder_model_id": "test-encoder",
+            "feature_schema_version": TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
+            "trained_example_count": 50,
+        }
+    )
+    learner_state = {
+        "mode": "judge_first",
+        "judged_request_count": 50,
+        "candidate_requirement_artifact": artifact,
+    }
+    label = _label(51)
+
+    def fail_legacy_predict(*_args, **_kwargs):
+        raise AssertionError("축별 vector를 우회하는 직접 predict를 사용했습니다.")
+
+    monkeypatch.setattr(
+        IncrementalTaskRequirementClassifier,
+        "predict",
+        fail_legacy_predict,
+    )
+    monkeypatch.setattr(
+        MultilingualE5TaskRequirementClassifier,
+        "predict_from_vector",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            requirements={
+                "task_complexity": 1,
+                "decision_impact": 2,
+                "evidence_synthesis": 1,
+            },
+            confidence=0.8,
+            distance_score=0.9,
+            margin=0.7,
+        ),
+    )
+
+    result = ModelRoutingLearningBatchService.train_labels(
+        learner_state=learner_state,
+        labels=[label],
+        batch_size=1,
+    )
+
+    assert result.learner_state["recent_evaluation"]["sample_count"] == 1
+    assert label.local_prediction == {
+        "task_complexity": 1,
+        "decision_impact": 2,
+        "evidence_synthesis": 1,
+    }
 
 
 def test_async_batch_restarts_learning_when_feature_schema_changes():

@@ -105,6 +105,11 @@ class ModelRoutingLearningBatchService:
         for label, truth in valid_rows:
             contract_passed = str(getattr(label, "status", "")) == "accepted"
             judged_request_count += 1
+            encoder_model_id = str(getattr(label, "encoder_model_id", "") or "").strip()
+            artifact_encoder = str(artifact.get("encoder_model_id") or "").strip()
+            if artifact_encoder and encoder_model_id != artifact_encoder:
+                label.learning_processed_at = timestamp
+                continue
             is_validation_sample = (
                 not first_training_batch
                 and (
@@ -121,7 +126,7 @@ class ModelRoutingLearningBatchService:
             )
             prediction = None
             if not first_training_batch:
-                prediction = IncrementalTaskRequirementClassifier.predict(
+                prediction = MultilingualE5TaskRequirementClassifier.predict_from_vector(
                     artifact,
                     vector=getattr(label, "feature_vector", None) or [],
                 )
@@ -145,21 +150,18 @@ class ModelRoutingLearningBatchService:
                         contract_passed=contract_passed,
                     )
                 )
-            else:
-                encoder_model_id = str(getattr(label, "encoder_model_id", "") or "").strip()
-                artifact_encoder = str(artifact.get("encoder_model_id") or "").strip()
-                if artifact_encoder and encoder_model_id != artifact_encoder:
-                    label.learning_processed_at = timestamp
-                    continue
-                artifact = MultilingualE5TaskRequirementClassifier.update_from_vector(
-                    artifact,
-                    vector=getattr(label, "feature_vector", None) or [],
-                    encoder_model_id=encoder_model_id,
-                    task_requirements=truth,
-                )
-                artifact["feature_schema_version"] = (
-                    TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION
-                )
+
+            # 정확도에는 학습 전에 만든 예측만 기록하고, 이후 같은 정답을 정확히
+            # 한 번 학습한다. 검증 표본을 버리지 않으면서도 미래 정보 누출을 막는다.
+            artifact = MultilingualE5TaskRequirementClassifier.update_from_vector(
+                artifact,
+                vector=getattr(label, "feature_vector", None) or [],
+                encoder_model_id=encoder_model_id,
+                task_requirements=truth,
+            )
+            artifact["feature_schema_version"] = (
+                TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION
+            )
 
             if contract_passed:
                 selected_model_id = str(

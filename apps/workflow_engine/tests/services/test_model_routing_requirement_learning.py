@@ -131,6 +131,27 @@ def test_local_learning_feature_separates_primary_context_and_structured_values(
     assert payload["structured_features"] == {
         "customerTier": "enterprise",
         "outputMode": "analysis",
+        "request_evidence": {
+            "comparison_requested": False,
+            "comparison_criterion_count": 0,
+            "context_char_bucket": 0,
+            "context_field_count": 1,
+            "context_value_count": 1,
+            "multi_source_context": False,
+            "retrieved_source_count": 0,
+            "synthesis_requested": False,
+        },
+        "requested_action": {
+            "approval_decision": True,
+            "confidence": 1.0,
+            "external_send_requested": False,
+            "information_request": False,
+            "informational_scope": False,
+            "negated_action": False,
+            "recommendation_request": False,
+            "state_change_requested": False,
+            "workflow_effect_match": False,
+        },
         "routing_contract": {
             "control_gate_present": False,
             "customer_facing": False,
@@ -249,6 +270,233 @@ def test_learning_feature_uses_nested_routing_context_and_graph_effect_profile()
     }
 
 
+def test_learning_feature_distinguishes_information_from_requested_state_change():
+    node = SimpleNamespace(
+        user_prompt="{{request}}",
+        referenced_variables=[
+            SimpleNamespace(name="request", value_selector=["webhook", "request"]),
+        ],
+    )
+    effect_profile = {
+        "customer_output_reachable": True,
+        "external_write_reachable": True,
+        "irreversible_effect_possible": True,
+    }
+
+    information = json.loads(
+        ModelRouter.learning_feature_text(
+            {"webhook": {"request": "환불 승인 절차를 설명해 주세요."}},
+            node,
+            effect_profile=effect_profile,
+        )
+    )
+    execution = json.loads(
+        ModelRouter.learning_feature_text(
+            {"webhook": {"request": "이 고객의 환불을 승인하고 처리해 주세요."}},
+            node,
+            effect_profile=effect_profile,
+        )
+    )
+
+    information_action = information["structured_features"]["requested_action"]
+    execution_action = execution["structured_features"]["requested_action"]
+    assert information_action["information_request"] is True
+    assert information_action["approval_decision"] is False
+    assert information_action["state_change_requested"] is False
+    assert execution_action["information_request"] is False
+    assert execution_action["approval_decision"] is True
+    assert execution_action["state_change_requested"] is True
+    assert execution_action["workflow_effect_match"] is True
+
+
+def test_learning_feature_does_not_treat_negated_action_as_execution():
+    node = SimpleNamespace(
+        user_prompt="{{request}}",
+        referenced_variables=[
+            SimpleNamespace(name="request", value_selector=["webhook", "request"]),
+        ],
+    )
+
+    payload = json.loads(
+        ModelRouter.learning_feature_text(
+            {"webhook": {"request": "환불을 승인하거나 처리하지 마세요."}},
+            node,
+            effect_profile={"external_write_reachable": True},
+        )
+    )
+
+    action = payload["structured_features"]["requested_action"]
+    assert action["negated_action"] is True
+    assert action["approval_decision"] is False
+    assert action["state_change_requested"] is False
+
+
+@pytest.mark.parametrize(
+    ("request_text", "expected"),
+    [
+        (
+            "관리자 권한으로 변경하는 방법을 알려 주세요.",
+            {"information_request": True, "state_change_requested": False},
+        ),
+        (
+            "이 사용자의 권한을 관리자로 변경해 주세요.",
+            {"information_request": False, "state_change_requested": True},
+        ),
+        (
+            "두 요금제를 비교해서 하나를 추천해 주세요.",
+            {"recommendation_request": True, "state_change_requested": False},
+        ),
+        (
+            "고객에게 장애 안내 메일을 보내 주세요.",
+            {"external_send_requested": True},
+        ),
+        (
+            "이 데이터는 삭제하지 마세요.",
+            {"negated_action": True, "state_change_requested": False},
+        ),
+        (
+            "이 배포를 승인할 수 있는지 확인해 주세요.",
+            {"information_request": True, "approval_decision": False},
+        ),
+        (
+            "Refund policy overview",
+            {"state_change_requested": False},
+        ),
+        (
+            "Email delivery failure",
+            {"external_send_requested": False},
+        ),
+    ],
+)
+def test_learning_feature_extracts_cross_domain_requested_actions(request_text, expected):
+    node = SimpleNamespace(
+        user_prompt="{{request}}",
+        referenced_variables=[
+            SimpleNamespace(name="request", value_selector=["webhook", "request"]),
+        ],
+    )
+
+    payload = json.loads(
+        ModelRouter.learning_feature_text(
+            {"webhook": {"request": request_text}},
+            node,
+            effect_profile={
+                "customer_output_reachable": True,
+                "external_write_reachable": True,
+                "irreversible_effect_possible": True,
+            },
+        )
+    )
+
+    action = payload["structured_features"]["requested_action"]
+    assert {key: action[key] for key in expected} == expected
+
+
+def test_learning_feature_counts_request_specific_evidence_and_comparison_signals():
+    node = SimpleNamespace(
+        user_prompt="{{request}} {{context}}",
+        referenced_variables=[
+            SimpleNamespace(name="request", value_selector=["webhook", "request"]),
+            SimpleNamespace(name="context", value_selector=["webhook", "context"]),
+        ],
+    )
+
+    single = json.loads(
+        ModelRouter.learning_feature_text(
+            {
+                "webhook": {
+                    "request": "정책 내용을 요약해 주세요.",
+                    "context": ["정책 A"],
+                }
+            },
+            node,
+            rag_metadata={"used": True, "source_count": 1},
+        )
+    )
+    multiple = json.loads(
+        ModelRouter.learning_feature_text(
+            {
+                "webhook": {
+                    "request": "세 자료의 차이를 비교하고 근거를 종합해 결론을 내려 주세요.",
+                    "context": ["정책 A", "정책 B", "고객 상태 C"],
+                }
+            },
+            node,
+            rag_metadata={"used": True, "source_count": 3},
+        )
+    )
+
+    single_evidence = single["structured_features"]["request_evidence"]
+    multiple_evidence = multiple["structured_features"]["request_evidence"]
+    assert single_evidence["context_value_count"] == 1
+    assert single_evidence["comparison_requested"] is False
+    assert multiple_evidence["context_value_count"] == 3
+    assert multiple_evidence["comparison_requested"] is True
+    assert multiple_evidence["synthesis_requested"] is True
+    assert multiple_evidence["retrieved_source_count"] == 3
+    assert multiple_evidence["multi_source_context"] is True
+
+
+def test_learning_feature_counts_explicit_comparison_criteria():
+    node = SimpleNamespace(
+        user_prompt="{{request}}",
+        referenced_variables=[
+            SimpleNamespace(name="request", value_selector=["webhook", "request"]),
+        ],
+    )
+
+    payload = json.loads(
+        ModelRouter.learning_feature_text(
+            {
+                "webhook": {
+                    "request": "두 방안을 비용, 응답 속도, 품질 기준으로 비교해 주세요."
+                }
+            },
+            node,
+        )
+    )
+
+    evidence = payload["structured_features"]["request_evidence"]
+    assert evidence["comparison_requested"] is True
+    assert evidence["comparison_criterion_count"] == 3
+
+
+def test_learning_feature_does_not_count_constraints_as_evidence_sources():
+    node = SimpleNamespace(
+        user_prompt="{{request}} {{context}} {{constraints}}",
+        referenced_variables=[
+            SimpleNamespace(name="request", value_selector=["webhook", "request"]),
+            SimpleNamespace(name="context", value_selector=["webhook", "context"]),
+            SimpleNamespace(
+                name="constraints",
+                value_selector=["webhook", "constraints"],
+            ),
+        ],
+    )
+
+    payload = json.loads(
+        ModelRouter.learning_feature_text(
+            {
+                "webhook": {
+                    "request": "정책을 설명해 주세요.",
+                    "context": "정책 A",
+                    "constraints": [
+                        "확정하지 않습니다.",
+                        "JSON으로 답합니다.",
+                        "필수 필드를 포함합니다.",
+                    ],
+                }
+            },
+            node,
+        )
+    )
+
+    evidence = payload["structured_features"]["request_evidence"]
+    assert evidence["context_field_count"] == 1
+    assert evidence["context_value_count"] == 1
+    assert evidence["multi_source_context"] is False
+
+
 class _GroupedEmbedder:
     model_id = "grouped-test-embedder"
 
@@ -286,9 +534,9 @@ def test_grouped_learning_vector_prioritizes_primary_request_without_dropping_co
         embedder=embedder,
     )
 
-    assert len(vector) == 143
+    assert len(vector) == 160
     assert sum(value * value for value in vector[:128]) == pytest.approx(1.0)
-    assert vector[128:] == pytest.approx([0.0] * 15)
+    assert vector[128:] == pytest.approx([0.0] * 32)
     assert model_id == "grouped-test-embedder"
     assert len(embedder.texts) == 2
     assert all(text.startswith("query: ") for text in embedder.texts)
@@ -364,6 +612,80 @@ def test_decision_impact_learns_graph_effects_even_when_semantic_vectors_are_equ
     assert low.requirements["decision_impact"] < high.requirements["decision_impact"]
     assert low.requirements["task_complexity"] == high.requirements["task_complexity"]
     assert low.requirements["evidence_synthesis"] == high.requirements["evidence_synthesis"]
+
+
+def test_axis_specific_dynamic_features_separate_impact_and_evidence_requirements():
+    def feature(*, executes_action: bool, combines_evidence: bool) -> str:
+        return json.dumps(
+            {
+                "primary_request": {"request": "같은 주제의 요청"},
+                "dynamic_context": {},
+                "structured_features": {
+                    "requested_action": {
+                        "approval_decision": executes_action,
+                        "state_change_requested": executes_action,
+                        "workflow_effect_match": executes_action,
+                        "confidence": 1.0,
+                    },
+                    "request_evidence": {
+                        "context_field_count": 2 if combines_evidence else 0,
+                        "context_value_count": 3 if combines_evidence else 0,
+                        "context_char_bucket": 2 if combines_evidence else 0,
+                        "comparison_requested": combines_evidence,
+                        "synthesis_requested": combines_evidence,
+                        "retrieved_source_count": 3 if combines_evidence else 0,
+                        "multi_source_context": combines_evidence,
+                    },
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    low_vector, encoder_id = MultilingualE5ModelChoiceClassifier.vectorize(
+        feature(executes_action=False, combines_evidence=False),
+        artifact=None,
+        embedder=_SameSemanticEmbedder(),
+    )
+    high_vector, _ = MultilingualE5ModelChoiceClassifier.vectorize(
+        feature(executes_action=True, combines_evidence=True),
+        artifact=None,
+        embedder=_SameSemanticEmbedder(),
+    )
+    artifact = None
+    for _ in range(60):
+        artifact = MultilingualE5TaskRequirementClassifier.update_from_vector(
+            artifact,
+            vector=low_vector,
+            encoder_model_id=encoder_id,
+            task_requirements={
+                "task_complexity": 1,
+                "decision_impact": 0,
+                "evidence_synthesis": 0,
+            },
+        )
+        artifact = MultilingualE5TaskRequirementClassifier.update_from_vector(
+            artifact,
+            vector=high_vector,
+            encoder_model_id=encoder_id,
+            task_requirements={
+                "task_complexity": 1,
+                "decision_impact": 3,
+                "evidence_synthesis": 3,
+            },
+        )
+
+    low = MultilingualE5TaskRequirementClassifier.predict_from_vector(
+        artifact,
+        vector=low_vector,
+    )
+    high = MultilingualE5TaskRequirementClassifier.predict_from_vector(
+        artifact,
+        vector=high_vector,
+    )
+
+    assert low.requirements["decision_impact"] < high.requirements["decision_impact"]
+    assert low.requirements["evidence_synthesis"] < high.requirements["evidence_synthesis"]
+    assert low.requirements["task_complexity"] == high.requirements["task_complexity"]
 
 
 def test_local_router_uses_multilingual_e5_base_by_default(monkeypatch):
