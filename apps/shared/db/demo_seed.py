@@ -105,7 +105,7 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
-DEMO_SEED_VERSION = "final-demo-2026-07"
+DEMO_SEED_VERSION = "final-demo-2026-07-21"
 DEMO_PASSWORD = "123123"
 DEMO_CHAT_MODEL = "gpt-5.4"
 DEMO_CHAT_MINI_MODEL = "gpt-5.4-mini"
@@ -133,9 +133,6 @@ ENTERPRISE_REQUEST_ROUTING_DESCRIPTION = (
 )
 DEMO_REPO_ROOT = Path(__file__).resolve().parents[3]
 DEMO_LEGAL_DOCS_LABOR_DIR = DEMO_REPO_ROOT / "local" / "legal-docs-labor"
-DEMO_INTERNAL_DOCS_DIR = (
-    DEMO_REPO_ROOT / "local" / "demo-scenario-2026-07-08" / "internal-docs"
-)
 DEMO_ONBOARDING_PDF_DIR = DEMO_REPO_ROOT / "demodata"
 DEMO_KNOWLEDGE_FIXTURE_PATH = (
     DEMO_REPO_ROOT / "apps" / "shared" / "db" / "fixtures" / "demo_knowledge_chunks.jsonl.gz"
@@ -201,6 +198,14 @@ KB_IDS = {
     "legal_occupational_safety": _uuid(324),
     "legal_retirement_benefits": _uuid(325),
     "legal_fair_hiring": _uuid(326),
+    "onboarding_company_common": _uuid(338),
+    "onboarding_platform": _uuid(339),
+    "onboarding_sales": _uuid(340),
+    "onboarding_finance": _uuid(341),
+    "hr_welfare": _uuid(342),
+}
+
+RETIRED_INTERNAL_DOCUMENT_KB_IDS = {
     "internal_onboarding": _uuid(327),
     "internal_leave_attendance": _uuid(328),
     "internal_benefits": _uuid(329),
@@ -212,18 +217,16 @@ KB_IDS = {
     "internal_developer_compensation_band": _uuid(335),
     "internal_compensation_access_policy": _uuid(336),
     "internal_planning_onboarding_guide": _uuid(337),
-    "onboarding_company_common": _uuid(338),
-    "onboarding_platform": _uuid(339),
-    "onboarding_sales": _uuid(340),
-    "onboarding_finance": _uuid(341),
-    "hr_welfare": _uuid(342),
 }
 
 COLLECTION_IDS = {
     "legal_public": _uuid(360),
-    "internal_onboarding": _uuid(361),
     "team_onboarding_access_control": _uuid(362),
     "hr_policies": _uuid(363),
+}
+
+RETIRED_INTERNAL_DOCUMENT_COLLECTION_IDS = {
+    "internal_onboarding": _uuid(361),
 }
 
 # author의 승인된 App 생성 권한 신청 이력 (ADR-0016).
@@ -291,6 +294,13 @@ DOCUMENT_IDS = {
     "legal_occupational_safety": _uuid(344),
     "legal_retirement_benefits": _uuid(345),
     "legal_fair_hiring": _uuid(346),
+    "onboarding_company_common": _uuid(358),
+    "onboarding_platform": _uuid(359),
+    "onboarding_sales": _uuid(360),
+    "onboarding_finance": _uuid(361),
+}
+
+RETIRED_INTERNAL_DOCUMENT_IDS = {
     "internal_onboarding": _uuid(347),
     "internal_leave_attendance": _uuid(348),
     "internal_benefits": _uuid(349),
@@ -302,10 +312,6 @@ DOCUMENT_IDS = {
     "internal_developer_compensation_band": _uuid(355),
     "internal_compensation_access_policy": _uuid(356),
     "internal_planning_onboarding_guide": _uuid(357),
-    "onboarding_company_common": _uuid(358),
-    "onboarding_platform": _uuid(359),
-    "onboarding_sales": _uuid(360),
-    "onboarding_finance": _uuid(361),
 }
 
 COLLECTION_ITEM_IDS = {
@@ -316,6 +322,15 @@ COLLECTION_ITEM_IDS = {
     "legal_occupational_safety": _uuid(374),
     "legal_retirement_benefits": _uuid(375),
     "legal_fair_hiring": _uuid(376),
+    "onboarding_company_common": _uuid(388),
+    "onboarding_platform": _uuid(389),
+    "onboarding_sales": _uuid(390),
+    "onboarding_finance": _uuid(391),
+    "hr_leave": _uuid(392),
+    "hr_welfare": _uuid(393),
+}
+
+RETIRED_INTERNAL_DOCUMENT_COLLECTION_ITEM_IDS = {
     "internal_onboarding": _uuid(377),
     "internal_leave_attendance": _uuid(378),
     "internal_benefits": _uuid(379),
@@ -327,12 +342,6 @@ COLLECTION_ITEM_IDS = {
     "internal_developer_compensation_band": _uuid(385),
     "internal_compensation_access_policy": _uuid(386),
     "internal_planning_onboarding_guide": _uuid(387),
-    "onboarding_company_common": _uuid(388),
-    "onboarding_platform": _uuid(389),
-    "onboarding_sales": _uuid(390),
-    "onboarding_finance": _uuid(391),
-    "hr_leave": _uuid(392),
-    "hr_welfare": _uuid(393),
 }
 
 LEGACY_DEMO_DOCUMENT_KB_KEYS = {
@@ -342,8 +351,8 @@ LEGACY_DEMO_DOCUMENT_KB_KEYS = {
 }
 
 HR_POLICY_COLLECTION_ITEMS = (
-    ("hr_leave", "internal_leave_attendance"),
-    ("hr_welfare", "internal_benefits"),
+    ("hr_leave", "hr"),
+    ("hr_welfare", "hr_welfare"),
 )
 
 APP_IDS = {
@@ -927,257 +936,6 @@ TEST_TEAM_SPECS = {
     "qa_member": ("QA 일반팀", "테스트 viewer 권한 확인용 팀"),
 }
 
-INTERNAL_DOCUMENT_CONTENT = {
-    "internal_onboarding": """# 신입사원 공통 인사·휴가 정책
-
-## 첫 주 진행 순서
-
-신입사원은 입사 첫날 관리자 대시보드에서 조직 초대와 기본 권한을 확인한다.
-AI 빌더 사용이 필요한 경우 App 생성 권한 신청을 제출하고, 관리자가 승인한 뒤 온보딩 워크플로우를 만들 수 있다.
-
-## 필수 확인 항목
-
-1. 회사 계정 로그인과 2단계 인증 등록
-2. 인사 포털 프로필 확인
-3. 보안 서약과 개인정보 처리 안내 확인
-4. 사내 문서 질문 응답 봇 테스트 실행
-
-## 공통 휴가 절차
-
-휴가는 사내 인사 포털의 근태/휴가 메뉴에서 신청한다.
-긴급하지 않은 휴가는 사용 기간, 사유, 대체 업무 담당자를 입력하고 팀 리더 승인을 받는다.
-가족돌봄휴가는 연차휴가와 이어서 사용할 수 있으며 개인별 병가 기록이나 휴직 사유는 일반 RAG에서 조회하지 않는다.
-
-## 휴가와 프로젝트 운영 규정이 충돌할 때
-
-휴가 제도와 승인 절차를 먼저 확인하고 프로젝트 일정은 대체 담당자, 인수인계 범위와 변경 일정을 정해 조정한다.
-팀 내부 프로젝트 규정만으로 승인된 휴가 제도를 무효화하지 않는다.
-판단이 어려우면 팀 리더와 HR 담당자에게 함께 확인하고 합의한 담당자, 일정 변경과 후속 조치를 프로젝트 기록에 남긴다.
-긴급한 휴가는 업무 복귀 후 인수인계와 일정 변경 기록을 보완할 수 있다.
-
-## RAG 사용 안내
-
-사내 문서 질문 응답 봇은 인사, 복지, 휴가, 법령 공개 자료를 검색해 답변한다.
-개인별 병가 기록, 인사평가, 급여 원장처럼 개인 식별 정보가 포함된 자료는 일반 RAG 후보에 포함하지 않는다.
-""",
-    "internal_leave_attendance": """# 휴가·근태·가족돌봄휴가 운영 정책
-
-## 가족돌봄휴가
-
-가족의 질병, 사고, 노령 또는 자녀 양육으로 돌봄이 필요한 경우 가족돌봄휴가를 신청할 수 있다.
-사내 기준상 가족돌봄휴가는 연차휴가와 이어서 사용할 수 있으며, 긴급하지 않은 경우 사용 예정일 전까지 팀 리더 승인을 받아야 한다.
-
-## 신청 경로
-
-휴가는 사내 인사 포털 > 근태/휴가 > 휴가 신청 메뉴에서 신청한다.
-신청자는 휴가 종류, 사용 기간, 사유, 대체 업무 담당자를 입력한다.
-
-## 검색 제한
-
-동료의 병가 기록, 휴직 사유, 개인 인사평가 결과는 일반 사용자에게 공개되지 않는다.
-LLM 답변은 제도 설명과 신청 절차 안내로 제한한다.
-""",
-    "internal_benefits": """# 복지·교육비 지원 정책
-
-## 복지 포인트
-
-복지 포인트는 매년 초 재직 상태와 근속 조건에 따라 지급된다.
-사용 가능 항목은 건강관리, 자기계발, 가족 지원, 문화생활로 구분한다.
-
-## 교육비 지원
-
-업무 관련 교육, 자격증, 컨퍼런스 참가비는 팀 리더 승인 후 지원할 수 있다.
-교육비 지원 신청에는 교육명, 목적, 예상 비용, 업무 관련성을 기재한다.
-
-## 경조사 지원
-
-경조사 지원은 복지 포털에서 신청하며, 증빙 서류가 필요한 항목은 신청 후 7일 이내 제출한다.
-""",
-    "internal_privacy_hr_records": """# 개인정보 및 인사기록 접근 정책
-
-## 기본 원칙
-
-인사기록, 병가 기록, 평가 결과, 급여 정보는 최소 권한 원칙에 따라 접근한다.
-일반 RAG 검색은 제도 문서와 절차 문서만 노출하며, 개인별 원장이나 민감 원문은 후보에서 제외한다.
-
-## 허용되는 답변 범위
-
-LLM은 개인정보 처리 기준, 접근 신청 절차, 보존 기간 같은 정책 설명을 제공할 수 있다.
-특정 구성원의 건강 정보, 징계 정보, 급여, 평가 등 개인 식별 가능한 내용은 답변하지 않는다.
-
-## 운영자 조치
-
-민감 정보 접근 요청이 탐지되면 audit trace에 정책 차단 이벤트를 남기고 관리자 검토 대상으로 분류한다.
-""",
-    "internal_budget_alert_runbook": """# 워크플로우 예산 80% 알림 운영 Runbook
-
-## 알림 기준
-
-관리자 운영 콘솔은 월 예산 사용률이 80% 이상인 워크플로우를 비용 위험 대상으로 표시한다.
-관리자는 대상 워크플로우를 일괄 선택해 운영자에게 비용 점검 알림을 보낼 수 있다.
-
-## 알림 내용
-
-알림에는 워크플로우 이름, 최근 실행 비용, LLM 노드 비용 비중, 최근 7일 실패율, 권장 점검 항목을 포함한다.
-운영자는 알림에서 바로 워크플로우 분석 화면으로 이동한다.
-
-## 후속 조치
-
-운영자는 LLM 노드별 token 사용량, RAG 검색 건수, 모델별 비용을 비교하고 필요하면 모델 변경 또는 top_k 조정을 검토한다.
-""",
-    "internal_cost_optimization_playbook": """# Workflow LLM 비용 최적화 Playbook
-
-## 분석 순서
-
-운영자는 워크플로우 분석 화면에서 노드별 비용 비중을 먼저 확인한다.
-LLM 노드 비용이 높으면 prompt 길이, RAG evidence 수, 모델 단가, 재시도 횟수를 순서대로 점검한다.
-
-## 권장 조치
-
-반복 질의는 캐시 후보로 분류하고, 단순 분류 노드는 더 작은 모델을 검토한다.
-RAG 노드는 관련성이 낮은 문서가 많이 들어오면 top_k를 낮추거나 metadata filter를 적용한다.
-근거 문서는 trace에서 요약과 참조 ID만 남기고 원문을 durable trace에 중복 저장하지 않는다.
-
-## 승인 필요 조건
-
-고객 보상, 법무 검토, 개인정보 포함 답변은 자동 발송하지 않고 승인 노드로 넘긴다.
-""",
-    "internal_developer_onboarding_rules": """# 개발팀 신입 온보딩 및 업무 내규
-
-## 적용 대상
-
-이 문서는 개발팀에 입사한 신입사원이 첫 달에 따라야 할 업무 내규와 온보딩 절차를 설명한다.
-개발팀 신입사원은 입사 첫 주에 개발 환경 세팅, 보안 교육, 코드 저장소 접근 권한, PR 리뷰 흐름을 확인한다.
-
-## 첫 주 체크리스트
-
-1. 회사 계정, VPN, 2단계 인증을 등록한다.
-2. GitHub 조직 초대와 개발팀 repository 접근 권한을 확인한다.
-3. 기본 브랜치 정책, commit convention, PR template, 리뷰 승인 기준을 읽는다.
-4. 사내 문서 질문 응답 봇에서 온보딩 문서와 개발팀 내규를 검색해 확인한다.
-5. 운영 데이터, 고객 데이터, 개인 인사정보는 승인된 시스템에서만 접근한다.
-
-## 개발 업무 원칙
-
-신입 개발자는 첫 달 동안 production 직접 배포를 수행하지 않는다.
-모든 변경은 feature branch에서 작업하고, PR 리뷰와 CI 통과 후 merge한다.
-긴급 장애 대응 참여는 멘토 또는 운영 담당자와 함께 진행한다.
-
-## 질문 채널
-
-개발 환경, 브랜치, 커밋 메시지, PR 리뷰 질문은 개발팀 온보딩 채널에 남긴다.
-보상, 평가, 개인 인사정보 관련 질문은 인사 포털의 공개 정책 범위 안에서만 안내받을 수 있다.
-""",
-    "internal_developer_commit_convention": """# 개발팀 커밋·브랜치·PR 컨벤션
-
-## 브랜치 이름
-
-Linear 이슈가 있는 기능 작업은 `feature/mba-번호` 형식의 브랜치를 사용한다.
-버그 수정은 같은 이슈 번호를 기준으로 `fix/mba-번호`를 사용할 수 있다.
-실험성 작업이나 개인 임시 브랜치는 PR 대상 브랜치로 사용하지 않는다.
-
-## 커밋 메시지
-
-커밋 메시지는 `type: 한국어 설명` 형식을 따른다.
-type은 영어 소문자로 작성하며 대표 값은 `feat`, `fix`, `docs`, `test`, `refactor`, `chore`다.
-예시는 다음과 같다.
-
-- `feat: 개발팀 온보딩 RAG 문서 추가`
-- `fix: Knowledge 목록 legacy schema 오류 방어`
-- `docs: 데모 DB 재생성 절차 보강`
-- `test: Workflow RAG 권한 경계 회귀 테스트 추가`
-
-## PR 작성 기준
-
-PR 본문에는 변경 사항, 관련 이슈, 테스트 결과, UI 변경 여부를 적는다.
-권한, credential, RAG, audit, trace, 비용 최적화 경계를 건드린 경우 관련 문서와 테스트를 함께 갱신한다.
-리뷰 요청 전에는 `git diff --check`와 변경 범위에 맞는 테스트를 실행한다.
-
-## 금지 사항
-
-secret, API key, token, `.env` 내용, 암호화 전 credential 원문을 커밋 메시지, PR 본문, 로그, fixture에 남기지 않는다.
-민감 원문을 trace나 demo fixture에 넣어야 하는 경우 별도 승인 없이 진행하지 않는다.
-""",
-    "internal_developer_compensation_band": """# 개발 직군 신입 보상 밴드 및 공개 가능 범위
-
-## 공개 가능한 안내 범위
-
-이 문서는 개발팀 신입사원이 질문할 수 있는 보상 기준의 공개 가능 범위를 설명한다.
-사내 문서 질문 응답 봇은 개인별 실제 연봉이 아니라 직군·레벨별 보상 밴드, 산정 요소, 문의 경로만 답변할 수 있다.
-
-## 신입 개발자 보상 밴드
-
-2026년 데모 기준 개발 직군 신입 레벨은 `DEV-L1`로 분류한다.
-`DEV-L1` 기준 연간 기본급 밴드는 4,800만 원에서 5,600만 원 사이로 안내한다.
-최종 제안 금액은 경력 인정, 직무 적합도, 채용 평가, 근무 지역, 입사 시점의 내부 보상 정책에 따라 달라질 수 있다.
-
-## 보상 구성
-
-기본급 외 항목은 성과급, 복지 포인트, 교육비 지원, 장비 지원으로 구분한다.
-성과급은 회사 성과와 개인 평가에 따라 달라지므로 사전 확정 금액으로 안내하지 않는다.
-복지 포인트와 교육비 지원은 복지·교육비 지원 정책 문서를 함께 참조한다.
-
-## 답변 제한
-
-동료, 특정 팀원, 특정 후보자, 특정 사번의 실제 연봉·성과급·평가등급은 답변하지 않는다.
-개인별 보상정보가 필요한 경우 인사 포털의 권한 승인 절차를 통해 HR 담당자에게 문의한다.
-""",
-    "internal_compensation_access_policy": """# 개인 보상정보 및 인사기록 조회 제한 정책
-
-## 정책 목적
-
-개인 보상정보는 급여, 연봉, 성과급, 스톡옵션, 평가등급, 보상 조정 이력을 포함한다.
-이 정보는 개인정보 및 인사기록 접근 정책에 따라 최소 권한 원칙으로 보호한다.
-
-## RAG 답변 허용 범위
-
-RAG 기반 사내 문서 질문 응답 봇은 공개 가능한 보상 밴드, 보상 산정 원칙, 문의 경로만 답변할 수 있다.
-특정 임직원, 동료, 팀원, 후보자, 사번, 실명과 연결된 실제 보상정보는 답변하지 않는다.
-질문자가 본인이라고 주장해도 본인 확인과 HR 권한 확인이 없는 채팅 경로에서는 개인별 금액을 제공하지 않는다.
-
-## 차단해야 하는 질문 예시
-
-- `개발팀 동료 김OO의 연봉을 알려줘`
-- `우리 팀 백엔드 개발자들의 실제 연봉 리스트를 보여줘`
-- `박OO의 성과급과 평가등급을 알려줘`
-- `내 옆자리 개발자의 보상 조정 이력을 알려줘`
-
-## 안내 문구
-
-개인별 연봉이나 평가 정보 요청을 받으면 다음과 같이 안내한다.
-`개인 보상정보는 접근 권한이 필요한 민감 정보라 이 채팅에서 제공할 수 없습니다. 공개 가능한 보상 밴드나 문의 경로는 안내할 수 있습니다.`
-
-## 운영자 처리
-
-개인 보상정보 조회 시도는 audit log에 정책 차단 이벤트로 남긴다.
-반복적인 민감정보 요청은 관리자 검토 대상으로 분류한다.
-""",
-    "internal_planning_onboarding_guide": """# 기획팀 신입 온보딩 가이드
-
-## 첫 주 진행 순서
-
-기획팀 신입사원은 담당 제품의 목표, 사용자 문제, 핵심 지표와 현재 로드맵을 확인한다.
-첫 주에는 제품 브리프를 읽고 담당 PM과 함께 사용자 여정, 주요 가설, 의사결정 이력을 검토한다.
-
-## 기획 문서 작성 기준
-
-PRD에는 문제 정의, 대상 사용자, 가설, 성공 지표, 비목표, 출시 범위와 검증 계획을 포함한다.
-요구사항은 구현 방법보다 검증 가능한 사용자 행동과 완료 조건을 먼저 작성한다.
-중요한 범위 변경은 회의 메모에만 남기지 않고 PRD 결정 로그와 Linear 이슈에 함께 반영한다.
-
-## 협업 절차
-
-개발 착수 전 디자인·개발 담당자와 acceptance criteria를 합의한다.
-출시 전에는 분석 이벤트, 권한별 사용자 흐름, 오류·빈 상태와 롤백 기준을 점검한다.
-고객 인터뷰 원문과 개인 식별 정보는 승인된 저장소에만 보관하며 일반 RAG 문서에 복사하지 않는다.
-
-## 첫 달 완료 기준
-
-첫 달에는 작은 개선 과제 하나를 문제 정의부터 출시 후 지표 확인까지 수행한다.
-결과 보고서는 `가설-근거-결정-결과-후속 조치` 순서로 정리한다.
-""",
-}
-
 LEGAL_DOCUMENT_SPECS = (
     DemoKnowledgeSeedSpec(
         key="legal_labor_standards",
@@ -1274,169 +1032,7 @@ LEGAL_DOCUMENT_SPECS = (
     ),
 )
 
-INTERNAL_DOCUMENT_SPECS = (
-    DemoKnowledgeSeedSpec(
-        key="internal_onboarding",
-        name="사내문서: 신입사원 공통 인사·휴가 정책",
-        description="신입사원 공통 온보딩, 휴가 신청과 프로젝트 일정 충돌 절차를 안내하는 사내문서 KB",
-        filename="신입사원 공통 인사 휴가 정책.md",
-        summary="입사 첫 주, 휴가 신청, 프로젝트 일정 충돌과 RAG 사용 범위를 안내합니다.",
-        source_tier="internal",
-        classification="internal_policy",
-        tags=("internal", "onboarding", "hr", "leave", "ai-builder"),
-        keywords=(
-            "신입사원",
-            "온보딩",
-            "인사",
-            "휴가",
-            "프로젝트 운영 규정",
-            "권한 신청",
-            "AI 빌더",
-        ),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_onboarding"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_leave_attendance",
-        name="사내문서: 휴가·근태·가족돌봄휴가 운영 정책",
-        description="휴가 신청 절차와 가족돌봄휴가 운영 기준을 안내하는 사내문서 KB",
-        filename="휴가 근태 가족돌봄휴가 운영 정책.md",
-        summary="가족돌봄휴가, 연차 연계 사용, 신청 경로를 안내합니다.",
-        source_tier="internal",
-        classification="internal_policy",
-        tags=("internal", "hr", "leave"),
-        keywords=("가족돌봄휴가", "연차", "휴가 신청", "근태", "팀 리더 승인"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_leave_attendance"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_benefits",
-        name="사내문서: 복지·교육비 지원 정책",
-        description="복지 포인트, 교육비, 경조사 지원을 설명하는 사내문서 KB",
-        filename="복지 교육비 지원 정책.md",
-        summary="복지 포인트, 교육비 지원, 경조사 지원 기준을 안내합니다.",
-        source_tier="internal",
-        classification="internal_policy",
-        tags=("internal", "hr", "benefits"),
-        keywords=("복지 포인트", "교육비", "경조사", "자기계발", "복지 포털"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_benefits"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_privacy_hr_records",
-        name="사내문서: 개인정보 및 인사기록 접근 정책",
-        description="인사기록과 민감정보 접근 제한을 설명하는 사내문서 KB",
-        filename="개인정보 및 인사기록 접근 정책.md",
-        summary="개인정보, 병가 기록, 평가 정보의 RAG 노출 제한을 안내합니다.",
-        source_tier="restricted_internal",
-        classification="restricted_policy",
-        tags=("internal", "privacy", "hr-records"),
-        keywords=("개인정보", "인사기록", "병가 기록", "인사평가", "정책 차단", "최소 권한"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_privacy_hr_records"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_budget_alert_runbook",
-        name="사내문서: 워크플로우 예산 80% 알림 Runbook",
-        description="관리자 예산 알림과 운영자 후속 분석 절차를 설명하는 운영문서 KB",
-        filename="워크플로우 예산 80퍼센트 알림 Runbook.md",
-        summary="예산 80% 이상 워크플로우 알림과 운영자 분석 진입 절차를 안내합니다.",
-        source_tier="internal_ops",
-        classification="internal_runbook",
-        tags=("internal", "llmops", "budget"),
-        keywords=("예산 80%", "일괄 알림", "운영자", "워크플로우 분석", "LLM 노드 비용"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_budget_alert_runbook"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_cost_optimization_playbook",
-        name="사내문서: Workflow LLM 비용 최적화 Playbook",
-        description="LLM 노드 비용 분석과 RAG 비용 최적화 절차를 설명하는 운영문서 KB",
-        filename="Workflow LLM 비용 최적화 Playbook.md",
-        summary="노드별 비용, RAG evidence 수, 모델 단가를 점검하는 절차를 안내합니다.",
-        source_tier="internal_ops",
-        classification="internal_runbook",
-        tags=("internal", "llmops", "cost-optimization"),
-        keywords=("비용 최적화", "LLM 노드", "top_k", "RAG evidence", "모델 변경", "trace"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_cost_optimization_playbook"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_developer_onboarding_rules",
-        name="사내문서: 개발팀 온보딩 가이드",
-        description="개발팀 신입사원의 첫 달 업무 내규, 권한, PR 흐름을 안내하는 사내문서 KB",
-        filename="개발팀 신입 온보딩 및 업무 내규.md",
-        summary="개발팀 신입 온보딩, repository 접근, PR 리뷰 흐름을 안내합니다.",
-        source_tier="internal",
-        classification="internal_policy",
-        tags=("internal", "developer", "onboarding"),
-        keywords=("개발팀", "신입", "온보딩", "내규", "repository", "PR", "멘토"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_developer_onboarding_rules"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_developer_commit_convention",
-        name="사내문서: 개발팀 커밋·브랜치·PR 컨벤션",
-        description="개발팀 commit convention, branch naming, PR 작성 기준을 안내하는 사내문서 KB",
-        filename="개발팀 커밋 브랜치 PR 컨벤션.md",
-        summary="feature/mba-번호 브랜치와 type: 한국어 설명 커밋 규칙을 안내합니다.",
-        source_tier="internal",
-        classification="internal_policy",
-        tags=("internal", "developer", "git", "commit", "pr"),
-        keywords=("커밋", "commit convention", "브랜치", "feature/mba", "PR", "type", "한국어 설명"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_developer_commit_convention"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_developer_compensation_band",
-        name="사내문서: 개발 직군 신입 보상 밴드 및 공개 가능 범위",
-        description="개발 직군 신입 보상 밴드와 공개 가능한 답변 범위를 안내하는 사내문서 KB",
-        filename="개발 직군 신입 보상 밴드 및 공개 가능 범위.md",
-        summary="DEV-L1 신입 개발자 보상 밴드와 공개 가능 범위를 안내합니다.",
-        source_tier="internal",
-        classification="internal_policy",
-        tags=("internal", "developer", "compensation", "onboarding"),
-        keywords=("개발자", "신입", "연봉", "보상 밴드", "DEV-L1", "기본급", "공개 가능 범위"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_developer_compensation_band"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_compensation_access_policy",
-        name="사내문서: 개인 보상정보 및 인사기록 조회 제한 정책",
-        description="개인별 연봉, 성과급, 평가정보 질의 차단 기준을 설명하는 사내문서 KB",
-        filename="개인 보상정보 및 인사기록 조회 제한 정책.md",
-        summary="개인별 보상정보 조회 제한과 민감 질문 차단 문구를 안내합니다.",
-        source_tier="restricted_internal",
-        classification="restricted_policy",
-        tags=("internal", "privacy", "compensation", "policy-block"),
-        keywords=("개인 보상정보", "동료 연봉", "성과급", "평가등급", "정책 차단", "민감정보"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_compensation_access_policy"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_planning_onboarding_guide",
-        name="사내문서: 기획팀 온보딩 가이드",
-        description="기획팀 신입사원의 PRD, 지표, 협업과 출시 검증 절차를 안내하는 사내문서 KB",
-        filename="기획팀 신입 온보딩 가이드.md",
-        summary="기획팀 신입사원의 PRD 작성, 협업, 지표 검증과 정보 취급 기준을 안내합니다.",
-        source_tier="internal",
-        classification="internal_policy",
-        tags=("internal", "planning", "onboarding", "prd"),
-        keywords=(
-            "기획팀",
-            "신입",
-            "온보딩",
-            "PRD",
-            "성공 지표",
-            "acceptance criteria",
-            "로드맵",
-        ),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_planning_onboarding_guide"],
-    ),
-)
-
-DEMO_DOCUMENT_SPECS = LEGAL_DOCUMENT_SPECS + INTERNAL_DOCUMENT_SPECS
+DEMO_DOCUMENT_SPECS = LEGAL_DOCUMENT_SPECS
 
 
 def demo_summary(profile: str = "demo") -> dict[str, Any]:
@@ -1475,7 +1071,7 @@ def demo_summary(profile: str = "demo") -> dict[str, Any]:
         ),
         "knowledge_documents": {
             "public_law_pdfs": len(LEGAL_DOCUMENT_SPECS),
-            "internal_markdown_docs": len(INTERNAL_DOCUMENT_SPECS),
+            "internal_markdown_docs": 0,
             "bundled_onboarding_pdfs": len(ONBOARDING_PDF_SPECS),
             "embedding_model": DEMO_EMBEDDING_MODEL,
             "fixture": DEMO_KNOWLEDGE_FIXTURE_PATH.as_posix(),
@@ -2189,14 +1785,8 @@ def _hr_bot_knowledge_base_refs() -> list[dict[str, str]]:
     return [
         _knowledge_base_ref(key)
         for key in (
-            "internal_onboarding",
-            "internal_leave_attendance",
-            "internal_benefits",
-            "internal_privacy_hr_records",
-            "internal_developer_onboarding_rules",
-            "internal_developer_commit_convention",
-            "internal_developer_compensation_band",
-            "internal_compensation_access_policy",
+            "hr",
+            "hr_welfare",
             "legal_labor_standards",
             "legal_equal_employment",
             "legal_equal_employment_enforcement_decree",
@@ -2287,9 +1877,9 @@ def _department_onboarding_knowledge_base_refs() -> list[dict[str, str]]:
     return [
         _knowledge_base_ref(key)
         for key in (
-            "internal_onboarding",
-            "internal_developer_onboarding_rules",
-            "internal_planning_onboarding_guide",
+            "onboarding_company_common",
+            "onboarding_platform",
+            "onboarding_sales",
         )
     ]
 
@@ -2537,9 +2127,6 @@ def _ticket_ops_graph() -> dict[str, Any]:
                             "name": "message",
                             "value_selector": ["webhook-ticket", "message"],
                         },
-                    ],
-                    "knowledgeBases": [
-                        _knowledge_base_ref("internal_cost_optimization_playbook")
                     ],
                     "parameters": {"temperature": 0.2, "max_tokens": 700},
                     "output_format": {
@@ -2946,11 +2533,10 @@ def _enterprise_request_routing_graph() -> dict[str, Any]:
             "knowledgeBases": [
                 _knowledge_base_ref(key)
                 for key in (
-                    "internal_onboarding",
-                    "internal_privacy_hr_records",
-                    "internal_budget_alert_runbook",
-                    "internal_cost_optimization_playbook",
-                    "internal_developer_onboarding_rules",
+                    "legal_privacy",
+                    "onboarding_company_common",
+                    "onboarding_platform",
+                    "onboarding_sales",
                     "onboarding_finance",
                 )
             ],
@@ -3301,59 +2887,6 @@ def _demo_team_knowledge_permission_specs() -> list[tuple[str, str, str]]:
                 (kb_key, "customer_support_ops", "operator"),
             ]
         )
-    for kb_key in (
-        "internal_onboarding",
-        "internal_leave_attendance",
-        "internal_benefits",
-        "internal_developer_onboarding_rules",
-        "internal_developer_commit_convention",
-        "internal_developer_compensation_band",
-    ):
-        knowledge_permission_specs.extend(
-            [
-                (kb_key, "platform_admin", "manager"),
-                (kb_key, "hr_knowledge_users", "operator"),
-                (kb_key, "ai_builder_onboarding", "operator"),
-            ]
-        )
-    knowledge_permission_specs.extend(
-        [
-            ("internal_privacy_hr_records", "platform_admin", "manager"),
-            ("internal_privacy_hr_records", "hr_knowledge_users", "operator"),
-            ("internal_compensation_access_policy", "platform_admin", "manager"),
-            ("internal_compensation_access_policy", "hr_knowledge_users", "operator"),
-            ("internal_compensation_access_policy", "ai_builder_onboarding", "operator"),
-            ("internal_budget_alert_runbook", "platform_admin", "manager"),
-            ("internal_budget_alert_runbook", "customer_support_ops", "operator"),
-            ("internal_cost_optimization_playbook", "platform_admin", "manager"),
-            ("internal_cost_optimization_playbook", "customer_support_ops", "operator"),
-            ("internal_onboarding", "department_development", "operator"),
-            ("internal_onboarding", "department_planning", "operator"),
-            (
-                "internal_developer_onboarding_rules",
-                "department_development",
-                "operator",
-            ),
-            (
-                "internal_planning_onboarding_guide",
-                "platform_admin",
-                "manager",
-            ),
-            (
-                "internal_planning_onboarding_guide",
-                "department_planning",
-                "operator",
-            ),
-        ]
-    )
-    knowledge_permission_specs.extend(
-        (kb_key, "tester_builder", "operator")
-        for kb_key in (
-            "internal_onboarding",
-            "internal_leave_attendance",
-            "internal_benefits",
-        )
-    )
     knowledge_permission_specs.extend(
         [
             ("onboarding_company_common", "onboarding_platform", "operator"),
@@ -3366,6 +2899,10 @@ def _demo_team_knowledge_permission_specs() -> list[tuple[str, str, str]]:
             ("onboarding_sales", "onboarding_people", "manager"),
             ("onboarding_finance", "onboarding_finance", "operator"),
             ("onboarding_finance", "onboarding_people", "manager"),
+            ("onboarding_company_common", "department_development", "operator"),
+            ("onboarding_company_common", "department_planning", "operator"),
+            ("onboarding_platform", "department_development", "operator"),
+            ("onboarding_sales", "department_planning", "operator"),
         ]
     )
     knowledge_permission_specs.extend(
@@ -3379,19 +2916,14 @@ def _demo_team_knowledge_permission_specs() -> list[tuple[str, str, str]]:
 
 def _demo_team_knowledge_collection_permission_specs() -> list[tuple[str, str, str]]:
     collection_permission_specs: list[tuple[str, str, str]] = []
-    for collection_key in ("legal_public", "internal_onboarding"):
-        for team_key in (
-            "platform_admin",
-            "hr_knowledge_users",
-            "ai_builder_onboarding",
-            "customer_support_ops",
-        ):
-            for action in ("read", "route"):
-                collection_permission_specs.append((collection_key, team_key, action))
-    collection_permission_specs.extend(
-        ("internal_onboarding", "tester_builder", action)
-        for action in ("read", "route")
-    )
+    for team_key in (
+        "platform_admin",
+        "hr_knowledge_users",
+        "ai_builder_onboarding",
+        "customer_support_ops",
+    ):
+        for action in ("read", "route"):
+            collection_permission_specs.append(("legal_public", team_key, action))
     for team_key in (
         "onboarding_platform",
         "onboarding_sales",
@@ -3412,7 +2944,63 @@ def _demo_team_knowledge_collection_permission_specs() -> list[tuple[str, str, s
     return collection_permission_specs
 
 
+def _delete_retired_internal_knowledge(db: Session) -> None:
+    retired_kb_ids = list(RETIRED_INTERNAL_DOCUMENT_KB_IDS.values())
+    retired_collection_ids = list(
+        RETIRED_INTERNAL_DOCUMENT_COLLECTION_IDS.values()
+    )
+    retired_document_ids = list(RETIRED_INTERNAL_DOCUMENT_IDS.values())
+    retired_item_ids = list(
+        RETIRED_INTERNAL_DOCUMENT_COLLECTION_ITEM_IDS.values()
+    )
+
+    db.query(TeamKnowledgePermission).filter(
+        TeamKnowledgePermission.knowledge_base_id.in_(retired_kb_ids)
+    ).delete(synchronize_session=False)
+    db.query(UserKnowledgePermission).filter(
+        UserKnowledgePermission.knowledge_base_id.in_(retired_kb_ids)
+    ).delete(synchronize_session=False)
+    db.query(TeamKnowledgeCollectionPermission).filter(
+        TeamKnowledgeCollectionPermission.knowledge_collection_id.in_(
+            retired_collection_ids
+        )
+    ).delete(synchronize_session=False)
+    db.query(KnowledgeDocumentIngestionJob).filter(
+        KnowledgeDocumentIngestionJob.knowledge_base_id.in_(retired_kb_ids)
+    ).delete(synchronize_session=False)
+    db.query(KnowledgeIngestionOutbox).filter(
+        KnowledgeIngestionOutbox.knowledge_base_id.in_(retired_kb_ids)
+    ).delete(synchronize_session=False)
+    db.query(KnowledgeCollectionItem).filter(
+        or_(
+            KnowledgeCollectionItem.id.in_(retired_item_ids),
+            KnowledgeCollectionItem.collection_id.in_(retired_collection_ids),
+            KnowledgeCollectionItem.knowledge_base_id.in_(retired_kb_ids),
+        )
+    ).delete(synchronize_session=False)
+    db.query(KnowledgeCollection).filter(
+        KnowledgeCollection.id.in_(retired_collection_ids)
+    ).delete(synchronize_session=False)
+    db.query(DocumentChunk).filter(
+        or_(
+            DocumentChunk.knowledge_base_id.in_(retired_kb_ids),
+            DocumentChunk.document_id.in_(retired_document_ids),
+        )
+    ).delete(synchronize_session=False)
+    db.query(Document).filter(
+        or_(
+            Document.knowledge_base_id.in_(retired_kb_ids),
+            Document.id.in_(retired_document_ids),
+        )
+    ).delete(synchronize_session=False)
+    db.query(KnowledgeBase).filter(
+        KnowledgeBase.id.in_(retired_kb_ids)
+    ).delete(synchronize_session=False)
+    db.flush()
+
+
 def _seed_knowledge(db: Session) -> None:
+    _delete_retired_internal_knowledge(db)
     knowledge_fixture = _demo_knowledge_fixture_or_none()
     fixture_documents = (
         knowledge_fixture["documents"] if knowledge_fixture is not None else {}
@@ -3525,27 +3113,6 @@ def _seed_knowledge(db: Session) -> None:
                 "approved_by": str(USER_IDS["admin"]),
                 "approved_source": "demo_seed",
                 "revocation_behavior": "remove_from_public_collection",
-            },
-            "created_by": USER_IDS["admin"],
-        },
-    )
-    _upsert_by_id(
-        db,
-        KnowledgeCollection,
-        COLLECTION_IDS["internal_onboarding"],
-        {
-            "organization_id": ORG_ID,
-            "name": "사내 온보딩·운영 문서 컬렉션",
-            "description": "온보딩, HR 정책, LLMOps 운영 절차를 묶은 private 데모 컬렉션",
-            "source_identity_id": None,
-            "source_connector_ref": "local.demo-scenario-2026-07-08.internal-docs",
-            "is_system_managed": True,
-            "sync_state": "manual",
-            "lifecycle_state": "active",
-            "safe_metadata": {
-                **_demo_options("collection-internal-onboarding"),
-                "safe_label": "사내 온보딩·운영 문서 컬렉션",
-                "visibility": "private",
             },
             "created_by": USER_IDS["admin"],
         },
@@ -5678,7 +5245,11 @@ def reset_demo_data(db: Session) -> None:
     app_ids = list(APP_IDS.values())
     workflow_ids = list(WORKFLOW_IDS.values())
     team_ids = list(TEAM_IDS.values())
-    kb_ids = list(KB_IDS.values())
+    kb_ids = [*KB_IDS.values(), *RETIRED_INTERNAL_DOCUMENT_KB_IDS.values()]
+    collection_ids = [
+        *COLLECTION_IDS.values(),
+        *RETIRED_INTERNAL_DOCUMENT_COLLECTION_IDS.values(),
+    ]
     credential_ids = [
         row[0]
         for row in db.query(LLMCredential.id)
@@ -5811,17 +5382,30 @@ def reset_demo_data(db: Session) -> None:
         KnowledgeIngestionOutbox.knowledge_base_id.in_(kb_ids)
     ).delete(synchronize_session=False)
     db.query(KnowledgeCollectionItem).filter(
-        KnowledgeCollectionItem.collection_id.in_(list(COLLECTION_IDS.values()))
+        or_(
+            KnowledgeCollectionItem.collection_id.in_(collection_ids),
+            KnowledgeCollectionItem.id.in_(
+                list(RETIRED_INTERNAL_DOCUMENT_COLLECTION_ITEM_IDS.values())
+            ),
+        )
     ).delete(synchronize_session=False)
     db.query(KnowledgeCollection).filter(
-        KnowledgeCollection.id.in_(list(COLLECTION_IDS.values()))
+        KnowledgeCollection.id.in_(collection_ids)
     ).delete(synchronize_session=False)
-    db.query(DocumentChunk).filter(DocumentChunk.knowledge_base_id.in_(kb_ids)).delete(
-        synchronize_session=False
-    )
-    db.query(Document).filter(Document.knowledge_base_id.in_(kb_ids)).delete(
-        synchronize_session=False
-    )
+    db.query(DocumentChunk).filter(
+        or_(
+            DocumentChunk.knowledge_base_id.in_(kb_ids),
+            DocumentChunk.document_id.in_(
+                list(RETIRED_INTERNAL_DOCUMENT_IDS.values())
+            ),
+        )
+    ).delete(synchronize_session=False)
+    db.query(Document).filter(
+        or_(
+            Document.knowledge_base_id.in_(kb_ids),
+            Document.id.in_(list(RETIRED_INTERNAL_DOCUMENT_IDS.values())),
+        )
+    ).delete(synchronize_session=False)
     db.query(KnowledgeBase).filter(KnowledgeBase.id.in_(kb_ids)).delete(
         synchronize_session=False
     )

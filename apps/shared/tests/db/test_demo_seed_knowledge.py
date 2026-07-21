@@ -207,14 +207,14 @@ def test_hr_bot_graph_references_seeded_rag_kbs():
     assert llm_node["data"]["model_id"] == demo_seed.DEMO_CHAT_MINI_MODEL
     assert llm_node["data"]["scoreThreshold"] == 0.3
     assert llm_node["data"]["topK"] == 4
-    assert str(demo_seed.KB_IDS["internal_leave_attendance"]) in kb_ids
-    assert str(demo_seed.KB_IDS["internal_privacy_hr_records"]) in kb_ids
-    assert str(demo_seed.KB_IDS["internal_developer_commit_convention"]) in kb_ids
-    assert str(demo_seed.KB_IDS["internal_developer_compensation_band"]) in kb_ids
-    assert str(demo_seed.KB_IDS["internal_compensation_access_policy"]) in kb_ids
+    assert str(demo_seed.KB_IDS["hr"]) in kb_ids
+    assert str(demo_seed.KB_IDS["hr_welfare"]) in kb_ids
     assert str(demo_seed.KB_IDS["legal_labor_standards"]) in kb_ids
     assert str(demo_seed.KB_IDS["legal_equal_employment"]) in kb_ids
-    assert str(demo_seed.KB_IDS["hr"]) not in kb_ids
+    assert kb_ids.isdisjoint(
+        str(kb_id)
+        for kb_id in demo_seed.RETIRED_INTERNAL_DOCUMENT_KB_IDS.values()
+    )
     assert "knowledgeCollections" not in llm_node["data"]
 
 
@@ -310,17 +310,14 @@ def test_test_profile_seed_preserves_valid_rotated_app_secret_state_without_rese
     )
 
 
-def test_hr_policy_collection_references_precomputed_indexed_kbs():
-    fixture = demo_seed._read_demo_knowledge_fixture()
-    indexed_keys = {spec.key for spec in demo_seed.DEMO_DOCUMENT_SPECS}
+def test_hr_policy_collection_references_legacy_policy_kbs():
     target_keys = {
         knowledge_base_key
         for _, knowledge_base_key in demo_seed.HR_POLICY_COLLECTION_ITEMS
     }
 
-    assert target_keys == {"internal_leave_attendance", "internal_benefits"}
-    assert target_keys <= indexed_keys
-    assert all(fixture["chunks_by_document"][key] for key in target_keys)
+    assert target_keys == {"hr", "hr_welfare"}
+    assert target_keys <= set(demo_seed.KB_IDS)
 
 
 def test_department_onboarding_graph_references_exact_rbac_demo_kbs():
@@ -332,9 +329,9 @@ def test_department_onboarding_graph_references_exact_rbac_demo_kbs():
     assert llm_node["data"]["topK"] == 3
     assert llm_node["data"]["answerGroundingCheck"] == "basic"
     assert [item["id"] for item in llm_node["data"]["knowledgeBases"]] == [
-        str(demo_seed.KB_IDS["internal_onboarding"]),
-        str(demo_seed.KB_IDS["internal_developer_onboarding_rules"]),
-        str(demo_seed.KB_IDS["internal_planning_onboarding_guide"]),
+        str(demo_seed.KB_IDS["onboarding_company_common"]),
+        str(demo_seed.KB_IDS["onboarding_platform"]),
+        str(demo_seed.KB_IDS["onboarding_sales"]),
     ]
 
 
@@ -362,15 +359,15 @@ def test_department_onboarding_knowledge_permissions_are_fail_closed_by_team():
     }
 
     assert department_specs == {
-        ("internal_onboarding", "department_development", "operator"),
-        ("internal_onboarding", "department_planning", "operator"),
+        ("onboarding_company_common", "department_development", "operator"),
+        ("onboarding_company_common", "department_planning", "operator"),
         (
-            "internal_developer_onboarding_rules",
+            "onboarding_platform",
             "department_development",
             "operator",
         ),
         (
-            "internal_planning_onboarding_guide",
+            "onboarding_sales",
             "department_planning",
             "operator",
         ),
@@ -587,6 +584,16 @@ def test_enterprise_request_routing_graph_uses_current_routing_context():
         "validation_budget_usd": 3.0,
         "excluded_model_ids": ["gpt-5.6-sol"],
     }
+    assert {item["id"] for item in data["knowledgeBases"]} == {
+        str(demo_seed.KB_IDS[key])
+        for key in (
+            "legal_privacy",
+            "onboarding_company_common",
+            "onboarding_platform",
+            "onboarding_sales",
+            "onboarding_finance",
+        )
+    }
     node_ids = {node["id"] for node in graph["nodes"]}
     assert all(
         edge["source"] in node_ids and edge["target"] in node_ids
@@ -699,11 +706,21 @@ def test_demo_summary_reports_seeded_knowledge_documents():
 
     assert summary["knowledge_documents"] == {
         "public_law_pdfs": 7,
-        "internal_markdown_docs": 11,
+        "internal_markdown_docs": 0,
         "bundled_onboarding_pdfs": 4,
         "embedding_model": demo_seed.DEMO_EMBEDDING_MODEL,
         "fixture": demo_seed.DEMO_KNOWLEDGE_FIXTURE_PATH.as_posix(),
     }
+
+
+def test_demo_seed_excludes_internal_document_prefixed_knowledge_bases():
+    prefixed_specs = [
+        spec.name
+        for spec in demo_seed.DEMO_DOCUMENT_SPECS
+        if spec.name.startswith("사내문서:")
+    ]
+
+    assert prefixed_specs == []
 
 
 def test_demo_summary_describes_secure_runtime_credential_input():
@@ -1094,6 +1111,53 @@ def test_demo_profile_reset_deletes_ingestion_jobs_before_documents(monkeypatch)
     ) < db.deleted_targets.index(demo_seed.KnowledgeBase)
 
 
+def test_demo_profile_reset_deletes_retired_internal_knowledge_rows(monkeypatch):
+    db = ResetRecorderSession()
+    monkeypatch.setattr(demo_seed, "validate_demo_seed_prerequisites", lambda: None)
+    monkeypatch.setattr(demo_seed, "_adopt_existing_demo_user_ids", lambda _db: None)
+    monkeypatch.setattr(demo_seed, "seed_demo_data", lambda _db: None)
+
+    demo_seed.reset_demo_data(db)
+
+    kb_condition = db.filter_criteria[demo_seed.KnowledgeBase][0].compile()
+    collection_condition = db.filter_criteria[demo_seed.KnowledgeCollection][
+        0
+    ].compile()
+    reset_kb_ids = set(next(iter(kb_condition.params.values())))
+    reset_collection_ids = set(next(iter(collection_condition.params.values())))
+    assert set(demo_seed.RETIRED_INTERNAL_DOCUMENT_KB_IDS.values()) <= reset_kb_ids
+    assert (
+        set(demo_seed.RETIRED_INTERNAL_DOCUMENT_COLLECTION_IDS.values())
+        <= reset_collection_ids
+    )
+
+
+def test_demo_seed_cleanup_deletes_retired_internal_knowledge_rows():
+    db = ResetRecorderSession()
+
+    demo_seed._delete_retired_internal_knowledge(db)
+
+    for model in (
+        demo_seed.TeamKnowledgePermission,
+        demo_seed.TeamKnowledgeCollectionPermission,
+        demo_seed.KnowledgeCollectionItem,
+        demo_seed.KnowledgeCollection,
+        demo_seed.DocumentChunk,
+        demo_seed.Document,
+        demo_seed.KnowledgeBase,
+    ):
+        assert model in db.deleted_targets
+    assert db.deleted_targets.index(
+        demo_seed.KnowledgeCollectionItem
+    ) < db.deleted_targets.index(demo_seed.KnowledgeCollection)
+    assert db.deleted_targets.index(demo_seed.DocumentChunk) < db.deleted_targets.index(
+        demo_seed.Document
+    )
+    assert db.deleted_targets.index(demo_seed.Document) < db.deleted_targets.index(
+        demo_seed.KnowledgeBase
+    )
+
+
 def test_demo_runtime_credential_grants_agent_builder_user_permission(monkeypatch):
     upserts = []
 
@@ -1294,9 +1358,7 @@ def test_ticket_ops_input_schema_matches_webhook_mappings():
     }
 
     llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-triage")
-    assert llm_node["data"]["knowledgeBases"] == [
-        demo_seed._knowledge_base_ref("internal_cost_optimization_playbook")
-    ]
+    assert "knowledgeBases" not in llm_node["data"]
 
 
 def test_schema_readiness_reports_stale_demo_db_columns():
@@ -1553,64 +1615,27 @@ def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
         for spec in demo_seed.DEMO_DOCUMENT_SPECS
         if spec.source_tier == "public"
     }
-    private_keys = document_keys - public_keys
+    retired_keys = set(demo_seed.RETIRED_INTERNAL_DOCUMENT_KB_IDS)
 
+    assert document_keys == public_keys
     assert document_keys <= set(demo_seed.KB_IDS)
     assert document_keys <= set(demo_seed.DOCUMENT_IDS)
     assert document_keys <= set(demo_seed.COLLECTION_ITEM_IDS)
+    assert retired_keys.isdisjoint(demo_seed.KB_IDS)
+    assert retired_keys.isdisjoint(demo_seed.DOCUMENT_IDS)
+    assert retired_keys.isdisjoint(demo_seed.COLLECTION_ITEM_IDS)
+    assert "internal_onboarding" not in demo_seed.COLLECTION_IDS
     assert all(
         spec.collection_key == "legal_public"
         for spec in demo_seed.DEMO_DOCUMENT_SPECS
-        if spec.source_tier == "public"
-    )
-    assert all(
-        spec.collection_key == "internal_onboarding"
-        for spec in demo_seed.DEMO_DOCUMENT_SPECS
-        if spec.source_tier != "public"
     )
 
     permission_specs = set(demo_seed._demo_team_knowledge_permission_specs())
     for key in public_keys:
         assert (key, "platform_admin", "manager") in permission_specs
         assert (key, "customer_support_ops", "operator") in permission_specs
-    for key in private_keys:
-        assert (key, "platform_admin", "manager") in permission_specs
-    assert {
-        "internal_onboarding",
-        "internal_developer_onboarding_rules",
-        "internal_planning_onboarding_guide",
-    } <= document_keys
-    assert (
-        "internal_developer_compensation_band",
-        "ai_builder_onboarding",
-        "operator",
-    ) in permission_specs
-    assert (
-        "internal_compensation_access_policy",
-        "ai_builder_onboarding",
-        "operator",
-    ) in permission_specs
-    assert (
-        "internal_privacy_hr_records",
-        "ai_builder_onboarding",
-        "operator",
-    ) not in permission_specs
-    assert (
-        "internal_privacy_hr_records",
-        "platform_admin",
-        "manager",
-    ) in permission_specs
-    assert (
-        "internal_privacy_hr_records",
-        "hr_knowledge_users",
-        "operator",
-    ) in permission_specs
-    for key in (
-        "internal_onboarding",
-        "internal_leave_attendance",
-        "internal_benefits",
-    ):
-        assert (key, "tester_builder", "operator") in permission_specs
+    assert all(kb_key in demo_seed.KB_IDS for kb_key, _, _ in permission_specs)
+    assert retired_keys.isdisjoint(kb_key for kb_key, _, _ in permission_specs)
 
     collection_permission_specs = set(
         demo_seed._demo_team_knowledge_collection_permission_specs()
@@ -1620,21 +1645,10 @@ def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
         "ai_builder_onboarding",
         "route",
     ) in collection_permission_specs
-    assert (
-        "internal_onboarding",
-        "customer_support_ops",
-        "read",
-    ) in collection_permission_specs
-    assert (
-        "internal_onboarding",
-        "tester_builder",
-        "read",
-    ) in collection_permission_specs
-    assert (
-        "internal_onboarding",
-        "tester_builder",
-        "route",
-    ) in collection_permission_specs
+    assert all(
+        collection_key in demo_seed.COLLECTION_IDS
+        for collection_key, _, _ in collection_permission_specs
+    )
     assert (
         "hr_policies",
         "hr_knowledge_users",
@@ -1657,12 +1671,16 @@ def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
     ) in permission_specs
 
 
-def test_demo_knowledge_seed_excludes_personal_salary_records():
+def test_removed_internal_document_rows_keep_only_reset_cleanup_ids():
     document_keys = {spec.key for spec in demo_seed.DEMO_DOCUMENT_SPECS}
     filenames = {spec.filename for spec in demo_seed.DEMO_DOCUMENT_SPECS}
+    retired_keys = set(demo_seed.RETIRED_INTERNAL_DOCUMENT_KB_IDS)
 
-    assert "internal_developer_compensation_band" in document_keys
-    assert "internal_compensation_access_policy" in document_keys
+    assert {
+        "internal_developer_compensation_band",
+        "internal_compensation_access_policy",
+    } <= retired_keys
+    assert retired_keys.isdisjoint(document_keys)
     assert all("개인별 실제 연봉" not in filename for filename in filenames)
     assert all("personal_salary" not in key for key in document_keys)
 
@@ -1683,29 +1701,13 @@ def test_committed_knowledge_fixture_matches_demo_seed_contract():
         assert len(chunks[0]["embedding"]) == demo_seed.DEMO_EMBEDDING_DIMENSION
 
 
-def test_committed_fixture_supports_department_onboarding_demo_questions():
+def test_committed_fixture_excludes_retired_internal_documents():
     fixture = demo_seed._read_demo_knowledge_fixture()
+    retired_keys = set(demo_seed.RETIRED_INTERNAL_DOCUMENT_KB_IDS)
 
-    common_content = "\n".join(
-        chunk["content"]
-        for chunk in fixture["chunks_by_document"]["internal_onboarding"]
-    )
-    developer_content = "\n".join(
-        chunk["content"]
-        for chunk in fixture["chunks_by_document"][
-            "internal_developer_onboarding_rules"
-        ]
-    )
-    planning_content = "\n".join(
-        chunk["content"]
-        for chunk in fixture["chunks_by_document"][
-            "internal_planning_onboarding_guide"
-        ]
-    )
-
-    assert "휴가와 프로젝트 운영 규정이 충돌할 때" in common_content
-    assert "repository 접근 권한" in developer_content
-    assert "PRD에는 문제 정의" in planning_content
+    assert fixture["header"]["fixture_version"] == demo_seed.DEMO_SEED_VERSION
+    assert retired_keys.isdisjoint(fixture["documents"])
+    assert retired_keys.isdisjoint(fixture["chunks_by_document"])
 
 
 def test_committed_knowledge_fixture_does_not_contain_secret_like_values():
