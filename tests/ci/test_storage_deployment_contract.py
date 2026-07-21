@@ -18,6 +18,18 @@ def _load(path: str) -> dict:
     return yaml.safe_load(_read(path))
 
 
+def test_direct_gateway_example_uses_supported_storage_contract():
+    example_lines = _read("dev/.env.example").splitlines()
+
+    assert any(
+        line.strip() in {"STORAGE_TYPE=LOCAL", "STORAGE_TYPE=CLOUD"}
+        for line in example_lines
+    ), "Direct Gateway example must select a supported storage mode"
+    assert not any(
+        re.search(r"\bPROD\b", line) for line in example_lines
+    ), "Legacy PROD storage mode must not be documented"
+
+
 def test_helm_storage_configuration_has_one_root_authority():
     defaults = _load("infra/helm/moduly/values.yaml")
     production = _load("infra/helm/moduly/values-production.yaml")

@@ -576,7 +576,7 @@ Canonical content revision/input hash
 
 - 주요 workload는 gateway, worker, logger, frontend, sandbox이며, chart dependency로 PostgreSQL, Redis, ingress-nginx를 사용한다. Sandbox와 Worker NetworkPolicy가 template에 포함된다.
 - Chart는 cloud provider에 중립적이다. production reference는 ingress와 provider identity annotation을 기본 비활성으로 두며 operator가 storage, ingress class/TLS, trusted proxy CIDR, external dependency network와 secret injection을 명시해야 한다. 문서 저장소는 root `storage`가 단일 권위이며 CLOUD의 bucket/region 누락은 Helm render와 Gateway startup에서 provider I/O 전에 실패한다. Storage consumer Pod는 같은 mode 조건으로 cloud 전용 ConfigMap key를 참조한다.
-- CI는 기본/production values를 lint·render하고 Kubernetes 1.31 compatibility baseline과 Pod-to-ConfigMap reference closure를 검사한다. CLOUD storage 필수값의 negative render, 승인 workflow allowlist와 workflow/composite action provider-specific content guard도 수행하며 checked-in rendered snapshot은 source of truth로 유지하지 않는다.
+- CI는 기본/production values를 lint·render하고 Kubernetes 1.31 compatibility baseline과 Pod-to-ConfigMap reference closure를 검사한다. CLOUD storage 필수값의 negative render와 승인 workflow allowlist를 검증하며, workflow/local action이 전이적으로 참조하는 `scripts/**` 실행 파일·Python module까지 bounded fail-closed 방식으로 provider-specific content를 검사한다. 이 execution-closure 검사는 모든 PR의 scope 분류 전에 실행하므로 최상위 workflow를 바꾸지 않는 위임 파일 변경도 우회할 수 없다. Checked-in rendered snapshot은 source of truth로 유지하지 않는다.
 - EKS provisioning, raw Kubernetes manifest, Terraform과 provider-specific CD는 현재 공식 지원 대상이 아니다. 재도입 조건은 ADR-0065를 따른다.
 - Schedule dispatch는 현재 supported Helm/Compose surface에서 disabled만 허용한다. claim/drain 운영 활성화를 수동 kubectl 절차로 우회하지 않는다.
 ### 시작/초기화

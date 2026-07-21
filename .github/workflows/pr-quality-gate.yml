@@ -61,6 +61,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Enforce supported deployment execution closure
+        run: python -m scripts.ci.check_supported_deployment_surface
+
       - name: Detect CI control changes outside the selector
         id: ci_control
         shell: bash

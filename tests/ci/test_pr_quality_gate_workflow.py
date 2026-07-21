@@ -257,6 +257,13 @@ def test_unsupported_deployment_surface_guard_is_wired_into_quality_gate():
 
     assert "support_surface_validation" in workflow
     assert "python -m scripts.ci.check_supported_deployment_surface" in workflow
+    scope_block = workflow.split("\n  scope:\n", maxsplit=1)[1].split(
+        "\n  python_lint:\n", maxsplit=1
+    )[0]
+    assert "Enforce supported deployment execution closure" in scope_block
+    assert scope_block.index(
+        "python -m scripts.ci.check_supported_deployment_surface"
+    ) < scope_block.index("python -m scripts.ci.changed_scope")
     assert "kubernetes_validation" not in workflow
     assert "terraform_validation" not in workflow
     assert "terraform_config_changed" not in workflow
