@@ -36,23 +36,20 @@ class _JudgeClient:
         del kwargs
         body = json.loads(messages[1]["content"])
         is_simple = "간단" in body["request_feature"]
-        selected = "gpt-4o-mini" if is_simple else "gpt-5.4"
         return {
             "choices": [
                 {
                     "message": {
                         "content": json.dumps(
                             {
-                                "selected_model_id": selected,
                                 "confidence": 0.92,
-                                "reason_short": "단순 안내 요청" if is_simple else "여러 조건 종합",
-                                "reason_code": "request_capability_match",
-                                "task_requirements": {
-                                    "task_complexity": 1 if is_simple else 3,
-                                    "decision_impact": 0 if is_simple else 2,
-                                    "evidence_synthesis": 0 if is_simple else 2,
-                                    "output_precision": 0,
-                                },
+                                "task_complexity": 1 if is_simple else 3,
+                                "decision_impact": 0 if is_simple else 2,
+                                "evidence_synthesis": 0 if is_simple else 2,
+                                "ambiguity_flags": [],
+                                "reason_codes": [
+                                    "multi_step_reasoning"
+                                ] if not is_simple else [],
                             }
                         )
                     }
@@ -100,12 +97,17 @@ def test_judge_labels_gradually_enable_confident_local_routing(monkeypatch):
     selected_models: set[str] = set()
     for index in range(100):
         feature = "간단 사용 안내" if index % 2 == 0 else "복잡 규정 종합 판단"
-        judge_decision = ModelRoutingRuntimeJudge.decide(
+        assessment = ModelRoutingRuntimeJudge.assess_requirements(
             client=_JudgeClient(),
-            candidate_model_ids=candidates,
             routing_feature_text=feature,
         )
-        selected_models.add(judge_decision.selected_model_id)
+        selected_model_id = ModelRouter.select_candidate_for_requirements(
+            candidate_model_ids=candidates,
+            requirements=assessment.task_requirements,
+            default_model_id="gpt-5.4",
+        )
+        assert selected_model_id is not None
+        selected_models.add(selected_model_id)
         vector, encoder_model_id = MultilingualE5ModelChoiceClassifier.vectorize(
             feature,
             artifact=None,
@@ -116,11 +118,11 @@ def test_judge_labels_gradually_enable_confident_local_routing(monkeypatch):
                 status="accepted",
                 feature_vector=vector,
                 encoder_model_id=encoder_model_id,
-                selected_model_id=judge_decision.selected_model_id,
+                selected_model_id=selected_model_id,
                 candidate_model_ids=candidates,
-                confidence=judge_decision.confidence,
-                reason_code=judge_decision.reason_code,
-                task_requirements=judge_decision.task_requirements,
+                confidence=assessment.confidence,
+                reason_code="requirements_candidate_selected",
+                task_requirements=assessment.task_requirements,
                 routing_feature_hash=None,
                 local_prediction=None,
                 local_confidence=None,
