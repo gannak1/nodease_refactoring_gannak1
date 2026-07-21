@@ -20,7 +20,7 @@ COPY docker/model-routing-cpu-constraints.txt /build/model-routing-cpu-constrain
 
 ARG INSTALL_RAG_RERANKER=false
 ARG PREFETCH_MODEL_ROUTING_CLASSIFIER=true
-ARG MODEL_ROUTING_DIFFICULTY_MODEL_ID=microsoft/mdeberta-v3-base
+ARG MODEL_ROUTING_DIFFICULTY_MODEL_ID=intfloat/multilingual-e5-base
 
 # [FIX] 의존성만 설치 (코드는 /app/에서 직접 사용, site-packages 중복 방지)
 # 1. pyproject.toml 기반으로 전체 설치 (의존성 해결을 위해)
@@ -40,7 +40,7 @@ RUN if [ "$INSTALL_RAG_RERANKER" = "true" ]; then \
 
 # 요청 난이도 분류기는 첫 정책 생성과 첫 자동 라우팅에서 사용된다. 실행 중에
 # checkpoint를 내려받으면 worker가 오래 멈추거나 네트워크 상태에 따라 기본 모델로
-# fallback할 수 있으므로, 기본 이미지에는 mDeBERTa 가중치를 함께 넣는다.
+# fallback할 수 있으므로, 기본 이미지에는 multilingual E5 가중치를 함께 넣는다.
 # 로컬의 빠른 의존성 전용 빌드가 필요할 때만 build arg로 건너뛸 수 있다.
 RUN mkdir -p /model-routing-hf-cache && \
     if [ "$PREFETCH_MODEL_ROUTING_CLASSIFIER" = "true" ]; then \

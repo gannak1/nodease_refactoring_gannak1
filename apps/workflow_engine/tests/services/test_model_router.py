@@ -9,6 +9,9 @@ from apps.workflow_engine.services.model_router import (
 from apps.workflow_engine.services.model_routing_judge_first_policy import (
     build_judge_first_active_policy,
 )
+from apps.workflow_engine.services.model_routing_incremental_learning import (
+    TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
+)
 from apps.workflow_engine.workflow.nodes.llm.entities import LLMNodeData
 
 
@@ -79,7 +82,7 @@ def test_judge_first_requires_runtime_judge_before_local_learning():
 def test_confident_local_prediction_skips_runtime_judge(monkeypatch):
     monkeypatch.setattr(
         "apps.workflow_engine.services.model_router."
-        "MDebertaTaskRequirementClassifier.predict",
+        "MultilingualE5TaskRequirementClassifier.predict",
         lambda *_args, **_kwargs: SimpleNamespace(
             requirements={
                 "task_complexity": 1,
@@ -93,7 +96,9 @@ def test_confident_local_prediction_skips_runtime_judge(monkeypatch):
         learning={
             "mode": "local_first",
             "local_confidence_threshold": 0.78,
-            "local_requirement_artifact": {"version": 1},
+            "local_requirement_artifact": {
+                "feature_schema_version": TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
+            },
         }
     )
 
@@ -114,7 +119,7 @@ def test_confident_local_prediction_skips_runtime_judge(monkeypatch):
 def test_uncertain_local_prediction_returns_to_runtime_judge(monkeypatch):
     monkeypatch.setattr(
         "apps.workflow_engine.services.model_router."
-        "MDebertaTaskRequirementClassifier.predict",
+        "MultilingualE5TaskRequirementClassifier.predict",
         lambda *_args, **_kwargs: SimpleNamespace(
             requirements={
                 "task_complexity": 1,
@@ -128,7 +133,9 @@ def test_uncertain_local_prediction_returns_to_runtime_judge(monkeypatch):
         learning={
             "mode": "local_first",
             "local_confidence_threshold": 0.78,
-            "local_requirement_artifact": {"version": 1},
+            "local_requirement_artifact": {
+                "feature_schema_version": TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
+            },
         }
     )
 
@@ -140,6 +147,35 @@ def test_uncertain_local_prediction_returns_to_runtime_judge(monkeypatch):
     )
 
     assert decision.reason_code == "local_router_uncertain"
+    assert decision.requires_runtime_judge is True
+
+
+def test_stale_local_feature_artifact_returns_to_runtime_judge(monkeypatch):
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("이전 feature artifact로 local 예측하면 안 됩니다.")
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.services.model_router."
+        "MultilingualE5TaskRequirementClassifier.predict",
+        fail_if_called,
+    )
+    policy = _policy(
+        learning={
+            "mode": "local_first",
+            "local_requirement_artifact": {
+                "feature_schema_version": "prompt_context_v1",
+            },
+        }
+    )
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "VPN 연결 방법"},
+        node_data=_node(),
+        available_model_ids=["gpt-4.1", "gpt-4.1-mini", "gpt-4o-mini"],
+    )
+
+    assert decision.decision_source == "runtime_judge_pending"
     assert decision.requires_runtime_judge is True
 
 

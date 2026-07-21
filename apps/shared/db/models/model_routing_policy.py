@@ -354,6 +354,16 @@ class LLMNodeModelRoutingLearningLabel(Base):
     confidence: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 6), nullable=True)
     reason_code: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     task_requirements: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    local_prediction: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    local_confidence: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(8, 6), nullable=True
+    )
+    local_distance_score: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(8, 6), nullable=True
+    )
+    local_margin: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(8, 6), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     outcome_reason: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -362,6 +372,9 @@ class LLMNodeModelRoutingLearningLabel(Base):
         default=lambda: datetime.now(timezone.utc),
     )
     finalized_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    learning_processed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 

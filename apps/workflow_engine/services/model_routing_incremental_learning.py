@@ -20,6 +20,7 @@ MIN_SUCCESS_RATE = 0.95
 MIN_SCHEMA_PASS_RATE = 0.95
 MIN_DOWNSTREAM_SUCCESS_RATE = 0.95
 MAX_FALLBACK_RATE = 0.05
+TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION = "grouped_runtime_variables_v4_e5"
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,9 @@ class LocalTaskRequirementPrediction:
 
     requirements: dict[str, int]
     confidence: float
+    raw_requirements: dict[str, float]
+    distance_score: float
+    margin: float
 
 
 class IncrementalTaskRequirementClassifier:
@@ -44,13 +48,13 @@ class IncrementalTaskRequirementClassifier:
     선택됐다는 사실만으로 다음 요청도 같은 모델을 고르는 편향을 만들지 않는다.
     """
 
-    ARTIFACT_KIND = "mdeberta_task_requirements_online_v1"
+    ARTIFACT_KIND = "multilingual_e5_task_requirements_online_v1"
     REQUIREMENT_KEYS = (
         "task_complexity",
         "decision_impact",
         "evidence_synthesis",
     )
-    LEARNING_RATE = 0.08
+    LEARNING_RATE = 0.10
     L2 = 0.0005
 
     @classmethod
@@ -85,6 +89,8 @@ class IncrementalTaskRequirementClassifier:
             + (total_error / len(cls.REQUIREMENT_KEYS)) * 0.1
         )
         state["trained_example_count"] = count
+        state["feature_schema_version"] = TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION
+        cls._update_centroid(state, values, targets)
         return state
 
     @classmethod
@@ -96,17 +102,35 @@ class IncrementalTaskRequirementClassifier:
     ) -> LocalTaskRequirementPrediction:
         values = cls._vector(vector)
         state = cls._state(artifact, len(values))
-        requirements = {
-            key: max(0, min(3, int(round(cls._predict_value(state, key, values)))))
+        raw_requirements = {
+            key: max(0.0, min(3.0, cls._predict_value(state, key, values)))
             for key in cls.REQUIREMENT_KEYS
         }
-        # local-first 전환 최소 표본(50)과 동일한 기준으로 신뢰도를 계산한다.
-        # 80으로 두면 전환 직후에는 어떤 요청도 threshold를 통과하지 못한다.
-        count_confidence = min(1.0, int(state["trained_example_count"]) / 50)
-        error_confidence = max(0.0, 1.0 - float(state.get("training_error_ema") or 3.0) / 3.0)
+        requirements = {
+            key: int(round(value)) for key, value in raw_requirements.items()
+        }
+        distance_score = cls._distance_score(state, values)
+        margin = min(cls._ordinal_margin(value) for value in raw_requirements.values())
+        recent_match_rate = max(
+            0.0, min(1.0, float(state.get("recent_judge_match_rate") or 0.0))
+        )
+        recent_contract_rate = max(
+            0.0, min(1.0, float(state.get("recent_contract_pass_rate") or 0.0))
+        )
         return LocalTaskRequirementPrediction(
             requirements=requirements,
-            confidence=round(count_confidence * error_confidence, 4),
+            confidence=round(
+                recent_match_rate
+                * distance_score
+                * margin
+                * recent_contract_rate,
+                4,
+            ),
+            raw_requirements={
+                key: round(value, 4) for key, value in raw_requirements.items()
+            },
+            distance_score=round(distance_score, 4),
+            margin=round(margin, 4),
         )
 
     @classmethod
@@ -125,6 +149,13 @@ class IncrementalTaskRequirementClassifier:
             "bias": {key: float(bias.get(key) or 0.0) for key in cls.REQUIREMENT_KEYS},
             "trained_example_count": int(previous.get("trained_example_count") or 0),
             "training_error_ema": float(previous.get("training_error_ema") or 0.0),
+            "requirement_centroids": dict(previous.get("requirement_centroids") or {}),
+            "recent_judge_match_rate": float(
+                previous.get("recent_judge_match_rate") or 0.0
+            ),
+            "recent_contract_pass_rate": float(
+                previous.get("recent_contract_pass_rate") or 0.0
+            ),
         }
 
     @staticmethod
@@ -155,11 +186,60 @@ class IncrementalTaskRequirementClassifier:
             for weight, value in zip(state["weights"][key], vector)
         ) + float(state["bias"][key])
 
+    @classmethod
+    def _update_centroid(
+        cls,
+        state: dict[str, Any],
+        vector: list[float],
+        targets: dict[str, int],
+    ) -> None:
+        key = ":".join(str(targets[name]) for name in cls.REQUIREMENT_KEYS)
+        centroids = state["requirement_centroids"]
+        current = centroids.get(key) if isinstance(centroids.get(key), dict) else {}
+        count = int(current.get("count") or 0)
+        previous = current.get("vector") if isinstance(current.get("vector"), list) else []
+        if len(previous) != len(vector):
+            previous = [0.0] * len(vector)
+            count = 0
+        next_count = count + 1
+        centroids[key] = {
+            "count": next_count,
+            "vector": [
+                ((float(old) * count) + value) / next_count
+                for old, value in zip(previous, vector)
+            ],
+        }
+
+    @staticmethod
+    def _distance_score(state: dict[str, Any], vector: list[float]) -> float:
+        centroids = state.get("requirement_centroids")
+        if not isinstance(centroids, dict) or not centroids:
+            return 0.0
+        vector_norm = math.sqrt(sum(value * value for value in vector)) or 1.0
+        similarities: list[float] = []
+        for centroid in centroids.values():
+            row = centroid.get("vector") if isinstance(centroid, dict) else None
+            if not isinstance(row, list) or len(row) != len(vector):
+                continue
+            row_values = [float(value) for value in row]
+            row_norm = math.sqrt(sum(value * value for value in row_values)) or 1.0
+            cosine = sum(a * b for a, b in zip(vector, row_values)) / (
+                vector_norm * row_norm
+            )
+            similarities.append(max(0.0, min(1.0, cosine)))
+        return max(similarities, default=0.0)
+
+    @staticmethod
+    def _ordinal_margin(value: float) -> float:
+        rounded = max(0, min(3, int(round(value))))
+        distance_to_center = abs(value - rounded)
+        return max(0.0, min(1.0, 1.0 - distance_to_center * 2.0))
+
 
 class IncrementalModelChoiceClassifier:
     """고정 encoder 위에서 online softmax head만 갱신한다."""
 
-    ARTIFACT_KIND = "mdeberta_model_choice_online_v1"
+    ARTIFACT_KIND = "multilingual_e5_model_choice_online_v1"
     LEARNING_RATE = 0.16
     L2 = 0.0005
 
@@ -281,20 +361,39 @@ class IncrementalModelChoiceClassifier:
 def learning_mode_for(
     *,
     judged_request_count: int,
-    distinct_selected_model_count: int,
+    distinct_selected_model_count: int | None = None,
     success_rate: float | None,
     schema_pass_rate: float | None,
     downstream_success_rate: float | None,
     fallback_rate: float | None,
     largest_selected_model_share: float | None = None,
+    recent_judge_match_rate: float | None = None,
+    recent_axis_mean_errors: dict[str, float] | None = None,
+    recent_judge_label_diversity: int | None = None,
+    recent_local_prediction_diversity: int | None = None,
+    recent_contract_pass_rate: float | None = None,
+    recent_evaluation_sample_count: int | None = None,
 ) -> str:
     """정확한 표본과 운영 결과가 모였을 때만 local-first로 바꾼다."""
 
     if judged_request_count < MIN_JUDGED_REQUESTS:
         return "judge_first"
-    if distinct_selected_model_count < MIN_DISTINCT_SELECTED_MODELS:
+    if (recent_evaluation_sample_count or 0) < 20:
         return "judge_first"
-    if largest_selected_model_share is not None and largest_selected_model_share > MAX_SELECTED_MODEL_SHARE:
+    if recent_judge_match_rate is None or recent_judge_match_rate < 0.80:
+        return "judge_first"
+    axis_errors = recent_axis_mean_errors or {}
+    if any(
+        axis_errors.get(key) is None or float(axis_errors[key]) > 0.5
+        for key in IncrementalTaskRequirementClassifier.REQUIREMENT_KEYS
+    ):
+        return "judge_first"
+    if (
+        (recent_judge_label_diversity or 0) > 1
+        and (recent_local_prediction_diversity or 0) <= 1
+    ):
+        return "judge_first"
+    if recent_contract_pass_rate is None or recent_contract_pass_rate < 0.95:
         return "judge_first"
     if (success_rate or 0.0) < MIN_SUCCESS_RATE:
         return "judge_first"

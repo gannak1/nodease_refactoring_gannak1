@@ -1,5 +1,6 @@
 from apps.workflow_engine.services.model_routing_incremental_learning import (
     IncrementalModelChoiceClassifier,
+    TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
     learning_mode_for,
 )
 from apps.workflow_engine.services.model_router import ModelRouter
@@ -71,6 +72,16 @@ def test_learning_mode_stays_judge_first_until_outcomes_are_diverse_and_healthy(
         schema_pass_rate=0.99,
         downstream_success_rate=0.99,
         fallback_rate=0.01,
+        recent_judge_match_rate=0.8,
+        recent_axis_mean_errors={
+            "task_complexity": 0.3,
+            "decision_impact": 0.2,
+            "evidence_synthesis": 0.4,
+        },
+        recent_judge_label_diversity=2,
+        recent_local_prediction_diversity=2,
+        recent_contract_pass_rate=0.95,
+        recent_evaluation_sample_count=20,
     ) == "local_first"
 
     assert learning_mode_for(
@@ -80,6 +91,16 @@ def test_learning_mode_stays_judge_first_until_outcomes_are_diverse_and_healthy(
         schema_pass_rate=0.80,
         downstream_success_rate=0.99,
         fallback_rate=0.01,
+        recent_judge_match_rate=0.8,
+        recent_axis_mean_errors={
+            "task_complexity": 0.3,
+            "decision_impact": 0.2,
+            "evidence_synthesis": 0.4,
+        },
+        recent_judge_label_diversity=2,
+        recent_local_prediction_diversity=2,
+        recent_contract_pass_rate=0.95,
+        recent_evaluation_sample_count=20,
     ) == "judge_first"
 
 
@@ -127,16 +148,19 @@ def test_policy_uses_runtime_judge_first_then_local_router(monkeypatch):
         confidence = 0.92
 
     from apps.workflow_engine.services.model_routing_local_classifier import (
-        MDebertaTaskRequirementClassifier,
+        MultilingualE5TaskRequirementClassifier,
     )
 
     monkeypatch.setattr(
-        MDebertaTaskRequirementClassifier, "predict", lambda *_args, **_kwargs: _Prediction()
+        MultilingualE5TaskRequirementClassifier, "predict", lambda *_args, **_kwargs: _Prediction()
     )
     policy["active_policy"]["learning"] = {
         "mode": "local_first",
         "local_confidence_threshold": 0.78,
-        "local_requirement_artifact": {"kind": "mdeberta_task_requirements_online_v1"},
+        "local_requirement_artifact": {
+            "kind": "multilingual_e5_task_requirements_online_v1",
+                "feature_schema_version": TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
+        },
     }
     local = ModelRouter.resolve_policy(
         policy,

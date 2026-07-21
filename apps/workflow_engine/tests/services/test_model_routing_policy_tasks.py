@@ -21,12 +21,25 @@ def test_operational_run_task_dispatches_refresh_for_due_policy():
             "apps.workflow_engine.services.model_routing_policy_store.ModelRoutingPolicyStore.record_completed_deployed_run",
             return_value=[policy_id],
         ),
+        patch(
+            "apps.workflow_engine.services.model_routing_policy_store.ModelRoutingPolicyStore.pending_learning_policy_ids_for_run",
+            return_value=[policy_id],
+        ),
     ):
         result = tasks.record_model_routing_operational_run.__wrapped__(str(uuid4()))
 
     assert result == {"status": "success", "scheduled_policy_ids": [str(policy_id)]}
     session.commit.assert_called_once()
     assert sent == [
+        (
+            ("workflow.model_routing.train_local_router",),
+            {
+                "args": [str(policy_id), False],
+                "kwargs": {},
+                "argsrepr": "[workflow arguments redacted]",
+                "kwargsrepr": "{workflow arguments redacted}",
+            },
+        ),
         (
             ("workflow.model_routing.refresh_policy",),
             {
@@ -37,6 +50,47 @@ def test_operational_run_task_dispatches_refresh_for_due_policy():
             },
         )
     ]
+
+
+def test_local_router_training_task_defers_a_small_batch_without_blocking_run():
+    from apps.workflow_engine import tasks
+    from apps.workflow_engine.services.model_routing_learning_batch import (
+        ModelRoutingLearningBatchResult,
+        ModelRoutingLearningBatchService,
+    )
+
+    policy_id = uuid4()
+    session = MagicMock()
+    sent = []
+    result = ModelRoutingLearningBatchResult(
+        active_policy={},
+        processed_count=0,
+        remaining_count=4,
+        deferred_seconds=300,
+    )
+
+    with (
+        patch.object(tasks, "SessionLocal", return_value=session),
+        patch.object(
+            ModelRoutingLearningBatchService,
+            "train_pending",
+            return_value=result,
+        ),
+        patch.object(
+            tasks.celery_app,
+            "send_task",
+            side_effect=lambda *args, **kwargs: sent.append((args, kwargs)),
+        ),
+    ):
+        task_result = tasks.train_model_routing_local_router.__wrapped__(
+            str(policy_id), False
+        )
+
+    session.commit.assert_called_once()
+    assert task_result["status"] == "deferred"
+    assert sent[0][0] == ("workflow.model_routing.train_local_router",)
+    assert sent[0][1]["args"] == [str(policy_id), True]
+    assert sent[0][1]["countdown"] == 300
 
 
 def test_duplicate_auto_refresh_delivery_is_skipped_after_request_is_consumed():

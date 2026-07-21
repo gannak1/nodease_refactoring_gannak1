@@ -174,7 +174,17 @@ def record_model_routing_operational_run(self, workflow_run_id: str):
             session,
             workflow_run_id=workflow_run_id,
         )
+        learning_policy_ids = ModelRoutingPolicyStore.pending_learning_policy_ids_for_run(
+            session,
+            workflow_run_id=workflow_run_id,
+        )
         session.commit()
+        for policy_id in learning_policy_ids:
+            send_workflow_task(
+                celery_app,
+                "workflow.model_routing.train_local_router",
+                args=[str(policy_id), False],
+            )
         for policy_id in policy_ids:
             send_workflow_task(
                 celery_app,
@@ -188,6 +198,61 @@ def record_model_routing_operational_run(self, workflow_run_id: str):
     except Exception as exc:
         session.rollback()
         logger.error("[Model-Routing] run event record failed: %s", exc)
+        raise self.retry(exc=exc, countdown=min(2 ** (self.request.retries + 1), 30))
+    finally:
+        session.close()
+
+
+@celery_app.task(
+    name="workflow.model_routing.train_local_router",
+    bind=True,
+    max_retries=3,
+    base=RedactedWorkflowTask,
+)
+def train_model_routing_local_router(
+    self,
+    policy_id: str,
+    force: bool = False,
+):
+    """Judge label을 요청 처리와 분리해 작은 batch로 학습한다."""
+
+    from apps.workflow_engine.services.model_routing_learning_batch import (
+        ModelRoutingLearningBatchService,
+    )
+
+    session = SessionLocal()
+    try:
+        result = ModelRoutingLearningBatchService.train_pending(
+            session,
+            policy_id=policy_id,
+            force=force,
+        )
+        session.commit()
+        if result.deferred_seconds is not None:
+            send_workflow_task(
+                celery_app,
+                "workflow.model_routing.train_local_router",
+                args=[policy_id, True],
+                countdown=result.deferred_seconds,
+            )
+            status = "deferred"
+        elif result.remaining_count > 0:
+            send_workflow_task(
+                celery_app,
+                "workflow.model_routing.train_local_router",
+                args=[policy_id, True],
+            )
+            status = "continued"
+        else:
+            status = "success"
+        return {
+            "status": status,
+            "processed_count": result.processed_count,
+            "remaining_count": result.remaining_count,
+        }
+    except Exception as exc:
+        session.rollback()
+        logger.error("[Model-Routing] local training failed: %s", exc)
         raise self.retry(exc=exc, countdown=min(2 ** (self.request.retries + 1), 30))
     finally:
         session.close()

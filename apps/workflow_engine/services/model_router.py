@@ -33,7 +33,10 @@ from apps.workflow_engine.services.model_routing_decision_cache import (
     accepted_decision,
 )
 from apps.workflow_engine.services.model_routing_local_classifier import (
-    MDebertaTaskRequirementClassifier,
+    MultilingualE5TaskRequirementClassifier,
+)
+from apps.workflow_engine.services.model_routing_incremental_learning import (
+    TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
 )
 
 
@@ -274,6 +277,27 @@ class ModelRouter:
     _JUDGE_TASK_DESCRIPTION_CHAR_BUDGET = 600
     _JUDGE_PROMPT_SECTION_CHAR_BUDGET = 480
     _JUDGE_OUTPUT_CONTRACT_CHAR_BUDGET = 900
+    _PRIMARY_LEARNING_VARIABLE_NAMES = {
+        "input",
+        "inputtext",
+        "instruction",
+        "message",
+        "prompt",
+        "query",
+        "question",
+        "request",
+        "text",
+        "userinput",
+    }
+    _CONTEXT_LEARNING_VARIABLE_NAMES = {
+        "constraints",
+        "content",
+        "context",
+        "conversation",
+        "documents",
+        "evidence",
+        "history",
+    }
 
     @classmethod
     def resolve_policy(
@@ -387,14 +411,19 @@ class ModelRouter:
                     },
                 )
         artifact = learning.get("local_requirement_artifact")
+        artifact_is_current = (
+            isinstance(artifact, dict)
+            and artifact.get("feature_schema_version")
+            == TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION
+        )
         min_confidence = cls._confidence(
             learning.get("local_confidence_threshold"),
             default=0.78,
         )
-        if learning.get("mode") == "local_first" and isinstance(artifact, dict):
+        if learning.get("mode") == "local_first" and artifact_is_current:
             low_confidence: float | None = None
             try:
-                prediction = MDebertaTaskRequirementClassifier.predict(
+                prediction = MultilingualE5TaskRequirementClassifier.predict(
                     artifact,
                     text=learning_feature_text or cls.learning_feature_text(inputs, node_data),
                 )
@@ -534,34 +563,15 @@ class ModelRouter:
     ) -> str:
         """요청 난이도 학습용 feature를 만든다.
 
-        JSON Schema 같은 노드 고정 출력 계약은 모든 요청에 같으므로 모델별
-        capability filter로만 사용한다. 이 feature에는 넣지 않아 난이도 학습이
-        ``JSON이면 고난도`` 같은 잘못된 상관관계를 외우지 않게 한다.
+        노드 제목과 prompt 같은 고정 계약은 같은 policy의 모든 실행에 반복되므로
+        제외한다. referenced variable의 실행값과 RAG runtime 신호만 남겨 local
+        router가 요청별 차이를 학습하게 한다. 변수 메타데이터가 없는 레거시
+        노드는 전체 runtime input을 안전하게 축약해 사용한다.
         """
 
-        if rendered_prompt_parts is None:
-            rendered_prompt_parts = cls.render_prompt_parts(inputs, node_data)
-        prompt_values = list(rendered_prompt_parts)[:3]
-        prompt_values.extend([""] * (3 - len(prompt_values)))
-        prompt_feature = "\n\n".join(
-            f"{label}:\n{cls._judge_prompt_excerpt(value)}"
-            for label, value in zip(
-                ("SYSTEM_PROMPT", "USER_PROMPT", "ASSISTANT_PROMPT"),
-                prompt_values,
-            )
-        )
-        task_parts = []
-        node_title = str(cls._node_data_value(node_data, "title") or "").strip()
-        if node_title:
-            task_parts.append(f"NODE_TITLE: {node_title[:120]}")
-        task_description = cls._judge_task_description(node_data)
-        if task_description:
-            task_parts.append(f"TASK_DESCRIPTION:\n{task_description}")
-        task_parts.append(f"PROMPT_CONTEXT:\n{prompt_feature}")
-        parts = [
-            f"CURRENT_REQUEST_JSON:\n{cls._judge_request_json(inputs)}",
-            "NODE_TASK_CONTEXT:\n" + "\n\n".join(task_parts),
-        ]
+        del rendered_prompt_parts  # routing_feature_text만 고정 prompt 계약을 사용한다.
+        runtime_variables = cls._learning_runtime_variables(inputs, node_data)
+        feature_groups = cls._learning_feature_groups(runtime_variables)
         safe_rag_metadata = {
             key: value
             for key, value in (rag_metadata or {}).items()
@@ -581,11 +591,96 @@ class ModelRouter:
             and isinstance(value, (bool, int, float, str))
         }
         if safe_rag_metadata:
-            parts.append(
-                "RAG_RUNTIME_SIGNALS:\n"
-                + json.dumps(safe_rag_metadata, ensure_ascii=False, sort_keys=True)
+            feature_groups["structured_features"]["rag"] = safe_rag_metadata
+        bounded_groups = {
+            group_name: json.loads(cls._judge_request_json(group_values))
+            for group_name, group_values in feature_groups.items()
+        }
+        return json.dumps(
+            bounded_groups,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+
+    @classmethod
+    def _learning_feature_groups(
+        cls,
+        runtime_variables: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        """실행 변수를 의미·문맥·구조 그룹으로 분리한다."""
+
+        groups: dict[str, dict[str, Any]] = {
+            "primary_request": {},
+            "dynamic_context": {},
+            "structured_features": {},
+        }
+        for name, value in runtime_variables.items():
+            normalized_name = "".join(
+                char for char in str(name).lower() if char.isalnum()
             )
-        return "\n\n".join(part for part in parts if part)
+            if normalized_name in cls._PRIMARY_LEARNING_VARIABLE_NAMES:
+                groups["primary_request"][name] = value
+            elif normalized_name in cls._CONTEXT_LEARNING_VARIABLE_NAMES:
+                groups["dynamic_context"][name] = value
+            elif isinstance(value, (dict, list, tuple, set)):
+                groups["dynamic_context"][name] = value
+            elif isinstance(value, str) and len(value.strip()) > 64:
+                groups["dynamic_context"][name] = value
+            else:
+                groups["structured_features"][name] = value
+
+        if not groups["primary_request"] and runtime_variables:
+            # 이름이 낯선 사용자 정의 변수도 가장 정보량이 큰 실행값을 요청 본문으로
+            # 사용할 수 있게 한다. 고정 prompt나 변수명별 제품 하드코딩은 사용하지 않는다.
+            primary_name = max(
+                runtime_variables,
+                key=lambda key: len(cls._flatten_text(runtime_variables[key])),
+            )
+            groups["primary_request"][primary_name] = runtime_variables[primary_name]
+            groups["dynamic_context"].pop(primary_name, None)
+            groups["structured_features"].pop(primary_name, None)
+        return groups
+
+    @classmethod
+    def _learning_runtime_variables(
+        cls,
+        inputs: dict[str, Any],
+        node_data: Any,
+    ) -> dict[str, Any]:
+        """referenced variable의 실행값만 local learning 입력으로 투영한다."""
+
+        referenced_variables = cls._node_data_value(
+            node_data,
+            "referenced_variables",
+            default=[],
+        )
+        if not isinstance(referenced_variables, list):
+            referenced_variables = []
+
+        values: dict[str, Any] = {}
+        for variable in referenced_variables:
+            name = str(
+                cls._node_data_value(variable, "name", default="") or ""
+            ).strip()
+            selector = cls._node_data_value(
+                variable,
+                "value_selector",
+                default=[],
+            )
+            if not name:
+                continue
+
+            value = None
+            if isinstance(selector, list) and selector:
+                source = inputs.get(str(selector[0]))
+                value = cls._nested_value(source, selector[1:])
+            if value is None and name in inputs:
+                value = inputs.get(name)
+            if value is not None:
+                values[name] = value
+
+        return values or inputs
 
     @classmethod
     def select_candidate_for_requirements(

@@ -34,10 +34,10 @@ from apps.workflow_engine.services.model_routing_operational_performance import 
     ModelRoutingOperationalPerformanceService,
 )
 from apps.workflow_engine.services.model_routing_incremental_learning import (
+    TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
     learning_mode_for,
 )
 from apps.workflow_engine.services.model_routing_decision_cache import (
-    remember_accepted_decision,
     routing_feature_hash,
 )
 from apps.workflow_engine.services.llm_service import LLMService
@@ -116,15 +116,35 @@ class ModelRoutingPolicyStore:
         )
         try:
             from apps.workflow_engine.services.model_routing_local_classifier import (
-                MDebertaModelChoiceClassifier,
+                MultilingualE5ModelChoiceClassifier,
+                MultilingualE5TaskRequirementClassifier,
             )
 
-            vector, encoder_model_id = MDebertaModelChoiceClassifier.vectorize(
+            vector, encoder_model_id = MultilingualE5ModelChoiceClassifier.vectorize(
                 learning_feature_text,
                 artifact=learning.get("local_requirement_artifact"),
             )
         except (RuntimeError, ValueError, OSError) as exc:
             return {"learning_queued": False, "reason": type(exc).__name__}
+
+        stored_artifact = (
+            learning.get("candidate_requirement_artifact")
+            or learning.get("local_requirement_artifact")
+            or {}
+        )
+        artifact = (
+            stored_artifact
+            if stored_artifact.get("feature_schema_version")
+            == TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION
+            else {}
+        )
+        try:
+            pre_learning = MultilingualE5TaskRequirementClassifier.predict_from_vector(
+                artifact,
+                vector=vector,
+            )
+        except (RuntimeError, ValueError):
+            pre_learning = None
 
         # 동일 요청 Judge 결과 cache는 전체 routing contract 기준으로만 재사용한다.
         # 반면 vector는 고정 출력 계약을 뺀 learning feature로 만든다.
@@ -153,6 +173,24 @@ class ModelRoutingPolicyStore:
                 confidence=Decimal(str(confidence)),
                 reason_code=str(reason_code)[:128],
                 task_requirements=cls._safe_task_requirements(task_requirements),
+                local_prediction=(
+                    dict(pre_learning.requirements) if pre_learning is not None else None
+                ),
+                local_confidence=(
+                    Decimal(str(pre_learning.confidence))
+                    if pre_learning is not None
+                    else None
+                ),
+                local_distance_score=(
+                    Decimal(str(pre_learning.distance_score))
+                    if pre_learning is not None
+                    else None
+                ),
+                local_margin=(
+                    Decimal(str(pre_learning.margin))
+                    if pre_learning is not None
+                    else None
+                ),
             )
         )
         db.flush()
@@ -312,7 +350,7 @@ class ModelRoutingPolicyStore:
         contract_passed: bool,
         outcome_reason: str,
     ) -> bool:
-        """계약 통과 label만 local classifier artifact에 반영한다."""
+        """계약 결과만 확정하고 실제 학습은 별도 Celery batch에 맡긴다."""
         label.outcome_reason = outcome_reason
         label.finalized_at = datetime.now(timezone.utc)
         if not contract_passed:
@@ -328,67 +366,10 @@ class ModelRoutingPolicyStore:
             label.status = "rejected"
             label.outcome_reason = "strategy_not_supported"
             return False
-        learning = (
-            dict(active_policy.get("learning"))
-            if isinstance(active_policy.get("learning"), dict)
-            else {}
-        )
-        try:
-            from apps.workflow_engine.services.model_routing_local_classifier import (
-                MDebertaTaskRequirementClassifier,
-            )
-
-            requirements = cls._safe_task_requirements(
-                getattr(label, "task_requirements", None)
-            )
-            if requirements is None:
-                label.status = "rejected"
-                label.outcome_reason = "task_requirements_missing"
-                return False
-            learning["local_requirement_artifact"] = (
-                MDebertaTaskRequirementClassifier.update_from_vector(
-                    learning.get("local_requirement_artifact"),
-                    vector=label.feature_vector,
-                    encoder_model_id=label.encoder_model_id,
-                    task_requirements=requirements,
-                )
-            )
-        except (RuntimeError, ValueError):
+        if cls._safe_task_requirements(getattr(label, "task_requirements", None)) is None:
             label.status = "rejected"
-            label.outcome_reason = "learning_error"
+            label.outcome_reason = "task_requirements_missing"
             return False
-
-        labels = {
-            str(model_id)
-            for model_id in (learning.get("selected_model_ids") or [])
-            if str(model_id).strip()
-        }
-        labels.add(str(label.selected_model_id))
-        selected_model_counts = (
-            dict(learning.get("selected_model_counts"))
-            if isinstance(learning.get("selected_model_counts"), dict)
-            else {}
-        )
-        selected_model_counts[str(label.selected_model_id)] = int(
-            selected_model_counts.get(str(label.selected_model_id)) or 0
-        ) + 1
-        learning["judged_request_count"] = int(
-            learning.get("judged_request_count") or 0
-        ) + 1
-        learning["selected_model_ids"] = sorted(labels)
-        learning["selected_model_counts"] = selected_model_counts
-        learning["last_judge_confidence"] = round(float(label.confidence or 0), 4)
-        learning["last_judge_reason_code"] = str(label.reason_code or "")[:80]
-        remember_accepted_decision(
-            learning,
-            feature_hash=getattr(label, "routing_feature_hash", None)
-            or getattr(label, "feature_hash", None),
-            selected_model_id=str(label.selected_model_id),
-            confidence=float(label.confidence or 0),
-            reason_code=str(label.reason_code or ""),
-        )
-        active_policy["learning"] = learning
-        policy.active_policy = active_policy
         label.status = "accepted"
         return True
 
@@ -414,7 +395,12 @@ class ModelRoutingPolicyStore:
             if isinstance(active_policy.get("learning"), dict)
             else {}
         )
-        if not isinstance(learning.get("local_requirement_artifact"), dict):
+        candidate_artifact = learning.get("candidate_requirement_artifact")
+        if (
+            not isinstance(candidate_artifact, dict)
+            or candidate_artifact.get("feature_schema_version")
+            != TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION
+        ):
             learning["mode"] = "judge_first"
             active_policy["learning"] = learning
             policy.active_policy = active_policy
@@ -438,7 +424,12 @@ class ModelRoutingPolicyStore:
                 return None
             return sum(count * float(rate) for count, rate in evaluated) / weight
 
-        learning["mode"] = learning_mode_for(
+        recent = (
+            learning.get("recent_evaluation")
+            if isinstance(learning.get("recent_evaluation"), dict)
+            else {}
+        )
+        next_mode = learning_mode_for(
             judged_request_count=int(learning.get("judged_request_count") or 0),
             distinct_selected_model_count=len(learning.get("selected_model_ids") or []),
             success_rate=weighted_rate("success_rate"),
@@ -446,10 +437,47 @@ class ModelRoutingPolicyStore:
             downstream_success_rate=weighted_rate("downstream_success_rate"),
             fallback_rate=weighted_rate("fallback_rate"),
             largest_selected_model_share=cls._largest_selected_model_share(learning),
+            recent_judge_match_rate=recent.get("judge_match_rate"),
+            recent_axis_mean_errors=recent.get("axis_mean_errors"),
+            recent_judge_label_diversity=recent.get("judge_label_diversity"),
+            recent_local_prediction_diversity=recent.get(
+                "local_prediction_diversity"
+            ),
+            recent_contract_pass_rate=recent.get("contract_pass_rate"),
+            recent_evaluation_sample_count=recent.get("sample_count"),
         )
+        learning["mode"] = next_mode
+        if next_mode == "local_first":
+            learning["local_requirement_artifact"] = dict(candidate_artifact)
         learning["operational_run_count"] = total_runs
         active_policy["learning"] = learning
         policy.active_policy = active_policy
+
+    @classmethod
+    def pending_learning_policy_ids_for_run(
+        cls,
+        db: Session,
+        *,
+        workflow_run_id: str | uuid.UUID,
+    ) -> list[uuid.UUID]:
+        """완료 훅에서 확정됐지만 아직 비동기 학습하지 않은 정책을 찾는다."""
+
+        rows = (
+            db.query(LLMNodeModelRoutingLearningLabel.policy_id)
+            .filter(
+                LLMNodeModelRoutingLearningLabel.workflow_run_id
+                == uuid.UUID(str(workflow_run_id))
+            )
+            .filter(
+                LLMNodeModelRoutingLearningLabel.status.in_(("accepted", "rejected"))
+            )
+            .filter(
+                LLMNodeModelRoutingLearningLabel.learning_processed_at.is_(None)
+            )
+            .distinct()
+            .all()
+        )
+        return [row[0] for row in rows]
 
     @staticmethod
     def _safe_task_requirements(value: Any) -> dict[str, int] | None:
