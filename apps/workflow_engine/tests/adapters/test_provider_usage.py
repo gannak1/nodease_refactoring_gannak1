@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 
 import pytest
 
@@ -9,6 +10,7 @@ from apps.workflow_engine.adapters.provider_usage import (
 )
 from apps.workflow_engine.application.provider_execution import (
     ProviderExecutionAttribution,
+    ProviderExecutionPricingSnapshot,
 )
 from apps.workflow_engine.application.provider_usage import ProviderUsageRecord
 from apps.workflow_engine.services import llm_service as workflow_llm_service
@@ -33,7 +35,7 @@ def _record(*, attribution: ProviderExecutionAttribution) -> ProviderUsageRecord
     )
 
 
-def test_usage_recorder_preserves_admitted_model_and_organization(monkeypatch):
+def test_capability_usage_uses_admission_pricing_snapshot(monkeypatch):
     session = _Session()
     organization_id = uuid.uuid4()
     model_db_id = uuid.uuid4()
@@ -41,21 +43,18 @@ def test_usage_recorder_preserves_admitted_model_and_organization(monkeypatch):
     principal_id = uuid.uuid4()
     captured: dict = {}
 
-    def calculate_cost(db, model_id, prompt_tokens, completion_tokens, **kwargs):
-        captured["cost"] = {
-            "db": db,
-            "model_id": model_id,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            **kwargs,
-        }
-        return 0.125
-
-    def log_usage(**kwargs):
-        captured["usage"] = kwargs
-
-    monkeypatch.setattr(LLMService, "calculate_cost", calculate_cost)
-    monkeypatch.setattr(LLMService, "log_usage", log_usage)
+    monkeypatch.setattr(
+        LLMService,
+        "calculate_cost",
+        lambda *_args, **_kwargs: pytest.fail(
+            "capability usage must not re-read mutable model pricing"
+        ),
+    )
+    monkeypatch.setattr(
+        LLMService,
+        "log_usage",
+        lambda **kwargs: captured.update(usage=kwargs),
+    )
     recorder = PostgresProviderUsageRecorder(session_factory=lambda: session)
 
     cost = recorder.record(
@@ -68,13 +67,17 @@ def test_usage_recorder_preserves_admitted_model_and_organization(monkeypatch):
                 model_db_id=model_db_id,
                 capability_id=uuid.uuid4(),
                 capability_revision=2,
+                pricing_snapshot=ProviderExecutionPricingSnapshot(
+                    revision="d" * 64,
+                    input_price_per_1k=Decimal("1"),
+                    output_price_per_1k=Decimal("2"),
+                ),
             )
         )
     )
 
-    assert cost == 0.125
-    assert captured["cost"]["model_db_id"] == model_db_id
-    assert captured["cost"]["allow_catalog_fallback"] is False
+    assert cost == pytest.approx(0.007)
+    assert captured["usage"]["cost"] == pytest.approx(0.007)
     assert captured["usage"]["model_db_id"] == model_db_id
     assert captured["usage"]["organization_id"] == organization_id
     assert captured["usage"]["credential_id"] == credential_id

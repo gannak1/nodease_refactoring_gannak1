@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -96,6 +97,7 @@ def test_capability_runtime_commits_and_closes_control_uow_before_provider_io():
     credential_id = uuid.uuid4()
     session = _Session()
     captured: dict = {}
+    pricing_revision = "d" * 64
 
     capability = SimpleNamespace(id=uuid.uuid4(), revision=3)
 
@@ -117,9 +119,12 @@ def test_capability_runtime_commits_and_closes_control_uow_before_provider_io():
                 model=SimpleNamespace(
                     id=model_db_id,
                     model_id_for_api_call="gpt-safe",
+                    input_price_1k=Decimal("0.001"),
+                    output_price_1k=Decimal("0.002"),
                 ),
                 capability=SimpleNamespace(
-                    credential_principal=RuntimePrincipal.user(policy_principal_id)
+                    credential_principal=RuntimePrincipal.user(policy_principal_id),
+                    pricing_revision=pricing_revision,
                 ),
             )
 
@@ -181,6 +186,9 @@ def test_capability_runtime_commits_and_closes_control_uow_before_provider_io():
     )
     assert lease.attribution.model_db_id == model_db_id
     assert lease.attribution.credential_principal_user_id == policy_principal_id
+    assert lease.attribution.pricing_snapshot.revision == pricing_revision
+    assert lease.attribution.pricing_snapshot.input_price_per_1k == Decimal("0.001")
+    assert lease.attribution.pricing_snapshot.output_price_per_1k == Decimal("0.002")
     assert captured["issue"].binding.node_id == "llm-1"
     assert captured["admission"].requested_output_tokens == 100
     assert lease.invoke()["choices"][0]["message"]["content"] == "ok"
@@ -410,9 +418,12 @@ def test_capability_runtime_hides_config_failure_and_does_not_commit():
                 model=SimpleNamespace(
                     id=uuid.uuid4(),
                     model_id_for_api_call="gpt-safe",
+                    input_price_1k=Decimal("0.001"),
+                    output_price_1k=Decimal("0.002"),
                 ),
                 capability=SimpleNamespace(
-                    credential_principal=RuntimePrincipal.user(uuid.uuid4())
+                    credential_principal=RuntimePrincipal.user(uuid.uuid4()),
+                    pricing_revision="d" * 64,
                 ),
             )
 

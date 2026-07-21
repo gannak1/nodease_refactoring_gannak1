@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from threading import Lock
 from typing import Any, Callable, Mapping
 
@@ -38,6 +39,7 @@ from apps.workflow_engine.application.provider_execution import (
     ProviderExecutionConfigurationError,
     ProviderExecutionPlan,
     ProviderExecutionPreflight,
+    ProviderExecutionPricingSnapshot,
     ProviderExecutionRequest,
 )
 
@@ -209,7 +211,12 @@ class CapabilityProviderExecutionAdapter:
                 credential_id = uuid.UUID(str(lease.credential.id))
                 model_db_id = uuid.UUID(str(lease.model.id))
                 principal_id = uuid.UUID(str(principal.reference_id))
-            except (AttributeError, TypeError, ValueError):
+                pricing_snapshot = ProviderExecutionPricingSnapshot(
+                    revision=str(lease.capability.pricing_revision),
+                    input_price_per_1k=Decimal(str(lease.model.input_price_1k)),
+                    output_price_per_1k=Decimal(str(lease.model.output_price_1k)),
+                )
+            except (AttributeError, InvalidOperation, TypeError, ValueError):
                 raise LLMCredentialNotAvailableError(
                     "provider_capability_attribution_invalid",
                     "Provider execution capability is not available.",
@@ -263,6 +270,7 @@ class CapabilityProviderExecutionAdapter:
                 model_db_id=model_db_id,
                 capability_id=capability.id,
                 capability_revision=capability.revision,
+                pricing_snapshot=pricing_snapshot,
             )
             db.commit()
         finally:

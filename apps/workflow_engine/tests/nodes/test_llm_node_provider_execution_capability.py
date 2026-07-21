@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,7 @@ from apps.workflow_engine.application.provider_execution import (
     ProviderExecutionAuditActorKind,
     ProviderExecutionConfigurationError,
     ProviderExecutionPlan,
+    ProviderExecutionPricingSnapshot,
 )
 from apps.workflow_engine.application.provider_usage import ProviderUsageRecord
 from apps.workflow_engine.domain.execution import NodeExecutionControl
@@ -160,6 +162,11 @@ def test_capability_required_llm_node_uses_provider_application_ports():
         model_db_id=uuid.uuid4(),
         capability_id=uuid.uuid4(),
         capability_revision=1,
+        pricing_snapshot=ProviderExecutionPricingSnapshot(
+            revision="d" * 64,
+            input_price_per_1k=Decimal("0.001"),
+            output_price_per_1k=Decimal("0.002"),
+        ),
     )
     client = _Client()
     runtime = _Runtime(client=client, attribution=attribution)
@@ -353,6 +360,11 @@ def test_capability_required_legacy_memory_summary_is_skipped_without_fallback(
         model_db_id=uuid.uuid4(),
         capability_id=uuid.uuid4(),
         capability_revision=1,
+        pricing_snapshot=ProviderExecutionPricingSnapshot(
+            revision="d" * 64,
+            input_price_per_1k=Decimal("0.001"),
+            output_price_per_1k=Decimal("0.002"),
+        ),
     )
     runtime = _Runtime(client=_Client(), attribution=attribution)
     node = _node(

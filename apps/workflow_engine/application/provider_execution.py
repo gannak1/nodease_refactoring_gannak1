@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from decimal import Decimal
 from enum import Enum
 from typing import Any, Mapping, Protocol
 
@@ -94,6 +95,24 @@ class ProviderExecutionRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderExecutionPricingSnapshot:
+    """Immutable non-secret rates approved by capability admission."""
+
+    revision: str
+    input_price_per_1k: Decimal
+    output_price_per_1k: Decimal
+
+    def __post_init__(self) -> None:
+        if len(self.revision) != 64 or any(
+            char not in "0123456789abcdef" for char in self.revision
+        ):
+            raise ValueError("pricing revision must be a SHA-256 digest")
+        for rate in (self.input_price_per_1k, self.output_price_per_1k):
+            if not isinstance(rate, Decimal) or not rate.is_finite() or rate < 0:
+                raise ValueError("pricing rates must be finite non-negative decimals")
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderExecutionAttribution:
     """Safe runtime identity; it never contains credential material."""
 
@@ -104,6 +123,25 @@ class ProviderExecutionAttribution:
     model_db_id: uuid.UUID | None
     capability_id: uuid.UUID | None = None
     capability_revision: int | None = None
+    pricing_snapshot: ProviderExecutionPricingSnapshot | None = None
+
+    def __post_init__(self) -> None:
+        if self.capability_id is None:
+            if (
+                self.capability_revision is not None
+                or self.pricing_snapshot is not None
+            ):
+                raise ValueError("legacy attribution cannot carry capability state")
+            return
+        if (
+            not isinstance(self.capability_id, uuid.UUID)
+            or not isinstance(self.model_db_id, uuid.UUID)
+            or not isinstance(self.capability_revision, int)
+            or isinstance(self.capability_revision, bool)
+            or self.capability_revision < 1
+            or not isinstance(self.pricing_snapshot, ProviderExecutionPricingSnapshot)
+        ):
+            raise ValueError("capability attribution requires revision and pricing")
 
 
 class ProviderInvocationLease(Protocol):
@@ -133,6 +171,7 @@ __all__ = [
     "ProviderExecutionConfigurationError",
     "ProviderExecutionPlan",
     "ProviderExecutionPreflight",
+    "ProviderExecutionPricingSnapshot",
     "ProviderExecutionRequest",
     "ProviderExecutionRuntime",
     "ProviderInvocationLease",
