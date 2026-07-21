@@ -172,9 +172,11 @@ mbased는 기존 Moduly 코드를 리팩토링해 Nodease라는 기업 내부 AI
 - 공통 tracing/audit service가 trace 접근과 payload 처리의 경계다.
 - deployment/runtime 변경은 `docker/`, `dev/`, `infra/`, `scripts/`, `docs/architecture.md`의 정합성을 함께 확인한다.
 
-## Review guidelines
+## Code Review Rules
 
 Codex PR 리뷰는 한국어로 작성하고, 실제 장애나 제품 시연 실패로 이어질 수 있는 문제를 우선한다.
+
+### 심각도
 
 리뷰 코멘트에는 가능한 경우 심각도를 `P0`, `P1`, `P2`, `P3` 중 하나로 표시한다.
 
@@ -183,17 +185,27 @@ Codex PR 리뷰는 한국어로 작성하고, 실제 장애나 제품 시연 실
 - `P2`: 특정 조건에서 실패하거나 운영 안정성, 성능, 테스트 신뢰도, 유지보수성에 의미 있는 위험을 만드는 문제. 이번 PR 또는 가까운 후속 PR에서 수정해야 한다.
 - `P3`: 명확한 개선 여지는 있지만 시연, 보안, 데이터, 핵심 기능에는 직접 영향이 낮은 문제. 선택적 개선으로 다룬다.
 
-- P0/P1 수준의 버그, 데이터 손상, 권한 우회, API 계약 파괴, 배포 장애, 제품 시연 차단 가능성을 먼저 지적한다.
-- 변경이 제품 시연에 결정적인 버그인지 판단한다. 로그인, 조직/팀 선택, workflow 생성/편집/실행/배포, RAG 질의, LLM credential 연결, audit/trace 확인 같은 데모 핵심 흐름이 깨지면 높은 우선순위로 표시한다.
-- 단순 취향, 네이밍, 사소한 리팩터링, 포맷 차이는 실제 위험과 연결되지 않으면 중요 이슈로 다루지 않는다.
-- 인증/인가가 필요한 API, workflow 실행, 배포, credential, organization/team/resource 접근 경로에서 권한 검사가 빠졌는지 확인한다.
-- DB model, migration, seed, relation, query 변경은 기존 데이터 호환성, transaction 경계, N+1, cascade/nullable 영향까지 확인한다.
-- API request/response schema가 바뀌면 `docs/features/<feature-name>/api_spec.md`, 프론트 호출부, 타입 정의, 테스트가 함께 갱신되었는지 확인한다.
-- workflow node runtime, Celery task, Redis pub/sub, schedule, async/background job 변경은 중복 실행, race condition, retry/idempotency 문제를 확인한다.
-- audit, tracing, RAG, LLM credential, deployment secret, raw payload를 다루는 변경은 secret 원문이나 민감 데이터가 응답, 로그, trace, fixture에 남지 않는지 확인한다.
-- 핵심 비즈니스 로직, 권한 정책, schema, workflow 실행 경로가 바뀌면 관련 테스트 또는 문서가 함께 갱신되었는지 확인한다.
-- 변경 범위가 공유 모듈이나 운영 경계에 닿으면 Gateway, Workflow Engine, Log System, Sandbox 중 영향받는 서비스의 테스트 범위가 충분한지 확인한다.
-- 리뷰 코멘트는 문제 위치, 재현/영향, 수정 방향이 분명할 때 남긴다. 근거가 약한 추측은 질문이나 확인 요청으로 표현한다.
+P2/P3는 재현 가능한 실패 조건이나 구체적인 운영·회귀 위험이 있을 때만 사용한다. 단순 취향, 네이밍,
+사소한 리팩터링, 포맷 차이와 근거 없는 미래 가능성은 finding으로 남기지 않는다.
+
+### 고위험 경계
+
+- 로그인, 조직/팀 선택, workflow 생성·편집·실행·배포, RAG 질의, LLM credential 연결과 audit/trace 확인 같은 데모 핵심 흐름의 회귀를 우선 확인한다.
+- 인증·인가가 필요한 API와 runtime/background 경로에서 active organization, resource permission과 lifecycle을 protected row 조회 또는 외부 부수효과 전에 확인하는지 검토한다.
+- DB model, migration, seed, relation과 query 변경은 기존 데이터 호환성, transaction 경계, concurrency, nullable/index/FK/cascade와 rollback 영향을 확인한다.
+- workflow node, Celery task, Redis pub/sub, schedule과 background job은 중복 실행, race, retry, idempotency, lease/fencing과 부분 성공 가능성을 확인한다.
+- audit, tracing, RAG, credential, deployment secret과 raw payload 변경은 secret·PII가 응답, 로그, trace, audit와 fixture에 남지 않는지 확인한다.
+- API 또는 공유 계약 변경은 영향을 받는 Client, Gateway, Workflow Engine, Log System, Sandbox, 공식 문서와 테스트를 필요한 범위에서 함께 대조한다.
+
+### Finding 품질
+
+- 변경된 전체 흐름과 관련 테스트를 먼저 읽고, 같은 근본 원인에서 파생된 위치는 하나의 finding으로 묶어 영향 범위를 함께 적는다.
+- Finding은 현재 PR의 최신 HEAD에서 재현되고, 현재 diff가 문제를 새로 만들었거나 악화했거나 기존 문제를 새로운 실행 경로에서 도달 가능하게 만든 경우에만 남긴다. 현재 diff와 무관한 기존 문제는 PR finding으로 남기지 않고 필요한 경우 별도 이슈 후보로 구분한다.
+- 확인 가능한 범위에서 최신 HEAD에서 이미 수정된 문제, outdated line context 또는 같은 근본 원인을 다루는 기존 활성 review thread를 반복해서 코멘트하지 않는다.
+- 문제 위치, 재현 또는 실패 조건, 사용자·보안·데이터 영향, 충돌하는 공식 계약과 수정 방향이 분명할 때만 코멘트를 남긴다. 근거가 약하면 단정하지 말고 질문으로 표현한다.
+- formatting, lint, import 정렬과 생성 파일 정합성처럼 결정적으로 자동 검사할 수 있는 항목은 CI에 맡긴다. 단, PR이 검사 규칙 자체를 약화하거나 CI 실패를 유발한 경우는 finding 대상이다.
+- 테스트 누락은 발견된 버그, 보안 불변조건, 상태 전이, concurrency·retry·idempotency 또는 공유 계약 회귀를 구체적으로 보호할 때만 지적한다.
+- finding이 없으면 GitHub review 결과에 지원되지 않는 별도 prose나 필드를 추가하지 않는다. 별도 summary를 지원하는 실행 환경에서만 finding이 없음을 밝히고, 실행하지 않은 검증과 남은 환경·통합 위험을 기록한다.
 
 ## 테스트와 검증
 
