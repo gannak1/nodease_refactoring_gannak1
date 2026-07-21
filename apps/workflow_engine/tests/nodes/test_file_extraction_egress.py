@@ -106,4 +106,3 @@ def test_file_extraction_node_has_no_direct_http_client_import() -> None:
 
     assert "import requests" not in source
     assert "requests.get" not in source
-

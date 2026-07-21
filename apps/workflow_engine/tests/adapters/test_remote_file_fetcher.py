@@ -67,4 +67,3 @@ def test_fetcher_removes_partial_file_when_downloader_reports_path(
         GuardedRemoteFileFetcher().fetch_to_temp("https://files.example/policy.pdf")
 
     assert not os.path.exists(partial)
-

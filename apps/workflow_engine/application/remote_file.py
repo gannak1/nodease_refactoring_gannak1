@@ -14,4 +14,3 @@ class RemoteFileFetcher(Protocol):
 
 
 __all__ = ["RemoteFileFetchError", "RemoteFileFetcher"]
-
