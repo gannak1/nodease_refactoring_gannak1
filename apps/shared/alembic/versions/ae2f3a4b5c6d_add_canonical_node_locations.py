@@ -20,6 +20,7 @@ depends_on: str | Sequence[str] | None = None
 _DIGEST_DOMAIN = "nodease:canonical-node-location:v1"
 _POLICY_TABLE = "llm_deployment_credential_policies"
 _CAPABILITY_TABLE = "provider_execution_capabilities"
+_BACKFILL_BATCH_SIZE = 500
 
 
 def _frame(value: str) -> bytes:
@@ -56,15 +57,34 @@ def _backfill_root_digests(table_name: str) -> None:
         sa.column("node_location_digest", sa.String(length=64)),
     )
     connection = op.get_bind()
-    rows = list(
-        connection.execute(sa.select(table.c.id, table.c.node_id)).mappings()
+    update_statement = (
+        sa.update(table)
+        .where(table.c.id == sa.bindparam("target_id"))
+        .values(node_location_digest=sa.bindparam("location_digest"))
     )
-    for row in rows:
-        connection.execute(
-            sa.update(table)
-            .where(table.c.id == row["id"])
-            .values(node_location_digest=_root_location_digest(row["node_id"]))
+    last_id = None
+    while True:
+        select_statement = (
+            sa.select(table.c.id, table.c.node_id)
+            .order_by(table.c.id)
+            .limit(_BACKFILL_BATCH_SIZE)
         )
+        if last_id is not None:
+            select_statement = select_statement.where(table.c.id > last_id)
+        rows = connection.execute(select_statement).mappings().all()
+        if not rows:
+            break
+        connection.execute(
+            update_statement,
+            [
+                {
+                    "target_id": row["id"],
+                    "location_digest": _root_location_digest(row["node_id"]),
+                }
+                for row in rows
+            ],
+        )
+        last_id = rows[-1]["id"]
     op.alter_column(
         table_name,
         "node_location_digest",

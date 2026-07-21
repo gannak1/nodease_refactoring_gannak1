@@ -294,6 +294,22 @@ def test_stored_location_digest_mismatch_fails_closed() -> None:
     assert exc_info.value.code == "selection_ambiguous"
 
 
+def test_policy_command_rejects_non_utf8_container_id_as_configuration_required():
+    command = DeploymentCredentialPolicyCommand(
+        organization_id=uuid.uuid4(),
+        deployment_id=uuid.uuid4(),
+        node_id="llm-1",
+        model_id=uuid.uuid4(),
+        credential_id=uuid.uuid4(),
+        container_path=(("loop", "\ud800"),),
+    )
+
+    with pytest.raises(ProviderExecutionPolicyError) as exc_info:
+        ProviderExecutionCapabilityService._command_location(command)
+
+    assert exc_info.value.code == "configuration_required"
+
+
 def test_request_cost_uses_canonical_pricing_and_rounds_up():
     model = SimpleNamespace(
         input_price_1k=Decimal("0.001001"),

@@ -147,3 +147,13 @@ def test_location_rejects_excessive_nesting_and_duplicate_local_ids() -> None:
     with pytest.raises(WorkflowNodeLocationError) as exc_info:
         iter_workflow_node_locations(graph)
     assert exc_info.value.code == "workflow_node_location.ambiguous"
+
+
+@pytest.mark.parametrize("node_id", ["\ud800", "node-\udfff"])
+def test_location_rejects_node_ids_that_cannot_be_encoded_as_utf8(
+    node_id: str,
+) -> None:
+    with pytest.raises(WorkflowNodeLocationError) as exc_info:
+        CanonicalWorkflowNodeLocation((), node_id)
+
+    assert exc_info.value.code == "workflow_node_location.invalid"

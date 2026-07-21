@@ -24,11 +24,17 @@ class WorkflowNodeLocationError(ValueError):
 
 
 def _valid_node_id(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and bool(value)
-        and len(value) <= MAX_CANONICAL_NODE_ID_LENGTH
-    )
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > MAX_CANONICAL_NODE_ID_LENGTH
+    ):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _frame(value: str) -> bytes:

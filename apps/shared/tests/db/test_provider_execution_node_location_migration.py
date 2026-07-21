@@ -15,7 +15,7 @@ from apps.shared.tests.helpers.disposable_postgres import (
     DisposablePostgresConfigurationError,
     quote_disposable_database_name,
 )
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
@@ -144,8 +144,38 @@ def test_location_migration_backfills_and_separates_nested_policy_keys(
                 "op",
                 Operations(MigrationContext.configure(connection)),
             )
+            monkeypatch.setattr(migration, "_BACKFILL_BATCH_SIZE", 1)
+            backfill_selects = {
+                "llm_deployment_credential_policies": 0,
+                "provider_execution_capabilities": 0,
+            }
 
-            migration.upgrade()
+            def count_backfill_selects(
+                _connection,
+                _cursor,
+                statement,
+                _parameters,
+                _context,
+                _executemany,
+            ) -> None:
+                normalized = statement.strip().lower()
+                if not normalized.startswith("select"):
+                    return
+                for table_name in backfill_selects:
+                    if table_name in normalized:
+                        backfill_selects[table_name] += 1
+
+            event.listen(connection, "before_cursor_execute", count_backfill_selects)
+            try:
+                migration.upgrade()
+            finally:
+                event.remove(
+                    connection,
+                    "before_cursor_execute",
+                    count_backfill_selects,
+                )
+
+            assert all(count >= 2 for count in backfill_selects.values())
 
             expected_root = CanonicalWorkflowNodeLocation((), "llm-1")
             root_row = connection.execute(
