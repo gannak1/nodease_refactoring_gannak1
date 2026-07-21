@@ -436,6 +436,12 @@ def test_team_onboarding_access_control_users_match_presentation_scenario():
 def test_team_onboarding_access_control_kbs_use_bundled_pdf_specs():
     specs = {spec.key: spec for spec in demo_seed.ONBOARDING_PDF_SPECS}
 
+    expected_safe_labels = {
+        "onboarding_company_common": "온보딩 문서: 회사 공통",
+        "onboarding_platform": "온보딩 문서: 플랫폼개발팀",
+        "onboarding_sales": "온보딩 문서: 영업팀",
+        "onboarding_finance": "온보딩 문서: 재무팀",
+    }
     expected_filenames = {
         "onboarding_company_common": "company_common_onboarding.pdf",
         "onboarding_platform": "platform_team_onboarding_v4.pdf",
@@ -443,10 +449,10 @@ def test_team_onboarding_access_control_kbs_use_bundled_pdf_specs():
         "onboarding_finance": "finance_team_onboarding_v3.pdf",
     }
     assert {key: spec.filename for key, spec in specs.items()} == expected_filenames
-    assert {key: spec.safe_label for key, spec in specs.items()} == expected_filenames
+    assert {key: spec.name for key, spec in specs.items()} == expected_safe_labels
     assert {
-        key: safe_label_from_text(spec.safe_label) for key, spec in specs.items()
-    } == expected_filenames
+        key: safe_label_from_text(spec.name) for key, spec in specs.items()
+    } == expected_safe_labels
     assert specs["onboarding_platform"].source_page_indexes == (0, 1, 2)
     assert all(
         (demo_seed.DEMO_ONBOARDING_PDF_DIR / spec.filename).is_file()
@@ -457,9 +463,9 @@ def test_team_onboarding_access_control_kbs_use_bundled_pdf_specs():
     )
 
 
-def test_team_onboarding_kb_seed_persists_safe_filename_labels(monkeypatch):
+def test_team_onboarding_kb_seed_persists_safe_kb_name_labels(monkeypatch):
     expected_by_id = {
-        demo_seed.KB_IDS[spec.key]: spec.filename
+        demo_seed.KB_IDS[spec.key]: spec.name
         for spec in demo_seed.ONBOARDING_PDF_SPECS
     }
     captured = {}

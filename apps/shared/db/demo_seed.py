@@ -620,7 +620,6 @@ class DemoKnowledgeSeedSpec:
     tags: tuple[str, ...]
     keywords: tuple[str, ...]
     collection_key: str | None
-    safe_label: str | None = None
     content: str | None = None
     legal_filename_pattern: str | None = None
     legal_required_tokens: tuple[str, ...] = ()
@@ -641,7 +640,6 @@ ONBOARDING_PDF_SPECS = (
         tags=("온보딩", "회사 공통", "보안 교육"),
         keywords=("첫날 일정", "SSO", "보안 교육", "메신저"),
         collection_key="team_onboarding_access_control",
-        safe_label="company_common_onboarding.pdf",
         chunk_size=800,
         chunk_overlap=100,
     ),
@@ -656,7 +654,6 @@ ONBOARDING_PDF_SPECS = (
         tags=("온보딩", "플랫폼", "개발환경", "접근 권한"),
         keywords=("Git", "VPN", "운영 조회", "배포 권한"),
         collection_key="team_onboarding_access_control",
-        safe_label="platform_team_onboarding_v4.pdf",
         chunk_size=800,
         chunk_overlap=100,
         # 마지막 페이지는 role_acl=manager다. 현재 runtime은 chunk ACL을
@@ -674,7 +671,6 @@ ONBOARDING_PDF_SPECS = (
         tags=("온보딩", "영업", "CRM", "고객 데이터"),
         keywords=("CRM", "고객 계정", "견적 승인", "세일즈 플레이북"),
         collection_key="team_onboarding_access_control",
-        safe_label="sales_team_onboarding_v2.pdf",
         chunk_size=800,
         chunk_overlap=100,
     ),
@@ -689,7 +685,6 @@ ONBOARDING_PDF_SPECS = (
         tags=("온보딩", "재무", "회계", "지급 승인"),
         keywords=("회계 시스템", "결산", "지급 요청", "업무 분리"),
         collection_key="team_onboarding_access_control",
-        safe_label="finance_team_onboarding_v3.pdf",
         chunk_size=800,
         chunk_overlap=100,
     ),
@@ -3497,7 +3492,7 @@ def _seed_knowledge(db: Session) -> None:
                 "description": spec.description,
                 "safe_metadata": {
                     **_demo_options(f"bundled-onboarding-kb-{spec.key}"),
-                    "safe_label": spec.safe_label,
+                    "safe_label": spec.name,
                     "source_filename": spec.filename,
                     "document_seed_mode": "bundled_pdf",
                 },
