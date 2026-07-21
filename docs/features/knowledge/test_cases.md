@@ -218,6 +218,8 @@ KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048]
 ## Connector And Egress Tests
 
 - Connector preview/test/fetch는 승인된 outbound guard factory 밖의 raw socket, ad hoc HTTP client, custom dialer를 사용할 수 없다.
+- Knowledge API source, `/api/v1/rag/proxy/preview`, remote FILE ingestion과 external preview/content fetch는 각각 등록된 operation profile을 사용한다. 승인 origin의 path/query와 bounded same-origin redirect query는 유지하고 userinfo, fragment, Host authority 위조, HTTP/non-443, unknown operation, private·metadata DNS result, DNS-to-dial 변경, peer mismatch, HTTPS downgrade, cross-origin redirect와 ambient proxy는 credential/body 전송 전에 거부된다. Cross-origin redirect는 대상 DNS 조회 전 차단된다.
+- Guarded response는 허용 content type과 byte 상한을 stream 중 적용한다. Denial/timeout/oversize 실패에는 source URL/query/header/body, resolved/peer IP와 raw exception이 없고 기존 active ready version은 유지된다.
 - `/api/v1/rag/proxy/preview`, URL upload/preview(`s3FileUrl`, `apiUrl`), crawler, sitemap, future web/API connector, DB/SSH/SaaS/object-storage probe는 모두 central guard를 통과한다.
 - `/api/v1/rag/upload` 신규 KB 생성은 `X-Organization-Id` active organization을 사용하며 primary organization fallback을 사용하지 않는다. 기존 KB 업로드는 KB organization과 active organization이 다르면 hidden/not-found로 닫는다.
 - DNS rebinding, private IP redirect, link-local/metadata IP, private network target, unsupported scheme, HTTPS downgrade, `verify=false`, oversized response, timeout을 거부한다.

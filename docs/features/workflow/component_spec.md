@@ -113,6 +113,12 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
 - Policy/DNS/transport exception은 raw destination이나 payload 없이 typed safe code와 failure phase만 application port로 전달한다. Provider는 pre-send permanent denial, proven pre-send transient failure와 post-send outcome unknown을 기존 effect error로 mapping한다.
 - Provider-neutral Helm의 Worker egress NetworkPolicy는 cluster DNS와 DB/Redis/Sandbox service, public HTTP/HTTPS 및 Mail IMAP port만 허용하고 public CIDR에서 private·metadata 범위를 제외한다. 외부 dependency CIDR은 해당 service port에만 한정한다. Cluster는 policy를 실제 집행하는 CNI를 사용해야 하고, additive allow 정책과 node-local/`hostNetwork` 예외를 배포 시 확인한다. 이는 private destination 방어선이며 public 허용 port의 모든 process-level direct dial을 proxy-only로 강제하지 않는다.
 
+### LLM And Remote File Outbound
+
+- LLM provider generation·embedding과 model discovery는 ADR-0067의 operation-bound guarded transport를 사용한다. Client/graph/credential snapshot이 목적지를 선택하지 않으며 current Provider catalog endpoint와 transport profile revision이 권위다.
+- `FileExtractionNode`는 `RemoteFileFetcher` application port만 사용한다. Workflow composition은 graph에 file extraction node가 있을 때 guarded adapter를 주입하고 concrete HTTP client, DNS result와 temp path를 execution context나 node output에 전달하지 않는다.
+- Remote file policy denial과 fetch/parser failure는 fixed typed reason으로 정규화한다. Signed URL, raw path, response body, resolved IP와 provider exception은 log, trace, audit와 사용자 output에 남기지 않는다.
+
 ### Configuration Preflight
 
 - Deployment preflight application의 node validator registry가 Mail/Gmail Draft/Mail Acknowledge/Slack semantic readiness를 소유한다. Workflow endpoint, `WorkflowService`와 Client component에 같은 execution readiness 규칙을 복제하지 않는다.

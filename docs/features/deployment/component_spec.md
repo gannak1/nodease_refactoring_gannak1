@@ -28,6 +28,7 @@ Status: Draft
 - Target Conversation Memory preflight snapshot includes immutable deployment version/snapshot hash, conversation mapping and node Memory policy version, contract/storage generation and required Worker capability. Runtime revalidates the same binding and never resolves an existing session through the latest active deployment pointer.
 - Public Chatbot and authenticated internal Chatbot use separate runtime policy/composition dependencies. They may share a visual Client component, but not auth/CORS/Origin, access permission, preflight audience or session namespace.
 - Public `chatbot`/`widget` parent embedding origins are a deployment-owned versioned policy adapter used only to render CSP `frame-ancestors`. Memory or Client code must not reuse them as a CORS allowlist or read environment fallback to widen them.
+- Frontend browser API resolver는 production에서 same-origin `/api/v1`을 기본으로 사용하고 명시적인 공개 HTTPS origin만 수용한다. 일반 `/api`는 Ingress/Nginx가 Gateway로 직접 라우팅하고 stream server route만 server-only `API_URL`을 사용한다. 이 내부 service URL을 `NEXT_PUBLIC_API_URL`이나 browser bundle로 projection하지 않는다.
 
 ### Public Webhook Components
 
