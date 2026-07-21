@@ -553,7 +553,7 @@ def test_enterprise_request_routing_graph_validates_and_maps_webhook_payload():
     }
 
 
-def test_demo_seed_creates_only_internal_it_helpdesk_workflow(monkeypatch):
+def test_demo_seed_creates_requested_onboarding_workflows(monkeypatch):
     calls = {}
 
     def capture(
@@ -566,6 +566,7 @@ def test_demo_seed_creates_only_internal_it_helpdesk_workflow(monkeypatch):
         *,
         deployed,
         deployment_type=demo_seed.DeploymentType.API,
+        list_updated_at=None,
     ):
         calls[key] = {
             "name": name,
@@ -574,6 +575,7 @@ def test_demo_seed_creates_only_internal_it_helpdesk_workflow(monkeypatch):
             "graph": graph,
             "deployed": deployed,
             "deployment_type": deployment_type,
+            "list_updated_at": list_updated_at,
         }
         return key
 
@@ -581,15 +583,56 @@ def test_demo_seed_creates_only_internal_it_helpdesk_workflow(monkeypatch):
 
     workflows = demo_seed._seed_apps_and_workflows(object())
 
-    assert set(workflows) == {"internal_it_helpdesk_routing"}
+    assert set(workflows) == {
+        "internal_it_helpdesk_routing",
+        "onboarding_chatbot",
+        "new_employee_onboarding_chatbot",
+    }
     assert calls["internal_it_helpdesk_routing"]["name"] == "사내 IT 문의 자동 처리"
     assert calls["internal_it_helpdesk_routing"]["deployed"] is True
     assert (
         calls["internal_it_helpdesk_routing"]["deployment_type"]
         is demo_seed.DeploymentType.WEBHOOK
     )
-    assert set(demo_seed.APP_IDS) == {"internal_it_helpdesk_routing"}
-    assert set(demo_seed.WORKFLOW_IDS) == {"internal_it_helpdesk_routing"}
+    onboarding_call = calls["onboarding_chatbot"]
+    assert onboarding_call["name"] == "온보딩 챗봇"
+    assert onboarding_call["owner_key"] == "admin"
+    assert onboarding_call["deployed"] is False
+    assert onboarding_call["graph"] == {
+        "nodes": [
+            {
+                "id": "start-onboarding-chatbot",
+                "type": "startNode",
+                "position": {"x": 250, "y": 250},
+                "data": {
+                    "title": "입력",
+                    "displayNumber": 1,
+                    "triggerType": "manual",
+                    "variables": [],
+                },
+            }
+        ],
+        "edges": [],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+    new_employee_call = calls["new_employee_onboarding_chatbot"]
+    assert new_employee_call["name"] == "신입 사원 온보딩 챗봇"
+    assert new_employee_call["deployed"] is False
+    assert (
+        onboarding_call["list_updated_at"]
+        > calls["internal_it_helpdesk_routing"]["list_updated_at"]
+        > new_employee_call["list_updated_at"]
+    )
+    assert set(demo_seed.APP_IDS) == {
+        "internal_it_helpdesk_routing",
+        "onboarding_chatbot",
+        "new_employee_onboarding_chatbot",
+    }
+    assert set(demo_seed.WORKFLOW_IDS) == {
+        "internal_it_helpdesk_routing",
+        "onboarding_chatbot",
+        "new_employee_onboarding_chatbot",
+    }
     assert set(demo_seed.DEPLOYMENT_IDS) == {"internal_it_helpdesk_routing"}
     assert set(demo_seed.RETIRED_DEMO_APP_IDS) == {
         "hr_bot_example",
@@ -606,7 +649,9 @@ def test_demo_seed_creates_only_internal_it_helpdesk_workflow(monkeypatch):
     }
 
 
-def test_demo_seed_grants_workflow_permission_only_for_internal_it(monkeypatch):
+def test_demo_seed_grants_onboarding_workflow_execution_to_platform_and_sales(
+    monkeypatch,
+):
     upserts = []
 
     def capture_upsert(_db, model, row_id, values):
@@ -637,7 +682,71 @@ def test_demo_seed_grants_workflow_permission_only_for_internal_it(monkeypatch):
                 ),
                 "flags": 0,
             },
-        )
+        ),
+        (
+            demo_seed.TEAM_PERMISSION_IDS["onboarding_chatbot_platform"],
+            {
+                "grantee_organization_id": demo_seed.ORG_ID,
+                "team_id": demo_seed.TEAM_IDS["onboarding_platform"],
+                "workflow_id": demo_seed.WORKFLOW_IDS["onboarding_chatbot"],
+                "auth_state": "operator",
+                "assigned_by": demo_seed.USER_IDS["admin"],
+                "options": demo_seed._demo_options(
+                    "permission-onboarding-chatbot-platform"
+                ),
+                "flags": 0,
+            },
+        ),
+        (
+            demo_seed.TEAM_PERMISSION_IDS["onboarding_chatbot_sales"],
+            {
+                "grantee_organization_id": demo_seed.ORG_ID,
+                "team_id": demo_seed.TEAM_IDS["onboarding_sales"],
+                "workflow_id": demo_seed.WORKFLOW_IDS["onboarding_chatbot"],
+                "auth_state": "operator",
+                "assigned_by": demo_seed.USER_IDS["admin"],
+                "options": demo_seed._demo_options(
+                    "permission-onboarding-chatbot-sales"
+                ),
+                "flags": 0,
+            },
+        ),
+        (
+            demo_seed.TEAM_PERMISSION_IDS[
+                "new_employee_onboarding_chatbot_platform"
+            ],
+            {
+                "grantee_organization_id": demo_seed.ORG_ID,
+                "team_id": demo_seed.TEAM_IDS["onboarding_platform"],
+                "workflow_id": demo_seed.WORKFLOW_IDS[
+                    "new_employee_onboarding_chatbot"
+                ],
+                "auth_state": "operator",
+                "assigned_by": demo_seed.USER_IDS["admin"],
+                "options": demo_seed._demo_options(
+                    "permission-new-employee-onboarding-chatbot-platform"
+                ),
+                "flags": 0,
+            },
+        ),
+        (
+            demo_seed.TEAM_PERMISSION_IDS[
+                "new_employee_onboarding_chatbot_sales"
+            ],
+            {
+                "grantee_organization_id": demo_seed.ORG_ID,
+                "team_id": demo_seed.TEAM_IDS["onboarding_sales"],
+                "workflow_id": demo_seed.WORKFLOW_IDS[
+                    "new_employee_onboarding_chatbot"
+                ],
+                "auth_state": "operator",
+                "assigned_by": demo_seed.USER_IDS["admin"],
+                "options": demo_seed._demo_options(
+                    "permission-new-employee-onboarding-chatbot-sales"
+                ),
+                "flags": 0,
+            },
+        ),
     ]
     assert all(
         model is not demo_seed.UserWorkflowPermission
@@ -645,9 +754,86 @@ def test_demo_seed_grants_workflow_permission_only_for_internal_it(monkeypatch):
     )
 
 
+def test_new_employee_onboarding_chatbot_graph_matches_demo_contract():
+    graph = demo_seed._new_employee_onboarding_chatbot_graph()
+    validate_workflow_graph(graph)
+
+    assert [node["type"] for node in graph["nodes"]] == [
+        "startNode",
+        "llmNode",
+        "answerNode",
+    ]
+    assert [(edge["source"], edge["target"]) for edge in graph["edges"]] == [
+        ("start-onboarding-question", "llm-onboarding-answer"),
+        ("llm-onboarding-answer", "answer-onboarding"),
+    ]
+
+    llm_data = graph["nodes"][1]["data"]
+    assert llm_data["model_id"] == "gpt-5.6"
+    assert llm_data["fallback_model_id"] == "gpt-5.4"
+    assert llm_data["auto_model_routing"] is True
+    assert llm_data["knowledgeCollections"] == [
+        {
+            "id": str(
+                demo_seed.COLLECTION_IDS["team_onboarding_access_control"]
+            ),
+            "safeLabel": "팀별 온보딩 접근 제어 문서",
+        }
+    ]
+    assert llm_data["knowledgeBases"] == [
+        demo_seed._knowledge_base_ref(spec.key)
+        for spec in demo_seed.ONBOARDING_PDF_SPECS
+    ]
+    assert llm_data["scoreThreshold"] == 0.3
+    assert llm_data["topK"] == 5
+
+
+def test_new_employee_onboarding_chatbot_keeps_fixed_last_list_timestamp(
+    monkeypatch,
+):
+    app = SimpleNamespace(
+        id=demo_seed.APP_IDS["new_employee_onboarding_chatbot"],
+        workflow_id=None,
+        active_deployment_id=None,
+        updated_at=None,
+    )
+    workflow = SimpleNamespace(
+        id=demo_seed.WORKFLOW_IDS["new_employee_onboarding_chatbot"]
+    )
+
+    def capture_upsert(_db, model, _row_id, _values):
+        if model is demo_seed.App:
+            return app
+        if model is demo_seed.Workflow:
+            return workflow
+        raise AssertionError(f"unexpected model: {model}")
+
+    db = SimpleNamespace(get=lambda _model, _row_id: None, flush=lambda: None)
+    monkeypatch.setattr(demo_seed, "_upsert_by_id", capture_upsert)
+
+    list_updated_at = datetime(2026, 7, 21, tzinfo=timezone.utc)
+    demo_seed._upsert_app_workflow(
+        db,
+        "new_employee_onboarding_chatbot",
+        "신입 사원 온보딩 챗봇",
+        "신입 사원 온보딩 챗봇",
+        "admin",
+        demo_seed._new_employee_onboarding_chatbot_graph(),
+        deployed=False,
+        list_updated_at=list_updated_at,
+    )
+
+    assert app.updated_at == list_updated_at
+
+
 def test_demo_summary_reports_seeded_knowledge_documents():
     summary = demo_seed.demo_summary("demo")
 
+    assert summary["apps"] == [
+        "온보딩 챗봇",
+        "사내 IT 문의 자동 처리",
+        "신입 사원 온보딩 챗봇",
+    ]
     assert summary["knowledge_documents"] == {
         "public_law_pdfs": 7,
         "internal_markdown_docs": 0,

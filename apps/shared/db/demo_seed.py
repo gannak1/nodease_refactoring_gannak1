@@ -357,6 +357,10 @@ APP_IDS = {
     "internal_it_helpdesk_routing": uuid.UUID(
         "94000000-0000-0000-0000-000000000001"
     ),
+    "onboarding_chatbot": uuid.UUID("95000000-0000-0000-0000-000000000001"),
+    "new_employee_onboarding_chatbot": uuid.UUID(
+        "96000000-0000-0000-0000-000000000001"
+    ),
 }
 
 RETIRED_DEMO_APP_IDS = {
@@ -376,6 +380,10 @@ RETIRED_DEMO_APP_IDS = {
 WORKFLOW_IDS = {
     "internal_it_helpdesk_routing": uuid.UUID(
         "94000000-0000-0000-0000-000000000002"
+    ),
+    "onboarding_chatbot": uuid.UUID("95000000-0000-0000-0000-000000000002"),
+    "new_employee_onboarding_chatbot": uuid.UUID(
+        "96000000-0000-0000-0000-000000000002"
     ),
 }
 
@@ -421,6 +429,10 @@ LEGACY_DEMO_LLM_CREDENTIAL_ID = _uuid(700)
 
 TEAM_PERMISSION_IDS = {
     "internal_it_helpdesk_routing": _uuid(814),
+    "onboarding_chatbot_platform": _uuid(815),
+    "onboarding_chatbot_sales": _uuid(816),
+    "new_employee_onboarding_chatbot_platform": _uuid(817),
+    "new_employee_onboarding_chatbot_sales": _uuid(818),
 }
 
 RETIRED_DEMO_TEAM_WORKFLOW_PERMISSION_IDS = {
@@ -1087,7 +1099,11 @@ def demo_summary(profile: str = "demo") -> dict[str, Any]:
         "organization": "노디즈 데모 조직",
         "users": [spec.email for spec in USER_SPECS],
         "teams": [name for name, _ in TEAM_SPECS.values()],
-        "apps": ["사내 IT 문의 자동 처리"],
+        "apps": [
+            "온보딩 챗봇",
+            "사내 IT 문의 자동 처리",
+            "신입 사원 온보딩 챗봇",
+        ],
         "reset_scope": "demo seed fixed UUID rows only",
         "credentials": (
             "non-secret demo metadata row by default; pass "
@@ -2518,6 +2534,147 @@ def _internal_it_helpdesk_routing_graph() -> dict[str, Any]:
     return calculate_workflow_auto_layout(graph)
 
 
+def _onboarding_chatbot_graph() -> dict[str, Any]:
+    """신규 workflow 편집기와 동일한 단일 입력 노드 canvas를 만든다."""
+    return {
+        "nodes": [
+            _node(
+                "start-onboarding-chatbot",
+                "startNode",
+                250,
+                250,
+                {
+                    "title": "입력",
+                    "displayNumber": 1,
+                    "triggerType": "manual",
+                    "variables": [],
+                },
+            )
+        ],
+        "edges": [],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+
+
+def _new_employee_onboarding_chatbot_graph() -> dict[str, Any]:
+    """팀 권한으로 온보딩 Collection과 하위 KB를 검색하는 3-node graph."""
+    return {
+        "nodes": [
+            _node(
+                "start-onboarding-question",
+                "startNode",
+                120,
+                120,
+                {
+                    **_base_node_data(
+                        "입력",
+                        "신입 사원의 온보딩 질문을 입력받습니다.",
+                        1,
+                    ),
+                    "triggerType": "manual",
+                    "trigger_type": "manual",
+                    "variables": [
+                        {
+                            "id": "question",
+                            "name": "question",
+                            "label": "온보딩 질문",
+                            "type": "paragraph",
+                            "required": True,
+                            "maxLength": 1200,
+                            "max_length": 1200,
+                        }
+                    ],
+                },
+            ),
+            _node(
+                "llm-onboarding-answer",
+                "llmNode",
+                700,
+                120,
+                {
+                    **_base_node_data(
+                        "온보딩 문서 답변",
+                        "팀 권한으로 허용된 온보딩 문서를 검색해 답변합니다.",
+                        2,
+                        [
+                            "model_id",
+                            "knowledgeCollections",
+                            "knowledgeBases",
+                            "user_prompt",
+                        ],
+                    ),
+                    "provider": "openai",
+                    "model_id": DEMO_MODEL_ROUTER_LATEST_ADVANCED_MODEL,
+                    "fallback_model_id": DEMO_CHAT_MODEL,
+                    "auto_model_routing": True,
+                    "system_prompt": (
+                        "신입 사원 온보딩 안내 AI입니다. 현재 실행 사용자의 팀 권한으로 "
+                        "조회 가능한 온보딩 문서만 근거로 답변하고, 근거가 없으면 "
+                        "추측하지 않습니다."
+                    ),
+                    "user_prompt": "온보딩 질문: {{ question }}",
+                    "referenced_variables": [
+                        {
+                            "name": "question",
+                            "value_selector": [
+                                "start-onboarding-question",
+                                "question",
+                            ],
+                        }
+                    ],
+                    "knowledgeCollections": [
+                        {
+                            "id": str(
+                                COLLECTION_IDS["team_onboarding_access_control"]
+                            ),
+                            "safeLabel": "팀별 온보딩 접근 제어 문서",
+                        }
+                    ],
+                    "knowledgeBases": [
+                        _knowledge_base_ref(spec.key)
+                        for spec in ONBOARDING_PDF_SPECS
+                    ],
+                    "scoreThreshold": 0.3,
+                    "topK": 5,
+                    "parameters": {"temperature": 0.2, "max_tokens": 900},
+                },
+            ),
+            _node(
+                "answer-onboarding",
+                "answerNode",
+                1280,
+                120,
+                {
+                    **_base_node_data(
+                        "출력",
+                        "온보딩 문서 기반 답변을 반환합니다.",
+                        3,
+                    ),
+                    "outputs": [
+                        {
+                            "variable": "answer_text",
+                            "label": "답변",
+                            "value_selector": ["llm-onboarding-answer", "text"],
+                        }
+                    ],
+                },
+            ),
+        ],
+        "edges": [
+            _edge(
+                "edge-onboarding-input-llm",
+                "start-onboarding-question",
+                "llm-onboarding-answer",
+            ),
+            _edge(
+                "edge-onboarding-llm-output",
+                "llm-onboarding-answer",
+                "answer-onboarding",
+            ),
+        ],
+        "viewport": {"x": 40, "y": 80, "zoom": 0.85},
+    }
+
 
 def _enterprise_request_routing_graph() -> dict[str, Any]:
     """사내 업무 요청을 RAG와 입력군별 자동 모델 라우팅으로 처리한다."""
@@ -3560,6 +3717,7 @@ def _upsert_app_workflow(
     *,
     deployed: bool,
     deployment_type: DeploymentType = DeploymentType.API,
+    list_updated_at: datetime | None = None,
 ) -> Workflow:
     app_secret = f"sk-demo-{key}"
     app_values = {
@@ -3638,6 +3796,10 @@ def _upsert_app_workflow(
     else:
         app.active_deployment_id = None
     db.flush()
+
+    if list_updated_at is not None:
+        app.updated_at = list_updated_at
+        db.flush()
 
     return workflow
 
@@ -3720,6 +3882,7 @@ def _delete_retired_demo_workflows(db: Session) -> None:
 
 
 def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
+    list_updated_at = _now()
     return {
         "internal_it_helpdesk_routing": _upsert_app_workflow(
             db,
@@ -3730,6 +3893,27 @@ def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
             _internal_it_helpdesk_routing_graph(),
             deployed=True,
             deployment_type=DeploymentType.WEBHOOK,
+            list_updated_at=list_updated_at - timedelta(seconds=1),
+        ),
+        "onboarding_chatbot": _upsert_app_workflow(
+            db,
+            "onboarding_chatbot",
+            "온보딩 챗봇",
+            "새 workflow의 기본 입력 노드만 유지한 온보딩 챗봇 draft",
+            "admin",
+            _onboarding_chatbot_graph(),
+            deployed=False,
+            list_updated_at=list_updated_at,
+        ),
+        "new_employee_onboarding_chatbot": _upsert_app_workflow(
+            db,
+            "new_employee_onboarding_chatbot",
+            "신입 사원 온보딩 챗봇",
+            "팀별 온보딩 문서를 RAG로 검색하는 신입 사원 안내 workflow",
+            "admin",
+            _new_employee_onboarding_chatbot_graph(),
+            deployed=False,
+            list_updated_at=list_updated_at - timedelta(seconds=2),
         ),
     }
 
@@ -3749,6 +3933,45 @@ def _seed_permissions(db: Session) -> None:
             "flags": 0,
         },
     )
+
+    for permission_key, team_key, workflow_key in (
+        (
+            "onboarding_chatbot_platform",
+            "onboarding_platform",
+            "onboarding_chatbot",
+        ),
+        (
+            "onboarding_chatbot_sales",
+            "onboarding_sales",
+            "onboarding_chatbot",
+        ),
+        (
+            "new_employee_onboarding_chatbot_platform",
+            "onboarding_platform",
+            "new_employee_onboarding_chatbot",
+        ),
+        (
+            "new_employee_onboarding_chatbot_sales",
+            "onboarding_sales",
+            "new_employee_onboarding_chatbot",
+        ),
+    ):
+        _upsert_by_id(
+            db,
+            TeamWorkflowPermission,
+            TEAM_PERMISSION_IDS[permission_key],
+            {
+                "grantee_organization_id": ORG_ID,
+                "team_id": TEAM_IDS[team_key],
+                "workflow_id": WORKFLOW_IDS[workflow_key],
+                "auth_state": "operator",
+                "assigned_by": USER_IDS["admin"],
+                "options": _demo_options(
+                    f"permission-{permission_key.replace('_', '-')}"
+                ),
+                "flags": 0,
+            },
+        )
 
     for index, team_key in enumerate(["hr_knowledge_users", "platform_admin"]):
         _upsert_by_id(
