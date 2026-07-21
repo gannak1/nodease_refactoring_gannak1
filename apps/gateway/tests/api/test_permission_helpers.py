@@ -187,3 +187,63 @@ def test_llm_credential_permission_denied_outside_organization_scope_is_404(
     assert exc_info.value.status_code == 404
     assert getattr(exc_info.value, "audit_recorded", False) is False
     assert events == []
+
+
+def test_llm_credential_permission_filters_by_active_organization_before_rbac(
+    monkeypatch,
+):
+    credential = SimpleNamespace(id=uuid.uuid4(), organization_id=uuid.uuid4())
+    active_organization_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4())
+    captured_filters = []
+
+    class OrganizationScopedQuery:
+        def filter(self, *criteria):
+            captured_filters.extend(criteria)
+            return self
+
+        def first(self):
+            filter_values = {
+                getattr(expression.left, "key", None): expression.right.value
+                for expression in captured_filters
+            }
+            if (
+                filter_values.get("id") == credential.id
+                and filter_values.get("organization_id")
+                == credential.organization_id
+            ):
+                return credential
+            return None
+
+    class OrganizationScopedDb:
+        def query(self, *_args, **_kwargs):
+            return OrganizationScopedQuery()
+
+    monkeypatch.setattr(
+        permissions,
+        "has_organization_scope_access",
+        lambda *_args, **_kwargs: pytest.fail(
+            "cross-organization credential reached scope authorization"
+        ),
+    )
+    monkeypatch.setattr(
+        permissions,
+        "has_llm_credential_permission",
+        lambda *_args, **_kwargs: pytest.fail(
+            "cross-organization credential reached resource authorization"
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        ensure_llm_credential_permission(
+            OrganizationScopedDb(),
+            user,
+            credential.id,
+            "read",
+            active_organization_id=active_organization_id,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert {
+        getattr(expression.left, "key", None) for expression in captured_filters
+    } == {"id", "organization_id"}
