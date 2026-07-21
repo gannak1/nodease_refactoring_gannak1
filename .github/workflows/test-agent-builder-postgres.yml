@@ -66,6 +66,7 @@ jobs:
       DB_PASSWORD: postgres
       NODEASE_DISPOSABLE_DB_MAINTENANCE_DB: postgres
       NODEASE_RUN_DISPOSABLE_DB_TEST: "1"
+      NODE_ENV: test
       PYTHONPATH: ${{ github.workspace }}
     steps:
       - name: Checkout code

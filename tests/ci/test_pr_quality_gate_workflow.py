@@ -24,12 +24,18 @@ KNOWLEDGE_POSTGRES_PATH = (
     / "workflows"
     / "test-knowledge-runtime-postgres.yml"
 )
+AGENT_BUILDER_POSTGRES_PATH = (
+    REPOSITORY_ROOT
+    / ".github"
+    / "workflows"
+    / "test-agent-builder-postgres.yml"
+)
 PROTECTED_CI_WORKFLOWS = (
     QUALITY_GATE_PATH,
     REPOSITORY_ROOT / ".github" / "workflows" / "pr-ci-control-guard.yml",
     KNOWLEDGE_POSTGRES_PATH,
     REPOSITORY_ROOT / ".github" / "workflows" / "test-schedule-dispatch-postgres.yml",
-    REPOSITORY_ROOT / ".github" / "workflows" / "test-agent-builder-postgres.yml",
+    AGENT_BUILDER_POSTGRES_PATH,
     REPOSITORY_ROOT / ".github" / "workflows" / "test-memory-postgres.yml",
 )
 EXTERNAL_ACTION_PATTERN = re.compile(
@@ -357,6 +363,20 @@ def test_knowledge_postgres_dev_push_tracks_all_durable_ingestion_services():
     )[0]
 
     assert '- "apps/shared/services/knowledge_ingestion_*.py"' in push_paths
+
+
+def test_gateway_test_jobs_declare_test_runtime_environment():
+    quality_gate = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+    gateway_job = quality_gate.split("\n  gateway_tests:\n", maxsplit=1)[1].split(
+        "\n  workflow_tests:\n",
+        maxsplit=1,
+    )[0]
+    agent_builder_workflow = AGENT_BUILDER_POSTGRES_PATH.read_text(
+        encoding="utf-8"
+    )
+
+    assert "      NODE_ENV: test" in gateway_job
+    assert "      NODE_ENV: test" in agent_builder_workflow
 
 
 def test_protected_ci_workflows_pin_external_actions_to_commit_shas():
