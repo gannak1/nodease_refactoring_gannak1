@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -85,6 +86,34 @@ def test_support_guard_rejects_provider_specific_delegated_script(tmp_path):
     script.parent.mkdir(parents=True)
     workflow.write_text(
         "name: Publish\nsteps:\n  - run: ./scripts/deploy.sh\n",
+        encoding="utf-8",
+    )
+    script.write_text("aws eks update-kubeconfig --name example\n", encoding="utf-8")
+
+    assert find_unsupported_deployment_paths(
+        [workflow_path],
+        repo_root=tmp_path,
+    ) == [workflow_path]
+
+
+@pytest.mark.parametrize(
+    "workspace_prefix",
+    [
+        "${{ github.workspace }}",
+        "$GITHUB_WORKSPACE",
+    ],
+)
+def test_support_guard_rejects_provider_specific_workspace_script_delegation(
+    tmp_path,
+    workspace_prefix,
+):
+    workflow_path = ".github/workflows/publish-images.yml"
+    workflow = tmp_path / workflow_path
+    script = tmp_path / "scripts" / "deploy.sh"
+    workflow.parent.mkdir(parents=True)
+    script.parent.mkdir(parents=True)
+    workflow.write_text(
+        f"name: Publish\nsteps:\n  - run: {workspace_prefix}/scripts/deploy.sh\n",
         encoding="utf-8",
     )
     script.write_text("aws eks update-kubeconfig --name example\n", encoding="utf-8")
@@ -323,18 +352,42 @@ def test_production_values_are_provider_neutral():
     assert "enabled: false  # Operator must explicitly configure ingress." in values
 
 
-def test_image_publisher_and_helm_defaults_use_nodease_ghcr_namespace():
+def test_image_publisher_chart_and_helm_defaults_use_nodease_repository_contract():
     publisher = (
         REPOSITORY_ROOT / ".github" / "workflows" / "publish-images.yml"
     ).read_text(encoding="utf-8")
+    chart = yaml.safe_load(
+        (REPOSITORY_ROOT / "infra" / "helm" / "moduly" / "Chart.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
     values = (
         REPOSITORY_ROOT / "infra" / "helm" / "moduly" / "values.yaml"
     ).read_text(encoding="utf-8")
 
     assert "ghcr.io/nodease" in publisher
     assert "ghcr.io/jungle-scope" not in publisher
+    assert chart["home"] == "https://github.com/nodease/mbased"
+    assert chart["sources"] == ["https://github.com/nodease/mbased"]
     assert "ghcr.io/nodease" in values
     assert "ghcr.io/jungle-scope" not in values
+
+
+@pytest.mark.parametrize(
+    "secret_path",
+    [
+        "apps/infra/k8s/secrets.yaml",
+        "infra/k8s/secrets.yaml",
+    ],
+)
+def test_legacy_kubernetes_secret_paths_remain_ignored(secret_path):
+    completed = subprocess.run(
+        ["git", "check-ignore", "--no-index", "--quiet", "--", secret_path],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+    )
+
+    assert completed.returncode == 0
 
 
 def test_storage_consumers_use_the_chart_service_account_contract():

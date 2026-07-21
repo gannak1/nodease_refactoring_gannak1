@@ -60,6 +60,13 @@ _SCRIPTS_EXECUTABLE_PATTERN = re.compile(
     r"(?![A-Za-z0-9_.-])",
     re.IGNORECASE,
 )
+_GITHUB_WORKSPACE_EXECUTABLE_PATTERN = re.compile(
+    r"(?:\$\{\{\s*github\.workspace\s*\}\}|\$GITHUB_WORKSPACE)"
+    r"/(?P<path>scripts/(?:[A-Za-z0-9_.-]+/)*"
+    r"[A-Za-z0-9_.-]+\.(?:py|sh|bash|ps1|js|mjs|cjs))"
+    r"(?![A-Za-z0-9_.-])",
+    re.IGNORECASE,
+)
 _PYTHON_MODULE_PATTERN = re.compile(
     r"(?:^|[\s/])python(?:3(?:\.\d+)?)?(?:\.exe)?\s+-m\s+"
     r"(?P<module>scripts(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\b",
@@ -162,6 +169,7 @@ def _delegated_execution_paths(
 
     for pattern in (
         _LOCAL_RELATIVE_EXECUTABLE_PATTERN,
+        _GITHUB_WORKSPACE_EXECUTABLE_PATTERN,
         _SCRIPTS_EXECUTABLE_PATTERN,
     ):
         for match in pattern.finditer(content):
