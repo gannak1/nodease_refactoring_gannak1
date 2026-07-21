@@ -305,9 +305,9 @@ def test_routing_feature_renders_variables_without_fixed_json_output_contract():
     assert "SYSTEM_PROMPT:\n개발팀 정책을 검토합니다." in feature
     assert "USER_PROMPT:\n질문: 휴가 규정을 알려 주세요." in feature
     assert "ASSISTANT_PROMPT:\n응답 형식: 요약" in feature
-    assert "OUTPUT_CONTRACT:" not in feature
-    assert "TOP_LEVEL_PROPERTY_COUNT:" not in feature
-    assert "json schema:" not in feature
+    assert "OUTPUT_CONTRACT:" in feature
+    assert "TOP_LEVEL_PROPERTY_COUNT: 1" in feature
+    assert '"answer"' in feature
     assert "{{" not in feature
 
     missing_value_feature = ModelRouter.routing_feature_text({}, node_data)
@@ -369,7 +369,7 @@ def test_routing_feature_preserves_request_types_and_more_prompt_constraints():
     assert important_tail in feature
 
 
-def test_routing_feature_excludes_json_contract_when_system_prompt_is_long():
+def test_routing_feature_keeps_json_contract_when_system_prompt_is_long():
     feature = ModelRouter.routing_feature_text(
         {"message": "판정 결과를 구조화해 주세요."},
         _node(
@@ -389,8 +389,8 @@ def test_routing_feature_excludes_json_contract_when_system_prompt_is_long():
     )
 
     assert feature.count("…") == 1
-    assert "OUTPUT_CONTRACT:" not in feature
-    assert '"decision"' not in feature
+    assert "OUTPUT_CONTRACT:" in feature
+    assert '"decision"' in feature
 
 
 def test_resolve_policy_reuses_accepted_judge_decision_for_same_safe_feature(monkeypatch):
