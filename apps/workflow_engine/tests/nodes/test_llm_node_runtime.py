@@ -1683,13 +1683,22 @@ def test_llm_node_logs_fallback_model_when_primary_client_selection_fails(
         raise AssertionError(f"unexpected model_id: {model_id}")
 
     def fake_calculate_cost(
-        db, model_id, prompt_tokens, completion_tokens, usage=None
+        db,
+        model_id,
+        prompt_tokens,
+        completion_tokens,
+        usage=None,
+        *,
+        model_db_id=None,
+        allow_catalog_fallback=False,
     ):
         cost_calls.append(
             {
                 "model_id": model_id,
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
+                "model_db_id": model_db_id,
+                "allow_catalog_fallback": allow_catalog_fallback,
             }
         )
         return 0.0
@@ -1742,6 +1751,8 @@ def test_llm_node_logs_fallback_model_when_primary_client_selection_fails(
         {"model_id": "fallback-model", "organization_id": organization_id},
     ]
     assert cost_calls[0]["model_id"] == "fallback-model"
+    assert cost_calls[0]["model_db_id"] is None
+    assert cost_calls[0]["allow_catalog_fallback"] is True
     assert log_calls[0]["model_id"] == "fallback-model"
     assert log_calls[0]["credential_id"] == fallback_credential_id
 
