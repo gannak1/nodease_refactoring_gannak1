@@ -115,9 +115,6 @@ gateway:
     # Google OAuth (optional)
     # GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are in secrets
     
-    # Node environment
-    NODE_ENV: "production"
-
 # Knowledge document ingestion worker. Enable only after the additive
 # migration has been applied; startup readiness rejects a stale schema.
 knowledgeWorker:

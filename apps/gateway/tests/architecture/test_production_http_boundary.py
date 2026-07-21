@@ -119,6 +119,20 @@ def test_production_values_use_https_only_credentialed_cors():
     assert all("localhost" not in origin and "127.0.0.1" not in origin for origin in origins)
 
 
+def test_default_helm_values_use_one_development_cors_profile():
+    source = _read("infra/helm/moduly/values.yaml")
+    values = yaml.safe_load(source)
+    environment = values["gateway"]["env"]
+    origins = environment["CORS_ORIGINS"].split(",")
+
+    assert source.count('    NODE_ENV: "') == 1
+    assert environment["NODE_ENV"] == "development"
+    assert all(origin.startswith("http://") for origin in origins)
+    assert all(
+        "localhost" in origin or "127.0.0.1" in origin for origin in origins
+    )
+
+
 def test_helm_does_not_fallback_public_api_url_to_cluster_http():
     configmap = _read("infra/helm/moduly/templates/configmap.yaml")
     deployment = _read("infra/helm/moduly/templates/frontend-deployment.yaml")
