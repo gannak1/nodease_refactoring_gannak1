@@ -20,6 +20,7 @@ spec:
         checksum/config: {{ toYaml .Values | sha256sum }}
         checksum/secret: {{ toYaml .Values.secrets | sha256sum }}
     spec:
+      serviceAccountName: {{ include "moduly.serviceAccountName" . }}
       containers:
       - name: worker
         image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag | default .Chart.AppVersion }}"

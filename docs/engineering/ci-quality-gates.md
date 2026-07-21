@@ -198,7 +198,7 @@ deployment-config-validation은 일반 배포 설정 변경에서는 변경된 �
 
 - GitHub Actions: 일반 변경에서는 추가·수정·이름 변경된 workflow를 검사한다. CI 제어 변경에서는 기존 배포 workflow의 ShellCheck 부채와 분리된 안정적 smoke 대상인 품질 게이트, 신뢰 가드와 네 PostgreSQL 계약 workflow에 PR에서 실제 변경한 workflow를 합치고 중복을 제거해 고정 버전 actionlint로 검사한다.
 - Helm: dependency build 전에 Chart.lock이 tracked regular file인지 확인하고 build 뒤 내용 불변을 검사한다. 기본/production values를 lint·render하고 kubeconform v0.7.0으로 Kubernetes 1.31 compatibility schema를 검사한다. 이 baseline은 EKS 지원 선언이 아니다.
-- 지원 표면: legacy dev namespace workflow, `deploy-eks-` workflow prefix와 `infra/k8s`, `infra/terraform` prefix가 현재 추적 파일에 존재하면 실패한다. 삭제 PR에서도 이 검사가 선택되며 이름만 바꾼 EKS 표면의 재도입도 막는다.
+- 지원 표면: `.yml`/`.yaml` 확장자와 무관하게 legacy dev namespace workflow stem, `deploy-eks-` workflow prefix와 `infra/k8s`, `infra/terraform` prefix가 현재 추적 파일에 존재하면 실패한다. 삭제 PR에서도 이 검사가 선택되며 확장자 또는 이름만 바꾼 EKS 표면의 재도입도 막는다.
 - Docker Compose: Compose 변경 또는 CI 제어 변경 시 tracked Compose 구성을 모두 해석한다. `compose.<variant>.yml`과 `docker-compose.<variant>.yml`은 같은 디렉터리의 기본 Compose 파일과 합성하고 선언된 profile을 활성화해 검사한다.
 - Dockerfile: `Dockerfile`, `Dockerfile.*`, `*.Dockerfile` 이름을 지원한다. 실제 Dockerfile 변경에서는 rename을 delete+add로 해석해 이전 경로를 선택 근거로 보존하고, 현재 존재하는 변경 파일에 BuildKit check를 실행한다. 삭제 또는 비지원 이름으로의 rename은 검증 대상이 존재하지 않는 상태로 허용한다. CI 제어만 변경된 경우에는 기존 Dockerfile의 lint 부채와 분리된 `tests/ci/fixtures/dockerfile-smoke/Dockerfile`로 같은 명령 계약을 검증한다.
 

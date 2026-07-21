@@ -89,11 +89,6 @@ gateway:
     # Node environment
     NODE_ENV: "production"
   
-  # Provider-specific workload identity annotations are operator supplied.
-  serviceAccount:
-    create: true
-    annotations: {}
-
 # Migration-first rollout gate. Set enabled=true only after the release's
 # Knowledge ingestion migration is visible to every worker pod.
 knowledgeWorker:
@@ -375,7 +370,8 @@ ingress:
   tls: []
 
 # =============================================================================
-# Service Account
+# Shared workload identity for Gateway, Workflow Worker and Knowledge Worker.
+# Provider-specific annotations are operator supplied here.
 # =============================================================================
 serviceAccount:
   create: true

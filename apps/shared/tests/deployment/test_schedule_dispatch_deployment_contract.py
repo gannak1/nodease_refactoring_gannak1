@@ -66,7 +66,13 @@ def test_compose_keeps_gateway_worker_schedule_settings_aligned():
 
     for env_name in SCHEDULE_ENV_NAMES:
         assert f"{env_name}:" in compose
-        if env_name != "SCHEDULE_DISPATCH_MODE_FINGERPRINT":
+        if env_name not in (
+            "SCHEDULE_DISPATCH_MODE",
+            "SCHEDULE_DISPATCH_MODE_FINGERPRINT",
+        ):
             assert f"${{{env_name}:-" in compose
+    assert compose.count("SCHEDULE_DISPATCH_MODE: disabled") == 2
+    assert "${SCHEDULE_DISPATCH_MODE" not in compose
     assert 'SCHEDULE_DISPATCH_MODE_FINGERPRINT: "v1|' in compose
+    assert compose.count('SCHEDULE_DISPATCH_MODE_FINGERPRINT: "v1|disabled|') == 2
     assert "${SCHEDULE_DISPATCH_LEASE_SECONDS:-60}" in compose

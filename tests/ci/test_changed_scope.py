@@ -291,7 +291,9 @@ def test_deployment_config_selects_only_its_static_validator(
     "path",
     [
         ".github/workflows/deploy-dev-namespace.yml",
+        ".github/workflows/deploy-dev-namespace.yaml",
         ".github/workflows/deploy-eks-gateway.yml",
+        ".github/workflows/deploy-eks-gateway.yaml",
         ".github/workflows/deploy-eks-schedule-coordinated.yml",
         ".github/workflows/deploy-eks-reintroduced.yml",
         "infra/k8s/ingress.yaml",

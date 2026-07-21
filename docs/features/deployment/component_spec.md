@@ -65,13 +65,14 @@ Status: Draft
 
 현재 지원 상태(ADR-0065): Docker Compose와 provider-neutral Helm은 disabled mode만 지원한다. EKS workflow/raw manifest/Terraform은 제거됐고 provider-neutral coordinated CD는 아직 구현되지 않았다.
 
-- Gateway와 Workflow Engine은 동일한 SCHEDULE_DISPATCH 환경변수 집합을 각 composition에서 검증해 주입받는다. 설정 파싱은 apps/shared/domain/schedule_dispatch.py가 소유하며, Helm helper와 Docker Compose가 같은 기본값을 전달한다.
+- Gateway와 Workflow Engine은 동일한 SCHEDULE_DISPATCH 환경변수 집합을 각 composition에서 검증해 주입받는다. 설정 파싱은 apps/shared/domain/schedule_dispatch.py가 소유한다. Helm helper는 non-disabled mode를 render 단계에서 거부하고 Docker Compose는 mode와 fingerprint를 `disabled`로 고정한다.
 - Celery Worker process는 task 소비 전 이 공통 설정을 검증한다. startup hook을 우회한 전용 schedule task도 잘못된 설정을 raw error나 자동 retry로 노출하지 않고 safe permanent rejection으로 종료한다.
 - `SCHEDULE_DISPATCH_MODE`의 기본값은 `disabled`다. `claim` 활성화는 Alembic migration 적용, disabled rollout, 기존 direct task drain과 pod 설정 일치 확인 이후에만 수행한다. `drain`은 신규 occurrence를 만들지 않고 이미 생성된 claim만 처리한다. `claim -> drain -> disabled`는 application rollout rollback이며, system schedule 실행 이력, admitted claim의 durable run correlation, active/unreviewed claim 또는 configuration quarantine이 남은 DB의 과거 schema downgrade는 모든 schedule revision에서 safe하게 거부된다.
 - 단일 Helm release는 disabled bootstrap/image packaging만 허용하고 non-disabled mode를 render 단계에서 거부한다. 현재 claim/drain 전환을 수행하는 공식 CD는 없으며 수동 kubectl 전환은 지원하지 않는다.
 - Gateway와 Worker는 공통 schema readiness service를 사용하고 `claim`/`drain` startup에서 Alembic head와 필수 claim column을 모두 확인한다. Alembic online migration은 같은 connection에서 bounded wait advisory lock을 획득해 동시 migration을 직렬화한다.
 - Target CD(미구현): provider-neutral coordinated rollout은 동일 immutable release의 Log System image를 migration 이후, schedule claim admission 이전에 배포·검증해야 한다. disabled 최초 도입에 한해서만 fingerprint annotation 누락을 bootstrap으로 취급한다.
-- Helm은 mode와 모든 dispatch batch/lease/deadline/retry/retention 값을 포함한 canonical nodease.io/schedule-dispatch-fingerprint Pod annotation을 기록하고 Downward API로 SCHEDULE_DISPATCH_MODE_FINGERPRINT를 주입한다. Docker Compose는 같은 canonical 값을 직접 주입한다.
+- Helm은 mode와 모든 dispatch batch/lease/deadline/retry/retention 값을 포함한 canonical nodease.io/schedule-dispatch-fingerprint Pod annotation을 기록하고 Downward API로 SCHEDULE_DISPATCH_MODE_FINGERPRINT를 주입한다. Docker Compose는 고정된 disabled mode와 나머지 bounded 설정으로 같은 canonical fingerprint를 직접 주입한다.
+- Helm workload identity는 root `serviceAccount` helper와 template이 소유한다. Gateway, Workflow Worker와 Knowledge Worker Pod는 이 이름을 명시하며 production provider annotation은 root `serviceAccount.annotations` 한 곳에만 둔다.
 - Scheduler tick은 critical recovery, occurrence claim, pending dispatch를 먼저 수행한다. WorkflowRun visibility와 terminal cleanup은 각각 독립 UnitOfWork의 optional maintenance로 실행되어 실패가 dispatch를 중단하지 않는다.
 - Pending dispatch는 canonical deployment/type/current-pointer 검증 뒤 configuration preflight를 budget보다 먼저 수행한다. Known blocker는 같은 UoW에서 `canceled + configuration_preflight_blocked`와 기존 canceled audit을 기록하고 publish batch에 넣지 않는다. Adapter/infrastructure exception은 UoW를 rollback해 fail-open을 막는다.
 - `disabled`에서는 critical dispatch를 실행하지 않지만 schema-ready 환경의 visibility, retention cleanup과 pending/running age signal은 계속 실행한다.

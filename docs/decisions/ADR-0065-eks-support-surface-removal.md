@@ -43,11 +43,14 @@ Option 3을 채택한다.
    - provider account, endpoint, domain, IAM annotation과 storage class를 포함하지 않는다.
    - ingress는 기본 비활성이고 operator가 class, TLS, trusted proxy CIDR과 host를 명시해야 한다.
    - secret 값은 저장소에 두지 않으며 외부 secret manager 또는 배포 시 주입을 요구한다.
+   - workload identity는 chart root `serviceAccount` 한 곳에서만 설정하며 Gateway, Workflow Worker와 Knowledge Worker가 같은 ServiceAccount를 명시적으로 사용한다.
 6. Helm과 Compose의 schedule dispatch 기본값은 disabled다. 현재 지원 표면에는 안전한 coordinated CD가 없으므로 claim/drain 활성화는 fail-closed한다.
+   - Helm은 non-disabled 값을 render 단계에서 거부하고 Compose는 mode와 fingerprint를 `disabled`로 고정해 shell 또는 `.env` 값으로 활성화하지 못하게 한다.
    - runtime ledger, readiness, transition preflight와 drain domain 코드는 삭제하지 않는다.
    - non-disabled activation은 immutable image identity, Logger/Gateway/Worker 순서, 실제 Pod 수렴과 안정 drain을 제공하는 별도 provider-neutral CD 결정과 구현 후에만 다시 지원한다.
 7. Knowledge ingestion worker는 본 결정에서 활성화하지 않는다. production knowledgeWorker.enabled: false를 유지하고 활성화 완결성은 MBA-359가 소유한다.
 8. PR 품질 게이트는 legacy dev namespace workflow, `deploy-eks-*` workflow와 `infra/k8s/**`, `infra/terraform/**`의 재도입을 거부한다.
+   - GitHub workflow 금지는 `.yml`과 `.yaml` 확장자를 동일하게 처리하며 파일 stem/prefix로 판정한다.
    - Helm 기본/production values에 대해 lint와 render를 수행한다.
    - 렌더 결과는 kubeconform v0.7.0과 Kubernetes 1.31 compatibility baseline으로 검사한다. 이는 EKS 지원 선언이 아니다.
 9. EKS를 다시 지원하려면 새 ADR과 이슈에서 cloud ownership, OIDC/secret, cluster/CNI, migration, rollback, schedule coordinated rollout, 실제 environment integration evidence를 함께 제시해야 한다.

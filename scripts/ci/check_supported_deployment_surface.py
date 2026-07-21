@@ -6,8 +6,7 @@ from pathlib import Path
 from typing import Iterable
 
 from scripts.ci.changed_scope import (
-    _UNSUPPORTED_DEPLOYMENT_EXACT_PATHS,
-    _UNSUPPORTED_DEPLOYMENT_PREFIXES,
+    is_unsupported_deployment_path,
     normalize_repo_path,
 )
 
@@ -16,9 +15,7 @@ def find_unsupported_deployment_paths(paths: Iterable[str]) -> list[str]:
     unsupported: list[str] = []
     for raw_path in paths:
         path = normalize_repo_path(raw_path)
-        if path in _UNSUPPORTED_DEPLOYMENT_EXACT_PATHS or path.startswith(
-            _UNSUPPORTED_DEPLOYMENT_PREFIXES
-        ):
+        if is_unsupported_deployment_path(path):
             unsupported.append(path)
     return list(dict.fromkeys(unsupported))
 

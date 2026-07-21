@@ -138,20 +138,11 @@ _DEPLOYMENT_ONLY_WORKFLOWS = (
     ".github/workflows/publish-images.yml",
 )
 
-_UNSUPPORTED_DEPLOYMENT_EXACT_PATHS = frozenset(
-    {
-        ".github/workflows/deploy-dev-namespace.yml",
-        ".github/workflows/deploy-eks-frontend.yml",
-        ".github/workflows/deploy-eks-gateway.yml",
-        ".github/workflows/deploy-eks-logger.yml",
-        ".github/workflows/deploy-eks-sandbox.yml",
-        ".github/workflows/deploy-eks-worker.yml",
-        ".github/workflows/deploy-eks-schedule-coordinated.yml",
-    }
-)
+_UNSUPPORTED_DEPLOYMENT_WORKFLOW_STEMS = frozenset({"deploy-dev-namespace"})
+
+_UNSUPPORTED_DEPLOYMENT_WORKFLOW_PREFIXES = ("deploy-eks-",)
 
 _UNSUPPORTED_DEPLOYMENT_PREFIXES = (
-    ".github/workflows/deploy-eks-",
     "infra/k8s/",
     "infra/terraform/",
 )
@@ -321,10 +312,21 @@ def _is_dockerfile_path(path: str) -> bool:
     )
 
 
-def _is_unsupported_deployment_path(path: str) -> bool:
-    return path in _UNSUPPORTED_DEPLOYMENT_EXACT_PATHS or path.startswith(
-        _UNSUPPORTED_DEPLOYMENT_PREFIXES
-    )
+def is_unsupported_deployment_path(raw_path: str) -> bool:
+    path = normalize_repo_path(raw_path)
+    workflow_path = PurePosixPath(path)
+    if (
+        workflow_path.parent == PurePosixPath(".github/workflows")
+        and workflow_path.suffix.lower() in {".yml", ".yaml"}
+        and (
+            workflow_path.stem in _UNSUPPORTED_DEPLOYMENT_WORKFLOW_STEMS
+            or workflow_path.stem.startswith(
+                _UNSUPPORTED_DEPLOYMENT_WORKFLOW_PREFIXES
+            )
+        )
+    ):
+        return True
+    return path.startswith(_UNSUPPORTED_DEPLOYMENT_PREFIXES)
 
 
 def _select_deployment_validation(path: str, scope: ChangeScope) -> None:
@@ -332,7 +334,7 @@ def _select_deployment_validation(path: str, scope: ChangeScope) -> None:
         scope.actions_validation = True
     if path.startswith("infra/helm/") or path == "tests/ci/fixtures/helm-values-ci.yaml":
         scope.helm_validation = True
-    if _is_unsupported_deployment_path(path):
+    if is_unsupported_deployment_path(path):
         scope.support_surface_validation = True
     if _COMPOSE_FILE_NAME_PATTERN.fullmatch(PurePosixPath(path).name):
         scope.compose_validation = True
