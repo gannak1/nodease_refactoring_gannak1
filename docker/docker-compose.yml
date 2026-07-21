@@ -427,7 +427,7 @@ services:
     mem_limit: 512m
     cpus: 0.5
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8194/v1/sandbox/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8194/v1/sandbox/health', timeout=3).read()"]
       interval: 30s
       timeout: 5s
       retries: 3
