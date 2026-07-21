@@ -61,7 +61,6 @@ _WORKFLOW_POSTGRES_PATTERNS = (
     "apps/workflow_engine/application/schedule_dispatch.py",
     "apps/workflow_engine/tasks.py",
     "scripts/check_schedule_dispatch_rollback.py",
-    ".github/workflows/deploy-eks-schedule-coordinated.yml",
     ".github/workflows/test-schedule-dispatch-postgres.yml",
 )
 
@@ -139,6 +138,24 @@ _DEPLOYMENT_ONLY_WORKFLOWS = (
     ".github/workflows/publish-images.yml",
 )
 
+_UNSUPPORTED_DEPLOYMENT_EXACT_PATHS = frozenset(
+    {
+        ".github/workflows/deploy-dev-namespace.yml",
+        ".github/workflows/deploy-eks-frontend.yml",
+        ".github/workflows/deploy-eks-gateway.yml",
+        ".github/workflows/deploy-eks-logger.yml",
+        ".github/workflows/deploy-eks-sandbox.yml",
+        ".github/workflows/deploy-eks-worker.yml",
+        ".github/workflows/deploy-eks-schedule-coordinated.yml",
+    }
+)
+
+_UNSUPPORTED_DEPLOYMENT_PREFIXES = (
+    ".github/workflows/deploy-eks-",
+    "infra/k8s/",
+    "infra/terraform/",
+)
+
 _PROTECTED_CI_WORKFLOW_PATHS = {
     ".github/workflows/pr-ci-control-guard.yml",
     ".github/workflows/pr-quality-gate.yml",
@@ -172,9 +189,7 @@ class ChangeScope:
     deployment_validation: bool = False
     actions_validation: bool = False
     helm_validation: bool = False
-    kubernetes_validation: bool = False
-    terraform_validation: bool = False
-    terraform_config_changed: bool = False
+    support_surface_validation: bool = False
     compose_validation: bool = False
     dockerfile_validation: bool = False
     dockerfile_config_changed: bool = False
@@ -194,8 +209,7 @@ class ChangeScope:
         self.deployment_validation = True
         self.actions_validation = True
         self.helm_validation = True
-        self.kubernetes_validation = True
-        self.terraform_validation = True
+        self.support_surface_validation = True
         self.compose_validation = True
         self.dockerfile_validation = True
 
@@ -307,16 +321,19 @@ def _is_dockerfile_path(path: str) -> bool:
     )
 
 
+def _is_unsupported_deployment_path(path: str) -> bool:
+    return path in _UNSUPPORTED_DEPLOYMENT_EXACT_PATHS or path.startswith(
+        _UNSUPPORTED_DEPLOYMENT_PREFIXES
+    )
+
+
 def _select_deployment_validation(path: str, scope: ChangeScope) -> None:
     if path.startswith((".github/workflows/", ".github/actions/")):
         scope.actions_validation = True
     if path.startswith("infra/helm/") or path == "tests/ci/fixtures/helm-values-ci.yaml":
         scope.helm_validation = True
-    if path.startswith("infra/k8s/"):
-        scope.kubernetes_validation = True
-    if path.startswith("infra/terraform/"):
-        scope.terraform_validation = True
-        scope.terraform_config_changed = True
+    if _is_unsupported_deployment_path(path):
+        scope.support_surface_validation = True
     if _COMPOSE_FILE_NAME_PATTERN.fullmatch(PurePosixPath(path).name):
         scope.compose_validation = True
     if _is_dockerfile_path(path):
@@ -327,8 +344,7 @@ def _select_deployment_validation(path: str, scope: ChangeScope) -> None:
         (
             scope.actions_validation,
             scope.helm_validation,
-            scope.kubernetes_validation,
-            scope.terraform_validation,
+            scope.support_surface_validation,
             scope.compose_validation,
             scope.dockerfile_validation,
         )

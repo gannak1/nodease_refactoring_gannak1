@@ -2,7 +2,7 @@
 # Moduly Helm Chart - Default Values (Open Source)
 # =============================================================================
 # This file contains default configuration for local Kubernetes deployment.
-# For production AWS EKS, see values-production.yaml
+# For a provider-neutral production reference, see values-production.yaml
 
 # Global settings
 global:
@@ -54,7 +54,7 @@ gateway:
   replicaCount: 2
   
   image:
-    repository: ghcr.io/jungle-scope/moduly-gateway
+    repository: ghcr.io/nodease/moduly-gateway
     tag: latest
     pullPolicy: IfNotPresent
   
@@ -148,7 +148,7 @@ worker:
   replicaCount: 4
   
   image:
-    repository: ghcr.io/jungle-scope/moduly-workflow-engine
+    repository: ghcr.io/nodease/moduly-workflow-engine
     tag: latest
     pullPolicy: IfNotPresent
   
@@ -216,7 +216,7 @@ logger:
   replicaCount: 1
   
   image:
-    repository: ghcr.io/jungle-scope/moduly-logger
+    repository: ghcr.io/nodease/moduly-logger
     tag: latest
     pullPolicy: IfNotPresent
   
@@ -252,7 +252,7 @@ frontend:
   replicaCount: 2
   
   image:
-    repository: ghcr.io/jungle-scope/moduly-client
+    repository: ghcr.io/nodease/moduly-client
     tag: latest
     pullPolicy: IfNotPresent
   
@@ -281,7 +281,7 @@ sandbox:
   replicaCount: 2
   
   image:
-    repository: ghcr.io/jungle-scope/moduly-sandbox
+    repository: ghcr.io/nodease/moduly-sandbox
     tag: latest
     pullPolicy: IfNotPresent
   

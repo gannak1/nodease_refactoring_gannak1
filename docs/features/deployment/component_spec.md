@@ -1,7 +1,6 @@
 # Deployment Component Spec
 
 Status: Draft
-Verified Against: `feature/mba-247 @ 3b947bd5ac6c51ffcc028510344ee2e5a5066873`
 
 ## Screens
 
@@ -64,22 +63,24 @@ Verified Against: `feature/mba-247 @ 3b947bd5ac6c51ffcc028510344ee2e5a5066873`
 
 ### Schedule Dispatch Configuration Contract
 
-- Gateway와 Workflow Engine은 동일한 `SCHEDULE_DISPATCH_*` 환경변수 집합을 각 composition에서 검증해 주입받는다. 설정 파싱은 `apps/shared/domain/schedule_dispatch.py`가 소유하며, 두 프로세스가 서로 다른 mode/deadline을 사용하지 않도록 Helm helper, raw Kubernetes manifest, Docker Compose가 같은 기본값을 전달한다.
+현재 지원 상태(ADR-0065): Docker Compose와 provider-neutral Helm은 disabled mode만 지원한다. EKS workflow/raw manifest/Terraform은 제거됐고 provider-neutral coordinated CD는 아직 구현되지 않았다.
+
+- Gateway와 Workflow Engine은 동일한 SCHEDULE_DISPATCH 환경변수 집합을 각 composition에서 검증해 주입받는다. 설정 파싱은 apps/shared/domain/schedule_dispatch.py가 소유하며, Helm helper와 Docker Compose가 같은 기본값을 전달한다.
 - Celery Worker process는 task 소비 전 이 공통 설정을 검증한다. startup hook을 우회한 전용 schedule task도 잘못된 설정을 raw error나 자동 retry로 노출하지 않고 safe permanent rejection으로 종료한다.
 - `SCHEDULE_DISPATCH_MODE`의 기본값은 `disabled`다. `claim` 활성화는 Alembic migration 적용, disabled rollout, 기존 direct task drain과 pod 설정 일치 확인 이후에만 수행한다. `drain`은 신규 occurrence를 만들지 않고 이미 생성된 claim만 처리한다. `claim -> drain -> disabled`는 application rollout rollback이며, system schedule 실행 이력, admitted claim의 durable run correlation, active/unreviewed claim 또는 configuration quarantine이 남은 DB의 과거 schema downgrade는 모든 schedule revision에서 safe하게 거부된다.
-- 일반 Dev workflow와 단일 Helm release는 `disabled` bootstrap/image rollout만 허용한다. Dev workflow도 live Gateway/Worker Deployment generation, replica와 non-terminating Pod의 Running/Ready/fingerprint 수렴을 fail-closed로 확인한다. Non-disabled mode는 immutable image identity, 실제 Pod 수렴과 안정 drain을 검증하는 coordinated workflow에서만 전환하며 rollout 실패를 성공으로 무시하지 않는다.
+- 단일 Helm release는 disabled bootstrap/image packaging만 허용하고 non-disabled mode를 render 단계에서 거부한다. 현재 claim/drain 전환을 수행하는 공식 CD는 없으며 수동 kubectl 전환은 지원하지 않는다.
 - Gateway와 Worker는 공통 schema readiness service를 사용하고 `claim`/`drain` startup에서 Alembic head와 필수 claim column을 모두 확인한다. Alembic online migration은 같은 connection에서 bounded wait advisory lock을 획득해 동시 migration을 직렬화한다.
-- Coordinated rollout은 동일 commit의 Log System image를 migration 이후, schedule claim admission 이전에 배포·검증한다. `disabled` 최초 도입에 한해서만 기존 Gateway/Worker Deployment의 fingerprint annotation 누락을 bootstrap으로 취급한다.
-- Helm/raw Kubernetes manifest는 mode와 모든 dispatch batch/lease/deadline/retry/retention 값을 포함한 canonical `nodease.io/schedule-dispatch-fingerprint` pod annotation을 기록하고 Downward API로 `SCHEDULE_DISPATCH_MODE_FINGERPRINT`를 주입한다. `claim`/`drain` process는 fingerprint가 없거나 실제 전체 설정과 다르면 fail-fast한다. Docker Compose는 같은 canonical 값을 직접 주입한다.
+- Target CD(미구현): provider-neutral coordinated rollout은 동일 immutable release의 Log System image를 migration 이후, schedule claim admission 이전에 배포·검증해야 한다. disabled 최초 도입에 한해서만 fingerprint annotation 누락을 bootstrap으로 취급한다.
+- Helm은 mode와 모든 dispatch batch/lease/deadline/retry/retention 값을 포함한 canonical nodease.io/schedule-dispatch-fingerprint Pod annotation을 기록하고 Downward API로 SCHEDULE_DISPATCH_MODE_FINGERPRINT를 주입한다. Docker Compose는 같은 canonical 값을 직접 주입한다.
 - Scheduler tick은 critical recovery, occurrence claim, pending dispatch를 먼저 수행한다. WorkflowRun visibility와 terminal cleanup은 각각 독립 UnitOfWork의 optional maintenance로 실행되어 실패가 dispatch를 중단하지 않는다.
 - Pending dispatch는 canonical deployment/type/current-pointer 검증 뒤 configuration preflight를 budget보다 먼저 수행한다. Known blocker는 같은 UoW에서 `canceled + configuration_preflight_blocked`와 기존 canceled audit을 기록하고 publish batch에 넣지 않는다. Adapter/infrastructure exception은 UoW를 rollback해 fail-open을 막는다.
 - `disabled`에서는 critical dispatch를 실행하지 않지만 schema-ready 환경의 visibility, retention cleanup과 pending/running age signal은 계속 실행한다.
-- Coordinated production rollout은 mutable commit tag를 deployment identity로 사용하지 않는다. 기존 tag digest를 재사용하거나 신규 push digest를 확정한 뒤 Logger/Gateway/Worker manifest를 `repository@sha256`로 렌더링하고 실제 container imageID까지 검증한다.
+- Target CD(미구현): coordinated production rollout은 mutable tag를 deployment identity로 사용하지 않고 OCI registry digest를 확정한 뒤 Logger/Gateway/Worker를 immutable image identity로 배포·검증해야 한다.
 - Schedule Celery publisher/task는 `ignore_result`를 사용하고 workflow output, RAG evidence, sync 상세를 result backend에 저장하지 않는다.
 - Schedule signal과 Scheduler/Worker 오류 로그는 UUID, idempotency key, raw payload와 raw exception message를 기록하지 않는다. 개별 claim 역추적은 durable claim과 canonical audit row를 사용한다.
 - Outcome review use case는 exact dead-letter claim을 lock하고 allowlisted resolution/correlation과 system audit만 같은 transaction에 기록한다. Rollback preflight는 별도 read use case/CLI이며 review와 redrive를 수행하지 않는다.
-- Production Gateway/Worker workflow는 같은 `production-schema-rollout` concurrency group을 사용한다. 일반 image rollout preflight는 desired manifest fingerprint와 live Gateway/Worker fingerprint가 모두 같을 때만 진행한다. Protected `production` environment의 `.github/workflows/deploy-eks-schedule-coordinated.yml`은 승인된 이전 공통 fingerprint를 입력받아 양쪽 desired/current 상태를 판정하고, migration, commit image가 포함된 최종 manifest render, staged apply, 양 rollout 완료와 최종 fingerprint를 한 작업에서 검증한다. `claim` 활성화는 Worker 우선, `drain`/`disabled`는 Gateway 우선이며 active claim 설정을 바꾸려면 먼저 drain으로 전환해야 한다. 첫 단계 후 실패한 재실행은 먼저 적용돼야 할 서비스가 같은 commit image/desired fingerprint이고 다른 서비스가 승인된 이전 fingerprint일 때만 남은 단계부터 재개한다.
-- Coordinated workflow는 `claim -> disabled` 직접 전환을 거부한다. `disabled`/`drain -> claim` activation과 `drain -> disabled` rollback은 새 Gateway image의 transition preflight CLI가 nonterminal claim과 미검토 outcome unknown이 모두 0임을 확인한 뒤에만 진행한다.
+- 현재 provider-specific production Gateway/Worker/coordinated workflow는 지원 표면에 없다. Future provider-neutral CD는 migration, immutable render, Logger 선행, staged Gateway/Worker apply, live convergence와 실패 재개를 하나의 승인된 경계에서 수행해야 한다.
+- Target CD(미구현)는 claim에서 disabled로의 직접 전환을 거부하고 activation/rollback 전 transition preflight로 nonterminal claim과 미검토 outcome unknown이 0인지 확인해야 한다.
 - Activation은 Legacy `workflow.execute_by_deployment`와 신규 dedicated schedule task, rollback은 신규 task의 active/reserved/scheduled 상태와 Redis workflow priority queue 전체 depth가 0인지 추가 확인한다. DB, worker inspection 또는 broker queue 확인 불가 시 fail-closed하고 Queue payload 원문은 읽거나 출력하지 않는다.
 - Polling, batch size, lease/delivery/execution deadline, retry cap, retention 값은 환경변수로 조정할 수 있지만 domain range validation을 통과해야 한다. 잘못된 mode 또는 범위를 가진 값은 process startup에서 fail-fast한다.
 - 이 설정은 secret이 아니지만 pod 환경과 운영 배포 이력에 남을 수 있으므로 raw workflow payload, credential, audit metadata와 섞어 기록하지 않는다.

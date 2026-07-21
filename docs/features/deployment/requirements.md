@@ -2,7 +2,6 @@
 
 Status: Draft
 Related Features: workflow, llm-credentials, audit-tracing, knowledge, chatbot-deployment, conversation-memory
-Verified Against: `feature/mba-247 @ 3b947bd5ac6c51ffcc028510344ee2e5a5066873`
 
 ## Purpose
 
@@ -57,18 +56,21 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-029: `attempt_count`는 pending claim을 Gateway dispatcher가 처리한 주기 수다. 한 처리 주기에서 budget 결과와 broker publish 여부에 관계없이 최대 한 번만 증가하고, Worker budget unavailable은 이미 publish된 attempt를 추가 증가시키지 않아야 한다. 최대치에 도달한 pending claim은 publish 없이 safe dead-letter로 격리한다.
 - DEP-REQ-030: `execution_outcome_unknown` 검토는 exact claim의 조사 완료 acknowledgment와 rollback gate 해제 표시에 한정한다. 검토는 claim status를 바꾸거나 redrive 권한을 부여하지 않으며, rollback preflight는 nonterminal claim, 미검토 outcome unknown, Celery active/reserved/scheduled 전용 task를 독립적으로 확인하고 inspection 불가 시 fail-closed해야 한다.
 - DEP-REQ-031: Dispatch 핵심 복구는 expired `dispatching`/`enqueued`와 running deadline 격리를 먼저 처리해야 한다. WorkflowRun visibility signal과 terminal cleanup은 별도 UnitOfWork의 optional maintenance로 수행하며 실패가 핵심 dispatch/recovery를 차단해서는 안 된다.
-- DEP-REQ-032: `claim`/`drain` mode의 Gateway와 Worker는 동일한 shared Alembic/schema readiness를 startup에서 통과해야 한다. Migration은 동일 DB connection의 bounded PostgreSQL advisory lock과 production rollout 공통 concurrency group으로 직렬화한다. 동시 migration 진입은 제한 시간 동안 현재 owner의 완료를 기다린 뒤에만 실패한다. Pod가 로드한 canonical settings fingerprint가 manifest annotation과 다르거나 일반 독립 rollout 시 live Gateway/Worker fingerprint가 desired 값과 다르면 fail-closed한다. 단, desired mode가 `disabled`인 최초 rollout에서는 기존 Deployment의 fingerprint annotation 누락을 bootstrap 상태로 허용한다.
-- DEP-REQ-033: Schedule claim을 활성화하는 coordinated production rollout은 Gateway/Worker보다 먼저 동일 commit의 Log System image를 배포하고 실제 Deployment image identity를 검증해야 한다. 그래야 nullable system actor와 canonical schedule trigger를 이해하지 못하는 이전 Logger가 새 schedule run을 소비하는 혼합 버전을 차단할 수 있다.
+
+현재 배포 지원 상태(ADR-0065): Docker Compose와 provider-neutral Helm은 schedule dispatch disabled만 지원한다. 아래 coordinated rollout 항목 중 claim/drain activation·cloud CD에 관한 문장은 미래 provider-neutral CD가 충족해야 할 Target이며 현재 구현된 배포 기능이 아니다.
+
+- DEP-REQ-032: Schedule runtime의 claim/drain startup readiness는 Alembic head, 필수 claim column과 canonical settings fingerprint를 fail-closed로 확인해야 한다. Migration은 동일 DB connection의 bounded PostgreSQL advisory lock으로 직렬화한다. 실제 activation 배포의 live fingerprint·rollout 검증은 Target coordinated CD가 소유한다.
+- DEP-REQ-033 (Target CD, 미구현): Schedule claim을 활성화하는 provider-neutral coordinated rollout은 Gateway/Worker보다 먼저 동일 immutable release의 Log System image를 배포하고 실제 image identity를 검증해야 한다.
 - DEP-REQ-034: Admission 전 `pending`/`dispatching`/`enqueued` claim은 `workflow_run_id`를 가질 수 없다. Scheduler는 한 claim의 publish 결과 write 실패를 다른 prepared claim으로 전파하지 않고 lease recovery에 맡겨야 한다. Engine 결과 확정 후 terminal state write는 engine을 재실행하지 않는 fresh-session bounded retry만 허용한다.
 - DEP-REQ-035: 오래 밀린 valid schedule은 과거 occurrence 수와 무관하게 현재 시각 이후 첫 fire time으로 coalesce해야 한다. Catch-up iteration cap 초과를 configuration error로 분류하거나 schedule을 quarantine해서는 안 된다.
 - DEP-REQ-036: `canceled`/`dead_lettered` claim의 safe reason, completed outcome review의 resolution, nullable system schedule WorkflowRun의 claim task id는 DB CHECK에서도 명시적으로 non-null이어야 한다. PostgreSQL `UNKNOWN` 평가가 incomplete terminal/correlation row를 허용해서는 안 된다.
-- DEP-REQ-037: `disabled` schedule dispatch mode는 신규 claim과 legacy direct enqueue를 모두 중지하는 명시적 kill switch다. 다중 replica 중복 실행을 다시 허용하는 legacy fallback은 제공하지 않으며, schedule 실행을 재개하려면 coordinated rollout과 drain 검증을 거쳐 `claim` mode를 활성화해야 한다.
+- DEP-REQ-037: disabled schedule dispatch mode는 신규 claim과 legacy direct enqueue를 모두 중지하는 명시적 kill switch다. 다중 replica 중복 실행을 다시 허용하는 legacy fallback은 제공하지 않는다. 현재 지원 배포 표면에는 claim 재활성화 경로가 없으며, 향후에는 Target coordinated CD와 drain 검증을 거쳐야 한다.
 - DEP-REQ-038: Terminal claim cleanup은 retention이 지났더라도 검토되지 않은 `execution_outcome_unknown` claim을 삭제하지 않아야 한다. 해당 claim은 allowlisted outcome review가 같은 row에 기록된 뒤에만 dead-letter retention 대상이 될 수 있으며, rollback/downgrade gate가 조사 전 correlation을 잃어서는 안 된다.
-- DEP-REQ-039: Coordinated rollout은 같은 commit tag의 기존 ECR digest를 재사용하거나 신규 push 뒤 digest를 확정하고 immutable image identity로 배포해야 한다. 완료 판정은 Deployment spec뿐 아니라 observed generation, desired/updated/Ready/available replica와 non-terminating Pod의 spec image, container imageID, fingerprint, Ready condition의 수렴을 Logger/Gateway/Worker 모두에서 검증해야 한다. 실패 후 재실행에서 mutable tag 또는 desired spec만 남은 unready stage는 완료로 간주하지 않는다.
+- DEP-REQ-039 (Target CD, 미구현): Coordinated rollout은 같은 release의 기존 OCI registry digest를 재사용하거나 신규 push 뒤 digest를 확정하고 immutable image identity로 배포해야 한다. 완료 판정은 Deployment spec뿐 아니라 observed generation, desired/updated/Ready/available replica와 non-terminating Pod의 spec image, container imageID, fingerprint, Ready condition의 수렴을 Logger/Gateway/Worker 모두에서 검증해야 한다.
 - DEP-REQ-040: Activation/rollback drain은 durable ledger의 nonterminal claim과 미검토 outcome unknown이 0이고 기대 Ready Worker 집합과 Celery inspect 응답 집합이 일치해야 한다. Queue와 Worker task 상태를 앞뒤로 확인한 연속 두 안정 관측이 모두 0일 때만 통과하며, DB/inspection 실패, 부분 응답과 관측 사이 task 이동은 fail-closed한다.
 - DEP-REQ-041: PostgreSQL lease, delivery deadline과 execution deadline은 transaction 시작 시각이 아니라 lock/정책 평가 이후의 DB wall clock으로 계산한다.
 - DEP-REQ-042: `disabled` mode는 신규 claim과 admission을 중지하지만 schema-ready 환경의 WorkflowRun visibility, terminal retention cleanup과 claim age 관측은 계속 수행한다.
-- DEP-REQ-043: 일반 Dev namespace workflow와 단일 Helm release는 non-disabled schedule mode 전환을 수행하지 않는다. Dev workflow는 live Gateway/Worker의 observed generation, replica 상태와 non-terminating Pod의 Running/Ready/fingerprint 수렴을 먼저 확인하고, claim/drain/mixed/부분 bootstrap 또는 미수렴 상태에서 단독 disabled 전환을 거부한다. Disabled 설정 변경은 Gateway/Worker 동시 배포에서만 허용하고 단독 service 배포는 live/desired fingerprint가 같아야 한다. `claim`/`drain` 전환은 Logger/Gateway/Worker 순서와 drain preflight를 소유한 coordinated workflow에서만 수행하고 rollout 실패를 성공으로 무시하지 않는다.
+- DEP-REQ-043: 현재 Docker Compose와 단일 Helm release는 disabled mode만 지원하고 Helm render는 non-disabled mode를 fail-closed한다. EKS/Dev namespace workflow는 지원 표면에 없으며 수동 kubectl 전환도 공식 경로가 아니다. 향후 claim/drain 전환을 도입하려면 Logger/Gateway/Worker 순서, immutable image identity, live Pod 수렴, drain preflight와 실패 재개를 소유하는 provider-neutral coordinated CD를 별도 구현해야 한다.
 - DEP-REQ-044: Schedule schema downgrade는 기본 비지원이다. 공통 Alembic graph의 sibling feature data를 함께 제거할 수 있으므로 일반 rollback은 `claim -> drain -> disabled` application rollback만 사용하며 파괴적 schema downgrade는 명시적 opt-in과 백업 절차가 필요하다.
 - DEP-REQ-045: Schedule 전용 Celery task는 result backend에 workflow output, RAG evidence, sync 상세를 저장하지 않고 비민감 claim outcome만 반환한다.
 - DEP-REQ-046: Schedule 운영 signal은 low-cardinality event name/status/reason/mode/value만 사용하며 claim/organization/user UUID, idempotency key, raw payload와 raw exception을 포함하지 않는다. Scheduler와 Worker의 일반 오류 로그도 operation, bounded attempt와 exception type만 기록하고 claim UUID 또는 raw exception message를 남기지 않는다.

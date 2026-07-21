@@ -7,9 +7,6 @@ QUALITY_GATE_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "pr-quality-gate
 HELM_CI_VALUES_PATH = (
     REPOSITORY_ROOT / "tests" / "ci" / "fixtures" / "helm-values-ci.yaml"
 )
-TERRAFORM_CI_FIXTURE_PATH = (
-    REPOSITORY_ROOT / "tests" / "ci" / "fixtures" / "terraform-smoke" / "main.tf"
-)
 DOCKERFILE_CI_FIXTURE_PATH = (
     REPOSITORY_ROOT / "tests" / "ci" / "fixtures" / "dockerfile-smoke" / "Dockerfile"
 )
@@ -79,7 +76,7 @@ def test_action_reference_matcher_supports_sequence_item_syntax():
     assert sequence_match.group("reference") == "v4"
 
 
-def test_ci_control_changes_force_all_deployment_validators():
+def test_ci_control_changes_force_all_supported_deployment_validators():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
     ci_control_block = workflow.split(
         'if [[ "$CI_CONTROL_CHANGED" == "true" ]]; then',
@@ -89,8 +86,7 @@ def test_ci_control_changes_force_all_deployment_validators():
     for validator in (
         "actions_validation",
         "helm_validation",
-        "kubernetes_validation",
-        "terraform_validation",
+        "support_surface_validation",
         "compose_validation",
         "dockerfile_validation",
     ):
@@ -153,7 +149,7 @@ def test_composite_action_metadata_uses_pinned_validator_and_fixture():
     assert ":(glob).github/actions/**/action.yaml" in workflow
 
 
-def test_trusted_diff_detects_real_terraform_and_dockerfile_changes():
+def test_trusted_diff_detects_real_dockerfile_changes():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
     trusted_diff_block = workflow.split(
         "- name: Detect CI control changes outside the selector",
@@ -161,24 +157,13 @@ def test_trusted_diff_detects_real_terraform_and_dockerfile_changes():
     )[1].split("- name: Classify changed paths", maxsplit=1)[0]
 
     assert (
-        "terraform_config_changed: "
-        "${{ steps.ci_control.outputs.terraform_config_changed }}"
-        in workflow
-    )
-    assert (
         "dockerfile_config_changed: "
         "${{ steps.ci_control.outputs.dockerfile_config_changed }}"
         in workflow
     )
-    assert "terraform_config_changed=false" in trusted_diff_block
     assert "dockerfile_config_changed=false" in trusted_diff_block
-    assert "infra/terraform/*)" in trusted_diff_block
     assert (
         "*/Dockerfile|Dockerfile|*/Dockerfile.*|Dockerfile.*|*.Dockerfile)"
-        in trusted_diff_block
-    )
-    assert (
-        'echo "terraform_config_changed=$terraform_config_changed"'
         in trusted_diff_block
     )
     assert (
@@ -212,7 +197,7 @@ def test_compose_validation_combines_variant_with_base_file():
     )
 
 
-def test_kubernetes_validation_uses_cluster_independent_schema_check():
+def test_helm_validation_schema_checks_rendered_manifests():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
 
     assert (
@@ -221,6 +206,7 @@ def test_kubernetes_validation_uses_cluster_independent_schema_check():
     )
     assert "kubeconform/cmd/kubeconform@v0.8.0" not in workflow
     assert "-kubernetes-version 1.31.0" in workflow
+    assert '"$rendered_manifest"' in workflow
     assert "kubectl create --dry-run=client" not in workflow
 
 
@@ -229,7 +215,7 @@ def test_helm_validation_requires_tracked_lock_before_dependency_build():
     helm_block = workflow.split(
         "- name: Validate Helm chart",
         maxsplit=1,
-    )[1].split("- name: Validate Kubernetes manifests", maxsplit=1)[0]
+    )[1].split("- name: Reject unsupported EKS deployment surface", maxsplit=1)[0]
 
     tracked_lock_guard = 'git ls-files --error-unmatch -- "$chart_lock"'
     dependency_build = "helm dependency build infra/helm/moduly"
@@ -238,22 +224,14 @@ def test_helm_validation_requires_tracked_lock_before_dependency_build():
     assert helm_block.index(tracked_lock_guard) < helm_block.index(dependency_build)
 
 
-def test_ci_control_terraform_smoke_uses_fixture_without_hiding_real_changes():
+def test_unsupported_eks_surface_guard_is_wired_into_quality_gate():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
 
-    assert TERRAFORM_CI_FIXTURE_PATH.is_file()
-    assert (
-        "terraform_config_changed: "
-        "${{ steps.ci_control.outputs.terraform_config_changed }}"
-        in workflow
-    )
-    assert (
-        "TERRAFORM_CONFIG_CHANGED: "
-        "${{ needs.scope.outputs.terraform_config_changed }}"
-        in workflow
-    )
-    assert 'terraform_target="infra/terraform"' in workflow
-    assert 'terraform_target="tests/ci/fixtures/terraform-smoke"' in workflow
+    assert "support_surface_validation" in workflow
+    assert "python -m scripts.ci.check_supported_deployment_surface" in workflow
+    assert "kubernetes_validation" not in workflow
+    assert "terraform_validation" not in workflow
+    assert "terraform_config_changed" not in workflow
 
 
 def test_dockerfile_validation_preserves_rename_source_paths():

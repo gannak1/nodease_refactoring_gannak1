@@ -72,7 +72,7 @@ flowchart LR
 | `apps/log_system/`                      | Audit·Trace·log 계열 비동기 처리                                             |
 | `apps/shared/`                          | DB model, schema, permission, LLM client, RAG와 tracing 공통 계층            |
 | `apps/sandbox/`                         | NSJail 기반 Python code 실행 격리                                            |
-| `docker/`, `dev/`, `infra/`, `scripts/` | 통합 컨테이너, 로컬 개발, Kubernetes/Helm과 운영 script                      |
+| `docker/`, `dev/`, `infra/`, `scripts/` | 통합 컨테이너, 로컬 개발, provider-neutral Helm과 운영 script                |
 
 자세한 서비스 경계와 요청 흐름은 [Architecture 문서](./docs/architecture.md)를 기준으로 합니다.
 
@@ -90,8 +90,10 @@ flowchart LR
 | Database       | PostgreSQL, pgvector                                                                |
 | LLM/RAG        | OpenAI·Anthropic·Google client, document ingestion, metadata/hierarchical retrieval |
 | Sandbox        | NSJail                                                                              |
-| Infrastructure | Docker Compose, Kubernetes, Helm, Terraform                                         |
+| Infrastructure | Docker Compose, provider-neutral Kubernetes Helm                                    |
 | Test           | pytest, Vitest, ESLint, Next.js build                                               |
+
+공식 배포 artifact는 Docker Compose와 provider-neutral Helm chart입니다. EKS 전용 provisioning·raw manifest·CD는 현재 지원하지 않으며, 자세한 경계는 [ADR-0065](./docs/decisions/ADR-0065-eks-support-surface-removal.md)를 따릅니다.
 
 ## Start in development environment
 

@@ -1,13 +1,12 @@
 # PR CI 품질 게이트
 
 Status: Draft
-Verified Against: feature/mba-353 @ c64b063d
 
 ## 목적
 
 Nodease의 PR 품질 게이트는 모든 테스트를 매번 실행하는 장치가 아니다. 변경 파일을 기능·도메인 영향 범위로 변환하고, 해당 변경에 필요한 검사만 실행한 뒤 하나의 안정적인 최종 check로 병합 가능 여부를 판단한다.
 
-Coverage threshold는 MBA-192, Client 기존 ESLint warning 정리는 MBA-252, 전체 cross-domain 회귀는 MBA-30, AWS 배포 인증과 CD는 MBA-224가 소유한다.
+Coverage threshold는 MBA-192, Client 기존 ESLint warning 정리는 MBA-252, 전체 cross-domain 회귀는 MBA-30이 소유한다. EKS 전용 CD는 현재 지원 표면에서 제거되며 재도입 조건은 ADR-0065를 따른다.
 
 ## 진입점
 
@@ -17,7 +16,7 @@ PR 검증 진입점은 `.github/workflows/pr-quality-gate.yml`과 `.github/workf
 - 신뢰 가드는 base 브랜치의 `pull_request_target` workflow로 실행되며 PR 코드를 checkout하거나 실행하지 않는다.
 - 신뢰 가드는 변경 파일, review, reviewer 권한만 GitHub API로 읽고 현재 PR head에 정책 status만 기록한다.
 - 같은 PR에 새 commit이 push되면 이전 실행을 취소하고 새 head를 다시 판정한다.
-- AWS credential, 배포 secret 또는 장기 credential을 요구하지 않는다.
+- 품질 게이트는 cloud credential, 배포 secret 또는 장기 credential을 요구하지 않는다.
 - required check 후보는 `PR Quality Gate / ci-required`와 `trusted-ci-control/base-policy`다.
 
 실제 required check context는 workflow가 `dev`에 병합된 뒤 probe PR에서 확인한다. 확인 전에는 GitHub ruleset에 이름을 추측해 등록하지 않는다.
@@ -35,7 +34,7 @@ PR 검증 진입점은 `.github/workflows/pr-quality-gate.yml`과 `.github/workf
 | `shared-tests` | Shared 영향 | 선택된 Shared pytest |
 | `log-system-tests` | Log System 영향 | 선택된 Log System pytest |
 | `sandbox-tests` | Sandbox 영향 | Sandbox pytest |
-| `deployment-config-validation` | Actions·Helm·Kubernetes·Terraform·Compose·Dockerfile 영향 | workflow·action metadata와 변경된 배포 설정의 정적 검사 |
+| deployment-config-validation | Actions·Helm·지원 표면·Compose·Dockerfile 영향 | workflow·action metadata, Helm render/schema와 지원 종료 경로 재도입을 포함한 배포 설정 정적 검사 |
 | `knowledge-postgres-contracts` | Knowledge runtime/ingestion/DB 영향 | 실제 PostgreSQL Knowledge 계약 검사 |
 | `workflow-postgres-contracts` | migration/schedule/external effect 영향 | 실제 PostgreSQL workflow 계약 검사 |
 | `agent-builder-postgres-contracts` | Agent Builder DB/CAS 영향 | 실제 PostgreSQL Agent Builder 계약 검사 |
@@ -49,8 +48,8 @@ PR 검증 진입점은 `.github/workflows/pr-quality-gate.yml`과 `.github/workf
 
 PR workspace의 selector 결과만으로 required gate를 결정하지 않는다.
 
-- 품질 게이트는 selector 실행 전에 `pr-quality-gate.yml`, `pr-ci-control-guard.yml`, 네 PostgreSQL 계약 workflow, `.github/actions/**`, `scripts/ci/**`, `tests/ci/**` 변경을 독립적으로 확인한다. 이 경로가 바뀌면 selector 출력과 무관하게 Client, Python service smoke, root, PostgreSQL 계약 검사와 Actions·Helm·Kubernetes·Terraform·Compose·Dockerfile 정적 검증을 모두 선택한다.
-- 동일한 독립 diff 단계가 `infra/terraform/**`와 `Dockerfile`, `Dockerfile.*`, `*.Dockerfile` 실변경 신호도 계산한다. CI 제어 파일과 실제 배포 설정을 함께 수정한 PR은 selector 출력이 잘못되어도 smoke fixture로 대체하지 않고 변경된 실제 구성을 검증한다.
+- 품질 게이트는 selector 실행 전에 보호된 CI 경로 변경을 독립적으로 확인한다. 이 경로가 바뀌면 selector 출력과 무관하게 Client, Python service smoke, root, PostgreSQL 계약 검사와 Actions·Helm·지원 표면·Compose·Dockerfile 정적 검증을 모두 선택한다.
+- 동일한 독립 diff 단계가 Dockerfile, Dockerfile.*, *.Dockerfile 실변경 신호를 계산한다. CI 제어 파일과 실제 Dockerfile을 함께 수정한 PR은 selector 출력이 잘못되어도 smoke fixture로 대체하지 않고 변경된 실제 구성을 검증한다.
 - GitHub workflow는 Actionlint로 검사하고, composite action metadata는 commit SHA로 고정한 action-validator와 저장소 fixture로 별도 검사한다.
 - 신뢰 가드는 base 브랜치에서 `.github/workflows/**`, `.github/actions/**`, `scripts/ci/**`, `tests/ci/**` 변경을 별도로 확인한다. rename은 이전 경로와 새 경로를 모두 검사하고, 변경 파일 전체를 열거하지 못하면 실패한다.
 - CI 제어 변경은 PR 작성자가 아닌 write 이상 권한 보유자가 현재 head commit에 남긴 `APPROVED` review가 있어야 통과한다. 이전 commit 승인은 재사용하지 않는다.
@@ -83,7 +82,8 @@ PR workspace의 selector 결과만으로 required gate를 결정하지 않는다
 | 품질 게이트 CI 제어 파일과 보호된 PostgreSQL workflow | 각 서비스 smoke, Client smoke, root CI 계약 test, PostgreSQL 계약 test, 전체 배포 정적 검증과 최신 독립 승인 |
 | 기타 GitHub Actions workflow | 기존 영향 범위 검사와 최신 독립 승인 |
 | 배포 workflow만 변경 | actionlint를 실행하고 runtime test는 선택하지 않음 |
-| Helm/Kubernetes/Terraform 변경 | 변경 종류에 맞는 lint, render, validate 실행 |
+| Helm 변경 | dependency lock, lint, 기본/production render와 Kubernetes schema 검사 |
+| 지원 종료한 EKS/Terraform 경로 변경 | 현재 추적 파일에 해당 경로가 남지 않았는지 fail-closed 검사 |
 | Docker Compose/Dockerfile 변경 | 변경 파일의 config 또는 build check 실행, Docker check 경고도 오류 처리 |
 | 알 수 없는 실행 경로 | Client와 Python smoke 범위로 fail-closed 확장 |
 
@@ -194,16 +194,15 @@ actionlint .github/workflows/pr-quality-gate.yml .github/workflows/pr-ci-control
 
 ## 배포 설정 검증
 
-`deployment-config-validation`은 일반 배포 설정 변경에서는 변경된 종류만 검사한다. 품질 게이트 CI 제어 파일이 바뀌면 검증 명령 자체의 회귀를 놓치지 않도록 여섯 배포 검증기를 모두 실행한다.
+deployment-config-validation은 일반 배포 설정 변경에서는 변경된 종류만 검사한다. 품질 게이트 CI 제어 파일이 바뀌면 검증 명령 자체의 회귀를 놓치지 않도록 다섯 배포 검증기를 모두 실행한다.
 
 - GitHub Actions: 일반 변경에서는 추가·수정·이름 변경된 workflow를 검사한다. CI 제어 변경에서는 기존 배포 workflow의 ShellCheck 부채와 분리된 안정적 smoke 대상인 품질 게이트, 신뢰 가드와 네 PostgreSQL 계약 workflow에 PR에서 실제 변경한 workflow를 합치고 중복을 제거해 고정 버전 actionlint로 검사한다.
-- Helm: dependency build 전에 `Chart.lock`이 tracked regular file인지 확인하고 build 뒤 내용 불변을 검사한다. 이어서 기본/production values lint와 template render를 실행한다.
-- Kubernetes: 목표 EKS `1.31`과 CI Go 1.25 도구체인에 맞춘 `kubeconform v0.7.0` strict schema 검증을 실행하며 cluster API에 접속하지 않음
-- Terraform: 실제 Terraform 변경은 `infra/terraform`을 대상으로 format, backend 없는 init, validate를 실행한다. CI 제어만 변경된 경우에는 provider와 module lock 부채에 영향을 받지 않는 `tests/ci/fixtures/terraform-smoke`로 같은 명령 계약을 검증한다.
+- Helm: dependency build 전에 Chart.lock이 tracked regular file인지 확인하고 build 뒤 내용 불변을 검사한다. 기본/production values를 lint·render하고 kubeconform v0.7.0으로 Kubernetes 1.31 compatibility schema를 검사한다. 이 baseline은 EKS 지원 선언이 아니다.
+- 지원 표면: legacy dev namespace workflow, `deploy-eks-` workflow prefix와 `infra/k8s`, `infra/terraform` prefix가 현재 추적 파일에 존재하면 실패한다. 삭제 PR에서도 이 검사가 선택되며 이름만 바꾼 EKS 표면의 재도입도 막는다.
 - Docker Compose: Compose 변경 또는 CI 제어 변경 시 tracked Compose 구성을 모두 해석한다. `compose.<variant>.yml`과 `docker-compose.<variant>.yml`은 같은 디렉터리의 기본 Compose 파일과 합성하고 선언된 profile을 활성화해 검사한다.
 - Dockerfile: `Dockerfile`, `Dockerfile.*`, `*.Dockerfile` 이름을 지원한다. 실제 Dockerfile 변경에서는 rename을 delete+add로 해석해 이전 경로를 선택 근거로 보존하고, 현재 존재하는 변경 파일에 BuildKit check를 실행한다. 삭제 또는 비지원 이름으로의 rename은 검증 대상이 존재하지 않는 상태로 허용한다. CI 제어만 변경된 경우에는 기존 Dockerfile의 lint 부채와 분리된 `tests/ci/fixtures/dockerfile-smoke/Dockerfile`로 같은 명령 계약을 검증한다.
 
-CI 제어와 PostgreSQL workflow가 사용하는 공식 Action은 40자리 commit SHA로 고정한다. Action 내부 runtime은 Node 24 기반 공식 major를 사용한다. Client build의 Node 20은 현재 Docker runtime과 별도 제품 계약이므로 이 문서의 Action runtime 전환 대상이 아니다. AWS·Docker 배포 Action과 장기 credential 전환은 MBA-224/MBA-329가 소유한다.
+CI 제어와 PostgreSQL workflow가 사용하는 공식 Action은 40자리 commit SHA로 고정한다. Action 내부 runtime은 Node 24 기반 공식 major를 사용한다. Client build의 Node 20은 현재 Docker runtime과 별도 제품 계약이다. Provider-specific cloud CD와 장기 credential은 현재 지원 표면이 아니며 재도입 시 별도 ADR과 통합 증거가 필요하다.
 
 ## Cache와 artifact
 
@@ -224,7 +223,7 @@ CI 제어와 PostgreSQL workflow가 사용하는 공식 Action은 40자리 commi
 | `client-quality` | ESLint error, test fixture 타입, 영향 test, build |
 | Python service job | Actions log에 출력된 실제 선택 target과 dependency 설치 |
 | PostgreSQL contract | migration upgrade, race, 실제 SQL 계약 |
-| `deployment-config-validation` | actionlint, Helm dependency/render, manifest, Terraform, Compose, Dockerfile 오류 |
+| `deployment-config-validation` | workflow·action metadata, Helm render/schema, 지원 종료 경로 재도입, Compose 또는 Dockerfile 오류 |
 | `ci-required` | 선택된 하위 job의 실패, 취소 또는 비정상 skip |
 | `trusted-ci-control/base-policy` | CI 제어 경로 변경, 현재 head 승인 부재, reviewer 권한 확인 실패, 변경 파일 열거 누락 |
 | `ci-control-review` evaluator job | PR head 식별 불가, authoritative status 기록 실패, 재시도 소진 뒤 status 기록도 실패한 GitHub 운영 오류 |

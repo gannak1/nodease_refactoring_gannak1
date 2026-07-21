@@ -75,8 +75,6 @@ credentials
 access_key
 
 # 암호
-apps/infra/k8s/secrets.yaml
-infra/k8s/secrets.yaml
 *.secret.yaml
 
 # Alembic

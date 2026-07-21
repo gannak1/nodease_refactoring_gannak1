@@ -18,10 +18,6 @@ def test_public_memory_is_explicitly_disabled_in_standard_deployment_defaults():
     compose = _read("docker/docker-compose.yml")
     values = _read("infra/helm/moduly/values.yaml")
     production_values = _read("infra/helm/moduly/values-production.yaml")
-    raw_deployments = (
-        _read("infra/k8s/namespaces/default/gateway-deployment.yaml"),
-        _read("infra/k8s/namespaces/dev/gateway-deployment.yaml"),
-    )
 
     assert "MEMORY_PUBLIC_CONVERSATION_ENABLED:-false" in compose
     assert "MEMORY_PUBLIC_PURGE_WORKER_READY:-false" in compose
@@ -29,9 +25,6 @@ def test_public_memory_is_explicitly_disabled_in_standard_deployment_defaults():
     assert "purgeWorkerReady: false" in values
     assert "memoryPublicConversation:\n  enabled: false" in production_values
     assert "purgeWorkerReady: false" in production_values
-    for deployment in raw_deployments:
-        assert "- name: MEMORY_PUBLIC_CONVERSATION_ENABLED\n              value: \"false\"" in deployment
-        assert "- name: MEMORY_PUBLIC_PURGE_WORKER_READY\n              value: \"false\"" in deployment
 
 
 def test_enabled_helm_and_compose_paths_wire_three_independent_secret_names():
@@ -61,10 +54,6 @@ def test_standard_deployment_paths_support_bounded_public_memory_key_rotation():
     production_values = _read("infra/helm/moduly/values-production.yaml")
     secret_template = _read("infra/helm/moduly/templates/secrets.yaml")
     gateway_template = _read("infra/helm/moduly/templates/gateway-deployment.yaml")
-    raw_deployments = (
-        _read("infra/k8s/namespaces/default/gateway-deployment.yaml"),
-        _read("infra/k8s/namespaces/dev/gateway-deployment.yaml"),
-    )
 
     for environment_name in (
         "MEMORY_PUBLIC_CAPABILITY_HMAC_KEYS",
@@ -74,8 +63,6 @@ def test_standard_deployment_paths_support_bounded_public_memory_key_rotation():
     ):
         assert environment_name in compose
         assert environment_name in gateway_template
-        for deployment in raw_deployments:
-            assert environment_name in deployment
 
     for value_name in (
         "capabilityHmacPrimaryVersion",

@@ -28,7 +28,6 @@ on:
       - "apps/workflow_engine/application/schedule_dispatch.py"
       - "apps/workflow_engine/tasks.py"
       - "scripts/check_schedule_dispatch_rollback.py"
-      - ".github/workflows/deploy-eks-schedule-coordinated.yml"
       - ".github/workflows/test-schedule-dispatch-postgres.yml"
 
 permissions:

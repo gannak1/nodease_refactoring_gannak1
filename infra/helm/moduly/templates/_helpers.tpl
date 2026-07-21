@@ -72,7 +72,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{- define "moduly.validateScheduleDispatchMode" -}}
 {{- if ne .Values.scheduleDispatch.mode "disabled" -}}
-{{- fail "non-disabled schedule dispatch requires the coordinated rollout workflow" -}}
+{{- fail "non-disabled schedule dispatch is unsupported by the current provider-neutral deployment surface" -}}
 {{- end -}}
 {{- end }}
 
