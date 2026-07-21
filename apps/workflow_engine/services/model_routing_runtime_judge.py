@@ -95,7 +95,7 @@ class ModelRoutingRuntimeJudge:
     """
 
     MAX_FEATURE_CHARS = 7_000
-    # Judge가 후보 비교와 짧은 선택 근거를 함께 끝낼 수 있도록 둔 상한이다.
+    # Judge가 요구 수준과 짧은 판단 근거를 함께 반환할 수 있도록 둔 상한이다.
     MAX_OUTPUT_TOKENS = 768
     # 진단은 후보별 제외 근거까지 반환하므로 운영 경로와 별도 예산을 사용한다.
     DIAGNOSTIC_MAX_OUTPUT_TOKENS = 2_000

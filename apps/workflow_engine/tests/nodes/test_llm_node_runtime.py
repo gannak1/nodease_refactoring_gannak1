@@ -4616,10 +4616,10 @@ def test_runtime_judge_failure_is_recorded_separately_from_judge_not_called(
     }
 
 
-def test_test_execution_uses_matching_deployment_policy_and_judge_without_learning(
+def test_test_execution_uses_newly_available_candidate_beyond_persisted_policy(
     monkeypatch,
 ):
-    """테스트도 배포와 같은 Judge 선택을 하되 운영 학습에는 포함하지 않는다."""
+    """좁게 저장된 배포 정책도 새로 사용 가능한 후보를 첫 실행부터 비교한다."""
     from apps.workflow_engine.services.model_routing_policy_store import (
         ModelRoutingPolicyStore,
     )
@@ -4631,9 +4631,9 @@ def test_test_execution_uses_matching_deployment_policy_and_judge_without_learni
         policy_version="router-policy-v10",
             active_policy={
                 "strategy_id": "judge_bootstrap_incremental_v1",
-                "default_model_id": "gpt-4.1-mini",
-                "fallback_model_id": "gpt-4.1",
-                "candidate_model_ids": ["gpt-4.1-mini", "gpt-4.1"],
+                "default_model_id": "gpt-4.1",
+                "fallback_model_id": "gpt-4.1-mini",
+                "candidate_model_ids": ["gpt-4.1"],
                 "learning": {"mode": "judge_first"},
         },
         refresh_every_runs=20,
@@ -4704,7 +4704,7 @@ def test_test_execution_uses_matching_deployment_policy_and_judge_without_learni
         lambda *_args, **_kwargs: [
                 {
                     "model_id": "gpt-4.1-mini",
-                    "validation_status": "bootstrap_validated",
+                    "validation_status": "unverified",
                 },
             {"model_id": "gpt-4.1"},
         ],
@@ -4727,7 +4727,7 @@ def test_test_execution_uses_matching_deployment_policy_and_judge_without_learni
     assert metadata["decision_source"] == "runtime_judge"
     assert metadata["execution_mode"] == "test"
     assert metadata["judge_called"] is True
-    assert metadata["judge"]["reason_short"] == "요구 수준에 맞는 기본 모델 선택"
+    assert metadata["judge"]["reason_short"] == "요구 수준에 맞는 후보 선택"
     assert metadata["policy_source"] == "active_deployment"
     assert metadata["included_in_policy_learning"] is False
     assert learning_calls == []
