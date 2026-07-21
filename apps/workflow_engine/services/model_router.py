@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Iterable, Mapping, Optional
 
-from jinja2 import Environment
+from jinja2 import Environment, meta
 from sqlalchemy.orm import Session
 
 from apps.shared.db.models.llm import (
@@ -273,6 +273,10 @@ class ModelRouter:
     """Judge-first와 충분히 학습된 local-first 사이만 조정한다."""
 
     LOCAL_ROUTER_AUDIT_RATE = 0.10
+    MIN_OPERATIONAL_EVIDENCE_RUNS = 5
+    MIN_OPERATIONAL_SUCCESS_RATE = 0.95
+    MIN_OPERATIONAL_CONTRACT_PASS_RATE = 0.95
+    MAX_OPERATIONAL_FALLBACK_RATE = 0.05
 
     # Judge 입력에서 이번 요청은 매 실행 달라지는 핵심 신호다. 고정 노드 프롬프트가
     # 길어도 요청 원문이 잘리지 않도록 별도 예산을 둔다.
@@ -378,6 +382,9 @@ class ModelRouter:
             allowed_models = None
 
         runtime_context = cls.infer_runtime_context(inputs, node_data)
+        effective_routing_feature = routing_feature_text or cls.routing_feature_text(
+            inputs, node_data
+        )
         structural_facts = cls.runtime_requirement_facts(
             inputs=inputs,
             node_data=node_data,
@@ -401,7 +408,7 @@ class ModelRouter:
         learning = learning if isinstance(learning, dict) else {}
         cached_decision = accepted_decision(
             learning,
-            feature_text=routing_feature_text or runtime_context.text,
+            feature_text=effective_routing_feature,
             available_model_ids=candidates,
         )
         if cached_decision:
@@ -570,7 +577,9 @@ class ModelRouter:
         output_contract = cls._judge_output_contract(node_data)
         if output_contract:
             task_contract_parts.append(f"OUTPUT_CONTRACT:\n{output_contract}")
-        request_json = cls._judge_request_json(inputs)
+        request_json = cls._judge_request_json(
+            cls._routing_runtime_variables(inputs, node_data)
+        )
         safe_rag_metadata = {
             key: value
             for key, value in (rag_metadata or {}).items()
@@ -619,7 +628,7 @@ class ModelRouter:
         """
 
         del rendered_prompt_parts  # routing_feature_text만 고정 prompt 계약을 사용한다.
-        runtime_variables = cls._learning_runtime_variables(inputs, node_data)
+        runtime_variables = cls._routing_runtime_variables(inputs, node_data)
         feature_groups = cls._learning_feature_groups(runtime_variables)
         feature_groups["structured_features"]["routing_contract"] = (
             cls._learning_routing_contract(
@@ -788,15 +797,33 @@ class ModelRouter:
         inputs: dict[str, Any],
         node_data: Any,
     ) -> dict[str, Any]:
-        """referenced variable의 실행값만 local learning 입력으로 투영한다."""
+        """호환용 별칭. 학습과 Judge는 동일한 실행 입력을 사용한다."""
+
+        return cls._routing_runtime_variables(inputs, node_data)
+
+    @classmethod
+    def _routing_runtime_variables(
+        cls,
+        inputs: dict[str, Any],
+        node_data: Any,
+    ) -> dict[str, Any]:
+        """현재 LLM 프롬프트가 실제로 참조하는 실행값만 Judge에 전달한다.
+
+        변수 참조 메타데이터가 없는 기존 노드는 어떤 입력이 실행에 영향을 주는지
+        안전하게 판별할 수 없으므로 이전 계약대로 전체 입력을 유지한다.
+        """
 
         referenced_variables = cls._node_data_value(
             node_data,
             "referenced_variables",
-            default=[],
+            default=None,
         )
-        if not isinstance(referenced_variables, list):
-            referenced_variables = []
+        if not isinstance(referenced_variables, list) or not referenced_variables:
+            return inputs
+
+        prompt_variable_names = cls._prompt_variable_names(node_data)
+        if prompt_variable_names is None:
+            return inputs
 
         values: dict[str, Any] = {}
         for variable in referenced_variables:
@@ -808,19 +835,37 @@ class ModelRouter:
                 "value_selector",
                 default=[],
             )
-            if not name:
+            if (
+                not name
+                or name not in prompt_variable_names
+                or not isinstance(selector, list)
+                or not selector
+            ):
                 continue
 
-            value = None
-            if isinstance(selector, list) and selector:
-                source = inputs.get(str(selector[0]))
-                value = cls._nested_value(source, selector[1:])
-            if value is None and name in inputs:
-                value = inputs.get(name)
+            source = inputs.get(str(selector[0]))
+            value = cls._nested_value(source, selector[1:])
             if value is not None:
                 values[name] = value
+        return values
 
-        return values or inputs
+    @classmethod
+    def _prompt_variable_names(cls, node_data: Any) -> set[str] | None:
+        """세 prompt template에서 실제로 읽는 변수명을 찾는다.
+
+        파싱할 수 없는 template은 runtime에서도 안전하게 렌더할 수 없는 상태이므로,
+        라우팅 입력을 줄이지 않고 기존 전체 입력을 유지한다.
+        """
+
+        names: set[str] = set()
+        try:
+            for field in ("system_prompt", "user_prompt", "assistant_prompt"):
+                template = str(cls._node_data_value(node_data, field, default="") or "")
+                if template:
+                    names.update(meta.find_undeclared_variables(_routing_jinja_env.parse(template)))
+        except Exception:
+            return None
+        return names
 
     @classmethod
     def select_candidate_for_requirements(
@@ -858,7 +903,7 @@ class ModelRouter:
         normalized_default = cls.normalize_model_id(default_model_id or "")
         facts = structural_facts if isinstance(structural_facts, Mapping) else {}
         task_intent = str(facts.get("task_intent") or "").strip().lower()
-        eligible: list[tuple[float, str]] = []
+        eligible: list[tuple[float, str, Mapping[str, Any]]] = []
         for model_id in cls._unique_model_ids(candidate_model_ids):
             normalized_model_id = cls.normalize_model_id(model_id)
             profile = profile_by_model.get(normalized_model_id, {})
@@ -866,7 +911,7 @@ class ModelRouter:
             metadata = catalog_metadata_for_model_id(model_id)
             if not metadata:
                 if is_default:
-                    eligible.append((float("inf"), model_id))
+                    eligible.append((float("inf"), model_id, profile))
                 continue
             model_ceiling = ceiling_rank.get(str(metadata.get("complexity_ceiling")), 0)
             reasoning = reasoning_rank.get(str(metadata.get("reasoning_profile")), 0)
@@ -897,13 +942,60 @@ class ModelRouter:
                     if pricing is not None
                     else float("inf")
                 )
-            eligible.append((price, model_id))
+            eligible.append((price, model_id, profile))
         if not eligible:
             return cls.first_available_model(
                 [default_model_id],
                 {cls.normalize_model_id(model_id) for model_id in candidate_model_ids},
             )
-        return min(eligible, key=lambda row: (row[0], row[1]))[1]
+
+        # 두 모델 이상이 같은 workflow 정책에서 충분한 운영 계약 성적을 보유한
+        # 경우에만, 단순 가격보다 검증된 후보군을 우선한다. 한 모델만 검증된 동안
+        # 전체 후보를 막으면 새 모델이 관측될 기회가 사라지는 순환이 생긴다.
+        proven = [
+            row
+            for row in eligible
+            if cls._has_qualified_operational_evidence(row[2])
+        ]
+        selection_pool = proven if len(proven) >= 2 else eligible
+        return min(selection_pool, key=lambda row: (row[0], row[1]))[1]
+
+    @classmethod
+    def _has_qualified_operational_evidence(
+        cls,
+        profile: Mapping[str, Any],
+    ) -> bool:
+        """실제 성공·계약·fallback 성적이 안정적인 후보인지 판정한다."""
+
+        run_count = cls._nonnegative_int(profile.get("operational_run_count"))
+        if run_count < cls.MIN_OPERATIONAL_EVIDENCE_RUNS:
+            return False
+        if cls._rate(profile.get("operational_success_rate")) < cls.MIN_OPERATIONAL_SUCCESS_RATE:
+            return False
+        if cls._rate(profile.get("operational_fallback_rate")) > cls.MAX_OPERATIONAL_FALLBACK_RATE:
+            return False
+        for key in (
+            "operational_schema_pass_rate",
+            "operational_downstream_success_rate",
+        ):
+            value = profile.get(key)
+            if value is not None and cls._rate(value) < cls.MIN_OPERATIONAL_CONTRACT_PASS_RATE:
+                return False
+        return True
+
+    @staticmethod
+    def _nonnegative_int(value: Any) -> int:
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _rate(value: Any) -> float:
+        try:
+            return max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            return 0.0
 
     @classmethod
     def runtime_requirement_facts(
@@ -917,11 +1009,12 @@ class ModelRouter:
     ) -> dict[str, Any]:
         """LLM이 추측할 필요가 없는 실행 구조 사실을 계산한다."""
 
+        runtime_inputs = cls._routing_runtime_variables(dict(inputs), node_data)
         output_format = cls._node_data_value(node_data, "output_format", default={})
         output_format = output_format if isinstance(output_format, dict) else {}
         output_type = str(output_format.get("type") or "text").strip().lower()
         serialized_size = len(
-            json.dumps(dict(inputs), ensure_ascii=False, default=str)
+            json.dumps(runtime_inputs, ensure_ascii=False, default=str)
         )
         if serialized_size < 2_000:
             input_bucket = "short"
@@ -960,7 +1053,7 @@ class ModelRouter:
                 downstream_contract_required
                 or effects.get("downstream_contract_required")
             ),
-            "file_input_present": cls._contains_file_like_value(inputs),
+            "file_input_present": cls._contains_file_like_value(runtime_inputs),
             "customer_facing": bool(
                 effects.get("customer_output_reachable")
                 or routing_context.get("customer_facing")
@@ -1146,7 +1239,8 @@ class ModelRouter:
         inputs: dict[str, Any],
         node_data: Any,
     ) -> ModelRoutingRuntimeContext:
-        text = cls._flatten_text(inputs)
+        runtime_inputs = cls._routing_runtime_variables(inputs, node_data)
+        text = cls._flatten_text(runtime_inputs)
         prompts = " ".join(
             prompt
             for prompt in (
@@ -1177,7 +1271,7 @@ class ModelRouter:
             knowledge_enabled=knowledge_enabled,
             output_format=cls._output_format_name(output_format_value),
             schema_required=cls._schema_required(output_format_value),
-            has_file_input=cls._has_file_input(inputs),
+            has_file_input=cls._has_file_input(runtime_inputs),
             input_length=len(text),
             input_length_bucket=cls._length_bucket(len(text)),
             prompt_length=len(prompts),

@@ -269,6 +269,8 @@ class ModelRoutingOperationalPerformanceService:
         *,
         policy_id: uuid.UUID | str,
         candidate_model_ids: list[str],
+        input_profile: str | None = None,
+        minimum_profile_run_count: int | None = None,
     ) -> dict[str, dict[str, float | int | None]]:
         """후보별 실제 계약 성적을 Judge 입력용 안전 요약으로 만든다.
 
@@ -279,27 +281,40 @@ class ModelRoutingOperationalPerformanceService:
 
         candidate_ids = {str(model_id or "").strip().lower() for model_id in candidate_model_ids}
         totals: dict[str, dict[str, int]] = {}
+        profile_totals: dict[str, dict[str, int]] = {}
+        normalized_input_profile = str(input_profile or "").strip().lower()
         for row in cls._rows(db, policy_id=policy_id):
             model_id = str(getattr(row, "model_id", "") or "").strip().lower()
             if not model_id or model_id not in candidate_ids:
                 continue
-            target = totals.setdefault(
-                model_id,
-                {
-                    "run_count": 0,
-                    "success_count": 0,
-                    "schema_pass_count": 0,
-                    "schema_eval_count": 0,
-                    "downstream_success_count": 0,
-                    "downstream_eval_count": 0,
-                    "fallback_count": 0,
-                },
-            )
-            for key in target:
-                target[key] += int(getattr(row, key, 0) or 0)
+            target = cls._empty_contract_totals(totals, model_id)
+            cls._add_contract_row(target, row)
+            if (
+                normalized_input_profile
+                and str(getattr(row, "input_profile", "") or "").strip().lower()
+                == normalized_input_profile
+            ):
+                profile_target = cls._empty_contract_totals(profile_totals, model_id)
+                cls._add_contract_row(profile_target, row)
+
+        if not normalized_input_profile:
+            selected_totals = totals
+        elif minimum_profile_run_count is None:
+            selected_totals = profile_totals
+        else:
+            minimum_run_count = max(1, int(minimum_profile_run_count))
+            selected_totals = {
+                model_id: (
+                    profile_totals[model_id]
+                    if profile_totals.get(model_id, {}).get("run_count", 0)
+                    >= minimum_run_count
+                    else total
+                )
+                for model_id, total in totals.items()
+            }
 
         evidence: dict[str, dict[str, float | int | None]] = {}
-        for model_id, total in totals.items():
+        for model_id, total in selected_totals.items():
             run_count = total["run_count"]
             if run_count <= 0:
                 continue
@@ -319,6 +334,28 @@ class ModelRoutingOperationalPerformanceService:
                 "operational_fallback_rate": cls._ratio(total["fallback_count"], run_count) or 0.0,
             }
         return evidence
+
+    @staticmethod
+    def _empty_contract_totals(
+        totals: dict[str, dict[str, int]], model_id: str
+    ) -> dict[str, int]:
+        return totals.setdefault(
+            model_id,
+            {
+                "run_count": 0,
+                "success_count": 0,
+                "schema_pass_count": 0,
+                "schema_eval_count": 0,
+                "downstream_success_count": 0,
+                "downstream_eval_count": 0,
+                "fallback_count": 0,
+            },
+        )
+
+    @staticmethod
+    def _add_contract_row(target: dict[str, int], row: Any) -> None:
+        for key in target:
+            target[key] += int(getattr(row, key, 0) or 0)
 
     @classmethod
     def profile_for_policy(cls, db: Session, *, policy_id: uuid.UUID) -> NodeRunProfile:

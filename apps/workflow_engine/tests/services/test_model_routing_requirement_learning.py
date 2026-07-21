@@ -94,6 +94,9 @@ def test_local_learning_feature_uses_runtime_variables_without_fixed_prompt_cont
 
 def test_local_learning_feature_separates_primary_context_and_structured_values():
     node = SimpleNamespace(
+        user_prompt=(
+            "{{request}} {{context}} {{constraints}} {{customerTier}} {{outputMode}}"
+        ),
         referenced_variables=[
             SimpleNamespace(name="request", value_selector=["webhook", "request"]),
             SimpleNamespace(name="context", value_selector=["webhook", "context"]),
@@ -145,6 +148,62 @@ def test_local_learning_feature_separates_primary_context_and_structured_values(
             "schema_required": False,
         },
     }
+
+
+def test_learning_feature_excludes_declared_value_when_prompt_does_not_use_it():
+    node = SimpleNamespace(
+        user_prompt="문의: {{message}}",
+        referenced_variables=[
+            SimpleNamespace(name="message", value_selector=["webhook", "message"]),
+            SimpleNamespace(
+                name="customerTier",
+                value_selector=["webhook", "customerTier"],
+            ),
+        ],
+    )
+    business = {
+        "webhook": {
+            "message": "환불 정책을 설명해 주세요.",
+            "customerTier": "business",
+            "attachment": {"filename": "ignored.pdf"},
+        }
+    }
+    enterprise = {
+        "webhook": {
+            "message": "환불 정책을 설명해 주세요.",
+            "customerTier": "enterprise",
+            "attachment": {"filename": "ignored.pdf"},
+        }
+    }
+
+    assert ModelRouter.learning_feature_text(
+        business, node
+    ) == ModelRouter.learning_feature_text(enterprise, node)
+    assert ModelRouter.runtime_requirement_facts(
+        inputs=business, node_data=node
+    ) == ModelRouter.runtime_requirement_facts(inputs=enterprise, node_data=node)
+    assert ModelRouter.runtime_requirement_facts(
+        inputs=business, node_data=node
+    )["file_input_present"] is False
+
+
+def test_learning_feature_keeps_value_when_prompt_uses_it():
+    node = SimpleNamespace(
+        user_prompt="{{customerTier}} 고객의 문의: {{message}}",
+        referenced_variables=[
+            SimpleNamespace(name="message", value_selector=["webhook", "message"]),
+            SimpleNamespace(
+                name="customerTier",
+                value_selector=["webhook", "customerTier"],
+            ),
+        ],
+    )
+
+    assert ModelRouter.learning_feature_text(
+        {"webhook": {"message": "문의", "customerTier": "business"}}, node
+    ) != ModelRouter.learning_feature_text(
+        {"webhook": {"message": "문의", "customerTier": "enterprise"}}, node
+    )
 
 
 def test_learning_feature_uses_nested_routing_context_and_graph_effect_profile():

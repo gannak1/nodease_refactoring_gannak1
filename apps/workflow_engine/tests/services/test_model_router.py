@@ -220,6 +220,78 @@ def test_candidate_selection_considers_available_candidates_without_prior_valida
     assert selected == "gpt-4o-mini"
 
 
+def test_candidate_selection_prefers_two_proven_models_over_cheaper_failed_model():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+        requirements={
+            "task_complexity": 1,
+            "decision_impact": 1,
+            "evidence_synthesis": 1,
+        },
+        candidate_profiles=[
+            {
+                "model_id": "gpt-4o-mini",
+                "input_price_per_1k": 0.00015,
+                "output_price_per_1k": 0.0006,
+                "operational_run_count": 8,
+                "operational_success_rate": 0.75,
+                "operational_schema_pass_rate": 0.75,
+                "operational_downstream_success_rate": 0.75,
+                "operational_fallback_rate": 0.25,
+            },
+            {
+                "model_id": "gpt-4.1-mini",
+                "input_price_per_1k": 0.0004,
+                "output_price_per_1k": 0.0016,
+                "operational_run_count": 6,
+                "operational_success_rate": 1.0,
+                "operational_schema_pass_rate": 1.0,
+                "operational_downstream_success_rate": 1.0,
+                "operational_fallback_rate": 0.0,
+            },
+            {
+                "model_id": "gpt-4.1",
+                "input_price_per_1k": 0.003,
+                "output_price_per_1k": 0.012,
+                "operational_run_count": 6,
+                "operational_success_rate": 1.0,
+                "operational_schema_pass_rate": 1.0,
+                "operational_downstream_success_rate": 1.0,
+                "operational_fallback_rate": 0.0,
+            },
+        ],
+        default_model_id="gpt-4.1",
+    )
+
+    assert selected == "gpt-4.1-mini"
+
+
+def test_candidate_selection_keeps_catalog_choice_until_two_models_have_proven_quality():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+        requirements={
+            "task_complexity": 1,
+            "decision_impact": 1,
+            "evidence_synthesis": 1,
+        },
+        candidate_profiles=[
+            {
+                "model_id": "gpt-4.1-mini",
+                "input_price_per_1k": 0.0004,
+                "output_price_per_1k": 0.0016,
+                "operational_run_count": 6,
+                "operational_success_rate": 1.0,
+                "operational_schema_pass_rate": 1.0,
+                "operational_downstream_success_rate": 1.0,
+                "operational_fallback_rate": 0.0,
+            },
+        ],
+        default_model_id="gpt-4.1",
+    )
+
+    assert selected == "gpt-4o-mini"
+
+
 def test_candidate_selection_excludes_routine_reasoning_model_for_generated_json_response():
     selected = ModelRouter.select_candidate_for_requirements(
         candidate_model_ids=["gpt-5-nano", "gpt-4o-mini", "gpt-4.1"],
@@ -489,6 +561,70 @@ def test_routing_feature_renders_variables_without_fixed_json_output_contract():
     missing_value_feature = ModelRouter.routing_feature_text({}, node_data)
     assert "None" not in missing_value_feature
     assert "{{" not in missing_value_feature
+
+
+def test_routing_feature_excludes_unreferenced_runtime_values_when_variable_metadata_exists():
+    node_data = _node(
+        user_prompt="문의: {{message}}",
+        referenced_variables=[
+            {"name": "message", "value_selector": ["webhook", "message"]},
+            {
+                "name": "customerTier",
+                "value_selector": ["webhook", "customerTier"],
+            },
+        ],
+    )
+
+    feature = ModelRouter.routing_feature_text(
+        {
+            "webhook": {
+                "message": "결제 상태를 확인해 주세요.",
+                "customerTier": "enterprise",
+                "requestId": "request-123",
+            }
+        },
+        node_data,
+    )
+
+    request_json = feature.split("CURRENT_REQUEST_JSON:\n", 1)[1].split(
+        "\n\nNODE_TASK_CONTRACT:", 1
+    )[0]
+    assert __import__("json").loads(request_json) == {
+        "message": "결제 상태를 확인해 주세요."
+    }
+    assert "enterprise" not in feature
+    assert "request-123" not in feature
+
+
+def test_routing_feature_keeps_variable_when_prompt_uses_it():
+    node_data = _node(
+        user_prompt="{{customerTier}} 고객의 문의: {{message}}",
+        referenced_variables=[
+            {"name": "message", "value_selector": ["webhook", "message"]},
+            {
+                "name": "customerTier",
+                "value_selector": ["webhook", "customerTier"],
+            },
+        ],
+    )
+
+    feature = ModelRouter.routing_feature_text(
+        {
+            "webhook": {
+                "message": "결제 상태를 확인해 주세요.",
+                "customerTier": "enterprise",
+            }
+        },
+        node_data,
+    )
+
+    request_json = feature.split("CURRENT_REQUEST_JSON:\n", 1)[1].split(
+        "\n\nNODE_TASK_CONTRACT:", 1
+    )[0]
+    assert __import__("json").loads(request_json) == {
+        "customerTier": "enterprise",
+        "message": "결제 상태를 확인해 주세요.",
+    }
 
 
 def test_routing_feature_truncates_task_description_to_judge_budget():

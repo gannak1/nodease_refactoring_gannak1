@@ -193,7 +193,7 @@ class StaticTextClient:
         }
 
 
-def test_auto_model_routing_raises_small_output_budget_to_safe_minimum(monkeypatch):
+def test_auto_model_routing_preserves_configured_output_budget(monkeypatch):
     client = StaticTextClient("자동 라우팅 응답")
     node = LLMNode(
         "llm-routing-budget",
@@ -219,14 +219,7 @@ def test_auto_model_routing_raises_small_output_budget_to_safe_minimum(monkeypat
 
     node.execute({})
 
-    assert client.calls[0]["kwargs"]["max_tokens"] >= 1600
-
-
-def test_auto_routing_gives_reasoning_models_more_output_budget():
-    assert LLMNode._auto_routing_output_token_floor("gpt-5-nano") == 4000
-    assert LLMNode._auto_routing_output_token_floor("gpt-5-mini") == 4000
-    assert LLMNode._auto_routing_output_token_floor("gpt-5.4-mini") == 4000
-    assert LLMNode._auto_routing_output_token_floor("gpt-4o-mini") == 1600
+    assert client.calls[0]["kwargs"]["max_tokens"] == 900
 
 
 @pytest.fixture(autouse=True)

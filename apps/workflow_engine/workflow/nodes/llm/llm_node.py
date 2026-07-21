@@ -119,8 +119,6 @@ MAX_RAG_FANOUT_CONCURRENCY = 5
 RAG_FANOUT_AGGREGATE_TIMEOUT_SECONDS = 30.0
 RAG_FANOUT_PER_KB_TIMEOUT_SECONDS = 10.0
 MAX_RAG_REWRITTEN_QUERY_LENGTH = 1000
-AUTO_ROUTING_MIN_OUTPUT_TOKENS = 1600
-AUTO_ROUTING_REASONING_MIN_OUTPUT_TOKENS = 4000
 QUERY_REWRITE_PLACEHOLDER_RE = re.compile(r"\{\{\s*query\s*\}\}|\{query\}")
 PROVIDER_HTTP_STATUS_RE = re.compile(r"\bstatus\s*[=:]?\s*(\d{3})\b", re.IGNORECASE)
 SAFE_PROVIDER_ERROR_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
@@ -764,18 +762,6 @@ class LLMNode(Node[LLMNodeData]):
                 )
                 candidate_model_ids = list(available_model_ids or [])
                 judge_default_model_id = selected_model_id
-                candidate_profiles = self._routing_candidate_profiles(
-                    db_session,
-                    candidate_model_ids,
-                    policy_id=policy.get("policy_id"),
-                )
-                judge_metadata.update(
-                    {
-                        "model": judge_model_id,
-                        "candidate_model_count": len(candidate_model_ids),
-                        "attempted": True,
-                    }
-                )
                 structural_facts = ModelRouter.runtime_requirement_facts(
                     inputs=inputs,
                     node_data=self.data,
@@ -786,6 +772,21 @@ class LLMNode(Node[LLMNodeData]):
                     effect_profile=self.execution_context.get(
                         "model_routing_effect_profile"
                     ),
+                )
+                candidate_profiles = self._routing_candidate_profiles(
+                    db_session,
+                    candidate_model_ids,
+                    policy_id=policy.get("policy_id"),
+                    input_profile=str(
+                        structural_facts.get("input_token_bucket") or ""
+                    ),
+                )
+                judge_metadata.update(
+                    {
+                        "model": judge_model_id,
+                        "candidate_model_count": len(candidate_model_ids),
+                        "attempted": True,
+                    }
                 )
                 requirement_assessment = ModelRoutingRuntimeJudge.assess_requirements(
                     client=judge_selection.client,
@@ -1044,6 +1045,7 @@ class LLMNode(Node[LLMNodeData]):
         candidate_model_ids: list[str],
         *,
         policy_id: str | uuid.UUID | None = None,
+        input_profile: str | None = None,
     ) -> list[dict[str, Any]]:
         """Judge가 비용과 문맥 여유를 비교할 수 있는 공개 카탈로그 요약이다."""
 
@@ -1100,6 +1102,10 @@ class LLMNode(Node[LLMNodeData]):
                             db_session,
                             policy_id=policy_id,
                             candidate_model_ids=normalized_ids,
+                            input_profile=input_profile,
+                            minimum_profile_run_count=(
+                                ModelRouter.MIN_OPERATIONAL_EVIDENCE_RUNS
+                            ),
                         )
                     )
                 except (AttributeError, SQLAlchemyError, TypeError, ValueError):
