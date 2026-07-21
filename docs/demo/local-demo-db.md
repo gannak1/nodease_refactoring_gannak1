@@ -277,6 +277,8 @@ Private 사내문서 자료:
 | `온보딩 문서: 영업팀` | `sales_team_onboarding_v2.pdf` | 영업팀, People 팀 |
 | `온보딩 문서: 재무팀` | `finance_team_onboarding_v3.pdf` | 재무팀, People 팀 |
 
+네 KB의 `safe_metadata.safe_label`에는 위 표의 안전한 PDF 파일명을 저장한다. 따라서 direct KB로 사용된 근거의 사용자 Citation은 일반 `참조 문서` 대신 해당 파일명을 표시한다. Collection 경유 근거는 기존 보안 경계에 따라 하위 파일명이 아니라 Collection의 승인된 표시 라벨을 사용한다.
+
 현재 실행 권한 경계는 document-level KB다. 한 PDF 안의 일부 chunk만 `manager`에게 허용하는 동적 `role_acl`은 지원하지 않는다. 따라서 플랫폼 PDF 원본은 보존하되, 일반 플랫폼 KB에 저장·색인하는 복사본에서는 manager-only 마지막 페이지를 제외한다. 제외된 내용을 시연하려면 후속으로 manager 전용 KB/PDF를 별도 구성해야 한다.
 
 발표 전에는 아래 명령으로 runtime credential 등록과 PDF embedding 생성을 함께 수행한 뒤 김서연·이준호 계정으로 같은 질문을 각각 한 번 실행한다. 이 사전 실행이 Run History 비교용 안전 경로가 된다.
