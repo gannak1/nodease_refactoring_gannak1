@@ -11,7 +11,9 @@ FR-011은 `judge_bootstrap_incremental_v1`으로 다룬다. 배포 실행 1~50�
 label의 요청 요구 능력만 local router 학습에 반영한다. 50건 이상이고 선택 모델 분포가 한 모델에
 과도하게 쏠리지 않았을 때 local router가 먼저 요청 요구 능력을 예측한다. 서버는 capability를
 충족하는 후보 중 비용이 낮은 모델을 선택하며, 확신이 낮으면 runtime Judge로 되돌아간다. JSON
-Schema 같은 고정 출력 계약은 runtime Judge 및 local 난이도 학습 feature에 포함하지 않고 후보 capability 검사로만 쓴다.
+Schema 같은 고정 출력 계약은 후보 capability 검사로만 쓴다. Local 난이도 학습 feature는
+`referenced_variables`의 실행값을 핵심 요청 75%, 동적 문맥 15%, 구조화 특징 10%의 분리
+임베딩으로 결합하고, 변하는 RAG 안전 신호만 구조화 특징에 포함하며 고정 prompt 계약은 제외한다.
 
 테스트는 LLM 노드 단위 Cost Optimizer 흐름을 기준으로 한다. 모델 라우팅은 자동 라우팅 토글과 active policy 평가뿐 아니라, operational/replay evidence 출처 분리, Hard Gate, 적합성 분석, candidate 품질 gate, 결정론적 optimizer와 decision trace를 검증한다. 고정 20회는 호환 trigger 테스트일 뿐 adaptive routing 완료 기준이 아니다.
 
@@ -279,6 +281,14 @@ evidence pipeline이 없으면 Workflow-Aware Adaptive Routing 구현 완료로 
 | FR-011-P09 | Test Sidebar 자동 라우팅 실행 | 자동 라우팅 LLM node를 Test Sidebar에서 실행한다 | 활성 배포 정책 유무와 관계없이 테스트한다 | 설정 fingerprint가 같은 활성 배포 정책이 정확히 하나일 때만 재사용한다. 여러 활성 배포가 일치하면 잘못된 정책을 고르지 않고 임시 Judge-first 정책으로 실행한다. trace에는 실제 선택 경로인 `decision_source=runtime_judge \| local_router \| stored_model`, 실행 맥락인 `execution_mode=test`, `policy_source=active_deployment 또는 test_ephemeral`, `included_in_policy_learning=false`를 분리해 남긴다. workflow run의 `deployment_id`는 비워 운영 표본/refresh counter에 포함하지 않는다. |
 | FR-011-P09A | Judge 실행 상태 trace/UI | Judge 성공, Judge 호출 후 실패, Judge 미호출, 이전 trace 상태가 각각 있다 | 로그 또는 Test Sidebar에서 LLM node 상세를 연다 | 공통 상세 화면은 성공 시 모델·확신도·후보 수·비용을, 호출 후 실패 시 기본 모델 회귀와 오류 코드를, 미호출 시 미호출 이유를 구분해 표시한다. 상태 없는 이전 trace는 실패로 단정하지 않고 `Judge 실행 정보 없음`으로 표시한다. |
 | FR-011-P10 | Test Sidebar 정책 stale 차단 | current draft의 자동 라우팅 LLM node 설정 fingerprint가 활성 deployment snapshot과 다르다 | Test Sidebar에서 실행한다 | 오래된 deployment policy는 평가하지 않는다. 현재 draft와 실행 주체가 사용할 수 있는 모델로 임시 Judge-first 정책을 만들어 Judge를 호출하되 정책·학습 데이터는 저장하지 않는다. |
+| FR-011-L01 | 요청 경로와 학습 분리 | 운영 요청에서 Judge가 모델을 선택했다 | workflow가 terminal 상태가 된다 | 실행 중에는 학습 전 예측과 안전 label만 저장하고 가중치를 변경하지 않는다. 확정 label은 Celery 학습 task로 전달된다. |
+| FR-011-L02 | 학습 batch 경계 | 같은 정책에 확정 label 10건이 쌓이거나 첫 label 후 5분이 지났다 | local router 학습 task를 실행한다 | 정책 행을 잠근 뒤 최대 10건을 한 번 처리하고 각 label에 `learning_processed_at`을 기록한다. 남은 label은 후속 task로 처리한다. |
+| FR-011-L03 | 최근 20건 전환 gate | Judge label은 50건 이상이지만 최근 학습 전 예측 비교가 20건 미만이거나 일치율·축 오차·계약 통과율 기준을 충족하지 못한다 | 학습 모드를 재평가한다 | candidate artifact를 실행용으로 승격하지 않고 `judge_first`를 유지한다. |
+| FR-011-L04 | 예측 붕괴 차단 | 최근 Judge 정답은 여러 요구 수준인데 로컬 예측은 한 요구 수준으로만 수렴한다 | 학습 모드를 재평가한다 | 높은 표본 수만으로 `local_first`로 전환하지 않는다. |
+| FR-011-L05 | 미지 입력 Judge 회귀 | local-first 상태에서 현재 vector가 학습 표본과 멀거나 예측 경계가 모호하다 | 운영 요청을 실행한다 | 로컬 confidence가 기준 미만이 되어 Runtime Judge가 모델을 선택하고 새 비교 label을 남긴다. |
+| FR-011-L06 | 그룹 분리 학습 feature | 같은 LLM 노드에서 실행 변수는 같고 제목·작업 설명·system/user/assistant prompt의 고정 문구만 다르다 | local learning feature와 vector를 만든다 | 두 feature는 같아야 한다. 핵심 요청, 동적 문맥, 구조화 특징을 별도 임베딩하고 `75% / 15% / 10%`로 정규화 결합한다. 변하는 RAG 안전 신호는 구조화 특징에 포함하고, 미참조 upstream 값과 고정 prompt 문구는 제외한다. 변수 메타데이터가 없는 레거시 노드는 가장 정보량이 큰 runtime 값을 핵심 요청으로 사용한다. |
+| FR-011-L07 | 학습 feature 버전 격리 | 이전 prompt-context artifact가 있는 정책에 변수 중심 feature 코드가 배포된다 | 운영 요청과 batch 학습을 실행한다 | 이전 artifact로 local 예측하지 않고 Judge-first로 돌아간다. 새 feature label부터 학습 횟수·최근 평가를 다시 시작하고 서로 다른 feature schema의 vector를 섞지 않는다. |
+| FR-011-L08 | Runtime Judge 시간 분리 저장 | Judge provider 호출이 재시도를 포함해 완료된다 | Judge usage와 실행 trace를 저장한다 | 첫 요청부터 최종 재시도 응답까지의 총 경과 시간을 `usage.latency_ms`와 Judge 전용 `llm_usage_logs.latency_ms`에 저장한다. 최종 작업 모델 latency와 섞거나 중복 합산하지 않는다. |
 
 ## Constraint-Difficulty Router Experimental Tests
 

@@ -38,15 +38,21 @@ Runtime Judge 입력은 현재 요청의 JSON key와 scalar type을 보존하고
 판단한 뒤 필요한 능력을 충족하는 후보 안에서만
 비용·지연·fallback을 비교한다.
 
-Judge 선택은 즉시 학습하지 않는다. 실행 중에는 원문 없는 숫자 vector, Judge가 판단한
+Judge 선택은 즉시 학습하지 않는다. 실행 중에는 학습 전 로컬 예측을 먼저 계산하고 원문 없는 숫자 vector, Judge가 판단한
 `task_complexity`·`decision_impact`·`evidence_synthesis`, 선택 모델만 대기 label로 저장하고,
 workflow가 끝난 뒤 해당 node가 schema 통과, 후속 노드 성공, fallback 미발생 조건을 모두 만족할
-때만 local artifact에 누적한다. local artifact는 **모델 ID를 직접 예측하지 않고 요청이 요구하는
+때만 학습 가능한 label로 확정한다. Celery worker가 정책별 10건 또는 최대 5분 단위로
+candidate artifact를 갱신하므로 workflow 응답은 학습을 기다리지 않는다. local artifact는 **모델 ID를 직접 예측하지 않고 요청이 요구하는
 능력 수준을 예측**한다. 완료된 운영 결과가 최소 표본 수, schema/downstream 성공률, fallback
 비율, 선택 모델 분포 편향 기준을 통과하면 로컬 분류기가 먼저 요구 수준을 판단한다. 서버는 그
 수준을 충족하는 현재 사용 가능 후보만 남긴 뒤 카탈로그 capability 상한을 만족하는 후보 중 비용이
 가장 낮은 모델을 선택한다. JSON Schema와 출력 형식은 노드에서 고정인 capability 제약이므로
-runtime Judge와 난이도 학습 입력에는 넣지 않는다. 로컬 신뢰도가 낮거나 선택 모델의 credential 권한이 바뀐
+난이도 학습 입력에는 넣지 않는다. Runtime Judge는 노드의 고정 prompt 계약을 계속 참고하지만,
+로컬 학습 vector는 `referenced_variables`의 실행별 값을 핵심 요청, 동적 문맥, 구조화 특징으로
+나누어 각각 임베딩하고 `75% / 15% / 10%` 비율로 결합한다. 변하는 RAG 안전 신호는 구조화
+특징에 포함한다. 노드 제목·작업 설명·system/user/assistant prompt의 고정 문구는 로컬 학습 입력에서 제외한다.
+학습 feature schema가 바뀌면 이전 artifact를 새 vector와 혼합하지 않고 Judge-first에서 학습
+횟수와 최근 평가를 다시 시작한다. 로컬 신뢰도가 낮거나 선택 모델의 credential 권한이 바뀐
 경우에만 Judge를 다시 호출한다. prompt, 출력 schema, RAG, downstream 계약이 바뀌면
 기존 local artifact를 오래됨으로 표시하고 Judge-first로 다시 시작한다.
 
@@ -488,9 +494,10 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 - bootstrap 생성은 외부 LLM을 호출하지 않으며 즉시 `ready` 상태가 된다.
 - 초기 Judge는 현재 요청별로 `selected_model_id`, `confidence`, `reason_code`를 반환한다.
   Judge label은 로컬 모델 선택 분류기의 학습 데이터이며 runtime keyword rule이 아니다.
-- 학습은 실행 중 메모리에 있는 rendered prompt로 mDeBERTa feature를 만든 뒤, 원문 대신
-  숫자 vector·Judge 선택만 대기 저장한다. workflow 완료 뒤 schema 통과, 후속 노드 성공,
-  fallback 미발생을 확인한 label만 artifact 가중치에 반영한다. RAG 문서 원문은 Judge와
+- 실행 중 메모리에 있는 rendered prompt로 mDeBERTa feature와 **학습 전 예측**을 만든 뒤,
+  원문 대신 숫자 vector·예측·Judge 선택만 대기 저장한다. workflow 완료 뒤 schema 통과,
+  후속 노드 성공, fallback 미발생을 확인해 label을 확정한다. 실제 가중치 학습은 Celery가
+  정책별 10건 또는 최대 5분 단위로 처리한다. RAG 문서 원문은 Judge와
   artifact에 넣지 않고 retrieval 사용 여부·문맥 길이·출처 수 같은 구조 정보만 쓴다.
 - prompt, 입력 매핑, 출력 schema, RAG 또는 downstream 계약이 바뀌면 bootstrap은 오래됨
   상태가 되며 다시 생성해야 한다. 수동 모델만 바뀐 경우에는 재사용할 수 있다.
@@ -498,10 +505,13 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 #### 실행 시 모델 선택과 점진 전환
 
 - `judge_first`: 계약을 통과한 성공 배포 실행 Judge label이 50건 미만이면 매 운영 요청에 Judge를 호출한다.
-- `local_first`: Judge 선택 label이 50건 이상 쌓이고 완료된 운영 품질 기준을 통과하면 로컬
+- `local_first`: Judge 선택 label이 50건 이상 쌓이고 최근 20건의 학습 전 예측 일치율 80%,
+  축별 평균 오차 0.5 이하, 계약 통과율 95%와 완료된 운영 품질 기준을 통과하면 로컬
   mDeBERTa 분류기가 전체 사용 가능 후보 중 하나를 먼저 선택한다.
 - `local_first` 상태에서 local prediction의 confidence가 기준 미만이거나 선택 모델이 현재
   실행 주체에게 허용되지 않으면 Judge를 호출한다. 별도 `hybrid` 상태값은 두지 않는다.
+- 로컬 confidence는 최근 Judge 일치율, 현재 입력과 학습 표본의 거리, 예측 경계 여유,
+  최근 계약 통과율을 함께 반영한다. 처음 보거나 모호한 요청은 Judge로 되돌린다.
 - Judge 호출 실패·형식 오류는 workflow를 실패시키지 않으며 사용자가 지정한 기본 모델, 그 뒤
   기본 대체 모델 순서로 실행한다.
 - 실행 trace에는 `decision_source`(`runtime_judge`, `local_router`, `stored_model`), Judge
