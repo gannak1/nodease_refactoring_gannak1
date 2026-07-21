@@ -31,6 +31,7 @@ class PostgresProviderUsageRecorder:
                 prompt_tokens,
                 completion_tokens,
                 usage=request.usage,
+                allow_catalog_fallback=attribution.capability_id is None,
                 **canonical_model,
             )
             LLMService.log_usage(

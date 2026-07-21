@@ -15,6 +15,7 @@ from apps.workflow_engine.adapters.provider_execution_capability import (
     provider_visible_request_bounds,
 )
 from apps.workflow_engine.application.provider_execution import (
+    ProviderExecutionAuditActorKind,
     ProviderExecutionConfigurationError,
     ProviderExecutionPreflight,
     ProviderExecutionRequest,
@@ -173,12 +174,62 @@ def test_capability_runtime_commits_and_closes_control_uow_before_provider_io():
 
     assert session.commits == 1
     assert session.closes == 1
+    assert plan.audit_actor is not None
+    assert plan.audit_actor.kind is ProviderExecutionAuditActorKind.USER
+    assert plan.audit_actor.reference_id == uuid.UUID(
+        context["execution_subject"]["id"]
+    )
     assert lease.attribution.model_db_id == model_db_id
     assert lease.attribution.credential_principal_user_id == policy_principal_id
     assert captured["issue"].binding.node_id == "llm-1"
     assert captured["admission"].requested_output_tokens == 100
     assert lease.invoke()["choices"][0]["message"]["content"] == "ok"
     assert client.calls == 1
+
+
+@pytest.mark.parametrize(
+    ("audience", "expected_kind"),
+    [
+        ("anonymous_public", ProviderExecutionAuditActorKind.PUBLIC),
+        ("system", ProviderExecutionAuditActorKind.SYSTEM),
+    ],
+)
+def test_capability_preflight_preserves_non_user_audit_actor(
+    audience,
+    expected_kind,
+):
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    context = _capability_context(
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+    )
+    context.pop("execution_subject")
+    context["provider_execution_audience"] = audience
+    runtime = CapabilityProviderExecutionAdapter(
+        session_factory=lambda: pytest.fail("preflight must not open a session")
+    )
+
+    plan = runtime.preflight(
+        ProviderExecutionPreflight(
+            node_id="llm-1",
+            configured_model_id="gpt-safe",
+            auto_model_routing=False,
+            fallback_model_id=None,
+            knowledge_enabled=False,
+            memory_summary_requested=False,
+            client_override=None,
+            execution_context=context,
+            runtime_control=_control(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+            ),
+        )
+    )
+
+    assert plan.audit_actor is not None
+    assert plan.audit_actor.kind is expected_kind
+    assert plan.audit_actor.reference_id is None
 
 
 def test_capability_runtime_does_not_materialize_client_after_admission_failure():

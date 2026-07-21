@@ -34,6 +34,7 @@ from apps.shared.services.model_routing_global_profile_catalog import (
     normalize_model_id,
 )
 from apps.shared.services.permission_audit import (
+    record_public_resource_permission_denied,
     record_resource_permission_denied,
     record_system_resource_permission_denied,
 )
@@ -66,6 +67,8 @@ from apps.workflow_engine.adapters.knowledge_runtime_citations import (
 from apps.workflow_engine.application.provider_execution import (
     LLMCredentialNotAvailableError,
     ProviderExecutionAttribution,
+    ProviderExecutionAuditActor,
+    ProviderExecutionAuditActorKind,
     ProviderExecutionConfigurationError,
     ProviderExecutionPreflight,
     ProviderExecutionRequest,
@@ -1400,7 +1403,15 @@ class LLMNode(Node[LLMNodeData]):
                 model_id: str,
                 error: Exception,
             ) -> None:
-                if provider_plan.fixed_model_id is not None:
+                audit_actor = provider_plan.audit_actor
+                if audit_actor is not None:
+                    self._record_llm_runtime_permission_denied(
+                        user_id=audit_actor.reference_id,
+                        model_id=model_id,
+                        organization_id=self.execution_context.get("organization_id"),
+                        error=error,
+                        audit_actor=audit_actor,
+                    )
                     return
                 user_id = self._resolve_credential_principal_user()
                 if user_id is None:
@@ -3349,10 +3360,11 @@ class LLMNode(Node[LLMNodeData]):
 
     def _record_llm_runtime_permission_denied(
         self,
-        user_id: uuid.UUID,
+        user_id: uuid.UUID | None,
         model_id: str,
         organization_id: Any,
         error: Optional[Exception] = None,
+        audit_actor: ProviderExecutionAuditActor | None = None,
     ) -> None:
         """최종 LLM credential runtime 차단을 permission.denied audit으로 남깁니다. MBA-43"""
         organization_uuid = None
@@ -3392,9 +3404,19 @@ class LLMNode(Node[LLMNodeData]):
             "organization_id": organization_uuid,
             "metadata": metadata,
         }
-        if self._is_system_schedule_execution():
+        if audit_actor is not None:
+            if audit_actor.kind is ProviderExecutionAuditActorKind.USER:
+                record_resource_permission_denied(
+                    user_id=audit_actor.reference_id,
+                    **audit_kwargs,
+                )
+            elif audit_actor.kind is ProviderExecutionAuditActorKind.SYSTEM:
+                record_system_resource_permission_denied(**audit_kwargs)
+            else:
+                record_public_resource_permission_denied(**audit_kwargs)
+        elif self._is_system_schedule_execution():
             record_system_resource_permission_denied(**audit_kwargs)
-        else:
+        elif user_id is not None:
             record_resource_permission_denied(user_id=user_id, **audit_kwargs)
 
     def _knowledge_trace_metadata(

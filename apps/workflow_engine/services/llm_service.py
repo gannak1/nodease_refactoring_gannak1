@@ -1076,31 +1076,34 @@ class LLMService:
         usage: Optional[Mapping[str, Any]] = None,
         *,
         model_db_id: Optional[uuid.UUID] = None,
+        allow_catalog_fallback: bool = False,
     ) -> float:
         """
         모델 가격 정보를 기반으로 비용을 계산합니다.
-        DB에 가격 정보가 없으면 shared pricing catalog로 폴백합니다.
-        model_db_id가 주어지면 exact canonical row의 가격만 사용합니다.
+        Capability 사용량은 exact canonical row의 가격만 사용합니다.
+        Legacy 사용량은 명시적으로 허용된 경우 shared catalog로 폴백합니다.
         """
         model = None
         if model_db_id is not None:
-            if db is None:
-                return 0.0
+            canonical_model_id = None
             try:
                 canonical_model_id = uuid.UUID(str(model_db_id))
             except (TypeError, ValueError):
-                return 0.0
-            model = (
-                db.query(LLMModel)
-                .filter(LLMModel.id == canonical_model_id)
-                .first()
-            )
+                pass
+            if db is not None and canonical_model_id is not None:
+                model = (
+                    db.query(LLMModel)
+                    .filter(LLMModel.id == canonical_model_id)
+                    .first()
+                )
             if (
                 model is None
                 or model.input_price_1k is None
                 or model.output_price_1k is None
             ):
-                return 0.0
+                if not allow_catalog_fallback:
+                    return 0.0
+                model = None
         elif db is not None:
             model = (
                 db.query(LLMModel)
@@ -1127,7 +1130,7 @@ class LLMService:
                 completion_tokens=completion_tokens,
             )
 
-        if model_db_id is not None:
+        if model_db_id is not None and not allow_catalog_fallback:
             return 0.0
 
         return calculate_text_token_cost(

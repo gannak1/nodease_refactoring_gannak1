@@ -10,7 +10,10 @@ from apps.workflow_engine.adapters.provider_execution_capability import (
     provider_visible_request_bounds,
 )
 from apps.workflow_engine.application.provider_execution import (
+    LLMCredentialNotAvailableError,
     ProviderExecutionAttribution,
+    ProviderExecutionAuditActor,
+    ProviderExecutionAuditActorKind,
     ProviderExecutionConfigurationError,
     ProviderExecutionPlan,
 )
@@ -19,6 +22,7 @@ from apps.workflow_engine.domain.execution import NodeExecutionControl
 from apps.workflow_engine.domain.external_effect import ExternalEffectContext
 from apps.workflow_engine.services import llm_service as workflow_llm_service
 from apps.workflow_engine.services.llm_service import LLMService
+from apps.workflow_engine.workflow.nodes.llm import llm_node as llm_node_module
 from apps.workflow_engine.workflow.nodes.llm.entities import (
     KnowledgeBaseRef,
     LLMNodeData,
@@ -72,6 +76,25 @@ class _Runtime:
     def resolve(self, request):
         self.resolve_requests.append(request)
         return _Lease(client=self.client, attribution=self.attribution)
+
+
+class _DenyingRuntime:
+    def __init__(self, *, audit_actor: ProviderExecutionAuditActor) -> None:
+        self.audit_actor = audit_actor
+
+    def preflight(self, request):
+        return ProviderExecutionPlan(
+            fixed_model_id=request.configured_model_id,
+            allow_legacy_memory_summary=False,
+            audit_actor=self.audit_actor,
+            state=object(),
+        )
+
+    def resolve(self, _request):
+        raise LLMCredentialNotAvailableError(
+            "provider_capability_permission_denied",
+            "Provider execution capability is not available.",
+        )
 
 
 class _UsageRecorder:
@@ -200,6 +223,61 @@ def test_capability_required_llm_node_fails_before_client_when_trusted_control_m
 
     with pytest.raises(ProviderExecutionConfigurationError):
         node.execute({})
+
+
+@pytest.mark.parametrize(
+    ("actor_kind", "expected_recorder"),
+    [
+        (ProviderExecutionAuditActorKind.USER, "user"),
+        (ProviderExecutionAuditActorKind.SYSTEM, "system"),
+        (ProviderExecutionAuditActorKind.PUBLIC, "public"),
+    ],
+)
+def test_capability_resolution_denial_uses_typed_audit_actor(
+    monkeypatch,
+    actor_kind,
+    expected_recorder,
+):
+    actor_id = uuid.uuid4() if actor_kind is ProviderExecutionAuditActorKind.USER else None
+    runtime = _DenyingRuntime(
+        audit_actor=ProviderExecutionAuditActor(
+            kind=actor_kind,
+            reference_id=actor_id,
+        )
+    )
+    node = _node(
+        context={
+            "organization_id": str(uuid.uuid4()),
+            "workflow_id": str(uuid.uuid4()),
+        }
+    )
+    node.bind_provider_execution_runtime(runtime)
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        llm_node_module,
+        "record_resource_permission_denied",
+        lambda **kwargs: calls.append(("user", kwargs)),
+    )
+    monkeypatch.setattr(
+        llm_node_module,
+        "record_system_resource_permission_denied",
+        lambda **kwargs: calls.append(("system", kwargs)),
+    )
+    monkeypatch.setattr(
+        llm_node_module,
+        "record_public_resource_permission_denied",
+        lambda **kwargs: calls.append(("public", kwargs)),
+    )
+
+    with pytest.raises(LLMCredentialNotAvailableError):
+        node.execute({})
+
+    assert len(calls) == 1
+    recorder, audit = calls[0]
+    assert recorder == expected_recorder
+    if actor_kind is ProviderExecutionAuditActorKind.USER:
+        assert audit["user_id"] == actor_id
+    assert audit["metadata"]["reason"] == "provider_capability_permission_denied"
 
 
 def test_capability_required_rag_fails_before_knowledge_or_provider_io(monkeypatch):

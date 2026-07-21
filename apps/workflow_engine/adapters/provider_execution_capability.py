@@ -33,6 +33,8 @@ from apps.workflow_engine.adapters.provider_invocation import (
 from apps.workflow_engine.application.provider_execution import (
     LLMCredentialNotAvailableError,
     ProviderExecutionAttribution,
+    ProviderExecutionAuditActor,
+    ProviderExecutionAuditActorKind,
     ProviderExecutionConfigurationError,
     ProviderExecutionPlan,
     ProviderExecutionPreflight,
@@ -146,6 +148,7 @@ class CapabilityProviderExecutionAdapter:
         return ProviderExecutionPlan(
             fixed_model_id=request.configured_model_id,
             allow_legacy_memory_summary=False,
+            audit_actor=self._application_audit_actor(command.audit_actor),
             routing_metadata={"provider_execution_capability": "required"},
             state=_CapabilityPlanState(
                 issue_command=command,
@@ -280,6 +283,19 @@ class CapabilityProviderExecutionAdapter:
         if db is None or db is shared_session:
             raise ProviderExecutionConfigurationError()
         return db
+
+    @staticmethod
+    def _application_audit_actor(
+        principal: RuntimePrincipal,
+    ) -> ProviderExecutionAuditActor:
+        try:
+            kind = ProviderExecutionAuditActorKind(principal.kind.value)
+            return ProviderExecutionAuditActor(
+                kind=kind,
+                reference_id=principal.reference_id,
+            )
+        except ValueError as exc:
+            raise ProviderExecutionConfigurationError() from exc
 
     @staticmethod
     def _required_uuid(
