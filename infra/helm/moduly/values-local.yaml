@@ -147,9 +147,9 @@ frontend:
       memory: 128Mi
   # Override API URL for local port-forward testing
   env:
-    # Client-side (browser) API URL
-    NEXT_PUBLIC_API_URL: "http://localhost"
-    # Server-side (SSR) API URL - uses Kubernetes service
+    # Browser uses same-origin /api through ingress.
+    NEXT_PUBLIC_API_URL: ""
+    # SSE server route uses the Kubernetes service URL at runtime.
     API_URL: "http://my-moduly-gateway:8000"
 
 sandbox:

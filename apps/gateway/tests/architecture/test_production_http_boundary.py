@@ -1,0 +1,191 @@
+from pathlib import Path
+
+import pytest
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[4]
+
+
+def _read(relative_path: str) -> str:
+    return (ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def test_production_values_keep_browser_and_server_api_origins_separate():
+    values = yaml.safe_load(_read("infra/helm/moduly/values-production.yaml"))
+
+    public_origin = values["frontend"]["env"].get("NEXT_PUBLIC_API_URL")
+    server_origin = values["frontend"]["env"].get("API_URL")
+    configmap = _read("infra/helm/moduly/templates/configmap.yaml")
+
+    assert public_origin in {None, ""}
+    assert server_origin in {None, ""}
+    assert '{{ printf "http://%s-gateway:%d"' in configmap
+
+
+def test_local_container_profiles_use_same_origin_browser_api():
+    compose = yaml.safe_load(_read("docker/docker-compose.yml"))
+    frontend = compose["services"]["frontend"]
+    build_args = frontend["build"].get("args", {})
+    environment = frontend.get("environment", {})
+    local_values = yaml.safe_load(_read("infra/helm/moduly/values-local.yaml"))
+
+    assert build_args.get("NEXT_PUBLIC_API_URL") in {None, ""}
+    assert environment.get("NEXT_PUBLIC_API_URL") in {None, ""}
+    assert environment["API_URL"].startswith("http://")
+    assert local_values["frontend"]["env"].get("NEXT_PUBLIC_API_URL") in {
+        None,
+        "",
+    }
+    assert local_values["frontend"]["env"]["API_URL"].startswith("http://")
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "infra/k8s/namespaces/default/frontend-deployment.yaml",
+        "infra/k8s/namespaces/dev/frontend-deployment.yaml",
+    ],
+)
+def test_kubernetes_frontends_keep_cluster_api_url_server_only(relative_path):
+    documents = list(yaml.safe_load_all(_read(relative_path)))
+    deployment = next(
+        document
+        for document in documents
+        if document and document.get("kind") == "Deployment"
+    )
+    frontend = next(
+        container
+        for container in deployment["spec"]["template"]["spec"]["containers"]
+        if container["name"] == "frontend"
+    )
+    environment = {item["name"]: item.get("value") for item in frontend["env"]}
+
+    assert "NEXT_PUBLIC_API_URL" not in environment
+    assert environment["API_URL"].startswith("http://")
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "expected_environment", "allowed_scheme"),
+    [
+        (
+            "infra/k8s/namespaces/default/gateway-deployment.yaml",
+            "production",
+            "https://",
+        ),
+        (
+            "infra/k8s/namespaces/dev/gateway-deployment.yaml",
+            "development",
+            "http://",
+        ),
+    ],
+)
+def test_raw_kubernetes_gateway_cors_matches_environment(
+    relative_path,
+    expected_environment,
+    allowed_scheme,
+):
+    documents = list(yaml.safe_load_all(_read(relative_path)))
+    deployment = next(
+        document
+        for document in documents
+        if document and document.get("kind") == "Deployment"
+    )
+    gateway = next(
+        container
+        for container in deployment["spec"]["template"]["spec"]["containers"]
+        if container["name"] == "api-server"
+    )
+    environment = {
+        item["name"]: item.get("value")
+        for item in gateway["env"]
+        if "value" in item
+    }
+    origins = environment["CORS_ORIGINS"].split(",")
+
+    assert environment["NODE_ENV"] == expected_environment
+    assert all(origin.startswith(allowed_scheme) for origin in origins)
+
+
+def test_production_values_use_https_only_credentialed_cors():
+    values = yaml.safe_load(_read("infra/helm/moduly/values-production.yaml"))
+    origins = [
+        origin.strip()
+        for origin in values["gateway"]["env"]["CORS_ORIGINS"].split(",")
+    ]
+
+    assert origins
+    assert all(origin.startswith("https://") for origin in origins)
+    assert all("localhost" not in origin and "127.0.0.1" not in origin for origin in origins)
+
+
+def test_helm_does_not_fallback_public_api_url_to_cluster_http():
+    configmap = _read("infra/helm/moduly/templates/configmap.yaml")
+    deployment = _read("infra/helm/moduly/templates/frontend-deployment.yaml")
+
+    assert 'NEXT_PUBLIC_API_URL: {{ printf "http://' not in configmap
+    assert "{{- if .Values.frontend.env.NEXT_PUBLIC_API_URL }}" in deployment
+    assert "optional: true" in deployment
+
+
+def test_production_ingress_terminates_https_and_redirects_http():
+    values = yaml.safe_load(_read("infra/helm/moduly/values-production.yaml"))
+    annotations = values["ingress"]["annotations"]
+
+    assert values["ingress"]["enabled"] is True
+    assert '"HTTPS": 443' in annotations["alb.ingress.kubernetes.io/listen-ports"]
+    assert annotations["alb.ingress.kubernetes.io/ssl-redirect"] == "443"
+    assert annotations["alb.ingress.kubernetes.io/certificate-arn"].startswith(
+        "arn:aws:acm:"
+    )
+
+
+def test_production_ingress_routes_same_origin_api_directly_to_gateway():
+    values = yaml.safe_load(_read("infra/helm/moduly/values-production.yaml"))
+
+    for host in values["ingress"]["hosts"]:
+        routes = {route["path"]: route["backend"] for route in host["paths"]}
+        assert routes["/api"] == "gateway"
+        assert routes["/"] == "frontend"
+
+
+def test_docker_entrypoint_routes_same_origin_api_directly_to_gateway():
+    nginx = _read("docker/nginx/nginx.conf")
+
+    assert "location /api {" in nginx
+    assert "proxy_pass http://gateway:8000;" in nginx
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "apps/gateway/services/ingestion/processors/api_processor.py",
+        "apps/gateway/services/ingestion/processors/file_processor.py",
+        "apps/gateway/services/knowledge_document_content_service.py",
+        "apps/shared/services/embedding_service.py",
+        "apps/workflow_engine/workflow/nodes/file_extraction/file_extraction_node.py",
+    ],
+)
+def test_mba_178_consumers_do_not_create_direct_http_clients(relative_path):
+    source = _read(relative_path)
+
+    assert "requests.get" not in source
+    assert "requests.post" not in source
+    assert "httpx.Client(" not in source
+    assert "httpx.AsyncClient(" not in source
+    assert "openai.OpenAI(" not in source
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "apps/gateway/services/llm_service.py",
+        "apps/workflow_engine/services/llm_service.py",
+    ],
+)
+def test_model_discovery_uses_the_registered_guarded_operation(relative_path):
+    source = _read(relative_path)
+
+    assert "requests.get" not in source
+    assert "safe_http_request(" in source
+    assert "operation_id=LLM_MODEL_DISCOVERY" in source

@@ -197,9 +197,10 @@ frontend:
       memory: 1Gi
   
   env:
-    # Next.js backend API URL (internal service)
-    NEXT_PUBLIC_API_URL: "http://{{ .Release.Name }}-gateway:8000"
-    API_URL: "http://{{ .Release.Name }}-gateway:8000"
+    # Browser calls use same-origin /api through the public HTTPS ingress.
+    NEXT_PUBLIC_API_URL: ""
+    # Empty uses the chart template's release-aware internal Gateway URL.
+    API_URL: ""
 
 # Sandbox (Code Execution)
 sandbox:

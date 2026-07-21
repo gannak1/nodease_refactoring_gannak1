@@ -9,35 +9,14 @@ const CONTEXT_HEADER_ALLOWLIST = [
 const normalizeBackendUrl = (url: string) =>
   url.replace(/\/+$/, '').replace(/\/api\/v1$/i, '');
 
-const isLoopbackUrl = (url: string) => {
-  try {
-    const hostname = new URL(url).hostname.toLowerCase();
-    return (
-      hostname === 'localhost' ||
-      hostname.endsWith('.localhost') ||
-      hostname === '0.0.0.0' ||
-      hostname === '127.0.0.1' ||
-      hostname.startsWith('127.') ||
-      hostname === '::1' ||
-      hostname === '[::1]'
-    );
-  } catch {
-    return false;
-  }
-};
-
 const resolveBackendUrl = () => {
   const apiUrl = process.env.API_URL?.trim();
   if (apiUrl) {
     return normalizeBackendUrl(apiUrl);
   }
 
-  const publicApiUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
-  if (
-    publicApiUrl &&
-    (process.env.NODE_ENV !== 'production' || !isLoopbackUrl(publicApiUrl))
-  ) {
-    return normalizeBackendUrl(publicApiUrl);
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('API_URL must be configured for the production server');
   }
 
   return normalizeBackendUrl('http://127.0.0.1:8000');

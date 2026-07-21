@@ -46,8 +46,75 @@ def test_explicit_session_signing_secret_is_returned_without_logging():
 
 def test_credentialed_cors_origins_are_trimmed_and_deduplicated():
     assert parse_credentialed_cors_origins(
-        " https://client.example,https://client.example/,http://localhost:3000 "
-    ) == ["https://client.example", "http://localhost:3000"]
+        " https://CLIENT.example:443,https://client.example/ ",
+        node_env="production",
+    ) == ["https://client.example"]
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    [
+        "http://client.example",
+        "http://localhost:3000",
+        "https://client.example,http://127.0.0.1:3000",
+    ],
+)
+def test_production_credentialed_cors_requires_https(raw_value):
+    with pytest.raises(RuntimeError, match="HTTPS"):
+        parse_credentialed_cors_origins(raw_value, node_env="production")
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://10.0.0.10",
+        "https://169.254.169.254",
+        "https://api-service",
+        "https://api.internal",
+        "https://api.local",
+        "https://api.home.arpa",
+        "https://gateway.default.svc",
+        "https://gateway.default.svc.",
+        "https://gateway.default.svc.cluster.local",
+        "https://gateway.default.svc.cluster.local.",
+    ],
+)
+def test_production_credentialed_cors_rejects_non_public_origins(origin):
+    with pytest.raises(RuntimeError):
+        parse_credentialed_cors_origins(origin, node_env="production")
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://[::1]:3000",
+    ],
+)
+def test_development_credentialed_cors_allows_loopback_http(origin):
+    assert parse_credentialed_cors_origins(origin, node_env="development") == [origin]
+
+
+def test_development_credentialed_cors_rejects_non_loopback_http():
+    with pytest.raises(RuntimeError, match="loopback"):
+        parse_credentialed_cors_origins(
+            "http://client.example",
+            node_env="development",
+        )
+
+
+def test_development_credentialed_cors_rejects_private_https_origin():
+    with pytest.raises(RuntimeError, match="public HTTPS"):
+        parse_credentialed_cors_origins(
+            "https://gateway.default.svc.cluster.local",
+            node_env="development",
+        )
+
+
+def test_missing_environment_uses_production_cors_policy():
+    with pytest.raises(RuntimeError, match="HTTPS"):
+        parse_credentialed_cors_origins("http://localhost:3000", node_env=None)
 
 
 @pytest.mark.parametrize(
@@ -59,9 +126,13 @@ def test_credentialed_cors_origins_are_trimmed_and_deduplicated():
         "https://user@client.example",
         "https://client.example/path",
         "https://client.example?query=1",
+        "https://client.example.",
+        "https://*.client.example",
+        "https://client.example:not-a-port",
+        "https://client.example:70000",
         "javascript:alert(1)",
     ],
 )
 def test_credentialed_cors_origins_fail_closed(raw_value):
     with pytest.raises(RuntimeError):
-        parse_credentialed_cors_origins(raw_value)
+        parse_credentialed_cors_origins(raw_value, node_env="production")

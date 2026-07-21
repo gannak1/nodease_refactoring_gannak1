@@ -173,7 +173,10 @@ async def permission_mutation_persistence_failed(
 
 
 origins_str = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
-origins = parse_credentialed_cors_origins(origins_str)
+origins = parse_credentialed_cors_origins(
+    origins_str,
+    node_env=os.getenv("NODE_ENV"),
+)
 
 # CORS 설정 (withCredentials 지원)
 app.add_middleware(
