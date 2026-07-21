@@ -22,6 +22,11 @@ RUNTIME_JUDGE_MODEL_PREFERENCES = {
     ),
     "google": ("gemini-3.5-flash", "gemini-2.5-flash", "gemini-3.1-flash-lite"),
 }
+RUNTIME_ADJUDICATOR_MODEL_PREFERENCES = {
+    "openai": ("gpt-5.4", "gpt-5.6-sol", "gpt-5.5-pro", "gpt-4.1"),
+    "anthropic": ("claude-opus-4-6", "claude-opus-4-5-20251101", "claude-sonnet-4-6"),
+    "google": ("gemini-3.1-pro-preview", "gemini-2.5-pro"),
+}
 
 
 def build_judge_first_active_policy(
@@ -159,6 +164,24 @@ def select_runtime_judge_model_id(
     if candidates:
         return candidates[0]
     raise ValueError("model_routing.judge_model_required")
+
+
+def select_runtime_adjudicator_model_id(
+    candidate_model_ids: Iterable[str],
+    *,
+    judge_model_id: str,
+) -> str | None:
+    """애매한 요구 수준만 재판정할 같은 provider의 상위 Judge를 고른다."""
+
+    candidates = deduplicate_model_routing_ids(candidate_model_ids)
+    provider = catalog_metadata_for_model_id(judge_model_id).get("provider")
+    for preferred_model_id in RUNTIME_ADJUDICATOR_MODEL_PREFERENCES.get(provider, ()):
+        available = _available_representative(preferred_model_id, candidates)
+        if available and canonical_model_routing_id(available) != canonical_model_routing_id(
+            judge_model_id
+        ):
+            return available
+    return None
 
 
 def _explicit_judge_model_id(

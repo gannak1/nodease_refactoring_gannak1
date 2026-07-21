@@ -674,8 +674,8 @@ def test_llm_node_auto_model_routing_without_policy_uses_stored_model(monkeypatc
     assert result["usage"] == {"prompt_tokens": 1, "completion_tokens": 1}
 
 
-def test_test_execution_without_active_policy_calls_runtime_judge(monkeypatch):
-    """테스트 실행은 정책 저장 전에도 임시 후보 정책으로 Judge를 호출한다."""
+def test_test_execution_can_select_available_unvalidated_candidate(monkeypatch):
+    """첫 실행도 권한 있는 비검증 후보를 요구 수준에 맞춰 선택할 수 있다."""
     from apps.workflow_engine.services.model_routing_policy_store import (
         ModelRoutingPolicyStore,
     )
@@ -699,9 +699,9 @@ def test_test_execution_without_active_policy_calls_runtime_judge(monkeypatch):
                     {
                         "message": {
                             "content": (
-                                '{"selected_model_id":"gpt-4.1-mini",'
-                                '"confidence":0.92,"reason_short":"간단한 분류 요청",'
-                                '"reason_code":"routine_classification"}'
+                                    '{"task_complexity":1,"decision_impact":0,'
+                                    '"evidence_synthesis":0,"confidence":0.92,'
+                                    '"ambiguity_flags":[],"reason_codes":[]}'
                             )
                         }
                     }
@@ -761,7 +761,10 @@ def test_test_execution_without_active_policy_calls_runtime_judge(monkeypatch):
         node,
         "_routing_candidate_profiles",
         lambda *_args, **_kwargs: [
-            {"model_id": "gpt-4.1-mini"},
+                {
+                    "model_id": "gpt-4.1-mini",
+                    "validation_status": "unverified",
+                },
             {"model_id": "gpt-4.1"},
         ],
     )
@@ -779,6 +782,7 @@ def test_test_execution_without_active_policy_calls_runtime_judge(monkeypatch):
     assert metadata["policy_source"] == "test_ephemeral"
     assert metadata["judge_called"] is True
     assert metadata["judge"]["status"] == "selected"
+    assert metadata["judge"]["reason_code"] == "requirements_candidate_selected"
     assert metadata["included_in_policy_learning"] is False
     assert learning_calls == []
 
@@ -4360,7 +4364,9 @@ def test_deployed_judge_bootstrap_uses_judge_and_queues_safe_learning_label(monk
                 "choices": [
                     {
                         "message": {
-                            "content": '{"selected_model_id":"gpt-4o-mini","confidence":0.9,"reason_short":"단순 안내 요청","reason_code":"economy_fit"}'
+                                "content": '{"task_complexity":1,"decision_impact":0,'
+                                '"evidence_synthesis":0,"confidence":0.9,'
+                                '"ambiguity_flags":[],"reason_codes":[]}'
                         }
                     }
                 ],
@@ -4404,8 +4410,9 @@ def test_deployed_judge_bootstrap_uses_judge_and_queues_safe_learning_label(monk
         node,
         "_routing_candidate_profiles",
             lambda *_args, **_kwargs: [
-            {
-                "model_id": "gpt-4o-mini",
+                {
+                    "model_id": "gpt-4o-mini",
+                    "validation_status": "bootstrap_validated",
                 "input_price_per_1k": 0.00015,
                 "output_price_per_1k": 0.0006,
                 "quality_by_difficulty": {
@@ -4439,7 +4446,7 @@ def test_deployed_judge_bootstrap_uses_judge_and_queues_safe_learning_label(monk
     assert metadata["judge_called"] is True
     assert metadata["judge"]["status"] == "selected"
     assert metadata["judge"]["attempted"] is True
-    assert metadata["judge"]["reason_short"] == "단순 안내 요청"
+    assert metadata["judge"]["reason_short"] == "요구 수준에 맞는 후보 선택"
     assert metadata["judge"]["candidate_model_count"] == 2
     assert metadata["judge"]["usage_log_error"] == "RuntimeError"
     assert captured["policy_id"] == str(policy_id)
@@ -4482,7 +4489,9 @@ def test_deployed_judge_bootstrap_exposes_learning_queue_failure_reason(monkeypa
                 "choices": [
                     {
                         "message": {
-                            "content": '{"selected_model_id":"gpt-5-mini","confidence":0.91,"reason_short":"조건 검토 필요","reason_code":"multi_constraint"}'
+                                "content": '{"task_complexity":2,"decision_impact":1,'
+                                '"evidence_synthesis":1,"confidence":0.91,'
+                                '"ambiguity_flags":[],"reason_codes":["multi_step_reasoning"]}'
                         }
                     }
                 ],
@@ -4668,9 +4677,9 @@ def test_test_execution_uses_matching_deployment_policy_and_judge_without_learni
                     {
                         "message": {
                             "content": (
-                                '{"selected_model_id":"gpt-4.1-mini",'
-                                '"confidence":0.91,"reason_short":"단순 안내 처리",'
-                                '"reason_code":"simple_response"}'
+                                    '{"task_complexity":1,"decision_impact":0,'
+                                    '"evidence_synthesis":0,"confidence":0.91,'
+                                    '"ambiguity_flags":[],"reason_codes":[]}'
                             )
                         }
                     }
@@ -4693,7 +4702,10 @@ def test_test_execution_uses_matching_deployment_policy_and_judge_without_learni
         node,
         "_routing_candidate_profiles",
         lambda *_args, **_kwargs: [
-            {"model_id": "gpt-4.1-mini"},
+                {
+                    "model_id": "gpt-4.1-mini",
+                    "validation_status": "bootstrap_validated",
+                },
             {"model_id": "gpt-4.1"},
         ],
     )
@@ -4715,7 +4727,7 @@ def test_test_execution_uses_matching_deployment_policy_and_judge_without_learni
     assert metadata["decision_source"] == "runtime_judge"
     assert metadata["execution_mode"] == "test"
     assert metadata["judge_called"] is True
-    assert metadata["judge"]["reason_short"] == "단순 안내 처리"
+    assert metadata["judge"]["reason_short"] == "요구 수준에 맞는 기본 모델 선택"
     assert metadata["policy_source"] == "active_deployment"
     assert metadata["included_in_policy_learning"] is False
     assert learning_calls == []
@@ -4785,9 +4797,9 @@ def test_deployed_auto_routing_without_persisted_policy_ignores_legacy_snapshot(
                     {
                         "message": {
                             "content": (
-                                '{"selected_model_id":"gpt-4.1-mini",'
-                                '"confidence":0.9,"reason_short":"간단한 요청",'
-                                '"reason_code":"routine_request"}'
+                                    '{"task_complexity":1,"decision_impact":0,'
+                                    '"evidence_synthesis":0,"confidence":0.9,'
+                                    '"ambiguity_flags":[],"reason_codes":[]}'
                             )
                         }
                     }
@@ -4856,7 +4868,10 @@ def test_deployed_auto_routing_without_persisted_policy_ignores_legacy_snapshot(
         node,
         "_routing_candidate_profiles",
         lambda *_args, **_kwargs: [
-            {"model_id": "gpt-4.1-mini"},
+                {
+                    "model_id": "gpt-4.1-mini",
+                    "validation_status": "bootstrap_validated",
+                },
             {"model_id": "gpt-4.1"},
         ],
     )

@@ -94,6 +94,8 @@ class ModelRoutingPolicyStore:
         confidence: float,
         reason_code: str,
         task_requirements: dict[str, Any] | None,
+        judge_rubric_version: str = "routing-requirements-v1",
+        judge_model_id: str | None = None,
     ) -> dict[str, Any]:
         """Judge 선택을 안전한 vector로 보관하고 policy row lock을 끝낸다.
 
@@ -128,6 +130,57 @@ class ModelRoutingPolicyStore:
                 if isinstance(active_policy.get("learning"), dict)
                 else {}
             )
+            judge_contract = {
+                "judge_rubric_version": str(judge_rubric_version or "")[:128],
+                "feature_schema_version": TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
+                "judge_model_id": str(judge_model_id or "")[:255] or None,
+            }
+            previous_contract = (
+                learning.get("judge_contract")
+                if isinstance(learning.get("judge_contract"), dict)
+                else None
+            )
+            if previous_contract != judge_contract:
+                # 서로 다른 rubric/model/schema로 만든 라벨을 한 artifact에 섞으면
+                # local router가 일관되지 않은 정답을 학습한다. 정책 행 잠금 안에서
+                # 이전 표본을 닫고 새 계약으로 학습 상태를 초기화한다.
+                (
+                    db.query(LLMNodeModelRoutingLearningLabel)
+                    .filter(LLMNodeModelRoutingLearningLabel.policy_id == policy.id)
+                    .filter(
+                        LLMNodeModelRoutingLearningLabel.status.in_(
+                            ["pending", "accepted"]
+                        )
+                    )
+                    .update(
+                        {
+                            LLMNodeModelRoutingLearningLabel.status: "rejected",
+                            LLMNodeModelRoutingLearningLabel.outcome_reason: (
+                                "judge_contract_replaced"
+                            ),
+                            LLMNodeModelRoutingLearningLabel.finalized_at: datetime.now(
+                                timezone.utc
+                            ),
+                        },
+                        synchronize_session=False,
+                    )
+                )
+                for key in (
+                    "candidate_requirement_artifact",
+                    "local_requirement_artifact",
+                    "recent_evaluation",
+                ):
+                    learning.pop(key, None)
+                learning.update(
+                    {
+                        "mode": "judge_first",
+                        "judged_request_count": 0,
+                        "selected_model_ids": [],
+                        "judge_contract": judge_contract,
+                    }
+                )
+                active_policy["learning"] = learning
+                policy.active_policy = active_policy
             from apps.workflow_engine.services.model_routing_local_classifier import (
                 MultilingualE5ModelChoiceClassifier,
                 MultilingualE5TaskRequirementClassifier,

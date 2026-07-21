@@ -51,6 +51,57 @@ class _IncompleteThenCompactJudgeClient(_JudgeClient):
         }
 
 
+def test_requirement_judge_does_not_receive_or_select_candidate_models():
+    client = _JudgeClient(
+        '{"task_complexity":2,"decision_impact":1,"evidence_synthesis":2,'
+        '"confidence":0.87,"ambiguity_flags":[],'
+        '"reason_codes":["multi_step_reasoning"]}'
+    )
+
+    assessment = ModelRoutingRuntimeJudge.assess_requirements(
+        client=client,
+        routing_feature_text="여러 문서를 비교해 내부 검토안을 작성해 주세요.",
+        structural_facts={
+            "input_token_bucket": "medium",
+            "schema_required": True,
+            "knowledge_enabled": True,
+            "retrieved_source_count": 3,
+            "downstream_contract_required": True,
+        },
+    )
+
+    assert assessment.task_requirements == {
+        "task_complexity": 2,
+        "decision_impact": 1,
+        "evidence_synthesis": 2,
+    }
+    assert assessment.confidence == 0.87
+    body = __import__("json").loads(client.calls[0]["messages"][1]["content"])
+    assert "candidate_models" not in body
+    system_prompt = client.calls[0]["messages"][0]["content"]
+    assert "selected_model_id" not in system_prompt
+    assert "결정 영향도" in system_prompt
+    assert "0" in system_prompt and "3" in system_prompt
+
+
+def test_requirement_judge_marks_boundary_or_unknown_requests_for_adjudication():
+    client = _JudgeClient(
+        '{"task_complexity":1,"decision_impact":2,"evidence_synthesis":1,'
+        '"confidence":0.61,"ambiguity_flags":["boundary_score"],'
+        '"reason_codes":["financial_action"]}'
+    )
+
+    assessment = ModelRoutingRuntimeJudge.assess_requirements(
+        client=client,
+        routing_feature_text="환불 가능 여부를 확인해 주세요.",
+        structural_facts={"schema_required": False},
+    )
+
+    assert assessment.requires_adjudication is True
+    assert assessment.ambiguity_flags == ["boundary_score"]
+    assert assessment.rubric_version == "routing-requirements-v2"
+
+
 def test_runtime_judge_records_total_provider_latency_in_usage(monkeypatch):
     timestamps = iter((10.0, 10.125))
     monkeypatch.setattr(

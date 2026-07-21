@@ -335,7 +335,12 @@ class ModelRouter:
         configured_candidates = cls._unique_model_ids(
             active_policy.get("candidate_model_ids") or []
         )
-        candidates = configured_candidates or executable_model_ids
+        # policy에 저장된 후보는 정책 생성 당시의 snapshot이다. 이후 credential에
+        # 새 모델이 연결되거나 예전 policy가 기본 모델 하나만 가진 경우에도 새 후보를
+        # 평가할 수 있어야 검증 기회가 사라지는 순환을 피할 수 있다.
+        candidates = cls._unique_model_ids(
+            [*configured_candidates, *executable_model_ids]
+        )
         if availability_is_enforced:
             executable_by_canonical_id: dict[str, str] = {}
             for model_id in executable_model_ids:
@@ -430,6 +435,7 @@ class ModelRouter:
                 selected = cls.select_candidate_for_requirements(
                     candidate_model_ids=candidates,
                     requirements=prediction.requirements,
+                    default_model_id=default_selected,
                 )
                 if selected and prediction.confidence >= min_confidence:
                     return ModelRoutingPolicyDecision(
@@ -691,12 +697,15 @@ class ModelRouter:
         *,
         candidate_model_ids: Iterable[str],
         requirements: Mapping[str, Any],
+        candidate_profiles: Iterable[Mapping[str, Any]] | None = None,
+        default_model_id: str | None = None,
+        structural_facts: Mapping[str, Any] | None = None,
     ) -> str | None:
-        """요구 수준을 충족하는 후보 중 가장 경제적인 모델을 고른다.
+        """현재 사용 가능한 후보 중 요구 수준을 충족하는 가장 경제적인 모델을 고른다.
 
-        catalog는 품질 점수가 아니라 공개된 capability 상한을 제공한다. 따라서
-        여기서는 후보 탈락과 동률 해소에만 쓰며, 실제 계약 성적은 학습 전환 gate가
-        별도로 검사한다.
+        운영 성적은 정책 갱신과 local router 전환을 판단하는 데 사용한다. 새 후보를
+        runtime에서 배제하면 검증할 기회 자체가 사라지므로, Judge가 평가한 현재 요청의
+        요구 수준과 현재 credential/capability 경계 안에서는 전체 후보를 비교한다.
         """
 
         complexity = cls._requirement_score(requirements.get("task_complexity"))
@@ -710,10 +719,21 @@ class ModelRouter:
             "frontier_reasoning": 3,
             "specialized_reasoning": 3,
         }
+        profile_by_model = {
+            cls.normalize_model_id(str(profile.get("model_id") or "")): profile
+            for profile in (candidate_profiles or [])
+            if isinstance(profile, Mapping) and profile.get("model_id")
+        }
+        normalized_default = cls.normalize_model_id(default_model_id or "")
         eligible: list[tuple[float, str]] = []
         for model_id in cls._unique_model_ids(candidate_model_ids):
+            normalized_model_id = cls.normalize_model_id(model_id)
+            profile = profile_by_model.get(normalized_model_id, {})
+            is_default = bool(normalized_default) and normalized_model_id == normalized_default
             metadata = catalog_metadata_for_model_id(model_id)
             if not metadata:
+                if is_default:
+                    eligible.append((float("inf"), model_id))
                 continue
             model_ceiling = ceiling_rank.get(str(metadata.get("complexity_ceiling")), 0)
             reasoning = reasoning_rank.get(str(metadata.get("reasoning_profile")), 0)
@@ -721,16 +741,79 @@ class ModelRouter:
                 continue
             if evidence >= 2 and reasoning < 2:
                 continue
-            pricing = get_model_pricing(model_id)
-            price = (
-                float(pricing.standard_input_per_1k + pricing.standard_output_per_1k)
-                if pricing is not None
-                else float("inf")
-            )
+            input_price = profile.get("input_price_per_1k")
+            output_price = profile.get("output_price_per_1k")
+            if isinstance(input_price, (int, float)) and isinstance(
+                output_price, (int, float)
+            ):
+                price = float(input_price) + float(output_price)
+            else:
+                pricing = get_model_pricing(model_id)
+                price = (
+                    float(pricing.standard_input_per_1k + pricing.standard_output_per_1k)
+                    if pricing is not None
+                    else float("inf")
+                )
             eligible.append((price, model_id))
         if not eligible:
-            return None
+            return cls.first_available_model(
+                [default_model_id],
+                {cls.normalize_model_id(model_id) for model_id in candidate_model_ids},
+            )
         return min(eligible, key=lambda row: (row[0], row[1]))[1]
+
+    @classmethod
+    def runtime_requirement_facts(
+        cls,
+        *,
+        inputs: Mapping[str, Any],
+        node_data: Any,
+        rag_metadata: Mapping[str, Any] | None = None,
+        downstream_contract_required: bool = False,
+    ) -> dict[str, Any]:
+        """LLM이 추측할 필요가 없는 실행 구조 사실을 계산한다."""
+
+        output_format = cls._node_data_value(node_data, "output_format", default={})
+        output_format = output_format if isinstance(output_format, dict) else {}
+        output_type = str(output_format.get("type") or "text").strip().lower()
+        serialized_size = len(
+            json.dumps(dict(inputs), ensure_ascii=False, default=str)
+        )
+        if serialized_size < 2_000:
+            input_bucket = "short"
+        elif serialized_size < 12_000:
+            input_bucket = "medium"
+        else:
+            input_bucket = "long"
+        knowledge_bases = cls._node_data_value(
+            node_data, "knowledgeBases", default=[]
+        ) or cls._node_data_value(node_data, "knowledge_bases", default=[])
+        rag = rag_metadata if isinstance(rag_metadata, Mapping) else {}
+        return {
+            "input_token_bucket": input_bucket,
+            "schema_required": bool(output_format.get("schema")),
+            "knowledge_enabled": bool(knowledge_bases) or bool(rag.get("used")),
+            "retrieved_source_count": max(
+                0,
+                int(rag.get("source_count") or rag.get("retrieved_chunk_count") or 0),
+            ),
+            "output_format": output_type,
+            "downstream_contract_required": bool(downstream_contract_required),
+            "file_input_present": cls._contains_file_like_value(inputs),
+        }
+
+    @classmethod
+    def _contains_file_like_value(cls, value: Any) -> bool:
+        if isinstance(value, Mapping):
+            if any(
+                str(key).lower() in {"file", "files", "filename", "mime_type"}
+                for key in value
+            ):
+                return True
+            return any(cls._contains_file_like_value(child) for child in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(cls._contains_file_like_value(child) for child in value)
+        return False
 
     @staticmethod
     def _requirement_score(value: Any) -> int:

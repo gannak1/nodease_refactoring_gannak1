@@ -1,8 +1,9 @@
 """초기 자동 모델 라우팅에서 사용할 짧은 Judge 호출 경계.
 
-Judge는 실제 요청을 실행하기 전에 현재 실행 주체가 사용할 수 있는 후보 안에서
-모델 하나를 고른다. 이 모듈은 응답을 엄격히 검증하고, trace/DB에 남길 수 있는
-안전한 메타데이터만 만든다. 원문 입력이나 prompt는 반환하거나 저장하지 않는다.
+Judge는 실제 요청을 실행하기 전에 요청이 요구하는 능력만 판정한다. 후보 모델의
+권한·capability·가격 비교는 호출한 서버가 수행한다. 이 모듈은 응답을 엄격히
+검증하고, trace/DB에 남길 수 있는 안전한 메타데이터만 만든다. 원문 입력이나
+prompt는 반환하거나 저장하지 않는다.
 """
 
 from __future__ import annotations
@@ -56,11 +57,41 @@ class RuntimeJudgeDecision:
         return metadata
 
 
+@dataclass(frozen=True)
+class RuntimeRequirementAssessment:
+    """모델 후보와 분리한 현재 요청의 요구 수준 판정이다."""
+
+    task_requirements: dict[str, int]
+    confidence: float
+    ambiguity_flags: list[str]
+    reason_codes: list[str]
+    usage: dict[str, Any]
+    rubric_version: str
+
+    @property
+    def requires_adjudication(self) -> bool:
+        return self.confidence < 0.75 or bool(self.ambiguity_flags)
+
+    def to_decision(self, *, selected_model_id: str, reason_code: str) -> RuntimeJudgeDecision:
+        return RuntimeJudgeDecision(
+            selected_model_id=selected_model_id,
+            confidence=self.confidence,
+            reason_short=ModelRoutingRuntimeJudge._REASON_SHORT_BY_CODE.get(
+                reason_code, "요구 수준 기반 선택"
+            ),
+            reason_code=reason_code,
+            usage=dict(self.usage),
+            reason_factors=list(self.reason_codes[:3]),
+            task_requirements=dict(self.task_requirements),
+        )
+
+
 class ModelRoutingRuntimeJudge:
     """초기 표본을 만들기 위한 runtime Judge.
 
-    모델 능력의 절대 순위를 추측하지 않는다. 현재 노드 계약과 렌더된 요청을 보고
-    *지금 실행 주체가 실제로 쓸 수 있는 후보* 중 하나만 선택하게 한다.
+    모델 능력의 절대 순위나 후보 모델을 선택하지 않는다. 현재 노드 계약과 렌더된
+    요청을 보고 요구 수준만 판정한다. 그 결과를 바탕으로 서버가 현재 실행 주체가
+    실제로 쓸 수 있는 후보를 비교한다.
     """
 
     MAX_FEATURE_CHARS = 7_000
@@ -70,7 +101,18 @@ class ModelRoutingRuntimeJudge:
     DIAGNOSTIC_MAX_OUTPUT_TOKENS = 2_000
     _RETRY_FEATURE_CHARS = 1_200
     _RETRYABLE_PROVIDER_REASON_CODES = {"responses_incomplete"}
+    REQUIREMENT_RUBRIC_VERSION = "routing-requirements-v2"
+    _AMBIGUITY_FLAGS = {
+        "boundary_score",
+        "conflicting_evidence",
+        "high_impact_uncertainty",
+        "insufficient_context",
+        "novel_request",
+    }
     _REASON_SHORT_BY_CODE = {
+        "requirement_default_selected": "요구 수준에 맞는 기본 모델 선택",
+        "requirements_candidate_selected": "요구 수준에 맞는 후보 선택",
+        "requirement_judge_ambiguous": "요구 수준이 모호해 기본 모델 사용",
         "simple_response": "단순 응답 처리",
         "multi_constraint": "여러 조건 종합",
         "evidence_synthesis": "근거 종합 판단",
@@ -102,6 +144,137 @@ class ModelRoutingRuntimeJudge:
         "ambiguous_request": ["multi_step_reasoning"],
         "long_context": ["long_context_handling", "broad_context_synthesis"],
     }
+
+    @classmethod
+    def assess_requirements(
+        cls,
+        *,
+        client: RuntimeJudgeClient,
+        routing_feature_text: str,
+        structural_facts: dict[str, Any] | None = None,
+        rag_context: dict[str, Any] | None = None,
+    ) -> RuntimeRequirementAssessment:
+        """후보 모델을 보지 않고 요청이 요구하는 능력만 판정한다."""
+
+        started_at = time.perf_counter()
+        response = client.invoke_sync(
+            messages=cls._requirement_messages(
+                routing_feature_text=routing_feature_text,
+                structural_facts=structural_facts,
+                rag_context=rag_context,
+            ),
+            temperature=0,
+            max_tokens=cls.MAX_OUTPUT_TOKENS,
+            response_format={"type": "json_object"},
+        )
+        latency_ms = max(1, int(round((time.perf_counter() - started_at) * 1_000)))
+        try:
+            payload = json.loads(cls._response_content(response))
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeJudgeResponseError("invalid JSON response") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeJudgeResponseError("response must be an object")
+
+        requirements = cls._safe_task_requirements(payload)
+        if requirements is None:
+            raise RuntimeJudgeResponseError("task requirements are missing")
+        try:
+            confidence = float(payload.get("confidence"))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeJudgeResponseError("invalid confidence") from exc
+        if not 0.0 <= confidence <= 1.0:
+            raise RuntimeJudgeResponseError("confidence must be between 0 and 1")
+
+        ambiguity_flags = cls._safe_string_codes(
+            payload.get("ambiguity_flags"), allowed=cls._AMBIGUITY_FLAGS
+        )
+        reason_codes = cls._safe_string_codes(
+            payload.get("reason_codes"), allowed=cls._REASON_FACTOR_CODES
+        )
+        usage = cls._safe_usage(
+            response.get("usage") if isinstance(response, dict) else None
+        )
+        usage["latency_ms"] = latency_ms
+        return RuntimeRequirementAssessment(
+            task_requirements=requirements,
+            confidence=confidence,
+            ambiguity_flags=ambiguity_flags,
+            reason_codes=reason_codes,
+            usage=usage,
+            rubric_version=cls.REQUIREMENT_RUBRIC_VERSION,
+        )
+
+    @classmethod
+    def _requirement_messages(
+        cls,
+        *,
+        routing_feature_text: str,
+        structural_facts: dict[str, Any] | None,
+        rag_context: dict[str, Any] | None,
+    ) -> list[dict[str, str]]:
+        instruction = (
+            "당신은 요청이 요구하는 능력 수준만 판정하는 Requirement Judge입니다. "
+            "모델을 선택하거나 모델 ID, 가격, 지연 시간을 추측하지 마세요. "
+            "작업 복잡도(task_complexity): 0=단순 전달·추출, 1=한 단계 변환·분류, "
+            "2=여러 조건을 비교하는 다단계 처리, 3=복합 전문 추론과 충돌 해결. "
+            "결정 영향도(decision_impact): 0=틀려도 외부 영향 없는 내부 참고, "
+            "1=일반 안내이며 금전·권한·상태를 바꾸지 않음, "
+            "2=결제·환불·권한·보상 또는 사용자 행동에 영향, "
+            "3=법무·보안·개인정보·대규모 장애처럼 피해가 크거나 복구가 어려움. "
+            "근거 종합도(evidence_synthesis): 0=외부 근거 불필요, 1=단일 사실 확인, "
+            "2=여러 근거 결합·조건 비교, 3=충돌하는 근거를 해석해 결론 도출. "
+            "코드가 계산한 STRUCTURAL_FACTS는 사실로 받아들이고 다시 추측하지 마세요. "
+            "경계가 모호하면 ambiguity_flags에 boundary_score, conflicting_evidence, "
+            "high_impact_uncertainty, insufficient_context, novel_request 중 해당 값을 넣으세요. "
+            "reason_codes는 high_decision_impact, security_or_compliance_risk, "
+            "multi_step_reasoning, evidence_conflict, broad_context_synthesis, "
+            "long_context_handling 중 최대 3개만 사용하세요. 요청 원문을 출력하지 마세요. "
+            "JSON object 하나만 반환하세요: "
+            '{"task_complexity":0,"decision_impact":0,"evidence_synthesis":0,'
+            '"confidence":0.0,"ambiguity_flags":[],"reason_codes":[]}.'
+        )
+        body = {
+            "request_feature": str(routing_feature_text or "")[: cls.MAX_FEATURE_CHARS],
+            "structural_facts": cls._safe_structural_facts(structural_facts),
+            "rag_context": cls._safe_rag_context(rag_context),
+            "rubric_version": cls.REQUIREMENT_RUBRIC_VERSION,
+        }
+        return [
+            {"role": "system", "content": instruction},
+            {"role": "user", "content": json.dumps(body, ensure_ascii=False)},
+        ]
+
+    @staticmethod
+    def _safe_structural_facts(value: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        allowed = {
+            "downstream_contract_required",
+            "file_input_present",
+            "input_token_bucket",
+            "knowledge_enabled",
+            "output_format",
+            "retrieved_source_count",
+            "schema_required",
+        }
+        return {
+            key: raw
+            for key, raw in value.items()
+            if key in allowed and isinstance(raw, (bool, int, str))
+        }
+
+    @staticmethod
+    def _safe_string_codes(value: Any, *, allowed: set[str]) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        result: list[str] = []
+        for raw in value:
+            code = str(raw or "").strip()
+            if code in allowed and code not in result:
+                result.append(code)
+            if len(result) == 3:
+                break
+        return result
     @classmethod
     def decide(
         cls,

@@ -2,6 +2,7 @@ from apps.workflow_engine.services.model_routing_judge_first_policy import (
     JUDGE_FIRST_STRATEGY_ID,
     build_judge_first_active_policy,
     normalize_judge_first_active_policy,
+    select_runtime_adjudicator_model_id,
     select_runtime_judge_model_id,
 )
 
@@ -81,6 +82,24 @@ def test_judge_preference_stays_with_the_default_models_provider():
     )
 
     assert selected == "gemini-3.5-flash"
+
+
+def test_runtime_adjudicator_uses_stronger_same_provider_model_when_available():
+    selected = select_runtime_adjudicator_model_id(
+        ["gpt-5.4-mini", "gpt-5.4", "gpt-4.1-mini"],
+        judge_model_id="gpt-5.4-mini",
+    )
+
+    assert selected == "gpt-5.4"
+
+
+def test_runtime_adjudicator_is_optional_without_a_stronger_model():
+    selected = select_runtime_adjudicator_model_id(
+        ["gpt-5.4-mini", "gpt-4.1-mini"],
+        judge_model_id="gpt-5.4-mini",
+    )
+
+    assert selected is None
 
 
 def test_legacy_policy_is_normalized_without_reusing_legacy_rules():

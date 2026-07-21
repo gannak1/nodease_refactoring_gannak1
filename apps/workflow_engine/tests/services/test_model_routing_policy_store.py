@@ -235,6 +235,88 @@ def test_learning_label_summary_returns_counts_without_exposing_vectors():
     }
 
 
+def test_new_judge_contract_rejects_old_labels_and_resets_learning_artifact(monkeypatch):
+    from apps.workflow_engine.services.model_routing_local_classifier import (
+        MultilingualE5ModelChoiceClassifier,
+        MultilingualE5TaskRequirementClassifier,
+    )
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    policy = SimpleNamespace(
+        id=uuid4(),
+        active_policy={
+            "strategy_id": "judge_bootstrap_incremental_v1",
+            "learning": {
+                "mode": "local_first",
+                "judge_contract": {
+                    "judge_rubric_version": "routing-requirements-v1",
+                    "feature_schema_version": "old-schema",
+                    "judge_model_id": "gpt-4.1-mini",
+                },
+                "candidate_requirement_artifact": {"kind": "old"},
+                "local_requirement_artifact": {"kind": "old"},
+                "judged_request_count": 50,
+            },
+        },
+    )
+    query = MagicMock()
+    query.filter.return_value = query
+    query.update.return_value = 2
+    query.first.return_value = None
+    db = MagicMock()
+    db.query.return_value = query
+    monkeypatch.setattr(
+        MultilingualE5ModelChoiceClassifier,
+        "vectorize",
+        lambda *_args, **_kwargs: ([0.1, 0.2], "test-encoder"),
+    )
+    monkeypatch.setattr(
+        MultilingualE5TaskRequirementClassifier,
+        "predict_from_vector",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("no artifact")),
+    )
+
+    with patch.object(
+        ModelRoutingPolicyStore,
+        "_lock_policy_for_update",
+        return_value=policy,
+    ):
+        result = ModelRoutingPolicyStore.queue_runtime_judge_label(
+            db,
+            policy_id=policy.id,
+            workflow_run_id=uuid4(),
+            node_id="llm-1",
+            routing_feature_text="safe feature",
+            learning_feature_text="safe learning feature",
+            selected_model_id="gpt-4.1",
+            candidate_model_ids=["gpt-4.1"],
+            confidence=0.9,
+            reason_code="requirement_default_selected",
+            task_requirements={
+                "task_complexity": 1,
+                "decision_impact": 1,
+                "evidence_synthesis": 1,
+            },
+            judge_rubric_version="routing-requirements-v2",
+            judge_model_id="gpt-5.4-mini",
+        )
+
+    learning = policy.active_policy["learning"]
+    assert result["learning_queued"] is True
+    assert learning["mode"] == "judge_first"
+    assert learning["judged_request_count"] == 0
+    assert "candidate_requirement_artifact" not in learning
+    assert "local_requirement_artifact" not in learning
+    assert learning["judge_contract"] == {
+        "judge_rubric_version": "routing-requirements-v2",
+        "feature_schema_version": "grouped_runtime_variables_v4_e5",
+        "judge_model_id": "gpt-5.4-mini",
+    }
+    query.update.assert_called_once()
+
+
 def test_finalize_learning_outcome_updates_node_trace_without_storing_feature_vector():
     from apps.workflow_engine.services.model_routing_policy_store import (
         ModelRoutingPolicyStore,
