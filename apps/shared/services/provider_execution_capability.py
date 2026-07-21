@@ -170,9 +170,6 @@ def deployment_llm_node_model_id(graph_snapshot: Any, node_id: str) -> str:
     return model_id
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
 
 def _lock_fresh(query: Any) -> Any:
     """Lock rows while replacing any stale identity-map state."""
@@ -460,9 +457,7 @@ class ProviderExecutionCapabilityService:
         db: Session,
         *,
         command: ProviderExecutionCapabilityAdmissionCommand,
-        now: datetime | None = None,
     ) -> ProviderExecutionCredentialLease:
-        admission_started_at = now or _utc_now()
         cls._validate_nonnegative_caps(
             command.requested_input_tokens,
             command.requested_output_tokens,
@@ -488,6 +483,7 @@ class ProviderExecutionCapabilityService:
         if record is None:
             raise ProviderExecutionPolicyError("capability_stale")
         capability = cls._domain_capability(record)
+        admission_started_at = cls._database_clock_now(db)
         try:
             capability.require_usable(
                 binding=command.binding,
@@ -759,6 +755,7 @@ class ProviderExecutionCapabilityService:
         if (
             model is None
             or not model.is_active
+            or model.type != "chat"
             or model.model_id_for_api_call != graph_model_id
         ):
             raise ProviderExecutionPolicyError("configuration_required")
@@ -855,6 +852,7 @@ class ProviderExecutionCapabilityService:
                         "id": model.id,
                         "provider_id": model.provider_id,
                         "model_id_for_api_call": model.model_id_for_api_call,
+                        "type": model.type,
                         "is_active": model.is_active,
                         "updated_at": model.updated_at,
                     },

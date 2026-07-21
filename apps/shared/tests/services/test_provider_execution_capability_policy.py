@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -301,7 +301,7 @@ def test_existing_attempt_cannot_replace_runtime_principals():
     )
 
 
-def test_admission_locks_policy_before_capability_record(monkeypatch):
+def test_admission_locks_policy_before_capability_and_uses_database_clock(monkeypatch):
     organization_id = uuid.uuid4()
     model_id = uuid.uuid4()
     credential_id = uuid.uuid4()
@@ -323,7 +323,6 @@ def test_admission_locks_policy_before_capability_record(monkeypatch):
     order: list[str] = []
     validation_times: list[datetime] = []
     lock_modes: dict[str, bool | None] = {}
-    injected_now = datetime(2026, 7, 19, 1, 2, 2, tzinfo=timezone.utc)
     database_now = datetime(2026, 7, 19, 1, 2, 3, tzinfo=timezone.utc)
     policy = SimpleNamespace(
         id=policy_id,
@@ -455,7 +454,6 @@ def test_admission_locks_policy_before_capability_record(monkeypatch):
             requested_input_tokens=10,
             requested_output_tokens=5,
         ),
-        now=injected_now,
     )
 
     assert order == [
@@ -464,9 +462,10 @@ def test_admission_locks_policy_before_capability_record(monkeypatch):
         "capability_refresh",
         "capability",
         "database_clock",
+        "database_clock",
     ]
     assert lock_modes == {"selection": True, "permission": True}
-    assert validation_times == [injected_now, database_now]
+    assert validation_times == [database_now, database_now]
     assert lease.credential is credential
 
 
@@ -508,7 +507,6 @@ def test_issue_capability_uses_database_clock_for_lifecycle_timestamps(monkeypat
         purpose=CapabilityPurpose.MAIN_GENERATION,
     )
     database_now = datetime(2026, 7, 19, 2, 0, tzinfo=timezone.utc)
-    worker_now = database_now + timedelta(hours=1)
     order: list[str] = []
     policy = SimpleNamespace(
         id=policy_id,
@@ -607,7 +605,6 @@ def test_issue_capability_uses_database_clock_for_lifecycle_timestamps(monkeypat
         "_database_clock_now",
         staticmethod(lambda _db: order.append("database_clock") or database_now),
     )
-    monkeypatch.setattr(capability_service, "_utc_now", lambda: worker_now)
     monkeypatch.setattr(
         ProviderExecutionCapabilityService,
         "_domain_capability",
@@ -651,6 +648,7 @@ def test_policy_selection_locks_runtime_authorization_rows(monkeypatch):
         id=model_id,
         provider_id=provider_id,
         model_id_for_api_call="gpt-safe",
+        type="chat",
         is_active=True,
     )
     provider = SimpleNamespace(id=provider_id)
@@ -742,6 +740,63 @@ def test_policy_selection_locks_runtime_authorization_rows(monkeypatch):
     assert refreshed == [LLMModel, LLMProvider, LLMCredential, LLMRelCredentialModel]
     assert locked == [LLMModel, LLMProvider, LLMCredential, LLMRelCredentialModel]
     assert permission_lock_modes == [True]
+
+
+def test_generation_policy_rejects_embedding_model_before_provider_selection(
+    monkeypatch,
+):
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    model_id = uuid.uuid4()
+    model = SimpleNamespace(
+        id=model_id,
+        provider_id=uuid.uuid4(),
+        model_id_for_api_call="gpt-safe",
+        type="embedding",
+        is_active=True,
+    )
+
+    class _Query:
+        def filter(self, *_args):
+            return self
+
+        def one_or_none(self):
+            return model
+
+    class _Db:
+        def query(self, entity):
+            if entity is not LLMModel:
+                pytest.fail("embedding model must be rejected before related rows")
+            return _Query()
+
+    monkeypatch.setattr(
+        capability_service,
+        "deployment_llm_node_model_id",
+        lambda *_args, **_kwargs: "gpt-safe",
+    )
+
+    with pytest.raises(ProviderExecutionPolicyError) as exc_info:
+        ProviderExecutionCapabilityService._resolve_policy_selection(
+            _Db(),
+            deployment=SimpleNamespace(app_id=app_id, graph_snapshot={}),
+            app=SimpleNamespace(
+                id=app_id,
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+            ),
+            workflow=SimpleNamespace(
+                id=workflow_id,
+                organization_id=organization_id,
+            ),
+            organization_id=organization_id,
+            node_id="llm-1",
+            model_id=model_id,
+            credential_id=uuid.uuid4(),
+            credential_principal_user_id=uuid.uuid4(),
+        )
+
+    assert exc_info.value.code == "configuration_required"
 
 
 def test_permission_revision_locks_every_existing_permission_source(monkeypatch):
