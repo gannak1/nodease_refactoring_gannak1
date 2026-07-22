@@ -174,7 +174,7 @@ def test_compose_target_workloads_have_no_direct_egress_or_ambient_proxy() -> No
     assert proxy["cap_drop"] == ["ALL"]
     assert "no-new-privileges:true" in proxy["security_opt"]
     assert set(proxy["tmpfs"]) >= {
-        "/run/squid",
+        "/run/squid:rw,noexec,nosuid,nodev,uid=13,gid=13,mode=0700",
         "/var/log/squid",
         "/var/spool/squid",
     }

@@ -183,7 +183,7 @@ def test_squid_rejects_unsafe_dns_sets_and_direct_or_unauthorized_paths() -> Non
                 "11.240.0.53",
                 "--read-only",
                 "--tmpfs",
-                "/run/squid",
+                "/run/squid:rw,noexec,nosuid,nodev,uid=13,gid=13,mode=0700",
                 "--tmpfs",
                 "/var/log/squid",
                 "--tmpfs",
@@ -224,7 +224,14 @@ def test_squid_rejects_unsafe_dns_sets_and_direct_or_unauthorized_paths() -> Non
                     break
                 time.sleep(0.5)
             else:
-                pytest.fail("proxy did not become ready")
+                logs = _run(
+                    "docker",
+                    "logs",
+                    proxy_name,
+                    check=False,
+                )
+                diagnostic = f"{logs.stdout}\n{logs.stderr}".strip()[-4096:]
+                pytest.fail(f"proxy did not become ready: {diagnostic}")
 
             assert (
                 _proxy_status(client_network, "http://proxy:3128", "http://safe.test/")

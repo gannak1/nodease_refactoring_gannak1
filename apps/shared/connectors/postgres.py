@@ -4,7 +4,6 @@ import logging
 from io import StringIO
 from typing import Any
 
-import paramiko
 from apps.shared.services.connector_tcp_transport import (
     HttpConnectProxyDialer,
     LocalConnectorProxyRelay,
@@ -19,7 +18,6 @@ from apps.shared.services.egress_guard import (
 )
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import URL
-from sshtunnel import SSHTunnelForwarder
 
 from .base import BaseConnector
 
@@ -33,6 +31,18 @@ DB_CONNECT_TIMEOUT_SECONDS = 5
 MAX_DB_FETCH_ROWS = 10000
 MAX_DB_FETCH_BYTES = 16 * 1024 * 1024
 _AUTO_CONNECTOR_PROXY = object()
+
+
+def _load_rsa_private_key(key_content: str) -> Any:
+    import paramiko
+
+    return paramiko.RSAKey.from_private_key(StringIO(key_content))
+
+
+def _create_ssh_tunnel(**ssh_params: Any) -> Any:
+    from sshtunnel import SSHTunnelForwarder
+
+    return SSHTunnelForwarder(**ssh_params)
 
 
 class PostgresConnector(BaseConnector):
@@ -89,7 +99,7 @@ class PostgresConnector(BaseConnector):
             # 인증방식에 따른 처리
             if ssh_config.get("auth_type") == "key":
                 key_content = ssh_config["private_key"]
-                pkey = paramiko.RSAKey.from_private_key(StringIO(key_content))
+                pkey = _load_rsa_private_key(key_content)
                 ssh_params["ssh_pkey"] = pkey
             else:
                 ssh_params["ssh_password"] = ssh_config.get("password")
@@ -108,7 +118,7 @@ class PostgresConnector(BaseConnector):
                     ssh_params["ssh_proxy"] = proxy_socket
 
                 # 터널 생성 및 시작
-                tunnel = SSHTunnelForwarder(**ssh_params)
+                tunnel = _create_ssh_tunnel(**ssh_params)
                 tunnel.start()
             except Exception:
                 if tunnel is not None:

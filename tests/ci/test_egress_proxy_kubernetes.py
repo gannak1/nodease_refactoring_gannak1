@@ -159,32 +159,19 @@ def _exec_curl(pod: str, *arguments: str) -> subprocess.CompletedProcess[str]:
 def _ipv4_from_nslookup(
     output: str,
     predicate: Callable[[ipaddress.IPv4Address], bool],
-    *,
-    prefer_last: bool = False,
 ) -> str:
-    matches: list[str] = []
     for candidate in re.findall(r"(?<![\w:])(?:\d{1,3}\.){3}\d{1,3}(?![\w:])", output):
         try:
             address = ipaddress.ip_address(candidate)
         except ValueError:
             continue
         if isinstance(address, ipaddress.IPv4Address) and predicate(address):
-            matches.append(str(address))
-    if matches:
-        return matches[-1] if prefer_last else matches[0]
+            return str(address)
     raise AssertionError("DNS lookup did not return a matching IPv4 address")
 
 
 def _public_ipv4_from_nslookup(output: str) -> str:
     return _ipv4_from_nslookup(output, lambda address: address.is_global)
-
-
-def _private_ipv4_from_nslookup(output: str) -> str:
-    # nslookup prints its private DNS server before the answer. Prefer the
-    # final matching address so the service endpoint is not mistaken for DNS.
-    return _ipv4_from_nslookup(
-        output, lambda address: address.is_private, prefer_last=True
-    )
 
 
 def _mapped_ipv4_address(address: str) -> str:
@@ -213,6 +200,36 @@ def _resolve_public_ipv4(pod: str, hostname: str) -> str:
     return _public_ipv4_from_nslookup(f"{result.stdout}\n{result.stderr}")
 
 
+def _kubernetes_service_ipv4() -> str:
+    result = _run(
+        "kubectl",
+        "get",
+        "service",
+        "kubernetes",
+        "--namespace",
+        "default",
+        "--output",
+        "jsonpath={.spec.clusterIP}",
+        timeout=30,
+    )
+    candidate = result.stdout.strip()
+    try:
+        address = ipaddress.ip_address(candidate)
+    except ValueError as exc:
+        raise AssertionError("Kubernetes service has an invalid ClusterIP") from exc
+    assert isinstance(address, ipaddress.IPv4Address), (
+        "Kubernetes egress contract requires an IPv4 service ClusterIP"
+    )
+    assert not (
+        address.is_global
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_unspecified
+    ), "Kubernetes service ClusterIP must be a private-routed IPv4 address"
+    return str(address)
+
+
 def test_nslookup_parser_selects_only_public_ipv4_destination() -> None:
     output = """
 Server:         10.96.0.10
@@ -236,18 +253,6 @@ def test_mapped_ipv4_resolve_rejects_ipv6_and_formats_ipv4_mapping() -> None:
 
     with pytest.raises(ValueError, match="expected an IPv4 address"):
         _mapped_ipv4_address("2001:db8::1")
-
-
-def test_nslookup_parser_selects_private_ipv4_destination() -> None:
-    output = """
-Server:         10.96.0.10
-Address:        10.96.0.10:53
-
-Name:   kubernetes.default.svc.cluster.local
-Address: 10.96.0.1
-"""
-
-    assert _private_ipv4_from_nslookup(output) == "10.96.0.1"
 
 
 def test_canary_policy_selects_only_proxy_revision_and_final_covers_component() -> None:
@@ -339,29 +344,15 @@ def test_calico_enforces_proxy_only_public_https_and_proxy_source_boundary() -> 
         "unrestricted control pod could not reach mapped public IPv4"
     )
 
-    private_ipv4_result = _run(
-        "kubectl",
-        "exec",
-        control_pod,
-        "--",
-        "nslookup",
-        "kubernetes.default.svc",
-        check=False,
-        timeout=30,
-    )
-    assert private_ipv4_result.returncode == 0, (
-        "control pod could not resolve the Kubernetes private service"
-    )
-    private_ipv4 = _private_ipv4_from_nslookup(
-        f"{private_ipv4_result.stdout}\n{private_ipv4_result.stderr}"
-    )
+    private_hostname = "kubernetes.default.svc.cluster.local"
+    private_ipv4 = _kubernetes_service_ipv4()
     control_private = _exec_curl(
         control_pod,
         "--no-fail",
         "--insecure",
         "--resolve",
-        _mapped_resolve("kubernetes.default.svc", 443, private_ipv4),
-        "https://kubernetes.default.svc/healthz",
+        _mapped_resolve(private_hostname, 443, private_ipv4),
+        f"https://{private_hostname}/healthz",
     )
     assert control_private.returncode == 0, (
         "unrestricted control pod could not reach mapped private IPv4"
@@ -383,8 +374,8 @@ def test_calico_enforces_proxy_only_public_https_and_proxy_source_boundary() -> 
             pod,
             "--insecure",
             "--resolve",
-            _mapped_resolve("kubernetes.default.svc", 443, private_ipv4),
-            "https://kubernetes.default.svc/healthz",
+            _mapped_resolve(private_hostname, 443, private_ipv4),
+            f"https://{private_hostname}/healthz",
         )
         assert mapped_private.returncode != 0, (
             f"{pod} retained direct mapped private egress"

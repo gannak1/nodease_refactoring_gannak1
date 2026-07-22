@@ -509,7 +509,7 @@ services:
     security_opt:
       - no-new-privileges:true
     tmpfs:
-      - /run/squid
+      - "/run/squid:rw,noexec,nosuid,nodev,uid=13,gid=13,mode=0700"
       - /var/log/squid
       - /var/spool/squid
       - /tmp

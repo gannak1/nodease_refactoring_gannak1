@@ -22,6 +22,7 @@ def _render_helm(
     *,
     values_files: tuple[str, ...],
     set_values: tuple[str, ...] = (),
+    set_json_values: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     if os.getenv("NODEASE_RUN_HELM_INTEGRATION_TESTS") != "1":
         pytest.skip("Helm integration contract is owned by deployment validation")
@@ -40,6 +41,8 @@ def _render_helm(
         command.extend(("-f", str(REPOSITORY_ROOT / values_file)))
     for value in set_values:
         command.extend(("--set", value))
+    for value in set_json_values:
+        command.extend(("--set-json", value))
 
     return subprocess.run(
         command,
@@ -497,3 +500,39 @@ def test_helm_renders_deployment_managed_connector_proxy_port() -> None:
     assert completed.returncode == 0, f"{completed.stdout}\n{completed.stderr}"
     assert 'value: "22,5432,15432"' in completed.stdout
     assert "port: 15432" in completed.stdout
+
+
+@pytest.mark.parametrize(
+    ("overrides", "empty_list_override", "expected_message"),
+    [
+        (
+            (
+                "worker.enabled=false",
+                "postgresql.enabled=false",
+            ),
+            "worker.networkPolicy.externalDatabaseCidrs=[]",
+            "worker.networkPolicy.externalDatabaseCidrs is required",
+        ),
+        (
+            (
+                "worker.enabled=false",
+                "redis.enabled=false",
+            ),
+            "worker.networkPolicy.externalRedisCidrs=[]",
+            "worker.networkPolicy.externalRedisCidrs is required",
+        ),
+    ],
+)
+def test_helm_rejects_missing_external_dependency_cidrs_when_worker_is_disabled(
+    overrides: tuple[str, ...],
+    empty_list_override: str,
+    expected_message: str,
+) -> None:
+    completed = _render_helm(
+        values_files=("tests/ci/fixtures/helm-values-ci.yaml",),
+        set_values=overrides,
+        set_json_values=(empty_list_override,),
+    )
+
+    assert completed.returncode != 0
+    assert expected_message in f"{completed.stdout}\n{completed.stderr}"

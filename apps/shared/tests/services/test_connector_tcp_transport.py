@@ -464,8 +464,8 @@ def test_postgres_ssh_tunnel_uses_validated_bastion_ip_through_connector_proxy(
         lambda *_args, **_kwargs: ("bastion.example", 22, "93.184.216.35"),
     )
     monkeypatch.setattr(
-        "apps.shared.connectors.postgres.SSHTunnelForwarder",
-        _SshTunnel,
+        "apps.shared.connectors.postgres._create_ssh_tunnel",
+        lambda **kwargs: _SshTunnel(**kwargs),
     )
     dialer = _Dialer()
     connector = PostgresConnector(
@@ -546,8 +546,8 @@ def test_postgres_connector_closes_proxy_when_ssh_tunnel_start_fails(
         lambda *_args, **_kwargs: ("bastion.example", 22, "93.184.216.35"),
     )
     monkeypatch.setattr(
-        "apps.shared.connectors.postgres.SSHTunnelForwarder",
-        _FailingSshTunnel,
+        "apps.shared.connectors.postgres._create_ssh_tunnel",
+        lambda **kwargs: _FailingSshTunnel(**kwargs),
     )
     connector = PostgresConnector(
         allow_ssh_tunnel=True,

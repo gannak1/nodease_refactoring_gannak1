@@ -125,6 +125,22 @@ CIDRs are deployment coordinates and must be supplied by the operator.
 {{- fail "egressProxy authorized source CIDRs cannot be empty, catch-all, loopback, link-local, or metadata ranges" -}}
 {{- end -}}
 {{- end -}}
+{{- if and (not .Values.postgresql.enabled) (empty .Values.worker.networkPolicy.externalDatabaseCidrs) -}}
+{{- fail "worker.networkPolicy.externalDatabaseCidrs is required when PostgreSQL is external" -}}
+{{- end -}}
+{{- if and (not .Values.redis.enabled) (empty .Values.worker.networkPolicy.externalRedisCidrs) -}}
+{{- fail "worker.networkPolicy.externalRedisCidrs is required when Redis is external" -}}
+{{- end -}}
+{{- $externalCidrs := concat .Values.worker.networkPolicy.externalDatabaseCidrs .Values.worker.networkPolicy.externalRedisCidrs .Values.worker.networkPolicy.externalSandboxCidrs -}}
+{{- range $externalCidr := $externalCidrs -}}
+{{- $cidr := trim (toString $externalCidr) -}}
+{{- if empty $cidr -}}
+{{- fail "worker.networkPolicy external dependency CIDRs cannot be empty" -}}
+{{- end -}}
+{{- if or (eq $cidr "0.0.0.0/0") (eq $cidr "::/0") (eq $cidr "169.254.0.0/16") (eq $cidr "169.254.169.254/32") (eq $cidr "fe80::/10") -}}
+{{- fail "worker.networkPolicy external dependency CIDRs cannot be public catch-all, link-local, or metadata ranges" -}}
+{{- end -}}
+{{- end -}}
 {{- if not (has .Values.egressProxy.networkPolicy.enforcementPhase (list "canary" "final")) -}}
 {{- fail "egressProxy.networkPolicy.enforcementPhase must be canary or final" -}}
 {{- end -}}

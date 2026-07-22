@@ -13,17 +13,19 @@ def test_helm_worker_policy_is_default_on_and_rejects_unsafe_catch_all() -> None
     values = yaml.safe_load(_read("infra/helm/moduly/values.yaml"))
     production = yaml.safe_load(_read("infra/helm/moduly/values-production.yaml"))
     template = _read("infra/helm/moduly/templates/worker-networkpolicy.yaml")
+    helpers = _read("infra/helm/moduly/templates/_helpers.tpl")
 
     assert values["worker"]["networkPolicy"]["enabled"] is True
     assert production["worker"]["networkPolicy"]["enabled"] is True
     assert production["worker"]["networkPolicy"]["externalDatabaseCidrs"] == [
         "10.0.0.0/16"
     ]
-    assert 'eq $cidr "0.0.0.0/0"' in template
-    assert 'eq $cidr "::/0"' in template
-    assert "externalDatabaseCidrs is required" in template
-    assert "externalRedisCidrs is required" in template
-    assert "external dependency CIDRs cannot be empty" in template
+    assert 'eq $cidr "0.0.0.0/0"' in helpers
+    assert 'eq $cidr "::/0"' in helpers
+    assert "externalDatabaseCidrs is required" in helpers
+    assert "externalRedisCidrs is required" in helpers
+    assert "external dependency CIDRs cannot be empty" in helpers
+    assert "externalDatabaseCidrs is required" not in template
     assert ".Values.egressProxy.enabled" in template
     assert 'component" "egress-proxy' in template
     assert "port: 3129" in template
