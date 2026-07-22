@@ -114,7 +114,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Slack template은 실제 사용된 `{{name}}` 등록 변수만 조회하며 미사용 reference의 누락 input은 무시한다. JSON 문자열 안의 quote/bracket payload는 escape 후에도 원래 scalar로 남고 구조를 바꾸지 못해야 한다. Jinja attribute/global 접근, expression, filter, statement/control flow와 동적 JSON key는 provider 호출 전에 거부한다.
 - deployment validation은 canonical commercial webhook URL과 mode별 credential을 검사하고, 공백이 아닌 `message`/비어 있지 않은 `blocks`/비어 있지 않은 `attachments` 중 하나 이상을 요구한다. Webhook mode의 숨은 레거시 `channel`은 무시하며 request payload에 포함하지 않는다. Client는 API mode에서 URL을 요구하지 않으며 API/Webhook mode별 output과 nested legacy selector 경고를 다르게 표시한다.
 - DNS/egress preflight와 HTTP connect/read는 각각 bounded timeout을 가지며, provider 실패 trace는 raw payload 없이 safe outcome과 status만 보존한다.
-- IMAP resolver는 private/loopback/metadata target과 `143/993` 이외 포트를 거부하고, `143`에서는 로그인 전에 STARTTLS를 강제한다. DNS 검증 IP에 socket 연결을 고정하면서 TLS hostname 검증은 canonical hostname으로 수행한다.
+- IMAP resolver는 private/loopback/metadata target과 `143/993` 이외 포트를 거부하고, `143`에서는 로그인 전에 STARTTLS를 강제한다. Local/test direct mode는 DNS 검증 IP에 socket 연결을 고정한다. Production proxy mode는 같은 IP를 Worker-only CONNECT authority로 보내고 TLS hostname 검증은 canonical hostname으로 수행하며, tunnel 거부·timeout 뒤 origin direct dial은 0회다.
 - Legacy inline password graph는 validation error에 secret 값을 포함하지 않고 fail-closed한다.
 
 ## MBA-356 Fixed SaaS Outbound Tests
@@ -894,7 +894,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Redirect-to-private 응답은 첫 3xx status/data/headers를 반환하고 두 번째 connection을 만들지 않는다. Peer mismatch는 request byte 전송 전 non-retryable 실패로 닫고, 압축·oversized response와 read 실패는 output을 사용하지 않고 outcome unknown으로 닫는다.
 - Connect 전에 전송이 없다고 증명되는 일시 실패만 retry-before-effect가 될 수 있다. Write/read timeout, response loss와 전송 뒤 검증 실패를 안전한 재시도로 바꾸지 않는다.
 - `HttpRequestNode`와 Generic HTTP provider는 `httpx.Client`를 직접 생성하지 않고 application outbound port를 사용한다. Production import/architecture contract가 직접 client 회귀를 탐지한다.
-- Helm render의 Worker egress NetworkPolicy는 cluster DNS, PostgreSQL 5432, Redis 6379, Sandbox 8194, Mail 143/993와 internal Squid 3129만 허용하고 public 80/443 direct route를 두지 않는다. External dependency CIDR은 해당 dedicated service port에만 적용되며 public catch-all CIDR을 허용하지 않아야 한다. Canary selector는 proxy revision label을 요구하고 final selector는 모든 Worker pod를 포함한다.
+- Helm render의 Worker egress NetworkPolicy는 cluster DNS, configured PostgreSQL port, Redis 6379, Sandbox 8194와 internal Squid 3129만 허용하고 public 80/143/443/993 direct route를 두지 않는다. Squid 3129는 Worker source의 IMAP 143/993 CONNECT만 별도로 허용한다. External dependency CIDR은 해당 configured service port에만 적용되며 public catch-all CIDR을 허용하지 않아야 한다. Canary selector는 proxy revision label을 요구하고 final selector는 모든 Worker pod를 포함한다.
 - Pinned kind+Calico IPv4 runtime에서 Worker-shaped probe의 direct public HTTPS는 실패하고 Squid `3129` 경유 HTTP/HTTPS는 성공해야 한다. Unauthorized Sandbox-shaped probe는 Squid ingress에 실패하며 proxy replica가 unavailable해도 direct fallback은 없어야 한다. Dual-stack과 실제 배포 CNI는 release 환경에서 같은 probe를 통과해야 한다.
 
 ## Test preflight와 실행 presentation state

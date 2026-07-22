@@ -72,7 +72,7 @@ spec:
               app.kubernetes.io/name: postgresql
       ports:
         - protocol: TCP
-          port: 5432
+          port: {{ include "moduly.postgresql.port" . }}
     {{- end }}
     {{- if .Values.redis.enabled }}
     - to:
@@ -99,7 +99,7 @@ spec:
             cidr: {{ . | quote }}
       ports:
         - protocol: TCP
-          port: 5432
+          port: {{ include "moduly.postgresql.port" . }}
     {{- end }}
     {{- range .Values.worker.networkPolicy.externalRedisCidrs }}
     - to:
@@ -156,7 +156,7 @@ spec:
               app.kubernetes.io/name: postgresql
       ports:
         - protocol: TCP
-          port: 5432
+          port: {{ include "moduly.postgresql.port" . }}
     {{- end }}
     {{- if .Values.redis.enabled }}
     - to:
@@ -174,7 +174,7 @@ spec:
             cidr: {{ . | quote }}
       ports:
         - protocol: TCP
-          port: 5432
+          port: {{ include "moduly.postgresql.port" . }}
     {{- end }}
     {{- range .Values.worker.networkPolicy.externalRedisCidrs }}
     - to:
@@ -215,7 +215,7 @@ spec:
               app.kubernetes.io/name: postgresql
       ports:
         - protocol: TCP
-          port: 5432
+          port: {{ include "moduly.postgresql.port" . }}
     {{- end }}
     {{- if .Values.redis.enabled }}
     - to:
@@ -233,7 +233,7 @@ spec:
             cidr: {{ . | quote }}
       ports:
         - protocol: TCP
-          port: 5432
+          port: {{ include "moduly.postgresql.port" . }}
     {{- end }}
     {{- range .Values.worker.networkPolicy.externalRedisCidrs }}
     - to:
@@ -371,7 +371,7 @@ spec:
               - ::/96
               - ::/128
               - ::1/128
-              - ::ffff:0:0/96
+              - ::ffff:0.0.0.0/96
               - 64:ff9b::/96
               - 64:ff9b:1::/48
               - 100::/64
@@ -390,4 +390,8 @@ spec:
           port: 80
         - protocol: TCP
           port: 443
+        - protocol: TCP
+          port: 143
+        - protocol: TCP
+          port: 993
 {{- end }}

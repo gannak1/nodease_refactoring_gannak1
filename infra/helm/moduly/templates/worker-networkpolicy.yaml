@@ -55,7 +55,7 @@ spec:
               app.kubernetes.io/name: postgresql
       ports:
         - protocol: TCP
-          port: 5432
+          port: {{ include "moduly.postgresql.port" . }}
     {{- end }}
     {{- if .Values.redis.enabled }}
     - to:
@@ -82,7 +82,7 @@ spec:
             cidr: {{ . | quote }}
       ports:
         - protocol: TCP
-          port: 5432
+          port: {{ include "moduly.postgresql.port" . }}
     {{- end }}
     {{- range .Values.worker.networkPolicy.externalRedisCidrs }}
     - to:
@@ -100,58 +100,4 @@ spec:
         - protocol: TCP
           port: 8194
     {{- end }}
-    # IMAP remains a dedicated non-HTTP transport. Public web traffic is
-    # available only through the internal egress proxy rule above.
-    - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
-            except:
-              - 0.0.0.0/8
-              - 10.0.0.0/8
-              - 100.64.0.0/10
-              - 127.0.0.0/8
-              - 169.254.0.0/16
-              - 172.16.0.0/12
-              - 192.0.0.0/24
-              - 192.0.2.0/24
-              - 192.88.99.0/24
-              - 192.168.0.0/16
-              - 198.18.0.0/15
-              - 198.51.100.0/24
-              - 203.0.113.0/24
-              - 224.0.0.0/4
-              - 240.0.0.0/4
-      ports:
-        - protocol: TCP
-          port: 143
-        - protocol: TCP
-          port: 993
-    # Public IPv6 only. Translation, local, documentation, discard and
-    # multicast ranges are excluded to prevent alternate-address bypasses.
-    - to:
-        - ipBlock:
-            cidr: ::/0
-            except:
-              - ::/96
-              - ::/128
-              - ::1/128
-              - ::ffff:0:0/96
-              - 64:ff9b::/96
-              - 64:ff9b:1::/48
-              - 100::/64
-              - 2001::/23
-              - 2001:db8::/32
-              - 2002::/16
-              - 3ffe::/16
-              - 3fff::/20
-              - 5f00::/16
-              - fc00::/7
-              - fe80::/10
-              - fec0::/10
-              - ff00::/8
-      ports:
-        - protocol: TCP
-          port: 143
-        - protocol: TCP
-          port: 993
 {{- end }}

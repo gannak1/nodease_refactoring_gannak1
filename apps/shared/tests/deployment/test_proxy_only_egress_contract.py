@@ -28,6 +28,16 @@ def _network_literals(
     return networks
 
 
+def _kubernetes_canonical_cidr(
+    network: ipaddress.IPv4Network | ipaddress.IPv6Network,
+) -> str:
+    if isinstance(network, ipaddress.IPv6Network):
+        mapped = network.network_address.ipv4_mapped
+        if mapped is not None:
+            return f"::ffff:{mapped}/{network.prefixlen}"
+    return str(network)
+
+
 def test_squid_configuration_is_pinned_fail_closed_and_does_not_retain_payloads() -> (
     None
 ):
@@ -42,6 +52,11 @@ def test_squid_configuration_is_pinned_fail_closed_and_does_not_retain_payloads(
     assert "dns_v4_first" not in config
     assert "http_port 3128 name=https_only" in config
     assert "http_port 3129 name=http_compatible" in config
+    assert "acl IMAP_ports port 143 993" in config
+    assert (
+        "http_access allow workflow_http_source http_compatible_listener "
+        "CONNECT IMAP_ports"
+    ) in config
     assert "http_access deny manager" in config
     assert "http_access deny blocked_destination" in config
     assert "acl blocked_destination dst ::ffff:0:0/96" in config
@@ -65,12 +80,27 @@ def test_proxy_and_network_policy_use_the_application_denied_cidr_registry() -> 
     }
 
     assert squid_networks == expected_networks
+    proxy_policy_networks = _network_literals(
+        _read("infra/helm/moduly/templates/proxy-only-networkpolicies.yaml")
+    )
+    assert expected_networks <= proxy_policy_networks
+    assert _network_literals(
+        _read("infra/helm/moduly/templates/worker-networkpolicy.yaml")
+    ) == set()
+
+
+def test_kubernetes_network_policy_cidrs_use_api_canonical_spelling() -> None:
     for path in (
         "infra/helm/moduly/templates/proxy-only-networkpolicies.yaml",
         "infra/helm/moduly/templates/worker-networkpolicy.yaml",
     ):
-        policy_networks = _network_literals(_read(path))
-        assert expected_networks <= policy_networks
+        for line in _read(path).splitlines():
+            candidate = line.strip().removeprefix("- ").strip().strip('"').strip("'")
+            try:
+                network = ipaddress.ip_network(candidate, strict=True)
+            except ValueError:
+                continue
+            assert candidate == _kubernetes_canonical_cidr(network)
 
 
 def test_compose_target_workloads_have_no_direct_egress_or_ambient_proxy() -> None:
@@ -173,8 +203,10 @@ def test_helm_production_reference_requires_ha_proxy_only_egress() -> None:
     assert "port: 3129" in policies
     assert "port: 80" not in worker_policy
     assert "port: 443" not in worker_policy
-    assert "port: 143" in worker_policy
-    assert "port: 993" in worker_policy
+    assert "port: 143" not in worker_policy
+    assert "port: 993" not in worker_policy
+    assert "cidr: 0.0.0.0/0" not in worker_policy
+    assert "cidr: ::/0" not in worker_policy
     assert "cidr: 0.0.0.0/0" in policies
     assert "cidr: ::/0" in policies
     proxy_ingress = policies.split("---", maxsplit=1)[0]
@@ -202,6 +234,19 @@ def test_helm_production_reference_requires_ha_proxy_only_egress() -> None:
         assert "HTTP_PROXY" not in workload
         assert "HTTPS_PROXY" not in workload
         assert "NO_PROXY" not in workload
+
+
+def test_helm_network_policies_reuse_the_configured_postgresql_port() -> None:
+    helpers = _read("infra/helm/moduly/templates/_helpers.tpl")
+    configmap = _read("infra/helm/moduly/templates/configmap.yaml")
+    policies = _read("infra/helm/moduly/templates/proxy-only-networkpolicies.yaml")
+    worker_policy = _read("infra/helm/moduly/templates/worker-networkpolicy.yaml")
+
+    assert 'define "moduly.postgresql.port"' in helpers
+    assert 'include "moduly.postgresql.port" .' in configmap
+    for source in (policies, worker_policy):
+        assert "port: 5432" not in source
+        assert 'port: {{ include "moduly.postgresql.port" . }}' in source
 
 
 def test_helm_proxy_only_policy_has_no_direct_public_route_for_target_workloads() -> (
@@ -235,7 +280,10 @@ def test_helm_non_http_workloads_are_default_deny_with_only_internal_dependencie
     policies = _read("infra/helm/moduly/templates/proxy-only-networkpolicies.yaml")
 
     expected_policies = {
-        "logger-internal-only-egress": {"5432", "6379"},
+        "logger-internal-only-egress": {
+            '{{ include "moduly.postgresql.port" . }}',
+            "6379",
+        },
         "beat-internal-only-egress": {"6379"},
         "frontend-internal-only-egress": {
             "{{ .Values.gateway.service.port }}",

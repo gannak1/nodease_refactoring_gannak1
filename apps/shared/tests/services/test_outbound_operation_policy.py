@@ -9,6 +9,7 @@ from apps.shared.services.outbound_operation_policy import (
     GMAIL_MESSAGE_MODIFY,
     GMAIL_MESSAGE_READ,
     GMAIL_PROFILE_READ,
+    GOOGLE_LOGIN_OIDC,
     GOOGLE_OAUTH_AUTHORIZATION_CODE_EXCHANGE,
     GOOGLE_OAUTH_REFRESH,
     KNOWLEDGE_API_FETCH,
@@ -29,6 +30,7 @@ def test_registered_sensitive_operations_are_https_only_and_versioned() -> None:
     assert set(profiles) == {
         GOOGLE_OAUTH_AUTHORIZATION_CODE_EXCHANGE,
         GOOGLE_OAUTH_REFRESH,
+        GOOGLE_LOGIN_OIDC,
         GMAIL_PROFILE_READ,
         GMAIL_MESSAGE_READ,
         GMAIL_MESSAGE_MODIFY,
@@ -58,6 +60,7 @@ def test_registered_sensitive_operations_are_https_only_and_versioned() -> None:
     [
         (GOOGLE_OAUTH_AUTHORIZATION_CODE_EXCHANGE, {"POST"}, 64 * 1024, 1024 * 1024),
         (GOOGLE_OAUTH_REFRESH, {"POST"}, 64 * 1024, 1024 * 1024),
+        (GOOGLE_LOGIN_OIDC, {"GET", "POST"}, 64 * 1024, 1024 * 1024),
         (GMAIL_PROFILE_READ, {"GET"}, 0, 256 * 1024),
         (GMAIL_MESSAGE_READ, {"GET"}, 0, 2 * 1024 * 1024),
         (GMAIL_MESSAGE_MODIFY, {"POST"}, 256 * 1024, 512 * 1024),

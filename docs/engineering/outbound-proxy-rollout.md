@@ -4,7 +4,7 @@ Status: Draft
 
 ## Scope
 
-이 runbook은 ADR-0071의 Docker Compose 및 provider-neutral Helm HTTP/HTTPS egress 전환을 다룬다. PostgreSQL, Redis, IMAP, Connector DB/SSH와 Sandbox control은 대상이 아니다. Proxy 설정을 제거해 direct egress로 되돌리는 절차는 안전한 rollback이 아니다.
+이 runbook은 ADR-0071의 Docker Compose 및 provider-neutral Helm HTTP/HTTPS egress와 Worker IMAP tunnel 전환을 다룬다. PostgreSQL, Redis, Connector DB/SSH와 Sandbox control은 대상이 아니다. Proxy 설정을 제거해 direct egress로 되돌리는 절차는 안전한 rollback이 아니다.
 
 ## Required inputs
 
@@ -37,7 +37,7 @@ Catch-all, loopback, link-local, metadata 또는 출처를 알 수 없는 source
    - 승인 HTTPS/Generic HTTP operation 성공
    - direct public/private/metadata IPv4/IPv6 실패
    - proxy unavailable에서 direct fallback 0회
-   - DB/Redis/Sandbox와 필요한 IMAP route 정상
+   - DB/Redis/Sandbox direct internal route와 검증 IP 기반 IMAP 143/993 tunnel 정상
    - safe error, latency, pool saturation과 application 기능 회귀
 5. 실패하면 해당 Deployment를 pause한 채 원인을 수정한다. NetworkPolicy나 proxy 설정을 제거해 호출을 살리지 않는다.
 

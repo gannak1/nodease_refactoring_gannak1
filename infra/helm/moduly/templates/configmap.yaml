@@ -11,7 +11,7 @@ metadata:
 data:
   # Database configuration (non-sensitive)
   DB_HOST: {{ include "moduly.postgresql.host" . | quote }}
-  DB_PORT: {{ .Values.postgresql.auth.port | default "5432" | quote }}
+  DB_PORT: {{ include "moduly.postgresql.port" . | quote }}
   DB_NAME: {{ .Values.postgresql.auth.database | default "moduly" | quote }}
   DB_USER: {{ .Values.postgresql.auth.username | default "moduly" | quote }}
   

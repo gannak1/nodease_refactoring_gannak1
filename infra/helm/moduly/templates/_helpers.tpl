@@ -270,6 +270,13 @@ Get PostgreSQL host
 {{- end }}
 
 {{/*
+Get the canonical PostgreSQL port used by both application config and egress policy.
+*/}}
+{{- define "moduly.postgresql.port" -}}
+{{- .Values.postgresql.auth.port | default 5432 -}}
+{{- end }}
+
+{{/*
 Get Redis host
 */}}
 {{- define "moduly.redis.host" -}}

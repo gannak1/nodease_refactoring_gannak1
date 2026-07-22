@@ -37,7 +37,7 @@ Option 3을 채택한다.
 4. Direct-pinned mode는 local/test와 exact internal 또는 별도 non-HTTP adapter에만 남는다. Production public HTTP workload는 direct mode로 시작할 수 없다.
 5. Squid는 두 내부 listener를 제공한다.
    - `3128`: Gateway와 Knowledge Worker의 HTTPS CONNECT 443 전용
-   - `3129`: Workflow Worker의 HTTPS CONNECT 443과 Generic HTTP 호환 public 80
+   - `3129`: Workflow Worker의 HTTPS CONNECT 443, Generic HTTP 호환 public 80과 address-pinned IMAP CONNECT 143/993
    Source/listener 분리는 NetworkPolicy와 Squid ACL을 함께 사용한다. 이는 network-authorized source이며 cryptographic workload identity가 아니다.
 6. Squid는 SSL bump/MITM을 사용하지 않는다. 원래 hostname SNI와 certificate 검증은 workload와 origin 사이의 CONNECT tunnel에서 유지한다.
 7. Squid는 private, loopback, link-local, metadata, reserved와 multicast IPv4/IPv6 destination을 거부한다. Application과 Squid가 각각 DNS를 검증하며 CNAME 또는 A/AAAA 결과 중 하나라도 unsafe이면 전체 hostname을 거부한다.
@@ -45,7 +45,7 @@ Option 3을 채택한다.
 9. Docker Compose는 application/internal dependency network를 `internal`로 만들고, Gateway·Knowledge·Workflow는 각각 proxy client network만 추가로 사용한다. Squid만 별도 egress-capable network에 연결하며 host에 proxy port를 publish하지 않는다.
 10. Provider-neutral Helm은 immutable Squid image digest, internal ClusterIP Service, 최소 2개 production replica, `maxUnavailable: 0`, PDB, non-root/read-only/capability-drop와 resource bound를 제공한다.
 11. Helm의 target workload egress는 DNS, Squid와 필요한 exact internal/dedicated protocol만 허용한다. Logger, Beat와 Frontend는 public proxy 권한 없이 각각 DB/Redis 또는 internal Gateway만 허용한다. Sandbox는 일반 Squid source가 아니며 기존 격리를 완화하지 않는다.
-12. PostgreSQL, Redis, Sandbox control, IMAP과 Connector DB/SSH는 Squid 대상이 아니다. 각 protocol의 기존 exact service/port, pinned transport와 Accepted ADR을 유지한다.
+12. PostgreSQL, Redis, Sandbox control과 Connector DB/SSH는 Squid 대상이 아니며 기존 exact service/port와 Accepted ADR을 유지한다. IMAP은 Compose/Kubernetes에서 Worker direct public egress를 다시 열지 않도록 예외적으로 `3129`의 143/993 CONNECT tunnel을 사용한다. Application은 검증된 IP만 CONNECT authority로 보내고 원래 hostname으로 TLS SNI·인증서를 검증하며, Squid는 의미 정책이나 credential 판단을 소유하지 않는다.
 13. Rollout은 `nodease.io/egress-mode=proxy-v1` revision label을 사용한다. `canary` phase의 strict workload policy는 이 label이 있는 새 pod만 선택한다. `final` phase는 revision label을 selector에서 제거해 해당 component의 모든 pod를 선택하며, old pod가 모두 drain된 뒤에만 적용한다. Pod annotation에 phase를 기록한다.
 14. Kubernetes 완료 판정은 정적 render만으로 하지 않는다. PR CI는 pinned kind/Kubernetes와 Calico IPv4에서 target direct HTTPS 실패, authorized proxy 성공과 unauthorized source 실패를 실행한다. Dual-stack과 실제 배포 CNI는 release 환경에서 같은 positive/negative probe를 통과해야 하며, 통과하지 않은 CNI는 지원 대상으로 간주하지 않는다.
 15. Standard NetworkPolicy가 additive라는 사실은 변하지 않는다. Release manifest와 cluster의 다른 allow policy, `hostNetwork`, privileged workload와 CNI enforcement를 배포 전 확인한다. 이 검증을 실패하면 proxy-only activation을 중단한다.
@@ -65,11 +65,11 @@ Option 3을 채택한다.
 | Lifecycle·HA | 완료 | 최소 replica, rolling bound, PDB, readiness/liveness와 canary/final selector 전환 |
 | Network enforcement | 완료(기준 환경) | Compose disposable network test와 pinned kind+Calico IPv4 CI probe |
 | Dual-stack·운영 CNI | Release gate | 실제 배포 환경에서 같은 probe를 통과해야 하며 미검증 환경은 활성화하지 않는다. |
-| 비-HTTP protocol | 해당 없음 | DB, Redis, IMAP, Sandbox와 Connector의 별도 Accepted 계약을 유지한다. |
+| 비-HTTP protocol | 완료(IMAP), 그 외 해당 없음 | IMAP은 ADR-0031 address pinning을 보존한 Worker-only 143/993 tunnel을 사용한다. DB, Redis, Sandbox와 Connector는 별도 Accepted 계약을 유지한다. |
 
 ## Consequences
 
-- External HTTP/HTTPS 호출은 application guard와 Squid를 모두 통과한다.
+- External HTTP/HTTPS 호출과 production IMAP tunnel은 application guard와 Squid를 모두 통과한다.
 - Proxy 장애는 해당 외부 operation의 가용성을 낮추지만 direct path로 보안을 완화하지 않는다.
 - HTTPS payload inspection은 제공하지 않는다. Squid만으로 operation authorization이 완료됐다고 판단할 수 없다.
 - NetworkPolicy를 집행하지 않거나 additive allow policy가 있는 cluster는 동일 chart를 렌더할 수 있어도 지원 환경이 아니다.

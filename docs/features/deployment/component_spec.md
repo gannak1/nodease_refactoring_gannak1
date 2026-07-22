@@ -6,9 +6,9 @@ Status: Draft
 
 - Application guard는 operation 의미 정책을, explicit transport는 exact internal Squid endpoint와 no-fallback을, Compose/NetworkPolicy는 direct socket 차단을 담당한다. Squid는 actor, organization, HTTPS path/header/body를 판정하지 않는다.
 - Helm은 `egressProxy` root block을 단일 배포 권위로 사용한다. Image digest, policy revision, listener, authorized pod CIDR, replica/resource와 `canary|final` phase를 component별로 중복 정의하지 않는다.
-- Gateway와 Knowledge Worker는 `3128` HTTPS CONNECT-only listener를, Workflow Worker는 `3129` HTTP-compatible listener를 사용한다. `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`를 Pod에 주입하지 않는다.
+- Gateway와 Knowledge Worker는 `3128` HTTPS CONNECT-only listener를, Workflow Worker는 `3129` HTTP-compatible listener를 사용한다. Workflow listener의 CONNECT는 HTTPS 443과 address-pinned IMAP 143/993만 허용한다. `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`를 Pod에 주입하지 않는다.
 - `canary`에서는 strict workload NetworkPolicy가 `nodease.io/egress-mode=proxy-v1` revision만 선택한다. `final`에서는 revision selector를 제거해 component의 unlabeled stale pod도 direct egress를 유지할 수 없게 한다. Phase는 Pod annotation에 남으며 rollout pause는 operator runbook이 소유한다.
-- Logger와 Beat는 DB/Redis, Frontend server는 internal Gateway만 사용한다. Sandbox는 일반 proxy source가 아니고 Mail IMAP 및 Connector DB는 Squid와 분리된 dedicated transport다.
+- Logger와 Beat는 DB/Redis, Frontend server는 internal Gateway만 사용한다. Sandbox는 일반 proxy source가 아니다. Mail IMAP은 Worker-only tunnel 안에서도 ADR-0031의 IP pinning과 hostname TLS를 유지하고, Connector DB는 Squid와 분리된 dedicated transport다.
 - Squid access/cache log는 비활성이다. UI/API surface는 추가하지 않으며 operator는 readiness, replica/resource와 safe failure bucket만 관측한다.
 
 ## Screens
