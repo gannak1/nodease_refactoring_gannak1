@@ -4,8 +4,12 @@ LLM 클라이언트의 공통 인터페이스.
 각 provider별 클라이언트는 이 추상 클래스를 상속해 구현합니다.
 """
 
+import json
+import math
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from enum import Enum
+from threading import Lock
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 import httpx
@@ -85,6 +89,73 @@ class ProviderInvocationError(LLMResponseValidationError):
 
 class ProviderEndpointUnsupportedError(ProviderInvocationError):
     """A redacted, explicit signal that a provider endpoint is unavailable."""
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingProviderResult:
+    """Validated provider result without the raw provider response."""
+
+    vector: tuple[float, ...] = field(repr=False)
+    input_tokens: int
+
+    def __post_init__(self) -> None:
+        if not self.vector or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            for value in self.vector
+        ):
+            raise LLMResponseValidationError("Embedding result is invalid.")
+        if (
+            isinstance(self.input_tokens, bool)
+            or not isinstance(self.input_tokens, int)
+            or self.input_tokens < 0
+        ):
+            raise LLMResponseValidationError("Embedding usage is invalid.")
+        object.__setattr__(self, "vector", tuple(float(value) for value in self.vector))
+
+
+class PreparedEmbeddingInvocation:
+    """Opaque single-use provider request with only safe admission bounds."""
+
+    __slots__ = (
+        "_invoke",
+        "_lock",
+        "_used",
+        "canonical_request_bytes",
+        "requested_input_tokens",
+    )
+
+    def __init__(
+        self,
+        *,
+        canonical_request_bytes: int,
+        requested_input_tokens: int,
+        invoke: Callable[[], EmbeddingProviderResult],
+    ) -> None:
+        for value in (canonical_request_bytes, requested_input_tokens):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError("embedding request bounds must be positive integers")
+        self.canonical_request_bytes = canonical_request_bytes
+        self.requested_input_tokens = requested_input_tokens
+        self._invoke = invoke
+        self._lock = Lock()
+        self._used = False
+
+    def __repr__(self) -> str:
+        return "PreparedEmbeddingInvocation(sealed=True, used=%s)" % self._used
+
+    def invoke(self) -> EmbeddingProviderResult:
+        with self._lock:
+            if self._used:
+                raise LLMResponseValidationError(
+                    "Prepared embedding invocation was already used."
+                )
+            self._used = True
+        result = self._invoke()
+        if not isinstance(result, EmbeddingProviderResult):
+            raise LLMResponseValidationError("Embedding result is invalid.")
+        return result
 
 
 class BaseLLMClient(ABC):
@@ -318,6 +389,50 @@ class BaseLLMClient(ABC):
             float 리스트 형태의 벡터
         """
         return self._run_coroutine_sync(lambda: self.embed(text))
+
+    def prepare_embedding_invocation(
+        self,
+        text: str,
+    ) -> PreparedEmbeddingInvocation:
+        """Prepare a typed embedding call when the provider supports usage."""
+
+        raise ProviderEndpointUnsupportedError(
+            "Typed embedding usage is not supported.",
+            reason_code="provider_endpoint_unsupported",
+            failure_phase=ProviderFailurePhase.BEFORE_SEND,
+        )
+
+    def _seal_embedding_invocation(
+        self,
+        *,
+        text: str,
+        invoke: Callable[[], EmbeddingProviderResult],
+    ) -> PreparedEmbeddingInvocation:
+        if (
+            not isinstance(text, str)
+            or not text
+            or not isinstance(self.model_id, str)
+            or not self.model_id
+        ):
+            raise LLMResponseValidationError("Embedding request is invalid.")
+        try:
+            encoded = json.dumps(
+                {"input": text, "model": self.model_id},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise LLMResponseValidationError("Embedding request is invalid.") from exc
+        if not encoded:
+            raise LLMResponseValidationError("Embedding request is invalid.")
+        bound = len(encoded)
+        return PreparedEmbeddingInvocation(
+            canonical_request_bytes=bound,
+            requested_input_tokens=bound,
+            invoke=invoke,
+        )
 
     def embed_batch_sync(self, texts: List[str]) -> List[List[float]]:
         """Synchronous batch fallback for clients without a native batch API."""

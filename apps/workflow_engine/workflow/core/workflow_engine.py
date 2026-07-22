@@ -276,6 +276,18 @@ class WorkflowEngine:
                     )
                 ),
             )
+        if knowledge_enabled and self.runtime_dependencies.query_embedding_runtime is None:
+            from apps.workflow_engine.composition.provider_execution import (
+                build_query_embedding_runtime,
+            )
+
+            self.runtime_dependencies = replace(
+                self.runtime_dependencies,
+                query_embedding_runtime=build_query_embedding_runtime(
+                    session_factory=session_factory,
+                    usage_recorder=self.runtime_dependencies.provider_usage_recorder,
+                ),
+            )
         if remote_file_enabled and self.runtime_dependencies.remote_file_fetcher is None:
             from apps.workflow_engine.composition.remote_file import (
                 build_remote_file_fetcher,

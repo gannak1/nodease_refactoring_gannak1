@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 MICROUSD_PER_USD = Decimal("1000000")
 BILLABLE_PROVIDER_USAGE_PURPOSES = frozenset(
-    {"main_generation", "memory_summary"}
+    {"main_generation", "memory_summary", "query_embedding"}
 )
 _UNRESOLVED_STATES = ("provider_started", "outcome_unknown")
 

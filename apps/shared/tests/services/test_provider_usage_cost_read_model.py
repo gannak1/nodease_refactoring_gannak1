@@ -132,6 +132,39 @@ def test_organization_and_billable_purpose_scope_are_fail_closed():
     assert result == ProviderUsageAggregate()
 
 
+def test_query_embedding_success_is_included_in_billable_usage():
+    organization_id = uuid4()
+    workflow_id = uuid4()
+
+    result = summarize_usage_records(
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+        start_at=START,
+        end_at=END,
+        legacy_usage_logs=[],
+        provider_operations=[
+            _provider_operation(
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+                purpose="query_embedding",
+                state="succeeded",
+                prompt_tokens=7,
+                completion_tokens=0,
+                total_cost_microusd=250_000,
+            )
+        ],
+    )
+
+    assert result == ProviderUsageAggregate(
+        prompt_tokens=7,
+        completion_tokens=0,
+        call_count=1,
+        total_cost=Decimal("0.25"),
+        agent_builder_cost=Decimal("0"),
+        unresolved_provider_call_count=0,
+    )
+
+
 def test_sql_aggregate_uses_canonical_source_and_legacy_only_projection_filter():
     aggregate = provider_usage_aggregate_subquery(
         organization_id=uuid4(),

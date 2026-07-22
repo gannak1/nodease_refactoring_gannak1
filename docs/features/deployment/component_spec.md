@@ -10,6 +10,8 @@ Status: Draft
 
 ## Components
 
+- `DeploymentCredentialPolicyService`는 immutable deployment graph의 canonical LLM location과 purpose별 model type을 검증한다. Main generation은 location당 하나, query embedding은 location/model당 하나의 active server-owned policy를 관리하고 purpose를 생략한 legacy request는 main generation으로 해석한다. Manager actor와 credential `use`를 server-side 검증하며 graph나 runtime actor가 credential principal을 공급하지 못하게 한다. Query policy write는 기본-disabled server rollout mode를 통과해야 하며 manager 권한 확인 뒤 mode가 비활성인 요청을 provider selection과 row mutation 전에 거부한다.
+
 - `DeploymentFlowModal` calls `POST /api/v1/deployments/preflight` before active create.
 - If preview returns `blocked`, deployment creation is not attempted and the existing error step displays safe reason labels and required actions.
 - If preview returns `warning`, deployment creation continues. The successful deployment result carries only the formatted safe warning, and `SuccessStep` displays it in an amber text banner with `role="status"`.

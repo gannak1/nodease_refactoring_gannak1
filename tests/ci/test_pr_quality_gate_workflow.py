@@ -1,6 +1,8 @@
 from pathlib import Path
 import re
 
+from scripts.ci.changed_scope import _WORKFLOW_POSTGRES_PATTERNS
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 QUALITY_GATE_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "pr-quality-gate.yml"
@@ -24,11 +26,17 @@ KNOWLEDGE_POSTGRES_PATH = (
     / "workflows"
     / "test-knowledge-runtime-postgres.yml"
 )
+WORKFLOW_POSTGRES_PATH = (
+    REPOSITORY_ROOT
+    / ".github"
+    / "workflows"
+    / "test-schedule-dispatch-postgres.yml"
+)
 PROTECTED_CI_WORKFLOWS = (
     QUALITY_GATE_PATH,
     REPOSITORY_ROOT / ".github" / "workflows" / "pr-ci-control-guard.yml",
     KNOWLEDGE_POSTGRES_PATH,
-    REPOSITORY_ROOT / ".github" / "workflows" / "test-schedule-dispatch-postgres.yml",
+    WORKFLOW_POSTGRES_PATH,
     REPOSITORY_ROOT / ".github" / "workflows" / "test-agent-builder-postgres.yml",
     REPOSITORY_ROOT / ".github" / "workflows" / "test-memory-postgres.yml",
 )
@@ -370,6 +378,19 @@ def test_knowledge_postgres_dev_push_tracks_all_durable_ingestion_services():
     )[0]
 
     assert '- "apps/shared/services/knowledge_ingestion_*.py"' in push_paths
+
+
+def test_workflow_postgres_dev_push_covers_selector_patterns():
+    workflow = WORKFLOW_POSTGRES_PATH.read_text(encoding="utf-8")
+    push_paths = workflow.split("  push:", maxsplit=1)[1].split(
+        "permissions:",
+        maxsplit=1,
+    )[0]
+    configured_paths = set(
+        re.findall(r'^\s*- "([^"]+)"', push_paths, flags=re.MULTILINE)
+    )
+
+    assert set(_WORKFLOW_POSTGRES_PATTERNS) <= configured_paths
 
 
 def test_protected_ci_workflows_pin_external_actions_to_commit_shas():

@@ -227,6 +227,7 @@ class DeploymentLLMCredentialPolicyUpsert(BaseModel):
 
     model_id: UUID
     credential_id: UUID
+    purpose: Literal["main_generation", "query_embedding"] = "main_generation"
     container_path: list[WorkflowNodeContainerPathSegment] = Field(
         default_factory=list,
         max_length=16,
@@ -241,6 +242,7 @@ class DeploymentLLMCredentialPolicyResponse(BaseModel):
     deployment_version: int = Field(ge=1)
     node_id: str
     container_path: list[WorkflowNodeContainerPathSegment]
+    purpose: Literal["main_generation", "query_embedding"]
     model_id: UUID
     credential_id: UUID
     policy_revision: int = Field(ge=1)

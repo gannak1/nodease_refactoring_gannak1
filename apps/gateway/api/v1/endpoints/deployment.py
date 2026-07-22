@@ -51,6 +51,7 @@ from apps.shared.domain.deployment_runtime_policy import (
     DeploymentRuntimePolicy,
     is_deployment_type_allowed_for_surface,
 )
+from apps.shared.domain.provider_execution_capability import CapabilityPurpose
 from apps.shared.domain.workflow_node_location import (
     CanonicalWorkflowNodeLocation,
     WorkflowNodeLocationError,
@@ -246,6 +247,7 @@ def _deployment_llm_credential_policy_response(
             {"kind": kind, "node_id": node_id}
             for kind, node_id in policy.container_path
         ],
+        purpose=policy.purpose.value,
         model_id=policy.model_id,
         credential_id=policy.credential_id,
         policy_revision=policy.policy_revision,
@@ -272,7 +274,11 @@ def _deployment_llm_policy_audit_metadata(kwargs: dict) -> dict[str, str]:
         )
     except WorkflowNodeLocationError:
         return {}
-    return {"node_location_ref": location.safe_reference}
+    return {
+        "node_location_ref": location.safe_reference,
+        "purpose": policy_in.purpose,
+        "model_id": str(policy_in.model_id),
+    }
 
 
 def _raise_provider_execution_policy_error(
@@ -282,11 +288,14 @@ def _raise_provider_execution_policy_error(
         raise HTTPException(status_code=404, detail="Deployment not found") from None
     if exc.code == "permission_denied":
         raise HTTPException(status_code=403, detail="permission.denied") from None
-    status_code = 409 if exc.code in {
-        "selection_ambiguous",
-        "capability_attempt_reused",
-        "capability_stale",
-    } else 422
+    if exc.code == "query_embedding_rollout_unavailable":
+        status_code = 503
+    else:
+        status_code = 409 if exc.code in {
+            "selection_ambiguous",
+            "capability_attempt_reused",
+            "capability_stale",
+        } else 422
     raise HTTPException(
         status_code=status_code,
         detail={
@@ -587,10 +596,14 @@ def replace_deployment_llm_credential_policy(
                 node_id=node_id,
                 model_id=policy_in.model_id,
                 credential_id=policy_in.credential_id,
+                purpose=CapabilityPurpose(policy_in.purpose),
                 container_path=tuple(
                     (segment.kind, segment.node_id)
                     for segment in policy_in.container_path
                 ),
+            ),
+            query_embedding_policy_writes_enabled=(
+                settings.QUERY_EMBEDDING_POLICY_WRITE_MODE == "active"
             ),
         )
         db.commit()

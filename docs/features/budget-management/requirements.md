@@ -1,7 +1,7 @@
 # Budget Management Requirements
 
 Status: Draft
-Related Features: admin-dashboard, workflow, app-management, deployment, audit-tracing, cost-optimizer, conversation-memory
+Related Features: admin-dashboard, workflow, app-management, deployment, audit-tracing, cost-optimizer, conversation-memory, knowledge, llm-credentials
 
 ## Purpose
 
@@ -55,6 +55,7 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 - BGT-REQ-038 (Conversation Memory Target Extension): Reservation은 LLM Credentials domain이 발급한 opaque `ProviderExecutionCapability` identity/revision, server-derived billing principal, Budget에 필요한 purpose/pricing/cap/expiry binding과 idempotency scope를 canonical하게 받아야 한다. Budget은 credential principal 또는 capability permission revision을 자체 계산하지 않으며 같은 idempotency key/capability의 중복 예약·commit을 만들지 않아야 한다.
 - BGT-REQ-039 (Conversation Memory Target Extension): Reservation, Memory context lease, provider attempt와 usage reconciliation은 같은 ProviderExecutionCapability identity/revision과 각 operation binding을 검증해야 한다. Stale/expired capability, wrong invocation/admission/attempt/purpose/pricing binding 또는 cap 초과는 provider 호출 전에 fail-closed해야 한다.
 - BGT-REQ-039A (Conversation Memory Target Extension): Billing principal은 execution subject, credential principal과 audit actor와 분리해야 한다. Conversation Access Grant나 app/deployment owner를 임의로 billing/execution/audit principal로 전환하지 않아야 한다. Reservation 만료와 늦은 usage commit 경합은 실제 비용을 누락하거나 동일 비용을 이중 계상하지 않도록 reconciliation해야 한다.
+- BGT-REQ-039B (Query Embedding Target Extension): RAG query embedding은 distinct canonical embedding model마다 ADR-0071의 capability identity/revision, organization billing principal, pricing snapshot, `output_token_cap=0`과 stable provider attempt에 binding된 ADR-0069 durable provider operation을 사용해야 한다. Intent와 `provider_started`가 provider 전송 전에 확정되지 않거나 usage ledger가 주입되지 않으면 provider를 호출하지 않는다. Raw query와 vector는 reservation, usage 또는 reconciliation data에 저장하지 않는다.
 
 ### Audit
 

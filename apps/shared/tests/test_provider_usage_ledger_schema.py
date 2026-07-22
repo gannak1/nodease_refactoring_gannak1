@@ -80,12 +80,27 @@ def test_provider_usage_operation_has_state_projection_and_redaction_constraints
     assert {
         "ck_provider_usage_operation_bounds",
         "ck_provider_usage_operation_identity_kinds",
+        "ck_provider_usage_operation_query_embedding_output",
         "ck_provider_usage_operation_location",
         "ck_provider_usage_operation_identity_alignment",
         "ck_provider_usage_operation_state_payload",
         "ck_provider_usage_operation_timestamps",
         "ck_provider_usage_operation_projection",
     } <= check_names
+
+
+def test_query_embedding_usage_requires_zero_output_in_schema() -> None:
+    constraint = next(
+        constraint
+        for constraint in ProviderUsageOperationRecord.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+        and constraint.name == "ck_provider_usage_operation_query_embedding_output"
+    )
+
+    sql = str(constraint.sqltext)
+    assert "output_token_cap = 0" in sql
+    assert "admitted_output_tokens = 0" in sql
+    assert "completion_tokens IS NULL OR completion_tokens = 0" in sql
 
 
 def test_succeeded_measurement_is_bounded_by_the_sealed_admission_in_schema() -> None:
@@ -157,7 +172,10 @@ def test_provider_usage_budget_lookup_has_workflow_leading_partial_index() -> No
     )
     where = str(index.dialect_options["postgresql"]["where"])
     assert "provider_started_at IS NOT NULL" in where
-    assert "purpose IN ('main_generation', 'memory_summary')" in where
+    assert (
+        "purpose IN ('main_generation', 'memory_summary', 'query_embedding')"
+        in where
+    )
     assert "state IN ('provider_started', 'succeeded', 'outcome_unknown')" in where
 
 
@@ -176,7 +194,10 @@ def test_provider_usage_model_cost_lookup_has_subject_leading_partial_index() ->
     assert "execution_subject_kind = 'user'" in where
     assert "execution_subject_id IS NOT NULL" in where
     assert "provider_started_at IS NOT NULL" in where
-    assert "purpose IN ('main_generation', 'memory_summary')" in where
+    assert (
+        "purpose IN ('main_generation', 'memory_summary', 'query_embedding')"
+        in where
+    )
     assert "state = 'succeeded'" in where
 
 

@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     # pod runs the verifier-aware revision.
     APP_AUTH_SECRET_LIFECYCLE_MODE: Literal["disabled", "active"] = "disabled"
 
+    # Keep query-embedding policy writes dormant until all purpose-unaware
+    # Gateway and Worker processes have drained.
+    QUERY_EMBEDDING_POLICY_WRITE_MODE: Literal["disabled", "active"] = "disabled"
+
     # AWS Settings
     AWS_ACCESS_KEY_ID: Optional[str] = None
     AWS_SECRET_ACCESS_KEY: Optional[str] = None

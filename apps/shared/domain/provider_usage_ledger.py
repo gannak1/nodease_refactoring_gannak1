@@ -160,6 +160,11 @@ class ProviderUsageIntentSnapshot:
             raise ValueError("admitted input tokens exceed the capability cap")
         if self.admitted_output_tokens > self.output_token_cap:
             raise ValueError("admitted output tokens exceed the capability cap")
+        if (
+            self.binding.purpose is CapabilityPurpose.QUERY_EMBEDDING
+            and (self.output_token_cap != 0 or self.admitted_output_tokens != 0)
+        ):
+            raise ValueError("query embedding output usage must be zero")
         if self.expires_at.tzinfo is None or self.expires_at.utcoffset() is None:
             raise ValueError("capability expiry must be timezone-aware")
 
@@ -253,6 +258,11 @@ class ProviderUsageOperation:
             raise ProviderUsageLedgerError("provider_usage.outcome_conflict")
         if self.state is not ProviderUsageState.PROVIDER_STARTED:
             raise ProviderUsageLedgerError("provider_usage.outcome_not_allowed")
+        if (
+            self.snapshot.binding.purpose is CapabilityPurpose.QUERY_EMBEDDING
+            and measurement.completion_tokens != 0
+        ):
+            raise ProviderUsageLedgerError("provider_usage.measurement_invalid")
         return self._succeed(measurement=measurement, now=now)
 
     def mark_outcome_unknown(

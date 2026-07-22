@@ -87,6 +87,7 @@ class DeploymentCredentialPolicyCommand:
     node_id: str
     model_id: uuid.UUID
     credential_id: uuid.UUID
+    purpose: CapabilityPurpose = CapabilityPurpose.MAIN_GENERATION
     container_path: ContainerPath = ()
 
 
@@ -99,6 +100,7 @@ class ProviderExecutionCapabilityIssueCommand:
     input_token_cap: int
     output_token_cap: int
     cost_cap_microusd: int
+    policy_model_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +110,7 @@ class ProviderExecutionCapabilityAdmissionCommand:
     binding: ProviderExecutionBinding
     requested_input_tokens: int
     requested_output_tokens: int
+    policy_model_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +133,7 @@ class DeploymentCredentialPolicyView:
     deployment_id: uuid.UUID
     deployment_version: int
     node_id: str
+    purpose: CapabilityPurpose
     model_id: uuid.UUID
     credential_id: uuid.UUID
     policy_revision: int
@@ -139,19 +143,12 @@ class DeploymentCredentialPolicyView:
     container_path: ContainerPath = ()
 
 
-def deployment_llm_node_model_id(
+def _deployment_llm_node_data(
     graph_snapshot: Any,
     node_id: str,
     *,
     container_path: ContainerPath = (),
-) -> str:
-    """Return the only graph-owned LLM selection: its model API identifier.
-
-    The policy layer does not silently normalize legacy direct credential
-    fields.  A capability-required deployment must be unambiguous before an
-    external provider can be reached.
-    """
-
+) -> dict[str, Any]:
     if (
         not isinstance(graph_snapshot, dict)
         or not isinstance(node_id, str)
@@ -170,15 +167,55 @@ def deployment_llm_node_model_id(
     data = node.get("data")
     if node_type not in _LLM_NODE_TYPES or not isinstance(data, dict):
         raise ProviderExecutionPolicyError("configuration_required")
+    return data
+
+
+def _require_unambiguous_llm_selection(data: dict[str, Any]) -> None:
     if any(field in data for field in _DIRECT_CREDENTIAL_FIELDS):
         raise ProviderExecutionPolicyError("configuration_required")
     if data.get("auto_model_routing") or data.get("fallback_model_id"):
         raise ProviderExecutionPolicyError("configuration_required")
 
+
+def deployment_llm_node_model_id(
+    graph_snapshot: Any,
+    node_id: str,
+    *,
+    container_path: ContainerPath = (),
+) -> str:
+    """Return the only graph-owned LLM selection: its model API identifier.
+
+    The policy layer does not silently normalize legacy direct credential
+    fields. A capability-required deployment must be unambiguous before an
+    external provider can be reached.
+    """
+
+    data = _deployment_llm_node_data(
+        graph_snapshot,
+        node_id,
+        container_path=container_path,
+    )
+    _require_unambiguous_llm_selection(data)
     model_id = str(data.get("model_id") or "").strip()
     if not model_id:
         raise ProviderExecutionPolicyError("configuration_required")
     return model_id
+
+
+def deployment_llm_node_supports_knowledge(
+    graph_snapshot: Any,
+    node_id: str,
+    *,
+    container_path: ContainerPath = (),
+) -> None:
+    data = _deployment_llm_node_data(
+        graph_snapshot,
+        node_id,
+        container_path=container_path,
+    )
+    _require_unambiguous_llm_selection(data)
+    if not data.get("knowledgeBases") and not data.get("knowledgeCollections"):
+        raise ProviderExecutionPolicyError("configuration_required")
 
 
 
@@ -224,6 +261,7 @@ class ProviderExecutionCapabilityService:
         *,
         actor_id: uuid.UUID,
         command: DeploymentCredentialPolicyCommand,
+        query_embedding_policy_writes_enabled: bool = False,
     ) -> DeploymentCredentialPolicyView:
         deployment, app, workflow = cls._canonical_deployment(
             db,
@@ -235,10 +273,22 @@ class ProviderExecutionCapabilityService:
             db, actor_id, command.organization_id
         ):
             raise ProviderExecutionPolicyError("permission_denied")
+        if command.purpose not in {
+            CapabilityPurpose.MAIN_GENERATION,
+            CapabilityPurpose.QUERY_EMBEDDING,
+        }:
+            raise ProviderExecutionPolicyError("configuration_required")
+        if (
+            command.purpose is CapabilityPurpose.QUERY_EMBEDDING
+            and query_embedding_policy_writes_enabled is not True
+        ):
+            raise ProviderExecutionPolicyError(
+                "query_embedding_rollout_unavailable"
+            )
 
         location = cls._command_location(command)
 
-        active_rows = (
+        active_query = (
             db.query(LLMDeploymentCredentialPolicy)
             .filter(
                 LLMDeploymentCredentialPolicy.organization_id
@@ -247,12 +297,15 @@ class ProviderExecutionCapabilityService:
                 LLMDeploymentCredentialPolicy.deployment_version == deployment.version,
                 LLMDeploymentCredentialPolicy.node_location_digest
                 == location.digest,
+                LLMDeploymentCredentialPolicy.purpose == command.purpose.value,
                 LLMDeploymentCredentialPolicy.is_active.is_(True),
             )
-            .populate_existing()
-            .with_for_update()
-            .all()
         )
+        if command.purpose is CapabilityPurpose.QUERY_EMBEDDING:
+            active_query = active_query.filter(
+                LLMDeploymentCredentialPolicy.model_id == command.model_id
+            )
+        active_rows = active_query.populate_existing().with_for_update().all()
         if len(active_rows) > 1:
             raise ProviderExecutionPolicyError("selection_ambiguous")
         if active_rows and cls._stored_location(active_rows[0]) != location:
@@ -269,6 +322,7 @@ class ProviderExecutionCapabilityService:
             model_id=command.model_id,
             credential_id=command.credential_id,
             credential_principal_user_id=actor_id,
+            purpose=command.purpose,
             lock_authorization_rows=True,
         )
         if not has_organization_manager_permission(
@@ -294,6 +348,7 @@ class ProviderExecutionCapabilityService:
             node_id=command.node_id,
             container_path=location.to_container_path_payload(),
             node_location_digest=location.digest,
+            purpose=command.purpose.value,
             model_id=model.id,
             credential_id=credential.id,
             credential_principal_user_id=actor_id,
@@ -330,6 +385,10 @@ class ProviderExecutionCapabilityService:
                 LLMDeploymentCredentialPolicy.is_active.is_(True),
             )
             .order_by(LLMDeploymentCredentialPolicy.node_location_digest.asc())
+            .order_by(
+                LLMDeploymentCredentialPolicy.purpose.asc(),
+                LLMDeploymentCredentialPolicy.model_id.asc(),
+            )
             .all()
         )
         return [cls._policy_view(row) for row in rows]
@@ -347,6 +406,11 @@ class ProviderExecutionCapabilityService:
             command.cost_cap_microusd,
         )
         binding = command.binding
+        cls._validate_capability_policy_slot(
+            binding=binding,
+            policy_model_id=command.policy_model_id,
+            output_tokens=command.output_token_cap,
+        )
         deployment, app, workflow = cls._canonical_deployment(
             db,
             organization_id=binding.organization_id,
@@ -359,7 +423,11 @@ class ProviderExecutionCapabilityService:
         )
         # The locked policy row serializes same-binding issue retries before
         # capability lookup and insert.
-        policy = cls._active_policy_for_binding(db, binding)
+        policy = cls._active_policy_for_binding(
+            db,
+            binding,
+            policy_model_id=command.policy_model_id,
+        )
         cls._validate_issue_principals(
             command,
             credential_principal_user_id=policy.credential_principal_user_id,
@@ -375,6 +443,7 @@ class ProviderExecutionCapabilityService:
             model_id=policy.model_id,
             credential_id=policy.credential_id,
             credential_principal_user_id=policy.credential_principal_user_id,
+            purpose=binding.purpose,
         )
         revisions = cls._current_revisions(
             db,
@@ -490,6 +559,11 @@ class ProviderExecutionCapabilityService:
             command.requested_input_tokens,
             command.requested_output_tokens,
         )
+        cls._validate_capability_policy_slot(
+            binding=command.binding,
+            policy_model_id=command.policy_model_id,
+            output_tokens=command.requested_output_tokens,
+        )
         deployment, app, workflow = cls._canonical_deployment(
             db,
             organization_id=command.binding.organization_id,
@@ -500,7 +574,11 @@ class ProviderExecutionCapabilityService:
             deployment=deployment,
             workflow=workflow,
         )
-        policy = cls._active_policy_for_binding(db, command.binding)
+        policy = cls._active_policy_for_binding(
+            db,
+            command.binding,
+            policy_model_id=command.policy_model_id,
+        )
         record = (
             db.query(ProviderExecutionCapabilityRecord)
             .filter(ProviderExecutionCapabilityRecord.id == command.capability_id)
@@ -541,6 +619,7 @@ class ProviderExecutionCapabilityService:
             model_id=policy.model_id,
             credential_id=policy.credential_id,
             credential_principal_user_id=policy.credential_principal_user_id,
+            purpose=command.binding.purpose,
             lock_authorization_rows=True,
         )
         if (
@@ -627,6 +706,7 @@ class ProviderExecutionCapabilityService:
             deployment_id=policy.deployment_id,
             deployment_version=policy.deployment_version,
             node_id=policy.node_id,
+            purpose=CapabilityPurpose(policy.purpose),
             container_path=ProviderExecutionCapabilityService._stored_location(
                 policy
             ).container_path,
@@ -653,6 +733,20 @@ class ProviderExecutionCapabilityService:
             isinstance(cap, bool) or not isinstance(cap, int) or cap < 0
             for cap in caps
         ):
+            raise ProviderExecutionPolicyError("configuration_required")
+
+    @staticmethod
+    def _validate_capability_policy_slot(
+        *,
+        binding: ProviderExecutionBinding,
+        policy_model_id: uuid.UUID | None,
+        output_tokens: int,
+    ) -> None:
+        if binding.purpose is CapabilityPurpose.QUERY_EMBEDDING:
+            if not isinstance(policy_model_id, uuid.UUID) or output_tokens != 0:
+                raise ProviderExecutionPolicyError("configuration_required")
+            return
+        if policy_model_id is not None:
             raise ProviderExecutionPolicyError("configuration_required")
 
     @staticmethod
@@ -760,12 +854,19 @@ class ProviderExecutionCapabilityService:
         cls,
         db: Session,
         binding: ProviderExecutionBinding,
+        *,
+        policy_model_id: uuid.UUID | None = None,
     ) -> LLMDeploymentCredentialPolicy:
         location = CanonicalWorkflowNodeLocation(
             binding.container_path,
             binding.node_id,
         )
-        rows = (
+        policy_purpose = (
+            CapabilityPurpose.MAIN_GENERATION
+            if binding.purpose is CapabilityPurpose.MEMORY_SUMMARY
+            else binding.purpose
+        )
+        query = (
             db.query(LLMDeploymentCredentialPolicy)
             .filter(
                 LLMDeploymentCredentialPolicy.organization_id
@@ -776,12 +877,15 @@ class ProviderExecutionCapabilityService:
                 LLMDeploymentCredentialPolicy.workflow_id == binding.workflow_id,
                 LLMDeploymentCredentialPolicy.node_location_digest
                 == location.digest,
+                LLMDeploymentCredentialPolicy.purpose == policy_purpose.value,
                 LLMDeploymentCredentialPolicy.is_active.is_(True),
             )
-            .populate_existing()
-            .with_for_update()
-            .all()
         )
+        if binding.purpose is CapabilityPurpose.QUERY_EMBEDDING:
+            query = query.filter(
+                LLMDeploymentCredentialPolicy.model_id == policy_model_id
+            )
+        rows = query.populate_existing().with_for_update().all()
         if not rows:
             raise ProviderExecutionPolicyError("configuration_required")
         if len(rows) != 1:
@@ -804,6 +908,7 @@ class ProviderExecutionCapabilityService:
         model_id: uuid.UUID,
         credential_id: uuid.UUID,
         credential_principal_user_id: uuid.UUID,
+        purpose: CapabilityPurpose = CapabilityPurpose.MAIN_GENERATION,
         lock_authorization_rows: bool = False,
     ) -> tuple[LLMModel, LLMCredential, LLMProvider, LLMRelCredentialModel]:
         if (
@@ -813,20 +918,36 @@ class ProviderExecutionCapabilityService:
             or deployment.app_id != app.id
         ):
             raise ProviderExecutionPolicyError("resource_not_found")
-        graph_model_id = deployment_llm_node_model_id(
-            deployment.graph_snapshot,
-            node_id,
-            container_path=container_path,
-        )
+        graph_model_id: str | None = None
+        if purpose is CapabilityPurpose.QUERY_EMBEDDING:
+            deployment_llm_node_supports_knowledge(
+                deployment.graph_snapshot,
+                node_id,
+                container_path=container_path,
+            )
+        else:
+            graph_model_id = deployment_llm_node_model_id(
+                deployment.graph_snapshot,
+                node_id,
+                container_path=container_path,
+            )
         model_query = db.query(LLMModel).filter(LLMModel.id == model_id)
         if lock_authorization_rows:
             model_query = _lock_fresh(model_query)
         model = model_query.one_or_none()
+        expected_type = (
+            "embedding"
+            if purpose is CapabilityPurpose.QUERY_EMBEDDING
+            else "chat"
+        )
         if (
             model is None
             or not model.is_active
-            or model.type != "chat"
-            or model.model_id_for_api_call != graph_model_id
+            or model.type != expected_type
+            or (
+                graph_model_id is not None
+                and model.model_id_for_api_call != graph_model_id
+            )
         ):
             raise ProviderExecutionPolicyError("configuration_required")
         provider_query = db.query(LLMProvider).filter(

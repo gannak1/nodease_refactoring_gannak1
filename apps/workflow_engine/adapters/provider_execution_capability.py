@@ -208,7 +208,6 @@ class CapabilityProviderExecutionAdapter:
         if (
             request.execution_context.get("provider_execution_capability_required")
             is not True
-            or request.knowledge_enabled
             or request.auto_model_routing
             or request.fallback_model_id
             or request.client_override is not None

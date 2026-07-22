@@ -80,6 +80,71 @@ def test_capability_requires_the_exact_issue_binding_and_purpose():
         )
 
 
+def test_query_embedding_capability_is_isolated_from_generation_purpose():
+    now = datetime(2026, 7, 22, tzinfo=timezone.utc)
+    query_binding = _binding(purpose=CapabilityPurpose.QUERY_EMBEDDING)
+    capability = ProviderExecutionCapability.issue(
+        capability_id=uuid.uuid4(),
+        revision=1,
+        binding=query_binding,
+        policy_id=uuid.uuid4(),
+        policy_revision=1,
+        credential_id=uuid.uuid4(),
+        model_id=uuid.uuid4(),
+        provider_id=uuid.uuid4(),
+        credential_principal=RuntimePrincipal.user(uuid.uuid4()),
+        permission_revision="a" * 64,
+        relation_revision="b" * 64,
+        egress_revision="c" * 64,
+        pricing_revision="d" * 64,
+        input_token_cap=256,
+        output_token_cap=0,
+        cost_cap_microusd=1_000,
+        expires_at=now + timedelta(minutes=5),
+        now=now,
+    )
+
+    capability.require_usable(binding=query_binding, revision=1, now=now)
+
+    with pytest.raises(CapabilityBindingError):
+        capability.require_usable(
+            binding=ProviderExecutionBinding(
+                **{
+                    **query_binding.as_kwargs(),
+                    "purpose": CapabilityPurpose.MAIN_GENERATION,
+                }
+            ),
+            revision=1,
+            now=now,
+        )
+
+
+def test_query_embedding_capability_requires_zero_output_cap():
+    now = datetime(2026, 7, 22, tzinfo=timezone.utc)
+
+    with pytest.raises(ValueError, match="output token cap"):
+        ProviderExecutionCapability.issue(
+            capability_id=uuid.uuid4(),
+            revision=1,
+            binding=_binding(purpose=CapabilityPurpose.QUERY_EMBEDDING),
+            policy_id=uuid.uuid4(),
+            policy_revision=1,
+            credential_id=uuid.uuid4(),
+            model_id=uuid.uuid4(),
+            provider_id=uuid.uuid4(),
+            credential_principal=RuntimePrincipal.user(uuid.uuid4()),
+            permission_revision="a" * 64,
+            relation_revision="b" * 64,
+            egress_revision="c" * 64,
+            pricing_revision="d" * 64,
+            input_token_cap=256,
+            output_token_cap=1,
+            cost_cap_microusd=1_000,
+            expires_at=now + timedelta(minutes=5),
+            now=now,
+        )
+
+
 def test_capability_expiry_and_revision_cannot_be_replayed():
     now = datetime(2026, 7, 18, tzinfo=timezone.utc)
     binding = _binding()

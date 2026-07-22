@@ -48,16 +48,22 @@ from apps.shared.services.llm_client.base import (  # noqa: E402
     ProviderInvocationError,
 )
 from apps.shared.services.rag_evidence_policy import RAGEvidenceDecision  # noqa: E402
-from apps.shared.services.retrieval_embedding_model_projection import (  # noqa: E402
+from apps.shared.domain.embedding_model_binding import (  # noqa: E402
     EmbeddingModelBinding,
 )
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer  # noqa: E402
 from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (  # noqa: E402
     KnowledgeRuntimeCandidateInfrastructureError,
 )
+from apps.workflow_engine.application.query_embedding_execution import (  # noqa: E402
+    QueryEmbeddingConfigurationError,
+    QueryEmbeddingExecutionResult,
+    QueryEmbeddingPlan,
+)
 from apps.workflow_engine.composition.provider_execution import (  # noqa: E402
     build_provider_execution_runtime,
     build_provider_usage_recorder,
+    build_query_embedding_runtime,
 )
 from apps.workflow_engine.services import (  # noqa: E402
     llm_service as workflow_llm_service,
@@ -283,8 +289,129 @@ def _inject_default_provider_ports(monkeypatch):
             node.bind_provider_usage_recorder(recorder)
         return recorder
 
+    def query_embedding_runtime(node):
+        runtime = getattr(node, "_query_embedding_runtime", None)
+        if runtime is None:
+            session_factory = node.execution_context.get("db_session_factory")
+            runtime = build_query_embedding_runtime(
+                session_factory=(
+                    session_factory if callable(session_factory) else None
+                )
+            )
+            node.bind_query_embedding_runtime(runtime)
+        return runtime
+
     monkeypatch.setattr(LLMNode, "_get_provider_execution_runtime", provider_runtime)
     monkeypatch.setattr(LLMNode, "_get_provider_usage_recorder", usage_recorder)
+    monkeypatch.setattr(
+        LLMNode,
+        "_get_query_embedding_runtime",
+        query_embedding_runtime,
+    )
+
+
+class _QueryEmbeddingRuntime:
+    def __init__(
+        self,
+        *,
+        bindings_by_kb=None,
+        vectors_by_model=None,
+        errors_by_model=None,
+        projection_failure=False,
+    ):
+        self.bindings_by_kb = {
+            str(key): value for key, value in (bindings_by_kb or {}).items()
+        }
+        self.vectors_by_model = vectors_by_model or {}
+        self.errors_by_model = errors_by_model or {}
+        self.projection_failure = projection_failure
+        self.preflight_requests = []
+        self.execute_requests = []
+        self.invoked_models = []
+
+    def preflight(self, request):
+        self.preflight_requests.append(request)
+        return QueryEmbeddingPlan(
+            capability_required=False,
+            organization_id=request.organization_id,
+            node_id=request.node_id,
+            state=object(),
+        )
+
+    def execute(self, request):
+        if (
+            request.plan.organization_id != request.organization_id
+            or request.plan.node_id != request.node_id
+        ):
+            raise QueryEmbeddingConfigurationError()
+        self.execute_requests.append(request)
+        if self.projection_failure:
+            if request.failure_policy == "fail_node":
+                raise QueryEmbeddingConfigurationError()
+            return QueryEmbeddingExecutionResult(
+                {},
+                {},
+                len(request.knowledge_base_ids),
+            )
+
+        vectors = {}
+        bindings = {}
+        failed_count = 0
+        invoked_models = set()
+        for kb_id in request.knowledge_base_ids:
+            binding = self.bindings_by_kb.get(str(kb_id))
+            if binding is None:
+                failed_count += 1
+                continue
+            model_identifier = binding.model_identifier
+            error = self.errors_by_model.get(model_identifier)
+            if error is not None:
+                if request.failure_policy == "fail_node":
+                    raise QueryEmbeddingConfigurationError() from None
+                failed_count += 1
+                continue
+            if model_identifier not in invoked_models:
+                invoked_models.add(model_identifier)
+                self.invoked_models.append(model_identifier)
+            vectors[str(kb_id)] = tuple(
+                self.vectors_by_model.get(model_identifier, [0.1, 0.2])
+            )
+            bindings[str(kb_id)] = binding
+        return QueryEmbeddingExecutionResult(vectors, bindings, failed_count)
+
+
+def _embedding_binding(model_identifier):
+    return EmbeddingModelBinding(
+        model_id=uuid.uuid4(),
+        provider_id=uuid.uuid4(),
+        model_identifier=model_identifier,
+    )
+
+
+def _bind_query_embedding_runtime(
+    node,
+    *,
+    organization_id=None,
+    bindings_by_kb=None,
+    vectors_by_model=None,
+    errors_by_model=None,
+    projection_failure=False,
+):
+    runtime = _QueryEmbeddingRuntime(
+        bindings_by_kb=bindings_by_kb,
+        vectors_by_model=vectors_by_model,
+        errors_by_model=errors_by_model,
+        projection_failure=projection_failure,
+    )
+    node.bind_query_embedding_runtime(runtime)
+    if organization_id is None:
+        organization_id = uuid.UUID(str(node.execution_context["organization_id"]))
+    return runtime, QueryEmbeddingPlan(
+        capability_required=False,
+        organization_id=organization_id,
+        node_id=node.id,
+        state=object(),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -2831,56 +2958,7 @@ def test_llm_node_reuses_query_embedding_across_same_model_kbs(monkeypatch):
     kb_a = uuid.uuid4()
     kb_b = uuid.uuid4()
     query_vectors = []
-    embedded_queries = []
-    model_query_count = 0
-    model_row = SimpleNamespace(
-        id=uuid.uuid4(),
-        provider_id=uuid.uuid4(),
-        model_id_for_api_call="text-embedding-test",
-        type="embedding",
-        is_active=True,
-    )
-
-    kb_rows = [
-        SimpleNamespace(
-            id=kb_a,
-            organization_id=organization_id,
-            lifecycle_state="active",
-            embedding_model="text-embedding-test",
-        ),
-        SimpleNamespace(
-            id=kb_b,
-            organization_id=organization_id,
-            lifecycle_state="active",
-            embedding_model="text-embedding-test",
-        ),
-    ]
-
-    class FakeQuery:
-        def __init__(self, model):
-            self.model = model
-
-        def filter(self, *args, **kwargs):
-            return self
-
-        def all(self):
-            if self.model is KnowledgeBase:
-                return kb_rows
-            if self.model is LLMModel:
-                return [model_row]
-            return []
-
-    class FakeDb:
-        def query(self, model):
-            nonlocal model_query_count
-            if model is LLMModel:
-                model_query_count += 1
-            return FakeQuery(model)
-
-    class FakeEmbeddingClient:
-        def embed_sync(self, query):
-            embedded_queries.append(query)
-            return [0.1, 0.2]
+    binding = _embedding_binding("text-embedding-test")
 
     class FakeRetrievalService:
         def __init__(self, db, user_id, organization_id=None):
@@ -2919,12 +2997,6 @@ def test_llm_node_reuses_query_embedding_across_same_model_kbs(monkeypatch):
     )
     monkeypatch.setattr(
         LLMService,
-        "get_client_for_model_binding",
-        lambda *args, **kwargs: FakeEmbeddingClient(),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        LLMService,
         "get_client_for_user",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("model identifier lookup must not be repeated")
@@ -2953,11 +3025,17 @@ def test_llm_node_reuses_query_embedding_across_same_model_kbs(monkeypatch):
         },
     )
     _patch_rag_gevent_inline(monkeypatch, node)
+    query_runtime, _ = _bind_query_embedding_runtime(
+        node,
+        bindings_by_kb={kb_a: binding, kb_b: binding},
+        vectors_by_model={"text-embedding-test": [0.1, 0.2]},
+    )
 
-    result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
+    result = node._execute_knowledge_search("query", db_session=object())  # noqa: SLF001
 
-    assert embedded_queries == ["query"]
-    assert model_query_count == 1
+    assert len(query_runtime.execute_requests) == 1
+    assert query_runtime.execute_requests[0].query == "query"
+    assert query_runtime.invoked_models == ["text-embedding-test"]
     assert query_vectors == [
         (str(kb_a), [0.1, 0.2], "text-embedding-test"),
         (str(kb_b), [0.1, 0.2], "text-embedding-test"),
@@ -2966,73 +3044,30 @@ def test_llm_node_reuses_query_embedding_across_same_model_kbs(monkeypatch):
 
 
 def test_llm_node_precomputes_query_vector_once_per_embedding_model(monkeypatch):
-    user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     kb_a = uuid.uuid4()
     kb_b = uuid.uuid4()
     kb_c = uuid.uuid4()
-    requested_models = []
-    model_query_count = 0
-    model_rows = [
-        SimpleNamespace(
-            id=uuid.uuid4(),
-            provider_id=uuid.uuid4(),
-            model_id_for_api_call=model_id,
-            type="embedding",
-            is_active=True,
-        )
-        for model_id in ("text-embedding-a", "text-embedding-b")
-    ]
-
-    kb_rows = [
-        SimpleNamespace(id=kb_a, embedding_model="text-embedding-a"),
-        SimpleNamespace(id=kb_b, embedding_model="text-embedding-b"),
-        SimpleNamespace(id=kb_c, embedding_model="text-embedding-a"),
-    ]
-
-    class FakeQuery:
-        def __init__(self, model):
-            self.model = model
-
-        def filter(self, *args, **kwargs):
-            return self
-
-        def all(self):
-            if self.model is KnowledgeBase:
-                return kb_rows
-            if self.model is LLMModel:
-                return model_rows
-            return []
-
-    class FakeDb:
-        def query(self, model):
-            nonlocal model_query_count
-            if model is LLMModel:
-                model_query_count += 1
-            return FakeQuery(model)
-
-    class FakeEmbeddingClient:
-        def __init__(self, model_id):
-            self.model_id = model_id
-
-        def embed_sync(self, query):
-            requested_models.append((self.model_id, query))
-            if self.model_id == "text-embedding-a":
-                return [0.1, 0.2]
-            return [0.3, 0.4]
-
-    monkeypatch.setattr(
-        LLMService,
-        "get_client_for_model_binding",
-        lambda _db, _user_id, binding, **_kwargs: FakeEmbeddingClient(
-            binding.model_identifier
-        ),
-        raising=False,
-    )
+    binding_a = _embedding_binding("text-embedding-a")
+    binding_b = _embedding_binding("text-embedding-b")
 
     node = LLMNode(
         "llm-1",
         LLMNodeData(title="LLM", provider="openai", model_id="gpt-5.4-mini"),
+    )
+    query_runtime = _QueryEmbeddingRuntime(
+        bindings_by_kb={kb_a: binding_a, kb_b: binding_b, kb_c: binding_a},
+        vectors_by_model={
+            "text-embedding-a": [0.1, 0.2],
+            "text-embedding-b": [0.3, 0.4],
+        }
+    )
+    node.bind_query_embedding_runtime(query_runtime)
+    query_plan = QueryEmbeddingPlan(
+        capability_required=False,
+        organization_id=organization_id,
+        node_id=node.id,
+        state=object(),
     )
 
     (
@@ -3041,16 +3076,18 @@ def test_llm_node_precomputes_query_vector_once_per_embedding_model(monkeypatch)
         failed_count,
         precomputed,
     ) = node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
-        FakeDb(),
+        object(),
         query="개발팀 온보딩",
-        user_id=user_id,
+        query_embedding_plan=query_plan,
         organization_id=organization_id,
         knowledge_base_ids=[str(kb_a), str(kb_b), str(kb_c)],
     )
 
-    assert requested_models == [
-        ("text-embedding-a", "개발팀 온보딩"),
-        ("text-embedding-b", "개발팀 온보딩"),
+    assert len(query_runtime.execute_requests) == 1
+    assert query_runtime.execute_requests[0].query == "개발팀 온보딩"
+    assert query_runtime.invoked_models == [
+        "text-embedding-a",
+        "text-embedding-b",
     ]
     assert vectors_by_kb == {
         str(kb_a): [0.1, 0.2],
@@ -3065,67 +3102,16 @@ def test_llm_node_precomputes_query_vector_once_per_embedding_model(monkeypatch)
         str(kb_b): "text-embedding-b",
         str(kb_c): "text-embedding-a",
     }
-    assert model_query_count == 1
     assert failed_count == 0
     assert precomputed is True
 
 
 def test_llm_node_precompute_safe_partial_on_embedding_failure(monkeypatch):
-    user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     kb_a = uuid.uuid4()
     kb_b = uuid.uuid4()
-
-    kb_rows = [
-        SimpleNamespace(id=kb_a, embedding_model="text-embedding-a"),
-        SimpleNamespace(id=kb_b, embedding_model="text-embedding-b"),
-    ]
-    model_rows = [
-        SimpleNamespace(
-            id=uuid.uuid4(),
-            provider_id=uuid.uuid4(),
-            model_id_for_api_call=model_id,
-            type="embedding",
-            is_active=True,
-        )
-        for model_id in ("text-embedding-a", "text-embedding-b")
-    ]
-
-    class FakeQuery:
-        def __init__(self, model):
-            self.model = model
-
-        def filter(self, *args, **kwargs):
-            return self
-
-        def all(self):
-            if self.model is KnowledgeBase:
-                return kb_rows
-            if self.model is LLMModel:
-                return model_rows
-            return []
-
-    class FakeDb:
-        def query(self, model):
-            return FakeQuery(model)
-
-    class FakeEmbeddingClient:
-        def __init__(self, model_id):
-            self.model_id = model_id
-
-        def embed_sync(self, query):
-            if self.model_id == "text-embedding-b":
-                raise RuntimeError("embedding unavailable")
-            return [0.1, 0.2]
-
-    monkeypatch.setattr(
-        LLMService,
-        "get_client_for_model_binding",
-        lambda _db, _user_id, binding, **_kwargs: FakeEmbeddingClient(
-            binding.model_identifier
-        ),
-        raising=False,
-    )
+    binding_a = _embedding_binding("text-embedding-a")
+    binding_b = _embedding_binding("text-embedding-b")
 
     node = LLMNode(
         "llm-1",
@@ -3136,6 +3122,12 @@ def test_llm_node_precompute_safe_partial_on_embedding_failure(monkeypatch):
             ragFailurePolicy="safe_no_result",
         ),
     )
+    _, query_plan = _bind_query_embedding_runtime(
+        node,
+        organization_id=organization_id,
+        bindings_by_kb={kb_a: binding_a, kb_b: binding_b},
+        errors_by_model={"text-embedding-b": RuntimeError("embedding unavailable")},
+    )
 
     (
         vectors_by_kb,
@@ -3143,9 +3135,9 @@ def test_llm_node_precompute_safe_partial_on_embedding_failure(monkeypatch):
         failed_count,
         precomputed,
     ) = node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
-        FakeDb(),
+        object(),
         query="개발팀 온보딩",
-        user_id=user_id,
+        query_embedding_plan=query_plan,
         organization_id=organization_id,
         knowledge_base_ids=[str(kb_a), str(kb_b)],
     )
@@ -3157,45 +3149,9 @@ def test_llm_node_precompute_safe_partial_on_embedding_failure(monkeypatch):
 
 
 def test_llm_node_precompute_propagates_failure_when_fail_node(monkeypatch):
-    user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     kb_id = uuid.uuid4()
-    model_row = SimpleNamespace(
-        id=uuid.uuid4(),
-        provider_id=uuid.uuid4(),
-        model_id_for_api_call="text-embedding-a",
-        type="embedding",
-        is_active=True,
-    )
-
-    class FakeQuery:
-        def __init__(self, model):
-            self.model = model
-
-        def filter(self, *args, **kwargs):
-            return self
-
-        def all(self):
-            if self.model is KnowledgeBase:
-                return [SimpleNamespace(id=kb_id, embedding_model="text-embedding-a")]
-            if self.model is LLMModel:
-                return [model_row]
-            return []
-
-    class FakeDb:
-        def query(self, model):
-            return FakeQuery(model)
-
-    class FailingEmbeddingClient:
-        def embed_sync(self, query):
-            raise RuntimeError("embedding unavailable")
-
-    monkeypatch.setattr(
-        LLMService,
-        "get_client_for_model_binding",
-        lambda *_args, **_kwargs: FailingEmbeddingClient(),
-        raising=False,
-    )
+    binding = _embedding_binding("text-embedding-a")
 
     node = LLMNode(
         "llm-1",
@@ -3206,66 +3162,29 @@ def test_llm_node_precompute_propagates_failure_when_fail_node(monkeypatch):
             ragFailurePolicy="fail_node",
         ),
     )
+    _, query_plan = _bind_query_embedding_runtime(
+        node,
+        organization_id=organization_id,
+        bindings_by_kb={kb_id: binding},
+        errors_by_model={"text-embedding-a": RuntimeError("embedding unavailable")},
+    )
 
-    with pytest.raises(RuntimeError, match="embedding unavailable"):
+    with pytest.raises(QueryEmbeddingConfigurationError):
         node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
-            FakeDb(),
+            object(),
             query="개발팀 온보딩",
-            user_id=user_id,
+            query_embedding_plan=query_plan,
             organization_id=organization_id,
             knowledge_base_ids=[str(kb_id)],
         )
 
 
 def test_llm_node_precompute_counts_missing_or_invalid_kbs(monkeypatch):
-    user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     valid_kb = uuid.uuid4()
     missing_kb = uuid.uuid4()
     invalid_kb = uuid.uuid4()
-    client_calls = []
-
-    kb_rows = [
-        SimpleNamespace(id=valid_kb, embedding_model="text-embedding-a"),
-        SimpleNamespace(id=invalid_kb, embedding_model=None),
-    ]
-    model_row = SimpleNamespace(
-        id=uuid.uuid4(),
-        provider_id=uuid.uuid4(),
-        model_id_for_api_call="text-embedding-a",
-        type="embedding",
-        is_active=True,
-    )
-
-    class FakeQuery:
-        def __init__(self, model):
-            self.model = model
-
-        def filter(self, *args, **kwargs):
-            return self
-
-        def all(self):
-            if self.model is KnowledgeBase:
-                return kb_rows
-            if self.model is LLMModel:
-                return [model_row]
-            return []
-
-    class FakeDb:
-        def query(self, model):
-            return FakeQuery(model)
-
-    class FakeEmbeddingClient:
-        def embed_sync(self, query):
-            client_calls.append(query)
-            return [0.1, 0.2]
-
-    monkeypatch.setattr(
-        LLMService,
-        "get_client_for_model_binding",
-        lambda *_args, **_kwargs: FakeEmbeddingClient(),
-        raising=False,
-    )
+    binding = _embedding_binding("text-embedding-a")
 
     node = LLMNode(
         "llm-1",
@@ -3276,6 +3195,11 @@ def test_llm_node_precompute_counts_missing_or_invalid_kbs(monkeypatch):
             ragFailurePolicy="safe_no_result",
         ),
     )
+    runtime, query_plan = _bind_query_embedding_runtime(
+        node,
+        organization_id=organization_id,
+        bindings_by_kb={valid_kb: binding},
+    )
 
     (
         vectors_by_kb,
@@ -3283,16 +3207,18 @@ def test_llm_node_precompute_counts_missing_or_invalid_kbs(monkeypatch):
         failed_count,
         precomputed,
     ) = node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
-        FakeDb(),
+        object(),
         query="개발팀 온보딩",
-        user_id=user_id,
+        query_embedding_plan=query_plan,
         organization_id=organization_id,
         knowledge_base_ids=[str(valid_kb), str(missing_kb), str(invalid_kb)],
     )
 
     assert vectors_by_kb == {str(valid_kb): [0.1, 0.2]}
     assert list(bindings_by_kb) == [str(valid_kb)]
-    assert client_calls == ["개발팀 온보딩"]
+    assert [request.query for request in runtime.execute_requests] == [
+        "개발팀 온보딩"
+    ]
     assert failed_count == 2
     assert precomputed is True
 
@@ -3302,20 +3228,8 @@ def test_llm_node_precompute_fails_closed_on_projection_infrastructure_error(
     monkeypatch,
     failure_policy,
 ):
+    organization_id = uuid.uuid4()
     knowledge_base_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
-
-    class FailingDb:
-        def query(self, _model):
-            raise RuntimeError("private-model-identifier")
-
-    monkeypatch.setattr(
-        LLMService,
-        "get_client_for_model_binding",
-        lambda *_args, **_kwargs: pytest.fail(
-            "projection failure must not resolve a provider client"
-        ),
-        raising=False,
-    )
     node = LLMNode(
         "llm-1",
         LLMNodeData(
@@ -3325,27 +3239,29 @@ def test_llm_node_precompute_fails_closed_on_projection_infrastructure_error(
             ragFailurePolicy=failure_policy,
         ),
     )
+    _, query_plan = _bind_query_embedding_runtime(
+        node,
+        organization_id=organization_id,
+        projection_failure=True,
+    )
 
     if failure_policy == "fail_node":
-        with pytest.raises(
-            RuntimeError,
-            match="^embedding_model_projection_unavailable$",
-        ) as exc_info:
+        with pytest.raises(QueryEmbeddingConfigurationError) as exc_info:
             node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
-                FailingDb(),
+                object(),
                 query="query",
-                user_id=uuid.uuid4(),
-                organization_id=uuid.uuid4(),
+                query_embedding_plan=query_plan,
+                organization_id=organization_id,
                 knowledge_base_ids=knowledge_base_ids,
             )
         assert "private-model-identifier" not in str(exc_info.value)
         return
 
     assert node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
-        FailingDb(),
+        object(),
         query="query",
-        user_id=uuid.uuid4(),
-        organization_id=uuid.uuid4(),
+        query_embedding_plan=query_plan,
+        organization_id=organization_id,
         knowledge_base_ids=knowledge_base_ids,
     ) == ({}, {}, len(knowledge_base_ids), True)
 
@@ -3876,36 +3792,8 @@ def test_precomputed_fanout_log_uses_bucketed_candidate_count(monkeypatch, caplo
 
 def test_query_vector_precompute_log_uses_only_count_buckets(monkeypatch, caplog):
     organization_id = uuid.uuid4()
-    user_id = uuid.uuid4()
     kb_ids = [uuid.uuid4() for _ in range(3)]
-    kb_rows = [
-        SimpleNamespace(id=kb_id, embedding_model="embedding-model") for kb_id in kb_ids
-    ]
-    model_row = SimpleNamespace(
-        id=uuid.uuid4(),
-        provider_id=uuid.uuid4(),
-        model_id_for_api_call="embedding-model",
-        type="embedding",
-        is_active=True,
-    )
-
-    class Query:
-        def __init__(self, model):
-            self.model = model
-
-        def filter(self, *_criteria):
-            return self
-
-        def all(self):
-            if self.model is KnowledgeBase:
-                return kb_rows
-            if self.model is LLMModel:
-                return [model_row]
-            return []
-
-    class Db:
-        def query(self, model):
-            return Query(model)
+    binding = _embedding_binding("embedding-model")
 
     node = LLMNode(
         "llm-1",
@@ -3916,11 +3804,11 @@ def test_query_vector_precompute_log_uses_only_count_buckets(monkeypatch, caplog
             user_prompt="query",
         ),
     )
-    monkeypatch.setattr(
-        LLMService,
-        "get_client_for_model_binding",
-        lambda *args, **kwargs: SimpleNamespace(embed_sync=lambda query: [0.1]),
-        raising=False,
+    _, query_plan = _bind_query_embedding_runtime(
+        node,
+        organization_id=organization_id,
+        bindings_by_kb={kb_id: binding for kb_id in kb_ids},
+        vectors_by_model={"embedding-model": [0.1]},
     )
 
     with caplog.at_level(
@@ -3933,9 +3821,9 @@ def test_query_vector_precompute_log_uses_only_count_buckets(monkeypatch, caplog
             failed_count,
             precomputed,
         ) = node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
-            Db(),
+            object(),
             query="query",
-            user_id=user_id,
+            query_embedding_plan=query_plan,
             organization_id=organization_id,
             knowledge_base_ids=[str(kb_id) for kb_id in kb_ids],
         )
@@ -5924,6 +5812,11 @@ def test_collection_only_zero_candidates_skips_retrieval_embedding_and_provider(
         "_run_rag_retrieval_fanout",
         lambda **kwargs: pytest.fail("retrieval must not run"),
     )
+    monkeypatch.setattr(
+        node,
+        "_get_query_embedding_runtime",
+        lambda: pytest.fail("query embedding preflight must not run"),
+    )
 
     result = node._run({})  # noqa: SLF001
 
@@ -6169,7 +6062,7 @@ def test_workflow_llm_node_applies_selected_kb_chunks_to_llm_prompt(monkeypatch)
     document_id = uuid.uuid4()
     chunk_id = uuid.uuid4()
     audit_calls = []
-    embedding_queries = []
+    binding = _embedding_binding("text-embedding-test")
 
     kb = KnowledgeBase(
         id=kb_id,
@@ -6275,11 +6168,6 @@ def test_workflow_llm_node_applies_selected_kb_chunks_to_llm_prompt(monkeypatch)
         def close(self):
             self.closed = True
 
-    class FakeEmbeddingClient:
-        def embed_sync(self, query):
-            embedding_queries.append(query)
-            return [0.1, 0.2, 0.3]
-
     fake_db = FakeDb()
     _patch_allowed_knowledge_permissions(
         monkeypatch,
@@ -6294,13 +6182,6 @@ def test_workflow_llm_node_applies_selected_kb_chunks_to_llm_prompt(monkeypatch)
         "apps.workflow_engine.workflow.nodes.llm.llm_node.SessionLocal",
         lambda: fake_db,
     )
-    monkeypatch.setattr(
-        workflow_retrieval_service.LLMService,
-        "get_client_for_model_binding",
-        lambda *args, **kwargs: FakeEmbeddingClient(),
-        raising=False,
-    )
-
     def fake_rerank(self, query, candidates, top_k, *, source_tier_policy="tie_break"):
         for item in candidates:
             item["rerank_score"] = 0.95
@@ -6344,6 +6225,11 @@ def test_workflow_llm_node_applies_selected_kb_chunks_to_llm_prompt(monkeypatch)
         },
     )
     _patch_rag_gevent_inline(monkeypatch, node)
+    query_runtime, _ = _bind_query_embedding_runtime(
+        node,
+        bindings_by_kb={kb_id: binding},
+        vectors_by_model={"text-embedding-test": [0.1, 0.2, 0.3]},
+    )
     generation_client = StaticTextClient("환불 정책 답변")
     node._client_override = generation_client  # noqa: SLF001
 
@@ -6359,7 +6245,9 @@ def test_workflow_llm_node_applies_selected_kb_chunks_to_llm_prompt(monkeypatch)
     )
 
     assert result["text"] == "환불 정책 답변"
-    assert embedding_queries == ["첫주차 일정 알려줘"]
+    assert [request.query for request in query_runtime.execute_requests] == [
+        "첫주차 일정 알려줘"
+    ]
     assert "온보딩 질문: 첫주차 일정 알려줘" in message_text
     assert fake_db.vector_execute_count == 1
     assert fake_db.keyword_execute_count == 1

@@ -10,7 +10,12 @@ from typing import Any, Dict, List
 import httpx
 from apps.shared.services.egress_guard import EgressGuardError
 
-from .base import BaseLLMClient
+from .base import (
+    BaseLLMClient,
+    EmbeddingProviderResult,
+    LLMResponseValidationError,
+    PreparedEmbeddingInvocation,
+)
 
 
 class GoogleClient(BaseLLMClient):
@@ -83,6 +88,63 @@ class GoogleClient(BaseLLMClient):
             return data["data"][0]["embedding"]
         except (ValueError, KeyError, IndexError) as exc:
             raise ValueError("Google Gemini 임베딩 응답 파싱 실패") from exc
+
+    def prepare_embedding_invocation(
+        self,
+        text: str,
+    ) -> PreparedEmbeddingInvocation:
+        payload = {"model": self.model_id, "input": text}
+        return self._seal_embedding_invocation(
+            text=text,
+            invoke=lambda: self._invoke_typed_embedding_sync(payload),
+        )
+
+    def _invoke_typed_embedding_sync(
+        self,
+        payload: Dict[str, Any],
+    ) -> EmbeddingProviderResult:
+        try:
+            with httpx.Client(
+                timeout=30,
+                **self._sync_http_client_options(),
+            ) as client:
+                response = client.post(
+                    self.embedding_url,
+                    headers=self._build_headers(),
+                    json=payload,
+                )
+        except (httpx.RequestError, EgressGuardError) as exc:
+            self._raise_provider_transport_error(exc)
+        if response.status_code >= 400:
+            self._raise_provider_http_error(response.status_code)
+        try:
+            data = response.json()
+            usage = data["usage"]
+            vector = tuple(data["data"][0]["embedding"])
+            if not isinstance(usage, dict):
+                raise TypeError
+            input_tokens = usage.get("prompt_tokens", usage.get("input_tokens"))
+            if (
+                isinstance(input_tokens, bool)
+                or not isinstance(input_tokens, int)
+                or input_tokens < 0
+            ):
+                raise TypeError
+            total_tokens = usage.get("total_tokens")
+            if total_tokens is not None and (
+                isinstance(total_tokens, bool)
+                or not isinstance(total_tokens, int)
+                or total_tokens != input_tokens
+            ):
+                raise TypeError
+            return EmbeddingProviderResult(
+                vector=vector,
+                input_tokens=input_tokens,
+            )
+        except (IndexError, KeyError, TypeError, ValueError) as exc:
+            raise LLMResponseValidationError(
+                "Embedding provider response is invalid."
+            ) from exc
 
     async def invoke(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
         """

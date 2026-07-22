@@ -32,6 +32,9 @@ from apps.workflow_engine.adapters.knowledge_runtime_candidates import (
     PostgresKnowledgeRuntimeCandidateSnapshotAdapter,
 )
 from apps.workflow_engine.application.provider_execution import ProviderExecutionPlan
+from apps.workflow_engine.application.query_embedding_execution import (
+    QueryEmbeddingPlan,
+)
 from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
     KnowledgeRuntimeCandidateResolver,
 )
@@ -971,6 +974,26 @@ class _ProviderRuntimeMustNotResolve:
         raise AssertionError("provider resolution must not run without usable evidence")
 
 
+class _QueryEmbeddingRuntimeForSnapshot:
+    def __init__(self) -> None:
+        self.preflight_calls = 0
+        self.execute_calls = 0
+
+    def preflight(self, request):
+        self.preflight_calls += 1
+        assert request.legacy_credential_user_id is not None
+        return QueryEmbeddingPlan(
+            capability_required=False,
+            organization_id=request.organization_id,
+            node_id=request.node_id,
+            state=object(),
+        )
+
+    def execute(self, _request):
+        self.execute_calls += 1
+        raise AssertionError("query embedding execution is replaced by this fixture")
+
+
 @pytest.mark.skipif(
     os.getenv(RUN_ENV) != "1",
     reason=f"set {RUN_ENV}=1 to run disposable Knowledge user matrix evidence",
@@ -1047,6 +1070,7 @@ def test_internal_chatbot_user_matrix_reaches_llm_node_with_authorized_candidate
     for user_alias, expected_kb_ids in node_cases:
         provider = _ProviderMustNotRun()
         provider_runtime = _ProviderRuntimeMustNotResolve()
+        query_embedding_runtime = _QueryEmbeddingRuntimeForSnapshot()
         node = LLMNode(
             "llm-mba-238",
             LLMNodeData(
@@ -1084,6 +1108,7 @@ def test_internal_chatbot_user_matrix_reaches_llm_node_with_authorized_candidate
         )
         node.bind_knowledge_runtime_candidate_resolver(resolver)
         node.bind_provider_execution_runtime(provider_runtime)
+        node.bind_query_embedding_runtime(query_embedding_runtime)
         node._client_override = provider  # noqa: SLF001
         precompute_calls = []
         fanout_calls = []
@@ -1124,6 +1149,10 @@ def test_internal_chatbot_user_matrix_reaches_llm_node_with_authorized_candidate
         assert provider.calls == 0
         assert provider_runtime.preflight_calls == 1
         assert provider_runtime.resolve_calls == 0
+        assert query_embedding_runtime.preflight_calls == (
+            1 if expected_kb_ids else 0
+        )
+        assert query_embedding_runtime.execute_calls == 0
         assert result["text"] == RAG_NO_EVIDENCE_MESSAGE
         assert fanout_calls == (
             [tuple(str(kb_id) for kb_id in expected_kb_ids)]

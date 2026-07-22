@@ -78,7 +78,7 @@ def test_provider_runtime_router_does_not_own_strategy_implementations():
     assert "apps.workflow_engine.services.llm_service" not in imported_modules
 
 
-def test_capability_adapter_is_the_only_workflow_shared_capability_owner():
+def test_capability_adapters_are_the_only_workflow_shared_capability_owners():
     workflow_root = Path(__file__).parents[1]
     owners = set()
     capability_modules = {
@@ -96,7 +96,10 @@ def test_capability_adapter_is_the_only_workflow_shared_capability_owner():
         if capability_modules.intersection(imported_modules):
             owners.add(source_path.relative_to(workflow_root).as_posix())
 
-    assert owners == {"adapters/provider_execution_capability.py"}
+    assert owners == {
+        "adapters/provider_execution_capability.py",
+        "adapters/query_embedding_capability.py",
+    }
 
 
 def test_provider_architecture_scan_ignores_non_source_runtime_directories(tmp_path):

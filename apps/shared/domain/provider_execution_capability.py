@@ -21,6 +21,7 @@ from apps.shared.domain.workflow_node_location import (
 class CapabilityPurpose(str, Enum):
     MAIN_GENERATION = "main_generation"
     MEMORY_SUMMARY = "memory_summary"
+    QUERY_EMBEDDING = "query_embedding"
 
 
 class PrincipalKind(str, Enum):
@@ -204,6 +205,11 @@ class ProviderExecutionCapability:
                 raise ValueError(f"{name} must be a SHA-256 digest")
         if input_token_cap < 0 or output_token_cap < 0 or cost_cap_microusd < 0:
             raise ValueError("capability caps cannot be negative")
+        if (
+            binding.purpose is CapabilityPurpose.QUERY_EMBEDDING
+            and output_token_cap != 0
+        ):
+            raise ValueError("query embedding output token cap must be zero")
         if expires_at <= now:
             raise ValueError("capability expiry must be future dated")
         return cls(

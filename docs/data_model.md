@@ -13,7 +13,7 @@ Status: Draft
 
 ## 도메인별 테이블
 
-현재 코드의 SQLAlchemy `__tablename__` 기준 활성 테이블은 103개다. 아래 목록은 공통 model registry와 Alembic head `b16c7d8e9f01`을 대조한 inventory다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 주석 처리된 호환 모델이므로 개수와 목록에서 제외한다. 테이블 추가·삭제 시 수동 개수만 바꾸지 말고 이 inventory와 해당 도메인 설명을 함께 갱신한다.
+현재 코드의 SQLAlchemy `__tablename__` 기준 활성 테이블은 103개다. 아래 목록은 공통 model registry와 Alembic head `b17c8d9e0f12`를 대조한 inventory다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 주석 처리된 호환 모델이므로 개수와 목록에서 제외한다. 테이블 추가·삭제 시 수동 개수만 바꾸지 말고 이 inventory와 해당 도메인 설명을 함께 갱신한다.
 
 | 도메인 | 테이블 |
 | --- | --- |
@@ -1330,7 +1330,7 @@ credential-model 사용 가능 관계.
 
 #### `llm_deployment_credential_policies`
 
-Immutable deployment version의 canonical LLM node location에 사용할 credential과 server-derived credential principal을 graph 밖에서 고정하는 실행 제어 row다 ([ADR-0064](decisions/ADR-0064-provider-execution-capability-boundary.md), [ADR-0066](decisions/ADR-0066-nested-llm-canonical-node-location.md)). Organization manager만 교체할 수 있고 graph에는 credential ID를 저장하지 않는다.
+Immutable deployment version의 canonical LLM node location에 사용할 credential과 server-derived credential principal을 graph 밖에서 고정하는 실행 제어 row다 ([ADR-0064](decisions/ADR-0064-provider-execution-capability-boundary.md), [ADR-0066](decisions/ADR-0066-nested-llm-canonical-node-location.md), [ADR-0071](decisions/ADR-0071-rag-query-embedding-provider-capability.md)). Organization manager만 교체할 수 있고 graph에는 credential ID를 저장하지 않는다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
@@ -1342,6 +1342,7 @@ Immutable deployment version의 canonical LLM node location에 사용할 credent
 | node_id | VARCHAR(255) | NOT NULL |
 | container_path | JSONB | NOT NULL, root는 `[]`, V1 segment는 `{kind: "loop", node_id}` |
 | node_location_digest | VARCHAR(64) | NOT NULL, server-derived canonical location SHA-256 |
+| purpose | VARCHAR(32) | NOT NULL, `main_generation` 또는 `query_embedding`; legacy write 호환 server default는 `main_generation` |
 | model_id | UUID | NOT NULL, FK→llm_models.id (RESTRICT) |
 | credential_id | UUID | NOT NULL, FK→llm_credentials.id (RESTRICT) |
 | credential_principal_user_id | UUID | NOT NULL, FK→users.id (RESTRICT) |
@@ -1349,7 +1350,9 @@ Immutable deployment version의 canonical LLM node location에 사용할 credent
 | is_active | BOOLEAN | NOT NULL |
 | created_at / updated_at | DATETIME | NOT NULL |
 
-- Partial UNIQUE `(organization_id, deployment_id, deployment_version, node_location_digest) WHERE is_active`로 canonical location당 active policy를 최대 한 개만 허용한다. Model UUID가 달라도 같은 location의 기존 active row를 먼저 비활성화한다.
+- Main generation은 partial UNIQUE `(organization_id, deployment_id, deployment_version, node_location_digest) WHERE is_active AND purpose='main_generation'`으로 canonical location당 active policy를 최대 한 개만 허용한다.
+- Query embedding은 partial UNIQUE `(organization_id, deployment_id, deployment_version, node_location_digest, model_id) WHERE is_active AND purpose='query_embedding'`으로 location/model slot당 active policy를 최대 한 개만 허용한다. 서로 다른 embedding model slot과 main-generation slot은 공존한다.
+- Query policy mutation은 purpose-aware Gateway/worker 수렴 전 기본-disabled server gate로 차단한다. Downgrade는 policy/capability/usage 세 테이블을 deterministic `ACCESS EXCLUSIVE` lock으로 먼저 직렬화하고 query row가 하나라도 있으면 purpose column이나 제약을 제거하지 않는다.
 - Digest는 index projection이며 authorization의 단독 근거가 아니다. 조회 뒤 structured `container_path`와 `node_id`를 exact 비교하고 불일치하면 fail-closed한다.
 - Policy 교체는 canonical deployment row와 기존 active policy를 lock하고 새 revision을 같은 transaction에 저장한다.
 
@@ -1367,7 +1370,7 @@ Immutable deployment version의 canonical LLM node location에 사용할 credent
 | deployment_version / node_id | INTEGER / VARCHAR(255) | NOT NULL, immutable deployment node binding |
 | container_path / node_location_digest | JSONB / VARCHAR(64) | NOT NULL, policy와 같은 canonical graph location binding |
 | node_invocation_id / execution_admission_id / provider_attempt_id | UUID | NOT NULL, provider attempt binding |
-| purpose | VARCHAR(32) | NOT NULL, `main_generation` 또는 `memory_summary` |
+| purpose | VARCHAR(32) | NOT NULL, `main_generation`, `memory_summary` 또는 `query_embedding` |
 | provider_id / model_id / credential_id | UUID | NOT NULL, 각 catalog/resource FK (RESTRICT) |
 | credential_principal_user_id | UUID | NOT NULL, FK→users.id (RESTRICT) |
 | execution_subject_kind / execution_subject_id | VARCHAR(32) / UUID | user·anonymous_public·system typed identity |
@@ -1380,6 +1383,7 @@ Immutable deployment version의 canonical LLM node location에 사용할 credent
 | created_at / updated_at | DATETIME | NOT NULL |
 
 - UNIQUE `(organization_id, provider_attempt_id, purpose)`로 같은 logical provider operation을 하나의 capability row에 수렴시킨다.
+- Query embedding capability는 exact embedding model policy를 사용하고 `output_token_cap=0`이어야 한다. Main generation과 Memory summary capability를 query consumer가 사용할 수 없다.
 - 기존 MBA-249 row는 migration에서 root `container_path=[]`로 backfill한다. Nested policy/capability row가 있으면 node-ID-only downgrade를 중단한다.
 - Admission은 실제 prompt UTF-8 byte upper bound, provider `max_tokens`와 canonical pricing의 최대 비용을 cap과 비교한다. Missing pricing과 provider별 output-limit alias는 capability-required path에서 fail-closed한다.
 - `egress_revision`은 현재 provider catalog routing fingerprint이며 중앙 egress authorization은 아니다. 실제 outbound guard 정책은 별도 경계가 소유한다.
@@ -1395,7 +1399,7 @@ Capability-required provider attempt의 canonical token/cost/outcome 원장이�
 | workflow_id / deployment_id / deployment_version / node_id | UUID / UUID / INTEGER / VARCHAR(255) | NOT NULL, immutable 실행 binding snapshot |
 | container_path | JSONB | NOT NULL, ADR-0066의 ordered Loop-only canonical parent path; root는 `[]` |
 | node_invocation_id / execution_admission_id / provider_attempt_id | UUID | NOT NULL, canonical attempt binding |
-| purpose | VARCHAR(32) | NOT NULL, 현재 `main_generation` 또는 `memory_summary` |
+| purpose | VARCHAR(32) | NOT NULL, `main_generation`, `memory_summary` 또는 `query_embedding` |
 | capability_id / capability_revision | UUID / INTEGER | NOT NULL, opaque capability snapshot |
 | capability_expires_at | DATETIME | NOT NULL |
 | policy_id / policy_revision | UUID / INTEGER | NOT NULL |
@@ -1421,6 +1425,7 @@ Capability-required provider attempt의 canonical token/cost/outcome 원장이�
 | created_at / updated_at | DATETIME | NOT NULL |
 
 - UNIQUE `(organization_id, provider_attempt_id, purpose)`가 provider attempt identity의 단일 권위다. 같은 key의 replay는 canonical `container_path + node_id`를 포함한 나머지 binding/principal/revision/pricing/cap snapshot이 정확히 같을 때만 기존 operation으로 수렴한다. 가격 비교는 DB round trip 전후가 같은 `NUMERIC(20,9)` fixed-scale canonical 표현을 사용한다.
+- Query embedding operation은 `output_token_cap=0`, `admitted_output_tokens=0`, success의 `completion_tokens=0`을 강제한다. Raw query, vector와 KB ID는 operation 또는 correction payload에 저장하지 않는다.
 - Organization FK 외 control-resource FK를 두지 않는다. Deployment/capability/policy/credential/model/user/WorkflowRun 삭제는 이미 발생한 usage fact를 cascade 삭제하거나 reconciliation을 막지 않는다.
 - `provider_started` 뒤 결과를 확정할 수 없으면 `outcome_unknown`으로 분류하고 provider를 자동 재호출하지 않는다. Typed outcome-unknown은 호출 경로에서 즉시 terminalize한다. Typed `before_send`는 `failed_definitive/provider_not_sent`, provider 인증·인가 HTTP `401`/`403`은 `failed_definitive/provider_rejected`로 닫되 `429`/`5xx`는 확정 거절로 승격하지 않는다. Stale started row를 정리하는 reconciler도 provider I/O를 수행하지 않는다.
 - Success, late success reconciliation과 correction은 모두 sealed admitted token, immutable input/output 가격으로 다시 계산한 `total_cost_microusd`와 cost cap을 domain 경계에서 검증한다.

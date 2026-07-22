@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import uuid
 from collections import defaultdict
-from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
 from apps.shared.db.models.llm import LLMModel
+from apps.shared.domain.embedding_model_binding import EmbeddingModelBinding
 from apps.shared.domain.knowledge_runtime_candidates import (
     MAX_RUNTIME_DIRECT_KB_REFERENCES,
 )
@@ -15,21 +14,6 @@ from sqlalchemy.orm import Session
 
 class EmbeddingModelProjectionError(RuntimeError):
     """Safe failure raised before retrieval or provider I/O."""
-
-
-@dataclass(frozen=True, slots=True)
-class EmbeddingModelBinding:
-    model_id: uuid.UUID
-    provider_id: uuid.UUID
-    model_identifier: str
-
-    @property
-    def id(self) -> uuid.UUID:
-        return self.model_id
-
-    @property
-    def model_id_for_api_call(self) -> str:
-        return self.model_identifier
 
 
 def _normalize_identifiers(
