@@ -171,6 +171,14 @@ OutboundEgressGuard는 네트워크와 protocol access 위험을 줄이는 gate�
 - 지원 file type/content type allowlist를 source policy별로 둔다. Allowlist 밖 file은 indexing-visible artifact를 만들지 않고 remediation 또는 safe unsupported 상태로 둔다.
 - Parser/extractor는 macro, script, embedded object, external reference, executable payload를 실행하지 않는 least-privilege 또는 sandboxed worker에서 수행한다.
 - Office, PDF, HTML, archive, rich document parser는 network access와 filesystem write 범위를 제한한다. Parser가 외부 URL을 따라가거나 document 내부 script를 실행하면 안 된다.
+- ADR-0070 Target enforcement의 기본 parser는 network-disabled local isolated parser다. Current
+  `llamaparse` credential의 Organization/`use` 검증은 raw-content egress 승인이 아니다. External parser는
+  explicit Organization opt-in과 source-managed source 또는 manual KB scope opt-in, exact Raw Parser
+  Egress Approval Revision, server-owned `knowledge.parser.external_approved` profile/credential capability와
+  ADR-0067 public-address guarded transport 및 no-log/no-durable-payload readiness가 구현되기
+  전 비활성화하고 raw upload 전에 `knowledge.raw_parser_egress_unavailable`로 fail-closed한다. 승인된
+  parser output도 local hard baseline을 우회하지 않는다. Private raw parser는 별도 Accepted ADR과
+  dedicated isolation profile 전까지 지원하지 않는다.
 - Archive는 nested depth, expanded size, contained file count, nested archive count cap을 적용한다. Cap 초과, archive bomb, executable/script/macro-enabled child file은 기본 fail-closed 또는 quarantine/remediation이다.
 - Malware/content scan hook은 provider-neutral interface로 둔다. Hook이 없거나 scan result가 `unknown`, `timeout`, `error`이면 high-risk binary/Office/archive는 ready/indexing-visible 상태로 진행하지 않는다.
 - Scan pass는 source ACL, KB `use`, redaction, prompt-injection guard를 대체하지 않는다.
@@ -247,6 +255,7 @@ Target ingestion은 partial artifact를 retrieval-visible하게 만들면 안 �
 - `active` document version status 단독으로 active source of truth를 표현하지 않는다. `ready` status와 `knowledge_bases.active_document_version_id` pointer를 함께 active retrieval indicator로 사용한다.
 - Finalization이 성공하기 전까지 기존 active version은 계속 retrieval-visible 상태로 유지한다.
 - MBA-105 legacy compatibility에서는 `active_document_version_id`가 아직 없는 KB에 한해 `document_chunks.document_version_id IS NULL` chunk를 retrieval-visible로 둘 수 있다. KB에 active pointer가 생긴 뒤에는 `ready` active document version chunk만 retrieval-visible하다.
+- ADR-0070 Target enforcement 뒤 위 legacy compatibility는 privacy-compliant active pointer를 한 번도 확정하지 않은 document가 frozen `legacy_unverified` migration wave membership, 아직 retire되지 않은 eligibility, wave의 frozen platform/Organization validity epoch와 current 두 epoch equality, code-owned `privacy_legacy_grace_v1 = 30 * 24 hours` 상한과 authoritative DB-time half-open cutoff를 retrieval prefilter와 final evidence gate 모두에서 통과한 경우로 제한한다. Security-invalidating epoch 전진은 item projection/cleanup과 별개로 legacy를 즉시 제외한다. Compliant pointer finalization은 legacy eligibility를 같은 transaction에서 비가역적으로 retire한다. 이후 active manifest가 stale/invalid가 되거나 cleanup이 남아 있어도 legacy로 fallback하지 않는다. Allowlist/wave 부재, stale validity epoch, unsupported grace contract, cutoff equality/경과와 stale cache/vector result는 legacy visibility를 연장하지 않는다. Privacy-gated active-ready artifact도 manifest의 global platform 및 same-Organization validity epoch가 current 두 epoch와 모두 같을 때만 retrieval-visible하며 security-invalidating epoch 전진은 pointer와 별개로 즉시 제외한다.
 - Legacy `documents` row가 남아 있는 전환기 retrieval 구현은 vector, keyword, hierarchy search 모두에서 `documents.status='completed'` 문서에 속한 chunk만 retrieval-visible로 취급한다. `pending`, `processing`, `failed`, `deleted` 또는 동등한 미완료/실패 상태의 chunk는 active pointer 조건을 만족하더라도 evidence 후보가 될 수 없다.
 - Pre-finalized chunk, vector, keyword index artifact는 retrieval-visible하지 않다.
 - External index 성공 후 DB finalize가 실패하면 기존 active version을 유지하고 cleanup을 queue에 넣는다.

@@ -4,6 +4,7 @@ Status: Draft
 Verified Against: feature/mba-359 @ 504f418ac708a2dc541a5283f1ad8e97da0869a2
 MBA-105 구현 baseline, 운영 기본값, permission helper output, active version finalization, resource hiding matrix는 [implementation_baseline.md](implementation_baseline.md)를 따른다. Workflow RAG에서 `execution_subject`가 없는 MVP public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md)을 따른다. MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md)을 따른다. Direct KB와 명시 selected Collection의 Workflow runtime candidate 해석은 [ADR-0036](../../decisions/ADR-0036-knowledge-runtime-candidate-resolution.md)을 따른다. KC lifecycle, item 순서와 권한 운영 경계는 [ADR-0044](../../decisions/ADR-0044-knowledge-collection-operational-management-boundary.md)을 따른다.
 KC sync의 Gateway application, durable repository, Workflow executor와 Client polling 경계는 [ADR-0048](../../decisions/ADR-0048-knowledge-collection-sync-execution-boundary.md)을 따른다.
+Organization Detector Provider와 embedding 전 local masking Target은 [ADR-0070](../../decisions/ADR-0070-organization-detector-provider-and-pre-embedding-local-masking-boundary.md)을 따른다. 현재 component/runtime 구현 완료를 뜻하지 않는다.
 
 ## Domain Components
 
@@ -20,9 +21,19 @@ KC sync의 Gateway application, durable repository, Workflow executor와 Client 
 | Public Exposure Policy Store | Source-managed KB의 anonymous public-only 노출 승인, 만료, 회수, 재검증 상태를 관리한다 | Collection visibility flag만으로 source-managed KB를 public candidate로 만들지 않는다 |
 | Content Safety Scanner | Source artifact의 file type allowlist, active content, archive cap, malware/content scan 결과를 평가한다 | Scan pass는 source ACL, KB permission, redaction, prompt-injection guard를 대체하지 않는다 |
 | Parser Isolation Worker | PDF/Office/HTML/archive 같은 rich content를 least-privilege 또는 sandboxed 환경에서 text로 추출한다 | Macro, script, embedded object, executable payload, external reference를 실행하지 않는다 |
-| LlamaParse Credential Resolver | User-initiated document parsing 직전에 execution subject, active organization, provider compatibility, valid 상태와 credential `use`를 확인하고 단일 허용 parser input을 반환한다 | FileProcessor가 credential ORM/config를 직접 읽거나 전역 최신 credential, environment fallback, 다른 organization credential을 사용하지 않는다 |
-| Privacy/Redaction Service | PII/secret hard baseline과 output-target redaction을 위한 shared detector/masking engine을 제공한다 | Trace storage나 Knowledge lifecycle을 소유하지 않는다 |
-| Canonical Normalizer | Source content를 추출, redaction, normalization해 canonical text/metadata를 만든다 | Chunk/embedding 생성 전에 Privacy/Redaction Service를 사용한다 |
+| LlamaParse Credential Resolver | User-initiated document parsing 직전에 execution subject, active organization, provider compatibility, valid 상태와 credential `use`를 확인하고 단일 허용 parser input을 반환한다 | 이 결과는 raw parser egress 승인이 아니다. FileProcessor가 credential ORM/config를 직접 읽거나 전역 최신 credential, environment fallback, 다른 organization credential을 사용하지 않는다 |
+| Privacy/Redaction Service | 순수 PII/secret hard baseline, privacy text/span contract, span 검증/union과 deterministic local masking을 제공한다 | Trace storage, provider I/O, Knowledge lifecycle, DB와 framework를 소유하지 않는다 |
+| Collection Privacy Policy Binding Application | Routing membership과 별개인 explicit Collection-to-KB privacy binding의 impact preview, expected-revision CAS, Organization validity epoch와 audit 원자성을 조율한다 | `catalog_manage` membership mutation을 privacy authority로 사용하거나 active binding을 unlink와 함께 암묵 삭제하지 않는다 |
+| Effective Privacy Policy Resolver | Platform hard baseline, current Organization base와 모든 explicitly bound Collection/source/KB stricter revision을 strongest union으로 합성하고 exact scope/binding revision, compiled digest와 derived mode/action/provider를 snapshot한다 | Routing membership/order, scope order/last-writer-wins, 하위 scope 약화, client/request/graph/document metadata로 scope/provider 선택 |
+| Raw Parser Egress Approval Resolver / Adapter | Explicit Organization과 applicable source-managed source 또는 manual KB opt-in, exact raw-parser approval, parser revision, credential capability, `knowledge.parser.external_approved` profile과 ADR-0067 public-address guarded transport readiness를 확인한 뒤 bounded raw bytes를 승인된 public HTTPS parser에 전송하고 untrusted parsed output을 local baseline으로 반환한다 | Detector approval 재사용, private destination, current LlamaParse credential `use`만으로 upload, raw payload/response durable 저장, baseline 우회 |
+| Detector Egress Approval Resolver | Exact provider revision과 same-Organization immutable trust-tier approval의 purpose, processor/ownership·endpoint/network boundary, residency/retention/no-training/no-secondary-use와 active/expiry/revoke를 평가한다 | Private IP, DNS, mTLS 또는 credential 존재를 egress 승인으로 간주하지 않는다 |
+| Detector Provider Port/Adapter | Exact effective policy의 same-Organization provider를 tier-specific operation profile로 bounded call하고 실제 전송 bytes와 immutable local call context에 result를 결속한 뒤 provider별 offset/error를 normalized document UTF-8 byte span contract로 변환한다 | Public-address guard를 private용으로 완화하거나 provider echo만을 무결성 근거로 신뢰하거나 baseline span을 제거하거나 provider output text를 canonical로 저장하거나 active pointer를 변경하지 않는다 |
+| Provider-Safe View Builder | `external_approved` provider에서 baseline span을 제거/치환한 view와 ephemeral document offset map을 만든다 | Raw document fingerprint, Organization/internal revision, source identity/ACL/credential을 wire payload 또는 durable storage에 넣지 않는다 |
+| Privacy Decision Manifest Store | Raw text/exact span 없이 effective scoped policy snapshot/digest, provider/detector-approval/raw-parser refs와 exact platform/Organization validity revision/epoch snapshot, keyed digest, coverage/outcome, redacted candidate ref와 exact candidate revision을 보존한다 | Unapproved candidate manifest를 retrieval authority로 사용하거나 audit/trace에 digest를 복사하거나 manifest를 raw 복구 자료로 사용하지 않는다 |
+| Privacy Artifact Validity Resolver | Manifest의 exact global platform 및 same-Organization validity revision/monotonic `validity_epoch` snapshot을 current 두 epoch와 대조하고 preserving/invalidating transition을 retrieval prefilter와 final evidence gate에 동일하게 적용한다 | Active pointer, ready state, cache/vector hit를 current privacy 준수 capability로 취급하지 않는다 |
+| Privacy Digest Key Ring | Protected master key version에서 Organization별 domain-separated key를 파생해 `privacy_digest_hmac_sha256_v1`을 제공한다 | Provider/LLM credential을 재사용하거나 key material을 DB/wire/job/audit/trace/log에 전달하지 않는다 |
+| Canonical Normalizer | Content safety를 통과한 source text에 hard baseline, required provider, local masking을 순서대로 적용해 staged redacted candidate/metadata를 만들고 approved exact revision만 canonical input으로 승격한다 | Review pending 또는 valid complete privacy result 전에 chunk/embedding을 생성하지 않는다 |
+| Privacy Review Application | Exact pending candidate의 range-only 추가 masking, local baseline 재검사, append-only review decision, exact-revision approve/reject와 actor/source/policy/validity fence를 조율한다 | candidate overwrite, submitted range durable 저장, 미래 content blanket approval, replacement text/raw payload 수신, terminal block override, provider 강제 |
 | Document Type Registry | Platform-supported document structure capability와 immutable published version을 제공한다 | Organization free-form label 또는 AI output을 runtime capability로 해석하지 않는다 |
 | Organization Taxonomy Registry | Draft/validate/publish, versioned sibling-label normalizer, depth-8 replacement graph validation, nullable first-current CAS, transaction-bound organization-lifetime stable topic identity/tombstone, rename/move/deprecate와 impact projection을 관리한다 | Client comparison key를 신뢰하거나 published version을 수정하거나 ledger write를 pointer/audit와 분리하거나 tombstoned ID를 active/다른 의미로 재사용하거나 replacement hint로 assignment를 자동 변경하거나 topic을 Collection, permission 또는 chunk hierarchy로 사용하지 않는다 |
 | Classification Policy Publish Coordinator | Taxonomy/profile-policy publish가 registry 및 Organization/Platform profile catalog compatibility snapshot을 commit 전에 재검증하게 한다. 전역 lock order는 applicable Organization catalog, Platform catalog, Organization coordination, taxonomy current, profile-policy current다 | 각 registry가 자기 nullable pointer/catalog revision만 CAS하거나 뒤 단계 row를 잡은 뒤 catalog row를 역순 취득해 first-publish/platform deprecate write skew 또는 deadlock을 만들지 않는다 |
@@ -41,7 +52,8 @@ KC sync의 Gateway application, durable repository, Workflow executor와 Client 
 | Processing Decision Manifest Builder | Canonical content ref, exact resolver input vector/profile과 resolver/materialization input fingerprints를 immutable decision manifest로 고정한다 | Output DocumentVersion ID/result bytes, mutable latest/display 값을 pre-build fingerprint 입력으로 저장하거나 legacy character 값을 token으로 재해석하지 않는다 |
 | Artifact Build Manifest Finalizer | `job_created` receipt에 불변 bind된 execution actor의 current permission/source authorization revision과 embedding credential lifecycle/relation/permission binding revision, ready artifact의 immutable build refs, post-build integrity hash와 decision satisfaction을 검증하고 current decision/artifact pointer를 CAS한다. Stale/cancelled attempt는 valid fence에서 terminal state와 cleanup outbox intent만 확정한다 | Cross-actor/credential reuse로 execution actor나 binding을 바꾸거나 revoked actor/credential 또는 stale resolver vector로 satisfaction/active pointer를 commit하거나 staging artifact를 직접 삭제하거나 output integrity hash를 job identity로 사용하지 않는다 |
 | Retrieval Representation Builder | Redacted canonical evidence에서 contextual/parent/late/visual retrieval artifact를 deterministic하게 파생한다 | Canonical evidence와 citation identity를 덮어쓰지 않는다 |
-| Raw Artifact Store | Compliance view용 optional protected raw source content store | RAG, embedding, prompt, router input, Agent answer stream에서 사용하지 않는다 |
+| Raw Artifact Store | Nodease가 보존하는 upload/fetch 원문을 opt-in compliance view용 protected raw artifact로 암호화 저장한다. Source system의 source-of-record object를 가리키는 opaque protected reference와 raw copy를 구분한다 | Current `file_path`를 Target 준수 증거로 간주하지 않고 RAG, embedding, prompt, router input, Agent answer stream에서 사용하지 않는다 |
+| Raw Copy Cutover Coordinator | 기존 Nodease-held upload/fetch raw copy를 exact inventory로 freeze하고 valid opt-in과 retention/legal-hold 보존 조건을 모두 충족한 item의 protected migration, migration 조건 미충족·no-hold item의 non-readable fence+physical purge를 original-copy absence와 terminal receipt로 수렴시킨 뒤 final readiness와 canonical completion audit을 원자 확정한다 | Legal hold만으로 opt-in을 만들거나 raw response 차단, DB path null 처리, no-opt-in hold, unknown/partial disposition, readable duplicate 또는 audit 실패를 cutover 완료로 간주하지 않는다 |
 | Ingestion Concurrency Guard | Same source item/document-level KB 처리의 owner-token lock, fencing token, advisory lock을 제공한다 | Lock TTL 만료 뒤 stale worker가 새 artifact를 finalize하거나 lock을 해제하지 못하게 한다 |
 | Ingestion Pipeline | Document version, chunk, embedding artifact, external index entry를 생성한다 | 성공 전 active version을 바꾸지 않는다 |
 | Document Ingestion Application | Process/sync/resume/reindex admission, same-document single-flight, duplicate resume 재사용 우선 판정, optional Connection reference UoW, protected input revision과 atomic Document/job transaction을 조율한다 | FastAPI/Celery/SQLAlchemy concrete API를 domain policy에 넣지 않고 raw source config를 job payload로 만들거나 active 동일 intent를 변경된 Document status만으로 거부하지 않는다 |
@@ -51,6 +63,7 @@ KC sync의 Gateway application, durable repository, Workflow executor와 Client 
 | Document Ingestion Status Projector | Internal job row를 operation/status/attempt/retryability/safe reason/timestamp allowlist로 축소한다 | owner/fencing token, input revision, idempotency key, raw error/source/provider payload를 반환하지 않는다 |
 | Active Version Finalizer | Transactional active version pointer swap, previous version `superseded` 표시, content_hash/fingerprint commit, outbox insert를 수행한다 | Fencing/recovery gate가 필요하며 hash만 먼저 commit하거나 pointer swap 후 outbox insert 전에 crash window를 만들지 않는다 |
 | Artifact Cleanup Reconciler | DB state와 object storage/vector index/external artifact cleanup을 outbox 기반으로 맞추고 retention pin, purge generation과 append-only Artifact Availability Tombstone을 수렴시킨다 | Manifest/Satisfaction provenance를 영구 pin으로 간주하거나 active/citation/legal-hold pin을 무시하거나 `purging|purged` artifact를 재사용하지 않는다 |
+| Privacy Review Candidate Cleanup Reconciler | 최초 generation DB-time expiry, reject/superseded/canonical-finalized/generation-authority-revoked/stale state와 current cleanup claim/fence를 확인하고 encrypted staged candidate body를 bounded batch로 purge한 뒤 receipt/tombstone을 확정한다 | Approve 직후 finalization input을 먼저 삭제하거나 개별 reviewer revoke를 candidate purge로 해석하거나 successor로 TTL을 연장하거나 legal hold를 review 재개로 해석하거나 stale worker가 current candidate/decision/audit/manifest를 삭제하지 않는다 |
 | Knowledge Permission Helper | Collection `read`, collection `route`, KB use, source ACL freshness/requester authorization을 bulk 평가한다 | Router와 controller는 permission row가 아니라 helper 결과를 소비해야 한다 |
 | Knowledge Document Registration Service | 빈 active manual KB를 잠그고 최초 Document 하나만 원자적으로 등록한다 | HTTP, raw header와 Client 상태를 import하지 않으며 기존 Document가 있으면 상태와 무관하게 typed conflict를 반환한다 |
 | Knowledge Document Lifecycle Service | Ingestion과 같은 document advisory lock 순서로 삭제를 직렬화하고 유일 Document 삭제 시 active version pointer와 slot을 함께 정리한다 | Storage physical cleanup보다 DB lifecycle commit을 먼저 확정하고 legacy sibling의 다른 active version을 임의로 해제하지 않는다 |
@@ -81,6 +94,192 @@ KC sync의 Gateway application, durable repository, Workflow executor와 Client 
 | Retrieval Orchestrator | 선택된 KB들에 대해 metadata/hierarchy retrieval을 실행하고 merge/rerank한다 | Authorized redacted evidence만 사용한다 |
 | Audit/Trace Summarizer | Redaction-safe audit/trace/answer summary를 만든다 | Raw content/title/path/url은 제외하고, raw/compliance audit은 safe reference, decision, reason만 저장한다 |
 | RAG Answer Retention Worker | Terminal answer run의 retention purge를 수행하고 aggregate audit을 남긴다 | requested/running row를 삭제하지 않고 동시 purge를 row lock/marker로 방지한다 |
+
+### MBA-333 Privacy Detection And Pre-Embedding Masking Boundary
+
+이 boundary는 [ADR-0070](../../decisions/ADR-0070-organization-detector-provider-and-pre-embedding-local-masking-boundary.md)의
+Target 구조이며 현재 package, table, provider endpoint 또는 worker가 구현됐다는 뜻은 아니다.
+Runtime/persistence/provider adapter와 아래 Target 테스트는 MBA-362가 구현한다.
+
+| Layer | 책임 | 금지 |
+| --- | --- | --- |
+| Shared domain | Unicode 14.0 NFC/LF text contract, UTF-8 byte span 검증/union, hard baseline과 deterministic mask | SQLAlchemy/FastAPI/provider SDK/trace policy import |
+| Knowledge application | Actor/source/content-safety gate, effective scoped policy/provider/raw-parser snapshot, raw handle 수명, attempt/fence, canonicalization과 finalization | Raw payload를 Celery/job에 저장, scope/provider failure downgrade |
+| Outbound adapter | External detector의 ADR-0067 public profile, private detector의 dedicated isolated profile, protected raw parser profile과 result normalization | Public guard 완화, generic private dial, open DB session/lock 중 I/O, endpoint/CIDR/credential override, raw exception 반환 |
+| Persistence adapter | Immutable scoped policy/Collection privacy binding/provider/detector-approval/raw-parser/validity revision, encrypted candidate ref+generation-bound expiry+legal-hold/purge state, append-only review decision/attempt/manifest의 exact platform/Organization epoch snapshot과 current generation/cleanup CAS | Candidate overwrite나 TTL 연장, submitted mask range, raw/view/map/span/parser/provider response 또는 digest key material 저장, stale fence commit |
+| Privacy Migration Coordinator | Deployment-owned migration principal의 explicit Organization allowlist, non-authoritative bounded staging, Organization rollout coordination lock의 exact-set freeze/epoch activation, Organization/KB/document/nullable-version과 exact opaque `legacy_artifact_ref`, frozen platform/Organization validity ref+epoch를 가진 immutable one-wave inventory, admission deadline/retrieval cutoff, compliant pointer swap과 eligibility retirement, one-way cleanup 상태 조율 | Document wildcard나 partial index generation을 inventory로 사용, unfrozen/stale-validity staging을 eligibility로 사용, epoch CAS 없는 legacy writer, request/runtime enrollment, later-wave 이동, 새 artifact 추가, client cutoff 연장, compliant pointer 뒤 legacy 복귀, cleanup receipt 뒤 legacy rollback |
+| Composition root | Concrete privacy core, policy/manifest repository, Privacy Digest Key Ring, egress guard와 enabled adapter 조립 | Application/domain package에서 concrete adapter import, missing key/readiness provider enable |
+
+`baseline_only`, `enterprise_detector_required`, `manual_review_required`는 서로 다른
+explicit policy mode다. `baseline_only` provider ref는 null, `enterprise_detector_required`는
+exactly one same-Organization active provider ref, `manual_review_required`는 null 또는 exactly one
+provider ref만 허용한다. Manual mode는 terminal block이 아닌 모든 결과를 review pending에 두며,
+다른 mode에서도 effective action policy의 strongest action이 `manual_review`이면 같은 상태로
+중단한다. Review-capable mode/action은 canonical review management/audit readiness, non-null provider는
+provider lifecycle/credential/revocation/egress-approval/exact cap readiness를 요구한다. Missing
+readiness에서 composition은 해당 policy를 만들지 않고 provider ref 제거나 action downgrade도 하지
+않는다. Background job은 admission actor를 교체하지 않고 각 external batch/finalize 전 current
+membership, KB/source/effective-policy/parser/provider/approval, global platform 및 same-Organization validity
+revision/epoch과 fence를 재검증한다.
+
+Resolver는 Organization base만 읽지 않는다. Platform hard baseline, current Organization base,
+모든 active explicit Collection Privacy Policy Binding, source와 KB stricter revision을 strongest union으로 합성한다.
+Collection UUID order는 digest 재현성 전용이고 policy precedence가 아니다. Category action은
+`block > manual_review > mask`, detector/manual review requirement는 OR이며 distinct non-null provider
+ref가 둘 이상이면 fail-closed한다. Snapshot은 모든 scoped revision과 Collection privacy/source/KB binding
+revision, compiled effective digest를 보존하고 finalizer가 같은 set을 다시 resolve한다. Applicable set
+또는 effective result 변경은 Organization validity epoch을 증가시키는 invalidating transition이다.
+
+일반 Collection item membership과 order는 검색 grouping/routing state다. Privacy binding은 별도 protected
+revision이고 V1에서는 Organization manager만 impact preview/acknowledgement와 exact expected revisions로
+변경한다. Active binding이 있는 item unlink는 safe conflict로 막고 binding을 먼저 제거한다. 따라서
+`catalog_manage` UI/API가 membership을 바꾸더라도 privacy policy나 Organization validity epoch은 바뀌지 않는다.
+Collection archive/restore도 routing lifecycle로만 처리한다. Archived Collection의 active binding은 계속
+effective policy에 포함하고 `lifecycle_manage`가 archive/restore해도 privacy epoch을 바꾸지 않는다. Active
+binding이 있는 hard delete/policy purge는 cascade하지 않고 binding 제거 전 safe conflict로 차단한다.
+
+Manual-review projection은 staged redacted candidate, bounded safe outcome과 opaque
+manifest/generation ref만 읽는다. Review UI 편의를 위해 raw, exact span, provider view/map 또는
+reversible mapping을 저장하지 않는다. Raw 확인은 별도 Raw Knowledge Access Flow의 permission,
+fresh source ACL, pre-response audit와 retention/legal-hold/purge를 통과해야 하며 Organization
+manager review authority가 이를 대신하지 않는다. Current
+`GET /api/v1/knowledge/{kb_id}/documents/{document_id}/content`는 이 dedicated flow가 아니므로
+Target raw/compliance permission/audit/retention 계약 없이 review surface에 재사용하지 않는다.
+Target enforcement cutover는 Nodease가 보존한 upload/fetch 원문 copy를 exact inventory로 freeze하고
+valid opt-in과 retention/legal-hold 보존 조건을 모두 충족한 item은 encrypted protected raw artifact로 이관한다.
+Protected migration 조건을 충족하지 않고 hold가 삭제를 막지 않는 item은 non-readable fence 뒤 물리
+삭제한다. No-opt-in legal-hold conflict는 자동 이관하지 않고 activation을 차단한다. Terminal
+`protected_migrated|purged` receipt와 original-copy physical absence가 하나라도
+미확정이면 composition root는 enforcement를 활성화하지 않는다. Raw body response는 별도로 해당 item이
+`protected_migrated`이고 같은 permission/source/audit/retention gate가 모두 조립된 경우에만 dedicated
+surface에서 허용한다. Response 차단은 storage disposition의 대안이 아니며 raw-derived retrieval은
+frozen legacy wave만 따른다.
+
+Manual review UI는 provider 유무와 무관하게 동작한다. Mask action은 current candidate에서 추가로 가릴
+범위만 선택하고 replacement text나 전체 문서를 전송하지 않는다. 성공하면 새 candidate revision을
+표시하되 여전히 pending으로 유지하고 최초 generation expiry를 연장하지 않는다. Candidate body는
+encrypted protected staging에 두고 최초 생성 DB time부터 `privacy_review_candidate_ttl_v1 = 7 * 24 hours`를
+적용한다. Approve는 UI projection/mutation을 닫되 exact body를 TTL 안의
+`approved_pending_finalization` input으로 유지하고, canonical active artifact finalization commit에서만
+`purge_pending`으로 전환한다. TTL equality/경과, reject/superseded, generation-bound source/ingestion authority
+revoke 또는 stale/abandoned 상태는 즉시 UI projection과 mutation을 닫고 `purge_pending`으로 전환한다.
+개별 reviewer 권한 회수는 해당 요청만 hidden zero-write로 닫는다. Approve는 화면에 표시된 exact non-expired candidate revision에만 적용하며
+stale conflict에서는 최신 candidate/policy 상태를 다시 조회한다. Pre-approval은 아직 생성되지 않은
+content나 이후 generation을 포괄하지 않는다. Terminal block candidate에는 mask/approve control을
+렌더링하지 않는다. Raw view를 열 수 있는 별도 권한이 있어도 review mutation request에 raw를 복사하지 않는다.
+Application은 candidate를 덮어쓰지 않고 mask/approve/reject를 append-only Privacy Review Decision으로
+기록한다. Mask 성공은 successor candidate/manifest, decision과 audit를 원자 확정하고 submitted range는
+저장하지 않는다. Approve는 decision/review-state/audit commit 뒤 transaction 밖에서 embedding을 재개하며
+finalizer가 current authority/policy/validity/fence를 다시 검사한다.
+Knowledge-owned cleanup reconciler는 current claim/fence와 legal hold를 확인해 terminal candidate body를
+24시간 안에 purge하고 receipt/tombstone을 남긴다. Legal hold는 physical deletion만 보류하며 review UI나
+approval TTL을 재개하지 않는다. Review-capable mode는 protected staging, expiry enforcement와 cleanup/
+reconciliation readiness가 모두 준비된 경우에만 조립한다.
+
+Source-managed pending candidate list/detail은 projection 직전에 requester source authorization과
+display policy를 fresh 평가한다. Mask/approve/reject application은 mutation commit 직전에 같은 revision을
+다시 평가한다. Revoke winner는 ownership-first `404 resource.hidden`으로 닫고 cached candidate/ref/state를
+폐기하며 mutation/audit를 남기지 않는다. Manual KB review에는 source gate를 적용하지 않는다.
+
+`external_approved`는 ADR-0067의 public-address guard를 유지한다. `organization_private` adapter는
+generic public guard의 private-address 예외가 아니라 별도 `knowledge.detector.organization_private`
+profile과 dedicated transport/network isolation을 사용한다. Exact current Detector Egress Approval
+Revision, server-owned host/port/CIDR allowlist, all-DNS-result 검증, address pinning, peer/Host/TLS SNI,
+HTTPS+mTLS와 no redirect/proxy가 모두 준비돼야 한다. Loopback/link-local/cloud metadata/public/
+미승인 private 주소 또는 profile/network readiness 부재는 adapter call 0회다. Approval/private IP/
+DNS/mTLS만으로 승인이나 transport readiness를 합성하지 않는다.
+
+Default parsing composition은 network-disabled local parser다. External parser는 detector approval을
+재사용하지 않고 explicit Organization opt-in과 source-managed source 또는 manual KB scope opt-in,
+exact Raw Parser Egress Approval Revision, server-owned parser revision/credential capability,
+`knowledge.parser.external_approved` profile과 ADR-0067 public-address guarded transport 및 bounded no-log/
+no-durable-payload readiness를 요구한다. Private raw parser는 별도 Accepted ADR과 dedicated isolation
+profile 전까지 지원하지 않는다. 이 경계가 없으면 composition root는 `llamaparse`를 포함한
+external strategy를 조립하지 않고 raw upload 전에 `knowledge.raw_parser_egress_unavailable`로 닫는다.
+승인된 external parser output도 local normalizer/hard baseline을 반드시 통과한다.
+
+Hard baseline이 terminal `block`을 결정하면 outbound adapter를 호출하지 않는다. Provider가
+terminal `block`을 추가하면 embedding/finalizer를 호출하지 않는다. 두 경로는 모두
+`knowledge.sensitive_content_detected` safe status와 canonical `policy.block` reason으로
+수렴한다. Token-only provider offset은 exact transmitted character boundary와 승인된 versioned
+tokenizer mapping이 없는 adapter에서 unsupported다.
+
+Provider nondeterminism은 current fence 아래 staged redacted candidate와 manifest staging
+transaction으로 수렴한다. Candidate commit 뒤 retry는 adapter를 다시 호출하지 않고 committed
+candidate를 재사용한다. Commit 전 crash/takeover만 bounded 재호출하며 stale generation response나
+서로 다른 response를 union/majority-select하지 않는다.
+
+Finalizer가 과거에 만든 active-ready artifact와 current privacy validity는 별도 상태다. V1 manifest는
+global platform과 same-Organization validity revision ref/monotonic `validity_epoch`을 snapshot한다. Server-owned
+compatibility validator는 policy/baseline/provider/egress-approval transition을
+`artifact_preserving|artifact_invalidating`으로 분류하고 모호한 변경은 invalidating으로 닫는다.
+Preserving transition은 current revision이 바뀌어도 해당 epoch을 유지한다. Baseline security
+supersession은 platform epoch을, stronger Organization action/new required detector와 provider/approval
+security invalidation은 Organization epoch을 정확히 1 증가시키며 revision/epoch CAS와 canonical
+management audit를 원자 commit한다. V1 Organization invalidation은 해당 Organization의 모든
+privacy-gated manifest를 old epoch으로 만든다. Credential rotation과 operational endpoint 변경은
+보호 의미가 보존된 preserving transition일 때만 과거 manifest를 유지한다. Pointer projection이
+늦더라도 Retrieval Orchestrator의 prefilter/final evidence gate가 두 current epoch을 재검증한다.
+
+`legacy_unverified`는 Privacy Migration Coordinator가 enforcement 전에 고정한 pre-cutoff
+artifact에만 적용하는 rollout 상태다. 일반 ingestion application은 이 상태를 만들거나
+선택하지 않는다. 각 artifact는 최대 한 wave에만 속하고 `admission_deadline_at`은 새 reindex
+admission, `retrieval_cutoff_at`은 legacy visibility를 각각 닫으며 전자는 후자보다 늦을 수
+없다. Deadline 전에 admitted된 attempt는 cutoff 뒤 fresh gate/fence를 통과해 compliant
+artifact를 finalize할 수 있지만 그동안 legacy retrieval은 닫혀 있다. Cleanup receipt가
+확정된 artifact는 rollback candidate에서 제외한다.
+
+Privacy-compliant active pointer finalizer는 pointer swap과 같은 transaction에서 legacy eligibility를
+비가역적으로 retire한다. 한 번 compliant pointer가 확정된 document는 active manifest가 나중에
+stale/invalid가 되거나 cleanup이 남아 있어도 legacy resolver로 돌아가지 않고 unavailable로 닫힌다.
+
+Allowlist/wave 부재는 legacy grace를 만들지 않는다. Admission과 retrieval은 authoritative DB
+time의 half-open `db_now < admission_deadline_at`, `db_now < retrieval_cutoff_at`으로 평가한다.
+Scheduler mutation이나 application clock은 cutoff authority가 아니며 Retrieval Orchestrator의
+prefilter와 final evidence gate가 frozen membership, current permission/source gate, cutoff 및 frozen
+platform/Organization validity epoch와 current 두 epoch equality를 재검증해 stale cache/vector result를
+제거한다. Invalidating epoch commit은 bulk item update나 cleanup을 기다리지 않고 관련 legacy evidence를
+즉시 제외한다.
+
+Wave header는 freeze 당시 exact platform/Organization validity revision ref+epoch, immutable
+`enforcement_activated_at`과 code-owned
+`privacy_legacy_grace_v1 = 30 * 24 hours`를 고정한다. `admission_deadline_at <= retrieval_cutoff_at <=
+enforcement_activated_at + 30 * 24 hours`여야 하며 deployment rollout은 더 짧게만 설정할 수 있다.
+지원되는 grace contract 또는 activation time readiness가 없거나 상한을 넘으면 freeze/activation과
+success audit가 모두 zero-write다.
+
+Inventory item은 bounded staging할 수 있으나 frozen wave 전에는 읽기 권위가 없다. Coordinator의
+final transaction은 Organization privacy rollout coordination row를 잠그고 exact current legacy
+set, staging snapshot과 current platform/Organization validity ref+epoch을 대조해
+`legacy_snapshot_revision`과 enforcement epoch를 전진시킨다.
+Legacy-producing pointer writer는 같은 epoch CAS를 사용한다. Freeze/writer 경합 loser는 각각
+재대조 또는 privacy-gated fresh admission으로 수렴하고 partial staging은 eligibility를 만들지 않는다.
+Immutable wave header와 `knowledge.privacy_migration_wave.created` audit는 같은 final transaction에
+한 번 commit한다. Aborted/unfrozen staging은 bounded cleanup하고 frozen wave나 cleanup receipt로
+투영하지 않는다.
+
+`legacy_artifact_ref`는 `document_version_id`가 있는 versioned artifact와 `NULL`인 legacy
+unversioned artifact를 모두 표현하되, 해당 시점의 chunk와 vector/keyword/hierarchy generation
+전체 exact set을 하나의 내부 opaque identity로 묶는다. Document 전체 wildcard, 일부 chunk만의
+선택 또는 index generation 누락은 허용하지 않는다. Staging 뒤 이 exact set이 추가·삭제·교체되면
+final freeze의 set comparison이 실패하고 wave activation/audit를 모두 남기지 않는다.
+
+Legacy cleanup은 Artifact Cleanup Reconciler의 기존 purge completion 경계를 재사용한다.
+Coordinator가 exact ref를 non-retrievable `purging`으로 fence하고 durable intent를 commit한
+뒤 adapter가 physical generation을 삭제한다. Reconciler는 absence와 generation을 확인해 cleanup
+receipt, tombstone과 `knowledge.processing_artifact.purged`를 한 transaction에 exactly-once로
+확정하며 completion 실패에 legacy visibility를 복원하지 않는다.
+
+Deployment preflight adapter는 별도 ready 판정을 만들지 않고 Runtime Collection Retrieval과 같은
+privacy-aware retrieval-visible resolver를 호출한다. Standalone preview는 blocked 결과도 `200 OK`와
+`status="blocked"`로 투영하고 `is_active=false`에서 inactive 저장이 허용되는 availability blocker만
+기존 Deployment 계약에 따라 safe `warning`으로 낮출 수 있다. Active create/enable/toggle은
+current-valid compliant artifact 또는 아직 retire되지 않고 frozen/current platform·Organization validity
+epoch equality와 DB-time cutoff를 통과한 적법한 pre-cutoff legacy artifact가 없으면
+fixed `knowledge_privacy_artifact_unavailable` + `reprocess_or_remove_unavailable_knowledge`를 반환하고
+`409 deployment.preflight.blocked`로 차단한다. Document/policy/provider identity와 exact count는 표시하지 않는다.
+현재 preflight service에는 manifest/validity/legacy-retirement/cutoff 검사가 없으므로 MBA-362에서
+구현하기 전 완료로 표시하지 않는다.
 
 ### MBA-305 Classification And Processing Boundary
 
@@ -230,8 +429,12 @@ Retrieval Orchestrator는 최종 evidence와 함께 KB/document version, organiz
 - Domain `permission_delegate` actor에게는 자신과 자신이 속한 Team이 grant 대상으로 보이더라도 content-plane grant가 차단됨을 safe 안내한다. 최종 self/own-Team 차단은 Gateway가 수행한다.
 - Workflow builder/RAG 선택과 runtime retrieval의 canonical ready 기준은 active ready
   DocumentVersion이다. Active pointer가 없는 compatibility data만 completed Document의
-  retrieval-visible legacy unversioned chunk fallback을 사용할 수 있다. `completed` status만으로
-  ready를 판정하거나 active pointer가 있는데 legacy chunk로 우회하지 않는다.
+  retrieval-visible legacy unversioned chunk fallback을 사용할 수 있다. ADR-0070 enforcement
+  뒤에는 frozen `legacy_unverified` wave membership, frozen/current platform·Organization validity epoch
+  equality, `privacy_legacy_grace_v1` hard max와 DB-time half-open cutoff를 prefilter/final evidence gate
+  모두에서 통과해야 한다. Allowlist/wave 부재, stale validity epoch, cutoff equality/경과와 stale
+  cache/vector result는 fallback 대상이 아니다. `completed` status만으로 ready를 판정하거나
+  active pointer가 있는데 legacy chunk로 우회하지 않는다.
 
 KB detail UI는 manual KB recommendation용 safe metadata 편집 surface를 제공할 수 있다. `safe_label` 자동 생성 버튼과 `kb_safe_topics` 자동 생성 버튼은 각각 KB name/description에서 sanitizer, length cap, secret/url/path removal을 적용한 값을 채우며, 저장 버튼은 전용 `PATCH /api/v1/knowledge/{kb_id}/safe-metadata`로 allowlisted 필드만 전송한다. `can_manage_safe_metadata=true`일 때만 이 surface를 표시하고, `can_edit_settings=false`이면 이름·설명·embedding model·소스 추가/재처리 같은 `write` 동작을 표시하거나 활성화하지 않는다. Archive/restore는 `can_manage` 또는 lifecycle domain capability, hard delete는 별도 Organization manager acknowledgement capability를 사용한다. Source-managed KB의 raw source title/path/url은 이 surface에 표시하거나 recommendation input으로 사용하지 않는다.
 
@@ -425,11 +628,11 @@ Knowledge Collection 관리 UI는 Workflow Builder가 아니라 Knowledge 관리
 필수 surface:
 
 - Collection 목록: safe name/description, manual/system-managed, lifecycle/sync state, visibility, bucketed linked/active KB count, caller action flags를 표시한다.
-- Lifecycle 관리: active/archived 탭을 분리하고 archived manual Collection에만 restore action을 제공한다. 복구 성공 뒤 active 목록을 다시 조회하며 restore가 permission이나 Workflow route를 부여한다고 표시하지 않는다. System-managed 또는 source-deleted 제한은 고정 safe reason으로 표현한다.
+- Lifecycle 관리: active/archived 탭을 분리하고 archived manual Collection에만 restore action을 제공한다. 복구 성공 뒤 active 목록을 다시 조회하며 restore가 permission이나 Workflow route 또는 privacy binding을 부여·제거한다고 표시하지 않는다. Binding detail과 제거 control은 Organization manager 전용 privacy flow에만 두고 delegated lifecycle UI에는 policy identity나 binding detail을 노출하지 않는다. System-managed 또는 source-deleted 제한은 고정 safe reason으로 표현한다.
 - Collection 생성/수정: organization manager 또는 domain `catalog_manage`가 private manual Collection을 생성한다. 관리 form은 raw 관리용 `name`과 Workflow picker용 `안전 표시 이름`을 별도 필드로 제공하고 둘 다 nonblank일 때만 새 Manual Collection 생성을 제출한다. 편집 가능한 Manual Collection은 `safe_metadata.safe_label`을 안전 표시 이름 필드에 복원하며, 값이 없는 기존 Collection에는 보완 필요 안내를 표시하고 label 입력 전 정보 저장을 비활성화한다. UI는 관리용 `name`을 label로 자동 복사하지 않고 create/update request의 `safe_metadata.safe_label`로 명시적으로 전송한다. Update는 서버가 반환한 다른 safe metadata를 보존하면서 label을 교체한다. Delegated create는 client 입력과 무관하게 private다. `is_system_managed`나 public visibility는 일반 create/edit form에서 직접 설정하지 않는다.
 - Collection 생성과 public visibility control은 `domain-capabilities`의 분리된 boolean capability를 사용한다. Client는 Organization manager 여부나 action 조합으로 권한을 재구성하지 않으며 capability refresh 실패 시 이전 create/public 허용 상태를 즉시 닫는다. Collection list의 중복 management capability는 호환 projection이고 보안 판정 근거가 아니며, 모든 mutation은 Gateway가 다시 인가한다.
 - Collection 상세: item, permission, visibility, sync/system state를 분리해서 표시한다.
-- Item manager: linked KB safe label, lifecycle/sync state, rank, `can_manage_kb`, `can_use_kb`를 표시한다. 유효한 safe label이 없고 caller가 KB `read`를 통과하지 못하면 generic label을 사용하며, domain `catalog_manage`만으로 manual KB `name`을 표시하지 않는다. Private membership은 `collection.manage` + KB `manage` 또는 domain `catalog_manage`, public membership은 Organization manager acknowledgement 경계를 따른다. 500개 이하 item은 위/아래와 keyboard 조작으로 local draft를 만들고 current order revision과 전체 item set을 명시적으로 저장한다. Save/cancel/dirty/stale 상태를 구분하고 conflict 때 local draft를 조용히 덮어쓰지 않는다.
+- Item manager: linked KB safe label, lifecycle/sync state, rank, `can_manage_kb`, `can_use_kb`를 표시한다. 유효한 safe label이 없고 caller가 KB `read`를 통과하지 못하면 generic label을 사용하며, domain `catalog_manage`만으로 manual KB `name`을 표시하지 않는다. Private membership은 `collection.manage` + KB `manage` 또는 domain `catalog_manage`, public membership은 Organization manager acknowledgement 경계를 따른다. 이 화면은 routing membership만 관리하고 privacy binding control을 포함하지 않는다. Active privacy binding 때문에 unlink가 막히면 safe fixed 안내와 Organization manager 전용 privacy impact flow 이동 action만 표시한다. 500개 이하 item은 위/아래와 keyboard 조작으로 local draft를 만들고 current order revision과 전체 item set을 명시적으로 저장한다. Save/cancel/dirty/stale 상태를 구분하고 conflict 때 local draft를 조용히 덮어쓰지 않는다.
 - Permission panel: bounded server-side subject combobox를 사용하고 Team을 기본값으로 둔다. Subject type/query/cursor가 바뀌면 stale page를 폐기하고 loading/empty/error/retry/next-page를 제공하되 email이나 raw id를 visible fallback label로 쓰지 않는다. `collection.manage` 또는 domain `permission_delegate` actor가 `read`, `route`, `manage`, `sync` additive allow를 grant/revoke할 수 있다.
 - Public visibility warning flow: organization manager, explicit acknowledgement, safe exposure summary를 요구한다.
 - Public Collection item link/unlink/reorder도 같은 public exposure warning과 acknowledgement를 요구한다.
@@ -484,7 +687,7 @@ tombstone cleanup은 구현 전에 별도 retention policy, audit action/reason 
 1. Workflow runtime이 server-owned canonical organization과 explicit authenticated audience 또는 anonymous public audience를 구성한다. Optional user/owner fallback은 사용하지 않는다.
 2. MBA-232 resolver는 configured direct KB와 명시 selected Collection만 받아 fresh PostgreSQL `REPEATABLE READ, READ ONLY` snapshot을 연다. Missing/empty Collection scope는 0개다.
 3. Authenticated audience에서는 direct KB `use`, selected Collection `route`와 각 child KB `use`, applicable materialized source provenance를 bulk 평가한다. Anonymous audience에서는 active public Collection membership을 평가하고 source-managed KB를 fail-closed 제외한다.
-4. Active lifecycle, `source_deleted` exclusion, active ready version 또는 documented legacy retrieval-visible fallback을 적용한다. Collection item은 row presence만 membership으로 보고 parent/child lifecycle을 별도로 평가한다.
+4. Active lifecycle, `source_deleted` exclusion과 current-valid active ready version을 적용한다. ADR-0070 enforcement 뒤 legacy fallback은 privacy-compliant active pointer가 한 번도 확정되지 않았고 eligibility가 retire되지 않은 document만 frozen wave membership, frozen/current platform·Organization validity epoch equality, `privacy_legacy_grace_v1` hard max와 DB-time cutoff를 prefilter/final evidence gate 모두 통과할 때 허용한다. Invalidating epoch commit은 item projection/cleanup 전 즉시 legacy를 제외한다. Compliant pointer가 존재하거나 과거에 확정된 뒤 manifest가 stale/invalid가 된 경우 legacy로 돌아가지 않는다. Collection item은 row presence만 membership으로 보고 parent/child lifecycle을 별도로 평가한다.
 5. Direct configured order를 먼저 유지하고 selected Collection configured order의 round-robin으로 남은 20-KB budget을 채운다. Canonical KB ID로 dedupe하고 first provenance를 보존한다.
 6. Candidate 0개는 provider/retrieval 전 `safe_no_result`, budget 제한은 fixed safe warning을 가진 성공이다. Snapshot/repository/authorization infrastructure failure는 partial candidate 없이 retryable whole-resolution failure다.
 7. MBA-233에서 연결되는 Retrieval Orchestrator는 resolved active/ready KB만 검색하고 evidence를 merge한다. `query_rewrite_mode`는 safe candidate set을 넓히지 않는다.
@@ -517,12 +720,15 @@ tombstone cleanup은 구현 전에 별도 retention policy, audit action/reason 
 
 1. Scheduler가 connector sync lease를 획득한다.
 2. Connector worker가 guard/adapter를 통해 source item과 source ACL을 가져온다. MCP/API source는 allowlist operation만 사용한다. Slack 계열 초기 baseline은 channel을 collection으로, thread/huddle recap/canvas/bot-generated meeting summary/pinned-message group을 document-level KB로 매핑한다. DM/raw audio/raw transcript는 기본 수집하지 않는다.
-3. Content Safety Scanner와 Parser Isolation Worker가 file type allowlist, active content 차단, archive cap, scan timeout/unknown, parser isolation을 적용한다.
-4. Normalizer가 content safety gate를 통과한 content에만 shared privacy/redaction policy를 호출해 redacted canonical text와 safe metadata를 만든다.
-5. Ingestion concurrency guard가 source item 또는 document-level KB 단위 owner-token/fencing lock을 확보한다.
-6. Ingestion이 새 document version, chunk, embedding, external index artifact를 staging 상태로 생성한다.
-7. Finalizer는 모든 artifact가 준비된 뒤 짧은 transaction에서 active version, `content_hash`, chunking fingerprint, embedding model을 함께 확정한다.
-8. Outbox/recovery scanner가 orphan cleanup, stale worker finalization 차단, crash recovery를 처리한다.
+3. Content Safety Scanner가 file type allowlist, active content 차단, archive cap과 scan timeout/unknown을 적용한다.
+4. Default는 network-disabled Parser Isolation Worker다. External parser는 Organization과 applicable source-managed source 또는 manual KB opt-in, exact Raw Parser Egress Approval Revision, `knowledge.parser.external_approved` profile과 ADR-0067 public-address transport readiness가 있을 때만 raw bytes를 승인된 public HTTPS parser에 제한 전송하며, 그 전에는 upload 0회로 닫는다. Private raw parser는 별도 Accepted ADR 전까지 지원하지 않는다.
+5. Normalizer가 local/external parser의 untrusted output에 `privacy_text_unicode_14_0_nfc_lf_v1`을 적용하고 local hard baseline을 실행한다.
+6. Effective Privacy Policy Resolver가 Organization base, 모든 explicitly bound Collection과 applicable source/KB stricter revision을 합성한다. Policy가 요구하면 exact same-Organization provider revision을 trust-tier별 dedicated guarded transport로 호출하고 complete segment/fingerprint/UTF-8 span을 검증한다.
+7. Shared Privacy Core가 baseline/provider span을 additive union하고 local deterministic masking으로 redacted canonical text와 safe Privacy Decision Manifest를 만든다.
+8. Ingestion concurrency guard가 source item 또는 document-level KB 단위 owner-token/fencing lock을 확보한다.
+9. Ingestion이 redacted canonical content에서만 새 document version, chunk, embedding, external index artifact를 staging 상태로 생성한다.
+10. Finalizer는 current actor/source/effective policy/provider/parser revision과 fence, 모든 artifact completeness를 재검증한 뒤 짧은 transaction에서 active version, legacy eligibility retirement, `content_hash`, processing fingerprint와 embedding model을 함께 확정한다.
+11. Outbox/recovery scanner가 orphan cleanup, stale worker finalization 차단, ephemeral raw/view cleanup과 crash recovery를 처리한다.
 
 ### Live-linked Retrieval
 

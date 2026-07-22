@@ -31,6 +31,61 @@ Status: Draft
 - Trigger 누락 또는 `None`은 legacy compatibility로 deployed면 API, 아니면 MANUAL이지만 blank/unknown/non-string explicit input은 fallback하지 않고 permanent contract error다.
 - Workflow Logger는 explicit invalid trigger를 run id 할당과 payload preparation 전에 static `NonRetryableWorkflowError`로 변환한다. 이때 trigger와 workflow input 원문을 예외에 포함하지 않는다.
 
+### Knowledge Privacy Observability Target
+
+- Normal successful privacy detection은 AuditLog를 만들지 않고 bounded operational state/metric만
+  남긴다. Runtime policy block은 canonical `policy.block`과 safe 최상위
+  `audit_metadata.policy_reason=knowledge.sensitive_content_detected`를 정확히 한 건 기록한다.
+- Terminal blocked attempt와 generic audit Outbox intent는 같은 transaction으로 commit한다.
+  Outbox preparation/flush/commit 실패와 exact retry에서 partial attempt/artifact/pointer,
+  raw/direct-broker fallback 또는 duplicate canonical audit가 없어야 한다.
+- Migration wave create는 immutable inventory, rollout marker와
+  `knowledge.privacy_migration_wave.created` audit가 final exact-set freeze/frozen platform·Organization validity
+  ref+epoch/enforcement epoch
+  transaction에서 한 번 commit된다. Non-authoritative staging에는 success audit가 없고 audit
+  failure/retry는 frozen inventory/activation과 duplicate audit를 만들지 않는다. Metadata에는
+  safe Organization/server-issued opaque wave/deadline/cutoff/policy 및 validity ref+epoch와 bounded item-count bucket만
+  남는다. Internal wave/item primary key와 exact membership은 audit에 없고 opaque wave ref는 public
+  API/SSE/trace/log/metric에 없다.
+- Raw copy cutover는 valid opt-in migration, retention-expired purge와 no-opt-in legal-hold conflict가 섞인
+  exact inventory에서 모든 item의 terminal disposition/absence가 확인되기 전에는 completion audit과 readiness가
+  0건이다. All-terminal winner는 readiness marker와 `knowledge.raw_copy_cutover.completed`를 한 transaction에서
+  한 번 commit하고 audit fault는 둘 다 rollback한다. Redelivery/reconciliation은 per-item AuditLog를 만들지
+  않으며 metadata에는 safe Organization/opaque cutover ref와 bounded migrated/purged count bucket만 있고 raw
+  body/object key/content hash/item·document identity/exact count가 없다.
+- Security-invalidating privacy transition은 affected `platform|organization` current validity revision,
+  monotonic epoch exact `+1` CAS와 별도 canonical management audit를 한 transaction에 commit한다.
+  Audit preparation/flush/commit 또는 stale expected epoch 실패는 revision/epoch/audit를 모두 rollback하고
+  `policy.block`을 대신 만들지 않는다. Exact action 계약이 없는 fixture는 management route/
+  composition이 disabled이며 affected artifact/provider 목록, raw/span/digest, endpoint/credential과
+  security detail이 audit metadata에 없어야 한다.
+- Provider-null manual review의 mask/approve/reject는 exact append-only decision, successor candidate 또는
+  generation review-state와 canonical audit가
+  함께 commit되거나 함께 rollback된다. Stale/revoke/terminal-block loser는 audit 0건이고, 성공 audit에도
+  candidate body, submitted mask range, raw/span/digest와 provider identity가 없어야 한다. Exact action이
+  아직 승인되지 않은 fixture에서는 review composition 자체가 disabled다.
+- Candidate body TTL/terminal cleanup과 legal-hold 해제를 실행해도 append-only review Decision, canonical
+  audit와 manifest provenance는 cascade 삭제되지 않는다. Purge receipt에는 candidate body, storage key,
+  mask range, raw/span/digest가 없고 stale cleanup worker가 다른 revision의 audit/receipt를 만들지 않는다.
+- Legacy cleanup은 pre-delete transaction 실패/fence loser에서 external delete와 success audit가
+  0건이다. Physical absence 뒤 cleanup receipt, tombstone과
+  `knowledge.processing_artifact.purged`가 한 completion transaction에 한 번 commit되고,
+  completion failure/retry가 visibility, duplicate action 또는 다른 generation 삭제를 만들지 않는다.
+- Raw input의 sensitive canary는 redacted canonical/chunk artifact와 모든 raw-free sink에서 0건이다.
+  Non-sensitive redacted canonical/chunk body는 전용 artifact storage에만 있고 API/SSE status, DB
+  operational row, job/retry/dead-letter, audit/trace/log/metric에는 없다. Parser/provider-safe view/map,
+  exact span/confidence/count, source/canonical/span digest, raw fingerprint, endpoint, parser/provider/credential
+  identity/config/request id, parser/provider exception, internal `legacy_artifact_ref`, nullable-version
+  migration fact와 exact migration membership도 위 raw-free sink에서 모두 0건이다.
+- Safe privacy projection은 권한이 확인된 opaque attempt/manifest correlation, safe state/reason,
+  비민감 contract revision, latency/count bucket과 retryability만 보존한다. Unknown field는 drop하고
+  sanitizer 실패 시 raw payload로 fallback하지 않는다.
+- TraceRedactionService를 통과했더라도 redacted canonical과 complete Privacy Decision Manifest가
+  없으면 ingestion finalization은 실패한다. 반대로 privacy gate 성공 여부를 trace row 존재로
+  추론하지 않는다.
+- Scope 밖 또는 hidden Knowledge resource 실패는 privacy/provider-specific reason, attempt/manifest
+  correlation과 provider contract revision을 audit/trace에 만들지 않는다.
+
 ## API Tests
 
 - Raw/compliance access audit은 content 반환 전에 성공해야 하며, audit metadata에는 raw content, raw source id/url/path/title, raw principal, object storage key를 저장하지 않는다.

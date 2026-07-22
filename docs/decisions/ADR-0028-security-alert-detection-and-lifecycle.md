@@ -1,7 +1,7 @@
 # ADR-0028: Security Alert 탐지와 lifecycle 경계
 
 Status: Accepted
-Related ADRs: [ADR-0008](ADR-0008-audit-action-naming-standard.md), [ADR-0010](ADR-0010-resource-access-403-404-policy.md), [ADR-0023](ADR-0023-audit-actor-access-management-boundary.md)
+Related ADRs: [ADR-0008](ADR-0008-audit-action-naming-standard.md), [ADR-0010](ADR-0010-resource-access-403-404-policy.md), [ADR-0023](ADR-0023-audit-actor-access-management-boundary.md), [ADR-0070](ADR-0070-organization-detector-provider-and-pre-embedding-local-masking-boundary.md)
 
 ## 배경
 
@@ -15,6 +15,8 @@ Security Alert MVP는 검증된 organization과 인증 사용자가 있는 audit
 - 기존 workflow/LLM credential/team/organization manager permission helper 일부는 actor와 target은 기록하지만 `audit_metadata.organization_id`를 기록하지 않는다.
 - Actor access management의 `policy.block`은 최상위 `policy_reason`을 기록한다.
 - RAG PII 차단은 legacy `policy_result.reason_code='pii_policy_blocked'`를 사용한다.
+- ADR-0070 Target의 Knowledge ingestion terminal block은 MBA-362에서
+  `knowledge.sensitive_content_detected` canonical `policy_reason` producer를 추가한다.
 - Workflow 예산 초과는 `reason='budget.exceeded'`를 사용하며 보안 이상 접근이 아니라 운영 사건이다.
 
 Alert worker가 resource table을 다시 조회해 organization이나 reason을 추측하면 삭제·scope 변경·hidden resource 정책에 따라 과거 사건의 의미가 달라질 수 있다. 따라서 audit 생성 시점에 검증된 provenance와 표준 reason을 저장해야 한다.
@@ -89,6 +91,7 @@ MVP canonical reason은 다음과 같다.
 | Actor access | `access_management.target_user_inactive` | 포함 |
 | Actor access | `access_management.stale_state` | 포함 |
 | RAG evidence | `rag.pii_evidence_detected` | 포함 |
+| Knowledge ingestion (Target MBA-362) | `knowledge.sensitive_content_detected` | 포함 |
 | Budget | `budget.exceeded` | 제외 |
 
 Legacy `pii_policy_blocked`는 읽기와 reconciliation 단계에서 `rag.pii_evidence_detected`로 정규화한다. Append-only 기존 audit row를 수정하거나 backfill하지 않는다. 기존 `policy_result.reason_code`와 `reason`은 호환 기간 동안 유지할 수 있지만 신규 탐지 로직은 canonical `policy_reason`만 사용한다.

@@ -3,7 +3,7 @@
 Status: Draft
 Verified Against: feature/mba-284 @ 5247ed1b
 
-검증 값은 SafeChangeSummary와 audit actor management 연동, GenericAsyncAuditPublisher, Workflow/LLM 권한 변경 AuditRecorder 경계에 적용한다. 다른 trace UI는 각 feature 구현 기준을 따른다.
+검증 값은 SafeChangeSummary와 audit actor management 연동, GenericAsyncAuditPublisher, Workflow/LLM 권한 변경 AuditRecorder 경계에 적용한다. 다른 trace UI는 각 feature 구현 기준을 따른다. 아래 KnowledgePrivacyObservabilityProjection은 ADR-0070 Target이며 현재 코드 검증 값에 포함되지 않는다.
 
 ## Screens
 
@@ -48,6 +48,47 @@ Verified Against: feature/mba-284 @ 5247ed1b
 - 배포 전 broker에 들어간 메시지를 소진하기 위해 `audit.record` consumer는 호환성 task로 유지하지만 신규 producer에서는 사용하지 않는다.
 - Outbox payload는 `workflow_run_id`/`workflow_node_run_id`를 top-level correlation으로 운반한다. 현재 producer의 기존 metadata 값도 호환 입력으로 승격하며 Outbox worker와 호환 consumer가 Run의 Workflow 조직과 `audit_metadata.organization_id`가 같은 경우에만 AuditLog typed FK 컬럼에 저장한다.
 - Correlation migration은 정상 UUID, 실제 참조 row, Run의 Workflow 조직과 audit 조직의 일치가 모두 확인된 기존 metadata 값만 backfill한다. FK는 nullable `ON DELETE SET NULL`이며 두 컬럼에 개별 조회 인덱스를 둔다.
+
+### KnowledgePrivacyObservabilityProjection (Target)
+
+- Knowledge privacy runtime은 Audit/Tracing에 raw text, provider-safe view/map, exact span/confidence,
+  source/canonical/span digest, endpoint, provider/credential identity 또는 provider exception을 넘기지
+  않는다.
+- Safe projection은 권한이 확인된 opaque attempt/manifest correlation, safe state/reason, 비민감
+  contract revision, latency/count bucket과 retryability로 제한한다.
+- Normal successful detection은 operational state/metric으로만 관측한다. Policy block은 canonical
+  `policy.block`과 최상위
+  `audit_metadata.policy_reason=knowledge.sensitive_content_detected`를 사용한다.
+- Terminal blocked attempt의 safe state와 generic audit Outbox intent는 caller session의 같은
+  Unit of Work에 추가하며 adapter는 commit하지 않는다. Preparation 실패에는 raw/direct-broker
+  fallback이 없고 artifact/pointer를 남기지 않는다.
+- Privacy Migration Coordinator는 immutable inventory, rollout marker와 canonical
+  `knowledge.privacy_migration_wave.created` audit를 final exact-set freeze/enforcement epoch
+  transaction에 추가한다. Non-authoritative staging에는 success audit를 만들지 않고, Audit에는
+  safe Organization/server-issued opaque wave/deadline/cutoff/policy 및 frozen validity ref+epoch와 bounded count bucket만 투영한다. Internal
+  `legacy_artifact_ref`, nullable-version migration fact와 exact chunk/index membership은 투영하지
+  않는다.
+- Raw Copy Cutover Coordinator는 Organization별 all-terminal disposition과 original-copy absence를 확인한
+  final readiness marker와 `knowledge.raw_copy_cutover.completed` Audit Outbox intent를 한 Unit of Work에
+  확정한다. Per-item receipt는 AuditLog로 복제하지 않고 safe Organization/opaque cutover ref와 bounded
+  disposition count bucket만 투영한다. Audit 준비/commit 실패는 readiness와 함께 rollback한다.
+- Effective scoped privacy policy/Collection privacy binding, provider/detector-approval/raw-parser management가 `artifact_invalidating` transition을 확정할
+  때는 affected `platform|organization` current validity revision/monotonic epoch의 exact `+1` CAS와
+  별도 canonical management audit를 같은 Unit of Work에 추가한다.
+  이는 runtime `policy.block`이 아니며 exact action/actor/safe metadata가 승인되기 전에는 해당
+  management adapter를 composition하지 않는다. Affected artifact/provider 목록과 security detail은
+  audit projection에 넣지 않는다.
+- Manual review mask/approve/reject application은 append-only decision, candidate successor 또는 generation
+  review-state와 canonical review audit를 같은 Unit of Work에 추가한다. Safe Organization/document/candidate revision/outcome ref만 투영하고 candidate
+  body, mask range, raw/span/digest는 넣지 않는다. Candidate expiry/terminal cleanup은 이 decision/audit/manifest를
+  cascade 삭제하지 않고 safe purge receipt와 분리한다. Exact action contract 전에는 adapter를 composition하지 않는다.
+- Legacy cleanup reconciler는 physical absence와 exact generation을 확인한 뒤 cleanup receipt,
+  tombstone과 `knowledge.processing_artifact.purged`를 completion transaction에 exactly-once로
+  추가한다. Safe Organization/wave/receipt/tombstone ref와 fixed reason만 투영하고 internal
+  exact artifact ref/membership은 제외한다. Pre-delete `purging` fence/intent와 실패한
+  completion은 success action이 아니며 visibility를 복원하지 않는다.
+- TraceRedactionService는 이미 safe projection으로 들어온 telemetry를 방어적으로 정제하며
+  Knowledge text normalization, detector 판단, masking 또는 finalization을 소유하지 않는다.
 
 ## States
 

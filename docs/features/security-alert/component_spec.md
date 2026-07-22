@@ -223,6 +223,7 @@ Detection key, raw target 목록, raw audit metadata는 표시하지 않는다.
 | `access_management.target_user_inactive` | 비활성 사용자 대상 작업 제한 |
 | `access_management.stale_state` | 최신 상태와 다른 요청 |
 | `rag.pii_evidence_detected` | 개인정보 포함 근거 감지 |
+| `knowledge.sensitive_content_detected` (Target MBA-362) | 지식 문서 민감정보 감지 |
 
 Unknown reason은 원문을 사용자 문장으로 만들지 않고 `알 수 없는 정책 사유`로 표시한다.
 

@@ -91,6 +91,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0067](ADR-0067-production-https-and-operation-bound-outbound.md) | Accepted | 프로덕션 HTTPS와 operation-bound outbound 경계 | Browser public HTTPS와 server-only internal API URL을 분리하고 LLM, Knowledge와 Workflow 원격 파일을 immutable operation profile, address-pinned TLS transport와 safe error 경계에 연결한다. 잔여 adapter 이관과 proxy-only 강제는 MBA-356/357로 분리한다. |
 | [ADR-0068](ADR-0068-eks-support-surface-removal.md) | Accepted | EKS 지원 표면 제거와 공급자 중립 배포 경계 | EKS 전용 workflow/raw manifest/Terraform을 제거하고 Docker Compose와 provider-neutral Helm만 지원한다. Non-disabled schedule activation은 별도 coordinated CD가 생길 때까지 fail-closed한다. |
 | [ADR-0069](ADR-0069-provider-usage-durable-ledger.md) | Accepted | Provider usage durable ledger와 compatibility projection 경계 | Capability path의 intent/start/outcome canonical ledger, outcome-unknown no-retry, correction, deterministic `llm.call` audit, mixed cost read와 nullable compatibility projection/reconciliation을 확정한다. |
+| [ADR-0070](ADR-0070-organization-detector-provider-and-pre-embedding-local-masking-boundary.md) | Accepted | 조직 Detector Provider와 embedding 전 로컬 마스킹 경계 | Local hard baseline, closed mode/provider/action matrix, exact provider·egress approval revision, UTF-8 byte span/fingerprint, platform+Organization validity epoch와 30-day legacy hard max를 redacted canonical/retrieval 경계에 강제한다. 현재 runtime/provider/persistence는 미구현이며 MBA-362와 각 관리 readiness 전에는 non-null provider 및 review-capable path를 비활성화한다. |
 
 ## 참고 보고서
 

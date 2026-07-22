@@ -26,7 +26,8 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 - SAL-REQ-004: `policy.block` 입력은 최상위 `audit_metadata.policy_reason`에 `{domain}.{reason}` 형식의 canonical reason을 포함해야 한다.
 - SAL-REQ-005: Canonical policy reason은 `^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$` 형식을 따라야 한다. 신규 producer는 legacy reason만 기록해서는 안 된다.
 - SAL-REQ-006: Legacy `pii_policy_blocked`는 읽기와 reconciliation에서 `rag.pii_evidence_detected`로 정규화해야 한다. Append-only인 기존 audit row를 수정하거나 backfill하지 않아야 한다.
-- SAL-REQ-007: Security Alert policy allowlist는 `access_management.*`와 `rag.pii_evidence_detected`를 포함해야 한다. `budget.exceeded`, 형식이 잘못된 reason, allowlist에 없는 reason은 보안 alert 입력에서 제외해야 한다.
+- SAL-REQ-007: Security Alert policy allowlist는 `access_management.*`, `rag.pii_evidence_detected`와 `knowledge.sensitive_content_detected`를 포함해야 한다. `budget.exceeded`, 형식이 잘못된 reason, allowlist에 없는 reason은 보안 alert 입력에서 제외해야 한다.
+- `knowledge.sensitive_content_detected` producer와 allowlist 활성화는 ADR-0070 Target이며 MBA-362가 구현한다. 이 문서 변경만으로 현재 ingestion이 privacy block audit를 생성한다고 간주하지 않는다.
 - SAL-REQ-008: `user.login_failed`, organization scope가 없는 `auth.permission_denied`, scope 밖 resource 404, validation 실패, desired-state no-op은 입력에서 제외해야 한다.
 - SAL-REQ-009: Detector는 기능 활성화 시점 이후 발생한 audit만 처리해야 한다. 활성화 이전 audit은 실시간 처리와 reconciliation 모두에서 backfill하지 않아야 한다.
 

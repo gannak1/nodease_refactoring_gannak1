@@ -21,6 +21,9 @@ Status: Draft
 
 현재 client coverage는 active organization을 소비하는 knowledge/workflow 일부 테스트와 권한 신청 제출 wrapper(`organizationApi.test.ts`), Sidebar notification overlay 테스트를 포함한다. AdminConsolePage의 member/team/permission 관리 UI에 대한 직접 component test는 확인되지 않았다. App 생성 권한 신청 UI(ORG-TC-E009~E013)는 `apps/client/app/features/app/components/create-app-modal/index.test.tsx`가 담당한다.
 
+ORG-TC-U032는 ADR-0070 Target이며 MBA-362가 privacy policy schema/bootstrap을 구현하기 전에는
+현재 foundation 동작의 완료 증거가 아니다.
+
 ## Unit Tests
 
 | ID | 검증 조건 | 최소 실패 조건 | 기대 결과 |
@@ -62,6 +65,8 @@ Status: Draft
 | ORG-TC-U029 | Workflow user direct permission mutation은 중앙·legacy 경로 모두 access subject → App lifecycle → permission scope 순서를 사용하고 primary 교체를 재검증해야 한다. | 한 경로는 subject를 잡고 App을 기다리며 다른 경로는 App을 잡고 subject를 기다리거나, old primary만 변경하고 성공한다. | Deadlock 경로 없음. Primary 변경 시 `409 workflow.primary_changed`, permission/audit 불변. |
 | ORG-TC-U030 | 멤버 제거와 primary Workflow 권한 승계가 겹치면 제거 transaction이 승계된 target grant까지 회수해야 한다. | `FOR UPDATE` subject lock과 permission FK `KEY SHARE`가 scope 대기와 순환해 deadlock 나거나, 새 primary grant가 제거 후 남는다. | FK-compatible subject lock을 유지한 채 Workflow scope 집합을 재조회·잠그고 old/target direct grant를 모두 삭제. |
 | ORG-TC-U031 | Resource bulk grant는 최대 50개 resource×grantee pair와 row별 audit을 한 transaction에서 적용해야 한다. | 두 번째 pair의 scope, active state, lifecycle, audit 또는 persistence가 실패했는데 첫 pair이 commit된다. | Permission/audit 전체 rollback, partial success 없음. |
+| ORG-TC-U032 | Target foundation은 current platform contract/validity revision을 참조하고 null provider의 explicit initial `baseline_only` privacy policy와 positive initial Organization validity revision/epoch을 organization/membership/Default team과 같은 Unit of Work에 생성해야 한다. Review readiness가 없으면 action policy가 `manual_review`를 만들 수 없어야 한다. | Policy/validity insert·flush·commit 실패 뒤 foundation 일부가 남거나, idempotent retry가 duplicate policy/epoch을 만들거나, missing policy/validity를 runtime implicit default로 보충하거나, signup/OAuth input/response가 provider/mode/revision/validity scope/epoch을 override·노출한다. | Foundation/policy/validity 전체 원자 rollback 또는 exact 기존 foundation/policy/current Organization validity 반환, duplicate/implicit default/override/projection 0건. |
+| ORG-TC-U033 | Target rollout은 모든 Organization writer의 privacy dual-write 수렴과 구버전 writer fence 뒤 backfill/rescan 및 no-default DB foundation constraint를 완료해야 한다. | 최초 scan 직후 구버전 writer가 Organization을 만들거나 new writer create와 backfill이 경합했는데 final zero-missing/constraint 없이 enforcement가 켜지거나, enforcement 뒤 구버전 image가 시작 또는 직접 insert한다. | 새 Organization은 creation UoW 또는 final rescan 중 하나로 정확히 한 policy/validity set에 수렴한다. Missing row/marker/ref가 있으면 activation zero-write이고, old image startup/rollback은 readiness failure, 우회 insert는 Organization/foundation partial row 0건의 DB rollback이다. |
 
 ## API Tests
 
