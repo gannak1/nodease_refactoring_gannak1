@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import boto3
+from botocore.config import Config
 from fastapi import UploadFile
 
 from apps.gateway.core.config import settings
@@ -18,6 +19,10 @@ from apps.gateway.services.storage_reference import (
     build_upload_object_name,
     resolve_local_delete_path,
     resolve_s3_delete_key,
+)
+from apps.shared.services.outbound_proxy_policy import (
+    OutboundTransportMode,
+    outbound_proxy_policy_from_environment,
 )
 
 DEFAULT_LOCAL_UPLOAD_DIR = "/app/uploads"
@@ -63,9 +68,7 @@ def _resolve_default_local_upload_dir() -> str:
         except OSError as exc:
             if exc.errno not in _LOCAL_STORAGE_FALLBACK_ERRNOS:
                 raise
-            selected_root = _prepare_writable_directory(
-                FALLBACK_LOCAL_UPLOAD_DIR
-            )
+            selected_root = _prepare_writable_directory(FALLBACK_LOCAL_UPLOAD_DIR)
 
         _resolved_default_local_upload_dir = selected_root
         return selected_root
@@ -141,11 +144,21 @@ class S3StorageService(StorageService):
         if not self.bucket_name or not self.region:
             raise StorageConfigurationError("storage_configuration_invalid")
 
+        transport_policy = outbound_proxy_policy_from_environment()
+        proxies = (
+            {"https": transport_policy.proxy_url}
+            if transport_policy.mode is OutboundTransportMode.PROXY_GUARDED_EXTERNAL
+            else {}
+        )
         self.s3_client = boto3.client(
             "s3",
             aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
             aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
             region_name=self.region,
+            config=Config(
+                proxies=proxies,
+                retries={"total_max_attempts": 1, "mode": "standard"},
+            ),
         )
 
     def upload(self, file: UploadFile) -> str:
@@ -173,7 +186,9 @@ class S3StorageService(StorageService):
 
         # S3 URL
         encoded_key = quote(s3_key, safe="/")
-        return f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{encoded_key}"
+        return (
+            f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{encoded_key}"
+        )
 
     def generate_presigned_upload_url(
         self,

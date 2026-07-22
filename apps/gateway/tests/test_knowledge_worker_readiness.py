@@ -51,8 +51,13 @@ def test_readiness_wait_fails_closed_after_deadline() -> None:
         )
 
 
-def test_readiness_checks_llm_keyring_before_schema(monkeypatch) -> None:
+def test_readiness_checks_proxy_and_llm_keyring_before_schema(monkeypatch) -> None:
     calls = []
+    monkeypatch.setattr(
+        knowledge_worker_readiness,
+        "require_outbound_proxy_security_ready",
+        lambda: calls.append("egress"),
+    )
     monkeypatch.setattr(
         knowledge_worker_readiness,
         "require_llm_credential_keyring_ready",
@@ -66,7 +71,7 @@ def test_readiness_checks_llm_keyring_before_schema(monkeypatch) -> None:
 
     knowledge_worker_readiness._require_readiness()
 
-    assert calls == ["keyring", "schema"]
+    assert calls == ["egress", "keyring", "schema"]
 
 
 @pytest.mark.parametrize(

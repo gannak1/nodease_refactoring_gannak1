@@ -15,6 +15,10 @@ from apps.gateway.services.storage import (
     StorageOperationError,
     StorageReferenceError,
 )
+from apps.shared.services.outbound_proxy_policy import (
+    OutboundProxyPolicy,
+    OutboundTransportMode,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -122,6 +126,40 @@ def test_s3_storage_rejects_incomplete_configuration_before_provider_setup(
         S3StorageService()
 
     assert provider_calls == []
+
+
+def test_s3_storage_uses_explicit_proxy_and_disables_sdk_retry_and_ambient_env(
+    monkeypatch,
+):
+    captured = {}
+    monkeypatch.setattr(storage_module.settings, "S3_BUCKET_NAME", "bucket")
+    monkeypatch.setattr(storage_module.settings, "AWS_REGION", "region")
+    monkeypatch.setenv("HTTPS_PROXY", "http://ambient.invalid:9999")
+    monkeypatch.setenv("NO_PROXY", "*")
+    monkeypatch.setattr(
+        storage_module,
+        "outbound_proxy_policy_from_environment",
+        lambda: OutboundProxyPolicy(
+            mode=OutboundTransportMode.PROXY_GUARDED_EXTERNAL,
+            proxy_url="http://egress-proxy:3128",
+            allowed_proxy_hosts=("egress-proxy",),
+            policy_revision="proxy-v1",
+        ),
+    )
+
+    def client_factory(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return _CaptureS3Client()
+
+    monkeypatch.setattr(storage_module.boto3, "client", client_factory)
+
+    S3StorageService()
+
+    config = captured["kwargs"]["config"]
+    assert captured["args"] == ("s3",)
+    assert config.proxies == {"https": "http://egress-proxy:3128"}
+    assert config.retries == {"total_max_attempts": 1, "mode": "standard"}
 
 
 def test_s3_delete_raises_safe_typed_error_without_provider_details(caplog):
