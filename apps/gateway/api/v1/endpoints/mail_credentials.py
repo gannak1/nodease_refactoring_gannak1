@@ -5,12 +5,12 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.composition.google_oauth import build_gmail_oauth_service
 from apps.gateway.services.mail_credential_service import (
     MailCredentialService,
     MailCredentialServiceError,
 )
 from apps.gateway.services.gmail_oauth_service import (
-    GmailOAuthService,
     resolve_gmail_oauth_redirect_uri,
 )
 from apps.gateway.services.organization_context import resolve_active_organization_id
@@ -37,9 +37,7 @@ def _https_redirect_uri(request: Request, route_name: str) -> str:
     return resolve_gmail_oauth_redirect_uri(str(request.url_for(route_name)))
 
 
-@router.post(
-    "/credentials/oauth/google/start", response_model=GmailOAuthStartResponse
-)
+@router.post("/credentials/oauth/google/start", response_model=GmailOAuthStartResponse)
 def start_gmail_oauth(
     payload: GmailOAuthStartRequest,
     request: Request,
@@ -49,7 +47,7 @@ def start_gmail_oauth(
 ):
     organization_id = _organization_id(db, request, x_organization_id, current_user)
     try:
-        authorization_url = GmailOAuthService(db).start(
+        authorization_url = build_gmail_oauth_service(db).start(
             actor_id=current_user.id,
             organization_id=organization_id,
             credential_name=payload.credential_name,
@@ -71,7 +69,7 @@ async def complete_gmail_oauth(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        await GmailOAuthService(db).handle_callback(
+        await build_gmail_oauth_service(db).handle_callback(
             actor_id=current_user.id,
             state=state,
             code=code,

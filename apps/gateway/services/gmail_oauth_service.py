@@ -10,9 +10,12 @@ import uuid
 from typing import Any, MutableMapping, NoReturn
 from urllib.parse import urlencode, urlparse
 
-import httpx
 from sqlalchemy.orm import Session
 
+from apps.gateway.application.google_oauth import (
+    GoogleOAuthProviderError,
+    GoogleOAuthProviderPort,
+)
 from apps.gateway.services.mail_credential_service import (
     MailCredentialPermissionDenied,
     MailCredentialService,
@@ -27,8 +30,6 @@ from apps.shared.schemas.mail_credential import MailCredentialResponse
 from apps.shared.services.permissions import has_organization_manager_permission
 
 GOOGLE_AUTHORIZATION_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-GMAIL_PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
 SESSION_KEY = "gmail_mail_oauth_flow"
 FLOW_TTL_SECONDS = 10 * 60
 MAX_PENDING_FLOWS = 5
@@ -83,7 +84,7 @@ class GmailOAuthService:
         *,
         client_id: str | None = None,
         client_secret: str | None = None,
-        client: httpx.AsyncClient | None = None,
+        provider: GoogleOAuthProviderPort | None = None,
         now=time.time,
         session_signing_key: str | None = None,
     ) -> None:
@@ -92,7 +93,7 @@ class GmailOAuthService:
         self._client_secret = (
             client_secret or os.getenv("GOOGLE_CLIENT_SECRET", "")
         ).strip()
-        self._client = client
+        self._provider = provider
         self._now = now
         self._session_signing_key = (
             session_signing_key or os.getenv("SECRET_KEY", "")
@@ -290,44 +291,27 @@ class GmailOAuthService:
     ) -> dict:
         if not code or not redirect_uri or not verifier:
             raise GmailOAuthStateInvalid()
-        response = await self._request(
-            "POST",
-            GOOGLE_TOKEN_URL,
-            data={
-                "client_id": self._client_id,
-                "client_secret": self._client_secret,
-                "code": code,
-                "code_verifier": verifier,
-                "grant_type": "authorization_code",
-                "redirect_uri": redirect_uri,
-            },
-            headers={"Accept": "application/json"},
-        )
-        if response.status_code != 200:
-            raise GmailOAuthTokenExchangeFailed()
         try:
-            payload = response.json()
-        except ValueError as exc:
-            raise GmailOAuthTokenExchangeFailed() from exc
+            payload = await self._require_provider().exchange_authorization_code(
+                client_id=self._client_id,
+                client_secret=self._client_secret,
+                code=code,
+                verifier=verifier,
+                redirect_uri=redirect_uri,
+            )
+        except GoogleOAuthProviderError:
+            raise GmailOAuthTokenExchangeFailed() from None
         if not isinstance(payload, dict):
             raise GmailOAuthTokenExchangeFailed()
-        return payload
+        return dict(payload)
 
     async def _mailbox_email(self, access_token: str) -> str:
-        response = await self._request(
-            "GET",
-            GMAIL_PROFILE_URL,
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Accept": "application/json",
-            },
-        )
-        if response.status_code != 200:
-            raise GmailOAuthTokenExchangeFailed()
         try:
-            email_address = response.json().get("emailAddress")
-        except (ValueError, AttributeError) as exc:
-            raise GmailOAuthTokenExchangeFailed() from exc
+            email_address = await self._require_provider().read_mailbox_email(
+                access_token=access_token
+            )
+        except GoogleOAuthProviderError:
+            raise GmailOAuthTokenExchangeFailed() from None
         if (
             not isinstance(email_address, str)
             or "@" not in email_address
@@ -336,16 +320,10 @@ class GmailOAuthService:
             raise GmailOAuthTokenExchangeFailed()
         return email_address.lower()
 
-    async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
-        client = self._client or httpx.AsyncClient(timeout=10.0, follow_redirects=False)
-        should_close = self._client is None
-        try:
-            return await client.request(method, url, **kwargs)
-        except httpx.RequestError as exc:
-            raise GmailOAuthTokenExchangeFailed() from exc
-        finally:
-            if should_close:
-                await client.aclose()
+    def _require_provider(self) -> GoogleOAuthProviderPort:
+        if self._provider is None:
+            raise GoogleOAuthProviderError("mail.oauth_provider_unavailable")
+        return self._provider
 
     def _require_configuration(self) -> None:
         if not self._client_id or not self._client_secret:

@@ -108,6 +108,14 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - IMAP resolver는 private/loopback/metadata target과 `143/993` 이외 포트를 거부하고, `143`에서는 로그인 전에 STARTTLS를 강제한다. DNS 검증 IP에 socket 연결을 고정하면서 TLS hostname 검증은 canonical hostname으로 수행한다.
 - Legacy inline password graph는 validation error에 secret 값을 포함하지 않고 fail-closed한다.
 
+## MBA-356 Fixed SaaS Outbound Tests
+
+- GitHub pull request 조회/comment와 Slack API/webhook happy path가 기존 request와 safe output projection을 유지하면서 operation-bound guarded transport를 사용하는지 검증한다.
+- Wrong origin, private/mixed DNS, peer mismatch, redirect와 response byte 상한 위반은 추가 provider 요청 없이 차단되고 전송 전 실패와 outcome unknown을 구분하는지 검증한다.
+- Slack의 connect/write/read/pool timeout은 operation profile 상한 안에서 기존 단계별 값이 유지되며 상한 초과 설정은 client 생성 전에 거부되는지 검증한다.
+- 대상 production node/service/adapter가 직접 `requests` 또는 `httpx.Client|AsyncClient`를 생성하지 않는 architecture test를 유지한다.
+- GitHub read는 effect ledger 밖의 기존 조회 계약, GitHub comment와 Slack mutation은 기존 replay/result reuse 계약을 유지하며 transport 이관이 provider 재호출을 추가하지 않는지 검증한다.
+
 ## Spec Document Mapping
 
 `Demo Test Priority` 표의 `영역` 컬럼은 아래 spec 문서 섹션과 대응된다. 테스트를 구현하거나 우선순위를 바꿀 때는 대응하는 `requirements.md`, `api_spec.md`, `component_spec.md`를 함께 확인한다.
@@ -873,6 +881,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - DNS가 public과 차단 IP를 함께 반환하면 전체 요청을 거부한다. 모든 주소가 안전하면 custom network backend는 DNS/OS 순서대로 dial하고 첫 주소의 TCP connect 실패 시 다음 검증 주소로 폴백한다. 모든 검증 주소가 실패하면 `connection_failed`로 닫고, 첫 연결의 peer mismatch에서는 다음 주소를 시도하지 않는다. 검증 뒤 hostname DNS 응답이 바뀌어도 검증 목록 밖의 주소로 dial하지 않는다.
 - Public HTTP/HTTPS 80/443 happy path는 HTTPX 0.28 Generic HTTP V1 canonical digest, application header/JSON wire serialization, status/data/headers output과 non-2xx 성공 판정을 유지한다.
 - URL fragment는 network target에 전달하지 않고 userinfo, hop-by-hop/proxy header, 비허용 method/scheme/port와 request body/header 상한 초과를 pre-send permanent failure로 닫는다. Environment proxy는 사용하지 않는다.
+- GitHub comment의 request 상한은 comment 문자열 단독 크기가 아니라 compact UTF-8 JSON `{"body": ...}` 전체 wire 크기로 판단한다. 따옴표·역슬래시 escape와 JSON field overhead를 포함해 profile 상한과 정확히 같은 body는 준비되고 이를 초과하면 provider 호출과 durable attempt 이전에 거부되며 safe trace의 `request_size`도 같은 wire 크기를 사용한다.
 - Redirect-to-private 응답은 첫 3xx status/data/headers를 반환하고 두 번째 connection을 만들지 않는다. Peer mismatch는 request byte 전송 전 non-retryable 실패로 닫고, 압축·oversized response와 read 실패는 output을 사용하지 않고 outcome unknown으로 닫는다.
 - Connect 전에 전송이 없다고 증명되는 일시 실패만 retry-before-effect가 될 수 있다. Write/read timeout, response loss와 전송 뒤 검증 실패를 안전한 재시도로 바꾸지 않는다.
 - `HttpRequestNode`와 Generic HTTP provider는 `httpx.Client`를 직접 생성하지 않고 application outbound port를 사용한다. Production import/architecture contract가 직접 client 회귀를 탐지한다.

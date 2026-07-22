@@ -6,9 +6,17 @@ import re
 from email.message import EmailMessage
 from email.utils import getaddresses, parseaddr
 
-import httpx
-
 from apps.shared.domain.mail_processing import MailSourceReference
+from apps.shared.services.outbound_operation_http import (
+    OperationHttpFailure,
+    OperationHttpFailurePhase,
+    OperationHttpRequester,
+)
+from apps.shared.services.outbound_operation_policy import (
+    GMAIL_DRAFT_CREATE,
+    GMAIL_MESSAGE_READ,
+)
+from apps.workflow_engine.adapters.gmail_api import require_gmail_message_id
 from apps.workflow_engine.application.mail_processing import (
     GmailDraftCreated,
     GmailDraftOutcomeUnknown,
@@ -31,7 +39,7 @@ class GmailDraftProvider:
         *,
         access_token: str,
         mailbox_email: str,
-        client: httpx.Client | None = None,
+        requester: OperationHttpRequester | None = None,
     ) -> None:
         if not access_token or _CONTROL_CHARACTERS.search(access_token):
             raise GmailDraftRejectedBeforeEffect("mail.oauth_token_invalid")
@@ -42,57 +50,51 @@ class GmailDraftProvider:
             "Authorization": f"Bearer {access_token}",
             "Accept": "application/json",
         }
-        self._client = client
+        self._requester = requester or OperationHttpRequester()
 
     def resolve_source_message(
         self, *, source_reference: MailSourceReference
     ) -> GmailSourceMessage:
         if source_reference.message_id is None:
             raise GmailDraftRejectedBeforeEffect("mail.gmail_message_id_required")
-        client = self._client or httpx.Client(timeout=10.0, follow_redirects=False)
-        should_close = self._client is None
-        try:
-            message_id = source_reference.provider_message_id
-            if message_id is None:
-                listing = self._request_before_effect(
-                    client,
-                    "GET",
-                    f"{GMAIL_API_BASE_URL}/messages",
-                    params={
-                        "q": f"rfc822msgid:{source_reference.message_id}",
-                        "maxResults": "2",
-                    },
-                )
-                messages = listing.get("messages")
-                if not isinstance(messages, list) or len(messages) != 1:
-                    raise GmailDraftRejectedBeforeEffect(
-                        "mail.gmail_source_message_not_unique"
-                    )
-                message_id = (
-                    messages[0].get("id") if isinstance(messages[0], dict) else None
-                )
-                if not isinstance(message_id, str) or not message_id:
-                    raise GmailDraftRejectedBeforeEffect(
-                        "mail.gmail_source_message_invalid"
-                    )
-            detail = self._request_before_effect(
-                client,
+        message_id = source_reference.provider_message_id
+        if message_id is None:
+            listing = self._request_before_effect(
                 "GET",
-                f"{GMAIL_API_BASE_URL}/messages/{message_id}",
+                f"{GMAIL_API_BASE_URL}/messages",
                 params={
-                    "format": "metadata",
-                    "metadataHeaders": [
-                        "From",
-                        "Reply-To",
-                        "Subject",
-                        "Message-ID",
-                        "References",
-                    ],
+                    "q": f"rfc822msgid:{source_reference.message_id}",
+                    "maxResults": "2",
                 },
             )
-        finally:
-            if should_close:
-                client.close()
+            messages = listing.get("messages")
+            if not isinstance(messages, list) or len(messages) != 1:
+                raise GmailDraftRejectedBeforeEffect(
+                    "mail.gmail_source_message_not_unique"
+                )
+            message_id = (
+                messages[0].get("id") if isinstance(messages[0], dict) else None
+            )
+        try:
+            message_id = require_gmail_message_id(message_id)
+        except (TypeError, ValueError):
+            raise GmailDraftRejectedBeforeEffect(
+                "mail.gmail_source_message_invalid"
+            ) from None
+        detail = self._request_before_effect(
+            "GET",
+            f"{GMAIL_API_BASE_URL}/messages/{message_id}",
+            params={
+                "format": "metadata",
+                "metadataHeaders": [
+                    "From",
+                    "Reply-To",
+                    "Subject",
+                    "Message-ID",
+                    "References",
+                ],
+            },
+        )
         return _source_from_gmail_detail(
             detail,
             expected_message_id=message_id,
@@ -105,44 +107,38 @@ class GmailDraftProvider:
             source=request.source,
             reply_body=request.reply_body,
         )
-        client = self._client or httpx.Client(timeout=15.0, follow_redirects=False)
-        should_close = self._client is None
         try:
-            try:
-                with client.stream(
-                    "POST",
-                    f"{GMAIL_API_BASE_URL}/drafts",
-                    headers={**self._headers, "Content-Type": "application/json"},
-                    json={
-                        "message": {
-                            "raw": raw,
-                            "threadId": request.source.thread_id,
-                        }
-                    },
-                ) as response:
-                    if response.status_code >= 500:
-                        raise GmailDraftOutcomeUnknown("mail.draft_outcome_unknown")
-                    if response.status_code >= 400:
-                        reason = (
-                            "mail.oauth_reauthorization_required"
-                            if response.status_code in {401, 403}
-                            else "mail.draft_provider_rejected"
-                        )
-                        raise GmailDraftRejectedBeforeEffect(reason)
-                    content = _read_bounded_response(
-                        response,
-                        too_large_reason="mail.draft_response_invalid",
-                        outcome_unknown=True,
-                    )
-            except (httpx.ConnectError, httpx.ConnectTimeout):
+            response = self._requester.request(
+                operation_id=GMAIL_DRAFT_CREATE,
+                approved_endpoint=GMAIL_API_BASE_URL,
+                method="POST",
+                url=f"{GMAIL_API_BASE_URL}/drafts",
+                headers={**self._headers, "Content-Type": "application/json"},
+                json_body={
+                    "message": {
+                        "raw": raw,
+                        "threadId": request.source.thread_id,
+                    }
+                },
+            )
+        except OperationHttpFailure as exc:
+            if exc.phase is OperationHttpFailurePhase.BEFORE_SEND:
                 raise GmailDraftRejectedBeforeEffect(
                     "mail.draft_provider_unavailable"
                 ) from None
-            except httpx.RequestError:
-                raise GmailDraftOutcomeUnknown("mail.draft_outcome_unknown") from None
-        finally:
-            if should_close:
-                client.close()
+            raise GmailDraftOutcomeUnknown("mail.draft_outcome_unknown") from None
+        if response.status_code >= 500:
+            raise GmailDraftOutcomeUnknown("mail.draft_outcome_unknown")
+        if response.status_code >= 400:
+            reason = (
+                "mail.oauth_reauthorization_required"
+                if response.status_code in {401, 403}
+                else "mail.draft_provider_rejected"
+            )
+            raise GmailDraftRejectedBeforeEffect(reason)
+        content = response.content
+        if len(content) > MAX_RESPONSE_BYTES:
+            raise GmailDraftOutcomeUnknown("mail.draft_response_invalid")
         try:
             payload = json.loads(content)
             draft_id = payload.get("id")
@@ -152,29 +148,33 @@ class GmailDraftProvider:
             raise GmailDraftOutcomeUnknown("mail.draft_response_invalid")
         return GmailDraftCreated(provider_draft_id=draft_id)
 
-    def _request_before_effect(
-        self, client: httpx.Client, method: str, url: str, **kwargs
-    ) -> dict:
+    def _request_before_effect(self, method: str, url: str, **kwargs) -> dict:
+        params = kwargs.pop("params", None)
+        if kwargs:
+            raise GmailDraftRejectedBeforeEffect("mail.gmail_source_lookup_failed")
         try:
-            with client.stream(method, url, headers=self._headers, **kwargs) as response:
-                if response.status_code >= 400:
-                    reason = (
-                        "mail.oauth_reauthorization_required"
-                        if response.status_code in {401, 403}
-                        else "mail.gmail_source_lookup_failed"
-                    )
-                    raise GmailDraftRejectedBeforeEffect(reason)
-                content = _read_bounded_response(
-                    response,
-                    too_large_reason="mail.gmail_source_lookup_failed",
-                    outcome_unknown=False,
-                )
-        except GmailDraftRejectedBeforeEffect:
-            raise
-        except httpx.RequestError:
+            response = self._requester.request(
+                operation_id=GMAIL_MESSAGE_READ,
+                approved_endpoint=GMAIL_API_BASE_URL,
+                method=method,
+                url=url,
+                headers=self._headers,
+                query_params=params,
+            )
+        except OperationHttpFailure:
             raise GmailDraftRejectedBeforeEffect(
                 "mail.gmail_source_lookup_failed"
             ) from None
+        if response.status_code >= 400:
+            reason = (
+                "mail.oauth_reauthorization_required"
+                if response.status_code in {401, 403}
+                else "mail.gmail_source_lookup_failed"
+            )
+            raise GmailDraftRejectedBeforeEffect(reason)
+        content = response.content
+        if len(content) > MAX_RESPONSE_BYTES:
+            raise GmailDraftRejectedBeforeEffect("mail.gmail_source_lookup_failed")
         try:
             payload = json.loads(content)
         except (TypeError, ValueError):
@@ -184,27 +184,6 @@ class GmailDraftProvider:
         if not isinstance(payload, dict):
             raise GmailDraftRejectedBeforeEffect("mail.gmail_source_lookup_failed")
         return payload
-
-
-def _read_bounded_response(
-    response: httpx.Response,
-    *,
-    too_large_reason: str,
-    outcome_unknown: bool,
-) -> bytes:
-    chunks: list[bytes] = []
-    size = 0
-    for chunk in response.iter_bytes():
-        size += len(chunk)
-        if size > MAX_RESPONSE_BYTES:
-            error_type = (
-                GmailDraftOutcomeUnknown
-                if outcome_unknown
-                else GmailDraftRejectedBeforeEffect
-            )
-            raise error_type(too_large_reason)
-        chunks.append(chunk)
-    return b"".join(chunks)
 
 
 def build_reply_mime(

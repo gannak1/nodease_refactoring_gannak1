@@ -3,14 +3,14 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-import httpx
-
 from apps.shared.domain.mail_oauth import GmailOAuthSecret, MailOAuthSecretError
+from apps.workflow_engine.application.google_oauth import (
+    GoogleOAuthRefreshError,
+    GoogleOAuthRefreshProviderPort,
+)
 from apps.workflow_engine.application.mail_processing import (
     GmailDraftRejectedBeforeEffect,
 )
-
-GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 
 @dataclass(frozen=True)
@@ -28,13 +28,13 @@ class GoogleOAuthTokenService:
         *,
         client_id: str | None = None,
         client_secret: str | None = None,
-        client: httpx.Client | None = None,
+        provider: GoogleOAuthRefreshProviderPort | None = None,
     ) -> None:
         self._client_id = (client_id or os.getenv("GOOGLE_CLIENT_ID", "")).strip()
         self._client_secret = (
             client_secret or os.getenv("GOOGLE_CLIENT_SECRET", "")
         ).strip()
-        self._client = client
+        self._provider = provider
 
     def refresh(self, encrypted_payload: str) -> GoogleAccessToken:
         if not self._client_id or not self._client_secret:
@@ -43,37 +43,15 @@ class GoogleOAuthTokenService:
             secret = GmailOAuthSecret.parse(encrypted_payload)
         except MailOAuthSecretError as exc:
             raise GmailDraftRejectedBeforeEffect(exc.reason_code) from exc
-        client = self._client or httpx.Client(timeout=10.0, follow_redirects=False)
-        should_close = self._client is None
         try:
-            response = client.post(
-                GOOGLE_TOKEN_URL,
-                data={
-                    "client_id": self._client_id,
-                    "client_secret": self._client_secret,
-                    "grant_type": "refresh_token",
-                    "refresh_token": secret.refresh_token,
-                },
-                headers={"Accept": "application/json"},
+            payload = self._require_provider().refresh_access_token(
+                client_id=self._client_id,
+                client_secret=self._client_secret,
+                refresh_token=secret.refresh_token,
             )
-        except httpx.RequestError:
-            raise GmailDraftRejectedBeforeEffect(
-                "mail.oauth_token_exchange_failed"
-            ) from None
-        finally:
-            if should_close:
-                client.close()
-        if response.status_code != 200:
-            try:
-                oauth_error = response.json().get("error")
-            except (ValueError, AttributeError):
-                oauth_error = None
-            reason = "mail.oauth_token_exchange_failed"
-            if response.status_code == 400 and oauth_error == "invalid_grant":
-                reason = "mail.oauth_reauthorization_required"
-            raise GmailDraftRejectedBeforeEffect(reason)
+        except GoogleOAuthRefreshError as exc:
+            raise GmailDraftRejectedBeforeEffect(exc.reason_code) from None
         try:
-            payload = response.json()
             access_token = payload.get("access_token")
         except (TypeError, ValueError, AttributeError):
             raise GmailDraftRejectedBeforeEffect(
@@ -98,3 +76,8 @@ class GoogleOAuthTokenService:
             access_token,
             rotated_secret_payload=rotated_secret_payload,
         )
+
+    def _require_provider(self) -> GoogleOAuthRefreshProviderPort:
+        if self._provider is None:
+            raise GoogleOAuthRefreshError("mail.oauth_token_exchange_failed")
+        return self._provider

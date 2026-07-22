@@ -117,6 +117,8 @@ OAuth 취소 또는 실패는 `mail.oauth_cancelled`, `mail.oauth_state_invalid`
 
 OAuth Gmail credential의 Mail 조회와 읽음 처리는 고정 Gmail REST API만 사용한다. 저장된 scope에 `gmail.modify`가 없으면 token refresh/provider 호출 전에 `mail.oauth_scope_insufficient`로 실패하고 재인가를 요구한다. OAuth credential은 IMAP XOAUTH2 fallback을 사용하지 않는다.
 
+Google token endpoint, Gmail profile/message/modify/draft endpoint는 server-owned operation-bound transport를 사용한다. HTTPS/443, no-redirect, bounded timeout/request/response와 DNS-to-dial peer 검증을 적용하며 request에서 provider origin, method 또는 proxy를 지정할 수 없다. Guard/provider 실패는 기존 safe `mail.*` code로 반환하고 raw URL, token, message body, provider response와 exception을 노출하지 않는다.
+
 ## Workflow Runtime Reference 계약
 
 - `mailNode` durable output은 provider raw id 대신 opaque `processing_ref`를 반환한다.

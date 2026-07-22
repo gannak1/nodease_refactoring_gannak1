@@ -21,6 +21,16 @@ LLM_MODEL_DISCOVERY = "llm.model.discovery"
 KNOWLEDGE_API_FETCH = "knowledge.api.fetch"
 KNOWLEDGE_DOCUMENT_FETCH = "knowledge.document.fetch"
 WORKFLOW_REMOTE_FILE_FETCH = "workflow.remote_file.fetch"
+GOOGLE_OAUTH_AUTHORIZATION_CODE_EXCHANGE = "google.oauth.authorization_code.exchange"
+GOOGLE_OAUTH_REFRESH = "google.oauth.refresh"
+GMAIL_PROFILE_READ = "gmail.profile.read"
+GMAIL_MESSAGE_READ = "gmail.message.read"
+GMAIL_MESSAGE_MODIFY = "gmail.message.modify"
+GMAIL_DRAFT_CREATE = "gmail.draft.create"
+GITHUB_PULL_REQUEST_READ = "github.pull_request.read"
+GITHUB_ISSUE_COMMENT_CREATE = "github.issue_comment.create"
+SLACK_CHAT_POST_MESSAGE = "slack.chat.post_message"
+SLACK_INCOMING_WEBHOOK_POST = "slack.incoming_webhook.post"
 
 
 def _canonical_value(value: Any) -> Any:
@@ -81,7 +91,9 @@ class OutboundOperationProfile:
         operation_id = self.operation_id.strip()
         if not operation_id or operation_id != self.operation_id:
             raise ValueError("Outbound operation ID is invalid")
-        object.__setattr__(self, "revision", _policy_revision(operation_id, self.policy))
+        object.__setattr__(
+            self, "revision", _policy_revision(operation_id, self.policy)
+        )
 
     def bind(self, approved_endpoint: str) -> BoundOutboundOperation:
         origin = _canonical_origin(
@@ -128,7 +140,7 @@ def _profile(
     max_request_bytes: int,
     max_response_bytes: int,
     timeout_seconds: float,
-    content_types: frozenset[str],
+    content_types: frozenset[str] | None,
     max_redirects: int = 0,
 ) -> OutboundOperationProfile:
     return OutboundOperationProfile(
@@ -197,6 +209,86 @@ _PROFILES: Mapping[str, OutboundOperationProfile] = MappingProxyType(
             content_types=DOCUMENT_RESPONSE_CONTENT_TYPES,
             max_redirects=3,
         ),
+        GOOGLE_OAUTH_AUTHORIZATION_CODE_EXCHANGE: _profile(
+            GOOGLE_OAUTH_AUTHORIZATION_CODE_EXCHANGE,
+            methods=frozenset({"POST"}),
+            max_request_bytes=64 * 1024,
+            max_response_bytes=1024 * 1024,
+            timeout_seconds=10.0,
+            content_types=frozenset({"application/json"}),
+        ),
+        GOOGLE_OAUTH_REFRESH: _profile(
+            GOOGLE_OAUTH_REFRESH,
+            methods=frozenset({"POST"}),
+            max_request_bytes=64 * 1024,
+            max_response_bytes=1024 * 1024,
+            timeout_seconds=10.0,
+            content_types=frozenset({"application/json"}),
+        ),
+        GMAIL_PROFILE_READ: _profile(
+            GMAIL_PROFILE_READ,
+            methods=frozenset({"GET"}),
+            max_request_bytes=0,
+            max_response_bytes=256 * 1024,
+            timeout_seconds=10.0,
+            content_types=frozenset({"application/json"}),
+        ),
+        GMAIL_MESSAGE_READ: _profile(
+            GMAIL_MESSAGE_READ,
+            methods=frozenset({"GET"}),
+            max_request_bytes=0,
+            max_response_bytes=2 * 1024 * 1024,
+            timeout_seconds=10.0,
+            content_types=frozenset({"application/json"}),
+        ),
+        GMAIL_MESSAGE_MODIFY: _profile(
+            GMAIL_MESSAGE_MODIFY,
+            methods=frozenset({"POST"}),
+            max_request_bytes=256 * 1024,
+            max_response_bytes=512 * 1024,
+            timeout_seconds=10.0,
+            content_types=None,
+        ),
+        GMAIL_DRAFT_CREATE: _profile(
+            GMAIL_DRAFT_CREATE,
+            methods=frozenset({"POST"}),
+            max_request_bytes=1024 * 1024,
+            max_response_bytes=512 * 1024,
+            timeout_seconds=15.0,
+            content_types=frozenset({"application/json"}),
+        ),
+        GITHUB_PULL_REQUEST_READ: _profile(
+            GITHUB_PULL_REQUEST_READ,
+            methods=frozenset({"GET"}),
+            max_request_bytes=0,
+            max_response_bytes=10 * 1024 * 1024,
+            timeout_seconds=30.0,
+            content_types=frozenset({"application/json"}),
+        ),
+        GITHUB_ISSUE_COMMENT_CREATE: _profile(
+            GITHUB_ISSUE_COMMENT_CREATE,
+            methods=frozenset({"POST"}),
+            max_request_bytes=512 * 1024,
+            max_response_bytes=1024 * 1024,
+            timeout_seconds=30.0,
+            content_types=frozenset({"application/json"}),
+        ),
+        SLACK_CHAT_POST_MESSAGE: _profile(
+            SLACK_CHAT_POST_MESSAGE,
+            methods=frozenset({"POST"}),
+            max_request_bytes=256 * 1024,
+            max_response_bytes=64 * 1024,
+            timeout_seconds=10.0,
+            content_types=None,
+        ),
+        SLACK_INCOMING_WEBHOOK_POST: _profile(
+            SLACK_INCOMING_WEBHOOK_POST,
+            methods=frozenset({"POST"}),
+            max_request_bytes=256 * 1024,
+            max_response_bytes=64 * 1024,
+            timeout_seconds=10.0,
+            content_types=None,
+        ),
     }
 )
 
@@ -214,11 +306,21 @@ def require_outbound_operation_profile(operation_id: str) -> OutboundOperationPr
 
 __all__ = [
     "BoundOutboundOperation",
+    "GITHUB_ISSUE_COMMENT_CREATE",
+    "GITHUB_PULL_REQUEST_READ",
+    "GMAIL_DRAFT_CREATE",
+    "GMAIL_MESSAGE_MODIFY",
+    "GMAIL_MESSAGE_READ",
+    "GMAIL_PROFILE_READ",
+    "GOOGLE_OAUTH_AUTHORIZATION_CODE_EXCHANGE",
+    "GOOGLE_OAUTH_REFRESH",
     "KNOWLEDGE_API_FETCH",
     "KNOWLEDGE_DOCUMENT_FETCH",
     "LLM_MODEL_DISCOVERY",
     "LLM_PROVIDER_CALL",
     "OutboundOperationProfile",
+    "SLACK_CHAT_POST_MESSAGE",
+    "SLACK_INCOMING_WEBHOOK_POST",
     "WORKFLOW_REMOTE_FILE_FETCH",
     "outbound_operation_profiles",
     "require_outbound_operation_profile",

@@ -7,8 +7,12 @@ from jinja2 import Environment
 from apps.workflow_engine.workflow.nodes.base.node import Node
 from apps.workflow_engine.workflow.nodes.github.entities import GithubNodeData
 from apps.workflow_engine.adapters.providers.github import (
-    GithubCommentEffectAdapter,
     GithubCommentRequest,
+    GithubProviderError,
+)
+from apps.workflow_engine.composition.github import (
+    build_github_comment_effect_adapter,
+    build_github_read_provider,
 )
 from apps.shared.services.workflow_node_secret_service import (
     WorkflowNodeSecretError,
@@ -42,11 +46,8 @@ class GithubNode(Node[GithubNodeData]):
         """
         GitHub API 요청을 실행하고 결과를 반환합니다.
 
-        [GEVENT] 동기 메서드로 변환 - gevent pool 호환성을 위해.
-        requests 라이브러리를 사용하여 동기 API 호출을 수행합니다.
+        동기 provider port를 사용해 gevent worker 실행 계약을 유지합니다.
         """
-        import requests
-
         data = self.data
 
         # 변수 치환 (referenced_variables 기반)
@@ -70,37 +71,27 @@ class GithubNode(Node[GithubNodeData]):
         except ValueError:
             raise ValueError(f"PR 번호가 유효하지 않습니다: {pr_number_str}")
 
-        # GitHub API 호출 (requests 사용 - 동기)
-        headers = {
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github.v3+json",
-            "User-Agent": "moduly",
-        }
-        base_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}"
-
+        # GitHub provider 작업 실행
         try:
             # Action에 따라 분기
             action = data.action
 
             if action == "get_pr":
                 self._guard_read_only_effect_slot()
-                # PR 정보 가져오기
-                pr_response = requests.get(
-                    f"{base_url}/pulls/{pr_number}",
-                    headers=headers,
-                    timeout=30,
+                provider_factory = self.execution_context.get(
+                    "github_read_provider_factory"
                 )
-                pr_response.raise_for_status()
-                pr = pr_response.json()
-
-                # PR 파일 목록 가져오기
-                files_response = requests.get(
-                    f"{base_url}/pulls/{pr_number}/files",
-                    headers=headers,
-                    timeout=30,
+                provider = (
+                    provider_factory()
+                    if callable(provider_factory)
+                    else build_github_read_provider()
                 )
-                files_response.raise_for_status()
-                files_data = files_response.json()
+                pr, files_data = provider.get_pull_request(
+                    token=token,
+                    repo_owner=repo_owner,
+                    repo_name=repo_name,
+                    pr_number=pr_number,
+                )
 
                 files = []
                 for file in files_data:
@@ -133,7 +124,14 @@ class GithubNode(Node[GithubNodeData]):
                     raise ValueError("댓글 내용이 비어있습니다.")
 
                 if self._runtime_control is not None:
-                    adapter = GithubCommentEffectAdapter()
+                    adapter_factory = self.execution_context.get(
+                        "github_comment_effect_adapter_factory"
+                    )
+                    adapter = (
+                        adapter_factory()
+                        if callable(adapter_factory)
+                        else build_github_comment_effect_adapter()
+                    )
                     output = self._run_external_effect(
                         adapter,
                         GithubCommentRequest(
@@ -148,29 +146,29 @@ class GithubNode(Node[GithubNodeData]):
                     self._trace_payloads = []
                     return output
 
-                # Issue comments API 사용 (PR은 내부적으로 Issue)
-                comment_response = requests.post(
-                    f"{base_url}/issues/{pr_number}/comments",
-                    headers=headers,
-                    json={"body": comment_body},
-                    timeout=30,
+                adapter_factory = self.execution_context.get(
+                    "github_comment_effect_adapter_factory"
                 )
-                comment_response.raise_for_status()
-                comment = comment_response.json()
-
-                return {
-                    "comment_id": comment["id"],
-                    "comment_url": comment["html_url"],
-                    "comment_body": comment["body"],
-                }
+                adapter = (
+                    adapter_factory()
+                    if callable(adapter_factory)
+                    else build_github_comment_effect_adapter()
+                )
+                return adapter.create_comment(
+                    GithubCommentRequest(
+                        token=token,
+                        repo_owner=repo_owner,
+                        repo_name=repo_name,
+                        pr_number=pr_number,
+                        comment_body=comment_body,
+                    )
+                )
 
             else:
                 raise ValueError(f"지원하지 않는 액션입니다: {action}")
 
-        except requests.exceptions.HTTPError as e:
-            raise RuntimeError(f"GitHub API 오류 (HTTP Error): {str(e)}")
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"GitHub API 오류: {str(e)}")
+        except GithubProviderError:
+            raise RuntimeError("GitHub API 오류") from None
 
     def _render_template(self, template: Optional[str], inputs: Dict[str, Any]) -> str:
         """

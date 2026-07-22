@@ -8,16 +8,16 @@ from apps.shared.db.session import SessionLocal
 from apps.shared.services.credential_encryption import (
     get_credential_encryption_service,
 )
-from apps.workflow_engine.adapters.gmail_draft_provider import GmailDraftProvider
+from apps.workflow_engine.composition.mail import (
+    build_gmail_draft_provider,
+    build_google_oauth_token_service,
+)
 from apps.workflow_engine.adapters.mail_processing_repository import (
     SqlAlchemyMailProcessingRepository,
 )
 from apps.workflow_engine.application.mail_processing import (
     MailProcessingApplicationError,
     MailProcessingApplicationService,
-)
-from apps.workflow_engine.services.google_oauth_service import (
-    GoogleOAuthTokenService,
 )
 from apps.workflow_engine.services.mail_credential_service import (
     MailCredentialResolver,
@@ -56,16 +56,11 @@ class GmailDraftNode(Node[GmailDraftNodeData]):
                     organization_id=organization_id,
                     credential_id=self.data.credential_id,
                 )
-                if (
-                    credential.provider != "gmail"
-                    or credential.auth_type != "oauth2"
-                ):
+                if credential.provider != "gmail" or credential.auth_type != "oauth2":
                     raise RuntimeError("mail.gmail_oauth_credential_required")
-                token_service = self.execution_context.get(
-                    "google_oauth_token_service"
-                )
+                token_service = self.execution_context.get("google_oauth_token_service")
                 if token_service is None:
-                    token_service = GoogleOAuthTokenService()
+                    token_service = build_google_oauth_token_service()
                 access_token = MailCredentialResolver.refresh_oauth_serialized(
                     db,
                     user_id=user_id,
@@ -81,7 +76,7 @@ class GmailDraftNode(Node[GmailDraftNodeData]):
                         access_token.value,
                         credential.email_address,
                     )
-                return GmailDraftProvider(
+                return build_gmail_draft_provider(
                     access_token=access_token.value,
                     mailbox_email=credential.email_address,
                 )

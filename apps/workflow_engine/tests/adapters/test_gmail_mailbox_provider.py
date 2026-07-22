@@ -1,11 +1,13 @@
 import base64
 import inspect
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from apps.shared.domain.mail_processing import MailSourceReference
+from apps.shared.services.outbound_operation_http import OperationHttpRequester
 from apps.workflow_engine.adapters import gmail_mailbox_provider as provider_module
 from apps.workflow_engine.adapters.gmail_mailbox_provider import (
     GmailMailboxError,
@@ -17,6 +19,16 @@ from apps.workflow_engine.adapters.gmail_mailbox_provider import (
 
 def _encoded(value: str) -> str:
     return base64.urlsafe_b64encode(value.encode()).decode().rstrip("=")
+
+
+def _requester(handler, *, observed: dict | None = None) -> OperationHttpRequester:
+    def client_factory(**kwargs):
+        if observed is not None:
+            observed["client_count"] = observed.get("client_count", 0) + 1
+        kwargs.pop("transport")
+        return httpx.Client(transport=httpx.MockTransport(handler), **kwargs)
+
+    return OperationHttpRequester(client_factory=client_factory)
 
 
 def _message_detail(message_id: str = "gmail-message") -> dict:
@@ -58,7 +70,7 @@ def test_search_returns_safe_output_and_protected_source_identity():
 
     provider = GmailMailboxProvider(
         access_token="synthetic-access-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        requester=_requester(handler),
     )
     messages = provider.search(
         GmailSearchCriteria(
@@ -86,6 +98,49 @@ def test_search_returns_safe_output_and_protected_source_identity():
     assert calls[0].url.params["labelIds"] == "INBOX"
 
 
+def test_search_reuses_one_guarded_client_for_listing_and_message_details():
+    observed = {}
+
+    def handler(request):
+        if request.url.path.endswith("/messages"):
+            return httpx.Response(
+                200,
+                json={"messages": [{"id": "gmail-one"}, {"id": "gmail-two"}]},
+            )
+        message_id = request.url.path.rsplit("/", 1)[-1]
+        return httpx.Response(200, json=_message_detail(message_id))
+
+    provider = GmailMailboxProvider(
+        access_token="synthetic-access-token",
+        requester=_requester(handler, observed=observed),
+    )
+
+    messages = provider.search(GmailSearchCriteria(max_results=2))
+
+    assert len(messages) == 2
+    assert observed["client_count"] == 1
+
+
+def test_search_maps_session_client_initialization_failure_to_safe_provider_error():
+    def client_factory(**_kwargs):
+        raise httpx.ConnectError(
+            "raw connection detail",
+            request=httpx.Request("GET", "https://gmail.googleapis.com"),
+        )
+
+    provider = GmailMailboxProvider(
+        access_token="synthetic-access-token",
+        requester=OperationHttpRequester(client_factory=client_factory),
+    )
+
+    with pytest.raises(GmailMailboxError) as captured:
+        provider.search(GmailSearchCriteria(max_results=1))
+
+    assert captured.value.reason_code == "mail.gmail_provider_unavailable"
+    assert "raw connection detail" not in str(captured.value)
+    assert captured.value.__cause__ is None
+
+
 def test_mark_read_happens_in_one_batch_after_search_results_are_available():
     calls = []
 
@@ -103,7 +158,7 @@ def test_mark_read_happens_in_one_batch_after_search_results_are_available():
 
     provider = GmailMailboxProvider(
         access_token="synthetic-access-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        requester=_requester(handler),
     )
     messages = provider.search(GmailSearchCriteria(max_results=2))
     provider.mark_read(message.source_reference for message in messages)
@@ -122,7 +177,7 @@ def test_fetch_failure_prevents_caller_from_reaching_mark_read():
 
     provider = GmailMailboxProvider(
         access_token="synthetic-access-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        requester=_requester(handler),
     )
     with pytest.raises(GmailMailboxError, match="^mail.gmail_provider_unavailable$"):
         provider.search(GmailSearchCriteria(max_results=1))
@@ -141,10 +196,8 @@ def test_fetch_failure_prevents_caller_from_reaching_mark_read():
 def test_provider_http_failures_use_safe_reason_codes(status, reason_code):
     provider = GmailMailboxProvider(
         access_token="synthetic-access-token",
-        client=httpx.Client(
-            transport=httpx.MockTransport(
-                lambda _request: httpx.Response(status, json={"error": "raw detail"})
-            )
+        requester=_requester(
+            lambda _request: httpx.Response(status, json={"error": "raw detail"})
         ),
     )
     with pytest.raises(GmailMailboxError) as exc_info:
@@ -159,7 +212,7 @@ def test_provider_timeout_is_safe_unavailable_error():
 
     provider = GmailMailboxProvider(
         access_token="synthetic-access-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        requester=_requester(handler),
     )
     with pytest.raises(GmailMailboxError) as exc_info:
         provider.search(GmailSearchCriteria(max_results=1))
@@ -173,11 +226,7 @@ def test_provider_rejects_response_larger_than_configured_limit(monkeypatch):
     oversized = json.dumps({"messages": [{"id": "x" * 64}]}).encode()
     provider = GmailMailboxProvider(
         access_token="synthetic-access-token",
-        client=httpx.Client(
-            transport=httpx.MockTransport(
-                lambda _request: httpx.Response(200, content=oversized)
-            )
-        ),
+        requester=_requester(lambda _request: httpx.Response(200, content=oversized)),
     )
 
     with pytest.raises(GmailMailboxError) as exc_info:
@@ -202,7 +251,7 @@ def test_provider_rejects_excessively_deep_mime_tree(monkeypatch):
 
     provider = GmailMailboxProvider(
         access_token="synthetic-access-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        requester=_requester(handler),
     )
 
     with pytest.raises(GmailMailboxError) as exc_info:
@@ -226,7 +275,7 @@ def test_acknowledge_uses_fixed_message_modify_endpoint():
 
     provider = GmailMailboxProvider(
         access_token="synthetic-access-token",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        requester=_requester(handler),
     )
     provider.acknowledge(
         source_reference=MailSourceReference(provider_message_id="gmail-message")
@@ -236,6 +285,28 @@ def test_acknowledge_uses_fixed_message_modify_endpoint():
     assert requests[0].method == "POST"
     assert "drafts.send" not in requests[0].url.path
     assert "messages.send" not in requests[0].url.path
+
+
+@pytest.mark.parametrize(
+    "provider_message_id",
+    ["../drafts", "id/modify", "id\\modify", "id?format=raw", "id#fragment"],
+)
+def test_acknowledge_rejects_message_id_that_can_change_the_fixed_path(
+    provider_message_id,
+):
+    calls = []
+    provider = GmailMailboxProvider(
+        access_token="synthetic-access-token",
+        requester=_requester(lambda request: calls.append(request)),
+    )
+
+    with pytest.raises(GmailMailboxError) as captured:
+        provider.acknowledge(
+            source_reference=SimpleNamespace(provider_message_id=provider_message_id)
+        )
+
+    assert captured.value.reason_code == "mail.message_identity_invalid"
+    assert calls == []
 
 
 def test_mailbox_adapter_has_no_send_endpoint_or_callable_surface():

@@ -12,7 +12,10 @@ from apps.shared.domain.mail_processing import (
 from apps.shared.services.credential_encryption import (
     get_credential_encryption_service,
 )
-from apps.workflow_engine.adapters.gmail_mailbox_provider import GmailMailboxProvider
+from apps.workflow_engine.composition.mail import (
+    build_gmail_mailbox_provider,
+    build_google_oauth_token_service,
+)
 from apps.workflow_engine.adapters.mail_processing_repository import (
     SqlAlchemyMailProcessingRepository,
 )
@@ -24,9 +27,6 @@ from apps.workflow_engine.application.mail_processing import (
 from apps.workflow_engine.services.mail_credential_service import (
     MailCredentialResolver,
     ResolvedMailCredential,
-)
-from apps.workflow_engine.services.google_oauth_service import (
-    GoogleOAuthTokenService,
 )
 from apps.workflow_engine.workflow.nodes.base.node import Node
 from apps.workflow_engine.workflow.nodes.mail.entities import MailAcknowledgeNodeData
@@ -128,11 +128,13 @@ class MailAcknowledgeNode(Node[MailAcknowledgeNodeData]):
                 acknowledgement_factory=acknowledgement_factory,
                 required_effect_contract_hash=self._required_effect_contract_hash(),
                 lease_owner_hash=self._lease_owner_hash(),
-                authorization_guard=lambda credential_id: MailCredentialResolver.revalidate_use(
-                    db,
-                    user_id=user_id,
-                    organization_id=organization_id,
-                    credential_id=credential_id,
+                authorization_guard=lambda credential_id: (
+                    MailCredentialResolver.revalidate_use(
+                        db,
+                        user_id=user_id,
+                        organization_id=organization_id,
+                        credential_id=credential_id,
+                    )
                 ),
             )
         except MailProcessingApplicationError as exc:
@@ -155,7 +157,7 @@ class MailAcknowledgeNode(Node[MailAcknowledgeNodeData]):
             raise RuntimeError("mail.oauth_provider_unsupported")
         token_service = self.execution_context.get("google_oauth_token_service")
         if token_service is None:
-            token_service = GoogleOAuthTokenService()
+            token_service = build_google_oauth_token_service()
         access_token = MailCredentialResolver.refresh_oauth_serialized(
             db,
             user_id=user_id,
@@ -166,7 +168,7 @@ class MailAcknowledgeNode(Node[MailAcknowledgeNodeData]):
         provider_factory = self.execution_context.get("gmail_mailbox_provider_factory")
         if callable(provider_factory):
             return provider_factory(access_token.value)
-        return GmailMailboxProvider(access_token=access_token.value)
+        return build_gmail_mailbox_provider(access_token=access_token.value)
 
     def _processing_service(self, db) -> MailProcessingApplicationService:
         factory = self.execution_context.get("mail_processing_service_factory")

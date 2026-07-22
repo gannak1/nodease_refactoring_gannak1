@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import httpx
 import pytest
-import requests
 
 from apps.workflow_engine.adapters.providers.generic_http import (
     GenericHttpEffectAdapter,
@@ -15,6 +15,11 @@ from apps.workflow_engine.adapters.providers.generic_http import (
 from apps.workflow_engine.adapters.providers.github import (
     GithubCommentEffectAdapter,
     GithubCommentRequest,
+)
+from apps.shared.services.outbound_operation_http import (
+    OperationHttpFailure,
+    OperationHttpFailurePhase,
+    OperationHttpResponse,
 )
 from apps.workflow_engine.application.outbound_http import (
     OutboundHttpError,
@@ -449,17 +454,17 @@ def test_github_adapter_rejects_contract_with_unknown_response_semantics() -> No
 
 
 def test_github_invalid_url_is_safe_stop() -> None:
-    adapter = GithubCommentEffectAdapter()
+    requester = Mock()
+    requester.request.side_effect = OperationHttpFailure(
+        "egress.invalid_url", OperationHttpFailurePhase.BEFORE_SEND
+    )
+    adapter = GithubCommentEffectAdapter(requester=requester)
     prepared = adapter.prepare_effect(
         GithubCommentRequest("fixture-value", "owner", "repo", 1, "comment")
     )
 
-    with patch(
-        "apps.workflow_engine.adapters.providers.github.requests.post",
-        side_effect=requests.exceptions.InvalidURL("invalid URL"),
-    ):
-        with pytest.raises(EffectInvocationFailure) as captured:
-            adapter.invoke_effect(adapter.finalize_provider_call(prepared, None))
+    with pytest.raises(EffectInvocationFailure) as captured:
+        adapter.invoke_effect(adapter.finalize_provider_call(prepared, None))
 
     assert captured.value.outcome is EffectOutcome.FAILED_BEFORE_EFFECT
     assert captured.value.error_code == "invalid_prepared_request"
@@ -468,18 +473,18 @@ def test_github_invalid_url_is_safe_stop() -> None:
 
 @pytest.mark.parametrize("status_code", [401, 403, 404, 410, 422])
 def test_github_explicit_rejection_is_failed_before_effect(status_code) -> None:
-    adapter = GithubCommentEffectAdapter()
+    requester = Mock()
+    requester.request.return_value = OperationHttpResponse(
+        status_code=status_code,
+        headers={"content-type": "application/json"},
+        content=b"{}",
+    )
+    adapter = GithubCommentEffectAdapter(requester=requester)
     prepared = adapter.prepare_effect(
         GithubCommentRequest("fixture-value", "owner", "repo", 1, "comment")
     )
-    response = Mock(status_code=status_code, content=b"{}")
-
-    with patch(
-        "apps.workflow_engine.adapters.providers.github.requests.post",
-        return_value=response,
-    ):
-        with pytest.raises(EffectInvocationFailure) as captured:
-            adapter.invoke_effect(adapter.finalize_provider_call(prepared, None))
+    with pytest.raises(EffectInvocationFailure) as captured:
+        adapter.invoke_effect(adapter.finalize_provider_call(prepared, None))
 
     assert captured.value.outcome is EffectOutcome.FAILED_BEFORE_EFFECT
     assert captured.value.error_code == "provider_rejected_request"
@@ -497,19 +502,18 @@ def test_github_explicit_rejection_is_failed_before_effect(status_code) -> None:
     ],
 )
 def test_github_201_requires_schema_valid_comment(payload) -> None:
-    adapter = GithubCommentEffectAdapter()
+    requester = Mock()
+    requester.request.return_value = OperationHttpResponse(
+        status_code=201,
+        headers={"content-type": "application/json"},
+        content=json.dumps(payload).encode("utf-8"),
+    )
+    adapter = GithubCommentEffectAdapter(requester=requester)
     prepared = adapter.prepare_effect(
         GithubCommentRequest("fixture-value", "owner", "repo", 1, "comment")
     )
-    response = Mock(status_code=201, content=b"{}")
-    response.json.return_value = payload
-
-    with patch(
-        "apps.workflow_engine.adapters.providers.github.requests.post",
-        return_value=response,
-    ):
-        with pytest.raises(EffectInvocationFailure) as captured:
-            adapter.invoke_effect(adapter.finalize_provider_call(prepared, None))
+    with pytest.raises(EffectInvocationFailure) as captured:
+        adapter.invoke_effect(adapter.finalize_provider_call(prepared, None))
 
     assert captured.value.outcome is EffectOutcome.EFFECT_OUTCOME_UNKNOWN
     assert captured.value.error_code == "response_malformed"

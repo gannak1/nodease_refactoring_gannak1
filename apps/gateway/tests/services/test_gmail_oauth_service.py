@@ -2,9 +2,9 @@ import uuid
 from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
-import httpx
 import pytest
 
+from apps.gateway.application.google_oauth import GoogleOAuthProviderError
 from apps.gateway.services.gmail_oauth_service import (
     GmailOAuthCancelled,
     GmailOAuthConfigurationMissing,
@@ -17,19 +17,42 @@ from apps.gateway.services.gmail_oauth_service import (
 from apps.shared.domain.mail_oauth import GMAIL_MODIFY_SCOPE
 
 
-def _service(*, client=None, now=lambda: 1000):
+class _Provider:
+    def __init__(self, *, token=None, email="Mailbox@Example.com", error=None):
+        self.token = token or {
+            "access_token": "synthetic-access-token",
+            "refresh_token": "synthetic-refresh-token",
+            "scope": GMAIL_MODIFY_SCOPE,
+        }
+        self.email = email
+        self.error = error
+        self.calls = []
+
+    async def exchange_authorization_code(self, **kwargs):
+        self.calls.append(("exchange", kwargs))
+        if self.error is not None:
+            raise self.error
+        return self.token
+
+    async def read_mailbox_email(self, *, access_token):
+        self.calls.append(("profile", {"access_token": access_token}))
+        if self.error is not None:
+            raise self.error
+        return self.email
+
+
+def _service(*, provider=None, now=lambda: 1000):
     return GmailOAuthService(
         MagicMock(),
         client_id="client-id",
         client_secret="client-secret",
-        client=client,
+        provider=provider,
         now=now,
     )
 
 
 @patch(
-    "apps.gateway.services.gmail_oauth_service."
-    "has_organization_manager_permission",
+    "apps.gateway.services.gmail_oauth_service.has_organization_manager_permission",
     return_value=True,
 )
 def test_start_binds_actor_organization_and_pkce_in_signed_session(_permission):
@@ -57,8 +80,7 @@ def test_start_binds_actor_organization_and_pkce_in_signed_session(_permission):
 
 
 @patch(
-    "apps.gateway.services.gmail_oauth_service."
-    "has_organization_manager_permission",
+    "apps.gateway.services.gmail_oauth_service.has_organization_manager_permission",
     return_value=True,
 )
 def test_start_keeps_multiple_bounded_pending_flows_in_same_session(_permission):
@@ -83,8 +105,7 @@ def test_start_keeps_multiple_bounded_pending_flows_in_same_session(_permission)
 
 
 @patch(
-    "apps.gateway.services.gmail_oauth_service."
-    "has_organization_manager_permission",
+    "apps.gateway.services.gmail_oauth_service.has_organization_manager_permission",
     return_value=True,
 )
 def test_state_mismatch_preserves_other_pending_oauth_flows(_permission):
@@ -136,10 +157,14 @@ def test_redirect_uri_requires_explicit_configuration_outside_localhost(
 
 
 def test_redirect_uri_uses_validated_configured_value(monkeypatch):
-    expected = "https://gateway.example.test/api/v1/mail/credentials/oauth/google/callback"
+    expected = (
+        "https://gateway.example.test/api/v1/mail/credentials/oauth/google/callback"
+    )
     monkeypatch.setenv("GOOGLE_OAUTH_REDIRECT_URI", expected)
 
-    assert resolve_gmail_oauth_redirect_uri("http://untrusted.test/callback") == expected
+    assert (
+        resolve_gmail_oauth_redirect_uri("http://untrusted.test/callback") == expected
+    )
 
 
 def test_production_oauth_requires_safe_session_signing_key(monkeypatch):
@@ -163,30 +188,14 @@ def test_production_oauth_requires_safe_session_signing_key(monkeypatch):
 
 @pytest.mark.asyncio
 @patch(
-    "apps.gateway.services.gmail_oauth_service."
-    "has_organization_manager_permission",
+    "apps.gateway.services.gmail_oauth_service.has_organization_manager_permission",
     return_value=True,
 )
 async def test_complete_exchanges_code_and_persists_through_credential_service(
     _permission,
 ):
-    requests = []
-
-    async def handler(request):
-        requests.append(request)
-        if request.url.host == "oauth2.googleapis.com":
-            return httpx.Response(
-                200,
-                json={
-                    "access_token": "synthetic-access-token",
-                    "refresh_token": "synthetic-refresh-token",
-                    "scope": GMAIL_MODIFY_SCOPE,
-                },
-            )
-        return httpx.Response(200, json={"emailAddress": "Mailbox@Example.com"})
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    service = _service(client=client)
+    provider = _Provider()
+    service = _service(provider=provider)
     actor_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     session = {
@@ -223,7 +232,7 @@ async def test_complete_exchanges_code_and_persists_through_credential_service(
         refresh_token="synthetic-refresh-token",
         scopes=(GMAIL_MODIFY_SCOPE,),
     )
-    assert len(requests) == 2
+    assert [call[0] for call in provider.calls] == ["exchange", "profile"]
 
 
 @pytest.mark.asyncio
@@ -240,8 +249,7 @@ async def test_complete_consumes_flow_and_rejects_state_mismatch():
 
 
 @patch(
-    "apps.gateway.services.gmail_oauth_service."
-    "has_organization_manager_permission",
+    "apps.gateway.services.gmail_oauth_service.has_organization_manager_permission",
     return_value=True,
 )
 def test_cancel_consumes_valid_flow_without_provider_request(_permission):
@@ -269,18 +277,11 @@ def test_cancel_consumes_valid_flow_without_provider_request(_permission):
 
 @pytest.mark.asyncio
 @patch(
-    "apps.gateway.services.gmail_oauth_service."
-    "has_organization_manager_permission",
+    "apps.gateway.services.gmail_oauth_service.has_organization_manager_permission",
     return_value=True,
 )
 async def test_provider_error_body_is_not_exposed(_permission):
-    client = httpx.AsyncClient(
-        transport=httpx.MockTransport(
-            lambda _request: httpx.Response(
-                400, json={"error": "raw-provider-secret-detail"}
-            )
-        )
-    )
+    provider = _Provider(error=GoogleOAuthProviderError("raw-provider-secret-detail"))
     actor_id = uuid.uuid4()
     session = {
         SESSION_KEY: {
@@ -294,7 +295,7 @@ async def test_provider_error_body_is_not_exposed(_permission):
         }
     }
     with pytest.raises(GmailOAuthTokenExchangeFailed) as exc_info:
-        await _service(client=client).complete(
+        await _service(provider=provider).complete(
             actor_id=actor_id,
             state="expected-state",
             code="authorization-code",

@@ -3,12 +3,21 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-import requests
-
+from apps.shared.services.outbound_operation_http import (
+    OperationHttpFailure,
+    OperationHttpFailurePhase,
+    OperationHttpRequester,
+)
+from apps.shared.services.outbound_operation_policy import (
+    GITHUB_ISSUE_COMMENT_CREATE,
+    GITHUB_PULL_REQUEST_READ,
+    require_outbound_operation_profile,
+)
 from apps.workflow_engine.domain.external_effect import (
     EffectInvocationFailure,
     EffectOutcome,
@@ -31,6 +40,156 @@ class GithubCommentRequest:
     comment_body: str
 
 
+class GithubProviderError(RuntimeError):
+    def __init__(self, reason_code: str) -> None:
+        self.reason_code = reason_code
+        super().__init__(reason_code)
+
+
+_REPOSITORY_SEGMENT = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
+_GITHUB_API_ORIGIN = "https://api.github.com"
+_GITHUB_COMMENT_MAX_REQUEST_BYTES = require_outbound_operation_profile(
+    GITHUB_ISSUE_COMMENT_CREATE
+).policy.max_request_bytes
+
+
+def _comment_wire_body(comment_body: str) -> bytes:
+    return json.dumps(
+        {"body": comment_body},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _require_repository_segment(value: str) -> str:
+    if (
+        not isinstance(value, str)
+        or value in {".", ".."}
+        or not _REPOSITORY_SEGMENT.fullmatch(value)
+    ):
+        raise GithubProviderError("github.request_invalid")
+    return value
+
+
+def _require_pr_number(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 2**31:
+        raise GithubProviderError("github.request_invalid")
+    return value
+
+
+def _headers(token: str) -> dict[str, str]:
+    if not isinstance(token, str) or not token or any(c in token for c in "\r\n\x00"):
+        raise GithubProviderError("github.request_invalid")
+    return {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "moduly",
+    }
+
+
+def _require_comment_request(value: Any) -> GithubCommentRequest:
+    if not isinstance(value, GithubCommentRequest) or not isinstance(
+        value.comment_body, str
+    ):
+        raise GithubProviderError("github.request_invalid")
+    try:
+        comment_body_size = len(value.comment_body.encode("utf-8"))
+    except UnicodeEncodeError:
+        raise GithubProviderError("github.request_invalid") from None
+    if not value.comment_body or comment_body_size > _GITHUB_COMMENT_MAX_REQUEST_BYTES:
+        raise GithubProviderError("github.request_invalid")
+    try:
+        wire_body_size = len(_comment_wire_body(value.comment_body))
+    except UnicodeEncodeError:
+        raise GithubProviderError("github.request_invalid") from None
+    if wire_body_size > _GITHUB_COMMENT_MAX_REQUEST_BYTES:
+        raise GithubProviderError("github.request_invalid")
+    _headers(value.token)
+    _require_repository_segment(value.repo_owner)
+    _require_repository_segment(value.repo_name)
+    _require_pr_number(value.pr_number)
+    return value
+
+
+def _require_pull_request_projection(value: Any, *, expected_number: int) -> None:
+    if not isinstance(value, dict):
+        raise GithubProviderError("github.response_invalid")
+    number = value.get("number")
+    if (
+        not isinstance(value.get("title"), str)
+        or not isinstance(value.get("state"), str)
+        or not isinstance(value.get("diff_url"), str)
+        or not value.get("diff_url")
+        or (value.get("body") is not None and not isinstance(value.get("body"), str))
+        or isinstance(number, bool)
+        or number != expected_number
+    ):
+        raise GithubProviderError("github.response_invalid")
+
+
+def _require_pull_files_projection(value: Any) -> None:
+    if not isinstance(value, list):
+        raise GithubProviderError("github.response_invalid")
+    for item in value:
+        if not isinstance(item, dict):
+            raise GithubProviderError("github.response_invalid")
+        counts = (item.get("additions"), item.get("deletions"), item.get("changes"))
+        if (
+            not isinstance(item.get("filename"), str)
+            or not isinstance(item.get("status"), str)
+            or any(
+                isinstance(count, bool) or not isinstance(count, int) or count < 0
+                for count in counts
+            )
+            or (
+                item.get("patch") is not None and not isinstance(item.get("patch"), str)
+            )
+        ):
+            raise GithubProviderError("github.response_invalid")
+
+
+class GithubReadProvider:
+    def __init__(self, *, requester: OperationHttpRequester | None = None) -> None:
+        self._requester = requester or OperationHttpRequester()
+
+    def get_pull_request(
+        self,
+        *,
+        token: str,
+        repo_owner: str,
+        repo_name: str,
+        pr_number: int,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        owner = _require_repository_segment(repo_owner)
+        name = _require_repository_segment(repo_name)
+        number = _require_pr_number(pr_number)
+        headers = _headers(token)
+        base_url = f"{_GITHUB_API_ORIGIN}/repos/{owner}/{name}/pulls/{number}"
+        pr = self._read_json(url=base_url, headers=headers)
+        files = self._read_json(url=f"{base_url}/files", headers=headers)
+        _require_pull_request_projection(pr, expected_number=number)
+        _require_pull_files_projection(files)
+        return pr, files
+
+    def _read_json(self, *, url: str, headers: dict[str, str]) -> Any:
+        try:
+            response = self._requester.request(
+                operation_id=GITHUB_PULL_REQUEST_READ,
+                approved_endpoint=_GITHUB_API_ORIGIN,
+                method="GET",
+                url=url,
+                headers=headers,
+            )
+        except OperationHttpFailure:
+            raise GithubProviderError("github.unavailable") from None
+        if response.status_code >= 400:
+            raise GithubProviderError("github.provider_rejected")
+        try:
+            return response.json()
+        except (TypeError, ValueError):
+            raise GithubProviderError("github.response_invalid") from None
+
+
 class GithubCommentEffectAdapter:
     _REQUEST_SEMANTICS = frozenset({"github.issue_comment.request.v1"})
     _RESPONSE_SEMANTICS = frozenset({"github.issue_comment.response.v1"})
@@ -41,6 +200,7 @@ class GithubCommentEffectAdapter:
         contracts: ProviderContractRegistry | None = None,
         active_profile: ProviderContractProfile | None = None,
         historical_profiles: Iterable[ProviderContractProfile] = (),
+        requester: OperationHttpRequester | None = None,
     ) -> None:
         provider = "github"
         operation = "github.issue_comment.create"
@@ -81,6 +241,7 @@ class GithubCommentEffectAdapter:
                 raise ValueError("GitHub contract version has conflicting definitions")
             self._profiles_by_version[profile.contract_version] = profile
         self.trace_metadata: dict[str, Any] = {}
+        self._requester = requester or OperationHttpRequester()
 
     @property
     def profile(self) -> ProviderContractProfile:
@@ -105,8 +266,10 @@ class GithubCommentEffectAdapter:
         profile = self._require_known_profile(profile)
         if profile.request_semantics != "github.issue_comment.request.v1":
             raise ValueError("unsupported GitHub request semantics")
-        if not isinstance(payload, GithubCommentRequest) or not payload.comment_body:
-            raise ValueError("invalid GitHub comment request")
+        try:
+            _require_comment_request(payload)
+        except GithubProviderError:
+            raise ValueError("invalid GitHub comment request") from None
         canonical = json.dumps(
             {
                 "token": payload.token,
@@ -148,53 +311,41 @@ class GithubCommentEffectAdapter:
         if profile.response_semantics != "github.issue_comment.response.v1":
             raise ValueError("unsupported GitHub response semantics")
         request = call.request
-        if not isinstance(request, GithubCommentRequest):
-            raise EffectInvocationFailure(
-                outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
-                error_code="invalid_prepared_request",
-                retry_before_effect=False,
-            )
-        url = (
-            "https://api.github.com/repos/"
-            f"{request.repo_owner}/{request.repo_name}/issues/{request.pr_number}/comments"
-        )
-        headers = {
-            "Authorization": f"token {request.token}",
-            "Accept": "application/vnd.github.v3+json",
-            "User-Agent": "moduly",
-        }
         started = time.perf_counter()
         try:
-            response = requests.post(
-                url,
-                headers=headers,
-                json={"body": request.comment_body},
-                timeout=30,
-            )
-        except (
-            requests.exceptions.MissingSchema,
-            requests.exceptions.InvalidSchema,
-            requests.exceptions.InvalidURL,
-            requests.exceptions.InvalidHeader,
-        ):
+            request = _require_comment_request(request)
+        except GithubProviderError:
             self._set_trace(request, None, started)
             raise EffectInvocationFailure(
                 outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
                 error_code="invalid_prepared_request",
                 retry_before_effect=False,
             ) from None
-        except requests.exceptions.ConnectTimeout:
+        url = f"{_GITHUB_API_ORIGIN}/repos/{request.repo_owner}/{request.repo_name}/issues/{request.pr_number}/comments"
+        headers = _headers(request.token)
+        try:
+            response = self._requester.request(
+                operation_id=GITHUB_ISSUE_COMMENT_CREATE,
+                approved_endpoint=_GITHUB_API_ORIGIN,
+                method="POST",
+                url=url,
+                headers=headers,
+                json_body={"body": request.comment_body},
+            )
+        except OperationHttpFailure as exc:
             self._set_trace(request, None, started)
+            if exc.phase is not OperationHttpFailurePhase.BEFORE_SEND:
+                raise EffectInvocationFailure(
+                    outcome=EffectOutcome.EFFECT_OUTCOME_UNKNOWN,
+                    error_code="response_lost",
+                ) from None
+            retry_before_effect = exc.reason_code == "egress.connection_failed"
             raise EffectInvocationFailure(
                 outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
-                error_code="timeout",
-                retry_before_effect=True,
-            ) from None
-        except requests.exceptions.RequestException:
-            self._set_trace(request, None, started)
-            raise EffectInvocationFailure(
-                outcome=EffectOutcome.EFFECT_OUTCOME_UNKNOWN,
-                error_code="response_lost",
+                error_code=(
+                    "timeout" if retry_before_effect else "invalid_prepared_request"
+                ),
+                retry_before_effect=retry_before_effect,
             ) from None
 
         self._set_trace(request, response, started)
@@ -239,9 +390,17 @@ class GithubCommentEffectAdapter:
             output, provider_status_code=response.status_code
         )
 
+    def create_comment(self, request: GithubCommentRequest) -> dict[str, Any]:
+        try:
+            prepared = self.prepare_effect(request)
+            result = self.invoke_effect(self.finalize_provider_call(prepared, None))
+        except (EffectInvocationFailure, ValueError):
+            raise GithubProviderError("github.comment_failed") from None
+        return dict(result.output)
+
     def _set_trace(
         self,
-        request: GithubCommentRequest,
+        request: Any,
         response: Any,
         started: float,
     ) -> None:
@@ -250,7 +409,11 @@ class GithubCommentEffectAdapter:
                 "method": "POST",
                 "status_code": getattr(response, "status_code", None),
                 "latency_ms": int((time.perf_counter() - started) * 1000),
-                "request_size": len(request.comment_body.encode("utf-8")),
+                "request_size": (
+                    len(_comment_wire_body(request.comment_body))
+                    if isinstance(getattr(request, "comment_body", None), str)
+                    else None
+                ),
                 "response_size": len(getattr(response, "content", b"") or b""),
             }
         }
@@ -263,3 +426,11 @@ class GithubCommentEffectAdapter:
     ) -> Any:
         self._require_known_profile(profile)
         raise ValueError("GitHub contract does not support replay projection")
+
+
+__all__ = [
+    "GithubCommentEffectAdapter",
+    "GithubCommentRequest",
+    "GithubProviderError",
+    "GithubReadProvider",
+]

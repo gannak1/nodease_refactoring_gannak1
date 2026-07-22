@@ -20,7 +20,7 @@ ADR-0050은 사용자 설정 Generic HTTP node의 별도 application port와 HTT
 6. LLM generation·embedding과 model discovery는 별도 profile을 사용한다. Credential row의 저장 당시 `baseUrl`은 목적지 권위가 아니며 현재 server-owned Provider catalog endpoint와 API key만 materialize한다. Provider execution capability의 egress fingerprint에는 현재 LLM transport profile revision을 포함해 profile 변경 뒤 stale capability가 provider 호출 전에 거부되게 한다. Provider가 요청을 처리했을 수 있는 response header/body 거부와 read/write 결과 불명은 concrete invocation adapter가 Workflow application 오류 `outcome_unknown`으로 번역한다. LLM node는 Shared client 예외 타입에 의존하지 않고 이 application 계약으로 fallback provider 호출과 Workflow task 자동 재시도를 금지한다. Legacy Completions 전환은 legacy model과 redacted endpoint-unsupported 응답이 함께 확인된 경우에만 허용하고, billable response validation 실패나 Responses-native model에는 적용하지 않는다.
 7. Knowledge API source, remote document fetch·preview와 Workflow FileExtraction 원격 파일은 명시 operation profile과 guarded transport를 사용한다. Workflow node에는 concrete HTTP client를 주입하지 않고 원격 파일 application port만 전달한다. 원격 파일은 2xx response만 문서로 수락하며 그 밖의 status body는 기록하거나 parser에 전달하지 않는다. 수락한 response body는 전체를 memory에 적재하지 않고 profile byte 상한을 적용하며 임시 파일로 직접 streaming하고, 실패한 partial file은 제거한다.
 8. Policy denial과 provider/network failure는 safe reason code, status와 phase만 상위 계층에 전달한다. Credential header, prompt, body, document content, raw URL, resolved IP와 provider raw response·exception을 로그, trace, audit 또는 API 오류에 저장하지 않는다.
-9. GitHub, Gmail/OAuth와 남은 fixed-SaaS adapter의 공통 transport 이관은 MBA-356이 소유한다. 해당 이슈가 완료되기 전에는 platform 전체 outbound가 중앙화되었다고 표현하지 않는다.
+9. Google OAuth token exchange/refresh, Gmail profile/message/modify/draft, GitHub pull request read/comment와 Slack API/webhook의 fixed-SaaS 호출은 MBA-356의 operation-bound requester와 guarded transport를 사용한다. 각 operation은 server-owned ID와 endpoint profile에 묶이며 application service와 node는 concrete HTTP client를 생성하지 않는다. Gmail message 목록·상세 조회처럼 같은 operation과 승인 origin에 bounded fan-out이 있는 작업은 context-managed guarded session 안에서 연결 풀을 재사용하되 각 request URL을 network I/O 전에 다시 검증한다. Provider path/body 검증, 직렬화된 전체 request body 상한, 응답 분류, idempotency와 outcome 판정은 기존 provider adapter와 effect ledger가 계속 소유한다. 이 이관은 Generic HTTP, 내부 service 통신 또는 아직 등록되지 않은 adapter까지 platform 전체 outbound가 중앙화되었다는 뜻이 아니다.
 10. Application guard가 operation 의미와 요청 정책의 권위자다. 기존 NetworkPolicy와 Squid는 독립된 보조 방어선이며 public 80/443의 direct dial을 물리적으로 차단하는 proxy-only 보장은 아니다. 전용 egress proxy, DNS/CONNECT/TLS 책임, HA와 admission enforcement는 MBA-357과 후속 ADR이 소유한다.
 11. ADR-0050의 Workflow Generic HTTP는 기존 호환성을 위해 public HTTP 80을 계속 지원한다. MBA-178의 HTTPS-only profile을 Generic HTTP나 내부 Sandbox 통신에 암묵적으로 적용하지 않는다.
 
@@ -41,6 +41,6 @@ Application semantic policy와 cluster topology는 변경·검증·rollback 단�
 ## 결과
 
 - Browser bundle에 cluster 내부 HTTP 주소가 들어가지 않고 프로덕션 API 호출은 public HTTPS ingress를 사용한다.
-- LLM, Knowledge와 Workflow 원격 파일의 민감 요청은 검증된 public address와 server-owned endpoint 정책에 binding된다.
+- LLM, Knowledge, Workflow 원격 파일과 MBA-356 대상 Google OAuth/Gmail/GitHub/Slack fixed-SaaS 요청은 검증된 public address와 server-owned endpoint 정책에 binding된다.
 - Profile 변경은 provider execution capability를 stale 처리하지만 외부 provider 호출의 exactly-once나 business retry를 새로 보장하지 않는다.
-- MBA-356과 MBA-357이 끝나기 전에는 adapter 전체 중앙화와 proxy-only network enforcement는 잔여 위험으로 남는다.
+- MBA-356 대상 fixed-SaaS adapter는 operation-bound transport로 이관됐지만, 등록되지 않은 adapter의 직접 연결과 proxy-only network enforcement는 잔여 위험이다. 후자는 MBA-357이 소유한다.
