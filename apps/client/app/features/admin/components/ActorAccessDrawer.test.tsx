@@ -141,6 +141,27 @@ describe('ActorAccessDrawer', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('멤버십 요약 상태를 한글로 표시한다', async () => {
+    renderDrawer({
+      ...profile,
+      member: {
+        ...profile.member,
+        membership_state: 'suspended',
+      },
+      effective_access_enabled: false,
+    });
+
+    await screen.findByText('김멤버 · member@example.com');
+    expect(screen.getByText('상태').parentElement).toHaveTextContent('상태정지');
+    expect(screen.getByText('조직 역할').parentElement).toHaveTextContent(
+      '조직 역할멤버',
+    );
+    expect(screen.getByText('계정').parentElement).toHaveTextContent('계정활성');
+    expect(screen.getByText('유효 접근').parentElement).toHaveTextContent(
+      '유효 접근차단',
+    );
+  });
+
   it('profile 확인 후 team과 현재 resource tab을 bounded page로 조회한다', async () => {
     renderDrawer();
 
