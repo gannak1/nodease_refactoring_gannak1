@@ -9,15 +9,7 @@ from typing import Any, Mapping
 
 from sqlalchemy.orm import Session
 
-from apps.shared.domain.provider_execution_capability import (
-    CapabilityPurpose,
-    PrincipalKind,
-    ProviderExecutionBinding,
-    RuntimeIdentityContext,
-    RuntimePrincipal,
-)
 from apps.shared.domain.provider_usage_ledger import (
-    ProviderUsageIntentSnapshot,
     ProviderUsageLedgerError,
     ProviderUsageMeasurement,
     ProviderUsageState,
@@ -29,9 +21,8 @@ from apps.shared.services.provider_usage_ledger import (
     ProviderUsageIntentCommand,
     ProviderUsageLedgerService,
 )
-from apps.workflow_engine.application.provider_execution import (
-    ProviderExecutionPrincipal,
-    ProviderExecutionUsageContext,
+from apps.workflow_engine.adapters.provider_execution_capability import (
+    provider_usage_intent_snapshot,
 )
 from apps.workflow_engine.application.provider_usage import (
     ProviderUsageIntent,
@@ -264,7 +255,7 @@ class PostgresProviderUsageRecorder:
             or request.node_id != context.binding.node_id
         ):
             raise ProviderUsageRuntimeError("provider_usage.binding_mismatch")
-        snapshot = self._shared_snapshot(context)
+        snapshot = provider_usage_intent_snapshot(context)
         db = self._session_factory()
         try:
             operation = self._ledger_service.record_intent(
@@ -345,67 +336,5 @@ class PostgresProviderUsageRecorder:
             return cost
         finally:
             db.close()
-
-    @classmethod
-    def _shared_snapshot(
-        cls,
-        context: ProviderExecutionUsageContext,
-    ) -> ProviderUsageIntentSnapshot:
-        binding = context.binding
-        identities = context.identities
-        return ProviderUsageIntentSnapshot(
-            binding=ProviderExecutionBinding(
-                organization_id=binding.organization_id,
-                workflow_id=binding.workflow_id,
-                deployment_id=binding.deployment_id,
-                deployment_version=binding.deployment_version,
-                node_id=binding.node_id,
-                node_invocation_id=binding.node_invocation_id,
-                execution_admission_id=binding.execution_admission_id,
-                provider_attempt_id=binding.provider_attempt_id,
-                purpose=CapabilityPurpose(binding.purpose.value),
-                container_path=binding.container_path,
-            ),
-            capability_id=context.capability_id,
-            capability_revision=context.capability_revision,
-            policy_id=context.policy_id,
-            policy_revision=context.policy_revision,
-            provider_id=context.provider_id,
-            model_id=context.model_id,
-            model_api_id=context.model_api_id,
-            credential_id=context.credential_id,
-            identities=RuntimeIdentityContext(
-                execution_subject=cls._shared_principal(
-                    identities.execution_subject
-                ),
-                credential_principal=cls._shared_principal(
-                    identities.credential_principal
-                ),
-                billing_principal=cls._shared_principal(
-                    identities.billing_principal
-                ),
-                audit_actor=cls._shared_principal(identities.audit_actor),
-            ),
-            permission_revision=context.permission_revision,
-            relation_revision=context.relation_revision,
-            egress_revision=context.egress_revision,
-            pricing_revision=context.pricing_snapshot.revision,
-            input_price_per_1k=str(context.pricing_snapshot.input_price_per_1k),
-            output_price_per_1k=str(context.pricing_snapshot.output_price_per_1k),
-            input_token_cap=context.input_token_cap,
-            output_token_cap=context.output_token_cap,
-            cost_cap_microusd=context.cost_cap_microusd,
-            admitted_input_tokens=context.admitted_input_tokens,
-            admitted_output_tokens=context.admitted_output_tokens,
-            expires_at=context.capability_expires_at,
-        )
-
-    @staticmethod
-    def _shared_principal(principal: ProviderExecutionPrincipal) -> RuntimePrincipal:
-        return RuntimePrincipal(
-            PrincipalKind(principal.kind.value),
-            principal.reference_id,
-        )
-
 
 __all__ = ["PostgresProviderUsageRecorder"]

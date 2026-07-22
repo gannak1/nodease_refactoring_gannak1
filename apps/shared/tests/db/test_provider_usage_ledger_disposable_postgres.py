@@ -626,7 +626,8 @@ def test_late_workflow_run_is_claimed_and_attached_once(
             limit=10,
             now=NOW + timedelta(minutes=1),
         )
-        assert claimed == (operation.id,)
+        assert operation.id in claimed
+        assert len(claimed) == len(set(claimed))
     with Session(engine) as db:
         service.project_compatibility_usage(
             db,

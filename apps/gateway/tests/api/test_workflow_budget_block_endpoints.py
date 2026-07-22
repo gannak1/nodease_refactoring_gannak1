@@ -50,8 +50,12 @@ def _exceeded_db(workflow_id, organization_id):
         SimpleNamespace(
             workflow_id=workflow_id,
             organization_id=organization_id,
+            prompt_tokens=0,
+            completion_tokens=0,
             total_cost=Decimal("150.000000"),
             created_at=datetime.now(timezone.utc),
+            runtime_surface=None,
+            status="success",
         )
     ]
     return db
