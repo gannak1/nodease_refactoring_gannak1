@@ -1,4 +1,4 @@
-# ADR-0068: Provider usage durable ledger와 compatibility projection 경계
+# ADR-0069: Provider usage durable ledger와 compatibility projection 경계
 
 Status: Accepted
 

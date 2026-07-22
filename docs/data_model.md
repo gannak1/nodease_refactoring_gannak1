@@ -100,7 +100,7 @@ erDiagram
 - `rag_answer_runs`와 trace/usage 테이블은 FK가 아니라 opaque `correlation_id`(application-level convention)로만 연결한다 ([ADR-0013](decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)). 다이어그램에 없는 이유다.
 - `apps.workflow_id`와 `workflows.app_id`는 상호 참조(순환 FK)다.
 - JSONB metadata에 id를 넣는 방식(`audit_metadata`, `meta_info` 등)은 관계가 아니라 application convention이다.
-- `provider_usage_operations → llm_usage_logs`는 nullable unique operation reference를 사용하는 compatibility projection 관계이며 DB FK는 아니다. Ledger가 canonical fact이고 projection 삭제·지연이 ledger lifecycle을 바꾸지 않는다 ([ADR-0068](decisions/ADR-0068-provider-usage-durable-ledger.md)).
+- `provider_usage_operations → llm_usage_logs`는 nullable unique operation reference를 사용하는 compatibility projection 관계이며 DB FK는 아니다. Ledger가 canonical fact이고 projection 삭제·지연이 ledger lifecycle을 바꾸지 않는다 ([ADR-0069](decisions/ADR-0069-provider-usage-durable-ledger.md)).
 
 ## 공통 컬럼과 규칙
 
@@ -1290,7 +1290,7 @@ Immutable deployment version의 canonical LLM node location에 사용할 credent
 
 #### `provider_usage_operations`
 
-Capability-required provider attempt의 canonical token/cost/outcome 원장이다 ([ADR-0068](decisions/ADR-0068-provider-usage-durable-ledger.md)). Provider I/O보다 먼저 intent와 started fence를 각각 짧은 transaction으로 확정하고, 장기 비용 사실을 live capability나 WorkflowRun lifecycle과 분리한다.
+Capability-required provider attempt의 canonical token/cost/outcome 원장이다 ([ADR-0069](decisions/ADR-0069-provider-usage-durable-ledger.md)). Provider I/O보다 먼저 intent와 started fence를 각각 짧은 transaction으로 확정하고, 장기 비용 사실을 live capability나 WorkflowRun lifecycle과 분리한다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
