@@ -33,6 +33,7 @@ Status: Draft
 - MBA-219 node configuration evaluator는 FastAPI, SQLAlchemy, concrete service와 catalog loader를 import하지 않고 composition이 주입한 immutable node side-effect mapping과 resource snapshot port만 사용한다.
 - Mail/Gmail Draft/Mail Acknowledge/Slack은 managed validator, LLM/HTTP/GitHub는 runtime-authoritative로 명시된다. External node가 registry에 없거나 `implemented=false`이면 실행 표면에서 `node_configuration_validator_unavailable`로 차단한다.
 - Gateway Google login OAuth metadata/token/userinfo/JWKS는 세션마다 새 operation-bound guarded transport를 사용하고 ambient proxy를 무시한다. Helm NetworkPolicy의 내부·외부 PostgreSQL 허용 port는 application `DB_PORT`와 동일한 canonical chart helper에서 렌더한다.
+- Kubernetes NetworkPolicy CIDR은 API-canonical native IPv4/IPv6 형식이어야 하고 IPv4-mapped IPv6 prefix를 직접 넣지 않는다. Application/Squid mapped-range 차단과 pinned Calico의 direct destination negative probe를 함께 검증한다.
 - 최상위 graph와 다단계 Loop `subGraph`, WorkflowNode target graph의 managed node를 같은 audience/principal로 검사한다. Malformed nested graph와 nesting 한도 초과는 `workflow_graph_invalid`로 차단한다.
 - Runtime audience resolver는 `api`, `webapp`, `widget`, `chatbot`, `mcp`, `schedule`, `webhook`를 anonymous public-only로 판정한다.
 - `internal_chatbot`은 authenticated run/run-info surface에서만 허용하고 public info와 public app run surface에서는 fail-closed로 거부한다.

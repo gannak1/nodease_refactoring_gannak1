@@ -29,16 +29,6 @@ def _network_literals(
     return networks
 
 
-def _kubernetes_canonical_cidr(
-    network: ipaddress.IPv4Network | ipaddress.IPv6Network,
-) -> str:
-    if isinstance(network, ipaddress.IPv6Network):
-        mapped = network.network_address.ipv4_mapped
-        if mapped is not None:
-            return f"::ffff:{mapped}/{network.prefixlen}"
-    return str(network)
-
-
 def test_squid_configuration_is_pinned_fail_closed_and_does_not_retain_payloads() -> (
     None
 ):
@@ -84,7 +74,16 @@ def test_proxy_and_network_policy_use_the_application_denied_cidr_registry() -> 
     proxy_policy_networks = _network_literals(
         _read("infra/helm/moduly/templates/proxy-only-networkpolicies.yaml")
     )
-    assert expected_networks <= proxy_policy_networks
+    kubernetes_supported_networks = {
+        network
+        for network in expected_networks
+        if not isinstance(network, ipaddress.IPv6Network)
+        or network.network_address.ipv4_mapped is None
+    }
+    assert kubernetes_supported_networks <= proxy_policy_networks
+    assert expected_networks - kubernetes_supported_networks == {
+        ipaddress.ip_network("::ffff:0:0/96")
+    }
     assert _network_literals(
         _read("infra/helm/moduly/templates/worker-networkpolicy.yaml")
     ) == set()
@@ -96,12 +95,20 @@ def test_kubernetes_network_policy_cidrs_use_api_canonical_spelling() -> None:
         "infra/helm/moduly/templates/worker-networkpolicy.yaml",
     ):
         for line in _read(path).splitlines():
-            candidate = line.strip().removeprefix("- ").strip().strip('"').strip("'")
-            try:
-                network = ipaddress.ip_network(candidate, strict=True)
-            except ValueError:
+            stripped = line.strip()
+            if stripped.startswith("- "):
+                candidate = stripped.removeprefix("- ")
+            elif stripped.startswith("cidr: "):
+                candidate = stripped.removeprefix("cidr: ")
+            else:
                 continue
-            assert candidate == _kubernetes_canonical_cidr(network)
+            candidate = candidate.strip().strip('"').strip("'")
+            if "/" not in candidate:
+                continue
+            network = ipaddress.ip_network(candidate, strict=True)
+            if isinstance(network, ipaddress.IPv6Network):
+                assert network.network_address.ipv4_mapped is None
+            assert candidate == str(network)
 
 
 def test_compose_target_workloads_have_no_direct_egress_or_ambient_proxy() -> None:

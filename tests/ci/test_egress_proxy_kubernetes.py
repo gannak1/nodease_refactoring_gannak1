@@ -121,7 +121,17 @@ def _probe_pod(name: str, component: str) -> dict[str, Any]:
 
 def _apply(documents: list[dict[str, Any]]) -> None:
     payload = yaml.safe_dump_all(documents, sort_keys=False)
-    _run("kubectl", "apply", "-f", "-", input_text=payload)
+    result = _run(
+        "kubectl",
+        "apply",
+        "-f",
+        "-",
+        input_text=payload,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        "kubectl apply failed: " + result.stderr.strip()[-4096:]
+    )
 
 
 def _exec_curl(pod: str, *arguments: str) -> subprocess.CompletedProcess[str]:
