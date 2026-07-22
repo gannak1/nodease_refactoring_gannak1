@@ -329,26 +329,15 @@ QA 중 수정한 화면과 API 연결이 test profile seed 이후에도 정상 �
 
 ## Docker Gateway에 적용
 
-Docker gateway 이미지가 seed 파일 변경 전 빌드라면 컨테이너 안에 최신 `scripts/seed_demo.py`가 없을 수 있다.
-그 경우 이미지를 다시 빌드하거나, 임시로 파일을 복사한 뒤 실행한다.
-
-gateway 컨테이너명은 Docker Compose project name이나 실행 방식에 따라 달라질 수 있다. 먼저 gateway 컨테이너명을 확인한다.
+Docker Gateway 이미지가 현재 checkout의 seed 코드보다 오래됐다면 이미지를 반드시 다시 빌드한다. Seed는 Shared DB model뿐 아니라 도메인별 persistence adapter와 schema에도 의존하므로 `scripts/seed_demo.py`와 `apps/shared/db/demo_seed.py`만 컨테이너에 복사하는 부분 갱신은 지원하지 않는다.
 
 ```powershell
-docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
-```
-
-아래 명령의 `<GATEWAY_CONTAINER>`를 실제 gateway 컨테이너명으로 바꿔 실행한다. 기본 docker compose 설정에서는 `moduly-gateway`일 수 있다.
-
-```powershell
-docker exec <GATEWAY_CONTAINER> mkdir -p /app/scripts /app/apps/shared/db
-docker cp scripts/seed_demo.py <GATEWAY_CONTAINER>:/app/scripts/seed_demo.py
-docker cp apps/shared/db/demo_seed.py <GATEWAY_CONTAINER>:/app/apps/shared/db/demo_seed.py
-docker exec <GATEWAY_CONTAINER> sh -lc "PYTHONPATH=/app python /app/scripts/seed_demo.py --profile demo --reset"
+docker compose -f docker/docker-compose.yml up -d --build gateway
+docker compose -f docker/docker-compose.yml exec gateway sh -lc "PYTHONPATH=/app python /app/scripts/seed_demo.py --profile demo --reset"
 ```
 
 Test profile 적용:
 
 ```powershell
-docker exec <GATEWAY_CONTAINER> sh -lc "PYTHONPATH=/app python /app/scripts/seed_demo.py --profile test --reset"
+docker compose -f docker/docker-compose.yml exec gateway sh -lc "PYTHONPATH=/app python /app/scripts/seed_demo.py --profile test --reset"
 ```
