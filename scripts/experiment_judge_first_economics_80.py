@@ -37,12 +37,18 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from dotenv import load_dotenv
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PARENT_OF_ROOT = ROOT.parent
 EXPERIMENT_RUNS_ROOT = pathlib.Path("reports/model-routing/runs/judge-first")
 for path in (ROOT, PARENT_OF_ROOT):
     if str(path) not in sys.path:
         sys.path.append(str(path))
+
+# 이 스크립트는 Gateway/worker 진입점 없이 직접 실행되므로, 저장된 credential을
+# 복호화할 수 있도록 애플리케이션과 동일한 .env를 먼저 읽는다.
+load_dotenv(ROOT / ".env", override=False)
 
 from apps.log_system import tasks as log_tasks
 from apps.shared.celery_app import celery_app
