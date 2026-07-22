@@ -1933,7 +1933,7 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     document_ingestion_job_revision = script.get_revision("aa0b1c2d3e4f")
     agent_builder_intent_usage_revision = script.get_revision("a8c9d0e1f2a3")
     conversation_memory_revision = script.get_revision("ab1c2d3e4f50")
-    current_head_revision = script.get_revision("ac2d3e4f5061")
+    agent_builder_memory_merge_revision = script.get_revision("ac2d3e4f5061")
     app_auth_secret_revision = script.get_revision("b0c1d2e3f4a5")
     routing_bootstrap_inputs_revision = script.get_revision("ba6f5c4d3e2f")
     routing_performance_revision = script.get_revision("bb7c8d9e0f13")
@@ -1997,7 +1997,7 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     assert document_ingestion_job_revision.down_revision == "a9b0c1d2e3f4"
     assert agent_builder_intent_usage_revision.down_revision == "aa0b1c2d3e4f"
     assert conversation_memory_revision.down_revision == "aa0b1c2d3e4f"
-    assert set(current_head_revision.down_revision) == {
+    assert set(agent_builder_memory_merge_revision.down_revision) == {
         "a8c9d0e1f2a3",
         "ab1c2d3e4f50",
     }
@@ -2027,7 +2027,6 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     assert "ae2f3a4b5c6d" in ancestry
     assert routing_learner_revision.down_revision == "ae2f3a4b5c6d"
     assert "c06d7e8f9a15" in ancestry
-    assert script.get_heads() == ["c06d7e8f9a15"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

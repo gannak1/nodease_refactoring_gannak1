@@ -15,12 +15,17 @@ def _script_directory() -> ScriptDirectory:
     return ScriptDirectory.from_config(config)
 
 
-def test_model_routing_learner_migration_is_the_single_linear_head():
+def test_model_routing_learner_migration_remains_in_the_single_head_ancestry():
     script = _script_directory()
     revision = script.get_revision("c06d7e8f9a15")
+    heads = script.get_heads()
 
     assert revision.down_revision == "ae2f3a4b5c6d"
-    assert script.get_heads() == ["c06d7e8f9a15"]
+    assert len(heads) == 1
+    ancestry = {
+        item.revision for item in script.iterate_revisions(heads[0], "base")
+    }
+    assert revision.revision in ancestry
 
 
 def test_model_routing_learner_migration_purges_incompatible_learning_state():
