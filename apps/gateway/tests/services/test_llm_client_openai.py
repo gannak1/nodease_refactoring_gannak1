@@ -13,6 +13,7 @@ import pytest
 from apps.shared.services.llm_client import OpenAIClient
 from apps.shared.services.llm_client.base import (
     BaseLLMClient,
+    EmbeddingProviderResult,
     LLMResponseValidationError,
     ProviderInvocationError,
 )
@@ -440,6 +441,99 @@ def test_openai_embed_sync_malformed_response_is_parse_error(monkeypatch):
 
     with pytest.raises(ValueError, match="OpenAI 임베딩 응답 파싱 실패"):
         client.embed_sync("hello")
+
+
+def test_openai_prepared_embedding_returns_typed_usage_and_is_single_use(monkeypatch):
+    requested = {}
+
+    class MockResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "data": [{"embedding": [0.1, 0.2]}],
+                "usage": {"prompt_tokens": 3, "total_tokens": 3},
+            }
+
+    class MockClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, url, **kwargs):
+            requested["url"] = url
+            requested["payload"] = kwargs["json"]
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.Client",
+        MockClient,
+    )
+    client = OpenAIClient(
+        model_id="text-embedding-3-small",
+        credentials={
+            "apiKey": "redacted-test-key",
+            "baseUrl": "https://api.openai.com/v1",
+        },
+    )
+    prepared = client.prepare_embedding_invocation("sensitive-query-sentinel")
+
+    assert prepared.canonical_request_bytes > 0
+    assert prepared.requested_input_tokens == prepared.canonical_request_bytes
+    assert "sensitive-query-sentinel" not in repr(prepared)
+    assert prepared.invoke() == EmbeddingProviderResult(
+        vector=(0.1, 0.2),
+        input_tokens=3,
+    )
+    assert requested["payload"] == {
+        "model": "text-embedding-3-small",
+        "input": "sensitive-query-sentinel",
+    }
+    with pytest.raises(LLMResponseValidationError, match="already used"):
+        prepared.invoke()
+
+
+def test_openai_prepared_embedding_rejects_missing_usage(monkeypatch):
+    class MockResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"data": [{"embedding": [0.1]}]}
+
+    class MockClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, *_args, **_kwargs):
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.Client",
+        MockClient,
+    )
+    client = OpenAIClient(
+        model_id="text-embedding-3-small",
+        credentials={
+            "apiKey": "redacted-test-key",
+            "baseUrl": "https://api.openai.com/v1",
+        },
+    )
+
+    with pytest.raises(LLMResponseValidationError):
+        client.prepare_embedding_invocation("query").invoke()
 
 
 def test_openai_invoke_sync_uses_responses_sync_client(monkeypatch):

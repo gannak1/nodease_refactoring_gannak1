@@ -70,7 +70,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Explicit complete empty envelope은 source 없는 pure input/transform에서 허용하지만 missing/unknown envelope을 empty로 승격하지 않는다.
 - Subworkflow는 target deployment version과 child envelope 합집합을 parent output에 전달한다.
 - Memory admission/task는 deployment version/snapshot과 mapping/Memory policy version에 고정되고 active deployment 교체 후 새 graph로 자동 rebind하지 않는다.
-- Main/summary provider는 LLM Credentials가 발급한 opaque ProviderExecutionCapability identity/revision과 deployment/canonical node location/admission/provider-attempt/purpose binding이 일치할 때만 호출한다.
+- Main/summary/query-embedding provider는 LLM Credentials가 발급한 opaque ProviderExecutionCapability identity/revision과 deployment/canonical node location/admission/provider-attempt/purpose binding이 일치할 때만 호출한다.
 - Usage ledger round trip은 structured `container_path`를 보존하고, 다른 Loop에서 같은 `node_id`를 사용한 replay는 binding conflict로 닫는다.
 - Capability provider는 durable intent와 provider-start fence가 각각 commit된 뒤 정확히 한 번 호출된다. Duplicate delivery가 started/succeeded/outcome-unknown operation을 찾으면 provider를 다시 호출하지 않는다.
 - Provider timeout·response loss·unknown exception, malformed 또는 admitted cap 초과 usage와 success 저장 실패는 outcome unknown으로 수렴하고 routing fallback·Celery retry·동일 lease 재호출을 허용하지 않는다.
@@ -591,7 +591,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Execution context에 `user_id`만 있고 `execution_subject`가 없으면 `user_id` 권한으로 private KB access를 fallback하지 않는다.
 - Schedule/webhook/API trigger 실행은 배포 시 승인된 service account 또는 정책상 지정된 execution subject가 없으면 anonymous public-only로 Knowledge retrieval을 실행한다.
 - System schedule run은 `WorkflowRun.user_id=null`, execution audit system actor이며 App/deployment creator나 workflow owner가 executor/RAG subject로 전파되지 않는다. 기존 manual/API/webhook user-attributed run은 non-null actor 계약을 유지한다.
-- System schedule의 LLM credential principal은 locked canonical deployment creator에서만 구성되고 queue가 덮어쓸 수 없다. 이 principal로 LLM credential, query embedding과 legacy usage billing owner를 선택할 수 있지만 private Knowledge retrieval은 계속 execution subject 부재에 따른 anonymous public-only 경계를 사용한다. Malformed/unknown principal type은 fail-closed한다.
+- System schedule의 legacy LLM credential principal은 locked canonical deployment creator에서만 구성되고 queue가 덮어쓸 수 없다. Capability target의 main/query credential principal은 manager가 exact deployment policy에 고정한 사용자이며 schedule execution subject나 creator fallback에서 다시 만들지 않는다. 두 경로 모두 private Knowledge retrieval은 execution subject 부재에 따른 anonymous public-only 경계를 유지하고 malformed/unknown principal type은 fail-closed한다.
 - System schedule의 `rag.retrieve`와 RAG evidence `policy.block` audit은 credential principal이 있어도 system actor를 사용한다. Interactive 실행은 credential principal과 execution subject가 달라도 실제 execution subject만 user actor로 기록한다.
 - Schedule claim 실행 전 Knowledge sync가 connector/DB 예외로 실패해도 engine은 기존 index로 실행되고 claim은 engine 결과에 따라 finalize된다. Sync 결과는 `sync_failed` 같은 safe reason만 포함하고 connector 예외 원문을 노출하지 않는다.
 - Code node는 interactive/system schedule 여부와 무관하게 canonical `execution_context.organization_id`를 sandbox tenant로 전달한다. `user_id`가 null인 schedule도 organization tenant를 유지하고, organization이 없을 때 user를 tenant로 승격하지 않는다.
@@ -841,7 +841,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Public Chatbot route에 login cookie가 있어도 anonymous public audience를 유지하고 private KB/Memory를 허용하지 않는다. Target authenticated internal Chatbot은 별도 access policy/runtime namespace가 구현된 경우에만 user execution subject를 사용한다.
 - Active deployment 변경과 queued old-session task 경합에서 Worker는 pinned deployment snapshot을 사용하거나 side effect 전에 version conflict로 닫고 current graph를 임의 실행하지 않는다.
 - LLM Credentials가 발급한 ProviderExecutionCapability identity/revision의 purpose, deployment/node/admission/provider-attempt binding 또는 current validity mismatch는 context materialization, provider call과 budget reservation 전에 fail-closed 한다.
-- Capability-required LLM node는 `n|best_of`가 정확한 정수 `1`이 아니면 provider 호출 전에 차단한다. Knowledge 후보가 0개면 embedding capability와 provider operation을 만들지 않고, 후보가 있으면 distinct canonical embedding model마다 `query_embedding` capability/attempt를 하나 사용한다. Model별 policy, MBA-178 egress 또는 MBA-287 durable operation 경계가 없으면 legacy credential selection과 embedding/main provider 호출을 수행하지 않는다.
+- Capability-required LLM node는 `n|best_of`가 정확한 정수 `1`이 아니면 provider 호출 전에 차단한다. Knowledge 후보가 0개면 embedding capability와 provider operation을 만들지 않고, 후보가 있으면 distinct canonical embedding model마다 `query_embedding` capability/attempt를 하나 사용한다. Model별 policy, ADR-0067 egress 또는 ADR-0069 durable operation 경계가 없으면 legacy credential selection과 embedding/main provider 호출을 수행하지 않는다.
 
 ## Edge Cases
 

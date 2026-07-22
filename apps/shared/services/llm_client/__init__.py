@@ -4,7 +4,9 @@
 from .anthropic_client import AnthropicClient
 from .base import (
     BaseLLMClient,
+    EmbeddingProviderResult,
     LLMResponseValidationError,
+    PreparedEmbeddingInvocation,
     ProviderEndpointUnsupportedError,
     ProviderFailurePhase,
     ProviderInvocationError,
@@ -15,10 +17,12 @@ from .openai_client import OpenAIClient
 
 __all__ = [
     "BaseLLMClient",
+    "EmbeddingProviderResult",
     "LLMResponseValidationError",
     "ProviderEndpointUnsupportedError",
     "ProviderFailurePhase",
     "ProviderInvocationError",
+    "PreparedEmbeddingInvocation",
     "get_llm_client",
     "OpenAIClient",
     "GoogleClient",

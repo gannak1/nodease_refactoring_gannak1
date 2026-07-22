@@ -184,6 +184,21 @@ def test_provider_node_location_migration_test_selects_workflow_postgres():
 @pytest.mark.parametrize(
     "path",
     [
+        "apps/shared/db/models/llm.py",
+        "apps/shared/db/models/provider_usage.py",
+        "apps/shared/tests/db/test_query_embedding_capability_migration_postgres.py",
+    ],
+)
+def test_query_embedding_schema_change_selects_workflow_postgres(path: str):
+    scope = classify_paths([path])
+
+    assert scope.shared_tests is True
+    assert scope.workflow_postgres is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
         "apps/shared/services/external_effect_trace_capture.py",
         "apps/shared/services/knowledge_ingestion_outbox.py",
         "apps/shared/services/knowledge_ingestion_outbox_processor.py",

@@ -76,22 +76,24 @@ Active `api`/`webhook` preflight, create와 toggle은 configured App secret을 �
 
 ### Deployment LLM Credential Policy
 
-`GET /api/v1/deployments/{deployment_id}/llm-credential-policies`와 `PUT /api/v1/deployments/{deployment_id}/llm-credential-policies/{node_id}`는 immutable deployment snapshot의 `llmNode`별 provider credential 선택을 graph 밖의 server-side policy로 관리한다. 두 endpoint는 active organization의 manager만 호출할 수 있다.
+`GET /api/v1/deployments/{deployment_id}/llm-credential-policies`와 `PUT /api/v1/deployments/{deployment_id}/llm-credential-policies/{node_id}`는 immutable deployment snapshot의 canonical `llmNode` location과 purpose별 provider credential 선택을 graph 밖의 server-side policy로 관리한다. 두 endpoint는 active organization의 manager만 호출할 수 있다.
 
-PUT request는 extra field를 허용하지 않으며 다음 두 UUID만 받는다.
+PUT request는 extra field를 허용하지 않으며 purpose를 생략하면 `main_generation`으로 처리한다. `purpose=query_embedding`은 server-owned `QUERY_EMBEDDING_POLICY_WRITE_MODE=active`일 때만 쓸 수 있다. 기본 `disabled`에서는 인증·active organization·manager 범위를 확인한 뒤 `503 query_embedding_rollout_unavailable`로 종료하며 main-generation policy write는 유지한다.
 
 ```json
 {
   "model_id": "00000000-0000-0000-0000-000000000000",
-  "credential_id": "00000000-0000-0000-0000-000000000000"
+  "credential_id": "00000000-0000-0000-0000-000000000000",
+  "purpose": "query_embedding",
+  "container_path": []
 }
 ```
 
-Server는 canonical deployment/App/Workflow organization, immutable graph의 exact `node_id`와 `model_id`, active model, same-organization valid credential, verified model-provider relation, credential `use` 권한을 다시 검사한다. Graph에는 `model_id`만 저장하며 `credential_id`, auto-routing, default credential 또는 App/deployment creator fallback을 저장하거나 해석하지 않는다. PUT은 canonical deployment row를 lock하고 같은 deployment version/node의 기존 active policy를 model UUID와 무관하게 supersede한 뒤 policy revision을 증가시키며 deployment graph 또는 version을 바꾸지 않는다.
+Server는 canonical deployment/App/Workflow organization, immutable graph의 exact `container_path + node_id`, purpose에 맞는 active model, same-organization valid credential, verified model-provider relation과 credential `use` 권한을 다시 검사한다. Main generation은 graph-owned chat model과 일치해야 하고 query embedding은 Knowledge가 설정된 node와 active embedding model이어야 한다. Graph에는 credential policy를 저장하지 않으며 auto-routing, default credential 또는 App/deployment creator fallback을 해석하지 않는다. PUT은 canonical deployment row를 lock하고 main은 location slot, query는 location/model slot의 기존 active policy만 supersede한 뒤 policy revision을 증가시키며 deployment graph 또는 version을 바꾸지 않는다.
 
-GET/PUT response는 `id`, `deployment_id`, `deployment_version`, `node_id`, `model_id`, `credential_id`, `policy_revision`, `is_active`, `created_at`, `updated_at`만 포함한다. Credential config, encrypted value, server credential principal, capability identifier, execution/billing/audit principal은 반환하지 않는다. Missing deployment는 `404`, manager 권한 부족은 `403 permission.denied`, concurrent selection conflict는 `409 selection_ambiguous`, immutable graph/model/credential/relation/permission 불일치는 safe `422` code로 반환한다.
+GET/PUT response는 `id`, `deployment_id`, `deployment_version`, `node_id`, canonical `container_path`, `purpose`, `model_id`, `credential_id`, `policy_revision`, `is_active`, `created_at`, `updated_at`만 포함한다. Credential config, encrypted value, server credential principal, capability identifier, execution/billing/audit principal은 반환하지 않는다. Missing deployment는 `404`, manager 권한 부족은 `403 permission.denied`, disabled query rollout은 `503 query_embedding_rollout_unavailable`, concurrent selection conflict는 `409 selection_ambiguous`, immutable graph/purpose/model/credential/relation/permission 불일치는 safe `422` code로 반환한다.
 
-이 정책은 [ADR-0064](../../decisions/ADR-0064-provider-execution-capability-boundary.md)의 provider execution capability가 필요한 server-owned target runtime에서만 사용한다. Client 입력, CORS/embedding policy, Conversation Access Grant는 capability를 발급하거나 credential principal을 선택할 수 없다. Legacy LLM execution의 전면 전환은 별도 MBA-320 범위다.
+이 정책은 [ADR-0064](../../decisions/ADR-0064-provider-execution-capability-boundary.md)와 [ADR-0071](../../decisions/ADR-0071-rag-query-embedding-provider-capability.md)의 provider execution capability가 필요한 server-owned target runtime에서만 사용한다. Client 입력, CORS/embedding policy, Conversation Access Grant는 capability를 발급하거나 credential principal을 선택할 수 없다. Legacy LLM execution의 전면 전환은 별도 MBA-320 범위다.
 
 ### `GET /api/v1/deployments/public/{url_slug}/info`
 

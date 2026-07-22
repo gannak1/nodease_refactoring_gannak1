@@ -88,6 +88,7 @@ class ProviderExecutionPrincipalKind(str, Enum):
 class ProviderExecutionPurpose(str, Enum):
     MAIN_GENERATION = "main_generation"
     MEMORY_SUMMARY = "memory_summary"
+    QUERY_EMBEDDING = "query_embedding"
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,6 +294,11 @@ class ProviderExecutionUsageContext:
             or self.admitted_output_tokens > self.output_token_cap
         ):
             raise ValueError("admitted provider usage exceeds capability bounds")
+        if (
+            self.binding.purpose is ProviderExecutionPurpose.QUERY_EMBEDDING
+            and (self.output_token_cap != 0 or self.admitted_output_tokens != 0)
+        ):
+            raise ValueError("query embedding output usage must be zero")
         if (
             self.capability_expires_at.tzinfo is None
             or self.capability_expires_at.utcoffset() is None

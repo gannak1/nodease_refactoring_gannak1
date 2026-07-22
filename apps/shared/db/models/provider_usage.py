@@ -56,7 +56,7 @@ class ProviderUsageOperationRecord(Base):
             name="ck_provider_usage_operation_bounds",
         ),
         CheckConstraint(
-            "purpose IN ('main_generation', 'memory_summary') "
+            "purpose IN ('main_generation', 'memory_summary', 'query_embedding') "
             "AND state IN ('intent', 'provider_started', 'succeeded', "
             "'failed_definitive', 'outcome_unknown') "
             "AND projection_status IN ('pending', 'projected', "
@@ -70,6 +70,12 @@ class ProviderUsageOperationRecord(Base):
             "AND length(egress_revision) = 64 "
             "AND length(pricing_revision) = 64",
             name="ck_provider_usage_operation_identity_kinds",
+        ),
+        CheckConstraint(
+            "purpose <> 'query_embedding' OR (output_token_cap = 0 "
+            "AND admitted_output_tokens = 0 "
+            "AND (completion_tokens IS NULL OR completion_tokens = 0))",
+            name="ck_provider_usage_operation_query_embedding_output",
         ),
         CheckConstraint(
             "jsonb_typeof(container_path) = 'array'",
@@ -160,7 +166,8 @@ class ProviderUsageOperationRecord(Base):
             "provider_started_at",
             postgresql_where=text(
                 "provider_started_at IS NOT NULL "
-                "AND purpose IN ('main_generation', 'memory_summary') "
+                "AND purpose IN ('main_generation', 'memory_summary', "
+                "'query_embedding') "
                 "AND state IN ('provider_started', 'succeeded', 'outcome_unknown')"
             ),
         ),
@@ -172,7 +179,8 @@ class ProviderUsageOperationRecord(Base):
                 "execution_subject_kind = 'user' "
                 "AND execution_subject_id IS NOT NULL "
                 "AND provider_started_at IS NOT NULL "
-                "AND purpose IN ('main_generation', 'memory_summary') "
+                "AND purpose IN ('main_generation', 'memory_summary', "
+                "'query_embedding') "
                 "AND state = 'succeeded'"
             ),
         ),

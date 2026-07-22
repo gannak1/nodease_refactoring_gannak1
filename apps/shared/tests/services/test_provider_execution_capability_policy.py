@@ -246,7 +246,18 @@ class _ReplacementDb:
             self.added.updated_at = now
 
 
-def test_policy_replacement_flushes_superseded_active_row_before_insert(monkeypatch):
+@pytest.mark.parametrize(
+    ("purpose", "query_writes_enabled"),
+    [
+        (CapabilityPurpose.MAIN_GENERATION, False),
+        (CapabilityPurpose.QUERY_EMBEDDING, True),
+    ],
+)
+def test_policy_replacement_flushes_superseded_active_row_before_insert(
+    monkeypatch,
+    purpose,
+    query_writes_enabled,
+):
     organization_id = uuid.uuid4()
     deployment_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
@@ -314,12 +325,15 @@ def test_policy_replacement_flushes_superseded_active_row_before_insert(monkeypa
             node_id="llm-1",
             model_id=model_id,
             credential_id=credential_id,
+            purpose=purpose,
         ),
+        query_embedding_policy_writes_enabled=query_writes_enabled,
     )
 
     assert old_policy.is_active is False
     assert db.flush_states == [(False, False), (False, True)]
     assert policy.policy_revision == 8
+    assert policy.purpose is purpose
     assert policy.credential_id == credential_id
     assert canonical_calls[0]["lock"] is True
     assert db.lock_order == [
@@ -330,6 +344,50 @@ def test_policy_replacement_flushes_superseded_active_row_before_insert(monkeypa
     ]
     assert selection_lock_modes == [True]
     assert manager_checks == [actor_id, actor_id]
+
+
+def test_query_policy_write_requires_server_rollout_activation(monkeypatch):
+    organization_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    db = object()
+    manager_checks = []
+
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_canonical_deployment",
+        classmethod(
+            lambda _cls, *_args, **_kwargs: (
+                SimpleNamespace(id=uuid.uuid4(), version=1),
+                SimpleNamespace(id=uuid.uuid4()),
+                SimpleNamespace(id=uuid.uuid4()),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        capability_service,
+        "has_organization_manager_permission",
+        lambda _db, checked_actor_id, _organization_id: (
+            manager_checks.append(checked_actor_id) or True
+        ),
+    )
+
+    with pytest.raises(ProviderExecutionPolicyError) as exc_info:
+        ProviderExecutionCapabilityService.replace_deployment_policy(
+            db,
+            actor_id=actor_id,
+            command=DeploymentCredentialPolicyCommand(
+                organization_id=organization_id,
+                deployment_id=uuid.uuid4(),
+                node_id="llm-1",
+                model_id=uuid.uuid4(),
+                credential_id=uuid.uuid4(),
+                purpose=CapabilityPurpose.QUERY_EMBEDDING,
+            ),
+            query_embedding_policy_writes_enabled=False,
+        )
+
+    assert exc_info.value.code == "query_embedding_rollout_unavailable"
+    assert manager_checks == [actor_id]
 
 
 def test_active_policy_unique_index_is_scoped_to_canonical_node_location():
@@ -362,7 +420,7 @@ def test_query_embedding_policy_unique_index_is_scoped_to_node_and_model():
         "organization_id",
         "deployment_id",
         "deployment_version",
-        "node_id",
+        "node_location_digest",
         "model_id",
     ]
     assert "purpose = 'query_embedding'" in str(

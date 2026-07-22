@@ -280,7 +280,8 @@ class LLMDeploymentCredentialPolicy(Base):
             name="uq_llm_deploy_credential_policy_id_org",
         ),
         CheckConstraint(
-            "deployment_version >= 1 AND policy_revision >= 1",
+            "deployment_version >= 1 AND policy_revision >= 1 "
+            "AND purpose IN ('main_generation', 'query_embedding')",
             name="ck_llm_deploy_credential_policy_revision",
         ),
         Index(
@@ -290,7 +291,21 @@ class LLMDeploymentCredentialPolicy(Base):
             "deployment_version",
             "node_location_digest",
             unique=True,
-            postgresql_where=text("is_active"),
+            postgresql_where=text(
+                "is_active AND purpose = 'main_generation'"
+            ),
+        ),
+        Index(
+            "uq_llm_deploy_credential_policy_active_query_embedding",
+            "organization_id",
+            "deployment_id",
+            "deployment_version",
+            "node_location_digest",
+            "model_id",
+            unique=True,
+            postgresql_where=text(
+                "is_active AND purpose = 'query_embedding'"
+            ),
         ),
         Index(
             "ix_llm_deploy_credential_policy_lookup",
@@ -298,6 +313,8 @@ class LLMDeploymentCredentialPolicy(Base):
             "deployment_id",
             "deployment_version",
             "node_location_digest",
+            "purpose",
+            "model_id",
             "is_active",
         ),
         CheckConstraint(
@@ -333,6 +350,12 @@ class LLMDeploymentCredentialPolicy(Base):
         default=list,
     )
     node_location_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    purpose: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="main_generation",
+        server_default=text("'main_generation'"),
+    )
     model_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("llm_models.id", ondelete="RESTRICT"),
@@ -407,7 +430,7 @@ class ProviderExecutionCapabilityRecord(Base):
             name="ck_provider_execution_capability_bounds",
         ),
         CheckConstraint(
-            "purpose IN ('main_generation', 'memory_summary') "
+            "purpose IN ('main_generation', 'memory_summary', 'query_embedding') "
             "AND state IN ('active', 'revoked') "
             "AND execution_subject_kind IN ('user', 'anonymous_public', 'system') "
             "AND billing_principal_kind = 'organization' "
@@ -417,6 +440,10 @@ class ProviderExecutionCapabilityRecord(Base):
             "AND length(egress_revision) = 64 "
             "AND length(pricing_revision) = 64",
             name="ck_provider_execution_capability_state",
+        ),
+        CheckConstraint(
+            "purpose <> 'query_embedding' OR output_token_cap = 0",
+            name="ck_provider_execution_capability_query_embedding_output",
         ),
         CheckConstraint(
             "(execution_subject_kind = 'user' AND execution_subject_id IS NOT NULL) "

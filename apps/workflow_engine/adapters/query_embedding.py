@@ -6,17 +6,17 @@ from dataclasses import dataclass, replace
 
 from apps.workflow_engine.application.query_embedding_execution import (
     QueryEmbeddingConfigurationError,
-    QueryEmbeddingExecutionRuntime,
-    QueryEmbeddingInvocationLease,
     QueryEmbeddingPlan,
     QueryEmbeddingPreflight,
-    QueryEmbeddingRequest,
+    QueryEmbeddingProviderRequest,
+    QueryEmbeddingProviderResult,
+    QueryEmbeddingProviderRuntime,
 )
 
 
 @dataclass(frozen=True, slots=True)
 class _RoutedQueryEmbeddingPlanState:
-    strategy: QueryEmbeddingExecutionRuntime
+    strategy: QueryEmbeddingProviderRuntime
     strategy_plan: QueryEmbeddingPlan
 
 
@@ -24,8 +24,8 @@ class QueryEmbeddingExecutionRuntimeRouter:
     def __init__(
         self,
         *,
-        legacy_strategy: QueryEmbeddingExecutionRuntime,
-        capability_strategy: QueryEmbeddingExecutionRuntime,
+        legacy_strategy: QueryEmbeddingProviderRuntime,
+        capability_strategy: QueryEmbeddingProviderRuntime,
     ) -> None:
         self._legacy_strategy = legacy_strategy
         self._capability_strategy = capability_strategy
@@ -47,14 +47,14 @@ class QueryEmbeddingExecutionRuntimeRouter:
             ),
         )
 
-    def resolve(
+    def invoke(
         self,
-        request: QueryEmbeddingRequest,
-    ) -> QueryEmbeddingInvocationLease:
+        request: QueryEmbeddingProviderRequest,
+    ) -> QueryEmbeddingProviderResult:
         state = request.plan.state
         if not isinstance(state, _RoutedQueryEmbeddingPlanState):
             raise QueryEmbeddingConfigurationError()
-        return state.strategy.resolve(replace(request, plan=state.strategy_plan))
+        return state.strategy.invoke(replace(request, plan=state.strategy_plan))
 
 
 __all__ = ["QueryEmbeddingExecutionRuntimeRouter"]

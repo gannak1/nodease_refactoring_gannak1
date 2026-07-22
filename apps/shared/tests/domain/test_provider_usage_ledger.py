@@ -76,6 +76,19 @@ def _operation() -> ProviderUsageOperation:
     )
 
 
+def _query_embedding_snapshot() -> ProviderUsageIntentSnapshot:
+    snapshot = _snapshot()
+    return replace(
+        snapshot,
+        binding=replace(
+            snapshot.binding,
+            purpose=CapabilityPurpose.QUERY_EMBEDDING,
+        ),
+        output_token_cap=0,
+        admitted_output_tokens=0,
+    )
+
+
 def _measurement(
     *,
     prompt_tokens: int = 10,
@@ -256,6 +269,28 @@ def test_success_rejects_exact_usage_above_the_sealed_cost_cap() -> None:
     with pytest.raises(ProviderUsageLedgerError) as exc_info:
         started.record_success(measurement=_measurement(), now=NOW)
 
+    assert exc_info.value.code == "provider_usage.measurement_invalid"
+
+
+def test_query_embedding_success_requires_zero_output_usage() -> None:
+    operation = ProviderUsageOperation.intent(
+        operation_id=uuid.uuid4(),
+        snapshot=_query_embedding_snapshot(),
+        now=NOW,
+    ).mark_provider_started(now=NOW)
+
+    succeeded = operation.record_success(
+        measurement=_measurement(completion_tokens=0, cost=1_000),
+        now=NOW,
+    )
+
+    assert succeeded.measurement is not None
+    assert succeeded.measurement.completion_tokens == 0
+    with pytest.raises(ProviderUsageLedgerError) as exc_info:
+        operation.record_success(
+            measurement=_measurement(completion_tokens=1, cost=1_200),
+            now=NOW,
+        )
     assert exc_info.value.code == "provider_usage.measurement_invalid"
 
 

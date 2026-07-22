@@ -18,7 +18,7 @@ Status: Draft
 - Encryption metadata가 모두 null인 legacy row만 평문 read를 허용한다. Metadata 일부 누락, unsupported algorithm, unknown key version, 손상 ciphertext 또는 invalid config는 평문 fallback 없이 실패한다.
 - Gateway와 Workflow Engine의 신규 credential 등록은 raw config와 다른 ciphertext, active key version과 algorithm을 저장한다.
 - Gateway·Workflow Engine·RAG answer·embedding·LlamaParse의 decrypt 실패 테스트는 provider/client mock 호출이 0회임을 검증한다.
-- Deployment policy resolver는 immutable deployment graph의 exact `(container_path, node_id)` `llmNode.model_id`와 generation purpose의 active `chat` model type을 확인해 embedding 모델을 거부하고 `credential_id`/`credentialId`, fallback model, auto-routing이 있는 capability-required node를 거부한다. Terminal/parent ID는 255자, Loop path는 깊이 16까지 허용하며 초과·unknown kind·missing location은 row를 쓰기 전에 거부한다.
+- Deployment policy resolver는 immutable deployment graph의 exact `(container_path, node_id)`를 확인한다. Main generation은 graph-owned active `chat` model만, query embedding은 Knowledge가 설정된 node의 active `embedding` model만 허용한다. `credential_id`/`credentialId`, fallback model, auto-routing이 있는 capability-required graph는 거부한다. Terminal/parent ID는 255자, Loop path는 깊이 16까지 허용하며 초과·unknown kind·missing location은 row를 쓰기 전에 거부한다.
 - 같은 deployment version/location에 model UUID가 다른 두 active policy를 만들 수 없고, 서로 다른 Loop의 동일 `node_id`에는 별도 active policy를 허용한다. Concurrent 최초 policy write는 canonical deployment와 active policy를 순서대로 lock한 뒤 authorization 근거를 잠가 하나의 active revision으로 수렴하거나 safe `409`로 종료한다.
 - Stored digest와 structured path/node가 일치하지 않거나 한 location의 capability를 다른 Loop에서 재사용하면 credential materialization과 provider/client 호출은 0회여야 한다.
 - Policy 변경과 runtime permission denial audit은 canonical location에서 계산한 bounded opaque reference만 기록하고 raw `container_path`, nested input, credential/capability 원문을 기록하지 않는다.
@@ -27,7 +27,7 @@ Status: Draft
 - Capability-required LLM node는 trusted node invocation control과 explicit token/cost cap이 없으면 provider client를 만들지 않으며, legacy user/app owner/default/name/order/fallback selection을 호출하지 않는다.
 - Capability-required LLM node는 messages와 tools·response schema 등 provider-visible parameter 구조 전체의 UTF-8 byte upper bound, `max_tokens`와 canonical pricing 최대 비용 중 하나라도 cap을 넘으면 provider client/SDK를 호출하지 않는다. Provider-specific JSON schema format을 client materialization 뒤 추가하면 완성된 request로 같은 capability를 재-admission하고 attribution의 admitted token snapshot도 교체한다. 재-admission 실패는 LLM node가 삼키지 않으며 usage intent와 provider I/O를 모두 0회로 유지한다. Output limit이 없으면 server cap을 적용하고 직렬화 불가 parameter, provider-specific output-limit alias와 missing pricing은 fail-closed한다.
 - Capability-required LLM node는 request parameters의 `model`을 항상 거부하고 `n`과 `best_of`는 boolean/string을 포함해 정확한 정수 `1`이 아니면 provider client/SDK 호출 전에 거부한다.
-- Capability-required LLM node에 Knowledge Base 또는 Collection이 설정되면 별도 embedding capability가 준비되기 전까지 candidate resolution, legacy credential selection, embedding provider와 main provider 호출을 모두 0회로 유지하고 fail-closed한다.
+- Capability-required LLM node의 authorized Knowledge 후보가 0개면 query policy/capability/usage/provider를 0회로 유지한다. 후보가 있으면 distinct canonical embedding model마다 query capability와 provider attempt를 하나 사용하고 같은 model 후보만 vector를 공유한다. Preflight plan과 execution request/adapter state의 organization 또는 node가 다르면 model projection과 provider 호출은 0회다. Missing/stale query policy나 권한·relation·pricing·egress 실패는 legacy credential와 main provider 호출 전에 fail-closed한다. Query policy write mode 기본값은 disabled이고 활성화 전 mutation은 safe `503`이며 main policy 관리에는 영향을 주지 않는다.
 - Policy write와 capability issue/admission은 lock 전에 같은 Session에 적재된 organization, user, membership, grant, model, provider, credential, relation, policy와 capability row를 강제 갱신한다. Lock 대기 중 권한 회수·비활성화가 commit되면 이전 identity-map 상태로 manager/use 권한을 허용하지 않는다.
 - Worker process와 PostgreSQL clock이 어긋나도 capability `created_at`, `updated_at`, `expires_at`은 같은 DB wall clock으로 발급되고 `expires_at`은 그 시각 + TTL이어야 하며, admission의 최초·최종 만료 검사는 모두 lock 이후 DB wall clock을 사용하고 worker process clock을 호출하지 않는다.
 - 서로 다른 provider의 model row가 같은 API model identifier를 사용해도 capability admission이 고른 canonical model UUID가 비용 계산과 `llm_usage_logs.model_id`에 유지된다. Capability usage는 admission 중 봉인한 pricing revision과 immutable input/output 가격 snapshot을 사용해 provider 호출 중 model row의 가격 필드가 변경돼도 admission과 동일한 비용을 기록하고 catalog로 우회하지 않으며, legacy usage만 같은 상황에서 shared catalog fallback을 유지한다.
@@ -108,8 +108,23 @@ Status: Draft
 | Revoke/delete lifecycle | 완료 | control lifecycle과 historical usage 분리 | Ledger는 organization 외 control FK 없음; projector가 삭제된 optional ref를 NULL 처리 | schema FK test, deleted-reference projection test; 구체 retention/purge 기간은 Decision Required |
 | Audit exactly-once·redaction | 완료 | ADR-0069 deterministic first classification과 nullable run correlation | terminal transaction의 deterministic `llm.call` Audit Outbox가 ledger `workflow_run_id`를 top-level correlation으로 전달 | audit payload/redaction/run-correlation unit test와 PostgreSQL replay cardinality test(CI) |
 | 관리 API/UI | 해당 없음 | 새 ledger는 internal runtime·read-model 계약 | 신규 CRUD/API/UI 없음; 기존 admin/My Module 비용 화면에는 additive completeness만 노출 | admin/App API와 component tests |
-| Query embedding purpose | 후속 이슈 | 같은 ledger 확장 원칙 | 현재 enum/classifier는 main generation·memory summary만 지원 | MBA-351에서 capability purpose와 billable classifier·tests를 함께 확장 |
+| Query embedding purpose | 완료 | ADR-0071 exact model policy, output-zero, guarded outbound와 durable usage | query policy/capability schema, Workflow query application/projection/provider adapters, billable classifier | Shared/Gateway/Workflow unit tests와 migration static test; disposable PostgreSQL unique/race/upgrade/downgrade는 CI 실행 |
 | Legacy 전체 activation | 후속 이슈 | ADR-0064 staged activation | capability-required target path만 ledger 사용, legacy recorder 병행 | MBA-320 activation/readiness gate |
+
+## MBA-351 보호 리소스 완료 매트릭스
+
+| 경계 | 상태 | 공식 계약 | 구현 위치 | 실행 가능한 검증 또는 후속 |
+| --- | --- | --- | --- | --- |
+| Query policy 관리·권한 | 완료 | ADR-0071 purpose/model slot과 manager/current `use` | Gateway deployment policy API, Shared capability policy service | policy API, purpose default, model type와 permission unit tests |
+| Durable schema·migration | 완료 | ADR-0071 additive purpose/output-zero와 guarded downgrade | `llm_deployment_credential_policies`, capability/usage operation migration | ORM/static migration tests; disposable PostgreSQL slot uniqueness, concurrent write와 locked upgrade/downgrade는 CI 실행 |
+| Candidate·model projection | 완료 | ADR-0036 authorized candidate 이후 model projection | `QueryEmbeddingExecutionService`, bounded PostgreSQL projection | candidate 0, missing/ambiguous/inactive model, session-close tests |
+| Preflight·runtime 재검증 | 완료 | ADR-0071 exact purpose/model/revision, no fallback | capability query adapter와 Shared issue/final-admission | cross-purpose, stale revision, public/system principal과 provider 0-call tests |
+| Transaction·external I/O | 완료 | ADR-0067, ADR-0069, ADR-0071 | control session close, durable intent/start, guarded typed provider client | commit ordering, unsupported provider, before-send/unknown tests |
+| 멱등성·replay | 완료 | model별 stable attempt와 no-auto-retry | invocation model guard와 provider usage operation key/state | same-model reuse, duplicate delivery와 terminal state tests |
+| Revoke·background recovery | 완료 | fresh credential/relation/permission/egress revision과 ADR-0069 reconciliation | Shared final admission, common Log System reconciler | revoke/stale admission unit tests; common reconciler 회귀는 기존 suite |
+| Audit·redaction | 완료 | deterministic `llm.call`, query/vector/secret 비저장 | Provider usage terminal outbox와 redacted query DTO/lease | audit cardinality, safe failure와 object repr redaction tests |
+| 관리 UI | 해당 없음 | 기존 manager policy API의 additive purpose 계약 | 신규 Client surface 없음 | UI 추가는 MBA-351 범위 아님 |
+| 일반 runtime activation | 후속 이슈 | ADR-0071 rollout boundary | server-owned router와 default-disabled query policy write gate가 legacy/target을 분리 | MBA-320 mixed-version readiness, write/runtime activation과 rollback |
 
 ## MBA-358 보호 리소스 완료 매트릭스
 

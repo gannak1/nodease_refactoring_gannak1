@@ -308,7 +308,7 @@ Organization Detector Provider와 embedding 전 local masking Target 테스트�
 - Missing, inactive, non-embedding, ambiguous model identifier와 runtime KB model이 binding과 불일치하는 후보는 LLM client, embedding provider, vector store 호출 전에 제외된다.
 - Workflow fanout은 query vector와 immutable scalar binding을 재사용해 per-KB model ORM 조회를 수행하지 않는다. Projection 저장소 장애는 per-KB fallback이나 provider 호출 없이 safe no-result 또는 정책에 따른 sanitized node failure로 닫힌다.
 - Capability-required Workflow fanout은 authorized 후보가 0개면 query-embedding policy/capability/provider/usage를 호출하지 않는다. 후보가 있으면 distinct canonical embedding model마다 `query_embedding` capability와 provider attempt를 한 번만 사용하고 같은 model 후보만 vector를 공유한다.
-- Query-embedding policy, credential `use`, verified relation, MBA-178 egress 또는 MBA-287 durable operation 경계가 없거나 stale하면 generation credential·execution user·owner/default fallback 없이 embedding과 main provider 호출 전에 fail-closed한다.
+- Query-embedding policy, credential `use`, verified relation, ADR-0067 egress 또는 ADR-0069 durable operation 경계가 없거나 stale하면 generation credential·execution user·owner/default fallback 없이 embedding과 main provider 호출 전에 fail-closed한다.
 - Query embedding success/deny/provider failure의 API, audit, trace, usage와 task payload에는 raw query/vector/credential/config/capability scope/provider payload와 exact hidden candidate count가 없다.
 - `internal_chatbot` 실행의 current user는 Runtime permission helper에 그대로 전달되고, 해당 user의 KB permission 또는 source ACL이 거부한 후보는 retrieval 전에 제외된다.
 - 공개 `chatbot`은 execution subject나 owner fallback 없이 anonymous public-only로 검색하며, `internal_chatbot`의 public surface 실행은 safe 404로 거부된다.

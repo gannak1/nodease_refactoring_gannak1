@@ -140,6 +140,8 @@ Status: Draft
 
 ## Migration And Persistence Tests
 
+- Query embedding policy write mode는 application default와 미설정 환경에서 `disabled`이고 unknown value를 거부한다. Disabled query PUT은 manager scope 확인 뒤 policy row/provider selection 없이 safe `503`으로 끝나며 main-generation PUT은 계속 동작한다. Active mode는 MBA-320의 purpose-aware Gateway/worker drain 검증 없이는 운영에 적용하지 않는다.
+- Disposable PostgreSQL CI는 같은 canonical location에서 main/query 공존, 서로 다른 embedding model query slot 공존, 같은 query slot 중복·동시 최초 write의 하나의 winner를 검증한다. Downgrade는 policy/capability/usage 세 테이블을 deterministic `ACCESS EXCLUSIVE` lock으로 직렬화한 뒤 query row를 검사하고, 검사와 DDL 사이 concurrent write가 있으면 row 의미를 변환하지 않고 실패해야 한다.
 - MBA-247 expand migration은 single Alembic head를 유지하고 기존 non-null `apps.auth_secret`을 같은 V1 verifier와 version 1로 backfill한 뒤 legacy column을 nullable로 바꾼다. Raw value를 migration output에 기록하지 않는다.
 - Expand release의 checked-in manifest와 application default는 lifecycle mode를 `disabled`로 유지한다. 이 상태의 status는 `rotation_enabled=false`이며 권한이 있는 rotation도 secret 생성, row lock, audit과 mutation 전에 `503 app.auth_secret_lifecycle_unavailable`로 끝난다.
 - Docker Compose와 Helm values/template은 lifecycle mode를 기본 disabled로 Gateway에 전달한다. Status와 성공 rotation 응답은 no-store/no-cache header를 반환한다.

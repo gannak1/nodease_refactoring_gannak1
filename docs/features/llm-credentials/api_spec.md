@@ -12,7 +12,7 @@ Status: Draft
 | DELETE | `/api/v1/llm/credentials/{credential_id}` | active organization의 LLM credential을 revoke한다. Current 구현은 `is_valid=false`이며 row를 hard delete하지 않는다 | Organization manager 또는 credential `manage` |
 | POST | `/api/v1/llm/credentials/{credential_id}/sync-models` | active organization credential의 provider model relation을 재동기화한다 | Credential `manage`/`write` |
 | GET | `/api/v1/deployments/{deployment_id}/llm-credential-policies` | immutable deployment version의 active LLM credential policy를 safe projection으로 조회한다 | Active organization manager only |
-| PUT | `/api/v1/deployments/{deployment_id}/llm-credential-policies/{node_id}` | immutable deployment LLM node/model에 대한 server-owned credential policy revision을 생성한다 | Active organization manager only |
+| PUT | `/api/v1/deployments/{deployment_id}/llm-credential-policies/{node_id}` | immutable deployment LLM node의 purpose/model별 server-owned credential policy revision을 생성한다. Purpose 생략은 main generation이다 | Active organization manager only |
 
 ## 요청과 응답 모델
 
@@ -50,15 +50,16 @@ Secret physical purge 또는 crypto-shred는 이 endpoint의 현재 계약이 �
 
 - `model_id`: LLM catalog UUID
 - `credential_id`: active organization의 LLM credential UUID
+- `purpose`: optional `main_generation|query_embedding`. 생략하면 `main_generation`이다.
 - `container_path`: optional ordered Loop segment 배열. 생략 또는 `[]`는 root이며 각 entry는 `{kind: "loop", node_id: <1~255자>}`다. 최대 깊이는 16이다.
 
 Path의 terminal `node_id`와 각 parent Loop ID는 1~255자로 제한한다. Server는 `container_path + node_id`를 immutable graph에서 exact lookup하며, 초과·unknown kind·잘못된 순서·missing location이면 row를 쓰기 전에 `422 configuration_required`로 거부한다. Client가 `node_location_digest`, credential principal 또는 capability scope를 보내면 strict request schema가 거부한다.
 
-`credential_principal_user_id`, credential config, API key, provider request option은 request에 포함할 수 없다. Server는 policy write actor가 organization manager인지 확인하고, 그 actor를 credential principal으로 server-side 파생한다. 이어서 대상 deployment의 immutable `graph_snapshot`에서 정확히 하나의 `llmNode`와 graph-owned `model_id`를 확인하며, selected model/provider, credential valid state, same-organization scope, verified credential-model relation, credential `use`를 검증한다.
+`credential_principal_user_id`, credential config, API key, provider request option은 request에 포함할 수 없다. Server는 policy write actor가 organization manager인지 확인하고 그 actor를 credential principal로 server-side 파생한다. Main generation은 immutable graph의 exact `llmNode.model_id`와 active chat model을 검증한다. Query embedding은 같은 node에 Knowledge Base 또는 Collection 설정이 있고 request model이 active embedding model인지 검증한다. 두 purpose 모두 selected model/provider, credential valid state, same-organization scope, verified credential-model relation과 credential `use`를 확인한다.
 
 Capability-required policy는 direct `credential_id`/`credentialId` graph field, `fallback_model_id`, `auto_model_routing`을 허용하지 않는다. 이들은 현재 target policy의 명시 model/credential binding을 흐리므로 `422 configuration_required`로 fail-closed한다.
 
-같은 `(organization, deployment, deployment_version, container_path, node_id)` active policy를 교체하면 model UUID와 관계없이 기존 row를 inactive로 두고 새 row를 생성하며 `policy_revision`을 증가시킨다. 다른 container의 동일 `node_id`는 별도 policy다. GET은 현재 deployment version의 active row만 반환한다. Response에는 `id`, `deployment_id`, `deployment_version`, canonical `container_path`, `node_id`, `model_id`, `credential_id`, `policy_revision`, `is_active`, timestamps만 포함하며 digest, credential principal, encrypted config, API key/token, raw capability scope는 포함하지 않는다.
+Main generation의 같은 `(organization, deployment, deployment_version, container_path, node_id)` slot을 교체하면 기존 main row만 비활성화한다. Query embedding은 여기에 `model_id`를 더한 slot을 교체하므로 다른 embedding model과 main policy는 유지한다. 새 row는 `policy_revision`을 증가시키며 다른 container의 동일 `node_id`는 별도 policy다. GET은 현재 deployment version의 active row만 반환한다. Response에는 `id`, `deployment_id`, `deployment_version`, canonical `container_path`, `node_id`, `purpose`, `model_id`, `credential_id`, `policy_revision`, `is_active`, timestamps만 포함하며 digest, credential principal, encrypted config, API key/token, raw capability scope는 포함하지 않는다.
 
 오류는 `404 Deployment not found`(다른 organization 포함 resource hiding), `403 permission.denied`, `409 selection_ambiguous`, `422 configuration_required|relation_unavailable`의 safe code로 제한한다.
 
@@ -95,7 +96,7 @@ Option response는 전체 credential read schema가 아니라 실행 선택을 �
 - node/invocation reference와 Workflow가 승인한 execution admission reference
 - 해당 invocation에서 미리 생성한 server-issued provider attempt reference
 - execution subject 또는 public audience
-- `purpose=main_generation | memory_summary`
+- `purpose=main_generation | memory_summary | query_embedding`
 - server-owned input/output token과 cost ceiling
 
 Workflow Runtime은 provider SDK 호출 전에 attempt reference를 먼저 생성하되 provider effect를 시작하지 않는다. Issuer는 이 canonical attempt를 다른 invocation/admission에 재사용할 수 없는지 검증한 뒤 capability를 발급한다.
@@ -121,7 +122,7 @@ Policy write와 capability issue/admission에서 잠근 ORM row는 현재 Sessio
 
 현재 legacy LLM node의 inline memory summary는 Conversation Session/Access Grant/lease와 source authorization 재검증을 거치지 않으므로 capability-required path에서 실행하지 않는다. 이 경로는 `memory_summary` capability를 main generation capability로 바꾸거나 legacy user/owner credential fallback으로 호출하지 않고 summary를 생략한다. 별도 Conversation Memory summarizer가 lifecycle·budget·usage 계약을 갖춘 뒤에만 `inherit_node` 정책의 distinct `memory_summary` capability를 provider call에 소비한다.
 
-현재 LLM node RAG query embedding은 별도 provider capability가 아니라 legacy user credential resolver를 사용한다. Capability-required path는 embedding capability와 usage 귀속 계약이 준비되기 전까지 Knowledge candidate resolution과 embedding provider 호출 전에 `configuration_required`로 닫으며, main generation capability나 owner/user fallback으로 embedding을 실행하지 않는다.
+Target LLM node RAG query embedding은 authorized 후보의 distinct canonical embedding model마다 `query_embedding` capability와 durable provider usage operation을 하나 사용한다. Query provider client는 exact query payload를 single-use invocation으로 봉인하고 actual input usage와 finite vector를 typed result로 반환해야 한다. Output cap/admission/usage는 `0`이다. Candidate가 없으면 policy/capability/usage/provider를 호출하지 않으며 missing/stale policy, credential 권한·relation, pricing 또는 egress 경계는 main generation capability나 owner/user fallback 없이 `configuration_required`로 닫는다. 이 internal port와 schema 구현은 live target activation을 뜻하지 않으며 전면 전환은 MBA-320이 소유한다.
 
 ## 권한
 

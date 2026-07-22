@@ -23,6 +23,9 @@ from apps.workflow_engine.adapters.query_embedding_capability import (
 from apps.workflow_engine.adapters.query_embedding_legacy import (
     LegacyQueryEmbeddingAdapter,
 )
+from apps.workflow_engine.adapters.query_embedding_model_projection import (
+    PostgresQueryEmbeddingModelProjection,
+)
 from apps.workflow_engine.application.provider_execution import (
     ProviderExecutionConfigurationError,
 )
@@ -33,6 +36,7 @@ from apps.workflow_engine.composition.provider_execution import (
 )
 from apps.workflow_engine.application.query_embedding_execution import (
     QueryEmbeddingConfigurationError,
+    QueryEmbeddingExecutionService,
 )
 from apps.workflow_engine.workflow.core.runtime_dependencies import (
     WorkflowRuntimeDependencies,
@@ -69,10 +73,16 @@ def test_provider_composition_does_not_open_sessions_eagerly():
     assert isinstance(runtime, ProviderExecutionRuntimeRouter)
     assert isinstance(runtime._legacy_strategy, LegacyProviderExecutionAdapter)
     assert isinstance(runtime._capability_strategy, CapabilityProviderExecutionAdapter)
-    assert isinstance(query_runtime, QueryEmbeddingExecutionRuntimeRouter)
-    assert isinstance(query_runtime._legacy_strategy, LegacyQueryEmbeddingAdapter)
+    assert isinstance(query_runtime, QueryEmbeddingExecutionService)
     assert isinstance(
-        query_runtime._capability_strategy,
+        query_runtime._model_projection,
+        PostgresQueryEmbeddingModelProjection,
+    )
+    provider_runtime = query_runtime._provider_runtime
+    assert isinstance(provider_runtime, QueryEmbeddingExecutionRuntimeRouter)
+    assert isinstance(provider_runtime._legacy_strategy, LegacyQueryEmbeddingAdapter)
+    assert isinstance(
+        provider_runtime._capability_strategy,
         CapabilityQueryEmbeddingAdapter,
     )
     assert isinstance(recorder, PostgresProviderUsageRecorder)

@@ -1,22 +1,31 @@
-"""Capability-backed adapter for one RAG query-embedding operation."""
+"""Capability-backed RAG query embedding using shared usage and egress guards."""
 
 from __future__ import annotations
 
+import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from threading import Lock
-from typing import Any, Callable, Mapping
+from typing import Any, Mapping
 
-from sqlalchemy.orm import Session
-
+from apps.shared.domain.embedding_model_binding import EmbeddingModelBinding
 from apps.shared.domain.provider_execution_capability import (
     CapabilityPurpose,
     PrincipalKind,
     ProviderExecutionBinding,
     RuntimePrincipal,
 )
-from apps.shared.services.llm_client import get_llm_client
+from apps.shared.domain.workflow_node_location import CanonicalWorkflowNodeLocation
+from apps.shared.services.llm_client import (
+    EmbeddingProviderResult,
+    LLMResponseValidationError,
+    PreparedEmbeddingInvocation,
+    ProviderFailurePhase,
+    ProviderInvocationError,
+    get_llm_client,
+)
 from apps.shared.services.llm_credential_config import (
     LLMCredentialConfigError,
     load_llm_credential_config,
@@ -27,43 +36,41 @@ from apps.shared.services.provider_execution_capability import (
     ProviderExecutionCapabilityService,
     ProviderExecutionPolicyError,
 )
+from apps.workflow_engine.application.provider_execution import (
+    ProviderExecutionAttribution,
+    ProviderExecutionBindingSnapshot,
+    ProviderExecutionIdentityContext,
+    ProviderExecutionPricingSnapshot,
+    ProviderExecutionPrincipal,
+    ProviderExecutionPrincipalKind,
+    ProviderExecutionPurpose,
+    ProviderExecutionUsageContext,
+)
+from apps.workflow_engine.application.provider_usage import (
+    ProviderUsageIntent,
+    ProviderUsageRecorder,
+    ProviderUsageRuntimeError,
+)
 from apps.workflow_engine.application.query_embedding_execution import (
-    QueryEmbeddingAttribution,
     QueryEmbeddingConfigurationError,
-    QueryEmbeddingEgressRuntime,
-    QueryEmbeddingEgressScope,
-    QueryEmbeddingInvocationLease,
-    QueryEmbeddingOperationLedger,
-    QueryEmbeddingOperationRequest,
     QueryEmbeddingPlan,
     QueryEmbeddingPreflight,
+    QueryEmbeddingProviderRequest,
     QueryEmbeddingProviderResult,
-    QueryEmbeddingRequest,
 )
+from sqlalchemy.orm import Session
 
 
-class _ModelResolveGuard:
+class _ModelInvokeGuard:
     def __init__(self) -> None:
         self._lock = Lock()
-        self._consumed_model_ids: set[uuid.UUID] = set()
+        self._model_ids: set[uuid.UUID] = set()
 
     def consume(self, model_id: uuid.UUID) -> None:
         with self._lock:
-            if model_id in self._consumed_model_ids:
+            if model_id in self._model_ids:
                 raise QueryEmbeddingConfigurationError()
-            self._consumed_model_ids.add(model_id)
-
-
-class _SingleUseInvokeGuard:
-    def __init__(self) -> None:
-        self._lock = Lock()
-        self._consumed = False
-
-    def consume(self) -> None:
-        with self._lock:
-            if self._consumed:
-                raise QueryEmbeddingConfigurationError()
-            self._consumed = True
+            self._model_ids.add(model_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +80,8 @@ class _CapabilityQueryEmbeddingPlanState:
     deployment_id: uuid.UUID
     deployment_version: int
     node_id: str
+    container_path: tuple[tuple[str, str], ...]
+    node_location_digest: str
     node_invocation_id: uuid.UUID
     execution_admission_id: uuid.UUID
     execution_subject: RuntimePrincipal
@@ -81,88 +90,26 @@ class _CapabilityQueryEmbeddingPlanState:
     query_byte_cap: int
     input_token_cap: int
     cost_cap_microusd: int
-    resolve_guard: _ModelResolveGuard
-
-
-class _CapabilityQueryEmbeddingLease(QueryEmbeddingInvocationLease):
-    def __init__(
-        self,
-        *,
-        attribution: QueryEmbeddingAttribution,
-        query: str,
-        admitted_input_tokens: int,
-        operation: Any,
-        egress_lease: Any,
-    ) -> None:
-        self._attribution = attribution
-        self._query = query
-        self._admitted_input_tokens = admitted_input_tokens
-        self._operation = operation
-        self._egress_lease = egress_lease
-        self._guard = _SingleUseInvokeGuard()
-
-    @property
-    def attribution(self) -> QueryEmbeddingAttribution:
-        return self._attribution
-
-    def invoke(self) -> QueryEmbeddingProviderResult:
-        self._guard.consume()
-        try:
-            self._operation.mark_provider_started()
-        except Exception as exc:
-            raise QueryEmbeddingConfigurationError() from exc
-        try:
-            result = self._egress_lease.invoke(self._query)
-        except Exception:
-            try:
-                self._operation.complete_outcome_unknown()
-            except Exception:
-                pass
-            raise QueryEmbeddingConfigurationError() from None
-        if not isinstance(result, QueryEmbeddingProviderResult):
-            try:
-                self._operation.complete_outcome_unknown()
-            except Exception:
-                pass
-            raise QueryEmbeddingConfigurationError()
-        if result.input_tokens > self._admitted_input_tokens:
-            try:
-                self._operation.complete_outcome_unknown()
-            except Exception:
-                pass
-            raise QueryEmbeddingConfigurationError()
-        try:
-            self._operation.complete_success(input_tokens=result.input_tokens)
-        except Exception as exc:
-            try:
-                self._operation.complete_outcome_unknown()
-            except Exception:
-                pass
-            raise QueryEmbeddingConfigurationError() from exc
-        return result
+    workflow_run_id: uuid.UUID | None
+    cost_optimizer_candidate_id: uuid.UUID | None
+    invoke_guard: _ModelInvokeGuard
 
 
 class CapabilityQueryEmbeddingAdapter:
-    """Maps a trusted Workflow invocation to a query-embedding capability."""
+    """Authorize, account for, and invoke one embedding model group."""
 
     def __init__(
         self,
         *,
         session_factory: Callable[[], Session],
-        operation_ledger: QueryEmbeddingOperationLedger | None = None,
-        egress_runtime: QueryEmbeddingEgressRuntime | None = None,
+        usage_recorder: ProviderUsageRecorder,
         capability_service: Any = None,
         credential_loader: Callable[[Any], Mapping[str, Any]] | None = None,
         client_factory: Callable[..., Any] | None = None,
     ) -> None:
         self._session_factory = session_factory
-        self._operation_ledger = operation_ledger
-        self._egress_runtime = egress_runtime
-        self._capability_service = (
-            capability_service
-            if capability_service is not None
-            else ProviderExecutionCapabilityService
-        )
+        self._usage_recorder = usage_recorder
+        self._capability_service = capability_service or ProviderExecutionCapabilityService
         self._credential_loader = credential_loader or load_llm_credential_config
         self._client_factory = client_factory or get_llm_client
 
@@ -171,44 +118,39 @@ class CapabilityQueryEmbeddingAdapter:
             request.execution_context.get("provider_execution_capability_required")
             is not True
             or request.legacy_credential_user_id is not None
-            or self._operation_ledger is None
-            or self._egress_runtime is None
+            or self._usage_recorder is None
         ):
             raise QueryEmbeddingConfigurationError()
-        state = self._resolve_plan_state(request)
-        return QueryEmbeddingPlan(capability_required=True, state=state)
+        return QueryEmbeddingPlan(
+            capability_required=True,
+            organization_id=request.organization_id,
+            node_id=request.node_id,
+            state=self._resolve_plan_state(request),
+        )
 
-    def resolve(
+    def invoke(
         self,
-        request: QueryEmbeddingRequest,
-    ) -> QueryEmbeddingInvocationLease:
+        request: QueryEmbeddingProviderRequest,
+    ) -> QueryEmbeddingProviderResult:
         state = request.plan.state
-        if not isinstance(state, _CapabilityQueryEmbeddingPlanState):
-            raise QueryEmbeddingConfigurationError()
         binding = request.model_binding
         if (
-            not isinstance(binding.model_id, uuid.UUID)
-            or not isinstance(binding.provider_id, uuid.UUID)
-            or not isinstance(binding.model_identifier, str)
-            or not binding.model_identifier.strip()
-            or binding.model_identifier != binding.model_identifier.strip()
+            not isinstance(state, _CapabilityQueryEmbeddingPlanState)
+            or state.organization_id != request.plan.organization_id
+            or state.node_id != request.plan.node_id
+            or not isinstance(binding, EmbeddingModelBinding)
             or not isinstance(request.query, str)
             or not request.query
         ):
             raise QueryEmbeddingConfigurationError()
-        state.resolve_guard.consume(binding.model_id)
-        query_bytes = len(request.query.encode("utf-8"))
-        if (
-            query_bytes > state.query_byte_cap
-            or query_bytes > state.input_token_cap
-        ):
-            raise QueryEmbeddingConfigurationError()
+        state.invoke_guard.consume(binding.model_id)
 
         provider_attempt_id = uuid.uuid5(
             state.execution_admission_id,
             (
                 "provider_execution:"
-                f"{state.node_invocation_id}:query_embedding:{binding.model_id}"
+                f"{state.node_invocation_id}:{state.node_location_digest}:"
+                f"query_embedding:{binding.model_id}"
             ),
         )
         provider_binding = ProviderExecutionBinding(
@@ -221,6 +163,7 @@ class CapabilityQueryEmbeddingAdapter:
             execution_admission_id=state.execution_admission_id,
             provider_attempt_id=provider_attempt_id,
             purpose=CapabilityPurpose.QUERY_EMBEDDING,
+            container_path=state.container_path,
         )
         issue_command = ProviderExecutionCapabilityIssueCommand(
             binding=provider_binding,
@@ -233,161 +176,286 @@ class CapabilityQueryEmbeddingAdapter:
             policy_model_id=binding.model_id,
         )
 
-        db = self._new_isolated_session(request.shared_session)
+        db = self._new_session()
         try:
             try:
                 capability = self._capability_service.issue_capability(
                     db,
                     command=issue_command,
                 )
+                provisional = self._capability_service.admit_capability(
+                    db,
+                    command=ProviderExecutionCapabilityAdmissionCommand(
+                        capability_id=capability.id,
+                        capability_revision=capability.revision,
+                        binding=provider_binding,
+                        requested_input_tokens=0,
+                        requested_output_tokens=0,
+                        policy_model_id=binding.model_id,
+                    ),
+                )
+                client = self._materialize_client(
+                    lease=provisional,
+                    expected_binding=binding,
+                )
+                prepared = client.prepare_embedding_invocation(request.query)
+                if not isinstance(prepared, PreparedEmbeddingInvocation):
+                    raise QueryEmbeddingConfigurationError()
+                if (
+                    prepared.canonical_request_bytes > state.query_byte_cap
+                    or prepared.requested_input_tokens > state.input_token_cap
+                ):
+                    raise QueryEmbeddingConfigurationError()
                 admitted = self._capability_service.admit_capability(
                     db,
                     command=ProviderExecutionCapabilityAdmissionCommand(
                         capability_id=capability.id,
                         capability_revision=capability.revision,
                         binding=provider_binding,
-                        requested_input_tokens=query_bytes,
+                        requested_input_tokens=prepared.requested_input_tokens,
                         requested_output_tokens=0,
                         policy_model_id=binding.model_id,
                     ),
                 )
+                attribution = self._attribution(
+                    lease=admitted,
+                    expected_binding=binding,
+                    admitted_input_tokens=prepared.requested_input_tokens,
+                    issue_command=issue_command,
+                )
             except ProviderExecutionPolicyError as exc:
                 raise QueryEmbeddingConfigurationError() from exc
-            attribution, client, egress_scope = self._materialize(
-                admitted=admitted,
-                expected_binding=binding,
-                provider_attempt_id=provider_attempt_id,
-                organization_id=state.organization_id,
-            )
+            except QueryEmbeddingConfigurationError:
+                raise
+            except (LLMCredentialConfigError, LLMResponseValidationError):
+                raise QueryEmbeddingConfigurationError() from None
+            except Exception:
+                raise QueryEmbeddingConfigurationError() from None
             db.commit()
         finally:
             db.close()
 
         try:
-            operation = self._operation_ledger.begin(
-                QueryEmbeddingOperationRequest(
+            attempt = self._usage_recorder.begin(
+                ProviderUsageIntent(
                     attribution=attribution,
-                    provider_attempt_id=provider_attempt_id,
-                    requested_input_tokens=query_bytes,
-                    cost_cap_microusd=state.cost_cap_microusd,
+                    workflow_id=state.workflow_id,
+                    workflow_run_id=state.workflow_run_id,
+                    node_id=state.node_id,
+                    cost_optimizer_candidate_id=state.cost_optimizer_candidate_id,
                 )
             )
-            egress_lease = self._egress_runtime.authorize(
-                scope=egress_scope,
-                client=client,
+            if not attempt.durable:
+                raise ProviderUsageRuntimeError("provider_usage.durable_required")
+            attempt.mark_provider_started()
+        except Exception:
+            raise QueryEmbeddingConfigurationError() from None
+
+        started_at = time.monotonic()
+        try:
+            provider_result = prepared.invoke()
+        except Exception as exc:
+            self._terminalize_failure(attempt, exc)
+            raise QueryEmbeddingConfigurationError() from None
+        latency_ms = max(0, int((time.monotonic() - started_at) * 1000))
+        if not isinstance(provider_result, EmbeddingProviderResult):
+            self._mark_unknown(attempt, "provider_usage_invalid")
+            raise QueryEmbeddingConfigurationError()
+        try:
+            attempt.record_success(
+                usage={
+                    "prompt_tokens": provider_result.input_tokens,
+                    "completion_tokens": 0,
+                    "total_tokens": provider_result.input_tokens,
+                },
+                latency_ms=latency_ms,
             )
         except Exception:
-            if "operation" in locals():
-                try:
-                    operation.complete_before_effect_failure()
-                except Exception:
-                    pass
             raise QueryEmbeddingConfigurationError() from None
-        return _CapabilityQueryEmbeddingLease(
-            attribution=attribution,
-            query=request.query,
-            admitted_input_tokens=query_bytes,
-            operation=operation,
-            egress_lease=egress_lease,
+        return QueryEmbeddingProviderResult(
+            vector=provider_result.vector,
+            input_tokens=provider_result.input_tokens,
+            latency_ms=latency_ms,
         )
 
-    def _materialize(
+    def _materialize_client(
         self,
         *,
-        admitted: Any,
-        expected_binding: Any,
-        provider_attempt_id: uuid.UUID,
-        organization_id: uuid.UUID,
-    ) -> tuple[QueryEmbeddingAttribution, Any, QueryEmbeddingEgressScope]:
-        capability = admitted.capability
-        model = admitted.model
-        provider = admitted.provider
-        credential = admitted.credential
+        lease: Any,
+        expected_binding: EmbeddingModelBinding,
+    ) -> Any:
+        model = lease.model
+        provider = lease.provider
+        credential = lease.credential
+        if (
+            uuid.UUID(str(model.id)) != expected_binding.model_id
+            or uuid.UUID(str(provider.id)) != expected_binding.provider_id
+            or model.provider_id != expected_binding.provider_id
+            or model.model_id_for_api_call != expected_binding.model_identifier
+            or model.type != "embedding"
+        ):
+            raise QueryEmbeddingConfigurationError()
+        config = self._credential_loader(credential)
+        api_key = config.get("apiKey")
+        provider_name = getattr(provider, "name", None)
+        provider_base_url = getattr(provider, "base_url", None)
+        if (
+            not isinstance(api_key, str)
+            or not api_key.strip()
+            or not isinstance(provider_name, str)
+            or not provider_name.strip()
+            or not isinstance(provider_base_url, str)
+            or not provider_base_url
+            or provider_base_url != provider_base_url.strip()
+        ):
+            raise QueryEmbeddingConfigurationError()
+        return self._client_factory(
+            provider=provider_name,
+            model_id=expected_binding.model_identifier,
+            credentials={"apiKey": api_key, "baseUrl": provider_base_url},
+        )
+
+    def _attribution(
+        self,
+        *,
+        lease: Any,
+        expected_binding: EmbeddingModelBinding,
+        admitted_input_tokens: int,
+        issue_command: ProviderExecutionCapabilityIssueCommand,
+    ) -> ProviderExecutionAttribution:
+        capability = lease.capability
         principal = capability.credential_principal
         try:
-            model_id = uuid.UUID(str(model.id))
-            provider_id = uuid.UUID(str(provider.id))
-            credential_id = uuid.UUID(str(credential.id))
+            model_id = uuid.UUID(str(lease.model.id))
+            provider_id = uuid.UUID(str(lease.provider.id))
+            credential_id = uuid.UUID(str(lease.credential.id))
             principal_id = uuid.UUID(str(principal.reference_id))
-            capability_id = uuid.UUID(str(capability.id))
-            capability_revision = int(capability.revision)
-            input_price = Decimal(str(model.input_price_1k))
-            pricing_revision = str(capability.pricing_revision)
-            egress_revision = str(capability.egress_revision)
-            provider_name = str(provider.name)
-            provider_base_url = str(provider.base_url)
+            pricing = ProviderExecutionPricingSnapshot(
+                revision=str(capability.pricing_revision),
+                input_price_per_1k=Decimal(str(lease.model.input_price_1k)),
+                output_price_per_1k=Decimal(str(lease.model.output_price_1k)),
+            )
         except (AttributeError, InvalidOperation, TypeError, ValueError) as exc:
             raise QueryEmbeddingConfigurationError() from exc
         if (
             model_id != expected_binding.model_id
             or provider_id != expected_binding.provider_id
-            or getattr(model, "provider_id", None) != provider_id
-            or getattr(model, "model_id_for_api_call", None)
-            != expected_binding.model_identifier
-            or getattr(model, "type", None) != "embedding"
+            or lease.model.model_id_for_api_call != expected_binding.model_identifier
             or principal.kind is not PrincipalKind.USER
-            or capability_revision < 1
-            or len(pricing_revision) != 64
-            or len(egress_revision) != 64
-            or not input_price.is_finite()
-            or input_price < 0
-            or not provider_name.strip()
-            or provider_name != provider_name.strip()
-            or not provider_base_url
-            or provider_base_url != provider_base_url.strip()
         ):
             raise QueryEmbeddingConfigurationError()
-        try:
-            config = self._credential_loader(credential)
-            api_key = config.get("apiKey")
-            if not isinstance(api_key, str) or not api_key.strip():
-                raise QueryEmbeddingConfigurationError()
-            client = self._client_factory(
-                provider=provider_name,
-                model_id=expected_binding.model_identifier,
-                credentials={"apiKey": api_key, "baseUrl": provider_base_url},
-            )
-        except QueryEmbeddingConfigurationError:
-            raise
-        except (LLMCredentialConfigError, TypeError, ValueError, AttributeError):
-            raise QueryEmbeddingConfigurationError() from None
-        except Exception:
-            raise QueryEmbeddingConfigurationError() from None
-
-        attribution = QueryEmbeddingAttribution(
-            organization_id=organization_id,
-            model_id=model_id,
+        identities = ProviderExecutionIdentityContext(
+            execution_subject=self._application_principal(
+                issue_command.execution_subject
+            ),
+            credential_principal=ProviderExecutionPrincipal(
+                ProviderExecutionPrincipalKind.USER,
+                principal_id,
+            ),
+            billing_principal=self._application_principal(
+                issue_command.billing_principal
+            ),
+            audit_actor=self._application_principal(issue_command.audit_actor),
+        )
+        usage_context = ProviderExecutionUsageContext(
+            binding=ProviderExecutionBindingSnapshot(
+                organization_id=capability.binding.organization_id,
+                workflow_id=capability.binding.workflow_id,
+                deployment_id=capability.binding.deployment_id,
+                deployment_version=capability.binding.deployment_version,
+                node_id=capability.binding.node_id,
+                node_invocation_id=capability.binding.node_invocation_id,
+                execution_admission_id=capability.binding.execution_admission_id,
+                provider_attempt_id=capability.binding.provider_attempt_id,
+                purpose=ProviderExecutionPurpose.QUERY_EMBEDDING,
+                container_path=capability.binding.container_path,
+            ),
+            capability_id=capability.id,
+            capability_revision=capability.revision,
+            capability_expires_at=capability.expires_at,
+            policy_id=capability.policy_id,
+            policy_revision=capability.policy_revision,
             provider_id=provider_id,
+            model_id=model_id,
+            model_api_id=expected_binding.model_identifier,
+            credential_id=credential_id,
+            identities=identities,
+            permission_revision=capability.permission_revision,
+            relation_revision=capability.relation_revision,
+            egress_revision=capability.egress_revision,
+            pricing_snapshot=pricing,
+            input_token_cap=capability.input_token_cap,
+            output_token_cap=0,
+            cost_cap_microusd=capability.cost_cap_microusd,
+            admitted_input_tokens=admitted_input_tokens,
+            admitted_output_tokens=0,
+        )
+        return ProviderExecutionAttribution(
             credential_id=credential_id,
             credential_principal_user_id=principal_id,
-            provider_attempt_id=provider_attempt_id,
-            capability_id=capability_id,
-            capability_revision=capability_revision,
-            pricing_revision=pricing_revision,
-            egress_revision=egress_revision,
-            input_price_per_1k=input_price,
-        )
-        return (
-            attribution,
-            client,
-            QueryEmbeddingEgressScope(
-                organization_id=organization_id,
-                provider_id=provider_id,
-                model_id=model_id,
-                capability_id=capability_id,
-                capability_revision=capability_revision,
-                egress_revision=egress_revision,
-                provider_name=provider_name,
-                provider_base_url=provider_base_url,
-            ),
+            organization_id=capability.binding.organization_id,
+            model_id=expected_binding.model_identifier,
+            model_db_id=model_id,
+            capability_id=capability.id,
+            capability_revision=capability.revision,
+            pricing_snapshot=pricing,
+            usage_context=usage_context,
         )
 
-    def _new_isolated_session(self, shared_session: Any | None) -> Session:
+    @staticmethod
+    def _application_principal(
+        principal: RuntimePrincipal,
+    ) -> ProviderExecutionPrincipal:
+        try:
+            return ProviderExecutionPrincipal(
+                ProviderExecutionPrincipalKind(principal.kind.value),
+                principal.reference_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise QueryEmbeddingConfigurationError() from exc
+
+    @staticmethod
+    def _terminalize_failure(attempt: Any, exc: Exception) -> None:
+        try:
+            if isinstance(exc, ProviderInvocationError):
+                if exc.failure_phase is ProviderFailurePhase.BEFORE_SEND:
+                    attempt.record_definitive_failure(reason_code="provider_not_sent")
+                    return
+                if (
+                    exc.failure_phase is ProviderFailurePhase.RESPONSE_RECEIVED
+                    and exc.status_code in {401, 403}
+                ):
+                    attempt.record_definitive_failure(reason_code="provider_rejected")
+                    return
+                reason = (
+                    "provider_timeout"
+                    if exc.reason_code == "provider_timeout"
+                    else "provider_call_failed"
+                )
+                attempt.mark_outcome_unknown(reason_code=reason)
+                return
+            reason = (
+                "provider_usage_invalid"
+                if isinstance(exc, LLMResponseValidationError)
+                else "provider_call_failed"
+            )
+            attempt.mark_outcome_unknown(reason_code=reason)
+        except Exception:
+            return
+
+    @staticmethod
+    def _mark_unknown(attempt: Any, reason_code: str) -> None:
+        try:
+            attempt.mark_outcome_unknown(reason_code=reason_code)
+        except Exception:
+            return
+
+    def _new_session(self) -> Session:
         try:
             db = self._session_factory()
         except Exception as exc:
             raise QueryEmbeddingConfigurationError() from exc
-        if db is None or db is shared_session:
+        if db is None:
             raise QueryEmbeddingConfigurationError()
         return db
 
@@ -425,7 +493,6 @@ class CapabilityQueryEmbeddingAdapter:
             or workflow_id != effect.workflow_id
         ):
             raise QueryEmbeddingConfigurationError()
-
         limits = context.get("query_embedding_capability_limits")
         if not isinstance(limits, Mapping):
             raise QueryEmbeddingConfigurationError()
@@ -439,33 +506,51 @@ class CapabilityQueryEmbeddingAdapter:
             for value in values
         ):
             raise QueryEmbeddingConfigurationError()
-        query_byte_cap, input_token_cap, cost_cap_microusd = values
         execution_subject, audit_actor = self._execution_identities(context)
+        try:
+            location = CanonicalWorkflowNodeLocation(
+                control.binding_container_path,
+                request.node_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise QueryEmbeddingConfigurationError() from exc
         return _CapabilityQueryEmbeddingPlanState(
             organization_id=organization_id,
             workflow_id=workflow_id,
             deployment_id=deployment_id,
             deployment_version=deployment_version,
             node_id=request.node_id,
+            container_path=control.binding_container_path,
+            node_location_digest=location.digest,
             node_invocation_id=effect.node_invocation_id,
             execution_admission_id=control.execution_id,
             execution_subject=execution_subject,
             billing_principal=RuntimePrincipal.organization(organization_id),
             audit_actor=audit_actor,
-            query_byte_cap=query_byte_cap,
-            input_token_cap=input_token_cap,
-            cost_cap_microusd=cost_cap_microusd,
-            resolve_guard=_ModelResolveGuard(),
+            query_byte_cap=values[0],
+            input_token_cap=values[1],
+            cost_cap_microusd=values[2],
+            workflow_run_id=self._optional_uuid(context.get("workflow_run_id")),
+            cost_optimizer_candidate_id=self._optional_uuid(
+                context.get("cost_optimizer_candidate_id")
+            ),
+            invoke_guard=_ModelInvokeGuard(),
         )
 
     @staticmethod
-    def _required_uuid(
-        context: Mapping[str, Any],
-        field_name: str,
-    ) -> uuid.UUID:
+    def _required_uuid(context: Mapping[str, Any], field_name: str) -> uuid.UUID:
         try:
             return uuid.UUID(str(context[field_name]))
         except (KeyError, TypeError, ValueError) as exc:
+            raise QueryEmbeddingConfigurationError() from exc
+
+    @staticmethod
+    def _optional_uuid(value: Any) -> uuid.UUID | None:
+        if value in (None, ""):
+            return None
+        try:
+            return uuid.UUID(str(value))
+        except (TypeError, ValueError) as exc:
             raise QueryEmbeddingConfigurationError() from exc
 
     @staticmethod

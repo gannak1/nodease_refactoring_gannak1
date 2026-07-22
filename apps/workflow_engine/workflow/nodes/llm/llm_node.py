@@ -15,7 +15,6 @@ from apps.shared.domain.workflow_node_location import (
     CanonicalWorkflowNodeLocation,
     WorkflowNodeLocationError,
 )
-from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMModel
 from apps.shared.db.models.model_routing_policy import LLMModelRoutingGlobalProfile
 from apps.shared.db.models.workflow_run import RunStatus, WorkflowNodeRun, WorkflowRun
@@ -51,10 +50,7 @@ from apps.shared.services.rag_source_tier import (
     chunk_source_tier_priority,
     source_tier_tie_break_enabled,
 )
-from apps.shared.services.retrieval_embedding_model_projection import (
-    EmbeddingModelBinding,
-    load_embedding_model_projection,
-)
+from apps.shared.domain.embedding_model_binding import EmbeddingModelBinding
 from apps.shared.services.security_alert_policy_reason import (
     with_normalized_security_alert_policy_reason,
 )
@@ -88,11 +84,10 @@ from apps.workflow_engine.application.provider_usage import (
 )
 from apps.workflow_engine.application.query_embedding_execution import (
     QueryEmbeddingConfigurationError,
+    QueryEmbeddingExecutionRequest,
     QueryEmbeddingExecutionRuntime,
-    QueryEmbeddingModelBinding,
     QueryEmbeddingPlan,
     QueryEmbeddingPreflight,
-    QueryEmbeddingRequest,
 )
 from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
     KnowledgeRuntimeCandidateInfrastructureError,
@@ -2927,7 +2922,7 @@ class LLMNode(Node[LLMNodeData]):
 
     def _precompute_rag_query_vectors_by_kb(
         self,
-        db_session,
+        _db_session,
         *,
         query: str,
         query_embedding_plan: QueryEmbeddingPlan,
@@ -2941,99 +2936,29 @@ class LLMNode(Node[LLMNodeData]):
     ]:
         if not knowledge_base_ids:
             return {}, {}, 0, False
-
-        try:
-            parsed_ids = [uuid.UUID(str(kb_id)) for kb_id in knowledge_base_ids]
-            rows = (
-                db_session.query(KnowledgeBase)
-                .filter(
-                    KnowledgeBase.id.in_(parsed_ids),
-                    KnowledgeBase.organization_id == organization_id,
-                    KnowledgeBase.lifecycle_state == "active",
-                )
-                .all()
+        result = self._get_query_embedding_runtime().execute(
+            QueryEmbeddingExecutionRequest(
+                plan=query_embedding_plan,
+                organization_id=organization_id,
+                node_id=self.id,
+                knowledge_base_ids=tuple(knowledge_base_ids),
+                failure_policy=self.data.ragFailurePolicy,
+                query=query,
             )
-        except Exception as exc:
-            logger.warning(
-                "[LLMNode] RAG query vector precompute failed: %s",
-                exc.__class__.__name__,
-            )
-            if self.data.ragFailurePolicy == "fail_node":
-                raise RuntimeError(
-                    "embedding_model_projection_unavailable"
-                ) from exc
-            return {}, {}, len(knowledge_base_ids), True
-
-        if any(not hasattr(row, "embedding_model") for row in rows):
-            logger.info(
-                "[LLMNode] RAG query vector precompute failed: "
-                "missing embedding model attribute"
-            )
-            if self.data.ragFailurePolicy == "fail_node":
-                raise RuntimeError("embedding_model_projection_unavailable")
-            return {}, {}, len(knowledge_base_ids), True
-
-        kb_by_id = {str(row.id): row for row in rows}
-        model_to_kb_ids: Dict[str, List[str]] = {}
-        failed_count = 0
-        for kb_id in knowledge_base_ids:
-            kb = kb_by_id.get(str(kb_id))
-            if kb is None or not getattr(kb, "embedding_model", None):
-                failed_count += 1
-                continue
-            model_to_kb_ids.setdefault(kb.embedding_model, []).append(str(kb_id))
-
-        try:
-            model_projection = load_embedding_model_projection(
-                db_session,
-                model_to_kb_ids,
-            )
-        except Exception:
-            if self.data.ragFailurePolicy == "fail_node":
-                raise
-            failed_count += sum(
-                len(grouped_kb_ids)
-                for grouped_kb_ids in model_to_kb_ids.values()
-            )
-            return {}, {}, failed_count, True
-
-        query_vectors_by_kb: Dict[str, List[float]] = {}
-        model_bindings_by_kb: Dict[str, EmbeddingModelBinding] = {}
-        query_embedding_runtime = self._get_query_embedding_runtime()
-        for embedding_model, grouped_kb_ids in model_to_kb_ids.items():
-            model_binding = model_projection.get(embedding_model)
-            if model_binding is None:
-                failed_count += len(grouped_kb_ids)
-                continue
-            try:
-                lease = query_embedding_runtime.resolve(
-                    QueryEmbeddingRequest(
-                        plan=query_embedding_plan,
-                        model_binding=QueryEmbeddingModelBinding(
-                            model_id=model_binding.model_id,
-                            provider_id=model_binding.provider_id,
-                            model_identifier=model_binding.model_identifier,
-                        ),
-                        query=query,
-                        shared_session=db_session,
-                    )
-                )
-                query_vector = list(lease.invoke().vector)
-            except Exception:
-                if self.data.ragFailurePolicy == "fail_node":
-                    raise
-                failed_count += len(grouped_kb_ids)
-                continue
-            for kb_id in grouped_kb_ids:
-                query_vectors_by_kb[kb_id] = query_vector
-                model_bindings_by_kb[kb_id] = model_binding
+        )
+        query_vectors_by_kb = {
+            key: list(vector)
+            for key, vector in result.vectors_by_knowledge_base.items()
+        }
+        model_bindings_by_kb = dict(result.bindings_by_knowledge_base)
+        failed_count = result.failed_count
 
         logger.info(
             "[LLMNode] RAG query vector precompute completed: "
             "kb_count_bucket=%s model_count_bucket=%s "
             "vector_kb_count_bucket=%s failed_count_bucket=%s",
             self._bucket_count(len(knowledge_base_ids)),
-            self._bucket_count(len(model_to_kb_ids)),
+            self._bucket_count(len(set(model_bindings_by_kb.values()))),
             self._bucket_count(len(query_vectors_by_kb)),
             self._bucket_count(failed_count),
         )
