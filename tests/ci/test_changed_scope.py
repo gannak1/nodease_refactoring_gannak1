@@ -216,9 +216,7 @@ def test_ci_control_change_selects_smoke_jobs_and_postgres_contracts():
     assert scope.deployment_validation is True
     assert scope.actions_validation is True
     assert scope.helm_validation is True
-    assert scope.kubernetes_validation is True
-    assert scope.terraform_validation is True
-    assert scope.terraform_config_changed is False
+    assert scope.support_surface_validation is True
     assert scope.compose_validation is True
     assert scope.dockerfile_validation is True
     assert scope.dockerfile_config_changed is False
@@ -257,21 +255,50 @@ def test_protected_postgres_workflow_change_is_treated_as_ci_control(path: str):
 
 
 def test_deployment_workflow_selects_static_validation_without_runtime_tests():
-    scope = classify_paths([".github/workflows/deploy-eks-gateway.yml"])
+    scope = classify_paths([".github/workflows/publish-images.yml"])
 
     assert scope.deployment_validation is True
     assert scope.actions_validation is True
+    assert scope.support_surface_validation is True
     assert scope.client is False
     assert scope.gateway_tests is False
     assert scope.broad_python is False
 
 
 @pytest.mark.parametrize(
+    "path",
+    [
+        ".github/workflows/deploy-prod.yml",
+        ".github/workflows/release-renamed.yaml",
+    ],
+)
+def test_every_workflow_change_selects_support_boundary_guard(path: str):
+    scope = classify_paths([path])
+
+    assert scope.deployment_validation is True
+    assert scope.actions_validation is True
+    assert scope.support_surface_validation is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/actions/deploy/action.yml",
+        ".github/actions/release/action.yaml",
+    ],
+)
+def test_every_composite_action_change_selects_support_boundary_guard(path: str):
+    scope = classify_paths([path])
+
+    assert scope.deployment_validation is True
+    assert scope.actions_validation is True
+    assert scope.support_surface_validation is True
+
+
+@pytest.mark.parametrize(
     ("path", "selected_output"),
     [
         ("infra/helm/moduly/values-production.yaml", "helm_validation"),
-        ("infra/k8s/ingress.yaml", "kubernetes_validation"),
-        ("infra/terraform/eks.tf", "terraform_validation"),
         ("docker/docker-compose.yml", "compose_validation"),
         ("docker/docker-compose.connector-demo.yml", "compose_validation"),
         ("docker/gateway/Dockerfile", "dockerfile_validation"),
@@ -291,16 +318,27 @@ def test_deployment_config_selects_only_its_static_validator(
     assert scope.broad_python is False
 
 
-def test_terraform_change_is_distinct_from_ci_control_smoke_selection():
-    scope = classify_paths(
-        [
-            ".github/workflows/pr-quality-gate.yml",
-            "infra/terraform/eks.tf",
-        ]
-    )
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/workflows/deploy-dev-namespace.yml",
+        ".github/workflows/deploy-dev-namespace.yaml",
+        ".github/workflows/deploy-eks-gateway.yml",
+        ".github/workflows/deploy-eks-gateway.yaml",
+        ".github/workflows/deploy-eks-schedule-coordinated.yml",
+        ".github/workflows/deploy-eks-reintroduced.yml",
+        "infra/k8s/ingress.yaml",
+        "infra/terraform/eks.tf",
+    ],
+)
+def test_removed_eks_surface_selects_support_boundary_guard(path: str):
+    scope = classify_paths([path])
 
-    assert scope.terraform_validation is True
-    assert scope.terraform_config_changed is True
+    assert scope.deployment_validation is True
+    assert scope.support_surface_validation is True
+    assert scope.client is False
+    assert scope.gateway_tests is False
+    assert scope.broad_python is False
 
 
 def test_dockerfile_change_is_distinct_from_ci_control_smoke_selection():

@@ -1,7 +1,6 @@
 {{- if .Values.gateway.enabled }}
-{{- include "moduly.validateScheduleDispatchMode" . }}
 {{- $connectorTestAllowedPorts := required "connectorTest.allowedPorts is required" .Values.connectorTest.allowedPorts }}
-{{- $storageType := upper (default "LOCAL" .Values.gateway.env.STORAGE_TYPE) }}
+{{- $storageType := include "moduly.storageType" . }}
 {{- if and .Values.knowledgeWorker.enabled (eq $storageType "LOCAL") (not .Values.knowledgeWorker.localStorage.enabled) }}
 {{- fail "knowledgeWorker.localStorage.enabled must be true when Knowledge worker uses LOCAL storage" }}
 {{- end }}
@@ -25,6 +24,7 @@ spec:
         checksum/config: {{ toYaml .Values | sha256sum }}
         checksum/secret: {{ toYaml .Values.secrets | sha256sum }}
     spec:
+      serviceAccountName: {{ include "moduly.serviceAccountName" . }}
       {{- if and .Values.knowledgeWorker.enabled (eq $storageType "LOCAL") .Values.knowledgeWorker.localStorage.enabled }}
       securityContext:
         fsGroup: {{ .Values.knowledgeWorker.localStorage.fsGroup }}
@@ -244,18 +244,18 @@ spec:
             configMapKeyRef:
               name: {{ include "moduly.configMapName" . }}
               key: STORAGE_TYPE
-        {{- if .Values.gateway.env.S3_BUCKET_NAME }}
+        {{- if eq $storageType "CLOUD" }}
         - name: S3_BUCKET_NAME
           valueFrom:
             configMapKeyRef:
               name: {{ include "moduly.configMapName" . }}
               key: S3_BUCKET_NAME
-        {{- end }}
         - name: AWS_REGION
           valueFrom:
             configMapKeyRef:
               name: {{ include "moduly.configMapName" . }}
               key: AWS_REGION
+        {{- end }}
         
         # Google OAuth (optional)
         {{- if .Values.secrets.googleClientId }}

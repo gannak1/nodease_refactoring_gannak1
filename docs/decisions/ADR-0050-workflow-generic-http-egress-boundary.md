@@ -3,6 +3,8 @@
 Status: Accepted
 
 Related ADRs: [ADR-0022](ADR-0022-hexagonal-module-boundary.md), [ADR-0035](ADR-0035-external-effect-idempotency-boundary.md), [ADR-0049](ADR-0049-connector-test-security-boundary.md)
+Deployment surface correction: active EKS manifest에 관한 Decision 12와 consequence는 [ADR-0065](ADR-0065-eks-support-surface-removal.md)가 대체한다. Worker egress 정책의 현재 배포 증거는 provider-neutral Helm이다.
+
 
 ## 배경
 

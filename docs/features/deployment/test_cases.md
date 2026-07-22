@@ -1,7 +1,6 @@
 # Deployment Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-247 @ 3b947bd5ac6c51ffcc028510344ee2e5a5066873`
 
 ## Unit Tests
 
@@ -142,7 +141,7 @@ Verified Against: `feature/mba-247 @ 3b947bd5ac6c51ffcc028510344ee2e5a5066873`
 
 - MBA-247 expand migration은 single Alembic head를 유지하고 기존 non-null `apps.auth_secret`을 같은 V1 verifier와 version 1로 backfill한 뒤 legacy column을 nullable로 바꾼다. Raw value를 migration output에 기록하지 않는다.
 - Expand release의 checked-in manifest와 application default는 lifecycle mode를 `disabled`로 유지한다. 이 상태의 status는 `rotation_enabled=false`이며 권한이 있는 rotation도 secret 생성, row lock, audit과 mutation 전에 `503 app.auth_secret_lifecycle_unavailable`로 끝난다.
-- Raw Kubernetes, Docker Compose와 Helm values/template은 lifecycle mode를 기본 `disabled`로 Gateway에 전달한다. Status와 성공 rotation 응답은 `no-store, no-cache`/`no-cache` header를 반환한다.
+- Docker Compose와 Helm values/template은 lifecycle mode를 기본 disabled로 Gateway에 전달한다. Status와 성공 rotation 응답은 no-store/no-cache header를 반환한다.
 - Caller-controlled request ID/IP/User-Agent에 secret-like 값을 넣어 rotation해도 `app.auth_secret.rotated`와 permission-denied audit metadata에 해당 값이 저장되지 않는다.
 - REST API/Webhook 배포 모달은 첫 active preflight 이전 input 단계에서 App ID 기반 secret status와 발급·교체 control에 접근할 수 있다.
 - 발급된 one-time secret을 표시한 상태에서 교체 확인을 열었다가 취소하거나 refresh가 같은 version인 rotation 실패를 확인해도 기존 원문은 새 rotation 성공 전까지 현재 component memory에 유지된다. 성공 응답을 부모 state로 전달한 것만으로 status를 즉시 재조회하거나 원문을 숨기지 않는다. 단, 원문과 함께 보존한 발급 version이 초기·재진입 status 또는 실패 뒤 refresh의 version과 다르면 원문을 즉시 폐기한다.
@@ -165,13 +164,22 @@ Verified Against: `feature/mba-247 @ 3b947bd5ac6c51ffcc028510344ee2e5a5066873`
 - MBA-219 migration은 schedule claim table과 최신 safe-reason constraint를 만든 revision의 후손에 있어야 한다. 실제 PostgreSQL은 canceled claim의 `configuration_preflight_blocked`를 허용하지만 pending/dispatching/enqueued/running/succeeded/dead-lettered 상태의 같은 reason은 거부한다. 해당 reason row가 남아 있으면 downgrade는 constraint DDL 전에 fail-closed한다.
 - `pending`/`dispatching`/`enqueued`에 `workflow_run_id`를 직접 기록하면 domain과 실제 PostgreSQL check constraint가 모두 거부한다. 한 claim의 publish 결과 write 실패 뒤에도 같은 prepared batch의 다음 claim은 publish/result 처리를 계속하며, terminal finalization 일시 실패는 engine call 1회를 유지한 채 fresh session write만 bounded 재시도한다.
 - Gateway/Worker startup readiness는 같은 shared helper 결과를 사용하고 introspection 실패, stale head, 필수 column 누락을 safe하게 거부한다. Concurrent migration은 advisory lock owner 하나만 진행하며 contender는 bounded wait 안에서 owner가 끝나면 이어서 진행하고 제한 시간을 넘기면 DDL 전에 실패한다.
-- 기존 운영 Deployment에 fingerprint annotation이 없는 최초 `disabled` rollout은 bootstrap으로 진행되지만, `drain`/`claim` desired mode에서 annotation 누락은 fail-closed한다.
-- Coordinated claim rollout은 동일 commit Logger image를 Gateway/Worker보다 먼저 배포하고 image identity를 검증한다. 이전 Logger가 남아 있거나 Logger rollout이 실패하면 claim admission을 활성화하지 않는다.
-- Coordinated rollout 첫 시도에서 일부 image push 또는 Deployment 적용 후 실패한 뒤 같은 commit으로 재실행하면, 이미 존재하는 ECR digest를 재사용하고 immutable image identity로 남은 단계를 수행한다. 최종 성공은 Logger/Gateway/Worker의 observed generation, desired/updated/Ready/available replica와 non-terminating Pod spec image/container imageID/fingerprint/Ready condition이 모두 일치할 때만 허용한다.
-- Activation/rollback preflight에서 일부 Worker가 inspect에 응답하지 않거나 task가 queue 확인 사이 active로 이동하면 전환을 차단한다. 기대 Ready Worker 집합과 응답 집합이 일치하고 앞뒤 task/queue 관측이 연속 두 번 0일 때만 통과한다.
+
+현재 지원 상태(ADR-0065): provider-neutral Helm/Compose는 schedule dispatch disabled만 검증한다. 아래 coordinated rollout 검증은 future CD의 acceptance criteria이며 현재 실행 가능한 EKS/Dev workflow 테스트가 아니다.
+
+- Target CD는 기존 운영 Deployment에 fingerprint annotation이 없는 최초 disabled rollout만 bootstrap으로 허용하고 drain/claim desired mode의 annotation 누락을 fail-closed해야 한다.
+- Target CD는 동일 immutable release의 Logger image를 Gateway/Worker보다 먼저 배포·검증하고 Logger가 수렴하지 않으면 claim admission을 활성화하지 않아야 한다.
+- Target CD가 일부 image push 또는 apply 뒤 같은 release로 재실행되면 기존 OCI registry digest를 재사용하고 immutable identity로 남은 단계를 수행해야 한다. 최종 성공은 Logger/Gateway/Worker의 generation, replica, Pod imageID, fingerprint와 Ready condition이 모두 수렴할 때만 허용한다.
+- Target CD integration은 일부 Worker inspect 누락이나 관측 사이 task 이동을 차단하고, 기대 Ready Worker와 응답 집합이 일치하며 앞뒤 task/queue 관측이 연속 두 번 0일 때만 통과해야 한다.
 - Lock 대기 또는 느린 budget 평가가 transaction 시작 뒤 발생해도 dispatch lease와 execution deadline은 전환 직전 DB wall clock 이후로 설정되고 commit 직후 만료되지 않는다.
 - `disabled` mode에서 신규 occurrence/dispatch/admission은 0건이지만 schema-ready DB의 visibility, terminal cleanup, pending/running age 관측은 계속 실행된다. Schema가 없는 최초 bootstrap에서는 maintenance를 시작하지 않는다.
-- Dev 일반 배포와 Helm render에서 non-disabled mode를 요청하면 coordinated workflow 안내와 함께 실패한다. Live Gateway/Worker가 claim/drain/mixed이거나 한쪽만 없는 bootstrap 상태, Deployment generation/replica 미수렴, terminating Pod를 제외한 실제 Pod의 Running/Ready/fingerprint 불일치 상태에서도 단독 disabled 전환을 거부한다. 양쪽이 이미 수렴한 disabled 상태이면 Gateway/Worker를 함께 배포할 때만 disabled fingerprint 설정 변경을 허용하고, 단독 service deploy는 live/desired fingerprint가 같아야 한다. Unrelated service만 배포할 때는 schedule component를 조회하거나 변경하지 않는다. Rollout status 실패는 무시되지 않는다.
+- Helm 기본/production render는 disabled mode에서 통과하고 non-disabled mode에서 현재 지원하지 않는다는 safe error로 실패한다. Gateway와 Worker를 모두 비활성화해도 chart 전역 검증이 `claim|drain`을 같은 safe error로 거부한다. Docker Compose에 `SCHEDULE_DISPATCH_MODE=claim|drain` 환경값이 있어도 render된 Gateway/Worker mode와 fingerprint는 disabled를 유지한다.
+- CI support-surface guard는 모든 PR의 scope 분류 전에 repository execution closure를 검사하고, workflow/composite action 변경에서는 deployment validation도 선택한다. Legacy path, allowlist 밖으로 이름을 바꾼 workflow, 삭제 뒤 남은 stale allowlist entry, 승인 workflow·local action·지원하는 정적 형식으로 전이 참조한 `scripts/**` 실행 파일/Python module 안에 AWS credential/ECR/EKS/eksctl 신호를 넣은 경우와 `infra/k8s`, `infra/terraform` prefix가 다시 추적되면 실패한다. Provider-neutral 위임과 bounded 현재 승인 closure만 통과하며, 발견된 참조의 누락·경로 이탈·허용 prefix 밖 local 실행·non-UTF-8·symlink·과도한 크기/깊이/개수는 fail-closed한다. 최상위 workflow를 바꾸지 않고 참조 스크립트만 바꾼 PR도 같은 검사를 우회할 수 없어야 한다.
+- Production values에는 root `serviceAccount` 계약만 존재하고 Gateway, Workflow Worker, Knowledge Worker Deployment가 모두 같은 helper 결과를 `serviceAccountName`으로 사용한다. Component별 중첩 annotation은 허용하지 않는다.
+- Helm storage 기본값 `LOCAL`은 cloud 좌표 없이 통과하며 Gateway, Workflow Worker, Knowledge Worker Pod에 `S3_BUCKET_NAME`/`AWS_REGION` reference를 만들지 않는다. Production CLOUD는 CI 전용 non-secret placeholder와 두 reference를 함께 렌더하고, 각 필수 `configMapKeyRef`가 같은 render의 ConfigMap key에 대응해야 한다. Unknown type, 빈 bucket, 빈 region과 과거 `gateway.env`/`worker.env` storage key를 각각 주입하면 render 전에 실패한다. Component별 storage key와 implicit region default는 없어야 한다. Helm 파일만 변경한 PR도 이 실제 render closure와 support-surface/storage 계약 테스트를 deployment job에서 실행한다.
+- Gateway storage 설정은 type을 trim/대문자로 정규화한다. `CLOUD`의 bucket 또는 region이 null/empty/whitespace이면 safe validation error로 시작을 거부하고 provider client를 생성하지 않으며 unknown type을 LOCAL로 fallback하지 않는다.
+- Direct Gateway 개발 예시에는 정확히 하나의 지원 storage mode(`LOCAL` 또는 `CLOUD`)가 있어야 하고 legacy `PROD` 값은 없어야 한다. 현재 로컬 예시의 `LOCAL`은 cloud 좌표 없이 유효해야 한다.
+- S3 upload와 presigned URL provider failure는 cause chain 없이 stable safe error로 변환되고 provider exception text가 exception이나 log에 남지 않는다. Upload 실패 뒤 request file pointer는 기존 계약대로 초기 위치로 복원한다.
 - 기본 환경에서 schedule schema downgrade를 시도하면 sibling migration DDL 전에 실패하고 Alembic head가 유지된다. 파괴적 opt-in 없는 성공 downgrade/re-upgrade는 안전성 증거로 인정하지 않는다.
 - Schedule Celery task의 producer와 task registration은 모두 `ignore_result=True`이고 `task_store_errors_even_if_ignored=False`다. 성공과 실패 실행 뒤 Redis result backend에는 workflow output, RAG evidence, sync 상세 또는 raw exception이 생성되지 않으며 task outcome은 claim/status/finalization summary로 제한된다. 실제 Redis key 부재는 opt-in integration evidence로 별도 실행한다.
 - Schedule structured signal capture와 Scheduler/Worker 오류 log capture에는 정의된 event/value/status/reason/mode 또는 operation/attempt/exception type만 존재하고 UUID, idempotency key, raw payload와 raw exception message가 없다.

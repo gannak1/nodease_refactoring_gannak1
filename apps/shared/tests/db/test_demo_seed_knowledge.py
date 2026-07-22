@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from apps.shared.db import demo_seed
+from apps.shared.db.models.conversation_memory import ConversationSessionRecord
 from apps.shared.db.models.workflow_run import RunStatus
 from apps.shared.domain.app_auth_secret import (
     APP_AUTH_SECRET_VERIFIER_VERSION,
@@ -1354,7 +1355,7 @@ def test_demo_seed_cleanup_deletes_retired_workflows_child_first():
     for model in (
         demo_seed.TracePayloadAccessEvent,
         demo_seed.TracePayload,
-        demo_seed.ConversationSessionRecord,
+        ConversationSessionRecord,
         demo_seed.LLMUsageLog,
         demo_seed.WorkflowNodeRun,
         demo_seed.WorkflowRun,

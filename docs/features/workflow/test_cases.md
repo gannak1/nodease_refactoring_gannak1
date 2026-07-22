@@ -873,7 +873,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Redirect-to-private 응답은 첫 3xx status/data/headers를 반환하고 두 번째 connection을 만들지 않는다. Peer mismatch는 request byte 전송 전 non-retryable 실패로 닫고, 압축·oversized response와 read 실패는 output을 사용하지 않고 outcome unknown으로 닫는다.
 - Connect 전에 전송이 없다고 증명되는 일시 실패만 retry-before-effect가 될 수 있다. Write/read timeout, response loss와 전송 뒤 검증 실패를 안전한 재시도로 바꾸지 않는다.
 - `HttpRequestNode`와 Generic HTTP provider는 `httpx.Client`를 직접 생성하지 않고 application outbound port를 사용한다. Production import/architecture contract가 직접 client 회귀를 탐지한다.
-- Helm render와 활성 EKS manifest의 Worker egress NetworkPolicy는 cluster DNS, PostgreSQL 5432, Redis 6379, Sandbox 8194, public 80/443과 Mail 143/993만 허용한다. Public 허용에서 private·metadata CIDR가 제외되고 외부 dependency CIDR은 해당 service port에만 적용되며 public catch-all CIDR을 허용하지 않아야 한다.
+- Helm render의 Worker egress NetworkPolicy는 cluster DNS, PostgreSQL 5432, Redis 6379, Sandbox 8194, public 80/443과 Mail 143/993만 허용한다. Public 허용에서 private·metadata CIDR가 제외되고 외부 dependency CIDR은 해당 service port에만 적용되며 public catch-all CIDR을 허용하지 않아야 한다.
 
 ## Test preflight와 실행 presentation state
 

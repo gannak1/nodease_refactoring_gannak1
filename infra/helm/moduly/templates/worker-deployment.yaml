@@ -1,5 +1,5 @@
 {{- if .Values.worker.enabled }}
-{{- include "moduly.validateScheduleDispatchMode" . }}
+{{- $storageType := include "moduly.storageType" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,6 +20,7 @@ spec:
         checksum/config: {{ toYaml .Values | sha256sum }}
         checksum/secret: {{ toYaml .Values.secrets | sha256sum }}
     spec:
+      serviceAccountName: {{ include "moduly.serviceAccountName" . }}
       containers:
       - name: worker
         image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag | default .Chart.AppVersion }}"
@@ -89,18 +90,18 @@ spec:
             configMapKeyRef:
               name: {{ include "moduly.configMapName" . }}
               key: STORAGE_TYPE
-        {{- if .Values.worker.env.S3_BUCKET_NAME }}
+        {{- if eq $storageType "CLOUD" }}
         - name: S3_BUCKET_NAME
           valueFrom:
             configMapKeyRef:
               name: {{ include "moduly.configMapName" . }}
               key: S3_BUCKET_NAME
-        {{- end }}
         - name: AWS_REGION
           valueFrom:
             configMapKeyRef:
               name: {{ include "moduly.configMapName" . }}
               key: AWS_REGION
+        {{- end }}
         
         # Encryption key (from K8s worker config)
         {{- if .Values.secrets.encryptionKey }}

@@ -9,6 +9,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from apps.memory.adapters.persistence import repository as persistence_repository
 from apps.memory.adapters.persistence.repository import (
     SqlAlchemyConversationMemoryRepository,
     SqlAlchemyMemoryUnitOfWork,
@@ -116,6 +117,44 @@ def _scalar_rows_result(rows):
     result = MagicMock()
     result.scalars.return_value.all.return_value = rows
     return result
+
+
+def test_demo_resource_cleanup_deletes_only_matching_conversation_sessions():
+    db = MagicMock(spec=Session)
+    db.query.return_value.filter.return_value.delete.return_value = 3
+
+    deleted = persistence_repository.delete_conversation_sessions_for_resources(
+        db,
+        app_ids=[uuid.uuid4()],
+        workflow_ids=[uuid.uuid4()],
+        deployment_ids=[uuid.uuid4()],
+    )
+
+    assert deleted == 3
+    db.query.assert_called_once_with(ConversationSessionRecord)
+    condition = db.query.return_value.filter.call_args.args[0]
+    condition_sql = str(condition.compile(dialect=postgresql.dialect()))
+    assert "conversation_sessions.app_id" in condition_sql
+    assert "conversation_sessions.workflow_id" in condition_sql
+    assert "conversation_sessions.deployment_id" in condition_sql
+    assert " OR " in condition_sql
+    db.query.return_value.filter.return_value.delete.assert_called_once_with(
+        synchronize_session=False
+    )
+
+
+def test_demo_resource_cleanup_with_empty_scope_never_deletes_sessions():
+    db = MagicMock(spec=Session)
+
+    deleted = persistence_repository.delete_conversation_sessions_for_resources(
+        db,
+        app_ids=[],
+        workflow_ids=[],
+        deployment_ids=[],
+    )
+
+    assert deleted == 0
+    db.query.assert_not_called()
 
 
 def test_access_grant_lookup_accepts_a_bounded_versioned_verifier_set():

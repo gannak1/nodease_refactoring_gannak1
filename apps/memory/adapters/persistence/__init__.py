@@ -8,6 +8,7 @@ from apps.memory.adapters.persistence.readiness import (
 from apps.memory.adapters.persistence.repository import (
     SqlAlchemyConversationMemoryRepository,
     SqlAlchemyMemoryUnitOfWork,
+    delete_conversation_sessions_for_resources,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "SqlAlchemyMemoryUnitOfWork",
     "check_memory_schema_readiness",
     "check_memory_schema_readiness_with_inspector",
+    "delete_conversation_sessions_for_resources",
 ]

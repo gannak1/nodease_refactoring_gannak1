@@ -12,10 +12,6 @@ def test_gateway_and_workers_receive_the_same_llm_credential_keyring_contract():
         "infra/helm/moduly/templates/gateway-deployment.yaml",
         "infra/helm/moduly/templates/worker-deployment.yaml",
         "infra/helm/moduly/templates/knowledge-worker-deployment.yaml",
-        "infra/k8s/namespaces/default/gateway-deployment.yaml",
-        "infra/k8s/namespaces/default/worker-deployment.yaml",
-        "infra/k8s/namespaces/dev/gateway-deployment.yaml",
-        "infra/k8s/namespaces/dev/worker-deployment.yaml",
     ]
 
     for relative_path in deployment_files:
@@ -69,8 +65,6 @@ def test_helm_secret_declares_llm_keyring_without_embedding_a_key_value():
 def test_log_system_manifests_do_not_receive_llm_keyring():
     logger_files = [
         "infra/helm/moduly/templates/logger-deployment.yaml",
-        "infra/k8s/namespaces/default/logger-deployment.yaml",
-        "infra/k8s/namespaces/dev/logger-deployment.yaml",
     ]
 
     for relative_path in logger_files:

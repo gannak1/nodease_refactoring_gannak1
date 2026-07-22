@@ -10,7 +10,9 @@ from apps.gateway.services import storage as storage_module
 from apps.gateway.services.storage import (
     LocalStorageService,
     S3StorageService,
+    StorageConfigurationError,
     StorageDeleteError,
+    StorageOperationError,
     StorageReferenceError,
 )
 
@@ -29,6 +31,12 @@ class _FailingS3Client:
         self.message = message
 
     def delete_object(self, **_kwargs) -> None:
+        raise RuntimeError(self.message)
+
+    def upload_fileobj(self, *_args, **_kwargs) -> None:
+        raise RuntimeError(self.message)
+
+    def generate_presigned_url(self, *_args, **_kwargs):
         raise RuntimeError(self.message)
 
 
@@ -70,6 +78,52 @@ def _s3_storage(client=None) -> S3StorageService:
     return storage
 
 
+def test_unknown_storage_type_fails_closed_without_logging_config_value(
+    monkeypatch,
+    caplog,
+):
+    unexpected_value = "provider-specific-raw-value"
+    monkeypatch.setattr(storage_module.settings, "STORAGE_TYPE", unexpected_value)
+
+    with pytest.raises(
+        StorageConfigurationError,
+        match="^storage_configuration_invalid$",
+    ):
+        storage_module.get_storage_service()
+
+    assert unexpected_value not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("bucket", "region"),
+    [
+        (None, "region-1"),
+        ("nodease-documents", None),
+    ],
+)
+def test_s3_storage_rejects_incomplete_configuration_before_provider_setup(
+    monkeypatch,
+    bucket,
+    region,
+):
+    provider_calls = []
+    monkeypatch.setattr(storage_module.settings, "S3_BUCKET_NAME", bucket)
+    monkeypatch.setattr(storage_module.settings, "AWS_REGION", region)
+    monkeypatch.setattr(
+        storage_module.boto3,
+        "client",
+        lambda *_args, **_kwargs: provider_calls.append("called"),
+    )
+
+    with pytest.raises(
+        StorageConfigurationError,
+        match="^storage_configuration_invalid$",
+    ):
+        S3StorageService()
+
+    assert provider_calls == []
+
+
 def test_s3_delete_raises_safe_typed_error_without_provider_details(caplog):
     sensitive_value = "private-bucket/customer-contract.pdf"
     storage = object.__new__(S3StorageService)
@@ -83,6 +137,48 @@ def test_s3_delete_raises_safe_typed_error_without_provider_details(caplog):
 
     assert exc.value.__cause__ is None
     assert sensitive_value not in str(exc.value)
+    assert sensitive_value not in caplog.text
+
+
+def test_s3_upload_raises_safe_typed_error_without_provider_details(caplog):
+    sensitive_value = "provider-private-storage-detail"
+    storage = _s3_storage(_FailingS3Client(sensitive_value))
+    upload = SimpleNamespace(
+        filename="policy.pdf",
+        file=BytesIO(b"document"),
+        content_type="application/pdf",
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(
+            StorageOperationError,
+            match="^storage_upload_failed$",
+        ) as exc_info:
+            storage.upload(upload)
+
+    assert exc_info.value.__cause__ is None
+    assert sensitive_value not in str(exc_info.value)
+    assert sensitive_value not in caplog.text
+    assert upload.file.tell() == 0
+
+
+def test_s3_presign_raises_safe_typed_error_without_provider_details(caplog):
+    sensitive_value = "provider-private-storage-detail"
+    storage = _s3_storage(_FailingS3Client(sensitive_value))
+
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(
+            StorageOperationError,
+            match="^storage_presign_failed$",
+        ) as exc_info:
+            storage.generate_presigned_upload_url(
+                filename="policy.pdf",
+                content_type="application/pdf",
+                user_id="user-123",
+            )
+
+    assert exc_info.value.__cause__ is None
+    assert sensitive_value not in str(exc_info.value)
     assert sensitive_value not in caplog.text
 
 

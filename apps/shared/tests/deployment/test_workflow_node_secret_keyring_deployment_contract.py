@@ -11,10 +11,6 @@ def test_gateway_and_worker_receive_the_same_workflow_node_secret_keyring():
     deployment_files = [
         "infra/helm/moduly/templates/gateway-deployment.yaml",
         "infra/helm/moduly/templates/worker-deployment.yaml",
-        "infra/k8s/namespaces/default/gateway-deployment.yaml",
-        "infra/k8s/namespaces/default/worker-deployment.yaml",
-        "infra/k8s/namespaces/dev/gateway-deployment.yaml",
-        "infra/k8s/namespaces/dev/worker-deployment.yaml",
     ]
 
     for relative_path in deployment_files:

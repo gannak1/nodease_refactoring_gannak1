@@ -20,6 +20,9 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from apps.memory.adapters.persistence import (
+    delete_conversation_sessions_for_resources,
+)
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.agent_builder import (
     AgentBuilderDraft,
@@ -33,7 +36,6 @@ from apps.shared.db.models.audit_log import (
     AuditLog,
     AuditStatus,
 )
-from apps.shared.db.models.conversation_memory import ConversationSessionRecord
 from apps.shared.db.models.knowledge import (
     Document,
     DocumentChunk,
@@ -3878,13 +3880,12 @@ def _delete_retired_demo_workflows(db: Session) -> None:
         db.query(WorkflowNodeRun).filter(
             WorkflowNodeRun.workflow_run_id.in_(retired_run_ids)
         ).delete(synchronize_session=False)
-    db.query(ConversationSessionRecord).filter(
-        or_(
-            ConversationSessionRecord.app_id.in_(retired_app_ids),
-            ConversationSessionRecord.workflow_id.in_(retired_workflow_ids),
-            ConversationSessionRecord.deployment_id.in_(retired_deployment_ids),
-        )
-    ).delete(synchronize_session=False)
+    delete_conversation_sessions_for_resources(
+        db,
+        app_ids=retired_app_ids,
+        workflow_ids=retired_workflow_ids,
+        deployment_ids=retired_deployment_ids,
+    )
     db.query(LLMUsageLog).filter(
         or_(
             LLMUsageLog.workflow_id.in_(retired_workflow_ids),
@@ -5314,13 +5315,12 @@ def reset_demo_data(db: Session) -> None:
     db.query(WorkflowRun).filter(WorkflowRun.workflow_id.in_(workflow_ids)).delete(
         synchronize_session=False
     )
-    db.query(ConversationSessionRecord).filter(
-        or_(
-            ConversationSessionRecord.app_id.in_(app_ids),
-            ConversationSessionRecord.workflow_id.in_(workflow_ids),
-            ConversationSessionRecord.deployment_id.in_(deployment_ids),
-        )
-    ).delete(synchronize_session=False)
+    delete_conversation_sessions_for_resources(
+        db,
+        app_ids=app_ids,
+        workflow_ids=workflow_ids,
+        deployment_ids=deployment_ids,
+    )
     db.query(AuditLog).filter(
         AuditLog.audit_metadata["demo_seed"].astext == "true"
     ).delete(synchronize_session=False)
