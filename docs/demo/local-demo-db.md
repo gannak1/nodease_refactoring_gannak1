@@ -155,7 +155,7 @@ apps/gateway/.venv/Scripts/python.exe scripts/seed_demo.py --profile demo --rese
 
 ## Credential / Embedding 정책
 
-demo seed는 기본적으로 precomputed Knowledge fixture를 사용해 공개 법령 PDF를 `DocumentChunk`와 `text-embedding-3-small` 1536차원 embedding까지 생성한다. Fixed fixture는 독립 문서마다 별도 Knowledge Base를 사용하며 한 KB에 여러 Document를 넣지 않는다. 여러 문서를 함께 검색하는 범위는 Knowledge Collection 또는 명시된 여러 KB reference로 구성한다. `사내문서:` 접두사의 기존 Markdown KB와 이를 전용으로 묶던 Collection은 seed에서 제거됐다. `demodata/`의 팀별 온보딩 PDF 네 개는 각각 별도 Document-level KB로 등록하며, `--enable-runtime-openai-credential` 또는 fixture 재생성 옵션에서는 같은 실행에서 실제 파싱·embedding 생성까지 수행한다. 시연 workflow의 채팅 모델은 `gpt-5.4`와 `gpt-5.4-mini`를 사용한다.
+demo seed는 기본적으로 precomputed Knowledge fixture를 사용해 공개 법령 PDF 7개와 휴가·복지 정책 Markdown 2개를 `DocumentChunk`와 `text-embedding-3-small` 1536차원 embedding까지 생성한다. Fixed fixture는 독립 문서마다 별도 Knowledge Base를 사용하며 한 KB에 여러 Document를 넣지 않는다. 여러 문서를 함께 검색하는 범위는 Knowledge Collection 또는 명시된 여러 KB reference로 구성한다. `사내문서:` 접두사의 기존 Markdown KB와 이를 전용으로 묶던 Collection은 seed에서 제거됐다. `demodata/`의 팀별 온보딩 PDF 네 개는 각각 별도 Document-level KB로 등록하며, `--enable-runtime-openai-credential` 또는 fixture 재생성 옵션에서는 같은 실행에서 실제 파싱·embedding 생성까지 수행한다. 시연 workflow의 채팅 모델은 `gpt-5.4`와 `gpt-5.4-mini`를 사용한다.
 
 - 기본 reset에는 `apps/shared/db/fixtures/demo_knowledge_chunks.jsonl.gz` fixture를 사용한다.
 - 기본 reset에는 `OPENAI_API_KEY`와 법령 PDF 원본이 필요하지 않다.
@@ -224,9 +224,15 @@ Demo 주요 workflow:
 
 `온보딩 챗봇`은 새 workflow를 만든 직후처럼 `입력` 노드 하나만 있는 미배포 draft이며, edge나 다른 노드는 seed하지 않는다. `플랫폼개발팀`과 `영업팀`에는 이 workflow의 실행 권한인 `operator`를 부여한다.
 
-`신입 사원 온보딩 챗봇`은 입력·LLM·출력 노드로 구성하고 활성 `internal_chatbot`으로 배포한다. 인증 실행 URL은 `/modules/96000000-0000-0000-0000-000000000002/run?deploymentId=96000000-0000-0000-0000-000000000003`으로 고정된다. LLM node는 `gpt-5.6`과 fallback `gpt-5.4`를 사용하고 자동 모델 라우팅이 켜져 있다. RAG는 `팀별 온보딩 접근 제어 문서` Collection 및 하위 온보딩 KB 4개를 포함하며 `scoreThreshold=0.3`, `topK=5`를 사용한다. `플랫폼개발팀`과 `영업팀`에는 실행 권한인 `operator`를 부여한다. 세 데모 App의 정렬 시각을 시드 실행 시점부터 1초 간격으로 지정해 `updated_at DESC` 목록에서 `온보딩 챗봇`, `사내 IT 문의 자동 처리`, `신입 사원 온보딩 챗봇` 순서를 유지한다.
+`신입 사원 온보딩 챗봇`은 입력·LLM·출력 노드로 구성하고 활성 `internal_chatbot`으로 배포한다. 인증 실행 URL은 `/modules/97000000-0000-0000-0000-000000000002/run?deploymentId=97000000-0000-0000-0000-000000000003`으로 고정된다. LLM node는 `gpt-5.6`과 fallback `gpt-5.4`를 사용하고 자동 모델 라우팅이 켜져 있다. RAG는 `팀별 온보딩 접근 제어 문서` Collection 및 하위 온보딩 KB 4개를 포함하며 `scoreThreshold=0.3`, `topK=5`를 사용한다. `플랫폼개발팀`과 `영업팀`에는 실행 권한인 `operator`를 부여한다. 세 데모 App의 정렬 시각을 시드 실행 시점부터 1초 간격으로 지정해 `updated_at DESC` 목록에서 `온보딩 챗봇`, `사내 IT 문의 자동 처리`, `신입 사원 온보딩 챗봇` 순서를 유지한다.
 
 이전에 seed하던 나머지 workflow 11개와 해당 App, Deployment, 실행·권한·사용량 데이터는 일반 demo seed와 `--reset` 모두에서 retired cleanup 대상으로 삭제한다.
+
+## Demo Security Alert
+
+demo seed는 `신입사원 이서연`이 관리자 전용 보안 알림 목록 조회 5회와 해결 처리 5회를 시도해 `permission.denied`가 반복된 상황을 미리 생성한다. 10개 사건은 5분 안에 발생한 safe audit evidence로 연결되고, `repeated_permission_denied` v1 규칙의 `medium`·`open` Security Alert 한 건으로 표시된다. 따라서 관리자 계정에서는 Sidebar 알림 요약과 Admin Dashboard의 `보안 알림` 탭에서 reset 직후 바로 확인할 수 있다.
+
+시드 audit에는 검증된 organization ID, 고정 permission/operation/reason code와 opaque target만 저장한다. 이메일, URL/path, request body, 임의 alert ID와 raw exception은 저장하지 않는다.
 
 ## Demo Knowledge / RAG 데이터
 

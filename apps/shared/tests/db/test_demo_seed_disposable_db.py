@@ -11,20 +11,10 @@ from apps.shared.db.models.agent_builder import (
     AgentBuilderRequest,
     AgentBuilderSession,
 )
-from apps.shared.domain.knowledge_runtime_candidates import (
-    AuthenticatedAudience,
-    KnowledgeRuntimeCandidateRequest,
-)
 from apps.shared.tests.helpers.disposable_postgres import (
     DisposablePostgresConfig,
     DisposablePostgresConfigurationError,
     quote_disposable_database_name,
-)
-from apps.workflow_engine.adapters.knowledge_runtime_candidates import (
-    PostgresKnowledgeRuntimeCandidateSnapshotAdapter,
-)
-from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
-    KnowledgeRuntimeCandidateResolver,
 )
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
@@ -181,6 +171,44 @@ def _snapshot_counts(
                     {
                         "collection_id": demo_seed.COLLECTION_IDS["hr_policies"],
                         "embedding_dimension": demo_seed.DEMO_EMBEDDING_DIMENSION,
+                    },
+                ).scalar_one(),
+                "rookie_open_security_alerts": conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM security_alerts alert "
+                        "JOIN users actor ON actor.id = alert.subject_actor_id "
+                        "WHERE alert.id = :alert_id "
+                        "AND alert.organization_id = :organization_id "
+                        "AND alert.rule_id = 'repeated_permission_denied' "
+                        "AND alert.status = 'open' "
+                        "AND alert.occurrence_count = 10 "
+                        "AND actor.name = '신입사원 이서연'"
+                    ),
+                    {
+                        "alert_id": demo_seed.DEMO_SECURITY_ALERT_ID,
+                        "organization_id": demo_seed.ORG_ID,
+                    },
+                ).scalar_one(),
+                "rookie_security_alert_evidence": conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM security_alert_audit_events "
+                        "WHERE security_alert_id = :alert_id"
+                    ),
+                    {"alert_id": demo_seed.DEMO_SECURITY_ALERT_ID},
+                ).scalar_one(),
+                "rookie_security_denial_audits": conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM audit_logs "
+                        "WHERE id = ANY(:audit_ids) "
+                        "AND actor_id = :actor_id "
+                        "AND action = 'permission.denied' "
+                        "AND status = 'failure'"
+                    ),
+                    {
+                        "audit_ids": list(
+                            demo_seed.DEMO_SECURITY_ALERT_PERMISSION_AUDIT_IDS
+                        ),
+                        "actor_id": demo_seed.USER_IDS["rookie"],
                     },
                 ).scalar_one(),
             }
@@ -464,42 +492,15 @@ def _existing_knowledge_ingestion_outbox_ids(
         engine.dispose()
 
 
-def _snapshot_department_onboarding_rbac(
+def _snapshot_active_onboarding_rbac(
     database: str,
     config: DisposablePostgresConfig,
 ) -> dict[str, object]:
     engine = create_engine(config.database_url(database))
     try:
-        session_factory = sessionmaker(
-            bind=engine,
-            autoflush=False,
-            expire_on_commit=False,
-        )
-        resolver = KnowledgeRuntimeCandidateResolver(
-            snapshot_port=PostgresKnowledgeRuntimeCandidateSnapshotAdapter(
-                session_factory=session_factory
-            )
-        )
-        selected_kb_ids = (
-            demo_seed.KB_IDS["internal_onboarding"],
-            demo_seed.KB_IDS["internal_developer_onboarding_rules"],
-            demo_seed.KB_IDS["internal_planning_onboarding_guide"],
-        )
         team_onboarding_kb_ids = tuple(
             demo_seed.KB_IDS[spec.key] for spec in demo_seed.ONBOARDING_PDF_SPECS
         )
-
-        def resolve_for(user_key: str) -> set[uuid.UUID]:
-            resolution = resolver.resolve(
-                KnowledgeRuntimeCandidateRequest(
-                    audience=AuthenticatedAudience(
-                        organization_id=demo_seed.ORG_ID,
-                        user_id=demo_seed.USER_IDS[user_key],
-                    ),
-                    direct_kb_ids=selected_kb_ids,
-                )
-            )
-            return {candidate.knowledge_base_id for candidate in resolution.candidates}
 
         with engine.connect() as conn:
             deployment_type = conn.execute(
@@ -509,7 +510,7 @@ def _snapshot_department_onboarding_rbac(
                 ),
                 {
                     "deployment_id": demo_seed.DEPLOYMENT_IDS[
-                        "department_onboarding_chatbot"
+                        "new_employee_onboarding_chatbot"
                     ]
                 },
             ).scalar_one()
@@ -517,55 +518,15 @@ def _snapshot_department_onboarding_rbac(
                 text(
                     "SELECT COUNT(*) FROM team_workflow_permissions "
                     "WHERE workflow_id = :workflow_id "
-                    "AND team_id IN (:development_team_id, :planning_team_id) "
+                    "AND team_id IN (:platform_team_id, :sales_team_id) "
                     "AND auth_state = 'operator'"
                 ),
                 {
                     "workflow_id": demo_seed.WORKFLOW_IDS[
-                        "department_onboarding_chatbot"
-                    ],
-                    "development_team_id": demo_seed.TEAM_IDS["department_development"],
-                    "planning_team_id": demo_seed.TEAM_IDS["department_planning"],
-                },
-            ).scalar_one()
-            runtime_llm_permission_count = conn.execute(
-                text(
-                    "SELECT COUNT(*) FROM team_llm_permissions "
-                    "WHERE team_id IN (:development_team_id, :planning_team_id)"
-                ),
-                {
-                    "development_team_id": demo_seed.TEAM_IDS["department_development"],
-                    "planning_team_id": demo_seed.TEAM_IDS["department_planning"],
-                },
-            ).scalar_one()
-            planning_document = conn.execute(
-                text(
-                    "SELECT d.status, COUNT(c.id), "
-                    "MIN(vector_dims(c.embedding)) "
-                    "FROM documents d "
-                    "JOIN document_chunks c ON c.document_id = d.id "
-                    "WHERE d.id = :document_id "
-                    "GROUP BY d.status"
-                ),
-                {
-                    "document_id": demo_seed.DOCUMENT_IDS[
-                        "internal_planning_onboarding_guide"
-                    ]
-                },
-            ).one()
-            team_onboarding_workflow_permission_count = conn.execute(
-                text(
-                    "SELECT COUNT(*) FROM team_workflow_permissions "
-                    "WHERE workflow_id = :workflow_id "
-                    "AND team_id IN (:platform_team_id, :sales_team_id, :people_team_id)"
-                ),
-                {
-                    "workflow_id": demo_seed.WORKFLOW_IDS[
-                        "team_onboarding_access_control"
+                        "new_employee_onboarding_chatbot"
                     ],
                     "platform_team_id": demo_seed.TEAM_IDS["onboarding_platform"],
                     "sales_team_id": demo_seed.TEAM_IDS["onboarding_sales"],
-                    "people_team_id": demo_seed.TEAM_IDS["onboarding_people"],
                 },
             ).scalar_one()
             bundled_onboarding_document_count = conn.execute(
@@ -601,20 +562,11 @@ def _snapshot_department_onboarding_rbac(
             )
 
         return {
-            "developer_candidates": resolve_for("developer"),
-            "planning_candidates": resolve_for("planning"),
             "deployment_type": deployment_type,
             "workflow_permission_count": workflow_permission_count,
-            "runtime_llm_permission_count": runtime_llm_permission_count,
-            "planning_document_status": planning_document[0],
-            "planning_chunk_count": planning_document[1],
-            "planning_embedding_dimension": planning_document[2],
             "platform_onboarding_permissions": platform_onboarding_permissions,
             "sales_onboarding_permissions": sales_onboarding_permissions,
             "people_onboarding_permissions": people_onboarding_permissions,
-            "team_onboarding_workflow_permission_count": (
-                team_onboarding_workflow_permission_count
-            ),
             "bundled_onboarding_document_count": bundled_onboarding_document_count,
         }
     finally:
@@ -680,15 +632,6 @@ def test_seed_profile_resets_are_scoped_and_idempotent_in_disposable_postgres():
             knowledge_base_id=non_demo_kb_id,
             key_prefix="user-created-reset-test",
         )
-        demo_agent_builder_ids = _insert_agent_builder_state(
-            database,
-            config,
-            organization_id=demo_seed.ORG_ID,
-            user_id=demo_seed.USER_IDS["admin"],
-            workflow_id=demo_seed.WORKFLOW_IDS["hr_bot_example"],
-            app_id=demo_seed.APP_IDS["hr_bot_example"],
-        )
-
         _run_seed_command(
             ["scripts/seed_demo.py", "--profile", "demo", "--reset"],
             database=database,
@@ -701,10 +644,7 @@ def test_seed_profile_resets_are_scoped_and_idempotent_in_disposable_postgres():
             first_id=demo_outbox_id,
             second_id=non_demo_outbox_id,
         )
-        rbac_state = _snapshot_department_onboarding_rbac(database, config)
-        demo_agent_builder_after_demo_reset = _agent_builder_state_exists(
-            database, config, demo_agent_builder_ids
-        )
+        rbac_state = _snapshot_active_onboarding_rbac(database, config)
 
         _run_seed_command(
             ["scripts/seed_demo.py", "--profile", "test", "--reset"],
@@ -732,9 +672,6 @@ def test_seed_profile_resets_are_scoped_and_idempotent_in_disposable_postgres():
         test_agent_builder_after_reset = _agent_builder_state_exists(
             database, config, test_agent_builder_ids
         )
-        demo_agent_builder_after_test_reset = _agent_builder_state_exists(
-            database, config, demo_agent_builder_ids
-        )
         test_profile_baseline_exists = _test_profile_baseline_exists(database, config)
 
         assert reset_counts["knowledge_bases"] > 0
@@ -753,31 +690,17 @@ def test_seed_profile_resets_are_scoped_and_idempotent_in_disposable_postgres():
         assert second_reset_counts["seed_multi_document_knowledge_bases"] == 0
         assert reset_counts["hr_policy_collection_members"] == 2
         assert reset_counts["hr_policy_collection_retrievable_members"] == 2
+        assert reset_counts["rookie_open_security_alerts"] == 1
+        assert reset_counts["rookie_security_alert_evidence"] == 10
+        assert reset_counts["rookie_security_denial_audits"] == 10
         assert remaining_outbox_ids == {non_demo_outbox_id}
-        assert all(demo_agent_builder_after_demo_reset.values())
         assert not any(test_agent_builder_after_reset.values())
-        assert all(demo_agent_builder_after_test_reset.values())
         assert test_profile_baseline_exists
-        assert rbac_state["developer_candidates"] == {
-            demo_seed.KB_IDS["internal_onboarding"],
-            demo_seed.KB_IDS["internal_developer_onboarding_rules"],
-        }
-        assert rbac_state["planning_candidates"] == {
-            demo_seed.KB_IDS["internal_onboarding"],
-            demo_seed.KB_IDS["internal_planning_onboarding_guide"],
-        }
         assert (
             rbac_state["deployment_type"]
             == demo_seed.DeploymentType.INTERNAL_CHATBOT.name
         )
         assert rbac_state["workflow_permission_count"] == 2
-        assert rbac_state["runtime_llm_permission_count"] == 0
-        assert rbac_state["planning_document_status"] == "completed"
-        assert rbac_state["planning_chunk_count"] > 0
-        assert (
-            rbac_state["planning_embedding_dimension"]
-            == demo_seed.DEMO_EMBEDDING_DIMENSION
-        )
         assert rbac_state["platform_onboarding_permissions"] == {
             demo_seed.KB_IDS["onboarding_company_common"],
             demo_seed.KB_IDS["onboarding_platform"],
@@ -789,7 +712,6 @@ def test_seed_profile_resets_are_scoped_and_idempotent_in_disposable_postgres():
         assert rbac_state["people_onboarding_permissions"] == {
             demo_seed.KB_IDS[spec.key] for spec in demo_seed.ONBOARDING_PDF_SPECS
         }
-        assert rbac_state["team_onboarding_workflow_permission_count"] == 3
         assert rbac_state["bundled_onboarding_document_count"] == 4
     except OperationalError:
         raise pytest.fail.Exception(

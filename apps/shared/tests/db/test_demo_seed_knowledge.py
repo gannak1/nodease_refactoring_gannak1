@@ -91,7 +91,7 @@ def write_minimal_demo_fixture(
     embedding = [0.0] * demo_seed.DEMO_EMBEDDING_DIMENSION
     specs = [
         spec
-        for spec in demo_seed.DEMO_DOCUMENT_SPECS
+        for spec in demo_seed.INDEXED_DEMO_DOCUMENT_SPECS
         if spec.key != omitted_document_key
     ]
     with gzip.open(fixture_path, "wt", encoding="utf-8", newline="\n") as handle:
@@ -641,8 +641,14 @@ def test_demo_seed_creates_requested_onboarding_workflows(monkeypatch):
         "internal_it_helpdesk_routing",
         "new_employee_onboarding_chatbot",
     }
+    assert demo_seed.APP_IDS["new_employee_onboarding_chatbot"] == uuid.UUID(
+        "97000000-0000-0000-0000-000000000001"
+    )
+    assert demo_seed.WORKFLOW_IDS["new_employee_onboarding_chatbot"] == uuid.UUID(
+        "97000000-0000-0000-0000-000000000002"
+    )
     assert demo_seed.DEPLOYMENT_IDS["new_employee_onboarding_chatbot"] == uuid.UUID(
-        "96000000-0000-0000-0000-000000000003"
+        "97000000-0000-0000-0000-000000000003"
     )
     assert set(demo_seed.RETIRED_DEMO_APP_IDS) == {
         "hr_bot_example",
@@ -846,7 +852,7 @@ def test_demo_summary_reports_seeded_knowledge_documents():
     ]
     assert summary["knowledge_documents"] == {
         "public_law_pdfs": 7,
-        "internal_markdown_docs": 0,
+        "internal_markdown_docs": 2,
         "bundled_onboarding_pdfs": 4,
         "embedding_model": demo_seed.DEMO_EMBEDDING_MODEL,
         "fixture": demo_seed.DEMO_KNOWLEDGE_FIXTURE_PATH.as_posix(),
@@ -1535,6 +1541,130 @@ def test_demo_audit_logs_reference_only_active_workflow(monkeypatch):
     )
 
 
+def test_demo_seed_presets_rookie_security_alert_with_safe_evidence(monkeypatch):
+    upserts = []
+    adopted_rookie_id = uuid.uuid4()
+
+    def capture_upsert(_db, model, row_id, values):
+        upserts.append((model, row_id, values))
+
+    monkeypatch.setattr(demo_seed, "_upsert_by_id", capture_upsert)
+    monkeypatch.setitem(demo_seed.USER_IDS, "rookie", adopted_rookie_id)
+
+    demo_seed._seed_security_alert(ResetRecorderSession())
+
+    denied_audits = [
+        (row_id, values)
+        for model, row_id, values in upserts
+        if model is demo_seed.AuditLog
+        and values["action"] == demo_seed.AuditAction.PERMISSION_DENIED
+    ]
+    assert len(denied_audits) == 10
+    assert all(
+        values["actor_id"] == adopted_rookie_id
+        and values["actor_type"] == demo_seed.ActorType.USER
+        and values["category"] == demo_seed.AuditCategory.ACTION
+        and values["status"] == demo_seed.AuditStatus.FAILURE
+        and values["target_type"] == "organization"
+        and values["target_id"] == str(demo_seed.ORG_ID)
+        for _row_id, values in denied_audits
+    )
+    occurred_at = [values["occurred_at"] for _row_id, values in denied_audits]
+    assert max(occurred_at) - min(occurred_at) <= timedelta(minutes=5)
+    assert {
+        values["audit_metadata"]["requested_operation"]
+        for _row_id, values in denied_audits
+    } == {"list", "resolve"}
+    assert all(
+        set(values["audit_metadata"])
+        == {
+            "demo_seed",
+            "demo_seed_version",
+            "demo_seed_key",
+            "organization_id",
+            "required_permission",
+            "requested_operation",
+            "denial_reason",
+            "permission_action",
+            "policy_result",
+        }
+        for _row_id, values in denied_audits
+    )
+
+    alert_rows = [
+        (row_id, values)
+        for model, row_id, values in upserts
+        if model is demo_seed.SecurityAlert
+    ]
+    assert alert_rows == [
+        (
+            demo_seed.DEMO_SECURITY_ALERT_ID,
+            {
+                "organization_id": demo_seed.ORG_ID,
+                "subject_actor_id": adopted_rookie_id,
+                "rule_id": "repeated_permission_denied",
+                "rule_version": "v1",
+                "severity": "medium",
+                "status": "open",
+                "policy_reason": None,
+                "detection_key": demo_seed._demo_security_alert_detection_key(),
+                "occurrence_count": 10,
+                "episode_count": 1,
+                "first_detected_at": min(occurred_at),
+                "last_detected_at": max(occurred_at),
+                "last_episode_started_at": occurred_at[4],
+                "lifecycle_version": 1,
+                "acknowledged_by": None,
+                "acknowledged_at": None,
+                "resolution_type": None,
+                "resolution_reason": None,
+                "resolved_by": None,
+                "resolved_at": None,
+                "created_at": occurred_at[4],
+                "updated_at": max(occurred_at),
+            },
+        )
+    ]
+
+    evidence_rows = [
+        values
+        for model, _row_id, values in upserts
+        if model is demo_seed.SecurityAlertAuditEvent
+    ]
+    assert len(evidence_rows) == 10
+    assert {values["audit_log_id"] for values in evidence_rows} == {
+        row_id for row_id, _values in denied_audits
+    }
+    assert all(
+        values["security_alert_id"] == demo_seed.DEMO_SECURITY_ALERT_ID
+        for values in evidence_rows
+    )
+
+    detected_audit = next(
+        values
+        for model, _row_id, values in upserts
+        if model is demo_seed.AuditLog
+        and values["action"] == "security_alert.detected"
+    )
+    assert detected_audit["actor_id"] is None
+    assert detected_audit["actor_type"] == demo_seed.ActorType.SYSTEM
+    assert detected_audit["target_type"] == "security_alert"
+    assert detected_audit["target_id"] == str(demo_seed.DEMO_SECURITY_ALERT_ID)
+    assert detected_audit["audit_metadata"] == {
+        "organization_id": str(demo_seed.ORG_ID),
+        "rule_id": "repeated_permission_denied",
+        "rule_version": "v1",
+        "severity": "medium",
+    }
+
+
+def test_demo_security_alert_id_is_client_deep_link_compatible():
+    alert_id = demo_seed.DEMO_SECURITY_ALERT_ID
+
+    assert alert_id.variant == uuid.RFC_4122
+    assert alert_id.version in {1, 2, 3, 4, 5}
+
+
 def test_internal_it_helpdesk_seed_uses_catalog_tier_for_terra_security_reason():
     security_spec = next(
         spec
@@ -1921,7 +2051,7 @@ def test_removed_internal_document_rows_keep_only_reset_cleanup_ids():
 
 def test_committed_knowledge_fixture_matches_demo_seed_contract():
     fixture = demo_seed._read_demo_knowledge_fixture()
-    document_keys = {spec.key for spec in demo_seed.DEMO_DOCUMENT_SPECS}
+    document_keys = {spec.key for spec in demo_seed.INDEXED_DEMO_DOCUMENT_SPECS}
     chunk_total = sum(len(chunks) for chunks in fixture["chunks_by_document"].values())
 
     assert set(fixture["documents"]) == document_keys

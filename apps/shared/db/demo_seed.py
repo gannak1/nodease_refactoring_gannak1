@@ -66,6 +66,10 @@ from apps.shared.db.models.permission_request import (
     REQUESTED_PERMISSION_APP_CREATE,
     PermissionRequest,
 )
+from apps.shared.db.models.security_alert import (
+    SecurityAlert,
+    SecurityAlertAuditEvent,
+)
 from apps.shared.db.models.team import (
     Team,
     TeamAuditPermission,
@@ -102,6 +106,9 @@ from apps.shared.services.model_routing_global_profile_catalog import (
     catalog_metadata_for_model_id,
 )
 from apps.shared.services.password_hashing import hash_password
+from apps.shared.services.security_alert_rule_evaluator import (
+    build_security_alert_detection_key,
+)
 from apps.shared.services.workflow_layout import calculate_workflow_auto_layout
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import or_, text
@@ -169,6 +176,13 @@ USER_IDS = {
     "onboarding_sales_rookie": _uuid(13),
     "onboarding_people_manager": _uuid(14),
 }
+
+DEMO_SECURITY_ALERT_PERMISSION_AUDIT_IDS = tuple(
+    _uuid(4100 + index) for index in range(10)
+)
+DEMO_SECURITY_ALERT_DETECTED_AUDIT_ID = _uuid(4110)
+DEMO_SECURITY_ALERT_ID = uuid.UUID("10200000-0000-4000-8000-000000004200")
+DEMO_SECURITY_ALERT_EVIDENCE_IDS = tuple(_uuid(4300 + index) for index in range(10))
 
 TEAM_IDS = {
     "platform_admin": _uuid(200),
@@ -359,7 +373,7 @@ APP_IDS = {
     ),
     "onboarding_chatbot": uuid.UUID("95000000-0000-0000-0000-000000000001"),
     "new_employee_onboarding_chatbot": uuid.UUID(
-        "96000000-0000-0000-0000-000000000001"
+        "97000000-0000-0000-0000-000000000001"
     ),
 }
 
@@ -383,7 +397,7 @@ WORKFLOW_IDS = {
     ),
     "onboarding_chatbot": uuid.UUID("95000000-0000-0000-0000-000000000002"),
     "new_employee_onboarding_chatbot": uuid.UUID(
-        "96000000-0000-0000-0000-000000000002"
+        "97000000-0000-0000-0000-000000000002"
     ),
 }
 
@@ -408,7 +422,7 @@ DEPLOYMENT_IDS = {
         "94000000-0000-0000-0000-000000000003"
     ),
     "new_employee_onboarding_chatbot": uuid.UUID(
-        "96000000-0000-0000-0000-000000000003"
+        "97000000-0000-0000-0000-000000000003"
     ),
 }
 
@@ -1081,6 +1095,66 @@ LEGAL_DOCUMENT_SPECS = (
 
 DEMO_DOCUMENT_SPECS = LEGAL_DOCUMENT_SPECS
 
+HR_DOCUMENT_SPECS = (
+    DemoKnowledgeSeedSpec(
+        key="hr_leave",
+        name="사내 휴가 정책 지식베이스",
+        description="휴가 신청과 근태 유의 사항을 담은 데모 지식베이스",
+        filename="휴가 제도 안내.md",
+        summary="가족돌봄휴가는 연차와 이어서 사용할 수 있으며, 사내 인사 포털에서 신청합니다.",
+        source_tier="private",
+        classification="internal",
+        tags=("인사", "휴가", "근태"),
+        keywords=("가족돌봄휴가", "연차휴가", "휴가 신청"),
+        collection_key="hr_policies",
+        content="""# 휴가 제도 안내
+
+## 가족돌봄휴가
+
+가족의 질병, 사고, 노령 또는 자녀 양육으로 돌봄이 필요한 경우 가족돌봄휴가를 신청할 수 있습니다.
+가족돌봄휴가는 연차휴가와 이어서 사용할 수 있으며, 신청 시 사유와 예상 사용 기간을 함께 입력합니다.
+
+## 신청 경로
+
+휴가는 사내 인사 포털 > 근태/휴가 > 휴가 신청 메뉴에서 신청합니다.
+긴급한 사유가 아니라면 사용 예정일 전까지 팀 리더 승인을 받아야 합니다.
+
+## 유의 사항
+
+개인의 병가 기록, 타인의 근태 현황, 인사평가 결과는 일반 사내 문서 검색 권한으로 조회할 수 없습니다.
+""",
+    ),
+    DemoKnowledgeSeedSpec(
+        key="hr_welfare",
+        name="사내 복지 정책 지식베이스",
+        description="복지 포인트와 경조사 지원을 담은 데모 지식베이스",
+        filename="복지 제도 안내.md",
+        summary="복지 포인트와 경조사 지원은 인사 지식 활용팀 권한으로 조회할 수 있습니다.",
+        source_tier="private",
+        classification="internal",
+        tags=("인사", "복지", "경조사"),
+        keywords=("복지 포인트", "경조사 지원", "복지 포털"),
+        collection_key="hr_policies",
+        content="""# 복지 제도 안내
+
+## 복지 포인트
+
+복지 포인트는 매년 초 재직 상태와 근속 조건에 따라 지급됩니다.
+사용 가능 항목은 건강관리, 자기계발, 가족 지원, 문화생활로 구분됩니다.
+
+## 경조사 지원
+
+경조사 지원은 사내 복지 포털에서 신청하며, 증빙 서류가 필요한 항목은 신청 후 7일 이내에 제출해야 합니다.
+
+## 문의
+
+복지 제도 일반 문의는 인사 지식 활용팀 채널을 통해 접수합니다.
+""",
+    ),
+)
+
+INDEXED_DEMO_DOCUMENT_SPECS = (*DEMO_DOCUMENT_SPECS, *HR_DOCUMENT_SPECS)
+
 
 def demo_summary(profile: str = "demo") -> dict[str, Any]:
     """Return a lightweight summary for --dry-run output."""
@@ -1115,7 +1189,7 @@ def demo_summary(profile: str = "demo") -> dict[str, Any]:
         ),
         "knowledge_documents": {
             "public_law_pdfs": len(LEGAL_DOCUMENT_SPECS),
-            "internal_markdown_docs": 0,
+            "internal_markdown_docs": len(HR_DOCUMENT_SPECS),
             "bundled_onboarding_pdfs": len(ONBOARDING_PDF_SPECS),
             "embedding_model": DEMO_EMBEDDING_MODEL,
             "fixture": DEMO_KNOWLEDGE_FIXTURE_PATH.as_posix(),
@@ -1307,7 +1381,7 @@ def _read_demo_knowledge_fixture() -> dict[str, Any]:
             f"{header.get('embedding_dimension')}"
         )
 
-    expected_keys = {spec.key for spec in DEMO_DOCUMENT_SPECS}
+    expected_keys = {spec.key for spec in INDEXED_DEMO_DOCUMENT_SPECS}
     missing_documents = sorted(expected_keys - set(documents))
     if missing_documents:
         raise ValueError(
@@ -1352,7 +1426,7 @@ def _write_demo_knowledge_fixture(records: list[dict[str, Any]]) -> None:
         "fixture_version": DEMO_SEED_VERSION,
         "embedding_model": DEMO_EMBEDDING_MODEL,
         "embedding_dimension": DEMO_EMBEDDING_DIMENSION,
-        "document_keys": [spec.key for spec in DEMO_DOCUMENT_SPECS],
+        "document_keys": [spec.key for spec in INDEXED_DEMO_DOCUMENT_SPECS],
         "storage": "plaintext_chunks_with_precomputed_embeddings",
     }
     with gzip.open(DEMO_KNOWLEDGE_FIXTURE_PATH, "wt", encoding="utf-8", newline="\n") as handle:
@@ -3409,47 +3483,19 @@ def _seed_knowledge(db: Session) -> None:
             },
         )
 
+    hr_document_specs = {spec.key: spec for spec in HR_DOCUMENT_SPECS}
     document_specs = {
         "hr_leave": (
             KB_IDS[LEGACY_DEMO_DOCUMENT_KB_KEYS["hr_leave"]],
-            "휴가 제도 안내.md",
-            "가족돌봄휴가는 연차와 이어서 사용할 수 있으며, 사내 인사 포털에서 신청합니다.",
-            """# 휴가 제도 안내
-
-## 가족돌봄휴가
-
-가족의 질병, 사고, 노령 또는 자녀 양육으로 돌봄이 필요한 경우 가족돌봄휴가를 신청할 수 있습니다.
-가족돌봄휴가는 연차휴가와 이어서 사용할 수 있으며, 신청 시 사유와 예상 사용 기간을 함께 입력합니다.
-
-## 신청 경로
-
-휴가는 사내 인사 포털 > 근태/휴가 > 휴가 신청 메뉴에서 신청합니다.
-긴급한 사유가 아니라면 사용 예정일 전까지 팀 리더 승인을 받아야 합니다.
-
-## 유의 사항
-
-개인의 병가 기록, 타인의 근태 현황, 인사평가 결과는 일반 사내 문서 검색 권한으로 조회할 수 없습니다.
-""",
+            hr_document_specs["hr_leave"].filename,
+            hr_document_specs["hr_leave"].summary,
+            hr_document_specs["hr_leave"].content,
         ),
         "hr_welfare": (
             KB_IDS[LEGACY_DEMO_DOCUMENT_KB_KEYS["hr_welfare"]],
-            "복지 제도 안내.md",
-            "복지 포인트와 경조사 지원은 인사 지식 활용팀 권한으로 조회할 수 있습니다.",
-            """# 복지 제도 안내
-
-## 복지 포인트
-
-복지 포인트는 매년 초 재직 상태와 근속 조건에 따라 지급됩니다.
-사용 가능 항목은 건강관리, 자기계발, 가족 지원, 문화생활로 구분됩니다.
-
-## 경조사 지원
-
-경조사 지원은 사내 복지 포털에서 신청하며, 증빙 서류가 필요한 항목은 신청 후 7일 이내에 제출해야 합니다.
-
-## 문의
-
-복지 제도 일반 문의는 인사 지식 활용팀 채널을 통해 접수합니다.
-""",
+            hr_document_specs["hr_welfare"].filename,
+            hr_document_specs["hr_welfare"].summary,
+            hr_document_specs["hr_welfare"].content,
         ),
         "finance_sensitive": (
             KB_IDS[LEGACY_DEMO_DOCUMENT_KB_KEYS["finance_sensitive"]],
@@ -3566,7 +3612,7 @@ def _seed_knowledge(db: Session) -> None:
         )
 
     db.flush()
-    _index_demo_documents(db, DEMO_DOCUMENT_SPECS, knowledge_fixture)
+    _index_demo_documents(db, INDEXED_DEMO_DOCUMENT_SPECS, knowledge_fixture)
     if _should_index_onboarding_pdfs():
         _index_demo_documents_from_sources(
             db,
@@ -4702,6 +4748,142 @@ def _seed_audit_logs(db: Session) -> None:
         )
 
 
+def _demo_security_alert_detection_key() -> str:
+    return build_security_alert_detection_key(
+        organization_id=ORG_ID,
+        actor_id=USER_IDS["rookie"],
+        rule_id="repeated_permission_denied",
+        rule_version="v1",
+    )
+
+
+def _seed_security_alert(db: Session) -> None:
+    now = _now()
+    detection_key = _demo_security_alert_detection_key()
+    first_occurred_at = now - timedelta(minutes=4, seconds=30)
+    operations = ("list",) * 5 + ("resolve",) * 5
+    occurred_at_by_audit_id: dict[uuid.UUID, datetime] = {}
+
+    for index, (audit_id, operation) in enumerate(
+        zip(DEMO_SECURITY_ALERT_PERMISSION_AUDIT_IDS, operations, strict=True)
+    ):
+        occurred_at = first_occurred_at + timedelta(seconds=index * 30)
+        occurred_at_by_audit_id[audit_id] = occurred_at
+        _upsert_by_id(
+            db,
+            AuditLog,
+            audit_id,
+            {
+                "occurred_at": occurred_at,
+                "actor_id": USER_IDS["rookie"],
+                "actor_type": ActorType.USER,
+                "category": AuditCategory.ACTION,
+                "action": AuditAction.PERMISSION_DENIED,
+                "target_type": "organization",
+                "target_id": str(ORG_ID),
+                "before": None,
+                "after": None,
+                "status": AuditStatus.FAILURE,
+                "audit_metadata": {
+                    **_demo_options(f"security-alert-permission-denied-{index}"),
+                    "organization_id": str(ORG_ID),
+                    "required_permission": "security_alert.manage",
+                    "requested_operation": operation,
+                    "denial_reason": "organization_manager_required",
+                    "permission_action": "manage",
+                    "policy_result": "deny",
+                },
+            },
+        )
+
+    db.query(SecurityAlert).filter(
+        SecurityAlert.detection_key == detection_key,
+        SecurityAlert.id != DEMO_SECURITY_ALERT_ID,
+        SecurityAlert.status.in_(("open", "acknowledged")),
+    ).delete(synchronize_session=False)
+    db.query(AuditLog).filter(
+        AuditLog.target_type == "security_alert",
+        AuditLog.target_id == str(DEMO_SECURITY_ALERT_ID),
+    ).delete(synchronize_session=False)
+    db.query(SecurityAlertAuditEvent).filter(
+        SecurityAlertAuditEvent.security_alert_id == DEMO_SECURITY_ALERT_ID
+    ).delete(synchronize_session=False)
+
+    threshold_detected_at = occurred_at_by_audit_id[
+        DEMO_SECURITY_ALERT_PERMISSION_AUDIT_IDS[4]
+    ]
+    _upsert_by_id(
+        db,
+        SecurityAlert,
+        DEMO_SECURITY_ALERT_ID,
+        {
+            "organization_id": ORG_ID,
+            "subject_actor_id": USER_IDS["rookie"],
+            "rule_id": "repeated_permission_denied",
+            "rule_version": "v1",
+            "severity": "medium",
+            "status": "open",
+            "policy_reason": None,
+            "detection_key": detection_key,
+            "occurrence_count": len(DEMO_SECURITY_ALERT_PERMISSION_AUDIT_IDS),
+            "episode_count": 1,
+            "first_detected_at": first_occurred_at,
+            "last_detected_at": now,
+            "last_episode_started_at": threshold_detected_at,
+            "lifecycle_version": 1,
+            "acknowledged_by": None,
+            "acknowledged_at": None,
+            "resolution_type": None,
+            "resolution_reason": None,
+            "resolved_by": None,
+            "resolved_at": None,
+            "created_at": threshold_detected_at,
+            "updated_at": now,
+        },
+    )
+    db.flush()
+
+    for evidence_id, audit_id in zip(
+        DEMO_SECURITY_ALERT_EVIDENCE_IDS,
+        DEMO_SECURITY_ALERT_PERMISSION_AUDIT_IDS,
+        strict=True,
+    ):
+        _upsert_by_id(
+            db,
+            SecurityAlertAuditEvent,
+            evidence_id,
+            {
+                "security_alert_id": DEMO_SECURITY_ALERT_ID,
+                "audit_log_id": audit_id,
+                "linked_at": occurred_at_by_audit_id[audit_id],
+            },
+        )
+
+    _upsert_by_id(
+        db,
+        AuditLog,
+        DEMO_SECURITY_ALERT_DETECTED_AUDIT_ID,
+        {
+            "occurred_at": threshold_detected_at,
+            "actor_id": None,
+            "actor_type": ActorType.SYSTEM,
+            "category": AuditCategory.ACTION,
+            "action": "security_alert.detected",
+            "target_type": "security_alert",
+            "target_id": str(DEMO_SECURITY_ALERT_ID),
+            "before": None,
+            "after": None,
+            "status": AuditStatus.SUCCESS,
+            "audit_metadata": {
+                "organization_id": str(ORG_ID),
+                "rule_id": "repeated_permission_denied",
+                "rule_version": "v1",
+                "severity": "medium",
+            },
+        },
+    )
+
+
 def _adopt_existing_test_user_ids(db: Session) -> None:
     """Reuse existing local users with the test profile emails."""
     for spec in TEST_USER_SPECS:
@@ -5070,6 +5252,7 @@ def seed_demo_data(db: Session) -> None:
     db.flush()
     _seed_runs_and_usage(db, models)
     _seed_audit_logs(db)
+    _seed_security_alert(db)
     db.commit()
 
 
