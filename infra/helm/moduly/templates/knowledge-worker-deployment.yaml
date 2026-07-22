@@ -1,8 +1,6 @@
+{{- include "moduly.validateKnowledgeWorker" . -}}
 {{- if .Values.knowledgeWorker.enabled }}
 {{- $storageType := include "moduly.storageType" . }}
-{{- if and (eq $storageType "LOCAL") (not .Values.knowledgeWorker.localStorage.enabled) }}
-{{- fail "knowledgeWorker.localStorage.enabled must be true when Knowledge worker uses LOCAL storage" }}
-{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -90,6 +88,7 @@ spec:
         - worker
         - --loglevel=info
         - --queues=knowledge
+        - --hostname=knowledge@%h
         - --concurrency={{ .Values.knowledgeWorker.concurrency }}
         - --prefetch-multiplier=1
         env:
@@ -207,6 +206,17 @@ spec:
         {{- end }}
         resources:
           {{- toYaml .Values.knowledgeWorker.resources | nindent 10 }}
+        readinessProbe:
+          exec:
+            command:
+            - python
+            - -m
+            - apps.gateway.knowledge_worker_health
+          initialDelaySeconds: 2
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
         {{- if and (eq $storageType "LOCAL") .Values.knowledgeWorker.localStorage.enabled }}
         volumeMounts:
         - name: knowledge-uploads

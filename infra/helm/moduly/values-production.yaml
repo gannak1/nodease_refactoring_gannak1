@@ -92,12 +92,18 @@ gateway:
     # Node environment
     NODE_ENV: "production"
   
-# Migration-first rollout gate. Set enabled=true only after the release's
-# Knowledge ingestion migration is visible to every worker pod.
+# The resource is rendered in the production reference. Apply the release's
+# additive migration first; the init and worker bootstep fail closed until the
+# migration and credential keyring are ready.
 knowledgeWorker:
-  enabled: false
+  enabled: true
   replicaCount: 2
   concurrency: 2
+
+# Durable Knowledge ingestion recovery is part of the supported production
+# worker contract. The chart rejects a worker-only deployment without Beat.
+beat:
+  enabled: true
 
 # Worker (Workflow Engine)
 worker:

@@ -1,7 +1,7 @@
 # Knowledge Test Cases
 
 Status: Draft
-Verified Against: feature/mba-301 @ 24dde720bd100cb0d8ad6ed0a5dadab944210843
+Verified Against: feature/mba-359 @ 504f418ac708a2dc541a5283f1ad8e97da0869a2
 이 문서는 현재 RAG 동작과 목표 KB 통합 모델에 필요한 테스트 범위를 함께 기록한다. MBA-105 목표 모델 테스트는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)과 [implementation_baseline.md](implementation_baseline.md)의 임시 baseline을 기준으로 구현 blocker가 된다.
 KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048](../../decisions/ADR-0048-knowledge-collection-sync-execution-boundary.md)을 따른다.
 
@@ -527,7 +527,7 @@ KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048]
 - Worker-start authorization은 current organization membership과 KB write 또는 sync authority를 재검사한다. Revoke가 authorization query 전에 commit되면 source/provider 호출 없이 cancel하고, hidden resource identity는 status/log에 노출하지 않는다.
 - Status와 SSE는 owner/fencing token, input revision, idempotency key, raw source config/path/content, provider exception을 반환하지 않는다. Status는 `no-store`이고 unknown reason은 allowlisted generic code로 축소한다. 새 process/reindex/redrive admission과 retry/cancel/dead-letter/recovery commit은 이전 attempt의 Redis progress key를 삭제하고 SSE는 새 attempt 또는 DB의 0 projection으로 fallback해야 하며 lease-lost worker는 key를 삭제하지 않는다.
 - Missing table/column/idempotency unique/active partial unique/due·lease index는 worker startup과 API readiness에서 fail-closed한다. Processing Document 상세 조회도 authorization 뒤 reconciliation query 전에 readiness를 검사해 `503 knowledge.ingestion_schema_not_ready`를 반환하고 raw introspection 오류를 반사하지 않는다.
-- Docker Compose와 Helm rendering은 Gateway image 기반 `knowledge` queue 전용 worker, bounded concurrency/prefetch, recovery beat route와 migration-first disabled production default를 검증한다. Compose worker는 Gateway health 이후 시작하고 Helm worker는 bounded schema init readiness를 통과해야 한다. Helm이 ServiceAccount를 생성하도록 설정되면 worker가 참조하는 같은 이름의 리소스가 렌더링되고 외부 ServiceAccount 설정에서는 생성되지 않아야 한다. `LOCAL` mode는 Gateway/worker가 같은 PVC와 non-root write를 위한 fsGroup을 사용하며 shared storage가 없으면 rendering이 실패하고 `CLOUD` mode에는 Knowledge upload PVC가 없어야 한다. 다른 queue worker는 Knowledge table readiness에 결합되지 않는다.
+- Docker Compose와 Helm rendering은 Gateway image 기반 `knowledge` queue 전용 worker, bounded concurrency/prefetch, recovery beat route와 migration-first startup gate를 검증한다. 기본 Helm values는 worker opt-in을 유지하지만 provider-neutral production reference는 worker와 singleton Beat를 함께 활성화하고 worker-only, replica 0 또는 concurrency 0 설정을 safe render error로 거부해야 한다. Compose worker는 Gateway health 이후 시작하고 Helm worker는 bounded schema init readiness를 통과해야 한다. 실행 중 readiness는 `knowledge@<pod-hostname>` exact destination에 bounded ping을 보내 local pong만 허용하고 empty/malformed/다른 replica 응답과 broker exception을 raw detail 없이 실패 처리해야 한다. Kubernetes probe timeout은 내부 ping timeout보다 길고, Redis/control path 장애를 반복 restart로 바꾸는 liveness probe는 두지 않는다. Helm이 ServiceAccount를 생성하도록 설정되면 worker가 참조하는 같은 이름의 리소스가 렌더링되고 외부 ServiceAccount 설정에서는 생성되지 않아야 한다. `LOCAL` mode는 Gateway/worker가 같은 PVC와 non-root write를 위한 fsGroup을 사용하며 shared storage가 없으면 rendering이 실패하고 `CLOUD` mode에는 Knowledge upload PVC가 없어야 한다. 다른 queue worker는 Knowledge table readiness에 결합되지 않는다.
 - Migration은 최신 dev 기준 Alembic single head를 유지하고 실제 disposable PostgreSQL에서 upgrade, active-job unique, concurrent claim, heartbeat fencing과 terminal cleanup을 검증한다.
 
 - Bulk permission helper는 per-KB database query 없이 user-candidate lookup과 KB-centric lookup을 처리한다.

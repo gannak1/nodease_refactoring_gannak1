@@ -134,6 +134,7 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-104 (MBA-337): Direct Gateway 개발 설정 예시는 runtime과 같은 `LOCAL | CLOUD` storage mode만 안내해야 하며 legacy `PROD` alias를 문서화하거나 암묵적으로 변환하지 않아야 한다. `CLOUD`를 선택할 때만 bucket과 region을 함께 요구하고, 현재 로컬 기본 예시는 cloud 좌표가 필요 없는 `LOCAL`을 사용한다.
 - DEP-REQ-105 (MBA-178): Production browser API는 same-origin `/api/v1`을 기본으로 사용해야 한다. `NEXT_PUBLIC_API_URL`을 명시하면 공개 HTTPS origin-only 값이어야 하며 cluster/private/loopback host, HTTP, path, query, fragment, userinfo와 wildcard를 build/startup 전에 거부해야 한다. Next.js server-only `API_URL`은 내부 HTTP service를 사용할 수 있지만 public 변수의 fallback이 되어서는 안 된다.
 - DEP-REQ-106 (MBA-178): Production 또는 알 수 없는 환경의 credentialed CORS allowlist는 공개 HTTPS origin만 허용해야 한다. Development/test의 HTTP 예외는 loopback host로 제한하고 wildcard, userinfo, path, query와 fragment는 모든 환경에서 거부해야 한다. Deployment browser parent policy를 CORS allowlist로 재사용해서는 안 된다.
+- DEP-REQ-107 (MBA-359): Provider-neutral Helm production reference는 durable Knowledge document ingestion을 소비하는 bounded `knowledge` worker와 due recovery를 발행하는 singleton Celery Beat를 함께 활성화해야 한다. Worker가 활성인데 Beat가 비활성이거나 worker replica/concurrency가 양수가 아니면 chart rendering을 safe fixed error로 거부해야 한다. Worker는 migration/keyring init·bootstep을 통과하고 exact local Celery self-ping으로 runtime readiness를 판정하며, 다른 replica 응답을 성공으로 인정하거나 Redis/control path 장애에 liveness restart loop를 만들거나 probe에 raw broker/credential/exception detail을 출력해서는 안 된다.
 
 ## Runtime Audience Matrix
 
