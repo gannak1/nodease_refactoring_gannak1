@@ -6,9 +6,11 @@ Verified Against: `feature/mba-247 @ 311a4bc2`
 ## Purpose
 
 이 문서는 `requirements.md`의 FR-001부터 FR-015까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
-FR-011은 `judge_bootstrap_incremental_v1`으로 다룬다. 배포 실행 1~50회는 runtime Judge가
-현재 요청의 후보 모델을 선택하고, workflow 완료 뒤 schema·후속 노드·fallback 계약을 통과한
-label의 요청 요구 능력만 local router 학습에 반영한다. 50건 이상이고 선택 모델 분포가 한 모델에
+FR-011은 정책과 분리된 자동 라우팅 학습기로 다룬다. 배포 실행 1~50회는 runtime Judge가
+현재 요청의 요구 수준을 판정하고, 서버가 실행 주체가 사용할 수 있는 전체 후보 중 capability와
+비용을 비교해 모델을 선택한다. 후보가 아직 운영 검증을 통과하지 않았다는 이유만으로 첫 사용을
+막지 않는다. workflow 완료 뒤 schema·후속 노드·fallback 계약을 통과한 label의 요청 요구 능력만
+별도 learner의 local router 학습에 반영한다. 50건 이상이고 선택 모델 분포가 한 모델에
 과도하게 쏠리지 않았을 때 local router가 먼저 요청 요구 능력을 예측한다. 서버는 capability를
 충족하는 후보 중 비용이 낮은 모델을 선택하며, 확신이 낮으면 runtime Judge로 되돌아간다. JSON
 Schema 같은 고정 출력 계약은 후보 capability 검사로만 쓴다. Local 난이도 학습 feature는
@@ -49,7 +51,7 @@ RAG는 문서 원문 없이 검색량·근거 충분성·부분 결과·query re
 | FR-008 | Apply candidate action | PATCH apply | B 후보 설정을 current draft에 적용 | 작성 완료 | 통과 |
 | FR-009 | Cost/usage display | llm usage logging | 비교 실행 비용/토큰/latency 기록과 표시 | 작성 완료 | 통과 |
 | FR-010 | Permission-gated UI | builder permission enforcement | builder 이상 권한 강제 | 작성 완료 | 통과 |
-| FR-011 | Judge-first routing / incremental learning | Runtime Judge, deferred label, local router | label 대기·계약 확정·50건 local 전환, 같은 feature의 accepted Judge cache, safe trace | 작성 완료 | `test_judge_first_model_routing_e2e.py`, `test_model_router.py`, `test_llm_node_runtime.py` 집중 통과 |
+| FR-011 | Judge-first routing / policy-independent learner | Runtime Judge, learner label, 불변 learner version, local router | 작업 지문 재사용·계약 계보 분리·운영 label 확정·50건 local 전환·테스트 실행 비학습·safe trace | 작성 완료 | `test_model_routing_learner_store.py`, `test_model_routing_learning_batch.py`, `test_model_routing_policy_tasks.py`, `test_judge_first_model_routing_e2e.py`, `test_llm_node_runtime.py` 집중 통과 |
 | FR-012 | Optimization recommendation modal | Parameter recommendation API | 운영 로그 기반 추천 조회, `direct_policy_update` 적용, 일반 추천의 A/B 후보 실험 연결 | 작성 완료 | 부분 통과 |
 | FR-013 | Recommendation verification / compare quality row | Recommendation verification·compare API | 최신 성공 또는 사용자 선택 baseline, candidate 1회 실행, 품질 judge, schema/downstream gate, 품질 점수 이력, 적용/상세 분석 연결 | Gateway/frontend 테스트 작성 완료 | Gateway/frontend targeted test 통과 |
 | FR-014 | 배포별 자동 파라미터 최적화 | deployment config / operations summary | 배포 모달 설정, 대상 LLM node 검증, 배포 후 운영 실행 수집, 별도 예산/관리 UI | Gateway/frontend targeted test 작성 완료 | 통과 |
@@ -134,7 +136,7 @@ RAG는 문서 원문 없이 검색량·근거 충분성·부분 결과·query re
 | FR-011-B02 | 부분 로그 | 성공 운영 run이 1~11건이다 | bootstrap을 생성한다 | 운영 표본을 우선 사용하고 부족한 난이도만 합성 표본으로 보완한 `hybrid` artifact가 생성된다 | `test_model_routing_bootstrap.py` |
 | FR-011-B03 | 충분한 로그 | 성공 운영 run이 12건 이상이다 | bootstrap을 생성한다 | 최대 24개 대표 운영 표본만 사용하며 합성 표본은 만들지 않는다 | `test_model_routing_bootstrap.py` |
 | FR-011-B04 | 작업 지문 | 모델만 바뀌거나 prompt/RAG/schema가 바뀐다 | fingerprint를 계산한다 | 모델만 바뀌면 같고, 실제 작업 계약이 바뀌면 달라진다 | `test_model_routing_bootstrap.py` |
-| FR-011-B05 | runtime 전체 후보 선택 | ready bootstrap artifact, 전역 profile catalog, 실행 주체가 사용할 수 있는 여러 모델이 있다 | 난이도 확률이 충분한 입력을 실행한다 | mDeBERTa 확률과 같은 입력 길이의 node-local 성적을 사용해 **모든 현재 사용 가능 후보**를 다시 점수화한다. 과거 `difficulty_models` 세 값은 snapshot 없는 정책의 호환 fallback으로만 쓴다 | `test_model_routing_bootstrap_runtime.py` |
+| FR-011-B05 | legacy bootstrap 전체 후보 선택 | ready legacy bootstrap artifact, 전역 profile catalog, 실행 주체가 사용할 수 있는 여러 모델이 있다 | 과거 호환 테스트를 실행한다 | legacy 분류 확률과 같은 입력 길이의 node-local 성적을 사용해 현재 사용 가능 후보를 다시 점수화한다. 이 결과는 신규 learner version 발행 근거로 사용하지 않는다 | `test_model_routing_bootstrap_runtime.py` |
 | FR-011-B05A | 전역 profile 후보 점수 | 실행 주체가 사용할 수 있는 4개 이상의 catalog 모델과 난이도 확률이 있다 | `ModelRoutingGlobalProfileScorer.rank()`를 호출한다 | 모든 후보의 품질 하한, 예상 비용, 예상 지연 시간, fallback 위험을 계산하고 난이도별 품질 floor를 통과한 후보 중 최종 모델을 선택한다. 가격순 3개 대표 모델로 축소하지 않는다 | `test_model_routing_global_profiles.py` |
 | FR-011-B05B | 노드별 운영 성적 보정 | 같은 policy/model/input length profile에 성공·schema·downstream·비용·지연 성적이 쌓였다 | 같은 input profile로 점수화한다 | 전역 profile은 그대로 두고 해당 노드 성적만 posterior 품질, 비용, 지연, fallback 점수에 반영한다. 다른 input profile 또는 다른 policy 성적은 섞지 않는다 | `test_model_routing_global_profiles.py`, `test_model_routing_operational_performance.py` |
 | FR-011-B05C | bootstrap profile 매칭 | bootstrap 생성 시 실행 가능한 catalog 모델이 여러 개다 | 난이도별 초기 선택을 만든다 | economy/balanced/advanced마다 모든 모델을 전역 profile로 비교하고 선택 모델, 비교 모델 수, 품질 하한, 비용, 지연, profile 출처를 safe summary로 저장한다 | `test_model_routing_global_profiles.py`, `test_model_routing_bootstrap.py` |
@@ -279,17 +281,26 @@ evidence pipeline이 없으면 Workflow-Aware Adaptive Routing 구현 완료로 
 | FR-011-P06A | Test Sidebar 실행 비교 폭 | Test Sidebar가 열린 상태다 | `실행 비교` 탭을 선택한다 | Sidebar가 화면 우측 여백 24px을 제외한 최대 너비로 확장되고, 비교 결과를 같은 화면에서 표시한다. |
 | FR-011-P07 | Test Sidebar 실행 노드 상세 | 자동 라우팅 trace가 있는 LLM node 테스트 실행이 완료됐다 | 해당 node의 `상세 보기`를 누른다 | 페이지 이동 없이 같은 Sidebar의 본문을 맨 위로 이동하고 실행 상태(상태·비용·시간·토큰), 입력, 실행 모델/자동 라우팅, 출력 순서로 표시한다. 입력 길이 profile·검토/제외 모델 수·품질 하한·예상 비용/지연·선택 이유·policy version을 표시한다. raw input/prompt는 노출하지 않는다. Sidebar와 비교 영역 바깥의 중복 학습 제외 안내는 표시하지 않고, 배포 정책·임시 정책 또는 이전 test trace용 학습 제외 안내를 Judge·학습 상태 다음 상세의 마지막에 한 번 표시한다. `테스트 결과로 돌아가기`로 목록에 복귀한다. |
 | FR-011-P08 | Test Sidebar 실제 fallback | 자동 라우팅 LLM node가 primary 호출 실패 뒤 fallback으로 성공했다 | node 상세를 연다 | 최초 선택 모델, 안전한 실패 사유, 실제 사용한 fallback 모델을 `실제 대체 실행` block으로 표시한다. 계획된 fallback만 있는 정상 실행과 혼동하지 않는다. |
-| FR-011-P09 | Test Sidebar 자동 라우팅 실행 | 자동 라우팅 LLM node를 Test Sidebar에서 실행한다 | 활성 배포 정책 유무와 관계없이 테스트한다 | 설정 fingerprint가 같은 활성 배포 정책이 정확히 하나일 때만 재사용한다. 여러 활성 배포가 일치하면 잘못된 정책을 고르지 않고 임시 Judge-first 정책으로 실행한다. trace에는 실제 선택 경로인 `decision_source=runtime_judge \| local_router \| stored_model`, 실행 맥락인 `execution_mode=test`, `policy_source=active_deployment 또는 test_ephemeral`, `included_in_policy_learning=false`를 분리해 남긴다. workflow run의 `deployment_id`는 비워 운영 표본/refresh counter에 포함하지 않는다. |
+| FR-011-P09 | Test Sidebar 자동 라우팅 실행 | 자동 라우팅 LLM node를 Test Sidebar에서 실행한다 | 활성 배포 정책 유무와 관계없이 테스트한다 | 설정 fingerprint가 같은 활성 배포 정책이 정확히 하나일 때만 재사용한다. 여러 활성 배포가 일치하면 잘못된 정책을 고르지 않고 임시 Judge-first 정책으로 실행한다. 작업 지문이 같은 검증 learner version이 있으면 로컬 라우터를 사용하고, 없거나 불확실하면 Judge를 사용한다. trace에는 실제 선택 경로인 `decision_source=runtime_judge \| local_router \| stored_model`, 실행 맥락인 `execution_mode=test`, `policy_source=active_deployment 또는 test_ephemeral`, `included_in_routing_learning=false`를 분리해 남긴다. workflow run의 `deployment_id`는 비우고 learner label·학습 횟수·운영 성적·정책 갱신 카운터를 변경하지 않는다. |
 | FR-011-P09A | Judge 실행 상태 trace/UI | Judge 성공, Judge 호출 후 실패, Judge 미호출, 이전 trace 상태가 각각 있다 | 로그 또는 Test Sidebar에서 LLM node 상세를 연다 | 공통 상세 화면은 성공 시 모델·확신도·후보 수·비용을, 호출 후 실패 시 기본 모델 회귀와 오류 코드를, 미호출 시 미호출 이유를 구분해 표시한다. 상태 없는 이전 trace는 실패로 단정하지 않고 `Judge 실행 정보 없음`으로 표시한다. Judge 성공 상세의 header에는 중복된 `Judge가 모델 선택` 배지를 표시하지 않는다. |
 | FR-011-P10 | Test Sidebar 정책 stale 차단 | current draft의 자동 라우팅 LLM node 설정 fingerprint가 활성 deployment snapshot과 다르다 | Test Sidebar에서 실행한다 | 오래된 deployment policy는 평가하지 않는다. 현재 draft와 실행 주체가 사용할 수 있는 모델로 임시 Judge-first 정책을 만들어 Judge를 호출하되 정책·학습 데이터는 저장하지 않는다. |
 | FR-011-L01 | 요청 경로와 학습 분리 | 운영 요청에서 Judge가 모델을 선택했다 | workflow가 terminal 상태가 된다 | 실행 중에는 학습 전 예측과 안전 label만 저장하고 가중치를 변경하지 않는다. 확정 label은 Celery 학습 task로 전달된다. |
-| FR-011-L02 | 학습 batch 경계 | 같은 정책에 확정 label 10건이 쌓이거나 첫 label 후 5분이 지났다 | local router 학습 task를 실행한다 | 정책 행을 잠근 뒤 최대 10건을 한 번 처리하고 각 label에 `learning_processed_at`을 기록한다. 남은 label은 후속 task로 처리한다. |
+| FR-011-L02 | 학습 batch 경계 | 같은 learner에 확정 label 10건이 쌓이거나 첫 label 후 5분이 지났다 | local router 학습 task를 실행한다 | learner 행을 잠근 뒤 최대 10건을 한 번 처리하고 각 label에 `learning_processed_at`을 기록한다. 남은 label은 후속 task로 처리한다. |
 | FR-011-L03 | 최근 20건 전환 gate | Judge label은 50건 이상이지만 최근 학습 전 예측 비교가 20건 미만이거나 일치율·축 오차·계약 통과율 기준을 충족하지 못한다 | 학습 모드를 재평가한다 | candidate artifact를 실행용으로 승격하지 않고 `judge_first`를 유지한다. |
 | FR-011-L04 | 예측 붕괴 차단 | 최근 Judge 정답은 여러 요구 수준인데 로컬 예측은 한 요구 수준으로만 수렴한다 | 학습 모드를 재평가한다 | 높은 표본 수만으로 `local_first`로 전환하지 않는다. |
 | FR-011-L05 | 미지 입력 Judge 회귀 | local-first 상태에서 현재 vector가 학습 표본과 멀거나 예측 경계가 모호하다 | 운영 요청을 실행한다 | 로컬 confidence가 기준 미만이 되어 Runtime Judge가 모델을 선택하고 새 비교 label을 남긴다. |
 | FR-011-L06 | 그룹 분리 학습 feature | 같은 LLM 노드에서 실행 변수는 같고 제목·작업 설명·system/user/assistant prompt의 고정 문구만 다르다 | local learning feature와 vector를 만든다 | 두 feature는 같아야 한다. 핵심 요청, 동적 문맥, 구조화 특징을 별도 임베딩하고 `75% / 15% / 10%`로 정규화 결합한다. 변하는 RAG 안전 신호는 구조화 특징에 포함하고, 미참조 upstream 값과 고정 prompt 문구는 제외한다. 변수 메타데이터가 없는 레거시 노드는 가장 정보량이 큰 runtime 값을 핵심 요청으로 사용한다. |
 | FR-011-L07 | 학습 feature 버전 격리 | 이전 prompt-context artifact가 있는 정책에 변수 중심 feature 코드가 배포된다 | 운영 요청과 batch 학습을 실행한다 | 이전 artifact로 local 예측하지 않고 Judge-first로 돌아간다. 새 feature label부터 학습 횟수·최근 평가를 다시 시작하고 서로 다른 feature schema의 vector를 섞지 않는다. |
 | FR-011-L08 | Runtime Judge 시간 분리 저장 | Judge provider 호출이 재시도를 포함해 완료된다 | Judge usage와 실행 trace를 저장한다 | 첫 요청부터 최종 재시도 응답까지의 총 경과 시간을 `usage.latency_ms`와 Judge 전용 `llm_usage_logs.latency_ms`에 저장한다. 최종 작업 모델 latency와 섞거나 중복 합산하지 않는다. |
+| FR-011-L09 | 재배포 학습 재사용 | 같은 organization/workflow/node의 새 배포가 이전과 같은 task fingerprint와 Judge 계약을 가진다 | 자동 라우팅 policy를 생성한다 | 기존 learner와 최신 검증 learner version을 재사용하고 학습 횟수를 0으로 되돌리지 않는다. |
+| FR-011-L10 | 작업 변경 계보 분리 | prompt, RAG, 출력 schema 또는 downstream 계약이 바뀌어 task fingerprint가 달라진다 | 자동 라우팅 policy를 생성한다 | 새 learner를 만들고 이전 learner/version은 수정하지 않는다. |
+| FR-011-L11 | 학습 계약 변경 계보 분리 | Judge rubric, feature schema 또는 E5 encoder 식별자가 바뀐다 | learner를 조회하거나 생성한다 | 새 judge contract hash의 learner를 만들고 기존 learner는 `stale` 읽기 전용 계보로 보존한다. |
+| FR-011-L12 | policy 누락 운영 실행 | 자동 라우팅 배포 실행인데 persisted policy row가 누락됐다 | LLM node를 실행하고 workflow를 완료한다 | 임시 Judge-first 실행을 허용하되 task fingerprint 기준 learner를 조회·생성하고 운영 label은 해당 learner에 저장한다. |
+| FR-011-L13 | 테스트 실행 비학습 | 같은 작업 지문의 검증 learner version이 있거나 Judge 호출이 필요하다 | Test Sidebar에서 실행한다 | 로컬 라우터 또는 Judge로 모델을 선택하지만 learner label, 학습 횟수, 운영 성적, policy refresh counter를 변경하지 않는다. trace에는 `included_in_routing_learning=false`를 남긴다. |
+| FR-011-L14 | 불변 버전 발행·정책 반영 | Judge label 50건, 최근 평가 20건, 일치율·축 오차·계약 품질 gate를 모두 충족한다 | batch 학습을 완료한다 | candidate artifact hash로 중복 발행을 막고 새 learner version을 발행한다. 같은 hash의 과거 version이 있으면 새 row를 만들지 않고 기존 불변 version을 재활성화한다. 같은 learner를 참조하는 활성 policy는 해당 version을 참조한다. |
+| FR-011-L15 | 비정형 출력 중립 schema gate | 출력 schema가 없는 자유형 LLM node의 운영 label이 모두 `not_applicable`이다 | learner version 발행 gate를 계산한다 | schema 미검사를 실패로 취급하지 않고 schema pass rate를 중립 100%로 계산한다. 실행·downstream·fallback 및 최근 Judge 평가가 다른 gate를 충족하면 version을 발행할 수 있다. |
+| FR-011-L16 | 구형 학습 데이터 폐기 migration | policy 소유 label과 `active_policy.learning` artifact가 있는 DB를 신규 head로 올린다 | migration을 실행한다 | 구형 label/artifact를 복원 없이 폐기하고 learner/version/신규 label schema를 만든다. 기존 policy, 실행 로그, 비용·성능 데이터는 유지하며 Alembic head는 하나다. |
+| FR-011-L17 | 활성 학습 버전 운영 품질 저하 | 특정 배포 정책이 검증된 learner version을 사용 중이고 완료된 운영 표본이 20건 이상이다 | 정책 점검에서 실행 성공률, schema 통과율 또는 downstream 성공률이 95% 미만이거나 fallback 비율이 5%를 초과한다 | learner와 불변 version은 감사용으로 보존하되 해당 배포 정책의 `active_learner_version_id`만 해제한다. 다음 실행은 Runtime Judge 우선으로 돌아가며 정책 점검 결과에는 `operational_contract_degraded`를 남긴다. |
 
 ## Constraint-Difficulty Router Experimental Tests
 

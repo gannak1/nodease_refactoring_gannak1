@@ -490,7 +490,7 @@ class LLMNode(Node[LLMNodeData]):
         preview_metadata = (
             {
                 "policy_source": "active_deployment",
-                "included_in_policy_learning": False,
+                "included_in_routing_learning": False,
             }
             if is_policy_preview_node
             else {}
@@ -507,15 +507,53 @@ class LLMNode(Node[LLMNodeData]):
                 deployment_id=policy_deployment_id,
                 node_id=self.id,
             )
+            if is_deployed_execution and (
+                persisted_policy is None
+                or getattr(persisted_policy, "learner_id", None) is None
+            ):
+                from apps.shared.db.models.workflow_run import WorkflowRun
+
+                workflow_run_id = self.execution_context.get("workflow_run_id")
+                workflow_run = (
+                    db_session.query(WorkflowRun)
+                    .filter(WorkflowRun.id == uuid.UUID(str(workflow_run_id)))
+                    .first()
+                    if workflow_run_id
+                    else None
+                )
+                if workflow_run is not None:
+                    ensured_policy = (
+                        ModelRoutingPolicyStore.ensure_policy_for_deployed_node(
+                            db_session,
+                            workflow_run=workflow_run,
+                            node_id=self.id,
+                            node_data=self.data.model_dump(),
+                        )
+                    )
+                    if ensured_policy is not None:
+                        persisted_policy = ensured_policy
             if persisted_policy is not None and persisted_policy.enabled:
+                from apps.workflow_engine.services.model_routing_learner_store import (
+                    ModelRoutingLearnerStore,
+                )
+
                 policy = {
                     "status": persisted_policy.status,
                     "policy_id": str(persisted_policy.id),
                     "policy_version": persisted_policy.policy_version,
                     "active_policy": persisted_policy.active_policy,
+                    "learner": ModelRoutingLearnerStore.runtime_snapshot(
+                        db_session,
+                        learner_id=getattr(persisted_policy, "learner_id", None),
+                        version_id=getattr(
+                            persisted_policy, "active_learner_version_id", None
+                        ),
+                    ),
                     "refresh": {
                         "refresh_every_runs": persisted_policy.refresh_every_runs,
-                        "runs_since_last_refresh": persisted_policy.eligible_runs_since_last_refresh,
+                        "runs_since_last_refresh": (
+                            persisted_policy.eligible_runs_since_last_refresh
+                        ),
                     },
                 }
             elif persisted_policy is not None:
@@ -638,6 +676,9 @@ class LLMNode(Node[LLMNodeData]):
                     inputs,
                     self.data,
                     rag_metadata=routing_rag_context,
+                    effect_profile=self.execution_context.get(
+                        "model_routing_effect_profile"
+                    ),
                 ),
             )
             selected_model_id = decision.selected_model_id
@@ -711,10 +752,24 @@ class LLMNode(Node[LLMNodeData]):
                 )
                 candidate_model_ids = list(available_model_ids or [])
                 judge_default_model_id = selected_model_id
+                structural_facts = ModelRouter.runtime_requirement_facts(
+                    inputs=inputs,
+                    node_data=self.data,
+                    rag_metadata=routing_rag_context,
+                    downstream_contract_required=bool(
+                        self.execution_context.get("downstream_contract_required")
+                    ),
+                    effect_profile=self.execution_context.get(
+                        "model_routing_effect_profile"
+                    ),
+                )
                 candidate_profiles = self._routing_candidate_profiles(
                     db_session,
                     candidate_model_ids,
                     policy_id=policy.get("policy_id"),
+                    input_profile=str(
+                        structural_facts.get("input_token_bucket") or ""
+                    ),
                 )
                 judge_metadata.update(
                     {
@@ -723,12 +778,64 @@ class LLMNode(Node[LLMNodeData]):
                         "attempted": True,
                     }
                 )
-                judge_decision = ModelRoutingRuntimeJudge.decide(
+                requirement_assessment = ModelRoutingRuntimeJudge.assess_requirements(
                     client=judge_selection.client,
-                    candidate_model_ids=candidate_model_ids,
                     routing_feature_text=routing_feature_text or "",
+                    structural_facts=structural_facts,
                     rag_context=routing_rag_context,
-                    candidate_profiles=candidate_profiles,
+                )
+                judge_attempts = [
+                    (judge_model_id, judge_selection, requirement_assessment)
+                ]
+                requires_safe_fallback = bool(
+                    requirement_assessment.requires_safe_fallback
+                )
+                if requires_safe_fallback:
+                    selected_by_server = (
+                        ModelRouter.select_safe_fallback_for_requirements(
+                            candidate_model_ids=candidate_model_ids,
+                            requirements=requirement_assessment.task_requirements,
+                            candidate_profiles=candidate_profiles,
+                            default_model_id=judge_default_model_id,
+                            structural_facts=structural_facts,
+                        )
+                        or judge_default_model_id
+                    )
+                    fallback_model_id = (
+                        ModelRouter.select_safe_fallback_for_requirements(
+                            candidate_model_ids=[
+                                model_id
+                                for model_id in candidate_model_ids
+                                if ModelRouter.normalize_model_id(model_id)
+                                != ModelRouter.normalize_model_id(selected_by_server)
+                            ],
+                            requirements=requirement_assessment.task_requirements,
+                            candidate_profiles=candidate_profiles,
+                            default_model_id=judge_default_model_id,
+                            structural_facts=structural_facts,
+                        )
+                        or fallback_model_id
+                    )
+                    selection_reason_code = (
+                        "requirement_judge_low_confidence_fallback"
+                    )
+                else:
+                    selected_by_server = ModelRouter.select_candidate_for_requirements(
+                        candidate_model_ids=candidate_model_ids,
+                        requirements=requirement_assessment.task_requirements,
+                        candidate_profiles=candidate_profiles,
+                        default_model_id=judge_default_model_id,
+                        structural_facts=structural_facts,
+                    ) or judge_default_model_id
+                    selection_reason_code = (
+                        "requirements_candidate_selected"
+                        if ModelRouter.normalize_model_id(selected_by_server)
+                        != ModelRouter.normalize_model_id(judge_default_model_id)
+                        else "requirement_default_selected"
+                    )
+                judge_decision = requirement_assessment.to_decision(
+                    selected_model_id=selected_by_server,
+                    reason_code=selection_reason_code,
                 )
             except (RuntimeError, ValueError, TypeError, SQLAlchemyError) as exc:
                 # Judge는 초기 학습을 위한 보조 경로다. 일시 실패가 운영 요청을
@@ -768,19 +875,43 @@ class LLMNode(Node[LLMNodeData]):
                     "status": "selected",
                     "attempted": True,
                 }
-                judge_metadata["model"] = judge_model_id
-                judge_metadata["selection_source"] = "judge_candidate_selection"
+                final_judge_model_id = judge_attempts[-1][0]
+                judge_metadata["model"] = final_judge_model_id
+                judge_metadata["selection_source"] = "server_requirement_selection"
                 judge_metadata["candidate_model_count"] = len(candidate_model_ids)
-                usage = judge_decision.usage
-                has_billable_usage = any(
-                    int(usage.get(key) or 0) > 0
-                    for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                judge_metadata["rubric_version"] = (
+                    requirement_assessment.rubric_version
                 )
-                if has_billable_usage:
+                judge_metadata["ambiguity_flags"] = list(
+                    requirement_assessment.ambiguity_flags
+                )
+                judge_metadata["adjudication_attempted"] = False
+                judge_metadata["safe_fallback_used"] = requires_safe_fallback
+                aggregate_usage = ModelRoutingRuntimeJudge._aggregate_usages(
+                    [assessment.usage for _model, _selection, assessment in judge_attempts]
+                )
+                aggregate_usage["latency_ms"] = sum(
+                    max(0, int(assessment.usage.get("latency_ms") or 0))
+                    for _model, _selection, assessment in judge_attempts
+                )
+                judge_metadata["usage"] = aggregate_usage
+                total_judge_cost = 0.0
+                for attempt_index, (
+                    attempt_model_id,
+                    attempt_selection,
+                    attempt_assessment,
+                ) in enumerate(judge_attempts, start=1):
+                    usage = attempt_assessment.usage
+                    has_billable_usage = any(
+                        int(usage.get(key) or 0) > 0
+                        for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                    )
+                    if not has_billable_usage:
+                        continue
                     try:
                         judge_cost = LLMService.calculate_cost(
                             db_session,
-                            judge_model_id,
+                            attempt_model_id,
                             int(usage.get("prompt_tokens") or 0),
                             int(usage.get("completion_tokens") or 0),
                             usage=usage,
@@ -789,7 +920,7 @@ class LLMNode(Node[LLMNodeData]):
                         LLMService.log_usage(
                             db=db_session,
                             user_id=user_id,
-                            model_id=judge_model_id,
+                            model_id=attempt_model_id,
                             usage=usage,
                             cost=judge_cost,
                             organization_id=self.execution_context.get("organization_id"),
@@ -799,23 +930,38 @@ class LLMNode(Node[LLMNodeData]):
                                 if workflow_run_id
                                 else None
                             ),
-                            node_id=f"{self.id}:routing_judge",
-                            credential_id=judge_selection.credential_id,
+                            node_id=(
+                                f"{self.id}:routing_judge"
+                                if attempt_index == 1
+                                else f"{self.id}:routing_adjudicator"
+                            ),
+                            credential_id=attempt_selection.credential_id,
                         )
-                        judge_metadata["cost"] = judge_cost
+                        total_judge_cost += float(judge_cost or 0)
                     except (RuntimeError, ValueError, TypeError, SQLAlchemyError) as exc:
                         judge_metadata["usage_log_error"] = type(exc).__name__
+                if total_judge_cost:
+                    judge_metadata["cost"] = total_judge_cost
 
                 policy_id = policy.get("policy_id")
+                learner = policy.get("learner")
+                learner_id = (
+                    learner.get("id") if isinstance(learner, dict) else None
+                )
                 # Editor test runs must show the same model selection as a deployed
                 # run, but they must never become deployed learning samples.
-                if policy_id and not is_policy_preview_node:
+                if (
+                    learner_id
+                    and not is_policy_preview_node
+                    and not requires_safe_fallback
+                ):
                     try:
                         workflow_run_id = self.execution_context.get("workflow_run_id")
                         if workflow_run_id:
                             queued_learning = ModelRoutingPolicyStore.queue_runtime_judge_label(
                                 db_session,
-                                policy_id=policy_id,
+                                learner_id=learner_id,
+                                source_policy_id=policy_id,
                                 workflow_run_id=workflow_run_id,
                                 node_id=self.id,
                                 routing_feature_text=routing_feature_text or "",
@@ -823,6 +969,9 @@ class LLMNode(Node[LLMNodeData]):
                                     inputs,
                                     self.data,
                                     rag_metadata=routing_rag_context,
+                                    effect_profile=self.execution_context.get(
+                                        "model_routing_effect_profile"
+                                    ),
                                 ),
                                 selected_model_id=selected_model_id,
                                 candidate_model_ids=candidate_model_ids,
@@ -839,6 +988,11 @@ class LLMNode(Node[LLMNodeData]):
                                 )[:80]
                     except (RuntimeError, ValueError, TypeError, SQLAlchemyError) as exc:
                         judge_metadata["learning_error"] = type(exc).__name__
+                elif requires_safe_fallback:
+                    judge_metadata["learning_status"] = "not_queued"
+                    judge_metadata["learning_not_queued_reason"] = (
+                        "requirement_judge_low_confidence"
+                    )
 
         if not should_execute_runtime_judge:
             judge_metadata["not_called_reason"] = reason_code
@@ -847,6 +1001,22 @@ class LLMNode(Node[LLMNodeData]):
             "enabled": True,
             "policy_id": policy.get("policy_id"),
             "policy_version": policy.get("policy_version"),
+            "learner_id": (
+                policy.get("learner", {}).get("id")
+                if isinstance(policy.get("learner"), dict)
+                else None
+            ),
+            "learner_version": (
+                policy.get("learner", {}).get("active_version")
+                if isinstance(policy.get("learner"), dict)
+                else None
+            ),
+            "included_in_routing_learning": bool(
+                not is_policy_preview_node
+                and isinstance(policy.get("learner"), dict)
+                and policy.get("learner", {}).get("id")
+                and judge_metadata.get("learning_status") == "pending_contract"
+            ),
             "selected_model": selected_model_id,
             "fallback_model": fallback_model_id,
             # 선택 주체(Judge/local/stored)와 실행 환경(test/deployed)은 별개다.
@@ -878,6 +1048,7 @@ class LLMNode(Node[LLMNodeData]):
         candidate_model_ids: list[str],
         *,
         policy_id: str | uuid.UUID | None = None,
+        input_profile: str | None = None,
     ) -> list[dict[str, Any]]:
         """Judge가 비용과 문맥 여유를 비교할 수 있는 공개 카탈로그 요약이다."""
 
@@ -934,6 +1105,10 @@ class LLMNode(Node[LLMNodeData]):
                             db_session,
                             policy_id=policy_id,
                             candidate_model_ids=normalized_ids,
+                            input_profile=input_profile,
+                            minimum_profile_run_count=(
+                                ModelRouter.MIN_OPERATIONAL_EVIDENCE_RUNS
+                            ),
                         )
                     )
                 except (AttributeError, SQLAlchemyError, TypeError, ValueError):

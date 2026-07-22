@@ -12,7 +12,6 @@ from uuid import UUID, uuid4
 
 import tiktoken
 from fastapi import UploadFile
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sqlalchemy.orm import Session
 
 from apps.gateway.services.ingestion.factory import IngestionFactory
@@ -71,6 +70,14 @@ _SAFE_PREVIEW_SOURCE_REASON_CODES = frozenset(
         "source.temporarily_unavailable",
     }
 )
+
+
+def _recursive_character_text_splitter(**kwargs: Any) -> Any:
+    # Import lazily so unrelated Gateway endpoints do not pay the heavy
+    # langchain/nltk import cost during application startup.
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+    return RecursiveCharacterTextSplitter(**kwargs)
 
 
 def _pre_finalization_chunk_progress(completed: int, total: int) -> int:
@@ -390,7 +397,7 @@ class IngestionOrchestrator:
         self._active_progress_fencing_token: str | None = None
         self._active_progress_lease_guard: Callable[[], bool] | None = None
 
-        self.text_splitter = RecursiveCharacterTextSplitter(
+        self.text_splitter = _recursive_character_text_splitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             separators=["\n\n", "\n", ".", " ", ""],
@@ -837,7 +844,7 @@ class IngestionOrchestrator:
             if identifier not in separators:
                 separators.insert(0, identifier)
 
-        doc_specific_splitter = RecursiveCharacterTextSplitter(
+        doc_specific_splitter = _recursive_character_text_splitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             separators=separators,
@@ -1351,7 +1358,7 @@ class IngestionOrchestrator:
             if identifier not in separators:
                 separators.insert(0, identifier)
 
-        splitter = RecursiveCharacterTextSplitter(
+        splitter = _recursive_character_text_splitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             separators=separators,
@@ -1455,7 +1462,7 @@ class IngestionOrchestrator:
 
         # 청크 사이즈 오버라이드 (DB 대형 Row 처리 등)
         if override_chunk_size is not None:
-            target_splitter = RecursiveCharacterTextSplitter(
+            target_splitter = _recursive_character_text_splitter(
                 chunk_size=override_chunk_size,
                 chunk_overlap=self.text_splitter._chunk_overlap,
                 separators=self.text_splitter._separators,

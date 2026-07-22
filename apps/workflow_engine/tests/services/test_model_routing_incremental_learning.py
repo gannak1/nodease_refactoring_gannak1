@@ -57,7 +57,7 @@ def test_learning_mode_stays_judge_first_until_outcomes_are_diverse_and_healthy(
     ) == "judge_first"
 
     assert learning_mode_for(
-        judged_request_count=50,
+        judged_request_count=100,
         distinct_selected_model_count=1,
         success_rate=1.0,
         schema_pass_rate=1.0,
@@ -66,13 +66,18 @@ def test_learning_mode_stays_judge_first_until_outcomes_are_diverse_and_healthy(
     ) == "judge_first"
 
     assert learning_mode_for(
-        judged_request_count=50,
+        judged_request_count=100,
         distinct_selected_model_count=2,
         success_rate=0.98,
         schema_pass_rate=0.99,
         downstream_success_rate=0.99,
         fallback_rate=0.01,
-        recent_judge_match_rate=0.8,
+        recent_judge_match_rate=0.75,
+        recent_axis_accuracies={
+            "task_complexity": 0.9,
+            "decision_impact": 0.9,
+            "evidence_synthesis": 0.9,
+        },
         recent_axis_mean_errors={
             "task_complexity": 0.3,
             "decision_impact": 0.2,
@@ -81,17 +86,23 @@ def test_learning_mode_stays_judge_first_until_outcomes_are_diverse_and_healthy(
         recent_judge_label_diversity=2,
         recent_local_prediction_diversity=2,
         recent_contract_pass_rate=0.95,
-        recent_evaluation_sample_count=20,
+        recent_evaluation_sample_count=50,
+        high_risk_underestimation_count=0,
     ) == "local_first"
 
     assert learning_mode_for(
-        judged_request_count=50,
+        judged_request_count=100,
         distinct_selected_model_count=2,
         success_rate=0.98,
         schema_pass_rate=0.80,
         downstream_success_rate=0.99,
         fallback_rate=0.01,
-        recent_judge_match_rate=0.8,
+        recent_judge_match_rate=0.75,
+        recent_axis_accuracies={
+            "task_complexity": 0.9,
+            "decision_impact": 0.9,
+            "evidence_synthesis": 0.9,
+        },
         recent_axis_mean_errors={
             "task_complexity": 0.3,
             "decision_impact": 0.2,
@@ -100,7 +111,8 @@ def test_learning_mode_stays_judge_first_until_outcomes_are_diverse_and_healthy(
         recent_judge_label_diversity=2,
         recent_local_prediction_diversity=2,
         recent_contract_pass_rate=0.95,
-        recent_evaluation_sample_count=20,
+        recent_evaluation_sample_count=50,
+        high_risk_underestimation_count=0,
     ) == "judge_first"
 
 
@@ -154,11 +166,11 @@ def test_policy_uses_runtime_judge_first_then_local_router(monkeypatch):
     monkeypatch.setattr(
         MultilingualE5TaskRequirementClassifier, "predict", lambda *_args, **_kwargs: _Prediction()
     )
-    policy["active_policy"]["learning"] = {
+    policy["learner"] = {
         "mode": "local_first",
         "local_confidence_threshold": 0.78,
         "local_requirement_artifact": {
-            "kind": "multilingual_e5_task_requirements_online_v1",
+            "kind": "multilingual_e5_task_requirements_ordinal_v2",
                 "feature_schema_version": TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
         },
     }

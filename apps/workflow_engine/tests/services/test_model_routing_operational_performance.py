@@ -292,6 +292,99 @@ def test_candidate_contract_evidence_aggregates_schema_downstream_and_fallback(m
     }
 
 
+def test_candidate_contract_evidence_can_be_limited_to_current_input_profile(monkeypatch):
+    rows = [
+        SimpleNamespace(
+            model_id="gpt-4o-mini",
+            input_profile="short",
+            run_count=5,
+            success_count=5,
+            schema_pass_count=5,
+            schema_eval_count=5,
+            downstream_success_count=5,
+            downstream_eval_count=5,
+            fallback_count=0,
+        ),
+        SimpleNamespace(
+            model_id="gpt-4o-mini",
+            input_profile="long",
+            run_count=5,
+            success_count=1,
+            schema_pass_count=1,
+            schema_eval_count=5,
+            downstream_success_count=1,
+            downstream_eval_count=5,
+            fallback_count=4,
+        ),
+    ]
+    monkeypatch.setattr(
+        ModelRoutingOperationalPerformanceService,
+        "_rows",
+        classmethod(lambda cls, db, *, policy_id: rows),
+    )
+
+    evidence = ModelRoutingOperationalPerformanceService.candidate_contract_evidence(
+        object(),
+        policy_id="policy-id",
+        candidate_model_ids=["gpt-4o-mini"],
+        input_profile="short",
+    )
+
+    assert evidence["gpt-4o-mini"]["operational_run_count"] == 5
+    assert evidence["gpt-4o-mini"]["operational_success_rate"] == 1.0
+    assert evidence["gpt-4o-mini"]["operational_fallback_rate"] == 0.0
+
+
+def test_candidate_contract_evidence_falls_back_to_global_when_profile_is_immature(
+    monkeypatch,
+):
+    rows = [
+        SimpleNamespace(
+            model_id="gpt-4o-mini",
+            input_profile="short",
+            run_count=1,
+            success_count=1,
+            schema_pass_count=1,
+            schema_eval_count=1,
+            downstream_success_count=1,
+            downstream_eval_count=1,
+            fallback_count=0,
+        ),
+        SimpleNamespace(
+            model_id="gpt-4o-mini",
+            input_profile="medium",
+            run_count=5,
+            success_count=4,
+            schema_pass_count=4,
+            schema_eval_count=5,
+            downstream_success_count=4,
+            downstream_eval_count=5,
+            fallback_count=1,
+        ),
+    ]
+    monkeypatch.setattr(
+        ModelRoutingOperationalPerformanceService,
+        "_rows",
+        classmethod(lambda cls, db, *, policy_id: rows),
+    )
+
+    evidence = ModelRoutingOperationalPerformanceService.candidate_contract_evidence(
+        object(),
+        policy_id="policy-id",
+        candidate_model_ids=["gpt-4o-mini"],
+        input_profile="short",
+        minimum_profile_run_count=5,
+    )
+
+    assert evidence["gpt-4o-mini"] == {
+        "operational_run_count": 6,
+        "operational_success_rate": 5 / 6,
+        "operational_schema_pass_rate": 5 / 6,
+        "operational_downstream_success_rate": 5 / 6,
+        "operational_fallback_rate": 1 / 6,
+    }
+
+
 def test_learning_contract_accepts_clean_success_and_rejects_fallback_or_contract_failure():
     workflow_run = SimpleNamespace(status="success")
     clean_run = SimpleNamespace(

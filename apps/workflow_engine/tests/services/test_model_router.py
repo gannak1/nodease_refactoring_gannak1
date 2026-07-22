@@ -30,7 +30,7 @@ def _node(**overrides):
     return SimpleNamespace(**values)
 
 
-def _policy(**active_overrides):
+def _policy(*, learner=None, **active_overrides):
     active = build_judge_first_active_policy(
         policy_version="judge-first-v1",
         default_model_id="gpt-4.1",
@@ -38,7 +38,7 @@ def _policy(**active_overrides):
         candidate_model_ids=["gpt-4.1", "gpt-4.1-mini", "gpt-4o-mini"],
     )
     active.update(active_overrides)
-    return {"active_policy": active}
+    return {"active_policy": active, "learner": learner}
 
 
 def test_workflow_chat_model_allowlist_includes_gpt_56_aliases():
@@ -92,8 +92,9 @@ def test_confident_local_prediction_skips_runtime_judge(monkeypatch):
             confidence=0.91,
         ),
     )
+    monkeypatch.setattr(ModelRouter, "should_audit_local_prediction", lambda *_: False)
     policy = _policy(
-        learning={
+        learner={
             "mode": "local_first",
             "local_confidence_threshold": 0.78,
             "local_requirement_artifact": {
@@ -110,10 +111,47 @@ def test_confident_local_prediction_skips_runtime_judge(monkeypatch):
         routing_feature_text="CURRENT_REQUEST: 비밀번호 변경 위치",
     )
 
-    assert decision.selected_model_id == "gpt-4o-mini"
+    assert decision.selected_model_id == "gpt-4.1-mini"
     assert decision.reason_code == "local_router_confident"
     assert decision.decision_source == "local_router"
     assert decision.requires_runtime_judge is False
+
+
+def test_confident_local_prediction_audit_sample_returns_to_runtime_judge(monkeypatch):
+    monkeypatch.setattr(
+        "apps.workflow_engine.services.model_router."
+        "MultilingualE5TaskRequirementClassifier.predict",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            requirements={
+                "task_complexity": 1,
+                "decision_impact": 0,
+                "evidence_synthesis": 0,
+            },
+            confidence=0.91,
+        ),
+    )
+    monkeypatch.setattr(ModelRouter, "should_audit_local_prediction", lambda *_: True)
+
+    decision = ModelRouter.resolve_policy(
+        _policy(
+            learner={
+                "mode": "local_first",
+                "local_confidence_threshold": 0.78,
+                "local_requirement_artifact": {
+                    "feature_schema_version": TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
+                },
+            }
+        ),
+        inputs={"message": "비밀번호 변경 위치를 알려 주세요."},
+        node_data=_node(),
+        available_model_ids=["gpt-4.1", "gpt-4.1-mini", "gpt-4o-mini"],
+        routing_feature_text="CURRENT_REQUEST: 감사 표본",
+    )
+
+    assert decision.selected_model_id == "gpt-4.1"
+    assert decision.reason_code == "local_router_audit_sample"
+    assert decision.decision_source == "local_router_audit"
+    assert decision.requires_runtime_judge is True
 
 
 def test_uncertain_local_prediction_returns_to_runtime_judge(monkeypatch):
@@ -130,7 +168,7 @@ def test_uncertain_local_prediction_returns_to_runtime_judge(monkeypatch):
         ),
     )
     policy = _policy(
-        learning={
+        learner={
             "mode": "local_first",
             "local_confidence_threshold": 0.78,
             "local_requirement_artifact": {
@@ -148,6 +186,332 @@ def test_uncertain_local_prediction_returns_to_runtime_judge(monkeypatch):
 
     assert decision.reason_code == "local_router_uncertain"
     assert decision.requires_runtime_judge is True
+
+
+def test_candidate_selection_considers_available_candidates_without_prior_validation():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+        requirements={
+            "task_complexity": 1,
+            "decision_impact": 1,
+            "evidence_synthesis": 1,
+        },
+        candidate_profiles=[
+            {
+                "model_id": "gpt-4o-mini",
+                "validation_status": "unverified",
+                "input_price_per_1k": 0.00015,
+                "output_price_per_1k": 0.0006,
+            },
+            {
+                "model_id": "gpt-4.1-mini",
+                "operational_run_count": 12,
+                "operational_success_rate": 1.0,
+                "operational_schema_pass_rate": 1.0,
+                "operational_downstream_success_rate": 1.0,
+                "operational_fallback_rate": 0.0,
+                "input_price_per_1k": 0.0004,
+                "output_price_per_1k": 0.0016,
+            },
+        ],
+        default_model_id="gpt-4.1",
+    )
+
+    assert selected == "gpt-4o-mini"
+
+
+def test_candidate_selection_prefers_two_proven_models_over_cheaper_failed_model():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+        requirements={
+            "task_complexity": 1,
+            "decision_impact": 1,
+            "evidence_synthesis": 1,
+        },
+        candidate_profiles=[
+            {
+                "model_id": "gpt-4o-mini",
+                "input_price_per_1k": 0.00015,
+                "output_price_per_1k": 0.0006,
+                "operational_run_count": 8,
+                "operational_success_rate": 0.75,
+                "operational_schema_pass_rate": 0.75,
+                "operational_downstream_success_rate": 0.75,
+                "operational_fallback_rate": 0.25,
+            },
+            {
+                "model_id": "gpt-4.1-mini",
+                "input_price_per_1k": 0.0004,
+                "output_price_per_1k": 0.0016,
+                "operational_run_count": 6,
+                "operational_success_rate": 1.0,
+                "operational_schema_pass_rate": 1.0,
+                "operational_downstream_success_rate": 1.0,
+                "operational_fallback_rate": 0.0,
+            },
+            {
+                "model_id": "gpt-4.1",
+                "input_price_per_1k": 0.003,
+                "output_price_per_1k": 0.012,
+                "operational_run_count": 6,
+                "operational_success_rate": 1.0,
+                "operational_schema_pass_rate": 1.0,
+                "operational_downstream_success_rate": 1.0,
+                "operational_fallback_rate": 0.0,
+            },
+        ],
+        default_model_id="gpt-4.1",
+    )
+
+    assert selected == "gpt-4.1-mini"
+
+
+def test_candidate_selection_keeps_catalog_choice_until_two_models_have_proven_quality():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+        requirements={
+            "task_complexity": 1,
+            "decision_impact": 1,
+            "evidence_synthesis": 1,
+        },
+        candidate_profiles=[
+            {
+                "model_id": "gpt-4.1-mini",
+                "input_price_per_1k": 0.0004,
+                "output_price_per_1k": 0.0016,
+                "operational_run_count": 6,
+                "operational_success_rate": 1.0,
+                "operational_schema_pass_rate": 1.0,
+                "operational_downstream_success_rate": 1.0,
+                "operational_fallback_rate": 0.0,
+            },
+        ],
+        default_model_id="gpt-4.1",
+    )
+
+    assert selected == "gpt-4o-mini"
+
+
+def test_candidate_selection_avoids_economy_model_for_generated_json_response():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=[
+            "gpt-5-nano",
+            "gpt-4o-mini",
+            "gpt-4.1-mini",
+            "gpt-4.1",
+        ],
+        requirements={
+            "task_complexity": 1,
+            "decision_impact": 0,
+            "evidence_synthesis": 0,
+        },
+        default_model_id="gpt-4.1",
+        structural_facts={
+            "task_intent": "generate",
+            "output_format": "json",
+            "schema_required": True,
+        },
+    )
+
+    assert selected == "gpt-4.1-mini"
+
+
+def test_candidate_selection_keeps_nano_for_structured_extraction():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=["gpt-5-nano", "gpt-4o-mini", "gpt-4.1"],
+        requirements={
+            "task_complexity": 1,
+            "decision_impact": 0,
+            "evidence_synthesis": 0,
+        },
+        default_model_id="gpt-4.1",
+        structural_facts={
+            "task_intent": "extract",
+            "output_format": "json",
+            "schema_required": True,
+        },
+    )
+
+    assert selected == "gpt-5-nano"
+
+
+def test_judge_first_adds_newly_available_models_to_a_narrow_persisted_pool():
+    policy = _policy(candidate_model_ids=["gpt-4.1"])
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "짧은 사용 방법을 알려 주세요."},
+        node_data=_node(),
+        available_model_ids=["gpt-4.1", "gpt-4.1-mini", "gpt-4o-mini"],
+    )
+
+    assert decision.decision_factors["candidate_model_count"] == 3
+    assert decision.requires_runtime_judge is True
+
+
+def test_candidate_selection_keeps_default_when_no_candidate_meets_requirements():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=["gpt-4o-mini", "gpt-4.1"],
+        requirements={
+            "task_complexity": 3,
+            "decision_impact": 3,
+            "evidence_synthesis": 3,
+        },
+        candidate_profiles=[
+            {
+                "model_id": "gpt-4o-mini",
+            }
+        ],
+        default_model_id="gpt-4.1",
+    )
+
+    assert selected == "gpt-4.1"
+
+
+def test_candidate_selection_uses_real_score_for_all_axis_level_two_request():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=[
+            "gpt-4o-mini",
+            "gpt-4.1-mini",
+            "gpt-4.1",
+            "gpt-5.4-mini",
+        ],
+        requirements={
+            "task_complexity": 2,
+            "decision_impact": 2,
+            "evidence_synthesis": 2,
+        },
+        default_model_id="gpt-4.1",
+    )
+
+    assert selected == "gpt-5.4-mini"
+
+
+def test_candidate_selection_raises_model_for_complex_request():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=[
+            "gpt-4.1",
+            "gpt-5.4-mini",
+            "gpt-5.4",
+            "gpt-5.6-terra",
+            "gpt-5.6-sol",
+        ],
+        requirements={
+            "task_complexity": 3,
+            "decision_impact": 2,
+            "evidence_synthesis": 2,
+        },
+        default_model_id="gpt-4.1",
+    )
+
+    assert selected == "gpt-5.4"
+
+
+def test_candidate_selection_reserves_top_score_for_all_axis_level_three():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=[
+            "gpt-5.4",
+            "o3",
+            "gpt-5.6-sol",
+        ],
+        requirements={
+            "task_complexity": 3,
+            "decision_impact": 3,
+            "evidence_synthesis": 3,
+        },
+        default_model_id="gpt-5.4",
+    )
+
+    assert selected == "gpt-5.6-sol"
+
+
+def test_candidate_selection_avoids_economy_model_for_freeform_generation():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+        requirements={
+            "task_complexity": 1,
+            "decision_impact": 0,
+            "evidence_synthesis": 0,
+        },
+        default_model_id="gpt-4.1",
+        structural_facts={
+            "task_intent": "generate",
+            "output_format": "text",
+            "schema_required": False,
+        },
+    )
+
+    assert selected == "gpt-4.1-mini"
+
+
+def test_safe_fallback_adds_margin_for_uncertain_generated_response():
+    selected = ModelRouter.select_safe_fallback_for_requirements(
+        candidate_model_ids=[
+            "gpt-4o-mini",
+            "gpt-4.1",
+            "gpt-5.4-mini",
+            "gpt-5.6-sol",
+        ],
+        requirements={
+            "task_complexity": 2,
+            "decision_impact": 2,
+            "evidence_synthesis": 2,
+        },
+        default_model_id="gpt-5.4-mini",
+        structural_facts={"task_intent": "generate", "output_format": "json"},
+    )
+
+    assert selected == "gpt-5.4-mini"
+
+
+def test_safe_fallback_uses_strongest_available_when_high_impact_floor_is_unmet():
+    selected = ModelRouter.select_safe_fallback_for_requirements(
+        candidate_model_ids=["gpt-4o-mini", "gpt-5-mini", "gpt-5.4"],
+        requirements={
+            "task_complexity": 2,
+            "decision_impact": 3,
+            "evidence_synthesis": 2,
+        },
+        default_model_id="gpt-5-mini",
+        structural_facts={"task_intent": "generate", "output_format": "json"},
+    )
+
+    assert selected == "gpt-5.4"
+
+
+def test_runtime_requirement_facts_are_computed_without_llm_guessing():
+    facts = ModelRouter.runtime_requirement_facts(
+        inputs={"message": "문의", "attachment": {"filename": "policy.pdf"}},
+        node_data=_node(
+            knowledgeBases=[{"id": "kb-1"}],
+            output_format={
+                "type": "json",
+                "schema": {"type": "object"},
+            },
+        ),
+        rag_metadata={"used": True, "source_count": 3},
+        downstream_contract_required=True,
+    )
+
+    assert facts == {
+        "task_intent": "generate",
+        "input_token_bucket": "short",
+        "schema_required": True,
+        "knowledge_enabled": True,
+        "retrieved_source_count": 3,
+        "output_format": "json",
+        "downstream_contract_required": True,
+        "file_input_present": True,
+        "customer_facing": False,
+        "external_write_reachable": False,
+        "external_read_reachable": False,
+        "local_execution_reachable": False,
+        "customer_output_reachable": False,
+        "control_gate_present": False,
+        "irreversible_effect_possible": False,
+        "reachable_effect_count": 0,
+        "human_approval_required": False,
+    }
 
 
 def test_stale_local_feature_artifact_returns_to_runtime_judge(monkeypatch):
@@ -315,6 +679,70 @@ def test_routing_feature_renders_variables_without_fixed_json_output_contract():
     assert "{{" not in missing_value_feature
 
 
+def test_routing_feature_excludes_unreferenced_runtime_values_when_variable_metadata_exists():
+    node_data = _node(
+        user_prompt="문의: {{message}}",
+        referenced_variables=[
+            {"name": "message", "value_selector": ["webhook", "message"]},
+            {
+                "name": "customerTier",
+                "value_selector": ["webhook", "customerTier"],
+            },
+        ],
+    )
+
+    feature = ModelRouter.routing_feature_text(
+        {
+            "webhook": {
+                "message": "결제 상태를 확인해 주세요.",
+                "customerTier": "enterprise",
+                "requestId": "request-123",
+            }
+        },
+        node_data,
+    )
+
+    request_json = feature.split("CURRENT_REQUEST_JSON:\n", 1)[1].split(
+        "\n\nNODE_TASK_CONTRACT:", 1
+    )[0]
+    assert __import__("json").loads(request_json) == {
+        "message": "결제 상태를 확인해 주세요."
+    }
+    assert "enterprise" not in feature
+    assert "request-123" not in feature
+
+
+def test_routing_feature_keeps_variable_when_prompt_uses_it():
+    node_data = _node(
+        user_prompt="{{customerTier}} 고객의 문의: {{message}}",
+        referenced_variables=[
+            {"name": "message", "value_selector": ["webhook", "message"]},
+            {
+                "name": "customerTier",
+                "value_selector": ["webhook", "customerTier"],
+            },
+        ],
+    )
+
+    feature = ModelRouter.routing_feature_text(
+        {
+            "webhook": {
+                "message": "결제 상태를 확인해 주세요.",
+                "customerTier": "enterprise",
+            }
+        },
+        node_data,
+    )
+
+    request_json = feature.split("CURRENT_REQUEST_JSON:\n", 1)[1].split(
+        "\n\nNODE_TASK_CONTRACT:", 1
+    )[0]
+    assert __import__("json").loads(request_json) == {
+        "customerTier": "enterprise",
+        "message": "결제 상태를 확인해 주세요.",
+    }
+
+
 def test_routing_feature_truncates_task_description_to_judge_budget():
     feature = ModelRouter.routing_feature_text(
         {"message": "요청"},
@@ -402,9 +830,10 @@ def test_resolve_policy_reuses_accepted_judge_decision_for_same_safe_feature(mon
 
     feature = "CURRENT_REQUEST:\nmessage: 동일한 안전 요청"
     policy = _policy()
-    learning = policy["active_policy"]["learning"]
+    learner = {}
+    policy["learner"] = learner
     remember_accepted_decision(
-        learning,
+        learner,
         feature_hash=routing_feature_hash(feature),
         selected_model_id="gpt-4o-mini",
         confidence=0.94,

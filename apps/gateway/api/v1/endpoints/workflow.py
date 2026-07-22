@@ -1052,6 +1052,7 @@ def _model_routing_policy_response(
             "bootstrap_id": None,
             "policy_version": None,
             "active_policy": None,
+            "learner": None,
             "pending_policy": None,
             "refresh": {
                 "refresh_every_runs": 20,
@@ -1066,13 +1067,29 @@ def _model_routing_policy_response(
     refresh_every_runs = policy.refresh_every_runs
     eligible = policy.eligible_runs_since_last_refresh
     bootstrap_id = getattr(policy, "bootstrap_id", None)
+    from apps.workflow_engine.services.model_routing_learner_store import (
+        ModelRoutingLearnerStore,
+    )
+
+    learner = (
+        ModelRoutingLearnerStore.public_summary(
+            db,
+            learner_id=getattr(policy, "learner_id", None),
+            version_id=getattr(policy, "active_learner_version_id", None),
+        )
+        if db is not None
+        else None
+    )
+    active_policy = dict(policy.active_policy or {})
+    active_policy.pop("learning", None)
     return {
         "enabled": policy.enabled,
         "status": policy.status,
         "policy_id": str(policy.id),
         "bootstrap_id": str(bootstrap_id) if bootstrap_id else None,
         "policy_version": policy.policy_version,
-        "active_policy": policy.active_policy or None,
+        "active_policy": active_policy or None,
+        "learner": learner,
         "pending_policy": policy.pending_policy,
         "refresh": {
             "refresh_every_runs": refresh_every_runs,

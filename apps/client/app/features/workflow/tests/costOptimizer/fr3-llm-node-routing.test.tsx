@@ -131,11 +131,20 @@ describe('FR-003 LLM node model routing optimization entry', () => {
         judge_provider: 'openai',
         judge_model_id: 'gpt-4.1-mini',
         minimum_local_samples: 24,
-        local_confidence_threshold: 0.78,
-        learning: {
-          mode: 'local_first',
-          judged_request_count: 24,
-          distinct_model_count: 2,
+      },
+      learner: {
+        id: 'learner-1',
+        status: 'ready',
+        mode: 'local_first',
+        task_fingerprint: 'fingerprint-1',
+        judged_request_count: 57,
+        pending_count: 2,
+        accepted_count: 57,
+        rejected_count: 4,
+        active_version: 3,
+        recent_evaluation: {
+          judge_match_rate: 0.85,
+          contract_pass_rate: 0.97,
         },
       },
       pending_policy: null,
@@ -164,6 +173,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       policy_id: null,
       policy_version: null,
       active_policy: null,
+      learner: null,
       pending_policy: null,
       refresh: {
         refresh_every_runs: 20,
@@ -284,6 +294,10 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     expect(screen.getByText('실행 실패 대체 모델')).toBeInTheDocument();
     expect(screen.getByText('최근 실행 선택')).toBeInTheDocument();
     expect(screen.getByText('여러 조건 종합')).toBeInTheDocument();
+    expect(screen.getByText('자동 라우팅 학습')).toBeInTheDocument();
+    expect(screen.getByText('57건')).toBeInTheDocument();
+    expect(screen.getByText('85%')).toBeInTheDocument();
+    expect(screen.getByText('v3')).toBeInTheDocument();
     expect(screen.queryByText('Judge-first')).not.toBeInTheDocument();
     expect(screen.queryByText('Judge 선택 학습 중')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '자동 선택 기준 만들기' })).not.toBeInTheDocument();

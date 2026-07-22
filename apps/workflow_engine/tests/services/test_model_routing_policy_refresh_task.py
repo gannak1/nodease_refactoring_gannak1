@@ -28,13 +28,9 @@ def _policy(*, strategy_id: str = "judge_bootstrap_incremental_v1"):
             "strategy_id": strategy_id,
             "default_model_id": "gpt-4.1",
             "fallback_model_id": "gpt-4.1-mini",
-            "learning": {
-                "mode": "judge_first",
-                "judged_request_count": 50,
-                "selected_model_ids": ["gpt-4.1", "gpt-4.1-mini"],
-                "local_router_artifact": {"version": 1},
-            },
         },
+        learner_id=uuid4(),
+        active_learner_version_id=uuid4(),
         pending_policy=None,
         policy_version="judge-first-v1",
         refresh_every_runs=20,
@@ -71,7 +67,7 @@ def _db(policy, deployment):
     return db
 
 
-def test_refresh_only_reconciles_judge_first_learning_mode():
+def test_refresh_reads_learner_summary_without_embedding_it_in_policy():
     from apps.workflow_engine.services.model_routing_policy_refresh_task import (
         PersistedModelRoutingPolicyRefreshService,
     )
@@ -80,14 +76,15 @@ def test_refresh_only_reconciles_judge_first_learning_mode():
     db = _db(policy, _deployment())
     profile = SimpleNamespace(operational_usable_runs=24)
 
-    def _reconcile(_db, *, policy):
-        policy.active_policy["learning"]["mode"] = "local_first"
-
     with (
         patch(
-            "apps.workflow_engine.services.model_routing_policy_store."
-            "ModelRoutingPolicyStore.reconcile_incremental_learning_mode",
-            side_effect=_reconcile,
+            "apps.workflow_engine.services.model_routing_learner_store."
+            "ModelRoutingLearnerStore.runtime_snapshot",
+            return_value={
+                "id": str(policy.learner_id),
+                "mode": "local_first",
+                "judged_request_count": 50,
+            },
         ),
         patch(
             "apps.workflow_engine.services.model_routing_policy_refresh_task."
@@ -118,9 +115,74 @@ def test_refresh_only_reconciles_judge_first_learning_mode():
 
     assert update.status == "kept_current"
     assert policy.active_policy["strategy_id"] == "judge_bootstrap_incremental_v1"
-    assert policy.active_policy["learning"]["mode"] == "local_first"
+    assert "learning" not in policy.active_policy
     assert policy.active_policy["default_model_id"] == "gpt-4.1"
     assert update.output_summary["local_router_ready"] is True
+
+
+def test_refresh_detaches_local_version_when_operational_contract_degrades():
+    from apps.workflow_engine.services.model_router import ModelPerformance, NodeRunProfile
+    from apps.workflow_engine.services.model_routing_policy_refresh_task import (
+        PersistedModelRoutingPolicyRefreshService,
+    )
+
+    policy = _policy()
+    db = _db(policy, _deployment())
+    profile = NodeRunProfile(
+        operational_usable_runs=20,
+        model_performance={
+            "gpt-4.1-mini": ModelPerformance(
+                model_id="gpt-4.1-mini",
+                run_count=20,
+                success_count=17,
+                downstream_eval_count=20,
+                downstream_success_count=17,
+                fallback_count=2,
+            )
+        },
+    )
+
+    with (
+        patch(
+            "apps.workflow_engine.services.model_routing_learner_store."
+            "ModelRoutingLearnerStore.runtime_snapshot",
+            return_value={
+                "id": str(policy.learner_id),
+                "mode": "local_first",
+                "judged_request_count": 50,
+            },
+        ),
+        patch(
+            "apps.workflow_engine.services.model_routing_policy_refresh_task."
+            "ModelRoutingOperationalPerformanceService.profile_for_policy",
+            return_value=profile,
+        ),
+        patch(
+            "apps.workflow_engine.services.model_routing_policy_refresh_task."
+            "ModelRoutingOperationalPerformanceService.checkpoint_snapshot",
+            return_value={"total_runs": 20},
+        ),
+        patch.object(
+            PersistedModelRoutingPolicyRefreshService,
+            "_remaining_event_count",
+            return_value=0,
+        ),
+        patch.object(
+            PersistedModelRoutingPolicyRefreshService,
+            "_excluded_run_count",
+            return_value=0,
+        ),
+    ):
+        update = PersistedModelRoutingPolicyRefreshService.refresh(
+            db,
+            policy_id=policy.id,
+            trigger="auto_runs",
+        )
+
+    assert policy.active_learner_version_id is None
+    assert update.output_summary["local_router_ready"] is False
+    assert update.output_summary["learning_mode"] == "judge_first"
+    assert update.output_summary["reason_code"] == "operational_contract_degraded"
 
 
 def test_refresh_migrates_legacy_policy_without_reusing_legacy_rules():
@@ -160,8 +222,13 @@ def test_refresh_migrates_legacy_policy_without_reusing_legacy_rules():
             return_value=0,
         ),
         patch(
-            "apps.workflow_engine.services.model_routing_policy_store."
-            "ModelRoutingPolicyStore.reconcile_incremental_learning_mode"
+            "apps.workflow_engine.services.model_routing_learner_store."
+            "ModelRoutingLearnerStore.runtime_snapshot",
+            return_value={
+                "id": str(policy.learner_id),
+                "mode": "judge_first",
+                "judged_request_count": 0,
+            },
         ),
     ):
         update = PersistedModelRoutingPolicyRefreshService.refresh(
@@ -173,7 +240,7 @@ def test_refresh_migrates_legacy_policy_without_reusing_legacy_rules():
     assert update.status == "kept_current"
     assert policy.active_policy["strategy_id"] == "judge_bootstrap_incremental_v1"
     assert "rules" not in policy.active_policy
-    assert policy.active_policy["learning"]["mode"] == "judge_first"
+    assert "learning" not in policy.active_policy
 
 
 def test_refresh_keeps_policy_when_auto_routing_is_off():

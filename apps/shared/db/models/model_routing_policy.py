@@ -66,6 +66,20 @@ class LLMNodeModelRoutingPolicy(Base):
         index=True,
         comment="초기 난이도 분류 artifact. 배포 policy는 이 bootstrap의 task fingerprint를 따른다.",
     )
+    learner_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("llm_node_model_routing_learners.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    active_learner_version_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey(
+            "llm_node_model_routing_learner_versions.id", ondelete="SET NULL"
+        ),
+        nullable=True,
+        index=True,
+    )
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="collecting"
@@ -309,6 +323,119 @@ class LLMNodeModelRoutingPolicyRunEvent(Base):
     )
 
 
+class LLMNodeModelRoutingLearner(Base):
+    """배포 정책과 독립적으로 재사용하는 LLM node 요구 수준 학습기."""
+
+    __tablename__ = "llm_node_model_routing_learners"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "workflow_id",
+            "node_id",
+            "task_fingerprint",
+            "judge_contract_hash",
+            name="uq_model_routing_learner_identity",
+        ),
+        Index(
+            "ix_model_routing_learner_workflow_node_status",
+            "workflow_id",
+            "node_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    workflow_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("workflows.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    node_id: Mapped[str] = mapped_column(String, nullable=False)
+    task_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    judge_contract_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    judge_rubric_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    feature_schema_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    encoder_model_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="collecting"
+    )
+    candidate_artifact: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    judged_request_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    selected_model_counts: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    evaluation_window: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    recent_evaluation: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    local_confidence_threshold: Mapped[Decimal] = mapped_column(
+        Numeric(8, 6), nullable=False, default=Decimal("0.78")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class LLMNodeModelRoutingLearnerVersion(Base):
+    """품질 gate를 통과해 발행된 변경 불가능한 로컬 라우터 버전."""
+
+    __tablename__ = "llm_node_model_routing_learner_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "learner_id", "version", name="uq_model_routing_learner_version"
+        ),
+        UniqueConstraint(
+            "learner_id",
+            "artifact_hash",
+            name="uq_model_routing_learner_artifact_hash",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    learner_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("llm_node_model_routing_learners.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    artifact: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    artifact_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    evaluation_summary: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    publish_reason: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
 class LLMNodeModelRoutingLearningLabel(Base):
     """Judge 선택을 실행 결과가 나온 뒤 학습하기 위한 안전한 대기 label.
 
@@ -320,14 +447,14 @@ class LLMNodeModelRoutingLearningLabel(Base):
     __tablename__ = "llm_node_model_routing_learning_labels"
     __table_args__ = (
         UniqueConstraint(
-            "policy_id",
+            "learner_id",
             "workflow_run_id",
             "node_id",
-            name="uq_model_routing_learning_label_policy_run_node",
+            name="uq_model_routing_learning_label_learner_run_node",
         ),
         Index(
-            "ix_model_routing_learning_label_policy_status",
-            "policy_id",
+            "ix_model_routing_learning_label_learner_status",
+            "learner_id",
             "status",
         ),
     )
@@ -335,10 +462,15 @@ class LLMNodeModelRoutingLearningLabel(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    policy_id: Mapped[uuid.UUID] = mapped_column(
+    learner_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True),
-        ForeignKey("llm_node_model_routing_policies.id", ondelete="CASCADE"),
+        ForeignKey("llm_node_model_routing_learners.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    source_policy_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("llm_node_model_routing_policies.id", ondelete="SET NULL"),
+        nullable=True,
     )
     workflow_run_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True),
@@ -366,6 +498,10 @@ class LLMNodeModelRoutingLearningLabel(Base):
     )
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     outcome_reason: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    execution_succeeded: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    schema_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    downstream_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    fallback_used: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

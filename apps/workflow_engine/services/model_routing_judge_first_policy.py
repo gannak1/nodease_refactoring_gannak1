@@ -30,7 +30,6 @@ def build_judge_first_active_policy(
     default_model_id: str,
     fallback_model_id: str | None,
     candidate_model_ids: Iterable[str],
-    learning: dict[str, Any] | None = None,
     judge_model_id: str | None = None,
 ) -> dict[str, Any]:
     """실행 가능한 후보만 포함한 Judge-first active policy를 만든다."""
@@ -64,7 +63,6 @@ def build_judge_first_active_policy(
         "fallback_model_id": fallback_model,
         "judge_model_id": judge_model,
         "candidate_model_ids": candidates,
-        "learning": dict(learning) if isinstance(learning, dict) else _empty_learning(),
     }
 
 
@@ -79,18 +77,11 @@ def normalize_judge_first_active_policy(
     """구형 전략 필드는 버리고 유효한 Judge-first 학습 상태만 보존한다."""
 
     source = active_policy if isinstance(active_policy, dict) else {}
-    learning = (
-        source.get("learning")
-        if source.get("strategy_id") == JUDGE_FIRST_STRATEGY_ID
-        and isinstance(source.get("learning"), dict)
-        else None
-    )
     return build_judge_first_active_policy(
         policy_version=policy_version,
         default_model_id=default_model_id,
         fallback_model_id=fallback_model_id,
         candidate_model_ids=candidate_model_ids,
-        learning=learning,
         judge_model_id=_explicit_judge_model_id(source, default_model_id),
     )
 
@@ -100,15 +91,6 @@ def is_judge_first_active_policy(active_policy: Any) -> bool:
         isinstance(active_policy, dict)
         and active_policy.get("strategy_id") == JUDGE_FIRST_STRATEGY_ID
     )
-
-
-def _empty_learning() -> dict[str, Any]:
-    return {
-        "mode": "judge_first",
-        "judged_request_count": 0,
-        "selected_model_ids": [],
-        "local_confidence_threshold": DEFAULT_LOCAL_CONFIDENCE_THRESHOLD,
-    }
 
 
 def _available_representative(model_id: str, candidates: list[str]) -> str | None:

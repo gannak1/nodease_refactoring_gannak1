@@ -279,6 +279,7 @@ export interface ModelRoutingPolicyResponse {
   bootstrap_id?: string | null;
   policy_version: string | null;
   active_policy: JudgeFirstActivePolicy | null;
+  learner: ModelRoutingLearnerSummary | null;
   pending_policy: Record<string, unknown> | null;
   refresh: {
     refresh_every_runs: number;
@@ -296,6 +297,23 @@ export interface ModelRoutingPolicyResponse {
     reason_label: string;
     created_at: string | null;
   } | null;
+}
+
+export interface ModelRoutingLearnerSummary {
+  id: string;
+  status: 'collecting' | 'ready' | 'degraded' | 'stale' | 'failed';
+  mode: 'judge_first' | 'local_first';
+  task_fingerprint: string;
+  judged_request_count: number;
+  pending_count: number;
+  accepted_count: number;
+  rejected_count: number;
+  active_version: number | null;
+  recent_evaluation: {
+    judge_match_rate?: number;
+    contract_pass_rate?: number;
+    axis_mean_errors?: Record<string, number>;
+  };
 }
 
 export interface ModelRoutingPolicyPatchResponse

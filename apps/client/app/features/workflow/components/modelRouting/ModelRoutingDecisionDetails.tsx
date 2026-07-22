@@ -40,7 +40,7 @@ type ModelRoutingSummary = {
   executionMode?: string;
   judge: JudgeSummary;
   policySource?: string;
-  includedInPolicyLearning?: boolean;
+  includedInRoutingLearning?: boolean;
   runtimeContext: RoutingContext;
   localConfidence?: number;
   localConfidenceThreshold?: number;
@@ -186,7 +186,9 @@ const summaryOf = ({
     executionMode: stringValue(routing.execution_mode),
     judge: judgeOf(routing.judge, decisionSource, reasonCode),
     policySource: stringValue(routing.policy_source),
-    includedInPolicyLearning: booleanValue(routing.included_in_policy_learning),
+    includedInRoutingLearning:
+      booleanValue(routing.included_in_routing_learning) ??
+      booleanValue(routing.included_in_policy_learning),
     runtimeContext: contextOf(routing.runtime_context || routing),
     localConfidence: numberValue(decisionFactors.local_confidence),
     localConfidenceThreshold: numberValue(
@@ -316,15 +318,15 @@ export function ModelRoutingDecisionDetails({
 
   const context = summary.runtimeContext;
   const isPolicyPreview =
-    summary.includedInPolicyLearning === false &&
+    summary.includedInRoutingLearning === false &&
     (summary.policySource === 'active_deployment' ||
       summary.policySource === 'test_ephemeral');
   const isEphemeralPolicyPreview =
     summary.policySource === 'test_ephemeral' &&
-    summary.includedInPolicyLearning === false;
+    summary.includedInRoutingLearning === false;
   const showsGenericTestLearningExclusion =
     summary.executionMode === 'test' &&
-    summary.includedInPolicyLearning !== true &&
+    summary.includedInRoutingLearning !== true &&
     !isPolicyPreview;
   const judge = summary.judge;
   const shortReason = reasonText(summary.reasonCode, judge.reasonShort);

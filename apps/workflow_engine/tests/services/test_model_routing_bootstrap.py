@@ -75,7 +75,7 @@ def test_bootstrap_policy_is_judge_first_only():
     policy = PersistedModelRoutingBootstrapStore.active_policy_for_bootstrap(bootstrap)
 
     assert policy["strategy_id"] == "judge_bootstrap_incremental_v1"
-    assert policy["learning"]["mode"] == "judge_first"
+    assert "learning" not in policy
     assert policy["candidate_model_ids"] == [
         "gpt-4.1",
         "gpt-4.1-mini",

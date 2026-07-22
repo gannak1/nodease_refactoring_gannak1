@@ -21,12 +21,6 @@ def test_builder_creates_only_judge_first_policy_contract():
         "fallback_model_id": "gpt-4.1",
         "judge_model_id": "gpt-4.1-mini",
         "candidate_model_ids": ["gpt-4.1-mini", "gpt-4.1"],
-        "learning": {
-            "mode": "judge_first",
-            "judged_request_count": 0,
-            "selected_model_ids": [],
-            "local_confidence_threshold": 0.78,
-        },
     }
 
 
@@ -108,12 +102,12 @@ def test_legacy_policy_is_normalized_without_reusing_legacy_rules():
     )
 
     assert normalized["strategy_id"] == JUDGE_FIRST_STRATEGY_ID
-    assert normalized["learning"]["mode"] == "judge_first"
+    assert "learning" not in normalized
     assert "rules" not in normalized
     assert "decision_profiles" not in normalized
 
 
-def test_existing_judge_first_learning_artifact_is_preserved():
+def test_existing_policy_embedded_learning_artifact_is_removed():
     existing = build_judge_first_active_policy(
         policy_version="judge-first-v1",
         default_model_id="gpt-4.1-mini",
@@ -137,4 +131,4 @@ def test_existing_judge_first_learning_artifact_is_preserved():
     )
 
     assert normalized["policy_version"] == "judge-first-v2"
-    assert normalized["learning"] == existing["learning"]
+    assert "learning" not in normalized

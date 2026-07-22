@@ -8,19 +8,24 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 
 # Local routing begins only after enough deployed, contract-passing Judge labels
 # have accumulated to make its first autonomous choice meaningful.
-MIN_JUDGED_REQUESTS = 50
+MIN_JUDGED_REQUESTS = 100
+MIN_RECENT_EVALUATION_SAMPLES = 50
+MIN_EXACT_MATCH_RATE = 0.75
+MIN_AXIS_ACCURACY = 0.85
 MIN_DISTINCT_SELECTED_MODELS = 2
 MAX_SELECTED_MODEL_SHARE = 0.70
 MIN_SUCCESS_RATE = 0.95
 MIN_SCHEMA_PASS_RATE = 0.95
 MIN_DOWNSTREAM_SUCCESS_RATE = 0.95
 MAX_FALLBACK_RATE = 0.05
-TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION = "grouped_runtime_variables_v4_e5"
+TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION = (
+    "grouped_runtime_variables_v8_e5_projection_128_axis_specific_dynamic_signals"
+)
 
 
 @dataclass(frozen=True)
@@ -39,23 +44,28 @@ class LocalTaskRequirementPrediction:
     raw_requirements: dict[str, float]
     distance_score: float
     margin: float
+    ordinal_probabilities: dict[str, list[float]]
+    coverage_score: float
 
 
 class IncrementalTaskRequirementClassifier:
-    """Judge가 판정한 요청 요구 수준을 독립적으로 누적한다.
+    """각 요구 축을 세 개의 누적 임계값으로 학습하는 online ordinal head.
 
-    이 head는 모델 ID를 목표값으로 사용하지 않는다. 따라서 특정 모델이 많이
-    선택됐다는 사실만으로 다음 요청도 같은 모델을 고르는 편향을 만들지 않는다.
+    축마다 하나의 weight vector와 정렬된 세 threshold를 공유하므로
+    ``P(level>=1) >= P(level>=2) >= P(level>=3)``가 구조적으로 보장된다.
     """
 
-    ARTIFACT_KIND = "multilingual_e5_task_requirements_online_v1"
+    ARTIFACT_KIND = "multilingual_e5_task_requirements_ordinal_v3"
+    ORDINAL_HEAD_VERSION = "coral-linear-ordinal-9-output-v2"
     REQUIREMENT_KEYS = (
         "task_complexity",
         "decision_impact",
         "evidence_synthesis",
     )
-    LEARNING_RATE = 0.10
+    LEARNING_RATE = 0.05
     L2 = 0.0005
+    INITIAL_THRESHOLDS = (-1.0, 0.0, 1.0)
+    MIN_THRESHOLD_CLASS_SAMPLES = 10
 
     @classmethod
     def update(
@@ -63,22 +73,36 @@ class IncrementalTaskRequirementClassifier:
         artifact: dict[str, Any] | None,
         *,
         vector: Iterable[float],
+        axis_vectors: Mapping[str, Iterable[float]] | None = None,
         task_requirements: dict[str, Any],
     ) -> dict[str, Any]:
         values = cls._vector(vector)
+        vectors = cls._axis_vectors(values, axis_vectors)
         targets = cls._requirements(task_requirements)
         state = cls._state(artifact, len(values))
         total_error = 0.0
         for key in cls.REQUIREMENT_KEYS:
-            prediction = cls._predict_value(state, key, values)
-            error = float(targets[key]) - prediction
-            total_error += abs(error)
-            weights = state["weights"][key]
-            state["weights"][key] = [
-                weight + cls.LEARNING_RATE * (error * feature - cls.L2 * weight)
-                for weight, feature in zip(weights, values)
+            axis_values = vectors[key]
+            probabilities = cls._ordinal_probabilities(state, key, axis_values)
+            ordinal_targets = cls.ordinal_targets(targets[key])
+            errors = [
+                float(target) - probability
+                for target, probability in zip(ordinal_targets, probabilities)
             ]
-            state["bias"][key] = float(state["bias"][key]) + cls.LEARNING_RATE * error
+            total_error += sum(abs(error) for error in errors) / 3.0
+            weights = state["weights"][key]
+            shared_error = sum(errors) / 3.0
+            state["weights"][key] = [
+                weight
+                + cls.LEARNING_RATE * (shared_error * feature - cls.L2 * weight)
+                for weight, feature in zip(weights, axis_values)
+            ]
+            updated_thresholds = [
+                threshold - cls.LEARNING_RATE * error
+                for threshold, error in zip(state["thresholds"][key], errors)
+            ]
+            state["thresholds"][key] = sorted(updated_thresholds)
+            cls._record_threshold_targets(state, key, ordinal_targets)
 
         count = int(state["trained_example_count"]) + 1
         previous_error = float(state.get("training_error_ema") or 0.0)
@@ -90,6 +114,7 @@ class IncrementalTaskRequirementClassifier:
         )
         state["trained_example_count"] = count
         state["feature_schema_version"] = TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION
+        state["ordinal_head_version"] = cls.ORDINAL_HEAD_VERSION
         cls._update_centroid(state, values, targets)
         return state
 
@@ -99,18 +124,37 @@ class IncrementalTaskRequirementClassifier:
         artifact: dict[str, Any] | None,
         *,
         vector: Iterable[float],
-    ) -> LocalTaskRequirementPrediction:
+        axis_vectors: Mapping[str, Iterable[float]] | None = None,
+    ) -> LocalTaskRequirementPrediction | None:
         values = cls._vector(vector)
+        if not isinstance(artifact, dict) or int(
+            artifact.get("trained_example_count") or 0
+        ) <= 0:
+            return None
+        vectors = cls._axis_vectors(values, axis_vectors)
         state = cls._state(artifact, len(values))
-        raw_requirements = {
-            key: max(0.0, min(3.0, cls._predict_value(state, key, values)))
+        ordinal_probabilities = {
+            key: cls._ordinal_probabilities(state, key, vectors[key])
             for key in cls.REQUIREMENT_KEYS
         }
+        raw_requirements = {
+            key: sum(probabilities)
+            for key, probabilities in ordinal_probabilities.items()
+        }
         requirements = {
-            key: int(round(value)) for key, value in raw_requirements.items()
+            key: sum(probability >= 0.5 for probability in probabilities)
+            for key, probabilities in ordinal_probabilities.items()
         }
         distance_score = cls._distance_score(state, values)
-        margin = min(cls._ordinal_margin(value) for value in raw_requirements.values())
+        margin = min(
+            cls._probability_margin(probability)
+            for probabilities in ordinal_probabilities.values()
+            for probability in probabilities
+        )
+        coverage_score = cls._coverage_score(
+            state,
+            ordinal_probabilities=ordinal_probabilities,
+        )
         recent_match_rate = max(
             0.0, min(1.0, float(state.get("recent_judge_match_rate") or 0.0))
         )
@@ -122,8 +166,9 @@ class IncrementalTaskRequirementClassifier:
             confidence=round(
                 recent_match_rate
                 * distance_score
-                * margin
-                * recent_contract_rate,
+                * recent_contract_rate
+                * coverage_score
+                * (0.9 + 0.1 * margin),
                 4,
             ),
             raw_requirements={
@@ -131,22 +176,96 @@ class IncrementalTaskRequirementClassifier:
             },
             distance_score=round(distance_score, 4),
             margin=round(margin, 4),
+            ordinal_probabilities={
+                key: [round(value, 6) for value in probabilities]
+                for key, probabilities in ordinal_probabilities.items()
+            },
+            coverage_score=round(coverage_score, 4),
         )
+
+    @classmethod
+    def initialize_from_requirements(
+        cls,
+        task_requirements: Iterable[dict[str, Any]],
+        *,
+        dimensions: int,
+    ) -> dict[str, Any]:
+        """첫 batch의 클래스 분포로 ordinal threshold의 시작점을 정한다.
+
+        아직 학습되지 않은 0 가중치 모델의 임의 예측은 만들지 않는다. Laplace
+        smoothing을 적용해 한 클래스만 있는 작은 첫 batch에서도 무한 threshold가
+        생기지 않도록 한다.
+        """
+
+        rows = [cls._requirements(value) for value in task_requirements]
+        state = cls._state(None, dimensions)
+        if not rows:
+            return state
+        for key in cls.REQUIREMENT_KEYS:
+            thresholds: list[float] = []
+            for level in (1, 2, 3):
+                positives = sum(int(row[key] >= level) for row in rows)
+                probability = (positives + 1.0) / (len(rows) + 2.0)
+                logit = math.log(probability / (1.0 - probability))
+                # score가 0일 때 sigmoid(score - threshold)가 관측 비율이 된다.
+                thresholds.append(-logit)
+            state["thresholds"][key] = sorted(thresholds)
+        state["initialized_from_label_distribution"] = True
+        state["initialization_sample_count"] = len(rows)
+        return state
+
+    @classmethod
+    def _axis_vectors(
+        cls,
+        values: list[float],
+        axis_vectors: Mapping[str, Iterable[float]] | None,
+    ) -> dict[str, list[float]]:
+        if axis_vectors is None:
+            return {key: list(values) for key in cls.REQUIREMENT_KEYS}
+        result: dict[str, list[float]] = {}
+        for key in cls.REQUIREMENT_KEYS:
+            candidate = cls._vector(axis_vectors.get(key, values))
+            if len(candidate) != len(values):
+                raise ValueError("요구 축별 feature vector 차원이 일치하지 않습니다.")
+            result[key] = candidate
+        return result
 
     @classmethod
     def _state(cls, artifact: dict[str, Any] | None, dimensions: int) -> dict[str, Any]:
         previous = artifact if isinstance(artifact, dict) else {}
+        if previous.get("kind") not in {None, cls.ARTIFACT_KIND}:
+            previous = {}
         weights = previous.get("weights") if isinstance(previous.get("weights"), dict) else {}
-        bias = previous.get("bias") if isinstance(previous.get("bias"), dict) else {}
+        thresholds = (
+            previous.get("thresholds")
+            if isinstance(previous.get("thresholds"), dict)
+            else {}
+        )
+        threshold_counts = (
+            previous.get("ordinal_threshold_counts")
+            if isinstance(previous.get("ordinal_threshold_counts"), dict)
+            else {}
+        )
         return {
             "kind": cls.ARTIFACT_KIND,
+            "ordinal_head_version": cls.ORDINAL_HEAD_VERSION,
             "weights": {
                 key: [float(value) for value in weights.get(key, [])]
                 if isinstance(weights.get(key), list) and len(weights.get(key)) == dimensions
                 else [0.0] * dimensions
                 for key in cls.REQUIREMENT_KEYS
             },
-            "bias": {key: float(bias.get(key) or 0.0) for key in cls.REQUIREMENT_KEYS},
+            "thresholds": {
+                key: sorted(float(value) for value in thresholds.get(key, []))
+                if isinstance(thresholds.get(key), list)
+                and len(thresholds.get(key)) == 3
+                else list(cls.INITIAL_THRESHOLDS)
+                for key in cls.REQUIREMENT_KEYS
+            },
+            "ordinal_threshold_counts": {
+                key: cls._normalized_threshold_counts(threshold_counts.get(key))
+                for key in cls.REQUIREMENT_KEYS
+            },
             "trained_example_count": int(previous.get("trained_example_count") or 0),
             "training_error_ema": float(previous.get("training_error_ema") or 0.0),
             "requirement_centroids": dict(previous.get("requirement_centroids") or {}),
@@ -180,11 +299,79 @@ class IncrementalTaskRequirementClassifier:
         return result
 
     @staticmethod
-    def _predict_value(state: dict[str, Any], key: str, vector: list[float]) -> float:
-        return sum(
+    def ordinal_targets(level: int) -> list[int]:
+        normalized = max(0, min(3, int(level)))
+        return [1 if normalized >= threshold else 0 for threshold in (1, 2, 3)]
+
+    @classmethod
+    def _ordinal_probabilities(
+        cls,
+        state: dict[str, Any],
+        key: str,
+        vector: list[float],
+    ) -> list[float]:
+        score = sum(
             weight * value
             for weight, value in zip(state["weights"][key], vector)
-        ) + float(state["bias"][key])
+        )
+        probabilities = [
+            cls._sigmoid(score - float(threshold))
+            for threshold in state["thresholds"][key]
+        ]
+        # 과거 artifact나 부동소수점 오차가 있어도 추론 계약은 단조로 보정한다.
+        return [
+            probabilities[0],
+            min(probabilities[0], probabilities[1]),
+            min(probabilities[0], probabilities[1], probabilities[2]),
+        ]
+
+    @staticmethod
+    def _sigmoid(value: float) -> float:
+        bounded = max(-30.0, min(30.0, float(value)))
+        return 1.0 / (1.0 + math.exp(-bounded))
+
+    @classmethod
+    def _record_threshold_targets(
+        cls,
+        state: dict[str, Any],
+        key: str,
+        targets: list[int],
+    ) -> None:
+        counts = state["ordinal_threshold_counts"][key]
+        for index, target in enumerate(targets):
+            bucket = "positive" if target else "negative"
+            counts[bucket][index] = int(counts[bucket][index]) + 1
+
+    @staticmethod
+    def _normalized_threshold_counts(value: Any) -> dict[str, list[int]]:
+        row = value if isinstance(value, dict) else {}
+        result: dict[str, list[int]] = {}
+        for bucket in ("positive", "negative"):
+            counts = row.get(bucket)
+            result[bucket] = (
+                [max(0, int(item)) for item in counts]
+                if isinstance(counts, list) and len(counts) == 3
+                else [0, 0, 0]
+            )
+        return result
+
+    @classmethod
+    def _coverage_score(
+        cls,
+        state: dict[str, Any],
+        *,
+        ordinal_probabilities: dict[str, list[float]],
+    ) -> float:
+        covered = 0
+        total = 0
+        for key, probabilities in ordinal_probabilities.items():
+            counts = state["ordinal_threshold_counts"][key]
+            for index, probability in enumerate(probabilities):
+                bucket = "positive" if probability >= 0.5 else "negative"
+                total += 1
+                if int(counts[bucket][index]) >= cls.MIN_THRESHOLD_CLASS_SAMPLES:
+                    covered += 1
+        return 1.0 if total and covered == total else 0.0
 
     @classmethod
     def _update_centroid(
@@ -230,10 +417,8 @@ class IncrementalTaskRequirementClassifier:
         return max(similarities, default=0.0)
 
     @staticmethod
-    def _ordinal_margin(value: float) -> float:
-        rounded = max(0, min(3, int(round(value))))
-        distance_to_center = abs(value - rounded)
-        return max(0.0, min(1.0, 1.0 - distance_to_center * 2.0))
+    def _probability_margin(probability: float) -> float:
+        return max(0.0, min(1.0, abs(float(probability) - 0.5) * 2.0))
 
 
 class IncrementalModelChoiceClassifier:
@@ -368,19 +553,28 @@ def learning_mode_for(
     fallback_rate: float | None,
     largest_selected_model_share: float | None = None,
     recent_judge_match_rate: float | None = None,
+    recent_axis_accuracies: dict[str, float] | None = None,
     recent_axis_mean_errors: dict[str, float] | None = None,
     recent_judge_label_diversity: int | None = None,
     recent_local_prediction_diversity: int | None = None,
     recent_contract_pass_rate: float | None = None,
     recent_evaluation_sample_count: int | None = None,
+    high_risk_underestimation_count: int | None = None,
 ) -> str:
     """정확한 표본과 운영 결과가 모였을 때만 local-first로 바꾼다."""
 
     if judged_request_count < MIN_JUDGED_REQUESTS:
         return "judge_first"
-    if (recent_evaluation_sample_count or 0) < 20:
+    if (recent_evaluation_sample_count or 0) < MIN_RECENT_EVALUATION_SAMPLES:
         return "judge_first"
-    if recent_judge_match_rate is None or recent_judge_match_rate < 0.80:
+    if recent_judge_match_rate is None or recent_judge_match_rate < MIN_EXACT_MATCH_RATE:
+        return "judge_first"
+    axis_accuracies = recent_axis_accuracies or {}
+    if any(
+        axis_accuracies.get(key) is None
+        or float(axis_accuracies[key]) < MIN_AXIS_ACCURACY
+        for key in IncrementalTaskRequirementClassifier.REQUIREMENT_KEYS
+    ):
         return "judge_first"
     axis_errors = recent_axis_mean_errors or {}
     if any(
@@ -394,6 +588,8 @@ def learning_mode_for(
     ):
         return "judge_first"
     if recent_contract_pass_rate is None or recent_contract_pass_rate < 0.95:
+        return "judge_first"
+    if int(high_risk_underestimation_count or 0) > 0:
         return "judge_first"
     if (success_rate or 0.0) < MIN_SUCCESS_RATE:
         return "judge_first"

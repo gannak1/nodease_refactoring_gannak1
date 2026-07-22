@@ -232,9 +232,7 @@ export function NodeSettingsComparisonPanel({
       fallbackModelId,
       candidateModelCount: activePolicy?.candidate_model_ids?.length || 0,
       learningMode:
-        activePolicy?.learning?.mode === 'local_first'
-          ? '로컬 라우터 우선'
-          : 'Judge 우선',
+        '자동 라우팅 학습 상태는 배포 정책 화면에서 확인',
       policyVersion: policy?.policy_version || '정책 없음',
     };
   }, [

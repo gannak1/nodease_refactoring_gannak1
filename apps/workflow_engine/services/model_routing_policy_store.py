@@ -1,7 +1,6 @@
 """모델 라우팅 policy의 DB persistence와 배포 run 완료 훅을 담당한다."""
 
 import uuid
-from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -26,19 +25,18 @@ from apps.shared.db.models.workflow_run import (
 from apps.workflow_engine.services.model_routing_policy_lifecycle import (
     ModelRoutingPolicyLifecycleService,
 )
+from apps.workflow_engine.services.model_routing_learner_store import (
+    ModelRoutingLearnerStore,
+)
+from apps.workflow_engine.services.model_routing_bootstrap import (
+    downstream_contract_from_graph,
+)
 from apps.workflow_engine.services.model_routing_judge_first_policy import (
     JUDGE_FIRST_STRATEGY_ID,
     build_judge_first_active_policy,
 )
 from apps.workflow_engine.services.model_routing_operational_performance import (
     ModelRoutingOperationalPerformanceService,
-)
-from apps.workflow_engine.services.model_routing_incremental_learning import (
-    TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
-    learning_mode_for,
-)
-from apps.workflow_engine.services.model_routing_decision_cache import (
-    routing_feature_hash,
 )
 from apps.workflow_engine.services.llm_service import LLMService
 from apps.shared.services.model_routing_model_filter import (
@@ -79,12 +77,12 @@ class ModelRoutingPolicyStore:
             value = Decimal("3")
         return max(Decimal("0.5"), min(Decimal("10"), value))
 
-    @classmethod
+    @staticmethod
     def queue_runtime_judge_label(
-        cls,
         db: Session,
         *,
-        policy_id: str | uuid.UUID,
+        learner_id: str | uuid.UUID,
+        source_policy_id: str | uuid.UUID | None,
         workflow_run_id: str | uuid.UUID,
         node_id: str,
         routing_feature_text: str,
@@ -95,399 +93,34 @@ class ModelRoutingPolicyStore:
         reason_code: str,
         task_requirements: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        """Judge 선택을 안전한 vector로 보관하고 policy row lock을 끝낸다.
+        """호환 진입점이며 실제 학습 데이터는 learner가 소유한다."""
 
-        이 메서드 뒤에는 provider 네트워크 호출이 이어진다. 따라서 성공 label은
-        즉시 commit하고, 저장하지 않는 경로와 예외는 rollback하여 DB transaction을
-        외부 I/O 구간까지 유지하지 않는다.
-        """
-
-        try:
-            policy = cls._lock_policy_for_update(
-                db,
-                policy_id=uuid.UUID(str(policy_id)),
-            )
-            if policy is None:
-                db.rollback()
-                return {"learning_queued": False, "reason": "policy_not_found"}
-            stored_active_policy = getattr(policy, "active_policy", None)
-            active_policy = (
-                dict(stored_active_policy)
-                if isinstance(stored_active_policy, dict)
-                else {}
-            )
-            if active_policy.get("strategy_id") != JUDGE_FIRST_STRATEGY_ID:
-                db.rollback()
-                return {
-                    "learning_queued": False,
-                    "reason": "strategy_not_supported",
-                }
-
-            learning = (
-                dict(active_policy.get("learning"))
-                if isinstance(active_policy.get("learning"), dict)
-                else {}
-            )
-            from apps.workflow_engine.services.model_routing_local_classifier import (
-                MultilingualE5ModelChoiceClassifier,
-                MultilingualE5TaskRequirementClassifier,
-            )
-
-            try:
-                vector, encoder_model_id = MultilingualE5ModelChoiceClassifier.vectorize(
-                    learning_feature_text,
-                    artifact=learning.get("local_requirement_artifact"),
-                )
-            except (RuntimeError, ValueError, OSError) as exc:
-                db.rollback()
-                return {"learning_queued": False, "reason": type(exc).__name__}
-
-            stored_artifact = (
-                learning.get("candidate_requirement_artifact")
-                or learning.get("local_requirement_artifact")
-                or {}
-            )
-            artifact = (
-                stored_artifact
-                if stored_artifact.get("feature_schema_version")
-                == TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION
-                else {}
-            )
-            try:
-                pre_learning = MultilingualE5TaskRequirementClassifier.predict_from_vector(
-                    artifact,
-                    vector=vector,
-                )
-            except (RuntimeError, ValueError):
-                pre_learning = None
-
-            # 동일 요청 Judge 결과 cache는 전체 routing contract 기준으로만 재사용한다.
-            # 반면 vector는 고정 출력 계약을 뺀 learning feature로 만든다.
-            feature_hash = routing_feature_hash(routing_feature_text)
-
-            run_uuid = uuid.UUID(str(workflow_run_id))
-            existing = (
-                db.query(LLMNodeModelRoutingLearningLabel)
-                .filter(LLMNodeModelRoutingLearningLabel.policy_id == policy.id)
-                .filter(LLMNodeModelRoutingLearningLabel.workflow_run_id == run_uuid)
-                .filter(LLMNodeModelRoutingLearningLabel.node_id == str(node_id))
-                .first()
-            )
-            if existing is not None:
-                db.rollback()
-                return {"learning_queued": False, "reason": "already_queued"}
-            db.add(
-                LLMNodeModelRoutingLearningLabel(
-                    policy_id=policy.id,
-                    workflow_run_id=run_uuid,
-                    node_id=str(node_id),
-                    selected_model_id=str(selected_model_id),
-                    candidate_model_ids=[
-                        str(model_id) for model_id in candidate_model_ids
-                    ],
-                    feature_vector=[float(value) for value in vector],
-                    routing_feature_hash=feature_hash,
-                    encoder_model_id=encoder_model_id,
-                    confidence=Decimal(str(confidence)),
-                    reason_code=str(reason_code)[:128],
-                    task_requirements=cls._safe_task_requirements(task_requirements),
-                    local_prediction=(
-                        dict(pre_learning.requirements)
-                        if pre_learning is not None
-                        else None
-                    ),
-                    local_confidence=(
-                        Decimal(str(pre_learning.confidence))
-                        if pre_learning is not None
-                        else None
-                    ),
-                    local_distance_score=(
-                        Decimal(str(pre_learning.distance_score))
-                        if pre_learning is not None
-                        else None
-                    ),
-                    local_margin=(
-                        Decimal(str(pre_learning.margin))
-                        if pre_learning is not None
-                        else None
-                    ),
-                )
-            )
-            db.flush()
-            db.commit()
-            return {
-                "learning_queued": True,
-                "learning_mode": learning.get("mode") or "judge_first",
-            }
-        except Exception:
-            db.rollback()
-            raise
-
-    @staticmethod
-    def learning_label_summary(
-        db: Session,
-        *,
-        policy_id: str | uuid.UUID,
-    ) -> dict[str, Any]:
-        """UI가 보여줄 수 있는 계약 기반 학습 현황만 반환한다.
-
-        학습 입력의 원문이나 vector는 반환하지 않는다. pending은 workflow의 최종
-        계약 결과를 기다리는 Judge 선택, accepted/rejected는 그 결과가 확정된
-        선택 수를 뜻한다.
-        """
-
-        try:
-            policy_uuid = uuid.UUID(str(policy_id))
-        except (TypeError, ValueError):
-            return {
-                "pending_count": 0,
-                "accepted_count": 0,
-                "rejected_count": 0,
-                "last_outcome_reason": None,
-            }
-
-        labels = (
-            db.query(LLMNodeModelRoutingLearningLabel)
-            .filter(LLMNodeModelRoutingLearningLabel.policy_id == policy_uuid)
-            .order_by(LLMNodeModelRoutingLearningLabel.created_at.desc())
-            .all()
+        return ModelRoutingLearnerStore.queue_runtime_judge_label(
+            db,
+            learner_id=learner_id,
+            source_policy_id=source_policy_id,
+            workflow_run_id=workflow_run_id,
+            node_id=node_id,
+            routing_feature_text=routing_feature_text,
+            learning_feature_text=learning_feature_text,
+            selected_model_id=selected_model_id,
+            candidate_model_ids=candidate_model_ids,
+            confidence=confidence,
+            reason_code=reason_code,
+            task_requirements=task_requirements,
         )
-        counts = {"pending": 0, "accepted": 0, "rejected": 0}
-        for label in labels:
-            status = str(getattr(label, "status", "") or "")
-            if status in counts:
-                counts[status] += 1
-        latest_finalized = next(
-            (
-                label
-                for label in labels
-                if str(getattr(label, "status", "") or "")
-                in {"accepted", "rejected"}
-            ),
-            None,
-        )
-        return {
-            "pending_count": counts["pending"],
-            "accepted_count": counts["accepted"],
-            "rejected_count": counts["rejected"],
-            "last_outcome_reason": (
-                str(getattr(latest_finalized, "outcome_reason", "") or "")
-                or None
-            ),
-        }
 
     @classmethod
-    def finalize_runtime_judge_labels(
-        cls,
-        db: Session,
-        *,
-        policy: LLMNodeModelRoutingPolicy,
-        workflow_run: WorkflowRun,
-        node_run: WorkflowNodeRun,
-    ) -> int:
-        """완료된 node의 대기 Judge label을 계약 결과에 따라 확정한다."""
-        labels = (
-            db.query(LLMNodeModelRoutingLearningLabel)
-            .filter(LLMNodeModelRoutingLearningLabel.policy_id == policy.id)
-            .filter(LLMNodeModelRoutingLearningLabel.workflow_run_id == workflow_run.id)
-            .filter(LLMNodeModelRoutingLearningLabel.node_id == node_run.node_id)
-            .filter(LLMNodeModelRoutingLearningLabel.status == "pending")
-            .all()
-        )
-        contract_passed, outcome_reason = (
-            ModelRoutingOperationalPerformanceService.learning_contract_outcome(
-                workflow_run=workflow_run,
-                node_run=node_run,
-            )
-        )
-        accepted = 0
-        final_status = "rejected"
-        for label in labels:
-            if cls._finalize_runtime_judge_label(
-                policy=policy,
-                label=label,
-                contract_passed=contract_passed,
-                outcome_reason=outcome_reason,
-            ):
-                accepted += 1
-                final_status = "accepted"
-        if labels:
-            cls._write_runtime_judge_learning_outcome(
-                node_run=node_run,
-                status=final_status,
-                outcome_reason=outcome_reason,
-            )
-        return accepted
-
-    @staticmethod
-    def _write_runtime_judge_learning_outcome(
-        *,
-        node_run: WorkflowNodeRun,
-        status: str,
-        outcome_reason: str,
-    ) -> None:
-        """기존 node trace에 학습 확정 결과만 보강한다.
-
-        실행 원문이나 feature vector는 trace에 쓰지 않는다. Test Sidebar와 실행 로그가
-        같은 결과를 보여주도록 안전한 상태 코드만 기록한다.
-        """
-
-        trace = (
-            dict(node_run.trace_metadata)
-            if isinstance(getattr(node_run, "trace_metadata", None), dict)
-            else {}
-        )
-        llm = dict(trace.get("llm")) if isinstance(trace.get("llm"), dict) else {}
-        llm["learning_status"] = status
-        llm["learning_outcome_reason"] = outcome_reason
-        trace["llm"] = llm
-        node_run.trace_metadata = trace
-
-        outputs = (
-            dict(node_run.outputs)
-            if isinstance(getattr(node_run, "outputs", None), dict)
-            else {}
-        )
-        metadata = (
-            dict(outputs.get("metadata"))
-            if isinstance(outputs.get("metadata"), dict)
-            else {}
-        )
-        routing = (
-            dict(metadata.get("model_routing"))
-            if isinstance(metadata.get("model_routing"), dict)
-            else {}
-        )
-        if routing:
-            routing["learning_status"] = status
-            routing["learning_outcome_reason"] = outcome_reason
-            metadata["model_routing"] = routing
-            outputs["metadata"] = metadata
-            node_run.outputs = outputs
-
-    @classmethod
-    def _finalize_runtime_judge_label(
-        cls,
-        *,
-        policy: LLMNodeModelRoutingPolicy,
-        label: LLMNodeModelRoutingLearningLabel,
-        contract_passed: bool,
-        outcome_reason: str,
-    ) -> bool:
-        """계약 결과만 확정하고 실제 학습은 별도 Celery batch에 맡긴다."""
-        label.outcome_reason = outcome_reason
-        label.finalized_at = datetime.now(timezone.utc)
-        if not contract_passed:
-            label.status = "rejected"
-            return False
-
-        active_policy = (
-            dict(policy.active_policy)
-            if isinstance(getattr(policy, "active_policy", None), dict)
-            else {}
-        )
-        if active_policy.get("strategy_id") != JUDGE_FIRST_STRATEGY_ID:
-            label.status = "rejected"
-            label.outcome_reason = "strategy_not_supported"
-            return False
-        if cls._safe_task_requirements(getattr(label, "task_requirements", None)) is None:
-            label.status = "rejected"
-            label.outcome_reason = "task_requirements_missing"
-            return False
-        label.status = "accepted"
-        return True
-
-    @classmethod
-    def reconcile_incremental_learning_mode(
-        cls,
-        db: Session,
-        *,
-        policy: LLMNodeModelRoutingPolicy,
-    ) -> None:
-        """운영 품질이 충분할 때만 Judge-first를 local-first로 전환한다."""
-
-        stored_active_policy = getattr(policy, "active_policy", None)
-        active_policy = (
-            dict(stored_active_policy)
-            if isinstance(stored_active_policy, dict)
-            else {}
-        )
-        if active_policy.get("strategy_id") != JUDGE_FIRST_STRATEGY_ID:
-            return
-        learning = (
-            dict(active_policy.get("learning"))
-            if isinstance(active_policy.get("learning"), dict)
-            else {}
-        )
-        candidate_artifact = learning.get("candidate_requirement_artifact")
-        if (
-            not isinstance(candidate_artifact, dict)
-            or candidate_artifact.get("feature_schema_version")
-            != TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION
-        ):
-            learning["mode"] = "judge_first"
-            active_policy["learning"] = learning
-            policy.active_policy = active_policy
-            return
-
-        summary = ModelRoutingOperationalPerformanceService.response_summary(
-            db, policy_id=policy.id
-        )
-        rows = summary.get("models") if isinstance(summary, dict) else []
-        rows = rows if isinstance(rows, list) else []
-        total_runs = sum(int(row.get("run_count") or 0) for row in rows if isinstance(row, dict))
-
-        def weighted_rate(key: str) -> float | None:
-            evaluated = [
-                (int(row.get("run_count") or 0), row.get(key))
-                for row in rows
-                if isinstance(row, dict) and row.get(key) is not None
-            ]
-            weight = sum(count for count, _rate in evaluated)
-            if not weight:
-                return None
-            return sum(count * float(rate) for count, rate in evaluated) / weight
-
-        recent = (
-            learning.get("recent_evaluation")
-            if isinstance(learning.get("recent_evaluation"), dict)
-            else {}
-        )
-        next_mode = learning_mode_for(
-            judged_request_count=int(learning.get("judged_request_count") or 0),
-            distinct_selected_model_count=len(learning.get("selected_model_ids") or []),
-            success_rate=weighted_rate("success_rate"),
-            schema_pass_rate=weighted_rate("schema_pass_rate"),
-            downstream_success_rate=weighted_rate("downstream_success_rate"),
-            fallback_rate=weighted_rate("fallback_rate"),
-            largest_selected_model_share=cls._largest_selected_model_share(learning),
-            recent_judge_match_rate=recent.get("judge_match_rate"),
-            recent_axis_mean_errors=recent.get("axis_mean_errors"),
-            recent_judge_label_diversity=recent.get("judge_label_diversity"),
-            recent_local_prediction_diversity=recent.get(
-                "local_prediction_diversity"
-            ),
-            recent_contract_pass_rate=recent.get("contract_pass_rate"),
-            recent_evaluation_sample_count=recent.get("sample_count"),
-        )
-        learning["mode"] = next_mode
-        if next_mode == "local_first":
-            learning["local_requirement_artifact"] = dict(candidate_artifact)
-        learning["operational_run_count"] = total_runs
-        active_policy["learning"] = learning
-        policy.active_policy = active_policy
-
-    @classmethod
-    def pending_learning_policy_ids_for_run(
+    def pending_learning_learner_ids_for_run(
         cls,
         db: Session,
         *,
         workflow_run_id: str | uuid.UUID,
     ) -> list[uuid.UUID]:
-        """완료 훅에서 확정됐지만 아직 비동기 학습하지 않은 정책을 찾는다."""
+        """완료 훅에서 확정됐지만 아직 비동기 학습하지 않은 학습기를 찾는다."""
 
         rows = (
-            db.query(LLMNodeModelRoutingLearningLabel.policy_id)
+            db.query(LLMNodeModelRoutingLearningLabel.learner_id)
             .filter(
                 LLMNodeModelRoutingLearningLabel.workflow_run_id
                 == uuid.UUID(str(workflow_run_id))
@@ -502,29 +135,6 @@ class ModelRoutingPolicyStore:
             .all()
         )
         return [row[0] for row in rows]
-
-    @staticmethod
-    def _safe_task_requirements(value: Any) -> dict[str, int] | None:
-        if not isinstance(value, dict):
-            return None
-        result: dict[str, int] = {}
-        for key in ("task_complexity", "decision_impact", "evidence_synthesis"):
-            raw = value.get(key)
-            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-                return None
-            if isinstance(raw, float) and not raw.is_integer():
-                return None
-            result[key] = max(0, min(3, int(raw)))
-        return result
-
-    @staticmethod
-    def _largest_selected_model_share(learning: dict[str, Any]) -> float | None:
-        counts = learning.get("selected_model_counts")
-        if not isinstance(counts, dict):
-            return None
-        values = [int(value or 0) for value in counts.values()]
-        total = sum(value for value in values if value > 0)
-        return max(values) / total if total else None
 
     @staticmethod
     def _is_routing_evidence_eligible_node_run(node_run: WorkflowNodeRun) -> bool:
@@ -588,16 +198,13 @@ class ModelRoutingPolicyStore:
         if workflow_run.deployment_id is None:
             return None
 
-        policy = cls.get_runtime_policy(
-            db,
-            workflow_id=workflow_run.workflow_id,
-            deployment_id=workflow_run.deployment_id,
-            node_id=node_id,
-        )
-        if policy is not None:
-            return policy
-
         organization_id = cls._organization_id_for_run(db, workflow_run)
+        deployment = (
+            db.query(WorkflowDeployment)
+            .filter(WorkflowDeployment.id == workflow_run.deployment_id)
+            .first()
+        )
+        graph_snapshot = deployment.graph_snapshot if deployment is not None else {}
         policy = cls._ensure_policy(
             db,
             workflow_id=workflow_run.workflow_id,
@@ -606,6 +213,9 @@ class ModelRoutingPolicyStore:
             execution_subject_user_id=getattr(workflow_run, "user_id", None),
             node_id=node_id,
             node_data=node_data,
+            downstream_contract=downstream_contract_from_graph(
+                graph_snapshot, node_id
+            ),
         )
         return policy
 
@@ -648,6 +258,9 @@ class ModelRoutingPolicyStore:
                 execution_subject_user_id=execution_subject_user_id,
                 node_id=node_id,
                 node_data=node_data,
+                downstream_contract=downstream_contract_from_graph(
+                    graph_snapshot, node_id
+                ),
             )
             if policy is not None and existing is None:
                 policies.append(policy)
@@ -664,6 +277,7 @@ class ModelRoutingPolicyStore:
         execution_subject_user_id: uuid.UUID | None,
         node_id: str,
         node_data: dict[str, Any],
+        downstream_contract: dict[str, Any] | None = None,
     ) -> LLMNodeModelRoutingPolicy | None:
         existing = cls.get_runtime_policy(
             db,
@@ -672,6 +286,22 @@ class ModelRoutingPolicyStore:
             node_id=node_id,
         )
         if existing is not None:
+            if existing.learner_id is None and organization_id is not None:
+                learner = ModelRoutingLearnerStore.get_or_create(
+                    db,
+                    organization_id=organization_id,
+                    workflow_id=workflow_id,
+                    node_id=node_id,
+                    node_data=node_data,
+                    downstream_contract=downstream_contract,
+                )
+                version = ModelRoutingLearnerStore.latest_version(
+                    db, learner_id=learner.id
+                )
+                existing.learner_id = learner.id
+                existing.active_learner_version_id = (
+                    version.id if version is not None else None
+                )
             return existing
 
         policy_id = uuid.uuid4()
@@ -684,6 +314,17 @@ class ModelRoutingPolicyStore:
             return None
         if organization_id is None or execution_subject_user_id is None:
             return None
+        learner = ModelRoutingLearnerStore.get_or_create(
+            db,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            node_id=node_id,
+            node_data=node_data,
+            downstream_contract=downstream_contract,
+        )
+        learner_version = ModelRoutingLearnerStore.latest_version(
+            db, learner_id=learner.id
+        )
         available_model_ids = filter_supported_model_routing_candidates(
             filter_model_routing_available_model_ids(
                 LLMService.get_runtime_available_model_ids_for_user(
@@ -732,6 +373,10 @@ class ModelRoutingPolicyStore:
             policy_version=policy_version,
             active_policy=bootstrap_active_policy,
             bootstrap_id=None,
+            learner_id=learner.id,
+            active_learner_version_id=(
+                learner_version.id if learner_version is not None else None
+            ),
             performance_checkpoint={},
             refresh_every_runs=refresh_every_runs,
             judge_user_id=execution_subject_user_id,
@@ -969,15 +614,13 @@ class ModelRoutingPolicyStore:
                     performance_changed = False
                 # 모델 사용량을 복원하지 못한 실패도 학습하면 안 된다. 성적 누계와
                 # 별개로 대기 label은 항상 이번 node의 계약 결과로 확정한다.
-                cls.finalize_runtime_judge_labels(
-                    db,
-                    policy=policy,
-                    workflow_run=workflow_run,
-                    node_run=node_run,
-                )
-            # Judge label로 학습한 local head는 운영 품질까지 확인된 뒤에만
-            # local-first로 바꾼다. editor test run은 이 완료 훅에 들어오지 않는다.
-            cls.reconcile_incremental_learning_mode(db, policy=policy)
+                if policy.learner_id is not None:
+                    ModelRoutingLearnerStore.finalize_labels(
+                        db,
+                        learner_id=policy.learner_id,
+                        workflow_run=workflow_run,
+                        node_run=node_run,
+                    )
             outcome = ModelRoutingPolicyLifecycleService.apply_run_event(
                 policy,
                 event_was_created=event_was_created,

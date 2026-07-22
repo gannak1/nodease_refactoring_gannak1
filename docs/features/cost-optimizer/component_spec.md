@@ -6,10 +6,12 @@ Verified Against: feature/mba-198 @ 40c45fcc
 ## Purpose
 
 이 문서는 `requirements.md`의 FR-001부터 FR-015까지를 화면과 컴포넌트 관점에서 구현 가능한 형태로 정리한다.
-FR-011은 LLM 노드 상세 화면의 Judge Bootstrap 자동 라우팅 컨트롤로 다룬다. 사용자는
+FR-011은 LLM 노드 상세 화면의 Judge-first 자동 라우팅 컨트롤로 다룬다. 사용자는
 작업 설명, 기본 모델과 기본 대체 모델을 정하고 자동 라우팅을 켠다. 입력군/유사도 편집 UI는
-노출하지 않는다. 자동 라우팅이 켜진 뒤에는 Judge-first/local-first 상태, 학습된 운영 표본 수,
-최근 예측 품질, 실제 선택 모델과 Judge 회귀 근거를 확인한다. Celery batch 학습은 화면 응답을
+노출하지 않는다. 자동 라우팅이 켜진 뒤에는 정책과 분리된 자동 라우팅 학습기의 상태,
+Judge-first/local-first 모드, 학습된 운영 표본 수,
+최근 예측 품질, 실제 선택 모델과 요구 수준 Judge 근거를 확인한다. Judge는 모델을 직접 고르지
+않고 서버가 현재 실행 가능한 전체 후보를 capability와 비용으로 비교한다. Celery batch 학습은 화면 응답을
 막지 않으며 별도의 사용자 실행 버튼을 요구하지 않는다.
 
 Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상세 화면에서 시작하는 LLM 노드 단위 A/B 테스트 흐름이다.
@@ -30,7 +32,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-008 | Apply candidate action | 선택한 B 후보 설정을 현재 LLM 노드 draft에 적용한다. |
 | FR-009 | Cost/usage display | 비교 실행 비용이 기록된다는 사실과 후보별 비용을 표시한다. |
 | FR-010 | Permission-gated UI | builder 이상이 아니면 A/B 테스트와 적용 액션을 막는다. |
-| FR-011 | Bootstrap routing controls / decision trace | 자동 라우팅 ON/OFF, 작업 설명, 기본·fallback 모델, 초기 생성 예산, bootstrap 출처/표본과 난이도별 선택 모델 및 실제 선택 근거를 보여준다. |
+| FR-011 | Routing controls / learner summary / decision trace | 자동 라우팅 ON/OFF, 작업 설명, 기본·fallback 모델, 정책과 분리된 학습기 상태·활성 버전 및 실제 선택 근거를 보여준다. |
 | FR-012 | Optimization recommendation modal | LLM 노드 상세 화면의 `최적화` 버튼으로 추천 모달을 열고, 추천 근거와 위험도를 확인한 뒤 직접 정책 적용 또는 A/B 후보 실험으로 연결한다. |
 | FR-013 | Recommendation verification / compare quality row | 추천 모달과 일반 결과 분석 화면에서 baseline 대비 candidate 비용·속도·token·품질 점수·schema·downstream 결과를 보여주고 적용 또는 이력 재조회로 연결한다. |
 | FR-014 | 배포별 자동 파라미터 최적화 | 배포 모달에서 운영 로그 수집·점검 주기·월간 검증 예산을 설정하고, 워크플로우 운영 현황에서는 비용 위험과 분리된 자동 최적화 상태를 관리한다. |
@@ -52,8 +54,8 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-008 | Apply candidate action | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-flow.test.tsx` | 통과 |
 | FR-009 | Cost/usage metric display, experiment history | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx`, `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerHistoryPanel.tsx`, `apps/client/app/features/workflow/hooks/useCostOptimizerHistory.ts` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr9-usage-display.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr9-experiment-history-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr9-history-model.test.ts` | 통과 |
 | FR-010 | Permission-gated UI | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
-| FR-011 | 기존 policy controls와 model-routing route | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/modules/[id]/model-routing/[nodeId]/page.tsx` | 기반 구현 완료 | 기존 Cost Optimizer frontend tests | 토글, 주기, policy 상태, 추천 route 통과 |
-| FR-011 | Bootstrap creation panel / runtime decision trace | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/features/workflow/components/modelRouting/ModelRoutingDecisionDetails.tsx` | 진행중 | `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx`, `apps/workflow_engine/tests/services/test_model_routing_bootstrap*.py` | 초안 생성/분류기/runtime unit 통과, Inspector 상세 보강 필요 |
+| FR-011 | Policy controls / learner summary / model-routing route | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/modules/[id]/model-routing/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx` | 토글, 주기, policy 상태, learner 상태·활성 버전 표시 통과 |
+| FR-011 | Runtime decision trace | `apps/client/app/features/workflow/components/modelRouting/ModelRoutingDecisionDetails.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr11-judge-first-routing-trace.test.tsx`, `apps/client/app/features/workflow/tests/test-sidebar-node-detail.test.tsx` | policy와 learner 식별자, Judge 호출, 학습 포함 여부 표시 통과 |
 | FR-012 | Optimization recommendation modal | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 기록 있음 |
 | FR-013 | Recommendation verification, compare quality row, history restore | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerHistoryPanel.tsx`, `apps/client/app/features/workflow/hooks/useCostOptimizerHistory.ts`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/features/workflow/types/Api.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | modal 검증, 일반 compare 품질 행, 평가 불가, 단건 비교 이력 복원 통과 |
 | FR-014 | Deployment optimization step / management | `apps/client/app/features/workflow/components/deployment/ParameterOptimizationStep.tsx`, `apps/client/app/features/workflow/components/deployment/AutomaticOptimizationManagementModal.tsx`, `apps/client/app/dashboard/mymodule/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/components/deployment/DeploymentFlowModal.test.tsx`, `apps/client/app/features/workflow/components/deployment/AutomaticOptimizationManagementModal.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr14-dashboard-automatic-optimization-management.test.tsx` | 통과 |
@@ -250,8 +252,8 @@ B 후보 재실행을 위해 baseline picker를 다시 열거나 workspace를 �
 
 관련 FR: FR-011
 
-> 현재 기준: 아래 기존 prior-guided/semantic cohort 설명 중 bootstrap 계약과 충돌하는 내용은
-> 이력으로만 본다. 신규 화면은 `bootstrap_mdeberta_difficulty_v1`을 우선한다.
+> 현재 기준: 아래 기존 prior-guided/semantic cohort 설명은 이력으로만 본다. 신규 실행 경로는
+> 정책과 분리된 multilingual E5 학습기와 불변 learner version을 우선한다.
 
 #### Bootstrap 생성 화면
 
@@ -280,12 +282,19 @@ Runtime Judge가 남긴 0~3 범위의 `task_requirements`가 있으면 작업 �
 #### 목표 사용자 흐름
 
 1. 사용자가 LLM node에서 `자동 모델 라우팅`을 켠다.
-2. 시스템은 실행 가능한 후보 모델과 Judge/local router 학습 상태를 policy에 보관한다. policy는 초기 실행 모델을 미리 고정하지 않는다.
+2. 시스템은 실행 가능한 후보 모델을 배포 policy에 보관하고, Judge/local router 학습 상태는
+   같은 작업 지문과 학습 계약을 가진 별도 learner에 보관한다.
 3. 성공 배포 Judge label이 50건 미만이면 Judge가 현재 요청을 보고 모델과 fallback을 선택한다.
 4. 50건 이상이고 최근 20건의 학습 전 예측·계약 품질 기준을 통과한 로컬 라우터가 충분히
    확신하면 로컬 라우터가 선택하며, 처음 보는 입력 또는 확신이 낮은 입력은 Judge를 다시 호출한다.
 5. 테스트 실행은 배포와 같은 선택 방식을 사용하지만 학습에는 포함하지 않는다. 테스트 실행 상세와 실행 로그에서 실제 선택 모델, 적용 rule, fallback, policy version과
    safe 판단 근거를 확인한다.
+
+자동 라우팅 ON 상태의 `자동 라우팅 학습` 요약은 learner의 상태와 모드, Judge 판정 수,
+처리 대기 수, 최근 Judge 일치율, 활성 learner version만 표시한다. feature vector, 원문 입력,
+prompt, Judge 내부 응답은 표시하지 않는다. 정책이 없는 예외 실행이나 테스트 임시 정책에서는
+학습기를 찾을 수 없다는 이유로 모델 선택을 기본 모델로 강제하지 않되, 테스트 실행은
+`included_in_routing_learning=false`로 표시한다.
 
 후보 검증 결과에서 provider가 요청 후보와 다른 모델을 실제 실행한 경우, 후보 모델명만 성공으로 표시하면 안 된다. 분석 화면은 `요청 모델 -> 실제 실행 모델`과 `fallback 발생`을 함께 표시하고, 해당 후보를 `검증 제외` 상태로 표시한다. 이 경우 schema, downstream, 품질 점수가 있어도 policy 적용 후보로 선택할 수 없다.
 
@@ -414,12 +423,13 @@ LLM 노드 상세 비교는 `실행 상태(상태·비용·시간·토큰) → �
   `execution_mode=test`만 있고 policy source나 학습 포함 여부가 없는 이전 trace도 같은
   마지막 위치에 일반 학습 제외 안내를 표시한다. 비교 화면의 두 실행 패널 바깥에는
   학습 제외 문구를 반복하지 않고 핵심 실행 정보가 같은 순서로 먼저 보이도록 한다.
-- trace의 `policy_source=active_deployment`와 `included_in_policy_learning=false`이면 공통
+- trace의 `policy_source=active_deployment`와 `included_in_routing_learning=false`이면 공통
   상세 컴포넌트 header를 `배포 정책 기준 테스트`로 표시한다. 활성 배포 policy를 읽었지만
   테스트 결과는 운영 학습에 포함하지 않았다는 뜻이다.
 - 현재 draft와 활성 deployment의 node 설정이 다르면 배포 policy를 적용하지 않는다. 이 경우
   테스트 실행은 현재 draft와 실행 주체가 사용할 수 있는 후보로 임시 Judge-first 정책을 만들고,
-  상세에 `테스트 임시 정책`과 Judge 선택 결과를 표시한다. 이 결과는 운영 학습에 포함하지 않는다.
+  상세에 `테스트 임시 정책`, 요구 수준 Judge 결과, 서버가 고른 모델을 표시한다. 이 결과는
+  운영 학습에 포함하지 않는다.
 
 #### Backend core와 UI 연결 경계
 

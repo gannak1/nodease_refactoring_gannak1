@@ -174,16 +174,16 @@ def record_model_routing_operational_run(self, workflow_run_id: str):
             session,
             workflow_run_id=workflow_run_id,
         )
-        learning_policy_ids = ModelRoutingPolicyStore.pending_learning_policy_ids_for_run(
+        learning_learner_ids = ModelRoutingPolicyStore.pending_learning_learner_ids_for_run(
             session,
             workflow_run_id=workflow_run_id,
         )
         session.commit()
-        for policy_id in learning_policy_ids:
+        for learner_id in learning_learner_ids:
             send_workflow_task(
                 celery_app,
                 "workflow.model_routing.train_local_router",
-                args=[str(policy_id), False],
+                args=[str(learner_id), False],
             )
         for policy_id in policy_ids:
             send_workflow_task(
@@ -211,7 +211,7 @@ def record_model_routing_operational_run(self, workflow_run_id: str):
 )
 def train_model_routing_local_router(
     self,
-    policy_id: str,
+    learner_id: str,
     force: bool = False,
 ):
     """Judge label을 요청 처리와 분리해 작은 batch로 학습한다."""
@@ -224,7 +224,7 @@ def train_model_routing_local_router(
     try:
         result = ModelRoutingLearningBatchService.train_pending(
             session,
-            policy_id=policy_id,
+            learner_id=learner_id,
             force=force,
         )
         session.commit()
@@ -232,7 +232,7 @@ def train_model_routing_local_router(
             send_workflow_task(
                 celery_app,
                 "workflow.model_routing.train_local_router",
-                args=[policy_id, True],
+                args=[learner_id, True],
                 countdown=result.deferred_seconds,
             )
             status = "deferred"
@@ -240,7 +240,7 @@ def train_model_routing_local_router(
             send_workflow_task(
                 celery_app,
                 "workflow.model_routing.train_local_router",
-                args=[policy_id, True],
+                args=[learner_id, True],
             )
             status = "continued"
         else:

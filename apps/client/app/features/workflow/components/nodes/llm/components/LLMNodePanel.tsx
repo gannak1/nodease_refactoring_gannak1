@@ -359,10 +359,10 @@ export function LLMNodePanel({
         ? '정책 오류'
         : status === 'refreshing'
           ? '운영 성적 재평가 중'
-          : activePolicy?.learning?.mode === 'local_first'
+          : policy?.learner?.mode === 'local_first'
             ? '로컬 선택 우선'
               : activePolicy
-                ? 'Judge 선택 학습 중'
+                ? '자동 라우팅 학습 중'
                 : data.auto_model_routing
                   ? '첫 요청부터 Judge 선택'
                   : '사용 안 함';
@@ -371,6 +371,7 @@ export function LLMNodePanel({
       statusLabel,
       refreshEveryRuns,
       lastDecision: policy?.last_decision ?? null,
+      learner: policy?.learner ?? null,
     };
   }, [
     data.auto_model_routing,
@@ -986,6 +987,54 @@ export function LLMNodePanel({
                       아직 배포 실행 이력이 없습니다. 첫 실행 뒤 선택 모델과 판단 사유가 여기에 표시됩니다.
                     </p>
                   )}
+                  {routingPanelState.learner ? (
+                    <div className="mt-3 border-t border-slate-200 pt-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-[11px] font-semibold text-slate-700">
+                          자동 라우팅 학습
+                        </span>
+                        <span className="text-[11px] text-slate-500">
+                          {routingPanelState.learner.mode === 'local_first'
+                            ? '검증된 로컬 선택 사용 중'
+                            : 'Judge 정답 수집 중'}
+                        </span>
+                      </div>
+                      <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-[11px] sm:grid-cols-4">
+                        <div>
+                          <dt className="text-slate-500">Judge 정답</dt>
+                          <dd className="font-semibold text-slate-900">
+                            {routingPanelState.learner.judged_request_count}건
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">처리 대기</dt>
+                          <dd className="font-semibold text-slate-900">
+                            {routingPanelState.learner.pending_count}건
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">최근 Judge 일치율</dt>
+                          <dd className="font-semibold text-slate-900">
+                            {routingPanelState.learner.recent_evaluation
+                              .judge_match_rate == null
+                              ? '-'
+                              : `${Math.round(
+                                  routingPanelState.learner.recent_evaluation
+                                    .judge_match_rate * 100,
+                                )}%`}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">검증 학습 버전</dt>
+                          <dd className="font-semibold text-slate-900">
+                            {routingPanelState.learner.active_version == null
+                              ? '대기 중'
+                              : `v${routingPanelState.learner.active_version}`}
+                          </dd>
+                        </div>
+                      </dl>
+                    </div>
+                  ) : null}
                   {routingPolicyError ? (
                     <p className="mt-2 text-[11px] text-rose-600">
                       {routingPolicyError}

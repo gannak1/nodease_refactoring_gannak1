@@ -137,7 +137,7 @@ services:
     ports:
       - "8194:8194"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8194/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8194/health', timeout=3).read()"]
       interval: 30s
       timeout: 5s
       retries: 3

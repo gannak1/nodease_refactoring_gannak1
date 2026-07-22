@@ -14,8 +14,9 @@ FR-011의 현재 제품 계약은
 [ADR-0059](../../decisions/ADR-0059-judge-bootstrap-incremental-routing.md)를 따르는
 `judge_bootstrap_incremental_v1`의 무수동-bootstrap 경로다. 새 workflow가
 "정책이 없어서 routing을 시작할 수 없는" 상태에 머물지 않게, 자동 라우팅을 켠 테스트와
-배포 실행은 첫 요청부터 runtime Judge가 현재 요청에 맞는 모델을 선택한다. 정상 실행 결과가
-쌓일수록 로컬 라우터가 Judge를 대신한다.
+배포 실행은 첫 요청부터 runtime Judge가 현재 요청의 요구 수준을 판정하고, 서버가 현재
+실행 주체가 사용할 수 있는 후보 중 capability와 비용을 비교해 모델을 선택한다. 정상 실행
+결과가 쌓일수록 로컬 라우터가 Judge를 대신한다.
 
 배포 시에는 실행 주체가 사용할 수 있는 후보 모델로 Judge-first policy를 저장한다. 정책 행이
 아직 없거나 삭제된 예외 상황에서도 runtime은 같은 후보 모델로 일회성 Judge-first policy를
@@ -27,21 +28,26 @@ FR-011의 현재 제품 계약은
 
 일반 실행은 현재 문의의 주제 키워드나 문장 유사도를 저장·검색하지 않는다. 초기 단계에서는
 **변수 치환이 끝난 prompt와 들어온 입력**을 Judge에 일시적으로 전달해, 실행 주체가 쓸 수
-있는 전체 후보 중 하나를 선택하게 한다. Judge 응답은 선택 모델·신뢰도·안전한 근거만 남기며,
-원문 prompt, 입력 payload, RAG 문서 원문은 정책 artifact나 API 응답에 저장하지 않는다.
+있는 전체 후보의 요구 수준을 판정하게 한다. 서버는 그 판정과 모델 catalog를 사용해 실제
+처리 모델을 고른다. 검증되지 않은 후보도 현재 credential과 capability 조건을 충족하면 첫
+요청부터 선택할 수 있으며, 운영 결과는 이후 정책·학습 품질을 판단하는 근거로만 쓴다. Judge
+응답은 요구 수준·신뢰도·안전한 근거만 남기며, 원문 prompt, 입력 payload, RAG 문서 원문은
+정책 artifact나 API 응답에 저장하지 않는다.
 
 Runtime Judge 입력은 현재 요청의 JSON key와 scalar type을 보존하고, system/user/assistant prompt를
 각각 독립된 길이 예산으로 전달한다. RAG 문서 원문은 개인정보와 영업정보 노출 위험 때문에 전달하지
 않는다. 대신 검색 context 크기, chunk/source 수, 근거 충분 여부, 부분 결과 여부, query rewrite 여부와
 안전한 부족 사유를 전달한다. 후보 profile에는 context window를 포함한다. 고정 JSON Schema와 출력
 형식은 요청별 Judge 입력에서 제외한다. Judge는 작업 복잡도, 결정 영향도, 근거 종합 범위만 0~3으로
-판단한 뒤 필요한 능력을 충족하는 후보 안에서만
-비용·지연·fallback을 비교한다.
+판단한다. 서버는 필요한 능력을 충족하는 현재 사용 가능 후보 안에서 비용·지연·fallback을
+비교한다.
 
 Judge 선택은 즉시 학습하지 않는다. 실행 중에는 학습 전 로컬 예측을 먼저 계산하고 원문 없는 숫자 vector, Judge가 판단한
 `task_complexity`·`decision_impact`·`evidence_synthesis`, 선택 모델만 대기 label로 저장하고,
 workflow가 끝난 뒤 해당 node가 schema 통과, 후속 노드 성공, fallback 미발생 조건을 모두 만족할
-때만 학습 가능한 label로 확정한다. Celery worker가 정책별 10건 또는 최대 5분 단위로
+때만 학습 가능한 label로 확정한다. label은 배포 정책이 아니라 동일한
+`organization + workflow + node + task_fingerprint + judge_contract_hash`의 **자동 라우팅 학습기**에 귀속된다.
+Celery worker가 학습기별 10건 또는 최대 5분 단위로
 candidate artifact를 갱신하므로 workflow 응답은 학습을 기다리지 않는다. local artifact는 **모델 ID를 직접 예측하지 않고 요청이 요구하는
 능력 수준을 예측**한다. 완료된 운영 결과가 최소 표본 수, schema/downstream 성공률, fallback
 비율, 선택 모델 분포 편향 기준을 통과하면 로컬 분류기가 먼저 요구 수준을 판단한다. 서버는 그
@@ -51,10 +57,17 @@ candidate artifact를 갱신하므로 workflow 응답은 학습을 기다리지 
 로컬 학습 vector는 `referenced_variables`의 실행별 값을 핵심 요청, 동적 문맥, 구조화 특징으로
 나누어 각각 임베딩하고 `75% / 15% / 10%` 비율로 결합한다. 변하는 RAG 안전 신호는 구조화
 특징에 포함한다. 노드 제목·작업 설명·system/user/assistant prompt의 고정 문구는 로컬 학습 입력에서 제외한다.
-학습 feature schema가 바뀌면 이전 artifact를 새 vector와 혼합하지 않고 Judge-first에서 학습
-횟수와 최근 평가를 다시 시작한다. 로컬 신뢰도가 낮거나 선택 모델의 credential 권한이 바뀐
-경우에만 Judge를 다시 호출한다. prompt, 출력 schema, RAG, downstream 계약이 바뀌면
-기존 local artifact를 오래됨으로 표시하고 Judge-first로 다시 시작한다.
+학습 feature schema, Judge rubric 또는 E5 encoder가 바뀌면 이전 계보를 읽기 전용으로 보존하고
+새 학습기를 0부터 시작한다. prompt, 출력 schema, RAG, downstream 계약이 바뀌어
+`task_fingerprint`가 달라져도 새 학습기를 만든다. 반대로 작업 지문과 학습 계약이 같으면
+재배포 뒤에도 기존 학습기와 검증 버전을 재사용한다. 로컬 신뢰도가 낮거나 선택 모델의
+credential 권한이 바뀐 경우에는 Judge를 다시 호출한다.
+
+검증 게이트를 통과한 candidate artifact는 `learner version`으로 한 번 발행한 뒤 수정하지 않는다.
+배포 정책은 학습 데이터나 가중치를 직접 소유하지 않고 `learner_id`와
+`active_learner_version_id`만 참조한다. 새 버전이 발행되면 같은 학습기에 연결된 활성 정책이
+그 버전을 참조하고 정책 버전도 증가한다. 최근 정확도나 실행 계약 품질이 무너지면 새 버전을
+발행하지 않으며, 활성 버전의 안전 기준까지 무너지면 Judge-first로 되돌린다.
 
 계약을 통과한 Judge 선택은 원문 입력 대신 deployment secret으로 만든 HMAC feature hash로
 최대 128개까지 재사용할 수 있다. 같은 안전 feature가 다시 들어오고 해당 모델 권한이 여전히
@@ -160,7 +173,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | FR-008 | 후보 적용 | P1 | `구현 완료` | `테스트 통과` | 사용자가 성공한 B 후보 설정 전체를 현재 target LLM node draft에 적용한다. downstream warning 확인과 schema 실패 후보 차단을 제공한다. draft conflict 처리는 후속 보강 대상이다. |
 | FR-009 | 비용 기록 | P1 | `구현 완료` | `테스트 통과` | 결과 분석 화면은 A/B 비용, prompt/completion/total token, latency를 표시한다. 비교 실행은 전용 experiment/candidate row로 저장되고 usage row가 candidate를 직접 참조한다. 과거 결과 재조회 API와 trace metadata retention 기준 정리를 제공한다. |
 | FR-010 | 권한 | P1 | `구현 완료` | `UI/API 권한 기반 구현, 테스트 통과` | A/B 테스트와 후보 적용은 builder 이상 권한이 있는 사용자만 수행한다. compare/apply/history API와 모델/Knowledge 후보 사용 가능성 검증이 적용됐다. |
-| FR-011 | Judge Bootstrap 점진 학습 자동 모델 라우팅 | P1 | `진행중` | `Judge-first/local-first 요구 능력 학습 구조` | 초기 운영 요청은 Judge가 후보 모델을 선택하고, 계약을 통과한 요청의 요구 능력 label과 실제 운영 성과가 충분히 쌓이면 로컬 라우터가 요구 능력을 예측해 현재 후보 중 적합한 모델을 고른다. |
+| FR-011 | Judge Bootstrap 점진 학습 자동 모델 라우팅 | P1 | `진행중` | `Judge-first/local-first 요구 능력 학습 구조` | 초기 운영 요청은 Judge가 요구 수준을 판정하고, 서버가 현재 실행 가능한 전체 후보에서 capability와 비용을 비교해 모델을 고른다. 계약을 통과한 요청의 요구 능력 label과 실제 운영 성과가 충분히 쌓이면 로컬 라우터가 요구 능력을 예측해 같은 방식으로 후보를 고른다. |
 | FR-012 | LLM 파라미터 추천 룰셋 | P2 | `진행중` | `서비스/API/UI 일부 구현` | 운영 로그 기반 추천 API와 추천 모달이 있다. 모델 라우팅 enable/refresh 같은 `direct_policy_update`는 즉시 적용 가능하고, 일반 파라미터/RAG 조정은 A/B 후보 실험으로 검증한다. |
 | FR-013 | Cost Optimizer 후보 검증 및 출력 품질 평가 | P1 | `구현 완료` | `추천 빠른 검증·일반 compare quality judge·이력 저장·결과 분석 UI 및 targeted test 통과` | 추천 모달과 일반 비교 분석 테스트에서 동일 입력의 A/B 출력을 평가해 비용·속도·token·품질 점수·JSON schema·downstream 호환성을 보여주고, 같은 결과를 적용하거나 다시 조회한다. |
 | FR-014 | 배포별 자동 파라미터 최적화 | P2 | `진행중` | `배포 설정·운영 수집·상태/예산 UI 구현` | 배포 시 선택한 LLM 노드의 운영 실행을 수집하고, 점검 주기와 월간 검증 예산을 분리해 관리한다. 모델 라우팅·모델 선택·프롬프트 변경은 포함하지 않는다. |
@@ -480,11 +493,12 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 
 현재 Gateway의 Cost Optimizer availability, baseline 조회, experiment history, compare, apply API는 workflow `write` 권한을 요구한다. 프론트 진입 액션은 builder 미만 사용자에게 비활성화 상태와 권한 부족 안내를 제공한다. compare/apply API는 선택한 모델 후보가 현재 사용자의 사용 가능 모델 목록에 있는지 확인하고, Knowledge Base 후보가 현재 organization/workflow scope에서 `use` 가능한지 다시 검증한다.
 
-### FR-011. Judge Bootstrap 점진 학습 자동 모델 라우팅
+### FR-011. 정책과 분리된 점진 학습 자동 모델 라우팅
 
 자동 모델 라우팅은 입력 문장을 입력군으로 저장하거나 주제 키워드 rule을 하드코딩하지
-않는다. 초기에는 Judge가 현재 요청과 노드 계약을 읽어 후보 모델을 선택하고, 이후에는
-그 선택과 실제 실행 결과로 학습한 로컬 라우터가 먼저 모델을 고른다.
+않는다. 초기에는 Judge가 현재 요청과 노드 계약을 읽어 요구 수준을 판정하고, 서버가
+현재 사용 가능한 전체 후보에서 처리 모델을 선택한다. 이후에는 그 판단과 실제 실행
+결과로 학습한 로컬 라우터가 먼저 요구 수준을 예측한다.
 
 #### 초기 정책 생성
 
@@ -492,37 +506,49 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 - bootstrap은 system/user/assistant prompt, 입력 매핑, 출력 형식과 schema, RAG 설정,
   후속 노드 계약을 읽어 Judge 요청 계약과 로컬 router artifact 초기 상태를 만든다.
 - bootstrap 생성은 외부 LLM을 호출하지 않으며 즉시 `ready` 상태가 된다.
-- 초기 Judge는 현재 요청별로 `selected_model_id`, `confidence`, `reason_code`를 반환한다.
-  Judge label은 로컬 모델 선택 분류기의 학습 데이터이며 runtime keyword rule이 아니다.
-- 실행 중 메모리에 있는 rendered prompt로 mDeBERTa feature와 **학습 전 예측**을 만든 뒤,
+- 초기 Judge는 현재 요청별로 세 요구 축, `confidence`, `reason_code`를 반환한다. 모델 ID는
+  반환하지 않는다. 서버는 catalog capability·가격과 현재 credential 조건을 적용해 전체
+  후보에서 선택한다. 후보가 아직 운영 검증을 통과하지 않았다는 이유만으로 제외하지 않는다.
+  Judge label은 로컬 요구 수준 분류기의 학습 데이터이며 runtime keyword rule이 아니다.
+- 실행 중 메모리에 있는 실행 변수 중심 텍스트로 multilingual E5 vector와 **학습 전 예측**을 만든 뒤,
   원문 대신 숫자 vector·예측·Judge 선택만 대기 저장한다. workflow 완료 뒤 schema 통과,
   후속 노드 성공, fallback 미발생을 확인해 label을 확정한다. 실제 가중치 학습은 Celery가
-  정책별 10건 또는 최대 5분 단위로 처리한다. RAG 문서 원문은 Judge와
+  학습기 행을 잠그고 10건 또는 최대 5분 단위로 처리한다. RAG 문서 원문은 Judge와
   artifact에 넣지 않고 retrieval 사용 여부·문맥 길이·출처 수 같은 구조 정보만 쓴다.
+- `judged_request_count`는 요구 수준 3축을 정상 반환한 Judge 판정 수다. 실행 계약을 통과하지
+  못한 유효 판정도 품질 gate의 표본과 계약 통과율에는 포함하지만, 실패한 선택을 반복하지
+  않도록 로컬 분류기 가중치 학습에는 사용하지 않는다.
 - 대기 label 저장 transaction은 최종 작업 모델의 provider 호출 전에 commit 또는 rollback한다.
-  같은 정책을 사용하는 동시 실행이 policy row lock을 외부 네트워크 I/O 구간까지 유지하거나
+  같은 학습기를 사용하는 동시 실행이 learner row lock을 외부 네트워크 I/O 구간까지 유지하거나
   서로의 최종 모델 실행과 timeout 처리를 막아서는 안 된다.
-- prompt, 입력 매핑, 출력 schema, RAG 또는 downstream 계약이 바뀌면 bootstrap은 오래됨
-  상태가 되며 다시 생성해야 한다. 수동 모델만 바뀐 경우에는 재사용할 수 있다.
+- prompt, 입력 매핑, 출력 schema, RAG 또는 downstream 계약이 바뀌면 새 작업 지문의 학습기를
+  만든다. 기본·대체 모델이나 점검 주기만 바뀐 경우에는 기존 학습기를 재사용한다.
 
 #### 실행 시 모델 선택과 점진 전환
 
 - `judge_first`: 계약을 통과한 성공 배포 실행 Judge label이 50건 미만이면 매 운영 요청에 Judge를 호출한다.
-- `local_first`: Judge 선택 label이 50건 이상 쌓이고 최근 20건의 학습 전 예측 일치율 80%,
+- `local_first`: Judge 요구 수준 label이 50건 이상 쌓이고 최근 20건의 학습 전 예측 일치율 80%,
   축별 평균 오차 0.5 이하, 계약 통과율 95%와 완료된 운영 품질 기준을 통과하면 로컬
-  mDeBERTa 분류기가 전체 사용 가능 후보 중 하나를 먼저 선택한다.
+  E5 vector 기반 선형 분류기가 요구 수준을 먼저 예측한다.
 - `local_first` 상태에서 local prediction의 confidence가 기준 미만이거나 선택 모델이 현재
   실행 주체에게 허용되지 않으면 Judge를 호출한다. 별도 `hybrid` 상태값은 두지 않는다.
 - 로컬 confidence는 최근 Judge 일치율, 현재 입력과 학습 표본의 거리, 예측 경계 여유,
   최근 계약 통과율을 함께 반영한다. 처음 보거나 모호한 요청은 Judge로 되돌린다.
+- 검증 버전을 사용하는 특정 배포에서 완료된 운영 표본이 20건 이상 쌓인 뒤 실행 성공률,
+  schema 통과율 또는 downstream 성공률이 95% 미만이 되거나 fallback 비율이 5%를 초과하면,
+  학습기와 불변 버전은 보존하되 해당 배포 정책의 활성 버전 연결만 해제해 Judge 우선으로
+  되돌린다.
 - Judge 호출 실패·형식 오류는 workflow를 실패시키지 않으며 사용자가 지정한 기본 모델, 그 뒤
   기본 대체 모델 순서로 실행한다.
 - 실행 trace에는 `decision_source`(`runtime_judge`, `local_router`, `stored_model`), Judge
-  호출 여부와 비용, 선택 모델, 대체 모델, 정책 버전, 안전한 선택 근거를 남긴다.
+  호출 여부와 비용, 선택 모델, 대체 모델, 정책 버전, `learner_id/version`,
+  `included_in_routing_learning`, 안전한 선택 근거를 남긴다.
 
 #### 배포 후 재평가
 
-- Test Sidebar 실행은 활성 배포 정책과 같은 후보 목록, 같은 Judge/local router 전환 기준으로 실제 실행 모델을 고른다. `judge_first` 또는 local router 저확신이면 Judge를 호출하며, 확신 있는 `local_first`면 Judge를 호출하지 않는다. Judge usage는 해당 테스트 run에만 기록하고, Judge label·운영 성적·갱신 카운터에는 포함하지 않는다.
+- Test Sidebar 실행은 작업 지문이 같은 검증 학습 버전이 있으면 로컬 라우터를 사용하고,
+  버전이 없거나 확신이 낮으면 Judge를 사용한다. Judge usage는 해당 테스트 run에만 기록하며,
+  학습 label·학습 횟수·운영 성적·정책 갱신 카운터는 변경하지 않는다.
 - 성공한 배포 후 운영 실행만 노드별 모델·입력 길이 profile별 성적에 반영한다.
 - 설정한 점검 주기에 도달하면 완료된 Judge 표본과 운영 성적을 다시 평가한다.
   최소 표본 수, 최소 두 개 이상의 선택 모델, schema/downstream 성공률, fallback 비율 기준을
@@ -533,8 +559,9 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 
 - 입력군, 대표 예문, semantic cohort, embedding 유사도, cohort별 lifecycle과
   cohort별 Replay/Judge gate는 제품 경로와 저장소에서 제거한다.
-- 과거 전략 정책은 신규 runtime에서 실행하지 않는다. 정책 refresh 시 정적 rule을 버리고
-  Judge-first 기본·대체 모델과 빈 학습 상태로 한 번 이관하며, 이관 전 실행은 저장 모델로 닫는다.
+- 과거 전략 정책은 신규 runtime에서 실행하지 않는다. 구형 정책 소유 학습 label과 JSON
+  artifact는 migration에서 폐기하고, 새 학습기에서 0부터 시작한다. 기존 실행 로그와 비용·성능
+  데이터는 유지한다.
 ### FR-012. LLM 파라미터 추천 룰셋
 
 Cost Optimizer는 모델 교체뿐 아니라 LLM 노드의 파라미터 조정 후보도 추천한다.

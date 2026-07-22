@@ -68,7 +68,7 @@ vi.mock('../store/useWorkflowStore', () => {
             reason_code: 'judge_bootstrap_required',
             judge_called: false,
             policy_source: 'active_deployment',
-            included_in_policy_learning: false,
+            included_in_routing_learning: false,
             input_length_bucket: 'medium',
             output_format: 'json',
             schema_required: true,
