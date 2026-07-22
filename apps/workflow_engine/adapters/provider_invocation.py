@@ -32,6 +32,25 @@ class ProviderClientInvocationLease:
     def attribution(self) -> ProviderExecutionAttribution | None:
         return self._attribution
 
+    def apply_json_schema_response_format(
+        self,
+        *,
+        name: str,
+        schema: Mapping[str, Any],
+    ) -> bool:
+        """지원 provider에만 node JSON schema를 엄격한 응답 형식으로 전달한다."""
+        builder = getattr(self._client, "build_json_schema_response_format", None)
+        if not callable(builder):
+            return False
+        try:
+            response_format = builder(name=name, schema=dict(schema))
+        except Exception:
+            return False
+        if not isinstance(response_format, dict):
+            return False
+        self._parameters["response_format"] = response_format
+        return True
+
     def invoke(self) -> Mapping[str, Any]:
         if self._invoked:
             raise ProviderExecutionConfigurationError()

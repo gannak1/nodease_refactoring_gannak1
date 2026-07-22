@@ -1447,12 +1447,26 @@ class LLMNode(Node[LLMNodeData]):
             # 파라미터 전처리: JSON 응답 모드와 stop 리스트를 provider 호출 전에 정리한다.
             llm_params = dict(self.data.parameters or {})
             output_format = self.data.output_format or {}
-            if (
-                isinstance(output_format, dict)
-                and output_format.get("type") == "json"
-                and "response_format" not in llm_params
-            ):
-                llm_params["response_format"] = {"type": "json_object"}
+            provider_json_schema: dict[str, Any] | None = None
+            if isinstance(output_format, dict) and output_format.get("type") == "json":
+                response_format = llm_params.get("response_format")
+                if "response_format" not in llm_params:
+                    llm_params["response_format"] = {"type": "json_object"}
+                schema = output_format.get("schema")
+                # UI/legacy graph가 json_object를 명시해도 output_format schema보다
+                # 약한 계약이다. 지원 provider에서는 strict schema로 승격한다.
+                if (
+                    isinstance(schema, dict)
+                    and schema
+                    and (
+                        response_format is None
+                        or (
+                            isinstance(response_format, dict)
+                            and response_format.get("type") == "json_object"
+                        )
+                    )
+                ):
+                    provider_json_schema = schema
             if "stop" in llm_params and isinstance(llm_params["stop"], list):
                 llm_params["stop"] = [s for s in llm_params["stop"] if s and s.strip()]
                 if not llm_params["stop"]:
@@ -1578,6 +1592,28 @@ class LLMNode(Node[LLMNodeData]):
                     )
                 )
 
+            def apply_provider_json_schema(lease: Any) -> None:
+                """지원 provider에서는 JSON object 모드보다 강한 schema 계약을 사용한다."""
+                if provider_json_schema is None:
+                    return
+                apply_response_format = getattr(
+                    lease,
+                    "apply_json_schema_response_format",
+                    None,
+                )
+                if not callable(apply_response_format):
+                    return
+                try:
+                    apply_response_format(
+                        name="workflow_node_output",
+                        schema=provider_json_schema,
+                    )
+                except Exception:
+                    logger.warning(
+                        "[LLMNode] Provider strict JSON schema format skipped",
+                        exc_info=True,
+                    )
+
             def audit_provider_resolution_failure(
                 model_id: str,
                 error: Exception,
@@ -1644,6 +1680,7 @@ class LLMNode(Node[LLMNodeData]):
                 provider_attribution = provider_lease.attribution
                 if provider_attribution is not None:
                     selected_model_id = provider_attribution.model_id
+            apply_provider_json_schema(provider_lease)
 
             # STEP 4. LLM 호출 ----------------------------------------------------
             used_model_id = selected_model_id
@@ -1675,6 +1712,7 @@ class LLMNode(Node[LLMNodeData]):
                         fallback_resolution_error,
                     )
                     raise
+                apply_provider_json_schema(fallback_lease)
 
                 try:
                     response = fallback_lease.invoke()
@@ -1822,9 +1860,21 @@ class LLMNode(Node[LLMNodeData]):
                 },
             }
         finally:
-            # [FIX] 세션은 메서드 종료 시 닫음 (기존: 클라이언트 생성 직후)
+            # 자동 라우팅 Judge가 만든 학습 label은 이 임시 세션에 함께 쌓인다.
+            # 닫기 전에 확정하지 않으면 close()가 transaction을 rollback해 label이 사라진다.
             if temp_session is not None:
-                temp_session.close()
+                self._commit_and_close_runtime_session(temp_session)
+
+    @staticmethod
+    def _commit_and_close_runtime_session(session) -> None:
+        """노드가 소유한 runtime 세션의 변경을 확정한 뒤 닫는다."""
+        try:
+            session.commit()
+        except SQLAlchemyError:
+            session.rollback()
+            logger.exception("[LLMNode] Runtime session commit failed")
+        finally:
+            session.close()
 
     @staticmethod
     def _finish_reason(response: Any) -> str | None:
