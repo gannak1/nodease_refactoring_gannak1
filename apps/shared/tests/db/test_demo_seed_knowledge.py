@@ -15,6 +15,7 @@ from apps.shared.domain.app_auth_secret import (
 )
 from apps.shared.domain.workflow_graph import validate_workflow_graph
 from apps.shared.services.knowledge_safe_text import safe_label_from_text
+from apps.shared.services.workflow_layout import calculate_workflow_auto_layout
 from apps.workflow_engine.workflow.nodes.webhook.entities import WebhookTriggerNodeData
 from apps.workflow_engine.workflow.nodes.webhook.webhook_node import WebhookTriggerNode
 from scripts import seed_demo as seed_demo_script
@@ -91,7 +92,7 @@ def write_minimal_demo_fixture(
     embedding = [0.0] * demo_seed.DEMO_EMBEDDING_DIMENSION
     specs = [
         spec
-        for spec in demo_seed.DEMO_DOCUMENT_SPECS
+        for spec in demo_seed.INDEXED_DEMO_DOCUMENT_SPECS
         if spec.key != omitted_document_key
     ]
     with gzip.open(fixture_path, "wt", encoding="utf-8", newline="\n") as handle:
@@ -208,14 +209,14 @@ def test_hr_bot_graph_references_seeded_rag_kbs():
     assert llm_node["data"]["model_id"] == demo_seed.DEMO_CHAT_MINI_MODEL
     assert llm_node["data"]["scoreThreshold"] == 0.3
     assert llm_node["data"]["topK"] == 4
-    assert str(demo_seed.KB_IDS["internal_leave_attendance"]) in kb_ids
-    assert str(demo_seed.KB_IDS["internal_privacy_hr_records"]) in kb_ids
-    assert str(demo_seed.KB_IDS["internal_developer_commit_convention"]) in kb_ids
-    assert str(demo_seed.KB_IDS["internal_developer_compensation_band"]) in kb_ids
-    assert str(demo_seed.KB_IDS["internal_compensation_access_policy"]) in kb_ids
+    assert str(demo_seed.KB_IDS["hr"]) in kb_ids
+    assert str(demo_seed.KB_IDS["hr_welfare"]) in kb_ids
     assert str(demo_seed.KB_IDS["legal_labor_standards"]) in kb_ids
     assert str(demo_seed.KB_IDS["legal_equal_employment"]) in kb_ids
-    assert str(demo_seed.KB_IDS["hr"]) not in kb_ids
+    assert kb_ids.isdisjoint(
+        str(kb_id)
+        for kb_id in demo_seed.RETIRED_INTERNAL_DOCUMENT_KB_IDS.values()
+    )
     assert "knowledgeCollections" not in llm_node["data"]
 
 
@@ -311,17 +312,14 @@ def test_test_profile_seed_preserves_valid_rotated_app_secret_state_without_rese
     )
 
 
-def test_hr_policy_collection_references_precomputed_indexed_kbs():
-    fixture = demo_seed._read_demo_knowledge_fixture()
-    indexed_keys = {spec.key for spec in demo_seed.DEMO_DOCUMENT_SPECS}
+def test_hr_policy_collection_references_legacy_policy_kbs():
     target_keys = {
         knowledge_base_key
         for _, knowledge_base_key in demo_seed.HR_POLICY_COLLECTION_ITEMS
     }
 
-    assert target_keys == {"internal_leave_attendance", "internal_benefits"}
-    assert target_keys <= indexed_keys
-    assert all(fixture["chunks_by_document"][key] for key in target_keys)
+    assert target_keys == {"hr", "hr_welfare"}
+    assert target_keys <= set(demo_seed.KB_IDS)
 
 
 def test_department_onboarding_graph_references_exact_rbac_demo_kbs():
@@ -333,9 +331,9 @@ def test_department_onboarding_graph_references_exact_rbac_demo_kbs():
     assert llm_node["data"]["topK"] == 3
     assert llm_node["data"]["answerGroundingCheck"] == "basic"
     assert [item["id"] for item in llm_node["data"]["knowledgeBases"]] == [
-        str(demo_seed.KB_IDS["internal_onboarding"]),
-        str(demo_seed.KB_IDS["internal_developer_onboarding_rules"]),
-        str(demo_seed.KB_IDS["internal_planning_onboarding_guide"]),
+        str(demo_seed.KB_IDS["onboarding_company_common"]),
+        str(demo_seed.KB_IDS["onboarding_platform"]),
+        str(demo_seed.KB_IDS["onboarding_sales"]),
     ]
 
 
@@ -363,56 +361,19 @@ def test_department_onboarding_knowledge_permissions_are_fail_closed_by_team():
     }
 
     assert department_specs == {
-        ("internal_onboarding", "department_development", "operator"),
-        ("internal_onboarding", "department_planning", "operator"),
+        ("onboarding_company_common", "department_development", "operator"),
+        ("onboarding_company_common", "department_planning", "operator"),
         (
-            "internal_developer_onboarding_rules",
+            "onboarding_platform",
             "department_development",
             "operator",
         ),
         (
-            "internal_planning_onboarding_guide",
+            "onboarding_sales",
             "department_planning",
             "operator",
         ),
     }
-
-
-def test_department_onboarding_app_is_active_internal_chatbot(monkeypatch):
-    calls = {}
-
-    def capture(
-        _db,
-        key,
-        name,
-        description,
-        owner_key,
-        graph,
-        *,
-        deployed,
-        deployment_type=demo_seed.DeploymentType.API,
-    ):
-        calls[key] = {
-            "name": name,
-            "description": description,
-            "owner_key": owner_key,
-            "graph": graph,
-            "deployed": deployed,
-            "deployment_type": deployment_type,
-        }
-        return key
-
-    monkeypatch.setattr(demo_seed, "_upsert_app_workflow", capture)
-
-    workflows = demo_seed._seed_apps_and_workflows(object())
-
-    assert workflows["department_onboarding_chatbot"] == (
-        "department_onboarding_chatbot"
-    )
-    call = calls["department_onboarding_chatbot"]
-    assert call["owner_key"] == "admin"
-    assert call["deployed"] is True
-    assert call["deployment_type"] is demo_seed.DeploymentType.INTERNAL_CHATBOT
 
 
 def test_team_onboarding_access_control_users_match_presentation_scenario():
@@ -485,7 +446,7 @@ def test_team_onboarding_kb_seed_persists_safe_kb_name_labels(monkeypatch):
     monkeypatch.setattr(demo_seed, "_upsert_by_id", capture_upsert)
 
     with pytest.raises(SeedCaptured):
-        demo_seed._seed_knowledge(object())
+        demo_seed._seed_knowledge(ResetRecorderSession())
 
     assert {
         object_id: values["safe_metadata"]["safe_label"]
@@ -569,45 +530,6 @@ def test_team_onboarding_adaptive_routing_demo_only_changes_routing_settings():
     assert policy["excluded_model_ids"] == ["gpt-5.6-sol"]
 
 
-def test_team_onboarding_adaptive_routing_app_is_seeded_for_people_manager(
-    monkeypatch,
-):
-    calls = {}
-
-    def capture(
-        _db,
-        key,
-        name,
-        description,
-        owner_key,
-        graph,
-        *,
-        deployed,
-        deployment_type=demo_seed.DeploymentType.API,
-    ):
-        calls[key] = {
-            "name": name,
-            "owner_key": owner_key,
-            "graph": graph,
-            "deployed": deployed,
-            "deployment_type": deployment_type,
-        }
-        return key
-
-    monkeypatch.setattr(demo_seed, "_upsert_app_workflow", capture)
-
-    workflows = demo_seed._seed_apps_and_workflows(object())
-
-    assert workflows["team_onboarding_adaptive_routing"] == (
-        "team_onboarding_adaptive_routing"
-    )
-    call = calls["team_onboarding_adaptive_routing"]
-    assert call["name"] == "팀별 온보딩 자동 모델 라우팅 검증"
-    assert call["owner_key"] == "onboarding_people_manager"
-    assert call["deployed"] is True
-    assert call["deployment_type"] is demo_seed.DeploymentType.INTERNAL_CHATBOT
-
-
 def test_enterprise_request_routing_graph_uses_current_routing_context():
     """통합 업무 요청 workflow는 입력군 없이 현재 난이도 라우팅 설정을 제공한다."""
     graph = demo_seed._enterprise_request_routing_graph()
@@ -628,6 +550,16 @@ def test_enterprise_request_routing_graph_uses_current_routing_context():
         "refresh": {"refresh_every_runs": 10},
         "validation_budget_usd": 3.0,
         "excluded_model_ids": ["gpt-5.6-sol"],
+    }
+    assert {item["id"] for item in data["knowledgeBases"]} == {
+        str(demo_seed.KB_IDS[key])
+        for key in (
+            "legal_privacy",
+            "onboarding_company_common",
+            "onboarding_platform",
+            "onboarding_sales",
+            "onboarding_finance",
+        )
     }
     node_ids = {node["id"] for node in graph["nodes"]}
     assert all(
@@ -663,7 +595,7 @@ def test_enterprise_request_routing_graph_validates_and_maps_webhook_payload():
     }
 
 
-def test_enterprise_request_routing_app_is_seeded_as_deployed_webhook(monkeypatch):
+def test_demo_seed_creates_requested_onboarding_workflows(monkeypatch):
     calls = {}
 
     def capture(
@@ -676,41 +608,7 @@ def test_enterprise_request_routing_app_is_seeded_as_deployed_webhook(monkeypatc
         *,
         deployed,
         deployment_type=demo_seed.DeploymentType.API,
-    ):
-        calls[key] = {
-            "name": name,
-            "owner_key": owner_key,
-            "graph": graph,
-            "deployed": deployed,
-            "deployment_type": deployment_type,
-        }
-        return key
-
-    monkeypatch.setattr(demo_seed, "_upsert_app_workflow", capture)
-
-    workflows = demo_seed._seed_apps_and_workflows(object())
-
-    assert workflows["enterprise_request_routing"] == "enterprise_request_routing"
-    call = calls["enterprise_request_routing"]
-    assert call["name"] == "엔터프라이즈 통합 업무 요청 처리"
-    assert call["owner_key"] == "admin"
-    assert call["deployed"] is True
-    assert call["deployment_type"] is demo_seed.DeploymentType.WEBHOOK
-
-
-def test_team_onboarding_access_control_app_is_active_internal_chatbot(monkeypatch):
-    calls = {}
-
-    def capture(
-        _db,
-        key,
-        name,
-        description,
-        owner_key,
-        graph,
-        *,
-        deployed,
-        deployment_type=demo_seed.DeploymentType.API,
+        list_updated_at=None,
     ):
         calls[key] = {
             "name": name,
@@ -719,6 +617,7 @@ def test_team_onboarding_access_control_app_is_active_internal_chatbot(monkeypat
             "graph": graph,
             "deployed": deployed,
             "deployment_type": deployment_type,
+            "list_updated_at": list_updated_at,
         }
         return key
 
@@ -726,26 +625,290 @@ def test_team_onboarding_access_control_app_is_active_internal_chatbot(monkeypat
 
     workflows = demo_seed._seed_apps_and_workflows(object())
 
-    assert workflows["team_onboarding_access_control"] == (
-        "team_onboarding_access_control"
+    assert set(workflows) == {
+        "internal_it_helpdesk_routing",
+        "onboarding_chatbot",
+        "new_employee_onboarding_chatbot",
+    }
+    assert calls["internal_it_helpdesk_routing"]["name"] == "사내 IT 문의 자동 처리"
+    assert calls["internal_it_helpdesk_routing"]["deployed"] is True
+    assert (
+        calls["internal_it_helpdesk_routing"]["deployment_type"]
+        is demo_seed.DeploymentType.WEBHOOK
     )
-    call = calls["team_onboarding_access_control"]
-    assert call["name"] == "팀별 온보딩 문서 접근 제어 데모"
-    assert call["owner_key"] == "onboarding_people_manager"
-    assert call["deployed"] is True
-    assert call["deployment_type"] is demo_seed.DeploymentType.INTERNAL_CHATBOT
+    onboarding_call = calls["onboarding_chatbot"]
+    assert onboarding_call["name"] == "온보딩 챗봇"
+    assert onboarding_call["owner_key"] == "admin"
+    assert onboarding_call["deployed"] is False
+    assert onboarding_call["graph"] == {
+        "nodes": [
+            {
+                "id": "start-onboarding-chatbot",
+                "type": "startNode",
+                "position": {"x": 250, "y": 250},
+                "data": {
+                    "title": "입력",
+                    "displayNumber": 1,
+                    "triggerType": "manual",
+                    "variables": [],
+                },
+            }
+        ],
+        "edges": [],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+    new_employee_call = calls["new_employee_onboarding_chatbot"]
+    assert new_employee_call["name"] == "신입 사원 온보딩 챗봇"
+    assert new_employee_call["deployed"] is True
+    assert (
+        new_employee_call["deployment_type"]
+        is demo_seed.DeploymentType.INTERNAL_CHATBOT
+    )
+    assert (
+        onboarding_call["list_updated_at"]
+        > calls["internal_it_helpdesk_routing"]["list_updated_at"]
+        > new_employee_call["list_updated_at"]
+    )
+    assert set(demo_seed.APP_IDS) == {
+        "internal_it_helpdesk_routing",
+        "onboarding_chatbot",
+        "new_employee_onboarding_chatbot",
+    }
+    assert set(demo_seed.WORKFLOW_IDS) == {
+        "internal_it_helpdesk_routing",
+        "onboarding_chatbot",
+        "new_employee_onboarding_chatbot",
+    }
+    assert set(demo_seed.DEPLOYMENT_IDS) == {
+        "internal_it_helpdesk_routing",
+        "new_employee_onboarding_chatbot",
+    }
+    assert demo_seed.APP_IDS["new_employee_onboarding_chatbot"] == uuid.UUID(
+        "97000000-0000-0000-0000-000000000001"
+    )
+    assert demo_seed.WORKFLOW_IDS["new_employee_onboarding_chatbot"] == uuid.UUID(
+        "97000000-0000-0000-0000-000000000002"
+    )
+    assert demo_seed.DEPLOYMENT_IDS["new_employee_onboarding_chatbot"] == uuid.UUID(
+        "97000000-0000-0000-0000-000000000003"
+    )
+    assert set(demo_seed.RETIRED_DEMO_APP_IDS) == {
+        "hr_bot_example",
+        "ticket_ops",
+        "ticket_ops_warning",
+        "ticket_ops_risk",
+        "ticket_ops_paused",
+        "test_inquiry",
+        "department_onboarding_chatbot",
+        "team_onboarding_access_control",
+        "model_router_ticket_ops",
+        "team_onboarding_adaptive_routing",
+        "enterprise_request_routing",
+    }
+
+
+def test_demo_seed_grants_onboarding_workflow_execution_to_platform_and_sales(
+    monkeypatch,
+):
+    upserts = []
+
+    def capture_upsert(_db, model, row_id, values):
+        upserts.append((model, row_id, values))
+
+    monkeypatch.setattr(demo_seed, "_upsert_by_id", capture_upsert)
+
+    demo_seed._seed_permissions(object())
+
+    team_workflow_permissions = [
+        (row_id, values)
+        for model, row_id, values in upserts
+        if model is demo_seed.TeamWorkflowPermission
+    ]
+    assert team_workflow_permissions == [
+        (
+            demo_seed.TEAM_PERMISSION_IDS["internal_it_helpdesk_routing"],
+            {
+                "grantee_organization_id": demo_seed.ORG_ID,
+                "team_id": demo_seed.TEAM_IDS["platform_admin"],
+                "workflow_id": demo_seed.WORKFLOW_IDS[
+                    "internal_it_helpdesk_routing"
+                ],
+                "auth_state": "manager",
+                "assigned_by": demo_seed.USER_IDS["admin"],
+                "options": demo_seed._demo_options(
+                    "permission-internal-it-helpdesk-routing"
+                ),
+                "flags": 0,
+            },
+        ),
+        (
+            demo_seed.TEAM_PERMISSION_IDS["onboarding_chatbot_platform"],
+            {
+                "grantee_organization_id": demo_seed.ORG_ID,
+                "team_id": demo_seed.TEAM_IDS["onboarding_platform"],
+                "workflow_id": demo_seed.WORKFLOW_IDS["onboarding_chatbot"],
+                "auth_state": "operator",
+                "assigned_by": demo_seed.USER_IDS["admin"],
+                "options": demo_seed._demo_options(
+                    "permission-onboarding-chatbot-platform"
+                ),
+                "flags": 0,
+            },
+        ),
+        (
+            demo_seed.TEAM_PERMISSION_IDS["onboarding_chatbot_sales"],
+            {
+                "grantee_organization_id": demo_seed.ORG_ID,
+                "team_id": demo_seed.TEAM_IDS["onboarding_sales"],
+                "workflow_id": demo_seed.WORKFLOW_IDS["onboarding_chatbot"],
+                "auth_state": "operator",
+                "assigned_by": demo_seed.USER_IDS["admin"],
+                "options": demo_seed._demo_options(
+                    "permission-onboarding-chatbot-sales"
+                ),
+                "flags": 0,
+            },
+        ),
+        (
+            demo_seed.TEAM_PERMISSION_IDS[
+                "new_employee_onboarding_chatbot_platform"
+            ],
+            {
+                "grantee_organization_id": demo_seed.ORG_ID,
+                "team_id": demo_seed.TEAM_IDS["onboarding_platform"],
+                "workflow_id": demo_seed.WORKFLOW_IDS[
+                    "new_employee_onboarding_chatbot"
+                ],
+                "auth_state": "operator",
+                "assigned_by": demo_seed.USER_IDS["admin"],
+                "options": demo_seed._demo_options(
+                    "permission-new-employee-onboarding-chatbot-platform"
+                ),
+                "flags": 0,
+            },
+        ),
+        (
+            demo_seed.TEAM_PERMISSION_IDS[
+                "new_employee_onboarding_chatbot_sales"
+            ],
+            {
+                "grantee_organization_id": demo_seed.ORG_ID,
+                "team_id": demo_seed.TEAM_IDS["onboarding_sales"],
+                "workflow_id": demo_seed.WORKFLOW_IDS[
+                    "new_employee_onboarding_chatbot"
+                ],
+                "auth_state": "operator",
+                "assigned_by": demo_seed.USER_IDS["admin"],
+                "options": demo_seed._demo_options(
+                    "permission-new-employee-onboarding-chatbot-sales"
+                ),
+                "flags": 0,
+            },
+        ),
+    ]
+    assert all(
+        model is not demo_seed.UserWorkflowPermission
+        for model, _row_id, _values in upserts
+    )
+
+
+def test_new_employee_onboarding_chatbot_graph_matches_demo_contract():
+    graph = demo_seed._new_employee_onboarding_chatbot_graph()
+    validate_workflow_graph(graph)
+
+    assert [node["type"] for node in graph["nodes"]] == [
+        "startNode",
+        "llmNode",
+        "answerNode",
+    ]
+    assert [(edge["source"], edge["target"]) for edge in graph["edges"]] == [
+        ("start-onboarding-question", "llm-onboarding-answer"),
+        ("llm-onboarding-answer", "answer-onboarding"),
+    ]
+
+    llm_data = graph["nodes"][1]["data"]
+    assert llm_data["model_id"] == "gpt-5.6"
+    assert llm_data["fallback_model_id"] == "gpt-5.4"
+    assert llm_data["auto_model_routing"] is True
+    assert llm_data["knowledgeCollections"] == [
+        {
+            "id": str(
+                demo_seed.COLLECTION_IDS["team_onboarding_access_control"]
+            ),
+            "safeLabel": "팀별 온보딩 접근 제어 문서",
+        }
+    ]
+    assert llm_data["knowledgeBases"] == [
+        demo_seed._knowledge_base_ref(spec.key)
+        for spec in demo_seed.ONBOARDING_PDF_SPECS
+    ]
+    assert llm_data["scoreThreshold"] == 0.3
+    assert llm_data["topK"] == 5
+
+
+def test_new_employee_onboarding_chatbot_keeps_fixed_last_list_timestamp(
+    monkeypatch,
+):
+    app = SimpleNamespace(
+        id=demo_seed.APP_IDS["new_employee_onboarding_chatbot"],
+        workflow_id=None,
+        active_deployment_id=None,
+        updated_at=None,
+    )
+    workflow = SimpleNamespace(
+        id=demo_seed.WORKFLOW_IDS["new_employee_onboarding_chatbot"]
+    )
+
+    def capture_upsert(_db, model, _row_id, _values):
+        if model is demo_seed.App:
+            return app
+        if model is demo_seed.Workflow:
+            return workflow
+        raise AssertionError(f"unexpected model: {model}")
+
+    db = SimpleNamespace(get=lambda _model, _row_id: None, flush=lambda: None)
+    monkeypatch.setattr(demo_seed, "_upsert_by_id", capture_upsert)
+
+    list_updated_at = datetime(2026, 7, 21, tzinfo=timezone.utc)
+    demo_seed._upsert_app_workflow(
+        db,
+        "new_employee_onboarding_chatbot",
+        "신입 사원 온보딩 챗봇",
+        "신입 사원 온보딩 챗봇",
+        "admin",
+        demo_seed._new_employee_onboarding_chatbot_graph(),
+        deployed=False,
+        list_updated_at=list_updated_at,
+    )
+
+    assert app.updated_at == list_updated_at
 
 
 def test_demo_summary_reports_seeded_knowledge_documents():
     summary = demo_seed.demo_summary("demo")
 
+    assert summary["apps"] == [
+        "온보딩 챗봇",
+        "사내 IT 문의 자동 처리",
+        "신입 사원 온보딩 챗봇",
+    ]
     assert summary["knowledge_documents"] == {
         "public_law_pdfs": 7,
-        "internal_markdown_docs": 11,
+        "internal_markdown_docs": 2,
         "bundled_onboarding_pdfs": 4,
         "embedding_model": demo_seed.DEMO_EMBEDDING_MODEL,
         "fixture": demo_seed.DEMO_KNOWLEDGE_FIXTURE_PATH.as_posix(),
     }
+
+
+def test_demo_seed_excludes_internal_document_prefixed_knowledge_bases():
+    prefixed_specs = [
+        spec.name
+        for spec in demo_seed.DEMO_DOCUMENT_SPECS
+        if spec.name.startswith("사내문서:")
+    ]
+
+    assert prefixed_specs == []
 
 
 def test_demo_summary_describes_secure_runtime_credential_input():
@@ -1136,6 +1299,89 @@ def test_demo_profile_reset_deletes_ingestion_jobs_before_documents(monkeypatch)
     ) < db.deleted_targets.index(demo_seed.KnowledgeBase)
 
 
+def test_demo_profile_reset_deletes_retired_internal_knowledge_rows(monkeypatch):
+    db = ResetRecorderSession()
+    monkeypatch.setattr(demo_seed, "validate_demo_seed_prerequisites", lambda: None)
+    monkeypatch.setattr(demo_seed, "_adopt_existing_demo_user_ids", lambda _db: None)
+    monkeypatch.setattr(demo_seed, "seed_demo_data", lambda _db: None)
+
+    demo_seed.reset_demo_data(db)
+
+    kb_condition = db.filter_criteria[demo_seed.KnowledgeBase][0].compile()
+    collection_condition = db.filter_criteria[demo_seed.KnowledgeCollection][
+        0
+    ].compile()
+    reset_kb_ids = set(next(iter(kb_condition.params.values())))
+    reset_collection_ids = set(next(iter(collection_condition.params.values())))
+    assert set(demo_seed.RETIRED_INTERNAL_DOCUMENT_KB_IDS.values()) <= reset_kb_ids
+    assert (
+        set(demo_seed.RETIRED_INTERNAL_DOCUMENT_COLLECTION_IDS.values())
+        <= reset_collection_ids
+    )
+
+
+def test_demo_seed_cleanup_deletes_retired_internal_knowledge_rows():
+    db = ResetRecorderSession()
+
+    demo_seed._delete_retired_internal_knowledge(db)
+
+    for model in (
+        demo_seed.TeamKnowledgePermission,
+        demo_seed.TeamKnowledgeCollectionPermission,
+        demo_seed.KnowledgeCollectionItem,
+        demo_seed.KnowledgeCollection,
+        demo_seed.DocumentChunk,
+        demo_seed.Document,
+        demo_seed.KnowledgeBase,
+    ):
+        assert model in db.deleted_targets
+    assert db.deleted_targets.index(
+        demo_seed.KnowledgeCollectionItem
+    ) < db.deleted_targets.index(demo_seed.KnowledgeCollection)
+    assert db.deleted_targets.index(demo_seed.DocumentChunk) < db.deleted_targets.index(
+        demo_seed.Document
+    )
+    assert db.deleted_targets.index(demo_seed.Document) < db.deleted_targets.index(
+        demo_seed.KnowledgeBase
+    )
+
+
+def test_demo_seed_cleanup_deletes_retired_workflows_child_first():
+    db = ResetRecorderSession()
+
+    demo_seed._delete_retired_demo_workflows(db)
+
+    for model in (
+        demo_seed.TracePayloadAccessEvent,
+        demo_seed.TracePayload,
+        demo_seed.ConversationSessionRecord,
+        demo_seed.LLMUsageLog,
+        demo_seed.WorkflowNodeRun,
+        demo_seed.WorkflowRun,
+        demo_seed.TeamWorkflowPermission,
+        demo_seed.UserWorkflowPermission,
+        demo_seed.WorkflowDeployment,
+        demo_seed.Workflow,
+        demo_seed.App,
+    ):
+        assert model in db.deleted_targets
+    assert db.deleted_targets.index(
+        demo_seed.WorkflowNodeRun
+    ) < db.deleted_targets.index(demo_seed.WorkflowRun)
+    assert db.deleted_targets.index(
+        demo_seed.WorkflowDeployment
+    ) < db.deleted_targets.index(demo_seed.Workflow)
+    assert db.deleted_targets.index(demo_seed.Workflow) < db.deleted_targets.index(
+        demo_seed.App
+    )
+    assert set(demo_seed.APP_IDS.values()).isdisjoint(
+        demo_seed.RETIRED_DEMO_APP_IDS.values()
+    )
+    assert set(demo_seed.WORKFLOW_IDS.values()).isdisjoint(
+        demo_seed.RETIRED_DEMO_WORKFLOW_IDS.values()
+    )
+
+
 def test_demo_runtime_credential_grants_agent_builder_user_permission(monkeypatch):
     upserts = []
 
@@ -1256,6 +1502,40 @@ def test_internal_it_helpdesk_routing_demo_matches_presentation_contract():
     assert "고성능형" in llm_data["model_routing_task_description"]
 
 
+def test_internal_it_helpdesk_routing_demo_starts_with_optimized_layout():
+    graph = demo_seed._internal_it_helpdesk_routing_graph()
+    positions = {
+        node["id"]: node["position"]
+        for node in graph["nodes"]
+    }
+
+    assert positions == {
+        "webhook-ticket": {"x": 0, "y": 0},
+        "llm-triage": {"x": 580, "y": 0},
+        "extract-ticket": {"x": 1160, "y": 0},
+        "condition-approval": {"x": 1740, "y": 0},
+        "template-approval": {"x": 2320, "y": 300},
+        "template-reply": {"x": 2320, "y": 0},
+        "answer-approval": {"x": 2900, "y": 300},
+        "answer-reply": {"x": 2900, "y": 0},
+    }
+    assert calculate_workflow_auto_layout(graph) == graph
+
+
+def test_internal_it_helpdesk_routing_demo_orders_it_result_before_security_result():
+    graph = demo_seed._internal_it_helpdesk_routing_graph()
+    ordered_node_ids = [node["id"] for node in graph["nodes"]]
+    nodes = {node["id"]: node for node in graph["nodes"]}
+
+    assert nodes["answer-reply"]["data"]["title"] == "IT 안내 결과"
+    assert nodes["answer-reply"]["data"]["displayNumber"] == 7
+    assert nodes["answer-approval"]["data"]["title"] == "보안 대응 결과"
+    assert nodes["answer-approval"]["data"]["displayNumber"] == 8
+    assert ordered_node_ids.index("answer-reply") < ordered_node_ids.index(
+        "answer-approval"
+    )
+
+
 def test_internal_it_helpdesk_routing_demo_seeds_all_presentation_logs():
     specs = demo_seed.INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS
 
@@ -1277,6 +1557,154 @@ def test_internal_it_helpdesk_routing_demo_seeds_all_presentation_logs():
         "보안 교육을 아직 완료하지 않은 신규 입사자가 운영 저장소 접근과 배포 권한을 요청했습니다. "
         "SSO, VPN, Git 권한, 승인 절차를 함께 고려해 허용 여부를 판단해 주세요."
     )
+
+
+def test_demo_audit_logs_reference_only_active_workflow(monkeypatch):
+    upserts = []
+
+    def capture_upsert(_db, model, row_id, values):
+        upserts.append((model, row_id, values))
+
+    monkeypatch.setattr(demo_seed, "_upsert_by_id", capture_upsert)
+
+    demo_seed._seed_audit_logs(ResetRecorderSession())
+
+    workflow_target_ids = {
+        values["target_id"]
+        for model, _row_id, values in upserts
+        if model is demo_seed.AuditLog and values["target_type"] == "workflow"
+    }
+    assert workflow_target_ids == {
+        str(demo_seed.WORKFLOW_IDS["internal_it_helpdesk_routing"])
+    }
+    assert workflow_target_ids.isdisjoint(
+        str(workflow_id)
+        for workflow_id in demo_seed.RETIRED_DEMO_WORKFLOW_IDS.values()
+    )
+
+
+def test_demo_seed_presets_rookie_security_alert_with_safe_evidence(monkeypatch):
+    upserts = []
+    adopted_rookie_id = uuid.uuid4()
+
+    def capture_upsert(_db, model, row_id, values):
+        upserts.append((model, row_id, values))
+
+    monkeypatch.setattr(demo_seed, "_upsert_by_id", capture_upsert)
+    monkeypatch.setitem(demo_seed.USER_IDS, "rookie", adopted_rookie_id)
+
+    demo_seed._seed_security_alert(ResetRecorderSession())
+
+    denied_audits = [
+        (row_id, values)
+        for model, row_id, values in upserts
+        if model is demo_seed.AuditLog
+        and values["action"] == demo_seed.AuditAction.PERMISSION_DENIED
+    ]
+    assert len(denied_audits) == 10
+    assert all(
+        values["actor_id"] == adopted_rookie_id
+        and values["actor_type"] == demo_seed.ActorType.USER
+        and values["category"] == demo_seed.AuditCategory.ACTION
+        and values["status"] == demo_seed.AuditStatus.FAILURE
+        and values["target_type"] == "organization"
+        and values["target_id"] == str(demo_seed.ORG_ID)
+        for _row_id, values in denied_audits
+    )
+    occurred_at = [values["occurred_at"] for _row_id, values in denied_audits]
+    assert max(occurred_at) - min(occurred_at) <= timedelta(minutes=5)
+    assert {
+        values["audit_metadata"]["requested_operation"]
+        for _row_id, values in denied_audits
+    } == {"list", "resolve"}
+    assert all(
+        set(values["audit_metadata"])
+        == {
+            "demo_seed",
+            "demo_seed_version",
+            "demo_seed_key",
+            "organization_id",
+            "required_permission",
+            "requested_operation",
+            "denial_reason",
+            "permission_action",
+            "policy_result",
+        }
+        for _row_id, values in denied_audits
+    )
+
+    alert_rows = [
+        (row_id, values)
+        for model, row_id, values in upserts
+        if model is demo_seed.SecurityAlert
+    ]
+    assert alert_rows == [
+        (
+            demo_seed.DEMO_SECURITY_ALERT_ID,
+            {
+                "organization_id": demo_seed.ORG_ID,
+                "subject_actor_id": adopted_rookie_id,
+                "rule_id": "repeated_permission_denied",
+                "rule_version": "v1",
+                "severity": "medium",
+                "status": "open",
+                "policy_reason": None,
+                "detection_key": demo_seed._demo_security_alert_detection_key(),
+                "occurrence_count": 10,
+                "episode_count": 1,
+                "first_detected_at": min(occurred_at),
+                "last_detected_at": max(occurred_at),
+                "last_episode_started_at": occurred_at[4],
+                "lifecycle_version": 1,
+                "acknowledged_by": None,
+                "acknowledged_at": None,
+                "resolution_type": None,
+                "resolution_reason": None,
+                "resolved_by": None,
+                "resolved_at": None,
+                "created_at": occurred_at[4],
+                "updated_at": max(occurred_at),
+            },
+        )
+    ]
+
+    evidence_rows = [
+        values
+        for model, _row_id, values in upserts
+        if model is demo_seed.SecurityAlertAuditEvent
+    ]
+    assert len(evidence_rows) == 10
+    assert {values["audit_log_id"] for values in evidence_rows} == {
+        row_id for row_id, _values in denied_audits
+    }
+    assert all(
+        values["security_alert_id"] == demo_seed.DEMO_SECURITY_ALERT_ID
+        for values in evidence_rows
+    )
+
+    detected_audit = next(
+        values
+        for model, _row_id, values in upserts
+        if model is demo_seed.AuditLog
+        and values["action"] == "security_alert.detected"
+    )
+    assert detected_audit["actor_id"] is None
+    assert detected_audit["actor_type"] == demo_seed.ActorType.SYSTEM
+    assert detected_audit["target_type"] == "security_alert"
+    assert detected_audit["target_id"] == str(demo_seed.DEMO_SECURITY_ALERT_ID)
+    assert detected_audit["audit_metadata"] == {
+        "organization_id": str(demo_seed.ORG_ID),
+        "rule_id": "repeated_permission_denied",
+        "rule_version": "v1",
+        "severity": "medium",
+    }
+
+
+def test_demo_security_alert_id_is_client_deep_link_compatible():
+    alert_id = demo_seed.DEMO_SECURITY_ALERT_ID
+
+    assert alert_id.variant == uuid.RFC_4122
+    assert alert_id.version in {1, 2, 3, 4, 5}
 
 
 def test_internal_it_helpdesk_seed_uses_catalog_tier_for_terra_security_reason():
@@ -1336,9 +1764,7 @@ def test_ticket_ops_input_schema_matches_webhook_mappings():
     }
 
     llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-triage")
-    assert llm_node["data"]["knowledgeBases"] == [
-        demo_seed._knowledge_base_ref("internal_cost_optimization_playbook")
-    ]
+    assert "knowledgeBases" not in llm_node["data"]
 
 
 def test_schema_readiness_reports_stale_demo_db_columns():
@@ -1607,64 +2033,27 @@ def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
         for spec in demo_seed.DEMO_DOCUMENT_SPECS
         if spec.source_tier == "public"
     }
-    private_keys = document_keys - public_keys
+    retired_keys = set(demo_seed.RETIRED_INTERNAL_DOCUMENT_KB_IDS)
 
+    assert document_keys == public_keys
     assert document_keys <= set(demo_seed.KB_IDS)
     assert document_keys <= set(demo_seed.DOCUMENT_IDS)
     assert document_keys <= set(demo_seed.COLLECTION_ITEM_IDS)
+    assert retired_keys.isdisjoint(demo_seed.KB_IDS)
+    assert retired_keys.isdisjoint(demo_seed.DOCUMENT_IDS)
+    assert retired_keys.isdisjoint(demo_seed.COLLECTION_ITEM_IDS)
+    assert "internal_onboarding" not in demo_seed.COLLECTION_IDS
     assert all(
         spec.collection_key == "legal_public"
         for spec in demo_seed.DEMO_DOCUMENT_SPECS
-        if spec.source_tier == "public"
-    )
-    assert all(
-        spec.collection_key == "internal_onboarding"
-        for spec in demo_seed.DEMO_DOCUMENT_SPECS
-        if spec.source_tier != "public"
     )
 
     permission_specs = set(demo_seed._demo_team_knowledge_permission_specs())
     for key in public_keys:
         assert (key, "platform_admin", "manager") in permission_specs
         assert (key, "customer_support_ops", "operator") in permission_specs
-    for key in private_keys:
-        assert (key, "platform_admin", "manager") in permission_specs
-    assert {
-        "internal_onboarding",
-        "internal_developer_onboarding_rules",
-        "internal_planning_onboarding_guide",
-    } <= document_keys
-    assert (
-        "internal_developer_compensation_band",
-        "ai_builder_onboarding",
-        "operator",
-    ) in permission_specs
-    assert (
-        "internal_compensation_access_policy",
-        "ai_builder_onboarding",
-        "operator",
-    ) in permission_specs
-    assert (
-        "internal_privacy_hr_records",
-        "ai_builder_onboarding",
-        "operator",
-    ) not in permission_specs
-    assert (
-        "internal_privacy_hr_records",
-        "platform_admin",
-        "manager",
-    ) in permission_specs
-    assert (
-        "internal_privacy_hr_records",
-        "hr_knowledge_users",
-        "operator",
-    ) in permission_specs
-    for key in (
-        "internal_onboarding",
-        "internal_leave_attendance",
-        "internal_benefits",
-    ):
-        assert (key, "tester_builder", "operator") in permission_specs
+    assert all(kb_key in demo_seed.KB_IDS for kb_key, _, _ in permission_specs)
+    assert retired_keys.isdisjoint(kb_key for kb_key, _, _ in permission_specs)
 
     collection_permission_specs = set(
         demo_seed._demo_team_knowledge_collection_permission_specs()
@@ -1674,21 +2063,10 @@ def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
         "ai_builder_onboarding",
         "route",
     ) in collection_permission_specs
-    assert (
-        "internal_onboarding",
-        "customer_support_ops",
-        "read",
-    ) in collection_permission_specs
-    assert (
-        "internal_onboarding",
-        "tester_builder",
-        "read",
-    ) in collection_permission_specs
-    assert (
-        "internal_onboarding",
-        "tester_builder",
-        "route",
-    ) in collection_permission_specs
+    assert all(
+        collection_key in demo_seed.COLLECTION_IDS
+        for collection_key, _, _ in collection_permission_specs
+    )
     assert (
         "hr_policies",
         "hr_knowledge_users",
@@ -1711,19 +2089,23 @@ def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
     ) in permission_specs
 
 
-def test_demo_knowledge_seed_excludes_personal_salary_records():
+def test_removed_internal_document_rows_keep_only_reset_cleanup_ids():
     document_keys = {spec.key for spec in demo_seed.DEMO_DOCUMENT_SPECS}
     filenames = {spec.filename for spec in demo_seed.DEMO_DOCUMENT_SPECS}
+    retired_keys = set(demo_seed.RETIRED_INTERNAL_DOCUMENT_KB_IDS)
 
-    assert "internal_developer_compensation_band" in document_keys
-    assert "internal_compensation_access_policy" in document_keys
+    assert {
+        "internal_developer_compensation_band",
+        "internal_compensation_access_policy",
+    } <= retired_keys
+    assert retired_keys.isdisjoint(document_keys)
     assert all("개인별 실제 연봉" not in filename for filename in filenames)
     assert all("personal_salary" not in key for key in document_keys)
 
 
 def test_committed_knowledge_fixture_matches_demo_seed_contract():
     fixture = demo_seed._read_demo_knowledge_fixture()
-    document_keys = {spec.key for spec in demo_seed.DEMO_DOCUMENT_SPECS}
+    document_keys = {spec.key for spec in demo_seed.INDEXED_DEMO_DOCUMENT_SPECS}
     chunk_total = sum(len(chunks) for chunks in fixture["chunks_by_document"].values())
 
     assert set(fixture["documents"]) == document_keys
@@ -1737,29 +2119,13 @@ def test_committed_knowledge_fixture_matches_demo_seed_contract():
         assert len(chunks[0]["embedding"]) == demo_seed.DEMO_EMBEDDING_DIMENSION
 
 
-def test_committed_fixture_supports_department_onboarding_demo_questions():
+def test_committed_fixture_excludes_retired_internal_documents():
     fixture = demo_seed._read_demo_knowledge_fixture()
+    retired_keys = set(demo_seed.RETIRED_INTERNAL_DOCUMENT_KB_IDS)
 
-    common_content = "\n".join(
-        chunk["content"]
-        for chunk in fixture["chunks_by_document"]["internal_onboarding"]
-    )
-    developer_content = "\n".join(
-        chunk["content"]
-        for chunk in fixture["chunks_by_document"][
-            "internal_developer_onboarding_rules"
-        ]
-    )
-    planning_content = "\n".join(
-        chunk["content"]
-        for chunk in fixture["chunks_by_document"][
-            "internal_planning_onboarding_guide"
-        ]
-    )
-
-    assert "휴가와 프로젝트 운영 규정이 충돌할 때" in common_content
-    assert "repository 접근 권한" in developer_content
-    assert "PRD에는 문제 정의" in planning_content
+    assert fixture["header"]["fixture_version"] == demo_seed.DEMO_SEED_VERSION
+    assert retired_keys.isdisjoint(fixture["documents"])
+    assert retired_keys.isdisjoint(fixture["chunks_by_document"])
 
 
 def test_committed_knowledge_fixture_does_not_contain_secret_like_values():

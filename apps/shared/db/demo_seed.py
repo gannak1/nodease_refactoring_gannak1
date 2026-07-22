@@ -33,6 +33,7 @@ from apps.shared.db.models.audit_log import (
     AuditLog,
     AuditStatus,
 )
+from apps.shared.db.models.conversation_memory import ConversationSessionRecord
 from apps.shared.db.models.knowledge import (
     Document,
     DocumentChunk,
@@ -64,6 +65,10 @@ from apps.shared.db.models.permission_request import (
     PERMISSION_REQUEST_APPROVED,
     REQUESTED_PERMISSION_APP_CREATE,
     PermissionRequest,
+)
+from apps.shared.db.models.security_alert import (
+    SecurityAlert,
+    SecurityAlertAuditEvent,
 )
 from apps.shared.db.models.team import (
     Team,
@@ -101,11 +106,15 @@ from apps.shared.services.model_routing_global_profile_catalog import (
     catalog_metadata_for_model_id,
 )
 from apps.shared.services.password_hashing import hash_password
+from apps.shared.services.security_alert_rule_evaluator import (
+    build_security_alert_detection_key,
+)
+from apps.shared.services.workflow_layout import calculate_workflow_auto_layout
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
-DEMO_SEED_VERSION = "final-demo-2026-07"
+DEMO_SEED_VERSION = "final-demo-2026-07-21"
 DEMO_PASSWORD = "123123"
 DEMO_CHAT_MODEL = "gpt-5.4"
 DEMO_CHAT_MINI_MODEL = "gpt-5.4-mini"
@@ -127,15 +136,8 @@ DEMO_MODEL_ROUTER_REASONING_MODEL = "o3"
 DEMO_ONBOARDING_ROUTER_MODEL = "gpt-4.1"
 DEMO_EMBEDDING_MODEL = "text-embedding-3-small"
 DEMO_EMBEDDING_DIMENSION = 1536
-ENTERPRISE_REQUEST_ROUTING_NAME = "엔터프라이즈 통합 업무 요청 처리"
-ENTERPRISE_REQUEST_ROUTING_DESCRIPTION = (
-    "사내 문서 RAG와 난이도 기반 자동 모델 라우팅으로 다양한 업무 요청을 처리하는 workflow"
-)
 DEMO_REPO_ROOT = Path(__file__).resolve().parents[3]
 DEMO_LEGAL_DOCS_LABOR_DIR = DEMO_REPO_ROOT / "local" / "legal-docs-labor"
-DEMO_INTERNAL_DOCS_DIR = (
-    DEMO_REPO_ROOT / "local" / "demo-scenario-2026-07-08" / "internal-docs"
-)
 DEMO_ONBOARDING_PDF_DIR = DEMO_REPO_ROOT / "demodata"
 DEMO_KNOWLEDGE_FIXTURE_PATH = (
     DEMO_REPO_ROOT / "apps" / "shared" / "db" / "fixtures" / "demo_knowledge_chunks.jsonl.gz"
@@ -175,6 +177,13 @@ USER_IDS = {
     "onboarding_people_manager": _uuid(14),
 }
 
+DEMO_SECURITY_ALERT_PERMISSION_AUDIT_IDS = tuple(
+    _uuid(4100 + index) for index in range(10)
+)
+DEMO_SECURITY_ALERT_DETECTED_AUDIT_ID = _uuid(4110)
+DEMO_SECURITY_ALERT_ID = uuid.UUID("10200000-0000-4000-8000-000000004200")
+DEMO_SECURITY_ALERT_EVIDENCE_IDS = tuple(_uuid(4300 + index) for index in range(10))
+
 TEAM_IDS = {
     "platform_admin": _uuid(200),
     "ai_builder_onboarding": _uuid(201),
@@ -201,6 +210,14 @@ KB_IDS = {
     "legal_occupational_safety": _uuid(324),
     "legal_retirement_benefits": _uuid(325),
     "legal_fair_hiring": _uuid(326),
+    "onboarding_company_common": _uuid(338),
+    "onboarding_platform": _uuid(339),
+    "onboarding_sales": _uuid(340),
+    "onboarding_finance": _uuid(341),
+    "hr_welfare": _uuid(342),
+}
+
+RETIRED_INTERNAL_DOCUMENT_KB_IDS = {
     "internal_onboarding": _uuid(327),
     "internal_leave_attendance": _uuid(328),
     "internal_benefits": _uuid(329),
@@ -212,18 +229,16 @@ KB_IDS = {
     "internal_developer_compensation_band": _uuid(335),
     "internal_compensation_access_policy": _uuid(336),
     "internal_planning_onboarding_guide": _uuid(337),
-    "onboarding_company_common": _uuid(338),
-    "onboarding_platform": _uuid(339),
-    "onboarding_sales": _uuid(340),
-    "onboarding_finance": _uuid(341),
-    "hr_welfare": _uuid(342),
 }
 
 COLLECTION_IDS = {
     "legal_public": _uuid(360),
-    "internal_onboarding": _uuid(361),
     "team_onboarding_access_control": _uuid(362),
     "hr_policies": _uuid(363),
+}
+
+RETIRED_INTERNAL_DOCUMENT_COLLECTION_IDS = {
+    "internal_onboarding": _uuid(361),
 }
 
 # author의 승인된 App 생성 권한 신청 이력 (ADR-0016).
@@ -291,6 +306,13 @@ DOCUMENT_IDS = {
     "legal_occupational_safety": _uuid(344),
     "legal_retirement_benefits": _uuid(345),
     "legal_fair_hiring": _uuid(346),
+    "onboarding_company_common": _uuid(358),
+    "onboarding_platform": _uuid(359),
+    "onboarding_sales": _uuid(360),
+    "onboarding_finance": _uuid(361),
+}
+
+RETIRED_INTERNAL_DOCUMENT_IDS = {
     "internal_onboarding": _uuid(347),
     "internal_leave_attendance": _uuid(348),
     "internal_benefits": _uuid(349),
@@ -302,10 +324,6 @@ DOCUMENT_IDS = {
     "internal_developer_compensation_band": _uuid(355),
     "internal_compensation_access_policy": _uuid(356),
     "internal_planning_onboarding_guide": _uuid(357),
-    "onboarding_company_common": _uuid(358),
-    "onboarding_platform": _uuid(359),
-    "onboarding_sales": _uuid(360),
-    "onboarding_finance": _uuid(361),
 }
 
 COLLECTION_ITEM_IDS = {
@@ -316,6 +334,15 @@ COLLECTION_ITEM_IDS = {
     "legal_occupational_safety": _uuid(374),
     "legal_retirement_benefits": _uuid(375),
     "legal_fair_hiring": _uuid(376),
+    "onboarding_company_common": _uuid(388),
+    "onboarding_platform": _uuid(389),
+    "onboarding_sales": _uuid(390),
+    "onboarding_finance": _uuid(391),
+    "hr_leave": _uuid(392),
+    "hr_welfare": _uuid(393),
+}
+
+RETIRED_INTERNAL_DOCUMENT_COLLECTION_ITEM_IDS = {
     "internal_onboarding": _uuid(377),
     "internal_leave_attendance": _uuid(378),
     "internal_benefits": _uuid(379),
@@ -327,12 +354,6 @@ COLLECTION_ITEM_IDS = {
     "internal_developer_compensation_band": _uuid(385),
     "internal_compensation_access_policy": _uuid(386),
     "internal_planning_onboarding_guide": _uuid(387),
-    "onboarding_company_common": _uuid(388),
-    "onboarding_platform": _uuid(389),
-    "onboarding_sales": _uuid(390),
-    "onboarding_finance": _uuid(391),
-    "hr_leave": _uuid(392),
-    "hr_welfare": _uuid(393),
 }
 
 LEGACY_DEMO_DOCUMENT_KB_KEYS = {
@@ -342,11 +363,21 @@ LEGACY_DEMO_DOCUMENT_KB_KEYS = {
 }
 
 HR_POLICY_COLLECTION_ITEMS = (
-    ("hr_leave", "internal_leave_attendance"),
-    ("hr_welfare", "internal_benefits"),
+    ("hr_leave", "hr"),
+    ("hr_welfare", "hr_welfare"),
 )
 
 APP_IDS = {
+    "internal_it_helpdesk_routing": uuid.UUID(
+        "94000000-0000-0000-0000-000000000001"
+    ),
+    "onboarding_chatbot": uuid.UUID("95000000-0000-0000-0000-000000000001"),
+    "new_employee_onboarding_chatbot": uuid.UUID(
+        "97000000-0000-0000-0000-000000000001"
+    ),
+}
+
+RETIRED_DEMO_APP_IDS = {
     "hr_bot_example": _uuid(400),
     "ticket_ops": _uuid(401),
     "ticket_ops_warning": _uuid(402),
@@ -358,38 +389,70 @@ APP_IDS = {
     "model_router_ticket_ops": uuid.UUID("91000000-0000-0000-0000-000000000001"),
     "team_onboarding_adaptive_routing": _uuid(408),
     "enterprise_request_routing": _uuid(409),
-    "internal_it_helpdesk_routing": uuid.UUID(
-        "94000000-0000-0000-0000-000000000001"
-    ),
 }
 
 WORKFLOW_IDS = {
-    key: _uuid(500 + index)
-    for index, key in enumerate(APP_IDS.keys())
+    "internal_it_helpdesk_routing": uuid.UUID(
+        "94000000-0000-0000-0000-000000000002"
+    ),
+    "onboarding_chatbot": uuid.UUID("95000000-0000-0000-0000-000000000002"),
+    "new_employee_onboarding_chatbot": uuid.UUID(
+        "97000000-0000-0000-0000-000000000002"
+    ),
 }
-WORKFLOW_IDS["model_router_ticket_ops"] = uuid.UUID(
-    "91000000-0000-0000-0000-000000000002"
-)
-WORKFLOW_IDS["team_onboarding_adaptive_routing"] = _uuid(508)
-WORKFLOW_IDS["internal_it_helpdesk_routing"] = uuid.UUID(
-    "94000000-0000-0000-0000-000000000002"
-)
+
+RETIRED_DEMO_WORKFLOW_IDS = {
+    "hr_bot_example": _uuid(500),
+    "ticket_ops": _uuid(501),
+    "ticket_ops_warning": _uuid(502),
+    "ticket_ops_risk": _uuid(503),
+    "ticket_ops_paused": _uuid(504),
+    "test_inquiry": _uuid(505),
+    "department_onboarding_chatbot": _uuid(506),
+    "team_onboarding_access_control": _uuid(507),
+    "model_router_ticket_ops": uuid.UUID(
+        "91000000-0000-0000-0000-000000000002"
+    ),
+    "team_onboarding_adaptive_routing": _uuid(508),
+    "enterprise_request_routing": _uuid(510),
+}
 
 DEPLOYMENT_IDS = {
-    key: _uuid(600 + index)
-    for index, key in enumerate(APP_IDS.keys())
+    "internal_it_helpdesk_routing": uuid.UUID(
+        "94000000-0000-0000-0000-000000000003"
+    ),
+    "new_employee_onboarding_chatbot": uuid.UUID(
+        "97000000-0000-0000-0000-000000000003"
+    ),
 }
-DEPLOYMENT_IDS["model_router_ticket_ops"] = uuid.UUID(
-    "91000000-0000-0000-0000-000000000003"
-)
-DEPLOYMENT_IDS["team_onboarding_adaptive_routing"] = _uuid(608)
-DEPLOYMENT_IDS["internal_it_helpdesk_routing"] = uuid.UUID(
-    "94000000-0000-0000-0000-000000000003"
-)
+
+RETIRED_DEMO_DEPLOYMENT_IDS = {
+    "hr_bot_example": _uuid(600),
+    "ticket_ops": _uuid(601),
+    "ticket_ops_warning": _uuid(602),
+    "ticket_ops_risk": _uuid(603),
+    "ticket_ops_paused": _uuid(604),
+    "test_inquiry": _uuid(605),
+    "department_onboarding_chatbot": _uuid(606),
+    "team_onboarding_access_control": _uuid(607),
+    "model_router_ticket_ops": uuid.UUID(
+        "91000000-0000-0000-0000-000000000003"
+    ),
+    "team_onboarding_adaptive_routing": _uuid(608),
+    "enterprise_request_routing": _uuid(610),
+}
 
 LEGACY_DEMO_LLM_CREDENTIAL_ID = _uuid(700)
 
 TEAM_PERMISSION_IDS = {
+    "internal_it_helpdesk_routing": _uuid(814),
+    "onboarding_chatbot_platform": _uuid(815),
+    "onboarding_chatbot_sales": _uuid(816),
+    "new_employee_onboarding_chatbot_platform": _uuid(817),
+    "new_employee_onboarding_chatbot_sales": _uuid(818),
+}
+
+RETIRED_DEMO_TEAM_WORKFLOW_PERMISSION_IDS = {
     "customer_ticket": _uuid(800),
     "hr_bot": _uuid(801),
     "test_builder": _uuid(802),
@@ -404,8 +467,15 @@ TEAM_PERMISSION_IDS = {
     "team_onboarding_adaptive_sales": _uuid(811),
     "team_onboarding_adaptive_people": _uuid(812),
     "enterprise_request_routing": _uuid(813),
-    "internal_it_helpdesk_routing": _uuid(814),
 }
+
+RETIRED_DEMO_USER_WORKFLOW_PERMISSION_IDS = {
+    "ticket_ops_warning": _uuid(830),
+    "ticket_ops_risk": _uuid(831),
+    "ticket_ops_paused": _uuid(832),
+}
+
+RETIRED_DEMO_RUN_IDS = tuple(_uuid(2000 + index) for index in range(12))
 
 
 @dataclass(frozen=True)
@@ -927,257 +997,6 @@ TEST_TEAM_SPECS = {
     "qa_member": ("QA 일반팀", "테스트 viewer 권한 확인용 팀"),
 }
 
-INTERNAL_DOCUMENT_CONTENT = {
-    "internal_onboarding": """# 신입사원 공통 인사·휴가 정책
-
-## 첫 주 진행 순서
-
-신입사원은 입사 첫날 관리자 대시보드에서 조직 초대와 기본 권한을 확인한다.
-AI 빌더 사용이 필요한 경우 App 생성 권한 신청을 제출하고, 관리자가 승인한 뒤 온보딩 워크플로우를 만들 수 있다.
-
-## 필수 확인 항목
-
-1. 회사 계정 로그인과 2단계 인증 등록
-2. 인사 포털 프로필 확인
-3. 보안 서약과 개인정보 처리 안내 확인
-4. 사내 문서 질문 응답 봇 테스트 실행
-
-## 공통 휴가 절차
-
-휴가는 사내 인사 포털의 근태/휴가 메뉴에서 신청한다.
-긴급하지 않은 휴가는 사용 기간, 사유, 대체 업무 담당자를 입력하고 팀 리더 승인을 받는다.
-가족돌봄휴가는 연차휴가와 이어서 사용할 수 있으며 개인별 병가 기록이나 휴직 사유는 일반 RAG에서 조회하지 않는다.
-
-## 휴가와 프로젝트 운영 규정이 충돌할 때
-
-휴가 제도와 승인 절차를 먼저 확인하고 프로젝트 일정은 대체 담당자, 인수인계 범위와 변경 일정을 정해 조정한다.
-팀 내부 프로젝트 규정만으로 승인된 휴가 제도를 무효화하지 않는다.
-판단이 어려우면 팀 리더와 HR 담당자에게 함께 확인하고 합의한 담당자, 일정 변경과 후속 조치를 프로젝트 기록에 남긴다.
-긴급한 휴가는 업무 복귀 후 인수인계와 일정 변경 기록을 보완할 수 있다.
-
-## RAG 사용 안내
-
-사내 문서 질문 응답 봇은 인사, 복지, 휴가, 법령 공개 자료를 검색해 답변한다.
-개인별 병가 기록, 인사평가, 급여 원장처럼 개인 식별 정보가 포함된 자료는 일반 RAG 후보에 포함하지 않는다.
-""",
-    "internal_leave_attendance": """# 휴가·근태·가족돌봄휴가 운영 정책
-
-## 가족돌봄휴가
-
-가족의 질병, 사고, 노령 또는 자녀 양육으로 돌봄이 필요한 경우 가족돌봄휴가를 신청할 수 있다.
-사내 기준상 가족돌봄휴가는 연차휴가와 이어서 사용할 수 있으며, 긴급하지 않은 경우 사용 예정일 전까지 팀 리더 승인을 받아야 한다.
-
-## 신청 경로
-
-휴가는 사내 인사 포털 > 근태/휴가 > 휴가 신청 메뉴에서 신청한다.
-신청자는 휴가 종류, 사용 기간, 사유, 대체 업무 담당자를 입력한다.
-
-## 검색 제한
-
-동료의 병가 기록, 휴직 사유, 개인 인사평가 결과는 일반 사용자에게 공개되지 않는다.
-LLM 답변은 제도 설명과 신청 절차 안내로 제한한다.
-""",
-    "internal_benefits": """# 복지·교육비 지원 정책
-
-## 복지 포인트
-
-복지 포인트는 매년 초 재직 상태와 근속 조건에 따라 지급된다.
-사용 가능 항목은 건강관리, 자기계발, 가족 지원, 문화생활로 구분한다.
-
-## 교육비 지원
-
-업무 관련 교육, 자격증, 컨퍼런스 참가비는 팀 리더 승인 후 지원할 수 있다.
-교육비 지원 신청에는 교육명, 목적, 예상 비용, 업무 관련성을 기재한다.
-
-## 경조사 지원
-
-경조사 지원은 복지 포털에서 신청하며, 증빙 서류가 필요한 항목은 신청 후 7일 이내 제출한다.
-""",
-    "internal_privacy_hr_records": """# 개인정보 및 인사기록 접근 정책
-
-## 기본 원칙
-
-인사기록, 병가 기록, 평가 결과, 급여 정보는 최소 권한 원칙에 따라 접근한다.
-일반 RAG 검색은 제도 문서와 절차 문서만 노출하며, 개인별 원장이나 민감 원문은 후보에서 제외한다.
-
-## 허용되는 답변 범위
-
-LLM은 개인정보 처리 기준, 접근 신청 절차, 보존 기간 같은 정책 설명을 제공할 수 있다.
-특정 구성원의 건강 정보, 징계 정보, 급여, 평가 등 개인 식별 가능한 내용은 답변하지 않는다.
-
-## 운영자 조치
-
-민감 정보 접근 요청이 탐지되면 audit trace에 정책 차단 이벤트를 남기고 관리자 검토 대상으로 분류한다.
-""",
-    "internal_budget_alert_runbook": """# 워크플로우 예산 80% 알림 운영 Runbook
-
-## 알림 기준
-
-관리자 운영 콘솔은 월 예산 사용률이 80% 이상인 워크플로우를 비용 위험 대상으로 표시한다.
-관리자는 대상 워크플로우를 일괄 선택해 운영자에게 비용 점검 알림을 보낼 수 있다.
-
-## 알림 내용
-
-알림에는 워크플로우 이름, 최근 실행 비용, LLM 노드 비용 비중, 최근 7일 실패율, 권장 점검 항목을 포함한다.
-운영자는 알림에서 바로 워크플로우 분석 화면으로 이동한다.
-
-## 후속 조치
-
-운영자는 LLM 노드별 token 사용량, RAG 검색 건수, 모델별 비용을 비교하고 필요하면 모델 변경 또는 top_k 조정을 검토한다.
-""",
-    "internal_cost_optimization_playbook": """# Workflow LLM 비용 최적화 Playbook
-
-## 분석 순서
-
-운영자는 워크플로우 분석 화면에서 노드별 비용 비중을 먼저 확인한다.
-LLM 노드 비용이 높으면 prompt 길이, RAG evidence 수, 모델 단가, 재시도 횟수를 순서대로 점검한다.
-
-## 권장 조치
-
-반복 질의는 캐시 후보로 분류하고, 단순 분류 노드는 더 작은 모델을 검토한다.
-RAG 노드는 관련성이 낮은 문서가 많이 들어오면 top_k를 낮추거나 metadata filter를 적용한다.
-근거 문서는 trace에서 요약과 참조 ID만 남기고 원문을 durable trace에 중복 저장하지 않는다.
-
-## 승인 필요 조건
-
-고객 보상, 법무 검토, 개인정보 포함 답변은 자동 발송하지 않고 승인 노드로 넘긴다.
-""",
-    "internal_developer_onboarding_rules": """# 개발팀 신입 온보딩 및 업무 내규
-
-## 적용 대상
-
-이 문서는 개발팀에 입사한 신입사원이 첫 달에 따라야 할 업무 내규와 온보딩 절차를 설명한다.
-개발팀 신입사원은 입사 첫 주에 개발 환경 세팅, 보안 교육, 코드 저장소 접근 권한, PR 리뷰 흐름을 확인한다.
-
-## 첫 주 체크리스트
-
-1. 회사 계정, VPN, 2단계 인증을 등록한다.
-2. GitHub 조직 초대와 개발팀 repository 접근 권한을 확인한다.
-3. 기본 브랜치 정책, commit convention, PR template, 리뷰 승인 기준을 읽는다.
-4. 사내 문서 질문 응답 봇에서 온보딩 문서와 개발팀 내규를 검색해 확인한다.
-5. 운영 데이터, 고객 데이터, 개인 인사정보는 승인된 시스템에서만 접근한다.
-
-## 개발 업무 원칙
-
-신입 개발자는 첫 달 동안 production 직접 배포를 수행하지 않는다.
-모든 변경은 feature branch에서 작업하고, PR 리뷰와 CI 통과 후 merge한다.
-긴급 장애 대응 참여는 멘토 또는 운영 담당자와 함께 진행한다.
-
-## 질문 채널
-
-개발 환경, 브랜치, 커밋 메시지, PR 리뷰 질문은 개발팀 온보딩 채널에 남긴다.
-보상, 평가, 개인 인사정보 관련 질문은 인사 포털의 공개 정책 범위 안에서만 안내받을 수 있다.
-""",
-    "internal_developer_commit_convention": """# 개발팀 커밋·브랜치·PR 컨벤션
-
-## 브랜치 이름
-
-Linear 이슈가 있는 기능 작업은 `feature/mba-번호` 형식의 브랜치를 사용한다.
-버그 수정은 같은 이슈 번호를 기준으로 `fix/mba-번호`를 사용할 수 있다.
-실험성 작업이나 개인 임시 브랜치는 PR 대상 브랜치로 사용하지 않는다.
-
-## 커밋 메시지
-
-커밋 메시지는 `type: 한국어 설명` 형식을 따른다.
-type은 영어 소문자로 작성하며 대표 값은 `feat`, `fix`, `docs`, `test`, `refactor`, `chore`다.
-예시는 다음과 같다.
-
-- `feat: 개발팀 온보딩 RAG 문서 추가`
-- `fix: Knowledge 목록 legacy schema 오류 방어`
-- `docs: 데모 DB 재생성 절차 보강`
-- `test: Workflow RAG 권한 경계 회귀 테스트 추가`
-
-## PR 작성 기준
-
-PR 본문에는 변경 사항, 관련 이슈, 테스트 결과, UI 변경 여부를 적는다.
-권한, credential, RAG, audit, trace, 비용 최적화 경계를 건드린 경우 관련 문서와 테스트를 함께 갱신한다.
-리뷰 요청 전에는 `git diff --check`와 변경 범위에 맞는 테스트를 실행한다.
-
-## 금지 사항
-
-secret, API key, token, `.env` 내용, 암호화 전 credential 원문을 커밋 메시지, PR 본문, 로그, fixture에 남기지 않는다.
-민감 원문을 trace나 demo fixture에 넣어야 하는 경우 별도 승인 없이 진행하지 않는다.
-""",
-    "internal_developer_compensation_band": """# 개발 직군 신입 보상 밴드 및 공개 가능 범위
-
-## 공개 가능한 안내 범위
-
-이 문서는 개발팀 신입사원이 질문할 수 있는 보상 기준의 공개 가능 범위를 설명한다.
-사내 문서 질문 응답 봇은 개인별 실제 연봉이 아니라 직군·레벨별 보상 밴드, 산정 요소, 문의 경로만 답변할 수 있다.
-
-## 신입 개발자 보상 밴드
-
-2026년 데모 기준 개발 직군 신입 레벨은 `DEV-L1`로 분류한다.
-`DEV-L1` 기준 연간 기본급 밴드는 4,800만 원에서 5,600만 원 사이로 안내한다.
-최종 제안 금액은 경력 인정, 직무 적합도, 채용 평가, 근무 지역, 입사 시점의 내부 보상 정책에 따라 달라질 수 있다.
-
-## 보상 구성
-
-기본급 외 항목은 성과급, 복지 포인트, 교육비 지원, 장비 지원으로 구분한다.
-성과급은 회사 성과와 개인 평가에 따라 달라지므로 사전 확정 금액으로 안내하지 않는다.
-복지 포인트와 교육비 지원은 복지·교육비 지원 정책 문서를 함께 참조한다.
-
-## 답변 제한
-
-동료, 특정 팀원, 특정 후보자, 특정 사번의 실제 연봉·성과급·평가등급은 답변하지 않는다.
-개인별 보상정보가 필요한 경우 인사 포털의 권한 승인 절차를 통해 HR 담당자에게 문의한다.
-""",
-    "internal_compensation_access_policy": """# 개인 보상정보 및 인사기록 조회 제한 정책
-
-## 정책 목적
-
-개인 보상정보는 급여, 연봉, 성과급, 스톡옵션, 평가등급, 보상 조정 이력을 포함한다.
-이 정보는 개인정보 및 인사기록 접근 정책에 따라 최소 권한 원칙으로 보호한다.
-
-## RAG 답변 허용 범위
-
-RAG 기반 사내 문서 질문 응답 봇은 공개 가능한 보상 밴드, 보상 산정 원칙, 문의 경로만 답변할 수 있다.
-특정 임직원, 동료, 팀원, 후보자, 사번, 실명과 연결된 실제 보상정보는 답변하지 않는다.
-질문자가 본인이라고 주장해도 본인 확인과 HR 권한 확인이 없는 채팅 경로에서는 개인별 금액을 제공하지 않는다.
-
-## 차단해야 하는 질문 예시
-
-- `개발팀 동료 김OO의 연봉을 알려줘`
-- `우리 팀 백엔드 개발자들의 실제 연봉 리스트를 보여줘`
-- `박OO의 성과급과 평가등급을 알려줘`
-- `내 옆자리 개발자의 보상 조정 이력을 알려줘`
-
-## 안내 문구
-
-개인별 연봉이나 평가 정보 요청을 받으면 다음과 같이 안내한다.
-`개인 보상정보는 접근 권한이 필요한 민감 정보라 이 채팅에서 제공할 수 없습니다. 공개 가능한 보상 밴드나 문의 경로는 안내할 수 있습니다.`
-
-## 운영자 처리
-
-개인 보상정보 조회 시도는 audit log에 정책 차단 이벤트로 남긴다.
-반복적인 민감정보 요청은 관리자 검토 대상으로 분류한다.
-""",
-    "internal_planning_onboarding_guide": """# 기획팀 신입 온보딩 가이드
-
-## 첫 주 진행 순서
-
-기획팀 신입사원은 담당 제품의 목표, 사용자 문제, 핵심 지표와 현재 로드맵을 확인한다.
-첫 주에는 제품 브리프를 읽고 담당 PM과 함께 사용자 여정, 주요 가설, 의사결정 이력을 검토한다.
-
-## 기획 문서 작성 기준
-
-PRD에는 문제 정의, 대상 사용자, 가설, 성공 지표, 비목표, 출시 범위와 검증 계획을 포함한다.
-요구사항은 구현 방법보다 검증 가능한 사용자 행동과 완료 조건을 먼저 작성한다.
-중요한 범위 변경은 회의 메모에만 남기지 않고 PRD 결정 로그와 Linear 이슈에 함께 반영한다.
-
-## 협업 절차
-
-개발 착수 전 디자인·개발 담당자와 acceptance criteria를 합의한다.
-출시 전에는 분석 이벤트, 권한별 사용자 흐름, 오류·빈 상태와 롤백 기준을 점검한다.
-고객 인터뷰 원문과 개인 식별 정보는 승인된 저장소에만 보관하며 일반 RAG 문서에 복사하지 않는다.
-
-## 첫 달 완료 기준
-
-첫 달에는 작은 개선 과제 하나를 문제 정의부터 출시 후 지표 확인까지 수행한다.
-결과 보고서는 `가설-근거-결정-결과-후속 조치` 순서로 정리한다.
-""",
-}
-
 LEGAL_DOCUMENT_SPECS = (
     DemoKnowledgeSeedSpec(
         key="legal_labor_standards",
@@ -1274,169 +1093,67 @@ LEGAL_DOCUMENT_SPECS = (
     ),
 )
 
-INTERNAL_DOCUMENT_SPECS = (
+DEMO_DOCUMENT_SPECS = LEGAL_DOCUMENT_SPECS
+
+HR_DOCUMENT_SPECS = (
     DemoKnowledgeSeedSpec(
-        key="internal_onboarding",
-        name="사내문서: 신입사원 공통 인사·휴가 정책",
-        description="신입사원 공통 온보딩, 휴가 신청과 프로젝트 일정 충돌 절차를 안내하는 사내문서 KB",
-        filename="신입사원 공통 인사 휴가 정책.md",
-        summary="입사 첫 주, 휴가 신청, 프로젝트 일정 충돌과 RAG 사용 범위를 안내합니다.",
-        source_tier="internal",
-        classification="internal_policy",
-        tags=("internal", "onboarding", "hr", "leave", "ai-builder"),
-        keywords=(
-            "신입사원",
-            "온보딩",
-            "인사",
-            "휴가",
-            "프로젝트 운영 규정",
-            "권한 신청",
-            "AI 빌더",
-        ),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_onboarding"],
+        key="hr_leave",
+        name="사내 휴가 정책 지식베이스",
+        description="휴가 신청과 근태 유의 사항을 담은 데모 지식베이스",
+        filename="휴가 제도 안내.md",
+        summary="가족돌봄휴가는 연차와 이어서 사용할 수 있으며, 사내 인사 포털에서 신청합니다.",
+        source_tier="private",
+        classification="internal",
+        tags=("인사", "휴가", "근태"),
+        keywords=("가족돌봄휴가", "연차휴가", "휴가 신청"),
+        collection_key="hr_policies",
+        content="""# 휴가 제도 안내
+
+## 가족돌봄휴가
+
+가족의 질병, 사고, 노령 또는 자녀 양육으로 돌봄이 필요한 경우 가족돌봄휴가를 신청할 수 있습니다.
+가족돌봄휴가는 연차휴가와 이어서 사용할 수 있으며, 신청 시 사유와 예상 사용 기간을 함께 입력합니다.
+
+## 신청 경로
+
+휴가는 사내 인사 포털 > 근태/휴가 > 휴가 신청 메뉴에서 신청합니다.
+긴급한 사유가 아니라면 사용 예정일 전까지 팀 리더 승인을 받아야 합니다.
+
+## 유의 사항
+
+개인의 병가 기록, 타인의 근태 현황, 인사평가 결과는 일반 사내 문서 검색 권한으로 조회할 수 없습니다.
+""",
     ),
     DemoKnowledgeSeedSpec(
-        key="internal_leave_attendance",
-        name="사내문서: 휴가·근태·가족돌봄휴가 운영 정책",
-        description="휴가 신청 절차와 가족돌봄휴가 운영 기준을 안내하는 사내문서 KB",
-        filename="휴가 근태 가족돌봄휴가 운영 정책.md",
-        summary="가족돌봄휴가, 연차 연계 사용, 신청 경로를 안내합니다.",
-        source_tier="internal",
-        classification="internal_policy",
-        tags=("internal", "hr", "leave"),
-        keywords=("가족돌봄휴가", "연차", "휴가 신청", "근태", "팀 리더 승인"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_leave_attendance"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_benefits",
-        name="사내문서: 복지·교육비 지원 정책",
-        description="복지 포인트, 교육비, 경조사 지원을 설명하는 사내문서 KB",
-        filename="복지 교육비 지원 정책.md",
-        summary="복지 포인트, 교육비 지원, 경조사 지원 기준을 안내합니다.",
-        source_tier="internal",
-        classification="internal_policy",
-        tags=("internal", "hr", "benefits"),
-        keywords=("복지 포인트", "교육비", "경조사", "자기계발", "복지 포털"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_benefits"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_privacy_hr_records",
-        name="사내문서: 개인정보 및 인사기록 접근 정책",
-        description="인사기록과 민감정보 접근 제한을 설명하는 사내문서 KB",
-        filename="개인정보 및 인사기록 접근 정책.md",
-        summary="개인정보, 병가 기록, 평가 정보의 RAG 노출 제한을 안내합니다.",
-        source_tier="restricted_internal",
-        classification="restricted_policy",
-        tags=("internal", "privacy", "hr-records"),
-        keywords=("개인정보", "인사기록", "병가 기록", "인사평가", "정책 차단", "최소 권한"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_privacy_hr_records"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_budget_alert_runbook",
-        name="사내문서: 워크플로우 예산 80% 알림 Runbook",
-        description="관리자 예산 알림과 운영자 후속 분석 절차를 설명하는 운영문서 KB",
-        filename="워크플로우 예산 80퍼센트 알림 Runbook.md",
-        summary="예산 80% 이상 워크플로우 알림과 운영자 분석 진입 절차를 안내합니다.",
-        source_tier="internal_ops",
-        classification="internal_runbook",
-        tags=("internal", "llmops", "budget"),
-        keywords=("예산 80%", "일괄 알림", "운영자", "워크플로우 분석", "LLM 노드 비용"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_budget_alert_runbook"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_cost_optimization_playbook",
-        name="사내문서: Workflow LLM 비용 최적화 Playbook",
-        description="LLM 노드 비용 분석과 RAG 비용 최적화 절차를 설명하는 운영문서 KB",
-        filename="Workflow LLM 비용 최적화 Playbook.md",
-        summary="노드별 비용, RAG evidence 수, 모델 단가를 점검하는 절차를 안내합니다.",
-        source_tier="internal_ops",
-        classification="internal_runbook",
-        tags=("internal", "llmops", "cost-optimization"),
-        keywords=("비용 최적화", "LLM 노드", "top_k", "RAG evidence", "모델 변경", "trace"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_cost_optimization_playbook"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_developer_onboarding_rules",
-        name="사내문서: 개발팀 온보딩 가이드",
-        description="개발팀 신입사원의 첫 달 업무 내규, 권한, PR 흐름을 안내하는 사내문서 KB",
-        filename="개발팀 신입 온보딩 및 업무 내규.md",
-        summary="개발팀 신입 온보딩, repository 접근, PR 리뷰 흐름을 안내합니다.",
-        source_tier="internal",
-        classification="internal_policy",
-        tags=("internal", "developer", "onboarding"),
-        keywords=("개발팀", "신입", "온보딩", "내규", "repository", "PR", "멘토"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_developer_onboarding_rules"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_developer_commit_convention",
-        name="사내문서: 개발팀 커밋·브랜치·PR 컨벤션",
-        description="개발팀 commit convention, branch naming, PR 작성 기준을 안내하는 사내문서 KB",
-        filename="개발팀 커밋 브랜치 PR 컨벤션.md",
-        summary="feature/mba-번호 브랜치와 type: 한국어 설명 커밋 규칙을 안내합니다.",
-        source_tier="internal",
-        classification="internal_policy",
-        tags=("internal", "developer", "git", "commit", "pr"),
-        keywords=("커밋", "commit convention", "브랜치", "feature/mba", "PR", "type", "한국어 설명"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_developer_commit_convention"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_developer_compensation_band",
-        name="사내문서: 개발 직군 신입 보상 밴드 및 공개 가능 범위",
-        description="개발 직군 신입 보상 밴드와 공개 가능한 답변 범위를 안내하는 사내문서 KB",
-        filename="개발 직군 신입 보상 밴드 및 공개 가능 범위.md",
-        summary="DEV-L1 신입 개발자 보상 밴드와 공개 가능 범위를 안내합니다.",
-        source_tier="internal",
-        classification="internal_policy",
-        tags=("internal", "developer", "compensation", "onboarding"),
-        keywords=("개발자", "신입", "연봉", "보상 밴드", "DEV-L1", "기본급", "공개 가능 범위"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_developer_compensation_band"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_compensation_access_policy",
-        name="사내문서: 개인 보상정보 및 인사기록 조회 제한 정책",
-        description="개인별 연봉, 성과급, 평가정보 질의 차단 기준을 설명하는 사내문서 KB",
-        filename="개인 보상정보 및 인사기록 조회 제한 정책.md",
-        summary="개인별 보상정보 조회 제한과 민감 질문 차단 문구를 안내합니다.",
-        source_tier="restricted_internal",
-        classification="restricted_policy",
-        tags=("internal", "privacy", "compensation", "policy-block"),
-        keywords=("개인 보상정보", "동료 연봉", "성과급", "평가등급", "정책 차단", "민감정보"),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_compensation_access_policy"],
-    ),
-    DemoKnowledgeSeedSpec(
-        key="internal_planning_onboarding_guide",
-        name="사내문서: 기획팀 온보딩 가이드",
-        description="기획팀 신입사원의 PRD, 지표, 협업과 출시 검증 절차를 안내하는 사내문서 KB",
-        filename="기획팀 신입 온보딩 가이드.md",
-        summary="기획팀 신입사원의 PRD 작성, 협업, 지표 검증과 정보 취급 기준을 안내합니다.",
-        source_tier="internal",
-        classification="internal_policy",
-        tags=("internal", "planning", "onboarding", "prd"),
-        keywords=(
-            "기획팀",
-            "신입",
-            "온보딩",
-            "PRD",
-            "성공 지표",
-            "acceptance criteria",
-            "로드맵",
-        ),
-        collection_key="internal_onboarding",
-        content=INTERNAL_DOCUMENT_CONTENT["internal_planning_onboarding_guide"],
+        key="hr_welfare",
+        name="사내 복지 정책 지식베이스",
+        description="복지 포인트와 경조사 지원을 담은 데모 지식베이스",
+        filename="복지 제도 안내.md",
+        summary="복지 포인트와 경조사 지원은 인사 지식 활용팀 권한으로 조회할 수 있습니다.",
+        source_tier="private",
+        classification="internal",
+        tags=("인사", "복지", "경조사"),
+        keywords=("복지 포인트", "경조사 지원", "복지 포털"),
+        collection_key="hr_policies",
+        content="""# 복지 제도 안내
+
+## 복지 포인트
+
+복지 포인트는 매년 초 재직 상태와 근속 조건에 따라 지급됩니다.
+사용 가능 항목은 건강관리, 자기계발, 가족 지원, 문화생활로 구분됩니다.
+
+## 경조사 지원
+
+경조사 지원은 사내 복지 포털에서 신청하며, 증빙 서류가 필요한 항목은 신청 후 7일 이내에 제출해야 합니다.
+
+## 문의
+
+복지 제도 일반 문의는 인사 지식 활용팀 채널을 통해 접수합니다.
+""",
     ),
 )
 
-DEMO_DOCUMENT_SPECS = LEGAL_DOCUMENT_SPECS + INTERNAL_DOCUMENT_SPECS
+INDEXED_DEMO_DOCUMENT_SPECS = (*DEMO_DOCUMENT_SPECS, *HR_DOCUMENT_SPECS)
 
 
 def demo_summary(profile: str = "demo") -> dict[str, Any]:
@@ -1460,12 +1177,9 @@ def demo_summary(profile: str = "demo") -> dict[str, Any]:
         "users": [spec.email for spec in USER_SPECS],
         "teams": [name for name, _ in TEAM_SPECS.values()],
         "apps": [
-            "사내 문서 질문 응답 봇",
-            "부서별 온보딩 RAG 챗봇",
-            "팀별 온보딩 문서 접근 제어 데모",
-            ENTERPRISE_REQUEST_ROUTING_NAME,
-            "Enterprise 고객 티켓 처리",
-            "테스트용 문의 응답 워크플로우",
+            "온보딩 챗봇",
+            "사내 IT 문의 자동 처리",
+            "신입 사원 온보딩 챗봇",
         ],
         "reset_scope": "demo seed fixed UUID rows only",
         "credentials": (
@@ -1475,7 +1189,7 @@ def demo_summary(profile: str = "demo") -> dict[str, Any]:
         ),
         "knowledge_documents": {
             "public_law_pdfs": len(LEGAL_DOCUMENT_SPECS),
-            "internal_markdown_docs": len(INTERNAL_DOCUMENT_SPECS),
+            "internal_markdown_docs": len(HR_DOCUMENT_SPECS),
             "bundled_onboarding_pdfs": len(ONBOARDING_PDF_SPECS),
             "embedding_model": DEMO_EMBEDDING_MODEL,
             "fixture": DEMO_KNOWLEDGE_FIXTURE_PATH.as_posix(),
@@ -1667,7 +1381,7 @@ def _read_demo_knowledge_fixture() -> dict[str, Any]:
             f"{header.get('embedding_dimension')}"
         )
 
-    expected_keys = {spec.key for spec in DEMO_DOCUMENT_SPECS}
+    expected_keys = {spec.key for spec in INDEXED_DEMO_DOCUMENT_SPECS}
     missing_documents = sorted(expected_keys - set(documents))
     if missing_documents:
         raise ValueError(
@@ -1712,7 +1426,7 @@ def _write_demo_knowledge_fixture(records: list[dict[str, Any]]) -> None:
         "fixture_version": DEMO_SEED_VERSION,
         "embedding_model": DEMO_EMBEDDING_MODEL,
         "embedding_dimension": DEMO_EMBEDDING_DIMENSION,
-        "document_keys": [spec.key for spec in DEMO_DOCUMENT_SPECS],
+        "document_keys": [spec.key for spec in INDEXED_DEMO_DOCUMENT_SPECS],
         "storage": "plaintext_chunks_with_precomputed_embeddings",
     }
     with gzip.open(DEMO_KNOWLEDGE_FIXTURE_PATH, "wt", encoding="utf-8", newline="\n") as handle:
@@ -2189,14 +1903,8 @@ def _hr_bot_knowledge_base_refs() -> list[dict[str, str]]:
     return [
         _knowledge_base_ref(key)
         for key in (
-            "internal_onboarding",
-            "internal_leave_attendance",
-            "internal_benefits",
-            "internal_privacy_hr_records",
-            "internal_developer_onboarding_rules",
-            "internal_developer_commit_convention",
-            "internal_developer_compensation_band",
-            "internal_compensation_access_policy",
+            "hr",
+            "hr_welfare",
             "legal_labor_standards",
             "legal_equal_employment",
             "legal_equal_employment_enforcement_decree",
@@ -2287,9 +1995,9 @@ def _department_onboarding_knowledge_base_refs() -> list[dict[str, str]]:
     return [
         _knowledge_base_ref(key)
         for key in (
-            "internal_onboarding",
-            "internal_developer_onboarding_rules",
-            "internal_planning_onboarding_guide",
+            "onboarding_company_common",
+            "onboarding_platform",
+            "onboarding_sales",
         )
     ]
 
@@ -2537,9 +2245,6 @@ def _ticket_ops_graph() -> dict[str, Any]:
                             "name": "message",
                             "value_selector": ["webhook-ticket", "message"],
                         },
-                    ],
-                    "knowledgeBases": [
-                        _knowledge_base_ref("internal_cost_optimization_playbook")
                     ],
                     "parameters": {"temperature": 0.2, "max_tokens": 700},
                     "output_format": {
@@ -2892,16 +2597,160 @@ def _internal_it_helpdesk_routing_graph() -> dict[str, Any]:
         {
             "title": "보안 대응 결과",
             "description": "보안 에스컬레이션 결과를 반환합니다.",
+            "displayNumber": 8,
         }
     )
     nodes["answer-reply"]["data"].update(
         {
             "title": "IT 안내 결과",
             "description": "일반 IT 안내 결과를 반환합니다.",
+            "displayNumber": 7,
         }
     )
-    return graph
+    graph["nodes"].sort(key=lambda node: node["data"]["displayNumber"])
+    return calculate_workflow_auto_layout(graph)
 
+
+def _onboarding_chatbot_graph() -> dict[str, Any]:
+    """신규 workflow 편집기와 동일한 단일 입력 노드 canvas를 만든다."""
+    return {
+        "nodes": [
+            _node(
+                "start-onboarding-chatbot",
+                "startNode",
+                250,
+                250,
+                {
+                    "title": "입력",
+                    "displayNumber": 1,
+                    "triggerType": "manual",
+                    "variables": [],
+                },
+            )
+        ],
+        "edges": [],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+
+
+def _new_employee_onboarding_chatbot_graph() -> dict[str, Any]:
+    """팀 권한으로 온보딩 Collection과 하위 KB를 검색하는 3-node graph."""
+    return {
+        "nodes": [
+            _node(
+                "start-onboarding-question",
+                "startNode",
+                120,
+                120,
+                {
+                    **_base_node_data(
+                        "입력",
+                        "신입 사원의 온보딩 질문을 입력받습니다.",
+                        1,
+                    ),
+                    "triggerType": "manual",
+                    "trigger_type": "manual",
+                    "variables": [
+                        {
+                            "id": "question",
+                            "name": "question",
+                            "label": "온보딩 질문",
+                            "type": "paragraph",
+                            "required": True,
+                            "maxLength": 1200,
+                            "max_length": 1200,
+                        }
+                    ],
+                },
+            ),
+            _node(
+                "llm-onboarding-answer",
+                "llmNode",
+                700,
+                120,
+                {
+                    **_base_node_data(
+                        "온보딩 문서 답변",
+                        "팀 권한으로 허용된 온보딩 문서를 검색해 답변합니다.",
+                        2,
+                        [
+                            "model_id",
+                            "knowledgeCollections",
+                            "knowledgeBases",
+                            "user_prompt",
+                        ],
+                    ),
+                    "provider": "openai",
+                    "model_id": DEMO_MODEL_ROUTER_LATEST_ADVANCED_MODEL,
+                    "fallback_model_id": DEMO_CHAT_MODEL,
+                    "auto_model_routing": True,
+                    "system_prompt": (
+                        "신입 사원 온보딩 안내 AI입니다. 현재 실행 사용자의 팀 권한으로 "
+                        "조회 가능한 온보딩 문서만 근거로 답변하고, 근거가 없으면 "
+                        "추측하지 않습니다."
+                    ),
+                    "user_prompt": "온보딩 질문: {{ question }}",
+                    "referenced_variables": [
+                        {
+                            "name": "question",
+                            "value_selector": [
+                                "start-onboarding-question",
+                                "question",
+                            ],
+                        }
+                    ],
+                    "knowledgeCollections": [
+                        {
+                            "id": str(
+                                COLLECTION_IDS["team_onboarding_access_control"]
+                            ),
+                            "safeLabel": "팀별 온보딩 접근 제어 문서",
+                        }
+                    ],
+                    "knowledgeBases": [
+                        _knowledge_base_ref(spec.key)
+                        for spec in ONBOARDING_PDF_SPECS
+                    ],
+                    "scoreThreshold": 0.3,
+                    "topK": 5,
+                    "parameters": {"temperature": 0.2, "max_tokens": 900},
+                },
+            ),
+            _node(
+                "answer-onboarding",
+                "answerNode",
+                1280,
+                120,
+                {
+                    **_base_node_data(
+                        "출력",
+                        "온보딩 문서 기반 답변을 반환합니다.",
+                        3,
+                    ),
+                    "outputs": [
+                        {
+                            "variable": "answer_text",
+                            "label": "답변",
+                            "value_selector": ["llm-onboarding-answer", "text"],
+                        }
+                    ],
+                },
+            ),
+        ],
+        "edges": [
+            _edge(
+                "edge-onboarding-input-llm",
+                "start-onboarding-question",
+                "llm-onboarding-answer",
+            ),
+            _edge(
+                "edge-onboarding-llm-output",
+                "llm-onboarding-answer",
+                "answer-onboarding",
+            ),
+        ],
+        "viewport": {"x": 40, "y": 80, "zoom": 0.85},
+    }
 
 
 def _enterprise_request_routing_graph() -> dict[str, Any]:
@@ -2946,11 +2795,10 @@ def _enterprise_request_routing_graph() -> dict[str, Any]:
             "knowledgeBases": [
                 _knowledge_base_ref(key)
                 for key in (
-                    "internal_onboarding",
-                    "internal_privacy_hr_records",
-                    "internal_budget_alert_runbook",
-                    "internal_cost_optimization_playbook",
-                    "internal_developer_onboarding_rules",
+                    "legal_privacy",
+                    "onboarding_company_common",
+                    "onboarding_platform",
+                    "onboarding_sales",
                     "onboarding_finance",
                 )
             ],
@@ -3301,59 +3149,6 @@ def _demo_team_knowledge_permission_specs() -> list[tuple[str, str, str]]:
                 (kb_key, "customer_support_ops", "operator"),
             ]
         )
-    for kb_key in (
-        "internal_onboarding",
-        "internal_leave_attendance",
-        "internal_benefits",
-        "internal_developer_onboarding_rules",
-        "internal_developer_commit_convention",
-        "internal_developer_compensation_band",
-    ):
-        knowledge_permission_specs.extend(
-            [
-                (kb_key, "platform_admin", "manager"),
-                (kb_key, "hr_knowledge_users", "operator"),
-                (kb_key, "ai_builder_onboarding", "operator"),
-            ]
-        )
-    knowledge_permission_specs.extend(
-        [
-            ("internal_privacy_hr_records", "platform_admin", "manager"),
-            ("internal_privacy_hr_records", "hr_knowledge_users", "operator"),
-            ("internal_compensation_access_policy", "platform_admin", "manager"),
-            ("internal_compensation_access_policy", "hr_knowledge_users", "operator"),
-            ("internal_compensation_access_policy", "ai_builder_onboarding", "operator"),
-            ("internal_budget_alert_runbook", "platform_admin", "manager"),
-            ("internal_budget_alert_runbook", "customer_support_ops", "operator"),
-            ("internal_cost_optimization_playbook", "platform_admin", "manager"),
-            ("internal_cost_optimization_playbook", "customer_support_ops", "operator"),
-            ("internal_onboarding", "department_development", "operator"),
-            ("internal_onboarding", "department_planning", "operator"),
-            (
-                "internal_developer_onboarding_rules",
-                "department_development",
-                "operator",
-            ),
-            (
-                "internal_planning_onboarding_guide",
-                "platform_admin",
-                "manager",
-            ),
-            (
-                "internal_planning_onboarding_guide",
-                "department_planning",
-                "operator",
-            ),
-        ]
-    )
-    knowledge_permission_specs.extend(
-        (kb_key, "tester_builder", "operator")
-        for kb_key in (
-            "internal_onboarding",
-            "internal_leave_attendance",
-            "internal_benefits",
-        )
-    )
     knowledge_permission_specs.extend(
         [
             ("onboarding_company_common", "onboarding_platform", "operator"),
@@ -3366,6 +3161,10 @@ def _demo_team_knowledge_permission_specs() -> list[tuple[str, str, str]]:
             ("onboarding_sales", "onboarding_people", "manager"),
             ("onboarding_finance", "onboarding_finance", "operator"),
             ("onboarding_finance", "onboarding_people", "manager"),
+            ("onboarding_company_common", "department_development", "operator"),
+            ("onboarding_company_common", "department_planning", "operator"),
+            ("onboarding_platform", "department_development", "operator"),
+            ("onboarding_sales", "department_planning", "operator"),
         ]
     )
     knowledge_permission_specs.extend(
@@ -3379,19 +3178,14 @@ def _demo_team_knowledge_permission_specs() -> list[tuple[str, str, str]]:
 
 def _demo_team_knowledge_collection_permission_specs() -> list[tuple[str, str, str]]:
     collection_permission_specs: list[tuple[str, str, str]] = []
-    for collection_key in ("legal_public", "internal_onboarding"):
-        for team_key in (
-            "platform_admin",
-            "hr_knowledge_users",
-            "ai_builder_onboarding",
-            "customer_support_ops",
-        ):
-            for action in ("read", "route"):
-                collection_permission_specs.append((collection_key, team_key, action))
-    collection_permission_specs.extend(
-        ("internal_onboarding", "tester_builder", action)
-        for action in ("read", "route")
-    )
+    for team_key in (
+        "platform_admin",
+        "hr_knowledge_users",
+        "ai_builder_onboarding",
+        "customer_support_ops",
+    ):
+        for action in ("read", "route"):
+            collection_permission_specs.append(("legal_public", team_key, action))
     for team_key in (
         "onboarding_platform",
         "onboarding_sales",
@@ -3412,7 +3206,63 @@ def _demo_team_knowledge_collection_permission_specs() -> list[tuple[str, str, s
     return collection_permission_specs
 
 
+def _delete_retired_internal_knowledge(db: Session) -> None:
+    retired_kb_ids = list(RETIRED_INTERNAL_DOCUMENT_KB_IDS.values())
+    retired_collection_ids = list(
+        RETIRED_INTERNAL_DOCUMENT_COLLECTION_IDS.values()
+    )
+    retired_document_ids = list(RETIRED_INTERNAL_DOCUMENT_IDS.values())
+    retired_item_ids = list(
+        RETIRED_INTERNAL_DOCUMENT_COLLECTION_ITEM_IDS.values()
+    )
+
+    db.query(TeamKnowledgePermission).filter(
+        TeamKnowledgePermission.knowledge_base_id.in_(retired_kb_ids)
+    ).delete(synchronize_session=False)
+    db.query(UserKnowledgePermission).filter(
+        UserKnowledgePermission.knowledge_base_id.in_(retired_kb_ids)
+    ).delete(synchronize_session=False)
+    db.query(TeamKnowledgeCollectionPermission).filter(
+        TeamKnowledgeCollectionPermission.knowledge_collection_id.in_(
+            retired_collection_ids
+        )
+    ).delete(synchronize_session=False)
+    db.query(KnowledgeDocumentIngestionJob).filter(
+        KnowledgeDocumentIngestionJob.knowledge_base_id.in_(retired_kb_ids)
+    ).delete(synchronize_session=False)
+    db.query(KnowledgeIngestionOutbox).filter(
+        KnowledgeIngestionOutbox.knowledge_base_id.in_(retired_kb_ids)
+    ).delete(synchronize_session=False)
+    db.query(KnowledgeCollectionItem).filter(
+        or_(
+            KnowledgeCollectionItem.id.in_(retired_item_ids),
+            KnowledgeCollectionItem.collection_id.in_(retired_collection_ids),
+            KnowledgeCollectionItem.knowledge_base_id.in_(retired_kb_ids),
+        )
+    ).delete(synchronize_session=False)
+    db.query(KnowledgeCollection).filter(
+        KnowledgeCollection.id.in_(retired_collection_ids)
+    ).delete(synchronize_session=False)
+    db.query(DocumentChunk).filter(
+        or_(
+            DocumentChunk.knowledge_base_id.in_(retired_kb_ids),
+            DocumentChunk.document_id.in_(retired_document_ids),
+        )
+    ).delete(synchronize_session=False)
+    db.query(Document).filter(
+        or_(
+            Document.knowledge_base_id.in_(retired_kb_ids),
+            Document.id.in_(retired_document_ids),
+        )
+    ).delete(synchronize_session=False)
+    db.query(KnowledgeBase).filter(
+        KnowledgeBase.id.in_(retired_kb_ids)
+    ).delete(synchronize_session=False)
+    db.flush()
+
+
 def _seed_knowledge(db: Session) -> None:
+    _delete_retired_internal_knowledge(db)
     knowledge_fixture = _demo_knowledge_fixture_or_none()
     fixture_documents = (
         knowledge_fixture["documents"] if knowledge_fixture is not None else {}
@@ -3533,27 +3383,6 @@ def _seed_knowledge(db: Session) -> None:
     _upsert_by_id(
         db,
         KnowledgeCollection,
-        COLLECTION_IDS["internal_onboarding"],
-        {
-            "organization_id": ORG_ID,
-            "name": "사내 온보딩·운영 문서 컬렉션",
-            "description": "온보딩, HR 정책, LLMOps 운영 절차를 묶은 private 데모 컬렉션",
-            "source_identity_id": None,
-            "source_connector_ref": "local.demo-scenario-2026-07-08.internal-docs",
-            "is_system_managed": True,
-            "sync_state": "manual",
-            "lifecycle_state": "active",
-            "safe_metadata": {
-                **_demo_options("collection-internal-onboarding"),
-                "safe_label": "사내 온보딩·운영 문서 컬렉션",
-                "visibility": "private",
-            },
-            "created_by": USER_IDS["admin"],
-        },
-    )
-    _upsert_by_id(
-        db,
-        KnowledgeCollection,
         COLLECTION_IDS["team_onboarding_access_control"],
         {
             "organization_id": ORG_ID,
@@ -3655,47 +3484,19 @@ def _seed_knowledge(db: Session) -> None:
             },
         )
 
+    hr_document_specs = {spec.key: spec for spec in HR_DOCUMENT_SPECS}
     document_specs = {
         "hr_leave": (
             KB_IDS[LEGACY_DEMO_DOCUMENT_KB_KEYS["hr_leave"]],
-            "휴가 제도 안내.md",
-            "가족돌봄휴가는 연차와 이어서 사용할 수 있으며, 사내 인사 포털에서 신청합니다.",
-            """# 휴가 제도 안내
-
-## 가족돌봄휴가
-
-가족의 질병, 사고, 노령 또는 자녀 양육으로 돌봄이 필요한 경우 가족돌봄휴가를 신청할 수 있습니다.
-가족돌봄휴가는 연차휴가와 이어서 사용할 수 있으며, 신청 시 사유와 예상 사용 기간을 함께 입력합니다.
-
-## 신청 경로
-
-휴가는 사내 인사 포털 > 근태/휴가 > 휴가 신청 메뉴에서 신청합니다.
-긴급한 사유가 아니라면 사용 예정일 전까지 팀 리더 승인을 받아야 합니다.
-
-## 유의 사항
-
-개인의 병가 기록, 타인의 근태 현황, 인사평가 결과는 일반 사내 문서 검색 권한으로 조회할 수 없습니다.
-""",
+            hr_document_specs["hr_leave"].filename,
+            hr_document_specs["hr_leave"].summary,
+            hr_document_specs["hr_leave"].content,
         ),
         "hr_welfare": (
             KB_IDS[LEGACY_DEMO_DOCUMENT_KB_KEYS["hr_welfare"]],
-            "복지 제도 안내.md",
-            "복지 포인트와 경조사 지원은 인사 지식 활용팀 권한으로 조회할 수 있습니다.",
-            """# 복지 제도 안내
-
-## 복지 포인트
-
-복지 포인트는 매년 초 재직 상태와 근속 조건에 따라 지급됩니다.
-사용 가능 항목은 건강관리, 자기계발, 가족 지원, 문화생활로 구분됩니다.
-
-## 경조사 지원
-
-경조사 지원은 사내 복지 포털에서 신청하며, 증빙 서류가 필요한 항목은 신청 후 7일 이내에 제출해야 합니다.
-
-## 문의
-
-복지 제도 일반 문의는 인사 지식 활용팀 채널을 통해 접수합니다.
-""",
+            hr_document_specs["hr_welfare"].filename,
+            hr_document_specs["hr_welfare"].summary,
+            hr_document_specs["hr_welfare"].content,
         ),
         "finance_sensitive": (
             KB_IDS[LEGACY_DEMO_DOCUMENT_KB_KEYS["finance_sensitive"]],
@@ -3812,7 +3613,7 @@ def _seed_knowledge(db: Session) -> None:
         )
 
     db.flush()
-    _index_demo_documents(db, DEMO_DOCUMENT_SPECS, knowledge_fixture)
+    _index_demo_documents(db, INDEXED_DEMO_DOCUMENT_SPECS, knowledge_fixture)
     if _should_index_onboarding_pdfs():
         _index_demo_documents_from_sources(
             db,
@@ -3966,22 +3767,14 @@ def _upsert_app_workflow(
     *,
     deployed: bool,
     deployment_type: DeploymentType = DeploymentType.API,
+    list_updated_at: datetime | None = None,
 ) -> Workflow:
     app_secret = f"sk-demo-{key}"
     app_values = {
         "organization_id": ORG_ID,
         "name": name,
         "description": description,
-        "icon": _icon(
-            "🧭"
-            if key
-            in {
-                "ticket_ops",
-                "model_router_ticket_ops",
-                "internal_it_helpdesk_routing",
-            }
-            else "📘"
-        ),
+        "icon": _icon("🧭" if key == "internal_it_helpdesk_routing" else "📘"),
         "url_slug": (
             "internal-it-helpdesk-routing-demo"
             if key == "internal_it_helpdesk_routing"
@@ -4054,60 +3847,93 @@ def _upsert_app_workflow(
         app.active_deployment_id = None
     db.flush()
 
+    if list_updated_at is not None:
+        app.updated_at = list_updated_at
+        db.flush()
+
     return workflow
 
 
+def _delete_retired_demo_workflows(db: Session) -> None:
+    retired_app_ids = list(RETIRED_DEMO_APP_IDS.values())
+    retired_workflow_ids = list(RETIRED_DEMO_WORKFLOW_IDS.values())
+    retired_deployment_ids = list(RETIRED_DEMO_DEPLOYMENT_IDS.values())
+    retired_run_ids = {
+        *RETIRED_DEMO_RUN_IDS,
+        *(
+            row[0]
+            for row in db.query(WorkflowRun.id)
+            .filter(WorkflowRun.workflow_id.in_(retired_workflow_ids))
+            .all()
+        ),
+    }
+
+    if retired_run_ids:
+        db.query(TracePayloadAccessEvent).filter(
+            TracePayloadAccessEvent.workflow_run_id.in_(retired_run_ids)
+        ).delete(synchronize_session=False)
+        db.query(TracePayload).filter(
+            TracePayload.workflow_run_id.in_(retired_run_ids)
+        ).delete(synchronize_session=False)
+        db.query(WorkflowNodeRun).filter(
+            WorkflowNodeRun.workflow_run_id.in_(retired_run_ids)
+        ).delete(synchronize_session=False)
+    db.query(ConversationSessionRecord).filter(
+        or_(
+            ConversationSessionRecord.app_id.in_(retired_app_ids),
+            ConversationSessionRecord.workflow_id.in_(retired_workflow_ids),
+            ConversationSessionRecord.deployment_id.in_(retired_deployment_ids),
+        )
+    ).delete(synchronize_session=False)
+    db.query(LLMUsageLog).filter(
+        or_(
+            LLMUsageLog.workflow_id.in_(retired_workflow_ids),
+            LLMUsageLog.workflow_run_id.in_(retired_run_ids),
+        )
+    ).delete(synchronize_session=False)
+    db.query(WorkflowRun).filter(
+        WorkflowRun.workflow_id.in_(retired_workflow_ids)
+    ).delete(synchronize_session=False)
+    db.query(TeamWorkflowPermission).filter(
+        or_(
+            TeamWorkflowPermission.id.in_(
+                list(RETIRED_DEMO_TEAM_WORKFLOW_PERMISSION_IDS.values())
+            ),
+            TeamWorkflowPermission.workflow_id.in_(retired_workflow_ids),
+        )
+    ).delete(synchronize_session=False)
+    db.query(UserWorkflowPermission).filter(
+        or_(
+            UserWorkflowPermission.id.in_(
+                list(RETIRED_DEMO_USER_WORKFLOW_PERMISSION_IDS.values())
+            ),
+            UserWorkflowPermission.workflow_id.in_(retired_workflow_ids),
+        )
+    ).delete(synchronize_session=False)
+
+    db.query(App).filter(App.id.in_(retired_app_ids)).update(
+        {"workflow_id": None, "active_deployment_id": None},
+        synchronize_session=False,
+    )
+    db.flush()
+    db.query(WorkflowDeployment).filter(
+        or_(
+            WorkflowDeployment.id.in_(retired_deployment_ids),
+            WorkflowDeployment.app_id.in_(retired_app_ids),
+        )
+    ).delete(synchronize_session=False)
+    db.query(Workflow).filter(
+        Workflow.id.in_(retired_workflow_ids)
+    ).delete(synchronize_session=False)
+    db.query(App).filter(App.id.in_(retired_app_ids)).delete(
+        synchronize_session=False
+    )
+    db.flush()
+
+
 def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
-    workflows = {
-        "hr_bot_example": _upsert_app_workflow(
-            db,
-            "hr_bot_example",
-            "사내 문서 질문 응답 봇",
-            "신입사원 이서연이 권한 승인 후 직접 만들 workflow의 완성 예시",
-            "rookie",
-            _hr_bot_graph(),
-            deployed=False,
-        ),
-        "department_onboarding_chatbot": _upsert_app_workflow(
-            db,
-            "department_onboarding_chatbot",
-            "부서별 온보딩 RAG 챗봇",
-            "개발팀과 기획팀 사용자의 Knowledge 권한 차이를 확인하는 내부 챗봇",
-            "admin",
-            _department_onboarding_chatbot_graph(),
-            deployed=True,
-            deployment_type=DeploymentType.INTERNAL_CHATBOT,
-        ),
-        "team_onboarding_access_control": _upsert_app_workflow(
-            db,
-            "team_onboarding_access_control",
-            "팀별 온보딩 문서 접근 제어 데모",
-            "플랫폼개발팀·영업팀·People 팀 사용자의 Knowledge 권한 차이를 보여주는 내부 챗봇",
-            "onboarding_people_manager",
-            _team_onboarding_access_control_graph(),
-            deployed=True,
-            deployment_type=DeploymentType.INTERNAL_CHATBOT,
-        ),
-        "team_onboarding_adaptive_routing": _upsert_app_workflow(
-            db,
-            "team_onboarding_adaptive_routing",
-            "팀별 온보딩 자동 모델 라우팅 검증",
-            "팀 권한 RAG와 입력 추세 변화에 따른 자동 모델 라우팅을 검증하는 내부 챗봇",
-            "onboarding_people_manager",
-            _team_onboarding_adaptive_routing_graph(),
-            deployed=True,
-            deployment_type=DeploymentType.INTERNAL_CHATBOT,
-        ),
-        "enterprise_request_routing": _upsert_app_workflow(
-            db,
-            "enterprise_request_routing",
-            ENTERPRISE_REQUEST_ROUTING_NAME,
-            ENTERPRISE_REQUEST_ROUTING_DESCRIPTION,
-            "admin",
-            _enterprise_request_routing_graph(),
-            deployed=True,
-            deployment_type=DeploymentType.WEBHOOK,
-        ),
+    list_updated_at = _now()
+    return {
         "internal_it_helpdesk_routing": _upsert_app_workflow(
             db,
             "internal_it_helpdesk_routing",
@@ -4117,259 +3943,83 @@ def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
             _internal_it_helpdesk_routing_graph(),
             deployed=True,
             deployment_type=DeploymentType.WEBHOOK,
+            list_updated_at=list_updated_at - timedelta(seconds=1),
         ),
-        "ticket_ops": _upsert_app_workflow(
+        "onboarding_chatbot": _upsert_app_workflow(
             db,
-            "ticket_ops",
-            "Enterprise 고객 티켓 처리",
-            "비용 최적화 시연을 위한 고객지원 운영 workflow",
-            "author",
-            _ticket_ops_graph(),
-            deployed=True,
-            deployment_type=DeploymentType.WEBHOOK,
+            "onboarding_chatbot",
+            "온보딩 챗봇",
+            "새 workflow의 기본 입력 노드만 유지한 온보딩 챗봇 draft",
+            "admin",
+            _onboarding_chatbot_graph(),
+            deployed=False,
+            list_updated_at=list_updated_at,
         ),
-        "model_router_ticket_ops": _upsert_app_workflow(
+        "new_employee_onboarding_chatbot": _upsert_app_workflow(
             db,
-            "model_router_ticket_ops",
-            "모델 라우팅 검증용 고객 티켓 처리",
-            "자동 모델 라우팅과 비용 최적화 A/B 검증을 시연하기 위한 고객지원 workflow",
-            "author",
-            _model_router_ticket_ops_graph(),
+            "new_employee_onboarding_chatbot",
+            "신입 사원 온보딩 챗봇",
+            "팀별 온보딩 문서를 RAG로 검색하는 신입 사원 안내 workflow",
+            "admin",
+            _new_employee_onboarding_chatbot_graph(),
             deployed=True,
-            deployment_type=DeploymentType.WEBHOOK,
-        ),
-        "test_inquiry": _upsert_app_workflow(
-            db,
-            "test_inquiry",
-            "테스트용 문의 응답 워크플로우",
-            "팀원이 자유롭게 기능을 확인하는 테스트 workflow",
-            "tester_builder",
-            _test_inquiry_graph(),
-            deployed=True,
+            deployment_type=DeploymentType.INTERNAL_CHATBOT,
+            list_updated_at=list_updated_at - timedelta(seconds=2),
         ),
     }
 
-    # 운영 현황 상단 위험 패널 확인용 추가 앱.
-    for key, name, owner in [
-        ("ticket_ops_warning", "예산 80% 근접 티켓 처리 A", "author"),
-        ("ticket_ops_risk", "예산 80% 근접 티켓 처리 B", "author"),
-        ("ticket_ops_paused", "예산 초과로 정지된 워크플로우", "author"),
-    ]:
-        workflows[key] = _upsert_app_workflow(
-            db,
-            key,
-            name,
-            "운영 현황 비용 위험 표시용 데모 workflow",
-            owner,
-            _ticket_ops_graph(),
-            deployed=key != "ticket_ops_paused",
-            deployment_type=DeploymentType.WEBHOOK,
-        )
-
-    return workflows
-
 
 def _seed_permissions(db: Session) -> None:
-    permission_specs = [
+    _upsert_by_id(
+        db,
+        TeamWorkflowPermission,
+        TEAM_PERMISSION_IDS["internal_it_helpdesk_routing"],
+        {
+            "grantee_organization_id": ORG_ID,
+            "team_id": TEAM_IDS["platform_admin"],
+            "workflow_id": WORKFLOW_IDS["internal_it_helpdesk_routing"],
+            "auth_state": "manager",
+            "assigned_by": USER_IDS["admin"],
+            "options": _demo_options("permission-internal-it-helpdesk-routing"),
+            "flags": 0,
+        },
+    )
+
+    for permission_key, team_key, workflow_key in (
         (
-            TEAM_PERMISSION_IDS["customer_ticket"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["customer_support_ops"],
-                "workflow_id": WORKFLOW_IDS["ticket_ops"],
-                "auth_state": "manager",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-customer-ticket"),
-                "flags": 0,
-            },
+            "onboarding_chatbot_platform",
+            "onboarding_platform",
+            "onboarding_chatbot",
         ),
         (
-            TEAM_PERMISSION_IDS["model_router_ticket"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["customer_support_ops"],
-                "workflow_id": WORKFLOW_IDS["model_router_ticket_ops"],
-                "auth_state": "manager",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-model-router-ticket"),
-                "flags": 0,
-            },
+            "onboarding_chatbot_sales",
+            "onboarding_sales",
+            "onboarding_chatbot",
         ),
         (
-            TEAM_PERMISSION_IDS["enterprise_request_routing"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["platform_admin"],
-                "workflow_id": WORKFLOW_IDS["enterprise_request_routing"],
-                "auth_state": "manager",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-enterprise-request-routing"),
-                "flags": 0,
-            },
+            "new_employee_onboarding_chatbot_platform",
+            "onboarding_platform",
+            "new_employee_onboarding_chatbot",
         ),
         (
-            TEAM_PERMISSION_IDS["internal_it_helpdesk_routing"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["platform_admin"],
-                "workflow_id": WORKFLOW_IDS["internal_it_helpdesk_routing"],
-                "auth_state": "manager",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-internal-it-helpdesk-routing"),
-                "flags": 0,
-            },
+            "new_employee_onboarding_chatbot_sales",
+            "onboarding_sales",
+            "new_employee_onboarding_chatbot",
         ),
-        (
-            TEAM_PERMISSION_IDS["hr_bot"],
+    ):
+        _upsert_by_id(
+            db,
             TeamWorkflowPermission,
+            TEAM_PERMISSION_IDS[permission_key],
             {
                 "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["hr_knowledge_users"],
-                "workflow_id": WORKFLOW_IDS["hr_bot_example"],
-                "auth_state": "operator",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-hr-bot"),
-                "flags": 0,
-            },
-        ),
-        (
-            TEAM_PERMISSION_IDS["department_onboarding_development"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["department_development"],
-                "workflow_id": WORKFLOW_IDS["department_onboarding_chatbot"],
+                "team_id": TEAM_IDS[team_key],
+                "workflow_id": WORKFLOW_IDS[workflow_key],
                 "auth_state": "operator",
                 "assigned_by": USER_IDS["admin"],
                 "options": _demo_options(
-                    "permission-department-onboarding-development"
+                    f"permission-{permission_key.replace('_', '-')}"
                 ),
-                "flags": 0,
-            },
-        ),
-        (
-            TEAM_PERMISSION_IDS["department_onboarding_planning"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["department_planning"],
-                "workflow_id": WORKFLOW_IDS["department_onboarding_chatbot"],
-                "auth_state": "operator",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-department-onboarding-planning"),
-                "flags": 0,
-            },
-        ),
-        (
-            TEAM_PERMISSION_IDS["team_onboarding_platform"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["onboarding_platform"],
-                "workflow_id": WORKFLOW_IDS["team_onboarding_access_control"],
-                "auth_state": "operator",
-                "assigned_by": USER_IDS["onboarding_people_manager"],
-                "options": _demo_options("permission-team-onboarding-platform"),
-                "flags": 0,
-            },
-        ),
-        (
-            TEAM_PERMISSION_IDS["team_onboarding_sales"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["onboarding_sales"],
-                "workflow_id": WORKFLOW_IDS["team_onboarding_access_control"],
-                "auth_state": "operator",
-                "assigned_by": USER_IDS["onboarding_people_manager"],
-                "options": _demo_options("permission-team-onboarding-sales"),
-                "flags": 0,
-            },
-        ),
-        (
-            TEAM_PERMISSION_IDS["team_onboarding_people"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["onboarding_people"],
-                "workflow_id": WORKFLOW_IDS["team_onboarding_access_control"],
-                "auth_state": "manager",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-team-onboarding-people"),
-                "flags": 0,
-            },
-        ),
-        *[
-            (
-                TEAM_PERMISSION_IDS[f"team_onboarding_adaptive_{team_suffix}"],
-                TeamWorkflowPermission,
-                {
-                    "grantee_organization_id": ORG_ID,
-                    "team_id": TEAM_IDS[f"onboarding_{team_suffix}"],
-                    "workflow_id": WORKFLOW_IDS[
-                        "team_onboarding_adaptive_routing"
-                    ],
-                    "auth_state": auth_state,
-                    "assigned_by": USER_IDS["onboarding_people_manager"],
-                    "options": _demo_options(
-                        f"permission-team-onboarding-adaptive-{team_suffix}"
-                    ),
-                    "flags": 0,
-                },
-            )
-            for team_suffix, auth_state in (
-                ("platform", "operator"),
-                ("sales", "operator"),
-                ("people", "manager"),
-            )
-        ],
-        (
-            TEAM_PERMISSION_IDS["test_builder"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["tester_builder"],
-                "workflow_id": WORKFLOW_IDS["test_inquiry"],
-                "auth_state": "manager",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-test-builder"),
-                "flags": 0,
-            },
-        ),
-        (
-            TEAM_PERMISSION_IDS["test_member"],
-            TeamWorkflowPermission,
-            {
-                "grantee_organization_id": ORG_ID,
-                "team_id": TEAM_IDS["tester_member"],
-                "workflow_id": WORKFLOW_IDS["test_inquiry"],
-                "auth_state": "viewer",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options("permission-test-member"),
-                "flags": 0,
-            },
-        ),
-    ]
-    for row_id, model, values in permission_specs:
-        _upsert_by_id(db, model, row_id, values)
-
-    # 운영자에게 위험 패널용 workflow도 직접 manager 권한을 준다.
-    for index, workflow_key in enumerate(["ticket_ops_warning", "ticket_ops_risk", "ticket_ops_paused"]):
-        _upsert_by_id(
-            db,
-            UserWorkflowPermission,
-            _uuid(830 + index),
-            {
-                "grantee_organization_id": ORG_ID,
-                "user_id": USER_IDS["author"],
-                "workflow_id": WORKFLOW_IDS[workflow_key],
-                "auth_state": "manager",
-                "assigned_by": USER_IDS["admin"],
-                "options": _demo_options(f"direct-permission-{workflow_key}"),
                 "flags": 0,
             },
         )
@@ -4471,125 +4121,6 @@ def _seed_permissions(db: Session) -> None:
             "flags": 0,
         },
     )
-
-
-def _seed_run(
-    db: Session,
-    *,
-    run_id: uuid.UUID,
-    workflow_key: str,
-    user_key: str,
-    status: RunStatus,
-    started_at: datetime,
-    duration: float,
-    total_tokens: int,
-    total_cost: Decimal,
-    output_text: str | None,
-    error_message: str | None = None,
-    model_name: str = DEMO_CHAT_MODEL,
-    prompt_tokens: int = 0,
-    completion_tokens: int = 0,
-    latency_ms: int = 0,
-    node_prefix: int = 0,
-) -> None:
-    workflow_id = WORKFLOW_IDS[workflow_key]
-    app_id = APP_IDS[workflow_key]
-    app = db.get(App, app_id)
-    deployment_id = app.active_deployment_id if app else None
-    finished_at = started_at + timedelta(seconds=duration)
-    outputs = {"answer_text": output_text} if output_text else None
-    run = _upsert_by_id(
-        db,
-        WorkflowRun,
-        run_id,
-        {
-            "workflow_id": workflow_id,
-            "user_id": USER_IDS[user_key],
-            "app_id": app_id,
-            "deployment_id": deployment_id,
-            "workflow_version": 1,
-            "status": status,
-            "trigger_mode": RunTriggerMode.WEBHOOK,
-            "inputs": {
-                "customerTier": "enterprise",
-                "message": "결제 API 장애로 크레딧 보상 가능 여부를 확인해 주세요.",
-            },
-            "outputs": outputs,
-            "error_message": error_message,
-            "started_at": started_at,
-            "finished_at": finished_at if status != RunStatus.RUNNING else None,
-            "duration": duration,
-            "meta_info": _demo_options(f"run-{workflow_key}-{node_prefix}"),
-            "total_tokens": total_tokens,
-            "total_cost": total_cost,
-            "trace_metadata": {
-                "demo_seed": True,
-                "budget_ratio": 0.92 if workflow_key != "ticket_ops_paused" else 1.08,
-            },
-            "redaction_applied": False,
-            "pii_detected": False,
-            "payload_storage_mode": "redacted_only",
-        },
-    )
-    db.flush()
-
-    node_specs = [
-        ("webhook-ticket", "webhookTrigger", 0.02, {"message": run.inputs["message"]}),
-        (
-            "llm-triage",
-            "llmNode",
-            max(duration - 0.15, 0.5),
-            {
-                "text": output_text or "실행 실패",
-                "model": model_name,
-                "usage": {
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                },
-            },
-        ),
-        (
-            "extract-ticket",
-            "variableExtractionNode",
-            0.03,
-            {"approvalRequired": True, "mailDraft": output_text},
-        ),
-        ("condition-approval", "conditionNode", 0.01, {"selected_handle": "approval"}),
-        ("template-approval", "templateNode", 0.01, {"text": output_text}),
-        ("answer-approval", "answerNode", 0.01, outputs),
-    ]
-    for index, (node_id, node_type, node_duration, node_outputs) in enumerate(node_specs):
-        node_run_id = _uuid(3000 + node_prefix * 10 + index)
-        _upsert_by_id(
-            db,
-            WorkflowNodeRun,
-            node_run_id,
-            {
-                "workflow_run_id": run.id,
-                "node_id": node_id,
-                "node_type": node_type,
-                "status": NodeRunStatus.FAILED
-                if status == RunStatus.FAILED and node_id == "llm-triage"
-                else NodeRunStatus.SUCCESS,
-                "inputs": run.inputs if node_id == "webhook-ticket" else {"previous": "redacted"},
-                "process_data": _demo_options(f"node-run-{node_prefix}-{index}"),
-                "outputs": node_outputs,
-                "error_message": error_message if node_id == "llm-triage" else None,
-                "started_at": started_at + timedelta(milliseconds=100 * index),
-                "finished_at": started_at
-                + timedelta(milliseconds=100 * index)
-                + timedelta(seconds=node_duration),
-                "duration": node_duration,
-                "trace_metadata": {
-                    "demo_seed": True,
-                    "cost_hotspot": node_id == "llm-triage",
-                },
-                "redaction_applied": False,
-                "pii_detected": False,
-                "sequence": index + 1,
-                "retry_count": 0,
-            },
-        )
 
 
 def _internal_it_helpdesk_result(
@@ -5125,92 +4656,6 @@ def _replace_internal_it_helpdesk_seed_runs(db: Session) -> None:
 
 def _seed_runs_and_usage(db: Session, models: dict[str, LLMModel]) -> None:
     now = _now()
-    run_specs = [
-        ("ticket_ops", "author", RunStatus.SUCCESS, 4.8, 10120, Decimal("0.0820"), "CS 리드 승인 요청이 필요합니다.", DEMO_CHAT_MODEL, 8200, 1920, 4800),
-        ("ticket_ops", "author", RunStatus.SUCCESS, 4.1, 9800, Decimal("0.0780"), "Enterprise 고객 장애 티켓으로 우선 처리합니다.", DEMO_CHAT_MODEL, 7900, 1900, 4100),
-        ("ticket_ops", "author", RunStatus.SUCCESS, 1.9, 3280, Decimal("0.0220"), "권한 기반 RAG와 중간 모델로 처리했습니다.", DEMO_CHAT_MINI_MODEL, 2600, 680, 1900),
-        ("ticket_ops", "author", RunStatus.SUCCESS, 2.2, 3410, Decimal("0.0240"), "승인 필요 여부를 판단했습니다.", DEMO_CHAT_MINI_MODEL, 2700, 710, 2200),
-        ("ticket_ops", "author", RunStatus.SUCCESS, 2.4, 3650, Decimal("0.0260"), "고객 답변 초안을 생성했습니다.", DEMO_CHAT_MINI_MODEL, 2890, 760, 2400),
-        ("ticket_ops", "author", RunStatus.SUCCESS, 2.1, 3400, Decimal("0.0230"), "SLA 기준에 따라 기술지원팀으로 배정했습니다.", DEMO_CHAT_MINI_MODEL, 2720, 680, 2100),
-        ("ticket_ops", "author", RunStatus.FAILED, 1.3, 1200, Decimal("0.0060"), None, DEMO_CHAT_MINI_MODEL, 1000, 200, 1300),
-        ("ticket_ops_warning", "author", RunStatus.SUCCESS, 5.2, 11200, Decimal("0.0910"), "비용 위험 workflow 실행입니다.", DEMO_CHAT_MODEL, 9100, 2100, 5200),
-        ("ticket_ops_risk", "author", RunStatus.SUCCESS, 4.9, 10800, Decimal("0.0880"), "비용 위험 workflow 실행입니다.", DEMO_CHAT_MODEL, 8700, 2100, 4900),
-        ("ticket_ops_paused", "author", RunStatus.FAILED, 0.4, 0, Decimal("0.0000"), None, DEMO_CHAT_MODEL, 0, 0, 0),
-        (
-            "model_router_ticket_ops",
-            "author",
-            RunStatus.SUCCESS,
-            3.2,
-            1218,
-            Decimal("0.001920"),
-            '{"긴급도": true, "답변 초안": "먼저 불편을 드린 점 진심으로 사과드립니다. 현재 해당 장애가 SLA 위반 가능성이 있어 크레딧 보상 검토가 필요하며, 승인 결과는 48시간 내 안내드리겠습니다. 추가 영향 범위 확인을 위해 실패한 정산 파일 생성 시각과 요청 ID를 공유해 주세요."}',
-            DEMO_MODEL_ROUTER_BASE_MODEL,
-            295,
-            923,
-            3200,
-        ),
-        (
-            "model_router_ticket_ops",
-            "author",
-            RunStatus.SUCCESS,
-            2.7,
-            1045,
-            Decimal("0.001740"),
-            '{"긴급도": false, "답변 초안": "문의하신 정산 파일 재생성 방법과 다운로드 위치를 안내드리겠습니다. 관리자 페이지의 정산 메뉴에서 파일을 다시 생성한 뒤 완료 알림 후 다운로드할 수 있습니다. 추가 오류가 발생하면 요청 ID와 발생 시각을 함께 알려 주세요."}',
-            DEMO_MODEL_ROUTER_BASE_MODEL,
-            280,
-            765,
-            2700,
-        ),
-    ]
-
-    for index, spec in enumerate(run_specs):
-        workflow_key, user_key, status, duration, tokens, cost, output, model_name, prompt, completion, latency = spec
-        run_id = _uuid(2000 + index)
-        _seed_run(
-            db,
-            run_id=run_id,
-            workflow_key=workflow_key,
-            user_key=user_key,
-            status=status,
-            started_at=now - timedelta(hours=index + 1),
-            duration=duration,
-            total_tokens=tokens,
-            total_cost=cost,
-            output_text=output,
-            error_message="provider_timeout" if status == RunStatus.FAILED else None,
-            model_name=model_name,
-            prompt_tokens=prompt,
-            completion_tokens=completion,
-            latency_ms=latency,
-            node_prefix=index,
-        )
-
-        # 관리자 비용 탭/월간 요약(FR-012/FR-015)의 원천은 llm_usage_logs라
-        # run과 같은 시각/토큰/비용으로 usage row를 만든다. 실패 run은 provider
-        # 응답이 없어 usage를 기록하지 않는 실제 경로를 따른다.
-        if status == RunStatus.SUCCESS:
-            _upsert_by_id(
-                db,
-                LLMUsageLog,
-                _uuid(5000 + index),
-                {
-                    "user_id": USER_IDS[user_key],
-                    "organization_id": ORG_ID,
-                    "credential_id": LLM_CREDENTIAL_IDS["demo_openai"],
-                    "model_id": models[model_name].id,
-                    "workflow_id": WORKFLOW_IDS[workflow_key],
-                    "workflow_run_id": run_id,
-                    "node_id": "llm-triage",
-                    "prompt_tokens": prompt,
-                    "completion_tokens": completion,
-                    "total_cost": cost,
-                    "latency_ms": latency,
-                    "status": "success",
-                    "created_at": now - timedelta(hours=index + 1),
-                },
-            )
-
     _replace_internal_it_helpdesk_seed_runs(db)
     internal_it_started_at = now - timedelta(minutes=10)
     for index, spec in enumerate(INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS):
@@ -5220,7 +4665,6 @@ def _seed_runs_and_usage(db: Session, models: dict[str, LLMModel]) -> None:
             started_at=internal_it_started_at + timedelta(minutes=index),
             models=models,
         )
-
 
 def _seed_permission_requests(db: Session) -> None:
     """author의 승인된 App 생성 권한 신청과 부여 결과 (ADR-0016, FR-014)."""
@@ -5259,16 +4703,19 @@ def _seed_permission_requests(db: Session) -> None:
 
 def _seed_audit_logs(db: Session) -> None:
     now = _now()
+    db.query(AuditLog).filter(
+        AuditLog.audit_metadata["demo_seed"].astext == "true"
+    ).delete(synchronize_session=False)
     # ADR-0008 canonical action 기준. occurred_at은 index가 클수록 과거이므로
     # 최신 이벤트를 앞에 둔다 (신청 -> 승인 -> 권한 부여가 시간순이 되도록).
     logs = [
         (AuditAction.USER_LOGIN, "rookie", "user", USER_IDS["rookie"], "신입사원 로그인"),
-        (AuditAction.LLM_CALL, "author", "workflow", str(WORKFLOW_IDS["ticket_ops"]), "LLM 비용 사용 기록"),
-        (AuditAction.WORKFLOW_EXECUTE, "author", "workflow", str(WORKFLOW_IDS["ticket_ops"]), "고객 티켓 workflow 실행"),
-        (AuditAction.WORKFLOW_DEPLOY, "author", "workflow", str(WORKFLOW_IDS["ticket_ops"]), "Enterprise 고객 티켓 처리 배포"),
+        (AuditAction.LLM_CALL, "admin", "workflow", str(WORKFLOW_IDS["internal_it_helpdesk_routing"]), "사내 IT 문의 LLM 비용 사용 기록"),
+        (AuditAction.WORKFLOW_EXECUTE, "admin", "workflow", str(WORKFLOW_IDS["internal_it_helpdesk_routing"]), "사내 IT 문의 workflow 실행"),
+        (AuditAction.WORKFLOW_DEPLOY, "admin", "workflow", str(WORKFLOW_IDS["internal_it_helpdesk_routing"]), "사내 IT 문의 자동 처리 배포"),
         (AuditAction.POLICY_BLOCK, "admin", "knowledge", str(KB_IDS["finance"]), "민감 문서 접근 정책 차단"),
-        (AuditAction.PERMISSION_DENIED, "author", "workflow", str(WORKFLOW_IDS["ticket_ops"]), "권한 없는 workflow 접근 차단"),
-        (AuditAction.WORKFLOW_CREATE, "rookie", "workflow", str(WORKFLOW_IDS["hr_bot_example"]), "사내 문서 질문 응답 봇 생성"),
+        (AuditAction.PERMISSION_DENIED, "author", "workflow", str(WORKFLOW_IDS["internal_it_helpdesk_routing"]), "권한 없는 사내 IT workflow 접근 차단"),
+        (AuditAction.WORKFLOW_CREATE, "admin", "workflow", str(WORKFLOW_IDS["internal_it_helpdesk_routing"]), "사내 IT 문의 자동 처리 생성"),
         (AuditAction.USER_APP_CREATION_PERMISSION_CREATED, "admin", "user_app_creation_permission", str(APP_CREATION_PERMISSION_IDS["author"]), "운영자 App 생성 권한 부여"),
         (AuditAction.PERMISSION_REQUEST_APPROVED, "admin", "permission_request", str(PERMISSION_REQUEST_IDS["author_app_create"]), "운영자 권한 신청 승인"),
         (AuditAction.PERMISSION_REQUEST_CREATED, "author", "permission_request", str(PERMISSION_REQUEST_IDS["author_app_create"]), "운영자 workflow 생성/배포 권한 신청"),
@@ -5300,6 +4747,142 @@ def _seed_audit_logs(db: Session) -> None:
                 },
             },
         )
+
+
+def _demo_security_alert_detection_key() -> str:
+    return build_security_alert_detection_key(
+        organization_id=ORG_ID,
+        actor_id=USER_IDS["rookie"],
+        rule_id="repeated_permission_denied",
+        rule_version="v1",
+    )
+
+
+def _seed_security_alert(db: Session) -> None:
+    now = _now()
+    detection_key = _demo_security_alert_detection_key()
+    first_occurred_at = now - timedelta(minutes=4, seconds=30)
+    operations = ("list",) * 5 + ("resolve",) * 5
+    occurred_at_by_audit_id: dict[uuid.UUID, datetime] = {}
+
+    for index, (audit_id, operation) in enumerate(
+        zip(DEMO_SECURITY_ALERT_PERMISSION_AUDIT_IDS, operations, strict=True)
+    ):
+        occurred_at = first_occurred_at + timedelta(seconds=index * 30)
+        occurred_at_by_audit_id[audit_id] = occurred_at
+        _upsert_by_id(
+            db,
+            AuditLog,
+            audit_id,
+            {
+                "occurred_at": occurred_at,
+                "actor_id": USER_IDS["rookie"],
+                "actor_type": ActorType.USER,
+                "category": AuditCategory.ACTION,
+                "action": AuditAction.PERMISSION_DENIED,
+                "target_type": "organization",
+                "target_id": str(ORG_ID),
+                "before": None,
+                "after": None,
+                "status": AuditStatus.FAILURE,
+                "audit_metadata": {
+                    **_demo_options(f"security-alert-permission-denied-{index}"),
+                    "organization_id": str(ORG_ID),
+                    "required_permission": "security_alert.manage",
+                    "requested_operation": operation,
+                    "denial_reason": "organization_manager_required",
+                    "permission_action": "manage",
+                    "policy_result": "deny",
+                },
+            },
+        )
+
+    db.query(SecurityAlert).filter(
+        SecurityAlert.detection_key == detection_key,
+        SecurityAlert.id != DEMO_SECURITY_ALERT_ID,
+        SecurityAlert.status.in_(("open", "acknowledged")),
+    ).delete(synchronize_session=False)
+    db.query(AuditLog).filter(
+        AuditLog.target_type == "security_alert",
+        AuditLog.target_id == str(DEMO_SECURITY_ALERT_ID),
+    ).delete(synchronize_session=False)
+    db.query(SecurityAlertAuditEvent).filter(
+        SecurityAlertAuditEvent.security_alert_id == DEMO_SECURITY_ALERT_ID
+    ).delete(synchronize_session=False)
+
+    threshold_detected_at = occurred_at_by_audit_id[
+        DEMO_SECURITY_ALERT_PERMISSION_AUDIT_IDS[4]
+    ]
+    _upsert_by_id(
+        db,
+        SecurityAlert,
+        DEMO_SECURITY_ALERT_ID,
+        {
+            "organization_id": ORG_ID,
+            "subject_actor_id": USER_IDS["rookie"],
+            "rule_id": "repeated_permission_denied",
+            "rule_version": "v1",
+            "severity": "medium",
+            "status": "open",
+            "policy_reason": None,
+            "detection_key": detection_key,
+            "occurrence_count": len(DEMO_SECURITY_ALERT_PERMISSION_AUDIT_IDS),
+            "episode_count": 1,
+            "first_detected_at": first_occurred_at,
+            "last_detected_at": now,
+            "last_episode_started_at": threshold_detected_at,
+            "lifecycle_version": 1,
+            "acknowledged_by": None,
+            "acknowledged_at": None,
+            "resolution_type": None,
+            "resolution_reason": None,
+            "resolved_by": None,
+            "resolved_at": None,
+            "created_at": threshold_detected_at,
+            "updated_at": now,
+        },
+    )
+    db.flush()
+
+    for evidence_id, audit_id in zip(
+        DEMO_SECURITY_ALERT_EVIDENCE_IDS,
+        DEMO_SECURITY_ALERT_PERMISSION_AUDIT_IDS,
+        strict=True,
+    ):
+        _upsert_by_id(
+            db,
+            SecurityAlertAuditEvent,
+            evidence_id,
+            {
+                "security_alert_id": DEMO_SECURITY_ALERT_ID,
+                "audit_log_id": audit_id,
+                "linked_at": occurred_at_by_audit_id[audit_id],
+            },
+        )
+
+    _upsert_by_id(
+        db,
+        AuditLog,
+        DEMO_SECURITY_ALERT_DETECTED_AUDIT_ID,
+        {
+            "occurred_at": threshold_detected_at,
+            "actor_id": None,
+            "actor_type": ActorType.SYSTEM,
+            "category": AuditCategory.ACTION,
+            "action": "security_alert.detected",
+            "target_type": "security_alert",
+            "target_id": str(DEMO_SECURITY_ALERT_ID),
+            "before": None,
+            "after": None,
+            "status": AuditStatus.SUCCESS,
+            "audit_metadata": {
+                "organization_id": str(ORG_ID),
+                "rule_id": "repeated_permission_denied",
+                "rule_version": "v1",
+                "severity": "medium",
+            },
+        },
+    )
 
 
 def _adopt_existing_test_user_ids(db: Session) -> None:
@@ -5661,6 +5244,7 @@ def seed_demo_data(db: Session) -> None:
     )
 
     seed_model_routing_global_profiles(db)
+    _delete_retired_demo_workflows(db)
     _seed_apps_and_workflows(db)
     db.flush()
     _seed_permissions(db)
@@ -5669,6 +5253,7 @@ def seed_demo_data(db: Session) -> None:
     db.flush()
     _seed_runs_and_usage(db, models)
     _seed_audit_logs(db)
+    _seed_security_alert(db)
     db.commit()
 
 
@@ -5676,10 +5261,18 @@ def reset_demo_data(db: Session) -> None:
     """Delete fixed demo rows, then recreate the final demo state."""
     validate_demo_seed_prerequisites()
     _adopt_existing_demo_user_ids(db)
-    app_ids = list(APP_IDS.values())
-    workflow_ids = list(WORKFLOW_IDS.values())
+    app_ids = [*APP_IDS.values(), *RETIRED_DEMO_APP_IDS.values()]
+    workflow_ids = [*WORKFLOW_IDS.values(), *RETIRED_DEMO_WORKFLOW_IDS.values()]
+    deployment_ids = [
+        *DEPLOYMENT_IDS.values(),
+        *RETIRED_DEMO_DEPLOYMENT_IDS.values(),
+    ]
     team_ids = list(TEAM_IDS.values())
-    kb_ids = list(KB_IDS.values())
+    kb_ids = [*KB_IDS.values(), *RETIRED_INTERNAL_DOCUMENT_KB_IDS.values()]
+    collection_ids = [
+        *COLLECTION_IDS.values(),
+        *RETIRED_INTERNAL_DOCUMENT_COLLECTION_IDS.values(),
+    ]
     credential_ids = [
         row[0]
         for row in db.query(LLMCredential.id)
@@ -5693,12 +5286,22 @@ def reset_demo_data(db: Session) -> None:
         .all()
     ]
     user_ids = existing_demo_user_ids or list(USER_IDS.values())
+    workflow_run_ids = {
+        *[_uuid(2000 + i) for i in range(20)],
+        *(spec.run_id for spec in INTERNAL_IT_HELPDESK_ROUTING_RUN_SPECS),
+        *(
+            row[0]
+            for row in db.query(WorkflowRun.id)
+            .filter(WorkflowRun.workflow_id.in_(workflow_ids))
+            .all()
+        ),
+    }
 
     db.query(TracePayloadAccessEvent).filter(
-        TracePayloadAccessEvent.workflow_run_id.in_([_uuid(2000 + i) for i in range(20)])
+        TracePayloadAccessEvent.workflow_run_id.in_(workflow_run_ids)
     ).delete(synchronize_session=False)
     db.query(TracePayload).filter(
-        TracePayload.workflow_run_id.in_([_uuid(2000 + i) for i in range(20)])
+        TracePayload.workflow_run_id.in_(workflow_run_ids)
     ).delete(synchronize_session=False)
     db.query(LLMUsageLog).filter(
         (LLMUsageLog.workflow_id.in_(workflow_ids))
@@ -5706,11 +5309,18 @@ def reset_demo_data(db: Session) -> None:
         | (LLMUsageLog.credential_id.in_(credential_ids))
     ).delete(synchronize_session=False)
     db.query(WorkflowNodeRun).filter(
-        WorkflowNodeRun.workflow_run_id.in_([_uuid(2000 + i) for i in range(20)])
+        WorkflowNodeRun.workflow_run_id.in_(workflow_run_ids)
     ).delete(synchronize_session=False)
     db.query(WorkflowRun).filter(WorkflowRun.workflow_id.in_(workflow_ids)).delete(
         synchronize_session=False
     )
+    db.query(ConversationSessionRecord).filter(
+        or_(
+            ConversationSessionRecord.app_id.in_(app_ids),
+            ConversationSessionRecord.workflow_id.in_(workflow_ids),
+            ConversationSessionRecord.deployment_id.in_(deployment_ids),
+        )
+    ).delete(synchronize_session=False)
     db.query(AuditLog).filter(
         AuditLog.audit_metadata["demo_seed"].astext == "true"
     ).delete(synchronize_session=False)
@@ -5789,7 +5399,7 @@ def reset_demo_data(db: Session) -> None:
 
     db.query(WorkflowDeployment).filter(
         or_(
-            WorkflowDeployment.id.in_(list(DEPLOYMENT_IDS.values())),
+            WorkflowDeployment.id.in_(deployment_ids),
             WorkflowDeployment.app_id.in_(app_ids),
         )
     ).delete(synchronize_session=False)
@@ -5812,17 +5422,30 @@ def reset_demo_data(db: Session) -> None:
         KnowledgeIngestionOutbox.knowledge_base_id.in_(kb_ids)
     ).delete(synchronize_session=False)
     db.query(KnowledgeCollectionItem).filter(
-        KnowledgeCollectionItem.collection_id.in_(list(COLLECTION_IDS.values()))
+        or_(
+            KnowledgeCollectionItem.collection_id.in_(collection_ids),
+            KnowledgeCollectionItem.id.in_(
+                list(RETIRED_INTERNAL_DOCUMENT_COLLECTION_ITEM_IDS.values())
+            ),
+        )
     ).delete(synchronize_session=False)
     db.query(KnowledgeCollection).filter(
-        KnowledgeCollection.id.in_(list(COLLECTION_IDS.values()))
+        KnowledgeCollection.id.in_(collection_ids)
     ).delete(synchronize_session=False)
-    db.query(DocumentChunk).filter(DocumentChunk.knowledge_base_id.in_(kb_ids)).delete(
-        synchronize_session=False
-    )
-    db.query(Document).filter(Document.knowledge_base_id.in_(kb_ids)).delete(
-        synchronize_session=False
-    )
+    db.query(DocumentChunk).filter(
+        or_(
+            DocumentChunk.knowledge_base_id.in_(kb_ids),
+            DocumentChunk.document_id.in_(
+                list(RETIRED_INTERNAL_DOCUMENT_IDS.values())
+            ),
+        )
+    ).delete(synchronize_session=False)
+    db.query(Document).filter(
+        or_(
+            Document.knowledge_base_id.in_(kb_ids),
+            Document.id.in_(list(RETIRED_INTERNAL_DOCUMENT_IDS.values())),
+        )
+    ).delete(synchronize_session=False)
     db.query(KnowledgeBase).filter(KnowledgeBase.id.in_(kb_ids)).delete(
         synchronize_session=False
     )
