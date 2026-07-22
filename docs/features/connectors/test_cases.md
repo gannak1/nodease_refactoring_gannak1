@@ -60,6 +60,10 @@ Verified Against: feature/mba-302 @ b2d6467002b7becf1daa0badfe6fc155b3edaa57
 | CONN-TC-U033 | Schema 관리 API는 request-session rollback 전에 current user ID를 scalar로 고정해야 한다. | Rollback 뒤 expired ORM user attribute를 다시 읽어 새 request transaction이 외부 schema I/O 동안 열린다. | User ID 1회 조회, precheck rollback 뒤 독립 snapshot만 사용. |
 | CONN-TC-U034 | Runtime snapshot은 stored PostgreSQL identifier와 passwordless SSH compatibility를 보존해야 한다. | database/username 앞뒤 공백을 trim하거나 `encrypted_ssh_password=NULL`을 복호화·configuration failure로 처리한다. | 공백뿐인 값만 거부하고 stored identifier text 유지, SSH password는 `None`, 불필요한 decrypt 0회. |
 | CONN-TC-U035 | Reference mutation commit 오류는 lifecycle UoW가 rollback하고 typed safe error로 변환해야 한다. | `40001`/`40P01`/`55P03`/`57014` 또는 일반 SQLAlchemy commit 오류가 500/raw detail로 노출된다. | Transient SQLSTATE는 retryable `connection.reference_busy`, 기타는 `connection.reference_unavailable`, 전체 rollback. |
+| CONN-TC-U036 | Production Connector proxy config는 exact internal `3130`, current revision과 bounded deployment port만 받아야 한다. | Missing/public/credential-bearing/path endpoint, stale revision, duplicate/invalid/17개 port를 각각 주입한다. | Startup-safe configuration failure, network dial 0회. |
+| CONN-TC-U037 | Connector proxy dial은 검증된 literal public IP와 허용 포트만 사용해야 한다. | Hostname, private/link-local/metadata/mapped address 또는 allowlist 밖 port를 전달한다. | Proxy 연결 0회, `connector.egress_target_not_allowed`. |
+| CONN-TC-U038 | CONNECT header 뒤 즉시 도착한 SSH/DB byte를 잃지 않아야 한다. | Proxy 200 header와 SSH banner가 같은 read에 도착한다. | Header까지만 소비하고 banner 전체를 tunnel consumer가 수신. |
+| CONN-TC-U039 | Relay/SSH/engine 생성 실패는 열린 socket과 relay를 정리해야 한다. | CONNECT 성공 뒤 SSH start 또는 SQLAlchemy engine 생성이 실패한다. | Resource stop/close 1회, direct retry 0회, raw target/error 비노출. |
 
 ## API Tests
 
@@ -178,6 +182,7 @@ Verified Against: feature/mba-302 @ b2d6467002b7becf1daa0badfe6fc155b3edaa57
 | CONN-TC-X028 | Production Connector startup secret은 모든 지원 배포 표면에서 같은 fail-closed 계약을 가져야 한다. | Runtime과 Helm은 admission HMAC key를 요구하지만 base Docker Compose가 외부 값을 Gateway 컨테이너에 전달하지 않거나 tracked env example에 실제 key를 둔다. | Compose는 빈 development default를 보존하면서 외부 key 이름만 passthrough하고, production의 누락·짧은 값은 Gateway startup에서 실패한다. Helm required Secret 계약과 key 비재사용·비노출은 유지된다. |
 | CONN-TC-X029 | Connector test 민감 경로 집합은 Nginx와 ASGI sanitizer에서 일치해야 한다. | `/api/v1/connectors/test/`가 일반 `/api` location으로 떨어지거나 child path까지 Connector test로 취급된다. | Canonical path와 단일 trailing slash만 같은 32 KiB/5초/buffering-off/log-off 경계를 사용하고 child path는 두 matcher 모두에서 제외된다. |
 | CONN-TC-X030 | Knowledge DB metadata와 chunk label은 opaque reference 외 Connection 상세를 복제하지 않아야 한다. | `connection_name`, `db_type`, host/database/username, encrypted/decrypted credential 중 하나가 document metadata, processor result 또는 chunk source label에 남는다. | 테스트 실패. |
+| CONN-TC-X031 | Connector egress port 목록은 application, Squid와 NetworkPolicy에 동일하게 배포되어야 한다. | Strict test port가 proxy 목록에 없거나 custom port가 ACL/IPv4/IPv6 중 하나에만 렌더된다. | Startup/Helm render fail-closed 또는 세 경계에 동일 포트 렌더. |
 
 ## MBA-281 Automation Traceability
 

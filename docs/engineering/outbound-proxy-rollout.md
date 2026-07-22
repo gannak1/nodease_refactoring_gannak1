@@ -4,11 +4,12 @@ Status: Draft
 
 ## Scope
 
-이 runbook은 ADR-0071의 Docker Compose 및 provider-neutral Helm HTTP/HTTPS egress와 Worker IMAP tunnel 전환을 다룬다. PostgreSQL, Redis, Connector DB/SSH와 Sandbox control은 대상이 아니다. Proxy 설정을 제거해 direct egress로 되돌리는 절차는 안전한 rollback이 아니다.
+이 runbook은 ADR-0071의 Docker Compose 및 provider-neutral Helm HTTP/HTTPS egress, Worker IMAP tunnel과 external Connector DB/SSH tunnel 전환을 다룬다. Platform PostgreSQL/Redis와 Sandbox control은 대상이 아니다. Proxy 설정을 제거해 direct egress로 되돌리는 절차는 안전한 rollback이 아니다.
 
 ## Required inputs
 
 - Immutable application 및 Squid image identity
+- Connector DB/SSH의 배포 관리 포트 allowlist. 기본은 `22,5432`이며 추가 포트는 workload env, Squid ACL과 proxy NetworkPolicy에 동일하게 반영해야 한다.
 - Exact cluster pod CIDR 목록인 `egressProxy.networkPolicy.authorizedSourceCidrs`
 - NetworkPolicy를 실제 집행하는 CNI와 해당 version
 - Release manifest 전체 NetworkPolicy 목록
@@ -20,7 +21,7 @@ Catch-all, loopback, link-local, metadata 또는 출처를 알 수 없는 source
 ## Preflight
 
 1. Helm lint/render와 proxy deployment contract를 통과한다.
-2. Squid image가 digest로 고정되고 replica가 2개 이상이며 PDB, resource bound, non-root/read-only/capability drop이 렌더되는지 확인한다.
+2. Squid image가 digest로 고정되고 replica가 2개 이상이며 PDB, resource bound, non-root/read-only/capability drop이 렌더되는지 확인한다. `3128/3129/3130` listener와 Connector allowlist가 application env, ConfigMap과 NetworkPolicy에서 일치해야 한다.
 3. Gateway, Workflow Worker와 Knowledge Worker에 custom `OUTBOUND_*` 설정만 있고 ambient proxy/`NO_PROXY`가 없는지 확인한다.
 4. Release 전체에서 target selector를 여는 다른 public 80/443 egress policy, `hostNetwork`, privileged target pod와 Sandbox proxy source가 없는지 확인한다.
 5. 배포 CNI에서 DNS, Service DNAT, IPv4/IPv6, private/metadata deny와 unauthorized source probe를 실행한다. PR CI의 pinned Calico IPv4 결과는 운영 CNI 또는 dual-stack 증거를 대체하지 않는다.
@@ -53,6 +54,7 @@ Catch-all, loopback, link-local, metadata 또는 출처를 알 수 없는 source
 
 - Application 오류는 직전 proxy-aware image/config revision으로 되돌린다.
 - Squid config 오류는 직전 digest/config checksum으로 되돌리되 workload strict policy를 유지한다.
+- Connector `3130` 또는 허용 포트가 실패하면 direct public route를 추가하지 않는다. 직전 일치 allowlist로 되돌리거나 해당 Connector operation을 중지한다.
 - Proxy capacity 문제는 승인된 resource/replica 조정으로 해결한다.
 - `egressProxy.enabled=false`, strict policy 삭제, broad public CIDR 또는 `NO_PROXY=*`는 rollback으로 사용하지 않는다. 불가피하게 direct path를 복구하면 proxy-only 보장이 해제된 보안 incident/degraded mode로 선언하고 별도 승인을 받아야 한다.
 

@@ -4,14 +4,15 @@ Status: Draft
 
 ## MBA-357 Outbound Proxy-Only Contracts
 
-- Production proxy mode는 exact internal host와 3128/3129만 허용하고 blank, public, localhost/loopback/link-local, userinfo, path/query/fragment, stale revision과 direct mode를 network I/O 전에 거부한다. Ambient proxy와 broad `NO_PROXY`는 결과를 바꾸지 않는다.
+- Production proxy mode는 exact internal host와 HTTP listener `3128/3129`, Connector listener `3130`만 허용하고 blank, public, localhost/loopback/link-local, userinfo, path/query/fragment, stale revision과 direct mode를 network I/O 전에 거부한다. Ambient proxy와 broad `NO_PROXY`는 결과를 바꾸지 않는다.
 - Guarded sync/async transport는 application URL/DNS policy를 proxy 연결 전에 다시 평가하고 Squid만 dial한다. Proxy connection/tunnel failure 뒤 origin direct dial은 0회이며 HTTPS SNI/certificate hostname, response cap, stream/cancellation과 safe error 계약을 유지한다.
 - S3/object storage client는 explicit proxy 설정 또는 explicit empty proxy map을 사용하며 ambient environment를 신뢰하지 않는다. Invalid proxy config에서는 provider client 생성과 signed request가 0회다.
-- Squid config는 pinned image, CONNECT 443, Workflow-only HTTP 80 listener, final deny-all, private/reserved/metadata IPv4/IPv6 deny, no SSL bump, no cache와 `access_log none`을 검증한다.
+- Squid config는 pinned image, CONNECT 443, Workflow-only HTTP 80 listener, IMAP 143/993와 Connector 전용 `3130` listener의 배포 관리 포트 allowlist, final deny-all, private/reserved/metadata IPv4/IPv6 deny, no SSL bump, no cache와 `access_log none`을 검증한다.
 - Compose는 Gateway·Knowledge·Workflow가 egress-capable network에 직접 연결되지 않고 Squid만 egress network를 사용하며 host-published listener가 없는지 검증한다. Disposable runtime은 safe origin 성공, mixed A/AAAA/CNAME/rebind 차단, unauthorized source 차단, direct dial과 proxy-down fallback 실패를 확인한다.
 - Helm render는 Squid Deployment/Service/PDB, immutable digest, minimum replica, security context, resource bounds, listener별 ingress와 workload별 egress를 검증한다. Logger/Beat/Frontend에는 public route와 proxy access가 없어야 한다.
 - Canary render의 workload selector에는 `nodease.io/egress-mode=proxy-v1`이 있고 final render에서는 없어야 한다. Pod phase annotation, `maxUnavailable=0`, `maxSurge=1`과 PDB를 함께 확인한다.
-- Remote CI는 pinned kind/Kubernetes와 Calico IPv4에서 target direct HTTPS 실패, authorized Squid HTTPS 성공과 Sandbox-shaped unauthorized source 실패를 실제 실행한다. Dual-stack과 실제 운영 CNI는 release probe이며 미검증 환경을 지원으로 표시하지 않는다.
+- Remote CI는 pinned kind/Kubernetes와 Calico IPv4에서 target direct HTTPS 실패, authorized Squid HTTPS/Connector 성공과 Sandbox-shaped unauthorized source 실패를 실제 실행한다. Unrestricted control에서 IPv4-mapped public/private 연결이 가능한지 먼저 증명한 뒤 보호 workload의 mapped public/private/metadata direct 연결 실패를 확인한다. Dual-stack과 실제 운영 CNI는 release probe이며 미검증 환경을 지원으로 표시하지 않는다.
+- Image contract는 `cl100k_base`/`o200k_base`와 NLTK `punkt`/`punkt_tab`/`stopwords`가 build 단계에 적재되고 ingestion runtime source에 `nltk.download`가 없음을 검증한다.
 - Synthetic secret marker를 application/proxy logs와 failure output에 넣어도 URL/query/header/body, credential, resolved IP와 raw provider exception이 남지 않아야 한다.
 
 ## Unit Tests
@@ -199,8 +200,8 @@ Status: Draft
 - Direct Gateway 개발 예시에는 정확히 하나의 지원 storage mode(`LOCAL` 또는 `CLOUD`)가 있어야 하고 legacy `PROD` 값은 없어야 한다. 현재 로컬 예시의 `LOCAL`은 cloud 좌표 없이 유효해야 한다.
 - S3 upload와 presigned URL provider failure는 cause chain 없이 stable safe error로 변환되고 provider exception text가 exception이나 log에 남지 않는다. Upload 실패 뒤 request file pointer는 기존 계약대로 초기 위치로 복원한다.
 - Production proxy mode의 S3 client와 workload identity nested STS client는 같은 botocore session default config의 exact proxy와 retry 정책을 상속한다. Ambient proxy가 있어도 사용하지 않고 credential exchange 실패 뒤 direct fallback하지 않는다.
-- Helm render는 `egressProxy.service.httpsPort!=3128` 또는 `httpCompatiblePort!=3129`를 각각 고정된 safe message로 거부한다. Squid IPv4/IPv6 egress rule은 public 80/443과 Worker-only IMAP 143/993를 모두 포함한다.
-- Kubernetes direct HTTPS negative probe는 먼저 workload pod DNS 성공을 확인하고 public IPv4를 얻은 뒤 `curl --resolve`로 direct TCP를 강제해 실패를 확인한다. Workflow probe는 같은 IPv4 path에서 Squid `3129`를 통한 143/993 CONNECT 성공을 별도로 확인한다.
+- Helm render는 `egressProxy.service.httpsPort!=3128`, `httpCompatiblePort!=3129` 또는 `connectorTcpPort!=3130`을 각각 고정된 safe message로 거부한다. Connector port 목록은 1~16개의 unique valid port이며 strict Connector test 목록을 포함해야 하고, application env·Squid ACL·IPv4/IPv6 proxy egress rule에 동일하게 렌더되어야 한다. Squid rule은 public 80/443과 Worker-only IMAP 143/993도 포함한다.
+- Kubernetes direct HTTPS negative probe는 먼저 workload pod DNS 성공을 확인하고 public IPv4를 얻은 뒤 `curl --resolve`로 direct TCP를 강제해 실패를 확인한다. IPv4-mapped probe는 unrestricted control success와 보호 workload의 mapped public/private/metadata failure를 함께 요구한다. Workflow probe는 같은 IPv4 path에서 Squid `3129`를 통한 143/993 CONNECT 성공을, Connector probe는 `3130`을 통한 배포 허용 포트 성공과 HTTPS 거부를 별도로 확인한다.
 - 기본 환경에서 schedule schema downgrade를 시도하면 sibling migration DDL 전에 실패하고 Alembic head가 유지된다. 파괴적 opt-in 없는 성공 downgrade/re-upgrade는 안전성 증거로 인정하지 않는다.
 - Schedule Celery task의 producer와 task registration은 모두 `ignore_result=True`이고 `task_store_errors_even_if_ignored=False`다. 성공과 실패 실행 뒤 Redis result backend에는 workflow output, RAG evidence, sync 상세 또는 raw exception이 생성되지 않으며 task outcome은 claim/status/finalization summary로 제한된다. 실제 Redis key 부재는 opt-in integration evidence로 별도 실행한다.
 - Schedule structured signal capture와 Scheduler/Worker 오류 log capture에는 정의된 event/value/status/reason/mode 또는 operation/attempt/exception type만 존재하고 UUID, idempotency key, raw payload와 raw exception message가 없다.
