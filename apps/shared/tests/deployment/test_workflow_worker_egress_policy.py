@@ -41,7 +41,7 @@ PUBLIC_IPV6_EXCLUSIONS = {
     "fec0::/10",
     "ff00::/8",
 }
-PUBLIC_PORTS = {80, 443, 143, 993}
+PUBLIC_PORTS = {143, 993}
 
 
 def _read(relative_path: str) -> str:
@@ -63,6 +63,9 @@ def test_helm_worker_policy_is_default_on_and_rejects_unsafe_catch_all() -> None
     assert "externalDatabaseCidrs is required" in template
     assert "externalRedisCidrs is required" in template
     assert "external dependency CIDRs cannot be empty" in template
+    assert ".Values.egressProxy.enabled" in template
+    assert 'component" "egress-proxy' in template
+    assert "port: 3129" in template
     assert "- {}" not in template
     assert "hostNetwork: true" not in _read(
         "infra/helm/moduly/templates/worker-deployment.yaml"
@@ -72,6 +75,8 @@ def test_helm_worker_policy_is_default_on_and_rejects_unsafe_catch_all() -> None
         assert f"- {cidr}" in template
     for port in PUBLIC_PORTS | {53, 5432, 6379, 8194}:
         assert f"port: {port}" in template
+    assert "port: 80" not in template
+    assert "port: 443" not in template
 
 
 def test_generic_http_production_path_cannot_construct_httpx_client_directly() -> None:
@@ -93,9 +98,7 @@ def test_generic_http_production_path_cannot_construct_httpx_client_directly() -
         ]
         assert direct_clients == []
 
-    node_source = _read(
-        "apps/workflow_engine/workflow/nodes/http/http_node.py"
-    )
+    node_source = _read("apps/workflow_engine/workflow/nodes/http/http_node.py")
     composition_source = _read("apps/workflow_engine/composition/generic_http.py")
     assert "build_generic_http_effect_adapter" in node_source
     assert "GuardedHttpxOutboundAdapter" in composition_source

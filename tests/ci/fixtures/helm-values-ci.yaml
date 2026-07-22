@@ -3,6 +3,11 @@ storage:
   bucketName: "ci-static-render-placeholder"
   region: "region-ci-1"
 
+egressProxy:
+  networkPolicy:
+    authorizedSourceCidrs:
+      - "192.168.0.0/16"
+
 gateway:
   env:
     AUTH_LOGIN_TRUSTED_PROXY_CIDRS: "10.0.0.0/16"

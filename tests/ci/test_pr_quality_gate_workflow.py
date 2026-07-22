@@ -21,10 +21,7 @@ COMPOSITE_ACTION_CI_FIXTURE_PATH = (
     / "action.yml"
 )
 KNOWLEDGE_POSTGRES_PATH = (
-    REPOSITORY_ROOT
-    / ".github"
-    / "workflows"
-    / "test-knowledge-runtime-postgres.yml"
+    REPOSITORY_ROOT / ".github" / "workflows" / "test-knowledge-runtime-postgres.yml"
 )
 WORKFLOW_POSTGRES_PATH = (
     REPOSITORY_ROOT
@@ -75,22 +72,15 @@ def test_deployment_validation_is_fail_closed_in_required_gate():
 def test_actionlint_validates_only_changed_workflow_files():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
 
-    assert (
-        'git diff --name-only --no-renames --diff-filter=ACMR -z'
-        in workflow
-    )
+    assert "git diff --name-only --no-renames --diff-filter=ACMR -z" in workflow
     assert "'.github/workflows/*.yml'" in workflow
     assert "'.github/workflows/*.yaml'" in workflow
     assert 'actionlint@v1.7.12 "${workflow_files[@]}"' in workflow
 
 
 def test_action_reference_matcher_supports_sequence_item_syntax():
-    mapping_match = EXTERNAL_ACTION_PATTERN.match(
-        "      uses: actions/checkout@v4"
-    )
-    sequence_match = EXTERNAL_ACTION_PATTERN.match(
-        "      - uses: actions/checkout@v4"
-    )
+    mapping_match = EXTERNAL_ACTION_PATTERN.match("      uses: actions/checkout@v4")
+    sequence_match = EXTERNAL_ACTION_PATTERN.match("      - uses: actions/checkout@v4")
 
     assert mapping_match is not None
     assert sequence_match is not None
@@ -122,7 +112,9 @@ def test_ci_control_smoke_uses_protected_actionlint_and_dockerfile_fixture():
     )[1].split("- name: Set up Helm", maxsplit=1)[0]
 
     assert "ci_control_changed: ${{ steps.ci_control.outputs.changed }}" in workflow
-    assert "CI_CONTROL_CHANGED: ${{ needs.scope.outputs.ci_control_changed }}" in workflow
+    assert (
+        "CI_CONTROL_CHANGED: ${{ needs.scope.outputs.ci_control_changed }}" in workflow
+    )
     for workflow_path in PROTECTED_CI_WORKFLOWS:
         relative = workflow_path.relative_to(REPOSITORY_ROOT).as_posix()
         assert relative in actionlint_block
@@ -130,13 +122,11 @@ def test_ci_control_smoke_uses_protected_actionlint_and_dockerfile_fixture():
     assert DOCKERFILE_CI_FIXTURE_PATH.is_file()
     assert (
         "dockerfile_config_changed: "
-        "${{ steps.ci_control.outputs.dockerfile_config_changed }}"
-        in workflow
+        "${{ steps.ci_control.outputs.dockerfile_config_changed }}" in workflow
     )
     assert (
         "DOCKERFILE_CONFIG_CHANGED: "
-        "${{ needs.scope.outputs.dockerfile_config_changed }}"
-        in workflow
+        "${{ needs.scope.outputs.dockerfile_config_changed }}" in workflow
     )
     assert "tests/ci/fixtures/dockerfile-smoke/Dockerfile" in workflow
     assert "git ls-files -z -- ':(glob)**/Dockerfile'" not in workflow
@@ -161,8 +151,7 @@ def test_composite_action_metadata_uses_pinned_validator_and_fixture():
     assert COMPOSITE_ACTION_CI_FIXTURE_PATH.is_file()
     assert (
         "uses: mpalmer/action-validator@"
-        "c994f427b7c42cd5ecb1bc9315cb91c3d7d72e3d # v0.9.0"
-        in workflow
+        "c994f427b7c42cd5ecb1bc9315cb91c3d7d72e3d # v0.9.0" in workflow
     )
     assert 'version: "0.9.0"' in workflow
     assert "tests/ci/fixtures/composite-action-smoke/action.yml" in workflow
@@ -179,8 +168,7 @@ def test_trusted_diff_detects_real_dockerfile_changes():
 
     assert (
         "dockerfile_config_changed: "
-        "${{ steps.ci_control.outputs.dockerfile_config_changed }}"
-        in workflow
+        "${{ steps.ci_control.outputs.dockerfile_config_changed }}" in workflow
     )
     assert "dockerfile_config_changed=false" in trusted_diff_block
     assert (
@@ -213,18 +201,14 @@ def test_compose_validation_combines_variant_with_base_file():
     assert "docker-compose.*.yml|docker-compose.*.yaml" in workflow
     assert (
         'docker compose --profile "*" --file "$base_path" --file "$path" '
-        "config --quiet"
-        in workflow
+        "config --quiet" in workflow
     )
 
 
 def test_helm_validation_schema_checks_rendered_manifests():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
 
-    assert (
-        "go run github.com/yannh/kubeconform/cmd/kubeconform@v0.7.0"
-        in workflow
-    )
+    assert "go run github.com/yannh/kubeconform/cmd/kubeconform@v0.7.0" in workflow
     assert "kubeconform/cmd/kubeconform@v0.8.0" not in workflow
     assert "-kubernetes-version 1.31.0" in workflow
     assert '"$rendered_manifest"' in workflow
@@ -251,9 +235,9 @@ def test_helm_validation_requires_tracked_lock_before_dependency_build():
 def test_helm_validation_runs_targeted_deployment_contract_tests():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
     deployment_block = workflow.split(
-        "deployment_validation:",
+        "\n  deployment_validation:\n",
         maxsplit=1,
-    )[1].split("ci_required:", maxsplit=1)[0]
+    )[1].split("\n  ci_required:\n", maxsplit=1)[0]
 
     helm_validation = "needs.scope.outputs.helm_validation == 'true'"
     contract_step = deployment_block.split(
@@ -271,6 +255,44 @@ def test_helm_validation_runs_targeted_deployment_contract_tests():
     assert deployment_block.index("helm dependency build infra/helm/moduly") < (
         deployment_block.index("- name: Run Helm deployment contract tests")
     )
+
+
+def test_egress_proxy_runtime_contract_runs_only_for_its_selected_scope():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+    deployment_block = workflow.split(
+        "deployment_validation:",
+        maxsplit=1,
+    )[1].split("ci_required:", maxsplit=1)[0]
+    contract_step = deployment_block.split(
+        "- name: Run egress proxy runtime contracts",
+        maxsplit=1,
+    )[1].split("- name:", maxsplit=1)[0]
+
+    assert "needs.scope.outputs.egress_proxy_validation == 'true'" in contract_step
+    assert 'NODEASE_RUN_EGRESS_PROXY_INTEGRATION: "1"' in contract_step
+    assert "tests/ci/test_egress_proxy_runtime.py" in contract_step
+
+
+def test_egress_proxy_scope_uses_pinned_kind_and_calico_network_policy_probe():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+    deployment_block = workflow.split(
+        "\n  deployment_validation:\n",
+        maxsplit=1,
+    )[1].split("\n  ci_required:\n", maxsplit=1)[0]
+    deployment_header = deployment_block.split("\n    steps:\n", maxsplit=1)[0]
+
+    assert "timeout-minutes: 30" in deployment_header
+    assert "sigs.k8s.io/kind@v0.31.0" in deployment_block
+    assert (
+        "kindest/node:v1.32.11@sha256:"
+        "5fc52d52a7b9574015299724bd68f183702956aa4a2116ae75a63cb574b35af8"
+    ) in deployment_block
+    assert (
+        "projectcalico/calico/0ca9d1b93644778cafdf1812f3dda02ac0c361e8/"
+        "manifests/calico.yaml"
+    ) in deployment_block
+    assert "tests/ci/test_egress_proxy_kubernetes.py" in deployment_block
+    assert 'NODEASE_RUN_EGRESS_PROXY_KUBERNETES: "1"' in deployment_block
 
 
 def test_unsupported_deployment_surface_guard_is_wired_into_quality_gate():
@@ -301,10 +323,7 @@ def test_dockerfile_validation_preserves_rename_source_paths():
         'git diff --name-only --no-renames -z "$BASE_SHA" "$HEAD_SHA" --'
         in dockerfile_block
     )
-    assert (
-        '--build-arg "BUILDKIT_DOCKERFILE_CHECK=error=true"'
-        in dockerfile_block
-    )
+    assert '--build-arg "BUILDKIT_DOCKERFILE_CHECK=error=true"' in dockerfile_block
     assert "Dockerfile|Dockerfile.*|*.Dockerfile)" in dockerfile_block
 
 
@@ -315,9 +334,7 @@ def test_dockerfile_validation_runs_demo_seed_image_contract():
         maxsplit=1,
     )[1].split("ci_required:", maxsplit=1)[0]
     helm_validation = "needs.scope.outputs.helm_validation == 'true'"
-    dockerfile_validation = (
-        "needs.scope.outputs.dockerfile_validation == 'true'"
-    )
+    dockerfile_validation = "needs.scope.outputs.dockerfile_validation == 'true'"
 
     for step_name in (
         "Set up Python for deployment contract tests",

@@ -8,6 +8,11 @@
 scheduleDispatch:
   mode: "disabled"
 
+# Local Helm keeps the existing direct-pinned development transport. The
+# production reference and Docker Compose exercise proxy-only enforcement.
+egressProxy:
+  enabled: false
+
 # In-cluster Gateway reaches the PostgreSQL service on its service port only.
 connectorTest:
   allowedPorts:
@@ -115,6 +120,10 @@ knowledgeWorker:
 
 worker:
   replicaCount: 1  # Single replica for local
+  networkPolicy:
+    # The local Helm profile explicitly keeps the direct-pinned development
+    # transport and therefore does not render the production proxy-only policy.
+    enabled: false
   resources:
     limits:
       cpu: 500m

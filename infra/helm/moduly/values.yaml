@@ -19,6 +19,33 @@ storage:
   bucketName: ""
   region: ""
 
+# Public HTTP/HTTPS leaves target workloads only through this internal proxy.
+# Operators must supply the cluster pod CIDRs used by the Squid source ACL.
+egressProxy:
+  enabled: true
+  policyRevision: "proxy-v1"
+  replicaCount: 2
+  image:
+    repository: ubuntu/squid
+    tag: "6.6-24.04_edge"
+    digest: "sha256:8a3baed477e2c282ab8aa5edad442f69873246964f225c5c2ae8364b6610963c"
+    pullPolicy: IfNotPresent
+  service:
+    httpsPort: 3128
+    httpCompatiblePort: 3129
+  networkPolicy:
+    enabled: true
+    enforced: true
+    enforcementPhase: "final"
+    authorizedSourceCidrs: []
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
 # Durable distributed schedule dispatch. Keep disabled until the migration-first
 # rollout has completed and the legacy dispatcher has been drained.
 scheduleDispatch:

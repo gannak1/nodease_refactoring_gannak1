@@ -69,6 +69,72 @@ ingestion contract requires a recovery scheduler and positive worker capacity.
 {{- end -}}
 
 {{/*
+Validate the immutable, server-owned outbound proxy boundary. The proxy source
+CIDRs are deployment coordinates and must be supplied by the operator.
+*/}}
+{{- define "moduly.validateEgressProxy" -}}
+{{- $nodeEnv := lower (.Values.gateway.env.NODE_ENV | default "production") -}}
+{{- if .Values.egressProxy.enabled -}}
+{{- if ne .Values.egressProxy.policyRevision "proxy-v1" -}}
+{{- fail "egressProxy.policyRevision must be proxy-v1" -}}
+{{- end -}}
+{{- if not (regexMatch "^sha256:[a-f0-9]{64}$" (default "" .Values.egressProxy.image.digest)) -}}
+{{- fail "egressProxy.image.digest must be an immutable sha256 digest" -}}
+{{- end -}}
+{{- if empty .Values.egressProxy.networkPolicy.authorizedSourceCidrs -}}
+{{- fail "egressProxy.networkPolicy.authorizedSourceCidrs is required" -}}
+{{- end -}}
+{{- range $cidr := .Values.egressProxy.networkPolicy.authorizedSourceCidrs -}}
+{{- $value := trim (toString $cidr) -}}
+{{- if or (empty $value) (eq $value "0.0.0.0/0") (eq $value "::/0") (eq $value "127.0.0.0/8") (eq $value "169.254.0.0/16") (eq $value "fe80::/10") -}}
+{{- fail "egressProxy authorized source CIDRs cannot be empty, catch-all, loopback, link-local, or metadata ranges" -}}
+{{- end -}}
+{{- end -}}
+{{- if not (has .Values.egressProxy.networkPolicy.enforcementPhase (list "canary" "final")) -}}
+{{- fail "egressProxy.networkPolicy.enforcementPhase must be canary or final" -}}
+{{- end -}}
+{{- if and (eq $nodeEnv "production") (lt (int .Values.egressProxy.replicaCount) 2) -}}
+{{- fail "production egressProxy.replicaCount must be at least 2" -}}
+{{- end -}}
+{{- if and (eq $nodeEnv "production") (or (not .Values.egressProxy.networkPolicy.enabled) (not .Values.egressProxy.networkPolicy.enforced)) -}}
+{{- fail "production egressProxy network policy must be enabled and enforced" -}}
+{{- end -}}
+{{- if and (eq $nodeEnv "production") .Values.worker.enabled (not .Values.worker.networkPolicy.enabled) -}}
+{{- fail "production Worker proxy-only network policy must be enabled" -}}
+{{- end -}}
+{{- else if and (eq $nodeEnv "production") (or .Values.gateway.enabled .Values.worker.enabled .Values.knowledgeWorker.enabled) -}}
+{{- fail "production public HTTP workloads require egressProxy.enabled" -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "moduly.outboundProxyEnv" -}}
+{{- if .context.Values.egressProxy.enabled }}
+- name: OUTBOUND_TRANSPORT_MODE
+  value: "proxy_guarded_external"
+- name: OUTBOUND_PROXY_URL
+  value: {{ printf "http://%s-egress-proxy:%d" (include "moduly.fullname" .context) (.port | int) | quote }}
+- name: OUTBOUND_PROXY_ALLOWED_HOSTS
+  value: {{ printf "%s-egress-proxy" (include "moduly.fullname" .context) | quote }}
+- name: OUTBOUND_PROXY_POLICY_REVISION
+  value: {{ .context.Values.egressProxy.policyRevision | quote }}
+{{- else }}
+- name: OUTBOUND_TRANSPORT_MODE
+  value: "direct_pinned_internal_or_dedicated"
+{{- end }}
+{{- end -}}
+
+{{/*
+During canary rollout, strict workload egress selects only proxy-aware pods.
+In final phase the revision label is intentionally omitted so every pod of the
+component is covered and an unlabeled stale pod cannot retain direct egress.
+*/}}
+{{- define "moduly.egressWorkloadSelectorLabel" -}}
+{{- if eq .Values.egressProxy.networkPolicy.enforcementPhase "canary" -}}
+nodease.io/egress-mode: proxy-v1
+{{- end -}}
+{{- end -}}
+
+{{/*
 Create a default fully qualified app name.
 We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
 If release name contains chart name it will be used as a full name.

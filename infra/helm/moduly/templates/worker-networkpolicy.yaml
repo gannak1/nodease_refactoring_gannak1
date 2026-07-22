@@ -1,4 +1,4 @@
-{{- if and .Values.worker.enabled .Values.worker.networkPolicy.enabled }}
+{{- if and .Values.worker.enabled .Values.worker.networkPolicy.enabled .Values.egressProxy.enabled }}
 {{- if and (not .Values.postgresql.enabled) (empty .Values.worker.networkPolicy.externalDatabaseCidrs) }}
 {{- fail "worker.networkPolicy.externalDatabaseCidrs is required when PostgreSQL is external" }}
 {{- end }}
@@ -25,6 +25,7 @@ spec:
   podSelector:
     matchLabels:
       {{- include "moduly.componentSelectorLabels" (dict "component" "worker" "context" .) | nindent 6 }}
+      {{- include "moduly.egressWorkloadSelectorLabel" . | nindent 6 }}
   policyTypes:
     - Egress
   egress:
@@ -39,6 +40,13 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "moduly.componentSelectorLabels" (dict "component" "egress-proxy" "context" .) | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 3129
     {{- if .Values.postgresql.enabled }}
     - to:
         - podSelector:
@@ -92,8 +100,8 @@ spec:
         - protocol: TCP
           port: 8194
     {{- end }}
-    # Public IPv4 only. Internal, non-routable, documentation, multicast,
-    # carrier-grade NAT and metadata/link-local ranges are excluded.
+    # IMAP remains a dedicated non-HTTP transport. Public web traffic is
+    # available only through the internal egress proxy rule above.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -114,10 +122,6 @@ spec:
               - 224.0.0.0/4
               - 240.0.0.0/4
       ports:
-        - protocol: TCP
-          port: 80
-        - protocol: TCP
-          port: 443
         - protocol: TCP
           port: 143
         - protocol: TCP
@@ -146,10 +150,6 @@ spec:
               - fec0::/10
               - ff00::/8
       ports:
-        - protocol: TCP
-          port: 80
-        - protocol: TCP
-          port: 443
         - protocol: TCP
           port: 143
         - protocol: TCP
