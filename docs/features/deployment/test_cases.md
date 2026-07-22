@@ -165,7 +165,7 @@ Status: Draft
 - `pending`/`dispatching`/`enqueued`에 `workflow_run_id`를 직접 기록하면 domain과 실제 PostgreSQL check constraint가 모두 거부한다. 한 claim의 publish 결과 write 실패 뒤에도 같은 prepared batch의 다음 claim은 publish/result 처리를 계속하며, terminal finalization 일시 실패는 engine call 1회를 유지한 채 fresh session write만 bounded 재시도한다.
 - Gateway/Worker startup readiness는 같은 shared helper 결과를 사용하고 introspection 실패, stale head, 필수 column 누락을 safe하게 거부한다. Concurrent migration은 advisory lock owner 하나만 진행하며 contender는 bounded wait 안에서 owner가 끝나면 이어서 진행하고 제한 시간을 넘기면 DDL 전에 실패한다.
 
-현재 지원 상태(ADR-0065): provider-neutral Helm/Compose는 schedule dispatch disabled만 검증한다. 아래 coordinated rollout 검증은 future CD의 acceptance criteria이며 현재 실행 가능한 EKS/Dev workflow 테스트가 아니다.
+현재 지원 상태(ADR-0068): provider-neutral Helm/Compose는 schedule dispatch disabled만 검증한다. 아래 coordinated rollout 검증은 future CD의 acceptance criteria이며 현재 실행 가능한 EKS/Dev workflow 테스트가 아니다.
 
 - Target CD는 기존 운영 Deployment에 fingerprint annotation이 없는 최초 disabled rollout만 bootstrap으로 허용하고 drain/claim desired mode의 annotation 누락을 fail-closed해야 한다.
 - Target CD는 동일 immutable release의 Logger image를 Gateway/Worker보다 먼저 배포·검증하고 Logger가 수렴하지 않으면 claim admission을 활성화하지 않아야 한다.

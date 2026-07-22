@@ -6,7 +6,7 @@ Status: Draft
 
 Nodease의 PR 품질 게이트는 모든 테스트를 매번 실행하는 장치가 아니다. 변경 파일을 기능·도메인 영향 범위로 변환하고, 해당 변경에 필요한 검사만 실행한 뒤 하나의 안정적인 최종 check로 병합 가능 여부를 판단한다.
 
-Coverage threshold는 MBA-192, Client 기존 ESLint warning 정리는 MBA-252, 전체 cross-domain 회귀는 MBA-30이 소유한다. EKS 전용 CD는 현재 지원 표면에서 제거되며 재도입 조건은 ADR-0065를 따른다.
+Coverage threshold는 MBA-192, Client 기존 ESLint warning 정리는 MBA-252, 전체 cross-domain 회귀는 MBA-30이 소유한다. EKS 전용 CD는 현재 지원 표면에서 제거되며 재도입 조건은 ADR-0068을 따른다.
 
 ## 진입점
 
@@ -25,7 +25,7 @@ PR 검증 진입점은 `.github/workflows/pr-quality-gate.yml`과 `.github/workf
 
 | Job | 실행 조건 | 책임 |
 | --- | --- | --- |
-| `change-scope` | 항상 | base와 head 사이의 변경 경로 분류 |
+| `change-scope` | 항상 | ADR 파일명·H1·번호·README 인덱스 검증, 지원 배포 실행 closure 검사와 base/head 변경 경로 분류 |
 | `alembic-single-head` | 항상 | revision 중복, 누락 parent, cycle, multiple heads 검사 |
 | `python-lint` | Python 파일 변경 | 존재하는 변경 Python 파일만 Ruff 검사 |
 | `client-quality` | Client 영향 | ESLint, typecheck, 변경 dependency Vitest, build |
@@ -67,7 +67,7 @@ PR workspace의 selector 결과만으로 required gate를 결정하지 않는다
 
 | 변경 | 기본 검사 |
 | --- | --- |
-| 문서만 변경 | scope, Alembic graph, aggregate |
+| 문서만 변경 | scope의 ADR 레지스트리 검사, Alembic graph, aggregate |
 | `apps/client/**` | Client lint, typecheck, 관련 Vitest, build |
 | `apps/gateway/**` | 대응 기능 test 또는 Gateway layer test |
 | `apps/workflow_engine/**` | 대응 기능 test 또는 Workflow Engine layer test |

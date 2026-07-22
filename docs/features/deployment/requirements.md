@@ -57,7 +57,7 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-030: `execution_outcome_unknown` 검토는 exact claim의 조사 완료 acknowledgment와 rollback gate 해제 표시에 한정한다. 검토는 claim status를 바꾸거나 redrive 권한을 부여하지 않으며, rollback preflight는 nonterminal claim, 미검토 outcome unknown, Celery active/reserved/scheduled 전용 task를 독립적으로 확인하고 inspection 불가 시 fail-closed해야 한다.
 - DEP-REQ-031: Dispatch 핵심 복구는 expired `dispatching`/`enqueued`와 running deadline 격리를 먼저 처리해야 한다. WorkflowRun visibility signal과 terminal cleanup은 별도 UnitOfWork의 optional maintenance로 수행하며 실패가 핵심 dispatch/recovery를 차단해서는 안 된다.
 
-현재 배포 지원 상태(ADR-0065): Docker Compose와 provider-neutral Helm은 schedule dispatch disabled만 지원한다. 아래 coordinated rollout 항목 중 claim/drain activation·cloud CD에 관한 문장은 미래 provider-neutral CD가 충족해야 할 Target이며 현재 구현된 배포 기능이 아니다.
+현재 배포 지원 상태(ADR-0068): Docker Compose와 provider-neutral Helm은 schedule dispatch disabled만 지원한다. 아래 coordinated rollout 항목 중 claim/drain activation·cloud CD에 관한 문장은 미래 provider-neutral CD가 충족해야 할 Target이며 현재 구현된 배포 기능이 아니다.
 
 - DEP-REQ-032: Schedule runtime의 claim/drain startup readiness는 Alembic head, 필수 claim column과 canonical settings fingerprint를 fail-closed로 확인해야 한다. Migration은 동일 DB connection의 bounded PostgreSQL advisory lock으로 직렬화한다. 실제 activation 배포의 live fingerprint·rollout 검증은 Target coordinated CD가 소유한다.
 - DEP-REQ-033 (Target CD, 미구현): Schedule claim을 활성화하는 provider-neutral coordinated rollout은 Gateway/Worker보다 먼저 동일 immutable release의 Log System image를 배포하고 실제 image identity를 검증해야 한다.

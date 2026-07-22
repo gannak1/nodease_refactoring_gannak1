@@ -64,6 +64,9 @@ jobs:
       - name: Enforce supported deployment execution closure
         run: python -m scripts.ci.check_supported_deployment_surface
 
+      - name: Validate ADR registry
+        run: python -m scripts.ci.check_adr_registry
+
       - name: Detect CI control changes outside the selector
         id: ci_control
         shell: bash

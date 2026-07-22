@@ -8,7 +8,8 @@
 - DB schema, RBAC, audit, data retention, organization boundary, 보안 경계는 ADR 후보로 본다.
 - ADR은 결정의 이유와 선택지를 기록한다. 현재 구현 기준은 관련 문서(`docs/`, `features/`)에도 반드시 반영한다.
 - 파일명은 `ADR-NNNN-topic-slug.md` 형식을 사용한다. `NNNN`은 4자리 순번이다.
-- 병렬 브랜치의 ADR 번호는 예약된 전역 식별자가 아니다. Merge 또는 rebase 직전에 최신 dev의 인덱스를 기준으로 중복을 확인하고, 충돌하면 아직 병합되지 않은 ADR의 파일명·제목·본문 링크·인덱스를 함께 재번호한다. 같은 번호의 서로 다른 결정을 dev에 병합하지 않는다.
+- 병렬 브랜치의 ADR 번호는 예약된 전역 식별자가 아니다. Merge 또는 rebase 직전에 최신 dev의 인덱스를 기준으로 중복을 확인하고, 충돌하면 아직 병합되지 않은 ADR의 파일명·제목·본문 링크·인덱스를 함께 재번호한다. 같은 번호의 서로 다른 결정을 dev에 병합하지 않는다. PR quality gate는 파일명, H1, 번호 유일성과 이 README 인덱스의 1:1 대응을 항상 검사한다.
+- 중복이 이미 dev에 병합됐다면 dev history에 먼저 도달한 ADR의 번호를 유지하고 후발 ADR의 파일명, H1, 인덱스와 모든 공식 참조만 다음 가용 번호로 재분류한다. 이 식별자 무결성 복구는 결정 내용의 소급 변경으로 보지 않으며 본문은 수정하지 않는다.
 - ADR 본문은 작성 시점의 기록으로 보존하고 소급 수정하지 않는다. 결정이 바뀌면 새 ADR을 추가하고 이전 ADR을 참조한다. 단 머리말 `Status`는 기록이 아니라 상태이므로 `Superseded` 등으로 전이할 수 있다.
 - 새 ADR의 메타 블록은 `Status`만 필수로 하고, 관련 결정이 있으면 `Related ADRs`를 선택적으로 추가한다. `Date`는 git history가 답하므로 넣지 않고, 구현 반영 여부는 이 README의 `현재 코드 기준` 열이 담당하므로 `Verified Against`도 넣지 않는다.
 - 이관 ADR의 `Date`, `Original`, `Verified Against` 필드는 이관 당시 기록으로 보존하며, 새 ADR 기준으로 소급 정리하지 않는다.
@@ -73,7 +74,6 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0050](ADR-0050-workflow-generic-http-egress-boundary.md) | Accepted | Workflow Generic HTTP egress 경계 | Generic HTTP를 application outbound port와 공통 guard에 연결하고 검증된 IP로 dial해 DNS rebinding을 차단한다. Redirect는 추적하지 않고 기존 HTTPX/provider 계약을 유지하며, Worker NetworkPolicy는 private·metadata direct egress를 추가로 차단한다. |
 | [ADR-0051](ADR-0051-connection-use-authorization-boundary.md) | Accepted | Connection 사용 권한 경계 | 현재 user-owned Connection은 실행 주체 본인 소유일 때만 Knowledge DB ingestion에 사용할 수 있다. Shared resolver가 설정 저장과 dial 직전에 권한 스냅샷을 재검증하고 non-owner/missing reference를 resource hiding으로 처리한다. Runtime transaction/lock protocol은 MBA-302에서 별도로 결정한다. |
 | [ADR-0052](ADR-0052-knowledge-document-ingestion-durable-execution-boundary.md) | Accepted | Knowledge document ingestion durable 실행 경계 | MBA-288은 process/sync/resume/reindex를 PostgreSQL durable job, document single-flight, worker lease/heartbeat/fencing, due recovery와 전용 `knowledge` queue worker로 이관한다. Celery는 job UUID wake-up 신호이며 active version finalization과 job success는 같은 transaction에서 확정한다. |
-| [ADR-0065](ADR-0065-eks-support-surface-removal.md) | Accepted | EKS 지원 표면 제거와 공급자 중립 배포 경계 | EKS 전용 workflow/raw manifest/Terraform을 제거하고 Docker Compose와 provider-neutral Helm만 지원한다. Non-disabled schedule activation은 별도 coordinated CD가 생길 때까지 fail-closed한다. |
 | [ADR-0053](ADR-0053-connection-transaction-and-lock-boundary.md) | Accepted | Connection transaction과 lock 경계 | Runtime DB use는 독립된 짧은 session에서 immutable credential snapshot을 만든 뒤 session을 닫고 외부 I/O를 시작한다. Reference mutation만 `Connection -> KnowledgeBase -> Document/Version` 순서의 bounded row lock과 stale revision 검사를 사용하며 timeout/deadlock은 safe transient 오류로 처리한다. |
 | [ADR-0054](ADR-0054-agent-builder-generation-modes.md) | Accepted | Agent Builder 생성 모드와 전환 경계 | 기본 `guided_generate`, 명시적 `quick_generate`, 고급 `structure_only`를 정의한다. 빠른 생성도 typed GraphMutation/CDS CAS를 사용하고 서버 eligibility와 사용자 확인을 통과하며 Legacy Preview 프로토콜을 복구하지 않는다. |
 | [ADR-0055](ADR-0055-agent-builder-intent-usage-attribution.md) | Accepted | Agent Builder intent 사용량 귀속 경계 | Planner와 repair 호출을 실제 user/organization/workflow/model/credential에 별도로 귀속하고, provider 응답 직후 raw content 없이 기존 `llm_usage_logs`에 멱등 저장한다. 모델·credential 삭제 뒤에도 token/cost 이력을 보존하며 기존 관리·예산·workflow별 월 예상 비용 집계에 포함한다. 워크플로우 화면의 page-level 표시 조항은 [ADR-0060](ADR-0060-my-module-cost-summary-presentation.md)이 대체한다. |
@@ -89,6 +89,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0065](ADR-0065-knowledge-classification-taxonomy-and-processing-profile.md) | Accepted | Knowledge 분류, 조직 taxonomy와 processing profile 경계 | Security classification, platform document type, organization taxonomy와 immutable processing profile을 분리한다. Manual lock과 accepted assignment가 우선하고 AI는 suggestion-only다. 현재는 목표 정책만 승인됐으며 registry, assignment API, profile infrastructure와 classifier는 아직 구현되지 않았다. |
 | [ADR-0066](ADR-0066-nested-llm-canonical-node-location.md) | Accepted | Nested LLM canonical node location | Deployment policy와 ProviderExecutionCapability의 node identity를 Loop-only structured `container_path + node_id`로 확장한다. 기존 top-level row는 root path로 보존하고 실제 capability rollout은 MBA-320이 소유한다. |
 | [ADR-0067](ADR-0067-production-https-and-operation-bound-outbound.md) | Accepted | 프로덕션 HTTPS와 operation-bound outbound 경계 | Browser public HTTPS와 server-only internal API URL을 분리하고 LLM, Knowledge와 Workflow 원격 파일을 immutable operation profile, address-pinned TLS transport와 safe error 경계에 연결한다. 잔여 adapter 이관과 proxy-only 강제는 MBA-356/357로 분리한다. |
+| [ADR-0068](ADR-0068-eks-support-surface-removal.md) | Accepted | EKS 지원 표면 제거와 공급자 중립 배포 경계 | EKS 전용 workflow/raw manifest/Terraform을 제거하고 Docker Compose와 provider-neutral Helm만 지원한다. Non-disabled schedule activation은 별도 coordinated CD가 생길 때까지 fail-closed한다. |
 
 ## 참고 보고서
 

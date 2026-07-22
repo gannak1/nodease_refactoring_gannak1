@@ -37,6 +37,19 @@ EXTERNAL_ACTION_PATTERN = re.compile(
 )
 
 
+def test_adr_registry_validation_runs_unconditionally_in_scope_job():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+    scope_job = workflow.split("\n  scope:\n", maxsplit=1)[1].split(
+        "\n  alembic_graph:\n",
+        maxsplit=1,
+    )[0]
+
+    assert (
+        "      - name: Validate ADR registry\n"
+        "        run: python -m scripts.ci.check_adr_registry\n"
+    ) in scope_job
+
+
 def test_deployment_validation_is_fail_closed_in_required_gate():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
 
