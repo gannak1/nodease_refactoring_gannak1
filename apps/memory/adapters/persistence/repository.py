@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select, tuple_, update
+from sqlalchemy import delete, func, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, SessionTransaction
@@ -61,6 +62,35 @@ from apps.shared.db.models.conversation_memory import (
 )
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
+
+
+def delete_conversation_sessions_for_resources(
+    session: Session,
+    *,
+    app_ids: Collection[uuid.UUID],
+    workflow_ids: Collection[uuid.UUID],
+    deployment_ids: Collection[uuid.UUID],
+) -> int:
+    """Delete Memory sessions owned by resources removed by demo maintenance."""
+
+    conditions = []
+    if app_ids:
+        conditions.append(ConversationSessionRecord.app_id.in_(tuple(app_ids)))
+    if workflow_ids:
+        conditions.append(ConversationSessionRecord.workflow_id.in_(tuple(workflow_ids)))
+    if deployment_ids:
+        conditions.append(
+            ConversationSessionRecord.deployment_id.in_(tuple(deployment_ids))
+        )
+    if not conditions:
+        return 0
+
+    deleted = (
+        session.query(ConversationSessionRecord)
+        .filter(or_(*conditions))
+        .delete(synchronize_session=False)
+    )
+    return int(deleted or 0)
 
 
 @dataclass(frozen=True, slots=True)

@@ -63,7 +63,11 @@ def test_memory_orm_models_are_only_imported_by_persistence_adapter_in_productio
     offenders = []
     for path in (ROOT / "apps").rglob("*.py"):
         relative = path.relative_to(ROOT)
-        if "tests" in relative.parts or relative in allowed:
+        if (
+            "tests" in relative.parts
+            or ".venv" in relative.parts
+            or relative in allowed
+        ):
             continue
         source = path.read_text(encoding="utf-8")
         if "apps.shared.db.models.conversation_memory" in source:
