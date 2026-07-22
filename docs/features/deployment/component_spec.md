@@ -64,7 +64,7 @@ Status: Draft
 
 ### Schedule Dispatch Configuration Contract
 
-현재 지원 상태(ADR-0065): Docker Compose와 provider-neutral Helm은 disabled mode만 지원한다. EKS workflow/raw manifest/Terraform은 제거됐고 provider-neutral coordinated CD는 아직 구현되지 않았다.
+현재 지원 상태(ADR-0068): Docker Compose와 provider-neutral Helm은 disabled mode만 지원한다. EKS workflow/raw manifest/Terraform은 제거됐고 provider-neutral coordinated CD는 아직 구현되지 않았다.
 
 - Gateway와 Workflow Engine은 동일한 SCHEDULE_DISPATCH 환경변수 집합을 각 composition에서 검증해 주입받는다. 설정 파싱은 apps/shared/domain/schedule_dispatch.py가 소유한다. Helm helper는 non-disabled mode를 render 단계에서 거부하고 Docker Compose는 mode와 fingerprint를 `disabled`로 고정한다.
 - Celery Worker process는 task 소비 전 이 공통 설정을 검증한다. startup hook을 우회한 전용 schedule task도 잘못된 설정을 raw error나 자동 retry로 노출하지 않고 safe permanent rejection으로 종료한다.

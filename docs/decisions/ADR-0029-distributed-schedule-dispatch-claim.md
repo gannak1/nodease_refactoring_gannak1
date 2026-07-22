@@ -2,7 +2,7 @@
 
 Status: Accepted
 Related ADRs: [ADR-0008](ADR-0008-audit-action-naming-standard.md), [ADR-0018](ADR-0018-workflow-rag-anonymous-public-only-runtime.md), [ADR-0022](ADR-0022-incremental-hexagonal-architecture-adoption.md), [ADR-0023](ADR-0023-audit-actor-access-management-boundary.md)
-Deployment surface correction: coordinated workflow와 raw Kubernetes rollout 조항은 [ADR-0065](ADR-0065-eks-support-surface-removal.md)에 따라 future provider-neutral CD의 Target으로 유지한다. 현재 지원 Helm/Compose는 disabled mode만 허용하며 runtime claim ledger 결정은 그대로 유효하다.
+Deployment surface correction: coordinated workflow와 raw Kubernetes rollout 조항은 [ADR-0068](ADR-0068-eks-support-surface-removal.md)에 따라 future provider-neutral CD의 Target으로 유지한다. 현재 지원 Helm/Compose는 disabled mode만 허용하며 runtime claim ledger 결정은 그대로 유효하다.
 
 
 ## Context
