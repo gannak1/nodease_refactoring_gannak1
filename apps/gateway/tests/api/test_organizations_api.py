@@ -464,6 +464,8 @@ class TestOrganizationsApi(unittest.TestCase):
                 "total_cost": 3.5,
                 "workflow_execution_cost": 2.0,
                 "agent_builder_cost": 1.5,
+                "usage_data_complete": True,
+                "unresolved_provider_call_count": 0,
             },
         )
         service.assert_called_once()
