@@ -210,9 +210,9 @@ class _GuardedTransportMixin:
     def _validate_request(self, request: httpx.Request) -> None:
         url = str(request.url)
         if self._operation is not None:
-            self._operation.validate_url(url)
+            self._operation.validate_url_policy(url)
         else:
-            self._guard.validate_url(url)
+            self._guard.validate_url_policy(url)
         self._guard.validate_method(request.method)
 
         expected_host = request.url.netloc.decode("ascii").lower()

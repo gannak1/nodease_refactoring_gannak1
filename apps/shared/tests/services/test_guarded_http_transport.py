@@ -82,6 +82,14 @@ class _AsyncStream(httpcore.AsyncNetworkStream):
         return (self.peer_ip, 443) if info == "server_addr" else None
 
 
+class _AsyncResponseStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield b"{}"
+
+    async def aclose(self) -> None:
+        return None
+
+
 class _AsyncBackend(httpcore.AsyncNetworkBackend):
     def __init__(self, peer_ip: str) -> None:
         self.peer_ip = peer_ip
@@ -192,6 +200,44 @@ async def test_async_backend_applies_connect_timeout_to_dns_resolution(
         await guarded.connect_tcp("provider.example", 443, timeout=0.005)
 
     assert backend.targets == []
+
+
+@pytest.mark.asyncio
+async def test_async_transport_defers_dns_to_guarded_network_backend(
+    monkeypatch,
+) -> None:
+    transport = GuardedAsyncHttpTransport(operation=_bound_operation())
+    request = httpx.Request(
+        "POST",
+        "https://provider.example/v1/responses",
+        json={"input": "synthetic"},
+    )
+    pool_calls: list[httpx.Request] = []
+
+    def unexpected_dns(*_args, **_kwargs):
+        pytest.fail("request preflight must not resolve DNS on the event loop")
+
+    async def handle_request(_self, received_request):
+        pool_calls.append(received_request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            stream=_AsyncResponseStream(),
+            request=received_request,
+        )
+
+    monkeypatch.setattr(socket, "getaddrinfo", unexpected_dns)
+    monkeypatch.setattr(
+        httpx.AsyncHTTPTransport,
+        "handle_async_request",
+        handle_request,
+    )
+
+    response = await transport.handle_async_request(request)
+
+    assert pool_calls == [request]
+    await response.aclose()
+    await transport.aclose()
 
 
 def test_bound_transport_rejects_another_origin_before_pool_call(monkeypatch) -> None:

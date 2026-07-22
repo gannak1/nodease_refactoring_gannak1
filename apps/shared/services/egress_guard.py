@@ -163,7 +163,7 @@ class OutboundEgressGuard:
     def __init__(self, policy: EgressGuardPolicy | None = None) -> None:
         self.policy = policy or EgressGuardPolicy()
 
-    def validate_url(self, url: str) -> str:
+    def _validate_url_policy(self, url: str) -> tuple[str, str]:
         try:
             parts = urlsplit(str(url or "").strip())
             scheme = parts.scheme.lower()
@@ -187,11 +187,23 @@ class OutboundEgressGuard:
             raise EgressGuardError("egress.invalid_port")
         self._validate_allowed_port(scheme, port)
 
-        self._validate_resolved_addresses(host)
         netloc = f"[{host}]" if ":" in host else host
         if port is not None:
             netloc = f"{netloc}:{port}"
-        return urlunsplit((scheme, netloc, parts.path or "/", parts.query, ""))
+        canonical_url = urlunsplit(
+            (scheme, netloc, parts.path or "/", parts.query, "")
+        )
+        return host, canonical_url
+
+    def validate_url_policy(self, url: str) -> str:
+        """Validate URL policy without resolving its network destination."""
+        _host, canonical_url = self._validate_url_policy(url)
+        return canonical_url
+
+    def validate_url(self, url: str) -> str:
+        host, canonical_url = self._validate_url_policy(url)
+        self._validate_resolved_addresses(host)
+        return canonical_url
 
     def validate_redirect(self, from_url: str, to_url: str) -> str:
         from_scheme = urlsplit(from_url).scheme.lower()

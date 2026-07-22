@@ -116,6 +116,10 @@ class BoundOutboundOperation:
         self.validate_origin(url)
         return self.guard.validate_url(url)
 
+    def validate_url_policy(self, url: str) -> str:
+        self.validate_origin(url)
+        return self.guard.validate_url_policy(url)
+
 
 def _profile(
     operation_id: str,
