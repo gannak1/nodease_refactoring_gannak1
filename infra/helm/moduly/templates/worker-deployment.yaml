@@ -1,5 +1,4 @@
 {{- if .Values.worker.enabled }}
-{{- include "moduly.validateScheduleDispatchMode" . }}
 {{- $storageType := include "moduly.storageType" . }}
 apiVersion: apps/v1
 kind: Deployment

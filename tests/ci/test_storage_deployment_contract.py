@@ -85,6 +85,58 @@ def test_helm_storage_templates_use_root_authority_and_render_validation():
         assert ".Values.worker.env.S3_BUCKET_NAME" not in template
 
 
+def test_schedule_dispatch_validation_uses_global_render_boundary():
+    validation = _read(
+        "infra/helm/moduly/templates/schedule-dispatch-validation.yaml"
+    )
+
+    assert 'include "moduly.validateScheduleDispatchMode" .' in validation
+    for template_name in (
+        "gateway-deployment.yaml",
+        "worker-deployment.yaml",
+    ):
+        template = _read(f"infra/helm/moduly/templates/{template_name}")
+        assert 'include "moduly.validateScheduleDispatchMode" .' not in template
+
+
+@pytest.mark.parametrize("mode", ["claim", "drain"])
+def test_helm_rejects_schedule_dispatch_when_workloads_are_disabled(mode: str):
+    if os.getenv("NODEASE_RUN_HELM_INTEGRATION_TESTS") != "1":
+        pytest.skip("Helm integration contract is owned by deployment validation")
+
+    helm = shutil.which("helm")
+    if helm is None:
+        pytest.fail("Deployment validation enabled the Helm contract without Helm")
+
+    completed = subprocess.run(
+        [
+            helm,
+            "template",
+            "nodease-schedule-contract",
+            str(REPOSITORY_ROOT / "infra" / "helm" / "moduly"),
+            "-f",
+            str(REPOSITORY_ROOT / "tests" / "ci" / "fixtures" / "helm-values-ci.yaml"),
+            "--set",
+            "gateway.enabled=false",
+            "--set",
+            "worker.enabled=false",
+            "--set",
+            f"scheduleDispatch.mode={mode}",
+        ],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert completed.returncode != 0
+    assert (
+        "non-disabled schedule dispatch is unsupported"
+        in f"{completed.stdout}\n{completed.stderr}"
+    )
+
+
 def test_cloud_only_storage_env_references_share_one_template_condition():
     cloud_block_pattern = re.compile(
         r'\{\{- if eq \$storageType "CLOUD" \}\}(.*?)\{\{- end \}\}',
