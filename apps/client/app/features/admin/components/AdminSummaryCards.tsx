@@ -180,6 +180,12 @@ export function AdminSummaryCards({
                 Agent Builder {formatCost(summary.agent_builder_cost ?? 0)}
               </span>
             </div>
+            {!summary.usage_data_complete && (
+              <p className="font-medium text-amber-700">
+                비용 미확정 provider 호출{' '}
+                {summary.unresolved_provider_call_count}건
+              </p>
+            )}
             {summary.budget && (
               <div
                 className="flex flex-wrap gap-x-4 gap-y-1 pt-1 text-slate-700"

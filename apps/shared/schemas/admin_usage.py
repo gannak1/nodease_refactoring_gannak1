@@ -16,6 +16,8 @@ class AdminWorkflowBudgetBlock(BaseModel):
     current_month_cost: float
     usage_ratio: float
     status: str
+    usage_data_complete: bool = True
+    unresolved_provider_call_count: int = 0
 
 
 class AdminBudgetSummaryBlock(BaseModel):
@@ -34,12 +36,16 @@ class AdminWorkflowUsageItem(BaseModel):
     total_cost: float
     workflow_execution_cost: float
     agent_builder_cost: float
+    usage_data_complete: bool = True
+    unresolved_provider_call_count: int = 0
     budget: AdminWorkflowBudgetBlock | None = None
 
 
 class AdminWorkflowUsageResponse(BaseModel):
     total: int
     period: AdminUsagePeriodResponse
+    usage_data_complete: bool = True
+    unresolved_provider_call_count: int = 0
     items: list[AdminWorkflowUsageItem]
 
 
@@ -48,4 +54,6 @@ class AdminOrganizationSummaryResponse(BaseModel):
     total_cost: float
     workflow_execution_cost: float
     agent_builder_cost: float
+    usage_data_complete: bool = True
+    unresolved_provider_call_count: int = 0
     budget: AdminBudgetSummaryBlock | None = None

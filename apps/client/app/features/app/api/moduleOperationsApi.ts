@@ -35,6 +35,8 @@ export type ModuleOperationAppSummary = {
     projected_month_agent_builder_cost?: number | null;
     previous_month_cost: number;
     trend_percent?: number | null;
+    usage_data_complete: boolean;
+    unresolved_provider_call_count: number;
   } | null;
   owner_name?: string;
   created_at: string;
@@ -105,6 +107,8 @@ export type ModuleOperationsCostSummary = {
   projected_month_cost: number;
   projected_month_workflow_execution_cost: number;
   projected_month_agent_builder_cost: number;
+  usage_data_complete: boolean;
+  unresolved_provider_call_count: number;
 };
 
 type OperationsApiRow = {

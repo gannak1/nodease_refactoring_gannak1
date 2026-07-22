@@ -42,6 +42,7 @@ Verified Against: feature/mba-284 @ 5247ed1b
 - Caller SQLAlchemy session이 있으면 commit 없이 `audit_event_outbox` row를 같은 UnitOfWork에 추가한다. Session이 없는 legacy producer는 짧은 독립 session으로 Outbox를 commit한다.
 - Rollout 4부터 `record_audit()`은 Outbox 저장만 수행하고 기존 `audit.record` Celery task를 발행하지 않는다. Outbox 저장 성공 시 audit id를 반환하고 실패 시 `None`을 반환한다.
 - `audit.event_outbox.process`는 Beat가 30초마다 Log queue에서 실행한다. Due row를 `FOR UPDATE SKIP LOCKED`로 분배하고 lease/attempt를 먼저 commit한다.
+- Provider usage ledger는 success·definitive failure·outcome unknown의 첫 durable classification과 deterministic `llm.call` Outbox insert를 같은 transaction에 묶는다. Provider usage reconciler는 같은 event id를 재발행하지 않고 operation state/projection만 조정하며 raw provider payload나 credential을 로드하지 않는다.
 - Worker는 `AuditLog` insert, Outbox `succeeded` 전환, 성공 payload의 빈 JSON object 교체를 같은 transaction으로 commit한다. 성공 row는 idempotency key와 terminal 상태·시각만 tombstone으로 유지한다. 같은 audit id가 이미 있으면 멱등 성공이며, retry/dead-letter payload는 재처리를 위해 유지하고 실패는 safe reason code로 최대 5회 재시도한 뒤 dead-letter 처리한다.
 - 성공 commit 뒤 Security Alert 탐지를 발행한다. 발행 실패는 저장 transaction을 되돌리지 않으며 기존 Security Alert reconciliation이 복구 경로다.
 - 배포 전 broker에 들어간 메시지를 소진하기 위해 `audit.record` consumer는 호환성 task로 유지하지만 신규 producer에서는 사용하지 않는다.

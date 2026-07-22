@@ -21,6 +21,7 @@ Status: Draft
 - MBA-283 Generic HTTP egress: `apps/workflow_engine/tests/adapters/test_guarded_outbound_http.py`, `apps/workflow_engine/tests/adapters/test_external_effect_provider_adapters.py`, `apps/workflow_engine/tests/nodes/test_http_node.py`, `apps/shared/tests/deployment/test_workflow_worker_egress_policy.py`
 - MBA-286 scheduler readiness: `apps/workflow_engine/tests/nodes/test_workflow_scheduler_readiness.py`, `apps/workflow_engine/tests/nodes/test_parallel_execution_optimization.py`, `apps/workflow_engine/tests/test_condition_branch_routing.py`
 - MBA-285 child lifecycle: `apps/workflow_engine/tests/services/test_child_execution_lifecycle.py`, `apps/workflow_engine/tests/nodes/test_loop_graph_entry.py`, `apps/workflow_engine/tests/nodes/test_workflow_node.py`, `apps/workflow_engine/tests/domain/test_external_effect_identity_runtime.py`
+- MBA-287 durable provider usage: `apps/shared/tests/domain/test_provider_usage_ledger.py`, `apps/shared/tests/services/test_provider_usage_ledger.py`, `apps/shared/tests/services/test_provider_usage_cost_read_model.py`, `apps/shared/tests/db/test_provider_usage_ledger_disposable_postgres.py`, `apps/workflow_engine/tests/adapters/test_provider_usage.py`, `apps/workflow_engine/tests/nodes/test_llm_node_provider_execution_capability.py`, `apps/log_system/tests/test_provider_usage_tasks.py`, Gateway budget/admin/member usage service tests
 - 동시성 처리: `apps/gateway/tests/integration/test_agent_builder_workflow_cas.py`에서 독립 PostgreSQL session/transaction으로 autosync 대 autosync 및 autosync 대 Agent Builder 저장 경쟁을 실행하고 한 요청만 성공하며 다른 요청이 `409 stale_graph`인지 검증한다.
 - 테스트 실행 전 저장: `TestSidebar` component test에서 canonical draft GET의 `graph_hash`/`updated_at`이 save request에 전달되고 성공 응답 metadata가 shared Workflow store에 반영되며 stale save는 실행을 시작하지 않는지 검증한다.
 - Agent Builder 저장 중 test preflight: 같은 workflow의 Agent Builder save/acknowledgement 중에는 TestSidebar 저장과 실행 API가 호출되지 않고, 확정 뒤 버튼이 다시 활성화되는지 검증한다.
@@ -70,6 +71,12 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Subworkflow는 target deployment version과 child envelope 합집합을 parent output에 전달한다.
 - Memory admission/task는 deployment version/snapshot과 mapping/Memory policy version에 고정되고 active deployment 교체 후 새 graph로 자동 rebind하지 않는다.
 - Main/summary provider는 LLM Credentials가 발급한 opaque ProviderExecutionCapability identity/revision과 deployment/canonical node location/admission/provider-attempt/purpose binding이 일치할 때만 호출한다.
+- Usage ledger round trip은 structured `container_path`를 보존하고, 다른 Loop에서 같은 `node_id`를 사용한 replay는 binding conflict로 닫는다.
+- Capability provider는 durable intent와 provider-start fence가 각각 commit된 뒤 정확히 한 번 호출된다. Duplicate delivery가 started/succeeded/outcome-unknown operation을 찾으면 provider를 다시 호출하지 않는다.
+- Provider timeout·response loss·unknown exception, malformed 또는 admitted cap 초과 usage와 success 저장 실패는 outcome unknown으로 수렴하고 routing fallback·Celery retry·동일 lease 재호출을 허용하지 않는다.
+- WorkflowRun이 provider success보다 늦게 생성되어도 canonical usage/cost는 즉시 보존되고 compatibility row는 nullable run으로 먼저 수렴한다. Exact workflow correlation이 확인될 때만 run을 연결하며 mismatch는 canonical ledger를 바꾸지 않는다.
+- Authenticated/public/system 실행의 execution subject, credential principal, billing principal과 audit actor는 ledger round trip에서 독립적으로 보존된다. Public/system actor를 credential principal 또는 deployment creator로 바꾸면 실패한다.
+- Same terminal replay와 correction/projection replay는 operation당 `llm.call` audit 한 건과 `llm_usage_logs` 한 행으로 수렴한다. Ledger-linked projection은 budget/admin 합계에 중복 포함되지 않고 unresolved operation은 active budget을 fail-closed한다.
 - Credential revoke/permission decision revision 또는 verified relation/provider-routing revision 변경 뒤 stale capability는 새 claim/reservation/attempt/provider call에 사용할 수 없다. 이 fingerprint는 중앙 egress authorization을 대체하지 않는다.
 - Public Access Grant, credential/billing principal과 app owner는 execution subject 또는 audit actor로 승격되지 않는다.
 - Preflight 뒤 Worker pool capability가 바뀌어도 runtime guard가 incompatible task를 거부한다.

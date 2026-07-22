@@ -1,9 +1,8 @@
 from datetime import datetime, timezone
-from decimal import Decimal
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, func, or_
+from sqlalchemy import and_, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -18,7 +17,6 @@ from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.context import get_current_metadata
 from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import AuditLog
-from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_AUTH_MEMBER,
@@ -39,11 +37,6 @@ from apps.shared.db.models.team import (
 from apps.shared.db.models.user import User
 from apps.shared.db.models.user_app_creation_permission import UserAppCreationPermission
 from apps.shared.db.models.workflow import Workflow
-from apps.shared.domain.llm_usage import (
-    AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
-    is_agent_builder_intent_usage,
-    is_billable_llm_usage,
-)
 from apps.shared.schemas.organization_membership import (
     MemberCurrentMonthUsage,
     OrganizationMemberInviteRequest,
@@ -58,6 +51,10 @@ from apps.shared.services.permission_audit import record_resource_permission_den
 from apps.shared.services.permissions import (
     has_organization_manager_permission,
     has_organization_scope_access,
+)
+from apps.shared.services.provider_usage_cost_read_model import (
+    provider_usage_subject_aggregate_subquery,
+    summarize_usage_by_execution_subject,
 )
 
 from .notification_service import publish_notifications_changed
@@ -269,8 +266,6 @@ def _member_current_month_usage_fake(
     start_at: datetime,
     end_at: datetime,
 ) -> dict[Any, MemberCurrentMonthUsage]:
-    totals = {user_id: Decimal("0") for user_id in user_ids}
-    agent_builder_totals = {user_id: Decimal("0") for user_id in user_ids}
     workflow_organizations = {
         workflow.id: workflow.organization_id
         for workflow in getattr(db, "workflows", [])
@@ -282,29 +277,22 @@ def _member_current_month_usage_fake(
         and app.workflow_id is not None
         and workflow_organizations.get(app.workflow_id) == organization_id
     }
-
-    for usage in db.usage_logs:
-        if (
-            usage.user_id not in totals
-            or usage.workflow_id not in eligible_workflow_ids
-            or usage.organization_id not in {None, organization_id}
-            or not start_at <= usage.created_at < end_at
-            or not is_billable_llm_usage(
-                getattr(usage, "runtime_surface", None),
-                getattr(usage, "status", "success"),
-            )
-        ):
-            continue
-        cost = AdminUsageService.coalesce_cost(usage.total_cost)
-        totals[usage.user_id] += cost
-        if is_agent_builder_intent_usage(
-            getattr(usage, "runtime_surface", None)
-        ):
-            agent_builder_totals[usage.user_id] += cost
-
+    aggregates = summarize_usage_by_execution_subject(
+        organization_id=organization_id,
+        eligible_workflow_ids=eligible_workflow_ids,
+        user_ids=set(user_ids),
+        start_at=start_at,
+        end_at=end_at,
+        legacy_usage_logs=db.usage_logs,
+        provider_operations=getattr(db, "provider_usage_operations", ()),
+    )
     return {
-        user_id: _member_usage_costs(total, agent_builder_totals[user_id])
-        for user_id, total in totals.items()
+        user_id: _member_usage_costs(
+            aggregate.total_cost,
+            aggregate.agent_builder_cost,
+            aggregate.unresolved_provider_call_count,
+        )
+        for user_id, aggregate in aggregates.items()
     }
 
 
@@ -333,53 +321,37 @@ def _member_current_month_usage_query(
         .distinct()
         .subquery()
     )
-    usage_cost = func.coalesce(LLMUsageLog.total_cost, 0)
-    total_cost = func.coalesce(func.sum(usage_cost), 0).label("total_cost")
-    agent_builder_cost = func.coalesce(
-        func.sum(
-            case(
-                (
-                    LLMUsageLog.runtime_surface
-                    == AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
-                    usage_cost,
-                ),
-                else_=0,
-            )
-        ),
-        0,
-    ).label("agent_builder_cost")
+    usage = provider_usage_subject_aggregate_subquery(
+        organization_id=organization_id,
+        start_at=start_at,
+        end_at=end_at,
+    )
     rows = (
         db.query(
-            LLMUsageLog.user_id.label("user_id"),
-            total_cost,
-            agent_builder_cost,
+            usage.c.attribution_user_id.label("user_id"),
+            func.coalesce(func.sum(usage.c.total_cost), 0).label("total_cost"),
+            func.coalesce(func.sum(usage.c.agent_builder_cost), 0).label(
+                "agent_builder_cost"
+            ),
+            func.coalesce(
+                func.sum(usage.c.unresolved_provider_call_count), 0
+            ).label("unresolved_provider_call_count"),
         )
         .join(
             eligible_workflows,
-            LLMUsageLog.workflow_id == eligible_workflows.c.workflow_id,
+            usage.c.workflow_id == eligible_workflows.c.workflow_id,
         )
         .filter(
-            LLMUsageLog.user_id.in_(user_ids),
-            or_(
-                LLMUsageLog.organization_id == organization_id,
-                LLMUsageLog.organization_id.is_(None),
-            ),
-            LLMUsageLog.created_at >= start_at,
-            LLMUsageLog.created_at < end_at,
-            or_(
-                LLMUsageLog.runtime_surface.is_(None),
-                LLMUsageLog.runtime_surface
-                != AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
-                LLMUsageLog.status == "success",
-            ),
+            usage.c.attribution_user_id.in_(user_ids),
         )
-        .group_by(LLMUsageLog.user_id)
+        .group_by(usage.c.attribution_user_id)
         .all()
     )
     for row in rows:
         result[row.user_id] = _member_usage_costs(
             row.total_cost,
             row.agent_builder_cost,
+            row.unresolved_provider_call_count,
         )
     return result
 
@@ -387,6 +359,7 @@ def _member_current_month_usage_query(
 def _member_usage_costs(
     total_cost: Any,
     agent_builder_cost: Any,
+    unresolved_provider_call_count: Any = 0,
 ) -> MemberCurrentMonthUsage:
     total = AdminUsageService.coalesce_cost(total_cost)
     agent_builder = AdminUsageService.coalesce_cost(agent_builder_cost)
@@ -394,6 +367,10 @@ def _member_usage_costs(
         total_cost=float(total),
         workflow_execution_cost=float(total - agent_builder),
         agent_builder_cost=float(agent_builder),
+        usage_data_complete=int(unresolved_provider_call_count or 0) == 0,
+        unresolved_provider_call_count=int(
+            unresolved_provider_call_count or 0
+        ),
     )
 
 

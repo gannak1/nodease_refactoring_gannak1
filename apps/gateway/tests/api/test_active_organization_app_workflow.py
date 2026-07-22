@@ -922,6 +922,8 @@ def test_operation_cost_summary_includes_all_readable_active_workflows(monkeypat
                 "projected_month_cost": 3,
                 "projected_month_workflow_execution_cost": 2,
                 "projected_month_agent_builder_cost": 1,
+                "usage_data_complete": False,
+                "unresolved_provider_call_count": 1,
             }
             for workflow_id in workflow_ids
         },
@@ -939,6 +941,8 @@ def test_operation_cost_summary_includes_all_readable_active_workflows(monkeypat
     assert summary.projected_month_cost == pytest.approx(303)
     assert summary.projected_month_workflow_execution_cost == pytest.approx(202)
     assert summary.projected_month_agent_builder_cost == pytest.approx(101)
+    assert summary.usage_data_complete is False
+    assert summary.unresolved_provider_call_count == 101
 
 
 def test_operation_cost_summary_batches_non_manager_permission_sources(monkeypatch):

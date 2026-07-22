@@ -46,6 +46,8 @@ const mockedGetBudget = vi.mocked(budgetApi.getWorkflowBudget);
 
 const usageResponse = {
   total: 2,
+  usage_data_complete: true,
+  unresolved_provider_call_count: 0,
   period: {
     startAt: '2026-07-01T00:00:00+09:00',
     endAt: '2026-08-01T00:00:00+09:00',
@@ -60,11 +62,15 @@ const usageResponse = {
       total_cost: 92.345678,
       workflow_execution_cost: 90,
       agent_builder_cost: 2.345678,
+      usage_data_complete: true,
+      unresolved_provider_call_count: 0,
       budget: {
         monthly_budget_usd: 100,
         current_month_cost: 92.345678,
         usage_ratio: 0.923457,
         status: 'at_risk',
+        usage_data_complete: true,
+        unresolved_provider_call_count: 0,
       },
     },
     {
@@ -76,6 +82,8 @@ const usageResponse = {
       total_cost: 0.123456,
       workflow_execution_cost: 0.1,
       agent_builder_cost: 0.023456,
+      usage_data_complete: true,
+      unresolved_provider_call_count: 0,
       budget: null,
     },
   ],

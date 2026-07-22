@@ -1,0 +1,135 @@
+from __future__ import annotations
+
+from apps.shared.db.models.llm import LLMUsageLog
+from apps.shared.db.models.provider_usage import (
+    ProviderUsageCorrectionRecord,
+    ProviderUsageOperationRecord,
+)
+from sqlalchemy import CheckConstraint, ForeignKeyConstraint, UniqueConstraint
+
+
+def test_provider_usage_operation_uses_the_canonical_provider_attempt_key() -> None:
+    table = ProviderUsageOperationRecord.__table__
+    unique_constraints = {
+        constraint.name: tuple(column.name for column in constraint.columns)
+        for constraint in table.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+
+    assert unique_constraints["uq_provider_usage_operation_attempt"] == (
+        "organization_id",
+        "provider_attempt_id",
+        "purpose",
+    )
+    assert "attempt_generation" not in table.c
+
+
+def test_provider_usage_operation_keeps_safe_snapshots_without_control_row_fks() -> None:
+    table = ProviderUsageOperationRecord.__table__
+    foreign_key_targets = {
+        tuple(element.target_fullname for element in constraint.elements)
+        for constraint in table.foreign_key_constraints
+        if isinstance(constraint, ForeignKeyConstraint)
+    }
+    column_names = set(table.c.keys())
+
+    assert foreign_key_targets == {("organization.id",)}
+    assert {
+        "capability_id",
+        "capability_revision",
+        "capability_expires_at",
+        "policy_id",
+        "policy_revision",
+        "provider_id",
+        "model_id",
+        "model_api_id",
+        "credential_id",
+        "container_path",
+        "execution_subject_kind",
+        "credential_principal_kind",
+        "billing_principal_kind",
+        "audit_actor_kind",
+        "permission_revision",
+        "relation_revision",
+        "egress_revision",
+        "pricing_revision",
+        "input_price_per_1k",
+        "output_price_per_1k",
+        "admitted_input_tokens",
+        "admitted_output_tokens",
+    } <= column_names
+    assert {
+        "raw_request",
+        "raw_response",
+        "prompt",
+        "completion",
+        "headers",
+        "encrypted_config",
+        "api_key",
+        "capability_scope",
+    }.isdisjoint(column_names)
+
+
+def test_provider_usage_operation_has_state_projection_and_redaction_constraints() -> None:
+    check_names = {
+        constraint.name
+        for constraint in ProviderUsageOperationRecord.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert {
+        "ck_provider_usage_operation_bounds",
+        "ck_provider_usage_operation_identity_kinds",
+        "ck_provider_usage_operation_location",
+        "ck_provider_usage_operation_identity_alignment",
+        "ck_provider_usage_operation_state_payload",
+        "ck_provider_usage_operation_timestamps",
+        "ck_provider_usage_operation_projection",
+    } <= check_names
+
+
+def test_corrections_are_append_only_children_with_revision_uniqueness() -> None:
+    table = ProviderUsageCorrectionRecord.__table__
+    unique_constraints = {
+        constraint.name: tuple(column.name for column in constraint.columns)
+        for constraint in table.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    foreign_keys = {
+        (
+            element.target_fullname,
+            element.ondelete,
+        )
+        for constraint in table.foreign_key_constraints
+        for element in constraint.elements
+    }
+
+    assert unique_constraints["uq_provider_usage_correction_key"] == (
+        "operation_id",
+        "correction_key",
+    )
+    assert unique_constraints["uq_provider_usage_correction_revision"] == (
+        "operation_id",
+        "resulting_usage_revision",
+    )
+    assert foreign_keys == {("provider_usage_operations.id", "CASCADE")}
+
+
+def test_legacy_projection_has_nullable_unique_operation_identity() -> None:
+    table = LLMUsageLog.__table__
+    operation_column = table.c.provider_usage_operation_id
+    indexes = {index.name: index for index in table.indexes}
+
+    assert operation_column.nullable is True
+    assert table.c.provider_usage_revision.nullable is True
+    assert indexes["uq_llm_usage_logs_provider_usage_operation"].unique is True
+
+
+def test_legacy_projection_workflow_reference_does_not_block_deletion() -> None:
+    workflow_foreign_keys = list(
+        LLMUsageLog.__table__.c.workflow_id.foreign_keys
+    )
+
+    assert len(workflow_foreign_keys) == 1
+    assert workflow_foreign_keys[0].target_fullname == "workflows.id"
+    assert workflow_foreign_keys[0].ondelete == "SET NULL"

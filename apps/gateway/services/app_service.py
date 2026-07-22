@@ -5,7 +5,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import case, func, or_, true
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from apps.gateway.services.admin_usage_service import (
@@ -22,18 +22,12 @@ from apps.gateway.services.workflow_permission_lock import (
     lock_workflow_permission_scope,
 )
 from apps.shared.db.models.app import App
-from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.team import TeamWorkflowPermission, UserWorkflowPermission
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.workflow_run import WorkflowRun
-from apps.shared.domain.llm_usage import (
-    AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
-    is_agent_builder_intent_usage,
-    is_billable_llm_usage,
-)
 from apps.shared.permissions import (
     AUTH_STATE_MANAGER,
     normalize_resource_auth_state,
@@ -56,6 +50,10 @@ from apps.shared.services.permissions import (
     has_organization_scope_access,
     has_organization_manager_permission,
     has_workflow_permission,
+)
+from apps.shared.services.provider_usage_cost_read_model import (
+    provider_usage_aggregate_subquery,
+    summarize_usage_records,
 )
 
 
@@ -502,6 +500,7 @@ class AppService:
         projected_total = Decimal("0")
         projected_workflow_execution = Decimal("0")
         projected_agent_builder = Decimal("0")
+        unresolved_provider_call_count = 0
         for workflow_id in workflow_ids:
             metric = metrics.get(workflow_id) or {}
             projected_total += AdminUsageService.coalesce_cost(
@@ -513,6 +512,9 @@ class AppService:
             projected_agent_builder += AdminUsageService.coalesce_cost(
                 metric.get("projected_month_agent_builder_cost")
             )
+            unresolved_provider_call_count += int(
+                metric.get("unresolved_provider_call_count") or 0
+            )
 
         return AppOperationsCostSummary(
             active_workflow_count=len(workflow_ids),
@@ -521,6 +523,8 @@ class AppService:
                 projected_workflow_execution
             ),
             projected_month_agent_builder_cost=float(projected_agent_builder),
+            usage_data_complete=unresolved_provider_call_count == 0,
+            unresolved_provider_call_count=unresolved_provider_call_count,
         )
 
     @staticmethod
@@ -1138,6 +1142,10 @@ class AppService:
                 ),
                 "previous_month_cost": float(previous_cost),
                 "trend_percent": trend_percent,
+                "usage_data_complete": current_breakdown.usage_data_complete,
+                "unresolved_provider_call_count": (
+                    current_breakdown.unresolved_provider_call_count
+                ),
             }
         return metrics
 
@@ -1582,34 +1590,27 @@ def _fake_operation_cost_breakdowns(
     organization_id: Any | None = None,
 ) -> dict[Any, UsageCostBreakdown]:
     workflow_id_set = set(workflow_ids)
-    totals = {workflow_id: Decimal("0") for workflow_id in workflow_id_set}
-    agent_builder_totals = {
-        workflow_id: Decimal("0") for workflow_id in workflow_id_set
-    }
-    for usage in getattr(db, "usage_logs", []):
-        if usage.workflow_id not in workflow_id_set:
-            continue
-        if not _usage_matches_organization_scope(usage, organization_id):
-            continue
-        if not period.start_at <= usage.created_at < period.end_at:
-            continue
-        if not is_billable_llm_usage(
-            getattr(usage, "runtime_surface", None),
-            getattr(usage, "status", "success"),
-        ):
-            continue
-        cost = AdminUsageService.coalesce_cost(usage.total_cost)
-        totals[usage.workflow_id] += cost
-        if is_agent_builder_intent_usage(
-            getattr(usage, "runtime_surface", None)
-        ):
-            agent_builder_totals[usage.workflow_id] += cost
     return {
         workflow_id: UsageCostBreakdown(
-            total_cost=totals[workflow_id],
-            agent_builder_cost=agent_builder_totals[workflow_id],
+            total_cost=usage.total_cost,
+            agent_builder_cost=usage.agent_builder_cost,
+            unresolved_provider_call_count=(
+                usage.unresolved_provider_call_count
+            ),
         )
         for workflow_id in workflow_id_set
+        for usage in (
+            summarize_usage_records(
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+                start_at=period.start_at,
+                end_at=period.end_at,
+                legacy_usage_logs=getattr(db, "usage_logs", ()),
+                provider_operations=getattr(
+                    db, "provider_usage_operations", ()
+                ),
+            ),
+        )
     }
 
 
@@ -1620,36 +1621,19 @@ def _operation_cost_breakdowns_query(
     period,
     organization_id: Any | None = None,
 ) -> dict[Any, UsageCostBreakdown]:
-    total_cost = func.coalesce(
-        func.sum(func.coalesce(LLMUsageLog.total_cost, 0)), 0
-    ).label("total_cost")
-    agent_builder_cost = func.coalesce(
-        func.sum(
-            case(
-                (
-                    LLMUsageLog.runtime_surface
-                    == AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
-                    func.coalesce(LLMUsageLog.total_cost, 0),
-                ),
-                else_=0,
-            )
-        ),
-        0,
-    ).label("agent_builder_cost")
+    usage = provider_usage_aggregate_subquery(
+        organization_id=organization_id,
+        start_at=period.start_at,
+        end_at=period.end_at,
+    )
     rows = (
         db.query(
-            LLMUsageLog.workflow_id.label("workflow_id"),
-            total_cost,
-            agent_builder_cost,
+            usage.c.workflow_id,
+            usage.c.total_cost,
+            usage.c.agent_builder_cost,
+            usage.c.unresolved_provider_call_count,
         )
-        .filter(
-            LLMUsageLog.workflow_id.in_(set(workflow_ids)),
-            LLMUsageLog.created_at >= period.start_at,
-            LLMUsageLog.created_at < period.end_at,
-            _usage_organization_scope_condition(organization_id),
-            _billable_usage_condition(),
-        )
-        .group_by(LLMUsageLog.workflow_id)
+        .filter(usage.c.workflow_id.in_(set(workflow_ids)))
         .all()
     )
     return {
@@ -1657,6 +1641,9 @@ def _operation_cost_breakdowns_query(
             total_cost=AdminUsageService.coalesce_cost(row.total_cost),
             agent_builder_cost=AdminUsageService.coalesce_cost(
                 row.agent_builder_cost
+            ),
+            unresolved_provider_call_count=int(
+                row.unresolved_provider_call_count or 0
             ),
         )
         for row in rows
@@ -1689,24 +1676,17 @@ def _fake_budget_status_costs(
     period,
     organization_id: Any | None = None,
 ) -> dict[Any, Decimal]:
-    workflow_id_set = set(workflow_ids)
-    costs = {workflow_id: Decimal("0") for workflow_id in workflow_id_set}
-    for usage in getattr(db, "usage_logs", []):
-        if usage.workflow_id not in workflow_id_set:
-            continue
-        if not _usage_matches_organization_scope(usage, organization_id):
-            continue
-        if not (period.start_at <= usage.created_at < period.end_at):
-            continue
-        if not is_billable_llm_usage(
-            getattr(usage, "runtime_surface", None),
-            getattr(usage, "status", "success"),
-        ):
-            continue
-        costs[usage.workflow_id] += AdminUsageService.coalesce_cost(
-            usage.total_cost
-        )
-    return costs
+    return {
+        workflow_id: summarize_usage_records(
+            workflow_id=workflow_id,
+            organization_id=organization_id,
+            start_at=period.start_at,
+            end_at=period.end_at,
+            legacy_usage_logs=getattr(db, "usage_logs", ()),
+            provider_operations=getattr(db, "provider_usage_operations", ()),
+        ).total_cost
+        for workflow_id in set(workflow_ids)
+    }
 
 
 def _budget_status_costs_query(
@@ -1716,46 +1696,17 @@ def _budget_status_costs_query(
     period,
     organization_id: Any | None = None,
 ) -> dict[Any, Decimal]:
-    total_cost = func.coalesce(
-        func.sum(func.coalesce(LLMUsageLog.total_cost, 0)), 0
-    ).label("total_cost")
+    usage = provider_usage_aggregate_subquery(
+        organization_id=organization_id,
+        start_at=period.start_at,
+        end_at=period.end_at,
+    )
     rows = (
-        db.query(LLMUsageLog.workflow_id.label("workflow_id"), total_cost)
-        .filter(
-            LLMUsageLog.workflow_id.in_(set(workflow_ids)),
-            LLMUsageLog.created_at >= period.start_at,
-            LLMUsageLog.created_at < period.end_at,
-            _usage_organization_scope_condition(organization_id),
-            _billable_usage_condition(),
-        )
-        .group_by(LLMUsageLog.workflow_id)
+        db.query(usage.c.workflow_id, usage.c.total_cost)
+        .filter(usage.c.workflow_id.in_(set(workflow_ids)))
         .all()
     )
     return {
         row.workflow_id: AdminUsageService.coalesce_cost(row.total_cost)
         for row in rows
     }
-
-
-def _billable_usage_condition():
-    return or_(
-        LLMUsageLog.runtime_surface.is_(None),
-        LLMUsageLog.runtime_surface != AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
-        LLMUsageLog.status == "success",
-    )
-
-
-def _usage_organization_scope_condition(organization_id: Any | None):
-    if organization_id is None:
-        return true()
-    return or_(
-        LLMUsageLog.organization_id == organization_id,
-        LLMUsageLog.organization_id.is_(None),
-    )
-
-
-def _usage_matches_organization_scope(usage, organization_id: Any | None) -> bool:
-    if organization_id is None:
-        return True
-    usage_organization_id = getattr(usage, "organization_id", None)
-    return usage_organization_id is None or usage_organization_id == organization_id

@@ -39,6 +39,11 @@ Status: Draft
 - OpenAI legacy model의 Chat endpoint가 non-chat을 반환하고 Responses endpoint가 비구조화 `404/405`로 endpoint 미지원을 알린 경우에만 legacy `/completions` 전환을 허용한다. Responses-native model, structured provider 오류, 성공 응답의 malformed/empty/billable validation 실패는 legacy endpoint로 재호출하지 않는다.
 - User/anonymous-public/system execution subject는 각각 동일 user/public/system audit actor와만 결합되고 organization billing principal은 capability organization과 일치해야 한다. Capability resolve 권한 거부는 이 typed actor로 `permission.denied`를 한 번 기록하며 synthetic user나 raw credential/provider payload를 남기지 않는다.
 - Capability-required LLM node가 legacy `memory_mode`를 만나면 inline summary helper를 skip하고 history query 또는 legacy `get_client_for_user` provider call을 만들지 않는다. Main capability를 summary purpose로 재사용하지 않으며, dedicated Conversation Memory summarizer가 없는 상태에서 summary provider 호출을 추가하지 않는다.
+- Capability-required provider usage는 canonical `(container_path, node_id)` admission → intent commit → provider-start commit → opaque lease invoke → terminal commit 순서를 지킨다. 다른 Loop의 동일 `node_id`는 exact replay로 축소하지 않는다. Intent/start commit 실패, duplicate started/succeeded/unknown delivery와 state-version conflict에서는 provider SDK 호출이 0회여야 한다.
+- Timeout·connection loss·분류 불가 provider 오류, 필수 token field 누락, non-integer/negative usage, 제공된 total token 불일치, admitted token·cost 상한 초과와 response 수신 뒤 terminal 저장 실패는 outcome unknown으로 수렴하고 fallback·동일 attempt 재호출이 0회여야 한다.
+- Public/anonymous와 system 실행은 ledger round trip 뒤에도 execution subject/audit actor reference가 null이고 각각 public/system kind를 유지한다. Credential principal user는 compatibility projection에만 사용하며 member usage, 사용자별 Top Models 또는 audit actor로 대체되지 않는다. 사용자별 Top Models는 legacy-only usage와 explicit user execution subject의 canonical success만 중복 없이 합산한다.
+- WorkflowRun이 아직 없거나 삭제된 credential/model/workflow/candidate가 있어도 canonical success와 비용은 보존된다. Compatibility projection은 nullable reference로 한 행에 수렴한다. Run이 나중에 생성되면 exact workflow와 organization이 모두 일치할 때 한 번만 연결하고, 불일치하면 terminal projection failure로 닫는다. Workflow 삭제는 projection의 workflow/run reference만 `SET NULL`로 만들며 ledger와 비용을 삭제하거나 삭제 자체를 막지 않는다. 필수 legacy principal이 사라진 경우에도 retry loop 대신 terminal projection failure가 된다.
+- Same operation success replay, projection marker 유실 뒤 replay와 correction replay는 각각 audit outbox 한 건, compatibility usage 한 행과 최신 usage revision 하나로 수렴한다. PostgreSQL unique/CHECK, concurrent insert·terminal classification, late run 연결·삭제, upgrade/downgrade는 disposable DB CI에서 검증한다.
 
 - Credential list repository fake는 SQLAlchemy filter 조건을 실제로 적용해야 한다. `organization_id` 또는 `is_valid` predicate를 구현에서 제거하면 cross-organization/revoked fixture가 결과에 들어와 테스트가 실패해야 한다.
 - Credential permission helper는 active organization과 credential id를 한 query에 적용하고, 다른 organization row는 organization/resource RBAC 평가 전에 `404`로 종료해야 한다.
@@ -87,6 +92,23 @@ Status: Draft
 - Malformed row가 포함된 rotation batch는 전체 rollback되고 운영 출력에는 config, API key, ciphertext, key 또는 원본 예외가 없어야 한다.
 - Gateway, Workflow Worker와 Knowledge Worker는 missing/invalid keyring, active version 누락 또는 64자를 초과하는 active version에서 시작을 거부한다. Knowledge Worker는 init container와 Celery parent/child process에 같은 keyring을 주입받고, Log System deployment에는 LLM keyring이 주입되지 않는다.
 - Encrypted metadata row가 존재하면 schema downgrade는 metadata 유실 전에 fail-closed한다.
+
+## MBA-287 보호 리소스 완료 매트릭스
+
+| 경계 | 상태 | 공식 계약 | 구현 위치 | 실행 가능한 검증 또는 후속 |
+| --- | --- | --- | --- | --- |
+| Capability·principal binding | 완료 | ADR-0064, ADR-0066, ADR-0067 | Workflow `ProviderExecutionUsageContext`, capability adapter, Shared ledger snapshot | provider execution/usage adapter와 public/system principal unit tests |
+| Durable 저장·migration | 완료 | ADR-0067 canonical key/state/safe snapshot | `provider_usage_operations`, `provider_usage_corrections`, nullable unique usage projection migration | schema/migration unit test; disposable PostgreSQL unique/CHECK/upgrade/downgrade test는 CI 실행 |
+| Preflight와 runtime 재검증 | 완료 | ADR-0064 final admission, ADR-0066 canonical location, ADR-0067 start fence | capability resolve 뒤 ledger intent, `mark_provider_started`의 exact snapshot 재-admission | LLM node order, stale capability, binding mismatch와 provider 0-call tests |
+| Session·transaction·lock 수명 | 완료 | provider I/O 중 session/lock 금지 | 각 ledger mutation의 독립 session/commit, bounded `FOR UPDATE` | adapter session close tests와 disposable PostgreSQL replay test |
+| 멱등성·crash replay·outcome unknown | 완료 | ADR-0067 no-auto-retry | operation key/state version, single-use lease, stale-start reconciler | duplicate delivery, timeout, terminal write failure, projection marker replay tests |
+| Projection·canonical 비용 조회 | 완료 | ADR-0055 Agent Builder legacy usage, ADR-0067 mixed read와 incomplete signal | Shared cost read model, Gateway budget/admin/member/My Module usage, compatibility projector | shared/gateway/client unit tests; PostgreSQL projection/correction test는 CI 실행 |
+| Background/retry | 완료 | bounded safe reconciliation | Log System periodic task, projection lease/retry/terminal failure | Log System task와 Shared batch/skip-locked unit tests |
+| Revoke/delete lifecycle | 완료 | control lifecycle과 historical usage 분리 | Ledger는 organization 외 control FK 없음; projector가 삭제된 optional ref를 NULL 처리 | schema FK test, deleted-reference projection test; 구체 retention/purge 기간은 Decision Required |
+| Audit exactly-once·redaction | 완료 | ADR-0067 deterministic first classification | terminal transaction의 deterministic `llm.call` Audit Outbox | audit payload/redaction unit test와 PostgreSQL replay cardinality test(CI) |
+| 관리 API/UI | 해당 없음 | 새 ledger는 internal runtime·read-model 계약 | 신규 CRUD/API/UI 없음; 기존 admin/My Module 비용 화면에는 additive completeness만 노출 | admin/App API와 component tests |
+| Query embedding purpose | 후속 이슈 | 같은 ledger 확장 원칙 | 현재 enum/classifier는 main generation·memory summary만 지원 | MBA-351에서 capability purpose와 billable classifier·tests를 함께 확장 |
+| Legacy 전체 activation | 후속 이슈 | ADR-0064 staged activation | capability-required target path만 ledger 사용, legacy recorder 병행 | MBA-320 activation/readiness gate |
 
 ## MBA-358 보호 리소스 완료 매트릭스
 

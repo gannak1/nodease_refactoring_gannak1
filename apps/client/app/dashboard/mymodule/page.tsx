@@ -215,6 +215,8 @@ type CostOptimizationSignal = {
   workflowExecutionCost: number | null;
   agentBuilderCost: number | null;
   trendPercent: number | null;
+  usageDataComplete: boolean;
+  unresolvedProviderCallCount: number;
   budgetUsageRatio: number | null;
   budgetStatus: BudgetUsageStatus | null;
 };
@@ -258,6 +260,9 @@ const costSignalOf = (row: ModuleOperationRow): CostOptimizationSignal => {
     workflowExecutionCost,
     agentBuilderCost,
     trendPercent,
+    usageDataComplete: metrics?.usage_data_complete ?? true,
+    unresolvedProviderCallCount:
+      metrics?.unresolved_provider_call_count ?? 0,
     budgetUsageRatio,
     budgetStatus,
   };
@@ -293,6 +298,11 @@ function ModuleProjectedCost({
         <p>Agent Builder {formatCurrency(costSignal.agentBuilderCost)}</p>
       </div>
       {hasNoCost && <p className="mt-1 text-xs text-slate-400">비용 없음</p>}
+      {!costSignal.usageDataComplete && (
+        <p className="mt-1 text-xs font-medium text-amber-700">
+          미확정 {costSignal.unresolvedProviderCallCount}건
+        </p>
+      )}
     </div>
   );
 }

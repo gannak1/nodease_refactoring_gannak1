@@ -46,6 +46,8 @@ const operationRow = {
       projected_month_cost: 2,
       previous_month_cost: 1,
       trend_percent: 10,
+      usage_data_complete: true,
+      unresolved_provider_call_count: 0,
     },
   },
   deployment: { state: 'active', deployment_id: 'deployment-1' },
@@ -193,5 +195,26 @@ describe('워크플로우 운영 현황 보기 전환', () => {
         screen.getByRole('heading', { level: 3, name: '신입사원 온보딩' }),
       ).toBeInTheDocument();
     });
+  });
+
+  it('미확정 provider 호출이 있으면 비용 완결성 경고를 표시한다', async () => {
+    vi.mocked(moduleOperationsApi.listModuleOperations).mockResolvedValue([
+      {
+        ...operationRow,
+        app: {
+          ...operationRow.app,
+          operation_metrics: {
+            ...operationRow.app.operation_metrics,
+            usage_data_complete: false,
+            unresolved_provider_call_count: 1,
+          },
+        },
+      },
+    ] as never);
+
+    render(<MyModulePage />);
+    fireEvent.click(await screen.findByRole('button', { name: '리스트 보기' }));
+
+    expect(await screen.findByText('미확정 1건')).toBeVisible();
   });
 });

@@ -1107,6 +1107,7 @@ class ProviderExecutionCapabilityService:
                     ).container_path,
                 ),
                 policy_id=record.policy_id,
+                policy_revision=record.policy_revision,
                 credential_id=record.credential_id,
                 model_id=record.model_id,
                 provider_id=record.provider_id,

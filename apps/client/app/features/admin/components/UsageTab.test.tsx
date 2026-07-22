@@ -39,6 +39,8 @@ const usageResponse = {
     startAt: '2026-07-01T00:00:00+09:00',
     endAt: '2026-08-01T00:00:00+09:00',
   },
+  usage_data_complete: true,
+  unresolved_provider_call_count: 0,
   items: [
     {
       workflow_id: 'wf-1',
@@ -49,6 +51,8 @@ const usageResponse = {
       total_cost: 12.345678,
       workflow_execution_cost: 10,
       agent_builder_cost: 2.345678,
+      usage_data_complete: true,
+      unresolved_provider_call_count: 0,
     },
     {
       workflow_id: 'wf-2',
@@ -59,6 +63,8 @@ const usageResponse = {
       total_cost: 0.123456,
       workflow_execution_cost: 0.1,
       agent_builder_cost: 0.023456,
+      usage_data_complete: true,
+      unresolved_provider_call_count: 0,
     },
   ],
 };
@@ -107,6 +113,22 @@ describe('UsageTab', () => {
       '기간은 시작과 끝을 함께 입력하거나 모두 비워야 합니다.',
     );
     expect(mockedList).not.toHaveBeenCalled();
+  });
+
+  it('미해결 provider 호출이 있으면 확정 비용이 아님을 경고한다', async () => {
+    mockedList.mockResolvedValue({
+      ...usageResponse,
+      usage_data_complete: false,
+      unresolved_provider_call_count: 2,
+    });
+
+    render(<UsageTab />);
+
+    expect(
+      await screen.findByText(
+        '비용 미확정 provider 호출 2건이 있어 합계가 변경될 수 있습니다.',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('기간을 모두 입력하면 해당 기간으로 1페이지부터 재조회한다', async () => {

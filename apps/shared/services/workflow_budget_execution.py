@@ -5,13 +5,14 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.domain.workflow_budget import (
     BudgetExecutionDecision,
     resolve_month_period_kst,
 )
-from sqlalchemy import func
+from apps.shared.services.provider_usage_cost_read_model import (
+    read_workflow_usage_aggregate,
+)
 from sqlalchemy.orm import Session
 
 
@@ -69,26 +70,16 @@ def _evaluate_workflow_budget_execution(
         return BudgetExecutionDecision(status="allowed")
 
     period = resolve_month_period_kst(now)
-    if hasattr(db, "usage_logs"):
-        current_cost = sum(
-            (
-                _decimal(usage.total_cost)
-                for usage in db.usage_logs
-                if usage.workflow_id == workflow_id
-                and period.start_at <= usage.created_at < period.end_at
-            ),
-            Decimal("0"),
-        )
-    else:
-        current_cost = _decimal(
-            db.query(func.sum(LLMUsageLog.total_cost))
-            .filter(
-                LLMUsageLog.workflow_id == workflow_id,
-                LLMUsageLog.created_at >= period.start_at,
-                LLMUsageLog.created_at < period.end_at,
-            )
-            .scalar()
-        )
+    usage = read_workflow_usage_aggregate(
+        db,
+        workflow_id=workflow_id,
+        organization_id=None,
+        start_at=period.start_at,
+        end_at=period.end_at,
+    )
+    if not usage.usage_data_complete:
+        return BudgetExecutionDecision(status="unavailable")
+    current_cost = usage.total_cost
 
     return BudgetExecutionDecision(
         status="blocked" if current_cost > monthly_budget else "allowed"

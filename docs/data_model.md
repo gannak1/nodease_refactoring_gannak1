@@ -13,19 +13,19 @@ Status: Draft
 
 ## 도메인별 테이블
 
-현재 코드의 SQLAlchemy `__tablename__` 기준 활성 테이블은 101개다. 아래 목록은 공통 model registry와 Alembic head `c06d7e8f9a15`를 대조한 inventory다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 주석 처리된 호환 모델이므로 개수와 목록에서 제외한다. 테이블 추가·삭제 시 수동 개수만 바꾸지 말고 이 inventory와 해당 도메인 설명을 함께 갱신한다.
+현재 코드의 SQLAlchemy `__tablename__` 기준 활성 테이블은 103개다. 아래 목록은 공통 model registry와 Alembic head `b16c7d8e9f01`을 대조한 inventory다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 주석 처리된 호환 모델이므로 개수와 목록에서 제외한다. 테이블 추가·삭제 시 수동 개수만 바꾸지 말고 이 inventory와 해당 도메인 설명을 함께 갱신한다.
 
 | 도메인 | 테이블 |
 | --- | --- |
 | 사용자/조직 | `users`, `organization`, `organization_memberships`, `teams`, `team_memberships` |
 | 권한 | `team_workflow_permissions`, `team_knowledge_permissions`, `team_knowledge_collection_permissions`, `team_knowledge_domain_permissions`, `team_llm_permissions`, `team_mail_credential_permissions`, `team_audit_permissions`, `user_workflow_permissions`, `user_knowledge_permissions`, `user_knowledge_collection_permissions`, `user_knowledge_domain_permissions`, `user_llm_permissions`, `user_mail_credential_permissions`, `permission_requests`, `user_app_creation_permissions` |
-| 앱/워크플로우 | `apps`, `workflows`, `workflow_budgets`, `workflow_deployments`, `schedules`, `schedule_dispatch_claims`, `workflow_runs`, `workflow_node_runs`, `workflow_node_effect_attempts`, `llm_node_versions`, `deployment_parameter_optimization_plans` |
+| 앱/워크플로우 | `apps`, `workflows`, `workflow_budgets`, `workflow_deployments`, `schedules`, `schedule_dispatch_claims`, `workflow_runs`, `workflow_node_runs`, `workflow_node_effect_attempts`, `workflow_node_secrets`, `llm_node_versions`, `deployment_parameter_optimization_plans` |
 | Agent Builder | `agent_builder_sessions`, `agent_builder_requests`, `agent_builder_drafts` |
 | Conversation Memory | `conversation_sessions`, `conversation_access_grants`, `conversation_turns`, `conversation_memory_entries`, `conversation_memory_summaries`, `memory_data_dependencies`, `memory_entry_dependencies`, `memory_summary_dependencies`, `memory_turn_dispatch_jobs`, `memory_summary_generation_jobs`, `memory_context_plans`, `memory_context_leases`, `memory_context_provider_attempts`, `conversation_purge_jobs`, `conversation_idempotency_records`, `conversation_secret_replays` |
 | 추적/감사 | `trace_payloads`, `trace_payload_access_events`, `trace_redaction_policies`, `trace_retention_policies`, `trace_visibility_policies`, `audit_logs`, `audit_event_outbox` |
 | 보안 알림 | `security_alerts`, `security_alert_audit_events`, `security_alert_reconciliation_watermarks`, `security_alert_reconciliation_receipts`, `security_alert_notification_outbox` |
 | Knowledge/RAG | `knowledge_bases`, `documents`, `document_versions`, `document_chunks`, `rag_answer_runs`, `knowledge_collections`, `knowledge_collection_items`, `knowledge_collection_sync_jobs`, `knowledge_collection_sync_job_items`, `knowledge_ingestion_outbox`, `knowledge_document_ingestion_jobs`, `knowledge_source_identities`, `source_authorization_provenance`, `source_policy_kb_use_grants` |
-| LLM | `llm_providers`, `llm_models`, `llm_credentials`, `llm_rel_credential_models`, `llm_deployment_credential_policies`, `provider_execution_capabilities`, `llm_usage_logs` |
+| LLM | `llm_providers`, `llm_models`, `llm_credentials`, `llm_rel_credential_models`, `llm_deployment_credential_policies`, `provider_execution_capabilities`, `provider_usage_operations`, `provider_usage_corrections`, `llm_usage_logs` |
 | LLM routing/비용 | `llm_model_routing_global_profiles`, `llm_node_model_routing_bootstraps`, `llm_node_model_routing_bootstrap_samples`, `llm_node_model_routing_policies`, `llm_node_model_routing_policy_run_events`, `llm_node_model_routing_policy_updates`, `llm_node_model_routing_performances`, `llm_node_model_routing_learners`, `llm_node_model_routing_learner_versions`, `llm_node_model_routing_learning_labels`, `cost_optimizer_candidates`, `cost_optimizer_experiments`, `cost_optimizer_recommendation_verifications` |
 | 외부 연동 | `connections`, `mail_credentials`, `mail_draft_effects`, `mail_message_processings` |
 
@@ -80,6 +80,9 @@ erDiagram
   llm_credentials ||--o{ llm_deployment_credential_policies : selected_by
   llm_deployment_credential_policies ||--o{ provider_execution_capabilities : issues
   workflow_deployments ||--o{ provider_execution_capabilities : scopes
+  organization ||--o{ provider_usage_operations : bills
+  provider_usage_operations ||--o{ provider_usage_corrections : corrects
+  provider_usage_operations ||--o| llm_usage_logs : projects_as
   llm_credentials ||--o{ llm_usage_logs : logs
 
   mail_credentials ||--o{ team_mail_credential_permissions : grants
@@ -93,10 +96,11 @@ erDiagram
   audit_logs ||--o{ security_alert_audit_events : supports
 ```
 
-- 위 ER diagram은 핵심 관계만 표시하며 100개 전체 table inventory를 반복하지 않는다.
+- 위 ER diagram은 핵심 관계만 표시하며 103개 전체 table inventory를 반복하지 않는다.
 - `rag_answer_runs`와 trace/usage 테이블은 FK가 아니라 opaque `correlation_id`(application-level convention)로만 연결한다 ([ADR-0013](decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)). 다이어그램에 없는 이유다.
 - `apps.workflow_id`와 `workflows.app_id`는 상호 참조(순환 FK)다.
 - JSONB metadata에 id를 넣는 방식(`audit_metadata`, `meta_info` 등)은 관계가 아니라 application convention이다.
+- `provider_usage_operations → llm_usage_logs`는 nullable unique operation reference를 사용하는 compatibility projection 관계이며 DB FK는 아니다. Ledger가 canonical fact이고 projection 삭제·지연이 ledger lifecycle을 바꾸지 않는다 ([ADR-0068](decisions/ADR-0068-provider-usage-durable-ledger.md)).
 
 ## 공통 컬럼과 규칙
 
@@ -1284,9 +1288,67 @@ Immutable deployment version의 canonical LLM node location에 사용할 credent
 - Admission은 실제 prompt UTF-8 byte upper bound, provider `max_tokens`와 canonical pricing의 최대 비용을 cap과 비교한다. Missing pricing과 provider별 output-limit alias는 capability-required path에서 fail-closed한다.
 - `egress_revision`은 현재 provider catalog routing fingerprint이며 중앙 egress authorization은 아니다. 실제 outbound guard 정책은 별도 경계가 소유한다.
 
+#### `provider_usage_operations`
+
+Capability-required provider attempt의 canonical token/cost/outcome 원장이다 ([ADR-0068](decisions/ADR-0068-provider-usage-durable-ledger.md)). Provider I/O보다 먼저 intent와 started fence를 각각 짧은 transaction으로 확정하고, 장기 비용 사실을 live capability나 WorkflowRun lifecycle과 분리한다.
+
+| 컬럼 | 타입 | 제약 |
+| --- | --- | --- |
+| id | UUID | PK |
+| organization_id | UUID | NOT NULL, FK→organization.id (RESTRICT) |
+| workflow_id / deployment_id / deployment_version / node_id | UUID / UUID / INTEGER / VARCHAR(255) | NOT NULL, immutable 실행 binding snapshot |
+| container_path | JSONB | NOT NULL, ADR-0066의 ordered Loop-only canonical parent path; root는 `[]` |
+| node_invocation_id / execution_admission_id / provider_attempt_id | UUID | NOT NULL, canonical attempt binding |
+| purpose | VARCHAR(32) | NOT NULL, 현재 `main_generation` 또는 `memory_summary` |
+| capability_id / capability_revision | UUID / INTEGER | NOT NULL, opaque capability snapshot |
+| capability_expires_at | DATETIME | NOT NULL |
+| policy_id / policy_revision | UUID / INTEGER | NOT NULL |
+| provider_id / model_id / model_api_id / credential_id | UUID / UUID / VARCHAR(255) / UUID | NOT NULL, live FK가 아닌 safe reference snapshot |
+| permission_revision / relation_revision / egress_revision / pricing_revision | VARCHAR(64) | NOT NULL, SHA-256 revision fingerprint |
+| input_price_per_1k / output_price_per_1k | NUMERIC(20,9) | NOT NULL, admission 시점 immutable pricing |
+| input_token_cap / output_token_cap / cost_cap_microusd | INTEGER / INTEGER / BIGINT | NOT NULL, 0 이상 |
+| admitted_input_tokens / admitted_output_tokens | INTEGER | NOT NULL, 각 capability cap 이하 |
+| execution_subject_kind / execution_subject_id | VARCHAR(32) / UUID | user·anonymous_public·system typed identity |
+| credential_principal_kind / credential_principal_id | VARCHAR(32) / UUID | user만 허용, reference 필수 |
+| billing_principal_kind / billing_principal_id | VARCHAR(32) / UUID | organization만 허용, row organization과 일치 |
+| audit_actor_kind / audit_actor_id | VARCHAR(32) / UUID | subject에 정합한 user·public·system actor |
+| state / state_version | VARCHAR(32) / INTEGER | `intent`, `provider_started`, `succeeded`, `failed_definitive`, `outcome_unknown`; version 1 이상 |
+| safe_reason_code | VARCHAR(64) | NULL, terminal 실패/unknown allowlist만 허용 |
+| intent_created_at / provider_started_at / terminal_at | DATETIME | state별 nullability CHECK |
+| prompt_tokens / completion_tokens / total_cost_microusd / latency_ms | INTEGER / INTEGER / BIGINT / INTEGER | `succeeded`에서만 NOT NULL, 0 이상 |
+| usage_revision | INTEGER | NOT NULL, success/correction revision |
+| workflow_run_id / cost_optimizer_candidate_id | UUID | NULL, FK 없는 correlation snapshot |
+| projection_status | VARCHAR(32) | NOT NULL, `pending`, `projected`, `retryable_failure`, `terminal_failure` |
+| projected_usage_log_id / projected_usage_revision / projected_at | UUID / INTEGER / DATETIME | successful compatibility projection marker |
+| projection_attempts / projection_next_attempt_at / projection_reason_code | INTEGER / DATETIME / VARCHAR(64) | bounded reconciler 상태 |
+| audit_event_id | UUID | NULL, post-call terminal에서 deterministic event id 필수·UNIQUE |
+| created_at / updated_at | DATETIME | NOT NULL |
+
+- UNIQUE `(organization_id, provider_attempt_id, purpose)`가 provider attempt identity의 단일 권위다. 같은 key의 replay는 canonical `container_path + node_id`를 포함한 나머지 binding/principal/revision/pricing/cap snapshot이 정확히 같을 때만 기존 operation으로 수렴한다.
+- Organization FK 외 control-resource FK를 두지 않는다. Deployment/capability/policy/credential/model/user/WorkflowRun 삭제는 이미 발생한 usage fact를 cascade 삭제하거나 reconciliation을 막지 않는다.
+- `provider_started` 뒤 결과를 확정할 수 없으면 `outcome_unknown`으로 분류하고 provider를 자동 재호출하지 않는다. Stale started row를 정리하는 reconciler도 provider I/O를 수행하지 않는다.
+- Raw prompt/completion, request/response/header, credential/config와 raw exception column은 두지 않는다.
+
+#### `provider_usage_corrections`
+
+Provider 보고 또는 billing reconciliation으로 canonical measurement를 정정한 append-only receipt다.
+
+| 컬럼 | 타입 | 제약 |
+| --- | --- | --- |
+| id | UUID | PK |
+| operation_id | UUID | NOT NULL, FK→provider_usage_operations.id (CASCADE) |
+| correction_key | VARCHAR(128) | NOT NULL |
+| base_usage_revision / resulting_usage_revision | INTEGER | NOT NULL, resulting = base + 1 |
+| prompt_tokens / completion_tokens / total_cost_microusd / latency_ms | INTEGER / INTEGER / BIGINT / INTEGER | NOT NULL, 0 이상 |
+| source / reason_code | VARCHAR | NOT NULL, 고정 allowlist |
+| created_at | DATETIME | NOT NULL |
+
+- UNIQUE `(operation_id, correction_key)`와 `(operation_id, resulting_usage_revision)`로 replay와 revision 경합을 제한한다.
+- Correction이 적용되면 operation의 canonical measurement/revision과 projection pending marker가 같은 transaction에서 갱신된다. Provider invoice나 raw payload는 저장하지 않는다.
+
 #### `llm_usage_logs`
 
-LLM token/cost/latency 원천.
+Legacy LLM token/cost/latency 원천이자 durable provider usage의 compatibility projection. Operation reference가 없는 기존 행만 canonical mixed read의 legacy 부분으로 직접 합산한다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
@@ -1295,7 +1357,7 @@ LLM token/cost/latency 원천.
 | organization_id | UUID | NULL, FK→organization.id |
 | credential_id | UUID | NULL, FK→llm_credentials.id (SET NULL) — 신규 기록에는 실제 credential ID가 필수이며 삭제 뒤 과거 token/cost 보존을 위해서만 NULL 허용 |
 | model_id | UUID | NULL, FK→llm_models.id (SET NULL) — 신규 기록에는 실제 model ID가 필수이며 삭제 뒤 과거 token/cost 보존을 위해서만 NULL 허용 |
-| workflow_id | UUID | NULL, FK→workflows.id |
+| workflow_id | UUID | NULL, FK→workflows.id (SET NULL) |
 | workflow_run_id | UUID | NULL, FK→workflow_runs.id (SET NULL) |
 | cost_optimizer_candidate_id | UUID | NULL, FK→cost_optimizer_candidates.id (SET NULL) — candidate summary가 정리돼도 usage fact는 유지 |
 | node_id | TEXT | NULL — graph 내 string 참조 |
@@ -1303,6 +1365,8 @@ LLM token/cost/latency 원천.
 | runtime_session_id | UUID | NULL — runtime provenance snapshot, FK 없음 |
 | runtime_request_id | UUID | NULL — 논리 요청 snapshot, FK 없음 |
 | runtime_attempt | INTEGER | NULL, 1 이상 — 최초 planner 1, repair 2 |
+| provider_usage_operation_id | UUID | NULL, compatibility projection identity, UNIQUE, FK 없음 |
+| provider_usage_revision | INTEGER | NULL, operation id와 함께 존재하고 1 이상 |
 | prompt_tokens / completion_tokens | INTEGER | NOT NULL |
 | total_cost | NUMERIC(10,6) | NULL |
 | latency_ms | INTEGER | NOT NULL |
@@ -1311,11 +1375,12 @@ LLM token/cost/latency 원천.
 | created_at | DATETIME | NOT NULL |
 
 - RAG 전용 FK(`rag_answer_run_id`)를 추가하지 않는다. standalone answer와의 연결은 correlation convention이다.
+- Durable provider usage projection은 operation당 한 행만 허용한다. WorkflowRun이 늦으면 `workflow_run_id=NULL`로 먼저 저장하고, 해당 run의 workflow와 organization이 ledger snapshot과 정확히 일치할 때만 나중에 연결한다. 삭제된 optional credential/model/workflow/candidate reference는 `SET NULL` 또는 projection 정규화로 내릴 수 있으며 canonical safe snapshot은 ledger에 남는다.
 - Agent Builder intent row는 `(runtime_surface, runtime_session_id, runtime_request_id, runtime_attempt)` partial unique key로 중복을 제거한다. Provider 호출 전 `pending` 행은 token/cost/latency 0으로 예약하고 응답 뒤 같은 행을 `success`로 완료한다. 해당 surface에서는 session/request/attempt가 모두 필수이며 prompt/completion token, total cost와 latency는 음수가 될 수 없다. `total_cost`도 필수다.
 - Model 또는 credential 삭제 시 연결 ID만 NULL이 되며 token, 당시 계산된 비용, user/organization/workflow 귀속은 유지한다. 일반 조직·workflow·예산 집계는 이 행을 계속 합산한다 ([ADR-0055](decisions/ADR-0055-agent-builder-intent-usage-attribution.md)).
 - 비용 구분 집계는 `runtime_surface='agent_builder_intent' AND status='success'`인 행만 Agent Builder 비용·token·호출 수로 포함한다. Pending 행은 미확정 운영 증거이며 집계에서 제외한다. NULL과 그 밖의 surface는 기존 workflow 실행 비용 분류를 유지한다. 두 구분값의 합은 기존 총비용과 같아야 하며 예산과 전월 추세는 총비용 기준을 유지한다.
 - 일반 credential revoke는 row를 삭제하지 않는다. Hard purge 또는 catalog row 삭제는 nullable FK와 `SET NULL`로 연결 ID만 해제하며, 이력 비용 행은 삭제하지 않는다.
-- Usage는 청구·비용 분석·감사의 historical fact이므로 credential/model과 함께 cascade delete하지 않는다. 현재 schema는 삭제 뒤 token/cost와 귀속을 보존하지만 provider/model/pricing 식별 스냅샷을 정의하지 않는다. 이 식별 정보와 organization별 retention·법적 보존·purge 규칙은 후속 결정으로 분리한다.
+- Usage는 청구·비용 분석·감사의 historical fact이므로 credential/model과 함께 cascade delete하지 않는다. Capability path의 provider/model/pricing/principal 의미는 canonical ledger safe snapshot으로 보존한다. Organization별 retention·법적 보존·physical purge 기간은 별도 결정 전까지 자동화하지 않는다.
 
 ### 외부 연동
 

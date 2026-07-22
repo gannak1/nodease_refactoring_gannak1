@@ -81,6 +81,9 @@ Status: Draft
 - Public create/close/reset/delete request와 grant action은 `actor_id=null`, `actor_type='public'`, async physical purge/compliance completion은 `actor_id=null`, `actor_type='system'`을 사용한다. App/deployment owner, credential/billing principal과 grant reference를 actor로 기록하면 실패한다.
 - Audit schema/sanitizer/list/detail/UI는 `actor_type='public'`을 안전한 익명 public actor로 round-trip하고 `System`/user name으로 오표시하지 않는다. User-only alert detector는 이 row를 user actor로 포함하지 않는다.
 - ProviderExecutionCapability/lease/reservation의 raw token/scope/credential은 AuditLog/trace/metric에 없고 safe opaque reference/revision/purpose만 operational record에 허용된다.
+- Provider usage success/definitive failure/outcome unknown의 최초 durable classification은 operation당 deterministic `llm.call` Outbox 한 건을 만든다. Same-result replay, unknown 뒤 late reconciliation, correction과 Outbox redelivery는 두 번째 call audit을 만들지 않는다.
+- Authenticated/public/system provider usage audit actor는 각각 admitted user/public/system이고 public/system actor id는 null이다. Credential/billing principal, workflow/App/deployment creator를 actor로 대체하면 실패한다.
+- Provider usage audit payload와 storage/reconciliation 로그에는 raw prompt/completion, provider request/response/header, credential/config, token 문자열과 raw exception이 없고 allowlisted safe reference/revision/status/reason만 존재한다.
 
 ## E2E Tests
 

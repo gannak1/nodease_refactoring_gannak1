@@ -1856,6 +1856,16 @@ function MembersTab({
                             member.current_month_usage.agent_builder_cost,
                           )}
                         </p>
+                        {!member.current_month_usage.usage_data_complete && (
+                          <p className="font-medium text-amber-700">
+                            미확정{' '}
+                            {
+                              member.current_month_usage
+                                .unresolved_provider_call_count
+                            }
+                            건
+                          </p>
+                        )}
                       </div>
                     </td>
                     <td className="px-5 py-4 text-xs text-slate-500">

@@ -36,11 +36,17 @@ from apps.workflow_engine.application.provider_execution import (
     ProviderExecutionAttribution,
     ProviderExecutionAuditActor,
     ProviderExecutionAuditActorKind,
+    ProviderExecutionBindingSnapshot,
     ProviderExecutionConfigurationError,
+    ProviderExecutionIdentityContext,
     ProviderExecutionPlan,
     ProviderExecutionPreflight,
     ProviderExecutionPricingSnapshot,
+    ProviderExecutionPrincipal,
+    ProviderExecutionPrincipalKind,
+    ProviderExecutionPurpose,
     ProviderExecutionRequest,
+    ProviderExecutionUsageContext,
 )
 
 
@@ -271,6 +277,54 @@ class CapabilityProviderExecutionAdapter:
                 capability_id=capability.id,
                 capability_revision=capability.revision,
                 pricing_snapshot=pricing_snapshot,
+                usage_context=ProviderExecutionUsageContext(
+                    binding=ProviderExecutionBindingSnapshot(
+                        organization_id=capability.binding.organization_id,
+                        workflow_id=capability.binding.workflow_id,
+                        deployment_id=capability.binding.deployment_id,
+                        deployment_version=capability.binding.deployment_version,
+                        node_id=capability.binding.node_id,
+                        node_invocation_id=capability.binding.node_invocation_id,
+                        execution_admission_id=(
+                            capability.binding.execution_admission_id
+                        ),
+                        provider_attempt_id=capability.binding.provider_attempt_id,
+                        purpose=ProviderExecutionPurpose(
+                            capability.binding.purpose.value
+                        ),
+                        container_path=capability.binding.container_path,
+                    ),
+                    capability_id=capability.id,
+                    capability_revision=capability.revision,
+                    capability_expires_at=capability.expires_at,
+                    policy_id=capability.policy_id,
+                    policy_revision=capability.policy_revision,
+                    provider_id=capability.provider_id,
+                    model_id=capability.model_id,
+                    model_api_id=admitted_model_id,
+                    credential_id=capability.credential_id,
+                    identities=ProviderExecutionIdentityContext(
+                        execution_subject=self._application_principal(
+                            issue_command.execution_subject
+                        ),
+                        credential_principal=self._application_principal(principal),
+                        billing_principal=self._application_principal(
+                            issue_command.billing_principal
+                        ),
+                        audit_actor=self._application_principal(
+                            issue_command.audit_actor
+                        ),
+                    ),
+                    permission_revision=capability.permission_revision,
+                    relation_revision=capability.relation_revision,
+                    egress_revision=capability.egress_revision,
+                    pricing_snapshot=pricing_snapshot,
+                    input_token_cap=capability.input_token_cap,
+                    output_token_cap=capability.output_token_cap,
+                    cost_cap_microusd=capability.cost_cap_microusd,
+                    admitted_input_tokens=input_tokens,
+                    admitted_output_tokens=output_tokens,
+                ),
             )
             db.commit()
         finally:
@@ -300,6 +354,18 @@ class CapabilityProviderExecutionAdapter:
             kind = ProviderExecutionAuditActorKind(principal.kind.value)
             return ProviderExecutionAuditActor(
                 kind=kind,
+                reference_id=principal.reference_id,
+            )
+        except ValueError as exc:
+            raise ProviderExecutionConfigurationError() from exc
+
+    @staticmethod
+    def _application_principal(
+        principal: RuntimePrincipal,
+    ) -> ProviderExecutionPrincipal:
+        try:
+            return ProviderExecutionPrincipal(
+                kind=ProviderExecutionPrincipalKind(principal.kind.value),
                 reference_id=principal.reference_id,
             )
         except ValueError as exc:

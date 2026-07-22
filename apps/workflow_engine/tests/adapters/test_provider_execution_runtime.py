@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -102,16 +103,37 @@ def test_capability_runtime_commits_and_closes_control_uow_before_provider_io():
     policy_principal_id = uuid.uuid4()
     model_db_id = uuid.uuid4()
     credential_id = uuid.uuid4()
+    provider_id = uuid.uuid4()
     session = _Session()
     captured: dict = {}
     pricing_revision = "d" * 64
 
-    capability = SimpleNamespace(id=uuid.uuid4(), revision=3)
+    capability_id = uuid.uuid4()
 
     class _CapabilityService:
         @staticmethod
         def issue_capability(_db, *, command):
             captured["issue"] = command
+            capability = SimpleNamespace(
+                id=capability_id,
+                revision=3,
+                binding=command.binding,
+                policy_id=uuid.uuid4(),
+                policy_revision=2,
+                provider_id=provider_id,
+                model_id=model_db_id,
+                credential_id=credential_id,
+                credential_principal=RuntimePrincipal.user(policy_principal_id),
+                permission_revision="a" * 64,
+                relation_revision="b" * 64,
+                egress_revision="c" * 64,
+                pricing_revision=pricing_revision,
+                input_token_cap=command.input_token_cap,
+                output_token_cap=command.output_token_cap,
+                cost_cap_microusd=command.cost_cap_microusd,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            )
+            captured["capability"] = capability
             return capability
 
         @staticmethod
@@ -120,6 +142,7 @@ def test_capability_runtime_commits_and_closes_control_uow_before_provider_io():
             return SimpleNamespace(
                 credential=SimpleNamespace(id=credential_id),
                 provider=SimpleNamespace(
+                    id=provider_id,
                     name="provider",
                     base_url="https://catalog.example.test/v1",
                 ),
@@ -129,10 +152,7 @@ def test_capability_runtime_commits_and_closes_control_uow_before_provider_io():
                     input_price_1k=Decimal("0.001"),
                     output_price_1k=Decimal("0.002"),
                 ),
-                capability=SimpleNamespace(
-                    credential_principal=RuntimePrincipal.user(policy_principal_id),
-                    pricing_revision=pricing_revision,
-                ),
+                capability=captured["capability"],
             )
 
     client = _Client(session)
@@ -199,6 +219,10 @@ def test_capability_runtime_commits_and_closes_control_uow_before_provider_io():
     assert lease.attribution.pricing_snapshot.output_price_per_1k == Decimal("0.002")
     assert captured["issue"].binding.node_id == "llm-1"
     assert captured["issue"].binding.container_path == (("loop", "loop-a"),)
+    assert lease.attribution.usage_context is not None
+    assert lease.attribution.usage_context.binding.container_path == (
+        ("loop", "loop-a"),
+    )
     assert captured["admission"].requested_output_tokens == 100
     assert lease.invoke()["choices"][0]["message"]["content"] == "ok"
     assert client.calls == 1

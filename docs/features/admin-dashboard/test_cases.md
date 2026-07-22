@@ -19,6 +19,15 @@ Security Alert FR-013의 상세 rule/worker/API/component/E2E matrix는 [Securit
 
 ## Acceptance Criteria
 
+### Durable provider usage completeness
+
+- Given 성공한 provider operation의 compatibility usage projection이 아직 생성되지 않았다, When workflow usage와 organization summary를 조회하면, Then canonical ledger 비용과 token/call count가 즉시 한 번만 합산되고 `usage_data_complete=true`다.
+- Given 같은 성공 operation의 compatibility usage projection이 존재한다, When 조회하면, Then operation reference가 있는 projection은 legacy 합계에서 제외되어 비용이 두 번 합산되지 않는다.
+- Given 기간 안에 `provider_started` 또는 `outcome_unknown` operation이 있다, When 조회하면, Then 확정된 비용은 그대로 반환하고 해당 workflow 및 전체 응답의 `usage_data_complete=false`, `unresolved_provider_call_count`는 미해결 건수를 반환한다.
+- Given eligible workflow는 존재하지만 요청 page가 전체 범위를 벗어나 item이 비어 있다, When workflow usage를 조회하면, Then response-level `usage_data_complete`와 `unresolved_provider_call_count`는 빈 page가 아니라 모든 eligible workflow의 전역 상태를 계속 반환한다.
+- Given 월 경계 전에 시작한 provider operation의 projection이 다음 달에 늦게 생성된다, When 두 달을 각각 조회하면, Then 비용은 projection 생성 시각이 아니라 `provider_started_at`이 속한 달에만 귀속된다.
+- Given 기존 usage와 durable ledger operation이 함께 존재한다, When 조회하면, Then operation reference가 없는 legacy usage와 canonical succeeded operation만 합산하고 raw prompt/completion/provider 오류는 응답하지 않는다.
+
 ### AC-1. audit log 검색/상세 (FR-011)
 
 - Given 조직 A의 audit `auditor` 이상 권한 사용자, When `GET /admin/audit-logs`를 호출하면, Then 조직 A scope의 audit log만 `occurred_at` 내림차순으로 반환된다.

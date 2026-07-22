@@ -86,6 +86,8 @@ const member = {
     total_cost: 0,
     workflow_execution_cost: 0,
     agent_builder_cost: 0,
+    usage_data_complete: true,
+    unresolved_provider_call_count: 0,
   },
 };
 
@@ -260,6 +262,8 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
                     total_cost: 1.25,
                     workflow_execution_cost: 1.25,
                     agent_builder_cost: 0,
+                    usage_data_complete: true,
+                    unresolved_provider_call_count: 0,
                   },
                 },
                 {
@@ -271,6 +275,8 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
                     total_cost: 5,
                     workflow_execution_cost: 2,
                     agent_builder_cost: 3,
+                    usage_data_complete: false,
+                    unresolved_provider_call_count: 1,
                   },
                 },
               ],
@@ -284,6 +290,7 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
     expect(within(rows[1]).getByText('High cost')).toBeInTheDocument();
     expect(within(rows[1]).getByText('$5.00')).toBeInTheDocument();
     expect(within(rows[1]).getByText('Agent Builder $3.00')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('미확정 1건')).toBeInTheDocument();
     expect(within(rows[2]).getByText('Low cost')).toBeInTheDocument();
     expect(within(rows[2]).getByText('$1.25')).toBeInTheDocument();
   });

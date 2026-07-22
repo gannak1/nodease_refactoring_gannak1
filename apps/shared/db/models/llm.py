@@ -590,6 +590,14 @@ class LLMUsageLog(Base):
             "AND total_cost IS NOT NULL AND total_cost >= 0 AND latency_ms >= 0)",
             name="ck_llm_usage_logs_agent_builder_billing_facts",
         ),
+        CheckConstraint(
+            "(provider_usage_operation_id IS NULL "
+            "AND provider_usage_revision IS NULL) OR "
+            "(provider_usage_operation_id IS NOT NULL "
+            "AND provider_usage_revision IS NOT NULL "
+            "AND provider_usage_revision >= 1)",
+            name="ck_llm_usage_logs_provider_usage_projection",
+        ),
         Index(
             "uq_llm_usage_logs_agent_builder_attempt",
             "runtime_surface",
@@ -604,6 +612,11 @@ class LLMUsageLog(Base):
             "organization_id",
             "runtime_surface",
             "created_at",
+        ),
+        Index(
+            "uq_llm_usage_logs_provider_usage_operation",
+            "provider_usage_operation_id",
+            unique=True,
         ),
     )
 
@@ -633,7 +646,10 @@ class LLMUsageLog(Base):
     )
 
     workflow_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("workflows.id"), nullable=True, index=True
+        PGUUID(as_uuid=True),
+        ForeignKey("workflows.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     workflow_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True),
@@ -658,6 +674,12 @@ class LLMUsageLog(Base):
         PGUUID(as_uuid=True), nullable=True
     )
     runtime_attempt: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    provider_usage_operation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True), nullable=True
+    )
+    provider_usage_revision: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
 
     prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

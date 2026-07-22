@@ -80,8 +80,9 @@ from apps.workflow_engine.application.provider_execution import (
     ProviderInvocationOutcomeUnknownError,
 )
 from apps.workflow_engine.application.provider_usage import (
-    ProviderUsageRecord,
+    ProviderUsageIntent,
     ProviderUsageRecorder,
+    ProviderUsageRuntimeError,
 )
 from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
     KnowledgeRuntimeCandidateInfrastructureError,
@@ -1617,6 +1618,79 @@ class LLMNode(Node[LLMNodeData]):
                         "[LLMNode] Provider strict JSON schema format skipped",
                         exc_info=True,
                     )
+            def begin_provider_usage(attribution: ProviderExecutionAttribution | None):
+                if attribution is None:
+                    return None
+                durable = attribution.usage_context is not None
+
+                def optional_uuid(value: Any) -> uuid.UUID | None:
+                    if value in (None, ""):
+                        return None
+                    try:
+                        return uuid.UUID(str(value))
+                    except (TypeError, ValueError) as exc:
+                        if durable:
+                            raise ProviderUsageRuntimeError(
+                                "provider_usage.correlation_invalid"
+                            ) from exc
+                        return None
+
+                context = attribution.usage_context
+                if context is not None:
+                    workflow_id = context.binding.workflow_id
+                    configured_workflow_id = optional_uuid(
+                        self.execution_context.get("workflow_id")
+                    )
+                    if (
+                        configured_workflow_id is not None
+                        and configured_workflow_id != workflow_id
+                    ):
+                        raise ProviderUsageRuntimeError(
+                            "provider_usage.binding_mismatch"
+                        )
+                else:
+                    workflow_id = optional_uuid(
+                        self.execution_context.get("workflow_id")
+                    )
+                candidate_value = self.execution_context.get(
+                    "cost_optimizer_candidate_id"
+                )
+                optimizer_context = self.execution_context.get("cost_optimizer")
+                if not candidate_value and isinstance(optimizer_context, dict):
+                    candidate_value = optimizer_context.get("candidate_id")
+                return self._get_provider_usage_recorder().begin(
+                    ProviderUsageIntent(
+                        attribution=attribution,
+                        workflow_id=workflow_id,
+                        workflow_run_id=optional_uuid(
+                            self.execution_context.get("workflow_run_id")
+                        ),
+                        node_id=self.id,
+                        cost_optimizer_candidate_id=optional_uuid(candidate_value),
+                    )
+                )
+
+            def start_provider_usage(attribution: ProviderExecutionAttribution | None):
+                try:
+                    attempt = begin_provider_usage(attribution)
+                    if attempt is not None:
+                        attempt.mark_provider_started()
+                    return attempt
+                except ProviderUsageRuntimeError as exc:
+                    raise NonRetryableWorkflowError(exc.code) from exc
+
+            def fail_durable_provider_usage(attempt: Any) -> None:
+                if attempt is None or not attempt.durable:
+                    return
+                try:
+                    attempt.mark_outcome_unknown(
+                        reason_code="provider_call_failed"
+                    )
+                except ProviderUsageRuntimeError:
+                    pass
+                raise NonRetryableWorkflowError(
+                    "provider_usage.outcome_unknown"
+                )
 
             def audit_provider_resolution_failure(
                 model_id: str,
@@ -1688,11 +1762,13 @@ class LLMNode(Node[LLMNodeData]):
 
             # STEP 4. LLM 호출 ----------------------------------------------------
             used_model_id = selected_model_id
+            provider_usage_attempt = start_provider_usage(provider_attribution)
             try:
                 response = provider_lease.invoke()
             except ProviderInvocationOutcomeUnknownError as primary_error:
                 raise ProviderOutcomeUnknownWorkflowError() from primary_error
             except Exception as primary_error:
+                fail_durable_provider_usage(provider_usage_attempt)
                 if not fallback_model_id:
                     raise
                 fallback_error_metadata = _safe_provider_failure_metadata(
@@ -1721,10 +1797,17 @@ class LLMNode(Node[LLMNodeData]):
                 apply_provider_json_schema(fallback_lease)
 
                 try:
+                    fallback_usage_attempt = None
+                    fallback_usage_attempt = start_provider_usage(
+                        fallback_lease.attribution
+                    )
                     response = fallback_lease.invoke()
                 except Exception as fallback_error:
+                    if fallback_usage_attempt is not None:
+                        fail_durable_provider_usage(fallback_usage_attempt)
                     raise fallback_error from primary_error
                 provider_attribution = fallback_lease.attribution
+                provider_usage_attempt = fallback_usage_attempt
                 used_model_id = (
                     provider_attribution.model_id
                     if provider_attribution is not None
@@ -1754,48 +1837,31 @@ class LLMNode(Node[LLMNodeData]):
             # STEP 5. 결과 포맷팅 --------------------------------------------------
             cost = 0.0
             usage_for_log = usage or {}
-            if provider_attribution is not None:
+            if provider_usage_attempt is not None:
                 try:
-                    workflow_run_id_value = self.execution_context.get(
-                        "workflow_run_id"
+                    latency_value = usage_for_log.get("latency_ms", 0)
+                    latency_ms = (
+                        int(latency_value)
+                        if isinstance(latency_value, (int, float))
+                        and not isinstance(latency_value, bool)
+                        else 0
                     )
-                    workflow_run_id = (
-                        uuid.UUID(str(workflow_run_id_value))
-                        if workflow_run_id_value
-                        else None
+                    cost = provider_usage_attempt.record_success(
+                        usage=usage_for_log,
+                        latency_ms=latency_ms,
                     )
-                    cost_optimizer_candidate_id = self.execution_context.get(
-                        "cost_optimizer_candidate_id"
-                    )
-                    cost_optimizer_context = self.execution_context.get(
-                        "cost_optimizer"
-                    )
-                    if not cost_optimizer_candidate_id and isinstance(
-                        cost_optimizer_context, dict
-                    ):
-                        cost_optimizer_candidate_id = cost_optimizer_context.get(
-                            "candidate_id"
-                        )
-                    candidate_id = (
-                        uuid.UUID(str(cost_optimizer_candidate_id))
-                        if cost_optimizer_candidate_id
-                        else None
-                    )
-                    cost = self._get_provider_usage_recorder().record(
-                        ProviderUsageRecord(
-                            attribution=provider_attribution,
-                            usage=usage_for_log,
-                            workflow_id=(
-                                uuid.UUID(str(self.execution_context["workflow_id"]))
-                                if self.execution_context.get("workflow_id")
-                                else None
-                            ),
-                            workflow_run_id=workflow_run_id,
-                            node_id=self.id,
-                            cost_optimizer_candidate_id=candidate_id,
-                        )
+                except ProviderUsageRuntimeError as exc:
+                    if provider_usage_attempt.durable:
+                        raise NonRetryableWorkflowError(exc.code) from exc
+                    logger.error(
+                        "[LLMNode] Cost calculation/logging failed: error_type=%s",
+                        type(exc).__name__,
                     )
                 except Exception as exc:
+                    if provider_usage_attempt.durable:
+                        raise NonRetryableWorkflowError(
+                            "provider_usage.outcome_unknown"
+                        ) from exc
                     logger.error(
                         "[LLMNode] Cost calculation/logging failed: error_type=%s",
                         type(exc).__name__,
