@@ -99,6 +99,8 @@ PR workspace의 selector 결과만으로 required gate를 결정하지 않는다
 4. 공통 CI 변경은 서비스 전체 suite 대신 명시된 smoke target을 사용한다.
 5. schema, DB model, migration처럼 영향이 넓은 변경은 관련 서비스와 PostgreSQL 계약 범위로 확장한다.
 
+파일명 token만으로 찾기 어려운 Shared 응답 schema의 간접 소비자는 검토 가능한 명시적 source-to-test mapping으로 보완한다. 매핑된 source 또는 test 중 하나가 변경되면 전체 매핑의 source와 모든 target 존재성을 검증한다. 어느 하나라도 rename 또는 삭제되어 존재하지 않으면 조용히 제외하지 않고 selector가 실패해야 하며, mapping 변경에는 source 변경과 mapped test 변경 양쪽에서 전체 소비 관계를 검증하는 단위 테스트를 함께 둔다.
+
 Gateway job이 선택되면 기능 test와 별개로 소규모 architecture import-boundary suite를 항상 실행한다.
 
 `manual`, `load`, `evaluation`, browser E2E는 PR unit target에서 자동 선택하지 않는다. 이들은 해당 이슈 또는 전체 회귀 절차에서 명시적으로 실행한다.

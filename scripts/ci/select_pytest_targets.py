@@ -20,6 +20,14 @@ _POSTGRES_ONLY_TESTS = {
     "apps/gateway/tests/integration/test_agent_builder_workflow_cas.py",
     "apps/memory/tests/adapters/test_disposable_postgres.py",
 }
+_EXPLICIT_CONTRACT_TEST_TARGETS = {
+    "gateway": {
+        "apps/shared/schemas/organization_membership.py": (
+            "apps/gateway/tests/api/test_organizations_api.py",
+            "apps/gateway/tests/services/test_organization_member_service.py",
+        ),
+    },
+}
 _GENERIC_TOKENS = {
     "adapter",
     "api",
@@ -217,6 +225,42 @@ def _changed_test_targets(
     return targets
 
 
+def _explicit_contract_targets(
+    component: str,
+    changed_paths: Iterable[str],
+    repo_root: Path,
+    config: ComponentConfig,
+) -> set[str]:
+    mappings = _EXPLICIT_CONTRACT_TEST_TARGETS.get(component, {})
+    changed_path_set = {
+        normalize_repo_path(path) for path in changed_paths
+    }
+    targets: set[str] = set()
+    for source, mapped_targets in mappings.items():
+        if source not in changed_path_set and changed_path_set.isdisjoint(
+            mapped_targets
+        ):
+            continue
+
+        source_candidate = repo_root / source
+        if not source_candidate.is_file():
+            raise RuntimeError(
+                f"explicit contract source is missing: {source}"
+            )
+        for target in mapped_targets:
+            candidate = repo_root / target
+            if not candidate.is_file():
+                raise RuntimeError(
+                    f"explicit contract test target is missing: {target}"
+                )
+            if not _is_allowed_test(candidate, repo_root, config):
+                raise RuntimeError(
+                    f"explicit contract test target is not allowed: {target}"
+                )
+            targets.add(target)
+    return targets
+
+
 def _matching_feature_targets(
     changed_paths: Iterable[str], test_files: Iterable[Path], repo_root: Path
 ) -> set[str]:
@@ -322,6 +366,9 @@ def select_pytest_targets(
     test_files = _test_files(repo_root, config)
 
     targets = _changed_test_targets(paths, repo_root, config)
+    targets.update(
+        _explicit_contract_targets(component, paths, repo_root, config)
+    )
     targets.update(_matching_feature_targets(paths, test_files, repo_root))
 
     if broad:
