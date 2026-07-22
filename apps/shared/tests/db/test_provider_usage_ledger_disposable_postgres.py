@@ -778,30 +778,25 @@ def test_concurrent_projections_accumulate_one_workflow_run_total(
         db.commit()
 
     operation_ids = []
+    terminal_service = ProviderUsageLedgerService()
     for prompt_tokens, completion_tokens, total_cost_microusd in (
         (10, 5, 2_000),
         (7, 3, 1_000),
     ):
-        operation = (
-            ProviderUsageOperation.intent(
-                operation_id=uuid.uuid4(),
-                snapshot=_snapshot(
-                    organization_id=organization_id,
-                    credential_principal_id=user_id,
-                    workflow_id=workflow_id,
-                ),
-                now=NOW,
-            )
-            .mark_provider_started(now=NOW + timedelta(seconds=1))
-            .record_success(
-                measurement=ProviderUsageMeasurement(
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_cost_microusd=total_cost_microusd,
-                    latency_ms=42,
-                ),
-                now=NOW + timedelta(seconds=2),
-            )
+        operation = ProviderUsageOperation.intent(
+            operation_id=uuid.uuid4(),
+            snapshot=_snapshot(
+                organization_id=organization_id,
+                credential_principal_id=user_id,
+                workflow_id=workflow_id,
+            ),
+            now=NOW,
+        ).mark_provider_started(now=NOW + timedelta(seconds=1))
+        measurement = ProviderUsageMeasurement(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_cost_microusd=total_cost_microusd,
+            latency_ms=42,
         )
         operation_ids.append(operation.id)
         with Session(engine) as db:
@@ -813,6 +808,14 @@ def test_concurrent_projections_accumulate_one_workflow_run_total(
                 )
             )
             db.commit()
+        with Session(engine) as db:
+            terminal_service.record_success(
+                db,
+                operation_id=operation.id,
+                expected_state_version=operation.state_version,
+                measurement=measurement,
+                now=NOW + timedelta(seconds=2),
+            )
 
     barrier = Barrier(2)
 
