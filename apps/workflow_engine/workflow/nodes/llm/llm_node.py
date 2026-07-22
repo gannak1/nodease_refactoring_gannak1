@@ -446,16 +446,6 @@ class LLMNode(Node[LLMNodeData]):
             raise ProviderExecutionConfigurationError()
         return recorder
 
-    @staticmethod
-    def _auto_routing_output_token_floor(model_id: str | None) -> int:
-        """모델 capability에 맞는 자동 라우팅 출력 예산 하한을 반환한다."""
-
-        capability = catalog_metadata_for_model_id(model_id)
-        reasoning_profile = str(capability.get("reasoning_profile") or "")
-        if reasoning_profile and reasoning_profile != "non_reasoning":
-            return AUTO_ROUTING_REASONING_MIN_OUTPUT_TOKENS
-        return AUTO_ROUTING_MIN_OUTPUT_TOKENS
-
     def _resolve_model_routing_policy(
         self,
         inputs: Dict[str, Any],
@@ -1565,13 +1555,6 @@ class LLMNode(Node[LLMNodeData]):
                         routing_rag_context=routing_rag_context,
                     )
                 )
-            if self.data.auto_model_routing:
-                output_token_floor = self._auto_routing_output_token_floor(
-                    selected_model_id
-                )
-                requested_max_tokens = int(llm_params.get("max_tokens") or 0)
-                if requested_max_tokens < output_token_floor:
-                    llm_params["max_tokens"] = output_token_floor
             # 자동 라우팅을 끈 노드도 provider fallback은 사용할 수 있다. 이 경우에도
             # 실제 대체 실행 정보를 안전하게 남길 수 있도록 빈 metadata로 정규화한다.
             model_routing_metadata = dict(model_routing_metadata or {})

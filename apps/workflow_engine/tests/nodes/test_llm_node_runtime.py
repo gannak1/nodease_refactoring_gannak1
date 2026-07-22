@@ -4481,18 +4481,18 @@ def test_deployed_judge_bootstrap_uses_judge_and_queues_safe_learning_label(monk
         {"message": "짧은 사용 방법을 알려 주세요"}, object(), routing_feature_text="짧은 안내"
     )
 
-    assert selected == "gpt-4o-mini"
-    assert fallback == "gpt-5-mini"
+    assert selected == "gpt-5-mini"
+    assert fallback == "gpt-4o-mini"
     assert metadata["decision_source"] == "runtime_judge"
     assert metadata["judge_called"] is True
     assert metadata["judge"]["status"] == "selected"
     assert metadata["judge"]["attempted"] is True
-    assert metadata["judge"]["reason_short"] == "요구 수준에 맞는 후보 선택"
+    assert metadata["judge"]["reason_short"] == "요구 수준에 맞는 기본 모델 선택"
     assert metadata["judge"]["candidate_model_count"] == 2
     assert metadata["judge"]["usage_log_error"] == "RuntimeError"
     assert captured["source_policy_id"] == str(policy_id)
     assert captured["learner_id"] == str(persisted.learner_id)
-    assert captured["selected_model_id"] == "gpt-4o-mini"
+    assert captured["selected_model_id"] == "gpt-5-mini"
 
 
 def test_deployed_judge_bootstrap_exposes_learning_queue_failure_reason(monkeypatch):

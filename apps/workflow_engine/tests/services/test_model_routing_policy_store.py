@@ -124,39 +124,37 @@ def _runtime_judge_policy():
     )
 
 
-def test_runtime_judge_label_commits_before_returning(monkeypatch):
-    """최종 provider 호출 전 학습 label transaction과 policy lock을 끝낸다."""
-    from apps.workflow_engine.services.model_routing_local_classifier import (
-        MultilingualE5ModelChoiceClassifier,
-        MultilingualE5TaskRequirementClassifier,
+def test_runtime_judge_label_delegates_to_learner_store(monkeypatch):
+    """호환 진입점은 정책이 아니라 learner 소유 저장소에 위임한다."""
+    from apps.workflow_engine.services.model_routing_learner_store import (
+        ModelRoutingLearnerStore,
     )
     from apps.workflow_engine.services.model_routing_policy_store import (
         ModelRoutingPolicyStore,
     )
 
-    policy = _runtime_judge_policy()
+    learner_id = uuid4()
+    policy_id = uuid4()
+    workflow_run_id = uuid4()
     db = MagicMock()
-    db.query.return_value = _Query(first_value=None)
+    captured: dict[str, object] = {}
+
+    def queue_label(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return {"learning_queued": True}
+
     monkeypatch.setattr(
-        ModelRoutingPolicyStore,
-        "_lock_policy_for_update",
-        lambda *_args, **_kwargs: policy,
-    )
-    monkeypatch.setattr(
-        MultilingualE5ModelChoiceClassifier,
-        "vectorize",
-        lambda *_args, **_kwargs: ([0.25, 0.75], "test-encoder"),
-    )
-    monkeypatch.setattr(
-        MultilingualE5TaskRequirementClassifier,
-        "predict_from_vector",
-        lambda *_args, **_kwargs: None,
+        ModelRoutingLearnerStore,
+        "queue_runtime_judge_label",
+        queue_label,
     )
 
     result = ModelRoutingPolicyStore.queue_runtime_judge_label(
         db,
-        policy_id=policy.id,
-        workflow_run_id=uuid4(),
+        learner_id=learner_id,
+        source_policy_id=policy_id,
+        workflow_run_id=workflow_run_id,
         node_id="llm-1",
         routing_feature_text="safe routing feature",
         learning_feature_text="safe learning feature",
@@ -167,51 +165,21 @@ def test_runtime_judge_label_commits_before_returning(monkeypatch):
         task_requirements={"task_complexity": 2},
     )
 
-    assert result["learning_queued"] is True
-    db.flush.assert_called_once_with()
-    db.commit.assert_called_once_with()
-    db.rollback.assert_not_called()
-
-
-def test_runtime_judge_label_rolls_back_when_vectorization_is_skipped(monkeypatch):
-    """처리 가능한 label 실패도 policy row lock을 남기지 않는다."""
-    from apps.workflow_engine.services.model_routing_local_classifier import (
-        MultilingualE5ModelChoiceClassifier,
-    )
-    from apps.workflow_engine.services.model_routing_policy_store import (
-        ModelRoutingPolicyStore,
-    )
-
-    policy = _runtime_judge_policy()
-    db = MagicMock()
-    monkeypatch.setattr(
-        ModelRoutingPolicyStore,
-        "_lock_policy_for_update",
-        lambda *_args, **_kwargs: policy,
-    )
-    monkeypatch.setattr(
-        MultilingualE5ModelChoiceClassifier,
-        "vectorize",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("encoder unavailable")),
-    )
-
-    result = ModelRoutingPolicyStore.queue_runtime_judge_label(
-        db,
-        policy_id=policy.id,
-        workflow_run_id=uuid4(),
-        node_id="llm-1",
-        routing_feature_text="safe routing feature",
-        learning_feature_text="safe learning feature",
-        selected_model_id="gpt-5-mini",
-        candidate_model_ids=["gpt-4o-mini", "gpt-5-mini"],
-        confidence=0.9,
-        reason_code="multi_constraint",
-        task_requirements=None,
-    )
-
-    assert result == {"learning_queued": False, "reason": "OSError"}
-    db.rollback.assert_called_once_with()
-    db.commit.assert_not_called()
+    assert result == {"learning_queued": True}
+    assert captured["args"] == (db,)
+    assert captured["kwargs"] == {
+        "learner_id": learner_id,
+        "source_policy_id": policy_id,
+        "workflow_run_id": workflow_run_id,
+        "node_id": "llm-1",
+        "routing_feature_text": "safe routing feature",
+        "learning_feature_text": "safe learning feature",
+        "selected_model_id": "gpt-5-mini",
+        "candidate_model_ids": ["gpt-4o-mini", "gpt-5-mini"],
+        "confidence": 0.9,
+        "reason_code": "multi_constraint",
+        "task_requirements": {"task_complexity": 2},
+    }
 
 
 def test_learning_label_summary_returns_counts_without_exposing_vectors():
