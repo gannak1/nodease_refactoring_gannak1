@@ -109,6 +109,29 @@ def test_rerank_enabled_reuses_cross_encoder_model(monkeypatch):
     assert init_calls == [("cross-encoder/test-model", 512)]
 
 
+def test_rerank_enabled_decrypts_chunk_content_before_model_prediction(monkeypatch):
+    monkeypatch.setenv("RAG_CROSS_ENCODER_RERANK_ENABLED", "true")
+    predicted_pairs = []
+
+    class FakeCrossEncoder:
+        def predict(self, pairs):
+            predicted_pairs.extend(pairs)
+            return [0.9]
+
+    service = RetrievalService(db=None, user_id=None)
+    monkeypatch.setattr(service, "_get_cross_encoder_model", FakeCrossEncoder)
+    monkeypatch.setattr(
+        service,
+        "_decrypt_content",
+        lambda content: "플랫폼개발팀 첫 주 일정" if content == "ciphertext" else content,
+    )
+
+    candidate = {"chunk": SimpleNamespace(content="ciphertext")}
+
+    assert service._rerank("첫주차 일정", [candidate], top_k=1) == [candidate]
+    assert predicted_pairs == [("첫주차 일정", "플랫폼개발팀 첫 주 일정")]
+
+
 def test_sync_search_threshold_uses_score_when_rerank_falls_back(monkeypatch):
     kb_id = uuid.uuid4()
     user_id = uuid.uuid4()

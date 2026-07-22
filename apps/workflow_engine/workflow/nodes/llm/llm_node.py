@@ -1341,6 +1341,7 @@ class LLMNode(Node[LLMNodeData]):
                 label="UPSTREAM_SYSTEM_INPUT",
             )
             rendered_user_prompt = self._render_prompt(self.data.user_prompt, inputs)
+            rag_search_query = self._rag_search_query(rendered_user_prompt, inputs)
             assistant_render = self._render_privileged_prompt(
                 self.data.assistant_prompt,
                 inputs,
@@ -1363,10 +1364,9 @@ class LLMNode(Node[LLMNodeData]):
             knowledge_result: WorkflowRAGSearchResult | None = None
             if knowledge_enabled:
                 try:
-                    # User Prompt를 검색 쿼리로 사용 (렌더링 후)
-                    if rendered_user_prompt:
+                    if rag_search_query:
                         knowledge_result = self._execute_knowledge_search(
-                            query=rendered_user_prompt,
+                            query=rag_search_query,
                             db_session=db_session,
                             candidate_resolution=candidate_resolution,
                         )
@@ -2010,6 +2010,20 @@ class LLMNode(Node[LLMNodeData]):
             return _jinja_env.from_string(template).render(**context)
         except Exception as e:
             raise ValueError(f"프롬프트 렌더링 실패: {e}")
+
+    def _rag_search_query(
+        self,
+        rendered_user_prompt: str,
+        inputs: Dict[str, Any],
+    ) -> str:
+        """명시된 질문 변수만 RAG 검색어로 사용하고, 기존 graph는 prompt를 유지한다."""
+        variable_name = self.data.context_variable
+        if not variable_name:
+            return rendered_user_prompt
+
+        value = self._prompt_variable_context(inputs).get(variable_name)
+        query = stringify_untrusted_value(value, key_path=variable_name).strip()
+        return query[:MAX_RAG_REWRITTEN_QUERY_LENGTH]
 
     def _render_privileged_prompt(
         self,

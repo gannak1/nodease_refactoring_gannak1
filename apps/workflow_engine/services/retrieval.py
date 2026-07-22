@@ -578,7 +578,10 @@ class RetrievalService:
 
         try:
             model = self._get_cross_encoder_model()
-            pairs = [(query, item["chunk"].content) for item in candidates]
+            pairs = [
+                (query, self._decrypt_content(item["chunk"].content))
+                for item in candidates
+            ]
             scores = model.predict(pairs)
 
             for i, item in enumerate(candidates):

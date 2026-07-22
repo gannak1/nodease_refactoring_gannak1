@@ -2692,6 +2692,7 @@ def _new_employee_onboarding_chatbot_graph() -> dict[str, Any]:
                         "추측하지 않습니다."
                     ),
                     "user_prompt": "온보딩 질문: {{ question }}",
+                    "context_variable": "question",
                     "referenced_variables": [
                         {
                             "name": "question",

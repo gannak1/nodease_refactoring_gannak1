@@ -84,7 +84,7 @@ Status: Draft
 - `text-xs/sm/base/lg` 계층을 각각 한 단계 키우고 최대 폭은 `max-w-4xl`로 확장해
   4열 멤버십 지표와 actor·team·resource 정보를 읽기 쉽게 유지한다.
 - Organization member access semantics와 API contract는 [organization component spec](../organization/component_spec.md)의 `ActorAccessDrawer`와 [organization API spec](../organization/api_spec.md)을 따른다.
-- Summary 영역: actor name/email, global user active state, membership state, organization role, effective access, control block reason. Role set은 `member`/`manager` desired value별 control을 구분한다.
+- Summary 영역: actor name/email, global user active state, membership state, organization role, effective access, control block reason. 요약에서 membership state는 `활성`/`정지`, organization role은 `멤버`/`관리자`, global user state는 `활성`/`비활성`, effective access는 `허용`/`차단`으로 표시한다. Role set은 `member`/`manager` desired value별 control을 구분한다.
 - Source 영역: team membership count와 paginated active/inactive membership, App creation source, direct/team resource source counts.
 - Resource 영역: workflow/Knowledge Base/LLM credential filter, direct/team source filter, pagination. Team membership 목록도 별도 pagination을 사용한다.
 - Catalog team/resource 선택은 exact `teamId`/`resourceId` 조회로 current page 밖 existing row를 확인한 뒤 confirm precondition을 구성한다. Exact 조회가 실패하면 absence로 간주하지 않고 추가/부여 action을 disabled 처리한다.

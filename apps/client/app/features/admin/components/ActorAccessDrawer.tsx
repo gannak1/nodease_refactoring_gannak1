@@ -22,6 +22,8 @@ import type {
   ActorAccessResourceCatalogItem,
   ActorAccessTeamCatalogItem,
   ActorGrantAuthState,
+  ActorMembershipState,
+  ActorOrganizationAuthState,
   ActorResourceType,
   MemberAccessAction,
   MemberAccessProfile,
@@ -48,6 +50,14 @@ const GRANT_STATES: ActorGrantAuthState[] = [
 const PAGE_SIZE = 20;
 const FOCUSABLE_SELECTOR =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const MEMBERSHIP_STATE_LABELS: Record<ActorMembershipState, string> = {
+  active: '활성',
+  suspended: '정지',
+};
+const ORGANIZATION_ROLE_LABELS: Record<ActorOrganizationAuthState, string> = {
+  member: '멤버',
+  manager: '관리자',
+};
 
 type ActionDraft = {
   title: string;
@@ -529,18 +539,25 @@ export function ActorAccessDrawer({
             <section className="px-5 py-5">
               <SectionTitle icon={Shield} title="조직 멤버십" />
               <div className="mt-4 grid gap-3 sm:grid-cols-4">
-                <Metric label="상태" value={profile.member.membership_state} />
+                <Metric
+                  label="상태"
+                  value={MEMBERSHIP_STATE_LABELS[profile.member.membership_state]}
+                />
                 <Metric
                   label="조직 역할"
-                  value={profile.member.organization_auth_state}
+                  value={
+                    ORGANIZATION_ROLE_LABELS[
+                      profile.member.organization_auth_state
+                    ]
+                  }
                 />
                 <Metric
                   label="계정"
-                  value={profile.member.user_active ? 'active' : 'deactivated'}
+                  value={profile.member.user_active ? '활성' : '비활성'}
                 />
                 <Metric
                   label="유효 접근"
-                  value={profile.effective_access_enabled ? 'enabled' : 'disabled'}
+                  value={profile.effective_access_enabled ? '허용' : '차단'}
                 />
               </div>
               <p className="mt-3 text-xs text-slate-500">

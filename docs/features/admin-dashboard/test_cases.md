@@ -90,6 +90,7 @@ Security Alert FR-013의 상세 rule/worker/API/component/E2E matrix는 [Securit
 ### AC-7. Audit actor access management (FR-016~FR-018)
 
 - Given organization manager와 current organization user actor, When actor button을 클릭하면, Then actor access drawer가 열리고 membership/role/team/App-creation/direct/team source가 organization scope 안에서만 표시된다.
+- Given actor access profile을 표시할 때, When 멤버십 요약을 렌더링하면, Then 상태·조직 역할·계정·유효 접근 값을 영문 API enum이 아닌 `활성`/`정지`, `멤버`/`관리자`, `활성`/`비활성`, `허용`/`차단`으로 표시한다.
 - Given target이 여러 team membership을 가짐, When team source 영역을 탐색하면, Then profile은 count만 반환하고 active/inactive row는 stable paginated endpoint로 조회된다.
 - Given audit `auditor`/`raw_auditor`만 가진 사용자, When audit API와 access profile/action API를 호출하면, Then audit detail은 조회할 수 있지만 actor API는 `403`이다. Auditor-only admin page 노출은 후순위이며, isolated AuditSearchTab test에서도 management control을 렌더링하지 않는다.
 - Given system/null/historical actor, When audit row를 조회하면, Then audit detail은 유지되지만 access management control은 제공되지 않는다.
