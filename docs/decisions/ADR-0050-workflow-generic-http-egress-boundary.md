@@ -4,6 +4,7 @@ Status: Accepted
 
 Related ADRs: [ADR-0022](ADR-0022-hexagonal-module-boundary.md), [ADR-0035](ADR-0035-external-effect-idempotency-boundary.md), [ADR-0049](ADR-0049-connector-test-security-boundary.md)
 Deployment surface correction: active EKS manifest에 관한 Decision 12와 consequence는 [ADR-0068](ADR-0068-eks-support-surface-removal.md)가 대체한다. Worker egress 정책의 현재 배포 증거는 provider-neutral Helm이다.
+Outbound enforcement correction: Decision 12와 잔여 위험의 direct public 80/443 경계는 [ADR-0072](ADR-0072-outbound-proxy-only-network-enforcement.md)가 대체한다. Generic HTTP의 application port, public 80 호환성과 request/response 계약은 유지한다.
 
 
 ## 배경

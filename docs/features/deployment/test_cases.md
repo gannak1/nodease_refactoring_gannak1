@@ -2,6 +2,18 @@
 
 Status: Draft
 
+## MBA-357 Outbound Proxy-Only Contracts
+
+- Production proxy mode는 exact internal host와 3128/3129만 허용하고 blank, public, localhost/loopback/link-local, userinfo, path/query/fragment, stale revision과 direct mode를 network I/O 전에 거부한다. Ambient proxy와 broad `NO_PROXY`는 결과를 바꾸지 않는다.
+- Guarded sync/async transport는 application URL/DNS policy를 proxy 연결 전에 다시 평가하고 Squid만 dial한다. Proxy connection/tunnel failure 뒤 origin direct dial은 0회이며 HTTPS SNI/certificate hostname, response cap, stream/cancellation과 safe error 계약을 유지한다.
+- S3/object storage client는 explicit proxy 설정 또는 explicit empty proxy map을 사용하며 ambient environment를 신뢰하지 않는다. Invalid proxy config에서는 provider client 생성과 signed request가 0회다.
+- Squid config는 pinned image, CONNECT 443, Workflow-only HTTP 80 listener, final deny-all, private/reserved/metadata IPv4/IPv6 deny, no SSL bump, no cache와 `access_log none`을 검증한다.
+- Compose는 Gateway·Knowledge·Workflow가 egress-capable network에 직접 연결되지 않고 Squid만 egress network를 사용하며 host-published listener가 없는지 검증한다. Disposable runtime은 safe origin 성공, mixed A/AAAA/CNAME/rebind 차단, unauthorized source 차단, direct dial과 proxy-down fallback 실패를 확인한다.
+- Helm render는 Squid Deployment/Service/PDB, immutable digest, minimum replica, security context, resource bounds, listener별 ingress와 workload별 egress를 검증한다. Logger/Beat/Frontend에는 public route와 proxy access가 없어야 한다.
+- Canary render의 workload selector에는 `nodease.io/egress-mode=proxy-v1`이 있고 final render에서는 없어야 한다. Pod phase annotation, `maxUnavailable=0`, `maxSurge=1`과 PDB를 함께 확인한다.
+- Remote CI는 pinned kind/Kubernetes와 Calico IPv4에서 target direct HTTPS 실패, authorized Squid HTTPS 성공과 Sandbox-shaped unauthorized source 실패를 실제 실행한다. Dual-stack과 실제 운영 CNI는 release probe이며 미검증 환경을 지원으로 표시하지 않는다.
+- Synthetic secret marker를 application/proxy logs와 failure output에 넣어도 URL/query/header/body, credential, resolved IP와 raw provider exception이 남지 않아야 한다.
+
 ## Unit Tests
 
 - App secret generator는 호출마다 최소 256-bit entropy의 bounded ASCII token과 common redactor가 free-text에서 식별할 수 있는 고정 marker를 만들고 repr/log helper에 원문을 포함하지 않는다.
