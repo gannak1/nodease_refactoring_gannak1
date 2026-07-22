@@ -143,19 +143,12 @@ class DeploymentCredentialPolicyView:
     container_path: ContainerPath = ()
 
 
-def deployment_llm_node_model_id(
+def _deployment_llm_node_data(
     graph_snapshot: Any,
     node_id: str,
     *,
     container_path: ContainerPath = (),
-) -> str:
-    """Return the only graph-owned LLM selection: its model API identifier.
-
-    The policy layer does not silently normalize legacy direct credential
-    fields.  A capability-required deployment must be unambiguous before an
-    external provider can be reached.
-    """
-
+) -> dict[str, Any]:
     if (
         not isinstance(graph_snapshot, dict)
         or not isinstance(node_id, str)
@@ -174,11 +167,35 @@ def deployment_llm_node_model_id(
     data = node.get("data")
     if node_type not in _LLM_NODE_TYPES or not isinstance(data, dict):
         raise ProviderExecutionPolicyError("configuration_required")
+    return data
+
+
+def _require_unambiguous_llm_selection(data: dict[str, Any]) -> None:
     if any(field in data for field in _DIRECT_CREDENTIAL_FIELDS):
         raise ProviderExecutionPolicyError("configuration_required")
     if data.get("auto_model_routing") or data.get("fallback_model_id"):
         raise ProviderExecutionPolicyError("configuration_required")
 
+
+def deployment_llm_node_model_id(
+    graph_snapshot: Any,
+    node_id: str,
+    *,
+    container_path: ContainerPath = (),
+) -> str:
+    """Return the only graph-owned LLM selection: its model API identifier.
+
+    The policy layer does not silently normalize legacy direct credential
+    fields. A capability-required deployment must be unambiguous before an
+    external provider can be reached.
+    """
+
+    data = _deployment_llm_node_data(
+        graph_snapshot,
+        node_id,
+        container_path=container_path,
+    )
+    _require_unambiguous_llm_selection(data)
     model_id = str(data.get("model_id") or "").strip()
     if not model_id:
         raise ProviderExecutionPolicyError("configuration_required")
@@ -191,22 +208,12 @@ def deployment_llm_node_supports_knowledge(
     *,
     container_path: ContainerPath = (),
 ) -> None:
-    if (
-        not isinstance(graph_snapshot, dict)
-        or not isinstance(node_id, str)
-        or not node_id
-        or len(node_id) > _MAX_POLICY_NODE_ID_LENGTH
-    ):
-        raise ProviderExecutionPolicyError("configuration_required")
-    try:
-        location = CanonicalWorkflowNodeLocation(container_path, node_id)
-        node = find_workflow_node_at_location(graph_snapshot, location)
-    except WorkflowNodeLocationError as exc:
-        raise ProviderExecutionPolicyError("configuration_required") from exc
-    data = node.get("data") if isinstance(node, dict) else None
-    node_type = str(node.get("type") or "").strip().lower() if node else ""
-    if node_type not in _LLM_NODE_TYPES or not isinstance(data, dict):
-        raise ProviderExecutionPolicyError("configuration_required")
+    data = _deployment_llm_node_data(
+        graph_snapshot,
+        node_id,
+        container_path=container_path,
+    )
+    _require_unambiguous_llm_selection(data)
     if not data.get("knowledgeBases") and not data.get("knowledgeCollections"):
         raise ProviderExecutionPolicyError("configuration_required")
 

@@ -193,6 +193,59 @@ def test_policy_rejects_direct_credential_and_implicit_selection(data):
     assert "do-not-use" not in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    "ambiguous_selection",
+    [
+        {"credential_id": "do-not-use"},
+        {"credentialId": "do-not-use"},
+        {"auto_model_routing": True},
+        {"fallback_model_id": "another-model"},
+    ],
+)
+def test_query_embedding_policy_rejects_ambiguous_graph_selection_before_db(
+    ambiguous_selection,
+):
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    data = {
+        "model_id": "gpt-safe",
+        "knowledgeBases": [{"id": "knowledge-1"}],
+        **ambiguous_selection,
+    }
+
+    class _Db:
+        def query(self, _entity):
+            pytest.fail("ambiguous graph selection must fail before DB lookup")
+
+    with pytest.raises(ProviderExecutionPolicyError) as exc_info:
+        ProviderExecutionCapabilityService._resolve_policy_selection(
+            _Db(),
+            deployment=SimpleNamespace(
+                app_id=app_id,
+                graph_snapshot=_graph(data=data),
+            ),
+            app=SimpleNamespace(
+                id=app_id,
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+            ),
+            workflow=SimpleNamespace(
+                id=workflow_id,
+                organization_id=organization_id,
+            ),
+            organization_id=organization_id,
+            node_id="llm-1",
+            model_id=uuid.uuid4(),
+            credential_id=uuid.uuid4(),
+            credential_principal_user_id=uuid.uuid4(),
+            purpose=CapabilityPurpose.QUERY_EMBEDDING,
+        )
+
+    assert exc_info.value.code == "configuration_required"
+    assert "do-not-use" not in str(exc_info.value)
+
+
 def test_policy_rejects_duplicate_or_wrong_node_without_disclosure():
     graph = _graph()
     graph["nodes"].append(dict(graph["nodes"][0]))

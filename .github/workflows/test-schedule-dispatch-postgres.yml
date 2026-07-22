@@ -14,6 +14,7 @@ on:
       - "apps/shared/alembic/**"
       - "apps/shared/celery_app.py"
       - "apps/shared/db/models/workflow_node_effect_attempt.py"
+      - "apps/shared/db/models/llm.py"
       - "apps/shared/db/models/schedule_dispatch.py"
       - "apps/shared/db/models/provider_usage.py"
       - "apps/shared/domain/schedule_dispatch.py"
