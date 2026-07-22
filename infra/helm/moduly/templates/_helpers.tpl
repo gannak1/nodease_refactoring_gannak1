@@ -78,6 +78,12 @@ CIDRs are deployment coordinates and must be supplied by the operator.
 {{- if ne .Values.egressProxy.policyRevision "proxy-v1" -}}
 {{- fail "egressProxy.policyRevision must be proxy-v1" -}}
 {{- end -}}
+{{- if ne (int .Values.egressProxy.service.httpsPort) 3128 -}}
+{{- fail "egressProxy.service.httpsPort must be 3128" -}}
+{{- end -}}
+{{- if ne (int .Values.egressProxy.service.httpCompatiblePort) 3129 -}}
+{{- fail "egressProxy.service.httpCompatiblePort must be 3129" -}}
+{{- end -}}
 {{- if not (regexMatch "^sha256:[a-f0-9]{64}$" (default "" .Values.egressProxy.image.digest)) -}}
 {{- fail "egressProxy.image.digest must be an immutable sha256 digest" -}}
 {{- end -}}

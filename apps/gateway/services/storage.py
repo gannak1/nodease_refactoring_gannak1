@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import boto3
+import botocore.session
 from botocore.config import Config
 from fastapi import UploadFile
 
@@ -150,15 +151,22 @@ class S3StorageService(StorageService):
             if transport_policy.mode is OutboundTransportMode.PROXY_GUARDED_EXTERNAL
             else {}
         )
-        self.s3_client = boto3.client(
+        client_config = Config(
+            proxies=proxies,
+            retries={"total_max_attempts": 1, "mode": "standard"},
+        )
+        provider_session = botocore.session.get_session()
+        provider_session.set_config_variable("region", self.region)
+        # Botocore creates nested STS clients from this same session while
+        # resolving workload-identity credentials. A session default keeps
+        # both credential exchange and S3 traffic on the explicit proxy.
+        provider_session.set_default_client_config(client_config)
+        aws_session = boto3.Session(botocore_session=provider_session)
+        self.s3_client = aws_session.client(
             "s3",
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID or None,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY or None,
             region_name=self.region,
-            config=Config(
-                proxies=proxies,
-                retries={"total_max_attempts": 1, "mode": "standard"},
-            ),
         )
 
     def upload(self, file: UploadFile) -> str:

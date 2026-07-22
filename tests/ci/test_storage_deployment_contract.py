@@ -427,3 +427,29 @@ def test_production_worker_rejects_invalid_operational_boundaries(
 
     assert completed.returncode != 0
     assert expected_message in f"{completed.stdout}\n{completed.stderr}"
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_message"),
+    [
+        (
+            "egressProxy.service.httpsPort=43128",
+            "egressProxy.service.httpsPort must be 3128",
+        ),
+        (
+            "egressProxy.service.httpCompatiblePort=43129",
+            "egressProxy.service.httpCompatiblePort must be 3129",
+        ),
+    ],
+)
+def test_helm_rejects_proxy_listener_port_overrides(
+    override: str,
+    expected_message: str,
+):
+    completed = _render_helm(
+        values_files=("tests/ci/fixtures/helm-values-ci.yaml",),
+        set_values=(override,),
+    )
+
+    assert completed.returncode != 0
+    assert expected_message in f"{completed.stdout}\n{completed.stderr}"

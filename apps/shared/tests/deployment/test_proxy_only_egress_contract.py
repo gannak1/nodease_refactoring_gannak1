@@ -293,6 +293,29 @@ def test_helm_proxy_only_policy_has_no_direct_public_route_for_target_workloads(
     assert "cidr: ::/0" not in target_egress
 
 
+def test_helm_proxy_ipv4_egress_allows_each_approved_listener_destination() -> None:
+    policies = _read("infra/helm/moduly/templates/proxy-only-networkpolicies.yaml")
+    proxy_egress = policies.split("egress-proxy-egress", maxsplit=1)[1]
+    ipv4_egress = proxy_egress.split("cidr: 0.0.0.0/0", maxsplit=1)[1].split(
+        "- to:", maxsplit=1
+    )[0]
+
+    for port in (80, 443, 143, 993):
+        assert f"port: {port}" in ipv4_egress
+
+
+def test_helm_proxy_listener_ports_are_an_immutable_contract() -> None:
+    defaults = yaml.safe_load(_read("infra/helm/moduly/values.yaml"))
+    helpers = _read("infra/helm/moduly/templates/_helpers.tpl")
+
+    assert defaults["egressProxy"]["service"] == {
+        "httpsPort": 3128,
+        "httpCompatiblePort": 3129,
+    }
+    assert "egressProxy.service.httpsPort must be 3128" in helpers
+    assert "egressProxy.service.httpCompatiblePort must be 3129" in helpers
+
+
 def test_helm_non_http_workloads_are_default_deny_with_only_internal_dependencies() -> (
     None
 ):

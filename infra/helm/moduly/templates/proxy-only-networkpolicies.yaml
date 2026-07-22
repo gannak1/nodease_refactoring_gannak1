@@ -364,6 +364,10 @@ spec:
           port: 80
         - protocol: TCP
           port: 443
+        - protocol: TCP
+          port: 143
+        - protocol: TCP
+          port: 993
     - to:
         - ipBlock:
             cidr: ::/0

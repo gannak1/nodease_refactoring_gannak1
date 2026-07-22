@@ -142,6 +142,8 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-111 (MBA-357): Compose target workload는 외부 연결이 차단된 application/proxy-client network만 사용하고 Squid만 별도 egress-capable network에 연결되어야 한다. Proxy listener를 host에 publish하거나 Sandbox를 proxy source로 허용해서는 안 된다.
 - DEP-REQ-112 (MBA-357): Provider-neutral Helm은 Gateway·Knowledge에는 Squid HTTPS listener, Workflow에는 Generic HTTP 호환 listener만 허용하고 public 80/143/443/993 direct route를 제거해야 한다. Workflow password IMAP은 검증 IP를 authority로 사용하는 Worker-only 143/993 CONNECT tunnel을 통과하고 원래 hostname TLS를 유지해야 한다. Logger, Beat와 Frontend는 각각 필요한 DB/Redis 또는 internal Gateway만 허용하고 Sandbox 격리를 완화하지 않아야 한다. PostgreSQL, Redis, Sandbox control과 Connector protocol은 Squid와 분리된 exact service/port 정책을 유지한다.
 - DEP-REQ-113 (MBA-357): `canary` strict policy는 `nodease.io/egress-mode=proxy-v1` pod만 선택하고 `final` policy는 component 전체를 선택해야 한다. Final 전 old pod drain과 additive allow policy 부재를 확인해야 한다. PR CI는 pinned kind+Calico IPv4에서 direct HTTPS 차단, authorized proxy 성공과 unauthorized source 차단을 실제 실행하며 dual-stack과 운영 CNI는 release 환경에서 같은 probe를 통과해야 한다.
+- DEP-REQ-114 (MBA-357): `proxy-v1` listener는 Gateway·Knowledge용 `3128`과 Workflow용 `3129`로 고정한다. Helm은 Service port override를 render 전에 거부하고 Squid egress NetworkPolicy는 IPv4와 IPv6 모두 public 80/443 및 Worker-only IMAP 143/993를 허용해야 한다.
+- DEP-REQ-115 (MBA-357): S3 storage adapter는 S3와 workload identity 자격증명 교환용 nested STS client가 공유하는 botocore session default config에 explicit proxy와 bounded retry를 적용해야 한다. Ambient proxy, STS direct fallback과 provider 원문 오류 노출을 허용하지 않는다.
 
 ## Runtime Audience Matrix
 

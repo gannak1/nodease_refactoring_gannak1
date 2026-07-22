@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ipaddress
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -154,6 +156,47 @@ def _exec_curl(pod: str, *arguments: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _public_ipv4_from_nslookup(output: str) -> str:
+    for candidate in re.findall(r"(?<![\w:])(?:\d{1,3}\.){3}\d{1,3}(?![\w:])", output):
+        try:
+            address = ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        if isinstance(address, ipaddress.IPv4Address) and address.is_global:
+            return str(address)
+    raise AssertionError("DNS lookup did not return a public IPv4 address")
+
+
+def _resolve_public_ipv4(pod: str, hostname: str) -> str:
+    result = _run(
+        "kubectl",
+        "exec",
+        pod,
+        "--",
+        "nslookup",
+        hostname,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, f"{pod} could not resolve the probe hostname"
+    return _public_ipv4_from_nslookup(f"{result.stdout}\n{result.stderr}")
+
+
+def test_nslookup_parser_selects_only_public_ipv4_destination() -> None:
+    output = """
+Server:         10.96.0.10
+Address:        10.96.0.10:53
+
+Non-authoritative answer:
+Name:   example.com
+Address: 2606:2800:220:1:248:1893:25c8:1946
+Name:   example.com
+Address: 93.184.216.34
+"""
+
+    assert _public_ipv4_from_nslookup(output) == "93.184.216.34"
+
+
 def test_canary_policy_selects_only_proxy_revision_and_final_covers_component() -> None:
     _require_integration_environment()
 
@@ -211,7 +254,13 @@ def test_calico_enforces_proxy_only_public_https_and_proxy_source_boundary() -> 
         )
 
     for pod, proxy_port in proxy_clients.items():
-        direct = _exec_curl(pod, "https://example.com/")
+        example_ipv4 = _resolve_public_ipv4(pod, "example.com")
+        direct = _exec_curl(
+            pod,
+            "--resolve",
+            f"example.com:443:{example_ipv4}",
+            "https://example.com/",
+        )
         assert direct.returncode != 0, f"{pod} retained direct HTTPS egress"
 
         proxied = _exec_curl(
@@ -230,6 +279,22 @@ def test_calico_enforces_proxy_only_public_https_and_proxy_source_boundary() -> 
     )
     assert workflow_http.returncode == 0, "Workflow HTTP listener rejected port 80"
 
+    # portquiz is a credential-free TCP reachability target that listens on
+    # arbitrary ports; no IMAP payload or provider account is used here.
+    imap_ipv4 = _resolve_public_ipv4("worker-egress-probe", "portquiz.net")
+    for imap_port in (143, 993):
+        imap_tunnel = _exec_curl(
+            "worker-egress-probe",
+            "--verbose",
+            "--proxytunnel",
+            "--proxy",
+            f"http://{PROXY_SERVICE}:3129",
+            f"telnet://{imap_ipv4}:{imap_port}",
+        )
+        assert "200 Connection established" in imap_tunnel.stderr, (
+            f"Workflow IPv4 IMAP CONNECT failed for port {imap_port}"
+        )
+
     gateway_http = _exec_curl(
         "gateway-egress-probe",
         "--proxy",
@@ -239,7 +304,13 @@ def test_calico_enforces_proxy_only_public_https_and_proxy_source_boundary() -> 
     assert gateway_http.returncode != 0, "Gateway listener allowed plain HTTP"
 
     for pod in internal_only:
-        direct = _exec_curl(pod, "https://example.com/")
+        example_ipv4 = _resolve_public_ipv4(pod, "example.com")
+        direct = _exec_curl(
+            pod,
+            "--resolve",
+            f"example.com:443:{example_ipv4}",
+            "https://example.com/",
+        )
         assert direct.returncode != 0, f"{pod} retained public HTTPS egress"
 
     unauthorized = _exec_curl(

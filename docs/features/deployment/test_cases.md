@@ -198,6 +198,9 @@ Status: Draft
 - Gateway storage 설정은 type을 trim/대문자로 정규화한다. `CLOUD`의 bucket 또는 region이 null/empty/whitespace이면 safe validation error로 시작을 거부하고 provider client를 생성하지 않으며 unknown type을 LOCAL로 fallback하지 않는다.
 - Direct Gateway 개발 예시에는 정확히 하나의 지원 storage mode(`LOCAL` 또는 `CLOUD`)가 있어야 하고 legacy `PROD` 값은 없어야 한다. 현재 로컬 예시의 `LOCAL`은 cloud 좌표 없이 유효해야 한다.
 - S3 upload와 presigned URL provider failure는 cause chain 없이 stable safe error로 변환되고 provider exception text가 exception이나 log에 남지 않는다. Upload 실패 뒤 request file pointer는 기존 계약대로 초기 위치로 복원한다.
+- Production proxy mode의 S3 client와 workload identity nested STS client는 같은 botocore session default config의 exact proxy와 retry 정책을 상속한다. Ambient proxy가 있어도 사용하지 않고 credential exchange 실패 뒤 direct fallback하지 않는다.
+- Helm render는 `egressProxy.service.httpsPort!=3128` 또는 `httpCompatiblePort!=3129`를 각각 고정된 safe message로 거부한다. Squid IPv4/IPv6 egress rule은 public 80/443과 Worker-only IMAP 143/993를 모두 포함한다.
+- Kubernetes direct HTTPS negative probe는 먼저 workload pod DNS 성공을 확인하고 public IPv4를 얻은 뒤 `curl --resolve`로 direct TCP를 강제해 실패를 확인한다. Workflow probe는 같은 IPv4 path에서 Squid `3129`를 통한 143/993 CONNECT 성공을 별도로 확인한다.
 - 기본 환경에서 schedule schema downgrade를 시도하면 sibling migration DDL 전에 실패하고 Alembic head가 유지된다. 파괴적 opt-in 없는 성공 downgrade/re-upgrade는 안전성 증거로 인정하지 않는다.
 - Schedule Celery task의 producer와 task registration은 모두 `ignore_result=True`이고 `task_store_errors_even_if_ignored=False`다. 성공과 실패 실행 뒤 Redis result backend에는 workflow output, RAG evidence, sync 상세 또는 raw exception이 생성되지 않으며 task outcome은 claim/status/finalization summary로 제한된다. 실제 Redis key 부재는 opt-in integration evidence로 별도 실행한다.
 - Schedule structured signal capture와 Scheduler/Worker 오류 log capture에는 정의된 event/value/status/reason/mode 또는 operation/attempt/exception type만 존재하고 UUID, idempotency key, raw payload와 raw exception message가 없다.

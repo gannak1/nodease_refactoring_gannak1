@@ -38,7 +38,7 @@ Option 3을 채택한다.
 5. Squid는 두 내부 listener를 제공한다.
    - `3128`: Gateway와 Knowledge Worker의 HTTPS CONNECT 443 전용
    - `3129`: Workflow Worker의 HTTPS CONNECT 443, Generic HTTP 호환 public 80과 address-pinned IMAP CONNECT 143/993
-   Source/listener 분리는 NetworkPolicy와 Squid ACL을 함께 사용한다. 이는 network-authorized source이며 cryptographic workload identity가 아니다.
+   두 포트는 Squid config, Service, workload 환경과 NetworkPolicy가 공유하는 immutable `proxy-v1` 계약이다. Helm override로 변경할 수 없으며 다른 값은 render 전에 실패한다. Source/listener 분리는 NetworkPolicy와 Squid ACL을 함께 사용한다. 이는 network-authorized source이며 cryptographic workload identity가 아니다.
 6. Squid는 SSL bump/MITM을 사용하지 않는다. 원래 hostname SNI와 certificate 검증은 workload와 origin 사이의 CONNECT tunnel에서 유지한다.
 7. Squid는 private, loopback, link-local, metadata, reserved와 multicast IPv4/IPv6 destination을 거부한다. Application과 Squid가 각각 DNS를 검증하며 CNAME 또는 A/AAAA 결과 중 하나라도 unsafe이면 전체 hostname을 거부한다.
 8. Squid는 response cache와 request access log를 비활성화한다. Raw URL/query/header/body, credential, resolved IP와 provider exception은 proxy, application log, trace, audit와 metric label에 저장하지 않는다. 운영 관측은 readiness, replica, resource와 safe reason bucket으로 제한한다.
@@ -49,7 +49,7 @@ Option 3을 채택한다.
 13. Rollout은 `nodease.io/egress-mode=proxy-v1` revision label을 사용한다. `canary` phase의 strict workload policy는 이 label이 있는 새 pod만 선택한다. `final` phase는 revision label을 selector에서 제거해 해당 component의 모든 pod를 선택하며, old pod가 모두 drain된 뒤에만 적용한다. Pod annotation에 phase를 기록한다.
 14. Kubernetes 완료 판정은 정적 render만으로 하지 않는다. PR CI는 pinned kind/Kubernetes와 Calico IPv4에서 target direct HTTPS 실패, authorized proxy 성공과 unauthorized source 실패를 실행한다. Dual-stack과 실제 배포 CNI는 release 환경에서 같은 positive/negative probe를 통과해야 하며, 통과하지 않은 CNI는 지원 대상으로 간주하지 않는다.
 15. Standard NetworkPolicy가 additive라는 사실은 변하지 않는다. Release manifest와 cluster의 다른 allow policy, `hostNetwork`, privileged workload와 CNI enforcement를 배포 전 확인한다. 이 검증을 실패하면 proxy-only activation을 중단한다.
-16. Object storage SDK는 ambient 환경이 아니라 explicit proxy configuration을 사용한다. Signed request와 provider business semantics는 storage adapter가 계속 소유한다.
+16. Object storage SDK는 ambient 환경이 아니라 explicit proxy configuration을 사용한다. 같은 botocore session의 default client config에 proxy와 retry 정책을 주입해 S3 client뿐 아니라 workload identity 자격증명을 교환하는 nested STS client에도 동일하게 적용한다. Signed request와 provider business semantics는 storage adapter가 계속 소유한다.
 17. 이 결정은 Docker Compose와 provider-neutral Helm만 변경하며 ADR-0068의 EKS 비지원 경계를 확장하지 않는다.
 
 ## Security and protected-resource boundaries
