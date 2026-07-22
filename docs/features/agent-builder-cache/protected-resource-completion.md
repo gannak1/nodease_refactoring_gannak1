@@ -65,3 +65,34 @@ durable audit 및 production serving 증거를 계속 소유한다. MBA-350은 l
 위 항목은 운영 증거 확인 전에는 운영자가 ready attestation을 설정할 수 없다는 의미다. 런타임은 별도 evidence
 저장소를 조회하지 않고 attestation과 bounded configuration을 검사한다. Cache 코드·필수 검증 완료는 운영
 작업 번호와 독립적으로 판정하며, 실제 Production Redis evidence 전에는 production/staging serving만 비활성으로 유지한다.
+
+## MBA-349 Actual Consumer Verification
+
+Status: Local Integration Verified (current disposable PostgreSQL rerun)
+
+| Boundary | Status | Code and test evidence | Remaining condition |
+| --- | --- | --- | --- |
+| Cache storage, GraphMutation, CAS, acknowledgement | Complete | `test_actual_cache_hit_reaches_safe_envelope_cas_ack_audit_and_blocks_revoked_credential` passed against disposable PostgreSQL. The current combined workflow-CAS and intent-usage PostgreSQL rerun passed `56` tests. Warm hit reached the ordinary safe envelope, workflow CAS save, and acknowledgement. | No cache plan is persisted with a GraphMutation envelope. |
+| Model/credential permission and lifecycle | Complete | The same PostgreSQL consumer test queries current credential, model, and verified relation state on cache-context construction and revalidation; a committed credential revoke returns `configuration_required` without a GraphMutation or usage row. | No prior permission decision is reused. |
+| Current workflow target and Knowledge/Collection | Complete | Existing current-target and current-Knowledge rehydration regressions cover changed/deleted target and current handle reissue; the PostgreSQL consumer test reaches the same rehydrator factory before GraphMutation. | Current server resolution remains authoritative. |
+| Redis TTL, authenticated envelope, generation fence, rotation | Complete | Existing CACHE-03 Redis integration passed (`5 passed`) without source changes. A live Redis smoke check used two ephemeral HMAC versions and verified new namespace cold miss without dual-read. | Namespace rotation remains a cold-miss contract. |
+| Cache-off, Redis outage, and serving gate | Complete | Existing cache-off service regression remains unchanged. `test_actual_cache_cold_paths_record_single_provider_usage` proves cache-enabled cold miss and cache-unavailable fail-open each call the synthetic provider once and create one request-scoped durable usage row. | Production/staging serving remains disabled without operational evidence. |
+| Audit, usage, and event redaction | Complete | The PostgreSQL consumer test proves a warm hit creates no provider call or usage row, preserves issued/acknowledged audit events, and retains no cached plan in the safe envelope. The cold/error path test proves one provider call and one request-scoped usage row per request. Existing observer/codec tests cover allowlisted redaction. | Cache events are not a durable replay source. |
+| Final benchmark artifact redaction | Follow-up issue MBA-350 | CACHE-07 does not generate a final benchmark bundle. | MBA-350 owns live bundle generation and its artifact inspection. |
+| Deployment preflight and runtime/background | Not applicable | Cache adds no deployment reference or worker/runtime work. | Existing generated-graph consumers retain these checks. |
+| Production Redis rollout | Follow-up operational issue | Default feature flag and serving gate stay fail closed. | Instance, secret wiring, capacity, failure, monitoring, rollback, and operational attestation are outside CACHE-07. |
+
+Current local execution used the repository's explicit disposable PostgreSQL configuration sourced without printing connection values from the running Compose service. The combined CAS and intent-usage modules passed `56` tests. The existing Redis integration (`5 passed`) and rotation smoke check emitted no key, value, credential, or request content.
+
+## MBA-349 Consumer-Evidence Correction
+
+This section supersedes the MBA-349 consumer-evidence counts and descriptions above.
+
+- The current disposable PostgreSQL workflow-CAS plus intent-usage module result is `56 passed`; it supersedes the historical `19` and `21` counts.
+- The selected-target regression builds a planning context from a persisted workflow, removes the selected target before cache rehydration, and verifies that the real coordinator discards the warm plan before any mutation path.
+- The Knowledge regression deletes a persisted Knowledge row before the current resolver runs and verifies that rehydration emits no restored candidate handle. It does not claim that a historical Knowledge identifier was cached; plan contracts intentionally contain no durable Knowledge identity.
+- The consumer audit query recursively rejects cache-plan and raw-payload metadata field names in durable issued and acknowledged audit rows. It proves that a warm hit has no provider call or planner usage row.
+- The cache-enabled cold-miss and cache-unavailable fail-open regression invokes the synthetic provider once and records one durable usage row for its own request, proving lazy usage-context creation does not lose or duplicate attribution.
+- Credential/model/relation state is separately re-read from PostgreSQL; a committed credential revoke is fail closed before GraphMutation, CAS, acknowledgement, usage, or external provider work.
+
+Final benchmark artifacts remain outside this issue and are owned by MBA-350. The actual consumer boundaries above are complete only for the local disposable PostgreSQL environment; production serving remains gated by the existing operational attestation requirement.

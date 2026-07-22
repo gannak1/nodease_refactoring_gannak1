@@ -6,7 +6,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import HTTPException
 from sqlalchemy import or_, select
@@ -1197,14 +1197,27 @@ class AgentBuilderService:
                 self.db.commit()
                 return response
             usage_context = None
+            usage_context_factory = None
             if selected_kb_context is None and self.intent_extractor is not None:
-                usage_context = self._primary_intent_usage_context(
-                    session=session,
-                    request=message_request,
-                    request_id=request_row.id,
-                    workflow=workflow,
-                    app=app,
-                )
+                if isinstance(
+                    self.intent_plan_cache,
+                    DisabledIntentPlanCacheBoundary,
+                ):
+                    usage_context = self._primary_intent_usage_context(
+                        session=session,
+                        request=message_request,
+                        request_id=request_row.id,
+                        workflow=workflow,
+                        app=app,
+                    )
+                elif getattr(self.intent_extractor, "usage_recorder", None) is not None:
+                    usage_context_factory = lambda: self._primary_intent_usage_context(
+                        session=session,
+                        request=message_request,
+                        request_id=request_row.id,
+                        workflow=workflow,
+                        app=app,
+                    )
             structured = (
                 selected_kb_context["structured_request"]
                 if selected_kb_context
@@ -1220,6 +1233,11 @@ class AgentBuilderService:
                     **(
                         {"usage_context": usage_context}
                         if usage_context is not None
+                        else {}
+                    ),
+                    **(
+                        {"usage_context_factory": usage_context_factory}
+                        if usage_context_factory is not None
                         else {}
                     ),
                 )
@@ -2631,6 +2649,9 @@ class AgentBuilderService:
         workflow: Workflow | None,
         *,
         usage_context: AgentBuilderIntentUsageContext | None = None,
+        usage_context_factory: (
+            Callable[[], AgentBuilderIntentUsageContext | None] | None
+        ) = None,
         cache_cancellation_fence=None,
         cache_request_deadline_monotonic: float | None = None,
     ) -> AgentBuilderStructuredRequest:
@@ -2645,8 +2666,13 @@ class AgentBuilderService:
                 "safe_message": safe_message,
                 "workflow_context": workflow_context,
             }
-            if usage_context is not None:
-                extract_kwargs["usage_context"] = usage_context
+            current_usage_context = (
+                usage_context_factory()
+                if usage_context_factory is not None
+                else usage_context
+            )
+            if current_usage_context is not None:
+                extract_kwargs["usage_context"] = current_usage_context
             extraction = self.intent_extractor.extract(**extract_kwargs)
             validate_intent_semantics(
                 extraction,

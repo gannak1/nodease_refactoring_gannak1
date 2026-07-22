@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -6,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Barrier, Event
+from types import SimpleNamespace
 
 import pytest
 from cryptography.fernet import Fernet
@@ -16,6 +18,23 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm import sessionmaker
 
 from apps.gateway.adapters.db.agent_builder_repository import AgentBuilderRepository
+from apps.gateway.application.agent_builder.intent_cache.contracts import (
+    CachedIntentPlanV1,
+    CachedEditPlacement,
+    CachedKnowledgePlacement,
+    CachedKnowledgeRequirement,
+    CachedParameterGuidanceRef,
+    IntentCacheKey,
+    IntentPlanContractVersions,
+    IntentPlanLoadResult,
+    LogicalStepRef,
+)
+from apps.gateway.application.agent_builder.intent_cache_coordinator import (
+    AgentBuilderIntentCacheCoordinator,
+)
+from apps.gateway.application.agent_builder.intent_normalization import (
+    DeterministicIntentNormalizer,
+)
 from apps.gateway.application.agent_builder.graph_mutation_builder import (
     GraphMutationBuilder,
     apply_graph_operations,
@@ -25,16 +44,35 @@ from apps.gateway.application.agent_builder.graph_mutation_builder import (
 from apps.gateway.services.agent_builder.parameter_task_service import (
     ParameterTaskService,
 )
+from apps.gateway.services.agent_builder.intent_cache_integration import (
+    build_intent_planning_context,
+    current_rehydrator_for,
+    project_structured_intent_plan,
+)
 from apps.gateway.services.agent_builder.mutation_lifecycle import (
     GraphMutationLifecycleService,
 )
+from apps.gateway.services.agent_builder.intent_usage_service import (
+    AgentBuilderIntentUsageService,
+)
+from apps.gateway.services.agent_builder_intent_service import (
+    LLMAgentBuilderIntentExtractor,
+)
 from apps.gateway.services.agent_builder_service import AgentBuilderService
+from apps.gateway.services.llm_service import LLMCredentialNotAvailableError
 from apps.gateway.services import workflow_service as workflow_service_module
 from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.agent_builder import AgentBuilderRequest, AgentBuilderSession
 from apps.shared.db.models.app import App
 from apps.shared.db.models.knowledge import KnowledgeBase
+from apps.shared.db.models.llm import (
+    LLMCredential,
+    LLMModel,
+    LLMProvider,
+    LLMRelCredentialModel,
+    LLMUsageLog,
+)
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import OrganizationMembership
 from apps.shared.db.models.user import User
@@ -56,6 +94,7 @@ from apps.shared.schemas.agent_builder import (
     AgentBuilderParameterTaskDecisionRequest,
     AgentBuilderSessionCreateRequest,
     GraphMutationAcknowledgementRequest,
+    AgentBuilderMessageRequest,
 )
 from apps.shared.schemas.workflow import WorkflowDraftRequest
 from apps.shared.services.credential_encryption import CredentialEncryptionService
@@ -226,6 +265,704 @@ def _fixture(db):
     db.flush()
     return user, workflow, request_row
 
+class _PostgresWarmHitStore:
+    """In-memory cache port that exposes a prevalidated warm plan to the real service."""
+
+    def __init__(self, plan: CachedIntentPlanV1, *, on_load=None) -> None:
+        self.plan = plan
+        self.on_load = on_load
+        self.build_calls = 0
+        self.load_calls = 0
+
+    def build_key(self, _material: bytes) -> IntentCacheKey:
+        self.build_calls += 1
+        return IntentCacheKey(
+            namespace="agent-builder:intent-plan",
+            key_version="postgres-consumer-v1",
+            digest="a" * 64,
+        )
+
+    def load(self, _key: IntentCacheKey) -> IntentPlanLoadResult:
+        self.load_calls += 1
+        if self.on_load is not None:
+            self.on_load()
+        return IntentPlanLoadResult(status="hit", plan=self.plan, reason=None)
+
+class _PostgresCountingIntentClient:
+    """Synthetic provider client that exposes call count without recording input."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def invoke_sync(self, _messages, **_kwargs):
+        self.calls += 1
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "request_type": "new_workflow",
+                                "draft_mode": "new_workflow",
+                                "intent_summary": "Create a basic workflow.",
+                                "ordered_capabilities": ["start_input", "answer"],
+                                "knowledge_required": False,
+                                "knowledge_topics": [],
+                                "integration_actions": [],
+                                "edit": None,
+                                "unsupported_requests": [],
+                            }
+                        )
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+        }
+
+class _PostgresUsagePathStore:
+    """Cache-port double for one actual service cold/error planning path."""
+
+    def __init__(self, *, load_status: str) -> None:
+        self.load_status = load_status
+        self.load_calls = 0
+        self.acquire_calls = 0
+
+    def build_key(self, _material: bytes) -> IntentCacheKey:
+        return IntentCacheKey(
+            namespace="agent-builder:intent-plan",
+            key_version="postgres-consumer-v1",
+            digest="b" * 64,
+        )
+
+    def load(self, _key: IntentCacheKey) -> IntentPlanLoadResult:
+        self.load_calls += 1
+        return IntentPlanLoadResult(
+            status=self.load_status,
+            plan=None,
+            reason=(
+                "cache_unavailable"
+                if self.load_status == "unavailable"
+                else "not_found"
+            ),
+        )
+
+    @staticmethod
+    def new_owner_token() -> str:
+        return "postgres-usage-owner"
+
+    def acquire_lease(self, _key: IntentCacheKey, _owner: str):
+        self.acquire_calls += 1
+        return SimpleNamespace(status="acquired", generation=1)
+
+    @staticmethod
+    def complete_without_value(_key, _owner, _generation):
+        return SimpleNamespace(status="signaled_and_released")
+
+    @staticmethod
+    def release_lease(_key, _owner, _generation):
+        return None
+
+def _postgres_warm_hit_plan() -> CachedIntentPlanV1:
+    versions = IntentPlanContractVersions(
+        normalizer_version="intent-normalizer-v1",
+        cache_schema_version=1,
+        planner_contract_version="agent-builder-intent-v1",
+        catalog_version=3,
+        canonical_text_registry_version="intent-text-v1",
+        materializer_version="agent-builder-direct-edit-v1",
+    )
+    return CachedIntentPlanV1(
+        schema_version=1,
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        ordered_capabilities=("start_input", "answer"),
+        logical_steps=(
+            LogicalStepRef(capability="start_input", occurrence=1),
+            LogicalStepRef(capability="answer", occurrence=1),
+        ),
+        edit_placement=None,
+        integration_actions=(),
+        parameter_guidance_refs=(),
+        knowledge_requirements=(),
+        knowledge_placements=(),
+        risk_flags=(),
+        contract_versions=versions,
+    )
+
+def _postgres_selected_target_warm_hit_plan() -> CachedIntentPlanV1:
+    step = LogicalStepRef(capability="slack_send", occurrence=1)
+    return CachedIntentPlanV1(
+        schema_version=1,
+        request_type="modify_workflow",
+        draft_mode="modify_workflow",
+        ordered_capabilities=("slack_send",),
+        logical_steps=(step,),
+        edit_placement=CachedEditPlacement(
+            placement="after",
+            target_reference_type="selected_node",
+            step_refs=(step,),
+        ),
+        integration_actions=(),
+        parameter_guidance_refs=(
+            CachedParameterGuidanceRef(
+                logical_step_ref=step,
+                parameter_key="channel",
+                reason_template_ref="guidance.reason.delivery_destination_required.v1",
+                input_guidance_template_ref="guidance.input.select_slack_channel_id.v1",
+            ),
+        ),
+        knowledge_requirements=(),
+        knowledge_placements=(),
+        risk_flags=(
+            "external_action_requested",
+            "slack_channel_unresolved",
+            "external_configuration_unresolved",
+        ),
+        contract_versions=_postgres_warm_hit_plan().contract_versions,
+    )
+
+def _postgres_knowledge_warm_hit_plan() -> CachedIntentPlanV1:
+    start = LogicalStepRef(capability="start_input", occurrence=1)
+    knowledge = LogicalStepRef(capability="knowledge_backed_llm", occurrence=1)
+    answer = LogicalStepRef(capability="answer", occurrence=1)
+    return CachedIntentPlanV1(
+        schema_version=1,
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        ordered_capabilities=("start_input", "knowledge_backed_llm", "answer"),
+        logical_steps=(start, knowledge, answer),
+        edit_placement=None,
+        integration_actions=(),
+        parameter_guidance_refs=(),
+        knowledge_requirements=(
+            CachedKnowledgeRequirement(
+                requirement_ref="kr_1",
+                required=True,
+                evidence_kind="policy_or_reference",
+                target_step_ref=knowledge,
+                topic_refs=("topic.internal_documents.v1",),
+            ),
+        ),
+        knowledge_placements=(
+            CachedKnowledgePlacement(
+                requirement_ref="kr_1",
+                timing="after_graph",
+                effect_kind="binding_only",
+                target_step_ref=knowledge,
+            ),
+        ),
+        risk_flags=(),
+        contract_versions=_postgres_warm_hit_plan().contract_versions,
+    )
+
+def _postgres_planning_extractor(db, *, user, workflow):
+    provider = LLMProvider(
+        name="openai",
+        description="PostgreSQL rehydration test provider",
+        type="system",
+        base_url="https://example.invalid/v1",
+        auth_type="api_key",
+        doc_url="https://example.invalid/docs",
+    )
+    db.add(provider)
+    db.flush()
+    model = LLMModel(
+        provider_id=provider.id,
+        model_id_for_api_call="rehydration-test-model",
+        name="Rehydration Test Model",
+        type="chat",
+        context_window=8192,
+        is_active=True,
+    )
+    db.add(model)
+    db.flush()
+    credential_id = uuid.uuid4()
+
+    def current_runtime(**_kwargs):
+        return SimpleNamespace(
+            credential_id=credential_id,
+            model_db_id=model.id,
+            model_id=model.model_id_for_api_call,
+            organization_id=workflow.organization_id,
+        )
+
+    return LLMAgentBuilderIntentExtractor(
+        db=db,
+        user_id=user.id,
+        organization_id=workflow.organization_id,
+        credential_id=credential_id,
+        model_id=model.id,
+        runtime_loader=current_runtime,
+    )
+
+def test_postgres_rehydrator_rejects_selected_target_removed_after_cache_context(
+    db_session,
+):
+    user, workflow, _request_row = _fixture(db_session)
+    workflow.graph = {"nodes": [{"id": "current-target", "type": "startNode", "position": {"x": 0, "y": 0}, "data": {"title": "Start"}}], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 1}}
+    db_session.flush()
+    extractor = _postgres_planning_extractor(db_session, user=user, workflow=workflow)
+    message_request = AgentBuilderMessageRequest(
+        message="ADD LLM",
+        workflow_id=workflow.id,
+        generation_mode="configure_and_generate",
+        selected_node_id="current-target",
+    )
+    inputs = build_intent_planning_context(
+        db=db_session,
+        user_id=user.id,
+        organization_id=workflow.organization_id,
+        extractor=extractor,
+        request=message_request,
+        workflow=workflow,
+        safe_summary=lambda message, limit: message[:limit],
+        safe_label=lambda _value, *, fallback: fallback,
+        current_workflow_loader=lambda: db_session.get(Workflow, workflow.id),
+        knowledge_context_fingerprint_factory=lambda **_kwargs: "c" * 64,
+    )
+    assert inputs is not None
+    plan = _postgres_selected_target_warm_hit_plan()
+    before_deletion = inputs.rehydrator_factory(inputs.context, plan).rehydrate(
+        plan,
+        inputs.context,
+    )
+    assert before_deletion.status == "success"
+    assert before_deletion.structured_request is not None
+    workflow.graph = {"nodes": [], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 1}}
+    db_session.flush()
+    cache = AgentBuilderIntentCacheCoordinator(
+        normalizer=DeterministicIntentNormalizer(),
+        store=_PostgresWarmHitStore(plan),
+        rehydrator_factory=inputs.rehydrator_factory,
+        plan_projector=lambda *_args: None,
+        knowledge_context_fingerprint_factory=lambda **_kwargs: "c" * 64,
+    )
+    assert cache._rehydrate(plan, inputs.context) is None
+
+def test_postgres_current_knowledge_rehydration_never_restores_cached_handle(
+    db_session,
+):
+    user, workflow, _request_row = _fixture(db_session)
+    historical_knowledge = KnowledgeBase(
+        organization_id=workflow.organization_id,
+        user_id=user.id,
+        name="Test Knowledge",
+    )
+    db_session.add(historical_knowledge)
+    db_session.flush()
+    extractor = _postgres_planning_extractor(db_session, user=user, workflow=workflow)
+    message_request = AgentBuilderMessageRequest(
+        message="ADD LLM",
+        workflow_id=workflow.id,
+        generation_mode="configure_and_generate",
+    )
+    inputs = build_intent_planning_context(
+        db=db_session,
+        user_id=user.id,
+        organization_id=workflow.organization_id,
+        extractor=extractor,
+        request=message_request,
+        workflow=workflow,
+        safe_summary=lambda message, limit: message[:limit],
+        safe_label=lambda _value, *, fallback: fallback,
+        current_workflow_loader=lambda: db_session.get(Workflow, workflow.id),
+        knowledge_context_fingerprint_factory=lambda **_kwargs: "c" * 64,
+    )
+    assert inputs is not None
+    plan = _postgres_knowledge_warm_hit_plan()
+    before_deletion = inputs.rehydrator_factory(inputs.context, plan).rehydrate(
+        plan,
+        inputs.context,
+    )
+    assert before_deletion.status == "success"
+    assert before_deletion.structured_request is not None
+    assert before_deletion.structured_request.knowledge_requirements[0].suggested_candidate_handles
+    db_session.delete(historical_knowledge)
+    db_session.flush()
+    result = inputs.rehydrator_factory(inputs.context, plan).rehydrate(
+        plan,
+        inputs.context,
+    )
+    assert result.status == "success"
+    assert result.structured_request is not None
+    requirement = result.structured_request.knowledge_requirements[0]
+    assert requirement.suggested_candidate_handles == []
+
+def test_actual_cache_hit_reaches_safe_envelope_cas_ack_audit_and_blocks_revoked_credential(
+    db_session,
+    disposable_cas_engine,
+    request,
+):
+    db_session.close()
+    db_session = Session(bind=disposable_cas_engine)
+    request.addfinalizer(db_session.close)
+    user, workflow, request_row = _fixture(db_session)
+    session = db_session.get(AgentBuilderSession, request_row.session_id)
+    session.protocol_version = "direct_edit_v1"
+    provider = LLMProvider(
+        name="openai",
+        description="PostgreSQL cache-consumer test provider",
+        type="system",
+        base_url="https://example.invalid/v1",
+        auth_type="api_key",
+        doc_url="https://example.invalid/docs",
+    )
+    db_session.add(provider)
+    db_session.flush()
+    model = LLMModel(
+        provider_id=provider.id,
+        model_id_for_api_call="cache-consumer-model",
+        name="Cache Consumer Model",
+        type="chat",
+        context_window=8192,
+        is_active=True,
+    )
+    credential = LLMCredential(
+        provider_id=provider.id,
+        user_id=user.id,
+        organization_id=workflow.organization_id,
+        credential_name="Cache Consumer Credential",
+        encrypted_config="{}",
+        config_preview=None,
+        is_valid=True,
+    )
+    db_session.add_all([model, credential])
+    db_session.flush()
+    db_session.add(
+        LLMRelCredentialModel(
+            credential_id=credential.id,
+            model_id=model.id,
+            is_verified=True,
+            priority=0,
+        )
+    )
+    db_session.flush()
+    # Cache I/O is intentionally outside the service transaction. Persist the
+    # current protected-resource state before that transaction is released.
+    credential_id = credential.id
+    model_db_id = model.id
+    model_api_id = model.model_id_for_api_call
+    organization_id = workflow.organization_id
+    db_session.commit()
+
+    runtime_calls = []
+    provider_client = _PostgresCountingIntentClient()
+
+    def current_runtime(**kwargs):
+        runtime_calls.append(kwargs)
+        current_credential = db_session.get(LLMCredential, credential_id)
+        current_model = db_session.get(LLMModel, model_db_id)
+        verified_relation = (
+            db_session.query(LLMRelCredentialModel)
+            .filter(
+                LLMRelCredentialModel.credential_id == credential_id,
+                LLMRelCredentialModel.model_id == model_db_id,
+                LLMRelCredentialModel.is_verified.is_(True),
+            )
+            .first()
+        )
+        if (
+            current_credential is None
+            or not current_credential.is_valid
+            or current_model is None
+            or not current_model.is_active
+            or verified_relation is None
+        ):
+            raise LLMCredentialNotAvailableError("current_runtime_unavailable")
+        return SimpleNamespace(
+            credential_id=credential_id,
+            model_db_id=model_db_id,
+            model_id=model_api_id,
+            organization_id=organization_id,
+            client=provider_client,
+        )
+
+    store = _PostgresWarmHitStore(_postgres_warm_hit_plan())
+    cache = AgentBuilderIntentCacheCoordinator(
+        normalizer=DeterministicIntentNormalizer(),
+        store=store,
+        rehydrator_factory=current_rehydrator_for,
+        plan_projector=project_structured_intent_plan,
+        knowledge_context_fingerprint_factory=lambda **_kwargs: "c" * 64,
+    )
+    service = AgentBuilderService(
+        db_session,
+        user=user,
+        organization_id=workflow.organization_id,
+        intent_extractor=LLMAgentBuilderIntentExtractor(
+            db=db_session,
+            user_id=user.id,
+            organization_id=workflow.organization_id,
+            credential_id=credential.id,
+            model_id=model.id,
+            runtime_loader=current_runtime,
+        ),
+        intent_plan_cache=cache,
+    )
+    original_usage_recorder = service.intent_extractor.usage_recorder
+    service.intent_extractor.usage_recorder = object()
+    original_usage_context = service._primary_intent_usage_context
+    usage_context_calls = []
+
+    def unexpected_usage_context(**_kwargs):
+        usage_context_calls.append(True)
+        raise AssertionError("cache hit must not create planner usage context")
+
+    service._primary_intent_usage_context = unexpected_usage_context
+
+    response = service.submit_message(
+        session.id,
+        AgentBuilderMessageRequest(
+            message="ADD LLM",
+            workflow_id=workflow.id,
+            generation_mode="configure_and_generate",
+        ),
+    )
+
+    assert response.status == "graph_mutation_ready"
+    assert response.graph_mutation is not None
+    assert usage_context_calls == []
+    service.intent_extractor.usage_recorder = original_usage_recorder
+    service._primary_intent_usage_context = original_usage_context
+    assert store.build_calls == store.load_calls == 1
+    assert len(runtime_calls) == 2
+    assert db_session.query(LLMUsageLog).count() == 0
+    assert provider_client.calls == 0
+
+    request_after_hit = db_session.get(AgentBuilderRequest, response.request_id)
+    mutation = response.graph_mutation
+    envelope = AgentBuilderRepository().find_envelope(
+        request_after_hit,
+        mutation.operation_id,
+    )
+    assert envelope is not None
+    assert "cached_intent_plan" not in envelope
+
+    result_graph = apply_graph_operations(workflow.graph, mutation.operations)
+    saved = WorkflowService.save_draft(
+        db_session,
+        str(workflow.id),
+        _draft_request(
+            {
+                **result_graph,
+                "mutation_context": {
+                    "operation_id": mutation.operation_id,
+                    "action": "apply",
+                    "expected_base_graph_hash": mutation.base_graph_hash,
+                    "expected_workflow_updated_at": mutation.expected_workflow_updated_at,
+                    "catalog_version": 3,
+                },
+            }
+        ),
+        user_id=str(user.id),
+    )
+
+    GraphMutationLifecycleService(
+        db_session,
+        user_id=user.id,
+        organization_id=workflow.organization_id,
+    ).acknowledge(
+        session.id,
+        mutation.operation_id,
+        GraphMutationAcknowledgementRequest.model_validate(
+            {
+                "workflow_id": workflow.id,
+                "graph_hash": saved["graph_hash"],
+                "updated_at": saved["updated_at"],
+            }
+        ),
+    )
+
+    recovered = AgentBuilderService(
+        db_session,
+        user=user,
+        organization_id=workflow.organization_id,
+    ).get_session(session.id)
+    assert recovered.active_graph_mutation is not None
+    assert recovered.active_graph_mutation["status"] == "acknowledged"
+    with Session(bind=disposable_cas_engine) as revocation_db:
+        revoked_credential = revocation_db.get(LLMCredential, credential_id)
+        assert revoked_credential is not None
+        revoked_credential.is_valid = False
+        revocation_db.commit()
+    db_session.expire_all()
+
+    revoked_response = service.submit_message(
+        session.id,
+        AgentBuilderMessageRequest(
+            message="ADD LLM",
+            workflow_id=workflow.id,
+            generation_mode="configure_and_generate",
+        ),
+    )
+    assert revoked_response.status == "configuration_required"
+    assert revoked_response.graph_mutation is None
+    assert store.build_calls == store.load_calls == 1
+    assert len(runtime_calls) == 4
+    assert db_session.query(LLMUsageLog).count() == 0
+
+    assert (
+        db_session.query(AuditLog)
+        .filter(AuditLog.action == AuditAction.AGENT_BUILDER_GRAPH_MUTATION_ISSUED)
+        .count()
+        == 1
+    )
+    assert (
+        db_session.query(AuditLog)
+        .filter(AuditLog.action == "agent_builder.graph_mutation.acknowledged")
+        .count()
+        == 1
+    )
+    def metadata_keys(value):
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                yield key
+                yield from metadata_keys(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from metadata_keys(nested)
+
+    audit_rows = (
+        db_session.query(AuditLog)
+        .filter(
+            AuditLog.action.in_(
+                [
+                    AuditAction.AGENT_BUILDER_GRAPH_MUTATION_ISSUED,
+                    "agent_builder.graph_mutation.acknowledged",
+                ]
+            )
+        )
+        .all()
+    )
+    forbidden_cache_metadata = {"cache_key", "cache_value", "cached_intent_plan", "intent_plan", "raw_request", "raw_payload"}
+    assert all(
+        forbidden_cache_metadata.isdisjoint(set(metadata_keys(row.audit_metadata or {})))
+        for row in audit_rows
+    )
+
+@pytest.mark.parametrize("load_status", ["miss", "unavailable"])
+def test_actual_cache_cold_paths_record_single_provider_usage(
+    db_session,
+    disposable_cas_engine,
+    request,
+    load_status,
+):
+    db_session.close()
+    db_session = Session(bind=disposable_cas_engine)
+    request.addfinalizer(db_session.close)
+    user, workflow, request_row = _fixture(db_session)
+    session = db_session.get(AgentBuilderSession, request_row.session_id)
+    app = db_session.get(App, workflow.app_id)
+    assert session is not None
+    assert app is not None
+    session.protocol_version = "direct_edit_v1"
+    app.workflow_id = workflow.id
+    provider = LLMProvider(
+        name="openai",
+        description="PostgreSQL cache usage test provider",
+        type="system",
+        base_url="https://example.invalid/v1",
+        auth_type="api_key",
+        doc_url="https://example.invalid/docs",
+    )
+    db_session.add(provider)
+    db_session.flush()
+    model = LLMModel(
+        provider_id=provider.id,
+        model_id_for_api_call=f"cache-usage-model-{uuid.uuid4().hex}",
+        name="Cache Usage Model",
+        type="chat",
+        context_window=8192,
+        is_active=True,
+    )
+    credential = LLMCredential(
+        provider_id=provider.id,
+        user_id=user.id,
+        organization_id=workflow.organization_id,
+        credential_name="Cache Usage Credential",
+        encrypted_config="{}",
+        config_preview=None,
+        is_valid=True,
+    )
+    db_session.add_all([model, credential])
+    db_session.flush()
+    db_session.add(
+        LLMRelCredentialModel(
+            credential_id=credential.id,
+            model_id=model.id,
+            is_verified=True,
+            priority=0,
+        )
+    )
+    db_session.commit()
+
+    provider_client = _PostgresCountingIntentClient()
+
+    def current_runtime(**_kwargs):
+        return SimpleNamespace(
+            credential_id=credential.id,
+            model_db_id=model.id,
+            model_id=model.model_id_for_api_call,
+            organization_id=workflow.organization_id,
+            client=provider_client,
+        )
+
+    store = _PostgresUsagePathStore(load_status=load_status)
+    cache = AgentBuilderIntentCacheCoordinator(
+        normalizer=DeterministicIntentNormalizer(),
+        store=store,
+        rehydrator_factory=current_rehydrator_for,
+        plan_projector=lambda *_args: None,
+        knowledge_context_fingerprint_factory=lambda **_kwargs: "c" * 64,
+    )
+    usage_sessions = sessionmaker(
+        bind=disposable_cas_engine,
+        expire_on_commit=False,
+    )
+    service = AgentBuilderService(
+        db_session,
+        user=user,
+        organization_id=workflow.organization_id,
+        intent_extractor=LLMAgentBuilderIntentExtractor(
+            db=db_session,
+            user_id=user.id,
+            organization_id=workflow.organization_id,
+            credential_id=credential.id,
+            model_id=model.id,
+            runtime_loader=current_runtime,
+            usage_recorder=AgentBuilderIntentUsageService(
+                session_factory=usage_sessions,
+            ),
+        ),
+        intent_plan_cache=cache,
+    )
+    original_usage_context = service._primary_intent_usage_context
+    usage_context_calls = []
+
+    def tracked_usage_context(**kwargs):
+        usage_context_calls.append(True)
+        return original_usage_context(**kwargs)
+
+    service._primary_intent_usage_context = tracked_usage_context
+
+    response = service.submit_message(
+        session.id,
+        AgentBuilderMessageRequest(
+            message="ADD LLM",
+            workflow_id=workflow.id,
+            generation_mode="configure_and_generate",
+        ),
+    )
+
+    assert response.status == "graph_mutation_ready"
+    assert provider_client.calls == 1
+    assert usage_context_calls == [True]
+    assert store.load_calls == 1
+    assert (
+        db_session.query(LLMUsageLog)
+        .filter(LLMUsageLog.runtime_request_id == response.request_id)
+        .count() == 1
+    )
 
 @pytest.fixture(scope="module")
 def disposable_cas_engine():

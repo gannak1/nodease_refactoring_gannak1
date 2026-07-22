@@ -120,6 +120,23 @@ def test_safe_envelope_never_contains_typed_operations():
     assert envelope.expected_result_graph_hash == mutation.expected_result_graph_hash
 
 
+def test_safe_envelope_rejects_cache_plan_attachment():
+    mutation = GraphMutationBuilder().build(
+        operation_id=uuid4(),
+        kind="initial_graph",
+        generation_mode="configure_and_generate",
+        workflow_id=uuid4(),
+        base_graph={"nodes": [], "edges": []},
+        expected_workflow_updated_at=datetime.now(timezone.utc),
+        operations=_initial_operations(),
+    )
+    payload = GraphMutationSafeEnvelope.from_mutation(mutation).model_dump()
+    payload["cached_intent_plan"] = {"schema_version": 1}
+
+    with pytest.raises(ValidationError):
+        GraphMutationSafeEnvelope.model_validate(payload)
+
+
 @pytest.mark.parametrize("schema", [GraphMutation, GraphMutationSafeEnvelope])
 @pytest.mark.parametrize("timestamp", [None, pytest.param("missing", id="missing")])
 def test_graph_mutation_contract_requires_expected_workflow_timestamp(
