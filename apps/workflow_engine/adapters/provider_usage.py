@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from contextlib import suppress
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Mapping
 
@@ -235,16 +236,19 @@ class _LedgerProviderUsageAttempt:
         self._terminal = True
 
     def _project_best_effort(self) -> None:
-        db = self._session_factory()
+        db = None
         try:
+            db = self._session_factory()
             self._service.project_compatibility_usage(
                 db,
                 operation_id=self._operation_id,
             )
-        except ProviderUsageLedgerError:
+        except Exception:
             return
         finally:
-            db.close()
+            if db is not None:
+                with suppress(Exception):
+                    db.close()
 
     @classmethod
     def _usage_integer(cls, usage: Mapping[str, Any], field_name: str) -> int:

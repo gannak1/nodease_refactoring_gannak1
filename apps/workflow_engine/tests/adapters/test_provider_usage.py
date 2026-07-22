@@ -403,6 +403,60 @@ def test_capability_attempt_commits_intent_and_start_before_terminal_usage() -> 
     assert all(session.closes == 1 for session in sessions)
 
 
+@pytest.mark.parametrize(
+    "failure_phase",
+    ["session_factory", "projection", "session_close"],
+)
+def test_projection_failure_does_not_override_committed_provider_success(
+    failure_phase: str,
+) -> None:
+    class ProjectionLedger(_LedgerService):
+        def project_compatibility_usage(self, _db, **_kwargs):
+            self.calls.append("project")
+            if failure_phase == "projection":
+                raise RuntimeError("projection unavailable")
+            return object()
+
+    class ProjectionSession(_Session):
+        def close(self) -> None:
+            super().close()
+            if failure_phase == "session_close":
+                raise RuntimeError("projection session close failed")
+
+    service = ProjectionLedger()
+    session_count = 0
+
+    def new_session():
+        nonlocal session_count
+        session_count += 1
+        if session_count == 4:
+            if failure_phase == "session_factory":
+                raise RuntimeError("projection session unavailable")
+            return ProjectionSession()
+        return _Session()
+
+    recorder = PostgresProviderUsageRecorder(
+        session_factory=new_session,
+        ledger_service=service,  # type: ignore[arg-type]
+    )
+    attribution = _capability_attribution(
+        organization_id=uuid.uuid4(),
+        model_db_id=uuid.uuid4(),
+        credential_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+    )
+    attempt = recorder.begin(_intent_for(attribution))
+    attempt.mark_provider_started()
+
+    cost = attempt.record_success(
+        usage={"prompt_tokens": 3, "completion_tokens": 2},
+        latency_ms=10,
+    )
+
+    assert cost == pytest.approx(0.007)
+    assert service.calls[:3] == ["intent", "start", "success"]
+
+
 def test_capability_attempt_records_definitive_pre_send_failure() -> None:
     service = _LedgerService()
     recorder = PostgresProviderUsageRecorder(
