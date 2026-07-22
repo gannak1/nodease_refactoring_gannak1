@@ -130,13 +130,10 @@ def _assert_upgraded_schema(connection) -> None:
         connection,
         "llm_deployment_credential_policies",
     )
-    assert "purpose = 'main_generation'" in policy_indexes[
-        "uq_llm_deploy_credential_policy_active"
-    ]
+    assert "uq_llm_deploy_credential_policy_active" in policy_indexes
     query_index = policy_indexes[
         "uq_llm_deploy_credential_policy_active_query_embedding"
     ]
-    assert "purpose = 'query_embedding'" in query_index
     assert "model_id" in query_index
     lookup_index = policy_indexes["ix_llm_deploy_credential_policy_lookup"]
     assert "purpose" in lookup_index
@@ -404,6 +401,16 @@ def _assert_policy_slot_constraints(test_engine) -> None:
                 model_id=model_b,
             )
         )
+        with pytest.raises(IntegrityError):
+            with connection.begin_nested():
+                _insert_policy_row(
+                    connection,
+                    organization_id=organization_id,
+                    deployment_id=deployment_id,
+                    node_location_digest=node_location_digest,
+                    purpose="main_generation",
+                    model_id=model_b,
+                )
         with pytest.raises(IntegrityError):
             with connection.begin_nested():
                 _insert_policy_row(
