@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 from pathlib import Path
 
 import yaml
@@ -247,6 +248,17 @@ def test_helm_network_policies_reuse_the_configured_postgresql_port() -> None:
     for source in (policies, worker_policy):
         assert "port: 5432" not in source
         assert 'port: {{ include "moduly.postgresql.port" . }}' in source
+        external_database_blocks = re.findall(
+            r"{{- range \.Values\.worker\.networkPolicy\.externalDatabaseCidrs }}"
+            r"(.*?){{- end }}",
+            source,
+            flags=re.DOTALL,
+        )
+        assert external_database_blocks
+        assert all(
+            'port: {{ include "moduly.postgresql.port" $ }}' in block
+            for block in external_database_blocks
+        )
 
 
 def test_helm_proxy_only_policy_has_no_direct_public_route_for_target_workloads() -> (

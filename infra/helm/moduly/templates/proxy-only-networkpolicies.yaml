@@ -99,7 +99,7 @@ spec:
             cidr: {{ . | quote }}
       ports:
         - protocol: TCP
-          port: {{ include "moduly.postgresql.port" . }}
+          port: {{ include "moduly.postgresql.port" $ }}
     {{- end }}
     {{- range .Values.worker.networkPolicy.externalRedisCidrs }}
     - to:
@@ -174,7 +174,7 @@ spec:
             cidr: {{ . | quote }}
       ports:
         - protocol: TCP
-          port: {{ include "moduly.postgresql.port" . }}
+          port: {{ include "moduly.postgresql.port" $ }}
     {{- end }}
     {{- range .Values.worker.networkPolicy.externalRedisCidrs }}
     - to:
@@ -233,7 +233,7 @@ spec:
             cidr: {{ . | quote }}
       ports:
         - protocol: TCP
-          port: {{ include "moduly.postgresql.port" . }}
+          port: {{ include "moduly.postgresql.port" $ }}
     {{- end }}
     {{- range .Values.worker.networkPolicy.externalRedisCidrs }}
     - to:
