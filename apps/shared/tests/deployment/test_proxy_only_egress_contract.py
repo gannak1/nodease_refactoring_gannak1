@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 from pathlib import Path
 
 import yaml
@@ -10,6 +11,21 @@ ROOT = Path(__file__).resolve().parents[4]
 
 def _read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
+
+
+def _network_literals(
+    source: str,
+) -> set[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    networks: set[ipaddress.IPv4Network | ipaddress.IPv6Network] = set()
+    for line in source.splitlines():
+        candidate = line.strip()
+        if candidate.startswith("- "):
+            candidate = candidate[2:].strip().strip('"').strip("'")
+        try:
+            networks.add(ipaddress.ip_network(candidate, strict=True))
+        except ValueError:
+            continue
+    return networks
 
 
 def test_squid_configuration_is_pinned_fail_closed_and_does_not_retain_payloads() -> (
@@ -37,22 +53,24 @@ def test_squid_configuration_is_pinned_fail_closed_and_does_not_retain_payloads(
 
 
 def test_proxy_and_network_policy_use_the_application_denied_cidr_registry() -> None:
-    expected_cidrs = {str(network) for network in _PUBLIC_EGRESS_DENIED_NETWORKS}
+    expected_networks = set(_PUBLIC_EGRESS_DENIED_NETWORKS)
     config = _read("docker/proxy/squid.conf")
-    squid_cidrs = {
-        line.removeprefix("acl blocked_destination dst ").strip()
+    squid_networks = {
+        ipaddress.ip_network(
+            line.removeprefix("acl blocked_destination dst ").strip(),
+            strict=True,
+        )
         for line in config.splitlines()
         if line.startswith("acl blocked_destination dst ")
     }
 
-    assert squid_cidrs == expected_cidrs
+    assert squid_networks == expected_networks
     for path in (
         "infra/helm/moduly/templates/proxy-only-networkpolicies.yaml",
         "infra/helm/moduly/templates/worker-networkpolicy.yaml",
     ):
-        policy = _read(path)
-        for cidr in expected_cidrs:
-            assert f"- {cidr}" in policy
+        policy_networks = _network_literals(_read(path))
+        assert expected_networks <= policy_networks
 
 
 def test_compose_target_workloads_have_no_direct_egress_or_ambient_proxy() -> None:
