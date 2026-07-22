@@ -100,6 +100,15 @@ Option 3과 option 5를 채택한다.
   설정이 없으면 rendering을 거부한다. Production `CLOUD` storage는 이 PVC를 사용하지 않는다.
 - Production rollout은 additive migration을 먼저 적용한 뒤 Knowledge worker를 활성화한다. Queue
   drain 뒤 application rollback은 가능하지만 schema downgrade를 rollback 수단으로 사용하지 않는다.
+- Provider-neutral Helm production reference는 bounded Knowledge worker와 singleton Celery Beat를
+  함께 활성화한다. Worker replica 또는 concurrency가 양수가 아니거나 recovery schedule을 소유한
+  Beat가 꺼져 있으면 chart rendering을 safe fixed error로 거부한다. 이는 migration을 Helm이
+  대신 수행한다는 뜻이 아니며 운영자는 release migration을 worker rollout보다 먼저 적용해야 한다.
+- Kubernetes init container와 Celery bootstep의 schema/keyring 검사를 통과한 worker만 시작한다.
+  실행 중 readiness는 `knowledge@<pod-hostname>` exact destination에 대한 bounded Celery self-ping으로
+  해당 Pod의 consumer와 broker control path를 확인한다. 다른 replica의 pong은 local readiness로
+  인정하지 않는다. Redis/control path 장애는 Pod를 `Unready`로 표시하되 liveness restart loop를
+  만들지 않으며, probe는 raw broker/credential/exception detail을 출력하지 않는다.
 
 ## Consequences
 
@@ -109,6 +118,9 @@ Option 3과 option 5를 채택한다.
   finalize할 수 없다.
 - Parsing/embedding provider 호출 자체의 수학적 exactly-once는 보장하지 않는다. Lease 만료 뒤
   provider 작업이 겹칠 수 있으나 stale DB write/finalization은 차단한다.
+- Production readiness는 local Celery consumer가 control message에 응답한다는 운영 신호다. 개별
+  ingestion 성공, queue drain 또는 provider/storage 정상 동작을 보증하지 않으며 durable job/status가
+  계속 실행 결과의 source of truth다.
 - KC sync job/item은 ADR-0048의 별도 aggregate를 유지한다. MBA-288은 Collection batch sync를
   대체하거나 source connector adapter를 추가하지 않는다.
 
