@@ -45,3 +45,17 @@ def test_ingestion_never_downloads_nltk_resources_at_runtime() -> None:
         '"corpora/stopwords"',
     ):
         assert resource in source
+
+
+def test_workflow_image_prefetches_opt_in_rag_reranker() -> None:
+    dockerfile = WORKFLOW_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert (
+        "ARG RAG_CROSS_ENCODER_MODEL_ID="
+        "cross-encoder/ms-marco-MiniLM-L-12-v2"
+    ) in dockerfile
+    assert 'if [ "$INSTALL_RAG_RERANKER" = "true" ]' in dockerfile
+    assert "from sentence_transformers import CrossEncoder" in dockerfile
+    assert "CrossEncoder('${RAG_CROSS_ENCODER_MODEL_ID}', device='cpu')" in dockerfile
+    assert "HF_HOME=/model-routing-hf-cache" in dockerfile
+    assert "COPY --from=builder /model-routing-hf-cache /opt/huggingface" in dockerfile

@@ -52,7 +52,7 @@ Option 3을 채택한다.
 15. Standard NetworkPolicy가 additive라는 사실은 변하지 않는다. Release manifest와 cluster의 다른 allow policy, `hostNetwork`, privileged workload와 CNI enforcement를 배포 전 확인한다. 이 검증을 실패하면 proxy-only activation을 중단한다.
 16. Object storage SDK는 ambient 환경이 아니라 explicit proxy configuration을 사용한다. 같은 botocore session의 default client config에 proxy와 retry 정책을 주입해 S3 client뿐 아니라 workload identity 자격증명을 교환하는 nested STS client에도 동일하게 적용한다. Signed request와 provider business semantics는 storage adapter가 계속 소유한다.
 17. 이 결정은 Docker Compose와 provider-neutral Helm만 변경하며 ADR-0068의 EKS 비지원 경계를 확장하지 않는다.
-18. Proxy-only workload가 첫 요청에서 외부 package 자산을 내려받지 않도록 Gateway/Knowledge와 Workflow image는 사용하는 tiktoken encoding 및 NLTK corpus를 build 단계에 포함한다. Runtime은 NLTK download를 호출하지 않으며 자산 누락 시 keyword 부가기능만 bounded warning으로 생략한다. 필수 tokenizer 자산이 없는 image는 배포 계약 실패다.
+18. Proxy-only workload가 첫 요청에서 외부 package 자산을 내려받지 않도록 Gateway/Knowledge와 Workflow image는 사용하는 tiktoken encoding, NLTK corpus와 build에서 활성화한 CrossEncoder 모델을 build 단계에 포함한다. Runtime은 NLTK 또는 활성 모델 download를 호출하지 않으며 자산 누락 시 keyword 부가기능만 bounded warning으로 생략한다. 필수 tokenizer 또는 활성 reranker 자산이 없는 image는 배포 계약 실패다. Demo seed의 runtime embedding도 bare provider SDK 대신 shared operation-bound guarded client를 사용한다.
 
 ## Security and protected-resource boundaries
 

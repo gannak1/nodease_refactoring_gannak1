@@ -132,6 +132,17 @@ def test_ci_control_smoke_uses_protected_actionlint_and_dockerfile_fixture():
     assert "git ls-files -z -- ':(glob)**/Dockerfile'" not in workflow
 
 
+def test_dockerfile_validation_runs_runtime_asset_contracts():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+    contract_step = workflow.split(
+        "- name: Run Dockerfile deployment contract tests",
+        maxsplit=1,
+    )[1].split("\n  knowledge_postgres:", maxsplit=1)[0]
+
+    assert "tests/ci/test_demo_seed_image_contract.py" in contract_step
+    assert "tests/ci/test_tokenizer_runtime_contract.py" in contract_step
+
+
 def test_ci_control_actionlint_smoke_also_validates_changed_workflows():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
     actionlint_block = workflow.split(

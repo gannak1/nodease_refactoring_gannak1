@@ -889,6 +889,7 @@ jobs:
         run: >-
           .venv-ci-deployment/bin/python -m pytest
           tests/ci/test_demo_seed_image_contract.py
+          tests/ci/test_tokenizer_runtime_contract.py
           -q
 
   knowledge_postgres:

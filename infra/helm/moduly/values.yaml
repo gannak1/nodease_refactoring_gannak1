@@ -19,10 +19,11 @@ storage:
   bucketName: ""
   region: ""
 
-# Public HTTP/HTTPS leaves target workloads only through this internal proxy.
-# Operators must supply the cluster pod CIDRs used by the Squid source ACL.
+# The base chart is a local/development profile and keeps direct-pinned
+# transport. Production values explicitly enable the proxy and supply exact
+# cluster pod CIDRs for the Squid source ACL.
 egressProxy:
-  enabled: true
+  enabled: false
   policyRevision: "proxy-v1"
   replicaCount: 2
   image:

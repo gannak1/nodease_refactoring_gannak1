@@ -203,7 +203,7 @@ def test_helm_production_reference_requires_ha_proxy_only_egress() -> None:
         "infra/helm/moduly/templates/knowledge-worker-deployment.yaml"
     )
 
-    assert values["egressProxy"]["enabled"] is True
+    assert values["egressProxy"]["enabled"] is False
     assert values["egressProxy"]["connectorAllowedPorts"] == [22, 5432]
     assert production["egressProxy"]["enabled"] is True
     assert production["egressProxy"]["replicaCount"] >= 2

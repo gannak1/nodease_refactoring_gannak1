@@ -77,6 +77,30 @@ def _deployment_by_component(manifests: list[dict], component: str) -> dict:
     return matching[0]
 
 
+def test_default_helm_values_render_local_profile_without_proxy_coordinates():
+    completed = _render_helm(values_files=())
+    manifests = _rendered_manifests(completed)
+
+    assert not any(
+        manifest.get("metadata", {})
+        .get("labels", {})
+        .get("app.kubernetes.io/component")
+        == "egress-proxy"
+        for manifest in manifests
+    )
+    for component in ("gateway", "worker"):
+        deployment = _deployment_by_component(manifests, component)
+        container = next(
+            item
+            for item in deployment["spec"]["template"]["spec"]["containers"]
+            if item["name"] == component
+        )
+        environment = {item["name"]: item for item in container.get("env", [])}
+        assert environment["OUTBOUND_TRANSPORT_MODE"]["value"] == (
+            "direct_pinned_internal_or_dedicated"
+        )
+
+
 def test_direct_gateway_example_uses_supported_storage_contract():
     example_lines = _read("dev/.env.example").splitlines()
 

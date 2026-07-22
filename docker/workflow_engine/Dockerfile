@@ -19,6 +19,7 @@ COPY apps/workflow_engine /build/apps/workflow_engine
 COPY docker/model-routing-cpu-constraints.txt /build/model-routing-cpu-constraints.txt
 
 ARG INSTALL_RAG_RERANKER=false
+ARG RAG_CROSS_ENCODER_MODEL_ID=cross-encoder/ms-marco-MiniLM-L-12-v2
 ARG PREFETCH_MODEL_ROUTING_CLASSIFIER=true
 ARG MODEL_ROUTING_DIFFICULTY_MODEL_ID=intfloat/multilingual-e5-base
 
@@ -56,6 +57,15 @@ RUN mkdir -p /model-routing-hf-cache && \
         HF_HOME=/model-routing-hf-cache \
         HF_HUB_DISABLE_XET=1 \
         python -c "from transformers import AutoModel, AutoTokenizer; model_id='${MODEL_ROUTING_DIFFICULTY_MODEL_ID}'; AutoTokenizer.from_pretrained(model_id, use_fast=False); AutoModel.from_pretrained(model_id)"; \
+    fi
+
+# Opt-in reranking must not download model weights after proxy-only startup.
+# Prefetch the exact runtime model into the cache copied to the final image.
+RUN if [ "$INSTALL_RAG_RERANKER" = "true" ]; then \
+        PYTHONPATH=/install/lib/python3.11/site-packages \
+        HF_HOME=/model-routing-hf-cache \
+        HF_HUB_DISABLE_XET=1 \
+        python -c "from sentence_transformers import CrossEncoder; CrossEncoder('${RAG_CROSS_ENCODER_MODEL_ID}', device='cpu')"; \
     fi
 
 

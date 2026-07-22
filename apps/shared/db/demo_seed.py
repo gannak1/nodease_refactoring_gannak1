@@ -104,6 +104,7 @@ from apps.shared.domain.app_auth_secret import (
     app_auth_secret_verifier,
     app_auth_secret_verifier_state_is_valid,
 )
+from apps.shared.services.llm_client.openai_client import OpenAIClient
 from apps.shared.services.model_routing_global_profile_catalog import (
     catalog_metadata_for_model_id,
 )
@@ -138,6 +139,7 @@ DEMO_MODEL_ROUTER_REASONING_MODEL = "o3"
 DEMO_ONBOARDING_ROUTER_MODEL = "gpt-4.1"
 DEMO_EMBEDDING_MODEL = "text-embedding-3-small"
 DEMO_EMBEDDING_DIMENSION = 1536
+DEMO_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEMO_REPO_ROOT = Path(__file__).resolve().parents[3]
 DEMO_LEGAL_DOCS_LABOR_DIR = DEMO_REPO_ROOT / "local" / "legal-docs-labor"
 DEMO_ONBOARDING_PDF_DIR = DEMO_REPO_ROOT / "demodata"
@@ -1468,28 +1470,38 @@ def _mask_demo_api_key(api_key: str) -> str:
 
 def _embed_text_batches(texts: list[str]) -> list[list[float]]:
     api_key = _require_seed_env("OPENAI_API_KEY")
-    try:
-        import openai
-    except ImportError as error:
-        raise RuntimeError("openai 패키지가 설치되어 있어야 demo seed embedding을 만들 수 있습니다.") from error
-
-    client = openai.OpenAI(api_key=api_key, timeout=60.0)
+    client = OpenAIClient(
+        model_id=DEMO_EMBEDDING_MODEL,
+        credentials={
+            "apiKey": api_key,
+            "baseUrl": DEMO_OPENAI_BASE_URL,
+        },
+    )
     embeddings: list[list[float]] = []
     batch_size = 64
     for start in range(0, len(texts), batch_size):
-        batch = [text if text and text.strip() else " " for text in texts[start : start + batch_size]]
-        response = client.embeddings.create(input=batch, model=DEMO_EMBEDDING_MODEL)
-        ordered = sorted(response.data, key=lambda item: item.index)
-        for item in ordered:
-            vector = list(item.embedding)
+        batch = [
+            text if text and text.strip() else " "
+            for text in texts[start : start + batch_size]
+        ]
+        batch_embeddings = client.embed_batch_sync(batch)
+        if len(batch_embeddings) != len(batch):
+            raise RuntimeError(
+                "embedding 응답 개수가 batch 입력과 다릅니다: "
+                f"expected={len(batch)}, actual={len(batch_embeddings)}"
+            )
+        for embedding in batch_embeddings:
+            vector = list(embedding)
             if len(vector) != DEMO_EMBEDDING_DIMENSION:
                 raise RuntimeError(
-                    f"{DEMO_EMBEDDING_MODEL} embedding 차원이 {DEMO_EMBEDDING_DIMENSION}이 아닙니다: {len(vector)}"
+                    f"{DEMO_EMBEDDING_MODEL} embedding 차원이 "
+                    f"{DEMO_EMBEDDING_DIMENSION}이 아닙니다: {len(vector)}"
                 )
             embeddings.append(vector)
     if len(embeddings) != len(texts):
         raise RuntimeError(
-            f"embedding 응답 개수가 입력과 다릅니다: expected={len(texts)}, actual={len(embeddings)}"
+            f"embedding 응답 개수가 입력과 다릅니다: "
+            f"expected={len(texts)}, actual={len(embeddings)}"
         )
     return embeddings
 
@@ -3631,7 +3643,7 @@ def _ensure_openai_provider_and_models(db: Session) -> tuple[LLMProvider, dict[s
         provider = LLMProvider(
             name="openai",
             description="OpenAI default provider",
-            base_url="https://api.openai.com/v1",
+            base_url=DEMO_OPENAI_BASE_URL,
             type="system",
             auth_type="api_key",
             doc_url="https://platform.openai.com/api-keys",
