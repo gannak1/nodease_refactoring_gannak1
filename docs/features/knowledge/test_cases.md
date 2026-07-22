@@ -8,6 +8,8 @@ KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048]
 ## Unit Tests
 
 - 새 LLM node, Agent Builder LLM node 초안, Knowledge RAG 추천 옵션과 runtime missing-value fallback은 `scoreThreshold=0.3`, `topK=5`를 사용하고, 명시된 기존 값은 덮어쓰지 않는다.
+- Workflow LLM node에 `context_variable`이 설정되면 RAG embedding/retrieval query는 렌더링된 user prompt 전체가 아니라 해당 `referenced_variables` 값만 사용한다. 값이 없거나 정제 뒤 비면 embedding과 retrieval을 호출하지 않는 safe no-evidence 경로로 닫고, `context_variable`이 없는 legacy graph는 기존 렌더링 prompt query를 유지한다.
+- Opt-in CrossEncoder rerank는 authorized chunk의 암호문이 아니라 메모리에서 복호화한 redacted canonical text를 입력으로 사용한다. 복호화 실패 시 암호문을 model input으로 fallback하거나 response, trace, audit, log에 남기면 실패다.
 - Metadata filter는 allowlist된 key/operator만 허용하고 free-form dict, JSONPath, raw SQL fragment, secret/header/prompt/completion/raw response field를 거부한다.
 - Classification metadata가 없으면 [ADR-0007](../../decisions/ADR-0007-mvp2-classification-metadata-storage.md)에 따라 `internal`로 처리한다.
 - 목표 cutover 전 `document_chunks.metadata`와 현재 `documents.meta_info`가 충돌하면 document metadata를 우선한다.

@@ -845,6 +845,7 @@ def test_new_employee_onboarding_chatbot_graph_matches_demo_contract():
     ]
     assert llm_data["scoreThreshold"] == 0.3
     assert llm_data["topK"] == 5
+    assert llm_data["context_variable"] == "question"
 
 
 def test_new_employee_onboarding_chatbot_keeps_fixed_last_list_timestamp(

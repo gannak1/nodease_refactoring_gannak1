@@ -6316,7 +6316,14 @@ def test_workflow_llm_node_applies_selected_kb_chunks_to_llm_prompt(monkeypatch)
         title="LLM",
         provider="openai",
         model_id="gpt-4o",
-        user_prompt="환불 정책 알려줘",
+        user_prompt="온보딩 질문: {{ question }}",
+        referenced_variables=[
+            LLMVariable(
+                name="question",
+                value_selector=["start-onboarding-question", "question"],
+            )
+        ],
+        context_variable="question",
         knowledgeBases=[KnowledgeBaseRef(id=str(kb_id), name="제품 정책")],
         topK=1,
         scoreThreshold=0.5,
@@ -6340,13 +6347,20 @@ def test_workflow_llm_node_applies_selected_kb_chunks_to_llm_prompt(monkeypatch)
     generation_client = StaticTextClient("환불 정책 답변")
     node._client_override = generation_client  # noqa: SLF001
 
-    result = node.execute({})
+    result = node.execute(
+        {
+            "start-onboarding-question": {
+                "question": "첫주차 일정 알려줘",
+            }
+        }
+    )
     message_text = "\n\n".join(
         call["content"] for call in generation_client.calls[0]["messages"]
     )
 
     assert result["text"] == "환불 정책 답변"
-    assert embedding_queries == ["환불 정책 알려줘"]
+    assert embedding_queries == ["첫주차 일정 알려줘"]
+    assert "온보딩 질문: 첫주차 일정 알려줘" in message_text
     assert fake_db.vector_execute_count == 1
     assert fake_db.keyword_execute_count == 1
     assert fake_db.closed is False

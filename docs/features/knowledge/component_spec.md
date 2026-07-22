@@ -552,6 +552,8 @@ tombstone cleanup은 구현 전에 별도 retention policy, audit action/reason 
 - 초기 candidate cap은 `max_candidate_kbs=5000`, `max_route_collections=20`, `max_retrieval_kbs=20`, `max_chunks_per_kb=8`, `max_total_chunks=50`이다. 이 값은 운영 baseline이며 제품의 고정 계약이 아니다.
 - Candidate cap, fanout concurrency, timeout, partial failure behavior는 [implementation_baseline.md](implementation_baseline.md)의 baseline을 시작점으로 삼고, operations policy로 조정 가능해야 하며 운영 배포 전에 load test를 거쳐야 한다.
 - 가능한 경우 KB/version filter를 포함한 단일 vector/keyword query를 우선한다. Backend가 지원하지 못하면 concurrency와 timeout cap이 있는 bounded per-KB fanout을 사용한다.
+- Workflow LLM node는 `context_variable`이 지정된 경우 해당 referenced variable의 정제된 값만 ephemeral retrieval query로 사용한다. 설정이 없는 legacy graph만 렌더링된 user prompt 전체를 사용하며 raw query는 durable trace, audit, log 또는 cache key에 저장하지 않는다.
+- Opt-in CrossEncoder rerank는 권한을 통과한 chunk의 redacted canonical text를 메모리에서 복호화한 뒤 사용한다. 저장 암호문을 ranking model input으로 전달하거나 복호화 실패 때 암호문으로 fallback하지 않는다.
 - MBA-232 runtime resolver는 candidate ID/authorization을 invocation 사이에 cache하지 않는다. 향후 candidate cache를 별도 승인할 경우 permission/freshness revision을 포함해 ACL revocation이 stale candidate를 무효화해야 한다.
 - Skill candidate cache key에는 skill version, freshness state, eval state, source version reference를 포함해 stale skill이나 source tier 변경이 즉시 무효화되어야 한다.
 - Query rewrite cache를 둘 경우 key에는 rewrite mode, safe template id, skill version, permission/freshness epoch를 포함해야 하며 raw rewritten query를 durable cache key나 trace key로 사용하지 않는다.
