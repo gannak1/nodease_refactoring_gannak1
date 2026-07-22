@@ -16,6 +16,7 @@ from apps.shared.services.outbound_operation_http import (
 from apps.shared.services.outbound_operation_policy import (
     GITHUB_ISSUE_COMMENT_CREATE,
     GITHUB_PULL_REQUEST_READ,
+    require_outbound_operation_profile,
 )
 from apps.workflow_engine.domain.external_effect import (
     EffectInvocationFailure,
@@ -47,6 +48,17 @@ class GithubProviderError(RuntimeError):
 
 _REPOSITORY_SEGMENT = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 _GITHUB_API_ORIGIN = "https://api.github.com"
+_GITHUB_COMMENT_MAX_REQUEST_BYTES = require_outbound_operation_profile(
+    GITHUB_ISSUE_COMMENT_CREATE
+).policy.max_request_bytes
+
+
+def _comment_wire_body(comment_body: str) -> bytes:
+    return json.dumps(
+        {"body": comment_body},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 def _require_repository_segment(value: str) -> str:
@@ -76,12 +88,21 @@ def _headers(token: str) -> dict[str, str]:
 
 
 def _require_comment_request(value: Any) -> GithubCommentRequest:
-    if (
-        not isinstance(value, GithubCommentRequest)
-        or not isinstance(value.comment_body, str)
-        or not value.comment_body
-        or len(value.comment_body.encode("utf-8")) > 512 * 1024
+    if not isinstance(value, GithubCommentRequest) or not isinstance(
+        value.comment_body, str
     ):
+        raise GithubProviderError("github.request_invalid")
+    try:
+        comment_body_size = len(value.comment_body.encode("utf-8"))
+    except UnicodeEncodeError:
+        raise GithubProviderError("github.request_invalid") from None
+    if not value.comment_body or comment_body_size > _GITHUB_COMMENT_MAX_REQUEST_BYTES:
+        raise GithubProviderError("github.request_invalid")
+    try:
+        wire_body_size = len(_comment_wire_body(value.comment_body))
+    except UnicodeEncodeError:
+        raise GithubProviderError("github.request_invalid") from None
+    if wire_body_size > _GITHUB_COMMENT_MAX_REQUEST_BYTES:
         raise GithubProviderError("github.request_invalid")
     _headers(value.token)
     _require_repository_segment(value.repo_owner)
@@ -389,7 +410,7 @@ class GithubCommentEffectAdapter:
                 "status_code": getattr(response, "status_code", None),
                 "latency_ms": int((time.perf_counter() - started) * 1000),
                 "request_size": (
-                    len(request.comment_body.encode("utf-8"))
+                    len(_comment_wire_body(request.comment_body))
                     if isinstance(getattr(request, "comment_body", None), str)
                     else None
                 ),

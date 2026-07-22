@@ -8,6 +8,7 @@ from apps.shared.services.outbound_operation_http import OperationHttpResponse
 from apps.shared.services.outbound_operation_policy import (
     GITHUB_ISSUE_COMMENT_CREATE,
     GITHUB_PULL_REQUEST_READ,
+    require_outbound_operation_profile,
 )
 from apps.workflow_engine.adapters.providers.github import (
     GithubCommentEffectAdapter,
@@ -145,6 +146,71 @@ def test_comment_adapter_revalidates_forged_provider_call_before_transport() -> 
     assert requester.calls == []
 
 
+def test_comment_prepare_rejects_wire_json_body_above_operation_limit() -> None:
+    requester = _Requester([])
+    adapter = GithubCommentEffectAdapter(requester=requester)
+    max_request_bytes = require_outbound_operation_profile(
+        GITHUB_ISSUE_COMMENT_CREATE
+    ).policy.max_request_bytes
+    escaped_body = '"' * (max_request_bytes // 2)
+
+    assert len(escaped_body.encode("utf-8")) <= max_request_bytes
+    with pytest.raises(ValueError, match="^invalid GitHub comment request$"):
+        adapter.prepare_effect(
+            GithubCommentRequest(
+                token="synthetic-token",
+                repo_owner="owner",
+                repo_name="repo",
+                pr_number=1,
+                comment_body=escaped_body,
+            )
+        )
+
+    assert requester.calls == []
+
+
+def test_comment_prepare_accepts_wire_json_body_at_operation_limit() -> None:
+    adapter = GithubCommentEffectAdapter(requester=_Requester([]))
+    max_request_bytes = require_outbound_operation_profile(
+        GITHUB_ISSUE_COMMENT_CREATE
+    ).policy.max_request_bytes
+    wire_overhead = len(
+        json.dumps(
+            {"body": ""},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    comment_body = "a" * (max_request_bytes - wire_overhead)
+
+    prepared = adapter.prepare_effect(
+        GithubCommentRequest(
+            token="synthetic-token",
+            repo_owner="owner",
+            repo_name="repo",
+            pr_number=1,
+            comment_body=comment_body,
+        )
+    )
+
+    assert prepared.request.comment_body == comment_body
+
+
+def test_comment_prepare_rejects_non_utf8_comment_without_raw_encode_error() -> None:
+    adapter = GithubCommentEffectAdapter(requester=_Requester([]))
+
+    with pytest.raises(ValueError, match="^invalid GitHub comment request$"):
+        adapter.prepare_effect(
+            GithubCommentRequest(
+                token="synthetic-token",
+                repo_owner="owner",
+                repo_name="repo",
+                pr_number=1,
+                comment_body="invalid-\ud800-comment",
+            )
+        )
+
+
 def test_comment_adapter_uses_the_mutating_operation_without_transport_retry() -> None:
     requester = _Requester(
         [
@@ -173,3 +239,10 @@ def test_comment_adapter_uses_the_mutating_operation_without_transport_retry() -
     assert result["comment_id"] == 1
     assert requester.calls[0]["operation_id"] == GITHUB_ISSUE_COMMENT_CREATE
     assert len(requester.calls) == 1
+    assert adapter.trace_metadata["http"]["request_size"] == len(
+        json.dumps(
+            {"body": "comment"},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
