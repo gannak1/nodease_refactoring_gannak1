@@ -159,6 +159,7 @@ class _LedgerProviderUsageAttempt:
                 "provider_usage.outcome_unknown"
             ) from exc
         db = self._session_factory()
+        terminal_error: ProviderUsageLedgerError | None = None
         try:
             operation = self._service.record_success(
                 db,
@@ -167,12 +168,14 @@ class _LedgerProviderUsageAttempt:
                 measurement=measurement,
             )
         except ProviderUsageLedgerError as exc:
+            terminal_error = exc
+        finally:
+            db.close()
+        if terminal_error is not None:
             self._classify_outcome_unknown("terminal_record_failed")
             raise ProviderUsageRuntimeError(
                 "provider_usage.outcome_unknown"
-            ) from exc
-        finally:
-            db.close()
+            ) from terminal_error
         self._state_version = operation.state_version
         self._terminal = True
         self._project_best_effort()

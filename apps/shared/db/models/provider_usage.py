@@ -60,7 +60,7 @@ class ProviderUsageOperationRecord(Base):
             "AND state IN ('intent', 'provider_started', 'succeeded', "
             "'failed_definitive', 'outcome_unknown') "
             "AND projection_status IN ('pending', 'projected', "
-            "'retryable_failure', 'terminal_failure') "
+            "'awaiting_workflow_run', 'retryable_failure', 'terminal_failure') "
             "AND execution_subject_kind IN ('user', 'anonymous_public', 'system') "
             "AND credential_principal_kind = 'user' "
             "AND billing_principal_kind = 'organization' "
@@ -124,14 +124,17 @@ class ProviderUsageOperationRecord(Base):
         ),
         CheckConstraint(
             "projection_attempts >= 0 "
+            "AND (projection_status <> 'awaiting_workflow_run' "
+            "OR workflow_run_id IS NOT NULL) "
             "AND (projected_usage_revision IS NULL "
             "OR (projected_usage_revision >= 1 "
             "AND projected_usage_revision <= usage_revision)) "
-            "AND ((projection_status = 'projected' AND state = 'succeeded' "
+            "AND ((projection_status IN ('projected', 'awaiting_workflow_run') "
+            "AND state = 'succeeded' "
             "AND projected_usage_log_id IS NOT NULL AND projected_at IS NOT NULL "
             "AND projected_usage_revision = usage_revision "
             "AND projection_reason_code IS NULL) "
-            "OR projection_status <> 'projected')",
+            "OR projection_status NOT IN ('projected', 'awaiting_workflow_run'))",
             name="ck_provider_usage_operation_projection",
         ),
         Index(
@@ -154,7 +157,7 @@ class ProviderUsageOperationRecord(Base):
             "id",
             postgresql_where=text(
                 "state = 'succeeded' AND projection_status IN "
-                "('pending', 'retryable_failure', 'projected')"
+                "('pending', 'retryable_failure', 'awaiting_workflow_run')"
             ),
         ),
         Index(

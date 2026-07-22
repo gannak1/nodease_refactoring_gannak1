@@ -543,10 +543,47 @@ def test_terminal_replay_projection_and_correction_converge_once(
             )
         ) == 1
 
-    correction = ProviderUsageCorrectionCommand(
+    same_value_correction = ProviderUsageCorrectionCommand(
         operation_id=operation.id,
         expected_usage_revision=1,
-        correction_key="provider-report-1",
+        correction_key="provider-report-same-value",
+        measurement=measurement,
+        source="provider_reconciliation",
+        reason_code="provider_reported_usage",
+    )
+    for _ in range(2):
+        with Session(engine) as db:
+            result = service.apply_correction(
+                db,
+                command=same_value_correction,
+                now=NOW + timedelta(hours=12),
+            )
+            assert result.usage_revision == 2
+    with Session(engine) as db:
+        with pytest.raises(ProviderUsageLedgerError) as exc_info:
+            service.apply_correction(
+                db,
+                command=ProviderUsageCorrectionCommand(
+                    operation_id=operation.id,
+                    expected_usage_revision=1,
+                    correction_key="provider-report-same-value",
+                    measurement=ProviderUsageMeasurement(
+                        prompt_tokens=10,
+                        completion_tokens=5,
+                        total_cost_microusd=2_001,
+                        latency_ms=42,
+                    ),
+                    source="provider_reconciliation",
+                    reason_code="provider_reported_usage",
+                ),
+                now=NOW + timedelta(hours=12),
+            )
+        assert exc_info.value.code == "provider_usage.correction_conflict"
+
+    correction = ProviderUsageCorrectionCommand(
+        operation_id=operation.id,
+        expected_usage_revision=2,
+        correction_key="provider-report-2",
         measurement=ProviderUsageMeasurement(
             prompt_tokens=12,
             completion_tokens=6,
@@ -563,20 +600,20 @@ def test_terminal_replay_projection_and_correction_converge_once(
                 command=correction,
                 now=NOW + timedelta(days=1),
             )
-            assert result.usage_revision == 2
+            assert result.usage_revision == 3
     with Session(engine) as db:
         assert db.scalar(
             select(func.count())
             .select_from(ProviderUsageCorrectionRecord)
             .where(ProviderUsageCorrectionRecord.operation_id == operation.id)
-        ) == 1
+        ) == 2
         with pytest.raises(ProviderUsageLedgerError) as exc_info:
             service.apply_correction(
                 db,
                 command=ProviderUsageCorrectionCommand(
                     operation_id=operation.id,
-                    expected_usage_revision=1,
-                    correction_key="provider-report-1",
+                    expected_usage_revision=2,
+                    correction_key="provider-report-2",
                     measurement=ProviderUsageMeasurement(
                         prompt_tokens=12,
                         completion_tokens=6,
@@ -598,7 +635,7 @@ def test_terminal_replay_projection_and_correction_converge_once(
             )
         )
         assert projected is not None
-        assert projected.provider_usage_revision == 2
+        assert projected.provider_usage_revision == 3
         assert Decimal(projected.total_cost) == Decimal("0.003000")
         assert db.scalar(
             select(func.count()).select_from(LLMUsageLog).where(
@@ -685,6 +722,9 @@ def test_late_workflow_run_is_claimed_and_attached_once(
         assert projected is not None
         assert projected.workflow_id == workflow_id
         assert projected.workflow_run_id is None
+        ledger = db.get(ProviderUsageOperationRecord, operation.id)
+        assert ledger is not None
+        assert ledger.projection_status == "awaiting_workflow_run"
         db.add(
             WorkflowRun(
                 id=workflow_run_id,
@@ -697,6 +737,11 @@ def test_late_workflow_run_is_claimed_and_attached_once(
                 started_at=NOW,
             )
         )
+        ledger = db.get(ProviderUsageOperationRecord, operation.id)
+        assert ledger is not None
+        ledger.projection_status = "retryable_failure"
+        ledger.projection_next_attempt_at = NOW
+        ledger.projection_reason_code = "projection_commit_failed"
         db.commit()
 
     with Session(engine) as db:
@@ -725,6 +770,14 @@ def test_late_workflow_run_is_claimed_and_attached_once(
         assert projected.workflow_run_id == workflow_run_id
         assert run.total_tokens == 15
         assert Decimal(run.total_cost) == Decimal("0.002000")
+        ledger = db.get(ProviderUsageOperationRecord, operation.id)
+        assert ledger is not None
+        assert ledger.projection_status == "projected"
+        assert service.claim_pending_projection_ids(
+            db,
+            limit=10,
+            now=NOW + timedelta(minutes=2),
+        ) == ()
 
     with Session(engine) as db:
         app = db.get(App, app_id)

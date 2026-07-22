@@ -40,7 +40,7 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 - BGT-REQ-021: admin summary(`GET /admin/summary`)의 `budget` 블록을 실제 예산 데이터 기준으로 반환한다. 각 workflow의 당월 비용은 요청 organization과 같은 usage 또는 NULL legacy usage만 포함하고, 다른 organization UUID가 명시된 usage는 관리자 summary 판정에서 제외한다. `at_risk_count`, `exceeded_count`, 호환용 `ratio`를 포함하고, `ratio`의 분모는 조직의 활성 예산 workflow 수다 (admin-dashboard Open Question 확정). 활성 예산 workflow가 0개면 `budget`은 null이다 ("예산 미설정" 표시).
 - BGT-REQ-022: 내 워크플로우 목록/운영 현황 원천인 `GET /apps/operations`의 App summary에 additive 필드 `budget_status`(사용률, 상태)를 추가한다. App의 primary workflow(`apps.workflow_id`) 기준이며, 활성 예산이 없거나 `workflow_id`가 null이면 null이다. 같은 `app_id`에 과거/보조 Workflow row가 남아 있어도 `apps.workflow_id`가 아닌 workflow의 예산 상태를 대신 표시하지 않는다. 예산 금액과 당월 비용 원문은 관리자 표면에만 노출하고 운영/목록 요약(`budget_status`)에는 사용률과 상태만 노출한다. `GET /apps/operations` 자체는 organization manager 또는 workflow `write` 이상 권한을 가진 운영 사용자에게만 row를 반환한다.
 - BGT-REQ-023: 기존 App 목록 소비자가 동일한 안전 예산 상태 요약을 재사용할 수 있도록 `GET /apps`의 `AppResponse`에도 `budget_status`를 같은 shape로 추가한다. `GET /apps`와 `GET /apps/operations` 모두 응답 App의 primary workflow id만 모아 workflow별 당월 비용을 grouped query로 계산해야 하며, App row마다 개별 비용 집계를 수행하는 N+1 구현은 허용하지 않는다. 이 grouped query의 사용량 합산 기준은 BGT-REQ-011과 같아야 하며, `llm_usage_logs.organization_id == organization_id` 조건으로 legacy NULL 로그를 제외하면 안 된다. `workflows.app_id` 역참조를 사용한 누락 복구나 후보 확장은 목록 응답 계산 경로에서 수행하지 않는다.
-- BGT-REQ-024: 관리자 예산 단건 조회와 설정 응답(`GET/PUT /admin/workflow-budgets/{workflow_id}`)의 `current_month_cost`, `usage_ratio`, `status`는 예산 row의 organization과 같은 usage 또는 NULL legacy usage만 포함한다. 다른 organization UUID가 명시된 usage는 관리자 응답에서 제외한다. 이 관리자 projection 조건은 BGT-REQ-011의 실행 차단 합산 범위를 변경하지 않는다.
+- BGT-REQ-024: 관리자 예산 단건 조회와 설정 응답(`GET/PUT /admin/workflow-budgets/{workflow_id}`)의 `current_month_cost`, `usage_ratio`, `status`는 예산 row의 organization과 같은 usage 또는 NULL legacy usage만 포함한다. 응답은 `usage_data_complete`와 `unresolved_provider_call_count`를 함께 반환해 `provider_started`/`outcome_unknown`이 남은 계산 가능 합계를 확정 비용처럼 표시하지 않는다. 다른 organization UUID가 명시된 usage는 관리자 응답에서 제외한다. 이 관리자 projection 조건은 BGT-REQ-011의 실행 차단 합산 범위를 변경하지 않는다.
 
 ### 실행 차단
 
@@ -59,7 +59,7 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 ### Audit
 
 - BGT-REQ-040: 예산 생성/수정/비활성화는 canonical action `workflow_budget.created`/`workflow_budget.updated`로 audit에 기록한다. `audit_metadata`에는 `monthly_budget_usd`, `is_enabled` 같은 운영 summary만 포함한다. 비활성화는 `workflow_budget.updated`에 `is_enabled=false` metadata로 표현한다. [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md) canonical action table 갱신이 필요하다.
-- BGT-REQ-041: 예산 초과로 실행이 차단되면 `policy.block`(target_type `workflow`, status `failure`, `audit_metadata.reason='budget.exceeded'`, trigger mode 포함)으로 기록한다. 별도 결과 중심 action(`workflow.budget_blocked` 등)은 만들지 않는다 (ADR-0008 원인 중심 명명).
+- BGT-REQ-041: 예산 초과 또는 BGT-REQ-033의 비용 미확정 `unavailable`로 직접 실행이 차단되면 `policy.block`(target_type `workflow`, status `failure`, public 오류와 동일한 `audit_metadata.reason='budget.exceeded'`, trigger mode 포함)으로 기록한다. 별도 결과 중심 action(`workflow.budget_blocked` 등)은 만들지 않는다 (ADR-0008 원인 중심 명명).
 - BGT-REQ-043: Schedule은 occurrence 생성, Gateway publish 직전, Worker admission 직전의 세 예산 판정에서 동일한 BGT-REQ-041 audit 계약을 사용한다. 최종 Worker 판정에서 차단되거나 budget 집계가 unavailable인 경우에도 claim 상태와 audit을 같은 transaction에 기록한다.
 - BGT-REQ-042: credential 원문, raw payload, secret 값은 예산 관련 응답/audit/trace에 노출하지 않는다 (NFR-004). 예산 금액과 비용 집계값은 secret이 아니며 관리자 표면과 audit metadata에 포함할 수 있다.
 

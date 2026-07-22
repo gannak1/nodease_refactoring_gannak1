@@ -88,6 +88,21 @@ def test_provider_usage_operation_has_state_projection_and_redaction_constraints
     } <= check_names
 
 
+def test_awaiting_workflow_run_projection_requires_a_snapshotted_run_id() -> None:
+    projection_constraint = next(
+        constraint
+        for constraint in ProviderUsageOperationRecord.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+        and constraint.name == "ck_provider_usage_operation_projection"
+    )
+
+    assert (
+        "projection_status <> 'awaiting_workflow_run' "
+        "OR workflow_run_id IS NOT NULL"
+        in str(projection_constraint.sqltext)
+    )
+
+
 def test_provider_usage_reconciliation_has_global_ordered_partial_indexes() -> None:
     indexes = {
         index.name: index for index in ProviderUsageOperationRecord.__table__.indexes
@@ -96,7 +111,8 @@ def test_provider_usage_reconciliation_has_global_ordered_partial_indexes() -> N
         "ix_provider_usage_operation_projection_recovery": (
             ("provider_started_at", "id"),
             "state = 'succeeded'",
-            "projection_status IN ('pending', 'retryable_failure', 'projected')",
+            "projection_status IN ('pending', 'retryable_failure', "
+            "'awaiting_workflow_run')",
         ),
         "ix_provider_usage_operation_started_recovery": (
             ("provider_started_at", "id"),

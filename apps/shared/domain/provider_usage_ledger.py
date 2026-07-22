@@ -347,8 +347,6 @@ class ProviderUsageOperation:
             raise ProviderUsageLedgerError("provider_usage.correction_not_allowed")
         if expected_usage_revision != self.usage_revision:
             raise ProviderUsageLedgerError("provider_usage.correction_conflict")
-        if measurement == self.measurement:
-            return self
         return replace(
             self,
             state_version=self.state_version + 1,

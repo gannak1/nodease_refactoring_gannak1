@@ -325,12 +325,110 @@ def test_projection_claim_revisits_a_nullable_projection_after_run_creation() ->
             )
         ).split()
     )
+    assert (
+        "provider_usage_operations.projection_status IN "
+        "('awaiting_workflow_run', 'retryable_failure')" in sql
+    )
     assert "workflow_runs.id = provider_usage_operations.workflow_run_id" in sql
     assert (
         "llm_usage_logs.provider_usage_operation_id = "
         "provider_usage_operations.id" in sql
     )
     assert "llm_usage_logs.workflow_run_id IS NULL" in sql
+
+
+def test_projection_waits_only_when_the_snapshotted_workflow_run_is_missing() -> None:
+    service = ProviderUsageLedgerService()
+    operation = _success()
+    record = service._record_from_operation(  # noqa: SLF001
+        operation,
+        workflow_run_id=uuid.uuid4(),
+        cost_optimizer_candidate_id=None,
+    )
+    db = _ProjectionDb(record=record, usage=None, workflow_run=None)
+
+    usage = service.project_compatibility_usage(
+        db,
+        operation_id=operation.id,
+        now=NOW + timedelta(minutes=1),
+    )
+
+    assert usage.workflow_run_id is None
+    assert record.projection_status == "awaiting_workflow_run"
+
+
+def test_late_intent_replay_reopens_only_the_workflow_run_projection() -> None:
+    service = ProviderUsageLedgerService()
+    operation = _success()
+    record = service._record_from_operation(  # noqa: SLF001
+        operation,
+        workflow_run_id=None,
+        cost_optimizer_candidate_id=None,
+    )
+    record.projection_status = "projected"
+    record.projected_usage_log_id = uuid.uuid4()
+    record.projected_usage_revision = operation.usage_revision
+    record.projected_at = NOW
+
+    service._attach_optional_correlations(  # noqa: SLF001
+        record,
+        command=SimpleNamespace(
+            workflow_run_id=uuid.uuid4(),
+            cost_optimizer_candidate_id=None,
+        ),
+    )
+
+    assert record.projection_status == "awaiting_workflow_run"
+
+
+def test_late_candidate_correlation_reopens_the_compatibility_projection() -> None:
+    service = ProviderUsageLedgerService()
+    operation = _success()
+    record = service._record_from_operation(  # noqa: SLF001
+        operation,
+        workflow_run_id=None,
+        cost_optimizer_candidate_id=None,
+    )
+    record.projection_status = "projected"
+    record.projected_usage_log_id = uuid.uuid4()
+    record.projected_usage_revision = operation.usage_revision
+    record.projected_at = NOW
+
+    service._attach_optional_correlations(  # noqa: SLF001
+        record,
+        command=SimpleNamespace(
+            workflow_run_id=None,
+            cost_optimizer_candidate_id=uuid.uuid4(),
+        ),
+    )
+
+    assert record.projection_status == "pending"
+    assert record.projected_usage_revision is None
+
+
+def test_late_candidate_does_not_wait_for_an_unavailable_workflow_run() -> None:
+    service = ProviderUsageLedgerService()
+    operation = _success()
+    record = service._record_from_operation(  # noqa: SLF001
+        operation,
+        workflow_run_id=uuid.uuid4(),
+        cost_optimizer_candidate_id=None,
+    )
+    record.projection_status = "awaiting_workflow_run"
+    record.projected_usage_log_id = uuid.uuid4()
+    record.projected_usage_revision = operation.usage_revision
+    record.projected_at = NOW
+
+    service._attach_optional_correlations(  # noqa: SLF001
+        record,
+        command=SimpleNamespace(
+            workflow_run_id=record.workflow_run_id,
+            cost_optimizer_candidate_id=uuid.uuid4(),
+        ),
+    )
+
+    assert record.projection_status == "pending"
+    assert record.projected_usage_revision is None
 
 
 def test_stale_provider_started_reconciles_to_unknown_without_provider_io() -> None:

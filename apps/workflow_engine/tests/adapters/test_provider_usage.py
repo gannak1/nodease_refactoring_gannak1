@@ -478,14 +478,28 @@ def test_capability_attempt_records_definitive_pre_send_failure() -> None:
 
 
 def test_terminal_commit_failure_is_classified_unknown_without_projection() -> None:
+    sessions: list[_Session] = []
+
     class FailingLedger(_LedgerService):
         def record_success(self, _db, **_kwargs):
             self.calls.append("success")
             raise ProviderUsageLedgerError("provider_usage.terminal_commit_failed")
 
+        def mark_outcome_unknown(self, _db, **kwargs):
+            # The failed terminal transaction may still hold the operation row
+            # lock.  A follow-up classification must not open against it until
+            # that session has been closed (and therefore rolled back).
+            assert sessions[2].closes == 1
+            return super().mark_outcome_unknown(_db, **kwargs)
+
+    def new_session() -> _Session:
+        session = _Session()
+        sessions.append(session)
+        return session
+
     service = FailingLedger()
     recorder = PostgresProviderUsageRecorder(
-        session_factory=_Session,
+        session_factory=new_session,
         ledger_service=service,  # type: ignore[arg-type]
     )
     attribution = _capability_attribution(

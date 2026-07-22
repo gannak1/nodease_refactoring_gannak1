@@ -23,6 +23,8 @@ export type WorkflowBudget = {
   current_month_cost?: number | null;
   usage_ratio?: number | null;
   status?: BudgetUsageStatus | null;
+  usage_data_complete?: boolean | null;
+  unresolved_provider_call_count?: number | null;
 };
 
 export type WorkflowBudgetUpsertPayload = {

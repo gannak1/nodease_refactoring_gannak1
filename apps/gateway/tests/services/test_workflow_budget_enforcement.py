@@ -177,6 +177,11 @@ def test_aggregation_failure_fails_closed():
         _ensure(db, workflow_id)
 
     assert exc_info.value.status_code == 429
+    audits = db.added_of(AuditLog)
+    assert len(audits) == 1
+    assert audits[0].action == AuditAction.POLICY_BLOCK
+    assert audits[0].audit_metadata["reason"] == "budget.exceeded"
+    assert db.commits >= 1
 
 
 def test_unresolved_provider_attempt_makes_active_budget_unavailable():
@@ -203,6 +208,12 @@ def test_unresolved_provider_attempt_makes_active_budget_unavailable():
     with pytest.raises(HTTPException) as exc_info:
         _ensure(db, workflow_id)
     assert exc_info.value.status_code == 429
+    audits = db.added_of(AuditLog)
+    assert len(audits) == 1
+    assert audits[0].action == AuditAction.POLICY_BLOCK
+    assert audits[0].audit_metadata["reason"] == "budget.exceeded"
+    assert audits[0].audit_metadata["trigger_mode"] == "test"
+    assert db.commits >= 1
 
 
 def test_canonical_success_is_counted_once_when_projection_exists():

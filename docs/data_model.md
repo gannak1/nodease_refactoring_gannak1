@@ -1318,7 +1318,7 @@ Capability-required provider attempt의 canonical token/cost/outcome 원장이�
 | prompt_tokens / completion_tokens / total_cost_microusd / latency_ms | INTEGER / INTEGER / BIGINT / INTEGER | `succeeded`에서만 NOT NULL, 0 이상 |
 | usage_revision | INTEGER | NOT NULL, success/correction revision |
 | workflow_run_id / cost_optimizer_candidate_id | UUID | NULL, FK 없는 correlation snapshot |
-| projection_status | VARCHAR(32) | NOT NULL, `pending`, `projected`, `retryable_failure`, `terminal_failure` |
+| projection_status | VARCHAR(32) | NOT NULL, `pending`, `awaiting_workflow_run`, `projected`, `retryable_failure`, `terminal_failure`. `awaiting_workflow_run`은 usage projection을 완료했으나 nullable WorkflowRun 연결만 남은 상태이며 `projected`는 주기 복구 대상이 아닌 완료 상태다 |
 | projected_usage_log_id / projected_usage_revision / projected_at | UUID / INTEGER / DATETIME | successful compatibility projection marker |
 | projection_attempts / projection_next_attempt_at / projection_reason_code | INTEGER / DATETIME / VARCHAR(64) | bounded reconciler 상태 |
 | audit_event_id | UUID | NULL, post-call terminal에서 deterministic event id 필수·UNIQUE |

@@ -21,6 +21,9 @@ from apps.gateway.services.app_lifecycle_lock import (
 )
 from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.schemas.workflow_budget import WorkflowBudgetResponse
+from apps.shared.services.provider_usage_cost_read_model import (
+    ProviderUsageAggregate,
+)
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -65,16 +68,19 @@ def test_budget_usage_serialization_passes_timezone_aware_kst_now(monkeypatch):
         updated_at=now,
     )
 
-    def fake_get_current_month_cost(db, *, workflow_id, now, organization_id=None):
+    def fake_get_current_month_usage(db, *, workflow_id, now, organization_id=None):
         captured["workflow_id"] = workflow_id
         captured["now"] = now
         captured["organization_id"] = organization_id
-        return Decimal("1.00")
+        return ProviderUsageAggregate(
+            total_cost=Decimal("1.00"),
+            unresolved_provider_call_count=2,
+        )
 
     monkeypatch.setattr(
         admin_endpoint.WorkflowBudgetService,
-        "get_current_month_cost",
-        staticmethod(fake_get_current_month_cost),
+        "get_current_month_usage",
+        staticmethod(fake_get_current_month_usage),
     )
 
     response = admin_endpoint._serialize_workflow_budget(
@@ -85,6 +91,8 @@ def test_budget_usage_serialization_passes_timezone_aware_kst_now(monkeypatch):
     )
 
     assert response.current_month_cost == 1.0
+    assert response.usage_data_complete is False
+    assert response.unresolved_provider_call_count == 2
     assert captured["workflow_id"] == workflow_id
     assert captured["organization_id"] == budget.organization_id
     assert captured["now"].tzinfo is not None

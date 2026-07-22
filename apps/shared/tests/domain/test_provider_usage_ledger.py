@@ -279,6 +279,25 @@ def test_cost_correction_is_revisioned_without_reopening_the_attempt() -> None:
     assert exc_info.value.code == "provider_usage.correction_conflict"
 
 
+def test_same_value_correction_still_consumes_a_usage_revision() -> None:
+    succeeded = (
+        _operation()
+        .mark_provider_started(now=NOW)
+        .record_success(measurement=_measurement(), now=NOW)
+    )
+
+    corrected = succeeded.apply_correction(
+        measurement=_measurement(),
+        expected_usage_revision=1,
+    )
+
+    assert corrected is not succeeded
+    assert corrected.state is ProviderUsageState.SUCCEEDED
+    assert corrected.state_version == succeeded.state_version + 1
+    assert corrected.usage_revision == 2
+    assert corrected.measurement == succeeded.measurement
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

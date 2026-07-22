@@ -67,6 +67,8 @@ Response `200`: 목록 항목과 동일한 필드 + 당월 판정 값.
   "current_month_cost": 92.345678,
   "usage_ratio": 0.923457,
   "status": "at_risk",
+  "usage_data_complete": false,
+  "unresolved_provider_call_count": 1,
   "created_by": "<uuid|null>",
   "updated_by": "<uuid|null>",
   "created_at": "<datetime>",
@@ -75,6 +77,7 @@ Response `200`: 목록 항목과 동일한 필드 + 당월 판정 값.
 ```
 
 - `current_month_cost`/`usage_ratio`/`status`는 당월(KST) 기준이다 (BGT-REQ-011).
+- `usage_data_complete=false`이면 `unresolved_provider_call_count`가 1 이상이며, `current_month_cost`는 현재 확정 가능한 합계일 뿐 최종 비용이 아니다. 이 상태의 활성 예산 workflow 실행은 BGT-REQ-033에 따라 fail-closed한다.
 - 당월 비용은 예산 row의 organization과 같은 usage 또는 NULL legacy usage만 합산한다. 다른 organization UUID가 명시된 usage는 단건 관리자 응답에서 제외한다 (BGT-REQ-024).
 - 비활성이거나 예산이 0 이하면 `usage_ratio`와 `status`는 null이다 (BGT-REQ-010).
 - 예산이 설정되지 않은 workflow는 `404 resource.not_found`가 아니라 `200`에 예산 필드 null로 반환하지 않고, `404`로 반환한다 — 예산 row가 없는 상태와 조직 scope 밖을 클라이언트가 구분할 필요가 없고, 설정 UI는 목록/usage 응답의 null로 미설정을 판단한다.

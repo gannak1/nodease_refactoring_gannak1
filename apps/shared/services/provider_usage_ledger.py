@@ -333,9 +333,6 @@ class ProviderUsageLedgerService:
             measurement=command.measurement,
             expected_usage_revision=command.expected_usage_revision,
         )
-        if updated is operation:
-            self._commit_or_raise(db, "provider_usage.correction_commit_failed")
-            return operation
         db.add(
             ProviderUsageCorrectionRecord(
                 id=uuid.uuid4(),
@@ -437,7 +434,11 @@ class ProviderUsageLedgerService:
                         - previous_completion,
                         cost_delta=self._cost_usd(operation) - previous_cost,
                     )
-            record.projection_status = "projected"
+            record.projection_status = (
+                "awaiting_workflow_run"
+                if record.workflow_run_id is not None and target_run_id is None
+                else "projected"
+            )
             record.projected_usage_log_id = usage.id
             record.projected_usage_revision = operation.usage_revision
             record.projected_at = projected_at
@@ -502,7 +503,7 @@ class ProviderUsageLedgerService:
         )
         late_workflow_run_ready = and_(
             ProviderUsageOperationRecord.projection_status.in_(
-                ("projected", "retryable_failure")
+                ("awaiting_workflow_run", "retryable_failure")
             ),
             ProviderUsageOperationRecord.workflow_run_id.is_not(None),
             exists(
@@ -1083,6 +1084,32 @@ class ProviderUsageLedgerService:
                 continue
             if current is None:
                 setattr(record, field_name, proposed)
+                if (
+                    record.state == ProviderUsageState.SUCCEEDED.value
+                ):
+                    if (
+                        field_name == "workflow_run_id"
+                        and record.projection_status == "projected"
+                    ):
+                        record.projection_status = "awaiting_workflow_run"
+                    elif (
+                        field_name == "cost_optimizer_candidate_id"
+                        and record.projected_usage_log_id is not None
+                        and record.projection_status
+                        in {
+                            "projected",
+                            "awaiting_workflow_run",
+                            "retryable_failure",
+                        }
+                    ):
+                        record.projection_status = "pending"
+                        record.projected_usage_revision = None
+                    if record.projection_status in {
+                        "pending",
+                        "awaiting_workflow_run",
+                    }:
+                        record.projection_next_attempt_at = None
+                        record.projection_reason_code = None
             elif current != proposed:
                 raise ProviderUsageLedgerError("provider_usage.correlation_conflict")
 

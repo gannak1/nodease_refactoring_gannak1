@@ -29,6 +29,7 @@ from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.services.provider_usage_cost_read_model import (
+    ProviderUsageAggregate,
     read_workflow_usage_aggregate,
 )
 
@@ -67,20 +68,27 @@ class WorkflowBudgetService:
         now: datetime,
         organization_id: Any = None,
     ) -> Decimal:
-        period = AdminUsageService.resolve_month_period_kst(now)
-        if hasattr(db, "usage_logs"):
-            return _current_month_cost_fake(
-                db,
-                workflow_id=workflow_id,
-                period=period,
-                organization_id=organization_id,
-            )
-
-        return _current_month_cost_query(
+        return WorkflowBudgetService.get_current_month_usage(
             db,
             workflow_id=workflow_id,
-            period=period,
+            now=now,
             organization_id=organization_id,
+        ).total_cost
+
+    @staticmethod
+    def get_current_month_usage(
+        db: Session,
+        workflow_id: Any,
+        now: datetime,
+        organization_id: Any = None,
+    ) -> ProviderUsageAggregate:
+        period = AdminUsageService.resolve_month_period_kst(now)
+        return read_workflow_usage_aggregate(
+            db,
+            workflow_id=workflow_id,
+            organization_id=organization_id,
+            start_at=period.start_at,
+            end_at=period.end_at,
         )
 
     @staticmethod
@@ -207,8 +215,6 @@ class WorkflowBudgetService:
         )
         if decision.status == "allowed":
             return
-        if decision.status == "unavailable":
-            raise _budget_exceeded_error()
 
         normalized_id = _normalize_workflow_id(workflow_id)
         budget = _find_budget(db, normalized_id)

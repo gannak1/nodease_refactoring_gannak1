@@ -36,6 +36,8 @@ class WorkflowBudgetResponse(BaseModel):
     current_month_cost: float | None = None
     usage_ratio: float | None = None
     status: str | None = None
+    usage_data_complete: bool | None = None
+    unresolved_provider_call_count: int | None = None
 
 
 class WorkflowBudgetListResponse(BaseModel):
