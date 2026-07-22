@@ -38,6 +38,9 @@ def test_helm_values_explicitly_start_schedule_dispatch_disabled():
 
 def test_helm_gateway_and_worker_use_one_schedule_dispatch_environment_contract():
     helper = _read("infra/helm/moduly/templates/_helpers.tpl")
+    validation = _read(
+        "infra/helm/moduly/templates/schedule-dispatch-validation.yaml"
+    )
     gateway = _read("infra/helm/moduly/templates/gateway-deployment.yaml")
     worker = _read("infra/helm/moduly/templates/worker-deployment.yaml")
 
@@ -54,8 +57,9 @@ def test_helm_gateway_and_worker_use_one_schedule_dispatch_environment_contract(
         "provider-neutral deployment surface"
         in helper
     )
-    assert 'include "moduly.validateScheduleDispatchMode"' in gateway
-    assert 'include "moduly.validateScheduleDispatchMode"' in worker
+    assert 'include "moduly.validateScheduleDispatchMode"' in validation
+    assert ".Values.gateway.enabled" not in validation
+    assert ".Values.worker.enabled" not in validation
     assert (
         "metadata.annotations['nodease.io/schedule-dispatch-fingerprint']" in helper
     )
