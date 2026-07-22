@@ -43,6 +43,7 @@ else:
 # Celery 앱 import (tasks 모듈이 자동으로 등록됨)
 from apps.log_system import (  # noqa: E402
     audit_tasks,  # noqa: F401 - audit.record 태스크 등록
+    provider_usage_tasks,  # noqa: F401 - provider usage recovery task 등록
     tasks,  # noqa: F401 - Celery 태스크 등록
 )
 from apps.memory import tasks as memory_tasks  # noqa: E402,F401 - retention task

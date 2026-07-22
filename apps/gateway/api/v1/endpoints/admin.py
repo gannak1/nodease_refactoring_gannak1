@@ -227,12 +227,19 @@ def _serialize_workflow_budget(
     current_month_cost = None
     usage_ratio = None
     status = None
+    usage_data_complete = None
+    unresolved_provider_call_count = None
     if include_usage:
-        current_cost = WorkflowBudgetService.get_current_month_cost(
+        current_usage = WorkflowBudgetService.get_current_month_usage(
             db,
             workflow_id=budget.workflow_id,
             now=datetime.now(KST),
             organization_id=budget.organization_id,
+        )
+        current_cost = current_usage.total_cost
+        usage_data_complete = current_usage.usage_data_complete
+        unresolved_provider_call_count = (
+            current_usage.unresolved_provider_call_count
         )
         status = WorkflowBudgetService.classify_budget_usage(
             current_cost=current_cost,
@@ -255,6 +262,8 @@ def _serialize_workflow_budget(
         current_month_cost=current_month_cost,
         usage_ratio=usage_ratio,
         status=status,
+        usage_data_complete=usage_data_complete,
+        unresolved_provider_call_count=unresolved_provider_call_count,
     )
 
 

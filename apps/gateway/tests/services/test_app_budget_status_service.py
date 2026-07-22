@@ -164,6 +164,53 @@ def test_app_budget_status_uses_kst_month_window():
     }
 
 
+def test_app_budget_status_prefers_canonical_usage_without_projection_double_count():
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    operation_id = uuid4()
+    started_at = datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc)
+    db = _BudgetStatusDb(
+        budgets=[_budget_row(organization_id, workflow_id, Decimal("100.00"))],
+        usage_logs=[
+            _usage_log(
+                organization_id,
+                workflow_id,
+                total_cost=Decimal("90.00"),
+                created_at=started_at,
+                provider_usage_operation_id=operation_id,
+            ),
+        ],
+        provider_usage_operations=[
+            _provider_usage_operation(
+                operation_id,
+                organization_id,
+                workflow_id,
+                total_cost_microusd=60_000_000,
+                provider_started_at=started_at,
+            ),
+            _provider_usage_operation(
+                uuid4(),
+                organization_id,
+                workflow_id,
+                total_cost_microusd=25_000_000,
+                provider_started_at=started_at,
+            ),
+        ],
+    )
+
+    statuses = AppService._budget_status_by_workflow_id(
+        db,
+        [workflow_id],
+        organization_id=organization_id,
+        now=datetime(2026, 7, 15, 9, 0, tzinfo=KST),
+    )
+
+    assert statuses[workflow_id] == {
+        "usage_ratio": pytest.approx(0.85),
+        "status": "at_risk",
+    }
+
+
 def test_app_operation_metrics_uses_real_monthly_usage_and_trend():
     organization_id = uuid4()
     workflow_id = uuid4()
@@ -215,7 +262,47 @@ def test_app_operation_metrics_uses_real_monthly_usage_and_trend():
         "projected_month_agent_builder_cost": pytest.approx(31 / 3),
         "previous_month_cost": pytest.approx(10.0),
         "trend_percent": pytest.approx(210.0),
+        "usage_data_complete": True,
+        "unresolved_provider_call_count": 0,
     }
+
+
+def test_app_operation_metrics_marks_unresolved_provider_usage_incomplete():
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    started_at = datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc)
+    db = _BudgetStatusDb(
+        budgets=[],
+        usage_logs=[
+            _usage_log(
+                organization_id,
+                workflow_id,
+                total_cost=Decimal("10.00"),
+                created_at=started_at,
+            )
+        ],
+        provider_usage_operations=[
+            _provider_usage_operation(
+                uuid4(),
+                organization_id,
+                workflow_id,
+                total_cost_microusd=None,
+                provider_started_at=started_at,
+                state="outcome_unknown",
+            )
+        ],
+    )
+
+    metrics = AppService._operation_metrics_by_workflow_id(
+        db,
+        [workflow_id],
+        organization_id=organization_id,
+        now=datetime(2026, 7, 16, 0, 0, tzinfo=KST),
+    )
+
+    assert metrics[workflow_id]["current_month_cost"] == pytest.approx(10.0)
+    assert metrics[workflow_id]["usage_data_complete"] is False
+    assert metrics[workflow_id]["unresolved_provider_call_count"] == 1
 
 
 def test_app_budget_status_uses_grouped_cost_lookup(monkeypatch):
@@ -415,10 +502,18 @@ def test_attach_operation_metrics_rolls_back_failed_optional_lookup(monkeypatch)
 
 
 class _BudgetStatusDb:
-    def __init__(self, *, budgets, usage_logs, workflows=None):
+    def __init__(
+        self,
+        *,
+        budgets,
+        usage_logs,
+        workflows=None,
+        provider_usage_operations=None,
+    ):
         self.budgets = budgets
         self.usage_logs = usage_logs
         self.workflows = workflows or []
+        self.provider_usage_operations = provider_usage_operations or []
 
 
 def _budget_row(organization_id, workflow_id, monthly_budget_usd, *, is_enabled=True):
@@ -440,6 +535,7 @@ def _usage_log(
     created_at,
     runtime_surface=None,
     status="success",
+    provider_usage_operation_id=None,
 ):
     return SimpleNamespace(
         organization_id=organization_id,
@@ -450,4 +546,27 @@ def _usage_log(
         created_at=created_at,
         runtime_surface=runtime_surface,
         status=status,
+        provider_usage_operation_id=provider_usage_operation_id,
+    )
+
+
+def _provider_usage_operation(
+    operation_id,
+    organization_id,
+    workflow_id,
+    *,
+    total_cost_microusd,
+    provider_started_at,
+    state="succeeded",
+):
+    return SimpleNamespace(
+        id=operation_id,
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+        purpose="main_generation",
+        state=state,
+        provider_started_at=provider_started_at,
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_cost_microusd=total_cost_microusd,
     )

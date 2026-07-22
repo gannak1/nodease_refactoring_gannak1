@@ -48,6 +48,8 @@ class AppOperationMetrics(BaseModel):
     projected_month_agent_builder_cost: Optional[float] = None
     previous_month_cost: float
     trend_percent: Optional[float] = None
+    usage_data_complete: bool = True
+    unresolved_provider_call_count: int = Field(default=0, ge=0)
 
 
 class AppOperationsCostSummary(BaseModel):
@@ -57,6 +59,8 @@ class AppOperationsCostSummary(BaseModel):
     projected_month_cost: float = Field(default=0.0, ge=0)
     projected_month_workflow_execution_cost: float = Field(default=0.0, ge=0)
     projected_month_agent_builder_cost: float = Field(default=0.0, ge=0)
+    usage_data_complete: bool = True
+    unresolved_provider_call_count: int = Field(default=0, ge=0)
 
 
 class AppResponse(BaseModel):

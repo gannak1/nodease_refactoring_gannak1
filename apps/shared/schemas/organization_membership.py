@@ -116,6 +116,8 @@ class MemberCurrentMonthUsage(BaseModel):
     total_cost: float = Field(default=0.0, ge=0)
     workflow_execution_cost: float = Field(default=0.0, ge=0)
     agent_builder_cost: float = Field(default=0.0, ge=0)
+    usage_data_complete: bool = True
+    unresolved_provider_call_count: int = Field(default=0, ge=0)
 
 
 class OrganizationMemberListItemResponse(OrganizationMemberResponse):

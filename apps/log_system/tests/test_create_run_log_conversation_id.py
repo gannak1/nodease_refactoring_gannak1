@@ -222,9 +222,11 @@ class _QuerySession:
     def __init__(self, run):
         self.run = run
         self.committed = False
+        self.populated_entities = []
+        self.locked_entities = []
 
     def query(self, *entities):
-        return _Query(entities[0] if entities else None, self.run)
+        return _Query(entities[0] if entities else None, self.run, self)
 
     def commit(self):
         self.committed = True
@@ -237,11 +239,20 @@ class _QuerySession:
 
 
 class _Query:
-    def __init__(self, entity, run):
+    def __init__(self, entity, run, session):
         self.entity = entity
         self.run = run
+        self.session = session
 
     def filter(self, *args, **kwargs):
+        return self
+
+    def populate_existing(self):
+        self.session.populated_entities.append(self.entity)
+        return self
+
+    def with_for_update(self):
+        self.session.locked_entities.append(self.entity)
         return self
 
     def first(self):
@@ -297,4 +308,6 @@ def test_update_run_finish_clears_previous_error_message(monkeypatch):
     assert session.committed is True
     assert run.status == RunStatus.SUCCESS
     assert run.error_message is None
+    assert session.populated_entities == [WorkflowRun]
+    assert session.locked_entities == [WorkflowRun]
     assert audit_calls[0][1]["organization_id"] == organization_id

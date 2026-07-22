@@ -6,7 +6,6 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -15,7 +14,6 @@ from sqlalchemy.orm import Session
 from apps.gateway.services.admin_usage_service import (
     KST,
     AdminUsageService,
-    _total_cost_sum,
 )
 from apps.gateway.services.audit_records import add_action_audit
 from apps.gateway.services.app_lifecycle_lock import (
@@ -28,12 +26,11 @@ from apps.shared.services.workflow_budget_execution import (
     evaluate_workflow_budget_execution,
 )
 from apps.shared.audit.actions import AuditAction
-from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_budget import WorkflowBudget
-from apps.shared.domain.llm_usage import (
-    AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
-    is_billable_llm_usage,
+from apps.shared.services.provider_usage_cost_read_model import (
+    ProviderUsageAggregate,
+    read_workflow_usage_aggregate,
 )
 
 BUDGET_AT_RISK_RATIO = Decimal("0.8")
@@ -71,20 +68,27 @@ class WorkflowBudgetService:
         now: datetime,
         organization_id: Any = None,
     ) -> Decimal:
-        period = AdminUsageService.resolve_month_period_kst(now)
-        if hasattr(db, "usage_logs"):
-            return _current_month_cost_fake(
-                db,
-                workflow_id=workflow_id,
-                period=period,
-                organization_id=organization_id,
-            )
-
-        return _current_month_cost_query(
+        return WorkflowBudgetService.get_current_month_usage(
             db,
             workflow_id=workflow_id,
-            period=period,
+            now=now,
             organization_id=organization_id,
+        ).total_cost
+
+    @staticmethod
+    def get_current_month_usage(
+        db: Session,
+        workflow_id: Any,
+        now: datetime,
+        organization_id: Any = None,
+    ) -> ProviderUsageAggregate:
+        period = AdminUsageService.resolve_month_period_kst(now)
+        return read_workflow_usage_aggregate(
+            db,
+            workflow_id=workflow_id,
+            organization_id=organization_id,
+            start_at=period.start_at,
+            end_at=period.end_at,
         )
 
     @staticmethod
@@ -211,8 +215,6 @@ class WorkflowBudgetService:
         )
         if decision.status == "allowed":
             return
-        if decision.status == "unavailable":
-            raise _budget_exceeded_error()
 
         normalized_id = _normalize_workflow_id(workflow_id)
         budget = _find_budget(db, normalized_id)
@@ -334,24 +336,13 @@ def _current_month_cost_fake(
     period: Any,
     organization_id: Any = None,
 ) -> Decimal:
-    return sum(
-        (
-            AdminUsageService.coalesce_cost(usage.total_cost)
-            for usage in db.usage_logs
-            if usage.workflow_id == workflow_id
-            and period.start_at <= usage.created_at < period.end_at
-            and is_billable_llm_usage(
-                getattr(usage, "runtime_surface", None),
-                getattr(usage, "status", "success"),
-            )
-            and (
-                organization_id is None
-                or usage.organization_id is None
-                or usage.organization_id == organization_id
-            )
-        ),
-        Decimal("0"),
-    )
+    return read_workflow_usage_aggregate(
+        db,
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+        start_at=period.start_at,
+        end_at=period.end_at,
+    ).total_cost
 
 
 def _current_month_cost_query(
@@ -361,29 +352,13 @@ def _current_month_cost_query(
     period: Any,
     organization_id: Any = None,
 ) -> Decimal:
-    query = db.query(_total_cost_sum()).filter(
-        LLMUsageLog.workflow_id == workflow_id,
-        LLMUsageLog.created_at >= period.start_at,
-        LLMUsageLog.created_at < period.end_at,
-        _billable_usage_condition(),
-    )
-    if organization_id is not None:
-        query = query.filter(
-            or_(
-                LLMUsageLog.organization_id == organization_id,
-                LLMUsageLog.organization_id.is_(None),
-            )
-        )
-    total = query.scalar()
-    return AdminUsageService.coalesce_cost(total)
-
-
-def _billable_usage_condition():
-    return or_(
-        LLMUsageLog.runtime_surface.is_(None),
-        LLMUsageLog.runtime_surface != AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
-        LLMUsageLog.status == "success",
-    )
+    return read_workflow_usage_aggregate(
+        db,
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+        start_at=period.start_at,
+        end_at=period.end_at,
+    ).total_cost
 
 
 def _update_budget(

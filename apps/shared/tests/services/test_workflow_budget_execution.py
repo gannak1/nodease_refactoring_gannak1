@@ -97,8 +97,13 @@ def test_shared_budget_evaluator_is_side_effect_free_and_uses_kst_month():
         [
             SimpleNamespace(
                 workflow_id=workflow_id,
+                organization_id=None,
+                prompt_tokens=0,
+                completion_tokens=0,
                 total_cost=Decimal("101"),
                 created_at=now,
+                runtime_surface=None,
+                status="success",
             )
         ],
     )

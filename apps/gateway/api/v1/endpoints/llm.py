@@ -1,10 +1,10 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from sqlalchemy import desc, func, or_
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
@@ -14,10 +14,9 @@ from apps.gateway.services.organization_context import resolve_active_organizati
 from apps.gateway.utils.api_errors import raise_api_error
 from apps.gateway.utils.audit import audit
 from apps.shared.audit.actions import AuditAction
-from apps.shared.db.models.llm import LLMModel, LLMProvider, LLMUsageLog
+from apps.shared.db.models.llm import LLMModel, LLMProvider
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
-from apps.shared.domain.llm_usage import AGENT_BUILDER_INTENT_RUNTIME_SURFACE
 from apps.shared.schemas.llm import (
     LLMCredentialCreate,
     LLMCredentialModelOptionResponse,
@@ -25,6 +24,9 @@ from apps.shared.schemas.llm import (
     LLMModelPricingUpdate,
     LLMModelResponse,
     LLMProviderResponse,
+)
+from apps.shared.services.provider_usage_cost_read_model import (
+    provider_usage_model_subject_rows_subquery,
 )
 from apps.shared.services.tracing.access import TraceAccessService
 
@@ -301,8 +303,14 @@ def get_top_expensive_models(
     """
     try:
         # 1. Determine date range (This Month in UTC mostly, or naive)
-        now = datetime.now()
-        start_of_month = datetime(now.year, now.month, 1)
+        now = datetime.now(timezone.utc)
+        start_of_month = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+
+        usage = provider_usage_model_subject_rows_subquery(
+            user_id=current_user.id,
+            start_at=start_of_month,
+            end_at=now,
+        )
 
         # 2. Query (User-scoped)
         # Join Log -> Model -> Provider
@@ -311,23 +319,11 @@ def get_top_expensive_models(
             db.query(
                 LLMModel.name.label("model_name"),
                 LLMProvider.name.label("provider_name"),
-                func.sum(LLMUsageLog.total_cost).label("total_cost"),
-                func.sum(
-                    LLMUsageLog.prompt_tokens + LLMUsageLog.completion_tokens
-                ).label("total_tokens"),
+                func.sum(usage.c.total_cost).label("total_cost"),
+                func.sum(usage.c.total_tokens).label("total_tokens"),
             )
-            .join(LLMModel, LLMUsageLog.model_id == LLMModel.id)
+            .join(LLMModel, usage.c.model_id == LLMModel.id)
             .join(LLMProvider, LLMModel.provider_id == LLMProvider.id)
-            .filter(LLMUsageLog.created_at >= start_of_month)
-            .filter(LLMUsageLog.user_id == current_user.id)  # 사용자별 필터링
-            .filter(
-                or_(
-                    LLMUsageLog.runtime_surface.is_(None),
-                    LLMUsageLog.runtime_surface
-                    != AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
-                    LLMUsageLog.status == "success",
-                )
-            )
             .group_by(LLMModel.id, LLMModel.name, LLMProvider.id, LLMProvider.name)
             .order_by(desc("total_cost"))
             .limit(3)

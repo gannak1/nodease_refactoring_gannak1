@@ -30,6 +30,8 @@ describe('AdminSummaryCards', () => {
       total_cost: 123.456789,
       workflow_execution_cost: 120,
       agent_builder_cost: 3.456789,
+      usage_data_complete: true,
+      unresolved_provider_call_count: 0,
       budget: null,
     });
 
@@ -52,6 +54,8 @@ describe('AdminSummaryCards', () => {
       total_cost: 4.43,
       workflow_execution_cost: 4.43,
       agent_builder_cost: 0,
+      usage_data_complete: true,
+      unresolved_provider_call_count: 0,
       budget: null,
     });
 
@@ -93,6 +97,24 @@ describe('AdminSummaryCards', () => {
 
     expect(
       await screen.findByText('요약을 불러오지 못했습니다'),
+    ).toBeInTheDocument();
+  });
+
+  it('비용이 불완전하면 미해결 provider 호출 건수를 표시한다', async () => {
+    mockedSummary.mockResolvedValue({
+      month: '2026-07',
+      total_cost: 4.43,
+      workflow_execution_cost: 4.43,
+      agent_builder_cost: 0,
+      usage_data_complete: false,
+      unresolved_provider_call_count: 1,
+      budget: null,
+    });
+
+    render(<AdminSummaryCards {...summaryProps} />);
+
+    expect(
+      await screen.findByText('비용 미확정 provider 호출 1건'),
     ).toBeInTheDocument();
   });
 });

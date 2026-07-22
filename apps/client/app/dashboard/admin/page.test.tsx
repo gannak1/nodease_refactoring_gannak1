@@ -86,6 +86,8 @@ const member = {
     total_cost: 0,
     workflow_execution_cost: 0,
     agent_builder_cost: 0,
+    usage_data_complete: true,
+    unresolved_provider_call_count: 0,
   },
 };
 
@@ -260,6 +262,8 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
                     total_cost: 1.25,
                     workflow_execution_cost: 1.25,
                     agent_builder_cost: 0,
+                    usage_data_complete: true,
+                    unresolved_provider_call_count: 0,
                   },
                 },
                 {
@@ -271,6 +275,8 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
                     total_cost: 5,
                     workflow_execution_cost: 2,
                     agent_builder_cost: 3,
+                    usage_data_complete: false,
+                    unresolved_provider_call_count: 1,
                   },
                 },
               ],
@@ -284,6 +290,7 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
     expect(within(rows[1]).getByText('High cost')).toBeInTheDocument();
     expect(within(rows[1]).getByText('$5.00')).toBeInTheDocument();
     expect(within(rows[1]).getByText('Agent Builder $3.00')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('미확정 1건')).toBeInTheDocument();
     expect(within(rows[2]).getByText('Low cost')).toBeInTheDocument();
     expect(within(rows[2]).getByText('$1.25')).toBeInTheDocument();
   });
@@ -450,9 +457,11 @@ describe('PermissionsTab 표 기반 권한 부여', () => {
         authState: 'viewer',
       }),
     );
-    expect(
-      screen.queryByRole('dialog', { name: '리소스 권한 부여' }),
-    ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('dialog', { name: '리소스 권한 부여' }),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   it('복수 리소스와 복수 대상을 checkbox로 선택해 한 번에 제출한다', async () => {

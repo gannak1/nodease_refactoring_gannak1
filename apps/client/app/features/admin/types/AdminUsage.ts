@@ -5,6 +5,8 @@ export type AdminWorkflowBudgetUsage = {
   current_month_cost: number;
   usage_ratio: number;
   status: BudgetUsageStatus | string;
+  usage_data_complete: boolean;
+  unresolved_provider_call_count: number;
 };
 
 export type AdminWorkflowUsageItem = {
@@ -16,6 +18,8 @@ export type AdminWorkflowUsageItem = {
   total_cost: number;
   workflow_execution_cost: number;
   agent_builder_cost: number;
+  usage_data_complete: boolean;
+  unresolved_provider_call_count: number;
   budget?: AdminWorkflowBudgetUsage | null;
 };
 
@@ -27,6 +31,8 @@ export type AdminUsagePeriod = {
 export type AdminWorkflowUsageResponse = {
   total: number;
   period: AdminUsagePeriod;
+  usage_data_complete: boolean;
+  unresolved_provider_call_count: number;
   items: AdminWorkflowUsageItem[];
 };
 
@@ -42,5 +48,7 @@ export type AdminOrganizationSummary = {
   total_cost: number;
   workflow_execution_cost: number;
   agent_builder_cost: number;
+  usage_data_complete: boolean;
+  unresolved_provider_call_count: number;
   budget: AdminBudgetSummary | null;
 };

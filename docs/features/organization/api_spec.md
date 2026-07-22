@@ -206,8 +206,9 @@ Query parameter:
 성공 응답: `200 OK`, `OrganizationMemberListItemResponse[]`.
 
 - 각 item의 `current_month_usage`는 이번 달 KST 반개구간 `[month_start, next_month_start)`의 사용자별 비용 묶음이다.
-- 비용은 current membership state와 무관하게 item의 `user_id`에 귀속된 eligible usage를 합산한다. 따라서 `invited`, `suspended`, `removed` member도 그 달 usage가 있으면 비용을 반환하며, usage가 없을 때만 0을 반환한다.
+- 비용은 current membership state와 무관하게 item의 `user_id`에 귀속된 eligible usage를 합산한다. Legacy usage는 operation reference가 없는 기존 `user_id`, canonical provider usage는 명시적인 user형 `execution_subject`를 사용한다. Credential principal, billing principal, audit actor를 member user로 대체하지 않으며 public/system 실행을 임의 사용자에게 합성하지 않는다. 따라서 `invited`, `suspended`, `removed` member도 그 달 usage가 있으면 비용을 반환하며, usage가 없을 때만 0을 반환한다.
 - eligible usage의 App primary workflow, organization/legacy NULL, Agent Builder 성공 행, 타 organization 제외 정책은 `GET /admin/usage/workflows`와 동일하다. `total_cost = workflow_execution_cost + agent_builder_cost`를 만족한다.
+- 해당 user의 기간 내 `provider_started`/`outcome_unknown` operation이 있으면 확정 비용은 유지하면서 `usage_data_complete=false`와 `unresolved_provider_call_count`를 반환한다.
 
 ### `POST /organizations/{organization_id}/members/invitations`
 
@@ -821,6 +822,8 @@ DELETE permission endpoints는 request body를 사용하지 않는다.
 | `total_cost` | `number` |
 | `workflow_execution_cost` | `number` |
 | `agent_builder_cost` | `number` |
+| `usage_data_complete` | `boolean` |
+| `unresolved_provider_call_count` | `integer` |
 
 `PermissionRequestResponse`:
 

@@ -345,6 +345,90 @@ def test_aggregate_workflow_usage_includes_null_organization_usage_for_primary_w
     assert item.total_cost == pytest.approx(1.25)
 
 
+def test_admin_usage_counts_canonical_success_once_and_exposes_unresolved():
+    AdminUsageService, AdminUsagePeriod = _service()
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    app_id = uuid4()
+    operation_id = uuid4()
+    provider_started_at = datetime(2026, 7, 5, tzinfo=timezone.utc)
+    db = _UsageSession(
+        usage_logs=[
+            _usage_log(
+                organization_id,
+                workflow_id,
+                prompt_tokens=2,
+                completion_tokens=3,
+                total_cost=Decimal("0.250000"),
+                created_at=provider_started_at,
+            ),
+            _usage_log(
+                organization_id,
+                workflow_id,
+                prompt_tokens=11,
+                completion_tokens=13,
+                total_cost=Decimal("3.000000"),
+                created_at=provider_started_at,
+                provider_usage_operation_id=operation_id,
+            ),
+        ],
+        provider_usage_operations=[
+            _provider_usage_operation(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                state="succeeded",
+                provider_started_at=provider_started_at,
+                prompt_tokens=17,
+                completion_tokens=19,
+                total_cost_microusd=4_000_000,
+            ),
+            _provider_usage_operation(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                state="outcome_unknown",
+                provider_started_at=provider_started_at,
+            ),
+        ],
+        workflows=[_workflow(workflow_id, app_id, organization_id)],
+        apps=[
+            _app(
+                app_id,
+                "canonical workflow",
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+            )
+        ],
+    )
+    period = AdminUsagePeriod(
+        start_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+        end_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+    )
+
+    result = AdminUsageService.aggregate_workflow_usage(
+        db,
+        organization_id=organization_id,
+        period=period,
+    )
+    summary = AdminUsageService.get_organization_summary(
+        db,
+        organization_id=organization_id,
+        now=datetime(2026, 7, 15, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    item = result.items[0]
+    assert item.prompt_tokens == 19
+    assert item.completion_tokens == 22
+    assert item.call_count == 2
+    assert item.total_cost == pytest.approx(4.25)
+    assert item.usage_data_complete is False
+    assert item.unresolved_provider_call_count == 1
+    assert result.usage_data_complete is False
+    assert result.unresolved_provider_call_count == 1
+    assert summary.total_cost == pytest.approx(4.25)
+    assert summary.usage_data_complete is False
+    assert summary.unresolved_provider_call_count == 1
+
+
 def test_aggregate_workflow_usage_excludes_explicit_cross_organization_usage():
     AdminUsageService, AdminUsagePeriod = _service()
     organization_id = uuid4()
@@ -554,13 +638,60 @@ def test_aggregate_workflow_usage_sql_keeps_scope_guards_in_join_conditions(
 
     assert result.total == 0
     sql = " ".join(captured_sql["count"].split())
-    where_sql = sql.split(" WHERE ", 1)[1].split(" GROUP BY", 1)[0]
     assert "JOIN workflows ON workflows.id = apps.workflow_id" in sql
     assert "workflows.organization_id" in sql
-    assert "LEFT OUTER JOIN llm_usage_logs ON" in sql
+    assert "LEFT OUTER JOIN (SELECT" in sql
+    assert "llm_usage_logs.provider_usage_operation_id IS NULL" in sql
     assert "llm_usage_logs.organization_id" in sql
     assert "llm_usage_logs.organization_id IS NULL" in sql
-    assert "llm_usage_logs.organization_id" not in where_sql
+    assert "provider_usage_operations.organization_id" in sql
+    assert "provider_usage_operations.provider_started_at" in sql
+    assert "provider_usage_operations.state" in sql
+
+
+def test_sql_usage_response_keeps_global_incomplete_signal_on_empty_page(
+    monkeypatch,
+):
+    from apps.gateway.services.admin_usage_service import (
+        _aggregate_workflow_usage_query,
+    )
+
+    _, AdminUsagePeriod = _service()
+    organization_id = uuid4()
+    captured_sql = {}
+
+    monkeypatch.setattr(Query, "count", lambda _query: 1)
+    monkeypatch.setattr(Query, "all", lambda _query: [])
+
+    def capture_scalar(query):
+        captured_sql["unresolved"] = str(
+            query.statement.compile(dialect=postgresql.dialect())
+        )
+        return 2
+
+    monkeypatch.setattr(Query, "scalar", capture_scalar)
+    db = Session()
+    try:
+        result = _aggregate_workflow_usage_query(
+            db,
+            organization_id=organization_id,
+            period=AdminUsagePeriod(
+                start_at=datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc),
+                end_at=datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc),
+            ),
+            page=2,
+            limit=20,
+            budget_now=datetime(2026, 7, 15, 0, 0, tzinfo=timezone.utc),
+        )
+    finally:
+        db.close()
+
+    assert result.items == []
+    assert result.usage_data_complete is False
+    assert result.unresolved_provider_call_count == 2
+    sql = " ".join(captured_sql["unresolved"].split())
+    assert "sum(coalesce" in sql.lower()
+    assert "provider_usage_operations" in sql
 
 
 def test_aggregate_workflow_usage_total_counts_primary_workflows_for_page_slice():
@@ -850,10 +981,18 @@ def test_get_organization_summary_uses_kst_month_boundaries():
 
 
 class _UsageSession:
-    def __init__(self, *, usage_logs, workflows, apps):
+    def __init__(
+        self,
+        *,
+        usage_logs,
+        workflows,
+        apps,
+        provider_usage_operations=None,
+    ):
         self.usage_logs = usage_logs
         self.workflows = workflows
         self.apps = apps
+        self.provider_usage_operations = provider_usage_operations or []
 
 
 def _usage_log(
@@ -865,6 +1004,7 @@ def _usage_log(
     total_cost,
     created_at,
     runtime_surface=None,
+    provider_usage_operation_id=None,
 ):
     return SimpleNamespace(
         organization_id=organization_id,
@@ -874,6 +1014,30 @@ def _usage_log(
         total_cost=total_cost,
         created_at=created_at,
         runtime_surface=runtime_surface,
+        status="success",
+        provider_usage_operation_id=provider_usage_operation_id,
+    )
+
+
+def _provider_usage_operation(
+    *,
+    organization_id,
+    workflow_id,
+    state,
+    provider_started_at,
+    prompt_tokens=None,
+    completion_tokens=None,
+    total_cost_microusd=None,
+):
+    return SimpleNamespace(
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+        purpose="main_generation",
+        state=state,
+        provider_started_at=provider_started_at,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_cost_microusd=total_cost_microusd,
     )
 
 

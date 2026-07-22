@@ -47,6 +47,7 @@ Verified Against: feature/mba-147 @ e1a04e9
 - Given 조직 A 활성 예산 workflow에 조직 B로 명시된 고비용 usage가 있다, When 조직 A의 `GET /admin/summary`를 호출하면, Then 해당 usage는 at_risk/exceeded 판정에 반영되지 않는다. NULL organization legacy usage는 계속 반영한다.
 - Given 조직 A 예산 workflow에 조직 A usage, NULL legacy usage, 조직 B로 명시된 usage가 함께 있다, When 조직 A의 `GET /admin/workflow-budgets/{workflow_id}`를 호출하면, Then `current_month_cost`, `usage_ratio`, `status`는 조직 A와 NULL usage만 반영한다.
 - Given 같은 혼합 usage가 있다, When 조직 A의 `PUT /admin/workflow-budgets/{workflow_id}`로 예산을 저장하면, Then 저장 응답의 `current_month_cost`, `usage_ratio`, `status`도 조직 A와 NULL usage만 반영한다.
+- Given 단건 예산의 당월 canonical operation에 `provider_started` 또는 `outcome_unknown`이 남아 있다, When GET 또는 PUT 응답을 받으면, Then 계산 가능한 `current_month_cost`와 함께 `usage_data_complete=false`, 양수 `unresolved_provider_call_count`가 반환된다.
 - Given 활성 예산 workflow가 0개인 조직, When summary를 조회하면, Then `budget`은 null이다.
 - Given 활성 예산이 있는 App, When member가 `GET /apps`를 호출하면, Then 항목의 `budget_status`에 `usage_ratio`, `status`만 포함되고 예산 금액/비용 원문은 포함되지 않는다.
 - Given 활성 예산이 있는 App, When organization manager 또는 workflow `write` 이상 사용자가 `GET /apps/operations`를 호출하면, Then row의 `app.budget_status`에 `usage_ratio`, `status`만 포함되고 `/dashboard/mymodule`은 이 값을 표시 원천으로 사용한다.
@@ -89,6 +90,7 @@ Verified Against: feature/mba-147 @ e1a04e9
 
 - Given 예산 생성/수정/비활성화, When audit log를 조회하면, Then `workflow_budget.created`/`workflow_budget.updated`가 target_type `workflow_budget` 기준으로 기록되고 metadata는 `monthly_budget_usd`, `is_enabled` 운영 summary로 제한된다.
 - Given 예산 초과 차단, When audit log를 조회하면, Then `policy.block`(target_type `workflow`, status `failure`, `audit_metadata.reason='budget.exceeded'`, trigger mode 포함)이 기록된다.
+- Given 활성 예산의 비용이 미확정이라 direct 실행이 `unavailable`로 차단됨, When audit log를 조회하면, Then 공개 차단 계약과 동일한 `policy.block`, `budget.exceeded`, trigger mode가 기록되고 차단 응답과 별도로 commit된다.
 - Given Schedule occurrence 이후 비용이 초과되어 Gateway dispatch 또는 Worker admission에서 처음 차단됨, When audit log를 조회하면, Then 두 경로 모두 `policy.block`, workflow target, `budget.exceeded`, `scheduler` trigger를 기록하고 claim cancellation과 같은 transaction으로 commit된다.
 - Given budget unavailable이 재시도 한도에 도달함, When claim을 확인하면, Then `dead_lettered`와 failure audit이 기록되고 성공한 `schedule_dispatch.deferred`로 표시되지 않는다.
 - Given anonymous public 실행 차단, When audit을 확인하면, Then actor_id 없이 기록된다.
@@ -136,6 +138,9 @@ Gateway service/helper 대상 (기존 pytest 패턴). 함수명은 구현 시 �
 - `normal`/`at_risk`(정확히 100% 포함) → 통과.
 - `exceeded` → 차단 예외 (HTTP 계층에서 `429 budget.exceeded`로 변환).
 - 활성 예산 workflow에서 집계 쿼리 예외 → fail-closed 차단 예외 (BGT-REQ-033).
+- 활성 예산 workflow의 당월 canonical provider operation에 `provider_started` 또는 `outcome_unknown`이 존재 → 비용을 0으로 간주하지 않고 `unavailable`로 fail-closed한다.
+- 직접 실행 helper의 `unavailable` 차단도 초과 차단과 같은 safe `policy.block` audit을 한 건 기록하며 금액·raw payload는 포함하지 않는다.
+- 성공 provider operation의 compatibility projection이 pending/완료 어느 상태이든 canonical 비용은 한 번만 합산되며, operation reference가 있는 projection은 legacy 합계에서 제외한다.
 - Schedule dispatch/admission의 활성 예산 집계 statement가 실패하면 savepoint만 rollback되고 outer transaction은 계속 사용 가능해야 한다. 같은 UnitOfWork에서 `budget_evaluation_failed` backoff/dead-letter 상태를 기록하고 commit할 때 `PendingRollbackError`가 발생하지 않는다.
 - 매 호출마다 집계를 새로 조회한다 — 같은 helper 인스턴스/요청 컨텍스트에서 판정 캐시 없음 (BGT-REQ-034).
 - compare 경로 플래그/미호출 검증 (BGT-REQ-032).
@@ -171,6 +176,7 @@ Gateway service/helper 대상 (기존 pytest 패턴). 함수명은 구현 시 �
 - `GET /admin/usage/workflows` 목록 — App과 Workflow organization이 모두 요청 organization과 일치하는 primary workflow 전체를 반환, same-organization 또는 NULL legacy usage만 합산, usage row가 없는 workflow도 prompt/completion tokens/call_count/total_cost 0으로 포함, `total`은 usage row 보유 workflow 수가 아니라 응답 대상 primary workflow 수, 비용 내림차순과 동률 안정 정렬.
 - `GET /admin/usage/workflows` budget 블록 — 기간 필터와 무관하게 당월 기준, same-organization 또는 NULL legacy usage만 합산, 명시적 타 organization usage 제외, 미설정 null, 활성 예산이 있지만 eligible 당월 usage row가 없으면 current_month_cost/usage_ratio 0과 `normal`.
 - `GET /admin/workflow-budgets` 목록 — 조직 scope 필터, `updated_at` 내림차순, pagination.
+- `GET/PUT /admin/workflow-budgets/{workflow_id}` 단건 — 계산 가능한 당월 합계와 함께 `usage_data_complete`, `unresolved_provider_call_count`를 반환해 미확정 비용을 숨기지 않는다.
 - `GET /apps` budget_status — 목록 전체가 primary workflow id 기준 grouped query 1회로 계산 (N+1 없음), 사용량 합산은 실행 차단과 동일하게 `workflow_id`+KST 월 경계 기준(`llm_usage_logs.organization_id` 필터 없음), `usage_ratio`/`status`만 포함 (금액 필드 부재 검증), `workflow_id` null인 App은 null, 같은 `app_id`의 과거/보조 workflow 예산은 무시.
 - `GET /apps/operations` app budget_status — operations page/batch의 primary workflow id 기준으로 grouped query 1회 계산, 같은 workflow의 NULL organization legacy usage를 포함, `row.app.budget_status` shape는 `GET /apps`와 동일, 권한 없는 row에는 예산 상태를 노출하지 않음, `workflows.app_id` 역참조로 후보를 확장하지 않음.
 - App budget_status 경계값 — 79.99/80.00/100.00/100.000001(예산 100)에서 `normal`/`at_risk`/`at_risk`/`exceeded`, `total_cost` NULL은 0, 비활성/0 이하 예산은 null.

@@ -36,6 +36,8 @@ export type MemberCurrentMonthUsage = {
   total_cost: number;
   workflow_execution_cost: number;
   agent_builder_cost: number;
+  usage_data_complete: boolean;
+  unresolved_provider_call_count: number;
 };
 
 export type OrganizationMemberListItem = OrganizationMember & {

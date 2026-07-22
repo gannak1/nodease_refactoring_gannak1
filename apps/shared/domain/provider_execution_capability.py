@@ -152,6 +152,7 @@ class ProviderExecutionCapability:
     revision: int
     binding: ProviderExecutionBinding
     policy_id: uuid.UUID
+    policy_revision: int
     credential_id: uuid.UUID
     model_id: uuid.UUID
     provider_id: uuid.UUID
@@ -174,6 +175,7 @@ class ProviderExecutionCapability:
         revision: int,
         binding: ProviderExecutionBinding,
         policy_id: uuid.UUID,
+        policy_revision: int,
         credential_id: uuid.UUID,
         model_id: uuid.UUID,
         provider_id: uuid.UUID,
@@ -188,8 +190,8 @@ class ProviderExecutionCapability:
         expires_at: datetime,
         now: datetime,
     ) -> "ProviderExecutionCapability":
-        if revision < 1:
-            raise ValueError("capability revision must be positive")
+        if revision < 1 or policy_revision < 1:
+            raise ValueError("capability and policy revisions must be positive")
         if credential_principal.kind is not PrincipalKind.USER:
             raise ValueError("credential principal must be a user")
         for value, name in (
@@ -209,6 +211,7 @@ class ProviderExecutionCapability:
             revision=revision,
             binding=binding,
             policy_id=policy_id,
+            policy_revision=policy_revision,
             credential_id=credential_id,
             model_id=model_id,
             provider_id=provider_id,

@@ -102,6 +102,10 @@ from apps.shared.db.models.permission_request import (
     REQUESTED_PERMISSION_APP_CREATE,
     PermissionRequest,
 )
+from apps.shared.db.models.provider_usage import (
+    ProviderUsageCorrectionRecord,
+    ProviderUsageOperationRecord,
+)
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.schedule_dispatch import ScheduleDispatchClaim
 from apps.shared.db.models.security_alert import (
@@ -199,6 +203,8 @@ __all__ = [
     "LLMRelCredentialModel",
     "LLMUsageLog",
     "ProviderExecutionCapabilityRecord",
+    "ProviderUsageOperationRecord",
+    "ProviderUsageCorrectionRecord",
     "MailCredential",
     "MAIL_CREDENTIAL_ACTIVE",
     "MAIL_CREDENTIAL_REVOKED",

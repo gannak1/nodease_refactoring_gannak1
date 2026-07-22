@@ -448,7 +448,13 @@ def update_run_log_finish(self, data: Dict[str, Any]):
     try:
         run_id = _deserialize_uuid(data["run_id"])
 
-        run_log = session.query(WorkflowRun).filter(WorkflowRun.id == run_id).first()
+        run_log = (
+            session.query(WorkflowRun)
+            .filter(WorkflowRun.id == run_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
 
         if not run_log:
             # 아직 생성되지 않은 경우 재시도

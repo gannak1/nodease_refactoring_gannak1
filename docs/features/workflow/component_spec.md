@@ -66,6 +66,8 @@ V1 canonical envelope은 값 dependency와 활성 control dependency의 합집�
 
 Main generation과 Memory summary provider adapter는 Workflow admission 안에서 provider effect 없는 server-issued attempt reference를 먼저 만든 뒤 LLM Credentials domain의 authoritative port에서 해당 invocation/admission/attempt에 binding된 opaque capability identity/revision을 받는다. 상세 schema, credential principal과 permission decision revision은 [LLM Credentials API Spec](../llm-credentials/api_spec.md#target-provider-execution-capability-contract)이 소유한다. Runtime은 capability identity/revision을 Memory context lease, budget reservation, provider attempt와 usage reconciliation에 그대로 전달하고 client/Access Grant/owner 값으로 scope를 바꾸거나 credential principal을 합성하지 않는다.
 
+Capability path의 `ProviderUsageRecorder`는 `LLMNode`가 Shared persistence를 직접 알지 않도록 application port로 유지한다. Recorder adapter는 admitted safe context의 canonical `(container_path, node_id)`를 포함한 exact binding으로 durable intent를 commit하고, final capability 재검증과 provider-start commit이 끝난 뒤에만 opaque lease invocation을 허용한다. Provider call 뒤 성공 measurement는 immutable admission pricing으로 계산하며 malformed 또는 admitted cap을 넘는 usage를 성공으로 축소하지 않는다. Terminal 저장과 compatibility projection은 별도 짧은 session을 사용하고 projection 실패가 이미 확정된 canonical success를 rollback하지 않는다. Log System reconciler는 stale started와 pending projection만 처리하며 provider client나 credential material을 로드하지 않는다.
+
 ## MBA-233 LLM Knowledge Selection And Runtime
 
 - `LLMNodePanel`과 `LLMReferenceSidePanel`은 “고정 지식 베이스”와 “지식

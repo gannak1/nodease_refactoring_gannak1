@@ -17,6 +17,7 @@ Budget Management 확장:
 - `budget_status.status`가 `exceeded`면 실행 상태 영역에 "실행 차단" 표시를 추가하고, title/tooltip 문구는 "월 예산 초과로 실행이 차단되었습니다"를 사용한다.
 - `budget_status`가 null이면 기존 row 레이아웃을 유지하고 예산 관련 텍스트를 표시하지 않는다.
 - row의 `app.operation_metrics`가 있으면 월 예상 비용, 전월 대비 증가 추세, 최적화 권장 판단의 원천으로 사용한다. 월 예상 총비용 아래에는 `워크플로 실행`과 `Agent Builder` 예상 비용을 함께 표시한다.
+- `operation_metrics.usage_data_complete=false`이면 계산 가능한 비용과 함께 `미확정 N건`을 표시한다. 미확정 provider call을 0원 확정 또는 완결된 월 예상 비용으로 숨기지 않는다.
 - 상단의 `예상 월 비용`, `평균 증가 추세`, `예산 위험`, `비용 위험 신호` 요약 카드는 렌더링하지 않는다. 화면 진입과 새로고침에서 `GET /apps/operations/cost-summary`를 호출하지 않는다 ([ADR-0060](../../decisions/ADR-0060-my-module-cost-summary-presentation.md)).
 - `operation_metrics`가 null이거나 `trend_percent`가 null이면 클라이언트는 더미 비용/추세를 만들지 않고 "운영 비용 없음" 또는 "비교 데이터 없음"으로 표시한다.
 - `budget_status`는 예산 사용률/상태 전용이고, `operation_metrics`는 `/dashboard/mymodule` 운영 비용 지표 전용이다. 두 필드를 합쳐서 해석하지 않는다.

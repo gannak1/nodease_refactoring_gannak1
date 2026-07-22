@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Query, Session
+from sqlalchemy.orm import Session
 from sqlalchemy.sql.operators import eq
 
 from apps.gateway.services.app_lifecycle_lock import (
@@ -328,13 +328,22 @@ def test_current_month_cost_sql_applies_optional_organization_projection(monkeyp
     organization_id = uuid4()
     captured_sql = {}
 
-    def capture_scalar(query):
+    def capture_execute(_session, statement, *args, **kwargs):
         captured_sql["query"] = str(
-            query.statement.compile(dialect=postgresql.dialect())
+            statement.compile(dialect=postgresql.dialect())
         )
-        return Decimal("30.000000")
+        return SimpleNamespace(
+            one_or_none=lambda: SimpleNamespace(
+                prompt_tokens=0,
+                completion_tokens=0,
+                call_count=1,
+                total_cost=Decimal("30.000000"),
+                agent_builder_cost=Decimal("0"),
+                unresolved_provider_call_count=0,
+            )
+        )
 
-    monkeypatch.setattr(Query, "scalar", capture_scalar)
+    monkeypatch.setattr(Session, "execute", capture_execute)
     db = Session()
 
     try:
@@ -353,6 +362,7 @@ def test_current_month_cost_sql_applies_optional_organization_projection(monkeyp
     assert cost == Decimal("30.000000")
     assert "llm_usage_logs.organization_id" in captured_sql["query"]
     assert "llm_usage_logs.organization_id IS NULL" in captured_sql["query"]
+    assert "provider_usage_operations.organization_id" in captured_sql["query"]
 
 
 def test_get_current_month_cost_returns_zero_for_no_usage():

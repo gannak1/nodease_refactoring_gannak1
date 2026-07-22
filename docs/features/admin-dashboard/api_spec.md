@@ -107,6 +107,8 @@ Response `200`:
 {
   "total": 12,
   "period": { "startAt": "<datetime>", "endAt": "<datetime>" },
+  "usage_data_complete": false,
+  "unresolved_provider_call_count": 1,
   "items": [
     {
       "workflow_id": "<uuid>",
@@ -117,11 +119,15 @@ Response `200`:
       "total_cost": 12.345678,
       "workflow_execution_cost": 10.0,
       "agent_builder_cost": 2.345678,
+      "usage_data_complete": false,
+      "unresolved_provider_call_count": 1,
       "budget": {
         "monthly_budget_usd": 100.0,
         "current_month_cost": 92.345678,
         "usage_ratio": 0.923457,
-        "status": "at_risk"
+        "status": "at_risk",
+        "usage_data_complete": false,
+        "unresolved_provider_call_count": 1
       }
     }
   ]
@@ -132,6 +138,8 @@ Response `200`:
 - `total`은 기간 안에 usage가 있는 workflow 수가 아니라 organization scope 안의 응답 대상 App primary workflow 수다.
 - usage 합산은 `llm_usage_logs.organization_id`가 요청 organization과 같거나 NULL인 row만 허용한다. NULL은 legacy/migration compatibility로 포함하고, 다른 organization UUID가 명시된 row는 비용, token, call count에서 제외한다. 이 조건은 zero-usage row를 보존하도록 outer join의 `ON` 절에 적용한다.
 - `total_cost`가 NULL인 usage row는 0으로 합산한다.
+- Durable provider usage가 활성화된 실행은 canonical ledger의 `succeeded` 값을 `provider_started_at` 기준으로 합산한다. 같은 operation의 compatibility `llm_usage_logs` projection은 다시 합산하지 않으며, operation reference가 없는 기존 usage row만 legacy 비용으로 더한다.
+- 기간 안의 `provider_started` 또는 `outcome_unknown` operation은 비용 0으로 확정하지 않는다. 해당 workflow item은 `usage_data_complete=false`와 미해결 건수인 `unresolved_provider_call_count`를 반환한다. Response-level 두 필드는 모든 eligible workflow의 값을 AND/합계한 결과다. 미해결 operation의 provider payload나 오류 원문은 반환하지 않는다.
 - `agent_builder_cost`는 `runtime_surface=agent_builder_intent`인 행의 비용 합계다. `workflow_execution_cost`는 NULL과 그 밖의 surface 비용 합계이며 `total_cost = workflow_execution_cost + agent_builder_cost`를 만족한다.
 - `workflow_name`은 primary workflow를 가리키는 App의 `apps.name`을 사용한다. `workflows` 테이블 자체에는 이름 컬럼이 없으므로 App 이름이 관리자 화면의 workflow 표시명이다.
 - 정렬은 `total_cost` 내림차순 고정이며, 비용이 같은 row는 `workflow_name` 오름차순과 `workflow_id` 오름차순으로 안정적으로 정렬한다 (FR-012 비용 큰 workflow 탐색).
@@ -150,6 +158,8 @@ Response `200`:
   "total_cost": 123.456789,
   "workflow_execution_cost": 120.0,
   "agent_builder_cost": 3.456789,
+  "usage_data_complete": false,
+  "unresolved_provider_call_count": 1,
   "budget": {
     "budgeted_workflow_count": 5,
     "at_risk_count": 1,
@@ -161,6 +171,7 @@ Response `200`:
 
 - `budget` 블록의 판정(사용률 80% 이상 위험, 100% 초과 초과)과 `ratio`의 분모(활성 예산 workflow 수)는 [budget-management api_spec](../budget-management/api_spec.md)을 따른다. `ratio`는 기존 소비자 호환을 위해 유지하지만 관리 대시보드 카드의 대표 값으로 사용하지 않는다.
 - 세 비용 필드의 분류와 합계 관계는 `/admin/usage/workflows`와 같다. `budget`은 구분 비용이 아닌 `total_cost` 기준을 유지한다.
+- `usage_data_complete`와 `unresolved_provider_call_count`도 `/admin/usage/workflows`의 canonical ledger/legacy 혼합 규칙을 따른다. 불완전한 경우에도 확정된 비용은 반환하지만 이를 최종 총액으로 표현하지 않는다.
 - 활성 예산 workflow가 0개면 `budget` 전체가 null이다.
 - Security Alert open count와 최근 alert는 `/admin/security-alerts/summary`가 제공한다. 비용/예산 `/admin/summary` 응답에 섞지 않는다.
 

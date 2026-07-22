@@ -167,6 +167,7 @@ def test_member_list_uses_current_month_user_usage_across_membership_states(
         organization_id=organization.id,
         runtime_surface=None,
         status="success",
+        provider_usage_operation_id=None,
     ):
         return SimpleNamespace(
             user_id=user_id,
@@ -176,7 +177,42 @@ def test_member_list_uses_current_month_user_usage_across_membership_states(
             runtime_surface=runtime_surface,
             status=status,
             created_at=now,
+            prompt_tokens=1,
+            completion_tokens=1,
+            provider_usage_operation_id=provider_usage_operation_id,
         )
+
+    operation_id = uuid4()
+    provider_usage_operations = [
+        SimpleNamespace(
+            id=operation_id,
+            organization_id=organization.id,
+            workflow_id=primary_workflow.id,
+            purpose="main_generation",
+            state="succeeded",
+            provider_started_at=now,
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_cost_microusd=5_000_000,
+            execution_subject_kind="user",
+            execution_subject_id=manager.id,
+            credential_principal_id=invited.id,
+        ),
+        SimpleNamespace(
+            id=uuid4(),
+            organization_id=organization.id,
+            workflow_id=primary_workflow.id,
+            purpose="main_generation",
+            state="outcome_unknown",
+            provider_started_at=now,
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_cost_microusd=None,
+            execution_subject_kind="user",
+            execution_subject_id=manager.id,
+            credential_principal_id=invited.id,
+        ),
+    ]
 
     db = _Db(
         users=[manager, invited, suspended, removed, no_usage],
@@ -199,6 +235,11 @@ def test_member_list_uses_current_month_user_usage_across_membership_states(
             usage(manager.id, "1.25"),
             usage(
                 invited.id,
+                "5.00",
+                provider_usage_operation_id=operation_id,
+            ),
+            usage(
+                invited.id,
                 "2.50",
                 runtime_surface="agent_builder_intent",
             ),
@@ -217,6 +258,7 @@ def test_member_list_uses_current_month_user_usage_across_membership_states(
                 status="pending",
             ),
         ],
+        provider_usage_operations=provider_usage_operations,
     )
     monkeypatch.setattr(member_service_module, "_now", lambda: now)
     monkeypatch.setattr(
@@ -238,8 +280,14 @@ def test_member_list_uses_current_month_user_usage_across_membership_states(
     )
     current_by_user = {member.user_id: member for member in current_members}
 
-    assert current_by_user[manager.id].current_month_usage.total_cost == 1.25
+    assert current_by_user[manager.id].current_month_usage.total_cost == 6.25
     assert current_by_user[manager.id].current_month_usage.agent_builder_cost == 0
+    assert current_by_user[manager.id].current_month_usage.usage_data_complete is False
+    assert (
+        current_by_user[manager.id]
+        .current_month_usage.unresolved_provider_call_count
+        == 1
+    )
     assert current_by_user[invited.id].current_month_usage.total_cost == 2.5
     assert current_by_user[invited.id].current_month_usage.workflow_execution_cost == 0
     assert current_by_user[invited.id].current_month_usage.agent_builder_cost == 2.5
@@ -1275,6 +1323,7 @@ class _Db:
         apps=None,
         workflows=None,
         usage_logs=None,
+        provider_usage_operations=None,
     ):
         self.users = users or []
         self.organizations = organizations or []
@@ -1287,6 +1336,7 @@ class _Db:
         self.apps = apps or []
         self.workflows = workflows or []
         self.usage_logs = usage_logs or []
+        self.provider_usage_operations = provider_usage_operations or []
         self.audit_logs = []
         self.commits = 0
         self.rollbacks = 0

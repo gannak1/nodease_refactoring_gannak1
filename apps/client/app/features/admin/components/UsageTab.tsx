@@ -30,6 +30,8 @@ export function UsageTab() {
   const [items, setItems] = useState<AdminWorkflowUsageItem[]>([]);
   const [total, setTotal] = useState(0);
   const [period, setPeriod] = useState<AdminUsagePeriod | null>(null);
+  const [unresolvedProviderCallCount, setUnresolvedProviderCallCount] =
+    useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<
     { kind: 'forbidden' | 'unknown'; message: string } | null
@@ -52,10 +54,12 @@ export function UsageTab() {
       setItems(data.items);
       setTotal(data.total);
       setPeriod(data.period);
+      setUnresolvedProviderCallCount(data.unresolved_provider_call_count);
     } catch (err) {
       setItems([]);
       setTotal(0);
       setPeriod(null);
+      setUnresolvedProviderCallCount(0);
       if (isAxiosError(err) && err.response?.status === 403) {
         setError({
           kind: 'forbidden',
@@ -157,6 +161,16 @@ export function UsageTab() {
         </button>
       </form>
 
+      {unresolvedProviderCallCount > 0 && (
+        <p
+          role="status"
+          className="border-b border-amber-200 bg-amber-50 px-5 py-3 text-sm font-medium text-amber-900"
+        >
+          비용 미확정 provider 호출 {unresolvedProviderCallCount}건이 있어 합계가
+          변경될 수 있습니다.
+        </p>
+      )}
+
       {loading ? (
         <p className="px-5 py-12 text-center text-sm text-slate-500">
           사용량을 불러오는 중...
@@ -225,6 +239,11 @@ export function UsageTab() {
                   </td>
                   <td className="px-3 py-3 text-right font-semibold text-slate-900">
                     <p>{formatCost(item.total_cost)}</p>
+                    {!item.usage_data_complete && (
+                      <p className="mt-1 text-xs font-medium text-amber-700">
+                        미확정 {item.unresolved_provider_call_count}건
+                      </p>
+                    )}
                     <div
                       className="mt-1 space-y-0.5 text-xs font-normal text-slate-500"
                       aria-label={`${item.workflow_name} 비용 구성`}

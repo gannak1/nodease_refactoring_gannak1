@@ -60,7 +60,9 @@ Budget Management 확장 시 `app.budget_status`는 `GET /apps`의 `budget_statu
       "projected_month_workflow_execution_cost": 20.0,
       "projected_month_agent_builder_cost": 4.68,
       "previous_month_cost": 10.0,
-      "trend_percent": 146.8
+      "trend_percent": 146.8,
+      "usage_data_complete": false,
+      "unresolved_provider_call_count": 1
     }
   },
   "deployment": { "...": "..." },
@@ -69,12 +71,13 @@ Budget Management 확장 시 `app.budget_status`는 `GET /apps`의 `budget_statu
 ```
 
 - `operation_metrics`는 `/dashboard/mymodule` 비용/추세 UI 전용 요약이다.
-- `current_month_cost`: 현재 KST 월의 `llm_usage_logs.total_cost` 합계.
+- `current_month_cost`: 현재 KST 월의 operation reference 없는 billable legacy usage와 `succeeded` provider usage ledger operation 합계. Ledger-linked compatibility row는 중복 합산하지 않는다.
 - `current_month_workflow_execution_cost`, `current_month_agent_builder_cost`: 현재 월 총비용의 구분값. Agent Builder는 exact `runtime_surface=agent_builder_intent`, workflow 실행은 NULL과 그 밖의 surface다.
 - `projected_month_cost`: 현재 월 경과 비율을 기준으로 단순 projection한 월 예상 비용. 계산할 수 없으면 null이다.
 - `projected_month_workflow_execution_cost`, `projected_month_agent_builder_cost`: 각 당월 구분값에 총비용과 같은 projection 배수를 적용한 값이다. 두 값의 합은 `projected_month_cost`와 같다.
-- `previous_month_cost`: 직전 KST 월의 `llm_usage_logs.total_cost` 합계.
+- `previous_month_cost`: 직전 KST 월의 같은 mixed read model 비용 합계.
 - `trend_percent`: `projected_month_cost`와 `previous_month_cost`의 증감률. 직전 월 비용이 0이면 null이다.
+- `usage_data_complete`, `unresolved_provider_call_count`: 당월 범위에 `provider_started|outcome_unknown` canonical operation이 없을 때만 complete다. 불완전해도 계산 가능한 확정 비용은 반환하며 클라이언트는 미확정 건수를 함께 표시한다.
 - 전월 추세와 `budget_status`는 기존 총비용 기준이며 구분별 추세나 별도 Agent Builder 예산은 제공하지 않는다.
 - `operation_metrics`는 `budget_status`와 별도 필드이며 `GET /apps` 응답에는 포함하지 않는다.
 - `workflow_id`가 null인 legacy App은 기존 row 응답을 유지한다. null이 아닌 primary workflow는 해당 App id와 active organization id를 함께 소유해야 하며, 검증에 실패한 App은 운영 목록에서 제외한다. 다른 workflow의 권한, 최근 실행, 비용을 대체값으로 사용하지 않는다.
@@ -89,7 +92,9 @@ Budget Management 확장 시 `app.budget_status`는 `GET /apps`의 `budget_statu
   "active_workflow_count": 101,
   "projected_month_cost": 303.0,
   "projected_month_workflow_execution_cost": 202.0,
-  "projected_month_agent_builder_cost": 101.0
+  "projected_month_agent_builder_cost": 101.0,
+  "usage_data_complete": false,
+  "unresolved_provider_call_count": 2
 }
 ```
 
@@ -98,6 +103,7 @@ Budget Management 확장 시 `app.budget_status`는 `GET /apps`의 `budget_statu
 - `apps.active_deployment_id`는 application-level 참조이므로, 가리킨 deployment의 `app_id`가 해당 App id와 다르면 활성 배포로 인정하지 않는다.
 - 세 비용은 `operation_metrics`와 같은 KST 월 경계와 projection 배수를 사용한다.
 - `projected_month_cost = projected_month_workflow_execution_cost + projected_month_agent_builder_cost`를 만족한다.
+- `usage_data_complete`는 대상 workflow 전체의 미확정 provider call이 0개일 때만 true이고 `unresolved_provider_call_count`는 그 합계다.
 - 기존 `GET /apps/operations`의 배열 response는 호환성을 위해 변경하지 않는다.
 
 ## Errors

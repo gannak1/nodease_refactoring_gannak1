@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -15,11 +16,23 @@ from apps.workflow_engine.application.provider_execution import (
     ProviderExecutionAttribution,
     ProviderExecutionAuditActor,
     ProviderExecutionAuditActorKind,
+    ProviderExecutionBindingSnapshot,
     ProviderExecutionConfigurationError,
+    ProviderExecutionIdentityContext,
     ProviderExecutionPlan,
     ProviderExecutionPricingSnapshot,
+    ProviderExecutionPrincipal,
+    ProviderExecutionPrincipalKind,
+    ProviderExecutionPurpose,
+    ProviderExecutionUsageContext,
+    ProviderInvocationNotSentError,
+    ProviderInvocationOutcomeUnknownError,
+    ProviderInvocationRejectedError,
 )
-from apps.workflow_engine.application.provider_usage import ProviderUsageRecord
+from apps.workflow_engine.application.provider_usage import (
+    ProviderUsageIntent,
+    ProviderUsageRuntimeError,
+)
 from apps.workflow_engine.domain.execution import NodeExecutionControl
 from apps.workflow_engine.domain.external_effect import ExternalEffectContext
 from apps.workflow_engine.services import llm_service as workflow_llm_service
@@ -32,6 +45,7 @@ from apps.workflow_engine.workflow.nodes.llm.entities import (
 from apps.workflow_engine.workflow.nodes.llm.llm_node import (
     LLMNode,
 )
+from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 
 class _Client:
@@ -44,6 +58,26 @@ class _Client:
             "choices": [{"message": {"content": "safe capability result"}}],
             "usage": {"prompt_tokens": 3, "completion_tokens": 2},
         }
+
+
+class _FailingClient:
+    def invoke_sync(self, messages, **kwargs):
+        raise TimeoutError("must not be persisted")
+
+
+class _OutcomeUnknownClient:
+    def invoke_sync(self, messages, **kwargs):
+        raise ProviderInvocationOutcomeUnknownError()
+
+
+class _BeforeSendClient:
+    def invoke_sync(self, messages, **kwargs):
+        raise ProviderInvocationNotSentError()
+
+
+class _RejectedClient:
+    def invoke_sync(self, messages, **kwargs):
+        raise ProviderInvocationRejectedError()
 
 
 
@@ -80,6 +114,21 @@ class _Runtime:
         return _Lease(client=self.client, attribution=self.attribution)
 
 
+class _SchemaRevalidationRejectingRuntime(_Runtime):
+    def resolve(self, request):
+        self.resolve_requests.append(request)
+        lease = _Lease(client=self.client, attribution=self.attribution)
+
+        def reject_schema(*, name, schema):
+            raise LLMCredentialNotAvailableError(
+                "provider_capability_capability_stale",
+                "Provider execution capability is not available.",
+            )
+
+        lease.apply_json_schema_response_format = reject_schema
+        return lease
+
+
 class _DenyingRuntime:
     def __init__(self, *, audit_actor: ProviderExecutionAuditActor) -> None:
         self.audit_actor = audit_actor
@@ -99,13 +148,123 @@ class _DenyingRuntime:
         )
 
 
+class _UsageAttempt:
+    durable = True
+
+    def __init__(self, recorder: "_UsageRecorder", request: ProviderUsageIntent) -> None:
+        self.recorder = recorder
+        self.request = request
+
+    def mark_provider_started(self) -> None:
+        self.recorder.events.append("start")
+
+    def record_success(self, *, usage, latency_ms) -> float:
+        self.recorder.events.append("success")
+        self.recorder.successes.append((self.request, usage, latency_ms))
+        return 0.0
+
+    def mark_outcome_unknown(self, *, reason_code: str) -> None:
+        self.recorder.events.append(f"unknown:{reason_code}")
+
+    def record_definitive_failure(self, *, reason_code: str) -> None:
+        self.recorder.events.append(f"definitive:{reason_code}")
+
+
 class _UsageRecorder:
     def __init__(self) -> None:
-        self.requests: list[ProviderUsageRecord] = []
+        self.intents: list[ProviderUsageIntent] = []
+        self.successes: list[tuple] = []
+        self.events: list[str] = []
 
-    def record(self, request: ProviderUsageRecord) -> float:
-        self.requests.append(request)
-        return 0.0
+    def begin(self, request: ProviderUsageIntent) -> _UsageAttempt:
+        self.intents.append(request)
+        self.events.append("intent")
+        return _UsageAttempt(self, request)
+
+
+class _FailingUsageAttempt(_UsageAttempt):
+    def mark_provider_started(self) -> None:
+        self.recorder.events.append("start")
+        raise ProviderUsageRuntimeError("provider_usage.start_commit_failed")
+
+
+class _FailingUsageRecorder(_UsageRecorder):
+    def __init__(self, *, phase: str) -> None:
+        super().__init__()
+        self.phase = phase
+
+    def begin(self, request: ProviderUsageIntent) -> _UsageAttempt:
+        self.intents.append(request)
+        self.events.append("intent")
+        if self.phase == "intent":
+            raise ProviderUsageRuntimeError("provider_usage.intent_commit_failed")
+        return _FailingUsageAttempt(self, request)
+
+
+def _capability_attribution(
+    *, organization_id: uuid.UUID, workflow_id: uuid.UUID, principal_id: uuid.UUID
+) -> ProviderExecutionAttribution:
+    capability_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    model_id = uuid.uuid4()
+    pricing = ProviderExecutionPricingSnapshot(
+        revision="d" * 64,
+        input_price_per_1k=Decimal("0.001"),
+        output_price_per_1k=Decimal("0.002"),
+    )
+    subject = ProviderExecutionPrincipal(
+        ProviderExecutionPrincipalKind.USER, principal_id
+    )
+    usage_context = ProviderExecutionUsageContext(
+        binding=ProviderExecutionBindingSnapshot(
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            deployment_id=uuid.uuid4(),
+            deployment_version=1,
+            node_id="llm-1",
+            node_invocation_id=uuid.uuid4(),
+            execution_admission_id=uuid.uuid4(),
+            provider_attempt_id=uuid.uuid4(),
+            purpose=ProviderExecutionPurpose.MAIN_GENERATION,
+        ),
+        capability_id=capability_id,
+        capability_revision=1,
+        capability_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        policy_id=uuid.uuid4(),
+        policy_revision=1,
+        provider_id=uuid.uuid4(),
+        model_id=model_id,
+        model_api_id="gpt-safe",
+        credential_id=credential_id,
+        identities=ProviderExecutionIdentityContext(
+            execution_subject=subject,
+            credential_principal=subject,
+            billing_principal=ProviderExecutionPrincipal(
+                ProviderExecutionPrincipalKind.ORGANIZATION, organization_id
+            ),
+            audit_actor=subject,
+        ),
+        permission_revision="a" * 64,
+        relation_revision="b" * 64,
+        egress_revision="c" * 64,
+        pricing_snapshot=pricing,
+        input_token_cap=10_000,
+        output_token_cap=100,
+        cost_cap_microusd=50_000,
+        admitted_input_tokens=100,
+        admitted_output_tokens=100,
+    )
+    return ProviderExecutionAttribution(
+        credential_id=credential_id,
+        credential_principal_user_id=principal_id,
+        organization_id=organization_id,
+        model_id="gpt-safe",
+        model_db_id=model_id,
+        capability_id=capability_id,
+        capability_revision=1,
+        pricing_snapshot=pricing,
+        usage_context=usage_context,
+    )
 
 
 def _provider_execution_requested_usage(*, messages, llm_params, issue_command):
@@ -160,19 +319,10 @@ def test_capability_required_llm_node_uses_provider_application_ports():
     organization_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
     policy_principal_id = uuid.uuid4()
-    attribution = ProviderExecutionAttribution(
-        credential_id=uuid.uuid4(),
-        credential_principal_user_id=policy_principal_id,
+    attribution = _capability_attribution(
         organization_id=organization_id,
-        model_id="gpt-safe",
-        model_db_id=uuid.uuid4(),
-        capability_id=uuid.uuid4(),
-        capability_revision=1,
-        pricing_snapshot=ProviderExecutionPricingSnapshot(
-            revision="d" * 64,
-            input_price_per_1k=Decimal("0.001"),
-            output_price_per_1k=Decimal("0.002"),
-        ),
+        workflow_id=workflow_id,
+        principal_id=policy_principal_id,
     )
     client = _Client()
     runtime = _Runtime(client=client, attribution=attribution)
@@ -208,10 +358,221 @@ def test_capability_required_llm_node_uses_provider_application_ports():
     assert client.calls[0]["kwargs"]["max_tokens"] == 100
     assert result["text"] == "safe capability result"
     assert result["metadata"]["model_routing"]["provider_execution_capability"] == "required"
-    assert usage_recorder.requests[0].attribution == attribution
-    assert usage_recorder.requests[0].attribution.credential_principal_user_id == (
+    assert usage_recorder.intents[0].attribution == attribution
+    assert usage_recorder.intents[0].attribution.credential_principal_user_id == (
         policy_principal_id
     )
+    assert usage_recorder.events == ["intent", "start", "success"]
+
+
+def test_capability_json_schema_revalidation_failure_stops_before_usage_and_io():
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    attribution = _capability_attribution(
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+        principal_id=uuid.uuid4(),
+    )
+    client = _Client()
+    runtime = _SchemaRevalidationRejectingRuntime(
+        client=client,
+        attribution=attribution,
+    )
+    usage_recorder = _UsageRecorder()
+    node = _node(
+        context={
+            "provider_execution_capability_required": True,
+            "provider_execution_capability_limits": {
+                "input_token_cap": 10_000,
+                "output_token_cap": 100,
+                "cost_cap_microusd": 50_000,
+            },
+            "deployment_id": str(uuid.uuid4()),
+            "workflow_version": 2,
+            "organization_id": str(organization_id),
+            "workflow_id": str(workflow_id),
+            "execution_subject": {"type": "user", "id": str(uuid.uuid4())},
+        }
+    )
+    node.data.output_format = {
+        "type": "json",
+        "schema": {"type": "object", "properties": {}},
+    }
+    node.bind_provider_execution_runtime(runtime)
+    node.bind_provider_usage_recorder(usage_recorder)
+
+    with pytest.raises(LLMCredentialNotAvailableError):
+        node.execute(
+            {},
+            runtime_control=_control(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+            ),
+        )
+
+    assert usage_recorder.events == []
+    assert client.calls == []
+
+
+def test_capability_provider_error_is_durable_unknown_and_non_retryable() -> None:
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    attribution = _capability_attribution(
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+        principal_id=uuid.uuid4(),
+    )
+    runtime = _Runtime(client=_FailingClient(), attribution=attribution)
+    usage_recorder = _UsageRecorder()
+    node = _node(
+        context={
+            "provider_execution_capability_required": True,
+            "provider_execution_capability_limits": {
+                "input_token_cap": 10_000,
+                "output_token_cap": 100,
+                "cost_cap_microusd": 50_000,
+            },
+            "deployment_id": str(uuid.uuid4()),
+            "workflow_version": 1,
+            "organization_id": str(organization_id),
+            "workflow_id": str(workflow_id),
+            "execution_subject": {"type": "user", "id": str(uuid.uuid4())},
+        }
+    )
+    node.bind_provider_execution_runtime(runtime)
+    node.bind_provider_usage_recorder(usage_recorder)
+
+    with pytest.raises(NonRetryableWorkflowError):
+        node.execute(
+            {},
+            runtime_control=_control(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+            ),
+        )
+
+    assert usage_recorder.events == [
+        "intent",
+        "start",
+        "unknown:provider_call_failed",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("client", "expected_events"),
+    [
+        (
+            _OutcomeUnknownClient(),
+            ["intent", "start", "unknown:provider_call_failed"],
+        ),
+        (
+            _BeforeSendClient(),
+            ["intent", "start", "definitive:provider_not_sent"],
+        ),
+        (
+            _RejectedClient(),
+            ["intent", "start", "definitive:provider_rejected"],
+        ),
+    ],
+    ids=(
+        "explicit-outcome-unknown",
+        "definitive-before-send",
+        "definitive-provider-rejection",
+    ),
+)
+def test_capability_typed_provider_failure_is_terminalized_immediately(
+    client,
+    expected_events: list[str],
+) -> None:
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    attribution = _capability_attribution(
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+        principal_id=uuid.uuid4(),
+    )
+    runtime = _Runtime(client=client, attribution=attribution)
+    usage_recorder = _UsageRecorder()
+    node = _node(
+        context={
+            "provider_execution_capability_required": True,
+            "provider_execution_capability_limits": {
+                "input_token_cap": 10_000,
+                "output_token_cap": 100,
+                "cost_cap_microusd": 50_000,
+            },
+            "deployment_id": str(uuid.uuid4()),
+            "workflow_version": 1,
+            "organization_id": str(organization_id),
+            "workflow_id": str(workflow_id),
+            "execution_subject": {"type": "user", "id": str(uuid.uuid4())},
+        }
+    )
+    node.bind_provider_execution_runtime(runtime)
+    node.bind_provider_usage_recorder(usage_recorder)
+
+    with pytest.raises(NonRetryableWorkflowError):
+        node.execute(
+            {},
+            runtime_control=_control(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+            ),
+        )
+
+    assert usage_recorder.events == expected_events
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected_events"),
+    [
+        ("intent", ["intent"]),
+        ("start", ["intent", "start"]),
+    ],
+)
+def test_capability_usage_commit_failure_blocks_provider_call(
+    phase: str,
+    expected_events: list[str],
+) -> None:
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    attribution = _capability_attribution(
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+        principal_id=uuid.uuid4(),
+    )
+    client = _Client()
+    runtime = _Runtime(client=client, attribution=attribution)
+    usage_recorder = _FailingUsageRecorder(phase=phase)
+    node = _node(
+        context={
+            "provider_execution_capability_required": True,
+            "provider_execution_capability_limits": {
+                "input_token_cap": 10_000,
+                "output_token_cap": 100,
+                "cost_cap_microusd": 50_000,
+            },
+            "deployment_id": str(uuid.uuid4()),
+            "workflow_version": 1,
+            "organization_id": str(organization_id),
+            "workflow_id": str(workflow_id),
+            "execution_subject": {"type": "user", "id": str(uuid.uuid4())},
+        }
+    )
+    node.bind_provider_execution_runtime(runtime)
+    node.bind_provider_usage_recorder(usage_recorder)
+
+    with pytest.raises(NonRetryableWorkflowError):
+        node.execute(
+            {},
+            runtime_control=_control(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+            ),
+        )
+
+    assert usage_recorder.events == expected_events
+    assert client.calls == []
 
 def test_capability_required_llm_node_fails_before_client_when_trusted_control_missing(
     monkeypatch,
@@ -371,19 +732,10 @@ def test_capability_required_legacy_memory_summary_is_skipped_without_fallback(
 ):
     organization_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
-    attribution = ProviderExecutionAttribution(
-        credential_id=uuid.uuid4(),
-        credential_principal_user_id=uuid.uuid4(),
+    attribution = _capability_attribution(
         organization_id=organization_id,
-        model_id="gpt-safe",
-        model_db_id=uuid.uuid4(),
-        capability_id=uuid.uuid4(),
-        capability_revision=1,
-        pricing_snapshot=ProviderExecutionPricingSnapshot(
-            revision="d" * 64,
-            input_price_per_1k=Decimal("0.001"),
-            output_price_per_1k=Decimal("0.002"),
-        ),
+        workflow_id=workflow_id,
+        principal_id=uuid.uuid4(),
     )
     runtime = _Runtime(client=_Client(), attribution=attribution)
     node = _node(

@@ -57,6 +57,7 @@ celery_app.conf.update(
         "security_alert.*": {"queue": "log"},
         "knowledge.*": {"queue": "knowledge"},
         "memory.*": {"queue": "log"},
+        "provider_usage.*": {"queue": "log"},
     },
     beat_schedule={
         "security-alert-reconciliation": {
@@ -72,6 +73,11 @@ celery_app.conf.update(
         "audit-event-outbox": {
             "task": "audit.event_outbox.process",
             "schedule": 30.0,
+            "options": {"queue": "log"},
+        },
+        "provider-usage-reconciliation": {
+            "task": "provider_usage.reconcile",
+            "schedule": 60.0,
             "options": {"queue": "log"},
         },
         "memory-secret-replay-retention": {

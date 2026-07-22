@@ -21,6 +21,8 @@ Status: Draft
 - Given `/dashboard/mymodule`에 표시되는 App row의 primary workflow에 당월/전월 `llm_usage_logs` 비용이 있다, When `GET /apps/operations`를 호출한다, Then `row.app.operation_metrics`는 당월 비용, 월 예상 비용, 전월 비용, 전월 대비 증감률을 반환한다.
 - Given primary workflow에 Agent Builder planner/repair usage가 있다, When `GET /apps`와 `GET /apps/operations`를 호출한다, Then 해당 비용은 예산 사용률, 당월 비용과 월 예상 총비용에 포함되고 `operation_metrics`의 Agent Builder 구분 필드에도 반환된다.
 - Given workflow 실행 usage와 Agent Builder usage가 함께 있다, When `/dashboard/mymodule` 리스트 보기를 렌더링한다, Then workflow 비용 칸은 총비용 아래에 두 구분값을 표시하며 구분값의 합은 총비용과 같다.
+- Given 당월 `provider_started` 또는 `outcome_unknown` canonical operation이 남아 있다, When `GET /apps/operations`와 `/dashboard/mymodule` 리스트 보기를 확인한다, Then 계산 가능한 비용과 `usage_data_complete=false`, 정확한 `unresolved_provider_call_count`를 반환하고 화면은 `미확정 N건`을 표시한다.
+- Given 여러 활성 workflow에 미확정 canonical operation이 있다, When 호환 `GET /apps/operations/cost-summary`를 호출한다, Then `unresolved_provider_call_count`는 대상 전체 합계이고 한 건이라도 있으면 `usage_data_complete=false`다.
 - Given `/dashboard/mymodule`을 열거나 새로고침한다, Then `예상 월 비용`, `평균 증가 추세`, `예산 위험`, `비용 위험 신호` 상단 카드는 표시하지 않고 `GET /apps/operations/cost-summary`를 호출하지 않는다.
 - Given App의 `active_deployment_id`가 다른 App의 활성 deployment를 가리킨다, When `GET /apps/operations/cost-summary`를 호출한다, Then 해당 App primary workflow는 활성 workflow 수와 비용 합계에서 제외된다.
 - Given App의 `active_deployment_id`가 다른 App의 활성 deployment를 가리킨다, When `GET /apps/operations`를 호출한다, Then 해당 row는 다른 App deployment를 `active`로 표시하지 않고 해당 App의 실제 배포 이력으로 `inactive` 또는 `undeployed`를 반환하며 `automatic_optimization`은 null이다.

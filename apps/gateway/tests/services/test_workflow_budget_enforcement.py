@@ -177,6 +177,82 @@ def test_aggregation_failure_fails_closed():
         _ensure(db, workflow_id)
 
     assert exc_info.value.status_code == 429
+    audits = db.added_of(AuditLog)
+    assert len(audits) == 1
+    assert audits[0].action == AuditAction.POLICY_BLOCK
+    assert audits[0].audit_metadata["reason"] == "budget.exceeded"
+    assert db.commits >= 1
+
+
+def test_unresolved_provider_attempt_makes_active_budget_unavailable():
+    workflow_id = uuid4()
+    organization_id = uuid4()
+    db = _enforcement_db(
+        budget=_budget_row(organization_id, workflow_id, Decimal("100.00")),
+        provider_usage_operations=[
+            _provider_usage_operation(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                state="outcome_unknown",
+            )
+        ],
+    )
+
+    decision = _service().evaluate_workflow_budget_execution(
+        db,
+        workflow_id=workflow_id,
+        now=NOW,
+    )
+
+    assert decision.status == "unavailable"
+    with pytest.raises(HTTPException) as exc_info:
+        _ensure(db, workflow_id)
+    assert exc_info.value.status_code == 429
+    audits = db.added_of(AuditLog)
+    assert len(audits) == 1
+    assert audits[0].action == AuditAction.POLICY_BLOCK
+    assert audits[0].audit_metadata["reason"] == "budget.exceeded"
+    assert audits[0].audit_metadata["trigger_mode"] == "test"
+    assert db.commits >= 1
+
+
+def test_canonical_success_is_counted_once_when_projection_exists():
+    workflow_id = uuid4()
+    organization_id = uuid4()
+    operation_id = uuid4()
+    db = _enforcement_db(
+        budget=_budget_row(organization_id, workflow_id, Decimal("100.00")),
+        usage_logs=[
+            _usage_log(
+                workflow_id,
+                Decimal("150.000000"),
+                provider_usage_operation_id=operation_id,
+            )
+        ],
+        provider_usage_operations=[
+            _provider_usage_operation(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                state="succeeded",
+                total_cost_microusd=150_000_000,
+            ),
+            _provider_usage_operation(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                state="succeeded",
+                total_cost_microusd=25_000_000,
+            ),
+        ],
+    )
+
+    cost = _service().get_current_month_cost(
+        db,
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+        now=NOW,
+    )
+
+    assert cost == Decimal("175")
 
 
 def test_schedule_budget_decision_is_side_effect_free_and_distinguishes_unavailable():
@@ -297,7 +373,13 @@ def _budget_row(organization_id, workflow_id, amount, *, is_enabled=True):
     )
 
 
-def _usage_log(workflow_id, total_cost, *, now_utc=False):
+def _usage_log(
+    workflow_id,
+    total_cost,
+    *,
+    now_utc=False,
+    provider_usage_operation_id=None,
+):
     created_at = (
         datetime.now(timezone.utc)
         if now_utc
@@ -308,6 +390,32 @@ def _usage_log(workflow_id, total_cost, *, now_utc=False):
         organization_id=None,
         total_cost=total_cost,
         created_at=created_at,
+        prompt_tokens=0,
+        completion_tokens=0,
+        runtime_surface=None,
+        status="success",
+        provider_usage_operation_id=provider_usage_operation_id,
+    )
+
+
+def _provider_usage_operation(
+    *,
+    organization_id,
+    workflow_id,
+    state,
+    total_cost_microusd=None,
+):
+    return SimpleNamespace(
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+        purpose="main_generation",
+        state=state,
+        provider_started_at=datetime(
+            2026, 7, 10, 0, 0, tzinfo=timezone.utc
+        ),
+        prompt_tokens=0 if state == "succeeded" else None,
+        completion_tokens=0 if state == "succeeded" else None,
+        total_cost_microusd=total_cost_microusd,
     )
 
 
@@ -343,12 +451,19 @@ def _deployed_app(
     return app_row, deployment_row
 
 
-def _enforcement_db(*, budget=None, usage_logs=None, extra_rows=None):
+def _enforcement_db(
+    *,
+    budget=None,
+    usage_logs=None,
+    provider_usage_operations=None,
+    extra_rows=None,
+):
     rows = list(extra_rows or [])
     if budget is not None:
         rows.append(budget)
     db = _Db(rows=rows)
     db.usage_logs = list(usage_logs or [])
+    db.provider_usage_operations = list(provider_usage_operations or [])
     return db
 
 

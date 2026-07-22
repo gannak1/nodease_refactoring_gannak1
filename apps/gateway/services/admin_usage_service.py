@@ -7,16 +7,16 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, func, or_
+from sqlalchemy import and_, func
 
 from apps.shared.db.models.app import App
-from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_budget import WorkflowBudget
-from apps.shared.domain.llm_usage import (
-    AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
-    is_agent_builder_intent_usage,
-    is_billable_llm_usage,
+from apps.shared.services.provider_usage_cost_read_model import (
+    ProviderUsageAggregate,
+    provider_usage_aggregate_subquery,
+    read_workflow_usage_aggregate,
+    summarize_usage_records,
 )
 from apps.shared.schemas.admin_usage import (
     AdminBudgetSummaryBlock,
@@ -40,10 +40,15 @@ class AdminUsagePeriod:
 class UsageCostBreakdown:
     total_cost: Decimal
     agent_builder_cost: Decimal
+    unresolved_provider_call_count: int = 0
 
     @property
     def workflow_execution_cost(self) -> Decimal:
         return self.total_cost - self.agent_builder_cost
+
+    @property
+    def usage_data_complete(self) -> bool:
+        return self.unresolved_provider_call_count == 0
 
 
 class AdminUsageService:
@@ -123,6 +128,8 @@ class AdminUsageService:
             total_cost=float(costs.total_cost),
             workflow_execution_cost=float(costs.workflow_execution_cost),
             agent_builder_cost=float(costs.agent_builder_cost),
+            usage_data_complete=costs.usage_data_complete,
+            unresolved_provider_call_count=costs.unresolved_provider_call_count,
             budget=_budget_summary_block(
                 db,
                 organization_id=organization_id,
@@ -146,19 +153,16 @@ def _aggregate_workflow_usage_fake(
     budget_now: datetime,
 ) -> AdminWorkflowUsageResponse:
     aggregates = _primary_workflow_zero_items(db, organization_id)
-    for usage in db.usage_logs:
-        aggregate = aggregates.get(usage.workflow_id)
-        if (
-            aggregate is None
-            or not _is_usage_in_period(usage, period)
-            or not _is_usage_in_organization(usage, organization_id)
-            or not is_billable_llm_usage(
-                getattr(usage, "runtime_surface", None),
-                getattr(usage, "status", "success"),
-            )
-        ):
-            continue
-        _add_usage(aggregate, usage)
+    for workflow_id, aggregate in aggregates.items():
+        usage = summarize_usage_records(
+            workflow_id=workflow_id,
+            organization_id=organization_id,
+            start_at=period.start_at,
+            end_at=period.end_at,
+            legacy_usage_logs=db.usage_logs,
+            provider_operations=getattr(db, "provider_usage_operations", ()),
+        )
+        _apply_usage_aggregate(aggregate, usage)
 
     sorted_items = sorted(aggregates.values(), key=_usage_sort_key)
     for item in sorted_items:
@@ -172,6 +176,10 @@ def _aggregate_workflow_usage_fake(
         total=len(sorted_items),
         period=period,
         items=_page_items(sorted_items, page, limit),
+        unresolved_provider_call_count=sum(
+            int(item["unresolved_provider_call_count"])
+            for item in sorted_items
+        ),
     )
 
 
@@ -202,13 +210,21 @@ def _usage_response(
     total: int,
     period: AdminUsagePeriod,
     items: list[AdminWorkflowUsageItem],
+    unresolved_provider_call_count: int | None = None,
 ) -> AdminWorkflowUsageResponse:
+    unresolved_count = (
+        sum(item.unresolved_provider_call_count for item in items)
+        if unresolved_provider_call_count is None
+        else unresolved_provider_call_count
+    )
     return AdminWorkflowUsageResponse(
         total=total,
         period=AdminUsagePeriodResponse(
             start_at=period.start_at,
             end_at=period.end_at,
         ),
+        usage_data_complete=unresolved_count == 0,
+        unresolved_provider_call_count=unresolved_count,
         items=items,
     )
 
@@ -221,15 +237,28 @@ def _aggregate_workflow_usage_query(
     limit: int,
     budget_now: datetime,
 ) -> AdminWorkflowUsageResponse:
-    prompt_tokens = func.coalesce(func.sum(LLMUsageLog.prompt_tokens), 0).label(
+    usage = provider_usage_aggregate_subquery(
+        organization_id=organization_id,
+        start_at=period.start_at,
+        end_at=period.end_at,
+    )
+    prompt_tokens = func.coalesce(usage.c.prompt_tokens, 0).label(
         "prompt_tokens"
     )
-    completion_tokens = func.coalesce(
-        func.sum(LLMUsageLog.completion_tokens), 0
-    ).label("completion_tokens")
-    call_count = func.count(LLMUsageLog.id).label("call_count")
-    total_cost = _total_cost_sum().label("total_cost")
-    agent_builder_cost = _agent_builder_cost_sum().label("agent_builder_cost")
+    completion_tokens = func.coalesce(usage.c.completion_tokens, 0).label(
+        "completion_tokens"
+    )
+    call_count = func.coalesce(usage.c.call_count, 0).label("call_count")
+    total_cost = func.coalesce(usage.c.total_cost, 0).label("total_cost")
+    agent_builder_cost = func.coalesce(usage.c.agent_builder_cost, 0).label(
+        "agent_builder_cost"
+    )
+    unresolved_count = func.coalesce(
+        usage.c.unresolved_provider_call_count, 0
+    ).label("unresolved_provider_call_count")
+    response_unresolved_count = func.coalesce(
+        func.sum(unresolved_count).over(), 0
+    ).label("response_unresolved_provider_call_count")
 
     query = (
         db.query(
@@ -240,6 +269,8 @@ def _aggregate_workflow_usage_query(
             call_count,
             total_cost,
             agent_builder_cost,
+            unresolved_count,
+            response_unresolved_count,
         )
         .join(
             Workflow,
@@ -248,22 +279,11 @@ def _aggregate_workflow_usage_query(
                 Workflow.organization_id == organization_id,
             ),
         )
-        .outerjoin(
-            LLMUsageLog,
-            and_(
-                LLMUsageLog.workflow_id == App.workflow_id,
-                or_(
-                    LLMUsageLog.organization_id == organization_id,
-                    LLMUsageLog.organization_id.is_(None),
-                ),
-                *_usage_in_period_conditions(period),
-            ),
-        )
+        .outerjoin(usage, usage.c.workflow_id == App.workflow_id)
         .filter(
             App.organization_id == organization_id,
             App.workflow_id.isnot(None),
         )
-        .group_by(App.workflow_id, App.name)
     )
     total = query.count()
     rows = (
@@ -286,39 +306,26 @@ def _aggregate_workflow_usage_query(
             now=budget_now,
         )
         items.append(item)
-    return _usage_response(total=total, period=period, items=items)
-
-
-def _total_cost_sum():
-    return func.coalesce(func.sum(func.coalesce(LLMUsageLog.total_cost, 0)), 0)
-
-
-def _agent_builder_cost_sum():
-    return func.coalesce(
-        func.sum(
-            case(
-                (
-                    LLMUsageLog.runtime_surface
-                    == AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
-                    func.coalesce(LLMUsageLog.total_cost, 0),
-                ),
-                else_=0,
+    if rows:
+        response_unresolved = int(
+            rows[0].response_unresolved_provider_call_count or 0
+        )
+    elif total:
+        response_unresolved = int(
+            query.with_entities(
+                func.coalesce(func.sum(unresolved_count), 0)
             )
-        ),
-        0,
-    )
-
-
-def _usage_in_period_conditions(period: AdminUsagePeriod):
-    return (
-        LLMUsageLog.created_at >= period.start_at,
-        LLMUsageLog.created_at < period.end_at,
-        or_(
-            LLMUsageLog.runtime_surface.is_(None),
-            LLMUsageLog.runtime_surface
-            != AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
-            LLMUsageLog.status == "success",
-        ),
+            .order_by(None)
+            .scalar()
+            or 0
+        )
+    else:
+        response_unresolved = 0
+    return _usage_response(
+        total=total,
+        period=period,
+        items=items,
+        unresolved_provider_call_count=response_unresolved,
     )
 
 
@@ -327,6 +334,11 @@ def _organization_period_cost_query(
     organization_id: Any,
     period: AdminUsagePeriod,
 ) -> UsageCostBreakdown:
+    usage = provider_usage_aggregate_subquery(
+        organization_id=organization_id,
+        start_at=period.start_at,
+        end_at=period.end_at,
+    )
     eligible_primary_workflows = (
         db.query(App.workflow_id.label("workflow_id"))
         .join(
@@ -345,23 +357,25 @@ def _organization_period_cost_query(
     )
     row = (
         db.query(
-            _total_cost_sum().label("total_cost"),
-            _agent_builder_cost_sum().label("agent_builder_cost"),
+            func.coalesce(func.sum(usage.c.total_cost), 0).label("total_cost"),
+            func.coalesce(func.sum(usage.c.agent_builder_cost), 0).label(
+                "agent_builder_cost"
+            ),
+            func.coalesce(
+                func.sum(usage.c.unresolved_provider_call_count), 0
+            ).label("unresolved_provider_call_count"),
         )
         .join(
             eligible_primary_workflows,
-            eligible_primary_workflows.c.workflow_id == LLMUsageLog.workflow_id,
-        )
-        .filter(
-            or_(
-                LLMUsageLog.organization_id == organization_id,
-                LLMUsageLog.organization_id.is_(None),
-            ),
-            *_usage_in_period_conditions(period),
+            eligible_primary_workflows.c.workflow_id == usage.c.workflow_id,
         )
         .one()
     )
-    return _cost_breakdown(row.total_cost, row.agent_builder_cost)
+    return _cost_breakdown(
+        row.total_cost,
+        row.agent_builder_cost,
+        row.unresolved_provider_call_count,
+    )
 
 
 def _organization_period_cost_fake(
@@ -370,34 +384,29 @@ def _organization_period_cost_fake(
     period: AdminUsagePeriod,
 ) -> UsageCostBreakdown:
     eligible_workflow_ids = set(_primary_workflow_zero_items(db, organization_id))
-    total_cost = Decimal("0")
-    agent_builder_cost = Decimal("0")
-    for usage in db.usage_logs:
-        if (
-            usage.workflow_id not in eligible_workflow_ids
-            or not _is_usage_in_organization(usage, organization_id)
-            or not period.start_at <= usage.created_at < period.end_at
-            or not is_billable_llm_usage(
-                getattr(usage, "runtime_surface", None),
-                getattr(usage, "status", "success"),
-            )
-        ):
-            continue
-        cost = AdminUsageService.coalesce_cost(usage.total_cost)
-        total_cost += cost
-        if is_agent_builder_intent_usage(
-            getattr(usage, "runtime_surface", None)
-        ):
-            agent_builder_cost += cost
-    return UsageCostBreakdown(total_cost, agent_builder_cost)
-
-
-def _is_usage_in_period(usage: Any, period: AdminUsagePeriod) -> bool:
-    return period.start_at <= usage.created_at < period.end_at
-
-
-def _is_usage_in_organization(usage: Any, organization_id: Any) -> bool:
-    return usage.organization_id is None or usage.organization_id == organization_id
+    aggregates = [
+        summarize_usage_records(
+            workflow_id=workflow_id,
+            organization_id=organization_id,
+            start_at=period.start_at,
+            end_at=period.end_at,
+            legacy_usage_logs=db.usage_logs,
+            provider_operations=getattr(db, "provider_usage_operations", ()),
+        )
+        for workflow_id in eligible_workflow_ids
+    ]
+    return UsageCostBreakdown(
+        total_cost=sum(
+            (aggregate.total_cost for aggregate in aggregates), Decimal("0")
+        ),
+        agent_builder_cost=sum(
+            (aggregate.agent_builder_cost for aggregate in aggregates),
+            Decimal("0"),
+        ),
+        unresolved_provider_call_count=sum(
+            aggregate.unresolved_provider_call_count for aggregate in aggregates
+        ),
+    )
 
 
 def _empty_usage_item(workflow_id: Any, workflow_name: str) -> dict[str, Any]:
@@ -410,23 +419,33 @@ def _empty_usage_item(workflow_id: Any, workflow_name: str) -> dict[str, Any]:
         "total_cost": Decimal("0"),
         "workflow_execution_cost": Decimal("0"),
         "agent_builder_cost": Decimal("0"),
+        "usage_data_complete": True,
+        "unresolved_provider_call_count": 0,
     }
 
 
-def _add_usage(aggregate: dict[str, Any], usage: Any) -> None:
-    aggregate["prompt_tokens"] += usage.prompt_tokens or 0
-    aggregate["completion_tokens"] += usage.completion_tokens or 0
-    aggregate["call_count"] += 1
-    cost = AdminUsageService.coalesce_cost(usage.total_cost)
-    aggregate["total_cost"] += cost
-    if is_agent_builder_intent_usage(getattr(usage, "runtime_surface", None)):
-        aggregate["agent_builder_cost"] += cost
-    else:
-        aggregate["workflow_execution_cost"] += cost
+def _apply_usage_aggregate(
+    target: dict[str, Any],
+    usage: ProviderUsageAggregate,
+) -> None:
+    target["prompt_tokens"] = usage.prompt_tokens
+    target["completion_tokens"] = usage.completion_tokens
+    target["call_count"] = usage.call_count
+    target["total_cost"] = usage.total_cost
+    target["workflow_execution_cost"] = usage.workflow_execution_cost
+    target["agent_builder_cost"] = usage.agent_builder_cost
+    target["usage_data_complete"] = usage.usage_data_complete
+    target["unresolved_provider_call_count"] = (
+        usage.unresolved_provider_call_count
+    )
 
 
 def _usage_item_from_row(row: Any) -> AdminWorkflowUsageItem:
-    costs = _cost_breakdown(row.total_cost, row.agent_builder_cost)
+    costs = _cost_breakdown(
+        row.total_cost,
+        row.agent_builder_cost,
+        row.unresolved_provider_call_count,
+    )
     return AdminWorkflowUsageItem(
         workflow_id=row.workflow_id,
         workflow_name=row.workflow_name,
@@ -436,13 +455,22 @@ def _usage_item_from_row(row: Any) -> AdminWorkflowUsageItem:
         total_cost=float(costs.total_cost),
         workflow_execution_cost=float(costs.workflow_execution_cost),
         agent_builder_cost=float(costs.agent_builder_cost),
+        usage_data_complete=costs.usage_data_complete,
+        unresolved_provider_call_count=costs.unresolved_provider_call_count,
     )
 
 
-def _cost_breakdown(total_cost: Any, agent_builder_cost: Any) -> UsageCostBreakdown:
+def _cost_breakdown(
+    total_cost: Any,
+    agent_builder_cost: Any,
+    unresolved_provider_call_count: Any = 0,
+) -> UsageCostBreakdown:
     return UsageCostBreakdown(
         total_cost=AdminUsageService.coalesce_cost(total_cost),
         agent_builder_cost=AdminUsageService.coalesce_cost(agent_builder_cost),
+        unresolved_provider_call_count=int(
+            unresolved_provider_call_count or 0
+        ),
     )
 
 
@@ -505,12 +533,15 @@ def _workflow_budget_block(
 
     WorkflowBudgetService = _budget_service()
 
-    current_cost = WorkflowBudgetService.get_current_month_cost(
+    period = AdminUsageService.resolve_month_period_kst(now)
+    current_usage = read_workflow_usage_aggregate(
         db,
         workflow_id=workflow_id,
-        now=now,
         organization_id=organization_id,
+        start_at=period.start_at,
+        end_at=period.end_at,
     )
+    current_cost = current_usage.total_cost
     monthly_budget = AdminUsageService.coalesce_cost(budget.monthly_budget_usd)
     status = WorkflowBudgetService.classify_budget_usage(
         current_cost=current_cost,
@@ -525,6 +556,10 @@ def _workflow_budget_block(
         current_month_cost=float(current_cost),
         usage_ratio=float(current_cost / monthly_budget),
         status=status,
+        usage_data_complete=current_usage.usage_data_complete,
+        unresolved_provider_call_count=(
+            current_usage.unresolved_provider_call_count
+        ),
     )
 
 
