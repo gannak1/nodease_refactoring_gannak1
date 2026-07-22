@@ -39,6 +39,7 @@ def test_helm_worker_is_migration_first_and_has_bounded_concurrency() -> None:
     service_account_template = _read(
         "infra/helm/moduly/templates/serviceaccount.yaml"
     )
+    helpers = _read("infra/helm/moduly/templates/_helpers.tpl")
     values = _read("infra/helm/moduly/values.yaml")
     production = _read("infra/helm/moduly/values-production.yaml")
     local = _read("infra/helm/moduly/values-local.yaml")
@@ -48,8 +49,15 @@ def test_helm_worker_is_migration_first_and_has_bounded_concurrency() -> None:
     assert "apps.gateway.knowledge_worker:app" in template
     assert "--queues=knowledge" in template
     assert "--concurrency={{ .Values.knowledgeWorker.concurrency }}" in template
+    assert "--hostname=knowledge@%h" in template
     assert "initContainers:" in template
     assert "apps.gateway.knowledge_worker_readiness" in template
+    assert "readinessProbe:" in template
+    assert "apps.gateway.knowledge_worker_health" in template
+    assert "livenessProbe:" not in template
+    assert 'include "moduly.validateKnowledgeWorker" .' in template
+    assert 'define "moduly.validateKnowledgeWorker"' in helpers
+    assert "knowledge worker requires the bundled Celery Beat recovery scheduler" in helpers
     assert "claimName: {{ include \"moduly.knowledgeUploadClaimName\" . }}" in template
     assert "mountPath: /app/uploads" in template
     assert "mountPath: /app/uploads" in gateway_template
@@ -62,7 +70,8 @@ def test_helm_worker_is_migration_first_and_has_bounded_concurrency() -> None:
     assert ".Values.serviceAccount.create" in service_account_template
     assert 'include "moduly.serviceAccountName" .' in service_account_template
     assert "knowledgeWorker:\n  enabled: false" in values
-    assert "knowledgeWorker:\n  enabled: false" in production
+    assert "knowledgeWorker:\n  enabled: true" in production
+    assert "beat:\n  enabled: true" in production
     assert "knowledgeWorker:\n  enabled: true" in local
     assert "localStorage:\n    enabled: true" in local
 

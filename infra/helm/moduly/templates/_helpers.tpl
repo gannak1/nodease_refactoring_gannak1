@@ -45,6 +45,30 @@ never render without both coordinates; provider credentials remain external.
 {{- end -}}
 
 {{/*
+Validate the bundled Knowledge worker's operational dependencies. The durable
+ingestion contract requires a recovery scheduler and positive worker capacity.
+*/}}
+{{- define "moduly.validateKnowledgeWorker" -}}
+{{- if .Values.knowledgeWorker.enabled -}}
+{{- if not .Values.beat.enabled -}}
+{{- fail "knowledge worker requires the bundled Celery Beat recovery scheduler" -}}
+{{- end -}}
+{{- $replicaCount := toString .Values.knowledgeWorker.replicaCount -}}
+{{- if not (regexMatch "^[1-9][0-9]*$" $replicaCount) -}}
+{{- fail "knowledgeWorker.replicaCount must be a positive integer" -}}
+{{- end -}}
+{{- $concurrency := toString .Values.knowledgeWorker.concurrency -}}
+{{- if not (regexMatch "^[1-9][0-9]*$" $concurrency) -}}
+{{- fail "knowledgeWorker.concurrency must be a positive integer" -}}
+{{- end -}}
+{{- $storageType := include "moduly.storageType" . -}}
+{{- if and (eq $storageType "LOCAL") (not .Values.knowledgeWorker.localStorage.enabled) -}}
+{{- fail "knowledgeWorker.localStorage.enabled must be true when Knowledge worker uses LOCAL storage" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Create a default fully qualified app name.
 We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
 If release name contains chart name it will be used as a full name.
