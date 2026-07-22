@@ -152,5 +152,9 @@ class NodeFactory:
             usage_recorder = runtime_dependencies.provider_usage_recorder
             if usage_recorder is not None:
                 node.bind_provider_usage_recorder(usage_recorder)
+        if schema.type == "fileExtractionNode" and runtime_dependencies is not None:
+            fetcher = runtime_dependencies.remote_file_fetcher
+            if fetcher is not None:
+                node.bind_remote_file_fetcher(fetcher)
         node.runtime_node_type = schema.type
         return node

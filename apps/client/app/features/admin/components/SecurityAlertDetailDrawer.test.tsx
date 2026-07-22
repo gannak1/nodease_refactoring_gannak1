@@ -564,9 +564,11 @@ describe('SecurityAlertDetailDrawer', () => {
         reason: '정상 요청으로 확인했습니다.',
       }),
     );
-    expect(
-      screen.queryByRole('dialog', { name: '보안 알림 해결' }),
-    ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('dialog', { name: '보안 알림 해결' }),
+      ).not.toBeInTheDocument(),
+    );
     expect(await screen.findByText('해결됨')).toBeInTheDocument();
   });
 

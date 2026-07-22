@@ -1,8 +1,10 @@
 import socket
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import httpx
 import pytest
 from cryptography.fernet import Fernet
 
@@ -24,6 +26,7 @@ from apps.shared.services.egress_guard import (
     EgressGuardError,
     EgressGuardPolicy,
     OutboundEgressGuard,
+    download_url_to_temp_file,
     ensure_db_probe_allowed,
     ensure_network_target_allowed,
     ensure_object_listing_allowed,
@@ -31,6 +34,7 @@ from apps.shared.services.egress_guard import (
     safe_db_fetch_batch_size,
     safe_http_request,
 )
+from apps.shared.services.outbound_operation_policy import KNOWLEDGE_API_FETCH
 
 
 def _fake_getaddrinfo(ip_address):
@@ -149,45 +153,32 @@ def test_safe_http_request_rejects_unsupported_method_at_guard_policy(monkeypatc
     assert exc_info.value.reason_code == "egress.unsupported_method"
 
 
-def test_safe_http_request_rejects_unverified_peer_ip(monkeypatch):
-    class FakeResponse:
-        status_code = 200
-        headers = {}
-        is_redirect = False
-        raw = None
-        closed = False
-
-        def iter_content(self, chunk_size=8192):
-            yield b"ok"
-
-        def close(self):
-            self.closed = True
-
-    fake_response = FakeResponse()
-
-    class FakeSession:
-        def __enter__(self):
-            self.trust_env = False
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return None
-
-        def request(self, **kwargs):
-            return fake_response
+def test_safe_http_request_no_longer_uses_post_response_requests_peer_check(
+    monkeypatch,
+):
+    class ForbiddenSession:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("requests must not perform the network connection")
 
     monkeypatch.setattr(
         socket,
         "getaddrinfo",
         lambda *args, **kwargs: _fake_getaddrinfo("8.8.8.8"),
     )
-    monkeypatch.setattr("apps.shared.services.egress_guard.requests.Session", FakeSession)
+    monkeypatch.setattr(
+        "apps.shared.services.egress_guard.requests.Session",
+        ForbiddenSession,
+    )
+    monkeypatch.setattr(
+        "apps.shared.services.guarded_http_transport.GuardedHttpTransport",
+        lambda *_args, **_kwargs: httpx.MockTransport(
+            lambda request: httpx.Response(200, content=b"ok", request=request)
+        ),
+    )
 
-    with pytest.raises(EgressGuardError) as exc_info:
-        safe_http_request("GET", "https://example.com/resource")
+    response = safe_http_request("GET", "https://example.com/resource")
 
-    assert exc_info.value.reason_code == "egress.peer_unverified"
-    assert fake_response.closed is True
+    assert response.content == b"ok"
 
 
 def test_response_peer_ip_validation_rejects_missing_or_private_peer():
@@ -477,42 +468,89 @@ def test_egress_guard_strips_sensitive_headers_on_cross_origin_redirect():
     assert sanitized["Accept"] == "application/json"
 
 
+def test_operation_bound_request_allows_same_origin_redirect_with_query(
+    monkeypatch,
+):
+    requests_seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests_seen.append(str(request.url))
+        if request.url.path == "/start":
+            return httpx.Response(
+                302,
+                headers={"location": "/result?cursor=next"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=b"{}",
+            request=request,
+        )
+
+    monkeypatch.setattr(
+        "apps.shared.services.guarded_http_transport.GuardedHttpTransport",
+        lambda *_args, **_kwargs: httpx.MockTransport(handler),
+    )
+
+    response = safe_http_request(
+        "GET",
+        "https://example.com/start?cursor=first",
+        operation_id=KNOWLEDGE_API_FETCH,
+    )
+
+    assert response.status_code == 200
+    assert requests_seen == [
+        "https://example.com/start?cursor=first",
+        "https://example.com/result?cursor=next",
+    ]
+
+
+def test_operation_bound_request_rejects_cross_origin_redirect(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            302,
+            headers={"location": "https://redirect.example/result"},
+            request=request,
+        )
+
+    monkeypatch.setattr(
+        "apps.shared.services.guarded_http_transport.GuardedHttpTransport",
+        lambda *_args, **_kwargs: httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(EgressGuardError) as captured:
+        safe_http_request(
+            "GET",
+            "https://example.com/start",
+            operation_id=KNOWLEDGE_API_FETCH,
+        )
+
+    assert captured.value.reason_code == "egress.origin_not_allowed"
+
+
 def test_safe_http_request_disables_environment_proxy(monkeypatch):
-    class FakeResponse:
-        status_code = 200
-        headers = {}
-        is_redirect = False
+    captured = {}
+    real_client = httpx.Client
 
-        def iter_content(self, chunk_size=8192):
-            yield b"ok"
+    def client_factory(**kwargs):
+        captured.update(kwargs)
+        return real_client(**kwargs)
 
-        def close(self):
-            pass
-
-    class FakeSession:
-        last_instance = None
-        last_request_kwargs = None
-
-        def __init__(self):
-            self.trust_env = True
-            FakeSession.last_instance = self
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return None
-
-        def request(self, **kwargs):
-            FakeSession.last_request_kwargs = kwargs
-            return FakeResponse()
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["headers"] = dict(request.headers)
+        return httpx.Response(200, content=b"ok", request=request)
 
     monkeypatch.setattr(
         socket,
         "getaddrinfo",
         lambda *args, **kwargs: _fake_getaddrinfo("8.8.8.8"),
     )
-    monkeypatch.setattr("apps.shared.services.egress_guard.requests.Session", FakeSession)
+    monkeypatch.setattr("apps.shared.services.egress_guard.httpx.Client", client_factory)
+    monkeypatch.setattr(
+        "apps.shared.services.guarded_http_transport.GuardedHttpTransport",
+        lambda *_args, **_kwargs: httpx.MockTransport(handler),
+    )
 
     response = safe_http_request(
         "GET",
@@ -521,8 +559,129 @@ def test_safe_http_request_disables_environment_proxy(monkeypatch):
     )
 
     assert response.text == "ok"
-    assert FakeSession.last_instance.trust_env is False
-    assert FakeSession.last_request_kwargs["headers"]["Accept-Encoding"] == "identity"
+    assert captured["trust_env"] is False
+    assert captured["headers"]["accept-encoding"] == "identity"
+
+
+def test_download_url_to_temp_file_streams_without_buffered_helper(
+    monkeypatch,
+) -> None:
+    class ChunkedStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"chunk-one"
+            yield b"-chunk-two"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/octet-stream"},
+            stream=ChunkedStream(),
+            request=request,
+        )
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: _fake_getaddrinfo("8.8.8.8"),
+    )
+    monkeypatch.setattr(
+        "apps.shared.services.guarded_http_transport.GuardedHttpTransport",
+        lambda *_args, **_kwargs: httpx.MockTransport(handler),
+    )
+    monkeypatch.setattr(
+        "apps.shared.services.egress_guard.safe_http_request",
+        lambda *_args, **_kwargs: pytest.fail(
+            "download must not buffer through safe_http_request"
+        ),
+    )
+
+    path = download_url_to_temp_file(
+        "https://example.com/document.pdf",
+        suffix=".pdf",
+        policy=EgressGuardPolicy(
+            max_response_bytes=64,
+            validate_peer_ip=False,
+        ),
+    )
+    try:
+        assert Path(path).read_bytes() == b"chunk-one-chunk-two"
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+def test_download_url_to_temp_file_removes_partial_file_at_size_cap(
+    monkeypatch,
+) -> None:
+    class OversizedStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"1234"
+            yield b"5"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            stream=OversizedStream(),
+            request=request,
+        )
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: _fake_getaddrinfo("8.8.8.8"),
+    )
+    monkeypatch.setattr(
+        "apps.shared.services.guarded_http_transport.GuardedHttpTransport",
+        lambda *_args, **_kwargs: httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(EgressGuardError) as captured:
+        download_url_to_temp_file(
+            "https://example.com/document.pdf",
+            policy=EgressGuardPolicy(
+                max_response_bytes=4,
+                validate_peer_ip=False,
+            ),
+        )
+
+    partial_path = Path(captured.value.partial_file_path)
+    assert captured.value.reason_code == "egress.response_too_large"
+    assert partial_path.exists() is False
+
+
+def test_download_url_to_temp_file_rejects_http_error_before_writing(
+    monkeypatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            headers={"content-type": "text/plain"},
+            content=b"synthetic upstream error",
+            request=request,
+        )
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: _fake_getaddrinfo("8.8.8.8"),
+    )
+    monkeypatch.setattr(
+        "apps.shared.services.guarded_http_transport.GuardedHttpTransport",
+        lambda *_args, **_kwargs: httpx.MockTransport(handler),
+    )
+    monkeypatch.setattr(
+        "apps.shared.services.egress_guard.tempfile.NamedTemporaryFile",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an unsuccessful response must not create a temporary file"
+        ),
+    )
+
+    with pytest.raises(EgressGuardError) as captured:
+        download_url_to_temp_file(
+            "https://example.com/missing.txt",
+            policy=EgressGuardPolicy(validate_peer_ip=False),
+        )
+
+    assert captured.value.reason_code == "egress.http_status_rejected"
 
 
 def test_protocol_adapter_guards_reject_dangerous_operations():
@@ -1392,7 +1551,7 @@ def test_api_processor_does_not_copy_raw_url_into_chunk_metadata(monkeypatch):
     assert "example.com/private/path" not in str(result.chunks)
 
 
-def test_api_processor_returns_sanitized_egress_error(monkeypatch):
+def test_api_processor_returns_sanitized_egress_error(monkeypatch, caplog):
     def deny(*args, **kwargs):
         raise EgressGuardError("egress.private_target")
 
@@ -1403,6 +1562,8 @@ def test_api_processor_returns_sanitized_egress_error(monkeypatch):
     assert result.chunks == []
     assert result.metadata == {
         "error": "Outbound request denied.",
-        "reason_code": "egress.private_target",
+        "reason_code": "configuration.invalid",
     }
     assert "127.0.0.1" not in str(result.metadata)
+    assert "127.0.0.1" not in caplog.text
+    assert "egress.private_target" not in caplog.text

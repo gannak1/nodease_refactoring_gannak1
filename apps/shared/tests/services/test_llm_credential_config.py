@@ -8,6 +8,7 @@ from apps.shared.services.llm_credential_config import (
     LLMCredentialConfigError,
     LLMCredentialConfigService,
     load_llm_credential_config,
+    materialize_llm_client_credentials,
     require_llm_credential_keyring_ready,
 )
 from apps.shared.services.llm_credential_rotation import (
@@ -60,6 +61,47 @@ def test_llm_credential_config_reads_only_explicit_legacy_rows_without_keyring(
     assert load_llm_credential_config(credential)["apiKey"] == (
         "synthetic-legacy-secret"
     )
+
+
+def test_llm_client_credentials_use_current_provider_endpoint_authority():
+    credential = SimpleNamespace(
+        encrypted_config=json.dumps(
+            {
+                "apiKey": "synthetic-provider-secret",
+                "baseUrl": "https://stale-provider.example/v1",
+            }
+        ),
+        encryption_key_version=None,
+        encryption_algorithm=None,
+    )
+    provider = SimpleNamespace(base_url="https://current-provider.example/v1")
+
+    materialized = materialize_llm_client_credentials(credential, provider)
+
+    assert materialized == {
+        "apiKey": "synthetic-provider-secret",
+        "baseUrl": "https://current-provider.example/v1",
+    }
+
+
+@pytest.mark.parametrize("base_url", [None, "", " https://provider.example/v1"])
+def test_llm_client_credentials_reject_invalid_provider_endpoint(base_url):
+    credential = SimpleNamespace(
+        encrypted_config=json.dumps(
+            {"apiKey": "synthetic-provider-secret", "baseUrl": "https://stale"}
+        ),
+        encryption_key_version=None,
+        encryption_algorithm=None,
+    )
+
+    with pytest.raises(LLMCredentialConfigError) as captured:
+        materialize_llm_client_credentials(
+            credential,
+            SimpleNamespace(base_url=base_url),
+        )
+
+    assert "synthetic-provider-secret" not in str(captured.value)
+    assert "provider.example" not in str(captured.value)
 
 
 @pytest.mark.parametrize(

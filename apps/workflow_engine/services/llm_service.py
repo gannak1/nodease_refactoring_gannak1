@@ -3,7 +3,6 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
-import requests
 from sqlalchemy.orm import Session, joinedload
 
 from apps.shared.db.models.llm import (
@@ -20,9 +19,10 @@ from apps.shared.schemas.llm import (
     LLMProviderResponse,
 )
 from apps.shared.services.llm_client import get_llm_client
+from apps.shared.services.egress_guard import safe_http_request
 from apps.shared.services.llm_credential_config import (
     LLMCredentialConfigError,
-    load_llm_credential_config,
+    materialize_llm_client_credentials,
     protect_llm_credential_config,
 )
 from apps.shared.services.llm_model_pricing import (
@@ -35,6 +35,7 @@ from apps.shared.services.llm_model_pricing import (
 )
 from apps.shared.services.llm_usage_context import resolve_llm_usage_context
 from apps.shared.services.permissions import has_llm_credential_permission
+from apps.shared.services.outbound_operation_policy import LLM_MODEL_DISCOVERY
 from apps.shared.services.retrieval_embedding_model_projection import (
     EmbeddingModelBinding,
 )
@@ -137,10 +138,11 @@ class LLMService:
         if provider in ["openai", "google"]:
             url = base_url.rstrip("/") + "/models"
             try:
-                resp = requests.get(
+                resp = safe_http_request(
+                    "GET",
                     url,
                     headers={"Authorization": f"Bearer {api_key}"},
-                    timeout=10,
+                    operation_id=LLM_MODEL_DISCOVERY,
                 )
                 if resp.status_code == 200:
                     try:
@@ -181,10 +183,11 @@ class LLMService:
         elif provider == "anthropic":
             url = base_url.rstrip("/") + "/models"
             try:
-                resp = requests.get(
+                resp = safe_http_request(
+                    "GET",
                     url,
                     headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
-                    timeout=10,
+                    operation_id=LLM_MODEL_DISCOVERY,
                 )
                 if resp.status_code == 200:
                     try:
@@ -215,10 +218,11 @@ class LLMService:
             # base_url은 보통 https://api.cloud.llamaindex.ai
             url = base_url.rstrip("/") + "/api/v1/projects"
             try:
-                resp = requests.get(
+                resp = safe_http_request(
+                    "GET",
                     url,
                     headers={"Authorization": f"Bearer {api_key}"},
-                    timeout=10,
+                    operation_id=LLM_MODEL_DISCOVERY,
                 )
                 if resp.status_code == 200:
                     # 인증 성공
@@ -264,10 +268,11 @@ class LLMService:
         native_url = native_base.rstrip("/") + "/models"
 
         try:
-            resp = requests.get(
+            resp = safe_http_request(
+                "GET",
                 native_url,
                 headers={"x-goog-api-key": api_key},
-                timeout=10,
+                operation_id=LLM_MODEL_DISCOVERY,
             )
         except Exception:
             return remote_models
@@ -530,14 +535,14 @@ class LLMService:
             raise ValueError("Credential is not valid")
 
         try:
-            cfg = load_llm_credential_config(cred)
-            api_key = cfg.get("apiKey")
-            base_url = cfg.get("baseUrl")
+            credentials = materialize_llm_client_credentials(cred, cred.provider)
         except LLMCredentialConfigError as exc:
             raise ValueError("Invalid credential config") from exc
 
         remote_models = LLMService._fetch_remote_models(
-            base_url=base_url, api_key=api_key, provider_type=cred.provider.name
+            base_url=credentials["baseUrl"],
+            api_key=credentials["apiKey"],
+            provider_type=cred.provider.name,
         )
         db_models = LLMService._sync_models_to_db(db, cred.provider, remote_models)
 
@@ -712,9 +717,7 @@ class LLMService:
             )
 
         try:
-            cfg = load_llm_credential_config(cred)
-            api_key = cfg.get("apiKey")
-            base_url = cfg.get("baseUrl")
+            credentials = materialize_llm_client_credentials(cred, cred.provider)
         except LLMCredentialConfigError as exc:
             raise ValueError("Invalid credential config") from exc
 
@@ -722,7 +725,7 @@ class LLMService:
         client = get_llm_client(
             provider=cred.provider.name,
             model_id=model_id,
-            credentials={"apiKey": api_key, "baseUrl": base_url},
+            credentials=credentials,
         )
         return LLMRuntimeSelection(
             client=client,

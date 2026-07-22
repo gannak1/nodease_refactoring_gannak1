@@ -115,8 +115,8 @@ def test_workflow_runtime_stops_before_provider_creation_on_decrypt_failure(
     )
     monkeypatch.setattr(
         service_module,
-        "load_llm_credential_config",
-        lambda value: (_ for _ in ()).throw(
+        "materialize_llm_client_credentials",
+        lambda *args: (_ for _ in ()).throw(
             LLMCredentialConfigError("safe config failure")
         ),
     )

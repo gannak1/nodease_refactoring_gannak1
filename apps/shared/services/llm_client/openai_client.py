@@ -9,10 +9,13 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 import tiktoken
+from apps.shared.services.egress_guard import EgressGuardError
 
 from .base import (
     BaseLLMClient,
     LLMResponseValidationError,
+    ProviderEndpointUnsupportedError,
+    ProviderFailurePhase,
     ProviderInvocationError,
 )
 
@@ -35,6 +38,7 @@ class OpenAIClient(BaseLLMClient):
         self.base_url = credentials.get("baseUrl") or credentials.get("base_url")
         if not self.api_key or not self.base_url:
             raise ValueError(f"{self.provider_name} credentials에 apiKey/baseUrl가 필요합니다.")
+        self._configure_provider_endpoint(self.base_url)
         self.chat_url = self.base_url.rstrip("/") + "/chat/completions"
         self.completions_url = self.base_url.rstrip("/") + "/completions"
         self.responses_url = self.base_url.rstrip("/") + "/responses"
@@ -297,6 +301,7 @@ class OpenAIClient(BaseLLMClient):
                 f"summary={self._summarize_responses_response(data)}",
                 reason_code="responses_incomplete",
                 provider_response_status=response_status,
+                failure_phase=ProviderFailurePhase.RESPONSE_RECEIVED,
                 usage=mapped_usage,
             )
 
@@ -341,6 +346,7 @@ class OpenAIClient(BaseLLMClient):
                 "OpenAI Responses 응답에 사용할 수 있는 텍스트가 없습니다: "
                 f"summary={self._summarize_responses_response(data)}",
                 reason_code="responses_empty_text",
+                failure_phase=ProviderFailurePhase.RESPONSE_RECEIVED,
                 usage=mapped_usage,
             )
 
@@ -506,8 +512,8 @@ class OpenAIClient(BaseLLMClient):
                 json=responses_payload,
                 timeout=timeout_seconds,
             )
-        except httpx.RequestError as exc:
-            raise ValueError(f"{self.provider_name} 호출 실패: {exc}") from exc
+        except (httpx.RequestError, EgressGuardError) as exc:
+            self._raise_provider_transport_error(exc)
 
         return self._parse_responses_http_response(responses_resp)
 
@@ -527,8 +533,8 @@ class OpenAIClient(BaseLLMClient):
                 json=responses_payload,
                 timeout=timeout_seconds,
             )
-        except httpx.RequestError as exc:
-            raise ValueError(f"{self.provider_name} 호출 실패: {exc}") from exc
+        except (httpx.RequestError, EgressGuardError) as exc:
+            self._raise_provider_transport_error(exc)
 
         return self._parse_responses_http_response(responses_resp)
 
@@ -547,8 +553,8 @@ class OpenAIClient(BaseLLMClient):
                 json=payload,
                 timeout=timeout_seconds,
             )
-        except httpx.RequestError as exc:
-            raise ValueError(f"{self.provider_name} 호출 실패: {exc}") from exc
+        except (httpx.RequestError, EgressGuardError) as exc:
+            self._raise_provider_transport_error(exc)
 
         if response.status_code == 400:
             error_text = (response.text or "").lower()
@@ -581,8 +587,8 @@ class OpenAIClient(BaseLLMClient):
                         json=retry_payload,
                         timeout=timeout_seconds,
                     )
-                except httpx.RequestError as exc:
-                    raise ValueError(f"{self.provider_name} 호출 실패: {exc}") from exc
+                except (httpx.RequestError, EgressGuardError) as exc:
+                    self._raise_provider_transport_error(exc)
 
         if response.status_code == 404 and "not a chat model" in (
             response.text or ""
@@ -601,10 +607,7 @@ class OpenAIClient(BaseLLMClient):
                 error_data = {}
             if self._has_error_response(error_data):
                 self._raise_error_response(error_data, response.status_code)
-            snippet = response.text[:200] if response.text else ""
-            raise ValueError(
-                f"{self.provider_name} 호출 실패 (status {response.status_code}): {snippet}"
-            )
+            self._raise_provider_http_error(response.status_code)
 
         try:
             data = response.json()
@@ -639,9 +642,7 @@ class OpenAIClient(BaseLLMClient):
                 messages=messages,
                 timeout_seconds=timeout_seconds,
             )
-        except LLMResponseValidationError:
-            raise
-        except ValueError:
+        except ProviderEndpointUnsupportedError:
             if not self._should_try_legacy_completions():
                 raise
 
@@ -660,13 +661,10 @@ class OpenAIClient(BaseLLMClient):
                 json=completion_payload,
                 timeout=timeout_seconds,
             )
-        except httpx.RequestError as exc:
-            raise ValueError(f"{self.provider_name} 호출 실패: {exc}") from exc
+        except (httpx.RequestError, EgressGuardError) as exc:
+            self._raise_provider_transport_error(exc)
         if response.status_code >= 400:
-            snippet = response.text[:200] if response.text else ""
-            raise ValueError(
-                f"{self.provider_name} 호출 실패 (status {response.status_code}): {snippet}"
-            )
+            self._raise_provider_http_error(response.status_code)
         try:
             return self._convert_completion_response(response.json())
         except ValueError as exc:
@@ -684,10 +682,14 @@ class OpenAIClient(BaseLLMClient):
                 responses_data = {}
             if self._has_error_response(responses_data):
                 self._raise_error_response(responses_data, responses_resp.status_code)
-            snippet = responses_resp.text[:200] if responses_resp.text else ""
-            raise ValueError(
-                f"{self.provider_name} 호출 실패 (status {responses_resp.status_code}): {snippet}"
-            )
+            if responses_resp.status_code in {404, 405}:
+                raise ProviderEndpointUnsupportedError(
+                    "Provider endpoint is unavailable.",
+                    reason_code="provider_endpoint_unsupported",
+                    status_code=responses_resp.status_code,
+                    failure_phase=ProviderFailurePhase.RESPONSE_RECEIVED,
+                )
+            self._raise_provider_http_error(responses_resp.status_code)
 
         try:
             responses_data = responses_resp.json()
@@ -781,18 +783,6 @@ class OpenAIClient(BaseLLMClient):
 
         return summary
 
-    def _summarize_error(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        error_info = data.get("error") if isinstance(data, dict) else {}
-        if not isinstance(error_info, dict):
-            return {"has_error": False}
-        return {
-            "has_error": True,
-            "message": str(error_info.get("message", "")),
-            "type": error_info.get("type"),
-            "param": error_info.get("param"),
-            "code": error_info.get("code"),
-        }
-
     def _has_error_response(self, data: Any) -> bool:
         return isinstance(data, dict) and isinstance(data.get("error"), dict)
 
@@ -811,10 +801,9 @@ class OpenAIClient(BaseLLMClient):
                 messages=messages,
                 timeout_seconds=timeout_seconds,
             )
-        except LLMResponseValidationError:
-            raise
-        except ValueError:
-            pass
+        except ProviderEndpointUnsupportedError:
+            if not self._should_try_legacy_completions():
+                raise
 
         if "completions" in error_text and self._should_try_legacy_completions():
             completion_payload = dict(payload)
@@ -832,14 +821,11 @@ class OpenAIClient(BaseLLMClient):
                     json=completion_payload,
                     timeout=timeout_seconds,
                 )
-            except httpx.RequestError as exc:
-                raise ValueError(f"{self.provider_name} 호출 실패: {exc}") from exc
+            except (httpx.RequestError, EgressGuardError) as exc:
+                self._raise_provider_transport_error(exc)
 
             if completion_resp.status_code >= 400:
-                snippet = completion_resp.text[:200] if completion_resp.text else ""
-                raise ValueError(
-                    f"{self.provider_name} 호출 실패 (status {completion_resp.status_code}): {snippet}"
-                )
+                self._raise_provider_http_error(completion_resp.status_code)
 
             try:
                 return self._convert_completion_response(completion_resp.json())
@@ -857,25 +843,25 @@ class OpenAIClient(BaseLLMClient):
                 f"{self.provider_name} 호출 실패: Unknown error",
                 reason_code="provider_http_error",
                 status_code=status_code,
+                failure_phase=ProviderFailurePhase.RESPONSE_RECEIVED,
             )
-        message = str(error_info.get("message", "Unknown error"))
-        parts = [message]
-        for key in ("type", "param", "code"):
-            value = error_info.get(key)
-            if value:
-                parts.append(f"{key}={value}")
-        status_text = f" (status {status_code})" if status_code else ""
-        raise ProviderInvocationError(
-            f"{self.provider_name} 호출 실패{status_text}: " + " | ".join(parts),
-            reason_code="provider_http_error",
-            status_code=status_code,
-            provider_error_code=(
-                str(error_info["code"]) if error_info.get("code") else None
+        self._raise_provider_http_error(
+            status_code or 500,
+            provider_error_code=self._safe_provider_error_token(
+                error_info.get("code")
             ),
-            provider_error_param=(
-                str(error_info["param"]) if error_info.get("param") else None
+            provider_error_param=self._safe_provider_error_token(
+                error_info.get("param")
             ),
         )
+
+    @staticmethod
+    def _safe_provider_error_token(value: Any) -> str | None:
+        if not isinstance(value, str) or not value or len(value) > 64:
+            return None
+        if not all(character.isalnum() or character in "._-" for character in value):
+            return None
+        return value
 
     def _build_headers(self) -> Dict[str, str]:
         return {
@@ -896,20 +882,21 @@ class OpenAIClient(BaseLLMClient):
         """
         payload = {"model": self.model_id, "input": text}
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(
+            timeout=30,
+            **self._async_http_client_options(),
+        ) as client:
             try:
                 resp = await client.post(
                     self.embedding_url,
                     headers=self._build_headers(),
                     json=payload,
                 )
-            except httpx.RequestError as exc:
-                raise ValueError(f"{self.provider_name} 임베딩 호출 실패: {exc}") from exc
+            except (httpx.RequestError, EgressGuardError) as exc:
+                self._raise_provider_transport_error(exc)
 
         if resp.status_code >= 400:
-            raise ValueError(
-                f"{self.provider_name} 임베딩 호출 실패 (status {resp.status_code}): {resp.text[:200]}"
-            )
+            self._raise_provider_http_error(resp.status_code)
 
         try:
             return self._parse_embedding_response(resp.json())
@@ -928,19 +915,20 @@ class OpenAIClient(BaseLLMClient):
         payload = {"model": self.model_id, "input": text}
 
         try:
-            with httpx.Client(timeout=30) as client:
+            with httpx.Client(
+                timeout=30,
+                **self._sync_http_client_options(),
+            ) as client:
                 resp = client.post(
                     self.embedding_url,
                     headers=self._build_headers(),
                     json=payload,
                 )
-        except httpx.RequestError as exc:
-            raise ValueError(f"{self.provider_name} 임베딩 호출 실패: {exc}") from exc
+        except (httpx.RequestError, EgressGuardError) as exc:
+            self._raise_provider_transport_error(exc)
 
         if resp.status_code >= 400:
-            raise ValueError(
-                f"{self.provider_name} 임베딩 호출 실패 (status {resp.status_code}): {resp.text[:200]}"
-            )
+            self._raise_provider_http_error(resp.status_code)
 
         try:
             return self._parse_embedding_response(resp.json())
@@ -965,20 +953,21 @@ class OpenAIClient(BaseLLMClient):
 
         payload = {"model": self.model_id, "input": texts}
 
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(
+            timeout=60,
+            **self._async_http_client_options(),
+        ) as client:
             try:
                 resp = await client.post(
                     self.embedding_url,
                     headers=self._build_headers(),
                     json=payload,
                 )
-            except httpx.RequestError as exc:
-                raise ValueError(f"OpenAI 배치 임베딩 호출 실패: {exc}") from exc
+            except (httpx.RequestError, EgressGuardError) as exc:
+                self._raise_provider_transport_error(exc)
 
         if resp.status_code >= 400:
-            raise ValueError(
-                f"OpenAI 배치 임베딩 호출 실패 (status {resp.status_code}): {resp.text[:200]}"
-            )
+            self._raise_provider_http_error(resp.status_code)
 
         try:
             data = resp.json()
@@ -987,6 +976,38 @@ class OpenAIClient(BaseLLMClient):
             sorted_data = sorted(data["data"], key=lambda x: x["index"])
             return [item["embedding"] for item in sorted_data]
         except (ValueError, KeyError, IndexError) as exc:
+            raise ValueError("OpenAI 배치 임베딩 응답 파싱 실패") from exc
+
+    def embed_batch_sync(self, texts: List[str]) -> List[List[float]]:
+        """OpenAI Embeddings API 배치 호출 (동기)."""
+
+        if not texts:
+            return []
+        if len(texts) > 2048:
+            raise ValueError(f"OpenAI batch limit is 2,048, got {len(texts)}")
+
+        payload = {"model": self.model_id, "input": texts}
+        try:
+            with httpx.Client(
+                timeout=60,
+                **self._sync_http_client_options(),
+            ) as client:
+                resp = client.post(
+                    self.embedding_url,
+                    headers=self._build_headers(),
+                    json=payload,
+                )
+        except (httpx.RequestError, EgressGuardError) as exc:
+            self._raise_provider_transport_error(exc)
+
+        if resp.status_code >= 400:
+            self._raise_provider_http_error(resp.status_code)
+
+        try:
+            data = resp.json()
+            sorted_data = sorted(data["data"], key=lambda item: item["index"])
+            return [item["embedding"] for item in sorted_data]
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise ValueError("OpenAI 배치 임베딩 응답 파싱 실패") from exc
 
     def invoke_sync(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
@@ -1010,7 +1031,10 @@ class OpenAIClient(BaseLLMClient):
                 max(1, int(request_timeout_seconds)),
             )
 
-        with httpx.Client(timeout=60) as client:
+        with httpx.Client(
+            timeout=60,
+            **self._sync_http_client_options(),
+        ) as client:
             if self._should_use_responses_endpoint():
                 return self._invoke_responses_endpoint_sync(
                     client=client,
@@ -1046,7 +1070,10 @@ class OpenAIClient(BaseLLMClient):
         payload.update(self._normalize_params(kwargs))
         timeout_seconds = self._get_chat_timeout()
 
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(
+            timeout=60,
+            **self._async_http_client_options(),
+        ) as client:
             if self._should_use_responses_endpoint():
                 return await self._invoke_responses_endpoint(
                     client=client,
@@ -1062,8 +1089,8 @@ class OpenAIClient(BaseLLMClient):
                     json=payload,
                     timeout=timeout_seconds,
                 )
-            except httpx.RequestError as exc:
-                raise ValueError(f"{self.provider_name} 호출 실패: {exc}") from exc
+            except (httpx.RequestError, EgressGuardError) as exc:
+                self._raise_provider_transport_error(exc)
 
             if resp.status_code >= 400:
                 if resp.status_code == 400:
@@ -1111,10 +1138,8 @@ class OpenAIClient(BaseLLMClient):
                                 json=retry_payload,
                                 timeout=timeout_seconds,
                             )
-                        except httpx.RequestError as exc:
-                            raise ValueError(
-                                f"{self.provider_name} 호출 실패: {exc}"
-                            ) from exc
+                        except (httpx.RequestError, EgressGuardError) as exc:
+                            self._raise_provider_transport_error(exc)
 
                 if resp.status_code == 404:
                     error_text = (resp.text or "").lower()
@@ -1130,10 +1155,7 @@ class OpenAIClient(BaseLLMClient):
                             return handled
 
                 if resp.status_code >= 400:
-                    snippet = resp.text[:200] if resp.text else ""
-                    raise ValueError(
-                        f"{self.provider_name} 호출 실패 (status {resp.status_code}): {snippet}"
-                    )
+                    self._raise_provider_http_error(resp.status_code)
 
             try:
                 data = resp.json()

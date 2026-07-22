@@ -151,6 +151,7 @@ SPAN_SECTION_FIELDS = {
     "error": {
         "error_code",
         "error_type",
+        "failure_phase",
         "type",
     },
     "external_effect": {

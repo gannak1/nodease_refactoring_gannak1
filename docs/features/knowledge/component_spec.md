@@ -10,7 +10,7 @@ KC sync의 Gateway application, durable repository, Workflow executor와 Client 
 | Component | 책임 | 경계 |
 | --- | --- | --- |
 | Knowledge Source Connector | Adapter policy를 통해 source item과 source ACL을 열거하고 가져온다. MCP/API source는 server-side allowlist operation으로만 호출한다 | mbased permission을 직접 결정하지 않고, LLM 임의 tool-use나 raw source direct fetch surface가 아니다 |
-| OutboundEgressGuard | Knowledge/RAG source collection server-side outbound access 전에 network policy를 검증한다 | SQL/SSH/SaaS 의미를 구현하지 않으며, 별도 ADR 없이 모든 workflow runtime outbound를 포괄하지 않는다 |
+| Knowledge outbound operation adapter | API source, remote document fetch와 external preview를 operation별 immutable profile과 Shared guarded transport로 실행한다 | HTTPS/443, bounded same-origin redirect, address-pinned TLS와 safe failure를 강제하지만 SQL/SSH/SaaS 의미, credential 선택과 parser policy를 소유하지 않는다 ([ADR-0067](../../decisions/ADR-0067-production-https-and-operation-bound-outbound.md)) |
 | Protocol Adapter | Read-only probe, SQL/command deny, listing cap 같은 protocol-specific safe behavior를 수행한다 | 승인된 guard/client/dialer를 사용해야 한다 |
 | Sync Scheduler / Worker | Lease, cursor, retry/backoff, dead-letter, tombstone, sync run state를 관리한다 | Raw source metadata를 노출하지 않고 safe state/reason summary만 낸다 |
 | Source Identity Store | Protected/HMAC source identity reference와 tombstone matching을 관리한다 | User-facing document resource가 아니다 |
@@ -576,7 +576,7 @@ tombstone cleanup은 구현 전에 별도 retention policy, audit action/reason 
 - Domain revoke repository는 organization/subject/action predicate와 `FOR UPDATE`를 하나의 SQL statement로 유지한다. Compile contract와 opt-in disposable PostgreSQL test가 cross-org isolation, audit rollback, concurrent exactly-one delete/audit를 검증한다.
 - Collection membership 관리 capability는 KB label read capability가 아니다. Safe label이 없으면 독립 KB `read`를 통과한 caller만 manual KB `name`을 볼 수 있다.
 - Source-derived display metadata는 user-facing 저장 전에 redaction, 길이 제한, display-policy approval을 거쳐야 한다.
-- `verify=false`, HTTPS downgrade, 승인된 outbound client factory 밖의 custom HTTP client, private/link-local/metadata IP target, redirect 기반 guard 우회는 금지한다.
+- `verify=false`, HTTPS downgrade, 승인된 operation profile/guarded transport 밖의 custom HTTP client, private/link-local/metadata IP target, cross-origin redirect와 ambient proxy 기반 guard 우회는 금지한다.
 - DB adapter arbitrary SQL과 SSH adapter arbitrary command execution은 향후 ADR이 좁은 use case를 승인하지 않는 한 connector test/preview/sync path에서 금지한다.
 - 일반 사용자와 workflow 작성자 화면에는 권한/정책상 제외된 문서명, raw source title/path/url, exact denied count를 표시하지 않는다. 관리자/감사 화면도 별도 권한과 display policy가 없으면 safe/bucketed summary만 표시한다.
 - 운영 `general RAG`는 권한 없는 문서를 포함하는 mode가 아니다. 모든 RAG mode는 권한 gate를 통과하며, A/B 테스트의 차이는 authorized evidence 안에서 broad retrieval과 task-aware retrieval을 비교하는 것이다.

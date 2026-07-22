@@ -7,6 +7,7 @@ Anthropic Messages API를 직접 호출합니다.
 from typing import Any, Dict, List
 
 import httpx
+from apps.shared.services.egress_guard import EgressGuardError
 
 from .base import BaseLLMClient, LLMResponseValidationError
 
@@ -31,6 +32,7 @@ class AnthropicClient(BaseLLMClient):
         base_url = credentials.get("baseUrl") or credentials.get("base_url")
         if not self.api_key or not base_url:
             raise ValueError("Anthropic credentials에 apiKey/baseUrl가 필요합니다.")
+        self._configure_provider_endpoint(base_url)
         self.base_url = self._normalize_base_url(base_url)
         self.messages_url = self.base_url.rstrip("/") + "/v1/messages"
 
@@ -104,17 +106,19 @@ class AnthropicClient(BaseLLMClient):
             filtered_kwargs.pop("top_p", None)
         payload.update(filtered_kwargs)
 
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(
+            timeout=60,
+            **self._async_http_client_options(),
+        ) as client:
             try:
                 resp = await client.post(
                     self.messages_url, headers=self._build_headers(), json=payload
                 )
-            except httpx.RequestError as exc:
-                raise ValueError(f"Anthropic 호출 실패: {exc}") from exc
+            except (httpx.RequestError, EgressGuardError) as exc:
+                self._raise_provider_transport_error(exc)
 
         if resp.status_code >= 400:
-            snippet = resp.text[:200] if resp.text else ""
-            raise ValueError(f"Anthropic 호출 실패 (status {resp.status_code}): {snippet}")
+            self._raise_provider_http_error(resp.status_code)
 
         try:
             data = resp.json()

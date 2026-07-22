@@ -1,7 +1,86 @@
 from types import SimpleNamespace
 
+import pytest
+
+from apps.gateway.services import llm_service as gateway_llm_service
 from apps.gateway.services.llm_service import LLMService
+from apps.shared.services.egress_guard import EgressGuardError, SafeHTTPResponse
+from apps.shared.services.outbound_operation_policy import LLM_MODEL_DISCOVERY
+from apps.workflow_engine.services import llm_service as workflow_llm_service
 from apps.workflow_engine.services.llm_service import LLMService as WorkflowLLMService
+
+
+@pytest.mark.parametrize(
+    ("service_module", "service_type"),
+    [
+        (gateway_llm_service, LLMService),
+        (workflow_llm_service, WorkflowLLMService),
+    ],
+)
+def test_model_discovery_uses_guarded_operation_profile(
+    monkeypatch,
+    service_module,
+    service_type,
+):
+    calls = []
+
+    def fake_safe_http_request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return SafeHTTPResponse(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            content=b'{"data":[{"id":"synthetic-model"}]}',
+            final_url=url,
+        )
+
+    monkeypatch.setattr(service_module, "safe_http_request", fake_safe_http_request)
+
+    result = service_type._fetch_remote_models(
+        "https://provider.example/v1",
+        "synthetic-key",
+        "openai",
+    )
+
+    assert result == [{"id": "synthetic-model"}]
+    assert calls == [
+        (
+            "GET",
+            "https://provider.example/v1/models",
+            {
+                "headers": {"Authorization": "Bearer synthetic-key"},
+                "operation_id": LLM_MODEL_DISCOVERY,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("service_module", "service_type"),
+    [
+        (gateway_llm_service, LLMService),
+        (workflow_llm_service, WorkflowLLMService),
+    ],
+)
+def test_model_discovery_maps_guard_denial_without_leaking_endpoint(
+    monkeypatch,
+    service_module,
+    service_type,
+):
+    def deny_request(*_args, **_kwargs):
+        raise EgressGuardError("egress.unsupported_scheme")
+
+    monkeypatch.setattr(service_module, "safe_http_request", deny_request)
+
+    with pytest.raises(ValueError) as captured:
+        service_type._fetch_remote_models(
+            "http://internal.service.invalid/v1?token=must-not-leak",
+            "synthetic-key",
+            "openai",
+        )
+
+    assert str(captured.value) == "Network error verifying openai key"
+    assert "internal.service.invalid" not in str(captured.value)
+    assert "must-not-leak" not in str(captured.value)
 
 
 def test_gpt_5_6_tiers_have_display_names_and_prices():

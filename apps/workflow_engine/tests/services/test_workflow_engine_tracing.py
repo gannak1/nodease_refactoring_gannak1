@@ -139,6 +139,27 @@ def test_error_trace_metadata_excludes_raw_error_message():
     assert metadata["guardrail"]["reason_redacted"] == "node_error"
 
 
+def test_error_trace_metadata_keeps_only_safe_failure_phase():
+    engine = _engine_without_init()
+    error = NonRetryableWorkflowError("provider_outcome_unknown")
+    error.code = "provider_outcome_unknown"
+    error.failure_phase = "outcome_unknown"
+
+    metadata = engine._build_error_trace_metadata(
+        "llmNode",
+        datetime.now(timezone.utc),
+        datetime.now(timezone.utc),
+        error,
+    )
+
+    assert metadata["error"] == {
+        "type": "node_error",
+        "error_type": "NonRetryableWorkflowError",
+        "error_code": "provider_outcome_unknown",
+        "failure_phase": "outcome_unknown",
+    }
+
+
 def test_external_effect_error_trace_keeps_only_safe_provider_summary():
     engine = _engine_without_init()
     started_at = datetime.now(timezone.utc)

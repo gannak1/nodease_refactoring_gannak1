@@ -173,6 +173,26 @@ def load_llm_credential_config(credential: Any) -> dict[str, Any]:
     return get_llm_credential_config_service().load(credential)
 
 
+def materialize_llm_client_credentials(
+    credential: Any,
+    provider: Any,
+) -> dict[str, str]:
+    """Combine secret material with the current server-owned provider endpoint."""
+
+    config = load_llm_credential_config(credential)
+    api_key = config.get("apiKey")
+    base_url = getattr(provider, "base_url", None)
+    if (
+        not isinstance(api_key, str)
+        or not api_key
+        or not isinstance(base_url, str)
+        or not base_url
+        or base_url != base_url.strip()
+    ):
+        raise LLMCredentialConfigError("LLM provider configuration is invalid.")
+    return {"apiKey": api_key, "baseUrl": base_url}
+
+
 def require_llm_credential_keyring_ready() -> None:
     """Validate the LLM keyring without decrypting a credential."""
     get_llm_credential_config_service()

@@ -7,11 +7,10 @@ from apps.shared.services.ingestion.processors.base import (
     ProcessingResult,
 )
 from apps.shared.services.egress_guard import (
-    API_RESPONSE_CONTENT_TYPES,
     EgressGuardError,
-    EgressGuardPolicy,
     safe_http_request,
 )
+from apps.shared.services.outbound_operation_policy import KNOWLEDGE_API_FETCH
 
 logger = logging.getLogger(__name__)
 _TRANSIENT_EGRESS_REASONS = frozenset(
@@ -82,11 +81,7 @@ class ApiProcessor(BaseProcessor):
                 url=url,
                 headers=headers,
                 json_body=body,
-                policy=EgressGuardPolicy(
-                    timeout_seconds=30.0,
-                    max_response_bytes=10 * 1024 * 1024,
-                    allowed_content_types=API_RESPONSE_CONTENT_TYPES,
-                ),
+                operation_id=KNOWLEDGE_API_FETCH,
             )
             if response.status_code >= 400:
                 reason_code = _http_failure_reason(response.status_code)

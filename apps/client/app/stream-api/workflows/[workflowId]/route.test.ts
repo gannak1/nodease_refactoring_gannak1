@@ -27,9 +27,9 @@ const callRoute = (request: Request, workflowId = 'workflow-1') =>
   });
 
 describe('workflow stream proxy route', () => {
-  it('uses NEXT_PUBLIC_API_URL when API_URL is unset and forwards safe context headers', async () => {
-    vi.stubEnv('API_URL', undefined);
-    vi.stubEnv('NEXT_PUBLIC_API_URL', 'http://localhost:8001/api/v1/');
+  it('uses server-only API_URL and forwards safe context headers', async () => {
+    vi.stubEnv('API_URL', 'http://localhost:8001/api/v1/');
+    vi.stubEnv('NEXT_PUBLIC_API_URL', 'https://public.example');
     const fetchMock: MockedFunction<typeof fetch> = vi.fn(async () =>
       Promise.resolve(new Response('data: {}\n\n')),
     );
@@ -116,33 +116,29 @@ describe('workflow stream proxy route', () => {
     );
   });
 
-  it('uses non-loopback NEXT_PUBLIC_API_URL as a production fallback', async () => {
+  it('fails closed when production API_URL is missing', async () => {
     vi.stubEnv('API_URL', undefined);
-    vi.stubEnv('NEXT_PUBLIC_API_URL', 'https://api.nodease.example/api/v1');
+    vi.stubEnv('NEXT_PUBLIC_API_URL', 'https://api.nodease.example');
     vi.stubEnv('NODE_ENV', 'production');
-    const fetchMock: MockedFunction<typeof fetch> = vi.fn(async () =>
-      Promise.resolve(new Response('data: {}\n\n')),
-    );
+    const fetchMock: MockedFunction<typeof fetch> = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
-    await callRoute(
-      new Request('http://localhost:3000/stream-api/workflows/workflow-3', {
-        method: 'POST',
-        body: JSON.stringify({ inputs: {} }),
-      }),
-      'workflow-3',
-    );
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      'https://api.nodease.example/api/v1/workflows/workflow-3/stream',
-      expect.any(Object),
-    );
+    await expect(
+      callRoute(
+        new Request('http://localhost:3000/stream-api/workflows/workflow-3', {
+          method: 'POST',
+          body: JSON.stringify({ inputs: {} }),
+        }),
+        'workflow-3',
+      ),
+    ).rejects.toThrow('API_URL');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('does not use loopback NEXT_PUBLIC_API_URL as a production server fallback', async () => {
+  it('uses the local Gateway fallback outside production', async () => {
     vi.stubEnv('API_URL', undefined);
-    vi.stubEnv('NEXT_PUBLIC_API_URL', 'http://localhost');
-    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('NEXT_PUBLIC_API_URL', 'https://api.nodease.example');
+    vi.stubEnv('NODE_ENV', 'development');
     const fetchMock: MockedFunction<typeof fetch> = vi.fn(async () =>
       Promise.resolve(new Response('data: {}\n\n')),
     );

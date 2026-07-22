@@ -109,6 +109,72 @@ def test_policy_rejects_node_id_that_cannot_be_persisted():
     assert exc_info.value.code == "configuration_required"
 
 
+def test_egress_revision_includes_guarded_transport_policy_revision(monkeypatch):
+    now = datetime.now(timezone.utc)
+    organization_id = uuid.uuid4()
+    principal_id = uuid.uuid4()
+    provider_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    model_id = uuid.uuid4()
+    relation_id = uuid.uuid4()
+
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_permission_revision",
+        lambda *_args, **_kwargs: "permission-revision",
+    )
+    transport_revision = {"value": "a" * 64}
+    monkeypatch.setattr(
+        capability_service,
+        "require_outbound_operation_profile",
+        lambda _operation_id: SimpleNamespace(revision=transport_revision["value"]),
+        raising=False,
+    )
+
+    common = {
+        "db": object(),
+        "organization_id": organization_id,
+        "credential": SimpleNamespace(
+            id=credential_id,
+            organization_id=organization_id,
+            provider_id=provider_id,
+            is_valid=True,
+            updated_at=now,
+        ),
+        "credential_principal_user_id": principal_id,
+        "relation": SimpleNamespace(
+            id=relation_id,
+            credential_id=credential_id,
+            model_id=model_id,
+            is_verified=True,
+            priority=1,
+            created_at=now,
+        ),
+        "model": SimpleNamespace(
+            id=model_id,
+            provider_id=provider_id,
+            model_id_for_api_call="synthetic-model",
+            type="chat",
+            is_active=True,
+            input_price_1k=Decimal("0.001"),
+            output_price_1k=Decimal("0.002"),
+            updated_at=now,
+        ),
+        "provider": SimpleNamespace(
+            id=provider_id,
+            name="openai",
+            base_url="https://provider.example/v1",
+            updated_at=now,
+        ),
+    }
+
+    first = ProviderExecutionCapabilityService._current_revisions(**common)
+    transport_revision["value"] = "b" * 64
+    second = ProviderExecutionCapabilityService._current_revisions(**common)
+
+    assert first["egress"] != second["egress"]
+
+
 @pytest.mark.parametrize(
     "data",
     [

@@ -116,11 +116,10 @@ from apps.shared.schemas.rag import (
     SearchQuery,
 )
 from apps.shared.services.egress_guard import (
-    API_RESPONSE_CONTENT_TYPES,
     EgressGuardError,
-    EgressGuardPolicy,
     safe_http_request,
 )
+from apps.shared.services.outbound_operation_policy import KNOWLEDGE_API_FETCH
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 from apps.shared.services.knowledge_document_ingestion_projection import (
     project_safe_ingestion_job,
@@ -1113,11 +1112,7 @@ async def proxy_api_preview(
             request.url,
             headers=headers,
             json_body=request.body,
-            policy=EgressGuardPolicy(
-                timeout_seconds=30.0,
-                max_response_bytes=10 * 1024 * 1024,
-                allowed_content_types=API_RESPONSE_CONTENT_TYPES,
-            ),
+            operation_id=KNOWLEDGE_API_FETCH,
         )
         if response.status_code >= 400:
             raise HTTPException(

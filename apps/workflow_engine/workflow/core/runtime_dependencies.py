@@ -11,6 +11,7 @@ from apps.workflow_engine.application.provider_usage import ProviderUsageRecorde
 from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
     KnowledgeRuntimeCandidateResolver,
 )
+from apps.workflow_engine.application.remote_file import RemoteFileFetcher
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +23,7 @@ class WorkflowRuntimeDependencies:
     )
     provider_execution_runtime: ProviderExecutionRuntime | None = None
     provider_usage_recorder: ProviderUsageRecorder | None = None
+    remote_file_fetcher: RemoteFileFetcher | None = None
 
 
 __all__ = ["WorkflowRuntimeDependencies"]

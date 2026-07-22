@@ -11,7 +11,9 @@ from apps.shared.db.models.knowledge import RAGAnswerRun
 from apps.shared.db.models.llm import LLMCredential, LLMModel
 from apps.shared.schemas.rag import RAGAgentAnswerRequest, RAGUsageSummary
 from apps.shared.services.llm_client import get_llm_client
-from apps.shared.services.llm_credential_config import load_llm_credential_config
+from apps.shared.services.llm_credential_config import (
+    materialize_llm_client_credentials,
+)
 from apps.shared.utils.prompt_injection_guard import (
     PLATFORM_UNTRUSTED_CONTEXT_GUARDRAIL_PROMPT,
     build_untrusted_context_block,
@@ -125,14 +127,14 @@ class RAGAgentAnswerGenerationRunner:
     @staticmethod
     def _client_for(model: LLMModel, credential: LLMCredential):
         try:
-            config = load_llm_credential_config(credential)
+            credentials = materialize_llm_client_credentials(
+                credential,
+                credential.provider,
+            )
         except Exception as exc:  # noqa: BLE001 - secret 원문을 응답에 포함하지 않는다
             raise ValueError("Invalid credential config") from exc
         return get_llm_client(
             provider=credential.provider.name,
             model_id=model.model_id_for_api_call,
-            credentials={
-                "apiKey": config.get("apiKey"),
-                "baseUrl": config.get("baseUrl"),
-            },
+            credentials=credentials,
         )

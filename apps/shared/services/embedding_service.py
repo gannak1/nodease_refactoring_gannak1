@@ -2,11 +2,11 @@ import logging
 from typing import List
 from uuid import UUID
 
-import openai
 from apps.shared.db.models.llm import LLMCredential, LLMProvider
+from apps.shared.services.llm_client import get_llm_client
 from apps.shared.services.llm_credential_config import (
     LLMCredentialConfigError,
-    load_llm_credential_config,
+    materialize_llm_client_credentials,
 )
 from sqlalchemy.orm import Session
 
@@ -23,10 +23,12 @@ class EmbeddingService:
         self.db = db
         self.user_id = user_id
         self._client = None
+        self._client_model = None
         self._model = "text-embedding-3-small"  # Default
 
-    def _get_client(self):
-        if self._client:
+    def _get_client(self, model_id: str | None = None):
+        target_model = model_id or self._model
+        if self._client and self._client_model in (None, target_model):
             return self._client
 
         # 1. 사용자의 OpenAI 크리덴셜 조회 (우선순위: Provider Name = 'openai')
@@ -42,28 +44,23 @@ class EmbeddingService:
         )
 
         if not credential:
-            # Fallback: 아무 유효한 크리덴셜이나 사용 (개발/테스트용)
-            credential = (
-                self.db.query(LLMCredential)
-                .filter(
-                    LLMCredential.user_id == self.user_id,
-                    LLMCredential.is_valid,
-                )
-                .first()
-            )
+            raise ValueError("No valid OpenAI credential found")
 
-        if not credential:
-            raise ValueError(f"No valid LLM credential found for user {self.user_id}")
-
-        # 2. API Key 복호화
         try:
-            config = load_llm_credential_config(credential)
+            credentials = materialize_llm_client_credentials(
+                credential,
+                credential.provider,
+            )
         except LLMCredentialConfigError as exc:
             raise ValueError("Failed to initialize OpenAI client") from exc
 
         try:
-            api_key = config["apiKey"]
-            self._client = openai.OpenAI(api_key=api_key)
+            self._client = get_llm_client(
+                provider=credential.provider.name,
+                model_id=target_model,
+                credentials=credentials,
+            )
+            self._client_model = target_model
             return self._client
         except Exception:
             raise ValueError("Failed to initialize OpenAI client") from None
@@ -72,17 +69,14 @@ class EmbeddingService:
         """
         텍스트 배치를 임베딩 벡터로 변환 (OpenAI)
         """
-        client = self._get_client()
         target_model = model or self._model
+        client = self._get_client(target_model)
 
         # 빈 텍스트 처리 (OpenAI 에러 방지)
         clean_texts = [t if t and t.strip() else " " for t in texts]
 
         try:
-            response = client.embeddings.create(input=clean_texts, model=target_model)
-            # 순서 보장
-            embeddings = [data.embedding for data in response.data]
-            return embeddings
+            return client.embed_batch_sync(clean_texts)
         except Exception as exc:
             logger.error(
                 "[EmbeddingService] Provider call failed: error_type=%s",

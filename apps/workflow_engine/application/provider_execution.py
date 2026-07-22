@@ -17,6 +17,16 @@ class ProviderExecutionConfigurationError(ValueError):
     code = "provider_capability.configuration_required"
 
 
+class ProviderInvocationOutcomeUnknownError(RuntimeError):
+    """Provider I/O completed far enough that automatic replay is unsafe."""
+
+    code = "provider_outcome_unknown"
+    failure_phase = "outcome_unknown"
+
+    def __init__(self) -> None:
+        super().__init__(self.code)
+
+
 class LLMCredentialNotAvailableError(ValueError):
     """Safe provider credential-selection failure with structured attribution."""
 
@@ -174,5 +184,6 @@ __all__ = [
     "ProviderExecutionPricingSnapshot",
     "ProviderExecutionRequest",
     "ProviderExecutionRuntime",
+    "ProviderInvocationOutcomeUnknownError",
     "ProviderInvocationLease",
 ]

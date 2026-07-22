@@ -132,6 +132,8 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-102 (MBA-337): Helm의 storage 설정 생성부와 Gateway, Workflow Worker, Knowledge Worker의 소비부는 같은 mode 조건을 사용해야 한다. `LOCAL` Pod는 `S3_BUCKET_NAME`과 `AWS_REGION`을 참조하지 않고, `CLOUD` Pod가 필수로 참조하는 ConfigMap key는 같은 render에 모두 존재해야 한다. CI는 기본/production 실제 render의 ConfigMap reference closure를 검사해야 한다.
 - DEP-REQ-103 (MBA-337): Support-surface validation은 승인 workflow와 `.github/actions/**/action.yml|yaml` metadata에서 끝나지 않고, 이들이 지원하는 정적 형식으로 참조하는 승인 local reusable workflow/action과 `scripts/**` 실행 파일·Python module의 전이적 실행 closure를 같은 bounded UTF-8 reader로 검사해야 한다. 발견된 참조의 경로 이탈, 허용 prefix 밖 local 실행, 누락·symlink·non-UTF-8·과도한 파일 크기·과도한 깊이/개수는 fail-closed해야 한다. 이 closure 검사는 변경 selector보다 먼저 모든 PR에서 실행되어 참조된 스크립트만 변경하는 우회를 막아야 한다. Helm 변경은 lint/schema 검사에 더해 support-surface와 storage deployment 계약 테스트를 전용 deployment job에서 직접 실행해야 한다.
 - DEP-REQ-104 (MBA-337): Direct Gateway 개발 설정 예시는 runtime과 같은 `LOCAL | CLOUD` storage mode만 안내해야 하며 legacy `PROD` alias를 문서화하거나 암묵적으로 변환하지 않아야 한다. `CLOUD`를 선택할 때만 bucket과 region을 함께 요구하고, 현재 로컬 기본 예시는 cloud 좌표가 필요 없는 `LOCAL`을 사용한다.
+- DEP-REQ-105 (MBA-178): Production browser API는 same-origin `/api/v1`을 기본으로 사용해야 한다. `NEXT_PUBLIC_API_URL`을 명시하면 공개 HTTPS origin-only 값이어야 하며 cluster/private/loopback host, HTTP, path, query, fragment, userinfo와 wildcard를 build/startup 전에 거부해야 한다. Next.js server-only `API_URL`은 내부 HTTP service를 사용할 수 있지만 public 변수의 fallback이 되어서는 안 된다.
+- DEP-REQ-106 (MBA-178): Production 또는 알 수 없는 환경의 credentialed CORS allowlist는 공개 HTTPS origin만 허용해야 한다. Development/test의 HTTP 예외는 loopback host로 제한하고 wildcard, userinfo, path, query와 fragment는 모든 환경에서 거부해야 한다. Deployment browser parent policy를 CORS allowlist로 재사용해서는 안 된다.
 
 ## Runtime Audience Matrix
 

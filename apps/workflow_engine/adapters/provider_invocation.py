@@ -5,9 +5,14 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Mapping
 
+from apps.shared.services.llm_client.base import (
+    ProviderFailurePhase,
+    ProviderInvocationError,
+)
 from apps.workflow_engine.application.provider_execution import (
     ProviderExecutionAttribution,
     ProviderExecutionConfigurationError,
+    ProviderInvocationOutcomeUnknownError,
 )
 
 
@@ -37,10 +42,15 @@ class ProviderClientInvocationLease:
             raise ProviderExecutionConfigurationError()
         # Consume before I/O so an unknown provider outcome cannot be replayed.
         self._invoked = True
-        return self._client.invoke_sync(
-            messages=deepcopy(list(self._messages)),
-            **deepcopy(self._parameters),
-        )
+        try:
+            return self._client.invoke_sync(
+                messages=deepcopy(list(self._messages)),
+                **deepcopy(self._parameters),
+            )
+        except ProviderInvocationError as exc:
+            if exc.failure_phase is ProviderFailurePhase.OUTCOME_UNKNOWN:
+                raise ProviderInvocationOutcomeUnknownError() from exc
+            raise
 
 
 __all__ = ["ProviderClientInvocationLease"]

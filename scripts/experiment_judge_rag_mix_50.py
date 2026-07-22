@@ -48,7 +48,6 @@ from apps.workflow_engine.services.model_routing_judge_first_policy import (
 )
 from apps.workflow_engine.services.model_routing_policy_store import ModelRoutingPolicyStore
 from apps.workflow_engine.services.model_routing_runtime_judge import ModelRoutingRuntimeJudge
-from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 
 
 ORG_ID = uuid.UUID("10200000-0000-0000-0000-000000000100")
@@ -551,6 +550,8 @@ def _usage(row: LLMUsageLog | None) -> tuple[float, int]:
 
 
 def _run_case(case: ExperimentCase) -> RunResult:
+    from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
+
     run_id = _run_id(case)
     engine = WorkflowEngine(
         graph=experiment_graph(),

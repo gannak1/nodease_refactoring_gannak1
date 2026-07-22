@@ -102,6 +102,7 @@ gateway:
     
     # CORS and Security
     CORS_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000"
+    NODE_ENV: "development"
     # SECRET_KEY is in secrets
     
     # Sandbox configuration
@@ -114,9 +115,6 @@ gateway:
     # Google OAuth (optional)
     # GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are in secrets
     
-    # Node environment
-    NODE_ENV: "production"
-
 # Knowledge document ingestion worker. Enable only after the additive
 # migration has been applied; startup readiness rejects a stale schema.
 knowledgeWorker:
@@ -268,10 +266,10 @@ frontend:
       memory: 512Mi
   
   env:
-    # Next.js backend API URL
-    # Internal cluster service name for server-side calls
-    NEXT_PUBLIC_API_URL: "http://{{ .Release.Name }}-gateway:8000"
-    API_URL: "http://{{ .Release.Name }}-gateway:8000"
+    # Browser requests use same-origin /api through ingress.
+    NEXT_PUBLIC_API_URL: ""
+    # Empty uses the chart template's release-aware internal Gateway URL.
+    API_URL: ""
 
 # Sandbox (Code Execution)
 sandbox:

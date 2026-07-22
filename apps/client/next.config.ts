@@ -2,7 +2,13 @@ import type { NextConfig } from 'next';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { resolvePublicApiBaseUrl } from './lib/publicApiOrigin';
+
 const clientRoot = dirname(fileURLToPath(import.meta.url));
+
+// NEXT_PUBLIC_* values are embedded at build time. Reject an internal or
+// plaintext production origin before creating a deployable browser bundle.
+resolvePublicApiBaseUrl(process.env.NEXT_PUBLIC_API_URL, process.env.NODE_ENV);
 
 const nextConfig: NextConfig = {
   output: 'standalone',
@@ -40,15 +46,15 @@ const nextConfig: NextConfig = {
     ];
   },
   async rewrites() {
-    // 환경변수로 백엔드 URL 설정 (기본값: 로컬 Gateway 직접 실행)
+    // Development/direct-Next fallback only. Supported production entrypoints
+    // route /api to Gateway at Ingress/Nginx before the request reaches Next.js.
     const backendUrl = process.env.API_URL || 'http://localhost:8000';
 
     return [
       {
         source: '/api/:path*',
-        // 공식 로컬 개발: Gateway 직접 실행(http://localhost:8000)
-        // Docker nginx 경유: API_URL=http://localhost 주입
-        // 배포 테스트: .env.local에 API_URL 설정
+        // 로컬 개발: Gateway 직접 실행(http://localhost:8000)
+        // Next.js 직접 실행 테스트: .env.local에 API_URL 설정
         destination: `${backendUrl}/api/:path*`,
       },
     ];

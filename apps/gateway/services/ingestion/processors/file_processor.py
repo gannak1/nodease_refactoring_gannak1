@@ -11,11 +11,10 @@ from apps.gateway.services.llm_service import (
     LLMService,
 )
 from apps.shared.services.egress_guard import (
-    DOCUMENT_RESPONSE_CONTENT_TYPES,
     EgressGuardError,
-    EgressGuardPolicy,
     download_url_to_temp_file,
 )
+from apps.shared.services.outbound_operation_policy import KNOWLEDGE_DOCUMENT_FETCH
 from apps.shared.services.ingestion.processors.base import (
     BaseProcessor,
     ProcessingResult,
@@ -137,11 +136,7 @@ class FileProcessor(BaseProcessor):
             return download_url_to_temp_file(
                 url,
                 suffix=ext,
-                policy=EgressGuardPolicy(
-                    timeout_seconds=30.0,
-                    max_response_bytes=50 * 1024 * 1024,
-                    allowed_content_types=DOCUMENT_RESPONSE_CONTENT_TYPES,
-                ),
+                operation_id=KNOWLEDGE_DOCUMENT_FETCH,
             )
         except EgressGuardError:
             raise

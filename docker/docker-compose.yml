@@ -354,12 +354,8 @@ services:
     build:
       context: ..
       dockerfile: docker/client/Dockerfile
-      args:
-        # Nginx를 통한 API 접근 (브라우저에서 접근 가능)
-        NEXT_PUBLIC_API_URL: http://localhost
     container_name: moduly-frontend
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost
       API_URL: http://gateway:8000
       NODE_ENV: production
       NEXT_TELEMETRY_DISABLED: 1

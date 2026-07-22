@@ -39,7 +39,7 @@ data:
   APP_AUTH_SECRET_LIFECYCLE_MODE: {{ .Values.gateway.env.APP_AUTH_SECRET_LIFECYCLE_MODE | default "disabled" | quote }}
   
   # CORS configuration
-  CORS_ORIGINS: {{ .Values.gateway.env.CORS_ORIGINS | default "http://localhost:3000,http://127.0.0.1:3000" | quote }}
+  CORS_ORIGINS: {{ required "gateway.env.CORS_ORIGINS is required" .Values.gateway.env.CORS_ORIGINS | quote }}
   
   # Sandbox configuration
   SANDBOX_URL: {{ printf "http://%s-sandbox:%d" (include "moduly.fullname" .) (.Values.sandbox.service.port | int) | quote }}
@@ -50,8 +50,6 @@ data:
   # Next.js API URL (for frontend)
   {{- if .Values.frontend.env.NEXT_PUBLIC_API_URL }}
   NEXT_PUBLIC_API_URL: {{ .Values.frontend.env.NEXT_PUBLIC_API_URL | quote }}
-  {{- else }}
-  NEXT_PUBLIC_API_URL: {{ printf "http://%s-gateway:%d" (include "moduly.fullname" .) (.Values.gateway.service.port | int) | quote }}
   {{- end }}
   {{- if .Values.frontend.env.API_URL }}
   API_URL: {{ .Values.frontend.env.API_URL | quote }}

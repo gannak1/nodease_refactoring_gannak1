@@ -20,7 +20,7 @@ Client 내부 route:
 
 | Method | Path | Description |
 | --- | --- | --- |
-| POST | `/stream-api/workflows/{workflow_id}` | Next.js route handler가 Gateway `/api/v1/workflows/{workflow_id}/stream`으로 SSE를 proxy한다. Backend URL은 `API_URL`, `NEXT_PUBLIC_API_URL`, `http://127.0.0.1:8000` 순서로 결정하며 trailing `/api/v1`은 제거한다. Cookie와 `X-Organization-Id`, `X-Request-Id`, `X-Correlation-Id` 같은 safe context header만 전달한다. 서버/컨테이너 runtime에서는 `API_URL` 명시를 우선한다. `API_URL`이 없고 `NEXT_PUBLIC_API_URL`이 공개 Gateway URL이면 production에서도 fallback으로 사용할 수 있지만, `localhost`, `127.0.0.1`, `::1`, `0.0.0.0` 같은 loopback public URL은 production server fallback으로 사용하지 않는다. |
+| POST | `/stream-api/workflows/{workflow_id}` | Next.js route handler가 Gateway `/api/v1/workflows/{workflow_id}/stream`으로 SSE를 proxy한다. Production server에서는 server-only `API_URL`이 필수이며 `NEXT_PUBLIC_API_URL`로 fallback하지 않는다. 비프로덕션에서 `API_URL`이 없을 때만 `http://127.0.0.1:8000`을 사용하고, 선택한 URL의 trailing `/api/v1`은 제거한다. Cookie와 `X-Organization-Id`, `X-Request-Id`, `X-Correlation-Id` 같은 safe context header만 전달한다. |
 
 ## Conversation Memory Internal Target Contracts
 
