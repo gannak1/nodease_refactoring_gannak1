@@ -158,6 +158,13 @@ class ProviderInvocationLease(Protocol):
     @property
     def attribution(self) -> ProviderExecutionAttribution | None: ...
 
+    def apply_json_schema_response_format(
+        self,
+        *,
+        name: str,
+        schema: Mapping[str, Any],
+    ) -> bool: ...
+
     def invoke(self) -> Mapping[str, Any]: ...
 
 

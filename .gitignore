@@ -148,8 +148,6 @@ lerna-debug.log*
 # Evaluation generated reports
 tests/evaluation/reports/
 
-# Model routing experiment artifacts
-/reports/model-routing/
 
 # Codex local run logs
 .codex-run-logs/

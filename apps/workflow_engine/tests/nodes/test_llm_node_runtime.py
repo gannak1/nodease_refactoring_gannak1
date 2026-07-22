@@ -143,6 +143,23 @@ class DummyClient:
         }
 
 
+class SchemaAwareDummyClient(DummyClient):
+    """Provider strict JSON schema format을 지원하는 테스트용 클라이언트."""
+
+    def __init__(self):
+        super().__init__()
+        self.schema_format_calls = []
+
+    def build_json_schema_response_format(self, *, name, schema):
+        self.schema_format_calls.append({"name": name, "schema": schema})
+        return {
+            "type": "json_schema",
+            "name": name,
+            "schema": schema,
+            "strict": True,
+        }
+
+
 class FailingClient:
     """동기 실패 클라이언트 [GEVENT]"""
 
@@ -721,6 +738,26 @@ def test_llm_node_auto_model_routing_without_policy_uses_stored_model(monkeypatc
     assert result["usage"] == {"prompt_tokens": 1, "completion_tokens": 1}
 
 
+def test_owned_runtime_session_commits_routing_learning_before_close():
+    """자동 라우팅이 만든 학습 label은 임시 세션 종료 전에 확정한다."""
+    session = SimpleNamespace(commit_calls=0, close_calls=0)
+
+    def commit():
+        session.commit_calls += 1
+
+    def close():
+        session.close_calls += 1
+
+    session.commit = commit
+    session.close = close
+    node = LLMNode("llm-routing-learning", LLMNodeData(title="LLM", model_id="gpt-4.1"))
+
+    node._commit_and_close_runtime_session(session)
+
+    assert session.commit_calls == 1
+    assert session.close_calls == 1
+
+
 def test_test_execution_can_select_available_unvalidated_candidate(monkeypatch):
     """첫 실행도 권한 있는 비검증 후보를 요구 수준에 맞춰 선택할 수 있다."""
     from apps.workflow_engine.services.model_routing_policy_store import (
@@ -1215,6 +1252,42 @@ def test_llm_node_adds_json_schema_instruction_to_system_message():
     assert '"summary": {"type": "string"}' in system_message
     assert '"required": ["urgent", "summary"]' in system_message
     assert "markdown" in system_message
+
+
+def test_llm_node_uses_provider_strict_json_schema_when_available():
+    """JSON schema 출력 계약은 provider가 지원하면 요청 형식으로도 강제한다."""
+    client = SchemaAwareDummyClient()
+    schema = {
+        "type": "object",
+        "properties": {
+            "긴급도": {"type": "boolean"},
+            "답변 초안": {"type": "string"},
+        },
+        "required": ["긴급도", "답변 초안"],
+    }
+    node = LLMNode(
+        "llm-schema-contract",
+        LLMNodeData(
+            title="엄격한 JSON schema",
+            model_id="gpt-5.6-sol",
+            system_prompt="고객 지원 티켓을 처리하세요.",
+            parameters={"response_format": {"type": "json_object"}},
+            output_format={"type": "json", "schema": schema},
+        ),
+    )
+    node._client_override = client  # noqa: SLF001 - 테스트용
+
+    node.execute({})
+
+    assert client.schema_format_calls == [
+        {"name": "workflow_node_output", "schema": schema}
+    ]
+    assert client.calls[0]["kwargs"]["response_format"] == {
+        "type": "json_schema",
+        "name": "workflow_node_output",
+        "schema": schema,
+        "strict": True,
+    }
 
 
 def test_llm_node_adds_json_instruction_for_explicit_json_response_format():
