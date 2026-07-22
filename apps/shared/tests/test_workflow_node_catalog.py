@@ -165,6 +165,13 @@ def test_llm_catalog_exposes_basic_agent_builder_settings_and_keeps_advanced_rou
     assert next(
         parameter for parameter in parameters if parameter["key"] == "model_id"
     )["agent_builder_task"] is True
+    citation_parameter = next(
+        parameter
+        for parameter in parameters
+        if parameter["key"] == "citationDisplayMode"
+    )
+    assert citation_parameter["default"] == "detailed"
+    assert citation_parameter["apply_default_to_existing"] is False
     assert {
         parameter["key"]
         for parameter in parameters

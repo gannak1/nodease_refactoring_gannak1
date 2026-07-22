@@ -1325,33 +1325,6 @@ export function ExecutionComparisonPanel({
               </div>
             </div>
 
-            {selectedComparison.baseline?.nodeType === 'llmNode' ||
-            selectedComparison.current?.nodeType === 'llmNode' ? (
-              <div>
-                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                  모델 라우팅 비교
-                </h4>
-                <p className="mt-1 text-xs leading-5 text-gray-500">
-                  테스트 실행은 활성 배포 정책을 미리 보지만 정책 학습 횟수에는
-                  포함되지 않습니다.
-                </p>
-                <div className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
-                  <div>
-                    <p className="mb-2 text-[11px] font-semibold text-gray-500">
-                      기준 실행
-                    </p>
-                    <RoutingSide snapshot={selectedComparison.baseline} />
-                  </div>
-                  <div>
-                    <p className="mb-2 text-[11px] font-semibold text-blue-700">
-                      현재 실행
-                    </p>
-                    <RoutingSide snapshot={selectedComparison.current} />
-                  </div>
-                </div>
-              </div>
-            ) : null}
-
             <div>
               <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                 입력 비교
@@ -1371,6 +1344,29 @@ export function ExecutionComparisonPanel({
                 </div>
               </div>
             </div>
+
+            {selectedComparison.baseline?.nodeType === 'llmNode' ||
+            selectedComparison.current?.nodeType === 'llmNode' ? (
+              <div>
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  모델 라우팅 비교
+                </h4>
+                <div className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
+                  <div>
+                    <p className="mb-2 text-[11px] font-semibold text-gray-500">
+                      기준 실행
+                    </p>
+                    <RoutingSide snapshot={selectedComparison.baseline} />
+                  </div>
+                  <div>
+                    <p className="mb-2 text-[11px] font-semibold text-blue-700">
+                      현재 실행
+                    </p>
+                    <RoutingSide snapshot={selectedComparison.current} />
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
             <div>
               <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">

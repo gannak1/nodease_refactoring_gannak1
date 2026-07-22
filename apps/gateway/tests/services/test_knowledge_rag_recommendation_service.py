@@ -612,10 +612,26 @@ def test_high_risk_domain_only_changes_recommended_options():
     )
 
     recommendation = result.recommendations[0]
+    assert recommendation.recommended_options.scoreThreshold == 0.3
+    assert recommendation.recommended_options.topK == 5
     assert recommendation.recommended_options.evidenceSufficiencyPolicy == "strict_citation"
     assert recommendation.recommended_options.queryRewriteMode == "template"
     assert recommendation.safe_reason_code == "high_risk_domain_requires_citation"
     assert recommendation.runtime_availability == "available"
+
+
+def test_standard_domain_recommends_default_rag_options():
+    resolver = FakeResolver(
+        KnowledgeCandidateResolution(candidates=[_candidate(runtime_availability="available")])
+    )
+
+    result = _service(resolver).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(workflow_intent="휴가 규정 확인")
+    )
+
+    options = result.recommendations[0].recommended_options
+    assert options.scoreThreshold == 0.3
+    assert options.topK == 5
 
 
 def test_threshold_result_uses_documented_values():

@@ -24,7 +24,7 @@ Client 내부 route:
 
 ## Conversation Memory Internal Target Contracts
 
-Workflow test stream은 별도 계약 전 Conversation Memory session을 자동 생성하지 않는다. Target runtime은 node value와 `RuntimeDataDependencyEnvelope`를 함께 전달하고 Condition/Switch/Loop의 active control dependency를 final output까지 보존한다. Main/summary provider 호출은 [LLM Credentials API Spec](../llm-credentials/api_spec.md#target-provider-execution-capability-contract)이 소유하는 opaque `ProviderExecutionCapability` identity/revision을 사용한다. 이 contract는 public HTTP request/response에 capability token, credential principal 또는 raw scope를 노출하지 않는다.
+Workflow test stream은 별도 계약 전 Conversation Memory session을 자동 생성하지 않는다. Target runtime은 node value와 `RuntimeDataDependencyEnvelope`를 함께 전달하고 Condition/Switch/Loop의 active control dependency를 final output까지 보존한다. Main/summary provider 호출은 [LLM Credentials API Spec](../llm-credentials/api_spec.md#target-provider-execution-capability-contract)이 소유하는 opaque `ProviderExecutionCapability` identity/revision을 사용한다. Root와 nested LLM의 internal binding은 Loop-only structured `container_path + node_id`이며 Loop child가 만든 trusted execution control에서만 파생한다. 이 contract는 public HTTP request/response에 capability token, credential principal, digest 또는 raw scope를 노출하지 않는다.
 
 ## Request And Response Models
 
@@ -220,6 +220,7 @@ TestSidebar restore contract:
 - Client는 `testRun=<workflow_run_id>`와 optional `testNode=<node_id>`만 같은 workflow의 editor/report URL query에 보관한다.
 - 브라우저 새로고침 또는 보고 화면에서 editor로 돌아온 뒤 Client는 `GET /api/v1/workflows/{workflow_id}/runs/{testRun}`을 호출한다.
 - Gateway는 기존 workflow read permission을 적용한다. 권한이 없거나 해당 workflow에 속하지 않는 run은 복원하지 않는다.
+- `workflow_id`가 UUID가 아닌 editor 초기 placeholder나 malformed 값이면 Gateway는 DB UUID cast를 시도하지 않고 `404 Workflow not found`로 resource hiding한다.
 - `WorkflowNodeRun.duration`은 초 단위이며 Client는 표시 전에 millisecond로 변환한다. `trace_metadata`는 노드 상세의 safe model-routing 설명을 복원하는 데만 사용한다.
 - `workflow_start`는 durable run 기록 생성보다 먼저 도착할 수 있다. Client는 초기 `404` 또는 `running` 응답을 실패로 바꾸지 않고, 점차 길어지는 제한된 간격으로 재조회한다. terminal run을 정상 복원한 뒤에만 해당 URL run을 복원 완료로 고정한다.
 - 재시도 한도를 넘겨도 기존 실행을 `failure`로 덮어쓰지 않는다. Client는 기록 준비 지연 안내와 명시적 재시도 action을 표시한다. 브라우저 앞으로/뒤로가기로 `testRun` query가 바뀌면 Client는 새 URL을 다시 읽고, `testRun`이 제거된 경우 이전 복원 결과를 초기화한다.

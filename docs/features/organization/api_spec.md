@@ -101,6 +101,7 @@ Verified Against: feature/mba-136 @ 9819d16a
 | PUT | `/permissions/knowledge-bases/{knowledge_base_id}/users/{user_id}` | user direct KB permission을 생성하거나 갱신한다. | `auth_token` cookie, manager 또는 KB manage, `X-Organization-Id` |
 | PUT | `/permissions/llm-credentials/{credential_id}/teams/{team_id}` | team LLM credential permission을 생성하거나 갱신한다. | `auth_token` cookie, manager 또는 credential manage, `X-Organization-Id` |
 | PUT | `/permissions/llm-credentials/{credential_id}/users/{user_id}` | user direct LLM credential permission을 생성하거나 갱신한다. | `auth_token` cookie, manager 또는 credential manage, `X-Organization-Id` |
+| POST | `/permissions/bulk-grants` | Workflow, Knowledge Base, LLM/Mail credential의 복수 resource×grantee permission을 원자적으로 생성하거나 갱신한다. | `auth_token` cookie, 모든 target의 manage 또는 organization manager, `X-Organization-Id` |
 
 ### Resource Permission Revoke
 
@@ -723,6 +724,32 @@ Knowledge user direct grant request는 `KnowledgeDirectPermissionGrantRequest`�
 - user KB: `200 OK`, `UserKnowledgePermissionResponse`
 - team LLM credential: `200 OK`, `TeamLLMPermissionResponse`
 - user LLM credential: `200 OK`, `UserLLMPermissionResponse`
+
+### `POST /permissions/bulk-grants`
+
+다중 선택 권한 부여는 하나의 resource type과 grantee type 안에서 unique ID 목록을 받는다. `resource_ids × grantee_ids`는 최대 50건이며 `none`은 grant가 아닌 DELETE revoke로 표현한다. Workflow, Knowledge Base, LLM credential, Mail credential을 지원한다.
+
+```json
+{
+  "resource_type": "workflow",
+  "resource_ids": ["00000000-0000-0000-0000-000000000001"],
+  "grantee_type": "team",
+  "grantee_ids": ["00000000-0000-0000-0000-000000000002"],
+  "auth_state": "builder"
+}
+```
+
+서버는 ID를 정렬한 lock 순서로 모든 target의 organization scope, manage authority, active grantee, resource lifecycle와 resource-specific self-escalation 규칙을 재검증한다. 모든 pair의 permission row와 canonical row audit를 하나의 transaction에서 commit하며, 한 pair라도 실패하면 permission/audit 전체를 rollback한다.
+
+```json
+{
+  "resource_type": "workflow",
+  "grantee_type": "team",
+  "resource_count": 2,
+  "grantee_count": 3,
+  "grant_count": 6
+}
+```
 
 ### Permission Revoke Endpoints
 

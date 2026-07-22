@@ -373,9 +373,9 @@ export const candidateFromOptions = (
     output_format: outputFormat === 'json' ? 'json' : 'text',
     json_schema_fields: schemaFieldsFromOutputFormat(data.output_format),
     knowledgeBases: safeKnowledgeBaseSelections(data.knowledgeBases),
-    topK: typeof data.topK === 'number' ? data.topK : 3,
+    topK: typeof data.topK === 'number' ? data.topK : 5,
     scoreThreshold:
-      typeof data.scoreThreshold === 'number' ? data.scoreThreshold : 0.5,
+      typeof data.scoreThreshold === 'number' ? data.scoreThreshold : 0.3,
     dedupeRetrievedContext: data.dedupeRetrievedContext ?? false,
     retrievedContextMaxChars:
       typeof data.retrievedContextMaxChars === 'number'

@@ -9,9 +9,10 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_llm_credential_permission
-from apps.gateway.services.organization_context import resolve_active_organization_id
-from apps.gateway.utils.audit import audit
 from apps.gateway.services.llm_service import LLMService
+from apps.gateway.services.organization_context import resolve_active_organization_id
+from apps.gateway.utils.api_errors import raise_api_error
+from apps.gateway.utils.audit import audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.llm import LLMModel, LLMProvider, LLMUsageLog
 from apps.shared.db.models.user import User
@@ -102,13 +103,20 @@ def get_my_embedding_models(
 
 @router.get("/credentials", response_model=List[LLMCredentialResponse])
 def get_my_credentials(
-    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """
-    List all credentials for the current user.
-    """
+    """List readable credentials in the server-validated active organization."""
+
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
     try:
-        return LLMService.get_user_credentials(db, current_user.id)
+        return LLMService.get_user_credentials(
+            db, current_user.id, organization_id
+        )
     except Exception as exc:
         _raise_internal_operation_error(
             "credential_lookup", exc, "LLM credential lookup failed."
@@ -148,15 +156,35 @@ def get_agent_answer_options(
 @router.post("/credentials", response_model=LLMCredentialResponse)
 @audit(AuditAction.CREDENTIAL_CREATE)
 def register_credential(
-    request: LLMCredentialCreate,
+    credential_request: LLMCredentialCreate,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Register a new API Key for a specific provider.
-    """
+    """Register a provider credential in the active organization."""
+
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    if (
+        credential_request.organization_id is not None
+        and credential_request.organization_id != organization_id
+    ):
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Organization not found.",
+        )
+
     try:
-        return LLMService.register_credential(db, current_user.id, request)
+        return LLMService.register_credential(
+            db,
+            current_user.id,
+            credential_request,
+            organization_id,
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     except HTTPException:
@@ -178,15 +206,27 @@ def register_credential(
 @audit(AuditAction.CREDENTIAL_DELETE, target_param="credential_id")
 def delete_credential(
     credential_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Delete a user credential.
-    """
+    """Revoke a credential in the active organization."""
+
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
     try:
-        ensure_llm_credential_permission(db, current_user, credential_id, "write")
-        deleted = LLMService.delete_credential(db, credential_id, current_user.id)
+        ensure_llm_credential_permission(
+            db,
+            current_user,
+            credential_id,
+            "write",
+            active_organization_id=organization_id,
+        )
+        deleted = LLMService.delete_credential(
+            db, credential_id, current_user.id, organization_id
+        )
         if not deleted:
             raise HTTPException(status_code=404, detail="Credential not found")
         return {"message": "Credential deleted", "id": str(credential_id)}
@@ -206,17 +246,31 @@ def delete_credential(
 @router.post("/credentials/{credential_id}/sync-models")
 def sync_credential_models(
     credential_id: UUID,
+    request: Request,
     purge_unverified: bool = False,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    해당 크리덴셜 기준으로 모델 매핑을 재동기화합니다.
-    """
+    """현재 active organization의 credential model 관계를 재동기화합니다."""
+
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
     try:
-        ensure_llm_credential_permission(db, current_user, credential_id, "write")
+        ensure_llm_credential_permission(
+            db,
+            current_user,
+            credential_id,
+            "write",
+            active_organization_id=organization_id,
+        )
         return LLMService.sync_credential_models(
-            db, current_user.id, credential_id, purge_unverified=purge_unverified
+            db,
+            current_user.id,
+            credential_id,
+            organization_id,
+            purge_unverified=purge_unverified,
         )
     except HTTPException:
         raise

@@ -14,6 +14,7 @@ from apps.shared.domain.app_auth_secret import (
     app_auth_secret_verifier,
 )
 from apps.shared.domain.workflow_graph import validate_workflow_graph
+from apps.shared.services.knowledge_safe_text import safe_label_from_text
 from apps.shared.services.workflow_layout import calculate_workflow_auto_layout
 from apps.workflow_engine.workflow.nodes.webhook.entities import WebhookTriggerNodeData
 from apps.workflow_engine.workflow.nodes.webhook.webhook_node import WebhookTriggerNode
@@ -396,12 +397,23 @@ def test_team_onboarding_access_control_users_match_presentation_scenario():
 def test_team_onboarding_access_control_kbs_use_bundled_pdf_specs():
     specs = {spec.key: spec for spec in demo_seed.ONBOARDING_PDF_SPECS}
 
-    assert {key: spec.filename for key, spec in specs.items()} == {
+    expected_safe_labels = {
+        "onboarding_company_common": "온보딩 문서: 회사 공통",
+        "onboarding_platform": "온보딩 문서: 플랫폼개발팀",
+        "onboarding_sales": "온보딩 문서: 영업팀",
+        "onboarding_finance": "온보딩 문서: 재무팀",
+    }
+    expected_filenames = {
         "onboarding_company_common": "company_common_onboarding.pdf",
         "onboarding_platform": "platform_team_onboarding_v4.pdf",
         "onboarding_sales": "sales_team_onboarding_v2.pdf",
         "onboarding_finance": "finance_team_onboarding_v3.pdf",
     }
+    assert {key: spec.filename for key, spec in specs.items()} == expected_filenames
+    assert {key: spec.name for key, spec in specs.items()} == expected_safe_labels
+    assert {
+        key: safe_label_from_text(spec.name) for key, spec in specs.items()
+    } == expected_safe_labels
     assert specs["onboarding_platform"].source_page_indexes == (0, 1, 2)
     assert all(
         (demo_seed.DEMO_ONBOARDING_PDF_DIR / spec.filename).is_file()
@@ -410,6 +422,36 @@ def test_team_onboarding_access_control_kbs_use_bundled_pdf_specs():
     assert not set(specs).intersection(
         spec.key for spec in demo_seed.DEMO_DOCUMENT_SPECS
     )
+
+
+def test_team_onboarding_kb_seed_persists_safe_kb_name_labels(monkeypatch):
+    expected_by_id = {
+        demo_seed.KB_IDS[spec.key]: spec.name
+        for spec in demo_seed.ONBOARDING_PDF_SPECS
+    }
+    captured = {}
+
+    class SeedCaptured(Exception):
+        pass
+
+    def capture_upsert(_db, model, object_id, values):
+        if model is not demo_seed.KnowledgeBase or object_id not in expected_by_id:
+            return None
+        captured[object_id] = values
+        if len(captured) == len(expected_by_id):
+            raise SeedCaptured
+        return None
+
+    monkeypatch.setattr(demo_seed, "_demo_knowledge_fixture_or_none", lambda: None)
+    monkeypatch.setattr(demo_seed, "_upsert_by_id", capture_upsert)
+
+    with pytest.raises(SeedCaptured):
+        demo_seed._seed_knowledge(ResetRecorderSession())
+
+    assert {
+        object_id: values["safe_metadata"]["safe_label"]
+        for object_id, values in captured.items()
+    } == expected_by_id
 
 
 def test_onboarding_pdf_indexing_requires_a_seed_openai_key_mode(monkeypatch):
@@ -1900,6 +1942,9 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     workflow_node_secret_revision = script.get_revision("f5b6c7d8e9fa")
     learning_label_feature_hash_revision = script.get_revision("c3d4e5f6a7b8")
     routing_learning_task_requirements_revision = script.get_revision("c4e5f6a7b8c9")
+    routing_prelearning_revision = script.get_revision("b05c6d7e8f94")
+    provider_execution_revision = script.get_revision("ad1e2f3a4b5c")
+    canonical_node_location_revision = script.get_revision("ae2f3a4b5c6d")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -1969,7 +2014,16 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     assert workflow_node_secret_revision.down_revision == "f4a5b6c7d8e9"
     assert learning_label_feature_hash_revision.down_revision == "f5b6c7d8e9fa"
     assert routing_learning_task_requirements_revision.down_revision == "c3d4e5f6a7b8"
-    assert script.get_heads() == ["b05c6d7e8f94"]
+    assert set(routing_prelearning_revision.down_revision) == {
+        "af4a5b6c7d83",
+        "c4e5f6a7b8c9",
+    }
+    assert provider_execution_revision.down_revision == "b05c6d7e8f94"
+    assert canonical_node_location_revision.down_revision == "ad1e2f3a4b5c"
+    assert "b05c6d7e8f94" in ancestry
+    assert "ad1e2f3a4b5c" in ancestry
+    assert "ae2f3a4b5c6d" in ancestry
+    assert script.get_heads() == ["ae2f3a4b5c6d"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

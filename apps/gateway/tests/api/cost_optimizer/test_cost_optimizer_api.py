@@ -5028,6 +5028,8 @@ class TestCostOptimizerBaselineHelpers:
         )
 
         assert candidate["knowledge"]["answer_grounding_check"] == "basic"
+        assert candidate["knowledge"]["score_threshold"] == 0.3
+        assert candidate["knowledge"]["top_k"] == 5
 
     def test_fr7_downstream_compatibility_is_compatible_when_snapshot_matches(self):
         graph = {

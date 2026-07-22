@@ -54,6 +54,7 @@ KNOWLEDGE_DIRECT_GRANT_AUTH_STATES = KNOWLEDGE_AUTH_STATES - {"none"}
 LLM_AUTH_STATES = set(LLM_AUTH_STATE_RANK)
 MAIL_AUTH_STATES = set(MAIL_AUTH_STATE_RANK)
 AUDIT_AUTH_STATES = set(AUDIT_AUTH_STATE_RANK)
+MAX_BULK_PERMISSION_GRANTS = 50
 
 
 def _normalize_auth_state(value: str, allowed_states: set[str]) -> str:
@@ -112,6 +113,46 @@ class AuditPermissionGrantRequest(BaseModel):
 
 class PermissionGrantRequest(WorkflowPermissionGrantRequest):
     """Backward-compatible alias for workflow permission grant requests."""
+
+
+class BulkPermissionGrantRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    resource_type: Literal[
+        "workflow", "knowledge_base", "llm_credential", "mail_credential"
+    ]
+    resource_ids: list[UUID] = Field(..., min_length=1, max_length=50)
+    grantee_type: Literal["team", "user"]
+    grantee_ids: list[UUID] = Field(..., min_length=1, max_length=50)
+    auth_state: str
+
+    @field_validator("resource_ids", "grantee_ids")
+    @classmethod
+    def validate_unique_ids(cls, value: list[UUID]) -> list[UUID]:
+        if len(set(value)) != len(value):
+            raise ValueError("bulk permission ids must be unique")
+        return value
+
+    @model_validator(mode="after")
+    def validate_grant_matrix(self) -> "BulkPermissionGrantRequest":
+        if len(self.resource_ids) * len(self.grantee_ids) > MAX_BULK_PERMISSION_GRANTS:
+            raise ValueError(
+                f"bulk permission grant supports at most "
+                f"{MAX_BULK_PERMISSION_GRANTS} resource-grantee pairs"
+            )
+        allowed_states = set(RESOURCE_AUTH_STATE_RANKS[self.resource_type]) - {"none"}
+        self.auth_state = _normalize_auth_state(self.auth_state, allowed_states)
+        return self
+
+
+class BulkPermissionGrantResponse(BaseModel):
+    resource_type: Literal[
+        "workflow", "knowledge_base", "llm_credential", "mail_credential"
+    ]
+    grantee_type: Literal["team", "user"]
+    resource_count: int = Field(ge=1, le=50)
+    grantee_count: int = Field(ge=1, le=50)
+    grant_count: int = Field(ge=1, le=MAX_BULK_PERMISSION_GRANTS)
 
 
 class WorkflowPermissionSource(BaseModel):

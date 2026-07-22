@@ -481,6 +481,8 @@ class MailCredentialService:
         credential_id: uuid.UUID,
         user_id: uuid.UUID,
         payload: MailCredentialPermissionGrant,
+        *,
+        commit: bool = True,
     ) -> UserMailCredentialPermission:
         credential = self._get_scoped(organization_id, credential_id, for_update=True)
         self._require(actor_id, organization_id, credential, "manage")
@@ -533,8 +535,9 @@ class MailCredentialService:
             grantee_id=user_id,
             auth_state=payload.auth_state,
         )
-        self._commit()
-        self.db.refresh(row)
+        if commit:
+            self._commit()
+            self.db.refresh(row)
         return row
 
     def grant_team_permission(
@@ -544,6 +547,8 @@ class MailCredentialService:
         credential_id: uuid.UUID,
         team_id: uuid.UUID,
         payload: MailCredentialPermissionGrant,
+        *,
+        commit: bool = True,
     ) -> TeamMailCredentialPermission:
         credential = self._get_scoped(organization_id, credential_id, for_update=True)
         self._require(actor_id, organization_id, credential, "manage")
@@ -592,9 +597,60 @@ class MailCredentialService:
             grantee_id=team_id,
             auth_state=payload.auth_state,
         )
-        self._commit()
-        self.db.refresh(row)
+        if commit:
+            self._commit()
+            self.db.refresh(row)
         return row
+
+    def grant_permissions_bulk(
+        self,
+        actor_id: uuid.UUID,
+        organization_id: uuid.UUID,
+        credential_ids: list[uuid.UUID],
+        grantee_type: str,
+        grantee_ids: list[uuid.UUID],
+        payload: MailCredentialPermissionGrant,
+    ) -> None:
+        try:
+            sorted_credential_ids = sorted(credential_ids, key=str)
+            sorted_grantee_ids = sorted(grantee_ids, key=str)
+
+            # Acquire every resource lock before any grantee lock. This keeps the
+            # bulk path compatible with the scalar resource -> grantee lock order
+            # and prevents a partially processed batch from deadlocking with it.
+            for credential_id in sorted_credential_ids:
+                credential = self._get_scoped(
+                    organization_id,
+                    credential_id,
+                    for_update=True,
+                )
+                self._require(actor_id, organization_id, credential, "manage")
+                self._require_active(credential)
+
+            for credential_id in sorted_credential_ids:
+                for grantee_id in sorted_grantee_ids:
+                    if grantee_type == "team":
+                        self.grant_team_permission(
+                            actor_id,
+                            organization_id,
+                            credential_id,
+                            grantee_id,
+                            payload,
+                            commit=False,
+                        )
+                    else:
+                        self.grant_user_permission(
+                            actor_id,
+                            organization_id,
+                            credential_id,
+                            grantee_id,
+                            payload,
+                            commit=False,
+                        )
+            self._commit()
+        except Exception:
+            self.db.rollback()
+            raise
 
     def revoke_user_permission(
         self,

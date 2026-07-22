@@ -69,6 +69,9 @@ class AuditAction:
     DEPLOYMENT_TOGGLE = "deployment.toggle"
     DEPLOYMENT_ACTIVATE_PREVIOUS = "deployment.activate_previous"
     DEPLOYMENT_DELETE = "deployment.delete"
+    DEPLOYMENT_LLM_CREDENTIAL_POLICY_UPSERT = (
+        "deployment.llm_credential_policy.upsert"
+    )
 
     # 외부 연결 및 LLM 자격증명.
     CONNECTION_CREATE = "connection.create"

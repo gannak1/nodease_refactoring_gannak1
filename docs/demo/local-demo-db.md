@@ -155,7 +155,9 @@ apps/gateway/.venv/Scripts/python.exe scripts/seed_demo.py --profile demo --rese
 
 ## Credential / Embedding 정책
 
-demo seed는 기본적으로 precomputed Knowledge fixture를 사용해 공개 법령 PDF 7개와 휴가·복지 정책 Markdown 2개를 `DocumentChunk`와 `text-embedding-3-small` 1536차원 embedding까지 생성한다. Fixed fixture는 독립 문서마다 별도 Knowledge Base를 사용하며 한 KB에 여러 Document를 넣지 않는다. 여러 문서를 함께 검색하는 범위는 Knowledge Collection 또는 명시된 여러 KB reference로 구성한다. `사내문서:` 접두사의 기존 Markdown KB와 이를 전용으로 묶던 Collection은 seed에서 제거됐다. `demodata/`의 팀별 온보딩 PDF 네 개는 각각 별도 Document-level KB로 등록하며, `--enable-runtime-openai-credential` 또는 fixture 재생성 옵션에서는 같은 실행에서 실제 파싱·embedding 생성까지 수행한다. 시연 workflow의 채팅 모델은 `gpt-5.4`와 `gpt-5.4-mini`를 사용한다.
+demo seed는 기본적으로 precomputed Knowledge fixture를 사용해 공개 법령 PDF 7개와 휴가·복지 정책 Markdown 2개를 `DocumentChunk`와 `text-embedding-3-small` 1536차원 embedding까지 생성한다. Fixed fixture는 독립 문서마다 별도 Knowledge Base를 사용하며 한 KB에 여러 Document를 넣지 않는다. 여러 문서를 함께 검색하는 범위는 Knowledge Collection 또는 명시된 여러 KB reference로 구성한다. `사내문서:` 접두사의 기존 Markdown KB와 이를 전용으로 묶던 Collection은 seed에서 제거됐다. `demodata/`의 팀별 온보딩 PDF 네 개는 각각 별도 Document-level KB로 등록하며, `--enable-runtime-openai-credential` 또는 fixture 재생성 옵션에서는 같은 실행에서 실제 파싱·embedding 생성까지 수행한다. `사내 IT 문의 자동 처리`는 `gpt-5.4`·`gpt-5.4-mini`를 사용하고, `신입 사원 온보딩 챗봇`은 `gpt-5.6`과 fallback `gpt-5.4`를 자동 모델 라우팅으로 사용한다.
+
+제품의 새 LLM 노드 기본값은 `scoreThreshold=0.3`, `topK=5`이며, `신입 사원 온보딩 챗봇`도 이 값을 명시적으로 사용한다.
 
 - 기본 reset에는 `apps/shared/db/fixtures/demo_knowledge_chunks.jsonl.gz` fixture를 사용한다.
 - 기본 reset에는 `OPENAI_API_KEY`와 법령 PDF 원본이 필요하지 않다.
@@ -165,7 +167,7 @@ demo seed는 기본적으로 precomputed Knowledge fixture를 사용해 공개 �
 - seed는 API key 값을 출력하지 않는다.
 - 기본 seed는 embedding 생성에 사용한 OpenAI key를 DB credential로 저장하지 않는다.
 - 기본 seed에는 비용 탭/요약 카드 집계용 non-secret demo credential metadata row가 포함될 수 있으나, 실제 provider 호출용 key가 아니다.
-- 실제 workflow LLM/RAG runtime 실행에는 `gpt-5.4`, `gpt-5.4-mini`, `text-embedding-3-small`을 사용할 수 있는 organization-scoped verified credential relation과 `operator` 이상 LLM permission이 필요하다.
+- 실제 workflow LLM/RAG runtime 실행에는 `gpt-5.6`, `gpt-5.4`, `gpt-5.4-mini`, `text-embedding-3-small`을 사용할 수 있는 organization-scoped verified credential relation과 `operator` 이상 LLM permission이 필요하다.
 
 발표 전 실제 브라우저 smoke/E2E처럼 workflow runtime까지 검증해야 하면 disposable demo DB에서만 다음 옵션을 사용한다. 이 옵션은 먼저 실행 환경의 `OPENAI_API_KEY`를 사용하고, 없으면 터미널에서 key를 숨김 입력으로 받는다. 입력한 key를 `.env`나 CLI 인자에 쓰지 않으며, seed는 key 값을 출력하지 않는다.
 
@@ -262,6 +264,8 @@ demo seed는 `demodata/`의 아래 PDF를 대응 KB에 자동 등록한다. 검�
 | `온보딩 문서: 플랫폼개발팀` | `platform_team_onboarding_v4.pdf` | 플랫폼개발팀, People 팀, 개발팀 |
 | `온보딩 문서: 영업팀` | `sales_team_onboarding_v2.pdf` | 영업팀, People 팀, 기획팀 |
 | `온보딩 문서: 재무팀` | `finance_team_onboarding_v3.pdf` | 재무팀, People 팀 |
+
+네 KB의 `safe_metadata.safe_label`에는 위 표의 Knowledge Base 이름을 저장한다. 따라서 direct KB로 사용된 근거의 사용자 Citation은 일반 `참조 문서` 대신 `온보딩 문서: 플랫폼개발팀`과 같은 KB 이름을 표시한다. Collection 경유 근거는 기존 보안 경계에 따라 하위 KB 이름이 아니라 Collection의 승인된 표시 라벨을 사용한다.
 
 현재 실행 권한 경계는 document-level KB다. 한 PDF 안의 일부 chunk만 `manager`에게 허용하는 동적 `role_acl`은 지원하지 않는다. 따라서 플랫폼 PDF 원본은 보존하되, 일반 플랫폼 KB에 저장·색인하는 복사본에서는 manager-only 마지막 페이지를 제외한다. 제외된 내용을 시연하려면 후속으로 manager 전용 KB/PDF를 별도 구성해야 한다.
 

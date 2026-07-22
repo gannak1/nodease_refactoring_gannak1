@@ -38,27 +38,12 @@ from apps.shared.services.permissions import has_llm_credential_permission
 from apps.shared.services.retrieval_embedding_model_projection import (
     EmbeddingModelBinding,
 )
+from apps.workflow_engine.application.provider_execution import (
+    LLMCredentialNotAvailableError,
+)
 
 logger = logging.getLogger(__name__)
 
-
-class LLMCredentialNotAvailableError(ValueError):
-    """LLM runtime credential 선택 실패 원인을 보존합니다. MBA-43"""
-
-    def __init__(
-        self,
-        reason: str,
-        message: str,
-        *,
-        credential_id: Optional[uuid.UUID] = None,
-        model_id: Optional[str] = None,
-        organization_id: Optional[uuid.UUID] = None,
-    ) -> None:
-        super().__init__(message)
-        self.reason = reason
-        self.credential_id = credential_id
-        self.model_id = model_id
-        self.organization_id = organization_id
 
 
 @dataclass(frozen=True)
@@ -69,6 +54,8 @@ class LLMRuntimeSelection:
     credential_id: uuid.UUID
     model_id: str
     organization_id: uuid.UUID
+    model_db_id: uuid.UUID | None = None
+    credential_principal_user_id: uuid.UUID | None = None
 
 
 class LLMService:
@@ -742,6 +729,8 @@ class LLMService:
             credential_id=cred.id,
             model_id=model_id,
             organization_id=organization_id,
+            model_db_id=target_model.id,
+            credential_principal_user_id=user_id,
         )
 
     @staticmethod
@@ -1085,16 +1074,37 @@ class LLMService:
         prompt_tokens: int,
         completion_tokens: int,
         usage: Optional[Mapping[str, Any]] = None,
+        *,
+        model_db_id: Optional[uuid.UUID] = None,
+        allow_catalog_fallback: bool = False,
     ) -> float:
         """
         모델 가격 정보를 기반으로 비용을 계산합니다.
-        DB에 가격 정보가 없으면 KNOWN_MODEL_PRICES로 폴백합니다.
-        정규화된 모델 ID로 폴백 시도하여 버전 차이로 인한 매칭 실패를 방지합니다.
+        Capability 사용량은 exact canonical row의 가격만 사용합니다.
+        Legacy 사용량은 명시적으로 허용된 경우 shared catalog로 폴백합니다.
         """
-        # 1. DB의 관리 가격이 있으면 Judge 후보 프로필과 같은 가격을 사용한다.
-        # DB가 없는 lightweight caller는 즉시 catalog fallback으로 간다.
         model = None
-        if db is not None:
+        if model_db_id is not None:
+            canonical_model_id = None
+            try:
+                canonical_model_id = uuid.UUID(str(model_db_id))
+            except (TypeError, ValueError):
+                pass
+            if db is not None and canonical_model_id is not None:
+                model = (
+                    db.query(LLMModel)
+                    .filter(LLMModel.id == canonical_model_id)
+                    .first()
+                )
+            if (
+                model is None
+                or model.input_price_1k is None
+                or model.output_price_1k is None
+            ):
+                if not allow_catalog_fallback:
+                    return 0.0
+                model = None
+        elif db is not None:
             model = (
                 db.query(LLMModel)
                 .filter(LLMModel.model_id_for_api_call == model_id)
@@ -1120,7 +1130,9 @@ class LLMService:
                 completion_tokens=completion_tokens,
             )
 
-        # 2. DB 값이 없을 때만 shared catalog의 conditional rate를 적용한다.
+        if model_db_id is not None and not allow_catalog_fallback:
+            return 0.0
+
         return calculate_text_token_cost(
             model_id,
             prompt_tokens=prompt_tokens,
@@ -1141,30 +1153,43 @@ class LLMService:
         node_id: Optional[str] = None,
         credential_id: Optional[uuid.UUID] = None,
         cost_optimizer_candidate_id: Optional[uuid.UUID] = None,
+        model_db_id: Optional[uuid.UUID] = None,
     ) -> Optional[LLMUsageLog]:
         """
         LLM 사용 로그를 DB에 저장합니다.
         """
-        # 모델 DB ID 조회
-        model = (
-            db.query(LLMModel)
-            .filter(LLMModel.model_id_for_api_call == model_id)
-            .first()
-        )
-        if not model:
-            if model_id.startswith("models/"):
-                alt_id = model_id.replace("models/", "", 1)
-            else:
-                alt_id = f"models/{model_id}"
+        # Canonical model UUID가 주어지면 API identifier로 다시 선택하지 않는다.
+        if model_db_id is not None:
+            try:
+                canonical_model_id = uuid.UUID(str(model_db_id))
+            except (TypeError, ValueError):
+                logger.error(
+                    "[LLMService] Usage log skipped: invalid canonical model identity."
+                )
+                return None
             model = (
                 db.query(LLMModel)
-                .filter(LLMModel.model_id_for_api_call == alt_id)
+                .filter(LLMModel.id == canonical_model_id)
                 .first()
             )
-        if not model:
-            logger.error(
-                f"[LLMService] Usage log skipped: model '{model_id}' not found."
+        else:
+            model = (
+                db.query(LLMModel)
+                .filter(LLMModel.model_id_for_api_call == model_id)
+                .first()
             )
+            if not model:
+                if model_id.startswith("models/"):
+                    alt_id = model_id.replace("models/", "", 1)
+                else:
+                    alt_id = f"models/{model_id}"
+                model = (
+                    db.query(LLMModel)
+                    .filter(LLMModel.model_id_for_api_call == alt_id)
+                    .first()
+                )
+        if not model:
+            logger.error("[LLMService] Usage log skipped: model not found.")
             return None
 
         usage_context = resolve_llm_usage_context(

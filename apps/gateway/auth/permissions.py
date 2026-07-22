@@ -1,4 +1,5 @@
 from typing import Any
+from uuid import UUID
 
 from fastapi import Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -60,7 +61,14 @@ def ensure_workflow_permission(
     workflow_id: Any,
     action: str,
 ) -> Workflow:
-    workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
+    try:
+        workflow_uuid = UUID(str(workflow_id))
+    except (TypeError, ValueError):
+        # Workflow identity는 UUID다. Placeholder나 malformed 값은 DB UUID cast까지
+        # 보내지 않고 존재하지 않는 리소스와 같은 응답으로 닫는다.
+        raise HTTPException(status_code=404, detail="Workflow not found") from None
+
+    workflow = db.query(Workflow).filter(Workflow.id == workflow_uuid).first()
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
@@ -99,13 +107,19 @@ def ensure_llm_credential_permission(
     current_user: User,
     credential_id: Any,
     action: str,
+    *,
+    active_organization_id: Any = None,
 ) -> LLMCredential:
-    credential = (
-        db.query(LLMCredential).filter(LLMCredential.id == credential_id).first()
-    )
+    filters = [LLMCredential.id == credential_id]
+    if active_organization_id is not None:
+        filters.append(LLMCredential.organization_id == active_organization_id)
+    credential = db.query(LLMCredential).filter(*filters).first()
     if not credential:
         raise HTTPException(status_code=404, detail="Credential not found")
 
+    permission_organization_id = (
+        active_organization_id or credential.organization_id
+    )
     if credential.organization_id and not has_organization_scope_access(
         db, current_user.id, credential.organization_id
     ):
@@ -115,14 +129,14 @@ def ensure_llm_credential_permission(
         db,
         current_user.id,
         credential.id,
-        organization_id=credential.organization_id,
+        organization_id=permission_organization_id,
     )
     if not has_llm_credential_permission(
         db,
         current_user.id,
         credential.id,
         action,
-        organization_id=credential.organization_id,
+        organization_id=permission_organization_id,
     ):
         record_permission_denied(
             current_user,
@@ -130,7 +144,7 @@ def ensure_llm_credential_permission(
             credential.id,
             action,
             effective_auth_state,
-            credential.organization_id,
+            permission_organization_id,
         )
         raise recorded_permission_denied_exception()
     return credential

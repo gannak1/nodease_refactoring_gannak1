@@ -123,6 +123,7 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
 - Test Sidebar는 stream 시작 전 `409 workflow.configuration_preflight.blocked` 응답의 safe required action label을 표시한다. Generic 실행 실패 문구만 표시하거나 raw response object를 렌더링하지 않는다.
 - Compare와 Cost Optimizer는 base graph preflight가 blocked이면 variant/candidate publisher를 시작하지 않는다. 정상 graph의 기존 결과 projection은 유지한다.
 - Shared preflight classifier는 Catalog required configuration과 `external_read|external_write|local_execution` side effect를 기준으로 server-derived readiness를 계산한다. WorkflowNode는 `appId`를 필수 target으로 사용하고 runtime model도 선택 metadata인 `workflowId` 부재를 허용한다. Loop는 `subGraph`를 반복식으로 검사하고 `loop_key` 부재 시 mapped-input 첫 배열 fallback을 유지한다. `loop.item|index`, 상위 실행 입력, 현재 Loop까지 방향성 선행 경로가 있는 local output과 검증된 명시적 mapped input은 body implicit entry의 inherited source frame에만 포함된다. 후속 body node는 완료된 local result만 받으므로 inherited selector를 직접 사용하거나 downstream nested Loop child frame으로 전달하지 못한다. Mapping의 `value_selector`가 parent graph의 후행·형제 source 또는 stale output을 가리키면 child frame에 전달하지 않는다. Shared graph depth 상한 16을 넘으면 fail-closed한다. Gateway와 Workflow Engine은 이 판정을 공유하고 node `configuration_state`를 직접 신뢰하지 않는다.
+- `CanonicalWorkflowNodeLocation`은 root와 Loop `subGraph`의 ordered path, exact node lookup와 fixed-size digest를 소유하는 Shared pure component다. Gateway graph preflight와 WorkflowNode binding은 같은 walker를 사용하고, Loop child는 `NodeExecutionControl.binding_container_path`에 parent Loop segment를 추가한다. Capability runtime은 이 trusted path만 LLM credential policy/admission에 전달하며 client graph/input의 location override를 사용하지 않는다.
 - Gateway schedule adapter는 publish 전에 공통 configuration과 DB 기반 deployment target/policy를 검사한다. Workflow Engine schedule admission adapter는 `lock_canonical_bundle()` 뒤 canonical root identity와 공통 configuration 판정을 재실행한다. Publish 뒤 변경 가능한 WorkflowNode/KB/credential 상태와 권한은 runtime authoritative gate가 다시 검사하며, 이를 위해 Workflow Engine이 Gateway application을 import하거나 DB 정책을 복제하지 않는다.
 - blocker는 기존 repository cancel contract와 `configuration_preflight_blocked`를 사용해 `running` 전 `canceled`로 닫고 safe audit만 기록한다. terminal claim 재전달은 duplicate 결과로 끝내며 reopen/retry하지 않는다.
 
@@ -142,7 +143,9 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
 
 - `TestSidebar`
   - 테스트 입력값을 받고 기존 workflow stream 실행을 시작한다.
-  - 오른쪽에 고정되며 기본 폭은 `480px`이다. 왼쪽 세로 handle을 드래그해 `380px`에서 `640px` 사이로 폭을 조정한다.
+  - 오른쪽에 고정되며 기본 폭은 `560px`이다. 왼쪽 세로 handle을 드래그해 `440px`에서 `720px` 사이로 폭을 조정한다.
+  - 패널 안의 글자는 기존 Tailwind 타이포그래피 단계보다 한 단계 크게 표시한다. 이 규칙은 TestSidebar 안에만 적용한다.
+  - `paragraph` 타입 테스트 질문 textarea는 긴 질문을 더 많이 볼 수 있도록 최소 높이 `180px`를 사용하고 기존 세로 크기 조절을 유지한다.
   - 화면 폭이 최소 sidebar 폭과 canvas 가시 영역을 동시에 보장하지 못하면 handle을 숨기고 현재 화면 안에 들어오는 폭으로 표시한다.
   - handle은 keyboard focus가 가능하며 `ArrowLeft`/`ArrowRight`로 `20px`씩, `Home`/`End`로 최소/최대 폭을 조절한다.
   - 조정 폭은 같은 편집 세션의 패널 close/open 동안 유지한다.
@@ -158,10 +161,13 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
   - 서버 실행 시간은 주 지표로 표시한다.
   - 화면 완료 시간은 보조 지표로 표시하며, 네트워크/stream/UI 처리 시간이 포함될 수 있음을 tooltip 또는 보조 문구로 설명한다.
   - stream의 `workflow_start.run_id`를 받으면 Client는 실행 식별자와 선택한 노드 id만 URL query에 유지한다.
-  - 같은 workflow의 보고 화면을 거쳐 돌아오거나 새로고침하면, URL의 실행 식별자로 권한 확인된 workflow run 상세를 다시 읽어 마지막 실행의 결과·노드 카드·선택 상세를 복원한다. 실행 기록이 아직 생성되지 않은 `404` 또는 `running`이면 실행 중 상태를 유지한 채 점차 길어지는 제한된 간격으로 다시 조회하며, 한도를 넘겨도 실패 결과로 바꾸지 않고 재시도 action을 표시한다. 브라우저 앞으로/뒤로가기로 URL의 `testRun`이 바뀌면 새 실행을 복원하고, `testRun`이 사라지면 이전 실행 결과를 초기화한다.
+  - 같은 workflow의 보고 화면을 거쳐 돌아오거나 새로고침하면, URL의 실행 식별자로 권한 확인된 workflow run 상세를 다시 읽어 마지막 실행의 결과·노드 카드·선택 상세를 복원한다. Editor store가 초기 placeholder workflow `default`만 가진 동안에는 복원 API를 호출하지 않고 테스트 실행 버튼을 비활성화한 채 URL의 persisted workflow가 활성화될 때까지 기다린다. 실행 기록이 아직 생성되지 않은 `404` 또는 `running`이면 실행 중 상태를 유지한 채 점차 길어지는 제한된 간격으로 다시 조회하며, 한도를 넘겨도 실패 결과로 바꾸지 않고 재시도 action을 표시한다. 브라우저 앞으로/뒤로가기로 URL의 `testRun`이 바뀌면 새 실행을 복원하고, `testRun`이 사라지면 이전 실행 결과를 초기화한다.
+  - URL 실행 복원은 활성 workflow의 canonical draft metadata가 준비될 때까지 기다린다. 로딩 완료 여부를 현재 node 수로 판단하지 않으며, 로드가 끝난 빈 draft에서도 저장된 과거 실행을 복원한다.
   - 복원 결과는 실행 당시 저장된 node run 상태, duration, output, safe trace metadata를 표시한다. 현재 draft 설정을 실행 당시 설정으로 덮어쓰지 않는다.
+  - 실행 당시의 노드가 현재 draft에서 삭제되었더라도 저장된 node run의 제목·상태·output·지표로 실행 결과를 표시하며, 현재 node data 부재로 TestSidebar 렌더링이 실패하지 않는다.
   - `다시 테스트하기`는 복원 식별자와 선택 상세를 함께 지우고 입력 폼으로 전환한다.
   - `실행 비교` segmented control을 켜면 기준 실행 선택 목록을 같은 사이드바에 표시한다. 목록은 어떤 실행도 자동 선택하지 않으며 상태는 `전체 상태`, 실행 방식은 `전체 방식`을 기본 필터로 사용한다.
+  - `실행 비교` 탭을 누를 때마다 기준 실행 목록을 다시 조회한다. 이미 비교 패널을 열어둔 상태에서 새 테스트가 완료되거나 실패해도 목록을 다시 조회해 최신 실행 로그를 반영한다.
   - 기준 실행 목록의 `상세` 조회 또는 `기준으로 고정` 후 비교 기준 조회가 저장 지연·일시적인 네트워크 오류·`404`·`408`·`429`·`5xx`를 반환하면 한 번 짧게 다시 조회한다. `401`·`403`처럼 재시도로 해결되지 않는 오류는 즉시 원인을 안내한다. 최종 실패 시 사용자가 같은 행 또는 비교 오류 영역에서 `다시 불러오기`를 실행할 수 있어야 한다.
   - 기준 실행 목록 갱신이 실패해도 이미 불러온 실행 행은 숨기거나 삭제하지 않는다. 목록 오류 안내와 `다시 불러오기`를 함께 표시하며, TestSidebar 상단의 실행 기록 복원 `다시 시도`도 기준 실행 목록을 함께 재조회한다.
   - 기준 실행 목록은 실행 시각·실행 방식·대표 입력 한 줄만 표시하는 얇은 행으로 구성한다. 대표 입력은 credential·secret·token 계열 필드를 제외한 입력 문자열 중 식별력이 높은 값을 사용하며, 전체 입력과 실행 지표를 목록에 반복 노출하지 않는다.
@@ -174,7 +180,7 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
   - 현재 실행이 `running`인 동안에는 비교 API를 실패로 처리하지 않는다. 별도 비교 대기 패널을 추가하지 않고 기존 노드 실행 진행 패널 하나에서 `실행이 완료되면 비교 결과를 준비합니다`를 함께 안내한다. terminal 상태로 전환된 뒤에만 현재 실행 상세를 조회하며, node run 기록이 아직 반영되지 않은 `404`/준비 중 상태는 제한된 backoff로 다시 조회한다.
   - stream의 노드 상태·관측값 갱신만으로는 현재 비교 데이터를 다시 조회하거나 로딩 화면으로 전환하지 않으며, 열어 둔 노드 상세도 유지한다. 기준/현재 실행 식별자, 현재 실행의 terminal 전환, 노드 식별·표시 정보 또는 사용자의 재시도 요청이 바뀔 때만 비교 데이터를 다시 읽는다.
   - LLM trace가 없으면 비교는 node run 기록만으로 계속 표시하고 `LLM trace 기록 없음`을 표시한다. trace API가 권한·서버·네트워크 오류로 실패하면 `일부 LLM trace를 불러오지 못했습니다` 경고를 표시해 모델 라우팅·토큰·비용 근거 일부가 누락됐음을 알린다.
-  - `노드 상세 비교하기`를 누르면 페이지 이동 없이 TestSidebar 내부 상세로 전환한다. 상세는 양쪽 상태·실행 시간·입력·출력을 비교한다. `llmNode`에는 비용·토큰과 모델 라우팅 선택 모델·입력군·매칭 규칙·fallback·정책 버전·학습 포함 여부를 추가로 비교한다.
+  - `노드 상세 비교하기`를 누르면 페이지 이동 없이 TestSidebar 내부 상세로 전환하고, TestSidebar 본문 스크롤을 맨 위로 이동한다. 상세는 실행 상태 → 입력 → 모델 라우팅 → 출력 순서로 양쪽 값을 비교한다. `llmNode`에는 비용·토큰과 모델 라우팅 선택 모델·입력군·매칭 규칙·fallback·정책 버전·학습 포함 여부를 추가로 비교한다.
   - 상세의 `노드 비교 목록으로`를 누르면 canvas와 기준 실행을 유지한 채 목록으로 돌아간다.
 - `BottomPanel`
   - 기본 캔버스 조작 도구만 유지한다.
@@ -330,6 +336,7 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
 
 - LLM Reference side panel은 `답변·검색 문서 어휘 일치도`와 `출처 표시`를 별도 select로 제공한다.
 - `출처 표시` 옵션은 `숨김`, `기본`, `상세`이며, 상세 mode가 제한된 본문 미리보기를 포함할 수 있음을 helper text로 알린다.
+- 새 수동 LLM node와 Agent Builder 생성 node는 `상세`를 기본으로 저장한다. 값이 없는 기존 node는 응답 호환성을 위해 `숨김`으로 표시한다.
 - Test sidebar와 인증 실행 화면은 최종 사용자 답변 아래에 공통 `CitationList`를 표시한다. Citation이 없거나 malformed이면 목록만 생략한다.
 - Citation 목록은 native disclosure를 사용하고 keyboard로 열 수 있어야 하며 긴 라벨·section·preview는 작은 viewport에서 줄바꿈되어야 한다.
 

@@ -214,6 +214,9 @@ Verified Against: feature/mba-127 @ 258b26a9
 
 - 출처: `apps/client/app/features/admin/components/ActorAccessDrawer.tsx`.
 - 책임: audit actor 또는 member row에서 current organization member의 membership, role, team, App 생성 권한, direct/team-inherited resource access를 user 중심으로 조회하고 항목별 관리 action을 제공한다.
+- 표시: 기존 `text-xs/sm/base/lg` 계층을 각각 한 단계 키우고 drawer 최대 폭을
+  `max-w-4xl`로 확장해 멤버십 4열 지표와 actor·team·resource 정보의 불필요한
+  줄바꿈을 줄인다.
 - 진입:
   - AuditSearchTab의 user actor button
   - 필요 시 MembersTab의 동일 member detail action
@@ -544,15 +547,15 @@ Verified Against: feature/mba-127 @ 258b26a9
 - 기존 권한 회수는 본문 filter로 resource를 선택한 뒤 permission row의 `회수` action으로 수행한다. 새 권한을 저장할 필요가 없다.
 - `권한 부여` button은 AWS Console 스타일의 modal을 연다. Modal은 resource table, team/user table, permission radio group을 순서대로 제공한다.
 - Permission card에는 `권한 부여` action만 둔다. Selected resource 영역에 같은 modal을 여는 중복 action을 두지 않는다.
-- Resource와 grantee는 현재 단일 PUT API 계약에 맞춰 각각 하나만 선택한다. 각 table은 이름 검색과 유형 전환을 제공하고 현재 선택을 radio로 표시한다.
+- Resource와 grantee는 하나의 resource/grantee type 안에서 각각 하나 이상을 checkbox로 다중 선택한다. 선택한 Cartesian product는 최대 50건이며 초과 시 저장 action을 비활성화한다.
 - Resource와 grantee table은 결과가 많아도 modal 전체를 밀어내지 않도록 각각 약 10개 row가 보이는 최대 높이 500px의 독립 scroll 영역을 사용하고 table header를 상단에 고정한다.
 - Modal의 resource type/resource/grantee/auth state는 draft state다. 선택 또는 취소만으로 바깥 permission card의 selected resource와 permission 목록을 변경하지 않는다.
-- Grant PUT 성공 후에만 modal draft를 page selection에 반영하고, 방금 권한을 부여한 resource의 permission 목록을 조회한다. 실패하면 modal과 기존 page selection을 유지한다.
-- Grant PUT 처리 중에는 modal에 busy 상태를 표시하고 배경/X/취소/Escape 닫기와 resource/grantee/auth state 입력을 모두 비활성화한다.
+- Bulk grant POST 성공 후에만 첫 번째 선택 resource/grantee를 page selection에 반영하고 해당 resource의 permission 목록을 조회한다. 실패하면 modal과 기존 page selection을 유지한다.
+- Bulk grant POST 처리 중에는 modal에 busy 상태를 표시하고 배경/X/취소/Escape 닫기와 resource/grantee/auth state 입력을 모두 비활성화한다.
 - Modal 밖의 permission card는 현재 selected resource와 기존 team/user permission 목록을 표시한다.
 - grantee type이 team이면 active team select를 사용한다.
 - grantee type이 user이면 `ActiveOrganizationMemberPicker`로 active member만 선택하게 한다.
-- grant/save는 PUT permission endpoint를 호출한다.
+- grant/save는 `POST /permissions/bulk-grants`를 호출한다.
 - revoke는 confirm dialog를 거쳐 DELETE permission endpoint를 호출한다.
 - LLM credential tab에서 permission tab으로 전달된 selected credential id가 있으면 permission tab의 resource selection에 반영한다.
 

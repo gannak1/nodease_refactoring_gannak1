@@ -496,6 +496,7 @@ Lookback 구간 또는 지정 평가 구간의 audit가 설정된 limit을 초�
 | SAL-TC-C022 | AC-16 | 열린 detail에서 acknowledge, reopen, resolve가 각각 403 | cached detail과 해결 dialog 제거, drawer close callback으로 `alertId` URL 제거, action button 미노출 |
 | SAL-TC-C023 | AC-24 | occurrence 증가 notification으로 같은 scope의 list/detail/evidence background refresh가 지연되거나 재시도 가능한 오류로 실패 | 기존 table/detail/evidence와 발생 횟수를 유지하고 initial loading/error 전용 화면으로 교체하지 않으며 성공 응답만 한 번에 반영 |
 | SAL-TC-C024 | AC-14 | mutation 409 뒤 최신 detail 재조회가 재시도 가능한 오류로 실패 | stale detail과 mutation action 제거, safe detail 오류 표시, 이전 version으로 추가 mutation 불가 |
+| SAL-TC-C025 | AC-19, AC-23 | 보안 알림·연결 감사 로그·행위자 접근 관리 drawer 표시 | 세 drawer의 text 계층을 한 단계 키우고 최대 폭을 각각 `4xl`, `xl`, `4xl`로 확보해 주요 actor·권한 문구의 불필요한 줄바꿈을 줄임 |
 
 ### End-To-End Tests
 

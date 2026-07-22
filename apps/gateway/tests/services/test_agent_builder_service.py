@@ -110,6 +110,28 @@ class UnexpectedIntentExtractor:
         raise AssertionError("provider must not be called for a non-primary workflow")
 
 
+def test_agent_builder_llm_preview_uses_default_rag_options():
+    service = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    node = service._build_capability_preview_node(
+        "knowledge_backed_llm",
+        "llm-1",
+        source_id="start-1",
+        source_output_key="question",
+        entry_id="start-1",
+        entry_capability="start_input",
+        model_id="gpt-5.4-mini",
+        kb_refs=[{"id": str(uuid.uuid4()), "name": "사내 규정"}],
+    )
+
+    assert node["data"]["scoreThreshold"] == 0.3
+    assert node["data"]["topK"] == 5
+
+
 def test_submit_message_returns_safe_usage_recording_failure(monkeypatch):
     db = FakeDb()
     session_id = uuid.uuid4()
@@ -888,7 +910,7 @@ def test_named_existing_node_target_is_resolved_and_only_requested_node_is_splic
         node for node in preview["nodes"] if str(node["id"]).startswith("agent-")
     ]
     assert [node["type"] for node in generated_nodes] == ["llmNode"]
-    assert generated_nodes[0]["data"]["citationDisplayMode"] == "basic"
+    assert generated_nodes[0]["data"]["citationDisplayMode"] == "detailed"
     assert not any(node["type"] == "startNode" for node in generated_nodes)
     assert not any(node["type"] == "answerNode" for node in generated_nodes)
     generated_llm_id = generated_nodes[0]["id"]

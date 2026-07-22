@@ -445,7 +445,7 @@ export function ActorAccessDrawer({
         aria-hidden={draft ? true : undefined}
         inert={draft ? true : undefined}
         onKeyDown={handleKeyDown}
-        className="relative flex h-full w-full max-w-2xl flex-col overflow-y-auto bg-white shadow-xl outline-none"
+        className="relative flex h-full w-full max-w-4xl flex-col overflow-y-auto bg-white shadow-xl outline-none [&_.text-xs]:text-sm [&_.text-sm]:text-base [&_.text-base]:text-lg [&_.text-lg]:text-xl"
       >
         <header className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4">
           <div className="flex min-w-0 items-center gap-2">

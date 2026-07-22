@@ -18,6 +18,7 @@ from apps.shared.domain.workflow_node_binding import (
     canonical_snapshot_sha256,
     parse_workflow_node_bindings,
 )
+from apps.shared.domain.workflow_node_location import iter_workflow_node_locations
 from apps.shared.domain.workflow_graph import (
     WorkflowGraphValidationError,
     validate_workflow_graph,
@@ -891,19 +892,8 @@ class DeploymentPreflightUseCase:
 
     @staticmethod
     def _iter_graph_nodes(graph_snapshot: dict):
-        pending = [(graph_snapshot, ())]
-        while pending:
-            current, container_path = pending.pop()
-            nodes = current.get("nodes")
-            if not isinstance(nodes, list):
-                continue
-            for node in nodes:
-                yield node, container_path
-                data = node.get("data") if isinstance(node, dict) else None
-                subgraph = data.get("subGraph") if isinstance(data, dict) else None
-                if isinstance(subgraph, dict):
-                    node_id = str(node.get("id") or "")
-                    pending.append((subgraph, container_path + (("loop", node_id),)))
+        for located in iter_workflow_node_locations(graph_snapshot):
+            yield located.node, located.location.container_path
 
     @staticmethod
     def _safe_node_id(node: dict) -> str | None:

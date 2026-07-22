@@ -870,38 +870,39 @@ export default function AdminConsolePage() {
   };
 
   const grantPermission = async (selection: PermissionGrantSelection) => {
-    if (!selection.resourceId || !selection.granteeId) return false;
+    const primaryResourceId = selection.resourceIds[0];
+    const primaryGranteeId = selection.granteeIds[0];
+    if (!primaryResourceId || !primaryGranteeId) return false;
     return runAction(async () => {
-      await apiClient.put(
-        permissionPath(
-          selection.resourceType,
-          selection.granteeType,
-          selection.granteeId,
-          selection.resourceId,
-        ),
-        { auth_state: selection.authState },
-      );
-      toast.success('권한을 저장했습니다.');
+      await apiClient.post('/permissions/bulk-grants', {
+        resource_type: selection.resourceType,
+        resource_ids: selection.resourceIds,
+        grantee_type: selection.granteeType,
+        grantee_ids: selection.granteeIds,
+        auth_state: selection.authState,
+      });
+      const grantCount = selection.resourceIds.length * selection.granteeIds.length;
+      toast.success(`권한 ${grantCount}건을 저장했습니다.`);
       setPermissionResourceType(selection.resourceType);
       setPermissionGranteeType(selection.granteeType);
-      setPermissionGranteeId(selection.granteeId);
+      setPermissionGranteeId(primaryGranteeId);
       setPermissionAuthState(selection.authState);
 
       const nextWorkflowId =
         selection.resourceType === 'workflow'
-          ? selection.resourceId
+          ? primaryResourceId
           : selectedWorkflowId;
       const nextKnowledgeBaseId =
         selection.resourceType === 'knowledge_base'
-          ? selection.resourceId
+          ? primaryResourceId
           : selectedKnowledgeBaseId;
       const nextCredentialId =
         selection.resourceType === 'llm_credential'
-          ? selection.resourceId
+          ? primaryResourceId
           : selectedCredentialId;
       const nextMailCredentialId =
         selection.resourceType === 'mail_credential'
-          ? selection.resourceId
+          ? primaryResourceId
           : selectedMailCredentialId;
 
       setSelectedWorkflowId(nextWorkflowId);

@@ -118,6 +118,7 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
     navigationMock.replace.mockReset();
     adminSummaryCardsMock.mockClear();
     apiClientMock.get.mockReset();
+    apiClientMock.post.mockReset();
     organizationApiMock.getCurrentOrganization.mockResolvedValue({
       id: 'org-1',
       name: 'Nodease',
@@ -286,6 +287,74 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
     expect(within(rows[2]).getByText('Low cost')).toBeInTheDocument();
     expect(within(rows[2]).getByText('$1.25')).toBeInTheDocument();
   });
+
+  it('다중 선택 권한을 bulk grant API로 한 번 전송한다', async () => {
+    navigationMock.searchParams = 'tab=permissions';
+    apiClientMock.post.mockResolvedValue({ data: { grant_count: 4 } });
+    apiClientMock.get.mockImplementation((path: string) => {
+      if (path === '/teams') {
+        return Promise.resolve({
+          data: [team, { ...team, id: 'team-2', name: '운영팀' }],
+        });
+      }
+      if (path === '/apps') {
+        return Promise.resolve({
+          data: [
+            { id: 'app-1', name: '업무 자동화', workflow_id: 'workflow-1' },
+            { id: 'app-2', name: '문서 질문', workflow_id: 'workflow-2' },
+          ],
+        });
+      }
+      if (path.startsWith('/permissions/workflows/')) {
+        const resourceId = path.split('/').at(-1);
+        return Promise.resolve({
+          data: {
+            resource_type: 'workflow',
+            resource_id: resourceId,
+            organization_id: 'org-1',
+            team_permissions: [],
+            user_permissions: [],
+          },
+        });
+      }
+      if (
+        path === '/admin/permission-requests' ||
+        path === '/admin/app-creation-permissions'
+      ) {
+        return Promise.resolve({ data: { total: 0, items: [] } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    render(<AdminConsolePage />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: '권한 부여' }),
+    );
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: '문서 질문 선택' }),
+    );
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: '운영팀 선택' }),
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: '선택한 권한 부여' }),
+    );
+
+    await waitFor(() =>
+      expect(apiClientMock.post).toHaveBeenCalledWith(
+        '/permissions/bulk-grants',
+        {
+          resource_type: 'workflow',
+          resource_ids: ['workflow-1', 'workflow-2'],
+          grantee_type: 'team',
+          grantee_ids: ['team-1', 'team-2'],
+          auth_state: 'viewer',
+        },
+      ),
+    );
+    expect(apiClientMock.post).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('PermissionsTab 표 기반 권한 부여', () => {
@@ -375,15 +444,49 @@ describe('PermissionsTab 표 기반 권한 부여', () => {
     await waitFor(() =>
       expect(onGrant).toHaveBeenCalledWith({
         resourceType: 'workflow',
-        resourceId: 'workflow-1',
+        resourceIds: ['workflow-1'],
         granteeType: 'team',
-        granteeId: 'team-1',
+        granteeIds: ['team-1'],
         authState: 'viewer',
       }),
     );
     expect(
       screen.queryByRole('dialog', { name: '리소스 권한 부여' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('복수 리소스와 복수 대상을 checkbox로 선택해 한 번에 제출한다', async () => {
+    const secondTeam = {
+      ...team,
+      id: 'team-2',
+      name: '운영팀',
+    };
+    const { onGrant } = renderPermissionsTab({
+      activeTeams: [team, secondTeam],
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '권한 부여' }));
+    fireEvent.click(
+      screen.getByRole('checkbox', {
+        name: '사내 문서 질문 응답 봇 선택',
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: '운영팀 선택' }),
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: '선택한 권한 부여' }),
+    );
+
+    await waitFor(() =>
+      expect(onGrant).toHaveBeenCalledWith({
+        resourceType: 'workflow',
+        resourceIds: ['workflow-1', 'workflow-2'],
+        granteeType: 'team',
+        granteeIds: ['team-1', 'team-2'],
+        authState: 'viewer',
+      }),
+    );
   });
 
   it('모달 선택과 취소는 페이지의 조회 리소스를 바꾸지 않는다', () => {
@@ -404,7 +507,7 @@ describe('PermissionsTab 표 기반 권한 부여', () => {
     ).toBeVisible();
 
     fireEvent.click(
-      screen.getByRole('radio', { name: '사내 문서 질문 응답 봇 선택' }),
+      screen.getByRole('checkbox', { name: '사내 문서 질문 응답 봇 선택' }),
     );
     expect(onGrant).not.toHaveBeenCalled();
     expect(screen.getByText('Enterprise 고객 티켓 처리')).toBeVisible();
@@ -465,6 +568,9 @@ describe('PermissionsTab 표 기반 권한 부여', () => {
     within(dialog)
       .getAllByRole('radio')
       .forEach((radio) => expect(radio).toBeDisabled());
+    within(dialog)
+      .getAllByRole('checkbox')
+      .forEach((checkbox) => expect(checkbox).toBeDisabled());
   });
 
   it('본문 리소스 필터로 저장 없이 권한 조회 대상을 바꾼다', () => {

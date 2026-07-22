@@ -265,12 +265,11 @@ const judgeErrorText = (errorCode?: string): string => {
   return errorCode ? 'Judge 실행 중 처리 실패' : '실패 원인 정보 없음';
 };
 
-const decisionSourceLabel = (source?: string): string => {
+const decisionSourceLabel = (source?: string): string | null => {
   switch (source) {
     case 'runtime_judge':
-      return 'Judge가 모델 선택';
     case 'test_policy_preview':
-      return '테스트 Judge가 모델 선택';
+      return null;
     case 'local_router':
       return '로컬 라우터가 모델 선택';
     case 'active_policy':
@@ -323,10 +322,15 @@ export function ModelRoutingDecisionDetails({
   const isEphemeralPolicyPreview =
     summary.policySource === 'test_ephemeral' &&
     summary.includedInPolicyLearning === false;
+  const showsGenericTestLearningExclusion =
+    summary.executionMode === 'test' &&
+    summary.includedInPolicyLearning !== true &&
+    !isPolicyPreview;
   const judge = summary.judge;
   const shortReason = reasonText(summary.reasonCode, judge.reasonShort);
   // 자유형 Judge 설명은 저장하지 않는다. 정해진 reason code로만 표시한다.
   const selectionReason = shortReason;
+  const sourceLabel = decisionSourceLabel(summary.decisionSource);
 
   return (
     <section className="space-y-3 rounded-lg border border-slate-200 bg-white p-4 text-xs shadow-sm dark:border-slate-700 dark:bg-slate-900">
@@ -339,16 +343,12 @@ export function ModelRoutingDecisionDetails({
             이 실행에서 실제로 어떤 경로로 모델을 골랐는지 보여줍니다.
           </p>
         </div>
-        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
-          {decisionSourceLabel(summary.decisionSource)}
-        </span>
+        {sourceLabel ? (
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
+            {sourceLabel}
+          </span>
+        ) : null}
       </header>
-
-      {summary.executionMode === 'test' && (
-        <p className="rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
-          테스트 실행입니다. 이 결과는 자동 라우팅 학습에 포함되지 않습니다.
-        </p>
-      )}
 
       <dl className="grid gap-2 sm:grid-cols-2">
         <Detail label="실제 실행 모델" value={summary.actualModel || summary.selectedModel || '-'} />
@@ -544,6 +544,13 @@ export function ModelRoutingDecisionDetails({
           {isEphemeralPolicyPreview
             ? '활성 정책이 없어 현재 테스트에서만 사용할 임시 정책으로 모델을 선택했습니다. 이 결과는 정책 학습에 포함되지 않습니다.'
             : '이 테스트 실행은 배포 정책을 미리 적용한 결과이며, 정책 학습에는 포함되지 않습니다.'}
+        </p>
+      ) : showsGenericTestLearningExclusion ? (
+        <p
+          data-testid="model-routing-test-learning-exclusion"
+          className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-blue-900 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100"
+        >
+          이 테스트 실행 결과는 정책 학습에 포함되지 않습니다.
         </p>
       ) : null}
     </section>

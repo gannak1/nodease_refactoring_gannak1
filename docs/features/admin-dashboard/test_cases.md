@@ -10,6 +10,7 @@ Security Alert FR-013의 상세 rule/worker/API/component/E2E matrix는 [Securit
 - Given audit `auditor`/`raw_auditor` only user, When Admin Dashboard를 열거나 Security Alert API를 호출하면, Then audit list/detail은 기존 권한대로 사용할 수 있지만 Security Alert 탭/API는 허용되지 않는다.
 - Given Security Alert deep link의 유효한 `alertId`, When 새로고침하면, Then 같은 tab/detail이 복원된다. Invalid/cross-org ID는 safe 404로 처리한다.
 - Given Alert detail에서 `사용자 접근 관리` 선택, When ActorAccessDrawer로 전환하면, Then 두 drawer가 겹치지 않고 기존 organization access-management 정책을 재사용하며 alert를 자동 resolve하지 않는다.
+- Given 보안 알림 상세, 감사 로그 상세 또는 ActorAccessDrawer를 열 때, When drawer content를 표시하면, Then 기존 text 계층보다 한 단계 큰 글꼴을 사용하고 최대 폭을 각각 `4xl`, `xl`, `4xl`로 확보한다.
 - Given Security Alert 기능 활성화, When audit/비용/권한 탭의 권한 신청·App 생성 권한 카드를 사용하면, Then 기존 API, 권한, pagination, drawer 흐름이 회귀하지 않는다.
 - Given 관리자가 상위 탭을 선택한다, When 조직 구성·권한·비용을 포함한 탭이 활성화되면, Then 선택된 탭은 설정 화면과 같은 파란 글자와 파란 밑줄로 표시되고 나머지 탭은 중립 색상을 유지한다.
 검증 값은 MBA-188 actor access와 audit detail 확장 case에 적용한다. 기존 비용/권한 신청 case의 기준은 해당 feature 문서와 git history를 따른다.
@@ -119,13 +120,14 @@ Security Alert FR-013의 상세 rule/worker/API/component/E2E matrix는 [Securit
 - Given permission card를 확인했을 때, Then modal을 여는 action은 `권한 부여` 하나만 표시되고 selected resource 영역에 같은 역할의 중복 button이 없다.
 - Given 관리자가 기존 권한을 조회하거나 회수하려 할 때, When 본문의 `리소스 필터 변경`을 펼치면, Then 리소스 유형과 이름 검색 결과가 현재 선택 조건 아래에 넓게 표시된다.
 - Given 본문 리소스 필터에서 결과를 선택했을 때, Then 별도 저장이나 권한 부여 없이 selected resource와 permission 목록이 즉시 해당 리소스로 바뀐다.
-- Given resource table에서 이름을 검색하거나 resource type을 변경했을 때, Then 일치하는 현재 organization resource만 표시되고 하나를 선택할 수 있다.
-- Given grantee table에서 team/user direct 유형을 변경하거나 이름을 검색했을 때, Then active team 또는 active organization member만 표시되고 하나를 선택할 수 있다.
+- Given resource table에서 이름을 검색하거나 resource type을 변경했을 때, Then 일치하는 현재 organization resource만 표시되고 checkbox로 하나 이상을 선택할 수 있다.
+- Given grantee table에서 team/user direct 유형을 변경하거나 이름을 검색했을 때, Then active team 또는 active organization member만 표시되고 checkbox로 하나 이상을 선택할 수 있다.
 - Given 이미 선택한 resource 또는 grantee가 검색 결과에서 숨겨졌을 때, Then 숨겨진 선택값으로 권한을 저장할 수 없고 다시 표시하거나 새 항목을 선택해야 한다.
 - Given resource 또는 grantee 결과가 많을 때, Then 각 table은 modal 전체 높이를 늘리지 않고 제한된 내부 영역에서 독립적으로 스크롤하며 header를 고정한다.
 - Given modal에서 다른 resource/grantee/auth state를 선택하거나 취소했을 때, Then 바깥 page의 selected resource와 permission 목록은 바뀌지 않는다.
-- Given 권한 PUT 요청이 진행 중일 때, When 배경/X/취소/Escape로 닫기를 시도하거나 resource/grantee/auth state 입력을 조작하면, Then modal은 닫히지 않고 모든 입력은 disabled 상태를 유지한다.
-- Given resource, grantee, permission을 선택해 저장했을 때, Then 기존 단일 PUT permission endpoint를 호출하고 성공한 경우에만 modal을 닫고 selected resource permission 목록을 갱신한다.
+- Given bulk grant POST 요청이 진행 중일 때, When 배경/X/취소/Escape로 닫기를 시도하거나 resource/grantee/auth state 입력을 조작하면, Then modal은 닫히지 않고 모든 입력은 disabled 상태를 유지한다.
+- Given 복수 resource, 복수 grantee, permission을 선택해 저장했을 때, Then `POST /permissions/bulk-grants`를 한 번 호출하고 성공한 경우에만 modal을 닫고 첫 번째 selected resource permission 목록을 갱신한다.
+- Given resource×grantee 선택이 50건을 초과했을 때, Then 저장 action을 비활성화하고 API도 422로 거부한다.
 
 ## Unit Tests
 

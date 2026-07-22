@@ -24,6 +24,13 @@ DeploymentPreflightAudience = Literal[
 BrowserAccessContractVersion = Literal["deployment_browser_access.v1"]
 
 
+class WorkflowNodeContainerPathSegment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["loop"]
+    node_id: StrictStr = Field(min_length=1, max_length=255)
+
+
 class DeploymentBrowserEmbeddingPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -211,6 +218,35 @@ class DeploymentRunInfoResponse(BaseModel):
     type: str
     input_schema: Optional[dict] = None
     output_schema: Optional[dict] = None
+
+
+class DeploymentLLMCredentialPolicyUpsert(BaseModel):
+    """Manager-only server policy for one immutable deployment LLM node."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: UUID
+    credential_id: UUID
+    container_path: list[WorkflowNodeContainerPathSegment] = Field(
+        default_factory=list,
+        max_length=16,
+    )
+
+
+class DeploymentLLMCredentialPolicyResponse(BaseModel):
+    """Safe projection; it never returns credential config or a principal."""
+
+    id: UUID
+    deployment_id: UUID
+    deployment_version: int = Field(ge=1)
+    node_id: str
+    container_path: list[WorkflowNodeContainerPathSegment]
+    model_id: UUID
+    credential_id: UUID
+    policy_revision: int = Field(ge=1)
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
 
 
 class DeploymentConversationControl(BaseModel):

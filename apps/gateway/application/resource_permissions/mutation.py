@@ -127,6 +127,26 @@ class ResourcePermissionMutationUseCase:
             self.unit_of_work.rollback()
             raise PermissionMutationPersistenceFailed() from exc
 
+    def execute_many(
+        self, commands: list[PermissionMutationCommand]
+    ) -> list[PermissionMutationResult]:
+        results: list[PermissionMutationResult] = []
+        try:
+            for command in commands:
+                result = self.repository.mutate(command)
+                if result.status != "unchanged":
+                    self.audit.record(command, result)
+                    self.unit_of_work.flush()
+                results.append(result)
+            self.unit_of_work.commit()
+            return results
+        except PermissionMutationNotFound:
+            self.unit_of_work.rollback()
+            raise
+        except Exception as exc:
+            self.unit_of_work.rollback()
+            raise PermissionMutationPersistenceFailed() from exc
+
 
 def audit_target_type(command: PermissionMutationCommand) -> str:
     resource_name = {

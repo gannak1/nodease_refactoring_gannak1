@@ -853,7 +853,7 @@ def test_llm_parameter_plan_exposes_basic_settings_and_only_the_routing_toggle()
                     {
                         "model_id": "default-model",
                         "system_prompt": "Answer safely.",
-                        "citationDisplayMode": "basic",
+                        "citationDisplayMode": "detailed",
                         "knowledgeBases": [],
                     },
                 )
@@ -899,7 +899,7 @@ def test_llm_parameter_plan_exposes_basic_settings_and_only_the_routing_toggle()
         "basic",
         "detailed",
     ]
-    assert plan.graph["nodes"][0]["data"]["citationDisplayMode"] == "basic"
+    assert plan.graph["nodes"][0]["data"]["citationDisplayMode"] == "detailed"
     assert tasks["knowledgeBases"].status == "pending"
     assert plan.graph["nodes"][0]["data"]["auto_model_routing"] is False
     assert "model_routing_policy" not in plan.graph["nodes"][0]["data"]

@@ -11,16 +11,40 @@ Status: Draft
 - LlamaParse resolver는 허용 후보가 하나일 때만 parser 입력을 반환한다. 후보 없음 또는 둘 이상은 created_at/name/latest/default fallback 없이 fail-closed한다.
 - LlamaParse credential 후보가 존재하지만 모두 subject의 `use` 권한이 없으면 parser 호출 전에 `permission.denied` audit을 한 번 기록한다. 허용 candidate가 있는 요청에서 다른 후보의 거부 때문에 audit을 추가하지 않으며, audit에는 credential config/API key/provider raw payload를 남기지 않는다.
 - Generation credential preflight는 KB permission, collection route permission, source ACL authorization을 충족시키지 않는다.
-- ProviderExecutionCapability issuer는 opaque identity/revision, organization/workflow/deployment version, node invocation/execution admission/provider attempt, provider/model/credential, server-derived credential principal, credential permission decision, purpose, verified relation/egress·pricing revision, token·cost cap과 expiry를 모두 고정한다.
+- ProviderExecutionCapability issuer는 opaque identity/revision, organization/workflow/deployment version, canonical `(container_path, node_id)`, node invocation/execution admission/provider attempt, provider/model/credential, server-derived credential principal, credential permission decision, purpose, verified relation/provider-routing·pricing revision, token·cost cap과 expiry를 모두 고정한다.
 - Capability response/trace에는 raw credential, encrypted config와 capability token/scope 원문을 노출하지 않는다.
 - Capability consumer가 client 값으로 credential principal 또는 permission revision을 덮어쓰려 하면 발급·사용을 거부한다.
 - Credential config service는 active key round trip, 구키 decrypt, canonical JSON과 required `apiKey` validation을 수행한다.
 - Encryption metadata가 모두 null인 legacy row만 평문 read를 허용한다. Metadata 일부 누락, unsupported algorithm, unknown key version, 손상 ciphertext 또는 invalid config는 평문 fallback 없이 실패한다.
 - Gateway와 Workflow Engine의 신규 credential 등록은 raw config와 다른 ciphertext, active key version과 algorithm을 저장한다.
 - Gateway·Workflow Engine·RAG answer·embedding·LlamaParse의 decrypt 실패 테스트는 provider/client mock 호출이 0회임을 검증한다.
+- Deployment policy resolver는 immutable deployment graph의 exact `(container_path, node_id)` `llmNode.model_id`와 generation purpose의 active `chat` model type을 확인해 embedding 모델을 거부하고 `credential_id`/`credentialId`, fallback model, auto-routing이 있는 capability-required node를 거부한다. Terminal/parent ID는 255자, Loop path는 깊이 16까지 허용하며 초과·unknown kind·missing location은 row를 쓰기 전에 거부한다.
+- 같은 deployment version/location에 model UUID가 다른 두 active policy를 만들 수 없고, 서로 다른 Loop의 동일 `node_id`에는 별도 active policy를 허용한다. Concurrent 최초 policy write는 canonical deployment와 active policy를 순서대로 lock한 뒤 authorization 근거를 잠가 하나의 active revision으로 수렴하거나 safe `409`로 종료한다.
+- Stored digest와 structured path/node가 일치하지 않거나 한 location의 capability를 다른 Loop에서 재사용하면 credential materialization과 provider/client 호출은 0회여야 한다.
+- Policy 변경과 runtime permission denial audit은 canonical location에서 계산한 bounded opaque reference만 기록하고 raw `container_path`, nested input, credential/capability 원문을 기록하지 않는다.
+- PostgreSQL migration 검증은 기존 row의 root digest backfill, 서로 다른 location의 동일 node ID 허용, 같은 location의 active row 중복 거부와 nested row downgrade 차단을 실행한다.
+- Deployment policy write는 manager actor를 server-derived credential principal으로만 사용하고, request의 credential config/principal override를 받지 않는다. Same organization, active credential/provider, verified single relation, credential `use`를 만족하지 않으면 policy row를 만들지 않는다.
+- Capability-required LLM node는 trusted node invocation control과 explicit token/cost cap이 없으면 provider client를 만들지 않으며, legacy user/app owner/default/name/order/fallback selection을 호출하지 않는다.
+- Capability-required LLM node는 messages와 tools·response schema 등 provider-visible parameter 구조 전체의 UTF-8 byte upper bound, `max_tokens`와 canonical pricing 최대 비용 중 하나라도 cap을 넘으면 provider client/SDK를 호출하지 않는다. Output limit이 없으면 server cap을 적용하고 직렬화 불가 parameter, provider-specific output-limit alias와 missing pricing은 fail-closed한다.
+- Capability-required LLM node는 request parameters의 `model`을 항상 거부하고 `n`과 `best_of`는 boolean/string을 포함해 정확한 정수 `1`이 아니면 provider client/SDK 호출 전에 거부한다.
+- Capability-required LLM node에 Knowledge Base 또는 Collection이 설정되면 별도 embedding capability가 준비되기 전까지 candidate resolution, legacy credential selection, embedding provider와 main provider 호출을 모두 0회로 유지하고 fail-closed한다.
+- Policy write와 capability issue/admission은 lock 전에 같은 Session에 적재된 organization, user, membership, grant, model, provider, credential, relation, policy와 capability row를 강제 갱신한다. Lock 대기 중 권한 회수·비활성화가 commit되면 이전 identity-map 상태로 manager/use 권한을 허용하지 않는다.
+- Worker process와 PostgreSQL clock이 어긋나도 capability `created_at`, `updated_at`, `expires_at`은 같은 DB wall clock으로 발급되고 `expires_at`은 그 시각 + TTL이어야 하며, admission의 최초·최종 만료 검사는 모두 lock 이후 DB wall clock을 사용하고 worker process clock을 호출하지 않는다.
+- 서로 다른 provider의 model row가 같은 API model identifier를 사용해도 capability admission이 고른 canonical model UUID가 비용 계산과 `llm_usage_logs.model_id`에 유지된다. Capability usage는 admission 중 봉인한 pricing revision과 immutable input/output 가격 snapshot을 사용해 provider 호출 중 model row의 가격 필드가 변경돼도 admission과 동일한 비용을 기록하고 catalog로 우회하지 않으며, legacy usage만 같은 상황에서 shared catalog fallback을 유지한다.
+- Capability config는 encrypted/legacy row 모두 Shared `LLMCredentialConfigService`만 읽는다. Client는 credential config의 과거 base URL snapshot이 아니라 admission에서 잠근 provider catalog URL을 사용한다. Config/client materialization 성공 뒤 전용 capability transaction을 provider SDK 호출 전에 commit하며 Workflow legacy/shared session은 전달·commit하지 않고 provider 실패 뒤에도 발급 row가 rollback되지 않는다.
+- `LLMNode`는 Shared capability domain/service, concrete adapter 또는 composition module을 import하지 않고 Workflow application port만 소비한다. Runtime router도 Shared capability domain/service와 legacy `LLMService`를 import하지 않고, legacy `LLMService`는 capability 계약을 소유하지 않는다. Shared issue/admission command와 config/client materialization은 capability adapter 내부에만 존재하는 정적 architecture test로 이 경계를 보호한다.
+- WorkflowEngine composition은 provider runtime과 usage recorder를 session을 미리 열지 않고 한 번 구성해 node에 주입한다. `WorkflowNode`와 `LoopNode`의 자식 엔진도 같은 immutable dependency 묶음을 받아야 한다. 주입 객체는 execution context, graph와 task payload에 포함되지 않으며 기존 Knowledge runtime dependency를 덮어쓰지 않는다. Runtime router는 capability-required flag의 누락과 명시적 `false`만 legacy로 선택하고 null, 숫자 또는 문자열 같은 malformed 값은 fail-closed한다.
+- Capability adapter가 반환한 lease는 control transaction commit과 session close 이후에만 provider를 호출할 수 있다. Capability plan은 한 번만 lease로 resolve할 수 있다. Lease는 admission 이후 caller의 중첩 request 변형을 반영하지 않고 첫 provider 호출 시도 전에 소진되어 같은 승인으로 두 번 호출할 수 없다. Legacy adapter는 resolver가 반환한 model, organization과 credential principal이 요청 scope와 다르면 invocation 전에 fail-closed한다. Usage recorder는 별도 session을 사용하고 admission attribution의 organization, credential principal과 canonical model UUID를 그대로 비용 계산과 usage projection에 전달하며 실패해도 session을 닫는다.
+- User/anonymous-public/system execution subject는 각각 동일 user/public/system audit actor와만 결합되고 organization billing principal은 capability organization과 일치해야 한다. Capability resolve 권한 거부는 이 typed actor로 `permission.denied`를 한 번 기록하며 synthetic user나 raw credential/provider payload를 남기지 않는다.
+- Capability-required LLM node가 legacy `memory_mode`를 만나면 inline summary helper를 skip하고 history query 또는 legacy `get_client_for_user` provider call을 만들지 않는다. Main capability를 summary purpose로 재사용하지 않으며, dedicated Conversation Memory summarizer가 없는 상태에서 summary provider 호출을 추가하지 않는다.
 
+- Credential list repository fake는 SQLAlchemy filter 조건을 실제로 적용해야 한다. `organization_id` 또는 `is_valid` predicate를 구현에서 제거하면 cross-organization/revoked fixture가 결과에 들어와 테스트가 실패해야 한다.
+- Credential permission helper는 active organization과 credential id를 한 query에 적용하고, 다른 organization row는 organization/resource RBAC 평가 전에 `404`로 종료해야 한다.
 ## API 테스트
 
+- `GET /api/v1/llm/credentials`는 header로 검증한 active organization의 valid row 중 `read` 가능한 credential만 반환한다. 다른 organization direct/team grant, revoked row와 권한 없는 same-organization row는 포함하지 않는다.
+- `GET /api/v1/llm/credentials`의 header 누락/invalid/membership 밖 organization은 canonical `400/422/404`로 종료하며 내부 query 또는 credential 존재를 노출하지 않는다.
+- Memory와 Knowledge의 raw fetch client는 credential 목록 요청에 현재 `X-Organization-Id`를 포함한다. 공용 Axios client 경로도 interceptor 계약을 유지한다.
 - `POST /api/v1/llm/credentials`는 active organization manager만 성공해야 하며, 일반 member는 `403 permission.denied`로 실패해야 한다.
 - `POST /api/v1/llm/credentials`는 organization scope 밖 `organization_id`를 resource hiding 정책에 따라 거부해야 하며, 성공 응답과 audit metadata에 raw API key 또는 `encrypted_config` 원문을 포함하지 않아야 한다.
 - `GET /api/v1/llm/agent-answer-options`는 active organization context에서 보이고 verified 상태인 model/credential pair만 반환한다.
@@ -28,25 +52,31 @@ Status: Draft
 - DELETE의 legacy success message가 `deleted`를 사용하더라도 secret physical purge 완료로 해석하지 않는다. 응답, audit와 log에는 저장 secret 원문을 포함하지 않는다.
 - Knowledge target flow에서 `generation_model_id`/`credential_id`가 없거나 보이지 않으면 Knowledge API gate에 따라 answer-run 생성 전에 실패한다.
 - Credential `use` denial은 sanitized error/audit metadata에서 KB permission denial 및 source ACL denial과 구분된다.
+- `PUT /api/v1/deployments/{deployment_id}/llm-credential-policies/{node_id}`는 active organization manager만 성공한다. Path 생략은 root로 유지하고 nested request/response는 structured `container_path`를 사용하며, response에 digest, credential principal, encrypted config, API key/token, raw capability scope를 포함하지 않는다.
+- Policy endpoint는 다른 organization deployment를 `404`로 숨기고 manager denial은 `403 permission.denied`, invalid graph/relation은 safe `422`, concurrent/ambiguous selection은 safe `409`로 반환한다.
 
 ## E2E 테스트
 
 - Standalone RAG answer explicit KB mode와 auto collection mode는 preset/default credential ADR이 승인되기 전까지 모두 명시 generation model/credential selection을 요구한다.
 - Conversation Memory summary는 `inherit_node`만 허용하고 direct credential ID와 `organization_default`를 거부한다.
 - Main capability를 summary purpose로 재사용하거나 summary capability를 main generation에 사용하면 provider 호출 전에 거부한다.
+- Capability-required deployment LLM node는 selected model과 다른 fallback/auto-routed model로 provider SDK를 호출하지 않으며, current policy revision 또는 permission/relation/pricing/egress fingerprint가 달라지면 provider call 전에 거부한다.
 
 ## 권한 테스트
 
 - Credential 등록 권한은 organization manager 전용이며, credential `use`/`manage` 권한은 등록 권한으로 승격되지 않는다.
+- 같은 credential id에 다른 organization의 direct permission 또는 Team permission이 있어도 active organization 목록, revoke와 sync 범위를 확장하지 않는다.
 - Credential read/list 권한만 있고 credential `use` 권한이 없는 사용자는 해당 credential로 Agent answer generation을 실행할 수 없다.
 - 사용 가능한 credential이라도 요청 model과 verified relation이 없으면 Agent answer generation을 실행할 수 없다.
-- Credential revoke/permission decision revision 변경/model relation 또는 egress policy 변경 뒤 stale capability는 새 Memory context claim, budget reservation, provider attempt admission과 provider 호출에 사용할 수 없다.
+- Credential revoke/permission decision revision 변경/model relation 또는 provider-routing fingerprint 변경 뒤 stale capability는 새 Memory context claim, budget reservation, provider attempt admission과 provider 호출에 사용할 수 없다. 실제 egress policy 변경 검증은 authoritative LLM outbound guard가 연결된 뒤 해당 revision으로 대체한다.
+- Knowledge physical reindex binding 후보를 0/1/2개로 만든다. Exact profile model/provider, same Organization, active credential, verified relation과 immutable job actor `use`를 모두 만족하는 후보 1개만 safe revision binding을 발급한다. 0/2개는 같은 fixed `knowledge.processing_embedding_credential_unavailable`로 provider/job write 없이 닫고 candidate count/credential identity를 노출하지 않는다. Binding 뒤 credential revoke, relation/permission/provider-routing revision 변경은 다음 provider batch와 finalization을 차단하며 existing job을 다른 actor/credential로 rebind하지 않는다.
+- Policy write와 final admission은 credential, verified relation, User/Organization 상태와 현재 `use` 판정의 organization membership/direct/team permission 근거 row를 잠근 상태에서 manager/permission 및 revision을 다시 검증한다. Concurrent revoke, 사용자·조직 비활성화 또는 권한 회수가 먼저 commit되면 provider materialization이 0회이고, admission이 먼저 commit되면 해당 provider attempt만 변경보다 앞선 유효 실행으로 직렬화된다.
 - Credential principal, billing principal, execution subject와 audit actor가 서로 다른 fixture에서도 credential owner가 private KB subject/public actor로 승격되지 않는다.
 
 ## Edge Case
 
 - 여러 credential 또는 model이 있어도 name/order fallback selection을 하지 않는다.
-- Default credential/preset ambiguity는 향후 ADR이 selection priority를 정의하기 전까지 gated/unsupported condition으로 반환한다.
+- Default credential/preset ambiguity는 향후 ADR이 selection priority를 정의하기 전까지 gated/unsupported condition으로 반환한다. ADR-0065 Knowledge processing exact-one binding도 복수 후보를 선택하지 않고 fixed unavailable로 닫는다.
 - LlamaParse processing failure response, processing metadata, audit/trace/log fixture에는 credential ID, config 원문, API key, decrypted value 또는 provider raw payload가 없어야 한다.
 - Capability의 deployment version, node invocation, model, pricing revision, token/cost cap 또는 expiry 중 하나가 mismatch이면 raw secret/provider call 없이 fail-closed한다.
 - Capability의 execution admission 또는 provider attempt binding을 다른 run/attempt에서 재사용하면 provider SDK 호출 전에 fail-closed한다.
@@ -55,3 +85,19 @@ Status: Draft
 - Malformed row가 포함된 rotation batch는 전체 rollback되고 운영 출력에는 config, API key, ciphertext, key 또는 원본 예외가 없어야 한다.
 - Gateway, Workflow Worker와 Knowledge Worker는 missing/invalid keyring, active version 누락 또는 64자를 초과하는 active version에서 시작을 거부한다. Knowledge Worker는 init container와 Celery parent/child process에 같은 keyring을 주입받고, Log System deployment에는 LLM keyring이 주입되지 않는다.
 - Encrypted metadata row가 존재하면 schema downgrade는 metadata 유실 전에 fail-closed한다.
+
+## MBA-358 보호 리소스 완료 매트릭스
+
+| 경계 | 상태 | 계약·구현·검증 증거 | 해당 없음 또는 후속 |
+| --- | --- | --- | --- |
+| 정책·organization scope | 완료 | ADR-0009, ADR-0010; Gateway endpoint가 active organization을 해석하고 service/query/helper에 전달 | - |
+| 관리 API query/command | 완료 | 목록은 organization+valid 선필터 후 read 평가; 등록·revoke·sync는 canonical organization 사용 | - |
+| 관리 UI·picker | 완료 | 공용 Axios interceptor와 두 raw fetch hook이 `X-Organization-Id` 전달 | UI 구조 변경 없음 |
+| 저장 schema·migration | 해당 없음 | 기존 `organization_id`, `is_valid` 사용 | 신규 column/index 없음 |
+| Runtime/background | 해당 없음 | Workflow Engine의 동명 관리 메서드는 runtime 호출부가 없고 provider execution은 기존 capability 계약이 소유 | MBA-358은 Gateway 관리 API 격리 수정 |
+| Transaction·retry·lease | 해당 없음 | read query와 동기 HTTP command의 기존 transaction 유지 | 신규 background effect 없음 |
+| Revoke lifecycle | 완료 | revoke query와 권한 판정이 active organization에 고정되고 `is_valid=false` 의미 유지 | secret purge는 기존 후속 계약 |
+| 오류·resource hiding | 완료 | body/header mismatch와 cross-organization credential은 `404` | - |
+| Audit·redaction | 완료 | 기존 audit decorator/permission audit 유지, response schema에 secret/config/raw payload 없음 | 목록 성공 audit 추가는 계약 대상 아님 |
+| 검증 | 완료 | filter-aware service test, helper predicate test, endpoint scope tests, raw fetch header tests | 실제 provider 호출/E2E는 동작 변경 대상 아님 |
+| 공식 문서 | 완료 | requirements, API, component, test case 정합화 | - |

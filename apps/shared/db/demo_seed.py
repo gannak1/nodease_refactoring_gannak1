@@ -3342,6 +3342,7 @@ def _seed_knowledge(db: Session) -> None:
                 "description": spec.description,
                 "safe_metadata": {
                     **_demo_options(f"bundled-onboarding-kb-{spec.key}"),
+                    "safe_label": spec.name,
                     "source_filename": spec.filename,
                     "document_seed_mode": "bundled_pdf",
                 },

@@ -69,8 +69,8 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Explicit complete empty envelope은 source 없는 pure input/transform에서 허용하지만 missing/unknown envelope을 empty로 승격하지 않는다.
 - Subworkflow는 target deployment version과 child envelope 합집합을 parent output에 전달한다.
 - Memory admission/task는 deployment version/snapshot과 mapping/Memory policy version에 고정되고 active deployment 교체 후 새 graph로 자동 rebind하지 않는다.
-- Main/summary provider는 LLM Credentials가 발급한 opaque ProviderExecutionCapability identity/revision과 deployment/node/admission/provider-attempt/purpose binding이 일치할 때만 호출한다.
-- Credential revoke/permission decision revision 또는 verified relation/egress revision 변경 뒤 stale capability는 새 claim/reservation/attempt/provider call에 사용할 수 없다.
+- Main/summary provider는 LLM Credentials가 발급한 opaque ProviderExecutionCapability identity/revision과 deployment/canonical node location/admission/provider-attempt/purpose binding이 일치할 때만 호출한다.
+- Credential revoke/permission decision revision 또는 verified relation/provider-routing revision 변경 뒤 stale capability는 새 claim/reservation/attempt/provider call에 사용할 수 없다. 이 fingerprint는 중앙 egress authorization을 대체하지 않는다.
 - Public Access Grant, credential/billing principal과 app owner는 execution subject 또는 audit actor로 승격되지 않는다.
 - Preflight 뒤 Worker pool capability가 바뀌어도 runtime guard가 incompatible task를 거부한다.
 
@@ -141,13 +141,17 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 | 1 | 실행 편의성 | 서버 실행 시간과 화면 완료 시간을 서로 다른 라벨로 표시 | 통과 | `TestSidebar`가 `서버 실행`/`화면 완료` 라벨을 분리하고 summary unit test 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
 | 1 | 실행 편의성 | 테스트 실행 중복 클릭 방지 또는 기존 stream 정리 | 통과 | 실행 중/업로드/저장 중/권한 없음 disabled 조건 unit test 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
 | 1 | 실행 편의성 | stream 실패 시 사용자에게 실패 상태 표시 | 통과 | 실패 상태 store transition unit test와 `TestSidebar` 실패 UI 구현 완료 | `apps/client/app/features/workflow/store/useWorkflowStore.test.ts`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
-| 1 | 실행 편의성 | 테스트 실행 사이드바 기본 폭·드래그 최대 폭·키보드 최소 폭 제한 | 통과 | 기본 `480px`, `380px`~`640px` clamp, 왼쪽 handle pointer/keyboard 조작 unit test 완료 | `apps/client/app/features/workflow/tests/test-sidebar-resize.test.tsx`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
+| 1 | 실행 편의성 | 테스트 실행 사이드바 기본 폭·드래그 최대 폭·키보드 최소 폭·패널 글자 크기 | 통과 | 기본 `560px`, `440px`~`720px` clamp, 왼쪽 handle pointer/keyboard 조작과 패널 내 글자 한 단계 확대 unit test 완료 | `apps/client/app/features/workflow/tests/test-sidebar-resize.test.tsx`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
+| 1 | 실행 편의성 | 테스트 질문 textarea 기본 높이 | 통과 | `paragraph` 타입 질문 입력은 최소 높이 `180px`를 사용하고 기존 세로 크기 조절을 유지한다 | `apps/client/app/features/workflow/tests/test-sidebar-final-response-card.test.tsx`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
 | 1 | 실행 편의성 | 같은 workflow 재동기화 뒤 최신 테스트 실행 상태 유지 | 통과 | 같은 `activeWorkflowId` 재설정은 TestSidebar 실행 상태를 idle로 초기화하지 않는다 | `apps/client/app/features/workflow/store/useWorkflowStore.test.ts` |
 | 1 | 실행 편의성 | 저장된 workflow run을 TestSidebar 복원 상태로 변환 | 통과 | node run status/duration/usage/cost/safe trace metadata를 복원하고 duration을 ms로 변환한다. `running` run은 실패로 바꾸지 않는다. | `apps/client/app/features/workflow/tests/test-execution-restore.test.ts` |
-| 1 | 실행 편의성 | 실행 기록 생성 지연·브라우저 히스토리 중 TestSidebar 복원 | 통과 | 초기 `404`와 `running` run은 점차 긴 제한된 재조회 뒤 terminal 결과로 복원하며, 재시도 한도 전에는 오류를 표시하지 않는다. `testRun` URL 복원은 기록이 지연돼도 패널을 열고, `testNode`가 없으면 실행 전체 결과를 위해 선택 노드를 비운다. 앞으로/뒤로가기로 새 `testRun`을 복원하고 `testRun`이 사라지면 이전 결과를 초기화한다. | `apps/client/app/features/workflow/tests/test-sidebar-run-restore.test.tsx` |
+| 1 | 실행 편의성 | 빈 draft의 URL 실행 복원 | 통과 | canonical draft metadata가 준비되기 전에는 복원을 기다리고, 준비된 draft의 node가 0개여도 `testRun` 상세를 조회해 저장된 과거 node 결과를 복원한다. | `apps/client/app/features/workflow/tests/test-sidebar-run-restore.test.tsx`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
+| 1 | 실행 편의성 | 현재 graph에 없는 과거 노드 실행 결과 표시 | 통과 | 복원된 node run의 노드가 현재 draft에서 삭제되어 node data가 없고 token/cost가 누락돼도 TestSidebar가 오류 없이 저장된 실행 결과를 표시한다. | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
+| 1 | 실행 편의성 | 실행 기록 생성 지연·브라우저 히스토리 중 TestSidebar 복원 | 통과 | 초기 placeholder `default`에서는 복원 API를 호출하지 않고 테스트 실행 버튼을 비활성화한다. persisted workflow가 활성화된 뒤 초기 `404`와 `running` run은 점차 긴 제한된 재조회 뒤 terminal 결과로 복원하며, 재시도 한도 전에는 오류를 표시하지 않는다. `testRun` URL 복원은 기록이 지연돼도 패널을 열고, `testNode`가 없으면 실행 전체 결과를 위해 선택 노드를 비운다. 앞으로/뒤로가기로 새 `testRun`을 복원하고 `testRun`이 사라지면 이전 결과를 초기화한다. Gateway 권한 helper는 malformed workflow ID를 DB 조회 전 `404`로 닫는다. | `apps/client/app/features/workflow/tests/test-sidebar-run-restore.test.tsx`, `apps/gateway/tests/api/test_permission_helpers.py` |
 | 1 | 실행 편의성 | stream 시작 시 큐 등록·복원용 run id·실제 SSE record delimiter 전달 | 통과 | Gateway는 Redis 구독 뒤 workflow task를 큐에 등록한 다음 `workflow_start` UUID를 보내며, 각 event를 실제 `\n\n` record delimiter로 끝내 다음 JSON event와 분리한다 | `apps/gateway/tests/api/test_workflow_stream_start_contract.py` |
 | 1 | 실행 비교 | 기준 실행 목록 서버 필터 | 통과 | status와 trigger mode를 limit 전에 적용하고 다른 workflow run을 노출하지 않는다 | `apps/gateway/tests/api/test_workflow_run_comparison_api.py` |
 | 1 | 실행 비교 | 기준 실행 목록 기본 필터 | 통과 | 비교 모드 진입 시 상태는 `전체 상태`, 실행 방식은 `전체 방식`으로 시작하고 제한 없는 목록 조회에는 status와 trigger mode를 전송하지 않는다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
+| 1 | 실행 비교 | 기준 실행 목록 자동 새로고침 | 통과 | `실행 비교` 탭을 누를 때마다 목록을 다시 조회하고, 열린 패널은 새 테스트가 완료되거나 실패하면 최신 실행 로그를 다시 조회한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
 | 1 | 실행 비교 | 기준 실행 식별 행과 요청 시 상세 조회 | 통과 | 접힌 행에는 실행 시각·방식·대표 입력을 표시하고, `상세`를 누르기 전에는 상세 API를 호출하지 않는다. 상세 조회와 `기준으로 고정` 후 비교 기준 조회의 일시적인 네트워크 오류·`404`·`408`·`429`·`5xx`는 제한적으로 재조회하고, `401`·`403`은 즉시 안내하며 최종 실패에는 `다시 불러오기`를 제공한다. 펼친 행에는 전체 입력·모델 라우팅·실행 지표를 표시한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 실행 비교 | 목록 갱신 실패 시 기존 기록 유지와 재시도 | 통과 | 기준 실행 목록 재조회가 실패해도 기존 행을 유지하고, 목록 또는 TestSidebar 상단 재시도 신호가 실제 목록 API를 다시 호출해 복구한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 실행 비교 | 최신 실행 자동 선택 금지와 명시적 기준 고정 | 통과 | 비교 모드 진입 시 선택이 비어 있고 사용자가 기준 고정 버튼을 눌러야 상세를 조회한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
@@ -157,7 +161,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 | 1 | 실행 비교 | 실시간 노드 상태 갱신 중 비교 화면 유지 | 통과 | 같은 실행과 같은 노드 표시 정보를 유지한 상태 갱신은 비교 API 재조회와 로딩 화면 전환을 만들지 않는다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 실행 비교 | 전체 실행 기준·현재 가로 막대와 상태 배지 | 통과 | 비용·실행 시간·전체 토큰을 세로로 쌓고, 각 항목에서 기준 실행·현재 실행의 가로 막대와 변화율을 표시한다. 상태는 별도 배지로 분리한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 실행 비교 | 현재 실행 중 단일 진행 패널과 완료 뒤 자동 동기화 | 통과 | 현재 실행이 `running`인 동안 노드 대기와 비교 준비 안내를 하나의 진행 패널에 표시하고, terminal 상태 전환 뒤 비교 결과를 자동으로 읽는다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
-| 1 | 실행 비교 | 노드 목록 지표와 상세 비교 | 통과 | 목록에는 노드 이름·사람용 유형명·상태·시간을 표시하고, `llmNode`에만 비용·토큰을 추가한다. 상세에는 입력·출력을 양쪽으로 표시하고 LLM 노드에는 라우팅 근거를 추가한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
+| 1 | 실행 비교 | 노드 목록 지표와 상세 비교 | 통과 | 목록에는 노드 이름·사람용 유형명·상태·시간을 표시하고, `llmNode`에만 비용·토큰을 추가한다. 상세 진입 시 TestSidebar 본문을 맨 위로 이동하고 실행 상태 → 입력 → 모델 라우팅 → 출력 순서로 양쪽 값을 표시한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 실행 비교 | LLM trace 기록 없음과 조회 실패 구분 | 통과 | `404`/빈 trace는 `LLM trace 기록 없음`으로 표시하고, `403`/`5xx`/네트워크 실패는 비교를 유지하면서 근거 일부 누락 경고를 표시한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 노드 조작 편의성 | 3패널 기본 표시 | 통과 | 기본 3패널 폭 산출 unit test와 `NodeFullscreenEditor` grid 구현 완료 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts`, `apps/client/app/features/workflow/components/editor/NodeFullscreenEditor.tsx` |
 | 1 | 노드 조작 편의성 | 3패널 resize 계산의 min/max clamp | 통과 | layout 계산 unit test 완료 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts` |
@@ -385,7 +389,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - 서버 실행 시간과 화면 완료 시간은 `서버 실행`, `화면 완료`처럼 서로 다른 라벨로 구분된다.
 - 캔버스에는 별도 테스트 실행 요약 패널이 표시되지 않는다.
 - 다시 테스트하기를 누르면 이전 실행 요약이 초기화되고 새 실행 결과로 갱신된다.
-- 테스트 실행 사이드바는 기본 `480px`로 열리고, 왼쪽 handle을 드래그해 `380px`~`640px` 범위에서 폭을 조정할 수 있다.
+- 테스트 실행 사이드바는 기본 `560px`로 열리고, 왼쪽 handle을 드래그해 `440px`~`720px` 범위에서 폭을 조정할 수 있다. 패널 안의 글자는 기존보다 한 단계 크게 표시된다.
 - 테스트 실행 사이드바 폭은 keyboard `ArrowLeft`/`ArrowRight`와 `Home`/`End`로도 조정할 수 있으며, 패널을 닫고 다시 열어도 같은 편집 세션에서는 유지된다.
 
 ### 2. 노드 조작 편의성
@@ -613,6 +617,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - 배포 생성 시 root graph와 Loop subgraph 안의 각 WorkflowNode target deployment ID/version/snapshot hash가 server-owned internal binding으로 고정된다. Client 입력뿐 아니라 deployment clone, template/import와 다른 graph 복사 경로에 같은 이름 metadata가 있어도 제거 후 현재 canonical target으로 재계산된다. Draft/deployment/copy/export를 포함한 모든 client-facing graph 응답, node output, trace와 log에는 binding이 없다.
 - Stream에 유효한 아직 저장되지 않은 request `graph_snapshot`을 주면 publisher는 그 graph의 server-owned 복사본에 binding만 계산해 실행하고 DB draft로 대체하거나 저장하지 않는다. MBA-190 적용 전과 같은 unsaved node/data/edge가 실행되며 client가 넣은 internal binding metadata만 제거·재계산된다. DB draft를 사용하던 Draft/Compare surface는 기존 source를 그대로 유지한다.
 - Binding V1 entry는 Loop-only `container_path`, WorkflowNode/target app/deployment ID, deployment version과 lowercase 64자 snapshot SHA-256만 가지며 canonical path/node 순으로 정렬된다. Duplicate entry, unknown version, extra/malformed field, NaN과 canonicalization 불가 graph는 queue 발행 또는 provider 전에 실패한다.
+- Shared node-location walker는 root, 단일·중첩 Loop에서 ordered `container_path + node_id`를 계산하고 Gateway preflight와 Workflow Runtime이 같은 fixture에서 같은 location을 사용해야 한다. 다른 Loop의 동일 `node_id`는 서로 다른 digest/policy로 분리하고 wrong path capability는 config decrypt, provider client와 SDK 호출 전에 거부한다.
 - Snapshot hash는 target graph의 `_nodease_runtime.workflow_node_bindings`까지 포함한 sorted-key/compact/UTF-8/non-ASCII 유지 canonical JSON bytes로 independent reference implementation과 같은 값을 만든다. Target metadata나 graph 한 field를 바꾸면 hash가 달라진다.
 - Binding resolver는 same-organization, allowed WorkflowNode deployment type, cycle와 maximum nesting depth를 기존 runtime 정책과 같은 값으로 검사한다. `apps/gateway/application/deployment/preflight.py`와 `workflow_node_binding.py`가 동일한 `DeploymentPreflightRepository` port, shared Loop-aware walker와 depth constant를 호출하고 `apps/gateway/composition/deployment.py`가 기존 SQLAlchemy adapter를 조립한다. 새 resolver나 target DB query 정책을 `apps/gateway/services/`에 만들면 import/architecture test가 실패한다. Cycle/depth 초과나 다른 organization target은 두 경로에서 같은 safe preflight error로 닫힌다.
 - `apps/shared/domain/workflow_node_binding.py`는 `apps/shared/services.workflow_node_catalog` 또는 catalog file/path를 import하지 않는다. Gateway/Workflow Engine composition이 기존 catalog loader 결과에서 immutable side-effect mapping을 만들고 두 경로에 주입하며, 같은 catalog fixture에서 classifier 결과가 같아야 한다.
@@ -816,6 +821,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Public Chatbot route에 login cookie가 있어도 anonymous public audience를 유지하고 private KB/Memory를 허용하지 않는다. Target authenticated internal Chatbot은 별도 access policy/runtime namespace가 구현된 경우에만 user execution subject를 사용한다.
 - Active deployment 변경과 queued old-session task 경합에서 Worker는 pinned deployment snapshot을 사용하거나 side effect 전에 version conflict로 닫고 current graph를 임의 실행하지 않는다.
 - LLM Credentials가 발급한 ProviderExecutionCapability identity/revision의 purpose, deployment/node/admission/provider-attempt binding 또는 current validity mismatch는 context materialization, provider call과 budget reservation 전에 fail-closed 한다.
+- Capability-required LLM node는 `n|best_of`가 정확한 정수 `1`이 아니면 provider 호출 전에 차단하고, Knowledge가 설정됐지만 embedding capability가 없으면 candidate resolution, legacy credential selection과 embedding/main provider 호출을 모두 수행하지 않는다.
 
 ## Edge Cases
 
@@ -847,7 +853,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 
 ### MBA-322 Workflow Citation Regression
 
-- 새 LLM node와 Agent Builder node는 `citationDisplayMode=basic`, legacy missing field는 `hidden`인지 검증한다.
+- 새 LLM node와 Agent Builder node는 `citationDisplayMode=detailed`, legacy missing field는 `hidden`인지 검증한다.
 - Grounding lexical metadata 옵션과 Citation 표시 옵션을 서로 독립적으로 변경할 수 있는지 검증한다.
 - Answer data ancestry에 있는 LLM Citation만 최종 응답에 병합하고 control-only node와 subworkflow reserved key를 제외하는지 검증한다.
 - `LLM -> CodeNode inputs[].source -> Answer` data path도 Citation lineage에 포함되는지 검증한다.

@@ -491,8 +491,8 @@ class KnowledgeRAGRecommendedOptions(BaseModel):
     )
     ragFailurePolicy: KnowledgeRAGFailurePolicy = "safe_no_result"
     sourceTierPolicy: KnowledgeRAGSourceTierPolicy = "tie_break"
-    scoreThreshold: float = Field(default=0.5, ge=0.0, le=1.0)
-    topK: int = Field(default=3, ge=1, le=8)
+    scoreThreshold: float = Field(default=0.3, ge=0.0, le=1.0)
+    topK: int = Field(default=5, ge=1, le=8)
 
 
 class KnowledgeSourceCollectionSummary(BaseModel):

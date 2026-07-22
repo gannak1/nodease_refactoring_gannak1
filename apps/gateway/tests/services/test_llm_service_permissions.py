@@ -51,14 +51,22 @@ class FakeDb:
 
 def test_get_my_credentials_does_not_expose_internal_database_error(monkeypatch):
     leaked_detail = "SELECT llm_credentials.encryption_key_version"
+    organization_id = uuid.uuid4()
 
     def fail_lookup(*_args, **_kwargs):
         raise RuntimeError(leaked_detail)
 
+    monkeypatch.setattr(
+        llm_endpoint,
+        "resolve_active_organization_id",
+        lambda *_args, **_kwargs: organization_id,
+    )
     monkeypatch.setattr(LLMService, "get_user_credentials", fail_lookup)
 
     with pytest.raises(HTTPException) as exc_info:
         llm_endpoint.get_my_credentials(
+            SimpleNamespace(),
+            x_organization_id=str(organization_id),
             db=FakeDb([]),
             current_user=SimpleNamespace(id=uuid.uuid4()),
         )
@@ -66,6 +74,46 @@ def test_get_my_credentials_does_not_expose_internal_database_error(monkeypatch)
     assert exc_info.value.status_code == 500
     assert exc_info.value.detail == "LLM credential lookup failed."
     assert leaked_detail not in str(exc_info.value.detail)
+
+
+def test_get_my_credentials_resolves_active_organization(monkeypatch):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    request = SimpleNamespace()
+    db = object()
+    expected = [SimpleNamespace(id=uuid.uuid4())]
+    captured = {}
+
+    def resolve_org(db_arg, request_arg, header, checked_user_id):
+        captured["resolve"] = (db_arg, request_arg, header, checked_user_id)
+        return organization_id
+
+    def list_credentials(db_arg, checked_user_id, checked_organization_id):
+        captured["service"] = (
+            db_arg,
+            checked_user_id,
+            checked_organization_id,
+        )
+        return expected
+
+    monkeypatch.setattr(llm_endpoint, "resolve_active_organization_id", resolve_org)
+    monkeypatch.setattr(LLMService, "get_user_credentials", list_credentials)
+
+    result = llm_endpoint.get_my_credentials(
+        request,
+        x_organization_id=str(organization_id),
+        db=db,
+        current_user=SimpleNamespace(id=user_id),
+    )
+
+    assert result == expected
+    assert captured["resolve"] == (
+        db,
+        request,
+        str(organization_id),
+        user_id,
+    )
+    assert captured["service"] == (db, user_id, organization_id)
 
 
 def test_get_client_for_user_rejects_non_object_credential_config(monkeypatch):
@@ -258,11 +306,27 @@ class FakeCredentialRegisterDb:
 
 def test_delete_credential_preserves_permission_http_exception(monkeypatch):
     credential_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
     user = SimpleNamespace(id=uuid.uuid4())
+    request = SimpleNamespace()
     seen = {}
 
-    def deny(db, current_user, checked_credential_id, action):
+    monkeypatch.setattr(
+        llm_endpoint,
+        "resolve_active_organization_id",
+        lambda *_args, **_kwargs: organization_id,
+    )
+
+    def deny(
+        db,
+        current_user,
+        checked_credential_id,
+        action,
+        *,
+        active_organization_id=None,
+    ):
         seen["action"] = action
+        seen["organization_id"] = active_organization_id
         raise HTTPException(status_code=403, detail="Forbidden")
 
     monkeypatch.setattr(llm_endpoint, "ensure_llm_credential_permission", deny)
@@ -272,10 +336,93 @@ def test_delete_credential_preserves_permission_http_exception(monkeypatch):
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        llm_endpoint.delete_credential(credential_id, FakeDb(None), user)
+        llm_endpoint.delete_credential(
+            credential_id,
+            request,
+            x_organization_id=str(organization_id),
+            db=FakeDb(None),
+            current_user=user,
+        )
 
     assert exc_info.value.status_code == 403
-    assert seen["action"] == "write"
+    assert seen == {"action": "write", "organization_id": organization_id}
+
+
+def test_sync_credential_models_uses_active_organization(monkeypatch):
+    credential_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4())
+    request = SimpleNamespace()
+    db = object()
+    captured = {}
+
+    monkeypatch.setattr(
+        llm_endpoint,
+        "resolve_active_organization_id",
+        lambda *_args, **_kwargs: organization_id,
+    )
+
+    def allow(
+        db_arg,
+        current_user,
+        checked_credential_id,
+        action,
+        *,
+        active_organization_id=None,
+    ):
+        captured["permission"] = (
+            db_arg,
+            current_user,
+            checked_credential_id,
+            action,
+            active_organization_id,
+        )
+        return SimpleNamespace(id=credential_id)
+
+    def sync(
+        db_arg,
+        user_id,
+        checked_credential_id,
+        checked_organization_id,
+        *,
+        purge_unverified=False,
+    ):
+        captured["service"] = (
+            db_arg,
+            user_id,
+            checked_credential_id,
+            checked_organization_id,
+            purge_unverified,
+        )
+        return {"status": "ok"}
+
+    monkeypatch.setattr(llm_endpoint, "ensure_llm_credential_permission", allow)
+    monkeypatch.setattr(LLMService, "sync_credential_models", sync)
+
+    result = llm_endpoint.sync_credential_models(
+        credential_id,
+        request,
+        purge_unverified=True,
+        x_organization_id=str(organization_id),
+        db=db,
+        current_user=user,
+    )
+
+    assert result == {"status": "ok"}
+    assert captured["permission"] == (
+        db,
+        user,
+        credential_id,
+        "write",
+        organization_id,
+    )
+    assert captured["service"] == (
+        db,
+        user.id,
+        credential_id,
+        organization_id,
+        True,
+    )
 
 
 def _route(path, method):
@@ -368,16 +515,19 @@ def test_register_credential_checks_organization_manager_before_remote_fetch(mon
     )
 
     with pytest.raises(PermissionError):
-        LLMService.register_credential(FakeDb(provider), uuid.uuid4(), request)
+        LLMService.register_credential(
+            FakeDb(provider), uuid.uuid4(), request, organization_id
+        )
 
 
-def test_register_credential_flushes_default_organization_before_manager_check(
+def test_register_credential_uses_explicit_active_organization_before_manager_check(
     monkeypatch,
 ):
     user_id = uuid.uuid4()
     provider = SimpleNamespace(
         id=uuid.uuid4(), name="openai", base_url="https://api.example"
     )
+    organization_id = uuid.uuid4()
     request = LLMCredentialCreate(
         provider_id=provider.id,
         credential_name="first",
@@ -386,10 +536,11 @@ def test_register_credential_flushes_default_organization_before_manager_check(
     db = FakeCredentialRegisterDb(provider)
     manager_check_flush_counts = []
 
-    def has_manager_permission(db_arg, checked_user_id, organization_id):
+    def has_manager_permission(db_arg, checked_user_id, checked_organization_id):
         manager_check_flush_counts.append(db_arg.flush_count)
         assert checked_user_id == user_id
-        return db_arg.flush_count > 0
+        assert checked_organization_id == organization_id
+        return True
 
     monkeypatch.setattr(
         llm_service,
@@ -415,10 +566,12 @@ def test_register_credential_flushes_default_organization_before_manager_check(
         staticmethod(lambda credential: credential),
     )
 
-    credential = LLMService.register_credential(db, user_id, request)
+    credential = LLMService.register_credential(
+        db, user_id, request, organization_id
+    )
 
-    assert manager_check_flush_counts == [1]
-    assert credential.organization_id is not None
+    assert manager_check_flush_counts == [0]
+    assert credential.organization_id == organization_id
     assert credential.encrypted_config == "synthetic-ciphertext"
     assert credential.encryption_key_version == "v2"
     assert credential.encryption_algorithm == "fernet-v1"
@@ -497,11 +650,17 @@ def test_provider_verification_does_not_expose_json_error(monkeypatch):
 
 def test_credential_registration_endpoint_redacts_unexpected_error(monkeypatch):
     sensitive_detail = "database failed with ciphertext=must-not-leak"
-    request = LLMCredentialCreate(
+    organization_id = uuid.uuid4()
+    credential_request = LLMCredentialCreate(
         provider_id=uuid.uuid4(),
-        organization_id=uuid.uuid4(),
+        organization_id=organization_id,
         credential_name="shared",
         api_key="synthetic-key",
+    )
+    monkeypatch.setattr(
+        llm_endpoint,
+        "resolve_active_organization_id",
+        lambda *_args, **_kwargs: organization_id,
     )
 
     def fail_registration(*args, **kwargs):
@@ -511,9 +670,11 @@ def test_credential_registration_endpoint_redacts_unexpected_error(monkeypatch):
 
     with pytest.raises(HTTPException) as exc_info:
         llm_endpoint.register_credential.__wrapped__(
-            request,
-            FakeDb(None),
-            SimpleNamespace(id=uuid.uuid4()),
+            credential_request,
+            SimpleNamespace(state=SimpleNamespace()),
+            x_organization_id=str(organization_id),
+            db=FakeDb(None),
+            current_user=SimpleNamespace(id=uuid.uuid4()),
         )
 
     assert exc_info.value.status_code == 500
@@ -521,18 +682,105 @@ def test_credential_registration_endpoint_redacts_unexpected_error(monkeypatch):
     assert sensitive_detail not in str(exc_info.value.detail)
 
 
-def test_get_user_credentials_filters_by_read_permission(monkeypatch):
-    readable_id = uuid.uuid4()
-    blocked_id = uuid.uuid4()
-    credentials = [
-        SimpleNamespace(id=readable_id),
-        SimpleNamespace(id=blocked_id),
-    ]
-    seen_actions = []
+def test_credential_registration_rejects_body_organization_outside_active_context(
+    monkeypatch,
+):
+    active_organization_id = uuid.uuid4()
+    credential_request = LLMCredentialCreate(
+        provider_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        credential_name="cross-organization",
+        api_key="synthetic-key",
+    )
+    monkeypatch.setattr(
+        llm_endpoint,
+        "resolve_active_organization_id",
+        lambda *_args, **_kwargs: active_organization_id,
+    )
+    monkeypatch.setattr(
+        LLMService,
+        "register_credential",
+        lambda *_args, **_kwargs: pytest.fail(
+            "cross-organization registration reached the service"
+        ),
+    )
 
-    def can_read(db, user_id, credential_id, action):
-        seen_actions.append(action)
-        return credential_id == readable_id and action == "read"
+    with pytest.raises(HTTPException) as exc_info:
+        llm_endpoint.register_credential.__wrapped__(
+            credential_request,
+            SimpleNamespace(state=SimpleNamespace()),
+            x_organization_id=str(active_organization_id),
+            db=object(),
+            current_user=SimpleNamespace(id=uuid.uuid4()),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail["error"]["code"] == "resource.not_found"
+
+
+def test_get_user_credentials_filters_query_by_active_organization_and_read_permission(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    other_organization_id = uuid.uuid4()
+    readable = SimpleNamespace(
+        id=uuid.uuid4(), organization_id=organization_id, is_valid=True
+    )
+    blocked = SimpleNamespace(
+        id=uuid.uuid4(), organization_id=organization_id, is_valid=True
+    )
+    cross_organization = SimpleNamespace(
+        id=uuid.uuid4(), organization_id=other_organization_id, is_valid=True
+    )
+    revoked = SimpleNamespace(
+        id=uuid.uuid4(), organization_id=organization_id, is_valid=False
+    )
+    credentials = [readable, blocked, cross_organization, revoked]
+    permission_calls = []
+
+    class FilterAwareCredentialQuery:
+        def __init__(self):
+            self.filters = []
+
+        def filter(self, *criteria):
+            self.filters.extend(criteria)
+            return self
+
+        def all(self):
+            filtered_organization_id = _filter_value(
+                self.filters, "organization_id"
+            )
+            filtered_validity = _filter_value(self.filters, "is_valid")
+            return [
+                credential
+                for credential in credentials
+                if (
+                    filtered_organization_id is None
+                    or credential.organization_id == filtered_organization_id
+                )
+                and (
+                    filtered_validity is None
+                    or credential.is_valid is filtered_validity
+                )
+            ]
+
+    class FilterAwareCredentialDb:
+        def query(self, model):
+            assert model is llm_service.LLMCredential
+            return FilterAwareCredentialQuery()
+
+    def can_read(
+        db,
+        checked_user_id,
+        credential_id,
+        action,
+        organization_id=None,
+    ):
+        permission_calls.append(
+            (checked_user_id, credential_id, action, organization_id)
+        )
+        return credential_id in {readable.id, cross_organization.id}
 
     monkeypatch.setattr(llm_service, "has_llm_credential_permission", can_read)
     monkeypatch.setattr(
@@ -541,10 +789,15 @@ def test_get_user_credentials_filters_by_read_permission(monkeypatch):
         staticmethod(lambda credential: credential),
     )
 
-    result = LLMService.get_user_credentials(FakeDb(credentials), uuid.uuid4())
+    result = LLMService.get_user_credentials(
+        FilterAwareCredentialDb(), user_id, organization_id
+    )
 
-    assert result == [credentials[0]]
-    assert seen_actions == ["read", "read"]
+    assert result == [readable]
+    assert permission_calls == [
+        (user_id, readable.id, "read", organization_id),
+        (user_id, blocked.id, "read", organization_id),
+    ]
 
 
 def test_get_client_for_model_uses_model_db_id(monkeypatch):

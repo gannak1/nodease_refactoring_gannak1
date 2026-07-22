@@ -1,5 +1,14 @@
+import uuid
+
 import pytest
 
+from apps.shared.domain.workflow_execution_identity import InvocationSegment
+from apps.workflow_engine.domain.execution import NodeExecutionControl
+from apps.workflow_engine.domain.external_effect import ExternalEffectContext
+from apps.workflow_engine.workflow.core.runtime_dependencies import (
+    WorkflowRuntimeDependencies,
+)
+from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 from apps.workflow_engine.workflow.nodes.loop.loop_node import (
     LoopNode,
     LoopNodeData,
@@ -18,6 +27,112 @@ def _loop_node(
             error_strategy=error_strategy,
             subGraph=subgraph,
         ),
+    )
+
+
+def test_loop_child_inherits_parent_runtime_dependencies(monkeypatch) -> None:
+    node = _loop_node(
+        subgraph={
+            "nodes": [
+                {
+                    "id": "body",
+                    "type": "templateNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {},
+                }
+            ],
+            "edges": [],
+        }
+    )
+    runtime_dependencies = WorkflowRuntimeDependencies(
+        provider_execution_runtime=object(),
+        provider_usage_recorder=object(),
+    )
+    node.bind_runtime_dependencies(runtime_dependencies)
+    captured: dict = {}
+
+    class _ChildEngine:
+        _external_effect_output_sensitive = False
+
+        def execute(self):
+            return {"result": "ok"}
+
+        def cleanup(self):
+            return None
+
+    def create_child(_cls, *args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return _ChildEngine()
+
+    monkeypatch.setattr(WorkflowEngine, "create_child", classmethod(create_child))
+
+    result = node._execute_subgraph_scoped(
+        {},
+        iteration_index=0,
+        entry_node_id="body",
+    )
+
+    assert result == {"result": "ok"}
+    assert captured["kwargs"]["runtime_dependencies"] is runtime_dependencies
+
+
+def test_loop_child_appends_its_id_to_the_trusted_binding_container_path(
+    monkeypatch,
+) -> None:
+    node = _loop_node(
+        subgraph={
+            "nodes": [
+                {
+                    "id": "body",
+                    "type": "templateNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {},
+                }
+            ],
+            "edges": [],
+        }
+    )
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    execution_id = uuid.uuid4()
+    control = NodeExecutionControl(
+        execution_id=execution_id,
+        invocation_path_prefix=(InvocationSegment("root", "", "workflow"),),
+        external_effect_context=ExternalEffectContext(
+            organization_id=organization_id,
+            app_id=uuid.uuid4(),
+            workflow_id=workflow_id,
+            execution_id=execution_id,
+            node_invocation_id=uuid.uuid4(),
+            node_id="loop-1",
+        ),
+        external_effect_enforced=True,
+        binding_container_path=(("loop", "outer-loop"),),
+    )
+    captured: dict = {}
+
+    class _ChildEngine:
+        _external_effect_output_sensitive = False
+
+        def execute(self):
+            return {"result": "ok"}
+
+        def cleanup(self):
+            return None
+
+    def create_child(_cls, *args, **kwargs):
+        captured["kwargs"] = kwargs
+        return _ChildEngine()
+
+    monkeypatch.setattr(WorkflowEngine, "create_child", classmethod(create_child))
+
+    result = node.execute({"items": ["one"]}, runtime_control=control)
+
+    assert result["results"] == [{"result": "ok"}]
+    assert captured["kwargs"]["binding_container_path"] == (
+        ("loop", "outer-loop"),
+        ("loop", "loop-1"),
     )
 
 

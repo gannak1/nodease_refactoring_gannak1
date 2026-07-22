@@ -17,6 +17,8 @@ Verified Against: `feature/mba-247 @ 3b947bd5ac6c51ffcc028510344ee2e5a5066873`
 | GET | `/api/v1/deployments?app_id={app_id}` | 배포 이력과 App 소유 `url_slug` 조회 | 로그인 + workflow read 권한 |
 | GET | `/api/v1/deployments/public/{url_slug}/info` | Public app 화면용 safe metadata 조회 | 인증 없음. 기본 policy는 `webapp`, `widget`, `chatbot`만 허용 |
 | GET | `/api/v1/deployments/public/{url_slug}/browser-access` | Public Chatbot/Widget iframe CSP safe projection | 인증 없음. active `widget`/`chatbot`만 허용 |
+| GET | `/api/v1/deployments/{deployment_id}/llm-credential-policies` | Immutable deployment LLM node의 server-side credential policy safe projection 조회 | 로그인 + active organization manager |
+| PUT | `/api/v1/deployments/{deployment_id}/llm-credential-policies/{node_id}` | Immutable deployment LLM node의 server-side credential policy 교체 | 로그인 + active organization manager |
 | GET | `/api/v1/deployments/{deployment_id}/run-info` | 로그인 사용자 실행 화면에 필요한 safe deployment metadata 조회 | 로그인 + workflow execute 권한 |
 | POST | `/api/v1/deployments/{deployment_id}/run` | 로그인 사용자를 execution subject로 활성 deployment snapshot 실행 | 로그인 + workflow execute 권한 |
 | POST | `/api/v1/hooks/{url_slug}` | Public webhook trigger execution or pending capture ingestion | Exactly one App secret source: Bearer primary or `X-Webhook-Secret` compatibility header |
@@ -71,6 +73,25 @@ Active `api`/`webhook` preflight, create와 toggle은 configured App secret을 �
 ### `GET /api/v1/deployments?app_id={app_id}`
 
 각 deployment 응답은 App 소유 `url_slug`를 포함해 Client가 공개 공유 URL을 구성할 수 있게 한다. `auth_secret`은 이 목록 조합 과정에서 주입하지 않는다. 저장된 `browser_access_policy`가 malformed이거나 알 수 없는 version이면 목록 전체를 실패시키지 않고 disabled V1 policy로 정규화한다.
+
+### Deployment LLM Credential Policy
+
+`GET /api/v1/deployments/{deployment_id}/llm-credential-policies`와 `PUT /api/v1/deployments/{deployment_id}/llm-credential-policies/{node_id}`는 immutable deployment snapshot의 `llmNode`별 provider credential 선택을 graph 밖의 server-side policy로 관리한다. 두 endpoint는 active organization의 manager만 호출할 수 있다.
+
+PUT request는 extra field를 허용하지 않으며 다음 두 UUID만 받는다.
+
+```json
+{
+  "model_id": "00000000-0000-0000-0000-000000000000",
+  "credential_id": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+Server는 canonical deployment/App/Workflow organization, immutable graph의 exact `node_id`와 `model_id`, active model, same-organization valid credential, verified model-provider relation, credential `use` 권한을 다시 검사한다. Graph에는 `model_id`만 저장하며 `credential_id`, auto-routing, default credential 또는 App/deployment creator fallback을 저장하거나 해석하지 않는다. PUT은 canonical deployment row를 lock하고 같은 deployment version/node의 기존 active policy를 model UUID와 무관하게 supersede한 뒤 policy revision을 증가시키며 deployment graph 또는 version을 바꾸지 않는다.
+
+GET/PUT response는 `id`, `deployment_id`, `deployment_version`, `node_id`, `model_id`, `credential_id`, `policy_revision`, `is_active`, `created_at`, `updated_at`만 포함한다. Credential config, encrypted value, server credential principal, capability identifier, execution/billing/audit principal은 반환하지 않는다. Missing deployment는 `404`, manager 권한 부족은 `403 permission.denied`, concurrent selection conflict는 `409 selection_ambiguous`, immutable graph/model/credential/relation/permission 불일치는 safe `422` code로 반환한다.
+
+이 정책은 [ADR-0064](../../decisions/ADR-0064-provider-execution-capability-boundary.md)의 provider execution capability가 필요한 server-owned target runtime에서만 사용한다. Client 입력, CORS/embedding policy, Conversation Access Grant는 capability를 발급하거나 credential principal을 선택할 수 없다. Legacy LLM execution의 전면 전환은 별도 MBA-320 범위다.
 
 ### `GET /api/v1/deployments/public/{url_slug}/info`
 

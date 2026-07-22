@@ -9,6 +9,13 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: mockPush }),
 }));
 
+vi.mock('@/lib/activeOrganization', () => ({
+  activeOrganizationHeaders: (organizationId?: string | null) =>
+    organizationId ? { 'X-Organization-Id': organizationId } : {},
+  getStoredActiveOrganizationId: () =>
+    '11111111-1111-4111-8111-111111111111',
+}));
+
 describe('useMemoryMode credential status', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -34,6 +41,14 @@ describe('useMemoryMode credential status', () => {
       expect(result.current.providerKeyStatus).toBe('available');
     });
     expect(result.current.hasProviderKey).toBe(true);
+    expect(fetch).toHaveBeenCalledWith('/api/v1/llm/credentials', {
+      credentials: 'include',
+      headers: {
+        'X-Organization-Id':
+          '11111111-1111-4111-8111-111111111111',
+      },
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it('정상 응답이 빈 목록이면 credential이 없는 상태로 표시한다', async () => {
