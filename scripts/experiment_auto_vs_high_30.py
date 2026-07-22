@@ -12,7 +12,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from scripts import experiment_judge_first_economics_80 as experiment
+from scripts import experiment_judge_first_economics_80 as experiment  # noqa: E402
 
 
 EXTRA_HOLDOUT_CASES: tuple[tuple[str, str, str, str], ...] = (
