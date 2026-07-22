@@ -65,6 +65,8 @@ Mail credential은 organization이 관리하는 Mail provider 인증 정보를 w
 - MAIL-CRED-REQ-053: 이미 성공한 terminal acknowledgement와 활성 acknowledgement lease를 본 중복 실행은 Gmail/IMAP provider acknowledgement를 다시 호출하지 않아야 한다.
 - MAIL-CRED-REQ-054: Deployment 전환 시 effect가 없는 `pending` processing만 새 deployment로 재귀속할 수 있다. Active/effect-bearing processing은 conflict로 차단하고 terminal success는 provider 호출 없이 재사용해야 한다.
 - MAIL-CRED-REQ-055: Mail trace lineage는 control edge와 selector data dependency를 모두 따라 downstream durable payload를 구조 요약으로 최소화해야 한다.
+- MAIL-CRED-REQ-056: Google OAuth token exchange/refresh와 Gmail profile/message/modify/draft 호출은 server-owned operation ID, 고정 HTTPS/443 endpoint와 bounded request/response/timeout profile을 사용하는 공통 guarded requester를 통과해야 한다. Gateway/Worker service와 node는 concrete HTTP client 또는 arbitrary URL·method를 생성하지 않아야 한다.
+- MAIL-CRED-REQ-057: 공통 requester는 network failure phase만 반환하고 OAuth/Gmail adapter가 provider status, `invalid_grant`, reauthorization, Draft outcome unknown과 acknowledgement 의미를 기존 safe 계약으로 변환해야 한다. Gmail send capability는 추가하지 않는다.
 
 ## Policies And Edge Cases
 

@@ -267,6 +267,8 @@ FR-048 기존 실행 계약 보존: Draft/test·Compare·stream publisher는 DB 
 - Workflow 실행 권한, LLM credential `use`, connector/connection 사용 권한, Knowledge KB/source ACL 권한은 서로를 대체하지 않는다.
 - Workflow-node 순환 참조, nesting depth 초과, target app/deployment unavailable 같은 복구 불가능한 graph 설정 오류는 retry 가능한 일시 장애가 아니다. Celery task는 이러한 non-retryable runtime error를 즉시 실패로 보존해야 한다.
 - Workflow runtime HTTP/GitHub node의 전체 outbound egress policy는 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 Knowledge source collection egress boundary와 별도 gate다. Mail IMAP 연결은 [ADR-0031](../../decisions/ADR-0031-mail-credential-reference-boundary.md)의 제한된 egress gate를 적용한다.
+- GitHub pull request 조회/comment와 Slack API/webhook 호출은 server-owned operation ID, HTTPS/443 endpoint와 bounded request/response/timeout profile을 사용하는 공통 guarded requester를 통과해야 한다. Node와 application service는 직접 `requests`/`httpx` client를 생성하거나 arbitrary provider URL·method를 실행해서는 안 된다.
+- 공통 requester는 network 전송과 safe failure phase만 소유한다. GitHub/Slack adapter의 provider path·payload 검증, safe output, external-effect admission, retry 금지와 outcome-unknown 판정은 기존 계약을 유지해야 한다.
 
 - 외부 부수효과 node의 ambiguous provider outcome은 복구 불가능한 설정 오류와 별개지만, 외부 서비스 중복 방지 지원 수준이 `unsupported` 또는 `unknown`이면 자동 replay 가능한 일시 장애로 취급하지 않는다.
 - `workflow_node_effect_attempts`는 외부 부수효과 claim과 replay decision의 source of truth다. 비동기 `workflow_runs`/`workflow_node_runs` row는 nullable correlation이며 attempt 생성의 FK 선행 조건이 아니다.
@@ -336,7 +338,7 @@ Open Question 중요도는 다음 3단계로 나눈다.
 후속 확장 open question:
 - Service account의 데이터 접근 범위와 승인 절차를 Auth/RBAC에서 어떤 table과 helper로 표현할지.
 - Schedule/webhook/API trigger에서 private KB access가 필요할 때 service account/assigned operator `execution_subject` resolution reason enum과 audit action 이름을 어떻게 둘지. Conversation Access Grant나 credential principal은 후보가 아니다.
-- Generic HTTP는 ADR-0050의 Workflow application port와 공통 guard를 사용한다. GitHub와 다른 Workflow outbound adapter를 같은 port로 이관할 시점과 proxy-only enforcement는 후속 결정이다.
+- Generic HTTP는 ADR-0050의 Workflow application port와 공통 guard를 사용한다. GitHub/Slack fixed-SaaS는 MBA-356의 operation-bound requester로 이관됐으며, 등록되지 않은 adapter와 proxy-only enforcement는 각각 별도 inventory와 MBA-357 결정 대상이다.
 - Skill execution을 runtime node로 허용할지, 허용한다면 sandbox와 approval 경계를 어디에 둘지.
 - Workflow Playground, canvas 작업 공간/사용 공간, 배포 승인 요청에서 skill binding을 어떻게 표현하고 검토할지.
 

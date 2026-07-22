@@ -88,3 +88,5 @@ Status: Draft
 - MAIL-CRED-TC-078: 재배포 후 effect 없는 pending processing은 현재 deployment로 재귀속되지만 active/effect-bearing processing은 conflict로 차단되고 terminal success는 재사용된다.
 - MAIL-CRED-TC-079: 동시 OAuth refresh는 짧은 credential lease winner만 provider를 호출하고 외부 HTTP 동안 DB transaction을 유지하지 않는다. Replacement token rotation과 audit은 lease owner를 확인한 finalize transaction에서 commit하며 `invalid_grant`만 local revoke한다.
 - MAIL-CRED-TC-080: Opt-in disposable PostgreSQL race에서 동일 message registration은 한 processing id로 수렴하고 동시 Draft admission의 acquired winner는 하나다.
+- MAIL-CRED-TC-081: Google OAuth/Gmail adapter는 고정 operation과 guarded requester를 사용하며 wrong origin, private/mixed DNS, peer mismatch, redirect와 response 상한 위반을 추가 요청 없이 safe failure로 차단한다.
+- MAIL-CRED-TC-082: OAuth `invalid_grant`, Gmail 401/403/429/5xx, connect failure와 전송 뒤 응답 상실은 기존 provider별 safe code와 failure phase를 유지하고 token, raw URL/body/response/exception을 노출하지 않는다. Production adapter registry에는 Gmail send operation이 없다.

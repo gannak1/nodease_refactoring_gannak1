@@ -409,6 +409,12 @@ Blocking response:
 - Policy 거부는 기존 `external_effect.invalid_prepared_request`, 전송 전 일시 연결 실패는 기존 `external_effect.connection_failed` 또는 retry control, 전송 뒤 response 상실·크기 초과·검증 실패는 기존 `external_effect.outcome_unknown` 계약을 사용한다. 신규 public error code를 만들지 않는다.
 - 정상 3xx/4xx/5xx를 포함한 완전한 응답은 기존 `status`, `data`, `headers` output을 유지한다. Redirect는 자동 추적하지 않으므로 3xx의 `Location` destination으로 두 번째 request를 보내지 않는다.
 
+### MBA-356 Fixed SaaS Outbound Contract
+
+- 신규 public endpoint나 graph field를 추가하지 않는다. GitHub `get_pr|comment_pr`와 Slack API/webhook의 기존 request, node output과 safe error 계약을 유지한다.
+- Runtime은 server-owned GitHub/Slack operation과 endpoint만 guarded transport에 전달한다. Client가 provider origin, HTTP method, redirect, proxy 또는 timeout 상한을 변경할 수 없다.
+- Origin·DNS·peer·response 상한 거부는 raw URL, credential, request/response body 또는 provider exception 없이 기존 safe provider/external-effect 오류로 변환한다. 요청이 처리됐을 수 있는 실패는 전송 전 실패로 낮추지 않는다.
+
 ## Errors
 
 ### 1. 실행 편의성

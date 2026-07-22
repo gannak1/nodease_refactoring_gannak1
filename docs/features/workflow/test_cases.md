@@ -108,6 +108,14 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - IMAP resolver는 private/loopback/metadata target과 `143/993` 이외 포트를 거부하고, `143`에서는 로그인 전에 STARTTLS를 강제한다. DNS 검증 IP에 socket 연결을 고정하면서 TLS hostname 검증은 canonical hostname으로 수행한다.
 - Legacy inline password graph는 validation error에 secret 값을 포함하지 않고 fail-closed한다.
 
+## MBA-356 Fixed SaaS Outbound Tests
+
+- GitHub pull request 조회/comment와 Slack API/webhook happy path가 기존 request와 safe output projection을 유지하면서 operation-bound guarded transport를 사용하는지 검증한다.
+- Wrong origin, private/mixed DNS, peer mismatch, redirect와 response byte 상한 위반은 추가 provider 요청 없이 차단되고 전송 전 실패와 outcome unknown을 구분하는지 검증한다.
+- Slack의 connect/write/read/pool timeout은 operation profile 상한 안에서 기존 단계별 값이 유지되며 상한 초과 설정은 client 생성 전에 거부되는지 검증한다.
+- 대상 production node/service/adapter가 직접 `requests` 또는 `httpx.Client|AsyncClient`를 생성하지 않는 architecture test를 유지한다.
+- GitHub read는 effect ledger 밖의 기존 조회 계약, GitHub comment와 Slack mutation은 기존 replay/result reuse 계약을 유지하며 transport 이관이 provider 재호출을 추가하지 않는지 검증한다.
+
 ## Spec Document Mapping
 
 `Demo Test Priority` 표의 `영역` 컬럼은 아래 spec 문서 섹션과 대응된다. 테스트를 구현하거나 우선순위를 바꿀 때는 대응하는 `requirements.md`, `api_spec.md`, `component_spec.md`를 함께 확인한다.
