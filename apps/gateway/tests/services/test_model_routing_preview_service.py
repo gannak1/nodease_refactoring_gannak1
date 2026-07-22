@@ -230,11 +230,9 @@ class TestModelRoutingPreviewService:
             "\n\nNODE_TASK_CONTRACT:", 1
         )[0]
         assert json.loads(request_json) == {
-            "start": {
-                "department": "개발팀",
-                "format": "요약",
-                "question": "휴가와 운영 규정을 비교해 주세요.",
-            }
+            "department": "개발팀",
+            "format": "요약",
+            "question": "휴가와 운영 규정을 비교해 주세요.",
         }
         assert "휴가와 운영 규정" in feature
         assert "TASK_DESCRIPTION:\n회사 정책 근거를 비교해 답합니다." in feature

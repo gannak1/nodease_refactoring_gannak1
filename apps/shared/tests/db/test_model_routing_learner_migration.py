@@ -3,7 +3,6 @@ from pathlib import Path
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
-
 ROOT = Path(__file__).resolve().parents[4]
 
 
@@ -20,7 +19,7 @@ def test_model_routing_learner_migration_is_the_single_linear_head():
     script = _script_directory()
     revision = script.get_revision("c06d7e8f9a15")
 
-    assert revision.down_revision == "b05c6d7e8f94"
+    assert revision.down_revision == "ae2f3a4b5c6d"
     assert script.get_heads() == ["c06d7e8f9a15"]
 
 
