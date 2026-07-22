@@ -162,6 +162,14 @@ Gateway service/helper 대상 (기존 pytest 패턴). 함수명은 구현 시 �
 - Billing principal, execution subject, credential principal과 audit actor가 다른 fixture에서도 Conversation Access Grant/app owner를 임의 principal로 합성하지 않는다.
 - Stale pricing revision 또는 capability expiry와 concurrent reserve가 경합하면 old reservation을 새 provider call에 재사용하지 않고 safe reconciliation/re-reservation을 요구한다.
 
+### Query embedding provider operation target
+
+- 같은 node invocation에서 동일 canonical embedding model을 사용하는 여러 KB는 하나의 capability/provider attempt/usage operation을 공유하고 KB ID를 비용 dimension으로 저장하지 않는다.
+- `purpose`, model, provider, pricing revision, `output_token_cap=0` 또는 organization billing principal이 다르면 outbound 전에 거부한다.
+- Ledger intent 또는 `provider_started` 저장 실패는 embedding provider 호출 0회이고, timeout/terminal write 실패는 기존 operation을 `outcome_unknown`으로 남긴다.
+- Duplicate delivery와 reconciliation은 새 embedding 호출이나 usage row를 만들지 않고 같은 stable provider attempt로 수렴한다.
+- Usage/reservation/reconciliation의 fixture와 실패 출력에는 raw query, vector, credential 또는 provider payload가 없다.
+
 ### 실행 경로별 차단 연결
 
 - `POST /workflows/{id}/execute`, `/stream` — 429 응답 shape(`budget.exceeded`), Celery `send_task` 미호출, stream은 SSE 시작 전 차단.

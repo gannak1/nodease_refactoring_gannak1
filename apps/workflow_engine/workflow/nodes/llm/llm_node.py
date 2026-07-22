@@ -86,6 +86,14 @@ from apps.workflow_engine.application.provider_usage import (
     ProviderUsageRecorder,
     ProviderUsageRuntimeError,
 )
+from apps.workflow_engine.application.query_embedding_execution import (
+    QueryEmbeddingConfigurationError,
+    QueryEmbeddingExecutionRuntime,
+    QueryEmbeddingModelBinding,
+    QueryEmbeddingPlan,
+    QueryEmbeddingPreflight,
+    QueryEmbeddingRequest,
+)
 from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
     KnowledgeRuntimeCandidateInfrastructureError,
     KnowledgeRuntimeCandidateResolver,
@@ -441,6 +449,14 @@ class LLMNode(Node[LLMNodeData]):
 
         self._provider_usage_recorder = recorder
 
+    def bind_query_embedding_runtime(
+        self,
+        runtime: QueryEmbeddingExecutionRuntime,
+    ) -> None:
+        """Bind the in-memory RAG query-embedding execution port."""
+
+        self._query_embedding_runtime = runtime
+
     def _get_provider_execution_runtime(self) -> ProviderExecutionRuntime:
         runtime = getattr(self, "_provider_execution_runtime", None)
         if runtime is None:
@@ -452,6 +468,12 @@ class LLMNode(Node[LLMNodeData]):
         if recorder is None:
             raise ProviderExecutionConfigurationError()
         return recorder
+
+    def _get_query_embedding_runtime(self) -> QueryEmbeddingExecutionRuntime:
+        runtime = getattr(self, "_query_embedding_runtime", None)
+        if runtime is None:
+            raise QueryEmbeddingConfigurationError()
+        return runtime
 
     def _resolve_model_routing_policy(
         self,
@@ -2366,6 +2388,7 @@ class LLMNode(Node[LLMNodeData]):
         db_session,
         *,
         candidate_resolution: KnowledgeRuntimeCandidateResolution | None = None,
+        query_embedding_plan: QueryEmbeddingPlan | None = None,
     ) -> WorkflowRAGSearchResult:
         """
         연결된 지식 베이스에서 문서를 검색합니다.
@@ -2375,11 +2398,10 @@ class LLMNode(Node[LLMNodeData]):
         KnowledgeNode 로직을 재사용.
         """
         execution_subject_user_id = self._resolve_rag_execution_subject()
-        credential_user_id = self._resolve_rag_actor_user()
-        if credential_user_id is None:
-            raise PermissionError(
-                "RAG retrieval requires a valid credential user context."
-            )
+        capability_required = self._query_embedding_capability_required()
+        credential_user_id = (
+            None if capability_required else self._resolve_rag_actor_user()
+        )
         organization_id = self.execution_context.get("organization_id")
         try:
             organization_uuid = uuid.UUID(str(organization_id))
@@ -2402,6 +2424,20 @@ class LLMNode(Node[LLMNodeData]):
         kb_ids = list(candidate_kind_by_kb_id)
         if not kb_ids:
             return self._knowledge_candidate_safe_no_result(resolution)
+        if query_embedding_plan is None:
+            query_embedding_plan = self._preflight_query_embedding(
+                organization_id=organization_uuid,
+                legacy_credential_user_id=credential_user_id,
+            )
+        retrieval_user_id = (
+            execution_subject_user_id
+            if query_embedding_plan.capability_required
+            else credential_user_id
+        )
+        if not query_embedding_plan.capability_required and retrieval_user_id is None:
+            raise PermissionError(
+                "RAG retrieval requires a valid credential user context."
+            )
         top_k = min(self.data.topK or 5, MAX_RAG_CHUNKS_PER_KB)
         threshold = (
             0.3 if self.data.scoreThreshold is None else self.data.scoreThreshold
@@ -2420,7 +2456,7 @@ class LLMNode(Node[LLMNodeData]):
         ) = self._precompute_rag_query_vectors_by_kb(
             db_session,
             query=search_query,
-            user_id=credential_user_id,
+            query_embedding_plan=query_embedding_plan,
             organization_id=organization_uuid,
             knowledge_base_ids=kb_ids,
         )
@@ -2431,7 +2467,7 @@ class LLMNode(Node[LLMNodeData]):
         fanout = self._run_rag_retrieval_fanout(
             query=search_query,
             fallback_db_session=db_session,
-            user_id=credential_user_id,
+            user_id=retrieval_user_id,
             organization_id=organization_uuid,
             knowledge_base_ids=fanout_kb_ids,
             top_k=top_k,
@@ -2652,7 +2688,7 @@ class LLMNode(Node[LLMNodeData]):
         *,
         query: str,
         fallback_db_session,
-        user_id: uuid.UUID,
+        user_id: uuid.UUID | None,
         organization_id: uuid.UUID,
         knowledge_base_ids: List[str],
         top_k: int,
@@ -2753,7 +2789,7 @@ class LLMNode(Node[LLMNodeData]):
         *,
         query: str,
         db_session,
-        user_id: uuid.UUID,
+        user_id: uuid.UUID | None,
         organization_id: uuid.UUID,
         knowledge_base_ids: List[str],
         top_k: int,
@@ -2804,7 +2840,7 @@ class LLMNode(Node[LLMNodeData]):
         self,
         *,
         query: str,
-        user_id: uuid.UUID,
+        user_id: uuid.UUID | None,
         organization_id: uuid.UUID,
         knowledge_base_id: str,
         top_k: int,
@@ -2894,7 +2930,7 @@ class LLMNode(Node[LLMNodeData]):
         db_session,
         *,
         query: str,
-        user_id: uuid.UUID,
+        query_embedding_plan: QueryEmbeddingPlan,
         organization_id: uuid.UUID,
         knowledge_base_ids: List[str],
     ) -> tuple[
@@ -2963,19 +2999,26 @@ class LLMNode(Node[LLMNodeData]):
 
         query_vectors_by_kb: Dict[str, List[float]] = {}
         model_bindings_by_kb: Dict[str, EmbeddingModelBinding] = {}
+        query_embedding_runtime = self._get_query_embedding_runtime()
         for embedding_model, grouped_kb_ids in model_to_kb_ids.items():
             model_binding = model_projection.get(embedding_model)
             if model_binding is None:
                 failed_count += len(grouped_kb_ids)
                 continue
             try:
-                embed_client = LLMService.get_client_for_model_binding(
-                    db_session,
-                    user_id,
-                    model_binding,
-                    organization_id=organization_id,
+                lease = query_embedding_runtime.resolve(
+                    QueryEmbeddingRequest(
+                        plan=query_embedding_plan,
+                        model_binding=QueryEmbeddingModelBinding(
+                            model_id=model_binding.model_id,
+                            provider_id=model_binding.provider_id,
+                            model_identifier=model_binding.model_identifier,
+                        ),
+                        query=query,
+                        shared_session=db_session,
+                    )
                 )
-                query_vector = embed_client.embed_sync(query)
+                query_vector = list(lease.invoke().vector)
             except Exception:
                 if self.data.ragFailurePolicy == "fail_node":
                     raise
@@ -3000,6 +3043,34 @@ class LLMNode(Node[LLMNodeData]):
             failed_count,
             True,
         )
+
+    def _preflight_query_embedding(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        legacy_credential_user_id: uuid.UUID | None,
+    ) -> QueryEmbeddingPlan:
+        capability_required = self._query_embedding_capability_required()
+        return self._get_query_embedding_runtime().preflight(
+            QueryEmbeddingPreflight(
+                node_id=self.id,
+                organization_id=organization_id,
+                legacy_credential_user_id=(
+                    None if capability_required is True else legacy_credential_user_id
+                ),
+                execution_context=self.execution_context,
+                runtime_control=self._runtime_control,
+            )
+        )
+
+    def _query_embedding_capability_required(self) -> bool:
+        value = self.execution_context.get(
+            "provider_execution_capability_required",
+            False,
+        )
+        if type(value) is not bool:
+            raise QueryEmbeddingConfigurationError()
+        return value
 
     def _rewrite_rag_query(self, query: str) -> tuple[str, bool, str]:
         mode = getattr(self.data, "queryRewriteMode", "off")

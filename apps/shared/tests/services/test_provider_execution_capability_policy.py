@@ -345,6 +345,75 @@ def test_active_policy_unique_index_is_scoped_to_canonical_node_location():
         "deployment_version",
         "node_location_digest",
     ]
+    assert "purpose = 'main_generation'" in str(
+        index.dialect_options["postgresql"]["where"]
+    )
+
+
+def test_query_embedding_policy_unique_index_is_scoped_to_node_and_model():
+    index = next(
+        index
+        for index in LLMDeploymentCredentialPolicy.__table__.indexes
+        if index.name
+        == "uq_llm_deploy_credential_policy_active_query_embedding"
+    )
+
+    assert [column.name for column in index.columns] == [
+        "organization_id",
+        "deployment_id",
+        "deployment_version",
+        "node_id",
+        "model_id",
+    ]
+    assert "purpose = 'query_embedding'" in str(
+        index.dialect_options["postgresql"]["where"]
+    )
+
+
+def test_query_embedding_capability_output_cap_is_database_constrained():
+    constraint = next(
+        constraint
+        for constraint in ProviderExecutionCapabilityRecord.__table__.constraints
+        if constraint.name
+        == "ck_provider_execution_capability_query_embedding_output"
+    )
+
+    assert "purpose <> 'query_embedding' OR output_token_cap = 0" in str(
+        constraint.sqltext
+    )
+
+
+@pytest.mark.parametrize(
+    ("purpose", "policy_model_id", "output_tokens"),
+    [
+        (CapabilityPurpose.QUERY_EMBEDDING, None, 0),
+        (CapabilityPurpose.QUERY_EMBEDDING, uuid.uuid4(), 1),
+        (CapabilityPurpose.MAIN_GENERATION, uuid.uuid4(), 1),
+    ],
+)
+def test_capability_policy_slot_rejects_cross_purpose_scope(
+    purpose,
+    policy_model_id,
+    output_tokens,
+):
+    with pytest.raises(ProviderExecutionPolicyError) as exc_info:
+        ProviderExecutionCapabilityService._validate_capability_policy_slot(
+            binding=ProviderExecutionBinding(
+                organization_id=uuid.uuid4(),
+                workflow_id=uuid.uuid4(),
+                deployment_id=uuid.uuid4(),
+                deployment_version=1,
+                node_id="llm-1",
+                node_invocation_id=uuid.uuid4(),
+                execution_admission_id=uuid.uuid4(),
+                provider_attempt_id=uuid.uuid4(),
+                purpose=purpose,
+            ),
+            policy_model_id=policy_model_id,
+            output_tokens=output_tokens,
+        )
+
+    assert exc_info.value.code == "configuration_required"
 
 
 def test_stored_location_digest_mismatch_fails_closed() -> None:
@@ -801,6 +870,137 @@ def test_issue_capability_locks_policy_before_attempt_lookup_and_uses_database_c
     ]
 
 
+def test_query_embedding_issue_validates_query_embedding_policy_selection(monkeypatch):
+    organization_id = uuid.uuid4()
+    principal_id = uuid.uuid4()
+    model_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    provider_id = uuid.uuid4()
+    binding = ProviderExecutionBinding(
+        organization_id=organization_id,
+        workflow_id=uuid.uuid4(),
+        deployment_id=uuid.uuid4(),
+        deployment_version=1,
+        node_id="llm-1",
+        node_invocation_id=uuid.uuid4(),
+        execution_admission_id=uuid.uuid4(),
+        provider_attempt_id=uuid.uuid4(),
+        purpose=CapabilityPurpose.QUERY_EMBEDDING,
+    )
+    policy = SimpleNamespace(
+        id=uuid.uuid4(),
+        policy_revision=1,
+        model_id=model_id,
+        credential_id=credential_id,
+        credential_principal_user_id=principal_id,
+    )
+    selection_purposes: list[CapabilityPurpose] = []
+
+    class _CapabilityQuery:
+        def filter(self, *_args):
+            return self
+
+        def populate_existing(self):
+            return self
+
+        def with_for_update(self):
+            return self
+
+        def one_or_none(self):
+            return None
+
+    class _Db:
+        def query(self, entity):
+            assert entity is ProviderExecutionCapabilityRecord
+            return _CapabilityQuery()
+
+        def add(self, _record):
+            return None
+
+        def flush(self):
+            return None
+
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_canonical_deployment",
+        staticmethod(
+            lambda *_args, **_kwargs: (
+                SimpleNamespace(id=binding.deployment_id, version=1),
+                SimpleNamespace(id=uuid.uuid4()),
+                SimpleNamespace(id=binding.workflow_id),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_assert_binding_matches_deployment",
+        staticmethod(lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_active_policy_for_binding",
+        classmethod(lambda _cls, *_args, **_kwargs: policy),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_validate_issue_principals",
+        staticmethod(lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_resolve_policy_selection",
+        classmethod(
+            lambda _cls, *_args, **kwargs: (
+                selection_purposes.append(kwargs["purpose"])
+                or (
+                    SimpleNamespace(id=model_id),
+                    SimpleNamespace(id=credential_id),
+                    SimpleNamespace(id=provider_id),
+                    SimpleNamespace(),
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_current_revisions",
+        classmethod(
+            lambda _cls, *_args, **_kwargs: {
+                "permission": "a" * 64,
+                "relation": "b" * 64,
+                "egress": "c" * 64,
+                "pricing": "d" * 64,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_database_clock_now",
+        staticmethod(lambda _db: datetime(2026, 7, 22, tzinfo=timezone.utc)),
+    )
+    monkeypatch.setattr(
+        ProviderExecutionCapabilityService,
+        "_domain_capability",
+        staticmethod(lambda record: record),
+    )
+
+    ProviderExecutionCapabilityService.issue_capability(
+        _Db(),
+        command=ProviderExecutionCapabilityIssueCommand(
+            binding=binding,
+            execution_subject=RuntimePrincipal.user(principal_id),
+            billing_principal=RuntimePrincipal.organization(organization_id),
+            audit_actor=RuntimePrincipal.user(principal_id),
+            input_token_cap=100,
+            output_token_cap=0,
+            cost_cap_microusd=1_000,
+            policy_model_id=model_id,
+        ),
+    )
+
+    assert selection_purposes == [CapabilityPurpose.QUERY_EMBEDDING]
+
+
 def test_policy_selection_locks_runtime_authorization_rows(monkeypatch):
     organization_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
@@ -962,6 +1162,94 @@ def test_generation_policy_rejects_embedding_model_before_provider_selection(
         )
 
     assert exc_info.value.code == "configuration_required"
+
+
+def test_query_embedding_policy_accepts_only_embedding_model_on_knowledge_node(
+    monkeypatch,
+):
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    provider_id = uuid.uuid4()
+    model_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    principal_id = uuid.uuid4()
+    model = SimpleNamespace(
+        id=model_id,
+        provider_id=provider_id,
+        model_id_for_api_call="embed-safe",
+        type="embedding",
+        is_active=True,
+    )
+    provider = SimpleNamespace(id=provider_id)
+    credential = SimpleNamespace(
+        id=credential_id,
+        organization_id=organization_id,
+        provider_id=provider_id,
+        is_valid=True,
+    )
+    relation = SimpleNamespace(
+        credential_id=credential_id,
+        model_id=model_id,
+        is_verified=True,
+    )
+    rows = {
+        LLMModel: [model],
+        LLMProvider: [provider],
+        LLMCredential: [credential],
+        LLMRelCredentialModel: [relation],
+    }
+
+    class _Query:
+        def __init__(self, entity):
+            self.entity = entity
+
+        def filter(self, *_args):
+            return self
+
+        def one_or_none(self):
+            values = rows[self.entity]
+            return values[0] if values else None
+
+        def all(self):
+            return rows[self.entity]
+
+    class _Db:
+        def query(self, entity):
+            return _Query(entity)
+
+    monkeypatch.setattr(
+        capability_service,
+        "has_llm_credential_permission",
+        lambda *_args, **_kwargs: True,
+    )
+
+    selection = ProviderExecutionCapabilityService._resolve_policy_selection(
+        _Db(),
+        deployment=SimpleNamespace(
+            app_id=app_id,
+            graph_snapshot=_graph(
+                data={
+                    "model_id": "gpt-safe",
+                    "knowledgeBases": [{"id": str(uuid.uuid4())}],
+                }
+            ),
+        ),
+        app=SimpleNamespace(
+            id=app_id,
+            workflow_id=workflow_id,
+            organization_id=organization_id,
+        ),
+        workflow=SimpleNamespace(id=workflow_id, organization_id=organization_id),
+        organization_id=organization_id,
+        node_id="llm-1",
+        model_id=model_id,
+        credential_id=credential_id,
+        credential_principal_user_id=principal_id,
+        purpose=CapabilityPurpose.QUERY_EMBEDDING,
+    )
+
+    assert selection == (model, credential, provider, relation)
 
 
 def test_permission_revision_locks_every_existing_permission_source(monkeypatch):

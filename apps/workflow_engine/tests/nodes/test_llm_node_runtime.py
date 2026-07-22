@@ -55,9 +55,14 @@ from apps.shared.services.tracing.metadata import TraceMetadataSanitizer  # noqa
 from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (  # noqa: E402
     KnowledgeRuntimeCandidateInfrastructureError,
 )
+from apps.workflow_engine.application.query_embedding_execution import (  # noqa: E402
+    QueryEmbeddingPlan,
+    QueryEmbeddingProviderResult,
+)
 from apps.workflow_engine.composition.provider_execution import (  # noqa: E402
     build_provider_execution_runtime,
     build_provider_usage_recorder,
+    build_query_embedding_runtime,
 )
 from apps.workflow_engine.services import (  # noqa: E402
     llm_service as workflow_llm_service,
@@ -283,8 +288,80 @@ def _inject_default_provider_ports(monkeypatch):
             node.bind_provider_usage_recorder(recorder)
         return recorder
 
+    def query_embedding_runtime(node):
+        runtime = getattr(node, "_query_embedding_runtime", None)
+        if runtime is None:
+            session_factory = node.execution_context.get("db_session_factory")
+            runtime = build_query_embedding_runtime(
+                session_factory=(
+                    session_factory if callable(session_factory) else None
+                )
+            )
+            node.bind_query_embedding_runtime(runtime)
+        return runtime
+
     monkeypatch.setattr(LLMNode, "_get_provider_execution_runtime", provider_runtime)
     monkeypatch.setattr(LLMNode, "_get_provider_usage_recorder", usage_recorder)
+    monkeypatch.setattr(
+        LLMNode,
+        "_get_query_embedding_runtime",
+        query_embedding_runtime,
+    )
+
+
+class _QueryEmbeddingLease:
+    attribution = None
+
+    def __init__(self, *, vector, error=None):
+        self._vector = vector
+        self._error = error
+        self.invoke_count = 0
+
+    def invoke(self):
+        self.invoke_count += 1
+        if self._error is not None:
+            raise self._error
+        return QueryEmbeddingProviderResult(
+            vector=tuple(self._vector),
+            input_tokens=1,
+        )
+
+
+class _QueryEmbeddingRuntime:
+    def __init__(self, *, vectors_by_model=None, errors_by_model=None):
+        self.vectors_by_model = vectors_by_model or {}
+        self.errors_by_model = errors_by_model or {}
+        self.preflight_requests = []
+        self.resolve_requests = []
+        self.leases = []
+
+    def preflight(self, request):
+        self.preflight_requests.append(request)
+        return QueryEmbeddingPlan(capability_required=False, state=object())
+
+    def resolve(self, request):
+        self.resolve_requests.append(request)
+        model_identifier = request.model_binding.model_identifier
+        lease = _QueryEmbeddingLease(
+            vector=self.vectors_by_model.get(model_identifier, [0.1, 0.2]),
+            error=self.errors_by_model.get(model_identifier),
+        )
+        self.leases.append(lease)
+        return lease
+
+
+def _bind_query_embedding_runtime(
+    node,
+    *,
+    vectors_by_model=None,
+    errors_by_model=None,
+):
+    runtime = _QueryEmbeddingRuntime(
+        vectors_by_model=vectors_by_model,
+        errors_by_model=errors_by_model,
+    )
+    node.bind_query_embedding_runtime(runtime)
+    return runtime, QueryEmbeddingPlan(capability_required=False, state=object())
 
 
 @pytest.fixture(autouse=True)
@@ -2966,12 +3043,10 @@ def test_llm_node_reuses_query_embedding_across_same_model_kbs(monkeypatch):
 
 
 def test_llm_node_precomputes_query_vector_once_per_embedding_model(monkeypatch):
-    user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     kb_a = uuid.uuid4()
     kb_b = uuid.uuid4()
     kb_c = uuid.uuid4()
-    requested_models = []
     model_query_count = 0
     model_rows = [
         SimpleNamespace(
@@ -3011,21 +3086,11 @@ def test_llm_node_precomputes_query_vector_once_per_embedding_model(monkeypatch)
                 model_query_count += 1
             return FakeQuery(model)
 
-    class FakeEmbeddingClient:
-        def __init__(self, model_id):
-            self.model_id = model_id
-
-        def embed_sync(self, query):
-            requested_models.append((self.model_id, query))
-            if self.model_id == "text-embedding-a":
-                return [0.1, 0.2]
-            return [0.3, 0.4]
-
     monkeypatch.setattr(
         LLMService,
         "get_client_for_model_binding",
-        lambda _db, _user_id, binding, **_kwargs: FakeEmbeddingClient(
-            binding.model_identifier
+        lambda *_args, **_kwargs: pytest.fail(
+            "LLMNode must not resolve embedding credentials directly"
         ),
         raising=False,
     )
@@ -3034,6 +3099,14 @@ def test_llm_node_precomputes_query_vector_once_per_embedding_model(monkeypatch)
         "llm-1",
         LLMNodeData(title="LLM", provider="openai", model_id="gpt-5.4-mini"),
     )
+    query_runtime = _QueryEmbeddingRuntime(
+        vectors_by_model={
+            "text-embedding-a": [0.1, 0.2],
+            "text-embedding-b": [0.3, 0.4],
+        }
+    )
+    node.bind_query_embedding_runtime(query_runtime)
+    query_plan = QueryEmbeddingPlan(capability_required=False, state=object())
 
     (
         vectors_by_kb,
@@ -3043,15 +3116,19 @@ def test_llm_node_precomputes_query_vector_once_per_embedding_model(monkeypatch)
     ) = node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
         FakeDb(),
         query="개발팀 온보딩",
-        user_id=user_id,
+        query_embedding_plan=query_plan,
         organization_id=organization_id,
         knowledge_base_ids=[str(kb_a), str(kb_b), str(kb_c)],
     )
 
-    assert requested_models == [
+    assert [
+        (request.model_binding.model_identifier, request.query)
+        for request in query_runtime.resolve_requests
+    ] == [
         ("text-embedding-a", "개발팀 온보딩"),
         ("text-embedding-b", "개발팀 온보딩"),
     ]
+    assert [lease.invoke_count for lease in query_runtime.leases] == [1, 1]
     assert vectors_by_kb == {
         str(kb_a): [0.1, 0.2],
         str(kb_b): [0.3, 0.4],
@@ -3071,7 +3148,6 @@ def test_llm_node_precomputes_query_vector_once_per_embedding_model(monkeypatch)
 
 
 def test_llm_node_precompute_safe_partial_on_embedding_failure(monkeypatch):
-    user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     kb_a = uuid.uuid4()
     kb_b = uuid.uuid4()
@@ -3109,20 +3185,11 @@ def test_llm_node_precompute_safe_partial_on_embedding_failure(monkeypatch):
         def query(self, model):
             return FakeQuery(model)
 
-    class FakeEmbeddingClient:
-        def __init__(self, model_id):
-            self.model_id = model_id
-
-        def embed_sync(self, query):
-            if self.model_id == "text-embedding-b":
-                raise RuntimeError("embedding unavailable")
-            return [0.1, 0.2]
-
     monkeypatch.setattr(
         LLMService,
         "get_client_for_model_binding",
-        lambda _db, _user_id, binding, **_kwargs: FakeEmbeddingClient(
-            binding.model_identifier
+        lambda *_args, **_kwargs: pytest.fail(
+            "LLMNode must not resolve embedding credentials directly"
         ),
         raising=False,
     )
@@ -3136,6 +3203,10 @@ def test_llm_node_precompute_safe_partial_on_embedding_failure(monkeypatch):
             ragFailurePolicy="safe_no_result",
         ),
     )
+    _, query_plan = _bind_query_embedding_runtime(
+        node,
+        errors_by_model={"text-embedding-b": RuntimeError("embedding unavailable")},
+    )
 
     (
         vectors_by_kb,
@@ -3145,7 +3216,7 @@ def test_llm_node_precompute_safe_partial_on_embedding_failure(monkeypatch):
     ) = node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
         FakeDb(),
         query="개발팀 온보딩",
-        user_id=user_id,
+        query_embedding_plan=query_plan,
         organization_id=organization_id,
         knowledge_base_ids=[str(kb_a), str(kb_b)],
     )
@@ -3157,7 +3228,6 @@ def test_llm_node_precompute_safe_partial_on_embedding_failure(monkeypatch):
 
 
 def test_llm_node_precompute_propagates_failure_when_fail_node(monkeypatch):
-    user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     kb_id = uuid.uuid4()
     model_row = SimpleNamespace(
@@ -3186,14 +3256,12 @@ def test_llm_node_precompute_propagates_failure_when_fail_node(monkeypatch):
         def query(self, model):
             return FakeQuery(model)
 
-    class FailingEmbeddingClient:
-        def embed_sync(self, query):
-            raise RuntimeError("embedding unavailable")
-
     monkeypatch.setattr(
         LLMService,
         "get_client_for_model_binding",
-        lambda *_args, **_kwargs: FailingEmbeddingClient(),
+        lambda *_args, **_kwargs: pytest.fail(
+            "LLMNode must not resolve embedding credentials directly"
+        ),
         raising=False,
     )
 
@@ -3206,24 +3274,26 @@ def test_llm_node_precompute_propagates_failure_when_fail_node(monkeypatch):
             ragFailurePolicy="fail_node",
         ),
     )
+    _, query_plan = _bind_query_embedding_runtime(
+        node,
+        errors_by_model={"text-embedding-a": RuntimeError("embedding unavailable")},
+    )
 
     with pytest.raises(RuntimeError, match="embedding unavailable"):
         node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
             FakeDb(),
             query="개발팀 온보딩",
-            user_id=user_id,
+            query_embedding_plan=query_plan,
             organization_id=organization_id,
             knowledge_base_ids=[str(kb_id)],
         )
 
 
 def test_llm_node_precompute_counts_missing_or_invalid_kbs(monkeypatch):
-    user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     valid_kb = uuid.uuid4()
     missing_kb = uuid.uuid4()
     invalid_kb = uuid.uuid4()
-    client_calls = []
 
     kb_rows = [
         SimpleNamespace(id=valid_kb, embedding_model="text-embedding-a"),
@@ -3255,15 +3325,12 @@ def test_llm_node_precompute_counts_missing_or_invalid_kbs(monkeypatch):
         def query(self, model):
             return FakeQuery(model)
 
-    class FakeEmbeddingClient:
-        def embed_sync(self, query):
-            client_calls.append(query)
-            return [0.1, 0.2]
-
     monkeypatch.setattr(
         LLMService,
         "get_client_for_model_binding",
-        lambda *_args, **_kwargs: FakeEmbeddingClient(),
+        lambda *_args, **_kwargs: pytest.fail(
+            "LLMNode must not resolve embedding credentials directly"
+        ),
         raising=False,
     )
 
@@ -3276,6 +3343,7 @@ def test_llm_node_precompute_counts_missing_or_invalid_kbs(monkeypatch):
             ragFailurePolicy="safe_no_result",
         ),
     )
+    runtime, query_plan = _bind_query_embedding_runtime(node)
 
     (
         vectors_by_kb,
@@ -3285,14 +3353,16 @@ def test_llm_node_precompute_counts_missing_or_invalid_kbs(monkeypatch):
     ) = node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
         FakeDb(),
         query="개발팀 온보딩",
-        user_id=user_id,
+        query_embedding_plan=query_plan,
         organization_id=organization_id,
         knowledge_base_ids=[str(valid_kb), str(missing_kb), str(invalid_kb)],
     )
 
     assert vectors_by_kb == {str(valid_kb): [0.1, 0.2]}
     assert list(bindings_by_kb) == [str(valid_kb)]
-    assert client_calls == ["개발팀 온보딩"]
+    assert [request.query for request in runtime.resolve_requests] == [
+        "개발팀 온보딩"
+    ]
     assert failed_count == 2
     assert precomputed is True
 
@@ -3334,7 +3404,10 @@ def test_llm_node_precompute_fails_closed_on_projection_infrastructure_error(
             node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
                 FailingDb(),
                 query="query",
-                user_id=uuid.uuid4(),
+                query_embedding_plan=QueryEmbeddingPlan(
+                    capability_required=False,
+                    state=object(),
+                ),
                 organization_id=uuid.uuid4(),
                 knowledge_base_ids=knowledge_base_ids,
             )
@@ -3344,7 +3417,10 @@ def test_llm_node_precompute_fails_closed_on_projection_infrastructure_error(
     assert node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
         FailingDb(),
         query="query",
-        user_id=uuid.uuid4(),
+        query_embedding_plan=QueryEmbeddingPlan(
+            capability_required=False,
+            state=object(),
+        ),
         organization_id=uuid.uuid4(),
         knowledge_base_ids=knowledge_base_ids,
     ) == ({}, {}, len(knowledge_base_ids), True)
@@ -3876,7 +3952,6 @@ def test_precomputed_fanout_log_uses_bucketed_candidate_count(monkeypatch, caplo
 
 def test_query_vector_precompute_log_uses_only_count_buckets(monkeypatch, caplog):
     organization_id = uuid.uuid4()
-    user_id = uuid.uuid4()
     kb_ids = [uuid.uuid4() for _ in range(3)]
     kb_rows = [
         SimpleNamespace(id=kb_id, embedding_model="embedding-model") for kb_id in kb_ids
@@ -3916,11 +3991,9 @@ def test_query_vector_precompute_log_uses_only_count_buckets(monkeypatch, caplog
             user_prompt="query",
         ),
     )
-    monkeypatch.setattr(
-        LLMService,
-        "get_client_for_model_binding",
-        lambda *args, **kwargs: SimpleNamespace(embed_sync=lambda query: [0.1]),
-        raising=False,
+    _, query_plan = _bind_query_embedding_runtime(
+        node,
+        vectors_by_model={"embedding-model": [0.1]},
     )
 
     with caplog.at_level(
@@ -3933,10 +4006,10 @@ def test_query_vector_precompute_log_uses_only_count_buckets(monkeypatch, caplog
             failed_count,
             precomputed,
         ) = node._precompute_rag_query_vectors_by_kb(  # noqa: SLF001
-            Db(),
-            query="query",
-            user_id=user_id,
-            organization_id=organization_id,
+                Db(),
+                query="query",
+                query_embedding_plan=query_plan,
+                organization_id=organization_id,
             knowledge_base_ids=[str(kb_id) for kb_id in kb_ids],
         )
 
@@ -5923,6 +5996,11 @@ def test_collection_only_zero_candidates_skips_retrieval_embedding_and_provider(
         node,
         "_run_rag_retrieval_fanout",
         lambda **kwargs: pytest.fail("retrieval must not run"),
+    )
+    monkeypatch.setattr(
+        node,
+        "_get_query_embedding_runtime",
+        lambda: pytest.fail("query embedding preflight must not run"),
     )
 
     result = node._run({})  # noqa: SLF001

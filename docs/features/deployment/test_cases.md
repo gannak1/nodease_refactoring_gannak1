@@ -38,8 +38,8 @@ Status: Draft
 - Schedule application use case는 access-management command/model/port/recorder와 FastAPI/Celery/SQLAlchemy query를 import하지 않는다. Schedule 전용 audit port를 사용하고 concrete Gateway UnitOfWork만 composition에서 주입한다.
 - Schedule audit recorder는 system actor, canonical action/target과 strict metadata allowlist만 현재 UoW에 추가하며 commit/rollback하지 않는다.
 - System tick의 `Schedule.next_run_at`/`last_run_at`만 바뀌면 generic `schedule.updated`가 생성되지 않고 cron/timezone/lifecycle 또는 unrelated tracked mutation audit은 유지된다.
-- Deployment LLM credential policy는 graph의 exact `llmNode`와 `model_id`만 수용하고, credential selector/auto-routing/default fallback field가 graph에 있으면 거부한다. Capability issue/admission은 policy replacement, credential revoke, verified relation 또는 permission revision 변화 뒤 stale capability를 provider 호출 전에 거부한다.
-- Deployment LLM credential policy는 deployment version/node당 active row를 최대 하나만 허용하고, model UUID가 다른 교체와 concurrent 최초 write도 canonical deployment lock과 partial unique constraint를 우회하지 못한다.
+- Main-generation deployment LLM credential policy는 graph의 exact `llmNode`와 chat `model_id`만 수용하고, credential selector/auto-routing/default fallback field가 graph에 있으면 거부한다. Query-embedding policy는 Knowledge가 설정된 같은 node와 active embedding model만 수용한다. Capability issue/admission은 policy replacement, credential revoke, verified relation 또는 permission revision 변화 뒤 stale capability를 provider 호출 전에 거부한다.
+- Main-generation policy는 deployment version/node당 active row를 최대 하나만 허용한다. Query-embedding policy는 같은 node/model slot당 active row를 최대 하나만 허용하되 서로 다른 embedding model slot은 공존한다. Concurrent 최초 write도 canonical deployment lock과 partial unique constraint를 우회하지 못한다.
 
 ## API Tests
 
@@ -49,7 +49,7 @@ Status: Draft
 - Rotation 성공 response만 신규 원문을 한 번 포함한다. 같은 response의 다른 field, 후속 status와 모든 일반 resource endpoint에는 원문·verifier가 없고 audit/trace/log capture에도 남지 않는다.
 - Audit outbox add/flush/commit 실패는 transaction 전체를 rollback하고 성공 response 또는 신규 원문을 반환하지 않는다.
 - Authenticated deployment list는 App `url_slug`를 각 deployment 응답에 포함하되 App `auth_secret`을 목록 조합 과정에서 주입하지 않는다.
-- Deployment LLM credential policy GET/PUT는 active organization manager만 허용하고, safe policy projection 외 encrypted credential config, server credential principal, capability ID와 raw provider data를 반환하지 않는다. Missing/cross-organization deployment는 404, non-manager는 403, immutable graph/model mismatch·unavailable credential·unverified relation·`use` denial은 safe 422, concurrent active selection은 409로 정규화한다.
+- Deployment LLM credential policy GET/PUT는 active organization manager만 허용하고, safe purpose/model policy projection 외 encrypted credential config, server credential principal, capability ID와 raw provider data를 반환하지 않는다. Missing/cross-organization deployment는 404, non-manager는 403, immutable graph/purpose/model mismatch·unavailable credential·unverified relation·`use` denial은 safe 422, concurrent active selection은 409로 정규화한다.
 - Capability-required provider admission은 실제 prompt/output/cost upper bound를 검증하고 Shared credential config 경계를 거친 control row를 provider network 호출 전에 commit한다.
 - `POST /api/v1/deployments/preflight`는 blocked 결과도 `200 OK`와 `status="blocked"`로 반환한다.
 - `POST /api/v1/deployments/preflight` with `is_active=false`는 null unresolved blocker만 `status="warning"`으로 반환하되 required action은 유지한다. Non-null unavailable credential과 structural blocker는 `status="blocked"`다.

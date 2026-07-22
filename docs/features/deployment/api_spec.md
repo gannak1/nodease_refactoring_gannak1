@@ -18,7 +18,7 @@ Verified Against: `feature/mba-247 @ 3b947bd5ac6c51ffcc028510344ee2e5a5066873`
 | GET | `/api/v1/deployments/public/{url_slug}/info` | Public app 화면용 safe metadata 조회 | 인증 없음. 기본 policy는 `webapp`, `widget`, `chatbot`만 허용 |
 | GET | `/api/v1/deployments/public/{url_slug}/browser-access` | Public Chatbot/Widget iframe CSP safe projection | 인증 없음. active `widget`/`chatbot`만 허용 |
 | GET | `/api/v1/deployments/{deployment_id}/llm-credential-policies` | Immutable deployment LLM node의 server-side credential policy safe projection 조회 | 로그인 + active organization manager |
-| PUT | `/api/v1/deployments/{deployment_id}/llm-credential-policies/{node_id}` | Immutable deployment LLM node의 server-side credential policy 교체 | 로그인 + active organization manager |
+| PUT | `/api/v1/deployments/{deployment_id}/llm-credential-policies/{node_id}` | Immutable deployment LLM node의 purpose별 server-side credential policy 교체. `purpose` 생략은 main generation | 로그인 + active organization manager |
 | GET | `/api/v1/deployments/{deployment_id}/run-info` | 로그인 사용자 실행 화면에 필요한 safe deployment metadata 조회 | 로그인 + workflow execute 권한 |
 | POST | `/api/v1/deployments/{deployment_id}/run` | 로그인 사용자를 execution subject로 활성 deployment snapshot 실행 | 로그인 + workflow execute 권한 |
 | POST | `/api/v1/hooks/{url_slug}` | Public webhook trigger execution or pending capture ingestion | Exactly one App secret source: Bearer primary or `X-Webhook-Secret` compatibility header |

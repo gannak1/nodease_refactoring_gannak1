@@ -646,7 +646,7 @@ def test_capability_runtime_hides_config_failure_and_does_not_commit():
     assert session.closes == 1
 
 
-def test_capability_preflight_rejects_rag_before_session_or_provider_io():
+def test_capability_generation_preflight_leaves_rag_to_query_embedding_port():
     organization_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
     calls = 0
@@ -658,27 +658,27 @@ def test_capability_preflight_rejects_rag_before_session_or_provider_io():
 
     runtime = CapabilityProviderExecutionAdapter(session_factory=session_factory)
 
-    with pytest.raises(ProviderExecutionConfigurationError):
-        runtime.preflight(
-            ProviderExecutionPreflight(
-                node_id="llm-1",
-                configured_model_id="gpt-safe",
-                auto_model_routing=False,
-                fallback_model_id=None,
-                knowledge_enabled=True,
-                memory_summary_requested=False,
-                client_override=None,
-                execution_context=_capability_context(
-                    organization_id=organization_id,
-                    workflow_id=workflow_id,
-                ),
-                runtime_control=_control(
-                    organization_id=organization_id,
-                    workflow_id=workflow_id,
-                ),
-            )
+    plan = runtime.preflight(
+        ProviderExecutionPreflight(
+            node_id="llm-1",
+            configured_model_id="gpt-safe",
+            auto_model_routing=False,
+            fallback_model_id=None,
+            knowledge_enabled=True,
+            memory_summary_requested=False,
+            client_override=None,
+            execution_context=_capability_context(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+            ),
+            runtime_control=_control(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+            ),
         )
+    )
 
+    assert plan.fixed_model_id == "gpt-safe"
     assert calls == 0
 
 
