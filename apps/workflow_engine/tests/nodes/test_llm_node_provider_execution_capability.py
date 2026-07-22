@@ -27,6 +27,7 @@ from apps.workflow_engine.application.provider_execution import (
     ProviderExecutionUsageContext,
     ProviderInvocationNotSentError,
     ProviderInvocationOutcomeUnknownError,
+    ProviderInvocationRejectedError,
 )
 from apps.workflow_engine.application.provider_usage import (
     ProviderUsageIntent,
@@ -72,6 +73,11 @@ class _OutcomeUnknownClient:
 class _BeforeSendClient:
     def invoke_sync(self, messages, **kwargs):
         raise ProviderInvocationNotSentError()
+
+
+class _RejectedClient:
+    def invoke_sync(self, messages, **kwargs):
+        raise ProviderInvocationRejectedError()
 
 
 
@@ -399,8 +405,16 @@ def test_capability_provider_error_is_durable_unknown_and_non_retryable() -> Non
             _BeforeSendClient(),
             ["intent", "start", "definitive:provider_not_sent"],
         ),
+        (
+            _RejectedClient(),
+            ["intent", "start", "definitive:provider_rejected"],
+        ),
     ],
-    ids=("explicit-outcome-unknown", "definitive-before-send"),
+    ids=(
+        "explicit-outcome-unknown",
+        "definitive-before-send",
+        "definitive-provider-rejection",
+    ),
 )
 def test_capability_typed_provider_failure_is_terminalized_immediately(
     client,

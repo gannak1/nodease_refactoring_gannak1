@@ -42,6 +42,16 @@ class ProviderInvocationNotSentError(RuntimeError):
         super().__init__(self.code)
 
 
+class ProviderInvocationRejectedError(RuntimeError):
+    """The provider definitively rejected the request without billable work."""
+
+    code = "provider_rejected"
+    failure_phase = "response_received"
+
+    def __init__(self) -> None:
+        super().__init__(self.code)
+
+
 class LLMCredentialNotAvailableError(ValueError):
     """Safe provider credential-selection failure with structured attribution."""
 
@@ -382,6 +392,7 @@ __all__ = [
     "ProviderExecutionRuntime",
     "ProviderInvocationNotSentError",
     "ProviderInvocationOutcomeUnknownError",
+    "ProviderInvocationRejectedError",
     "ProviderExecutionUsageContext",
     "ProviderInvocationLease",
 ]

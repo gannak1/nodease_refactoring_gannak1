@@ -204,6 +204,27 @@ def provider_usage_postgres():
         admin_engine.dispose()
 
 
+def test_reconciliation_partial_indexes_are_installed(provider_usage_postgres) -> None:
+    with provider_usage_postgres.connect() as connection:
+        index_names = set(
+            connection.execute(
+                text(
+                    """
+                    SELECT indexname
+                    FROM pg_indexes
+                    WHERE schemaname = current_schema()
+                      AND tablename = 'provider_usage_operations'
+                    """
+                )
+            ).scalars()
+        )
+
+    assert {
+        "ix_provider_usage_operation_projection_recovery",
+        "ix_provider_usage_operation_started_recovery",
+    } <= index_names
+
+
 def _seed_tenant(engine) -> tuple[uuid.UUID, uuid.UUID]:
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()

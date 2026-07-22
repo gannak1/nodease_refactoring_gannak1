@@ -79,6 +79,7 @@ from apps.workflow_engine.application.provider_execution import (
     ProviderExecutionRuntime,
     ProviderInvocationNotSentError,
     ProviderInvocationOutcomeUnknownError,
+    ProviderInvocationRejectedError,
 )
 from apps.workflow_engine.application.provider_usage import (
     ProviderUsageIntent,
@@ -1686,11 +1687,15 @@ class LLMNode(Node[LLMNodeData]):
             ) -> str | None:
                 if attempt is None or not attempt.durable:
                     return None
-                definitive = isinstance(error, ProviderInvocationNotSentError)
+                definitive_reason_code = None
+                if isinstance(error, ProviderInvocationNotSentError):
+                    definitive_reason_code = "provider_not_sent"
+                elif isinstance(error, ProviderInvocationRejectedError):
+                    definitive_reason_code = "provider_rejected"
                 try:
-                    if definitive:
+                    if definitive_reason_code is not None:
                         attempt.record_definitive_failure(
-                            reason_code="provider_not_sent"
+                            reason_code=definitive_reason_code
                         )
                     else:
                         attempt.mark_outcome_unknown(
@@ -1700,7 +1705,7 @@ class LLMNode(Node[LLMNodeData]):
                     return terminal_error.code
                 return (
                     "provider_usage.failed_definitive"
-                    if definitive
+                    if definitive_reason_code is not None
                     else "provider_usage.outcome_unknown"
                 )
 

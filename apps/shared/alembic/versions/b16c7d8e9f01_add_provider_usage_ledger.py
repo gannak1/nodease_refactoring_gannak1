@@ -254,6 +254,21 @@ def upgrade() -> None:
         "provider_usage_operations",
         ["organization_id", "workflow_id", "provider_started_at", "state"],
     )
+    op.create_index(
+        "ix_provider_usage_operation_projection_recovery",
+        "provider_usage_operations",
+        ["provider_started_at", "id"],
+        postgresql_where=sa.text(
+            "state = 'succeeded' AND projection_status IN "
+            "('pending', 'retryable_failure', 'projected')"
+        ),
+    )
+    op.create_index(
+        "ix_provider_usage_operation_started_recovery",
+        "provider_usage_operations",
+        ["provider_started_at", "id"],
+        postgresql_where=sa.text("state = 'provider_started'"),
+    )
 
     op.create_table(
         "provider_usage_corrections",
@@ -380,6 +395,14 @@ def downgrade() -> None:
     op.drop_column("llm_usage_logs", "provider_usage_revision")
     op.drop_column("llm_usage_logs", "provider_usage_operation_id")
     op.drop_table("provider_usage_corrections")
+    op.drop_index(
+        "ix_provider_usage_operation_started_recovery",
+        table_name="provider_usage_operations",
+    )
+    op.drop_index(
+        "ix_provider_usage_operation_projection_recovery",
+        table_name="provider_usage_operations",
+    )
     op.drop_index(
         "ix_provider_usage_operation_budget_period",
         table_name="provider_usage_operations",

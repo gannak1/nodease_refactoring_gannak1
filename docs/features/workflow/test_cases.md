@@ -74,7 +74,9 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Usage ledger round trip은 structured `container_path`를 보존하고, 다른 Loop에서 같은 `node_id`를 사용한 replay는 binding conflict로 닫는다.
 - Capability provider는 durable intent와 provider-start fence가 각각 commit된 뒤 정확히 한 번 호출된다. Duplicate delivery가 started/succeeded/outcome-unknown operation을 찾으면 provider를 다시 호출하지 않는다.
 - Provider timeout·response loss·unknown exception, malformed 또는 admitted cap 초과 usage와 success 저장 실패는 outcome unknown으로 수렴하고 routing fallback·Celery retry·동일 lease 재호출을 허용하지 않는다.
+- Provider HTTP `401`/`403`은 typed `provider_rejected` definitive failure로 즉시 terminalize하고, `429`/`5xx`는 definitive rejection으로 오분류하지 않는다.
 - WorkflowRun이 provider success보다 늦게 생성되어도 canonical usage/cost는 즉시 보존되고 compatibility row는 nullable run으로 먼저 수렴한다. Exact workflow correlation이 확인될 때만 run을 연결하며 mismatch는 canonical ledger를 바꾸지 않는다.
+- Compatibility projection과 run-finish legacy 합계 재계산이 경합해도 같은 WorkflowRun fresh `FOR UPDATE`를 사용해 committed token/cost delta를 잃지 않는다.
 - Authenticated/public/system 실행의 execution subject, credential principal, billing principal과 audit actor는 ledger round trip에서 독립적으로 보존된다. Public/system actor를 credential principal 또는 deployment creator로 바꾸면 실패한다.
 - Same terminal replay와 correction/projection replay는 operation당 `llm.call` audit 한 건과 `llm_usage_logs` 한 행으로 수렴한다. Ledger-linked projection은 budget/admin 합계에 중복 포함되지 않고 unresolved operation은 active budget을 fail-closed한다.
 - Credential revoke/permission decision revision 또는 verified relation/provider-routing revision 변경 뒤 stale capability는 새 claim/reservation/attempt/provider call에 사용할 수 없다. 이 fingerprint는 중앙 egress authorization을 대체하지 않는다.

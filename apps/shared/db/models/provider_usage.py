@@ -148,6 +148,21 @@ class ProviderUsageOperationRecord(Base):
             "provider_started_at",
             "state",
         ),
+        Index(
+            "ix_provider_usage_operation_projection_recovery",
+            "provider_started_at",
+            "id",
+            postgresql_where=text(
+                "state = 'succeeded' AND projection_status IN "
+                "('pending', 'retryable_failure', 'projected')"
+            ),
+        ),
+        Index(
+            "ix_provider_usage_operation_started_recovery",
+            "provider_started_at",
+            "id",
+            postgresql_where=text("state = 'provider_started'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

@@ -14,6 +14,7 @@ from apps.workflow_engine.application.provider_execution import (
     ProviderExecutionConfigurationError,
     ProviderInvocationNotSentError,
     ProviderInvocationOutcomeUnknownError,
+    ProviderInvocationRejectedError,
 )
 
 
@@ -72,6 +73,11 @@ class ProviderClientInvocationLease:
                 raise ProviderInvocationOutcomeUnknownError() from exc
             if exc.failure_phase is ProviderFailurePhase.BEFORE_SEND:
                 raise ProviderInvocationNotSentError() from exc
+            if (
+                exc.failure_phase is ProviderFailurePhase.RESPONSE_RECEIVED
+                and exc.status_code in {401, 403}
+            ):
+                raise ProviderInvocationRejectedError() from exc
             raise
 
 

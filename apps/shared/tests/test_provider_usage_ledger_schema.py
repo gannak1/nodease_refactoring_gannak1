@@ -88,6 +88,32 @@ def test_provider_usage_operation_has_state_projection_and_redaction_constraints
     } <= check_names
 
 
+def test_provider_usage_reconciliation_has_global_ordered_partial_indexes() -> None:
+    indexes = {
+        index.name: index for index in ProviderUsageOperationRecord.__table__.indexes
+    }
+    expected = {
+        "ix_provider_usage_operation_projection_recovery": (
+            ("provider_started_at", "id"),
+            "state = 'succeeded'",
+            "projection_status IN ('pending', 'retryable_failure', 'projected')",
+        ),
+        "ix_provider_usage_operation_started_recovery": (
+            ("provider_started_at", "id"),
+            "state = 'provider_started'",
+            None,
+        ),
+    }
+
+    for name, (columns, required_where, optional_where) in expected.items():
+        index = indexes[name]
+        assert tuple(column.name for column in index.columns) == columns
+        where = str(index.dialect_options["postgresql"]["where"])
+        assert required_where in where
+        if optional_where is not None:
+            assert optional_where in where
+
+
 def test_corrections_are_append_only_children_with_revision_uniqueness() -> None:
     table = ProviderUsageCorrectionRecord.__table__
     unique_constraints = {

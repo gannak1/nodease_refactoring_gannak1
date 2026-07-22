@@ -13,6 +13,7 @@ from apps.workflow_engine.application.provider_execution import (
     ProviderExecutionConfigurationError,
     ProviderInvocationNotSentError,
     ProviderInvocationOutcomeUnknownError,
+    ProviderInvocationRejectedError,
 )
 
 
@@ -40,6 +41,19 @@ class _BeforeSendClient:
             "Provider request was not sent.",
             reason_code="provider_request_not_sent",
             failure_phase=ProviderFailurePhase.BEFORE_SEND,
+        )
+
+
+class _ResponseReceivedClient:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+    def invoke_sync(self, *, messages, **parameters):
+        raise ProviderInvocationError(
+            "Provider request failed.",
+            reason_code="provider_http_error",
+            status_code=self.status_code,
+            failure_phase=ProviderFailurePhase.RESPONSE_RECEIVED,
         )
 
 
@@ -96,3 +110,34 @@ def test_invocation_lease_translates_before_send_to_definitive_application_error
         lease.invoke()
 
     assert captured.value.failure_phase == "before_send"
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_invocation_lease_translates_auth_rejection_to_definitive_error(
+    status_code: int,
+) -> None:
+    lease = ProviderClientInvocationLease(
+        client=_ResponseReceivedClient(status_code),
+        messages=({"role": "user", "content": "synthetic"},),
+        parameters={},
+        attribution=None,
+    )
+
+    with pytest.raises(ProviderInvocationRejectedError) as captured:
+        lease.invoke()
+
+    assert captured.value.failure_phase == "response_received"
+
+
+def test_invocation_lease_does_not_treat_rate_limit_as_definitive_rejection() -> None:
+    lease = ProviderClientInvocationLease(
+        client=_ResponseReceivedClient(429),
+        messages=({"role": "user", "content": "synthetic"},),
+        parameters={},
+        attribution=None,
+    )
+
+    with pytest.raises(ProviderInvocationError) as captured:
+        lease.invoke()
+
+    assert captured.value.status_code == 429

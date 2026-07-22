@@ -222,6 +222,28 @@ def test_terminal_audit_is_deterministic_and_contains_only_safe_metadata() -> No
         assert forbidden not in serialized
 
 
+def test_terminal_audit_preserves_the_ledger_workflow_run_correlation() -> None:
+    service = ProviderUsageLedgerService()
+    operation = _success()
+    workflow_run_id = uuid.uuid4()
+    record = service._record_from_operation(  # noqa: SLF001
+        operation,
+        workflow_run_id=workflow_run_id,
+        cost_optimizer_candidate_id=None,
+    )
+    added: list[object] = []
+    db = SimpleNamespace(add=added.append)
+
+    service._enqueue_terminal_audit(  # noqa: SLF001
+        db,
+        record=record,
+        operation=operation,
+    )
+
+    assert len(added) == 1
+    assert added[0].payload["workflow_run_id"] == str(workflow_run_id)
+
+
 def test_projection_values_use_canonical_cost_and_provider_started_time() -> None:
     service = ProviderUsageLedgerService()
     operation = _success()

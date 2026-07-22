@@ -860,6 +860,8 @@ class ProviderUsageLedgerService:
     @staticmethod
     def _new_audit_outbox(
         operation: ProviderUsageOperation,
+        *,
+        workflow_run_id: uuid.UUID | None = None,
     ) -> tuple[uuid.UUID, AuditEventOutbox]:
         if operation.terminal_at is None:
             raise ProviderUsageLedgerError("provider_usage.audit_not_allowed")
@@ -899,7 +901,9 @@ class ProviderUsageLedgerService:
                 else "failure"
             ),
             "audit_metadata": metadata,
-            "workflow_run_id": None,
+            "workflow_run_id": (
+                str(workflow_run_id) if workflow_run_id is not None else None
+            ),
             "workflow_node_run_id": None,
             "occurred_at": operation.terminal_at.astimezone(timezone.utc).isoformat(),
         }
@@ -922,7 +926,10 @@ class ProviderUsageLedgerService:
     ) -> None:
         if record.audit_event_id is not None:
             return
-        event_id, outbox = self._new_audit_outbox(operation)
+        event_id, outbox = self._new_audit_outbox(
+            operation,
+            workflow_run_id=record.workflow_run_id,
+        )
         record.audit_event_id = event_id
         db.add(outbox)
 
