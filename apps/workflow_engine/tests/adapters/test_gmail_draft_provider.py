@@ -1,11 +1,13 @@
 import base64
 import inspect
 from email import message_from_bytes
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from apps.shared.domain.mail_processing import MailSourceReference
+from apps.shared.services.outbound_operation_http import OperationHttpRequester
 from apps.workflow_engine.adapters import gmail_draft_provider as provider_module
 from apps.workflow_engine.adapters.gmail_draft_provider import (
     GmailDraftProvider,
@@ -28,6 +30,14 @@ def _source():
         reply_to="Sender <sender@example.com>",
         subject="Question",
     )
+
+
+def _requester(handler) -> OperationHttpRequester:
+    def client_factory(**kwargs):
+        kwargs.pop("transport")
+        return httpx.Client(transport=httpx.MockTransport(handler), **kwargs)
+
+    return OperationHttpRequester(client_factory=client_factory)
 
 
 def test_mime_builder_preserves_reply_thread_headers_and_unicode():
@@ -95,11 +105,10 @@ def test_provider_resolves_source_and_creates_draft_without_send_surface():
         assert request.url.path.endswith("/drafts")
         return httpx.Response(200, json={"id": "provider-draft"})
 
-    client = httpx.Client(transport=httpx.MockTransport(handler))
     provider = GmailDraftProvider(
         access_token="synthetic-access-token",
         mailbox_email="mailbox@example.com",
-        client=client,
+        requester=_requester(handler),
     )
     source = provider.resolve_source_message(
         source_reference=MailSourceReference(
@@ -138,7 +147,7 @@ def test_provider_rejects_source_lookup_with_mismatched_rfc_message_id():
     provider = GmailDraftProvider(
         access_token="synthetic-access-token",
         mailbox_email="mailbox@example.com",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        requester=_requester(handler),
     )
 
     with pytest.raises(GmailDraftRejectedBeforeEffect) as exc_info:
@@ -174,7 +183,7 @@ def test_provider_uses_protected_gmail_message_id_without_search_round_trip():
     provider = GmailDraftProvider(
         access_token="synthetic-access-token",
         mailbox_email="mailbox@example.com",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        requester=_requester(handler),
     )
 
     source = provider.resolve_source_message(
@@ -195,7 +204,7 @@ def test_read_timeout_after_draft_request_is_outcome_unknown():
     provider = GmailDraftProvider(
         access_token="synthetic-access-token",
         mailbox_email="mailbox@example.com",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        requester=_requester(handler),
     )
     with pytest.raises(GmailDraftOutcomeUnknown) as exc_info:
         provider.create_reply_draft(
@@ -211,7 +220,7 @@ def test_connect_timeout_before_draft_request_is_retryable_before_effect():
     provider = GmailDraftProvider(
         access_token="synthetic-access-token",
         mailbox_email="mailbox@example.com",
-        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        requester=_requester(handler),
     )
     with pytest.raises(GmailDraftRejectedBeforeEffect) as exc_info:
         provider.create_reply_draft(
@@ -224,11 +233,7 @@ def test_malformed_success_response_is_outcome_unknown():
     provider = GmailDraftProvider(
         access_token="synthetic-access-token",
         mailbox_email="mailbox@example.com",
-        client=httpx.Client(
-            transport=httpx.MockTransport(
-                lambda _request: httpx.Response(200, content=b"not-json")
-            )
-        ),
+        requester=_requester(lambda _request: httpx.Response(200, content=b"not-json")),
     )
     with pytest.raises(GmailDraftOutcomeUnknown) as exc_info:
         provider.create_reply_draft(
@@ -241,10 +246,8 @@ def test_server_error_after_draft_request_is_outcome_unknown():
     provider = GmailDraftProvider(
         access_token="synthetic-access-token",
         mailbox_email="mailbox@example.com",
-        client=httpx.Client(
-            transport=httpx.MockTransport(
-                lambda _request: httpx.Response(503, json={"error": "raw detail"})
-            )
+        requester=_requester(
+            lambda _request: httpx.Response(503, json={"error": "raw detail"})
         ),
     )
 
@@ -264,12 +267,10 @@ def test_oversized_success_response_after_draft_request_is_outcome_unknown(
     provider = GmailDraftProvider(
         access_token="synthetic-access-token",
         mailbox_email="mailbox@example.com",
-        client=httpx.Client(
-            transport=httpx.MockTransport(
-                lambda _request: httpx.Response(
-                    200,
-                    json={"id": "provider-draft-" + "x" * 128},
-                )
+        requester=_requester(
+            lambda _request: httpx.Response(
+                200,
+                json={"id": "provider-draft-" + "x" * 128},
             )
         ),
     )
@@ -280,3 +281,29 @@ def test_oversized_success_response_after_draft_request_is_outcome_unknown(
         )
 
     assert exc_info.value.reason_code == "mail.draft_response_invalid"
+
+
+@pytest.mark.parametrize(
+    "provider_message_id",
+    ["../drafts", "id/modify", "id\\modify", "id?format=raw", "id#fragment"],
+)
+def test_source_lookup_rejects_message_id_that_can_change_the_fixed_path(
+    provider_message_id,
+):
+    calls = []
+    provider = GmailDraftProvider(
+        access_token="synthetic-access-token",
+        mailbox_email="mailbox@example.com",
+        requester=_requester(lambda request: calls.append(request)),
+    )
+
+    with pytest.raises(GmailDraftRejectedBeforeEffect) as captured:
+        provider.resolve_source_message(
+            source_reference=SimpleNamespace(
+                provider_message_id=provider_message_id,
+                message_id="<message@example.com>",
+            )
+        )
+
+    assert captured.value.reason_code == "mail.gmail_source_message_invalid"
+    assert calls == []

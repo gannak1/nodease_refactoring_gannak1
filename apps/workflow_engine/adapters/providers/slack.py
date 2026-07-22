@@ -7,15 +7,23 @@ import json
 import math
 import re
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-import httpx
-
 from apps.shared.domain.slack_delivery import is_valid_commercial_slack_webhook_url
-from apps.shared.services.egress_guard import EgressGuardError, OutboundEgressGuard
+from apps.shared.services.outbound_operation_http import (
+    OperationHttpFailure,
+    OperationHttpFailurePhase,
+    OperationHttpRequester,
+    OperationHttpResponse,
+    OperationHttpTimeouts,
+)
+from apps.shared.services.outbound_operation_policy import (
+    SLACK_CHAT_POST_MESSAGE,
+    SLACK_INCOMING_WEBHOOK_POST,
+)
 from apps.workflow_engine.domain.external_effect import (
     EffectInvocationFailure,
     EffectOutcome,
@@ -208,17 +216,15 @@ class SlackEffectAdapter:
         self,
         mode: SlackDeliveryMode,
         *,
-        egress_guard: OutboundEgressGuard,
         policy: SlackDeliveryPolicy | None = None,
-        client_factory: Callable[..., httpx.Client] = httpx.Client,
+        requester: OperationHttpRequester | None = None,
         contracts: ProviderContractRegistry | None = None,
         active_profile: ProviderContractProfile | None = None,
         historical_profiles: Iterable[ProviderContractProfile] = (),
     ) -> None:
         self.mode = SlackDeliveryMode(mode)
         self.policy = policy or SlackDeliveryPolicy()
-        self.egress_guard = egress_guard
-        self.client_factory = client_factory
+        self._requester = requester or OperationHttpRequester()
         operation = self._OPERATIONS[self.mode]
         historical_profiles = tuple(historical_profiles)
         if contracts is not None and (
@@ -342,17 +348,16 @@ class SlackEffectAdapter:
             )
 
         started = time.perf_counter()
-        response: httpx.Response | None = None
-        request_started = False
+        response: OperationHttpResponse | None = None
         try:
-            url = self._resolve_url_with_timeout(request)
-            self.egress_guard.validate_method("POST")
-            self.egress_guard.validate_request_body(
-                json_body=request.payload,
-                data=None,
+            url = self._provider_url(request)
+            operation_id = (
+                SLACK_CHAT_POST_MESSAGE
+                if request.mode is SlackDeliveryMode.API
+                else SLACK_INCOMING_WEBHOOK_POST
             )
             headers = self._headers_for(request)
-        except (EgressGuardError, TypeError, ValueError):
+        except (TypeError, ValueError):
             self._set_trace(
                 delivery_status="failed_before_effect",
                 provider_reason="egress_denied",
@@ -366,104 +371,68 @@ class SlackEffectAdapter:
             ) from None
 
         try:
-            timeout = httpx.Timeout(
-                connect=self.policy.connect_timeout_seconds,
-                write=self.policy.write_timeout_seconds,
-                read=self.policy.read_timeout_seconds,
-                pool=self.policy.pool_timeout_seconds,
+            response = self._requester.request(
+                operation_id=operation_id,
+                approved_endpoint=url,
+                method="POST",
+                url=url,
+                headers=headers,
+                json_body=request.payload,
+                timeouts=OperationHttpTimeouts(
+                    connect_seconds=self.policy.connect_timeout_seconds,
+                    write_seconds=self.policy.write_timeout_seconds,
+                    read_seconds=self.policy.read_timeout_seconds,
+                    pool_seconds=self.policy.pool_timeout_seconds,
+                ),
             )
-            with self.client_factory(
-                timeout=timeout,
-                follow_redirects=False,
-                trust_env=False,
-                verify=True,
-            ) as client:
-                request_started = True
-                with client.stream(
-                    "POST", url, headers=headers, json=request.payload
-                ) as response:
-                    if 300 <= response.status_code < 400:
-                        self._raise_transport_failure(
-                            request,
-                            response,
-                            started,
-                            reason="redirect_rejected",
-                            error_code="unexpected_provider_status",
-                        )
-                    self.egress_guard.validate_response_peer_ip(
-                        self._response_peer_ip(response)
-                    )
-                    body = self._read_bounded_body(response)
-                    retry_after = parse_retry_after(
-                        response.headers.get_list("retry-after"),
-                        cap=self.policy.max_retry_after_seconds,
-                    )
-                    classification = self._classify_response(
-                        status_code=response.status_code,
-                        content_type=response.headers.get("content-type"),
-                        body=body,
-                        retry_after_seconds=retry_after,
-                    )
-        except EffectInvocationFailure:
-            raise
-        except (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout):
+        except OperationHttpFailure as exc:
+            before_effect = exc.phase is OperationHttpFailurePhase.BEFORE_SEND
             self._set_trace(
-                delivery_status="failed_before_effect",
-                provider_reason="transport_unavailable",
+                delivery_status=(
+                    "failed_before_effect" if before_effect else "outcome_unknown"
+                ),
+                provider_reason=(
+                    "transport_unavailable" if before_effect else "response_lost"
+                ),
                 latency_ms=self._latency_ms(started),
                 request_size=len(request.canonical_payload),
             )
             raise EffectInvocationFailure(
-                outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
-                error_code="connection_failed",
+                outcome=(
+                    EffectOutcome.FAILED_BEFORE_EFFECT
+                    if before_effect
+                    else EffectOutcome.EFFECT_OUTCOME_UNKNOWN
+                ),
+                error_code=("connection_failed" if before_effect else "response_lost"),
                 retry_before_effect=False,
             ) from None
-        except (
-            httpx.WriteTimeout,
-            httpx.ReadTimeout,
-            httpx.WriteError,
-            httpx.ReadError,
-            httpx.RemoteProtocolError,
-        ):
+        if 300 <= response.status_code < 400:
             self._raise_transport_failure(
                 request,
                 response,
                 started,
-                reason="response_lost",
+                reason="redirect_rejected",
+                error_code="unexpected_provider_status",
+            )
+        body = response.content
+        if len(body) > self.policy.max_response_bytes:
+            self._raise_transport_failure(
+                request,
+                response,
+                started,
+                reason="response_unverified",
                 error_code="response_lost",
             )
-        except EgressGuardError:
-            self._raise_transport_failure(
-                request,
-                response,
-                started,
-                reason="response_unverified" if request_started else "egress_denied",
-                error_code=(
-                    "response_lost" if request_started else "invalid_prepared_request"
-                ),
-                before_effect=not request_started,
-            )
-        except (httpx.InvalidURL, httpx.UnsupportedProtocol, httpx.LocalProtocolError):
-            self._set_trace(
-                delivery_status="failed_before_effect",
-                provider_reason="egress_denied",
-                latency_ms=self._latency_ms(started),
-                request_size=len(request.canonical_payload),
-            )
-            raise EffectInvocationFailure(
-                outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
-                error_code="invalid_prepared_request",
-                retry_before_effect=False,
-            ) from None
-        except Exception:
-            self._raise_transport_failure(
-                request,
-                response,
-                started,
-                reason="response_lost" if request_started else "transport_unavailable",
-                error_code="provider_call_failed",
-                before_effect=not request_started,
-            )
+        retry_after = parse_retry_after(
+            response.header_values("retry-after"),
+            cap=self.policy.max_retry_after_seconds,
+        )
+        classification = self._classify_response(
+            status_code=response.status_code,
+            content_type=response.headers.get("content-type"),
+            body=body,
+            retry_after_seconds=retry_after,
+        )
 
         response_size = len(body)
         self._set_trace(
@@ -548,32 +517,17 @@ class SlackEffectAdapter:
         ):
             raise ValueError("invalid Slack webhook URL")
 
-    def _resolve_url_with_timeout(self, request: PreparedSlackRequest) -> str:
-        try:
-            from gevent import Timeout  # noqa: PLC0415
-        except ImportError as exc:  # pragma: no cover - Worker readiness dependency
-            raise EgressGuardError("egress.dns_timeout") from exc
-
-        timer = Timeout(self.policy.connect_timeout_seconds)
-        timer.start()
-        try:
-            candidate = (
-                _API_URL
-                if request.mode is SlackDeliveryMode.API
-                else request.secret.reveal_for_adapter()
-            )
-            if request.mode is SlackDeliveryMode.WEBHOOK and not (
-                is_valid_commercial_slack_webhook_url(candidate)
-            ):
-                raise EgressGuardError("egress.invalid_url")
-            validated = self.egress_guard.validate_url(candidate)
-            if validated != candidate:
-                raise EgressGuardError("egress.invalid_url")
-            return candidate
-        except Timeout:
-            raise EgressGuardError("egress.dns_timeout") from None
-        finally:
-            timer.cancel()
+    def _provider_url(self, request: PreparedSlackRequest) -> str:
+        candidate = (
+            _API_URL
+            if request.mode is SlackDeliveryMode.API
+            else request.secret.reveal_for_adapter()
+        )
+        if request.mode is SlackDeliveryMode.WEBHOOK and not (
+            is_valid_commercial_slack_webhook_url(candidate)
+        ):
+            raise ValueError("invalid Slack webhook URL")
+        return candidate
 
     def _headers_for(self, request: PreparedSlackRequest) -> dict[str, str]:
         headers = {
@@ -588,27 +542,6 @@ class SlackEffectAdapter:
         if request.mode is SlackDeliveryMode.API:
             headers["Authorization"] = f"Bearer {request.secret.reveal_for_adapter()}"
         return headers
-
-    def _read_bounded_body(self, response: httpx.Response) -> bytes:
-        encoding = response.headers.get("content-encoding", "").strip().lower()
-        if encoding and encoding != "identity":
-            raise EgressGuardError("egress.compressed_response_not_allowed")
-        content_length = response.headers.get("content-length")
-        if content_length is not None:
-            try:
-                declared_length = int(content_length)
-            except ValueError as exc:
-                raise EgressGuardError("egress.response_too_large") from exc
-            if declared_length < 0 or declared_length > self.policy.max_response_bytes:
-                raise EgressGuardError("egress.response_too_large")
-        chunks: list[bytes] = []
-        size = 0
-        for chunk in response.iter_bytes():
-            size += len(chunk)
-            if size > self.policy.max_response_bytes:
-                raise EgressGuardError("egress.response_too_large")
-            chunks.append(chunk)
-        return b"".join(chunks)
 
     def _classify_response(
         self,
@@ -766,7 +699,7 @@ class SlackEffectAdapter:
     def _raise_transport_failure(
         self,
         request: PreparedSlackRequest,
-        response: httpx.Response | None,
+        response: OperationHttpResponse | None,
         started: float,
         *,
         reason: str,
@@ -800,24 +733,11 @@ class SlackEffectAdapter:
         self.trace_metadata = {"slack": slack}
 
     @staticmethod
-    def _safe_response_size(response: httpx.Response | None) -> int | None:
+    def _safe_response_size(response: OperationHttpResponse | None) -> int | None:
         if response is None:
             return None
-        try:
-            return len(response.content)
-        except httpx.ResponseNotRead:
-            return None
+        return len(response.content)
 
     @staticmethod
     def _latency_ms(started: float) -> int:
         return max(0, int((time.perf_counter() - started) * 1000))
-
-    @staticmethod
-    def _response_peer_ip(response: httpx.Response) -> str | None:
-        stream = response.extensions.get("network_stream")
-        if stream is None or not hasattr(stream, "get_extra_info"):
-            return None
-        server_addr = stream.get_extra_info("server_addr")
-        if isinstance(server_addr, tuple) and server_addr:
-            return str(server_addr[0])
-        return None

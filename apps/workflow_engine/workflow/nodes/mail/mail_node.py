@@ -16,9 +16,10 @@ from apps.shared.domain.mail_processing import MailSourceReference
 from apps.shared.services.credential_encryption import (
     get_credential_encryption_service,
 )
-from apps.workflow_engine.adapters.gmail_mailbox_provider import (
-    GmailMailboxProvider,
-    GmailSearchCriteria,
+from apps.workflow_engine.adapters.gmail_mailbox_provider import GmailSearchCriteria
+from apps.workflow_engine.composition.mail import (
+    build_gmail_mailbox_provider,
+    build_google_oauth_token_service,
 )
 from apps.workflow_engine.adapters.mail_processing_repository import (
     SqlAlchemyMailProcessingRepository,
@@ -30,9 +31,6 @@ from apps.workflow_engine.application.mail_processing import (
 from apps.workflow_engine.services.mail_credential_service import (
     MailCredentialResolver,
     ResolvedMailCredential,
-)
-from apps.workflow_engine.services.google_oauth_service import (
-    GoogleOAuthTokenService,
 )
 from apps.workflow_engine.workflow.nodes.base.node import Node
 from apps.workflow_engine.workflow.nodes.mail.entities import MailNodeData
@@ -300,7 +298,7 @@ class MailNode(Node[MailNodeData]):
             raise RuntimeError("mail.oauth_provider_unsupported")
         token_service = self.execution_context.get("google_oauth_token_service")
         if token_service is None:
-            token_service = GoogleOAuthTokenService()
+            token_service = build_google_oauth_token_service()
         rotation_db, should_close_rotation_db = self._borrow_db_session()
         try:
             access_token = MailCredentialResolver.refresh_oauth_serialized(
@@ -317,7 +315,7 @@ class MailNode(Node[MailNodeData]):
         provider = (
             provider_factory(access_token.value)
             if callable(provider_factory)
-            else GmailMailboxProvider(access_token=access_token.value)
+            else build_gmail_mailbox_provider(access_token=access_token.value)
         )
         authorization_db, should_close_authorization_db = self._borrow_db_session()
         try:

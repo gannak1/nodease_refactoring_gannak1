@@ -4,7 +4,12 @@ import pickle
 import httpx
 import pytest
 
-from apps.shared.services.egress_guard import EgressGuardError
+from apps.shared.services.guarded_http_transport import GuardedHttpTransport
+from apps.shared.services.outbound_operation_http import (
+    OperationHttpFailure,
+    OperationHttpFailurePhase,
+    OperationHttpRequester,
+)
 from apps.workflow_engine.adapters.providers.slack import (
     SlackDeliveryMode,
     SlackDeliveryPolicy,
@@ -19,37 +24,19 @@ from apps.workflow_engine.domain.external_effect import (
 )
 
 
-class Guard:
-    def __init__(self) -> None:
-        self.urls: list[str] = []
-        self.bodies: list[object] = []
-
-    def validate_url(self, url: str) -> str:
-        self.urls.append(url)
-        return url
-
-    def validate_method(self, method: str) -> str:
-        assert method == "POST"
-        return method
-
-    def validate_request_body(self, *, json_body, data) -> None:
-        assert data is None
-        self.bodies.append(json_body)
-
-    def validate_response_peer_ip(self, peer_ip) -> None:
-        return None
-
-
-class PeerRejectingGuard(Guard):
-    def validate_response_peer_ip(self, peer_ip) -> None:
-        raise EgressGuardError("egress.peer_unverified")
+class _FailingRequester:
+    def request(self, **_kwargs):
+        raise OperationHttpFailure(
+            "egress.peer_mismatch",
+            OperationHttpFailurePhase.OUTCOME_UNKNOWN,
+        )
 
 
 def _client_factory(handler, observed: dict | None = None):
     def factory(**kwargs):
         if observed is not None:
             observed.update(kwargs)
-        kwargs.pop("verify", None)
+        kwargs.pop("transport")
         return httpx.Client(transport=httpx.MockTransport(handler), **kwargs)
 
     return factory
@@ -59,15 +46,17 @@ def _adapter(
     mode: SlackDeliveryMode,
     handler,
     *,
-    guard=None,
     policy: SlackDeliveryPolicy | None = None,
     observed: dict | None = None,
+    requester=None,
 ) -> SlackEffectAdapter:
     return SlackEffectAdapter(
         mode,
-        egress_guard=guard or Guard(),
         policy=policy,
-        client_factory=_client_factory(handler, observed),
+        requester=requester
+        or OperationHttpRequester(
+            client_factory=_client_factory(handler, observed),
+        ),
     )
 
 
@@ -123,7 +112,13 @@ def test_api_success_uses_hardened_transport_and_safe_projection() -> None:
     }
     assert observed["follow_redirects"] is False
     assert observed["trust_env"] is False
-    assert observed["verify"] is True
+    assert isinstance(observed["transport"], GuardedHttpTransport)
+    timeout = observed["timeout"]
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.connect == 3
+    assert timeout.write == 5
+    assert timeout.read == 10
+    assert timeout.pool == 2
     assert adapter.trace_metadata["slack"]["has_message_ref"] is True
     assert "token-value" not in repr(adapter.trace_metadata)
 
@@ -241,7 +236,7 @@ def test_redirect_and_post_request_peer_failure_are_outcome_unknown() -> None:
             headers={"content-type": "application/json"},
             json={"ok": True, "ts": "1.2"},
         ),
-        guard=PeerRejectingGuard(),
+        requester=_FailingRequester(),
     )
 
     for adapter in (redirect, peer_rejected):

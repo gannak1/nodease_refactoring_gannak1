@@ -9,12 +9,19 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Iterable
 
-import httpx
-
 from apps.shared.domain.mail_processing import (
     MailProcessingBoundaryError,
     MailSourceReference,
 )
+from apps.shared.services.outbound_operation_http import (
+    OperationHttpFailure,
+    OperationHttpRequester,
+)
+from apps.shared.services.outbound_operation_policy import (
+    GMAIL_MESSAGE_MODIFY,
+    GMAIL_MESSAGE_READ,
+)
+from apps.workflow_engine.adapters.gmail_api import require_gmail_message_id
 
 GMAIL_API_BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me"
 MAX_QUERY_LENGTH = 2048
@@ -63,7 +70,7 @@ class GmailMailboxProvider:
         self,
         *,
         access_token: str,
-        client: httpx.Client | None = None,
+        requester: OperationHttpRequester | None = None,
     ) -> None:
         if not access_token or _CONTROL_CHARACTERS.search(access_token):
             raise GmailMailboxError("mail.oauth_token_invalid")
@@ -71,16 +78,13 @@ class GmailMailboxProvider:
             "Authorization": f"Bearer {access_token}",
             "Accept": "application/json",
         }
-        self._client = client
+        self._requester = requester or OperationHttpRequester()
 
     def search(self, criteria: GmailSearchCriteria) -> list[GmailMailboxMessage]:
         query = build_gmail_search_query(criteria)
         label = _folder_label(criteria.folder)
-        client = self._client or httpx.Client(timeout=10.0, follow_redirects=False)
-        should_close = self._client is None
         try:
             listing = self._request(
-                client,
                 "GET",
                 f"{GMAIL_API_BASE_URL}/messages",
                 params={
@@ -97,7 +101,9 @@ class GmailMailboxProvider:
             messages: list[GmailMailboxMessage] = []
             for entry in entries[: criteria.max_results]:
                 provider_id = entry.get("id") if isinstance(entry, dict) else None
-                if not isinstance(provider_id, str):
+                try:
+                    provider_id = require_gmail_message_id(provider_id)
+                except (TypeError, ValueError):
                     raise GmailMailboxError("mail.gmail_response_invalid")
                 source = MailSourceReference.from_mapping(
                     {
@@ -106,7 +112,6 @@ class GmailMailboxProvider:
                     }
                 )
                 detail = self._request(
-                    client,
                     "GET",
                     f"{GMAIL_API_BASE_URL}/messages/{provider_id}",
                     params={"format": "full"},
@@ -125,93 +130,82 @@ class GmailMailboxProvider:
             return messages
         except MailProcessingBoundaryError as exc:
             raise GmailMailboxError("mail.gmail_response_invalid") from exc
-        finally:
-            if should_close:
-                client.close()
 
     def mark_read(self, source_references: Iterable[MailSourceReference]) -> None:
         provider_ids = []
         for source in source_references:
             if source.provider_message_id is None:
                 raise GmailMailboxError("mail.message_identity_invalid")
-            provider_ids.append(source.provider_message_id)
+            try:
+                provider_ids.append(
+                    require_gmail_message_id(source.provider_message_id)
+                )
+            except ValueError:
+                raise GmailMailboxError("mail.message_identity_invalid") from None
         if not provider_ids:
             return
-        client = self._client or httpx.Client(timeout=10.0, follow_redirects=False)
-        should_close = self._client is None
-        try:
-            self._request(
-                client,
-                "POST",
-                f"{GMAIL_API_BASE_URL}/messages/batchModify",
-                json={
-                    "ids": provider_ids,
-                    "removeLabelIds": ["UNREAD"],
-                },
-                allow_empty=True,
-            )
-        finally:
-            if should_close:
-                client.close()
+        self._request(
+            "POST",
+            f"{GMAIL_API_BASE_URL}/messages/batchModify",
+            json={
+                "ids": provider_ids,
+                "removeLabelIds": ["UNREAD"],
+            },
+            allow_empty=True,
+        )
 
     def acknowledge(self, *, source_reference: MailSourceReference) -> None:
         if source_reference.provider_message_id is None:
             raise GmailMailboxError("mail.message_identity_invalid")
-        client = self._client or httpx.Client(timeout=10.0, follow_redirects=False)
-        should_close = self._client is None
         try:
-            self._request(
-                client,
-                "POST",
-                (
-                    f"{GMAIL_API_BASE_URL}/messages/"
-                    f"{source_reference.provider_message_id}/modify"
-                ),
-                json={"removeLabelIds": ["UNREAD"]},
-            )
-        finally:
-            if should_close:
-                client.close()
+            provider_id = require_gmail_message_id(source_reference.provider_message_id)
+        except ValueError:
+            raise GmailMailboxError("mail.message_identity_invalid") from None
+        self._request(
+            "POST",
+            f"{GMAIL_API_BASE_URL}/messages/{provider_id}/modify",
+            json={"removeLabelIds": ["UNREAD"]},
+        )
 
     def _request(
         self,
-        client: httpx.Client,
         method: str,
         url: str,
         *,
         allow_empty: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        params = kwargs.pop("params", None)
+        json_body = kwargs.pop("json", None)
+        if kwargs:
+            raise GmailMailboxError("mail.gmail_request_invalid")
+        operation_id = GMAIL_MESSAGE_MODIFY if method == "POST" else GMAIL_MESSAGE_READ
         try:
-            with client.stream(
-                method,
-                url,
+            response = self._requester.request(
+                operation_id=operation_id,
+                approved_endpoint=GMAIL_API_BASE_URL,
+                method=method,
+                url=url,
                 headers={
                     **self._headers,
                     **(
                         {"Content-Type": "application/json"} if method == "POST" else {}
                     ),
                 },
-                **kwargs,
-            ) as response:
-                if response.status_code in {401, 403}:
-                    raise GmailMailboxError("mail.oauth_reauthorization_required")
-                if response.status_code == 429 or response.status_code >= 500:
-                    raise GmailMailboxError("mail.gmail_provider_unavailable")
-                if response.status_code >= 400:
-                    raise GmailMailboxError("mail.gmail_request_rejected")
-                chunks: list[bytes] = []
-                size = 0
-                for chunk in response.iter_bytes():
-                    size += len(chunk)
-                    if size > MAX_RESPONSE_BYTES:
-                        raise GmailMailboxError("mail.gmail_response_too_large")
-                    chunks.append(chunk)
-                content = b"".join(chunks)
-        except GmailMailboxError:
-            raise
-        except httpx.RequestError:
+                query_params=params,
+                json_body=json_body,
+            )
+        except OperationHttpFailure:
             raise GmailMailboxError("mail.gmail_provider_unavailable") from None
+        if response.status_code in {401, 403}:
+            raise GmailMailboxError("mail.oauth_reauthorization_required")
+        if response.status_code == 429 or response.status_code >= 500:
+            raise GmailMailboxError("mail.gmail_provider_unavailable")
+        if response.status_code >= 400:
+            raise GmailMailboxError("mail.gmail_request_rejected")
+        content = response.content
+        if len(content) > MAX_RESPONSE_BYTES:
+            raise GmailMailboxError("mail.gmail_response_too_large")
         if allow_empty and not content:
             return {}
         try:

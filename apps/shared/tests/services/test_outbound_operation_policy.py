@@ -3,10 +3,20 @@ from dataclasses import FrozenInstanceError
 import pytest
 from apps.shared.services.egress_guard import EgressGuardError
 from apps.shared.services.outbound_operation_policy import (
+    GITHUB_ISSUE_COMMENT_CREATE,
+    GITHUB_PULL_REQUEST_READ,
+    GMAIL_DRAFT_CREATE,
+    GMAIL_MESSAGE_MODIFY,
+    GMAIL_MESSAGE_READ,
+    GMAIL_PROFILE_READ,
+    GOOGLE_OAUTH_AUTHORIZATION_CODE_EXCHANGE,
+    GOOGLE_OAUTH_REFRESH,
     KNOWLEDGE_API_FETCH,
     KNOWLEDGE_DOCUMENT_FETCH,
     LLM_MODEL_DISCOVERY,
     LLM_PROVIDER_CALL,
+    SLACK_CHAT_POST_MESSAGE,
+    SLACK_INCOMING_WEBHOOK_POST,
     WORKFLOW_REMOTE_FILE_FETCH,
     OutboundOperationProfile,
     outbound_operation_profiles,
@@ -17,6 +27,16 @@ def test_registered_sensitive_operations_are_https_only_and_versioned() -> None:
     profiles = outbound_operation_profiles()
 
     assert set(profiles) == {
+        GOOGLE_OAUTH_AUTHORIZATION_CODE_EXCHANGE,
+        GOOGLE_OAUTH_REFRESH,
+        GMAIL_PROFILE_READ,
+        GMAIL_MESSAGE_READ,
+        GMAIL_MESSAGE_MODIFY,
+        GMAIL_DRAFT_CREATE,
+        GITHUB_PULL_REQUEST_READ,
+        GITHUB_ISSUE_COMMENT_CREATE,
+        SLACK_CHAT_POST_MESSAGE,
+        SLACK_INCOMING_WEBHOOK_POST,
         LLM_PROVIDER_CALL,
         LLM_MODEL_DISCOVERY,
         KNOWLEDGE_API_FETCH,
@@ -31,6 +51,37 @@ def test_registered_sensitive_operations_are_https_only_and_versioned() -> None:
     discovery = profiles[LLM_MODEL_DISCOVERY]
     assert discovery.policy.allowed_methods == frozenset({"GET"})
     assert discovery.policy.timeout_seconds == 10.0
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "methods", "request_bytes", "response_bytes"),
+    [
+        (GOOGLE_OAUTH_AUTHORIZATION_CODE_EXCHANGE, {"POST"}, 64 * 1024, 1024 * 1024),
+        (GOOGLE_OAUTH_REFRESH, {"POST"}, 64 * 1024, 1024 * 1024),
+        (GMAIL_PROFILE_READ, {"GET"}, 0, 256 * 1024),
+        (GMAIL_MESSAGE_READ, {"GET"}, 0, 2 * 1024 * 1024),
+        (GMAIL_MESSAGE_MODIFY, {"POST"}, 256 * 1024, 512 * 1024),
+        (GMAIL_DRAFT_CREATE, {"POST"}, 1024 * 1024, 512 * 1024),
+        (GITHUB_PULL_REQUEST_READ, {"GET"}, 0, 10 * 1024 * 1024),
+        (GITHUB_ISSUE_COMMENT_CREATE, {"POST"}, 512 * 1024, 1024 * 1024),
+        (SLACK_CHAT_POST_MESSAGE, {"POST"}, 256 * 1024, 64 * 1024),
+        (SLACK_INCOMING_WEBHOOK_POST, {"POST"}, 256 * 1024, 64 * 1024),
+    ],
+)
+def test_fixed_saas_operation_profiles_are_narrowly_bounded(
+    operation_id,
+    methods,
+    request_bytes,
+    response_bytes,
+) -> None:
+    profile = outbound_operation_profiles()[operation_id]
+
+    assert profile.policy.allowed_methods == frozenset(methods)
+    assert profile.policy.max_request_bytes == request_bytes
+    assert profile.policy.max_response_bytes == response_bytes
+    assert profile.policy.max_redirects == 0
+    assert profile.policy.force_identity_encoding is True
+    assert profile.policy.allow_compressed_response is False
 
 
 def test_profile_registry_and_profile_are_immutable() -> None:

@@ -3,6 +3,7 @@ import uuid
 import httpx
 import pytest
 
+from apps.shared.services.outbound_operation_http import OperationHttpRequester
 from apps.workflow_engine.adapters.providers.slack import (
     SlackDeliveryMode,
     SlackEffectAdapter,
@@ -20,23 +21,9 @@ from apps.workflow_engine.tests.fakes.external_effects import (
 )
 
 
-class Guard:
-    def validate_url(self, url: str) -> str:
-        return url
-
-    def validate_method(self, method: str) -> str:
-        return method
-
-    def validate_request_body(self, *, json_body, data) -> None:
-        return None
-
-    def validate_response_peer_ip(self, peer_ip) -> None:
-        return None
-
-
 def _client_factory(handler):
     def factory(**kwargs):
-        kwargs.pop("verify", None)
+        kwargs.pop("transport")
         return httpx.Client(transport=httpx.MockTransport(handler), **kwargs)
 
     return factory
@@ -45,8 +32,9 @@ def _client_factory(handler):
 def _adapter(mode: SlackDeliveryMode, handler) -> SlackEffectAdapter:
     return SlackEffectAdapter(
         mode,
-        egress_guard=Guard(),
-        client_factory=_client_factory(handler),
+        requester=OperationHttpRequester(
+            client_factory=_client_factory(handler),
+        ),
     )
 
 
