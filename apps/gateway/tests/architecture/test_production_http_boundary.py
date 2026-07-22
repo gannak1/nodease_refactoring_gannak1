@@ -133,6 +133,12 @@ def test_default_helm_values_use_one_development_cors_profile():
     )
 
 
+def test_local_dev_script_explicitly_selects_development_environment():
+    source = _read("scripts/dev.sh")
+
+    assert "export NODE_ENV=development" in source
+
+
 def test_helm_does_not_fallback_public_api_url_to_cluster_http():
     configmap = _read("infra/helm/moduly/templates/configmap.yaml")
     deployment = _read("infra/helm/moduly/templates/frontend-deployment.yaml")

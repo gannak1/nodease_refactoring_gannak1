@@ -3,6 +3,7 @@ from __future__ import annotations
 import socket
 import threading
 import time
+from dataclasses import replace
 
 import httpcore
 import httpx
@@ -142,6 +143,47 @@ def test_sync_backend_rejects_peer_that_differs_from_validated_address(
 
     assert captured.value.reason_code == "egress.peer_mismatch"
     assert backend.targets == [("93.184.216.34", 443)]
+
+
+def test_sync_backend_applies_connect_timeout_to_dns_resolution(monkeypatch) -> None:
+    guard = _bound_operation().guard
+
+    def slow_resolve(_host: str, _port: int):
+        time.sleep(0.05)
+        return "provider.example", 443, ("93.184.216.34",)
+
+    monkeypatch.setattr(guard, "validate_host_port_addresses", slow_resolve)
+    backend = _SyncBackend("93.184.216.34")
+    guarded = GuardedNetworkBackend(guard, backend=backend)
+
+    with pytest.raises(httpcore.ConnectTimeout):
+        guarded.connect_tcp("provider.example", 443, timeout=0.005)
+
+    assert backend.targets == []
+
+
+def test_sync_backend_passes_only_remaining_deadline_to_tcp(monkeypatch) -> None:
+    guard = _bound_operation().guard
+    observed_timeouts: list[float | None] = []
+
+    def resolve(_host: str, _port: int):
+        time.sleep(0.02)
+        return "provider.example", 443, ("93.184.216.34",)
+
+    class RecordingBackend(_SyncBackend):
+        def connect_tcp(self, host, port, **kwargs):
+            observed_timeouts.append(kwargs.get("timeout"))
+            return super().connect_tcp(host, port, **kwargs)
+
+    monkeypatch.setattr(guard, "validate_host_port_addresses", resolve)
+    backend = RecordingBackend("93.184.216.34")
+    guarded = GuardedNetworkBackend(guard, backend=backend)
+
+    guarded.connect_tcp("provider.example", 443, timeout=0.2)
+
+    assert observed_timeouts
+    assert observed_timeouts[0] is not None
+    assert 0 < observed_timeouts[0] < 0.2
 
 
 @pytest.mark.asyncio
@@ -323,6 +365,82 @@ def test_sync_transport_marks_response_header_rejection_after_send(
     assert captured.value.reason_code == "egress.compressed_response_not_allowed"
     assert response.is_closed is True
     transport.close()
+
+
+def test_sync_transport_marks_response_body_limit_after_send(monkeypatch) -> None:
+    transport = GuardedHttpTransport(operation=_bound_operation())
+    transport._guard.policy = replace(  # noqa: SLF001 - transport contract fixture
+        transport._guard.policy,  # noqa: SLF001
+        max_response_bytes=4,
+    )
+    request = httpx.Request(
+        "POST",
+        "https://provider.example/v1/responses",
+        json={"input": "synthetic"},
+    )
+    response = httpx.Response(
+        200,
+        headers={"content-type": "application/json"},
+        stream=httpx.ByteStream(b"12345"),
+        request=request,
+    )
+    monkeypatch.setattr(
+        httpx.HTTPTransport,
+        "handle_request",
+        lambda _self, _request: response,
+    )
+
+    guarded_response = transport.handle_request(request)
+    with pytest.raises(EgressResponseRejectedError) as captured:
+        guarded_response.read()
+
+    assert captured.value.reason_code == "egress.response_too_large"
+    transport.close()
+
+
+@pytest.mark.asyncio
+async def test_async_transport_marks_response_body_limit_after_send(
+    monkeypatch,
+) -> None:
+    class OversizedAsyncStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"12345"
+
+        async def aclose(self) -> None:
+            return None
+
+    transport = GuardedAsyncHttpTransport(operation=_bound_operation())
+    transport._guard.policy = replace(  # noqa: SLF001 - transport contract fixture
+        transport._guard.policy,  # noqa: SLF001
+        max_response_bytes=4,
+    )
+    request = httpx.Request(
+        "POST",
+        "https://provider.example/v1/responses",
+        json={"input": "synthetic"},
+    )
+    response = httpx.Response(
+        200,
+        headers={"content-type": "application/json"},
+        stream=OversizedAsyncStream(),
+        request=request,
+    )
+
+    async def handle_request(_self, _request):
+        return response
+
+    monkeypatch.setattr(
+        httpx.AsyncHTTPTransport,
+        "handle_async_request",
+        handle_request,
+    )
+
+    guarded_response = await transport.handle_async_request(request)
+    with pytest.raises(EgressResponseRejectedError) as captured:
+        await guarded_response.aread()
+
+    assert captured.value.reason_code == "egress.response_too_large"
+    await transport.aclose()
 
 
 def test_sync_and_async_transports_disable_ambient_proxy_and_pin_network() -> None:

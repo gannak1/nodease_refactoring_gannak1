@@ -5,11 +5,16 @@ import asyncio
 import pytest
 from apps.shared.services.egress_guard import EgressGuardError
 from apps.shared.services.guarded_http_transport import (
+    EgressResponseRejectedError,
     GuardedAsyncHttpTransport,
     GuardedHttpTransport,
 )
 from apps.shared.services.llm_client.anthropic_client import AnthropicClient
-from apps.shared.services.llm_client.base import ProviderInvocationError
+from apps.shared.services.llm_client.base import (
+    BaseLLMClient,
+    ProviderFailurePhase,
+    ProviderInvocationError,
+)
 from apps.shared.services.llm_client.google_client import GoogleClient
 from apps.shared.services.llm_client.openai_client import OpenAIClient
 
@@ -65,6 +70,16 @@ def test_llm_client_builds_guarded_sync_and_async_transports() -> None:
     assert isinstance(async_options["transport"], GuardedAsyncHttpTransport)
 
     sync_options["transport"].close()
+
+
+def test_response_rejection_preserves_outcome_unknown_phase() -> None:
+    with pytest.raises(ProviderInvocationError) as captured:
+        BaseLLMClient._raise_provider_transport_error(
+            EgressResponseRejectedError("egress.response_too_large")
+        )
+
+    assert captured.value.reason_code == "provider_response_rejected"
+    assert captured.value.failure_phase is ProviderFailurePhase.OUTCOME_UNKNOWN
 
 
 def test_openai_structured_error_does_not_expose_provider_message() -> None:

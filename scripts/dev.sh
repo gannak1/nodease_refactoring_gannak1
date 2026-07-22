@@ -7,6 +7,7 @@ set -e
 
 export PYTHONUTF8=1
 export PYTHONIOENCODING=utf-8
+export NODE_ENV=development
 
 # 색상 정의
 RED='\033[0;31m'

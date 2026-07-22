@@ -970,6 +970,9 @@ class WorkflowEngine:
             "error_type": type(error).__name__,
             "error_code": safe_error_code,
         }
+        failure_phase = getattr(error, "failure_phase", None)
+        if failure_phase in {"before_send", "response_received", "outcome_unknown"}:
+            metadata["error"]["failure_phase"] = failure_phase
         if started_at and finished_at:
             metadata["latency_ms"] = int(
                 (finished_at - started_at).total_seconds() * 1000

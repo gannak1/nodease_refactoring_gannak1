@@ -1074,6 +1074,116 @@ def test_openai_billable_response_validation_error_skips_legacy_fallback(
     }
 
 
+def test_openai_legacy_model_falls_back_only_when_responses_endpoint_is_missing():
+    client = OpenAIClient(
+        model_id="text-davinci-example",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+    requested_urls: list[str] = []
+
+    class LegacyClient:
+        def post(self, url, **_kwargs):
+            requested_urls.append(url)
+            if url.endswith("/responses"):
+                return httpx.Response(
+                    404,
+                    text="<html>endpoint not found</html>",
+                    headers={"content-type": "text/html"},
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"text": "legacy response", "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+                },
+            )
+
+    result = client._invoke_non_chat_model_sync(
+        LegacyClient(),
+        payload={"model": "text-davinci-example"},
+        messages=[{"role": "user", "content": "hello"}],
+        timeout_seconds=60,
+    )
+
+    assert requested_urls == [
+        "https://api.openai.com/v1/responses",
+        "https://api.openai.com/v1/completions",
+    ]
+    assert result["choices"][0]["message"]["content"] == "legacy response"
+
+
+@pytest.mark.asyncio
+async def test_openai_async_legacy_model_falls_back_when_responses_endpoint_is_missing():
+    client = OpenAIClient(
+        model_id="text-davinci-example",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+    requested_urls: list[str] = []
+
+    class LegacyAsyncClient:
+        async def post(self, url, **_kwargs):
+            requested_urls.append(url)
+            if url.endswith("/responses"):
+                return httpx.Response(
+                    404,
+                    text="endpoint not found",
+                    headers={"content-type": "text/plain"},
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"text": "legacy response", "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+                },
+            )
+
+    result = await client._handle_not_chat_model(
+        LegacyAsyncClient(),
+        payload={"model": "text-davinci-example"},
+        messages=[{"role": "user", "content": "hello"}],
+        error_text="not a chat model; use completions",
+    )
+
+    assert requested_urls == [
+        "https://api.openai.com/v1/responses",
+        "https://api.openai.com/v1/completions",
+    ]
+    assert result["choices"][0]["message"]["content"] == "legacy response"
+
+
+def test_openai_legacy_model_does_not_fallback_on_structured_provider_error():
+    client = OpenAIClient(
+        model_id="text-davinci-example",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+    requested_urls: list[str] = []
+
+    class StructuredErrorClient:
+        def post(self, url, **_kwargs):
+            requested_urls.append(url)
+            return httpx.Response(
+                404,
+                json={
+                    "error": {
+                        "message": "redacted by the client boundary",
+                        "code": "model_not_found",
+                    }
+                },
+            )
+
+    with pytest.raises(ProviderInvocationError) as captured:
+        client._invoke_non_chat_model_sync(
+            StructuredErrorClient(),
+            payload={"model": "text-davinci-example"},
+            messages=[{"role": "user", "content": "hello"}],
+            timeout_seconds=60,
+        )
+
+    assert requested_urls == ["https://api.openai.com/v1/responses"]
+    assert captured.value.provider_error_code == "model_not_found"
+    assert "redacted by the client boundary" not in str(captured.value)
+
+
 def test_openai_invoke_sync_chat_model_uses_sync_http_client(monkeypatch):
     """Gevent worker의 chat model 호출은 공유 asyncio loop를 만들지 않는다."""
     requests = []

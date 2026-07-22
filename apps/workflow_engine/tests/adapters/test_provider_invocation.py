@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import pytest
 
+from apps.shared.services.llm_client.base import (
+    ProviderFailurePhase,
+    ProviderInvocationError,
+)
 from apps.workflow_engine.adapters.provider_invocation import (
     ProviderClientInvocationLease,
 )
 from apps.workflow_engine.application.provider_execution import (
     ProviderExecutionConfigurationError,
+    ProviderInvocationOutcomeUnknownError,
 )
 
 
@@ -17,6 +22,15 @@ class _Client:
     def invoke_sync(self, *, messages, **parameters):
         self.calls.append({"messages": messages, "parameters": parameters})
         return {"choices": [{"message": {"content": "ok"}}]}
+
+
+class _OutcomeUnknownClient:
+    def invoke_sync(self, *, messages, **parameters):
+        raise ProviderInvocationError(
+            "Provider response rejected.",
+            reason_code="provider_response_rejected",
+            failure_phase=ProviderFailurePhase.OUTCOME_UNKNOWN,
+        )
 
 
 def test_invocation_lease_seals_request_and_allows_only_one_attempt():
@@ -44,3 +58,17 @@ def test_invocation_lease_seals_request_and_allows_only_one_attempt():
     with pytest.raises(ProviderExecutionConfigurationError):
         lease.invoke()
     assert len(client.calls) == 1
+
+
+def test_invocation_lease_translates_outcome_unknown_to_application_error():
+    lease = ProviderClientInvocationLease(
+        client=_OutcomeUnknownClient(),
+        messages=({"role": "user", "content": "synthetic"},),
+        parameters={},
+        attribution=None,
+    )
+
+    with pytest.raises(ProviderInvocationOutcomeUnknownError) as captured:
+        lease.invoke()
+
+    assert captured.value.failure_phase == "outcome_unknown"

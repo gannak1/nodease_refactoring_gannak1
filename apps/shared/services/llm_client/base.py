@@ -5,11 +5,13 @@ LLM 클라이언트의 공통 인터페이스.
 """
 
 from abc import ABC, abstractmethod
+from enum import Enum
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 import httpx
 from apps.shared.services.egress_guard import EgressGuardError
 from apps.shared.services.guarded_http_transport import (
+    EgressResponseRejectedError,
     GuardedAsyncHttpTransport,
     GuardedHttpTransport,
 )
@@ -51,6 +53,12 @@ class LLMResponseValidationError(ValueError):
         self.usage: Dict[str, int] | None = _safe_billing_usage(usage)
 
 
+class ProviderFailurePhase(str, Enum):
+    BEFORE_SEND = "before_send"
+    RESPONSE_RECEIVED = "response_received"
+    OUTCOME_UNKNOWN = "outcome_unknown"
+
+
 class ProviderInvocationError(LLMResponseValidationError):
     """Provider 호출 실패를 원문과 분리한 구조화된 진단 정보와 함께 전달한다."""
 
@@ -63,6 +71,7 @@ class ProviderInvocationError(LLMResponseValidationError):
         provider_error_code: str | None = None,
         provider_error_param: str | None = None,
         provider_response_status: str | None = None,
+        failure_phase: ProviderFailurePhase | None = None,
         usage: Any = None,
     ) -> None:
         super().__init__(message, usage=usage)
@@ -71,6 +80,11 @@ class ProviderInvocationError(LLMResponseValidationError):
         self.provider_error_code = provider_error_code
         self.provider_error_param = provider_error_param
         self.provider_response_status = provider_response_status
+        self.failure_phase = failure_phase
+
+
+class ProviderEndpointUnsupportedError(ProviderInvocationError):
+    """A redacted, explicit signal that a provider endpoint is unavailable."""
 
 
 class BaseLLMClient(ABC):
@@ -122,15 +136,32 @@ class BaseLLMClient(ABC):
 
     @staticmethod
     def _raise_provider_transport_error(exc: BaseException) -> None:
-        if isinstance(exc, EgressGuardError):
+        if isinstance(exc, EgressResponseRejectedError):
+            reason_code = "provider_response_rejected"
+            failure_phase = ProviderFailurePhase.OUTCOME_UNKNOWN
+        elif isinstance(exc, EgressGuardError):
             reason_code = "provider_egress_denied"
+            failure_phase = ProviderFailurePhase.BEFORE_SEND
+        elif isinstance(
+            exc,
+            (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout),
+        ):
+            reason_code = (
+                "provider_timeout"
+                if isinstance(exc, (httpx.ConnectTimeout, httpx.PoolTimeout))
+                else "provider_connection_failed"
+            )
+            failure_phase = ProviderFailurePhase.BEFORE_SEND
         elif isinstance(exc, httpx.TimeoutException):
             reason_code = "provider_timeout"
+            failure_phase = ProviderFailurePhase.OUTCOME_UNKNOWN
         else:
             reason_code = "provider_connection_failed"
+            failure_phase = ProviderFailurePhase.OUTCOME_UNKNOWN
         raise ProviderInvocationError(
             "Provider request failed.",
             reason_code=reason_code,
+            failure_phase=failure_phase,
         ) from None
 
     @staticmethod
@@ -146,6 +177,7 @@ class BaseLLMClient(ABC):
             status_code=status_code,
             provider_error_code=provider_error_code,
             provider_error_param=provider_error_param,
+            failure_phase=ProviderFailurePhase.RESPONSE_RECEIVED,
         )
 
     @staticmethod

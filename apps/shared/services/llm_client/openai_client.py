@@ -14,6 +14,8 @@ from apps.shared.services.egress_guard import EgressGuardError
 from .base import (
     BaseLLMClient,
     LLMResponseValidationError,
+    ProviderEndpointUnsupportedError,
+    ProviderFailurePhase,
     ProviderInvocationError,
 )
 
@@ -299,6 +301,7 @@ class OpenAIClient(BaseLLMClient):
                 f"summary={self._summarize_responses_response(data)}",
                 reason_code="responses_incomplete",
                 provider_response_status=response_status,
+                failure_phase=ProviderFailurePhase.RESPONSE_RECEIVED,
                 usage=mapped_usage,
             )
 
@@ -343,6 +346,7 @@ class OpenAIClient(BaseLLMClient):
                 "OpenAI Responses 응답에 사용할 수 있는 텍스트가 없습니다: "
                 f"summary={self._summarize_responses_response(data)}",
                 reason_code="responses_empty_text",
+                failure_phase=ProviderFailurePhase.RESPONSE_RECEIVED,
                 usage=mapped_usage,
             )
 
@@ -638,9 +642,7 @@ class OpenAIClient(BaseLLMClient):
                 messages=messages,
                 timeout_seconds=timeout_seconds,
             )
-        except LLMResponseValidationError:
-            raise
-        except ValueError:
+        except ProviderEndpointUnsupportedError:
             if not self._should_try_legacy_completions():
                 raise
 
@@ -680,6 +682,13 @@ class OpenAIClient(BaseLLMClient):
                 responses_data = {}
             if self._has_error_response(responses_data):
                 self._raise_error_response(responses_data, responses_resp.status_code)
+            if responses_resp.status_code in {404, 405}:
+                raise ProviderEndpointUnsupportedError(
+                    "Provider endpoint is unavailable.",
+                    reason_code="provider_endpoint_unsupported",
+                    status_code=responses_resp.status_code,
+                    failure_phase=ProviderFailurePhase.RESPONSE_RECEIVED,
+                )
             self._raise_provider_http_error(responses_resp.status_code)
 
         try:
@@ -792,10 +801,9 @@ class OpenAIClient(BaseLLMClient):
                 messages=messages,
                 timeout_seconds=timeout_seconds,
             )
-        except LLMResponseValidationError:
-            raise
-        except ValueError:
-            pass
+        except ProviderEndpointUnsupportedError:
+            if not self._should_try_legacy_completions():
+                raise
 
         if "completions" in error_text and self._should_try_legacy_completions():
             completion_payload = dict(payload)
@@ -835,6 +843,7 @@ class OpenAIClient(BaseLLMClient):
                 f"{self.provider_name} 호출 실패: Unknown error",
                 reason_code="provider_http_error",
                 status_code=status_code,
+                failure_phase=ProviderFailurePhase.RESPONSE_RECEIVED,
             )
         self._raise_provider_http_error(
             status_code or 500,

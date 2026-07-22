@@ -40,6 +40,10 @@ def test_llm_node_depends_on_provider_application_port_not_capability_service():
 
     assert "apps.shared.services.provider_execution_capability" not in imported_modules
     assert "apps.shared.domain.provider_execution_capability" not in imported_modules
+    assert not any(
+        module.startswith("apps.shared.services.llm_client")
+        for module in imported_modules
+    )
     assert "apps.workflow_engine.composition.provider_execution" not in imported_modules
     assert not any(
         module.startswith("apps.workflow_engine.adapters.provider_")

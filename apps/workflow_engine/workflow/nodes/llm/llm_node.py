@@ -77,6 +77,7 @@ from apps.workflow_engine.application.provider_execution import (
     ProviderExecutionPreflight,
     ProviderExecutionRequest,
     ProviderExecutionRuntime,
+    ProviderInvocationOutcomeUnknownError,
 )
 from apps.workflow_engine.application.provider_usage import (
     ProviderUsageRecord,
@@ -101,7 +102,10 @@ from apps.workflow_engine.services.model_routing_judge_first_policy import (
     select_runtime_judge_model_id,
 )
 from apps.workflow_engine.services.retrieval import RetrievalService
-from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
+from apps.workflow_engine.workflow.errors import (
+    NonRetryableWorkflowError,
+    ProviderOutcomeUnknownWorkflowError,
+)
 
 from ..base.node import Node
 from .entities import (
@@ -1649,6 +1653,8 @@ class LLMNode(Node[LLMNodeData]):
             used_model_id = selected_model_id
             try:
                 response = provider_lease.invoke()
+            except ProviderInvocationOutcomeUnknownError as primary_error:
+                raise ProviderOutcomeUnknownWorkflowError() from primary_error
             except Exception as primary_error:
                 if not fallback_model_id:
                     raise

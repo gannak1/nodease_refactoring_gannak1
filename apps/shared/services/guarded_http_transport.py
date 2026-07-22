@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import time
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import suppress
 
 import httpcore
@@ -18,8 +21,29 @@ class EgressResponseRejectedError(EgressGuardError):
     """A sanitized guard rejection after the remote response was received."""
 
 
+_SYNC_DNS_EXECUTOR = ThreadPoolExecutor(
+    max_workers=10,
+    thread_name_prefix="guarded-http-dns",
+)
+
+
 def _same_address(left: str, right: str) -> bool:
     return ipaddress.ip_address(str(left)) == ipaddress.ip_address(str(right))
+
+
+def _connect_deadline(guard: OutboundEgressGuard, timeout: float | None) -> float:
+    profile_timeout = float(guard.policy.timeout_seconds)
+    effective_timeout = (
+        profile_timeout if timeout is None else min(float(timeout), profile_timeout)
+    )
+    return time.monotonic() + max(0.0, effective_timeout)
+
+
+def _remaining_connect_timeout(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise httpcore.ConnectTimeout
+    return remaining
 
 
 class GuardedNetworkBackend(httpcore.NetworkBackend):
@@ -42,17 +66,26 @@ class GuardedNetworkBackend(httpcore.NetworkBackend):
         local_address: str | None = None,
         socket_options: Iterable[httpcore.SOCKET_OPTION] | None = None,
     ) -> httpcore.NetworkStream:
-        _host, safe_port, target_ips = self._guard.validate_host_port_addresses(
+        deadline = _connect_deadline(self._guard, timeout)
+        resolution = _SYNC_DNS_EXECUTOR.submit(
+            self._guard.validate_host_port_addresses,
             host,
             port,
         )
+        try:
+            _host, safe_port, target_ips = resolution.result(
+                timeout=_remaining_connect_timeout(deadline)
+            )
+        except FutureTimeoutError:
+            resolution.cancel()
+            raise httpcore.ConnectTimeout from None
         last_error: httpcore.ConnectError | httpcore.ConnectTimeout | None = None
         for target_ip in target_ips:
             try:
                 stream = self._backend.connect_tcp(
                     host=target_ip,
                     port=safe_port,
-                    timeout=timeout,
+                    timeout=_remaining_connect_timeout(deadline),
                     local_address=local_address,
                     socket_options=socket_options,
                 )
@@ -106,19 +139,17 @@ class GuardedAsyncNetworkBackend(httpcore.AsyncNetworkBackend):
         local_address: str | None = None,
         socket_options: Iterable[httpcore.SOCKET_OPTION] | None = None,
     ) -> httpcore.AsyncNetworkStream:
+        deadline = _connect_deadline(self._guard, timeout)
         try:
             resolution = asyncio.to_thread(
                 self._guard.validate_host_port_addresses,
                 host,
                 port,
             )
-            if timeout is None:
-                _host, safe_port, target_ips = await resolution
-            else:
-                _host, safe_port, target_ips = await asyncio.wait_for(
-                    resolution,
-                    timeout=timeout,
-                )
+            _host, safe_port, target_ips = await asyncio.wait_for(
+                resolution,
+                timeout=_remaining_connect_timeout(deadline),
+            )
         except TimeoutError as exc:
             raise httpcore.ConnectTimeout from exc
         last_error: httpcore.ConnectError | httpcore.ConnectTimeout | None = None
@@ -127,7 +158,7 @@ class GuardedAsyncNetworkBackend(httpcore.AsyncNetworkBackend):
                 stream = await self._backend.connect_tcp(
                     host=target_ip,
                     port=safe_port,
-                    timeout=timeout,
+                    timeout=_remaining_connect_timeout(deadline),
                     local_address=local_address,
                     socket_options=socket_options,
                 )
@@ -171,7 +202,7 @@ class _CappedSyncStream(httpx.SyncByteStream):
         for chunk in self._stream:
             total += len(chunk)
             if total > self._max_bytes:
-                raise EgressGuardError("egress.response_too_large")
+                raise EgressResponseRejectedError("egress.response_too_large")
             yield chunk
 
     def close(self) -> None:
@@ -188,7 +219,7 @@ class _CappedAsyncStream(httpx.AsyncByteStream):
         async for chunk in self._stream:
             total += len(chunk)
             if total > self._max_bytes:
-                raise EgressGuardError("egress.response_too_large")
+                raise EgressResponseRejectedError("egress.response_too_large")
             yield chunk
 
     async def aclose(self) -> None:

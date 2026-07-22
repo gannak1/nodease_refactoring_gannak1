@@ -43,7 +43,10 @@ from apps.shared.domain.workflow_knowledge_references import (  # noqa: E402
     WorkflowKnowledgeReferenceError,
 )
 from apps.shared.schemas.rag import ChunkPreview  # noqa: E402
-from apps.shared.services.llm_client.base import ProviderInvocationError  # noqa: E402
+from apps.shared.services.llm_client.base import (  # noqa: E402
+    ProviderFailurePhase,
+    ProviderInvocationError,
+)
 from apps.shared.services.rag_evidence_policy import RAGEvidenceDecision  # noqa: E402
 from apps.shared.services.retrieval_embedding_model_projection import (  # noqa: E402
     EmbeddingModelBinding,
@@ -160,6 +163,21 @@ class IncompleteResponsesClient:
             "OpenAI Responses 응답이 완료되지 않았습니다: status=incomplete",
             reason_code="responses_incomplete",
             provider_response_status="incomplete",
+        )
+
+
+class OutcomeUnknownClient:
+    """Provider가 요청을 처리했을 수 있지만 응답 검증에 실패한 상황을 재현한다."""
+
+    def __init__(self):
+        self.calls = []
+
+    def invoke_sync(self, messages, **kwargs):
+        self.calls.append({"messages": messages, "kwargs": kwargs})
+        raise ProviderInvocationError(
+            "Provider response rejected.",
+            reason_code="provider_response_rejected",
+            failure_phase=ProviderFailurePhase.OUTCOME_UNKNOWN,
         )
 
 
@@ -1638,6 +1656,51 @@ def test_llm_node_uses_fallback_model_on_failure(monkeypatch):
         {"model_id": "primary-model", "organization_id": organization_id},
         {"model_id": "fallback-model", "organization_id": organization_id},
     ]
+
+
+def test_llm_node_does_not_fallback_after_provider_outcome_is_unknown(monkeypatch):
+    primary_client = OutcomeUnknownClient()
+    fallback_client = SuccessClient()
+    organization_id = uuid.uuid4()
+    service_calls: list[str] = []
+
+    def fake_get_runtime_client_for_user(db, user_id, model_id, organization_id=None):
+        service_calls.append(model_id)
+        client = primary_client if model_id == "primary-model" else fallback_client
+        return SimpleNamespace(
+            client=client,
+            credential_id=uuid.uuid4(),
+            model_id=model_id,
+            organization_id=organization_id,
+        )
+
+    monkeypatch.setattr(
+        LLMService, "get_runtime_client_for_user", fake_get_runtime_client_for_user
+    )
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="primary-model",
+            fallback_model_id="fallback-model",
+            system_prompt="sys",
+            user_prompt="user",
+            parameters={},
+        ),
+        execution_context={
+            "user_id": str(uuid.uuid4()),
+            "organization_id": str(organization_id),
+            "db": object(),
+        },
+    )
+
+    with pytest.raises(NonRetryableWorkflowError, match="provider_outcome_unknown"):
+        node.execute({})
+
+    assert primary_client.calls
+    assert fallback_client.calls == []
+    assert service_calls == ["primary-model"]
 
 
 def test_llm_node_records_safe_responses_failure_category_before_fallback(monkeypatch):
