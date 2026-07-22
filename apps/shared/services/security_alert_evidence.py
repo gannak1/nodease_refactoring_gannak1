@@ -4,10 +4,9 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy.dialects.postgresql import insert
-
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.security_alert import SecurityAlert, SecurityAlertAuditEvent
+from sqlalchemy.dialects.postgresql import insert
 
 _ACTIVE_STATUSES = frozenset({"open", "acknowledged"})
 

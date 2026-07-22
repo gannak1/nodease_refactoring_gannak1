@@ -1,9 +1,8 @@
-from sqlalchemy import CheckConstraint, ForeignKeyConstraint, UniqueConstraint
-from sqlalchemy.dialects.postgresql import JSONB
-
 from apps.shared.db.models import LLMNodeVersion
 from apps.shared.db.models.app import App
 from apps.shared.db.models.workflow import Workflow
+from sqlalchemy import CheckConstraint, ForeignKeyConstraint, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 
 
 def test_llm_node_version_model_contract():

@@ -1,9 +1,8 @@
 from decimal import Decimal
 
 import pytest
-from pydantic import ValidationError
-
 from apps.shared.schemas.workflow_budget import WorkflowBudgetUpsertRequest
+from pydantic import ValidationError
 
 
 def test_workflow_budget_upsert_request_rejects_numeric_12_2_overflow():

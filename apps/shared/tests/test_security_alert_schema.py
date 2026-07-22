@@ -2,14 +2,13 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError
-
 from apps.shared.schemas.security_alert import (
     SecurityAlertAcknowledgeRequest,
     SecurityAlertDetail,
     SecurityAlertResolveRequest,
     SecurityAlertSummaryResponse,
 )
+from pydantic import ValidationError
 
 
 def _detail_payload() -> dict:

@@ -1,9 +1,8 @@
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError
-
 from apps.shared.schemas.deployment import AuthenticatedDeploymentRunRequest
+from pydantic import ValidationError
 
 
 def test_authenticated_deployment_run_request_separates_conversation_control():

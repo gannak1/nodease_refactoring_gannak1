@@ -1,6 +1,5 @@
 from typing import Any
 
-
 SOURCE_TIER_PRIORITY: dict[str, int] = {
     "legal": 100,
     "legal_regulation": 100,

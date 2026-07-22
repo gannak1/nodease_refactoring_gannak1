@@ -9,12 +9,12 @@ Create Date: 2026-07-10 00:00:00.000000
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
-from sqlalchemy.dialects import postgresql
-
 from apps.shared.alembic.schedule_dispatch_downgrade import (
     assert_schedule_dispatch_downgrade_is_safe,
 )
+from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision: str = "fa8b9c0d1e23"
 down_revision: Union[str, Sequence[str], None] = "fa7b8c9d0e12"

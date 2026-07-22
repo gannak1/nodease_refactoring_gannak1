@@ -2,10 +2,9 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 from apps.shared.db.models.audit_log import ActorType, AuditCategory, AuditStatus
 from apps.shared.schemas.member_access import normalize_management_reason
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SecurityAlertRuleId = Literal[
     "repeated_permission_denied",

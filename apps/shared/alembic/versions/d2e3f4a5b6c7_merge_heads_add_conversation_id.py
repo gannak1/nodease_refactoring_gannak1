@@ -12,6 +12,7 @@ workflow_runs.conversation_id 컬럼 추가. 동시에 기존 두 마이그레�
 from typing import Sequence, Union
 
 import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers, used by Alembic.

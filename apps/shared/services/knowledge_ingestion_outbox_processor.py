@@ -2,8 +2,6 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy.orm import Session
-
 from apps.shared.db.models.knowledge import (
     DocumentChunk,
     DocumentVersion,
@@ -15,6 +13,7 @@ from apps.shared.services.knowledge_ingestion_outbox import (
     OUTBOX_EVENT_CLEANUP_SUPERSEDED,
     KnowledgeIngestionOutboxService,
 )
+from sqlalchemy.orm import Session
 
 
 @dataclass(frozen=True)

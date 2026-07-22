@@ -3,10 +3,9 @@ import uuid
 from dataclasses import dataclass
 from typing import Optional
 
-from sqlalchemy.orm import Session
-
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_run import WorkflowRun
+from sqlalchemy.orm import Session
 
 
 @dataclass(frozen=True)

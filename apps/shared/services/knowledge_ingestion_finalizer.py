@@ -3,21 +3,19 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func
-from sqlalchemy.orm import Session
-
 from apps.shared.db.models.knowledge import (
     Document,
     DocumentChunk,
     DocumentVersion,
     KnowledgeBase,
 )
+from apps.shared.services.knowledge_ingestion_fencing import KnowledgeIngestionFencing
 from apps.shared.services.knowledge_ingestion_outbox import (
     OUTBOX_EVENT_CLEANUP_SUPERSEDED,
     KnowledgeIngestionOutboxService,
 )
-from apps.shared.services.knowledge_ingestion_fencing import KnowledgeIngestionFencing
-
+from sqlalchemy import func
+from sqlalchemy.orm import Session
 
 DEFAULT_PROCESSING_POLICY_VERSION = "knowledge-ingestion-v1"
 

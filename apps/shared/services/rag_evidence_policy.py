@@ -3,7 +3,6 @@ from typing import Any, Iterable
 
 from apps.shared.schemas.rag import ChunkPreview, RAGCitation
 
-
 MINIMUM_EVIDENCE_POLICY = "minimum_evidence"
 STRICT_CITATION_POLICY = "strict_citation"
 DEFAULT_MIN_EVIDENCE_SCORE = 0.15

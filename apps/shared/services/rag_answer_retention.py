@@ -2,11 +2,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy.orm import Session
-
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.knowledge import RAGAnswerRun
+from sqlalchemy.orm import Session
 
 DEFAULT_RAG_ANSWER_PURGE_LIMIT = 1000
 MAX_RAG_ANSWER_PURGE_LIMIT = 5000

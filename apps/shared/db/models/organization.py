@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
+from apps.shared.db.base import Base
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -13,8 +14,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-
-from apps.shared.db.base import Base
 
 if TYPE_CHECKING:
     from apps.shared.db.models.organization_membership import OrganizationMembership

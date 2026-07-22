@@ -166,12 +166,29 @@ def test_policy_uses_runtime_judge_first_then_local_router(monkeypatch):
     monkeypatch.setattr(
         MultilingualE5TaskRequirementClassifier, "predict", lambda *_args, **_kwargs: _Prediction()
     )
+    selection_calls: list[list[str]] = []
+
+    def _select_available_candidate(
+        _cls,
+        *,
+        candidate_model_ids,
+        **_kwargs,
+    ):
+        candidates = list(candidate_model_ids)
+        selection_calls.append(candidates)
+        return candidates[0]
+
+    monkeypatch.setattr(
+        ModelRouter,
+        "select_candidate_for_requirements",
+        classmethod(_select_available_candidate),
+    )
     policy["learner"] = {
         "mode": "local_first",
         "local_confidence_threshold": 0.78,
         "local_requirement_artifact": {
             "kind": "multilingual_e5_task_requirements_ordinal_v2",
-                "feature_schema_version": TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
+            "feature_schema_version": TASK_REQUIREMENT_FEATURE_SCHEMA_VERSION,
         },
     }
     local = ModelRouter.resolve_policy(
@@ -181,6 +198,7 @@ def test_policy_uses_runtime_judge_first_then_local_router(monkeypatch):
         available_model_ids=["gpt-4o-mini", "gpt-5-mini"],
         routing_feature_text="짧은 문의",
     )
-    assert local.selected_model_id == "gpt-4o-mini"
+    assert selection_calls == [["gpt-4o-mini", "gpt-5-mini"]]
+    assert local.selected_model_id == selection_calls[0][0]
     assert local.decision_source == "local_router"
     assert local.requires_runtime_judge is False

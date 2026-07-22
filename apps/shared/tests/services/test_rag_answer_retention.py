@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-
 from apps.shared.audit.actions import AuditAction
 from apps.shared.services import rag_answer_retention as retention_module
 from apps.shared.services.rag_answer_retention import RAGAnswerRetentionService

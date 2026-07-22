@@ -2,11 +2,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+from apps.shared.db.base import Base
 from sqlalchemy import DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
-
-from apps.shared.db.base import Base
 
 
 class Workflow(Base):
