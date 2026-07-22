@@ -70,8 +70,8 @@ def _snapshot() -> ProviderUsageIntentSnapshot:
         relation_revision="b" * 64,
         egress_revision="c" * 64,
         pricing_revision="d" * 64,
-        input_price_per_1k="0.100000000",
-        output_price_per_1k="0.200000000",
+        input_price_per_1k="0.100000",
+        output_price_per_1k="0.200000",
         input_token_cap=1_000,
         output_token_cap=100,
         cost_cap_microusd=50_000,
@@ -493,6 +493,8 @@ def test_projection_attaches_a_late_exact_workflow_and_run() -> None:
     assert projected.workflow_run_id == run_id
     assert run.total_tokens == 15
     assert run.total_cost == Decimal("0.002")
+    assert db.workflow_run_query is not None
+    assert db.workflow_run_query.lock_calls == ["populate_existing", "with_for_update"]
 
 
 def test_projection_rejects_a_run_from_a_different_workflow_organization() -> None:
@@ -628,14 +630,17 @@ class _BatchDb:
 class _OneQuery:
     def __init__(self, value):
         self.value = value
+        self.lock_calls = []
 
     def filter(self, *_args):
         return self
 
     def populate_existing(self):
+        self.lock_calls.append("populate_existing")
         return self
 
     def with_for_update(self, **_kwargs):
+        self.lock_calls.append("with_for_update")
         return self
 
     def one_or_none(self):
@@ -664,6 +669,7 @@ class _ProjectionDb:
         self.added = []
         self.commits = 0
         self.rollbacks = 0
+        self.workflow_run_query = None
 
     def query(self, model):
         if model is ProviderUsageOperationRecord:
@@ -671,7 +677,8 @@ class _ProjectionDb:
         if model is LLMUsageLog:
             return _OneQuery(self.usage)
         if model is WorkflowRun:
-            return _OneQuery(self.workflow_run)
+            self.workflow_run_query = _OneQuery(self.workflow_run)
+            return self.workflow_run_query
         raise AssertionError(f"unexpected query model: {model}")
 
     def get(self, model, reference_id):

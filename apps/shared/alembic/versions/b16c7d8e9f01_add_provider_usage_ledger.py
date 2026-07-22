@@ -341,7 +341,22 @@ def upgrade() -> None:
     )
 
 
+def _require_empty_canonical_ledger_for_downgrade() -> None:
+    connection = op.get_bind()
+    connection.execute(
+        sa.text("LOCK TABLE provider_usage_operations IN ACCESS EXCLUSIVE MODE")
+    )
+    has_canonical_rows = connection.execute(
+        sa.text("SELECT EXISTS (SELECT 1 FROM provider_usage_operations)")
+    ).scalar_one()
+    if has_canonical_rows:
+        raise RuntimeError(
+            "provider usage ledger downgrade requires an empty canonical ledger"
+        )
+
+
 def downgrade() -> None:
+    _require_empty_canonical_ledger_for_downgrade()
     op.drop_constraint(
         "llm_usage_logs_workflow_id_fkey",
         "llm_usage_logs",

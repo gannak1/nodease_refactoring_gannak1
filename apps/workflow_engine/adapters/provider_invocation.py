@@ -12,6 +12,7 @@ from apps.shared.services.llm_client.base import (
 from apps.workflow_engine.application.provider_execution import (
     ProviderExecutionAttribution,
     ProviderExecutionConfigurationError,
+    ProviderInvocationNotSentError,
     ProviderInvocationOutcomeUnknownError,
 )
 
@@ -69,6 +70,8 @@ class ProviderClientInvocationLease:
         except ProviderInvocationError as exc:
             if exc.failure_phase is ProviderFailurePhase.OUTCOME_UNKNOWN:
                 raise ProviderInvocationOutcomeUnknownError() from exc
+            if exc.failure_phase is ProviderFailurePhase.BEFORE_SEND:
+                raise ProviderInvocationNotSentError() from exc
             raise
 
 

@@ -20,6 +20,25 @@ from apps.shared.domain.provider_execution_capability import (
     RuntimeIdentityContext,
 )
 
+_LEDGER_PRICE_QUANTUM = Decimal("0.000000001")
+_LEDGER_PRICE_MAX = Decimal("99999999999.999999999")
+
+
+def _canonical_ledger_price(value: str, *, name: str) -> str:
+    try:
+        price = Decimal(value)
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a non-negative decimal") from exc
+    if not price.is_finite() or price < 0:
+        raise ValueError(f"{name} must be a non-negative decimal")
+    try:
+        canonical = price.quantize(_LEDGER_PRICE_QUANTUM)
+    except InvalidOperation as exc:
+        raise ValueError(f"{name} does not fit the ledger price column") from exc
+    if canonical != price or canonical > _LEDGER_PRICE_MAX:
+        raise ValueError(f"{name} does not fit the ledger price column")
+    return format(canonical, "f")
+
 
 class ProviderUsageState(str, Enum):
     INTENT = "intent"
@@ -118,12 +137,11 @@ class ProviderUsageIntentSnapshot:
             (self.input_price_per_1k, "input_price_per_1k"),
             (self.output_price_per_1k, "output_price_per_1k"),
         ):
-            try:
-                price = Decimal(value)
-            except (InvalidOperation, ValueError) as exc:
-                raise ValueError(f"{name} must be a non-negative decimal") from exc
-            if not price.is_finite() or price < 0:
-                raise ValueError(f"{name} must be a non-negative decimal")
+            object.__setattr__(
+                self,
+                name,
+                _canonical_ledger_price(value, name=name),
+            )
         integer_values = (
             self.input_token_cap,
             self.output_token_cap,

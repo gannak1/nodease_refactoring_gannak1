@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, BrokenBarrierError
 
 import pytest
 from alembic.config import Config
@@ -61,11 +61,11 @@ DB_PREFIX = "mbased_provider_usage"
 NOW = datetime(2026, 7, 22, tzinfo=timezone.utc)
 
 
-def _run_alembic(
+def _alembic_returncode(
     *args: str,
     database: str,
     config: DisposablePostgresConfig,
-) -> None:
+) -> int:
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "-c", "apps/shared/alembic.ini", *args],
         cwd=ROOT_DIR,
@@ -77,9 +77,18 @@ def _run_alembic(
         timeout=180,
         check=False,
     )
-    if result.returncode != 0:
-        returncode = result.returncode
-        del result
+    returncode = result.returncode
+    del result
+    return returncode
+
+
+def _run_alembic(
+    *args: str,
+    database: str,
+    config: DisposablePostgresConfig,
+) -> None:
+    returncode = _alembic_returncode(*args, database=database, config=config)
+    if returncode != 0:
         pytest.fail(
             f"alembic command failed with exit code {returncode}; "
             "stdout/stderr omitted to protect configuration"
@@ -138,6 +147,14 @@ def provider_usage_postgres():
         engine = create_engine(config.database_url(database))
         yield engine
 
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "DELETE FROM llm_usage_logs "
+                    "WHERE provider_usage_operation_id IS NOT NULL"
+                )
+            )
+            connection.execute(text("DELETE FROM provider_usage_operations"))
         engine.dispose()
         engine = None
         _run_alembic(
@@ -259,6 +276,47 @@ def _snapshot(
         admitted_output_tokens=50,
         expires_at=NOW + timedelta(minutes=5),
     )
+
+
+def test_downgrade_refuses_to_drop_a_nonempty_canonical_ledger(
+    provider_usage_postgres,
+) -> None:
+    engine = provider_usage_postgres
+    user_id, organization_id = _seed_tenant(engine)
+    operation = ProviderUsageOperation.intent(
+        operation_id=uuid.uuid4(),
+        snapshot=_snapshot(
+            organization_id=organization_id,
+            credential_principal_id=user_id,
+        ),
+        now=NOW,
+    )
+    record = ProviderUsageLedgerService._record_from_operation(  # noqa: SLF001
+        operation,
+        workflow_run_id=None,
+        cost_optimizer_candidate_id=None,
+    )
+    with Session(engine) as db:
+        db.add(record)
+        db.commit()
+
+    config = DisposablePostgresConfig.from_environment()
+    database = str(engine.url.database)
+    returncode = _alembic_returncode(
+        "downgrade",
+        _provider_usage_parent_revision(),
+        database=database,
+        config=config,
+    )
+
+    assert returncode != 0
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT to_regclass('provider_usage_operations') IS NOT NULL")
+        ).scalar_one()
+        assert connection.execute(
+            text("SELECT EXISTS (SELECT 1 FROM provider_usage_operations)")
+        ).scalar_one()
 
 
 def test_canonical_attempt_is_unique_without_live_control_resource_fks(
@@ -669,3 +727,124 @@ def test_late_workflow_run_is_claimed_and_attached_once(
         assert projected.workflow_run_id is None
         assert Decimal(projected.total_cost) == Decimal("0.002000")
         assert ledger.total_cost_microusd == 2_000
+
+
+def test_concurrent_projections_accumulate_one_workflow_run_total(
+    provider_usage_postgres,
+) -> None:
+    engine = provider_usage_postgres
+    user_id, organization_id = _seed_tenant(engine)
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    workflow_run_id = uuid.uuid4()
+    with Session(engine) as db:
+        app = App(
+            id=app_id,
+            organization_id=organization_id,
+            name="Provider Usage Concurrent Projection",
+            description=None,
+            icon=None,
+            url_slug=f"provider-usage-{app_id.hex}",
+            auth_secret=None,
+            created_by=user_id,
+        )
+        db.add(app)
+        db.flush()
+        workflow = Workflow(
+            id=workflow_id,
+            organization_id=organization_id,
+            app_id=app_id,
+            graph={},
+            features={},
+            env_variables=[],
+            runtime_variables=[],
+            created_by=user_id,
+        )
+        db.add(workflow)
+        db.flush()
+        app.workflow_id = workflow_id
+        db.add(
+            WorkflowRun(
+                id=workflow_run_id,
+                workflow_id=workflow_id,
+                user_id=user_id,
+                app_id=app_id,
+                status=RunStatus.RUNNING,
+                trigger_mode=RunTriggerMode.MANUAL,
+                inputs={},
+                started_at=NOW,
+            )
+        )
+        db.commit()
+
+    operation_ids = []
+    for prompt_tokens, completion_tokens, total_cost_microusd in (
+        (10, 5, 2_000),
+        (7, 3, 1_000),
+    ):
+        operation = (
+            ProviderUsageOperation.intent(
+                operation_id=uuid.uuid4(),
+                snapshot=_snapshot(
+                    organization_id=organization_id,
+                    credential_principal_id=user_id,
+                    workflow_id=workflow_id,
+                ),
+                now=NOW,
+            )
+            .mark_provider_started(now=NOW + timedelta(seconds=1))
+            .record_success(
+                measurement=ProviderUsageMeasurement(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_cost_microusd=total_cost_microusd,
+                    latency_ms=42,
+                ),
+                now=NOW + timedelta(seconds=2),
+            )
+        )
+        operation_ids.append(operation.id)
+        with Session(engine) as db:
+            db.add(
+                ProviderUsageLedgerService._record_from_operation(  # noqa: SLF001
+                    operation,
+                    workflow_run_id=workflow_run_id,
+                    cost_optimizer_candidate_id=None,
+                )
+            )
+            db.commit()
+
+    barrier = Barrier(2)
+
+    class CoordinatedProjectionService(ProviderUsageLedgerService):
+        @staticmethod
+        def _apply_run_usage_delta(run, **kwargs) -> None:
+            try:
+                barrier.wait(timeout=2)
+            except BrokenBarrierError:
+                pass
+            ProviderUsageLedgerService._apply_run_usage_delta(run, **kwargs)  # noqa: SLF001
+
+    service = CoordinatedProjectionService()
+
+    def project(operation_id: uuid.UUID) -> None:
+        with Session(engine) as db:
+            service.project_compatibility_usage(
+                db,
+                operation_id=operation_id,
+                now=NOW + timedelta(minutes=1),
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(project, operation_ids))
+
+    with Session(engine) as db:
+        run = db.get(WorkflowRun, workflow_run_id)
+        assert run is not None
+        assert run.total_tokens == 25
+        assert Decimal(run.total_cost) == Decimal("0.003000")
+        assert db.scalar(
+            select(func.count()).select_from(LLMUsageLog).where(
+                LLMUsageLog.provider_usage_operation_id.in_(operation_ids)
+            )
+        ) == 2

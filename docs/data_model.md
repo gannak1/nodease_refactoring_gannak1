@@ -1305,7 +1305,7 @@ Capability-required provider attempt의 canonical token/cost/outcome 원장이�
 | policy_id / policy_revision | UUID / INTEGER | NOT NULL |
 | provider_id / model_id / model_api_id / credential_id | UUID / UUID / VARCHAR(255) / UUID | NOT NULL, live FK가 아닌 safe reference snapshot |
 | permission_revision / relation_revision / egress_revision / pricing_revision | VARCHAR(64) | NOT NULL, SHA-256 revision fingerprint |
-| input_price_per_1k / output_price_per_1k | NUMERIC(20,9) | NOT NULL, admission 시점 immutable pricing |
+| input_price_per_1k / output_price_per_1k | NUMERIC(20,9) | NOT NULL, admission 시점 immutable pricing. Intent 생성 시 정확히 9자리 fixed scale로 정규화하고 반올림 또는 precision 초과가 필요한 값은 거부 |
 | input_token_cap / output_token_cap / cost_cap_microusd | INTEGER / INTEGER / BIGINT | NOT NULL, 0 이상 |
 | admitted_input_tokens / admitted_output_tokens | INTEGER | NOT NULL, 각 capability cap 이하 |
 | execution_subject_kind / execution_subject_id | VARCHAR(32) / UUID | user·anonymous_public·system typed identity |
@@ -1324,9 +1324,11 @@ Capability-required provider attempt의 canonical token/cost/outcome 원장이�
 | audit_event_id | UUID | NULL, post-call terminal에서 deterministic event id 필수·UNIQUE |
 | created_at / updated_at | DATETIME | NOT NULL |
 
-- UNIQUE `(organization_id, provider_attempt_id, purpose)`가 provider attempt identity의 단일 권위다. 같은 key의 replay는 canonical `container_path + node_id`를 포함한 나머지 binding/principal/revision/pricing/cap snapshot이 정확히 같을 때만 기존 operation으로 수렴한다.
+- UNIQUE `(organization_id, provider_attempt_id, purpose)`가 provider attempt identity의 단일 권위다. 같은 key의 replay는 canonical `container_path + node_id`를 포함한 나머지 binding/principal/revision/pricing/cap snapshot이 정확히 같을 때만 기존 operation으로 수렴한다. 가격 비교는 DB round trip 전후가 같은 `NUMERIC(20,9)` fixed-scale canonical 표현을 사용한다.
 - Organization FK 외 control-resource FK를 두지 않는다. Deployment/capability/policy/credential/model/user/WorkflowRun 삭제는 이미 발생한 usage fact를 cascade 삭제하거나 reconciliation을 막지 않는다.
-- `provider_started` 뒤 결과를 확정할 수 없으면 `outcome_unknown`으로 분류하고 provider를 자동 재호출하지 않는다. Stale started row를 정리하는 reconciler도 provider I/O를 수행하지 않는다.
+- `provider_started` 뒤 결과를 확정할 수 없으면 `outcome_unknown`으로 분류하고 provider를 자동 재호출하지 않는다. Typed outcome-unknown은 호출 경로에서 즉시 terminalize하고, typed `before_send`만 `failed_definitive/provider_not_sent`로 닫는다. Stale started row를 정리하는 reconciler도 provider I/O를 수행하지 않는다.
+- 서로 다른 operation의 compatibility projection이 같은 WorkflowRun 합계를 갱신하면 run row를 fresh `FOR UPDATE`로 잠가 token/cost delta를 직렬화한다.
+- Canonical operation이 하나라도 존재하면 migration downgrade는 `ACCESS EXCLUSIVE` lock 아래 fail-closed한다. Downgrade가 projection을 근거로 operation/correction을 삭제하거나 이력 의미를 축소하지 않는다.
 - Raw prompt/completion, request/response/header, credential/config와 raw exception column은 두지 않는다.
 
 #### `provider_usage_corrections`

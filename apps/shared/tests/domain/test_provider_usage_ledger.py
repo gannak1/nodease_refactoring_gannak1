@@ -140,6 +140,34 @@ def test_duplicate_intent_reuses_only_an_exact_snapshot() -> None:
     assert location_exc.value.code == "provider_usage.intent_conflict"
 
 
+def test_intent_prices_use_one_exact_database_scale_for_crash_replay() -> None:
+    snapshot = _snapshot()
+
+    assert snapshot.input_price_per_1k == "0.100000000"
+    assert snapshot.output_price_per_1k == "0.200000000"
+
+    operation = ProviderUsageOperation.intent(
+        operation_id=uuid.uuid4(),
+        snapshot=snapshot,
+        now=NOW,
+    )
+    operation.require_same_intent(
+        replace(
+            snapshot,
+            input_price_per_1k="0.100000000",
+            output_price_per_1k="0.200000000",
+        )
+    )
+
+
+@pytest.mark.parametrize("price", ["0.0000000001", "100000000000"])
+def test_intent_price_rejects_values_the_ledger_column_cannot_store_exactly(
+    price: str,
+) -> None:
+    with pytest.raises(ValueError, match="ledger price"):
+        replace(_snapshot(), input_price_per_1k=price)
+
+
 def test_provider_call_requires_a_durable_start_and_cannot_restart() -> None:
     operation = _operation()
 

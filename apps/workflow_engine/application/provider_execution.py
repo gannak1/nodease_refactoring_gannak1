@@ -32,6 +32,16 @@ class ProviderInvocationOutcomeUnknownError(RuntimeError):
         super().__init__(self.code)
 
 
+class ProviderInvocationNotSentError(RuntimeError):
+    """The provider request definitively did not cross the outbound boundary."""
+
+    code = "provider_not_sent"
+    failure_phase = "before_send"
+
+    def __init__(self) -> None:
+        super().__init__(self.code)
+
+
 class LLMCredentialNotAvailableError(ValueError):
     """Safe provider credential-selection failure with structured attribution."""
 
@@ -370,6 +380,7 @@ __all__ = [
     "ProviderExecutionPurpose",
     "ProviderExecutionRequest",
     "ProviderExecutionRuntime",
+    "ProviderInvocationNotSentError",
     "ProviderInvocationOutcomeUnknownError",
     "ProviderExecutionUsageContext",
     "ProviderInvocationLease",

@@ -77,6 +77,7 @@ from apps.workflow_engine.application.provider_execution import (
     ProviderExecutionPreflight,
     ProviderExecutionRequest,
     ProviderExecutionRuntime,
+    ProviderInvocationNotSentError,
     ProviderInvocationOutcomeUnknownError,
 )
 from apps.workflow_engine.application.provider_usage import (
@@ -1679,17 +1680,28 @@ class LLMNode(Node[LLMNodeData]):
                 except ProviderUsageRuntimeError as exc:
                     raise NonRetryableWorkflowError(exc.code) from exc
 
-            def fail_durable_provider_usage(attempt: Any) -> None:
+            def terminalize_durable_provider_usage(
+                attempt: Any,
+                error: Exception,
+            ) -> str | None:
                 if attempt is None or not attempt.durable:
-                    return
+                    return None
+                definitive = isinstance(error, ProviderInvocationNotSentError)
                 try:
-                    attempt.mark_outcome_unknown(
-                        reason_code="provider_call_failed"
-                    )
-                except ProviderUsageRuntimeError:
-                    pass
-                raise NonRetryableWorkflowError(
-                    "provider_usage.outcome_unknown"
+                    if definitive:
+                        attempt.record_definitive_failure(
+                            reason_code="provider_not_sent"
+                        )
+                    else:
+                        attempt.mark_outcome_unknown(
+                            reason_code="provider_call_failed"
+                        )
+                except ProviderUsageRuntimeError as terminal_error:
+                    return terminal_error.code
+                return (
+                    "provider_usage.failed_definitive"
+                    if definitive
+                    else "provider_usage.outcome_unknown"
                 )
 
             def audit_provider_resolution_failure(
@@ -1766,9 +1778,22 @@ class LLMNode(Node[LLMNodeData]):
             try:
                 response = provider_lease.invoke()
             except ProviderInvocationOutcomeUnknownError as primary_error:
+                terminal_code = terminalize_durable_provider_usage(
+                    provider_usage_attempt,
+                    primary_error,
+                )
+                if terminal_code not in {None, "provider_usage.outcome_unknown"}:
+                    raise NonRetryableWorkflowError(
+                        terminal_code
+                    ) from primary_error
                 raise ProviderOutcomeUnknownWorkflowError() from primary_error
             except Exception as primary_error:
-                fail_durable_provider_usage(provider_usage_attempt)
+                terminal_code = terminalize_durable_provider_usage(
+                    provider_usage_attempt,
+                    primary_error,
+                )
+                if terminal_code is not None:
+                    raise NonRetryableWorkflowError(terminal_code) from primary_error
                 if not fallback_model_id:
                     raise
                 fallback_error_metadata = _safe_provider_failure_metadata(
@@ -1802,9 +1827,25 @@ class LLMNode(Node[LLMNodeData]):
                         fallback_lease.attribution
                     )
                     response = fallback_lease.invoke()
+                except ProviderInvocationOutcomeUnknownError as fallback_error:
+                    terminal_code = terminalize_durable_provider_usage(
+                        fallback_usage_attempt,
+                        fallback_error,
+                    )
+                    if terminal_code not in {None, "provider_usage.outcome_unknown"}:
+                        raise NonRetryableWorkflowError(
+                            terminal_code
+                        ) from fallback_error
+                    raise ProviderOutcomeUnknownWorkflowError() from fallback_error
                 except Exception as fallback_error:
-                    if fallback_usage_attempt is not None:
-                        fail_durable_provider_usage(fallback_usage_attempt)
+                    terminal_code = terminalize_durable_provider_usage(
+                        fallback_usage_attempt,
+                        fallback_error,
+                    )
+                    if terminal_code is not None:
+                        raise NonRetryableWorkflowError(
+                            terminal_code
+                        ) from fallback_error
                     raise fallback_error from primary_error
                 provider_attribution = fallback_lease.attribution
                 provider_usage_attempt = fallback_usage_attempt

@@ -25,6 +25,8 @@ from apps.workflow_engine.application.provider_execution import (
     ProviderExecutionPrincipalKind,
     ProviderExecutionPurpose,
     ProviderExecutionUsageContext,
+    ProviderInvocationNotSentError,
+    ProviderInvocationOutcomeUnknownError,
 )
 from apps.workflow_engine.application.provider_usage import (
     ProviderUsageIntent,
@@ -60,6 +62,16 @@ class _Client:
 class _FailingClient:
     def invoke_sync(self, messages, **kwargs):
         raise TimeoutError("must not be persisted")
+
+
+class _OutcomeUnknownClient:
+    def invoke_sync(self, messages, **kwargs):
+        raise ProviderInvocationOutcomeUnknownError()
+
+
+class _BeforeSendClient:
+    def invoke_sync(self, messages, **kwargs):
+        raise ProviderInvocationNotSentError()
 
 
 
@@ -132,6 +144,9 @@ class _UsageAttempt:
 
     def mark_outcome_unknown(self, *, reason_code: str) -> None:
         self.recorder.events.append(f"unknown:{reason_code}")
+
+    def record_definitive_failure(self, *, reason_code: str) -> None:
+        self.recorder.events.append(f"definitive:{reason_code}")
 
 
 class _UsageRecorder:
@@ -371,6 +386,63 @@ def test_capability_provider_error_is_durable_unknown_and_non_retryable() -> Non
         "start",
         "unknown:provider_call_failed",
     ]
+
+
+@pytest.mark.parametrize(
+    ("client", "expected_events"),
+    [
+        (
+            _OutcomeUnknownClient(),
+            ["intent", "start", "unknown:provider_call_failed"],
+        ),
+        (
+            _BeforeSendClient(),
+            ["intent", "start", "definitive:provider_not_sent"],
+        ),
+    ],
+    ids=("explicit-outcome-unknown", "definitive-before-send"),
+)
+def test_capability_typed_provider_failure_is_terminalized_immediately(
+    client,
+    expected_events: list[str],
+) -> None:
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    attribution = _capability_attribution(
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+        principal_id=uuid.uuid4(),
+    )
+    runtime = _Runtime(client=client, attribution=attribution)
+    usage_recorder = _UsageRecorder()
+    node = _node(
+        context={
+            "provider_execution_capability_required": True,
+            "provider_execution_capability_limits": {
+                "input_token_cap": 10_000,
+                "output_token_cap": 100,
+                "cost_cap_microusd": 50_000,
+            },
+            "deployment_id": str(uuid.uuid4()),
+            "workflow_version": 1,
+            "organization_id": str(organization_id),
+            "workflow_id": str(workflow_id),
+            "execution_subject": {"type": "user", "id": str(uuid.uuid4())},
+        }
+    )
+    node.bind_provider_execution_runtime(runtime)
+    node.bind_provider_usage_recorder(usage_recorder)
+
+    with pytest.raises(NonRetryableWorkflowError):
+        node.execute(
+            {},
+            runtime_control=_control(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+            ),
+        )
+
+    assert usage_recorder.events == expected_events
 
 
 @pytest.mark.parametrize(

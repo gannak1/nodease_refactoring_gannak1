@@ -341,6 +341,15 @@ class _LedgerService:
         )
         return self.operation
 
+    def record_definitive_failure(self, _db, *, reason_code, **_kwargs):
+        self.calls.append(f"definitive:{reason_code}")
+        assert self.operation is not None
+        self.operation = self.operation.record_definitive_failure(
+            reason_code=reason_code,
+            now=datetime.now(timezone.utc),
+        )
+        return self.operation
+
     def project_compatibility_usage(self, _db, **_kwargs):
         self.calls.append("project")
         return object()
@@ -392,6 +401,26 @@ def test_capability_attempt_commits_intent_and_start_before_terminal_usage() -> 
     assert service.calls == ["intent", "start", "success", "project"]
     assert cost == pytest.approx(0.007)
     assert all(session.closes == 1 for session in sessions)
+
+
+def test_capability_attempt_records_definitive_pre_send_failure() -> None:
+    service = _LedgerService()
+    recorder = PostgresProviderUsageRecorder(
+        session_factory=_Session,
+        ledger_service=service,  # type: ignore[arg-type]
+    )
+    attribution = _capability_attribution(
+        organization_id=uuid.uuid4(),
+        model_db_id=uuid.uuid4(),
+        credential_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+    )
+    attempt = recorder.begin(_intent_for(attribution))
+    attempt.mark_provider_started()
+
+    attempt.record_definitive_failure(reason_code="provider_not_sent")
+
+    assert service.calls == ["intent", "start", "definitive:provider_not_sent"]
 
 
 def test_terminal_commit_failure_is_classified_unknown_without_projection() -> None:

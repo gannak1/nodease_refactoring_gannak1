@@ -988,6 +988,8 @@ class ProviderUsageLedgerService:
         run = (
             db.query(WorkflowRun)
             .filter(WorkflowRun.id == record.workflow_run_id)
+            .populate_existing()
+            .with_for_update()
             .one_or_none()
         )
         if run is None:

@@ -11,6 +11,7 @@ from apps.workflow_engine.adapters.provider_invocation import (
 )
 from apps.workflow_engine.application.provider_execution import (
     ProviderExecutionConfigurationError,
+    ProviderInvocationNotSentError,
     ProviderInvocationOutcomeUnknownError,
 )
 
@@ -30,6 +31,15 @@ class _OutcomeUnknownClient:
             "Provider response rejected.",
             reason_code="provider_response_rejected",
             failure_phase=ProviderFailurePhase.OUTCOME_UNKNOWN,
+        )
+
+
+class _BeforeSendClient:
+    def invoke_sync(self, *, messages, **parameters):
+        raise ProviderInvocationError(
+            "Provider request was not sent.",
+            reason_code="provider_request_not_sent",
+            failure_phase=ProviderFailurePhase.BEFORE_SEND,
         )
 
 
@@ -72,3 +82,17 @@ def test_invocation_lease_translates_outcome_unknown_to_application_error():
         lease.invoke()
 
     assert captured.value.failure_phase == "outcome_unknown"
+
+
+def test_invocation_lease_translates_before_send_to_definitive_application_error():
+    lease = ProviderClientInvocationLease(
+        client=_BeforeSendClient(),
+        messages=({"role": "user", "content": "synthetic"},),
+        parameters={},
+        attribution=None,
+    )
+
+    with pytest.raises(ProviderInvocationNotSentError) as captured:
+        lease.invoke()
+
+    assert captured.value.failure_phase == "before_send"

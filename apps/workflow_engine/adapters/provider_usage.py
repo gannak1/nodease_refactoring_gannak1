@@ -69,6 +69,9 @@ class _LegacyProviderUsageAttempt:
     def mark_outcome_unknown(self, *, reason_code: str) -> None:
         return None
 
+    def record_definitive_failure(self, *, reason_code: str) -> None:
+        return None
+
 
 class _LedgerProviderUsageAttempt:
     durable = True
@@ -187,6 +190,29 @@ class _LedgerProviderUsageAttempt:
             )
         except (ProviderUsageLedgerError, ValueError) as exc:
             code = getattr(exc, "code", "provider_usage.outcome_unknown_commit_failed")
+            raise ProviderUsageRuntimeError(code) from exc
+        finally:
+            db.close()
+        self._state_version = operation.state_version
+        self._terminal = True
+
+    def record_definitive_failure(self, *, reason_code: str) -> None:
+        if not self._started or self._terminal:
+            raise ProviderUsageRuntimeError("provider_usage.outcome_not_allowed")
+        db = self._session_factory()
+        try:
+            operation = self._service.record_definitive_failure(
+                db,
+                operation_id=self._operation_id,
+                expected_state_version=self._state_version,
+                reason_code=reason_code,
+            )
+        except (ProviderUsageLedgerError, ValueError) as exc:
+            code = getattr(
+                exc,
+                "code",
+                "provider_usage.terminal_commit_failed",
+            )
             raise ProviderUsageRuntimeError(code) from exc
         finally:
             db.close()
