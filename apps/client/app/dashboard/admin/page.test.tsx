@@ -457,9 +457,11 @@ describe('PermissionsTab 표 기반 권한 부여', () => {
         authState: 'viewer',
       }),
     );
-    expect(
-      screen.queryByRole('dialog', { name: '리소스 권한 부여' }),
-    ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('dialog', { name: '리소스 권한 부여' }),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   it('복수 리소스와 복수 대상을 checkbox로 선택해 한 번에 제출한다', async () => {
