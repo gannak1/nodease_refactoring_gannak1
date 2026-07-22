@@ -14,6 +14,13 @@ from apps.shared.services.notification_pubsub import (
     publish_notifications_changed,
 )
 
+__all__ = [
+    "NOTIFICATION_EVENT_CHANGED",
+    "NotificationService",
+    "notification_channel",
+    "publish_notifications_changed",
+]
+
 
 class NotificationService:
     @staticmethod

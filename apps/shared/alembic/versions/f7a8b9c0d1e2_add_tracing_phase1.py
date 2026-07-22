@@ -6,15 +6,14 @@ Create Date: 2026-06-25 00:00:00.000000
 
 """
 
+import uuid
 from datetime import datetime, timezone
 from typing import Sequence, Union
-import uuid
 
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 from alembic import op
-
 
 revision: str = "f7a8b9c0d1e2"
 down_revision: Union[str, Sequence[str], None] = "2a28cca99a72"

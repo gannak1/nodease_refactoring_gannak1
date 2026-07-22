@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-
 from apps.shared.services.cost_optimizer_retention import (
     CostOptimizerRetentionService,
 )

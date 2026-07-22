@@ -10,10 +10,10 @@ import uuid
 from typing import Any, Iterator, Mapping, Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "9c1d2e3f4a67"

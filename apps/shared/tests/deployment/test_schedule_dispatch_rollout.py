@@ -3,7 +3,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from apps.shared.domain.schedule_dispatch_rollout import (
     ScheduleDispatchRolloutError,
     ScheduleDispatchRolloutState,

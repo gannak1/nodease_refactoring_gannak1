@@ -2,8 +2,6 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError
-
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_AUTH_MANAGER,
     ORGANIZATION_AUTH_MEMBER,
@@ -24,6 +22,7 @@ from apps.shared.schemas.organization_membership import (
     OrganizationSummaryResponse,
     RevokedUserPermissionCounts,
 )
+from pydantic import ValidationError
 
 
 def test_membership_schema_allowed_state_sets_match_db_contract():

@@ -288,8 +288,6 @@ class ConvoyEffectTest(HttpUser):
             if response.status_code == 200:
                 data = response.json()
                 if data.get("success"):
-                    # 응답 시간 로깅 (선택)
-                    exec_time = data.get("execution_time_ms", 0)
                     response.success()
                 else:
                     response.failure(data.get("error", "Unknown error"))
@@ -460,9 +458,6 @@ def on_test_stop(environment, **kwargs):
 # ============================================================
 
 if __name__ == "__main__":
-    import subprocess
-    import sys
-    
     print("Locust를 직접 실행하세요:")
     print(f"  locust -f {__file__} --host=http://localhost:8001")
     print("\n옵션:")

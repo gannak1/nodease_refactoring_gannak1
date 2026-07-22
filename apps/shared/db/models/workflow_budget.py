@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
+from apps.shared.db.base import Base
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -17,8 +18,6 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
-
-from apps.shared.db.base import Base
 
 
 class WorkflowBudget(Base):

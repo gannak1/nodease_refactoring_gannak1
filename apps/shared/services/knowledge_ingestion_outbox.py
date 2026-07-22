@@ -2,13 +2,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import or_
-from sqlalchemy.orm import Session
-
 from apps.shared.db.models.knowledge import (
     KnowledgeIngestionOutbox,
 )
-
+from sqlalchemy import or_
+from sqlalchemy.orm import Session
 
 OUTBOX_STATUS_PENDING = "pending"
 OUTBOX_STATUS_LEASED = "leased"

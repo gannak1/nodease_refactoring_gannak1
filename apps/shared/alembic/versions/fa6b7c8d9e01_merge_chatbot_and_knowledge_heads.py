@@ -8,7 +8,6 @@ Create Date: 2026-07-08 12:00:00.000000
 
 from typing import Sequence, Union
 
-
 revision: str = "fa6b7c8d9e01"
 down_revision: Union[str, Sequence[str], None] = (
     "d3e4f5a6b7c8",

@@ -13,8 +13,8 @@ table definition, and existing databases receive only what is absent.
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
 
+from alembic import op
 
 revision: str = "a6f4d2c8e1b7"
 down_revision: Union[str, Sequence[str], None] = "f1c2d3e4f5a6"

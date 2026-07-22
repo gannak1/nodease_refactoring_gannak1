@@ -1,7 +1,6 @@
 import logging
 
 import pytest
-
 from apps.shared.services.schedule_dispatch_observability import (
     emit_schedule_dispatch_signal,
 )

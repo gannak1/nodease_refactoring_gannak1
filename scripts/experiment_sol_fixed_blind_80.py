@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import pathlib
 import uuid
-from collections import Counter
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env", override=False)
 
-import scripts.experiment_judge_first_economics_80 as experiment
+experiment = importlib.import_module("scripts.experiment_judge_first_economics_80")
 
 
 SOURCE_RESULT = (

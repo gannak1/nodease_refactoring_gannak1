@@ -11,10 +11,10 @@ without receiving its DDL. This repair is deliberately additive and idempotent.
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy import inspect
 from sqlalchemy.dialects import postgresql
 
+from alembic import op
 
 revision: str = "fd0e1f2a3b4c"
 down_revision: Union[str, Sequence[str], None] = "fc9a1b2c3d4e"

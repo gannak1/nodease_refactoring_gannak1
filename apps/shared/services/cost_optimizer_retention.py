@@ -2,10 +2,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy.orm import Session
-
 from apps.shared.db.models.cost_optimizer import CostOptimizerExperiment
 from apps.shared.services.tracing.policy import TracePolicyService
+from sqlalchemy.orm import Session
 
 DEFAULT_COST_OPTIMIZER_PURGE_LIMIT = 1000
 MAX_COST_OPTIMIZER_PURGE_LIMIT = 5000

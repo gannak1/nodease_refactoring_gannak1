@@ -4,7 +4,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-
 MAX_MONTHLY_BUDGET_USD = Decimal("9999999999.99")
 
 

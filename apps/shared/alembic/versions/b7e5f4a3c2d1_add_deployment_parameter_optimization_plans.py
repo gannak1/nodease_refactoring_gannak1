@@ -7,12 +7,11 @@ Create Date: 2026-07-14 21:30:00.000000
 
 from typing import Sequence, Union
 
-from alembic import op
-
 from apps.shared.db.models.deployment_parameter_optimization import (
     DeploymentParameterOptimizationPlan,
 )
 
+from alembic import op
 
 revision: str = "b7e5f4a3c2d1"
 down_revision: Union[str, Sequence[str], None] = "fd4e5f6a7b89"

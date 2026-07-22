@@ -6,12 +6,12 @@ Revises: 2b6c7d8e9f02, a6f4d2c8e1b7
 
 from typing import Sequence, Union
 
-from alembic import op
-
 from apps.shared.alembic.schedule_dispatch_downgrade import (
     assert_schedule_configuration_quarantine_downgrade_is_safe,
     assert_schedule_dispatch_downgrade_is_safe,
 )
+
+from alembic import op
 
 revision: str = "c7f8a9b0d123"
 down_revision: Union[str, Sequence[str], None] = (

@@ -1,7 +1,6 @@
 import re
 from collections.abc import Iterable, Mapping
 
-
 SAFE_TEXT_MAX_LENGTH = 512
 SAFE_LABEL_MAX_LENGTH = 255
 SAFE_TOPICS_MAX_COUNT = 10

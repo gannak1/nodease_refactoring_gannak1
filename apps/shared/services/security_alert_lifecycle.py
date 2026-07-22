@@ -5,8 +5,6 @@ from datetime import datetime
 from typing import Any, Iterator
 from uuid import UUID
 
-from sqlalchemy import update
-
 from apps.shared.db.models.audit_log import (
     ActorType,
     AuditCategory,
@@ -15,6 +13,7 @@ from apps.shared.db.models.audit_log import (
 )
 from apps.shared.db.models.security_alert import SecurityAlert
 from apps.shared.schemas.member_access import normalize_management_reason
+from sqlalchemy import update
 
 _RESOLUTION_TYPES = frozenset({"mitigated", "false_positive", "accepted_risk"})
 

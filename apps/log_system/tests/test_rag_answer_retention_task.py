@@ -1,5 +1,4 @@
 import pytest
-
 from apps.log_system.tasks import _parse_rag_answer_purge_limit
 
 

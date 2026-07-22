@@ -7,10 +7,9 @@ Create Date: 2026-07-11 00:00:00.000000
 
 from typing import Sequence, Union
 
-from alembic import op
-
 from apps.shared.db.models.cost_optimizer import CostOptimizerRecommendationVerification
 
+from alembic import op
 
 revision: str = "fc9a1b2c3d4e"
 down_revision: Union[str, Sequence[str], None] = "fe3f4a5b6c78"

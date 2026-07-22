@@ -1,7 +1,6 @@
 import hashlib
 from typing import Any
 
-
 VERSION_FENCING_TOKEN_HASH_KEY = "ingestion_fencing_token_hash"
 ACTIVE_FENCING_TOKEN_HASH_KEY = "active_ingestion_fencing_token_hash"
 

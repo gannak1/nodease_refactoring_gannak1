@@ -7,20 +7,22 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from sqlalchemy import text
-
-from apps.shared.db.base import Base
-from apps.shared.db.seed import seed_dev_workflow_examples
-from apps.shared.db.session import SessionLocal, engine
-
 
 def ensure_schema() -> None:
+    from sqlalchemy import text
+
+    from apps.shared.db.base import Base
+    from apps.shared.db.session import engine
+
     with engine.begin() as connection:
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     Base.metadata.create_all(bind=engine)
 
 
 def main() -> None:
+    from apps.shared.db.seed import seed_dev_workflow_examples
+    from apps.shared.db.session import SessionLocal
+
     ensure_schema()
     db = SessionLocal()
     try:

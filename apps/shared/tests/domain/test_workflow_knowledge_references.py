@@ -1,14 +1,12 @@
 from uuid import UUID
 
 import pytest
-
 from apps.shared.domain.workflow_knowledge_references import (
     WorkflowKnowledgeReferenceError,
     aggregate_workflow_knowledge_reference_ids,
     parse_llm_knowledge_references,
     parse_workflow_knowledge_references,
 )
-
 
 KB_1 = "00000000-0000-0000-0000-000000000001"
 KB_2 = "00000000-0000-0000-0000-000000000002"

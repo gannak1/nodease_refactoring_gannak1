@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
+from apps.shared.db.base import Base
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
@@ -11,8 +12,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
-
-from apps.shared.db.base import Base
 
 
 class UserAppCreationPermission(Base):

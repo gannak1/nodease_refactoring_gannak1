@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 ACCESS_MANAGEMENT_POLICY_REASONS = frozenset(
     {
         "access_management.self_control_forbidden",
