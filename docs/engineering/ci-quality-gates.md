@@ -131,6 +131,8 @@ CI 제어 파일 변경은 dependency 기반 test가 0개일 수 있으므로 `p
 - revision cycle
 - head가 0개 또는 2개 이상인 상태
 
+기능별 migration 테스트는 해당 revision의 parent 관계나 현재 단일 head ancestry에 남아야 하는 historical revision을 고정할 수 있다. 그러나 repository의 현재 head revision 문자열 자체를 기대값으로 고정하지 않는다. 정상적인 additive migration이 추가돼도 unrelated 기능 테스트는 수정 없이 통과해야 하며, moving head는 `get_heads()`의 개수와 계산된 ancestry로 검증한다.
+
 DB 관련 변경에서는 graph 검사에 더해 disposable PostgreSQL upgrade와 다중 session 계약을 기존 reusable workflow로 실행한다.
 
 - `.github/workflows/test-knowledge-runtime-postgres.yml`
@@ -191,6 +193,26 @@ actionlint .github/workflows/pr-quality-gate.yml .github/workflows/pr-ci-control
 ```
 
 각 서비스 test 실행 명령은 repository `AGENTS.md`를 따른다. 전체 `scripts/test.sh`와 disposable PostgreSQL 계약은 일반적인 로컬 선행 검사가 아니며, 원격 CI 실패와 무관한 전체 회귀를 반복 실행하지 않는다.
+
+## dev → main 고정 승격 후보
+
+`dev → main` PR은 일반 기능 PR과 달리 두 branch 사이의 누적 변경 전체를 검증한다. `dev`는 다른 PR이 병합될 때마다 head가 바뀌므로, moving `dev`에서 서로 다른 시점에 얻은 CI 성공·리뷰·승인을 조합해 승격 근거로 사용하지 않는다.
+
+최종 승격은 다음 순서를 따른다.
+
+1. 승격 차단 수정이 `dev`에 병합된 뒤 짧은 promotion window 동안 추가 merge를 멈춘다.
+2. `origin/dev`의 40자리 commit SHA를 release candidate로 기록하고 승격 PR의 `headRefOid`와 일치하는지 확인한다.
+3. 같은 candidate에서 선택된 전체 PR quality gate와 `ci-required`를 한 번 완료한다.
+4. 같은 candidate 환경에서 인증, Workflow 저장·실행, 권한 기반 RAG, trace/audit safe projection 같은 시연 핵심 흐름을 한 번 smoke한다.
+5. 모든 code/document push가 끝난 뒤 current-head code review와 독립 write-maintainer `APPROVED` review를 받는다.
+6. CI control 변경이 포함되면 승인 뒤 `/recheck-ci-control`로 `trusted-ci-control/base-policy`를 다시 계산한다.
+7. 병합 직전에 branch head, PR head, CI, review, approval과 smoke evidence가 모두 candidate SHA를 가리키는지 다시 확인한다.
+
+Candidate 고정 뒤 `dev`에 새 commit이 들어오면 이전 CI, review, smoke와 approval은 stale evidence다. 새 head를 승격하려면 candidate를 다시 기록하고 위 절차를 반복한다. 짧은 merge freeze를 보장할 수 없어 별도 release branch와 replacement PR이 필요하면 기존 `dev → main` 절차의 예외이므로 사전에 명시적으로 결정한다.
+
+개발 중에는 실패한 lint 파일과 owning domain test만 대상으로 검증한다. 모든 domain suite와 PostgreSQL 계약을 포함하는 release gate를 수정 commit마다 반복하지 않는다. 동일 SHA의 GitHub 5xx·network failure처럼 코드와 무관한 transient failure만 원인을 확인한 뒤 제한적으로 재실행한다.
+
+`ci-required` 실패는 선택된 하위 job의 실패·취소·비정상 skip을 집계한 결과이므로 하위 원인을 먼저 해결한다. `ci-control-review` evaluator job 성공과 authoritative `trusted-ci-control/base-policy` 성공도 구분한다. Evaluator가 정상 실행됐더라도 current-head 독립 승인이 없으면 base policy failure가 올바른 결과다.
 
 ## 배포 설정 검증
 
