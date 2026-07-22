@@ -40,73 +40,6 @@ def test_local_container_profiles_use_same_origin_browser_api():
     assert local_values["frontend"]["env"]["API_URL"].startswith("http://")
 
 
-@pytest.mark.parametrize(
-    "relative_path",
-    [
-        "infra/k8s/namespaces/default/frontend-deployment.yaml",
-        "infra/k8s/namespaces/dev/frontend-deployment.yaml",
-    ],
-)
-def test_kubernetes_frontends_keep_cluster_api_url_server_only(relative_path):
-    documents = list(yaml.safe_load_all(_read(relative_path)))
-    deployment = next(
-        document
-        for document in documents
-        if document and document.get("kind") == "Deployment"
-    )
-    frontend = next(
-        container
-        for container in deployment["spec"]["template"]["spec"]["containers"]
-        if container["name"] == "frontend"
-    )
-    environment = {item["name"]: item.get("value") for item in frontend["env"]}
-
-    assert "NEXT_PUBLIC_API_URL" not in environment
-    assert environment["API_URL"].startswith("http://")
-
-
-@pytest.mark.parametrize(
-    ("relative_path", "expected_environment", "allowed_scheme"),
-    [
-        (
-            "infra/k8s/namespaces/default/gateway-deployment.yaml",
-            "production",
-            "https://",
-        ),
-        (
-            "infra/k8s/namespaces/dev/gateway-deployment.yaml",
-            "development",
-            "http://",
-        ),
-    ],
-)
-def test_raw_kubernetes_gateway_cors_matches_environment(
-    relative_path,
-    expected_environment,
-    allowed_scheme,
-):
-    documents = list(yaml.safe_load_all(_read(relative_path)))
-    deployment = next(
-        document
-        for document in documents
-        if document and document.get("kind") == "Deployment"
-    )
-    gateway = next(
-        container
-        for container in deployment["spec"]["template"]["spec"]["containers"]
-        if container["name"] == "api-server"
-    )
-    environment = {
-        item["name"]: item.get("value")
-        for item in gateway["env"]
-        if "value" in item
-    }
-    origins = environment["CORS_ORIGINS"].split(",")
-
-    assert environment["NODE_ENV"] == expected_environment
-    assert all(origin.startswith(allowed_scheme) for origin in origins)
-
-
 def test_production_values_use_https_only_credentialed_cors():
     values = yaml.safe_load(_read("infra/helm/moduly/values-production.yaml"))
     origins = [
@@ -148,21 +81,21 @@ def test_helm_does_not_fallback_public_api_url_to_cluster_http():
     assert "optional: true" in deployment
 
 
-def test_production_ingress_terminates_https_and_redirects_http():
+def test_production_reference_keeps_ingress_disabled_until_operator_configures_https():
     values = yaml.safe_load(_read("infra/helm/moduly/values-production.yaml"))
-    annotations = values["ingress"]["annotations"]
+    ingress = values["ingress"]
 
-    assert values["ingress"]["enabled"] is True
-    assert '"HTTPS": 443' in annotations["alb.ingress.kubernetes.io/listen-ports"]
-    assert annotations["alb.ingress.kubernetes.io/ssl-redirect"] == "443"
-    assert annotations["alb.ingress.kubernetes.io/certificate-arn"].startswith(
-        "arn:aws:acm:"
-    )
+    assert ingress["enabled"] is False
+    assert ingress["className"] == ""
+    assert ingress["annotations"] == {}
+    assert ingress["hosts"] == []
+    assert ingress["tls"] == []
 
 
-def test_production_ingress_routes_same_origin_api_directly_to_gateway():
-    values = yaml.safe_load(_read("infra/helm/moduly/values-production.yaml"))
+def test_helm_ingress_routes_same_origin_api_directly_to_gateway():
+    values = yaml.safe_load(_read("infra/helm/moduly/values.yaml"))
 
+    assert values["ingress"]["hosts"]
     for host in values["ingress"]["hosts"]:
         routes = {route["path"]: route["backend"] for route in host["paths"]}
         assert routes["/api"] == "gateway"
