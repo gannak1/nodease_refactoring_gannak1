@@ -1,11 +1,15 @@
-import uuid
 import sys
-from types import SimpleNamespace
+import uuid
+from importlib.machinery import ModuleSpec
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-sys.modules.setdefault("openai", SimpleNamespace(OpenAI=object))
+openai_stub = ModuleType("openai")
+openai_stub.__spec__ = ModuleSpec("openai", loader=None)
+openai_stub.OpenAI = object
+sys.modules.setdefault("openai", openai_stub)
 
 from apps.shared.db.models.knowledge import (  # noqa: E402 - openai 스텁 등록 이후 가져오기
     Document,
