@@ -114,6 +114,21 @@ class _Runtime:
         return _Lease(client=self.client, attribution=self.attribution)
 
 
+class _SchemaRevalidationRejectingRuntime(_Runtime):
+    def resolve(self, request):
+        self.resolve_requests.append(request)
+        lease = _Lease(client=self.client, attribution=self.attribution)
+
+        def reject_schema(*, name, schema):
+            raise LLMCredentialNotAvailableError(
+                "provider_capability_capability_stale",
+                "Provider execution capability is not available.",
+            )
+
+        lease.apply_json_schema_response_format = reject_schema
+        return lease
+
+
 class _DenyingRuntime:
     def __init__(self, *, audit_actor: ProviderExecutionAuditActor) -> None:
         self.audit_actor = audit_actor
@@ -348,6 +363,55 @@ def test_capability_required_llm_node_uses_provider_application_ports():
         policy_principal_id
     )
     assert usage_recorder.events == ["intent", "start", "success"]
+
+
+def test_capability_json_schema_revalidation_failure_stops_before_usage_and_io():
+    organization_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    attribution = _capability_attribution(
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+        principal_id=uuid.uuid4(),
+    )
+    client = _Client()
+    runtime = _SchemaRevalidationRejectingRuntime(
+        client=client,
+        attribution=attribution,
+    )
+    usage_recorder = _UsageRecorder()
+    node = _node(
+        context={
+            "provider_execution_capability_required": True,
+            "provider_execution_capability_limits": {
+                "input_token_cap": 10_000,
+                "output_token_cap": 100,
+                "cost_cap_microusd": 50_000,
+            },
+            "deployment_id": str(uuid.uuid4()),
+            "workflow_version": 2,
+            "organization_id": str(organization_id),
+            "workflow_id": str(workflow_id),
+            "execution_subject": {"type": "user", "id": str(uuid.uuid4())},
+        }
+    )
+    node.data.output_format = {
+        "type": "json",
+        "schema": {"type": "object", "properties": {}},
+    }
+    node.bind_provider_execution_runtime(runtime)
+    node.bind_provider_usage_recorder(usage_recorder)
+
+    with pytest.raises(LLMCredentialNotAvailableError):
+        node.execute(
+            {},
+            runtime_control=_control(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+            ),
+        )
+
+    assert usage_recorder.events == []
+    assert client.calls == []
 
 
 def test_capability_provider_error_is_durable_unknown_and_non_retryable() -> None:

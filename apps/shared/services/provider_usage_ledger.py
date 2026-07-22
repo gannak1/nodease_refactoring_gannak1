@@ -256,12 +256,19 @@ class ProviderUsageLedgerService:
         self,
         db: Session,
         *,
+        organization_id: uuid.UUID,
         operation_id: uuid.UUID,
         expected_state_version: int,
         measurement: ProviderUsageMeasurement,
         now: datetime | None = None,
     ) -> ProviderUsageOperation:
-        record = self._operation_for_id(db, operation_id, for_update=True)
+        record = self._operation_for_id(
+            db,
+            operation_id,
+            organization_id=organization_id,
+            for_update=True,
+        )
+        self._require_state_version(record, expected_state_version)
         operation = self._domain_operation(record)
         updated = operation.reconcile_success(
             measurement=measurement,
@@ -270,7 +277,6 @@ class ProviderUsageLedgerService:
         if updated is operation:
             self._commit_or_raise(db, "provider_usage.reconcile_commit_failed")
             return operation
-        self._require_state_version(record, expected_state_version)
         self._apply_operation(record, updated)
         self._commit_or_raise(db, "provider_usage.reconcile_commit_failed")
         return updated
@@ -279,12 +285,19 @@ class ProviderUsageLedgerService:
         self,
         db: Session,
         *,
+        organization_id: uuid.UUID,
         operation_id: uuid.UUID,
         expected_state_version: int,
         reason_code: str,
         now: datetime | None = None,
     ) -> ProviderUsageOperation:
-        record = self._operation_for_id(db, operation_id, for_update=True)
+        record = self._operation_for_id(
+            db,
+            operation_id,
+            organization_id=organization_id,
+            for_update=True,
+        )
+        self._require_state_version(record, expected_state_version)
         operation = self._domain_operation(record)
         updated = operation.reconcile_definitive_failure(
             reason_code=reason_code,
@@ -293,7 +306,6 @@ class ProviderUsageLedgerService:
         if updated is operation:
             self._commit_or_raise(db, "provider_usage.reconcile_commit_failed")
             return operation
-        self._require_state_version(record, expected_state_version)
         self._apply_operation(record, updated)
         self._commit_or_raise(db, "provider_usage.reconcile_commit_failed")
         return updated
@@ -874,6 +886,7 @@ class ProviderUsageLedgerService:
         actor = snapshot.identities.audit_actor
         metadata: dict[str, Any] = {
             "organization_id": str(operation.key.organization_id),
+            "workflow_id": str(snapshot.binding.workflow_id),
             "provider_usage_operation_id": str(operation.id),
             "provider_execution_capability_id": str(snapshot.capability_id),
             "provider_execution_capability_revision": snapshot.capability_revision,
@@ -1248,11 +1261,16 @@ class ProviderUsageLedgerService:
         db: Session,
         operation_id: uuid.UUID,
         *,
+        organization_id: uuid.UUID | None = None,
         for_update: bool,
     ) -> ProviderUsageOperationRecord:
         query = db.query(ProviderUsageOperationRecord).filter(
             ProviderUsageOperationRecord.id == operation_id
         )
+        if organization_id is not None:
+            query = query.filter(
+                ProviderUsageOperationRecord.organization_id == organization_id
+            )
         if for_update:
             query = query.populate_existing().with_for_update()
         record = query.one_or_none()

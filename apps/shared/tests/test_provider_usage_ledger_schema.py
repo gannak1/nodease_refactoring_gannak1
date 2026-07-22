@@ -88,6 +88,20 @@ def test_provider_usage_operation_has_state_projection_and_redaction_constraints
     } <= check_names
 
 
+def test_succeeded_measurement_is_bounded_by_the_sealed_admission_in_schema() -> None:
+    state_constraint = next(
+        constraint
+        for constraint in ProviderUsageOperationRecord.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+        and constraint.name == "ck_provider_usage_operation_state_payload"
+    )
+    sql = str(state_constraint.sqltext)
+
+    assert "prompt_tokens <= admitted_input_tokens" in sql
+    assert "completion_tokens <= admitted_output_tokens" in sql
+    assert "total_cost_microusd <= cost_cap_microusd" in sql
+
+
 def test_awaiting_workflow_run_projection_requires_a_snapshotted_run_id() -> None:
     projection_constraint = next(
         constraint
@@ -128,6 +142,42 @@ def test_provider_usage_reconciliation_has_global_ordered_partial_indexes() -> N
         assert required_where in where
         if optional_where is not None:
             assert optional_where in where
+
+
+def test_provider_usage_budget_lookup_has_workflow_leading_partial_index() -> None:
+    indexes = {
+        index.name: index for index in ProviderUsageOperationRecord.__table__.indexes
+    }
+
+    index = indexes["ix_provider_usage_operation_workflow_budget_period"]
+
+    assert tuple(column.name for column in index.columns) == (
+        "workflow_id",
+        "provider_started_at",
+    )
+    where = str(index.dialect_options["postgresql"]["where"])
+    assert "provider_started_at IS NOT NULL" in where
+    assert "purpose IN ('main_generation', 'memory_summary')" in where
+    assert "state IN ('provider_started', 'succeeded', 'outcome_unknown')" in where
+
+
+def test_provider_usage_model_cost_lookup_has_subject_leading_partial_index() -> None:
+    indexes = {
+        index.name: index for index in ProviderUsageOperationRecord.__table__.indexes
+    }
+
+    index = indexes["ix_provider_usage_operation_subject_cost_period"]
+
+    assert tuple(column.name for column in index.columns) == (
+        "execution_subject_id",
+        "provider_started_at",
+    )
+    where = str(index.dialect_options["postgresql"]["where"])
+    assert "execution_subject_kind = 'user'" in where
+    assert "execution_subject_id IS NOT NULL" in where
+    assert "provider_started_at IS NOT NULL" in where
+    assert "purpose IN ('main_generation', 'memory_summary')" in where
+    assert "state = 'succeeded'" in where
 
 
 def test_corrections_are_append_only_children_with_revision_uniqueness() -> None:

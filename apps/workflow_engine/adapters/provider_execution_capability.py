@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from threading import Lock
 from typing import Any, Callable, Mapping
@@ -397,7 +397,107 @@ class CapabilityProviderExecutionAdapter:
             messages=request.messages,
             parameters=parameters,
             attribution=attribution,
+            request_revalidator=lambda *, messages, parameters: (
+                self._readmit_final_request(
+                    shared_session=request.shared_session,
+                    issue_command=issue_command,
+                    attribution=attribution,
+                    messages=messages,
+                    parameters=parameters,
+                )
+            ),
         )
+
+    def _readmit_final_request(
+        self,
+        *,
+        shared_session: Any | None,
+        issue_command: ProviderExecutionCapabilityIssueCommand,
+        attribution: ProviderExecutionAttribution,
+        messages: tuple[Mapping[str, Any], ...],
+        parameters: Mapping[str, Any],
+    ) -> ProviderExecutionAttribution:
+        usage_context = attribution.usage_context
+        if usage_context is None or attribution.capability_id is None:
+            raise ProviderExecutionConfigurationError()
+        input_tokens, output_tokens, _ = provider_visible_request_bounds(
+            messages=messages,
+            parameters=parameters,
+            output_token_cap=usage_context.output_token_cap,
+        )
+        db = self._new_isolated_session(shared_session)
+        try:
+            try:
+                lease = self._capability_service.admit_capability(
+                    db,
+                    command=ProviderExecutionCapabilityAdmissionCommand(
+                        capability_id=attribution.capability_id,
+                        capability_revision=attribution.capability_revision,
+                        binding=issue_command.binding,
+                        requested_input_tokens=input_tokens,
+                        requested_output_tokens=output_tokens,
+                    ),
+                )
+            except ProviderExecutionPolicyError as exc:
+                raise LLMCredentialNotAvailableError(
+                    f"provider_capability_{exc.code}",
+                    "Provider execution capability is not available.",
+                    organization_id=issue_command.binding.organization_id,
+                ) from exc
+            self._require_same_admission(
+                lease=lease,
+                attribution=attribution,
+                issue_command=issue_command,
+            )
+            db.commit()
+        finally:
+            db.close()
+        return replace(
+            attribution,
+            usage_context=replace(
+                usage_context,
+                admitted_input_tokens=input_tokens,
+                admitted_output_tokens=output_tokens,
+            ),
+        )
+
+    @staticmethod
+    def _require_same_admission(
+        *,
+        lease: Any,
+        attribution: ProviderExecutionAttribution,
+        issue_command: ProviderExecutionCapabilityIssueCommand,
+    ) -> None:
+        usage_context = attribution.usage_context
+        pricing_snapshot = attribution.pricing_snapshot
+        try:
+            capability = lease.capability
+            principal = capability.credential_principal
+            matches = (
+                uuid.UUID(str(capability.id)) == attribution.capability_id
+                and capability.revision == attribution.capability_revision
+                and capability.binding == issue_command.binding
+                and uuid.UUID(str(lease.credential.id)) == attribution.credential_id
+                and uuid.UUID(str(lease.provider.id)) == usage_context.provider_id
+                and uuid.UUID(str(lease.model.id)) == attribution.model_db_id
+                and lease.model.model_id_for_api_call == attribution.model_id
+                and principal.kind is PrincipalKind.USER
+                and uuid.UUID(str(principal.reference_id))
+                == attribution.credential_principal_user_id
+                and str(capability.pricing_revision) == pricing_snapshot.revision
+                and Decimal(str(lease.model.input_price_1k))
+                == pricing_snapshot.input_price_per_1k
+                and Decimal(str(lease.model.output_price_1k))
+                == pricing_snapshot.output_price_per_1k
+            )
+        except (AttributeError, InvalidOperation, TypeError, ValueError):
+            matches = False
+        if not matches:
+            raise LLMCredentialNotAvailableError(
+                "provider_capability_attribution_invalid",
+                "Provider execution capability is not available.",
+                organization_id=issue_command.binding.organization_id,
+            )
 
     def _new_isolated_session(self, shared_session: Any | None) -> Session:
         try:

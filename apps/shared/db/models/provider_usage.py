@@ -94,6 +94,9 @@ class ProviderUsageOperationRecord(Base):
             "AND completion_tokens IS NOT NULL AND total_cost_microusd IS NOT NULL "
             "AND latency_ms IS NOT NULL AND prompt_tokens >= 0 "
             "AND completion_tokens >= 0 AND total_cost_microusd >= 0 "
+            "AND prompt_tokens <= admitted_input_tokens "
+            "AND completion_tokens <= admitted_output_tokens "
+            "AND total_cost_microusd <= cost_cap_microusd "
             "AND latency_ms >= 0 AND usage_revision >= 1 "
             "AND safe_reason_code IS NULL) "
             "OR (state = 'failed_definitive' AND prompt_tokens IS NULL "
@@ -150,6 +153,28 @@ class ProviderUsageOperationRecord(Base):
             "workflow_id",
             "provider_started_at",
             "state",
+        ),
+        Index(
+            "ix_provider_usage_operation_workflow_budget_period",
+            "workflow_id",
+            "provider_started_at",
+            postgresql_where=text(
+                "provider_started_at IS NOT NULL "
+                "AND purpose IN ('main_generation', 'memory_summary') "
+                "AND state IN ('provider_started', 'succeeded', 'outcome_unknown')"
+            ),
+        ),
+        Index(
+            "ix_provider_usage_operation_subject_cost_period",
+            "execution_subject_id",
+            "provider_started_at",
+            postgresql_where=text(
+                "execution_subject_kind = 'user' "
+                "AND execution_subject_id IS NOT NULL "
+                "AND provider_started_at IS NOT NULL "
+                "AND purpose IN ('main_generation', 'memory_summary') "
+                "AND state = 'succeeded'"
+            ),
         ),
         Index(
             "ix_provider_usage_operation_projection_recovery",

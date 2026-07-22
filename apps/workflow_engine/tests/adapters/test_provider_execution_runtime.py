@@ -53,6 +53,17 @@ class _Client:
             "usage": {"prompt_tokens": 1, "completion_tokens": 1},
         }
 
+    @staticmethod
+    def build_json_schema_response_format(*, name, schema):
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": name,
+                "strict": True,
+                "schema": schema,
+            },
+        }
+
 
 def _control(
     *,
@@ -97,14 +108,16 @@ def _capability_context(
     }
 
 
-def test_capability_runtime_commits_and_closes_control_uow_before_provider_io():
+def test_capability_runtime_readmits_final_json_schema_request_before_provider_io():
     organization_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
     policy_principal_id = uuid.uuid4()
     model_db_id = uuid.uuid4()
     credential_id = uuid.uuid4()
     provider_id = uuid.uuid4()
-    session = _Session()
+    initial_session = _Session()
+    final_session = _Session()
+    sessions = iter((initial_session, final_session))
     captured: dict = {}
     pricing_revision = "d" * 64
 
@@ -138,7 +151,7 @@ def test_capability_runtime_commits_and_closes_control_uow_before_provider_io():
 
         @staticmethod
         def admit_capability(_db, *, command):
-            captured["admission"] = command
+            captured.setdefault("admissions", []).append(command)
             return SimpleNamespace(
                 credential=SimpleNamespace(id=credential_id),
                 provider=SimpleNamespace(
@@ -155,9 +168,9 @@ def test_capability_runtime_commits_and_closes_control_uow_before_provider_io():
                 capability=captured["capability"],
             )
 
-    client = _Client(session)
+    client = _Client(initial_session)
     runtime = CapabilityProviderExecutionAdapter(
-        session_factory=lambda: session,
+        session_factory=lambda: next(sessions),
         capability_service=_CapabilityService,
         credential_loader=lambda _credential: {"apiKey": "[REDACTED]"},
         client_factory=lambda **_kwargs: client,
@@ -205,8 +218,29 @@ def test_capability_runtime_commits_and_closes_control_uow_before_provider_io():
             )
         )
 
-    assert session.commits == 1
-    assert session.closes == 1
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+    assert lease.apply_json_schema_response_format(
+        name="workflow_node_output",
+        schema=schema,
+    )
+    response_format = client.build_json_schema_response_format(
+        name="workflow_node_output",
+        schema=schema,
+    )
+    final_input_tokens, final_output_tokens, _ = provider_visible_request_bounds(
+        messages=({"role": "user", "content": "safe"},),
+        parameters={"max_tokens": 100, "response_format": response_format},
+        output_token_cap=100,
+    )
+
+    assert initial_session.commits == 1
+    assert initial_session.closes == 1
+    assert final_session.commits == 1
+    assert final_session.closes == 1
     assert plan.audit_actor is not None
     assert plan.audit_actor.kind is ProviderExecutionAuditActorKind.USER
     assert plan.audit_actor.reference_id == uuid.UUID(
@@ -223,7 +257,17 @@ def test_capability_runtime_commits_and_closes_control_uow_before_provider_io():
     assert lease.attribution.usage_context.binding.container_path == (
         ("loop", "loop-a"),
     )
-    assert captured["admission"].requested_output_tokens == 100
+    assert len(captured["admissions"]) == 2
+    assert captured["admissions"][1].requested_input_tokens == final_input_tokens
+    assert captured["admissions"][1].requested_output_tokens == final_output_tokens
+    assert (
+        lease.attribution.usage_context.admitted_input_tokens
+        == final_input_tokens
+    )
+    assert (
+        lease.attribution.usage_context.admitted_output_tokens
+        == final_output_tokens
+    )
     assert lease.invoke()["choices"][0]["message"]["content"] == "ok"
     assert client.calls == 1
 

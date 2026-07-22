@@ -76,10 +76,17 @@ def _operation() -> ProviderUsageOperation:
     )
 
 
-def _measurement(*, cost: int = 321) -> ProviderUsageMeasurement:
+def _measurement(
+    *,
+    prompt_tokens: int = 10,
+    completion_tokens: int = 5,
+    cost: int | None = None,
+) -> ProviderUsageMeasurement:
+    if cost is None:
+        cost = prompt_tokens * 100 + completion_tokens * 200
     return ProviderUsageMeasurement(
-        prompt_tokens=10,
-        completion_tokens=5,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
         total_cost_microusd=cost,
         latency_ms=42,
     )
@@ -212,6 +219,46 @@ def test_ambiguous_outcome_blocks_replay_and_accepts_one_late_success() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "measurement",
+    [
+        _measurement(prompt_tokens=301),
+        _measurement(completion_tokens=51),
+        _measurement(cost=2_001),
+    ],
+)
+def test_late_success_revalidates_sealed_admission_and_pricing(
+    measurement: ProviderUsageMeasurement,
+) -> None:
+    unknown = (
+        _operation()
+        .mark_provider_started(now=NOW)
+        .mark_outcome_unknown(reason_code="provider_timeout", now=NOW)
+    )
+
+    with pytest.raises(ProviderUsageLedgerError) as exc_info:
+        unknown.reconcile_success(
+            measurement=measurement,
+            now=NOW + timedelta(minutes=1),
+        )
+
+    assert exc_info.value.code == "provider_usage.measurement_invalid"
+
+
+def test_success_rejects_exact_usage_above_the_sealed_cost_cap() -> None:
+    snapshot = replace(_snapshot(), cost_cap_microusd=1_999)
+    started = ProviderUsageOperation.intent(
+        operation_id=uuid.uuid4(),
+        snapshot=snapshot,
+        now=NOW,
+    ).mark_provider_started(now=NOW)
+
+    with pytest.raises(ProviderUsageLedgerError) as exc_info:
+        started.record_success(measurement=_measurement(), now=NOW)
+
+    assert exc_info.value.code == "provider_usage.measurement_invalid"
+
+
 def test_definitive_failure_requires_a_safe_zero_effect_reason() -> None:
     started = _operation().mark_provider_started(now=NOW)
 
@@ -264,19 +311,35 @@ def test_cost_correction_is_revisioned_without_reopening_the_attempt() -> None:
     )
 
     corrected = succeeded.apply_correction(
-        measurement=_measurement(cost=654),
+        measurement=_measurement(prompt_tokens=20),
         expected_usage_revision=1,
     )
 
     assert corrected.state is ProviderUsageState.SUCCEEDED
     assert corrected.usage_revision == 2
-    assert corrected.measurement == _measurement(cost=654)
+    assert corrected.measurement == _measurement(prompt_tokens=20)
     with pytest.raises(ProviderUsageLedgerError) as exc_info:
         corrected.apply_correction(
-            measurement=_measurement(cost=777),
+            measurement=_measurement(prompt_tokens=30),
             expected_usage_revision=1,
         )
     assert exc_info.value.code == "provider_usage.correction_conflict"
+
+
+def test_cost_correction_revalidates_the_immutable_pricing_snapshot() -> None:
+    succeeded = (
+        _operation()
+        .mark_provider_started(now=NOW)
+        .record_success(measurement=_measurement(), now=NOW)
+    )
+
+    with pytest.raises(ProviderUsageLedgerError) as exc_info:
+        succeeded.apply_correction(
+            measurement=_measurement(cost=2_001),
+            expected_usage_revision=1,
+        )
+
+    assert exc_info.value.code == "provider_usage.measurement_invalid"
 
 
 def test_same_value_correction_still_consumes_a_usage_revision() -> None:

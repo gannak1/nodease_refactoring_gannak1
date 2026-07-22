@@ -135,11 +135,19 @@ def validate_audit_workflow_correlation(db: Session, audit: AuditLog) -> None:
         audit.workflow_run_id = None
         audit.workflow_node_run_id = None
         return
+    expects_workflow = "workflow_id" in metadata
+    expected_workflow_id = _to_uuid(metadata.get("workflow_id"))
+
+    def run_matches_expected_workflow(candidate: Any) -> bool:
+        return not expects_workflow or (
+            expected_workflow_id is not None
+            and _to_uuid(candidate.workflow_id) == expected_workflow_id
+        )
 
     run = None
     if audit.workflow_run_id is not None:
         run = db.get(WorkflowRun, audit.workflow_run_id)
-        if run is None:
+        if run is None or not run_matches_expected_workflow(run):
             audit.workflow_run_id = None
             audit.workflow_node_run_id = None
             return
@@ -160,7 +168,7 @@ def validate_audit_workflow_correlation(db: Session, audit: AuditLog) -> None:
         return
     if audit.workflow_run_id is None:
         run = db.get(WorkflowRun, node_run.workflow_run_id)
-        if run is None:
+        if run is None or not run_matches_expected_workflow(run):
             audit.workflow_node_run_id = None
             return
         workflow = db.get(Workflow, run.workflow_id)

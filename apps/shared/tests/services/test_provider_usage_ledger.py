@@ -184,6 +184,76 @@ def test_final_admission_uses_the_exact_previously_admitted_bounds() -> None:
     assert command.requested_output_tokens == 50
 
 
+def test_reconciliation_lookup_is_scoped_to_the_explicit_organization() -> None:
+    service = ProviderUsageLedgerService()
+    operation_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    db = _OperationLookupDb()
+
+    with pytest.raises(ProviderUsageLedgerError) as exc_info:
+        service._operation_for_id(  # noqa: SLF001
+            db,
+            operation_id,
+            organization_id=organization_id,
+            for_update=True,
+        )
+
+    assert exc_info.value.code == "provider_usage.not_found"
+    statement = select(ProviderUsageOperationRecord.id).where(
+        *db.query_obj.filter_conditions
+    )
+    sql = str(
+        statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert f"provider_usage_operations.id = '{operation_id}'" in sql
+    assert (
+        f"provider_usage_operations.organization_id = '{organization_id}'" in sql
+    )
+    assert db.query_obj.lock_calls == ["populate_existing", "with_for_update"]
+    assert db.rollbacks == 1
+
+
+def test_reconciliation_requires_the_exact_locked_state_version() -> None:
+    service = ProviderUsageLedgerService()
+    unknown = (
+        ProviderUsageOperation.intent(
+            operation_id=uuid.uuid4(),
+            snapshot=_snapshot(),
+            now=NOW,
+        )
+        .mark_provider_started(now=NOW)
+        .mark_outcome_unknown(reason_code="provider_timeout", now=NOW)
+    )
+    record = service._record_from_operation(  # noqa: SLF001
+        unknown,
+        workflow_run_id=None,
+        cost_optimizer_candidate_id=None,
+    )
+    db = _OperationLookupDb(record)
+
+    with pytest.raises(ProviderUsageLedgerError) as exc_info:
+        service.reconcile_success(
+            db,
+            organization_id=unknown.key.organization_id,
+            operation_id=unknown.id,
+            expected_state_version=unknown.state_version - 1,
+            measurement=ProviderUsageMeasurement(
+                prompt_tokens=10,
+                completion_tokens=5,
+                total_cost_microusd=2_000,
+                latency_ms=42,
+            ),
+            now=NOW + timedelta(minutes=1),
+        )
+
+    assert exc_info.value.code == "provider_usage.state_conflict"
+    assert record.state == ProviderUsageState.OUTCOME_UNKNOWN.value
+    assert db.commits == 0
+
+
 def test_terminal_audit_is_deterministic_and_contains_only_safe_metadata() -> None:
     service = ProviderUsageLedgerService()
     operation = _success()
@@ -201,6 +271,7 @@ def test_terminal_audit_is_deterministic_and_contains_only_safe_metadata() -> No
     assert outbox.payload["target_id"] == str(operation.id)
     assert outbox.payload["audit_metadata"] == {
         "organization_id": str(operation.key.organization_id),
+        "workflow_id": str(operation.snapshot.binding.workflow_id),
         "provider_usage_operation_id": str(operation.id),
         "provider_execution_capability_id": str(operation.snapshot.capability_id),
         "provider_execution_capability_revision": 2,
@@ -765,6 +836,32 @@ class _OneQuery:
 
     def one_or_none(self):
         return self.value
+
+
+class _OperationLookupQuery(_OneQuery):
+    def __init__(self, value=None):
+        super().__init__(value)
+        self.filter_conditions = []
+
+    def filter(self, *conditions):
+        self.filter_conditions.extend(conditions)
+        return self
+
+
+class _OperationLookupDb:
+    def __init__(self, value=None):
+        self.query_obj = _OperationLookupQuery(value)
+        self.rollbacks = 0
+        self.commits = 0
+
+    def query(self, *_models):
+        return self.query_obj
+
+    def rollback(self):
+        self.rollbacks += 1
+
+    def commit(self):
+        self.commits += 1
 
 
 class _ProjectionDb:

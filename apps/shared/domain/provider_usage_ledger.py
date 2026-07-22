@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from enum import Enum
 
 from apps.shared.domain.provider_execution_capability import (
@@ -22,6 +22,8 @@ from apps.shared.domain.provider_execution_capability import (
 
 _LEDGER_PRICE_QUANTUM = Decimal("0.000000001")
 _LEDGER_PRICE_MAX = Decimal("99999999999.999999999")
+_MICROUSD_PER_USD = Decimal(1_000_000)
+_TOKENS_PER_PRICE_UNIT = Decimal(1_000)
 
 
 def _canonical_ledger_price(value: str, *, name: str) -> str:
@@ -347,6 +349,7 @@ class ProviderUsageOperation:
             raise ProviderUsageLedgerError("provider_usage.correction_not_allowed")
         if expected_usage_revision != self.usage_revision:
             raise ProviderUsageLedgerError("provider_usage.correction_conflict")
+        self._validate_measurement(measurement)
         return replace(
             self,
             state_version=self.state_version + 1,
@@ -360,6 +363,7 @@ class ProviderUsageOperation:
         measurement: ProviderUsageMeasurement,
         now: datetime,
     ) -> "ProviderUsageOperation":
+        self._validate_measurement(measurement)
         return replace(
             self,
             state=ProviderUsageState.SUCCEEDED,
@@ -369,6 +373,31 @@ class ProviderUsageOperation:
             measurement=measurement,
             usage_revision=1,
         )
+
+    def _validate_measurement(
+        self,
+        measurement: ProviderUsageMeasurement,
+    ) -> None:
+        expected_cost_microusd = int(
+            (
+                (
+                    Decimal(measurement.prompt_tokens)
+                    * Decimal(self.snapshot.input_price_per_1k)
+                    + Decimal(measurement.completion_tokens)
+                    * Decimal(self.snapshot.output_price_per_1k)
+                )
+                * _MICROUSD_PER_USD
+                / _TOKENS_PER_PRICE_UNIT
+            ).to_integral_value(rounding=ROUND_HALF_UP)
+        )
+        if (
+            measurement.prompt_tokens > self.snapshot.admitted_input_tokens
+            or measurement.completion_tokens
+            > self.snapshot.admitted_output_tokens
+            or measurement.total_cost_microusd != expected_cost_microusd
+            or expected_cost_microusd > self.snapshot.cost_cap_microusd
+        ):
+            raise ProviderUsageLedgerError("provider_usage.measurement_invalid")
 
 
 __all__ = [

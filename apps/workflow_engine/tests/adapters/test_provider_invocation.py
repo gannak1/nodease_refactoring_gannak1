@@ -84,6 +84,41 @@ def test_invocation_lease_seals_request_and_allows_only_one_attempt():
     assert len(client.calls) == 1
 
 
+def test_json_schema_revalidation_failure_prevents_provider_io() -> None:
+    class _SchemaClient(_Client):
+        @staticmethod
+        def build_json_schema_response_format(*, name, schema):
+            return {
+                "type": "json_schema",
+                "json_schema": {"name": name, "schema": schema},
+            }
+
+    client = _SchemaClient()
+
+    def reject_final_request(*, messages, parameters):
+        assert messages == ({"role": "user", "content": "synthetic"},)
+        assert "response_format" in parameters
+        raise ProviderExecutionConfigurationError()
+
+    lease = ProviderClientInvocationLease(
+        client=client,
+        messages=({"role": "user", "content": "synthetic"},),
+        parameters={"max_tokens": 5},
+        attribution=None,
+        request_revalidator=reject_final_request,
+    )
+
+    with pytest.raises(ProviderExecutionConfigurationError):
+        lease.apply_json_schema_response_format(
+            name="workflow_node_output",
+            schema={"type": "object"},
+        )
+
+    with pytest.raises(ProviderExecutionConfigurationError):
+        lease.invoke()
+    assert client.calls == []
+
+
 def test_invocation_lease_translates_outcome_unknown_to_application_error():
     lease = ProviderClientInvocationLease(
         client=_OutcomeUnknownClient(),

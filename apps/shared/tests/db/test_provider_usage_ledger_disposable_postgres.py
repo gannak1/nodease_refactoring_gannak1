@@ -222,6 +222,8 @@ def test_reconciliation_partial_indexes_are_installed(provider_usage_postgres) -
     assert {
         "ix_provider_usage_operation_projection_recovery",
         "ix_provider_usage_operation_started_recovery",
+        "ix_provider_usage_operation_workflow_budget_period",
+        "ix_provider_usage_operation_subject_cost_period",
     } <= index_names
 
 
@@ -421,10 +423,11 @@ def test_concurrent_terminal_classification_has_one_winner(
 
     barrier = Barrier(2)
 
-    def finish_once(total_cost_microusd: int) -> str:
+    def finish_once(measurement_values: tuple[int, int, int]) -> str:
+        prompt_tokens, completion_tokens, total_cost_microusd = measurement_values
         measurement = ProviderUsageMeasurement(
-            prompt_tokens=10,
-            completion_tokens=5,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
             total_cost_microusd=total_cost_microusd,
             latency_ms=42,
         )
@@ -443,7 +446,12 @@ def test_concurrent_terminal_classification_has_one_winner(
         return "succeeded"
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        outcomes = list(executor.map(finish_once, (2_000, 3_000)))
+        outcomes = list(
+            executor.map(
+                finish_once,
+                ((10, 5, 2_000), (20, 5, 3_000)),
+            )
+        )
 
     assert sorted(outcomes) == ["provider_usage.outcome_conflict", "succeeded"]
     with Session(engine) as db:
@@ -585,8 +593,8 @@ def test_terminal_replay_projection_and_correction_converge_once(
         expected_usage_revision=2,
         correction_key="provider-report-2",
         measurement=ProviderUsageMeasurement(
-            prompt_tokens=12,
-            completion_tokens=6,
+            prompt_tokens=20,
+            completion_tokens=5,
             total_cost_microusd=3_000,
             latency_ms=40,
         ),
@@ -615,8 +623,8 @@ def test_terminal_replay_projection_and_correction_converge_once(
                     expected_usage_revision=2,
                     correction_key="provider-report-2",
                     measurement=ProviderUsageMeasurement(
-                        prompt_tokens=12,
-                        completion_tokens=6,
+                        prompt_tokens=20,
+                        completion_tokens=5,
                         total_cost_microusd=4_000,
                         latency_ms=40,
                     ),
@@ -855,7 +863,7 @@ def test_concurrent_projections_accumulate_one_workflow_run_total(
     terminal_service = ProviderUsageLedgerService()
     for prompt_tokens, completion_tokens, total_cost_microusd in (
         (10, 5, 2_000),
-        (7, 3, 1_000),
+        (7, 3, 1_300),
     ):
         operation = ProviderUsageOperation.intent(
             operation_id=uuid.uuid4(),
@@ -919,7 +927,7 @@ def test_concurrent_projections_accumulate_one_workflow_run_total(
         run = db.get(WorkflowRun, workflow_run_id)
         assert run is not None
         assert run.total_tokens == 25
-        assert Decimal(run.total_cost) == Decimal("0.003000")
+        assert Decimal(run.total_cost) == Decimal("0.003300")
         assert db.scalar(
             select(func.count()).select_from(LLMUsageLog).where(
                 LLMUsageLog.provider_usage_operation_id.in_(operation_ids)

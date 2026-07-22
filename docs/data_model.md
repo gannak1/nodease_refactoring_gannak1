@@ -1327,8 +1327,11 @@ Capability-required provider attempt의 canonical token/cost/outcome 원장이�
 - UNIQUE `(organization_id, provider_attempt_id, purpose)`가 provider attempt identity의 단일 권위다. 같은 key의 replay는 canonical `container_path + node_id`를 포함한 나머지 binding/principal/revision/pricing/cap snapshot이 정확히 같을 때만 기존 operation으로 수렴한다. 가격 비교는 DB round trip 전후가 같은 `NUMERIC(20,9)` fixed-scale canonical 표현을 사용한다.
 - Organization FK 외 control-resource FK를 두지 않는다. Deployment/capability/policy/credential/model/user/WorkflowRun 삭제는 이미 발생한 usage fact를 cascade 삭제하거나 reconciliation을 막지 않는다.
 - `provider_started` 뒤 결과를 확정할 수 없으면 `outcome_unknown`으로 분류하고 provider를 자동 재호출하지 않는다. Typed outcome-unknown은 호출 경로에서 즉시 terminalize한다. Typed `before_send`는 `failed_definitive/provider_not_sent`, provider 인증·인가 HTTP `401`/`403`은 `failed_definitive/provider_rejected`로 닫되 `429`/`5xx`는 확정 거절로 승격하지 않는다. Stale started row를 정리하는 reconciler도 provider I/O를 수행하지 않는다.
+- Success, late success reconciliation과 correction은 모두 sealed admitted token, immutable input/output 가격으로 다시 계산한 `total_cost_microusd`와 cost cap을 domain 경계에서 검증한다.
 - 서로 다른 operation의 compatibility projection과 run 종료 legacy 집계가 같은 WorkflowRun 합계를 갱신하면 모두 run row를 fresh `FOR UPDATE`로 잠가 token/cost delta를 직렬화한다.
 - Terminal `llm.call` Audit Outbox는 ledger의 nullable `workflow_run_id`를 top-level typed correlation으로 전달하며, run 저장이 늦으면 기존 bounded retry 뒤 nullable로 내리는 audit 계약을 따른다.
+- Workflow 단일 월간 예산 조회는 `(workflow_id, provider_started_at)` 선두 부분 인덱스를 사용하며 billable purpose의 `provider_started|succeeded|outcome_unknown`만 포함한다. Organization 선두 인덱스는 organization-scoped 집계용으로 별도 유지한다.
+- 사용자별 Top Models 조회는 `(execution_subject_id, provider_started_at)` 선두 부분 인덱스를 사용하며 user subject, billable purpose와 `succeeded` predicate를 인덱스 조건에 고정한다.
 - 전역 projection/stale-start 복구 쿼리는 state/status 부분 조건과 `(provider_started_at, id)` 정렬이 일치하는 별도 부분 인덱스를 사용한다.
 - Canonical operation이 하나라도 존재하면 migration downgrade는 `ACCESS EXCLUSIVE` lock 아래 fail-closed한다. Downgrade가 projection을 근거로 operation/correction을 삭제하거나 이력 의미를 축소하지 않는다.
 - Raw prompt/completion, request/response/header, credential/config와 raw exception column은 두지 않는다.

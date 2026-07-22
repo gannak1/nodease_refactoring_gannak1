@@ -566,6 +566,45 @@ def test_persistence_drops_cross_organization_run_and_node_correlation():
     assert db.added[0].workflow_node_run_id is None
 
 
+def test_persistence_drops_same_organization_run_from_unexpected_workflow():
+    module = _module()
+    event = _leased_event()
+    organization_id = uuid4()
+    expected_workflow_id = uuid4()
+    actual_workflow_id = uuid4()
+    workflow_run_id = uuid4()
+    workflow_node_run_id = uuid4()
+    event.payload["audit_metadata"].update(
+        {
+            "organization_id": str(organization_id),
+            "workflow_id": str(expected_workflow_id),
+        }
+    )
+    event.payload["workflow_run_id"] = str(workflow_run_id)
+    event.payload["workflow_node_run_id"] = str(workflow_node_run_id)
+    db = _CorrelationDb(
+        {
+            (WorkflowRun, workflow_run_id): SimpleNamespace(
+                id=workflow_run_id,
+                workflow_id=actual_workflow_id,
+            ),
+            (Workflow, actual_workflow_id): SimpleNamespace(
+                id=actual_workflow_id,
+                organization_id=organization_id,
+            ),
+            (WorkflowNodeRun, workflow_node_run_id): SimpleNamespace(
+                id=workflow_node_run_id,
+                workflow_run_id=workflow_run_id,
+            ),
+        }
+    )
+
+    module.persist_audit_payload(db, event.payload)
+
+    assert db.added[0].workflow_run_id is None
+    assert db.added[0].workflow_node_run_id is None
+
+
 def test_persistence_drops_cross_organization_node_only_correlation():
     module = _module()
     event = _leased_event()

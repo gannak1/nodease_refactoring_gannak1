@@ -183,6 +183,37 @@ kubectl -n <namespace> exec deployment/<release>-gateway -- \
 
 `--check`가 pending 0을 확인한 뒤에만 구키를 제거합니다. 명령 출력에는 credential config, ciphertext 또는 key가 포함되지 않습니다.
 
+### Provider usage outcome reconciliation
+
+`outcome_unknown` provider usage는 provider 또는 billing 근거로 결과를 독립적으로 확인한 뒤에만 Gateway container의 no-replay 운영 명령으로 해소합니다. 명령 실행 권한과 사람 actor 추적은 platform IAM/운영 감사가 소유하며, 이 명령은 provider를 재호출하지 않고 raw request/response나 credential을 입력받지 않습니다.
+
+성공이 확인된 경우 sealed admission의 token·가격·cost cap과 일치하는 측정값을 입력합니다.
+
+```bash
+python /app/scripts/reconcile_provider_usage.py \
+  --organization-id <organization-uuid> \
+  --operation-id <operation-uuid> \
+  --expected-state-version <version> \
+  --resolution succeeded \
+  --prompt-tokens <count> \
+  --completion-tokens <count> \
+  --total-cost-microusd <amount> \
+  --latency-ms <milliseconds>
+```
+
+Provider가 요청을 받지 않았거나 인증·인가 단계에서 확정 거절한 근거가 있는 경우에만 safe definitive reason을 사용합니다.
+
+```bash
+python /app/scripts/reconcile_provider_usage.py \
+  --organization-id <organization-uuid> \
+  --operation-id <operation-uuid> \
+  --expected-state-version <version> \
+  --resolution failed_definitive \
+  --reason-code provider_not_sent
+```
+
+Organization, operation 또는 expected state version이 현재 row와 정확히 일치하지 않거나 측정값이 immutable snapshot과 다르면 zero-write로 실패합니다. 같은 attempt를 다시 실행해 unknown을 해소해서는 안 됩니다.
+
 ## Testing
 
 Backend, Shared, Workflow Engine, Log System, Sandbox와 Client build를 포함한 저장소 검증:

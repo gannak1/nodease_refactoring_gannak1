@@ -1610,16 +1610,10 @@ class LLMNode(Node[LLMNodeData]):
                 )
                 if not callable(apply_response_format):
                     return
-                try:
-                    apply_response_format(
-                        name="workflow_node_output",
-                        schema=provider_json_schema,
-                    )
-                except Exception:
-                    logger.warning(
-                        "[LLMNode] Provider strict JSON schema format skipped",
-                        exc_info=True,
-                    )
+                apply_response_format(
+                    name="workflow_node_output",
+                    schema=provider_json_schema,
+                )
             def begin_provider_usage(attribution: ProviderExecutionAttribution | None):
                 if attribution is None:
                     return None
@@ -1776,6 +1770,9 @@ class LLMNode(Node[LLMNodeData]):
                 if provider_attribution is not None:
                     selected_model_id = provider_attribution.model_id
             apply_provider_json_schema(provider_lease)
+            provider_attribution = provider_lease.attribution
+            if provider_attribution is not None:
+                selected_model_id = provider_attribution.model_id
 
             # STEP 4. LLM 호출 ----------------------------------------------------
             used_model_id = selected_model_id
