@@ -61,17 +61,19 @@ def test_gateway_selector_excludes_postgres_only_tests(
 def test_selects_explicit_api_and_feature_consumers_for_shared_response_schema(
     tmp_path: Path,
 ):
+    source = "apps/shared/schemas/organization_membership.py"
     api_target = "apps/gateway/tests/api/test_organizations_api.py"
     service_target = (
         "apps/gateway/tests/services/test_organization_member_service.py"
     )
+    _write(tmp_path, source)
     _write(tmp_path, api_target)
     _write(tmp_path, service_target)
     _write(tmp_path, "apps/gateway/tests/architecture/test_boundaries.py")
 
     assert select_pytest_targets(
         "gateway",
-        ["apps/shared/schemas/organization_membership.py"],
+        [source],
         tmp_path,
     ) == ["apps/gateway/tests/architecture", api_target, service_target]
 
@@ -79,6 +81,8 @@ def test_selects_explicit_api_and_feature_consumers_for_shared_response_schema(
 def test_explicit_contract_mapping_fails_closed_when_consumer_is_missing(
     tmp_path: Path,
 ):
+    source = "apps/shared/schemas/organization_membership.py"
+    _write(tmp_path, source)
     _write(
         tmp_path,
         "apps/gateway/tests/services/test_organization_member_service.py",
@@ -88,7 +92,46 @@ def test_explicit_contract_mapping_fails_closed_when_consumer_is_missing(
     with pytest.raises(RuntimeError, match="explicit contract test target is missing"):
         select_pytest_targets(
             "gateway",
-            ["apps/shared/schemas/organization_membership.py"],
+            [source],
+            tmp_path,
+        )
+
+
+def test_explicit_contract_mapping_validates_a_changed_consumer_path(
+    tmp_path: Path,
+):
+    source = "apps/shared/schemas/organization_membership.py"
+    missing_api_target = "apps/gateway/tests/api/test_organizations_api.py"
+    _write(tmp_path, source)
+    _write(
+        tmp_path,
+        "apps/gateway/tests/services/test_organization_member_service.py",
+    )
+    _write(tmp_path, "apps/gateway/tests/architecture/test_boundaries.py")
+
+    with pytest.raises(RuntimeError, match="explicit contract test target is missing"):
+        select_pytest_targets(
+            "gateway",
+            [missing_api_target],
+            tmp_path,
+        )
+
+
+def test_explicit_contract_mapping_validates_a_changed_source_path(
+    tmp_path: Path,
+):
+    missing_source = "apps/shared/schemas/organization_membership.py"
+    _write(tmp_path, "apps/gateway/tests/api/test_organizations_api.py")
+    _write(
+        tmp_path,
+        "apps/gateway/tests/services/test_organization_member_service.py",
+    )
+    _write(tmp_path, "apps/gateway/tests/architecture/test_boundaries.py")
+
+    with pytest.raises(RuntimeError, match="explicit contract source is missing"):
+        select_pytest_targets(
+            "gateway",
+            [missing_source],
             tmp_path,
         )
 

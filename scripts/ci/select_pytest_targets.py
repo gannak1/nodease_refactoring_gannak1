@@ -232,10 +232,22 @@ def _explicit_contract_targets(
     config: ComponentConfig,
 ) -> set[str]:
     mappings = _EXPLICIT_CONTRACT_TEST_TARGETS.get(component, {})
+    changed_path_set = {
+        normalize_repo_path(path) for path in changed_paths
+    }
     targets: set[str] = set()
-    for raw_path in changed_paths:
-        path = normalize_repo_path(raw_path)
-        for target in mappings.get(path, ()):
+    for source, mapped_targets in mappings.items():
+        if source not in changed_path_set and changed_path_set.isdisjoint(
+            mapped_targets
+        ):
+            continue
+
+        source_candidate = repo_root / source
+        if not source_candidate.is_file():
+            raise RuntimeError(
+                f"explicit contract source is missing: {source}"
+            )
+        for target in mapped_targets:
             candidate = repo_root / target
             if not candidate.is_file():
                 raise RuntimeError(
