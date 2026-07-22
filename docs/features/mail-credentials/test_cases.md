@@ -90,3 +90,4 @@ Status: Draft
 - MAIL-CRED-TC-080: Opt-in disposable PostgreSQL race에서 동일 message registration은 한 processing id로 수렴하고 동시 Draft admission의 acquired winner는 하나다.
 - MAIL-CRED-TC-081: Google OAuth/Gmail adapter는 고정 operation과 guarded requester를 사용하며 wrong origin, private/mixed DNS, peer mismatch, redirect와 response 상한 위반을 추가 요청 없이 safe failure로 차단한다.
 - MAIL-CRED-TC-082: OAuth `invalid_grant`, Gmail 401/403/429/5xx, connect failure와 전송 뒤 응답 상실은 기존 provider별 safe code와 failure phase를 유지하고 token, raw URL/body/response/exception을 노출하지 않는다. Production adapter registry에는 Gmail send operation이 없다.
+- MAIL-CRED-TC-083: Gmail REST 검색의 목록 조회와 최대 100개 상세 조회는 같은 read operation과 승인 origin에 묶인 context-managed guarded session 하나를 사용한다. 각 상세 URL은 client 생성·network I/O 전에 다시 검증하고 session client 초기화·요청 실패는 raw 예외 없이 기존 safe unavailable code로 변환한다.

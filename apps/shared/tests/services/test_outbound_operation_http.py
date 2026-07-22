@@ -16,7 +16,10 @@ from apps.shared.services.outbound_operation_http import (
     OperationHttpRequester,
     OperationHttpTimeouts,
 )
-from apps.shared.services.outbound_operation_policy import GMAIL_PROFILE_READ
+from apps.shared.services.outbound_operation_policy import (
+    GMAIL_MESSAGE_READ,
+    GMAIL_PROFILE_READ,
+)
 
 
 class _SyncClient:
@@ -93,6 +96,70 @@ def test_sync_requester_builds_a_non_redirecting_operation_bound_client() -> Non
     assert observed["client"]["follow_redirects"] is False
     assert observed["client"]["trust_env"] is False
     assert isinstance(observed["client"]["transport"], GuardedHttpTransport)
+
+
+def test_sync_operation_session_reuses_one_client_for_bounded_requests() -> None:
+    observed = {"client_count": 0, "requests": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed["requests"].append(request.url.path)
+        return httpx.Response(200, json={"id": request.url.path.rsplit("/", 1)[-1]})
+
+    def client_factory(**kwargs):
+        observed["client_count"] += 1
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return httpx.Client(**kwargs)
+
+    requester = OperationHttpRequester(client_factory=client_factory)
+
+    with requester.open_session(
+        operation_id=GMAIL_MESSAGE_READ,
+        approved_endpoint="https://gmail.googleapis.com",
+    ) as session:
+        first = session.request(
+            method="GET",
+            url="https://gmail.googleapis.com/gmail/v1/users/me/messages/one",
+        )
+        second = session.request(
+            method="GET",
+            url="https://gmail.googleapis.com/gmail/v1/users/me/messages/two",
+        )
+        with pytest.raises(OperationHttpFailure) as captured:
+            session.request(
+                method="GET",
+                url="https://public-attacker.example/messages/three",
+            )
+
+    assert first.json() == {"id": "one"}
+    assert second.json() == {"id": "two"}
+    assert captured.value.reason_code == "egress.origin_not_allowed"
+    assert captured.value.phase is OperationHttpFailurePhase.BEFORE_SEND
+    assert observed["client_count"] == 1
+    assert observed["requests"] == [
+        "/gmail/v1/users/me/messages/one",
+        "/gmail/v1/users/me/messages/two",
+    ]
+
+
+def test_sync_operation_session_rejects_invalid_first_url_before_client() -> None:
+    observed = {}
+    requester = OperationHttpRequester(
+        client_factory=_sync_factory(httpx.Response(200), observed)
+    )
+
+    with requester.open_session(
+        operation_id=GMAIL_MESSAGE_READ,
+        approved_endpoint="https://gmail.googleapis.com",
+    ) as session:
+        with pytest.raises(OperationHttpFailure) as captured:
+            session.request(
+                method="GET",
+                url="https://public-attacker.example/messages/one",
+            )
+
+    assert captured.value.reason_code == "egress.origin_not_allowed"
+    assert captured.value.phase is OperationHttpFailurePhase.BEFORE_SEND
+    assert "client" not in observed
 
 
 def test_requester_preserves_bounded_phase_timeouts() -> None:

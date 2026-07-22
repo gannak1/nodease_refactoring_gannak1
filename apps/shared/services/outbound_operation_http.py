@@ -16,6 +16,7 @@ from apps.shared.services.guarded_http_transport import (
     GuardedHttpTransport,
 )
 from apps.shared.services.outbound_operation_policy import (
+    BoundOutboundOperation,
     require_outbound_operation_profile,
 )
 
@@ -143,6 +144,99 @@ def _bounded_timeout(
     )
 
 
+class OperationHttpSession:
+    def __init__(
+        self,
+        *,
+        operation: BoundOutboundOperation,
+        client_factory: Callable[..., httpx.Client],
+        timeout: float | httpx.Timeout,
+    ) -> None:
+        self._operation = operation
+        self._client_factory = client_factory
+        self._timeout = timeout
+        self._is_open = False
+        self._client_context: httpx.Client | None = None
+        self._client: httpx.Client | None = None
+
+    def __enter__(self) -> OperationHttpSession:
+        if self._is_open:
+            raise OperationHttpFailure(
+                "egress.session_already_open",
+                OperationHttpFailurePhase.BEFORE_SEND,
+            )
+        self._is_open = True
+        return self
+
+    def _ensure_client(self) -> httpx.Client:
+        if self._client is not None:
+            return self._client
+        try:
+            self._client_context = self._client_factory(
+                transport=GuardedHttpTransport(operation=self._operation),
+                timeout=self._timeout,
+                follow_redirects=False,
+                trust_env=False,
+            )
+            self._client = self._client_context.__enter__()
+            return self._client
+        except OperationHttpFailure:
+            self._client_context = None
+            self._client = None
+            raise
+        except Exception as exc:
+            self._client_context = None
+            self._client = None
+            raise _safe_failure(exc) from None
+
+    def __exit__(self, exc_type, exc, traceback) -> bool:
+        client_context = self._client_context
+        self._is_open = False
+        self._client_context = None
+        self._client = None
+        if client_context is None:
+            return False
+        try:
+            client_context.__exit__(exc_type, exc, traceback)
+            return False
+        except Exception as close_exc:
+            if exc is not None:
+                return False
+            raise _safe_failure(close_exc) from None
+
+    def request(
+        self,
+        *,
+        method: str,
+        url: str,
+        headers: Mapping[str, str] | None = None,
+        json_body: Any | None = None,
+        form_data: Mapping[str, Any] | None = None,
+        query_params: Mapping[str, Any] | None = None,
+    ) -> OperationHttpResponse:
+        if not self._is_open:
+            raise OperationHttpFailure(
+                "egress.session_not_open",
+                OperationHttpFailurePhase.BEFORE_SEND,
+            )
+        try:
+            self._operation.validate_url_policy(url)
+            client = self._ensure_client()
+            response = client.request(
+                method,
+                url,
+                headers=headers,
+                json=json_body,
+                data=form_data,
+                params=query_params,
+            )
+            return _response(response)
+        except OperationHttpFailure:
+            raise
+        except Exception as exc:
+            raise _safe_failure(exc) from None
+
+
 class OperationHttpRequester:
     def __init__(
         self,
@@ -150,6 +244,29 @@ class OperationHttpRequester:
         client_factory: Callable[..., httpx.Client] = httpx.Client,
     ) -> None:
         self._client_factory = client_factory
+
+    def open_session(
+        self,
+        *,
+        operation_id: str,
+        approved_endpoint: str,
+        timeouts: OperationHttpTimeouts | None = None,
+    ) -> OperationHttpSession:
+        try:
+            profile = require_outbound_operation_profile(operation_id)
+            operation = profile.bind(approved_endpoint)
+            return OperationHttpSession(
+                operation=operation,
+                client_factory=self._client_factory,
+                timeout=_bounded_timeout(
+                    operation_limit_seconds=profile.policy.timeout_seconds,
+                    timeouts=timeouts,
+                ),
+            )
+        except OperationHttpFailure:
+            raise
+        except Exception as exc:
+            raise _safe_failure(exc) from None
 
     def request(
         self,
@@ -164,33 +281,19 @@ class OperationHttpRequester:
         query_params: Mapping[str, Any] | None = None,
         timeouts: OperationHttpTimeouts | None = None,
     ) -> OperationHttpResponse:
-        try:
-            profile = require_outbound_operation_profile(operation_id)
-            operation = profile.bind(approved_endpoint)
-            operation.validate_url_policy(url)
-            transport = GuardedHttpTransport(operation=operation)
-            with self._client_factory(
-                transport=transport,
-                timeout=_bounded_timeout(
-                    operation_limit_seconds=profile.policy.timeout_seconds,
-                    timeouts=timeouts,
-                ),
-                follow_redirects=False,
-                trust_env=False,
-            ) as client:
-                response = client.request(
-                    method,
-                    url,
-                    headers=headers,
-                    json=json_body,
-                    data=form_data,
-                    params=query_params,
-                )
-                return _response(response)
-        except OperationHttpFailure:
-            raise
-        except Exception as exc:
-            raise _safe_failure(exc) from None
+        with self.open_session(
+            operation_id=operation_id,
+            approved_endpoint=approved_endpoint,
+            timeouts=timeouts,
+        ) as session:
+            return session.request(
+                method=method,
+                url=url,
+                headers=headers,
+                json_body=json_body,
+                form_data=form_data,
+                query_params=query_params,
+            )
 
 
 class AsyncOperationHttpRequester:
@@ -249,5 +352,6 @@ __all__ = [
     "OperationHttpFailurePhase",
     "OperationHttpRequester",
     "OperationHttpResponse",
+    "OperationHttpSession",
     "OperationHttpTimeouts",
 ]

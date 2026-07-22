@@ -16,6 +16,7 @@ from apps.shared.domain.mail_processing import (
 from apps.shared.services.outbound_operation_http import (
     OperationHttpFailure,
     OperationHttpRequester,
+    OperationHttpSession,
 )
 from apps.shared.services.outbound_operation_policy import (
     GMAIL_MESSAGE_MODIFY,
@@ -84,50 +85,52 @@ class GmailMailboxProvider:
         query = build_gmail_search_query(criteria)
         label = _folder_label(criteria.folder)
         try:
-            listing = self._request(
-                "GET",
-                f"{GMAIL_API_BASE_URL}/messages",
-                params={
-                    "q": query,
-                    "labelIds": label,
-                    "maxResults": str(criteria.max_results),
-                },
-            )
-            entries = listing.get("messages", [])
-            if entries is None:
-                entries = []
-            if not isinstance(entries, list):
-                raise GmailMailboxError("mail.gmail_response_invalid")
-            messages: list[GmailMailboxMessage] = []
-            for entry in entries[: criteria.max_results]:
-                provider_id = entry.get("id") if isinstance(entry, dict) else None
-                try:
-                    provider_id = require_gmail_message_id(provider_id)
-                except (TypeError, ValueError):
-                    raise GmailMailboxError("mail.gmail_response_invalid")
-                source = MailSourceReference.from_mapping(
-                    {
-                        "provider_message_id": provider_id,
-                        "folder": criteria.folder,
-                    }
-                )
-                detail = self._request(
+            with self._requester.open_session(
+                operation_id=GMAIL_MESSAGE_READ,
+                approved_endpoint=GMAIL_API_BASE_URL,
+            ) as session:
+                listing = self._request(
                     "GET",
-                    f"{GMAIL_API_BASE_URL}/messages/{provider_id}",
-                    params={"format": "full"},
+                    f"{GMAIL_API_BASE_URL}/messages",
+                    params={
+                        "q": query,
+                        "labelIds": label,
+                        "maxResults": str(criteria.max_results),
+                    },
+                    session=session,
                 )
-                output, rfc_message_id = _message_output(detail, provider_id)
-                source = MailSourceReference.from_mapping(
-                    {
-                        "provider_message_id": provider_id,
-                        "message_id": rfc_message_id,
-                        "folder": criteria.folder,
-                    }
-                )
-                messages.append(
-                    GmailMailboxMessage(output=output, source_reference=source)
-                )
-            return messages
+                entries = listing.get("messages", [])
+                if entries is None:
+                    entries = []
+                if not isinstance(entries, list):
+                    raise GmailMailboxError("mail.gmail_response_invalid")
+                messages: list[GmailMailboxMessage] = []
+                for entry in entries[: criteria.max_results]:
+                    provider_id = entry.get("id") if isinstance(entry, dict) else None
+                    try:
+                        provider_id = require_gmail_message_id(provider_id)
+                    except (TypeError, ValueError):
+                        raise GmailMailboxError("mail.gmail_response_invalid")
+                    detail = self._request(
+                        "GET",
+                        f"{GMAIL_API_BASE_URL}/messages/{provider_id}",
+                        params={"format": "full"},
+                        session=session,
+                    )
+                    output, rfc_message_id = _message_output(detail, provider_id)
+                    source = MailSourceReference.from_mapping(
+                        {
+                            "provider_message_id": provider_id,
+                            "message_id": rfc_message_id,
+                            "folder": criteria.folder,
+                        }
+                    )
+                    messages.append(
+                        GmailMailboxMessage(output=output, source_reference=source)
+                    )
+                return messages
+        except OperationHttpFailure:
+            raise GmailMailboxError("mail.gmail_provider_unavailable") from None
         except MailProcessingBoundaryError as exc:
             raise GmailMailboxError("mail.gmail_response_invalid") from exc
 
@@ -173,6 +176,7 @@ class GmailMailboxProvider:
         url: str,
         *,
         allow_empty: bool = False,
+        session: OperationHttpSession | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         params = kwargs.pop("params", None)
@@ -181,20 +185,28 @@ class GmailMailboxProvider:
             raise GmailMailboxError("mail.gmail_request_invalid")
         operation_id = GMAIL_MESSAGE_MODIFY if method == "POST" else GMAIL_MESSAGE_READ
         try:
-            response = self._requester.request(
-                operation_id=operation_id,
-                approved_endpoint=GMAIL_API_BASE_URL,
-                method=method,
-                url=url,
-                headers={
+            request_kwargs: dict[str, Any] = {
+                "method": method,
+                "url": url,
+                "headers": {
                     **self._headers,
                     **(
                         {"Content-Type": "application/json"} if method == "POST" else {}
                     ),
                 },
-                query_params=params,
-                json_body=json_body,
-            )
+                "query_params": params,
+                "json_body": json_body,
+            }
+            if session is not None:
+                if operation_id != GMAIL_MESSAGE_READ:
+                    raise GmailMailboxError("mail.gmail_request_invalid")
+                response = session.request(**request_kwargs)
+            else:
+                response = self._requester.request(
+                    operation_id=operation_id,
+                    approved_endpoint=GMAIL_API_BASE_URL,
+                    **request_kwargs,
+                )
         except OperationHttpFailure:
             raise GmailMailboxError("mail.gmail_provider_unavailable") from None
         if response.status_code in {401, 403}:

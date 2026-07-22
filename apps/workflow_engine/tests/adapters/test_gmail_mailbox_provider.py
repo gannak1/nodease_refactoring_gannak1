@@ -21,8 +21,10 @@ def _encoded(value: str) -> str:
     return base64.urlsafe_b64encode(value.encode()).decode().rstrip("=")
 
 
-def _requester(handler) -> OperationHttpRequester:
+def _requester(handler, *, observed: dict | None = None) -> OperationHttpRequester:
     def client_factory(**kwargs):
+        if observed is not None:
+            observed["client_count"] = observed.get("client_count", 0) + 1
         kwargs.pop("transport")
         return httpx.Client(transport=httpx.MockTransport(handler), **kwargs)
 
@@ -94,6 +96,49 @@ def test_search_returns_safe_output_and_protected_source_identity():
     assert "is:unread" in query
     assert '"onboarding"' in query
     assert calls[0].url.params["labelIds"] == "INBOX"
+
+
+def test_search_reuses_one_guarded_client_for_listing_and_message_details():
+    observed = {}
+
+    def handler(request):
+        if request.url.path.endswith("/messages"):
+            return httpx.Response(
+                200,
+                json={"messages": [{"id": "gmail-one"}, {"id": "gmail-two"}]},
+            )
+        message_id = request.url.path.rsplit("/", 1)[-1]
+        return httpx.Response(200, json=_message_detail(message_id))
+
+    provider = GmailMailboxProvider(
+        access_token="synthetic-access-token",
+        requester=_requester(handler, observed=observed),
+    )
+
+    messages = provider.search(GmailSearchCriteria(max_results=2))
+
+    assert len(messages) == 2
+    assert observed["client_count"] == 1
+
+
+def test_search_maps_session_client_initialization_failure_to_safe_provider_error():
+    def client_factory(**_kwargs):
+        raise httpx.ConnectError(
+            "raw connection detail",
+            request=httpx.Request("GET", "https://gmail.googleapis.com"),
+        )
+
+    provider = GmailMailboxProvider(
+        access_token="synthetic-access-token",
+        requester=OperationHttpRequester(client_factory=client_factory),
+    )
+
+    with pytest.raises(GmailMailboxError) as captured:
+        provider.search(GmailSearchCriteria(max_results=1))
+
+    assert captured.value.reason_code == "mail.gmail_provider_unavailable"
+    assert "raw connection detail" not in str(captured.value)
+    assert captured.value.__cause__ is None
 
 
 def test_mark_read_happens_in_one_batch_after_search_results_are_available():
