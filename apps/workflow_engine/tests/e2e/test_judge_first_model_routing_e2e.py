@@ -73,7 +73,12 @@ def _node_data():
 
 
 def test_judge_labels_gradually_enable_confident_local_routing(monkeypatch):
-    candidates = ["gpt-4o-mini", "gpt-5.4"]
+    monkeypatch.setattr(
+        ModelRouter,
+        "should_audit_local_prediction",
+        classmethod(lambda cls, feature_text: False),
+    )
+    candidates = ["gpt-4o-mini", "gpt-4.1-mini", "gpt-5.4"]
     active_policy = build_judge_first_active_policy(
         policy_version="judge-first-e2e-v1",
         default_model_id="gpt-5.4",
@@ -108,8 +113,12 @@ def test_judge_labels_gradually_enable_confident_local_routing(monkeypatch):
         )
         assert selected_model_id is not None
         selected_models.add(selected_model_id)
+        learning_feature = ModelRouter.learning_feature_text(
+            {"message": feature},
+            _node_data(),
+        )
         vector, encoder_model_id = MultilingualE5ModelChoiceClassifier.vectorize(
-            feature,
+            learning_feature,
             artifact=None,
             embedder=embedder,
         )
@@ -194,7 +203,7 @@ def test_judge_labels_gradually_enable_confident_local_routing(monkeypatch):
         routing_feature_text="복잡 규정 종합 판단",
     )
 
-    assert simple.selected_model_id == "gpt-4o-mini"
+    assert simple.selected_model_id == "gpt-4.1-mini"
     assert complex_request.selected_model_id == "gpt-5.4"
     assert simple.decision_source == "local_router"
     assert complex_request.decision_source == "local_router"
@@ -204,11 +213,16 @@ def test_judge_labels_gradually_enable_confident_local_routing(monkeypatch):
 
 def test_one_hundred_accepted_labels_enable_local_router_on_next_request(monkeypatch):
     """운영 label 100건과 최근 50건 gate 뒤에만 local router를 활성화한다."""
+    monkeypatch.setattr(
+        ModelRouter,
+        "should_audit_local_prediction",
+        classmethod(lambda cls, feature_text: False),
+    )
     from apps.workflow_engine.services.model_routing_learner_store import (
         ModelRoutingLearnerStore,
     )
 
-    candidates = ["gpt-4o-mini", "gpt-5-mini"]
+    candidates = ["gpt-4o-mini", "gpt-4.1-mini", "gpt-5-mini"]
     active_policy = build_judge_first_active_policy(
         policy_version="judge-first-e2e-v2",
         default_model_id="gpt-5-mini",
@@ -216,8 +230,12 @@ def test_one_hundred_accepted_labels_enable_local_router_on_next_request(monkeyp
         candidate_model_ids=candidates,
     )
     embedder = _FeatureEmbedder()
+    simple_learning_feature = ModelRouter.learning_feature_text(
+        {"message": "간단 사용 안내"},
+        _node_data(),
+    )
     simple_vector, encoder_model_id = MultilingualE5ModelChoiceClassifier.vectorize(
-        "간단 사용 안내",
+        simple_learning_feature,
         artifact=None,
         embedder=embedder,
     )
@@ -225,7 +243,7 @@ def test_one_hundred_accepted_labels_enable_local_router_on_next_request(monkeyp
         status="pending",
         feature_vector=simple_vector,
         encoder_model_id=encoder_model_id,
-        selected_model_id="gpt-4o-mini",
+        selected_model_id="gpt-4.1-mini",
         candidate_model_ids=candidates,
         confidence=0.94,
         reason_code="simple_response",
@@ -260,8 +278,13 @@ def test_one_hundred_accepted_labels_enable_local_router_on_next_request(monkeyp
     # 서로 다른 두 Judge 선택을 계약 통과 label로 100개 확정한다.
     for index in range(99):
         simple = index % 2 == 0
+        feature = "간단 사용 안내" if simple else "복잡 규정 종합 판단"
+        learning_feature = ModelRouter.learning_feature_text(
+            {"message": feature},
+            _node_data(),
+        )
         feature_vector, encoder_model_id = MultilingualE5ModelChoiceClassifier.vectorize(
-            "간단 사용 안내" if simple else "복잡 규정 종합 판단",
+            learning_feature,
             artifact=None,
             embedder=embedder,
         )
@@ -269,7 +292,7 @@ def test_one_hundred_accepted_labels_enable_local_router_on_next_request(monkeyp
             status="pending",
             feature_vector=feature_vector,
             encoder_model_id=encoder_model_id,
-            selected_model_id="gpt-4o-mini" if simple else "gpt-5-mini",
+            selected_model_id="gpt-4.1-mini" if simple else "gpt-5-mini",
             candidate_model_ids=candidates,
             confidence=0.94,
             reason_code="simple_response" if simple else "multi_constraint",
@@ -352,4 +375,4 @@ def test_one_hundred_accepted_labels_enable_local_router_on_next_request(monkeyp
         routing_feature_text="간단 사용 안내",
     )
     assert decision.decision_source == "local_router"
-    assert decision.selected_model_id == "gpt-4o-mini"
+    assert decision.selected_model_id == "gpt-4.1-mini"

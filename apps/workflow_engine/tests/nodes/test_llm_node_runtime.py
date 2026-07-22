@@ -4590,10 +4590,10 @@ def test_deployed_judge_bootstrap_exposes_learning_queue_failure_reason(monkeypa
     assert metadata["judge"]["learning_not_queued_reason"] == "RuntimeError"
 
 
-def test_low_confidence_judge_uses_configured_fallback_without_adjudicator(
+def test_low_confidence_judge_uses_requirement_safe_fallback_without_adjudicator(
     monkeypatch,
 ):
-    """불확실한 1차 판정은 추가 Judge 없이 사용자 설정 fallback으로 닫는다."""
+    """불확실한 판정은 추가 Judge 없이 요구 수준을 만족하는 안전 모델로 닫는다."""
     from apps.workflow_engine.services.model_routing_policy_store import (
         ModelRoutingPolicyStore,
     )
@@ -4726,7 +4726,7 @@ def test_low_confidence_judge_uses_configured_fallback_without_adjudicator(
         routing_feature_text="권한 변경 영향 검토",
     )
 
-    assert selected == "gpt-4o-mini"
+    assert selected == "gpt-5.4"
     assert fallback == "gpt-5-mini"
     assert captured == {}
     assert metadata["included_in_routing_learning"] is False

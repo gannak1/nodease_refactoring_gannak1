@@ -801,18 +801,31 @@ class LLMNode(Node[LLMNodeData]):
                     requirement_assessment.requires_safe_fallback
                 )
                 if requires_safe_fallback:
-                    allowed_models = {
-                        ModelRouter.normalize_model_id(model_id)
-                        for model_id in (available_model_ids or [])
-                    }
-                    selected_by_server = ModelRouter.first_available_model(
-                        [
-                            self.data.fallback_model_id,
-                            fallback_model_id,
-                            judge_default_model_id,
-                        ],
-                        allowed_models,
-                    ) or judge_default_model_id
+                    selected_by_server = (
+                        ModelRouter.select_safe_fallback_for_requirements(
+                            candidate_model_ids=candidate_model_ids,
+                            requirements=requirement_assessment.task_requirements,
+                            candidate_profiles=candidate_profiles,
+                            default_model_id=judge_default_model_id,
+                            structural_facts=structural_facts,
+                        )
+                        or judge_default_model_id
+                    )
+                    fallback_model_id = (
+                        ModelRouter.select_safe_fallback_for_requirements(
+                            candidate_model_ids=[
+                                model_id
+                                for model_id in candidate_model_ids
+                                if ModelRouter.normalize_model_id(model_id)
+                                != ModelRouter.normalize_model_id(selected_by_server)
+                            ],
+                            requirements=requirement_assessment.task_requirements,
+                            candidate_profiles=candidate_profiles,
+                            default_model_id=judge_default_model_id,
+                            structural_facts=structural_facts,
+                        )
+                        or fallback_model_id
+                    )
                     selection_reason_code = (
                         "requirement_judge_low_confidence_fallback"
                     )
