@@ -31,6 +31,11 @@ from apps.workflow_engine.services.llm_output_contract import (
 from apps.workflow_engine.services.model_routing_judge_first_policy import (
     JUDGE_FIRST_STRATEGY_ID,
 )
+from apps.workflow_engine.services.model_routing_bootstrap_score import (
+    model_bootstrap_score,
+    required_bootstrap_score,
+    required_safe_fallback_score,
+)
 from apps.workflow_engine.services.model_routing_decision_cache import (
     accepted_decision,
 )
@@ -1104,6 +1109,14 @@ class ModelRouter:
         impact = cls._requirement_score(requirements.get("decision_impact"))
         evidence = cls._requirement_score(requirements.get("evidence_synthesis"))
         required_ceiling = max(complexity, impact, evidence)
+        required_model_score = required_bootstrap_score(
+            {
+                "task_complexity": complexity,
+                "decision_impact": impact,
+                "evidence_synthesis": evidence,
+            },
+            structural_facts=structural_facts,
+        )
         ceiling_rank = {"routine": 1, "multi_constraint": 2, "complex_professional": 3}
         reasoning_rank = {
             "non_reasoning": 0,
@@ -1128,6 +1141,9 @@ class ModelRouter:
             if not metadata:
                 if is_default:
                     eligible.append((float("inf"), model_id, profile))
+                continue
+            bootstrap_score = model_bootstrap_score(model_id)
+            if bootstrap_score is None or bootstrap_score < required_model_score:
                 continue
             model_ceiling = ceiling_rank.get(str(metadata.get("complexity_ceiling")), 0)
             reasoning = reasoning_rank.get(str(metadata.get("reasoning_profile")), 0)
@@ -1198,6 +1214,52 @@ class ModelRouter:
             if value is not None and cls._rate(value) < cls.MIN_OPERATIONAL_CONTRACT_PASS_RATE:
                 return False
         return True
+
+    @classmethod
+    def select_safe_fallback_for_requirements(
+        cls,
+        *,
+        candidate_model_ids: Iterable[str],
+        requirements: Mapping[str, Any],
+        candidate_profiles: Iterable[Mapping[str, Any]] | None = None,
+        default_model_id: str | None = None,
+        structural_facts: Mapping[str, Any] | None = None,
+    ) -> str | None:
+        """불확실한 판정에서 약한 configured fallback으로 바로 내려가지 않는다."""
+
+        candidates = cls._unique_model_ids(candidate_model_ids)
+        safe_floor = required_safe_fallback_score(
+            requirements,
+            structural_facts=structural_facts,
+        )
+        safe_candidates = [
+            model_id
+            for model_id in candidates
+            if (model_bootstrap_score(model_id) or -1.0) >= safe_floor
+        ]
+        if safe_candidates:
+            selected = cls.select_candidate_for_requirements(
+                candidate_model_ids=safe_candidates,
+                requirements=requirements,
+                candidate_profiles=candidate_profiles,
+                default_model_id=default_model_id,
+                structural_facts=structural_facts,
+            )
+            if selected:
+                return selected
+
+        normalized_default = cls.normalize_model_id(default_model_id or "")
+        scored_candidates = [
+            (score, cls.normalize_model_id(model_id) == normalized_default, model_id)
+            for model_id in candidates
+            if (score := model_bootstrap_score(model_id)) is not None
+        ]
+        if scored_candidates:
+            return max(scored_candidates, key=lambda row: (row[0], row[1]))[2]
+        return cls.first_available_model(
+            [default_model_id],
+            {cls.normalize_model_id(model_id) for model_id in candidates},
+        )
 
     @staticmethod
     def _nonnegative_int(value: Any) -> int:

@@ -111,7 +111,7 @@ def test_confident_local_prediction_skips_runtime_judge(monkeypatch):
         routing_feature_text="CURRENT_REQUEST: 비밀번호 변경 위치",
     )
 
-    assert decision.selected_model_id == "gpt-4o-mini"
+    assert decision.selected_model_id == "gpt-4.1-mini"
     assert decision.reason_code == "local_router_confident"
     assert decision.decision_source == "local_router"
     assert decision.requires_runtime_judge is False
@@ -292,9 +292,14 @@ def test_candidate_selection_keeps_catalog_choice_until_two_models_have_proven_q
     assert selected == "gpt-4o-mini"
 
 
-def test_candidate_selection_excludes_routine_reasoning_model_for_generated_json_response():
+def test_candidate_selection_avoids_economy_model_for_generated_json_response():
     selected = ModelRouter.select_candidate_for_requirements(
-        candidate_model_ids=["gpt-5-nano", "gpt-4o-mini", "gpt-4.1"],
+        candidate_model_ids=[
+            "gpt-5-nano",
+            "gpt-4o-mini",
+            "gpt-4.1-mini",
+            "gpt-4.1",
+        ],
         requirements={
             "task_complexity": 1,
             "decision_impact": 0,
@@ -308,7 +313,7 @@ def test_candidate_selection_excludes_routine_reasoning_model_for_generated_json
         },
     )
 
-    assert selected == "gpt-4o-mini"
+    assert selected == "gpt-4.1-mini"
 
 
 def test_candidate_selection_keeps_nano_for_structured_extraction():
@@ -361,6 +366,117 @@ def test_candidate_selection_keeps_default_when_no_candidate_meets_requirements(
     )
 
     assert selected == "gpt-4.1"
+
+
+def test_candidate_selection_uses_real_score_for_all_axis_level_two_request():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=[
+            "gpt-4o-mini",
+            "gpt-4.1-mini",
+            "gpt-4.1",
+            "gpt-5.4-mini",
+        ],
+        requirements={
+            "task_complexity": 2,
+            "decision_impact": 2,
+            "evidence_synthesis": 2,
+        },
+        default_model_id="gpt-4.1",
+    )
+
+    assert selected == "gpt-5.4-mini"
+
+
+def test_candidate_selection_raises_model_for_complex_request():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=[
+            "gpt-4.1",
+            "gpt-5.4-mini",
+            "gpt-5.4",
+            "gpt-5.6-terra",
+            "gpt-5.6-sol",
+        ],
+        requirements={
+            "task_complexity": 3,
+            "decision_impact": 2,
+            "evidence_synthesis": 2,
+        },
+        default_model_id="gpt-4.1",
+    )
+
+    assert selected == "gpt-5.4"
+
+
+def test_candidate_selection_reserves_top_score_for_all_axis_level_three():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=[
+            "gpt-5.4",
+            "o3",
+            "gpt-5.6-sol",
+        ],
+        requirements={
+            "task_complexity": 3,
+            "decision_impact": 3,
+            "evidence_synthesis": 3,
+        },
+        default_model_id="gpt-5.4",
+    )
+
+    assert selected == "gpt-5.6-sol"
+
+
+def test_candidate_selection_avoids_economy_model_for_freeform_generation():
+    selected = ModelRouter.select_candidate_for_requirements(
+        candidate_model_ids=["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+        requirements={
+            "task_complexity": 1,
+            "decision_impact": 0,
+            "evidence_synthesis": 0,
+        },
+        default_model_id="gpt-4.1",
+        structural_facts={
+            "task_intent": "generate",
+            "output_format": "text",
+            "schema_required": False,
+        },
+    )
+
+    assert selected == "gpt-4.1-mini"
+
+
+def test_safe_fallback_adds_margin_for_uncertain_generated_response():
+    selected = ModelRouter.select_safe_fallback_for_requirements(
+        candidate_model_ids=[
+            "gpt-4o-mini",
+            "gpt-4.1",
+            "gpt-5.4-mini",
+            "gpt-5.6-sol",
+        ],
+        requirements={
+            "task_complexity": 2,
+            "decision_impact": 2,
+            "evidence_synthesis": 2,
+        },
+        default_model_id="gpt-5.4-mini",
+        structural_facts={"task_intent": "generate", "output_format": "json"},
+    )
+
+    assert selected == "gpt-5.4-mini"
+
+
+def test_safe_fallback_uses_strongest_available_when_high_impact_floor_is_unmet():
+    selected = ModelRouter.select_safe_fallback_for_requirements(
+        candidate_model_ids=["gpt-4o-mini", "gpt-5-mini", "gpt-5.4"],
+        requirements={
+            "task_complexity": 2,
+            "decision_impact": 3,
+            "evidence_synthesis": 2,
+        },
+        default_model_id="gpt-5-mini",
+        structural_facts={"task_intent": "generate", "output_format": "json"},
+    )
+
+    assert selected == "gpt-5.4"
 
 
 def test_runtime_requirement_facts_are_computed_without_llm_guessing():
