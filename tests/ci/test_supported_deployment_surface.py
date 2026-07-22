@@ -97,6 +97,54 @@ def test_support_guard_rejects_provider_specific_delegated_script(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "delegated_command",
+    [
+        "./scripts/deploy",
+        "scripts/deploy",
+        "${{ github.workspace }}/scripts/deploy",
+        "$GITHUB_WORKSPACE/scripts/deploy",
+    ],
+)
+def test_support_guard_rejects_provider_specific_extensionless_script_delegation(
+    tmp_path,
+    delegated_command,
+):
+    workflow_path = ".github/workflows/publish-images.yml"
+    workflow = tmp_path / workflow_path
+    script = tmp_path / "scripts" / "deploy"
+    workflow.parent.mkdir(parents=True)
+    script.parent.mkdir(parents=True)
+    workflow.write_text(
+        f"name: Publish\nsteps:\n  - run: {delegated_command}\n",
+        encoding="utf-8",
+    )
+    script.write_text("aws eks update-kubeconfig --name example\n", encoding="utf-8")
+
+    assert find_unsupported_deployment_paths(
+        [workflow_path],
+        repo_root=tmp_path,
+    ) == [workflow_path]
+
+
+def test_support_guard_accepts_provider_neutral_extensionless_script(tmp_path):
+    workflow_path = ".github/workflows/publish-images.yml"
+    workflow = tmp_path / workflow_path
+    script = tmp_path / "scripts" / "publish"
+    workflow.parent.mkdir(parents=True)
+    script.parent.mkdir(parents=True)
+    workflow.write_text(
+        "name: Publish\nsteps:\n  - run: ./scripts/publish\n",
+        encoding="utf-8",
+    )
+    script.write_text("echo provider-neutral\n", encoding="utf-8")
+
+    assert find_unsupported_deployment_paths(
+        [workflow_path],
+        repo_root=tmp_path,
+    ) == []
+
+
+@pytest.mark.parametrize(
     "workspace_prefix",
     [
         "${{ github.workspace }}",
@@ -181,6 +229,34 @@ def test_support_guard_rejects_script_delegated_through_local_action(tmp_path):
         "name: Deploy helper\nruns:\n  using: composite\n  steps:\n"
         "    - shell: bash\n"
         "      run: ${{ github.action_path }}/deploy.sh\n",
+        encoding="utf-8",
+    )
+    script.write_text("eksctl create cluster --name example\n", encoding="utf-8")
+
+    assert find_unsupported_deployment_paths(
+        [workflow_path],
+        repo_root=tmp_path,
+    ) == [workflow_path]
+
+
+def test_support_guard_rejects_extensionless_script_delegated_through_local_action(
+    tmp_path,
+):
+    workflow_path = ".github/workflows/publish-images.yml"
+    action_path = ".github/actions/deploy/action.yml"
+    workflow = tmp_path / workflow_path
+    action = tmp_path / action_path
+    script = action.parent / "deploy"
+    workflow.parent.mkdir(parents=True)
+    action.parent.mkdir(parents=True)
+    workflow.write_text(
+        "name: Publish\nsteps:\n  - uses: ./.github/actions/deploy\n",
+        encoding="utf-8",
+    )
+    action.write_text(
+        "name: Deploy helper\nruns:\n  using: composite\n  steps:\n"
+        "    - shell: bash\n"
+        "      run: ${{ github.action_path }}/deploy\n",
         encoding="utf-8",
     )
     script.write_text("eksctl create cluster --name example\n", encoding="utf-8")

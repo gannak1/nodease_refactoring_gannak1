@@ -41,6 +41,7 @@ _PROVIDER_SPECIFIC_EXECUTABLE_PATTERNS = tuple(
 _MAX_GITHUB_EXECUTABLE_BYTES = 1024 * 1024
 _MAX_LOCAL_EXECUTION_FILES = 128
 _MAX_LOCAL_EXECUTION_DEPTH = 16
+_STATIC_LOCAL_PATH_PATTERN = r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+"
 
 _LOCAL_USES_PATTERN = re.compile(
     r"^\s*(?:-\s*)?uses:\s*['\"]?(?P<path>\./[^\s'\"#]+)",
@@ -53,18 +54,22 @@ _LOCAL_RELATIVE_EXECUTABLE_PATTERN = re.compile(
     r"(?![A-Za-z0-9_.-])",
     re.IGNORECASE,
 )
+_LOCAL_RELATIVE_SCRIPT_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_.-])"
+    rf"(?P<path>(?:\.\.?/)+scripts/{_STATIC_LOCAL_PATH_PATTERN})"
+    r"(?![A-Za-z0-9_./-])",
+    re.IGNORECASE,
+)
 _SCRIPTS_EXECUTABLE_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_./-])"
-    r"(?P<path>scripts/(?:[A-Za-z0-9_.-]+/)*"
-    r"[A-Za-z0-9_.-]+\.(?:py|sh|bash|ps1|js|mjs|cjs))"
-    r"(?![A-Za-z0-9_.-])",
+    rf"(?P<path>scripts/{_STATIC_LOCAL_PATH_PATTERN})"
+    r"(?![A-Za-z0-9_./-])",
     re.IGNORECASE,
 )
 _GITHUB_WORKSPACE_EXECUTABLE_PATTERN = re.compile(
     r"(?:\$\{\{\s*github\.workspace\s*\}\}|\$GITHUB_WORKSPACE)"
-    r"/(?P<path>scripts/(?:[A-Za-z0-9_.-]+/)*"
-    r"[A-Za-z0-9_.-]+\.(?:py|sh|bash|ps1|js|mjs|cjs))"
-    r"(?![A-Za-z0-9_.-])",
+    rf"/(?P<path>scripts/{_STATIC_LOCAL_PATH_PATTERN})"
+    r"(?![A-Za-z0-9_./-])",
     re.IGNORECASE,
 )
 _PYTHON_MODULE_PATTERN = re.compile(
@@ -78,9 +83,8 @@ _ACTION_RUNTIME_PATTERN = re.compile(
 )
 _GITHUB_ACTION_PATH_PATTERN = re.compile(
     r"(?:\$\{?GITHUB_ACTION_PATH\}?|\$\{\{\s*github\.action_path\s*\}\})/"
-    r"(?P<path>"
-    r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:py|sh|bash|ps1|js|mjs|cjs)"
-    r")",
+    rf"(?P<path>{_STATIC_LOCAL_PATH_PATTERN})"
+    r"(?![A-Za-z0-9_./-])",
     re.IGNORECASE,
 )
 
@@ -169,6 +173,7 @@ def _delegated_execution_paths(
 
     for pattern in (
         _LOCAL_RELATIVE_EXECUTABLE_PATTERN,
+        _LOCAL_RELATIVE_SCRIPT_PATTERN,
         _GITHUB_WORKSPACE_EXECUTABLE_PATTERN,
         _SCRIPTS_EXECUTABLE_PATTERN,
     ):
