@@ -14,6 +14,7 @@ Status: Draft
 - If preview returns `blocked`, deployment creation is not attempted and the existing error step displays safe reason labels and required actions.
 - If preview returns `warning`, deployment creation continues. The successful deployment result carries only the formatted safe warning, and `SuccessStep` displays it in an amber text banner with `role="status"`.
 - Collection preflight copy may show affected Collection count bucket and candidate-budget-limited boolean. It never renders selected Collection/child identifiers, labels, membership, or exact hidden counts.
+- Privacy-aware Knowledge preflight는 stale/invalid manifest, frozen/current validity epoch 불일치 legacy, retired/expired legacy와 artifact 부재를 하나의 fixed `knowledge_privacy_artifact_unavailable` label과 `reprocess_or_remove_unavailable_knowledge` action으로 표시한다. Invalidating epoch commit은 item projection/cleanup 전에도 runtime과 같은 resolver에서 즉시 반영한다. Document, policy, provider identity와 exact affected count는 렌더링하지 않는다. Inactive warning은 저장 가능성만 뜻하며 활성화 가능 또는 privacy 승인으로 표현하지 않는다.
 - Existing activation toggle controls surface `deployment.preflight.blocked` responses without showing hidden KB identity.
 - `DeploymentFlowModal`과 activation toggle은 기존 preflight response에서 MBA-219의 generic node reason/action을 함께 표시한다. Mail credential identity, Slack token/Webhook URL/channel/payload와 raw configuration은 렌더링하지 않는다.
 - Active delete controls do not need preflight display in MBA-176 because delete no longer auto-promotes another deployment.

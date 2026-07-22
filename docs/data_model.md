@@ -911,6 +911,102 @@ safe query topics와 저장된 safe metadata를 사용해 계산한다. Migratio
 
 `meta_info.classification`의 canonical 의미는 ADR-0007의 보안 민감도다. Current demo/legacy 데이터에는 `public_law`, `internal_policy`처럼 문서 유형 또는 주제로 보이는 값이 남아 있지만 이를 허용 보안 등급 확장으로 해석하지 않는다. ADR-0065가 승인한 target `document_type`, taxonomy topic과 chunking profile은 classification과 분리된 additive metadata이며, AI가 만든 topic은 권한·보안 분류의 source of truth가 아니다.
 
+#### Target Knowledge privacy detection model
+
+[ADR-0070](decisions/ADR-0070-organization-detector-provider-and-pre-embedding-local-masking-boundary.md)은
+다음 logical entity와 관계를 승인한다. 현재 physical table/column이 존재하거나 기존
+chunk/vector가 이 privacy gate를 통과했다는 뜻은 아니다. MBA-362가 additive migration,
+retention, index/FK/cascade와 upgrade/downgrade를 확정한다.
+
+| Logical entity | 역할 | 핵심 불변조건 |
+| --- | --- | --- |
+| Organization/Scoped Privacy Policy Revision | Organization base 또는 Collection/source/KB stricter scope의 privacy requirement/action, normalization/masking과 nullable exact provider revision | Immutable same-Organization scope다. 하위 scope는 platform/Organization 값을 약화하지 않고 미지정 field는 상위 값을 유지한다. Existing Organization migration과 이후 Organization creation은 null provider와 current platform contract를 참조하는 explicit server-owned initial `baseline_only` revision을 가져야 하며 bootstrap 실패와 runtime missing policy는 fail-closed다. |
+| Organization Privacy Foundation Writer Generation | Organization creation writer가 initial privacy policy/current Organization validity를 함께 생성할 수 있음을 증명하는 Target generation marker와 foundation refs | Migration 중 nullable backfill state만 허용한다. Enforcement activation은 모든 row가 exact supported generation과 non-null initial policy/current validity ref를 가진 뒤 no-default non-null DB commit constraint를 켜야 한다. New writer는 값을 명시적으로 쓰고 old writer insert는 Organization row 없이 rollback한다. Exact FK/deferred-constraint shape는 MBA-362 migration에서 확정한다. |
+| Collection Privacy Policy Binding Revision | Published Collection privacy policy를 exact KB에 적용하는 explicit protected binding | 생성 시 active same-Organization routing membership이 전제이며 V1 Organization manager의 impact acknowledgement와 expected membership/binding/policy/current validity revision CAS로만 생성/교체/제거한다. 일반 membership link/reorder와 Collection archive/restore는 binding을 바꾸지 않는다. Archived Collection의 active binding도 explicit unbind 전까지 effective하며 active binding이 있는 unlink/hard-delete/referenced-policy purge는 차단한다. |
+| Effective Privacy Policy Snapshot | 한 materialization에 적용된 platform/Organization/Collection/source/KB 정책 집합 | 모든 explicit active Collection Privacy Policy Binding을 포함한 exact scoped revision과 Collection privacy/source/KB binding revision, strongest action/OR requirement, distinct provider 집합 검증, compiled digest와 derived mode/action/provider를 고정한다. Collection ordering은 digest 재현성 전용이다. Scope set/result 변경은 Organization validity invalidation을 유발한다. |
+| Detector Provider Registration/Revision | Organization-scoped DLP/NER endpoint/config/credential capability, exact egress approval revision과 trust/lifecycle contract | Immutable revision, exact owner, `organization_private|external_approved`, active/revoked를 분리한다. Endpoint/config/credential은 opaque server-owned reference이며 request/graph/document metadata에 저장하지 않는다. Safe management/revocation/approval/audit surface 전 provider path는 disabled다. |
+| Detector Egress Approval Revision | Exact Organization/provider/trust tier의 외부 처리 승인 | Purpose, processor/ownership·endpoint/network boundary, data residency, retention, no-training/no-secondary-use와 active/expiry/revoke를 immutable하게 고정한다. External tier는 ADR-0067 public guard를 유지한다. Private tier는 server-owned exact host/port/CIDR allowlist와 dedicated isolated transport readiness를 별도로 요구한다. Private IP/DNS/mTLS/credential 존재는 approval이 아니다. |
+| Raw Parser Egress Approval Revision | Exact Organization/applicable source 또는 KB/parser revision의 hard-baseline 전 raw 처리 승인 | Source-managed document는 source scope, manual document는 KB scope를 사용한다. Purpose, processor/ownership·endpoint/network, residency/retention/no-training/no-secondary-use, credential capability, active/expiry/revoke와 `knowledge.parser.external_approved` public-address operation-profile contract를 불변 고정한다. Private raw parser는 별도 Accepted ADR 전까지 지원하지 않고 Detector approval 또는 LlamaParse credential `use`를 재사용하지 않는다. |
+| Privacy Artifact Validity Revision | Privacy Decision Manifest의 현재 retrieval 적합성을 판정하는 server-owned `platform|organization` scoped revision | 각 scope에 monotonic positive `validity_epoch`과 previous/current revision, `artifact_preserving|artifact_invalidating` effect를 불변 기록한다. Preserving은 epoch을 유지하고 invalidating은 platform global 또는 해당 Organization epoch을 정확히 1 증가시킨다. Ambiguous transition은 invalidating이고 V1 Organization invalidation은 해당 Organization의 모든 privacy-gated artifact에 적용한다. |
+| Privacy Detection Attempt | Document/canonical generation의 effective policy/baseline/parser/provider snapshot, claim/fence와 safe operational state | Raw text/view/map, exact span/confidence, parser/provider payload/exception을 저장하지 않는다. Same materialization identity의 valid claim generation 하나만 external call/commit 권한을 가진다. |
+| Privacy Review Candidate Revision | Pending generation의 encrypted staged redacted candidate를 결속하는 immutable revision | Monotonic candidate revision, protected staging ref, 최초 generation DB time에 묶인 `retention_expires_at`, effective policy/Collection privacy binding, validity/source snapshot과 safe outcome은 immutable이다. 연결된 body lifecycle projection은 CAS-managed `reviewable|approved_pending_finalization|purge_pending|purged`와 separate legal-hold state를 저장한다. 추가 masking은 candidate-relative range로 새 revision을 만들고 expiry를 연장하지 않으며 replacement/raw text 또는 submitted range를 durable 저장하지 않는다. Exact non-expired approved revision만 finalization input이고 blanket/stale/expired approval과 terminal block override는 없다. |
+| Privacy Review Decision | Exact candidate에 대한 reviewer mutation을 기록하는 append-only decision | Generation/candidate revision, actor, `mask|approve|reject`, current policy/binding/validity/source precondition, safe outcome과 nullable successor candidate ref만 저장한다. Candidate body/range/raw/span/digest는 저장하지 않으며 decision과 generation review-state 또는 successor candidate mutation, canonical review audit는 한 Unit of Work다. |
+| Privacy Decision Manifest | Staged redacted candidate의 revision/coverage/outcome provenance | Organization-scoped keyed source/span digest와 key version, redacted candidate ref와 exact candidate revision, effective policy snapshot/digest, provider/detector-approval/raw-parser/baseline/masking refs, exact platform/Organization validity revision refs와 epoch snapshot, segment coverage digest와 bounded outcome만 저장한다. Approved exact candidate의 manifest만 canonical finalization에 사용하며 audit/trace에는 digest 대신 opaque manifest ref만 제공한다. |
+| Privacy Migration Inventory/Wave | Enforcement 시작 전 존재한 legacy raw-derived artifact의 일회성 전환 범위와 cutoff | Bounded item staging은 비권위다. Organization rollout coordination lock 아래 final freeze가 exact current retrieval-visible raw-derived set, staged inventory, `legacy_snapshot_revision`과 current platform/Organization validity ref+epoch을 대조하고 enforcement epoch/rollout marker와 immutable header를 원자 확정한다. Legacy-producing writer는 같은 epoch를 CAS한다. Organization/KB/document/nullable version과 opaque `legacy_artifact_ref`는 versioned 또는 unversioned chunk와 vector/keyword/hierarchy generation exact set을 결속한다. Inventory revision, frozen platform/Organization validity ref+epoch, immutable `enforcement_activated_at`, code-owned `privacy_legacy_grace_v1 = 30 * 24 hours`와 UTC `admission_deadline_at <= retrieval_cutoff_at <= enforcement_activated_at + 30 * 24 hours`를 고정한다. 각 artifact는 최대 한 wave에만 배정한다. Runtime/preflight는 frozen/current 두 epoch equality를 요구하고 invalidating epoch commit 즉시 관련 legacy를 제외한다. Privacy-compliant active pointer finalization은 같은 transaction에서 해당 eligibility를 비가역적으로 retire하며 이후 stale/invalid active에서도 legacy로 복귀하지 않는다. DB-time cutoff와 prefilter/final evidence gate가 stale cache/vector를 제외하고 client enrollment, deadline 연장, cleanup receipt 뒤 rollback을 금지한다. |
+| Raw Copy Cutover Inventory/Disposition | Target enforcement 전에 Nodease-held upload/fetch raw copy를 수렴시키는 일회성 inventory와 terminal disposition | Exact source storage copy를 freeze하고 valid opt-in과 retention/legal-hold 보존 조건을 모두 충족한 item만 encrypted protected raw artifact로 이관한다. Protected migration 조건을 충족하지 않고 hold가 삭제를 막지 않는 item은 non-readable fence 뒤 purge한다. Destination integrity 또는 purge와 original-copy physical absence를 확인한 `protected_migrated|purged` receipt만 terminal이다. No-opt-in legal-hold conflict, unknown/partial과 readable duplicate는 activation을 차단한다. All-terminal aggregate만 final readiness marker와 `knowledge.raw_copy_cutover.completed` Audit Outbox intent를 원자 확정하며 per-item receipt는 AuditLog가 아니다. Raw body/object key/content hash/item identity와 exact count는 receipt/audit에 저장하지 않는다. |
+
+Enforcement bootstrap은 current global platform Privacy Artifact Validity Revision/epoch을 먼저
+provision하고 enforcement를 비활성으로 유지한다. 모든 signup/OAuth/seed/admin Organization creation
+path가 initial `baseline_only` policy와 initial Organization validity revision/epoch을 같은 authoritative
+Unit of Work에 생성하는 writer generation으로 수렴한 뒤 구버전 writer를 drain/fence한다. 그 다음 Existing
+Organization을 idempotent backfill하고 bounded rescan이 missing policy/validity 0건임을 증명하며
+writer-generation readiness marker를 확정한 뒤에만 enforcement를 활성화한다. Concurrent new-writer create와
+backfill은 Organization row/uniqueness로 직렬화한다. 실패는 migration/creation 전체를 rollback하며 runtime은
+missing policy/validity를 implicit default로 합성하지 않는다. Enforcement 뒤 dual-write를 모르는 구버전
+writer image의 startup/rollback은 readiness에서 거부한다. Activation coordination transaction은
+`privacy_foundation_writer_generation`과 initial policy/current Organization validity refs를 no-default non-null
+DB commit constraint로 전환하며 old writer가 readiness를 우회해도 Organization insert 전체를 rollback한다.
+
+Legacy cleanup state는 exact `legacy_artifact_ref`와 generation에 결속한다. Pre-delete transaction은
+artifact를 non-retrievable `purging`으로 fence하고 durable intent를 남긴다. Physical absence 확인
+뒤 completion transaction이 cleanup receipt, append-only tombstone과
+`knowledge.processing_artifact.purged` audit를 함께 확정한다. Completion 실패는 visible state로
+rollback하지 않고 same-generation reconciler가 exactly-once로 완성한다.
+
+Privacy-compliant active pointer와 legacy eligibility retirement는 같은 transaction 경계다. Retirement는
+cleanup 완료 여부와 독립된 append-only fact이며, pointer가 나중에 stale/invalid가 되어도 삭제하거나
+되돌리지 않는다.
+
+Privacy Review Candidate body는 일반 candidate row나 audit payload가 아니라 encrypted protected staging
+artifact다. 최초 candidate 생성의 authoritative DB time에서 code-owned
+`privacy_review_candidate_ttl_v1 = 7 * 24 hours`를 계산하고 모든 successor revision이 같은 expiry를
+공유한다. Approve decision은 body를 review projection/mutation에서 닫되 TTL 안의
+`approved_pending_finalization` input으로 유지하고 canonical active artifact finalization commit에서만
+`purge_pending`으로 전환한다. TTL equality/경과, reject, successor 확정, generation-bound source/ingestion
+authority revoke 또는 stale/abandoned generation도 body를 non-projectable `purge_pending`으로 만든다.
+개별 reviewer 권한 회수는 해당 actor의 요청만 hidden zero-write로 닫고 candidate lifecycle을 바꾸지
+않는다. Cleanup claim/fence,
+`purge_generation`, legal-hold state, physical-absence 확인과 receipt/tombstone은 append-only Decision,
+safe audit와 manifest provenance와 분리한다. Legal hold는 physical deletion만 보류하고 review 가능 상태나
+TTL을 되돌리지 않는다.
+
+Effective privacy policy, baseline/provider/detector-approval/raw-parser/validity revision,
+`privacy_text_unicode_14_0_nfc_lf_v1`, masking
+contract와 action policy는 Canonical Content Revision의 canonicalization contract와
+ADR-0065 resolver/materialization input vector에 포함한다. Raw attempt-local byte-binding
+fingerprint와 provider-view fingerprint는 external result binding에만 사용하고 attempt 종료
+뒤 폐기한다. Durable digest는 low-entropy equality leakage를 줄이도록 Organization scope의
+versioned keyed digest를 사용한다. `privacy_digest_hmac_sha256_v1`은 dedicated Privacy
+Digest Key Ring의 master key version과 Organization UUID로 domain-separated key를 파생한
+뒤 versioned length-delimited canonical bytes를 HMAC-SHA-256한다. Key material은 physical
+row나 provider/observability payload가 아니며 rotation은 기존 manifest rewrite 또는 자동
+reindex를 뜻하지 않는다.
+
+Current artifact validity는 active pointer에 내장된 boolean이 아니다. Manifest는 finalization 당시
+global platform과 same-Organization validity revision ref/epoch의 두 요소를 snapshot한다. Retrieval은
+두 epoch가 current 두 epoch와 모두 같은지 prefilter/final evidence gate에서 대조한다. Preserving
+transition은 revision만 전진하고 epoch을 유지할 수 있으며, security-invalidating transition은 affected
+platform 또는 Organization epoch의 `+1` CAS와 canonical management audit를 같은 transaction에
+확정한다. Applicable Collection/source/KB scope·binding 또는 effective result 변경과 detector/raw-parser
+security change는 Organization invalidation이다. V1 Organization invalidation은 선택적 manifest bulk update 없이 해당 Organization의 모든
+privacy-gated artifact를 old epoch으로 만든다. Pointer/state projection이 지연되어도 final evidence
+gate가 권위이며 missing/malformed/stale epoch과 unknown transition을 preserving으로 해석하지 않는다.
+
+Raw source bytes/text, provider-safe view/map, exact spans/confidence와 raw parser/provider
+request/response는 일반 DB, retry/dead-letter payload, audit, trace와 log에 저장하지 않는다.
+Protected raw artifact 예외는 ADR-0014의 별도 encryption, raw/compliance permission, fresh
+source ACL, access audit, retention/legal hold/purge를 모두 요구하고 RAG/embedding/prompt 입력이
+아니다.
+Source system이 자체 보유하는 source-of-record object의 opaque protected reference는 raw body
+copy가 아니다. 반면 Nodease가 upload/fetch 원문 bytes를 보존하면 physical field나 object 이름과
+무관하게 protected raw artifact로 분류한다. Current `documents.file_path`와
+`GET /api/v1/knowledge/{kb_id}/documents/{document_id}/content`는 이 Target schema/gate가 구현됐다는
+증거가 아니다. Cutover는 exact raw-copy inventory를 freeze하고 valid opt-in과 retention/legal-hold 보존
+조건을 모두 충족한 item만 protected store로 이관한다. Protected migration 조건을 충족하지 않고 hold가 삭제를 막지 않는 item은
+non-readable fence 뒤 물리 삭제해 original-copy absence와 terminal disposition을 증명한다. No-opt-in
+legal-hold conflict는 자동 이관하지 않고 activation을 차단한다. Current raw response는 dedicated gate 준비 전 별도로 fail-closed하며 response 차단이나
+DB path null 처리는 storage migration/purge의 대안이 아니다.
+
 #### Target Knowledge classification and processing model
 
 [ADR-0065](decisions/ADR-0065-knowledge-classification-taxonomy-and-processing-profile.md)은
@@ -1115,7 +1211,7 @@ standalone RAG Agent answer의 실행 anchor. raw query/answer/chunk content는 
 아래 목록은 [ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md), [ADR-0015](decisions/ADR-0015-knowledge-skill-context-routing-boundary.md), [ADR-0017](decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md), [ADR-0018](decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), [ADR-0020](decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md)의 통합 방향을 설명하지만, 물리 table 존재와 목표 동작 완성을 구분한다.
 
 - **Current physical table**: `knowledge_bases`, `documents`, `document_versions`, `document_chunks`, `knowledge_collections`, `knowledge_collection_items`, `knowledge_collection_sync_jobs`, `knowledge_collection_sync_job_items`, `team_knowledge_collection_permissions`, `user_knowledge_collection_permissions`, `team_knowledge_domain_permissions`, `user_knowledge_domain_permissions`, `knowledge_source_identities`, `source_policy_kb_use_grants`, `source_authorization_provenance`, `knowledge_ingestion_outbox`, `knowledge_document_ingestion_jobs`. 이 목록에 있다고 lifecycle, source ACL, redacted canonical text, finalization/cleanup의 모든 Target invariant가 완료됐다는 뜻은 아니다. `knowledge_document_ingestion_jobs`는 process/sync/resume/reindex 요청 실행을 소유하며 `knowledge_ingestion_outbox`의 physical cleanup intent를 대체하지 않는다.
-- **Target-only candidate**: `raw_knowledge_artifacts`, `source_acl_principals`, `source_acl_facts`, `source_subject_mappings`, `source_public_exposure_policies`, `knowledge_skills`, `knowledge_skill_versions`, `knowledge_skill_source_refs`, `knowledge_skill_evaluations`와 ADR-0065의 organization classification-policy coordination, taxonomy topic identity ledger, canonical content revision, document-type registry, taxonomy version/topic, assignment revision, suggestion, profile/policy revision, processing decision manifest, artifact build manifest, decision satisfaction, processing admission receipt, retrieval representation logical entity. 이 이름과 물리 분할은 별도 승인과 migration에서 확정한다.
+- **Target-only candidate**: `raw_knowledge_artifacts`, `source_acl_principals`, `source_acl_facts`, `source_subject_mappings`, `source_public_exposure_policies`, `knowledge_skills`, `knowledge_skill_versions`, `knowledge_skill_source_refs`, `knowledge_skill_evaluations`, ADR-0070의 Organization privacy policy/provider/egress-approval/artifact-validity revision, privacy detection attempt/decision manifest와 ADR-0065의 organization classification-policy coordination, taxonomy topic identity ledger, canonical content revision, document-type registry, taxonomy version/topic, assignment revision, suggestion, profile/policy revision, processing decision manifest, artifact build manifest, decision satisfaction, processing admission receipt, retrieval representation logical entity. 이 이름과 물리 분할은 별도 승인과 migration에서 확정한다.
 
 MBA-105 구현은 ADR-0017, ADR-0018, ADR-0020과 [Knowledge implementation baseline](features/knowledge/implementation_baseline.md)을 기준으로 진행하되, destructive production migration, raw artifact opt-in, code-bearing skill, global/main Agent retrieval path, platform-wide Workflow egress guard는 별도 승인 전까지 포함하지 않는다.
 
@@ -1154,7 +1250,7 @@ Collection permission row는 organization/subject/collection/action UNIQUE를 �
 
 Target permission helper는 mbased KB permission gate와 source ACL/requester authorization gate를 분리해 평가한다. Manual team/user KB grant와 organization manager override는 mbased KB gate를 만족시킬 수 있지만 source-managed KB의 source ACL freshness/requester authorization gate를 우회하지 않는다. Source ACL provenance는 source ACL gate의 입력이며, KB `use` permission 자체를 자동 부여하는 행으로 해석하지 않는다. 자동 수집된 document-level KB는 normal mbased permission path 또는 `source_policy_kb_use_grants`가 명시 KB `use`를 provision한 경우에만 retrieval 후보가 된다. `subject_type="organization"` source-policy grant는 해당 organization의 active member에게만 적용되며, removed/suspended/invited/non-member user에게는 단순 organization_id 일치만으로 적용되지 않는다. Policy expiry, connector revocation, source ACL revocation, policy disable은 source-policy-provisioned grant만 inactive 처리하고 freshness epoch와 candidate cache를 갱신해야 한다. Manual team/user/admin grant row는 저장상 유지될 수 있지만, source-managed KB에서는 fresh source ACL/requester authorization gate가 fail-closed이면 retrieval 후보가 될 수 없다. Runtime source authorization cache는 short-lived optimization이며 authorization source of truth가 아니다. Cache key에는 organization, connector, protected source identity, source item 또는 document version, execution subject, mapping epoch, source ACL freshness epoch, operation을 포함해야 하고, subject-level allowed 결과를 다른 source item에 재사용하지 않는다. Helper는 allow/deny뿐 아니라 sanitized reason code, source ACL freshness state, freshness epoch, audit-safe metadata를 반환해야 하며 router/retrieval이 grant row를 직접 조합하지 않는다. `source_authorization_provenance` column 이름은 source permission action, source authorization state, provenance, KB permission `auth_state`가 섞이지 않게 정한다.
 
-Target retrieval에서 `document_chunks.content`, embedding input, retrieval-visible text artifact는 redacted canonical text에서 생성된다. Raw source content는 organization/source policy가 opt-in한 경우에만 `raw_knowledge_artifacts` 또는 encrypted object storage + metadata table에 분리 저장할 수 있다. Raw content는 RAG, embedding, prompt 구성, Agent answer stream, durable citation summary에 사용하지 않는다. Raw 조회는 별도 raw/compliance permission, fresh source ACL, audit, retention, purge policy를 통과해야 한다 ([ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)).
+Target retrieval에서 `document_chunks.content`, embedding input, retrieval-visible text artifact는 redacted canonical text에서 생성된다. ADR-0070의 hard baseline, exact Organization provider policy, UTF-8 span 검증과 local deterministic masking이 canonical content 이전에 적용되며 provider/정책 실패는 raw 또는 부분 결과로 fallback하지 않는다. Raw source content는 organization/source policy가 opt-in한 경우에만 `raw_knowledge_artifacts` 또는 encrypted object storage + metadata table에 분리 저장할 수 있다. Raw content는 RAG, embedding, prompt 구성, Agent answer stream, durable citation summary에 사용하지 않는다. Raw 조회는 별도 raw/compliance permission, fresh source ACL, audit, retention, purge policy를 통과해야 한다 ([ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md), [ADR-0070](decisions/ADR-0070-organization-detector-provider-and-pre-embedding-local-masking-boundary.md)).
 
 Target ingestion은 processed identity와 retrieval artifact visibility를 분리하지 않는다. `content_hash`나 fingerprint가 새 값이면 그 값에 대응하는 content safety pass 또는 safe remediation state, redacted canonical text, chunks, embeddings, index namespace, active version이 모두 committed 상태여야 한다. 현재 구현의 조기 `content_hash` commit이나 delete-then-insert chunk replacement pattern은 목표 모델의 finalization baseline을 통과하기 전까지 target-safe한 것으로 보지 않는다. Active version finalization은 fencing token, transactional outbox insert, outbox retry/dead-letter, recovery scanner, pre-finalized artifact visibility 차단, external index/DB finalize mismatch 복구 계약을 구현한다. Vector/keyword retrieval-visible artifact는 `organization_id + knowledge_base_id + active_document_version_id` filter 또는 이와 동등한 version-scoped tenant namespace를 기본 invariant로 사용해야 한다.
 

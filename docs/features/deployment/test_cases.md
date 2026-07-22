@@ -15,7 +15,7 @@ Status: Draft
 - Pure preflight use case는 repository port snapshot만으로 결과를 만들고 active blocker는 HTTPException이 아닌 typed `DeploymentPreflightBlocked`를 반환한다. Compatibility facade만 이를 기존 409 envelope으로 mapping한다.
 - Preflight graph scanner는 shared strict parser로 root/embedded LLM node의 direct KB와 Collection 목록을 검사한다. Malformed shape와 20개 초과는 active/inactive 여부와 무관한 fixed non-downgradable blocker다.
 - Embedded `subGraph` 순회는 반복 방식이며 호출 스택보다 깊은 입력에서도 같은 Collection audience policy를 적용한다.
-- Selected Collection repository projection은 selected IDs, active organization, active lifecycle, `sync_state != source_deleted`로 제한하고 same-organization active/retrieval-visible KB aggregate만 계산한다. Direct KB preflight도 retrieval-visible completed chunk가 없는 KB를 generic unavailable로 처리한다. Child ID를 application result로 반환하거나 Collection별 N+1 query를 만들지 않는다.
+- Selected Collection repository projection은 selected IDs, active organization, active lifecycle, `sync_state != source_deleted`로 제한하고 same-organization active/retrieval-visible KB aggregate만 계산한다. Direct KB와 Collection child preflight는 ADR-0070 enforcement 뒤 current-valid compliant manifest 또는 frozen/current platform·Organization validity epoch equality와 cutoff를 통과한 eligible pre-cutoff legacy artifact가 없는 KB를 `knowledge_privacy_artifact_unavailable`로 처리한다. Child ID를 application result로 반환하거나 Collection별 N+1 query를 만들지 않는다.
 - Anonymous-public preflight는 private Collection과 source-managed Collection/member를 fail-closed하고, public manual Collection은 통과시킨다. Missing/inactive/cross-org는 하나의 generic unavailable code로 처리한다.
 - Candidate budget 가능성은 bucket/boolean warning으로만 반환되고 active create를 차단하지 않는다. Client success step은 warning을 text status로 표시한다.
 - MBA-219 node configuration evaluator는 FastAPI, SQLAlchemy, concrete service와 catalog loader를 import하지 않고 composition이 주입한 immutable node side-effect mapping과 resource snapshot port만 사용한다.
@@ -57,6 +57,7 @@ Status: Draft
 - `POST /api/v1/deployments` with `is_active=true`는 private KB가 anonymous/public 실행 surface에 포함되면 `409 deployment.preflight.blocked`를 반환한다.
 - `POST /api/v1/deployments` with `is_active=false`는 같은 graph를 저장할 수 있지만 active deployment 교체, public URL 활성화, schedule job 생성을 하지 않는다.
 - Inactive deployment activation/toggle은 private KB preflight 실패 시 `409 deployment.preflight.blocked`를 반환한다.
+- Stale/missing/invalid privacy manifest, frozen/current validity epoch 불일치 legacy, compliant pointer 뒤 남은 legacy, retired legacy, DB-time cutoff equality/경과와 artifact 부재는 preview에서 fixed `knowledge_privacy_artifact_unavailable` + `reprocess_or_remove_unavailable_knowledge`를 반환한다. Invalidating platform/Organization epoch commit과 preflight를 경합시키면 item bulk update/cleanup 전에도 runtime과 같은 결과로 즉시 차단한다. Active create/enable/toggle은 `409 deployment.preflight.blocked`이고 inactive preview/create에서 허용된 availability warning만 저장 가능하며, response에는 document/policy/provider identity와 exact count가 없다.
 - Active create/toggle은 unresolved/invalid Mail 또는 Slack, unavailable Mail credential, subject 없는 Mail surface를 기존 `409 deployment.preflight.blocked` envelope으로 차단하며 task/schedule/active-pointer side effect를 만들지 않는다.
 - `is_active=false` preview/create는 null unresolved configuration과 상태 필드가 누락된 구버전 null Mail node만 warning으로 보존한다. Slack unresolved와 다른 legacy selector invalid가 함께 있으면 두 issue를 모두 유지하고 blocked한다. Invalid Mail/Slack 조합, 임의 non-null UUID, revoked/cross-organization/permission-denied credential, malformed graph와 validator unavailable은 blocked로 유지한다.
 - Missing/revoked/cross-organization/permission-denied Mail credential은 모두 `mail_credential_unavailable`이며 response에 credential ID/name/email과 permission 상세가 없다.
@@ -208,6 +209,7 @@ Status: Draft
 - Warning-only preflight 뒤 create가 정확히 한 번 호출되고 성공 결과에 safe warning이 표시되며, blocked preflight 뒤에는 create가 호출되지 않는다.
 - workflow-node target이 현재 활성화 후보 app을 다시 참조하면 기존 active deployment가 아니라 candidate graph 기준으로 순환을 감지한다.
 - 일부 authorized KB의 operational failure는 Knowledge partial-result 정책으로만 표시하고 preflight permission denial과 섞지 않는다.
+- Preflight와 runtime resolver는 privacy artifact readiness에 대해 같은 결과를 내야 한다. Frozen legacy의 platform/Organization validity epoch 중 하나라도 current와 다르면 남은 cutoff와 physical artifact가 있어도 ready가 아니다. Compliant pointer가 한 번 확정된 뒤 manifest가 stale해진 document도 남은 legacy/cutoff로 되돌아가지 않고, stale cache/vector hit는 final preflight evidence가 아니다.
 - Conversation-capable activation preflight는 input/output mapping, node Memory policy, immutable deployment version/snapshot hash, contract/storage generation과 Worker capability 누락을 각각 fail-closed 한다.
 - Preflight 통과 뒤 active deployment pointer가 바뀌어도 old session task가 새 snapshot으로 자동 rebind되지 않고 pinned version을 실행하거나 side effect 전에 version conflict로 닫힌다.
 - Public `chatbot` preflight는 login cookie나 client audience hint가 있어도 anonymous public-only이며 private KB 후보를 차단한다.

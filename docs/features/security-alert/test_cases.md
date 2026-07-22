@@ -6,6 +6,9 @@ Status: Draft
 
 현재 구현은 MBA-223의 audit 정규화부터 MBA-211~214의 영속 모델·lifecycle, 실시간 탐지·reconciliation, durable notification Outbox, 관리자 API, Admin Dashboard·Sidebar·SSE 재조회까지 포함한다.
 
+`knowledge.sensitive_content_detected` producer, allowlist와 관련 P016/E015는 ADR-0070
+Target이며 MBA-362가 구현하기 전에는 현재 동작의 완료 증거가 아니다.
+
 문서 상태는 `Draft`를 유지한다. 실제 Redis를 연결한 SSE End-to-End와 전체 PostgreSQL concurrency acceptance gate는 아직 완료되지 않았다. 전체 Log System suite의 Redis 연결 테스트와 전체 Shared suite의 선택 의존성도 환경 제약으로 별도 확인이 필요하다.
 
 ## Acceptance Criteria
@@ -285,7 +288,7 @@ Then actor, organization, target, category, status와 reason은 ADR-0028의 cano
 
 `permission.denied`의 `audit_metadata.organization_id`는 audit 생성 전에 scope가 검증된 UUID여야 하며 caller가 전달한 추가 metadata로 덮어쓸 수 없어야 한다. Workflow, LLM credential, Team manager, Team resource manager, Organization member manager 경로는 각각 이 계약을 검증해야 한다.
 
-`policy.block` producer는 최상위 `audit_metadata.policy_reason`에 canonical 값을 기록해야 한다. Access-management reason 6종과 `rag.pii_evidence_detected`, `budget.exceeded`를 producer 계약으로 허용하되, Security Alert evaluator는 `budget.exceeded`를 제외해야 한다.
+`policy.block` producer는 최상위 `audit_metadata.policy_reason`에 canonical 값을 기록해야 한다. Access-management reason 6종, `rag.pii_evidence_detected`, `knowledge.sensitive_content_detected`와 `budget.exceeded`를 producer 계약으로 허용하되, Security Alert evaluator는 `budget.exceeded`를 제외해야 한다.
 
 Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit을 새로 만들지 않아야 한다. 이미 `permission.denied`를 기록한 요청은 전역 handler에서 `auth.permission_denied`를 중복 기록하지 않아야 한다.
 
@@ -323,7 +326,7 @@ Lookback 구간 또는 지정 평가 구간의 audit가 설정된 limit을 초�
 | ID | Related AC | Given / Input | Expected |
 | --- | --- | --- | --- |
 | SAL-TC-U001 | AC-01 | actor, organization, category, status 조합을 하나씩 깨뜨린 audit | 모든 필수 조건을 만족한 event만 eligible |
-| SAL-TC-U002 | AC-01, AC-03 | `permission.denied`, allowlist `policy.block`, `auth.permission_denied`, `budget.exceeded`, unknown reason | 앞의 두 보안 event만 eligible |
+| SAL-TC-U002 | AC-01, AC-03 | `permission.denied`, RAG allowlist `policy.block`, Knowledge allowlist `policy.block`, `auth.permission_denied`, `budget.exceeded`, unknown reason | 앞의 세 보안 event만 eligible |
 | SAL-TC-U003 | AC-02 | organization ID 누락, invalid UUID, target으로 organization을 추론할 수 있는 event | 모두 제외하며 resource lookup 호출 없음 |
 | SAL-TC-U004 | AC-03 | canonical reason과 대문자, dot 누락, 공백, 결과 중심 legacy reason | canonical regex를 만족한 값만 신규 입력으로 허용 |
 | SAL-TC-U005 | AC-03 | `pii_policy_blocked`와 canonical `rag.pii_evidence_detected` | 둘 다 evaluator 내부 canonical 값은 `rag.pii_evidence_detected`, 원본 row mutation 없음 |
@@ -368,6 +371,7 @@ Lookback 구간 또는 지정 평가 구간의 audit가 설정된 limit을 초�
 | SAL-TC-P013 | AC-27, AC-31 | 각 producer 입력에 synthetic email/IP/user-agent/exception/request/secret marker 포함 | 신규 audit metadata와 log에 marker가 없고 safe opaque ID와 canonical code만 남음 |
 | SAL-TC-P014 | AC-31 | Hidden 404, validation 실패, desired-state no-op 경로 실행 | Target-aware `permission.denied`/`policy.block` audit가 생성되지 않음 |
 | SAL-TC-P015 | AC-04, AC-16, AC-31 | 일반 member/auditor/raw auditor가 현재 organization의 Security Alert 관리자 API 호출 | 403과 함께 organization safe target을 가진 eligible `permission.denied` 한 건 기록, Alert ID·존재 여부 없음 |
+| SAL-TC-P016 | AC-03, AC-31 | Knowledge hard-baseline/provider terminal block producer 실행 | 최상위 `policy_reason="knowledge.sensitive_content_detected"` 한 건 저장, raw text/span/category/provider identity 없음 |
 
 ### Service And Database Tests
 
@@ -516,6 +520,7 @@ Lookback 구간 또는 지정 평가 구간의 audit가 설정된 limit을 초�
 | SAL-TC-E012 | AC-28 | Security Alert worker 실패 상태에서 workflow/RAG permission denial | 원래 403/차단 결과 유지, 추가 5xx나 fail-open 없음 |
 | SAL-TC-E013 | AC-27 | 전체 API/UI/SSE/log capture에 synthetic secret marker 주입 | 어느 durable/user-visible 출력에도 marker 없음 |
 | SAL-TC-E014 | AC-30 | keyboard-only 관리자 전체 flow | Sidebar→alert→detail→resolve/접근 관리까지 mouse 없이 완료 |
+| SAL-TC-E015 | AC-06 | 같은 Knowledge sensitive-content policy block 3회 | canonical `knowledge.sensitive_content_detected` high alert 생성, raw document/provider detail 없음 |
 
 ### Concurrency Acceptance Gate
 
