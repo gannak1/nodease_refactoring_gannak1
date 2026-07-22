@@ -58,6 +58,9 @@ spec:
             - name: http-compatible
               containerPort: {{ .Values.egressProxy.service.httpCompatiblePort }}
               protocol: TCP
+            - name: connector-tcp
+              containerPort: {{ .Values.egressProxy.service.connectorTcpPort }}
+              protocol: TCP
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -91,6 +94,10 @@ spec:
             - name: proxy-config
               mountPath: /etc/squid/authorized-sources.conf
               subPath: authorized-sources.conf
+              readOnly: true
+            - name: proxy-config
+              mountPath: /etc/squid/connector-ports.conf
+              subPath: connector-ports.conf
               readOnly: true
             - name: proxy-run
               mountPath: /run/squid

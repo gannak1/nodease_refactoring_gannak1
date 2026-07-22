@@ -38,6 +38,14 @@ RUN if [ "$INSTALL_RAG_RERANKER" = "true" ]; then \
     rm -rf /install/lib/python3.11/site-packages/tests && \
     rm -rf /install/lib/python3.11/site-packages/moduly_workflow_engine*.dist-info
 
+# Runtime tokenizer resources are downloaded during the image build so the
+# proxy-only worker never attempts network access on its first task.
+RUN mkdir -p /tokenizer-cache /nltk-data && \
+    TIKTOKEN_CACHE_DIR=/tokenizer-cache \
+    NLTK_DATA=/nltk-data \
+    PYTHONPATH=/install/lib/python3.11/site-packages \
+    python -c "import nltk, tiktoken; tiktoken.get_encoding('cl100k_base'); tiktoken.get_encoding('o200k_base'); resources=(('punkt', 'tokenizers/punkt'), ('punkt_tab', 'tokenizers/punkt_tab'), ('stopwords', 'corpora/stopwords')); [nltk.download(name, download_dir='/nltk-data', quiet=True) for name, _ in resources]; [nltk.data.find(path) for _, path in resources]"
+
 # 요청 난이도 분류기는 첫 정책 생성과 첫 자동 라우팅에서 사용된다. 실행 중에
 # checkpoint를 내려받으면 worker가 오래 멈추거나 네트워크 상태에 따라 기본 모델로
 # fallback할 수 있으므로, 기본 이미지에는 multilingual E5 가중치를 함께 넣는다.
@@ -60,6 +68,8 @@ ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 ENV HF_HUB_DISABLE_XET=1
 ENV HF_HOME=/opt/huggingface
+ENV TIKTOKEN_CACHE_DIR=/opt/tokenizer-cache
+ENV NLTK_DATA=/opt/nltk-data
 
 # 실행 시 필요한 최소 라이브러리 설치
 RUN apt-get update && apt-get install -y \
@@ -70,6 +80,8 @@ RUN apt-get update && apt-get install -y \
 
 # 빌더 스테이지에서 설치된 패키지 복사
 COPY --from=builder /install /usr/local
+COPY --from=builder /tokenizer-cache /opt/tokenizer-cache
+COPY --from=builder /nltk-data /opt/nltk-data
 COPY --from=builder /model-routing-hf-cache /opt/huggingface
 
 # 앱 코드 복사 (모노레포 구조 유지)

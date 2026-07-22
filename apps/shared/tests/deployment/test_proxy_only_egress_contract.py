@@ -33,6 +33,8 @@ def test_squid_configuration_is_pinned_fail_closed_and_does_not_retain_payloads(
     None
 ):
     dockerfile = _read("docker/proxy/Dockerfile")
+    connector_ports = _read("docker/proxy/connector-ports.conf")
+    entrypoint = _read("docker/proxy/entrypoint.sh")
     config = _read("docker/proxy/squid.conf")
     helm_config = _read("infra/helm/moduly/files/squid.conf")
 
@@ -43,10 +45,20 @@ def test_squid_configuration_is_pinned_fail_closed_and_does_not_retain_payloads(
     assert "dns_v4_first" not in config
     assert "http_port 3128 name=https_only" in config
     assert "http_port 3129 name=http_compatible" in config
+    assert "http_port 3130 name=connector_tcp" in config
     assert "acl IMAP_ports port 143 993" in config
+    assert "include /etc/squid/connector-ports.conf" in config
+    assert "acl CONNECTOR_ports port 22 5432" in connector_ports
+    assert "CONNECTOR_EGRESS_ALLOWED_PORTS" in entrypoint
+    assert "connector egress port policy is invalid" in entrypoint
+    assert "/run/squid/connector-ports.conf" in entrypoint
     assert (
         "http_access allow workflow_http_source http_compatible_listener "
         "CONNECT IMAP_ports"
+    ) in config
+    assert (
+        "http_access allow authorized_source connector_tcp_listener "
+        "CONNECT CONNECTOR_ports"
     ) in config
     assert "http_access deny manager" in config
     assert "http_access deny blocked_destination" in config
@@ -134,12 +146,24 @@ def test_compose_target_workloads_have_no_direct_egress_or_ambient_proxy() -> No
         assert environment["OUTBOUND_PROXY_URL"] == proxy_url
         assert environment["OUTBOUND_PROXY_ALLOWED_HOSTS"] == "proxy"
         assert environment["OUTBOUND_PROXY_POLICY_REVISION"] == "proxy-v1"
+        assert environment["CONNECTOR_EGRESS_PROXY_URL"] == "http://proxy:3130"
+        assert environment["CONNECTOR_EGRESS_PROXY_ALLOWED_HOSTS"] == "proxy"
+        assert (
+            environment["CONNECTOR_EGRESS_POLICY_REVISION"]
+            == "connector-egress-v1"
+        )
+        assert environment["CONNECTOR_EGRESS_ALLOWED_PORTS"] == (
+            "${CONNECTOR_EGRESS_ALLOWED_PORTS:-22,5432}"
+        )
         assert "HTTP_PROXY" not in environment
         assert "HTTPS_PROXY" not in environment
         assert "NO_PROXY" not in environment
         assert service["depends_on"]["proxy"]["condition"] == "service_healthy"
 
     proxy = services["proxy"]
+    assert proxy["environment"]["CONNECTOR_EGRESS_ALLOWED_PORTS"] == (
+        "${CONNECTOR_EGRESS_ALLOWED_PORTS:-22,5432}"
+    )
     assert "ports" not in proxy
     assert proxy["networks"] == [
         "proxy-https-clients",
@@ -180,11 +204,14 @@ def test_helm_production_reference_requires_ha_proxy_only_egress() -> None:
     )
 
     assert values["egressProxy"]["enabled"] is True
+    assert values["egressProxy"]["connectorAllowedPorts"] == [22, 5432]
     assert production["egressProxy"]["enabled"] is True
     assert production["egressProxy"]["replicaCount"] >= 2
     assert production["egressProxy"]["image"]["digest"].startswith("sha256:")
     assert production["egressProxy"]["networkPolicy"]["enforced"] is True
     assert '.Files.Get "files/squid.conf"' in configmap
+    assert "range .Values.egressProxy.connectorAllowedPorts" in configmap
+    assert "connector-ports.conf" in configmap
     assert "access_log none" in squid_config
     assert "cache deny all" in squid_config
     assert "@{{ .Values.egressProxy.image.digest }}" in deployment
@@ -209,6 +236,8 @@ def test_helm_production_reference_requires_ha_proxy_only_egress() -> None:
     assert 'component" "worker' in policies
     assert "port: 3128" in policies
     assert "port: 3129" in policies
+    assert "port: 3130" in policies
+    assert "range .Values.egressProxy.connectorAllowedPorts" in policies
     assert "port: 80" not in worker_policy
     assert "port: 443" not in worker_policy
     assert "port: 143" not in worker_policy
@@ -253,7 +282,8 @@ def test_helm_network_policies_reuse_the_configured_postgresql_port() -> None:
     assert 'define "moduly.postgresql.port"' in helpers
     assert 'include "moduly.postgresql.port" .' in configmap
     for source in (policies, worker_policy):
-        assert "port: 5432" not in source
+        direct_workload_policy = source.split("egress-proxy-egress", maxsplit=1)[0]
+        assert "port: 5432" not in direct_workload_policy
         assert 'port: {{ include "moduly.postgresql.port" . }}' in source
         external_database_blocks = re.findall(
             r"{{- range \.Values\.worker\.networkPolicy\.externalDatabaseCidrs }}"
@@ -282,6 +312,8 @@ def test_helm_proxy_only_policy_has_no_direct_public_route_for_target_workloads(
     assert "egress-proxy-egress" in workload_policies
     assert "port: 3128" in workload_policies
     assert "port: 3129" in worker_policy
+    assert "port: 3130" in workload_policies
+    assert "port: 3130" in worker_policy
 
     # Only the proxy is allowed to open public web ports. Target workloads
     # must reach those destinations through the internal ClusterIP Service.
@@ -293,13 +325,14 @@ def test_helm_proxy_only_policy_has_no_direct_public_route_for_target_workloads(
     assert "cidr: ::/0" not in target_egress
 
 
-def test_helm_proxy_ipv4_egress_allows_each_approved_listener_destination() -> None:
+def test_helm_proxy_egress_uses_deployment_managed_connector_ports() -> None:
     policies = _read("infra/helm/moduly/templates/proxy-only-networkpolicies.yaml")
     proxy_egress = policies.split("egress-proxy-egress", maxsplit=1)[1]
     ipv4_egress = proxy_egress.split("cidr: 0.0.0.0/0", maxsplit=1)[1].split(
         "- to:", maxsplit=1
     )[0]
 
+    assert "range .Values.egressProxy.connectorAllowedPorts" in ipv4_egress
     for port in (80, 443, 143, 993):
         assert f"port: {port}" in ipv4_egress
 
@@ -311,9 +344,11 @@ def test_helm_proxy_listener_ports_are_an_immutable_contract() -> None:
     assert defaults["egressProxy"]["service"] == {
         "httpsPort": 3128,
         "httpCompatiblePort": 3129,
+        "connectorTcpPort": 3130,
     }
     assert "egressProxy.service.httpsPort must be 3128" in helpers
     assert "egressProxy.service.httpCompatiblePort must be 3129" in helpers
+    assert "egressProxy.service.connectorTcpPort must be 3130" in helpers
 
 
 def test_helm_non_http_workloads_are_default_deny_with_only_internal_dependencies() -> (
@@ -347,6 +382,7 @@ def test_helm_non_http_workloads_are_default_deny_with_only_internal_dependencie
     assert 'component" "gateway' in frontend_policy
     assert "port: 3128" not in frontend_policy
     assert "port: 3129" not in frontend_policy
+    assert "port: 3130" not in frontend_policy
 
 
 def test_helm_proxy_rollout_phase_is_visible_on_enforced_workloads() -> None:

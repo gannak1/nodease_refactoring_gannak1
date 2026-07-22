@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socketserver
+import threading
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -16,5 +18,13 @@ class Handler(BaseHTTPRequestHandler):
         return
 
 
+class ConnectorHandler(socketserver.BaseRequestHandler):
+    def handle(self) -> None:
+        self.request.sendall(b"connector-ready")
+
+
 if __name__ == "__main__":
+    for port in (22, 5432):
+        server = socketserver.ThreadingTCPServer(("0.0.0.0", port), ConnectorHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", 80), Handler).serve_forever()

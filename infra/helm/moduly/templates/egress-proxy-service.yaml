@@ -18,4 +18,8 @@ spec:
       port: {{ .Values.egressProxy.service.httpCompatiblePort }}
       targetPort: http-compatible
       protocol: TCP
+    - name: connector-tcp
+      port: {{ .Values.egressProxy.service.connectorTcpPort }}
+      targetPort: connector-tcp
+      protocol: TCP
 {{- end }}

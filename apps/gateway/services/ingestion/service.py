@@ -80,6 +80,19 @@ def _recursive_character_text_splitter(**kwargs: Any) -> Any:
     return RecursiveCharacterTextSplitter(**kwargs)
 
 
+def _nltk_resources_available(nltk: Any) -> bool:
+    for resource in (
+        "tokenizers/punkt",
+        "tokenizers/punkt_tab",
+        "corpora/stopwords",
+    ):
+        try:
+            nltk.data.find(resource)
+        except LookupError:
+            return False
+    return True
+
+
 def _pre_finalization_chunk_progress(completed: int, total: int) -> int:
     safe_total = max(1, int(total))
     safe_completed = max(0, min(int(completed), safe_total))
@@ -1623,18 +1636,15 @@ class IngestionOrchestrator:
                 import nltk
                 from rake_nltk import Rake
 
-                try:
-                    nltk.data.find("tokenizers/punkt")
-                except LookupError:
-                    nltk.download("punkt", quiet=True)
-                try:
-                    nltk.data.find("corpora/stopwords")
-                except LookupError:
-                    nltk.download("stopwords", quiet=True)
-
-                r = Rake()
-                r.extract_keywords_from_text(content)
-                keywords = r.get_ranked_phrases()[:10]
+                if _nltk_resources_available(nltk):
+                    r = Rake()
+                    r.extract_keywords_from_text(content)
+                    keywords = r.get_ranked_phrases()[:10]
+                elif not keyword_error_logged:
+                    logger.warning(
+                        "Keyword extraction skipped: required NLTK resources unavailable"
+                    )
+                    keyword_error_logged = True
             except Exception as exc:
                 # 키워드 추출 실패는 치명적이지 않음 (로그만 남김)
                 if not keyword_error_logged:

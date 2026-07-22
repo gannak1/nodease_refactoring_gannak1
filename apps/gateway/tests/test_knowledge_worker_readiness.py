@@ -60,6 +60,11 @@ def test_readiness_checks_proxy_and_llm_keyring_before_schema(monkeypatch) -> No
     )
     monkeypatch.setattr(
         knowledge_worker_readiness,
+        "require_connector_tcp_proxy_security_ready",
+        lambda: calls.append("connector-egress"),
+    )
+    monkeypatch.setattr(
+        knowledge_worker_readiness,
         "require_llm_credential_keyring_ready",
         lambda: calls.append("keyring"),
     )
@@ -71,7 +76,7 @@ def test_readiness_checks_proxy_and_llm_keyring_before_schema(monkeypatch) -> No
 
     knowledge_worker_readiness._require_readiness()
 
-    assert calls == ["egress", "keyring", "schema"]
+    assert calls == ["egress", "connector-egress", "keyring", "schema"]
 
 
 @pytest.mark.parametrize(

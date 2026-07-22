@@ -103,6 +103,10 @@ services:
       OUTBOUND_PROXY_URL: http://proxy:3128
       OUTBOUND_PROXY_ALLOWED_HOSTS: proxy
       OUTBOUND_PROXY_POLICY_REVISION: proxy-v1
+      CONNECTOR_EGRESS_PROXY_URL: http://proxy:3130
+      CONNECTOR_EGRESS_PROXY_ALLOWED_HOSTS: proxy
+      CONNECTOR_EGRESS_POLICY_REVISION: connector-egress-v1
+      CONNECTOR_EGRESS_ALLOWED_PORTS: "${CONNECTOR_EGRESS_ALLOWED_PORTS:-22,5432}"
 
       # Python
       PYTHONUNBUFFERED: 1
@@ -197,6 +201,10 @@ services:
       OUTBOUND_PROXY_URL: http://proxy:3128
       OUTBOUND_PROXY_ALLOWED_HOSTS: proxy
       OUTBOUND_PROXY_POLICY_REVISION: proxy-v1
+      CONNECTOR_EGRESS_PROXY_URL: http://proxy:3130
+      CONNECTOR_EGRESS_PROXY_ALLOWED_HOSTS: proxy
+      CONNECTOR_EGRESS_POLICY_REVISION: connector-egress-v1
+      CONNECTOR_EGRESS_ALLOWED_PORTS: "${CONNECTOR_EGRESS_ALLOWED_PORTS:-22,5432}"
       PYTHONUNBUFFERED: 1
       PYTHONPATH: /app
     depends_on:
@@ -264,6 +272,10 @@ services:
       OUTBOUND_PROXY_URL: http://proxy:3129
       OUTBOUND_PROXY_ALLOWED_HOSTS: proxy
       OUTBOUND_PROXY_POLICY_REVISION: proxy-v1
+      CONNECTOR_EGRESS_PROXY_URL: http://proxy:3130
+      CONNECTOR_EGRESS_PROXY_ALLOWED_HOSTS: proxy
+      CONNECTOR_EGRESS_POLICY_REVISION: connector-egress-v1
+      CONNECTOR_EGRESS_ALLOWED_PORTS: "${CONNECTOR_EGRESS_ALLOWED_PORTS:-22,5432}"
 
       # Python
       PYTHONUNBUFFERED: 1
@@ -484,6 +496,8 @@ services:
       context: ..
       dockerfile: docker/proxy/Dockerfile
     container_name: moduly-proxy
+    environment:
+      CONNECTOR_EGRESS_ALLOWED_PORTS: "${CONNECTOR_EGRESS_ALLOWED_PORTS:-22,5432}"
     networks:
       - proxy-https-clients
       - proxy-http-clients

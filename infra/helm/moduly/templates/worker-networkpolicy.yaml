@@ -47,6 +47,8 @@ spec:
       ports:
         - protocol: TCP
           port: 3129
+        - protocol: TCP
+          port: 3130
     {{- if .Values.postgresql.enabled }}
     - to:
         - podSelector:

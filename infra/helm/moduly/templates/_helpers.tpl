@@ -84,6 +84,35 @@ CIDRs are deployment coordinates and must be supplied by the operator.
 {{- if ne (int .Values.egressProxy.service.httpCompatiblePort) 3129 -}}
 {{- fail "egressProxy.service.httpCompatiblePort must be 3129" -}}
 {{- end -}}
+{{- if ne (int .Values.egressProxy.service.connectorTcpPort) 3130 -}}
+{{- fail "egressProxy.service.connectorTcpPort must be 3130" -}}
+{{- end -}}
+{{- $connectorPorts := required "egressProxy.connectorAllowedPorts is required" .Values.egressProxy.connectorAllowedPorts -}}
+{{- if gt (len $connectorPorts) 16 -}}
+{{- fail "egressProxy.connectorAllowedPorts must contain 1 to 16 unique ports" -}}
+{{- end -}}
+{{- $connectorPortSet := dict -}}
+{{- range $rawPort := $connectorPorts -}}
+{{- $portText := toString $rawPort -}}
+{{- if not (regexMatch "^[1-9][0-9]{0,4}$" $portText) -}}
+{{- fail "egressProxy.connectorAllowedPorts contains an invalid port" -}}
+{{- end -}}
+{{- $port := int $portText -}}
+{{- if gt $port 65535 -}}
+{{- fail "egressProxy.connectorAllowedPorts contains an invalid port" -}}
+{{- end -}}
+{{- $portKey := printf "%d" $port -}}
+{{- if hasKey $connectorPortSet $portKey -}}
+{{- fail "egressProxy.connectorAllowedPorts must contain 1 to 16 unique ports" -}}
+{{- end -}}
+{{- $_ := set $connectorPortSet $portKey true -}}
+{{- end -}}
+{{- range $rawPort := required "connectorTest.allowedPorts is required" .Values.connectorTest.allowedPorts -}}
+{{- $portKey := printf "%d" (int $rawPort) -}}
+{{- if not (hasKey $connectorPortSet $portKey) -}}
+{{- fail "connectorTest.allowedPorts must be included in egressProxy.connectorAllowedPorts" -}}
+{{- end -}}
+{{- end -}}
 {{- if not (regexMatch "^sha256:[a-f0-9]{64}$" (default "" .Values.egressProxy.image.digest)) -}}
 {{- fail "egressProxy.image.digest must be an immutable sha256 digest" -}}
 {{- end -}}
@@ -123,6 +152,14 @@ CIDRs are deployment coordinates and must be supplied by the operator.
   value: {{ printf "%s-egress-proxy" (include "moduly.fullname" .context) | quote }}
 - name: OUTBOUND_PROXY_POLICY_REVISION
   value: {{ .context.Values.egressProxy.policyRevision | quote }}
+- name: CONNECTOR_EGRESS_PROXY_URL
+  value: {{ printf "http://%s-egress-proxy:%d" (include "moduly.fullname" .context) (.context.Values.egressProxy.service.connectorTcpPort | int) | quote }}
+- name: CONNECTOR_EGRESS_PROXY_ALLOWED_HOSTS
+  value: {{ printf "%s-egress-proxy" (include "moduly.fullname" .context) | quote }}
+- name: CONNECTOR_EGRESS_POLICY_REVISION
+  value: "connector-egress-v1"
+- name: CONNECTOR_EGRESS_ALLOWED_PORTS
+  value: {{ join "," .context.Values.egressProxy.connectorAllowedPorts | quote }}
 {{- else }}
 - name: OUTBOUND_TRANSPORT_MODE
   value: "direct_pinned_internal_or_dedicated"

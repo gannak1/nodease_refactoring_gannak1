@@ -18,6 +18,7 @@ from apps.gateway.application.connectors.models import (
     TrustedLocalConnectorTarget,
 )
 from apps.shared.services.egress_guard import EgressGuardError
+from apps.shared.services.connector_tcp_transport import HttpConnectProxyDialer
 
 
 def command(*, host: str = "db.example.com", port: int = 5432) -> ConnectorTestCommand:
@@ -116,6 +117,75 @@ def test_probe_pins_public_ip_enforces_tls_and_runs_constant_read_only_query(
     }
     assert engine.connection.statements == ["SET TRANSACTION READ ONLY", "SELECT 1"]
     assert engine.disposed is True
+
+
+def test_probe_preserves_tls_hostname_while_dialing_validated_ip_through_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    engine = FakeEngine()
+
+    class _Dialer(HttpConnectProxyDialer):
+        def __init__(self) -> None:
+            pass
+
+    class _Relay:
+        local_bind_port = 6543
+
+        def __init__(
+            self,
+            dialer: HttpConnectProxyDialer,
+            *,
+            target_address: str,
+            target_port: int,
+            connect_timeout_seconds: float,
+        ) -> None:
+            captured["relay"] = (
+                dialer,
+                target_address,
+                target_port,
+                connect_timeout_seconds,
+            )
+
+        def start(self) -> None:
+            captured["relay_started"] = True
+
+        def stop(self) -> None:
+            captured["relay_stopped"] = True
+
+    monkeypatch.setattr(
+        probe_module,
+        "ensure_network_target_allowed",
+        lambda *_args, **_kwargs: ("db.example.com", 5432, "203.0.113.20"),
+    )
+    monkeypatch.setattr(probe_module, "_system_ca_file", lambda: "/system/ca.pem")
+    monkeypatch.setattr(probe_module, "LocalConnectorProxyRelay", _Relay)
+
+    def fake_create_engine(url, **_kwargs):
+        captured["url"] = url
+        return engine
+
+    monkeypatch.setattr(probe_module, "create_engine", fake_create_engine)
+    dialer = _Dialer()
+    probe = StrictPostgresConnectorProbe(
+        ConnectorTestPolicy(), connector_proxy_dialer=dialer
+    )
+    try:
+        assert probe._probe_sync(command()) is True
+    finally:
+        probe.shutdown()
+
+    url = captured["url"]
+    assert url.host == "db.example.com"
+    assert url.port == 6543
+    assert dict(url.query) == {
+        "hostaddr": "127.0.0.1",
+        "sslmode": "verify-full",
+        "sslrootcert": "/system/ca.pem",
+    }
+    assert captured["relay"] == (dialer, "203.0.113.20", 5432, 5)
+    assert captured["relay_started"] is True
+    assert captured["relay_stopped"] is True
 
 
 def test_probe_uses_deployment_ca_for_exact_trusted_local_target(
@@ -290,6 +360,7 @@ def test_probe_rejects_url_shaped_host_before_dns(
 def test_probe_normalizes_egress_and_driver_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(probe_module, "_system_ca_file", lambda: "/system/ca.pem")
     probe = StrictPostgresConnectorProbe(ConnectorTestPolicy())
     try:
         monkeypatch.setattr(

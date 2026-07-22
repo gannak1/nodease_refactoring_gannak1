@@ -65,6 +65,30 @@ def _proxy_status(network: str, proxy: str, url: str) -> str:
     return result.stdout.strip()
 
 
+def _connector_tunnel_output(network: str, target_port: int) -> str:
+    result = _run(
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        network,
+        CURL_IMAGE,
+        "--silent",
+        "--show-error",
+        "--connect-timeout",
+        "3",
+        "--max-time",
+        "8",
+        "--proxytunnel",
+        "--proxy",
+        "http://proxy:3130",
+        f"telnet://11.240.0.80:{target_port}",
+        check=False,
+    )
+    assert result.returncode == 0
+    return result.stdout
+
+
 def test_squid_rejects_unsafe_dns_sets_and_direct_or_unauthorized_paths() -> None:
     suffix = uuid.uuid4().hex[:10]
     client_network = f"nodease-egress-client-{suffix}"
@@ -235,6 +259,20 @@ def test_squid_rejects_unsafe_dns_sets_and_direct_or_unauthorized_paths() -> Non
                     client_network,
                     "http://proxy:3129",
                     "http://rebind.test/",
+                )
+                == "403"
+            )
+
+            for connector_port in (22, 5432):
+                assert (
+                    _connector_tunnel_output(client_network, connector_port)
+                    == "connector-ready"
+                )
+            assert (
+                _proxy_status(
+                    client_network,
+                    "http://proxy:3130",
+                    "http://safe.test/",
                 )
                 == "403"
             )

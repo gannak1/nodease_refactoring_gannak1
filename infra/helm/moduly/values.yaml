@@ -34,6 +34,11 @@ egressProxy:
   service:
     httpsPort: 3128
     httpCompatiblePort: 3129
+    connectorTcpPort: 3130
+  # Deployment-owned public DB/SSH ports accepted by connector-egress-v1.
+  connectorAllowedPorts:
+    - 22
+    - 5432
   networkPolicy:
     enabled: true
     enforced: true

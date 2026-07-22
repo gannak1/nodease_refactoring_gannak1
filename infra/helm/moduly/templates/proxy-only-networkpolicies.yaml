@@ -33,6 +33,22 @@ spec:
       ports:
         - protocol: TCP
           port: 3129
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "moduly.componentSelectorLabels" (dict "component" "gateway" "context" .) | nindent 14 }}
+              {{- include "moduly.egressWorkloadSelectorLabel" . | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "moduly.componentSelectorLabels" (dict "component" "knowledge-worker" "context" .) | nindent 14 }}
+              {{- include "moduly.egressWorkloadSelectorLabel" . | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "moduly.componentSelectorLabels" (dict "component" "worker" "context" .) | nindent 14 }}
+              {{- include "moduly.egressWorkloadSelectorLabel" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 3130
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -64,6 +80,8 @@ spec:
       ports:
         - protocol: TCP
           port: 3128
+        - protocol: TCP
+          port: 3130
     {{- if .Values.postgresql.enabled }}
     - to:
         - podSelector:
@@ -148,6 +166,8 @@ spec:
       ports:
         - protocol: TCP
           port: 3128
+        - protocol: TCP
+          port: 3130
     {{- if .Values.postgresql.enabled }}
     - to:
         - podSelector:
@@ -360,6 +380,10 @@ spec:
               - 224.0.0.0/4
               - 240.0.0.0/4
       ports:
+        {{- range .Values.egressProxy.connectorAllowedPorts }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
         - protocol: TCP
           port: 80
         - protocol: TCP
@@ -389,6 +413,10 @@ spec:
               - fec0::/10
               - ff00::/8
       ports:
+        {{- range .Values.egressProxy.connectorAllowedPorts }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
         - protocol: TCP
           port: 80
         - protocol: TCP

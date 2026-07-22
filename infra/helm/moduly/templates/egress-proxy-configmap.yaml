@@ -14,4 +14,10 @@ data:
     acl authorized_source src {{ . }}
     acl workflow_http_source src {{ . }}
 {{ end }}
+  connector-ports.conf: |
+{{ range .Values.egressProxy.connectorAllowedPorts }}
+    acl CONNECTOR_ports port {{ . }}
+    acl CONNECT_ports port {{ . }}
+    acl Safe_ports port {{ . }}
+{{ end }}
 {{- end }}

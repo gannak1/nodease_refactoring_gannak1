@@ -440,6 +440,10 @@ def test_production_worker_rejects_invalid_operational_boundaries(
             "egressProxy.service.httpCompatiblePort=43129",
             "egressProxy.service.httpCompatiblePort must be 3129",
         ),
+        (
+            "egressProxy.service.connectorTcpPort=43130",
+            "egressProxy.service.connectorTcpPort must be 3130",
+        ),
     ],
 )
 def test_helm_rejects_proxy_listener_port_overrides(
@@ -453,3 +457,43 @@ def test_helm_rejects_proxy_listener_port_overrides(
 
     assert completed.returncode != 0
     assert expected_message in f"{completed.stdout}\n{completed.stderr}"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_message"),
+    [
+        (
+            ("egressProxy.connectorAllowedPorts={22,22}",),
+            "egressProxy.connectorAllowedPorts must contain 1 to 16 unique ports",
+        ),
+        (
+            ("connectorTest.allowedPorts={15432}",),
+            "connectorTest.allowedPorts must be included in egressProxy.connectorAllowedPorts",
+        ),
+    ],
+)
+def test_helm_rejects_invalid_connector_proxy_port_contract(
+    overrides: tuple[str, ...],
+    expected_message: str,
+):
+    completed = _render_helm(
+        values_files=("tests/ci/fixtures/helm-values-ci.yaml",),
+        set_values=overrides,
+    )
+
+    assert completed.returncode != 0
+    assert expected_message in f"{completed.stdout}\n{completed.stderr}"
+
+
+def test_helm_renders_deployment_managed_connector_proxy_port() -> None:
+    completed = _render_helm(
+        values_files=("tests/ci/fixtures/helm-values-ci.yaml",),
+        set_values=(
+            "egressProxy.connectorAllowedPorts={22,5432,15432}",
+            "connectorTest.allowedPorts={5432,15432}",
+        ),
+    )
+
+    assert completed.returncode == 0, f"{completed.stdout}\n{completed.stderr}"
+    assert 'value: "22,5432,15432"' in completed.stdout
+    assert "port: 15432" in completed.stdout
