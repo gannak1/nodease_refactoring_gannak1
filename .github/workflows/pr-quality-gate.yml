@@ -572,20 +572,26 @@ jobs:
           go-version: "1.25.x"
           cache: false
 
-      - name: Set up Python for Helm contract tests
-        if: needs.scope.outputs.helm_validation == 'true'
+      - name: Set up Python for deployment contract tests
+        if: >-
+          needs.scope.outputs.helm_validation == 'true' ||
+          needs.scope.outputs.dockerfile_validation == 'true'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install uv for Helm contract tests
-        if: needs.scope.outputs.helm_validation == 'true'
+      - name: Install uv for deployment contract tests
+        if: >-
+          needs.scope.outputs.helm_validation == 'true' ||
+          needs.scope.outputs.dockerfile_validation == 'true'
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
 
-      - name: Install Helm contract test dependencies
-        if: needs.scope.outputs.helm_validation == 'true'
+      - name: Install deployment contract test dependencies
+        if: >-
+          needs.scope.outputs.helm_validation == 'true' ||
+          needs.scope.outputs.dockerfile_validation == 'true'
         run: |
           uv venv .venv-ci-deployment --python "$PYTHON_VERSION"
           uv pip install --python .venv-ci-deployment/bin/python \
@@ -819,6 +825,13 @@ jobs:
             exit 1
           fi
           echo "Validated $validated existing Dockerfile(s); deleted files: $((selected - validated))."
+
+      - name: Run Dockerfile deployment contract tests
+        if: needs.scope.outputs.dockerfile_validation == 'true'
+        run: >-
+          .venv-ci-deployment/bin/python -m pytest
+          tests/ci/test_demo_seed_image_contract.py
+          -q
 
   knowledge_postgres:
     name: knowledge-postgres-contracts

@@ -287,6 +287,37 @@ def test_dockerfile_validation_preserves_rename_source_paths():
     assert "Dockerfile|Dockerfile.*|*.Dockerfile)" in dockerfile_block
 
 
+def test_dockerfile_validation_runs_demo_seed_image_contract():
+    workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
+    deployment_block = workflow.split(
+        "deployment_validation:",
+        maxsplit=1,
+    )[1].split("ci_required:", maxsplit=1)[0]
+    helm_validation = "needs.scope.outputs.helm_validation == 'true'"
+    dockerfile_validation = (
+        "needs.scope.outputs.dockerfile_validation == 'true'"
+    )
+
+    for step_name in (
+        "Set up Python for deployment contract tests",
+        "Install uv for deployment contract tests",
+        "Install deployment contract test dependencies",
+    ):
+        step_block = deployment_block.split(
+            f"- name: {step_name}",
+            maxsplit=1,
+        )[1].split("- name:", maxsplit=1)[0]
+        assert helm_validation in step_block
+        assert dockerfile_validation in step_block
+
+    contract_step = deployment_block.split(
+        "- name: Run Dockerfile deployment contract tests",
+        maxsplit=1,
+    )[1].split("- name:", maxsplit=1)[0]
+    assert dockerfile_validation in contract_step
+    assert "tests/ci/test_demo_seed_image_contract.py" in contract_step
+
+
 def test_helm_validation_registers_chart_dependency_repositories():
     workflow = QUALITY_GATE_PATH.read_text(encoding="utf-8")
 
