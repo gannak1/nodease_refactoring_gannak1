@@ -78,7 +78,13 @@ def _deployment_by_component(manifests: list[dict], component: str) -> dict:
 
 
 def test_default_helm_values_render_local_profile_without_proxy_coordinates():
-    completed = _render_helm(values_files=())
+    completed = _render_helm(
+        values_files=(),
+        set_values=(
+            "secrets.connectorTestAdmissionHmacKey="
+            "ci-static-render-placeholder-32-bytes",
+        ),
+    )
     manifests = _rendered_manifests(completed)
 
     assert not any(

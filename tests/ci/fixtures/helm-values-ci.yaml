@@ -4,6 +4,7 @@ storage:
   region: "region-ci-1"
 
 egressProxy:
+  enabled: true
   networkPolicy:
     authorizedSourceCidrs:
       - "192.168.0.0/16"
