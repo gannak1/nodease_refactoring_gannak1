@@ -151,6 +151,7 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-120 (MBA-357): Sandbox 사용자 코드의 외부 네트워크 접근은 별도 guarded transport 계약이 완성되기 전까지 지원하지 않는다. `enable_network=true`는 큐 상태 변경과 NSJail 실행 전에 `422 sandbox.network_access_unsupported`로 fail-closed하고, Compose 환경변수나 내부 실행 경로가 NSJail network namespace 격리를 해제해서는 안 된다.
 - DEP-REQ-121 (MBA-357): Helm의 모든 strict egress NetworkPolicy는 `egressProxy.networkPolicy.dns`에서 관리하는 하나의 cluster DNS peer를 사용해야 한다. 기본 `kube-system` namespace 동작을 유지하되 운영자는 실제 DNS namespace와 선택적 Pod label selector를 override할 수 있어야 하며, 누락되거나 잘못된 좌표는 render 전에 거부해야 한다. NodeLocal DNS처럼 namespace/pod selector로 표현할 수 없는 경로는 별도 승인 계약과 실제 CNI probe 없이 허용해서는 안 된다.
 - DEP-REQ-122 (MBA-357): Proxy mode의 PostgreSQL Connector runtime은 `connector-egress-v1` dialer와 동일한 deployment-managed target port allowlist를 기본 정책으로 사용해야 한다. Direct local/development mode의 기본 `5432`와 호출자가 명시한 더 좁은 정책은 유지한다. `gevent` Worker에서 blocking PostgreSQL driver를 연결하는 local relay는 OS-native thread/socket/select로 진행되어야 하고, relay 밖의 직접 dialer 호출은 cooperative socket을 유지해야 하며, 어느 경로도 proxy 장애 뒤 direct fallback해서는 안 된다.
+- DEP-REQ-123 (MBA-357): External DB·Redis·Sandbox CIDR은 private RFC1918/ULA network 또는 exact public `/32`·`/128` host만 허용해야 한다. Private supernet, broad public network, 여러 CIDR로 분할한 public catch-all, loopback, link-local, metadata, multicast, IPv4-mapped IPv6와 invalid CIDR은 Helm render 전에 fail-closed해야 한다.
 
 ## Runtime Audience Matrix
 

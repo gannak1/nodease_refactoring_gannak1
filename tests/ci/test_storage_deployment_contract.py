@@ -604,3 +604,66 @@ def test_helm_rejects_missing_external_dependency_cidrs_when_worker_is_disabled(
 
     assert completed.returncode != 0
     assert expected_message in f"{completed.stdout}\n{completed.stderr}"
+
+
+@pytest.mark.parametrize(
+    "external_database_cidrs",
+    [
+        '["0.0.0.0/1"]',
+        '["0.0.0.0/1","128.0.0.0/1"]',
+        '["93.184.216.0/24"]',
+        '["10.0.0.0/7"]',
+        '["fc::/7"]',
+        '["2000::/3"]',
+        '["::/1","8000::/1"]',
+        '["127.0.0.1/32"]',
+        '["169.254.169.254/32"]',
+        '["ff00::1/128"]',
+        '["0:0:0:0:0:0:0:0/128"]',
+        '["0:0:0:0:0:0:0:1/128"]',
+        '["::ffff:c000:0280/128"]',
+        '["0:0:0:0:0:ffff:c000:0280/128"]',
+        '["999.1.1.1/32"]',
+        '[":2001:db8:0:0:0:0:0:1/128"]',
+        '["2001:::1/128"]',
+    ],
+)
+def test_helm_rejects_broad_or_unsafe_external_dependency_cidrs(
+    external_database_cidrs: str,
+) -> None:
+    completed = _render_helm(
+        values_files=("tests/ci/fixtures/helm-values-ci.yaml",),
+        set_json_values=(
+            f"worker.networkPolicy.externalDatabaseCidrs={external_database_cidrs}",
+        ),
+    )
+
+    assert completed.returncode != 0
+    assert (
+        "worker.networkPolicy external dependency CIDRs must use valid private "
+        "networks or exact public hosts" in f"{completed.stdout}\n{completed.stderr}"
+    )
+
+
+@pytest.mark.parametrize(
+    "external_database_cidrs",
+    [
+        '["10.0.0.0/8"]',
+        '["172.16.0.0/12"]',
+        '["192.168.0.0/16"]',
+        '["fc00::/7"]',
+        '["93.184.216.34/32"]',
+        '["2001:db8::1/128"]',
+    ],
+)
+def test_helm_accepts_private_networks_and_exact_public_dependency_hosts(
+    external_database_cidrs: str,
+) -> None:
+    completed = _render_helm(
+        values_files=("tests/ci/fixtures/helm-values-ci.yaml",),
+        set_json_values=(
+            f"worker.networkPolicy.externalDatabaseCidrs={external_database_cidrs}",
+        ),
+    )
+
+    assert completed.returncode == 0, f"{completed.stdout}\n{completed.stderr}"

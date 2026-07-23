@@ -14,10 +14,10 @@ Status: Draft
 - 실제 cluster DNS의 namespace와 필요한 경우 Pod label selector인 `egressProxy.networkPolicy.dns`. 기본 `kube-system`과 다르면 operator values에서 반드시 override한다.
 - NetworkPolicy를 실제 집행하는 CNI와 해당 version
 - Release manifest 전체 NetworkPolicy 목록
-- External DB/Redis/Sandbox가 있으면 exact destination CIDR
+- External DB/Redis/Sandbox가 있으면 RFC1918/ULA private network CIDR 또는 exact public host CIDR(`/32`, `/128`)
 - Application operation별 safe synthetic probe. Credential, 실제 문서, prompt와 payload를 probe/log에 넣지 않는다.
 
-Catch-all, loopback, link-local, metadata 또는 출처를 알 수 없는 source CIDR은 사용하지 않는다. Squid source CIDR은 coarse network coordinate이며 workload identity 증명이 아니다.
+Catch-all, split catch-all, public network prefix, private block보다 넓은 supernet, loopback, link-local, metadata, multicast 또는 출처를 알 수 없는 source/destination CIDR은 사용하지 않는다. Public managed dependency가 동적 주소 범위를 요구하면 broad public CIDR을 열지 말고 private connectivity 또는 별도 FQDN-aware egress 결정을 사용한다. Squid source CIDR은 coarse network coordinate이며 workload identity 증명이 아니다.
 
 NodeLocal DNS처럼 host-network IP 또는 CIDR 허용이 필요한 cluster는 현재 namespace/pod DNS 계약의 지원 대상이 아니다. DNS를 살리기 위해 broad port 53 egress를 추가하지 말고 별도 정책 결정과 실제 CNI positive/negative probe를 먼저 마련한다.
 

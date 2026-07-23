@@ -57,6 +57,7 @@ Option 3을 채택한다.
 20. Sandbox의 사용자 코드 외부 네트워크 접근은 현재 지원하지 않는다. `enable_network=true` 요청은 API에서 `422 sandbox.network_access_unsupported`로 거부하고 Scheduler, Executor와 NSJail command builder도 같은 중앙 정책을 다시 적용한다. Compose 환경변수나 내부 호출로 NSJail network namespace 격리를 해제할 수 없다. 향후 지원하려면 Sandbox 전용 guarded outbound port, 목적지·protocol 정책, NetworkPolicy와 audit/redaction 계약을 별도 결정해야 한다.
 21. 모든 strict egress NetworkPolicy는 `egressProxy.networkPolicy.dns`의 단일 operator-owned DNS peer를 공유한다. 기본 namespace는 기존 동작과 같은 `kube-system`이며, cluster DNS가 다른 namespace에 있거나 전용 Pod selector가 필요한 환경은 `namespace`와 선택적 `podSelectorLabels`를 명시해야 한다. 값이 없거나 형식이 잘못되면 Helm render를 실패시킨다. NodeLocal DNS처럼 host-network 또는 CIDR 예외가 필요한 환경은 이 namespace/pod 계약으로 지원된 것으로 간주하지 않으며 별도 결정과 release probe 없이 broad DNS egress를 열지 않는다.
 22. Proxy mode의 PostgreSQL Connector는 application guard의 기본 허용 포트를 `connector-egress-v1` dialer가 가진 deployment-managed allowlist에서 가져온다. Direct local/development mode의 기본값은 `5432`를 유지하고, 호출자가 명시한 더 좁은 포트 정책은 덮어쓰지 않는다. Blocking DB driver와 `gevent` Worker가 함께 실행되는 경우 local CONNECT relay는 monkey-patched greenlet이 아니라 OS-native thread/socket/select primitive를 사용해 relay 진행을 보장한다. Relay 밖에서 dialer를 직접 사용하는 SSH 같은 호출은 cooperative socket을 유지해 Worker event loop를 막지 않는다. 이 경계는 검증 IP와 원래 hostname TLS 의미를 바꾸거나 proxy 실패 뒤 direct 연결로 fallback해서는 안 된다.
+23. External platform DB·Redis·Sandbox NetworkPolicy 예외는 private IPv4(RFC1918) 또는 IPv6 ULA network CIDR을 허용하되 각 주소군의 private 범위보다 넓게 확장할 수 없다. Public destination은 exact IPv4 `/32` 또는 IPv6 `/128` host만 허용한다. 여러 broad public CIDR을 조합한 catch-all, loopback, link-local, metadata, multicast, IPv4-mapped IPv6와 문법적으로 잘못된 CIDR은 Helm render 전에 거부한다. Public managed dependency가 동적 주소 범위를 요구하면 broad CIDR을 열지 않고 private connectivity 또는 별도 FQDN-aware egress 결정을 사용한다.
 
 ## Security and protected-resource boundaries
 
@@ -73,6 +74,7 @@ Option 3을 채택한다.
 | Dual-stack·운영 CNI | Release gate | 실제 배포 환경에서 같은 probe를 통과해야 하며 미검증 환경은 활성화하지 않는다. |
 | 비-HTTP protocol | 완료(IMAP·Connector) | IMAP은 ADR-0031 address pinning을 보존한 Worker-only 143/993 tunnel, external Connector DB/SSH는 validated-IP·deployment-port `3130` tunnel을 사용한다. Platform DB/Redis/Sandbox는 exact internal 경계를 유지한다. |
 | Connector runtime composition | 완료 | Proxy mode Postgres runtime은 dialer의 deployment-managed port allowlist를 사용하고, `gevent` Worker의 blocking DB driver는 OS-native local relay로 전달된다. |
+| External dependency CIDR | 완료 | Private network 범위 또는 exact public host만 허용하고 split catch-all과 unsafe address range는 Helm render 전에 거부한다. |
 | Runtime package asset | 완료 | tiktoken encoding과 NLTK corpus를 image build에서 적재하고 runtime download를 금지한다. |
 | External raw parser | 현재 미지원·fail-closed | Approval/guarded transport가 완성되기 전 source fetch·credential·SDK 호출 없이 safe reason으로 종료한다. |
 | Sandbox 사용자 코드 network | 현재 미지원·fail-closed | API·Scheduler·Executor·NSJail command builder가 `enable_network=true`를 거부하고 Compose runtime override를 제공하지 않는다. |

@@ -93,6 +93,87 @@ Kubernetes permits an empty label value, so only the key must be non-empty here.
 {{- end -}}
 
 {{/*
+External DB/Redis/Sandbox routes may use private network ranges, but public
+destinations must be exact hosts. This prevents multiple syntactically valid
+broad CIDRs from reconstructing a public catch-all egress route.
+*/}}
+{{- define "moduly.validateExternalDependencyCidr" -}}
+{{- $message := "worker.networkPolicy external dependency CIDRs must use valid private networks or exact public hosts" -}}
+{{- $cidr := trim (toString .) -}}
+{{- $parts := splitList "/" $cidr -}}
+{{- if ne (len $parts) 2 -}}
+{{- fail $message -}}
+{{- end -}}
+{{- $address := lower (index $parts 0) -}}
+{{- $prefixText := index $parts 1 -}}
+{{- if contains ":" $address -}}
+{{- if or (not (regexMatch "^(0|[1-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$" $prefixText)) (not (regexMatch "^[0-9a-f:]+$" $address)) (contains ":::" $address) (gt (len (regexFindAll "::" $address -1)) 1) (and (hasPrefix ":" $address) (not (hasPrefix "::" $address))) (and (hasSuffix ":" $address) (not (hasSuffix "::" $address))) -}}
+{{- fail $message -}}
+{{- end -}}
+{{- $nonEmptySegments := 0 -}}
+{{- range $segment := splitList ":" $address -}}
+{{- if not (empty $segment) -}}
+{{- if not (regexMatch "^[0-9a-f]{1,4}$" $segment) -}}
+{{- fail $message -}}
+{{- end -}}
+{{- $nonEmptySegments = add1 $nonEmptySegments -}}
+{{- end -}}
+{{- end -}}
+{{- if or (and (contains "::" $address) (gt $nonEmptySegments 7)) (and (not (contains "::" $address)) (ne $nonEmptySegments 8)) -}}
+{{- fail $message -}}
+{{- end -}}
+{{- $prefix := int $prefixText -}}
+{{- $isUla := regexMatch "^(fc|fd)[0-9a-f]{2}(:|$)" $address -}}
+{{- $isUnsafe := or (eq $address "::") (eq $address "::1") (regexMatch "^(0{1,4}:){7}0{1,4}$" $address) (regexMatch "^(0{1,4}:){7}0{0,3}1$" $address) (regexMatch "^fe[89ab]" $address) (hasPrefix "ff" $address) (hasPrefix "::ffff:" $address) (regexMatch "^(0+:){5}ffff:" $address) -}}
+{{- if $isUnsafe -}}
+{{- fail $message -}}
+{{- end -}}
+{{- if $isUla -}}
+{{- if lt $prefix 7 -}}
+{{- fail $message -}}
+{{- end -}}
+{{- else if ne $prefix 128 -}}
+{{- fail $message -}}
+{{- end -}}
+{{- else -}}
+{{- if not (regexMatch "^(0|[1-9]|[12][0-9]|3[0-2])$" $prefixText) -}}
+{{- fail $message -}}
+{{- end -}}
+{{- $octets := splitList "." $address -}}
+{{- if ne (len $octets) 4 -}}
+{{- fail $message -}}
+{{- end -}}
+{{- range $octet := $octets -}}
+{{- if or (not (regexMatch "^(0|[1-9][0-9]{0,2})$" $octet)) (gt (int $octet) 255) -}}
+{{- fail $message -}}
+{{- end -}}
+{{- end -}}
+{{- $first := int (index $octets 0) -}}
+{{- $second := int (index $octets 1) -}}
+{{- $prefix := int $prefixText -}}
+{{- $privateMinimumPrefix := 33 -}}
+{{- if eq $first 10 -}}
+{{- $privateMinimumPrefix = 8 -}}
+{{- else if and (eq $first 172) (ge $second 16) (le $second 31) -}}
+{{- $privateMinimumPrefix = 12 -}}
+{{- else if and (eq $first 192) (eq $second 168) -}}
+{{- $privateMinimumPrefix = 16 -}}
+{{- end -}}
+{{- $isUnsafe := or (eq $first 0) (eq $first 127) (and (eq $first 169) (eq $second 254)) (ge $first 224) -}}
+{{- if $isUnsafe -}}
+{{- fail $message -}}
+{{- end -}}
+{{- if le $privateMinimumPrefix 32 -}}
+{{- if lt $prefix $privateMinimumPrefix -}}
+{{- fail $message -}}
+{{- end -}}
+{{- else if ne $prefix 32 -}}
+{{- fail $message -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Validate the immutable, server-owned outbound proxy boundary. The proxy source
 CIDRs are deployment coordinates and must be supplied by the operator.
 */}}
@@ -172,9 +253,7 @@ CIDRs are deployment coordinates and must be supplied by the operator.
 {{- if empty $cidr -}}
 {{- fail "worker.networkPolicy external dependency CIDRs cannot be empty" -}}
 {{- end -}}
-{{- if or (eq $cidr "0.0.0.0/0") (eq $cidr "::/0") (eq $cidr "169.254.0.0/16") (eq $cidr "169.254.169.254/32") (eq $cidr "fe80::/10") -}}
-{{- fail "worker.networkPolicy external dependency CIDRs cannot be public catch-all, link-local, or metadata ranges" -}}
-{{- end -}}
+{{- include "moduly.validateExternalDependencyCidr" $cidr -}}
 {{- end -}}
 {{- if not (has .Values.egressProxy.networkPolicy.enforcementPhase (list "canary" "final")) -}}
 {{- fail "egressProxy.networkPolicy.enforcementPhase must be canary or final" -}}
