@@ -2,7 +2,7 @@
 import json
 import logging
 from io import StringIO
-from typing import Any
+from typing import Any, cast
 
 from apps.shared.services.connector_tcp_transport import (
     HttpConnectProxyDialer,
@@ -31,6 +31,8 @@ DB_CONNECT_TIMEOUT_SECONDS = 5
 MAX_DB_FETCH_ROWS = 10000
 MAX_DB_FETCH_BYTES = 16 * 1024 * 1024
 _AUTO_CONNECTOR_PROXY = object()
+_AUTO_ALLOWED_DB_PORTS = object()
+_DEFAULT_ALLOWED_DB_PORTS = frozenset({5432})
 
 
 def _load_rsa_private_key(key_content: str) -> Any:
@@ -50,7 +52,7 @@ class PostgresConnector(BaseConnector):
         self,
         *,
         allow_ssh_tunnel: bool = False,
-        allowed_db_ports: frozenset[int] | None = frozenset({5432}),
+        allowed_db_ports: frozenset[int] | None | object = _AUTO_ALLOWED_DB_PORTS,
         connector_proxy_dialer: HttpConnectProxyDialer | None | object = (
             _AUTO_CONNECTOR_PROXY
         ),
@@ -67,6 +69,16 @@ class PostgresConnector(BaseConnector):
         ):
             return self._connector_proxy_dialer
         raise TypeError("connector proxy dialer is invalid")
+
+    def _resolve_allowed_db_ports(
+        self,
+        connector_proxy: HttpConnectProxyDialer | None,
+    ) -> frozenset[int] | None:
+        if self.allowed_db_ports is _AUTO_ALLOWED_DB_PORTS:
+            if connector_proxy is not None:
+                return connector_proxy.allowed_target_ports
+            return _DEFAULT_ALLOWED_DB_PORTS
+        return cast(frozenset[int] | None, self.allowed_db_ports)
 
     def _create_tunnel_and_engine(self, config):
         """
@@ -133,12 +145,12 @@ class PostgresConnector(BaseConnector):
             db_host = "127.0.0.1"
             db_port = tunnel.local_bind_port
         else:
+            connector_proxy = self._resolve_connector_proxy_dialer()
             db_host, db_port, db_hostaddr = ensure_network_target_allowed(
                 db_host,
                 db_port,
-                allowed_ports=self.allowed_db_ports,
+                allowed_ports=self._resolve_allowed_db_ports(connector_proxy),
             )
-            connector_proxy = self._resolve_connector_proxy_dialer()
             if connector_proxy is not None:
                 if not db_hostaddr:
                     raise EgressGuardError("adapter.target_not_allowed")

@@ -222,7 +222,7 @@ def test_local_connector_relay_forwards_bytes_without_re_resolving_target() -> N
         def __init__(self) -> None:
             pass
 
-        def open_tunnel(
+        def open_native_tunnel(
             self, target_address: str, target_port: int, *, timeout_seconds: float
         ) -> socket.socket:
             del timeout_seconds
@@ -320,6 +320,103 @@ def test_postgres_connector_routes_validated_address_through_local_proxy_relay(
         relay.stop()
 
     assert observed["stopped"] is True
+
+
+def test_postgres_connector_uses_proxy_deployment_ports_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+    dialer = connector_tcp_proxy_dialer_from_environment(
+        _proxy_environment(CONNECTOR_EGRESS_ALLOWED_PORTS="22,5432,55432")
+    )
+    assert dialer is not None
+
+    class _Relay:
+        local_bind_port = 6543
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            observed["started"] = True
+
+        def stop(self) -> None:
+            observed["stopped"] = True
+
+    def _allow_target(
+        host: str,
+        port: int,
+        *,
+        allowed_ports: frozenset[int] | None,
+    ) -> tuple[str, int, str]:
+        observed["target"] = (host, port)
+        observed["allowed_ports"] = allowed_ports
+        return host, port, "93.184.216.34"
+
+    monkeypatch.setattr(
+        "apps.shared.connectors.postgres.ensure_network_target_allowed",
+        _allow_target,
+    )
+    monkeypatch.setattr(
+        "apps.shared.connectors.postgres.LocalConnectorProxyRelay",
+        _Relay,
+    )
+    connector = PostgresConnector(connector_proxy_dialer=dialer)
+
+    engine, relay = connector._create_tunnel_and_engine(
+        {
+            "host": "db.example",
+            "port": 55432,
+            "username": "user",
+            "password": "not-a-real-secret",
+            "database": "database",
+        }
+    )
+    try:
+        assert observed["target"] == ("db.example", 55432)
+        assert observed["allowed_ports"] == frozenset({22, 5432, 55432})
+    finally:
+        engine.dispose()
+        assert relay is not None
+        relay.stop()
+
+    assert observed["stopped"] is True
+
+
+def test_postgres_connector_keeps_default_port_for_direct_development(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    def _allow_target(
+        host: str,
+        port: int,
+        *,
+        allowed_ports: frozenset[int] | None,
+    ) -> tuple[str, int, str]:
+        observed["allowed_ports"] = allowed_ports
+        return host, port, "93.184.216.34"
+
+    monkeypatch.setattr(
+        "apps.shared.connectors.postgres.ensure_network_target_allowed",
+        _allow_target,
+    )
+    connector = PostgresConnector(connector_proxy_dialer=None)
+
+    engine, relay = connector._create_tunnel_and_engine(
+        {
+            "host": "db.example",
+            "port": 5432,
+            "username": "user",
+            "password": "not-a-real-secret",
+            "database": "database",
+        }
+    )
+    try:
+        assert observed["allowed_ports"] == frozenset({5432})
+        assert relay is None
+    finally:
+        engine.dispose()
 
 
 def test_postgres_connector_stops_proxy_relay_when_engine_creation_fails(

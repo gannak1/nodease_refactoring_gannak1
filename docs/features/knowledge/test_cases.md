@@ -234,6 +234,8 @@ Organization Detector Provider와 embedding 전 local masking Target 테스트�
 - Parser/extractor는 sandbox 또는 least-privilege worker에서 실행되고, parser가 document 내부 script/macro/external URL을 실행하거나 따라가면 테스트 실패다.
 - Content safety failure, unsupported type, parser exception은 raw file bytes, active content marker, parser raw error를 audit, trace, log, retry/dead-letter payload, user-facing response에 남기지 않고 safe reason code와 remediation state만 남긴다.
 - DB adapter는 arbitrary SQL을 거부하고 승인된 read-only probe/schema introspection만 cap 안에서 허용한다.
+- Proxy mode DB ingestion은 deployment-managed Connector allowlist의 custom PostgreSQL port를 runtime guard까지 동일하게 적용하고, direct local/development 기본값은 `5432`를 유지한다.
+- Workflow Worker의 `gevent` 환경에서 DB ingestion local relay는 blocking driver와 독립된 OS-native accept/forward loop를 사용해야 한다. Relay 교착을 일반 `sync_failed` stale-index fallback으로 오인하거나 proxy 실패 뒤 direct dial하면 테스트 실패다.
 - SSH adapter는 arbitrary command execution과 승인되지 않은 tunnel/proxy behavior를 거부한다.
 - Object storage adapter는 policy가 bounded listing을 명시적으로 허용하지 않는 한 과도한 bucket/listing operation을 거부한다.
 - Egress/adapter error는 sanitized reason code를 반환하고 credential이나 raw connection string을 포함하지 않는다.

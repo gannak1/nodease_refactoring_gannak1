@@ -3,11 +3,10 @@ from __future__ import annotations
 import ipaddress
 import os
 import re
-import select
 import socket
-import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from urllib.parse import urlsplit
 
 CONNECTOR_PROXY_POLICY_REVISION = "connector-egress-v1"
@@ -22,6 +21,103 @@ _PRIVATE_PROXY_NETWORKS = (
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("fc00::/7"),
 )
+
+
+def _original_runtime_primitive(module_name: str, attribute: str) -> object:
+    try:
+        from gevent import monkey
+    except ImportError:
+        module = __import__(module_name)
+        return getattr(module, attribute)
+    return monkey.get_original(module_name, attribute)
+
+
+_NATIVE_START_NEW_THREAD = _original_runtime_primitive(
+    "_thread",
+    "start_new_thread",
+)
+_NATIVE_ALLOCATE_LOCK = _original_runtime_primitive("_thread", "allocate_lock")
+_NATIVE_SOCKET = _original_runtime_primitive("socket", "socket")
+_NATIVE_GETADDRINFO = _original_runtime_primitive("socket", "getaddrinfo")
+_NATIVE_SELECT = _original_runtime_primitive("select", "select")
+
+
+class _NativeEvent:
+    def __init__(self) -> None:
+        self._lock = _NATIVE_ALLOCATE_LOCK()
+        self._value = False
+
+    def set(self) -> None:
+        with self._lock:
+            self._value = True
+
+    def is_set(self) -> bool:
+        with self._lock:
+            return self._value
+
+
+class _NativeThread:
+    def __init__(self, target: Callable[[], None]) -> None:
+        self._target = target
+        self._done = _NATIVE_ALLOCATE_LOCK()
+        self._done.acquire()
+        self._started = False
+
+    def start(self) -> None:
+        if self._started:
+            raise RuntimeError("native thread is already started")
+        self._started = True
+        try:
+            _NATIVE_START_NEW_THREAD(self._run, ())
+        except BaseException:
+            self._started = False
+            self._done.release()
+            raise
+
+    def _run(self) -> None:
+        try:
+            self._target()
+        except BaseException:
+            pass
+        finally:
+            self._done.release()
+
+    def join(self, timeout: float | None = None) -> None:
+        if not self._started:
+            return
+        if timeout is None:
+            acquired = self._done.acquire()
+        else:
+            acquired = self._done.acquire(True, max(0.0, timeout))
+        if acquired:
+            self._done.release()
+
+
+def _native_create_connection(
+    address: tuple[str, int],
+    *,
+    timeout: float,
+) -> socket.socket:
+    host, port = address
+    last_error: OSError | None = None
+    for (
+        family,
+        socktype,
+        protocol,
+        _canonical_name,
+        socket_address,
+    ) in _NATIVE_GETADDRINFO(host, port, 0, socket.SOCK_STREAM):
+        candidate = _NATIVE_SOCKET(family, socktype, protocol)
+        try:
+            candidate.settimeout(timeout)
+            candidate.connect(socket_address)
+            return candidate
+        except OSError as exc:
+            last_error = exc
+            candidate.close()
+    if last_error is not None:
+        raise last_error
+    raise OSError("connector proxy address unavailable")
 
 
 class ConnectorTcpProxyConfigurationError(RuntimeError):
@@ -191,6 +287,35 @@ class HttpConnectProxyDialer:
         *,
         timeout_seconds: float,
     ) -> socket.socket:
+        return self._open_tunnel(
+            target_address,
+            target_port,
+            timeout_seconds=timeout_seconds,
+            create_connection=socket.create_connection,
+        )
+
+    def open_native_tunnel(
+        self,
+        target_address: str,
+        target_port: int,
+        *,
+        timeout_seconds: float,
+    ) -> socket.socket:
+        return self._open_tunnel(
+            target_address,
+            target_port,
+            timeout_seconds=timeout_seconds,
+            create_connection=_native_create_connection,
+        )
+
+    def _open_tunnel(
+        self,
+        target_address: str,
+        target_port: int,
+        *,
+        timeout_seconds: float,
+        create_connection: Callable[..., socket.socket],
+    ) -> socket.socket:
         try:
             address = ipaddress.ip_address(target_address)
         except ValueError as exc:
@@ -207,7 +332,7 @@ class HttpConnectProxyDialer:
 
         proxy_socket: socket.socket | None = None
         try:
-            proxy_socket = socket.create_connection(
+            proxy_socket = create_connection(
                 (self._policy.proxy_host, self._policy.proxy_port),
                 timeout=timeout_seconds,
             )
@@ -281,12 +406,12 @@ class LocalConnectorProxyRelay:
         self._target_address = target_address
         self._target_port = target_port
         self._connect_timeout_seconds = connect_timeout_seconds
-        self._stop_event = threading.Event()
+        self._stop_event = _NativeEvent()
         self._listener: socket.socket | None = None
-        self._accept_thread: threading.Thread | None = None
-        self._workers: list[threading.Thread] = []
+        self._accept_thread: _NativeThread | None = None
+        self._workers: list[_NativeThread] = []
         self._active_sockets: set[socket.socket] = set()
-        self._lock = threading.Lock()
+        self._lock = _NATIVE_ALLOCATE_LOCK()
 
     @property
     def local_bind_port(self) -> int:
@@ -297,17 +422,13 @@ class LocalConnectorProxyRelay:
     def start(self) -> None:
         if self._listener is not None:
             raise RuntimeError("connector relay is already started")
-        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener = _NATIVE_SOCKET(socket.AF_INET, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind(("127.0.0.1", 0))
         listener.listen(16)
         listener.settimeout(0.2)
         self._listener = listener
-        self._accept_thread = threading.Thread(
-            target=self._accept_loop,
-            name="connector-proxy-accept",
-            daemon=True,
-        )
+        self._accept_thread = _NativeThread(self._accept_loop)
         self._accept_thread.start()
 
     def _accept_loop(self) -> None:
@@ -321,12 +442,7 @@ class LocalConnectorProxyRelay:
                 continue
             except OSError:
                 break
-            worker = threading.Thread(
-                target=self._serve_client,
-                args=(client,),
-                name="connector-proxy-relay",
-                daemon=True,
-            )
+            worker = _NativeThread(partial(self._serve_client, client))
             with self._lock:
                 self._workers.append(worker)
             worker.start()
@@ -335,7 +451,7 @@ class LocalConnectorProxyRelay:
         upstream: socket.socket | None = None
         self._track_socket(client)
         try:
-            upstream = self._dialer.open_tunnel(
+            upstream = self._dialer.open_native_tunnel(
                 self._target_address,
                 self._target_port,
                 timeout_seconds=self._connect_timeout_seconds,
@@ -345,7 +461,7 @@ class LocalConnectorProxyRelay:
             upstream.setblocking(False)
             peers = {client: upstream, upstream: client}
             while not self._stop_event.is_set():
-                readable, _, _ = select.select(tuple(peers), (), (), 0.2)
+                readable, _, _ = _NATIVE_SELECT(tuple(peers), (), (), 0.2)
                 for source in readable:
                     try:
                         data = source.recv(64 * 1024)
