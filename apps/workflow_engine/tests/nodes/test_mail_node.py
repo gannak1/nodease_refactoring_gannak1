@@ -1,6 +1,7 @@
 """Mail node credential reference tests."""
 
 import imaplib
+import socket
 import ssl
 import uuid
 from types import SimpleNamespace
@@ -10,6 +11,10 @@ import pytest
 from pydantic import ValidationError
 
 from apps.shared.domain.mail_processing import MailSourceReference
+from apps.shared.services.outbound_proxy_policy import (
+    OutboundProxyPolicy,
+    OutboundTransportMode,
+)
 from apps.workflow_engine.services.mail_credential_service import (
     ResolvedMailCredential,
 )
@@ -19,6 +24,7 @@ from apps.workflow_engine.workflow.nodes.mail.mail_node import (
     MAIL_IMAP_TIMEOUT_SECONDS,
     MAX_IMAP_MESSAGE_BYTES,
     MailNode,
+    _create_pinned_imap_socket,
 )
 
 
@@ -343,6 +349,95 @@ def test_port_143_negotiates_starttls_before_login(plain_imap, resolved_credenti
         ("mailbox@example.test", "synthetic-mail-secret"),
         {},
     )
+
+
+class _ProxyHandshakeSocket:
+    def __init__(self, response: bytes) -> None:
+        self._response = bytearray(response)
+        self.sent = b""
+        self.closed = False
+
+    def sendall(self, payload: bytes) -> None:
+        self.sent += payload
+
+    def recv(self, size: int) -> bytes:
+        if not self._response:
+            return b""
+        chunk = bytes(self._response[:size])
+        del self._response[:size]
+        return chunk
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _proxy_policy() -> OutboundProxyPolicy:
+    return OutboundProxyPolicy(
+        mode=OutboundTransportMode.PROXY_GUARDED_EXTERNAL,
+        proxy_url="http://proxy:3129",
+        allowed_proxy_hosts=("proxy",),
+        policy_revision="proxy-v1",
+    )
+
+
+def test_imap_uses_validated_ip_through_proxy_without_direct_fallback(
+    monkeypatch,
+) -> None:
+    tunnel = _ProxyHandshakeSocket(b"HTTP/1.1 200 Connection established\r\n\r\n")
+    connect = MagicMock(return_value=tunnel)
+    monkeypatch.setattr(socket, "create_connection", connect)
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.mail.mail_node."
+        "outbound_proxy_policy_from_environment",
+        _proxy_policy,
+    )
+
+    result = _create_pinned_imap_socket("203.0.113.10", 993, timeout=10.0)
+
+    assert result is tunnel
+    connect.assert_called_once_with(("proxy", 3129), 10.0)
+    assert tunnel.sent == (
+        b"CONNECT 203.0.113.10:993 HTTP/1.1\r\n"
+        b"Host: 203.0.113.10:993\r\n\r\n"
+    )
+
+
+def test_imap_proxy_rejection_is_fail_closed(monkeypatch) -> None:
+    tunnel = _ProxyHandshakeSocket(b"HTTP/1.1 403 Forbidden\r\n\r\n")
+    connect = MagicMock(return_value=tunnel)
+    monkeypatch.setattr(socket, "create_connection", connect)
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.mail.mail_node."
+        "outbound_proxy_policy_from_environment",
+        _proxy_policy,
+    )
+
+    with pytest.raises(OSError, match="mail.imap_proxy_tunnel_failed"):
+        _create_pinned_imap_socket("203.0.113.10", 993, timeout=10.0)
+
+    connect.assert_called_once_with(("proxy", 3129), 10.0)
+    assert tunnel.closed is True
+
+
+def test_imap_local_direct_mode_keeps_address_pinning(monkeypatch) -> None:
+    direct_socket = MagicMock()
+    connect = MagicMock(return_value=direct_socket)
+    monkeypatch.setattr(socket, "create_connection", connect)
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.mail.mail_node."
+        "outbound_proxy_policy_from_environment",
+        lambda: OutboundProxyPolicy(
+            mode=OutboundTransportMode.DIRECT_PINNED_INTERNAL_OR_DEDICATED,
+            proxy_url=None,
+            allowed_proxy_hosts=(),
+            policy_revision="direct-v1",
+        ),
+    )
+
+    result = _create_pinned_imap_socket("203.0.113.10", 993, timeout=10.0)
+
+    assert result is direct_socket
+    connect.assert_called_once_with(("203.0.113.10", 993), 10.0)
 
 
 def test_gmail_oauth_is_rejected_before_imap_connection(mock_imap, resolved_credential):

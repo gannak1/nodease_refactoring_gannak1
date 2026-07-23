@@ -166,6 +166,33 @@ _PROTECTED_CI_WORKFLOW_PATHS = {
 _COMPOSE_FILE_NAME_PATTERN = re.compile(
     r"^(?:docker-)?compose(?:\.[A-Za-z0-9_-]+)*\.ya?ml$"
 )
+_EGRESS_PROXY_PATH_PREFIXES = (
+    "docker/proxy/",
+    "tests/ci/fixtures/egress-proxy/",
+)
+_EGRESS_PROXY_PATHS = frozenset(
+    {
+        "docker/docker-compose.yml",
+        "infra/helm/moduly/files/squid.conf",
+        "infra/helm/moduly/templates/_helpers.tpl",
+        "infra/helm/moduly/templates/configmap.yaml",
+        "infra/helm/moduly/templates/egress-proxy-configmap.yaml",
+        "infra/helm/moduly/templates/egress-proxy-deployment.yaml",
+        "infra/helm/moduly/templates/egress-proxy-pdb.yaml",
+        "infra/helm/moduly/templates/egress-proxy-service.yaml",
+        "infra/helm/moduly/templates/gateway-deployment.yaml",
+        "infra/helm/moduly/templates/knowledge-worker-deployment.yaml",
+        "infra/helm/moduly/templates/proxy-only-networkpolicies.yaml",
+        "infra/helm/moduly/templates/worker-deployment.yaml",
+        "infra/helm/moduly/templates/worker-networkpolicy.yaml",
+        "infra/helm/moduly/values-local.yaml",
+        "infra/helm/moduly/values-production.yaml",
+        "infra/helm/moduly/values.yaml",
+        "tests/ci/fixtures/helm-values-ci.yaml",
+        "tests/ci/test_egress_proxy_kubernetes.py",
+        "tests/ci/test_egress_proxy_runtime.py",
+    }
+)
 
 
 @dataclass
@@ -189,6 +216,7 @@ class ChangeScope:
     helm_validation: bool = False
     support_surface_validation: bool = False
     compose_validation: bool = False
+    egress_proxy_validation: bool = False
     dockerfile_validation: bool = False
     dockerfile_config_changed: bool = False
     broad_python: bool = False
@@ -209,6 +237,7 @@ class ChangeScope:
         self.helm_validation = True
         self.support_surface_validation = True
         self.compose_validation = True
+        self.egress_proxy_validation = True
         self.dockerfile_validation = True
 
     def github_outputs(self) -> dict[str, str]:
@@ -340,14 +369,9 @@ def is_github_composite_action_path(raw_path: str) -> bool:
 def is_unsupported_deployment_path(raw_path: str) -> bool:
     path = normalize_repo_path(raw_path)
     workflow_path = PurePosixPath(path)
-    if (
-        is_github_workflow_path(path)
-        and (
-            workflow_path.stem in _UNSUPPORTED_DEPLOYMENT_WORKFLOW_STEMS
-            or workflow_path.stem.startswith(
-                _UNSUPPORTED_DEPLOYMENT_WORKFLOW_PREFIXES
-            )
-        )
+    if is_github_workflow_path(path) and (
+        workflow_path.stem in _UNSUPPORTED_DEPLOYMENT_WORKFLOW_STEMS
+        or workflow_path.stem.startswith(_UNSUPPORTED_DEPLOYMENT_WORKFLOW_PREFIXES)
     ):
         return True
     return path.startswith(_UNSUPPORTED_DEPLOYMENT_PREFIXES)
@@ -365,12 +389,17 @@ def _select_deployment_validation(path: str, scope: ChangeScope) -> None:
         scope.support_surface_validation = True
     elif path.startswith((".github/workflows/", ".github/actions/")):
         scope.actions_validation = True
-    if path.startswith("infra/helm/") or path == "tests/ci/fixtures/helm-values-ci.yaml":
+    if (
+        path.startswith("infra/helm/")
+        or path == "tests/ci/fixtures/helm-values-ci.yaml"
+    ):
         scope.helm_validation = True
     if is_unsupported_deployment_path(path):
         scope.support_surface_validation = True
     if _COMPOSE_FILE_NAME_PATTERN.fullmatch(PurePosixPath(path).name):
         scope.compose_validation = True
+    if path in _EGRESS_PROXY_PATHS or path.startswith(_EGRESS_PROXY_PATH_PREFIXES):
+        scope.egress_proxy_validation = True
     if _is_dockerfile_path(path):
         scope.dockerfile_validation = True
         scope.dockerfile_config_changed = True
@@ -381,6 +410,7 @@ def _select_deployment_validation(path: str, scope: ChangeScope) -> None:
             scope.helm_validation,
             scope.support_surface_validation,
             scope.compose_validation,
+            scope.egress_proxy_validation,
             scope.dockerfile_validation,
         )
     )

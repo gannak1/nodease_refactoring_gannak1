@@ -26,6 +26,9 @@ from apps.shared.db.models.knowledge import (
 )
 from apps.shared.db.session import SessionLocal
 from apps.shared.distributed_lock import DistributedLock
+from apps.shared.domain.knowledge_document_ingestion import (
+    RAW_PARSER_EGRESS_UNAVAILABLE_REASON,
+)
 from apps.shared.services.knowledge_ingestion_fencing import (
     ACTIVE_FENCING_TOKEN_HASH_KEY,
     KnowledgeIngestionFencing,
@@ -68,6 +71,7 @@ _SAFE_PREVIEW_SOURCE_REASON_CODES = frozenset(
         "configuration.invalid",
         "resource.hidden",
         "source.temporarily_unavailable",
+        RAW_PARSER_EGRESS_UNAVAILABLE_REASON,
     }
 )
 
@@ -78,6 +82,19 @@ def _recursive_character_text_splitter(**kwargs: Any) -> Any:
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 
     return RecursiveCharacterTextSplitter(**kwargs)
+
+
+def _nltk_resources_available(nltk: Any) -> bool:
+    for resource in (
+        "tokenizers/punkt",
+        "tokenizers/punkt_tab",
+        "corpora/stopwords",
+    ):
+        try:
+            nltk.data.find(resource)
+        except LookupError:
+            return False
+    return True
 
 
 def _pre_finalization_chunk_progress(completed: int, total: int) -> int:
@@ -366,6 +383,7 @@ class DurableIngestionSourceFailure(RuntimeError):
             "processing.failed",
             "resource.hidden",
             "source.temporarily_unavailable",
+            RAW_PARSER_EGRESS_UNAVAILABLE_REASON,
         }
     )
 
@@ -994,7 +1012,13 @@ class IngestionOrchestrator:
                 safe_reason_code=(
                     "ingestion.finalization_failed"
                     if isinstance(error, KnowledgeIngestionFinalizationError)
-                    else "ingestion.processing_failed"
+                    else (
+                        error.reason_code
+                        if isinstance(error, DurableIngestionSourceFailure)
+                        and error.reason_code
+                        == RAW_PARSER_EGRESS_UNAVAILABLE_REASON
+                        else "ingestion.processing_failed"
+                    )
                 ),
                 fencing_token=fencing_token,
             )
@@ -1623,18 +1647,15 @@ class IngestionOrchestrator:
                 import nltk
                 from rake_nltk import Rake
 
-                try:
-                    nltk.data.find("tokenizers/punkt")
-                except LookupError:
-                    nltk.download("punkt", quiet=True)
-                try:
-                    nltk.data.find("corpora/stopwords")
-                except LookupError:
-                    nltk.download("stopwords", quiet=True)
-
-                r = Rake()
-                r.extract_keywords_from_text(content)
-                keywords = r.get_ranked_phrases()[:10]
+                if _nltk_resources_available(nltk):
+                    r = Rake()
+                    r.extract_keywords_from_text(content)
+                    keywords = r.get_ranked_phrases()[:10]
+                elif not keyword_error_logged:
+                    logger.warning(
+                        "Keyword extraction skipped: required NLTK resources unavailable"
+                    )
+                    keyword_error_logged = True
             except Exception as exc:
                 # 키워드 추출 실패는 치명적이지 않음 (로그만 남김)
                 if not keyword_error_logged:
@@ -1844,6 +1865,11 @@ class IngestionOrchestrator:
     def _safe_ingestion_error_message(self, error: Exception) -> str:
         if isinstance(error, KnowledgeIngestionFinalizationError):
             return "문서 색인 최종화에 실패했습니다."
+        if (
+            isinstance(error, DurableIngestionSourceFailure)
+            and error.reason_code == RAW_PARSER_EGRESS_UNAVAILABLE_REASON
+        ):
+            return "외부 문서 파서를 사용할 수 없습니다."
         return "문서 처리에 실패했습니다."
 
     def reindex_knowledge_base(self, kb_id: UUID, new_model: str):

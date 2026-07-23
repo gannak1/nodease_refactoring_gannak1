@@ -30,6 +30,9 @@ from apps.shared.services.credential_encryption import (
 from apps.shared.services.llm_credential_config import (
     require_llm_credential_keyring_ready,
 )
+from apps.shared.services.outbound_proxy_policy import (
+    require_outbound_proxy_security_ready,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,7 @@ async def lifespan(app: FastAPI):
     from apps.shared.audit.listeners import register_audit_listeners
 
     register_audit_listeners()
+    require_outbound_proxy_security_ready()
     require_mail_credential_keyring_ready()
     require_llm_credential_keyring_ready()
     require_connector_test_security_ready()

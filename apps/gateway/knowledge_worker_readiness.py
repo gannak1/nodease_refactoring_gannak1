@@ -15,9 +15,17 @@ from apps.shared.services.knowledge_document_ingestion_schema_readiness import (
     KnowledgeDocumentIngestionSchemaNotReady,
     require_knowledge_document_ingestion_ready,
 )
+from apps.shared.services.outbound_proxy_policy import (
+    require_outbound_proxy_security_ready,
+)
+from apps.shared.services.connector_tcp_transport import (
+    require_connector_tcp_proxy_security_ready,
+)
 
 
 def _require_readiness() -> None:
+    require_outbound_proxy_security_ready()
+    require_connector_tcp_proxy_security_ready()
     require_llm_credential_keyring_ready()
     require_knowledge_document_ingestion_ready(
         engine,

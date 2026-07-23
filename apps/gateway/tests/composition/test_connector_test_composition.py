@@ -365,6 +365,10 @@ def test_production_requires_strong_admission_hmac_key() -> None:
         {
             "NODE_ENV": "production",
             "CONNECTOR_TEST_ADMISSION_HMAC_KEY": "x" * 32,
+            "CONNECTOR_EGRESS_PROXY_URL": "http://egress-proxy:3130",
+            "CONNECTOR_EGRESS_PROXY_ALLOWED_HOSTS": "egress-proxy",
+            "CONNECTOR_EGRESS_POLICY_REVISION": "connector-egress-v1",
+            "CONNECTOR_EGRESS_ALLOWED_PORTS": "22,5432",
         }
     )
 

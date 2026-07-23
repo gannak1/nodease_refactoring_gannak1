@@ -2,6 +2,21 @@
 
 Status: Draft
 
+## MBA-357 Outbound Proxy-Only Contracts
+
+- Production proxy mode는 exact internal host와 HTTP listener `3128/3129`, Connector listener `3130`만 허용하고 blank, public, localhost/loopback/link-local, userinfo, path/query/fragment, stale revision과 direct mode를 network I/O 전에 거부한다. Ambient proxy와 broad `NO_PROXY`는 결과를 바꾸지 않는다.
+- Guarded sync/async transport는 application URL/DNS policy를 proxy 연결 전에 다시 평가하고 Squid만 dial한다. Proxy connection/tunnel failure 뒤 origin direct dial은 0회이며 HTTPS SNI/certificate hostname, response cap, stream/cancellation과 safe error 계약을 유지한다.
+- S3/object storage client는 explicit proxy 설정 또는 explicit empty proxy map을 사용하며 ambient environment를 신뢰하지 않는다. Invalid proxy config에서는 provider client 생성과 signed request가 0회다.
+- Squid config는 pinned image, CONNECT 443, Workflow-only HTTP 80 listener, IMAP 143/993와 Connector 전용 `3130` listener의 배포 관리 포트 allowlist, final deny-all, private/reserved/metadata IPv4/IPv6 deny, no SSL bump, no cache와 `access_log none`을 검증한다.
+- Compose는 Gateway·Knowledge·Workflow가 egress-capable network에 직접 연결되지 않고 Squid만 egress network를 사용하며 host-published listener가 없는지 검증한다. Disposable runtime은 safe origin 성공, mixed A/AAAA/CNAME/rebind 차단, unauthorized source 차단, direct dial과 proxy-down fallback 실패를 확인한다.
+- Helm render는 Squid Deployment/Service/PDB, immutable digest, minimum replica, security context, resource bounds, listener별 ingress와 workload별 egress를 검증한다. Logger/Beat/Frontend에는 public route와 proxy access가 없어야 한다. Proxy-only Frontend는 exact bundled Gateway URL만 허용하고 Gateway 비활성 또는 alternate `API_URL`을 render 전에 거부한다.
+- Canary render의 workload selector에는 `nodease.io/egress-mode=proxy-v1`이 있고 final render에서는 없어야 한다. Pod phase annotation, `maxUnavailable=0`, `maxSurge=1`과 PDB를 함께 확인한다.
+- Remote CI는 pinned kind/Kubernetes와 Calico IPv4에서 target direct HTTPS 실패, authorized Squid HTTPS/Connector 성공과 Sandbox-shaped unauthorized source 실패를 실제 실행한다. Unrestricted control에서 IPv4-mapped public/private 연결이 가능한지 먼저 증명한 뒤 보호 workload의 mapped public/private/metadata direct 연결 실패를 확인한다. Dual-stack과 실제 운영 CNI는 release probe이며 미검증 환경을 지원으로 표시하지 않는다.
+- Image contract는 `cl100k_base`/`o200k_base`, NLTK `punkt`/`punkt_tab`/`stopwords`, runtime 기본값과 동일한 immutable E5 `(model_id, revision)` snapshot과 opt-in CrossEncoder model이 build 단계에 적재되는지 검증한다. E5와 CrossEncoder build identity는 final stage runtime 환경에 유지되어야 하며 ingestion runtime source에는 `nltk.download`가 없어야 한다.
+- External parser readiness가 없는 `llamaparse` 요청은 source fetch, credential lookup, SDK 호출과 PyMuPDF fallback이 모두 0회이고 preview와 durable ingestion 모두 exact safe reason `knowledge.raw_parser_egress_unavailable`를 보존해야 한다.
+- Sandbox `enable_network=true` 요청은 Scheduler 조회와 큐 변경 전에 HTTP `422`와 `sandbox.network_access_unsupported`만 반환해야 한다. 내부 Scheduler·Executor·NSJail command builder 호출도 같은 요청을 거부하고, NSJail command에는 `--disable_clone_newnet`이 없어야 하며 Compose는 `SANDBOX_ENABLE_NETWORK` override를 제공하지 않아야 한다.
+- Synthetic secret marker를 application/proxy logs와 failure output에 넣어도 URL/query/header/body, credential, resolved IP와 raw provider exception이 남지 않아야 한다.
+
 ## Unit Tests
 
 - App secret generator는 호출마다 최소 256-bit entropy의 bounded ASCII token과 common redactor가 free-text에서 식별할 수 있는 고정 marker를 만들고 repr/log helper에 원문을 포함하지 않는다.
@@ -20,6 +35,10 @@ Status: Draft
 - Candidate budget 가능성은 bucket/boolean warning으로만 반환되고 active create를 차단하지 않는다. Client success step은 warning을 text status로 표시한다.
 - MBA-219 node configuration evaluator는 FastAPI, SQLAlchemy, concrete service와 catalog loader를 import하지 않고 composition이 주입한 immutable node side-effect mapping과 resource snapshot port만 사용한다.
 - Mail/Gmail Draft/Mail Acknowledge/Slack은 managed validator, LLM/HTTP/GitHub는 runtime-authoritative로 명시된다. External node가 registry에 없거나 `implemented=false`이면 실행 표면에서 `node_configuration_validator_unavailable`로 차단한다.
+- Gateway Google login OAuth metadata/token/userinfo/JWKS는 세션마다 새 operation-bound guarded transport를 사용하고 ambient proxy를 무시한다. Helm NetworkPolicy의 내부·외부 PostgreSQL 허용 port는 application `DB_PORT`와 동일한 canonical chart helper에서 렌더한다.
+- Kubernetes NetworkPolicy CIDR은 API-canonical native IPv4/IPv6 형식이어야 하고 IPv4-mapped IPv6 prefix를 직접 넣지 않는다. Application/Squid mapped-range 차단과 pinned Calico의 direct destination negative probe를 함께 검증한다.
+- 외부 PostgreSQL 또는 Redis를 사용하는 proxy-only chart는 `worker.enabled=false`여도 해당 dependency CIDR 누락을 Helm render 단계에서 거부한다.
+- External DB·Redis·Sandbox CIDR은 RFC1918/ULA private network와 exact public `/32`·`/128` host를 허용한다. `0.0.0.0/1`과 `128.0.0.0/1` 같은 split catch-all, public network prefix, private block보다 넓은 supernet, loopback, link-local, metadata, multicast, mapped IPv6와 invalid CIDR은 Helm render가 같은 safe fixed error로 거부해야 한다.
 - 최상위 graph와 다단계 Loop `subGraph`, WorkflowNode target graph의 managed node를 같은 audience/principal로 검사한다. Malformed nested graph와 nesting 한도 초과는 `workflow_graph_invalid`로 차단한다.
 - Runtime audience resolver는 `api`, `webapp`, `widget`, `chatbot`, `mcp`, `schedule`, `webhook`를 anonymous public-only로 판정한다.
 - `internal_chatbot`은 authenticated run/run-info surface에서만 허용하고 public info와 public app run surface에서는 fail-closed로 거부한다.
@@ -184,6 +203,15 @@ Status: Draft
 - Gateway storage 설정은 type을 trim/대문자로 정규화한다. `CLOUD`의 bucket 또는 region이 null/empty/whitespace이면 safe validation error로 시작을 거부하고 provider client를 생성하지 않으며 unknown type을 LOCAL로 fallback하지 않는다.
 - Direct Gateway 개발 예시에는 정확히 하나의 지원 storage mode(`LOCAL` 또는 `CLOUD`)가 있어야 하고 legacy `PROD` 값은 없어야 한다. 현재 로컬 예시의 `LOCAL`은 cloud 좌표 없이 유효해야 한다.
 - S3 upload와 presigned URL provider failure는 cause chain 없이 stable safe error로 변환되고 provider exception text가 exception이나 log에 남지 않는다. Upload 실패 뒤 request file pointer는 기존 계약대로 초기 위치로 복원한다.
+- Production proxy mode의 S3 client와 workload identity nested STS client는 같은 botocore session default config의 exact proxy와 retry 정책을 상속한다. Ambient proxy가 있어도 사용하지 않고 credential exchange 실패 뒤 direct fallback하지 않는다.
+- Helm render는 `egressProxy.service.httpsPort!=3128`, `httpCompatiblePort!=3129` 또는 `connectorTcpPort!=3130`을 각각 고정된 safe message로 거부한다. Connector port 목록은 1~16개의 unique valid port이며 strict Connector test 목록을 포함해야 하고, application env·Squid ACL·IPv4/IPv6 proxy egress rule에 동일하게 렌더되어야 한다. Squid rule은 public 80/443과 Worker-only IMAP 143/993도 포함한다.
+- 기본 Helm `values.yaml`은 추가 CIDR override 없이 local direct-pinned profile로 실제 렌더되고 egress-proxy workload를 만들지 않는다. Production values는 proxy와 exact source CIDR을 명시적으로 활성화한다.
+- 기본 및 production Helm render에서 모든 strict egress NetworkPolicy는 기본 `kube-system` DNS peer를 공유해야 한다. DNS namespace와 Pod label selector를 override한 render에서는 모든 policy가 같은 custom peer와 UDP/TCP 53만 사용해야 하며, invalid namespace, non-map selector와 빈 label key는 render 전에 safe fixed error로 실패해야 한다. Kubernetes가 허용하는 빈 label value는 정상 렌더해야 한다. Pinned Calico E2E는 기본 DNS 조회 성공 뒤 Gateway, Knowledge, Workflow, Logger, Beat와 Frontend의 proxy/internal 정상 경로 및 direct public 차단을 검증한다.
+- Proxy mode의 기본 PostgreSQL Connector는 `CONNECTOR_EGRESS_ALLOWED_PORTS`에 포함된 custom DB port를 application guard와 `3130` dialer 양쪽에서 허용하고, 목록 밖 port는 origin dial 전에 거부해야 한다. Direct local/development mode는 기본 `5432` 제한을 유지해야 한다.
+- 실제 Workflow Worker와 같은 `gevent.monkey.patch_all()` 이후 blocking client가 local relay에 연결해도 native accept/forward loop가 진행되어야 한다. 반대로 relay 밖의 직접 dialer 호출은 cooperative connection factory를 사용해야 한다. 이 검증은 별도 subprocess에서 실제 relay와 CONNECT handshake를 사용하고 timeout 또는 direct fallback을 성공으로 간주하지 않는다.
+- Gateway/Workflow Dockerfile만 변경해도 tiktoken·NLTK와 opt-in CrossEncoder preload 계약 테스트가 deployment validation에서 실행된다.
+- Demo seed embedding은 shared guarded OpenAI client를 사용하며 bare provider SDK를 생성하지 않는다.
+- Kubernetes direct HTTPS negative probe는 먼저 workload pod DNS 성공을 확인하고 public IPv4를 얻은 뒤 `curl --resolve`로 direct TCP를 강제해 실패를 확인한다. IPv4-mapped probe는 unrestricted control success와 보호 workload의 mapped public/private/metadata failure를 함께 요구한다. Workflow probe는 같은 IPv4 path에서 Squid `3129`를 통한 143/993 CONNECT 성공을, Connector probe는 `3130`을 통한 배포 허용 포트 성공과 HTTPS 거부를 별도로 확인한다.
 - 기본 환경에서 schedule schema downgrade를 시도하면 sibling migration DDL 전에 실패하고 Alembic head가 유지된다. 파괴적 opt-in 없는 성공 downgrade/re-upgrade는 안전성 증거로 인정하지 않는다.
 - Schedule Celery task의 producer와 task registration은 모두 `ignore_result=True`이고 `task_store_errors_even_if_ignored=False`다. 성공과 실패 실행 뒤 Redis result backend에는 workflow output, RAG evidence, sync 상세 또는 raw exception이 생성되지 않으며 task outcome은 claim/status/finalization summary로 제한된다. 실제 Redis key 부재는 opt-in integration evidence로 별도 실행한다.
 - Schedule structured signal capture와 Scheduler/Worker 오류 log capture에는 정의된 event/value/status/reason/mode 또는 operation/attempt/exception type만 존재하고 UUID, idempotency key, raw payload와 raw exception message가 없다.

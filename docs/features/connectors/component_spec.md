@@ -21,6 +21,13 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 
 ## Components
 
+### Production Connector TCP Transport
+
+- `apps/shared/services/connector_tcp_transport.py`는 `connector-egress-v1`, exact internal proxy endpoint와 최대 16개의 배포 관리 target port를 검증한다.
+- Strict Connector test, 저장된 PostgreSQL schema/runtime 사용과 Workflow SSH compatibility는 기존 egress guard가 반환한 literal public IP만 전용 `3130` CONNECT authority로 전달한다. Hostname을 proxy에서 다시 해석하지 않는다.
+- PostgreSQL은 원래 hostname과 loopback relay `hostaddr`를 분리해 TLS hostname 의미를 보존한다. SSH는 검증 IP에 이미 연결된 socket을 tunnel adapter에 전달한다.
+- Proxy 또는 local relay 생성 실패, disallowed/private/mapped target과 startup config drift는 provider I/O 전에 safe failure로 닫고 direct fallback하지 않는다. Connector credential과 target은 proxy log에 남기지 않는다.
+
 ### `connectorApi`
 
 - 출처: `apps/client/app/features/knowledge/api/connectorApi.ts`

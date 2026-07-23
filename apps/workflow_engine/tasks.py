@@ -41,6 +41,7 @@ from apps.shared.services.workflow_configuration_preflight import (
 )
 from apps.workflow_engine import mail_credential_startup  # noqa: F401
 from apps.workflow_engine import llm_credential_startup  # noqa: F401
+from apps.workflow_engine import outbound_proxy_startup  # noqa: F401
 from apps.workflow_engine.runtime_policy import get_deployment_runtime_policy
 from apps.workflow_engine.schedule_dispatch_settings import (
     get_schedule_dispatch_settings,
@@ -174,9 +175,11 @@ def record_model_routing_operational_run(self, workflow_run_id: str):
             session,
             workflow_run_id=workflow_run_id,
         )
-        learning_learner_ids = ModelRoutingPolicyStore.pending_learning_learner_ids_for_run(
-            session,
-            workflow_run_id=workflow_run_id,
+        learning_learner_ids = (
+            ModelRoutingPolicyStore.pending_learning_learner_ids_for_run(
+                session,
+                workflow_run_id=workflow_run_id,
+            )
         )
         session.commit()
         for learner_id in learning_learner_ids:

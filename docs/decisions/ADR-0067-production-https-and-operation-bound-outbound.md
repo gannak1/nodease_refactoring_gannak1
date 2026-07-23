@@ -4,6 +4,8 @@ Status: Accepted
 
 Related ADRs: ADR-0050, ADR-0057, ADR-0064
 
+Outbound enforcement completion: Decision 10과 결과의 proxy-only 잔여 위험은 이 결정 당시 상태이며, 현재 network 경계는 [ADR-0072](ADR-0072-outbound-proxy-only-network-enforcement.md)가 대체한다. Application operation policy와 guarded request 계약은 계속 유지한다.
+
 ## 배경
 
 프로덕션 Frontend 설정이 browser bundle에 cluster 내부 HTTP Gateway 주소를 공개할 수 있었고, Gateway CORS 설정도 환경에 따른 HTTPS 불변식을 강제하지 않았다. 또한 LLM provider, Knowledge API·문서 fetch와 Workflow 원격 파일 추출은 서로 다른 HTTP client를 사용해 URL 사전 검증과 실제 dial 사이의 DNS 재해석, ambient proxy, response size와 오류 redaction 정책이 일관되지 않았다.

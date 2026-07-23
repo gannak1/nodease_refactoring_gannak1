@@ -178,7 +178,9 @@ OutboundEgressGuard는 네트워크와 protocol access 위험을 줄이는 gate�
   ADR-0067 public-address guarded transport 및 no-log/no-durable-payload readiness가 구현되기
   전 비활성화하고 raw upload 전에 `knowledge.raw_parser_egress_unavailable`로 fail-closed한다. 승인된
   parser output도 local hard baseline을 우회하지 않는다. Private raw parser는 별도 Accepted ADR과
-  dedicated isolation profile 전까지 지원하지 않는다.
+  dedicated isolation profile 전까지 지원하지 않는다. 현재 FileProcessor는 이 판정을 source fetch,
+  credential lookup과 SDK 생성 전에 수행하고, preview와 durable ingestion에 같은 safe reason을 전달하며
+  local parser fallback으로 외부 parser 실패를 숨기지 않는다.
 - Archive는 nested depth, expanded size, contained file count, nested archive count cap을 적용한다. Cap 초과, archive bomb, executable/script/macro-enabled child file은 기본 fail-closed 또는 quarantine/remediation이다.
 - Malware/content scan hook은 provider-neutral interface로 둔다. Hook이 없거나 scan result가 `unknown`, `timeout`, `error`이면 high-risk binary/Office/archive는 ready/indexing-visible 상태로 진행하지 않는다.
 - Scan pass는 source ACL, KB `use`, redaction, prompt-injection guard를 대체하지 않는다.

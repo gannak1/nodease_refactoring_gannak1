@@ -1,16 +1,15 @@
 import json
-import logging
-import sys
 from types import SimpleNamespace
-from unittest.mock import sentinel
 from uuid import uuid4
 
 import pytest
 
 from apps.gateway.services import llm_service as llm_service_module
-from apps.gateway.services.ingestion.processors import file_processor as file_processor_module
 from apps.gateway.services.ingestion.processors.file_processor import FileProcessor
-from apps.gateway.services.ingestion.parsers.pdf_parser import PdfParser
+from apps.gateway.services.ingestion.parsers.pdf_parser import (
+    ExternalParserEgressUnavailable,
+    PdfParser,
+)
 from apps.gateway.services.ingestion.service import IngestionOrchestrator
 from apps.gateway.services.llm_service import (
     LLMCredentialNotAvailableError,
@@ -247,87 +246,54 @@ def test_resolver_sanitizes_malformed_config(monkeypatch):
     assert exc_info.value.reason == "credential_not_available"
 
 
-class _FakePdfParser:
-    calls = []
-
-    def parse(self, _path, **kwargs):
-        self.calls.append(kwargs)
-        return [{"text": "parsed", "page": 1}]
-
-
-def test_file_processor_blocks_before_parser_call_when_credential_is_unavailable(
-    monkeypatch, tmp_path
+def test_file_processor_blocks_external_parser_before_fetch_or_credential_lookup(
+    monkeypatch,
 ):
-    file_path = tmp_path / "document.pdf"
-    file_path.write_bytes(b"pdf")
-    _FakePdfParser.calls = []
-    monkeypatch.setattr(file_processor_module, "PdfParser", _FakePdfParser)
     monkeypatch.setattr(
         LLMService,
         "resolve_llamaparse_api_key",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            LLMCredentialNotAvailableError("credential_not_available")
-        ),
+        lambda *_args, **_kwargs: pytest.fail("credential lookup must not run"),
     )
-
+    monkeypatch.setattr(
+        FileProcessor,
+        "_download_file",
+        lambda *_args, **_kwargs: pytest.fail("source fetch must not run"),
+    )
     result = FileProcessor(
         object(),
         user_id=uuid4(),
         organization_id=uuid4(),
-    ).process({"file_path": str(file_path), "strategy": "llamaparse"})
-
-    assert _FakePdfParser.calls == []
-    assert result.metadata == {"error": "Parser credential is unavailable."}
-
-
-def test_file_processor_delegates_secret_without_persisting_it(monkeypatch, tmp_path):
-    file_path = tmp_path / "document.pdf"
-    file_path.write_bytes(b"pdf")
-    _FakePdfParser.calls = []
-    monkeypatch.setattr(file_processor_module, "PdfParser", _FakePdfParser)
-    monkeypatch.setattr(
-        LLMService,
-        "resolve_llamaparse_api_key",
-        lambda *_args, **_kwargs: sentinel.resolved_credential_material,
-    )
-
-    result = FileProcessor(
-        object(),
-        user_id=uuid4(),
-        organization_id=uuid4(),
-    ).process({"file_path": str(file_path), "strategy": "llamaparse"})
-
-    assert _FakePdfParser.calls == [
+    ).process(
         {
+            "file_path": "https://source.example.invalid/document.pdf",
             "strategy": "llamaparse",
-            "api_key": sentinel.resolved_credential_material,
         }
-    ]
-    assert "credential" not in result.metadata
-    assert "api_key" not in result.metadata
-
-
-def test_pdf_parser_does_not_log_provider_exception_traceback(monkeypatch, caplog):
-    class FailingLlamaParse:
-        def __init__(self, **_kwargs):
-            pass
-
-        def load_data(self, _file_path):
-            raise RuntimeError()
-
-    parser = PdfParser()
-    monkeypatch.setitem(
-        sys.modules,
-        "llama_parse",
-        SimpleNamespace(LlamaParse=FailingLlamaParse),
     )
-    monkeypatch.setattr(parser, "_parse_with_pymupdf", lambda _path: [])
 
-    with caplog.at_level(logging.WARNING):
-        assert parser._parse_with_llamaparse("document.pdf", sentinel.api_key) == []
+    assert result.chunks == []
+    assert result.metadata == {
+        "error": "External parser is unavailable.",
+        "reason_code": "knowledge.raw_parser_egress_unavailable",
+    }
 
-    assert "LlamaParse parsing failed: RuntimeError" in caplog.text
-    assert "Traceback" not in caplog.text
+
+def test_pdf_parser_blocks_external_strategy_without_sdk_or_local_fallback(monkeypatch):
+    parser = PdfParser()
+    monkeypatch.setattr(
+        parser,
+        "_parse_with_pymupdf",
+        lambda _path: pytest.fail("external parser must not fall back locally"),
+    )
+
+    with pytest.raises(ExternalParserEgressUnavailable) as exc_info:
+        parser.parse(
+            "document.pdf",
+            strategy="llamaparse",
+            api_key="synthetic-test-value",
+        )
+
+    assert exc_info.value.reason_code == "knowledge.raw_parser_egress_unavailable"
+    assert "synthetic-test-value" not in str(exc_info.value)
 
 
 def test_ingestion_orchestrator_preserves_organization_context_for_processor(

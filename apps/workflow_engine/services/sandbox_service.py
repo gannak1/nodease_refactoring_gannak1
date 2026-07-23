@@ -98,7 +98,7 @@ class SandboxService:
 
         try:
             # HTTP POST 요청
-            with httpx.Client(timeout=timeout_config) as client:
+            with httpx.Client(timeout=timeout_config, trust_env=False) as client:
                 response = client.post(
                     url,
                     json=request_data,

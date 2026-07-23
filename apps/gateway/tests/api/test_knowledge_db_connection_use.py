@@ -422,6 +422,11 @@ def test_preview_service_preserves_only_safe_processor_reason(
             503,
             "source.temporarily_unavailable",
         ),
+        (
+            "knowledge.raw_parser_egress_unavailable",
+            409,
+            "knowledge.raw_parser_egress_unavailable",
+        ),
         ("configuration.invalid", 400, "validation.failed"),
     ],
 )

@@ -18,7 +18,7 @@ Status: Accepted
 6. Credential 응답, audit, trace와 log는 safe metadata allowlist를 사용한다. Secret, ciphertext, mailbox email 원문과 provider raw error를 기록하지 않는다.
 7. Legacy inline password graph는 자동 migration이나 fallback 없이 `mail.credential_reference_required`로 fail-closed한다.
 8. 삭제 요청은 즉시 revoke하여 다음 실행부터 차단한다. 물리 삭제와 보존 기간은 별도 retention 결정에서 다룬다.
-9. Mail IMAP 연결은 중앙 egress guard로 public target과 허용 포트를 검증한다. `993`은 검증용 기본 SSL context를 사용하는 implicit TLS, `143`은 로그인 전 STARTTLS로만 허용한다. DNS 재바인딩을 막기 위해 검증된 IP로 실제 socket 연결을 고정하되 TLS 인증서와 SNI는 canonical hostname으로 검증한다. Connect와 socket read는 기본 10초 timeout으로 제한한다.
+9. Mail IMAP 연결은 중앙 egress guard로 public target과 허용 포트를 검증한다. `993`은 검증용 기본 SSL context를 사용하는 implicit TLS, `143`은 로그인 전 STARTTLS로만 허용한다. DNS 재바인딩을 막기 위해 검증된 IP를 최종 CONNECT authority로 고정하되 TLS 인증서와 SNI는 canonical hostname으로 검증한다. Production proxy mode에서는 Worker 전용 Squid listener가 `143/993` TCP tunnel만 중계하며, proxy 실패 뒤 direct socket으로 fallback하지 않는다. Local/test direct mode는 같은 검증 IP로 직접 연결한다. Connect와 socket read는 기본 10초 timeout으로 제한한다.
 10. Credential lifecycle과 permission mutation은 safe allowlist audit row를 같은 DB transaction에 기록한다. Audit 저장 실패 시 mutation도 rollback한다.
 11. Revoke는 terminal lifecycle state다. Revoked credential의 수정과 신규 permission grant는 거부하되 기존 permission 회수와 감사 조회는 허용한다.
 12. IMAP 검색 값은 protocol quoted-string으로 인코딩하고 CR/LF/NUL을 거부한다. 로그인 이후 select/search/fetch/cleanup에서 발생한 provider raw exception도 safe reason code로 변환하거나 cleanup에서 흡수한다.

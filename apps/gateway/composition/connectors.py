@@ -25,6 +25,9 @@ from apps.gateway.application.connectors.models import (
 from apps.gateway.application.connectors.test_connection import TestConnectorConnection
 from apps.shared.pubsub import get_async_redis_client
 from apps.shared.services.egress_guard import canonicalize_network_host
+from apps.shared.services.connector_tcp_transport import (
+    connector_tcp_proxy_dialer_from_environment,
+)
 
 _LOCAL_ADMISSION_KEY = b"connector-test-local-development-key-v1"
 _MAX_TRUSTED_LOCAL_CA_BYTES = 64 * 1024
@@ -94,6 +97,13 @@ def require_connector_test_security_ready(
 ) -> None:
     values = environ if environ is not None else os.environ
     policy = connector_test_policy_from_environment(values)
+    connector_proxy_dialer = connector_tcp_proxy_dialer_from_environment(values)
+    if connector_proxy_dialer is not None and not policy.allowed_ports <= (
+        connector_proxy_dialer.allowed_target_ports
+    ):
+        raise RuntimeError(
+            "CONNECTOR_TEST_ALLOWED_PORTS must be allowed by connector egress"
+        )
     _admission_key(values)
     _connector_test_redis_url(values)
     if policy.trusted_local_ca_file:
@@ -119,7 +129,19 @@ def get_connector_test_application() -> ConnectorTestApplication:
             policy=policy,
             hmac_key=_admission_key(os.environ),
         )
-        probe = StrictPostgresConnectorProbe(policy)
+        connector_proxy_dialer = connector_tcp_proxy_dialer_from_environment(
+            os.environ
+        )
+        if connector_proxy_dialer is not None and not policy.allowed_ports <= (
+            connector_proxy_dialer.allowed_target_ports
+        ):
+            raise RuntimeError(
+                "CONNECTOR_TEST_ALLOWED_PORTS must be allowed by connector egress"
+            )
+        probe = StrictPostgresConnectorProbe(
+            policy,
+            connector_proxy_dialer=connector_proxy_dialer,
+        )
         _application = ConnectorTestApplication(
             use_case=TestConnectorConnection(
                 admission,

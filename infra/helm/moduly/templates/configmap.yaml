@@ -1,5 +1,6 @@
 {{- include "moduly.validateLoginTrustedProxy" . }}
 {{- include "moduly.validateStorage" . }}
+{{- include "moduly.validateEgressProxy" . }}
 {{- $storageType := include "moduly.storageType" . }}
 apiVersion: v1
 kind: ConfigMap
@@ -10,7 +11,7 @@ metadata:
 data:
   # Database configuration (non-sensitive)
   DB_HOST: {{ include "moduly.postgresql.host" . | quote }}
-  DB_PORT: {{ .Values.postgresql.auth.port | default "5432" | quote }}
+  DB_PORT: {{ include "moduly.postgresql.port" . | quote }}
   DB_NAME: {{ .Values.postgresql.auth.database | default "moduly" | quote }}
   DB_USER: {{ .Values.postgresql.auth.username | default "moduly" | quote }}
   
@@ -56,11 +57,6 @@ data:
   {{- else }}
   API_URL: {{ printf "http://%s-gateway:%d" (include "moduly.fullname" .) (.Values.gateway.service.port | int) | quote }}
   {{- end }}
-  
-  # Sandbox proxy configuration
-  HTTP_PROXY: {{ .Values.sandbox.env.HTTP_PROXY | default "http://localhost:3128" | quote }}
-  HTTPS_PROXY: {{ .Values.sandbox.env.HTTPS_PROXY | default "http://localhost:3128" | quote }}
-  NO_PROXY: {{ .Values.sandbox.env.NO_PROXY | default "localhost,127.0.0.1,.svc,.cluster.local" | quote }}
   
   # Timezone
   TZ: {{ .Values.sandbox.env.TZ | default "Asia/Seoul" | quote }}

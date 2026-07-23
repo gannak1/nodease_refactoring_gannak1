@@ -22,6 +22,7 @@ def _render_helm(
     *,
     values_files: tuple[str, ...],
     set_values: tuple[str, ...] = (),
+    set_json_values: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     if os.getenv("NODEASE_RUN_HELM_INTEGRATION_TESTS") != "1":
         pytest.skip("Helm integration contract is owned by deployment validation")
@@ -40,6 +41,8 @@ def _render_helm(
         command.extend(("-f", str(REPOSITORY_ROOT / values_file)))
     for value in set_values:
         command.extend(("--set", value))
+    for value in set_json_values:
+        command.extend(("--set-json", value))
 
     return subprocess.run(
         command,
@@ -72,6 +75,36 @@ def _deployment_by_component(manifests: list[dict], component: str) -> dict:
     ]
     assert len(matching) == 1
     return matching[0]
+
+
+def test_default_helm_values_render_local_profile_without_proxy_coordinates():
+    completed = _render_helm(
+        values_files=(),
+        set_values=(
+            "secrets.connectorTestAdmissionHmacKey="
+            "ci-static-render-placeholder-32-bytes",
+        ),
+    )
+    manifests = _rendered_manifests(completed)
+
+    assert not any(
+        manifest.get("metadata", {})
+        .get("labels", {})
+        .get("app.kubernetes.io/component")
+        == "egress-proxy"
+        for manifest in manifests
+    )
+    for component in ("gateway", "worker"):
+        deployment = _deployment_by_component(manifests, component)
+        container = next(
+            item
+            for item in deployment["spec"]["template"]["spec"]["containers"]
+            if item["name"] == component
+        )
+        environment = {item["name"]: item for item in container.get("env", [])}
+        assert environment["OUTBOUND_TRANSPORT_MODE"]["value"] == (
+            "direct_pinned_internal_or_dedicated"
+        )
 
 
 def test_direct_gateway_example_uses_supported_storage_contract():
@@ -427,3 +460,210 @@ def test_production_worker_rejects_invalid_operational_boundaries(
 
     assert completed.returncode != 0
     assert expected_message in f"{completed.stdout}\n{completed.stderr}"
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_message"),
+    [
+        (
+            "egressProxy.service.httpsPort=43128",
+            "egressProxy.service.httpsPort must be 3128",
+        ),
+        (
+            "egressProxy.service.httpCompatiblePort=43129",
+            "egressProxy.service.httpCompatiblePort must be 3129",
+        ),
+        (
+            "egressProxy.service.connectorTcpPort=43130",
+            "egressProxy.service.connectorTcpPort must be 3130",
+        ),
+    ],
+)
+def test_helm_rejects_proxy_listener_port_overrides(
+    override: str,
+    expected_message: str,
+):
+    completed = _render_helm(
+        values_files=("tests/ci/fixtures/helm-values-ci.yaml",),
+        set_values=(override,),
+    )
+
+    assert completed.returncode != 0
+    assert expected_message in f"{completed.stdout}\n{completed.stderr}"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_message"),
+    [
+        (
+            ("egressProxy.connectorAllowedPorts={22,22}",),
+            "egressProxy.connectorAllowedPorts must contain 1 to 16 unique ports",
+        ),
+        (
+            ("connectorTest.allowedPorts={15432}",),
+            "connectorTest.allowedPorts must be included in egressProxy.connectorAllowedPorts",
+        ),
+    ],
+)
+def test_helm_rejects_invalid_connector_proxy_port_contract(
+    overrides: tuple[str, ...],
+    expected_message: str,
+):
+    completed = _render_helm(
+        values_files=("tests/ci/fixtures/helm-values-ci.yaml",),
+        set_values=overrides,
+    )
+
+    assert completed.returncode != 0
+    assert expected_message in f"{completed.stdout}\n{completed.stderr}"
+
+
+def test_helm_renders_deployment_managed_connector_proxy_port() -> None:
+    completed = _render_helm(
+        values_files=("tests/ci/fixtures/helm-values-ci.yaml",),
+        set_values=(
+            "egressProxy.connectorAllowedPorts={22,5432,15432}",
+            "connectorTest.allowedPorts={5432,15432}",
+        ),
+    )
+
+    assert completed.returncode == 0, f"{completed.stdout}\n{completed.stderr}"
+    assert 'value: "22,5432,15432"' in completed.stdout
+    assert "port: 15432" in completed.stdout
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_message"),
+    [
+        (
+            "gateway.enabled=false",
+            "proxy-only frontend requires the bundled Gateway",
+        ),
+        (
+            "frontend.env.API_URL=http://alternate-gateway.internal:8000",
+            "proxy-only frontend API_URL must target the bundled Gateway",
+        ),
+    ],
+)
+def test_helm_rejects_frontend_backend_without_matching_proxy_only_egress(
+    override: str,
+    expected_message: str,
+) -> None:
+    completed = _render_helm(
+        values_files=("tests/ci/fixtures/helm-values-ci.yaml",),
+        set_values=(override,),
+    )
+
+    assert completed.returncode != 0
+    assert expected_message in f"{completed.stdout}\n{completed.stderr}"
+
+
+def test_helm_accepts_explicit_bundled_gateway_frontend_api_url() -> None:
+    completed = _render_helm(
+        values_files=("tests/ci/fixtures/helm-values-ci.yaml",),
+        set_values=(
+            "frontend.env.API_URL="
+            "http://nodease-knowledge-worker-contract-moduly-gateway:8000",
+        ),
+    )
+
+    assert completed.returncode == 0, f"{completed.stdout}\n{completed.stderr}"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "empty_list_override", "expected_message"),
+    [
+        (
+            (
+                "worker.enabled=false",
+                "postgresql.enabled=false",
+            ),
+            "worker.networkPolicy.externalDatabaseCidrs=[]",
+            "worker.networkPolicy.externalDatabaseCidrs is required",
+        ),
+        (
+            (
+                "worker.enabled=false",
+                "redis.enabled=false",
+            ),
+            "worker.networkPolicy.externalRedisCidrs=[]",
+            "worker.networkPolicy.externalRedisCidrs is required",
+        ),
+    ],
+)
+def test_helm_rejects_missing_external_dependency_cidrs_when_worker_is_disabled(
+    overrides: tuple[str, ...],
+    empty_list_override: str,
+    expected_message: str,
+) -> None:
+    completed = _render_helm(
+        values_files=("tests/ci/fixtures/helm-values-ci.yaml",),
+        set_values=overrides,
+        set_json_values=(empty_list_override,),
+    )
+
+    assert completed.returncode != 0
+    assert expected_message in f"{completed.stdout}\n{completed.stderr}"
+
+
+@pytest.mark.parametrize(
+    "external_database_cidrs",
+    [
+        '["0.0.0.0/1"]',
+        '["0.0.0.0/1","128.0.0.0/1"]',
+        '["93.184.216.0/24"]',
+        '["10.0.0.0/7"]',
+        '["fc::/7"]',
+        '["2000::/3"]',
+        '["::/1","8000::/1"]',
+        '["127.0.0.1/32"]',
+        '["169.254.169.254/32"]',
+        '["ff00::1/128"]',
+        '["0:0:0:0:0:0:0:0/128"]',
+        '["0:0:0:0:0:0:0:1/128"]',
+        '["::ffff:c000:0280/128"]',
+        '["0:0:0:0:0:ffff:c000:0280/128"]',
+        '["999.1.1.1/32"]',
+        '[":2001:db8:0:0:0:0:0:1/128"]',
+        '["2001:::1/128"]',
+    ],
+)
+def test_helm_rejects_broad_or_unsafe_external_dependency_cidrs(
+    external_database_cidrs: str,
+) -> None:
+    completed = _render_helm(
+        values_files=("tests/ci/fixtures/helm-values-ci.yaml",),
+        set_json_values=(
+            f"worker.networkPolicy.externalDatabaseCidrs={external_database_cidrs}",
+        ),
+    )
+
+    assert completed.returncode != 0
+    assert (
+        "worker.networkPolicy external dependency CIDRs must use valid private "
+        "networks or exact public hosts" in f"{completed.stdout}\n{completed.stderr}"
+    )
+
+
+@pytest.mark.parametrize(
+    "external_database_cidrs",
+    [
+        '["10.0.0.0/8"]',
+        '["172.16.0.0/12"]',
+        '["192.168.0.0/16"]',
+        '["fc00::/7"]',
+        '["93.184.216.34/32"]',
+        '["2001:db8::1/128"]',
+    ],
+)
+def test_helm_accepts_private_networks_and_exact_public_dependency_hosts(
+    external_database_cidrs: str,
+) -> None:
+    completed = _render_helm(
+        values_files=("tests/ci/fixtures/helm-values-ci.yaml",),
+        set_json_values=(
+            f"worker.networkPolicy.externalDatabaseCidrs={external_database_cidrs}",
+        ),
+    )
+
+    assert completed.returncode == 0, f"{completed.stdout}\n{completed.stderr}"

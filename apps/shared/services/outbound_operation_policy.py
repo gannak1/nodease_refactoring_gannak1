@@ -23,6 +23,7 @@ KNOWLEDGE_DOCUMENT_FETCH = "knowledge.document.fetch"
 WORKFLOW_REMOTE_FILE_FETCH = "workflow.remote_file.fetch"
 GOOGLE_OAUTH_AUTHORIZATION_CODE_EXCHANGE = "google.oauth.authorization_code.exchange"
 GOOGLE_OAUTH_REFRESH = "google.oauth.refresh"
+GOOGLE_LOGIN_OIDC = "google.login.oidc"
 GMAIL_PROFILE_READ = "gmail.profile.read"
 GMAIL_MESSAGE_READ = "gmail.message.read"
 GMAIL_MESSAGE_MODIFY = "gmail.message.modify"
@@ -225,6 +226,14 @@ _PROFILES: Mapping[str, OutboundOperationProfile] = MappingProxyType(
             timeout_seconds=10.0,
             content_types=frozenset({"application/json"}),
         ),
+        GOOGLE_LOGIN_OIDC: _profile(
+            GOOGLE_LOGIN_OIDC,
+            methods=frozenset({"GET", "POST"}),
+            max_request_bytes=64 * 1024,
+            max_response_bytes=1024 * 1024,
+            timeout_seconds=10.0,
+            content_types=frozenset({"application/json"}),
+        ),
         GMAIL_PROFILE_READ: _profile(
             GMAIL_PROFILE_READ,
             methods=frozenset({"GET"}),
@@ -314,6 +323,7 @@ __all__ = [
     "GMAIL_PROFILE_READ",
     "GOOGLE_OAUTH_AUTHORIZATION_CODE_EXCHANGE",
     "GOOGLE_OAUTH_REFRESH",
+    "GOOGLE_LOGIN_OIDC",
     "KNOWLEDGE_API_FETCH",
     "KNOWLEDGE_DOCUMENT_FETCH",
     "LLM_MODEL_DISCOVERY",

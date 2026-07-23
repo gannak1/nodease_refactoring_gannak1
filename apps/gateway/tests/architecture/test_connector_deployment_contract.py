@@ -59,13 +59,20 @@ def _nginx_connector_block(config: str) -> str:
 
 def test_production_admission_hmac_is_wired_across_supported_deployments() -> None:
     environment_name = CONTRACT.admission_hmac_environment
+    production_environment = {
+        "NODE_ENV": "production",
+        "CONNECTOR_EGRESS_PROXY_URL": "http://egress-proxy:3130",
+        "CONNECTOR_EGRESS_PROXY_ALLOWED_HOSTS": "egress-proxy",
+        "CONNECTOR_EGRESS_POLICY_REVISION": "connector-egress-v1",
+        "CONNECTOR_EGRESS_ALLOWED_PORTS": "22,5432",
+    }
 
     with pytest.raises(RuntimeError, match=f"{environment_name} is required"):
-        require_connector_test_security_ready({"NODE_ENV": "production"})
+        require_connector_test_security_ready(production_environment)
 
     require_connector_test_security_ready(
         {
-            "NODE_ENV": "production",
+            **production_environment,
             environment_name: "x" * 32,
         }
     )

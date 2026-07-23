@@ -22,6 +22,7 @@ from apps.sandbox.config import settings
 from apps.sandbox.core.bucket import PriorityBucket
 from apps.sandbox.core.executor import execute_code
 from apps.sandbox.core.history import ExecutionHistory
+from apps.sandbox.core.network_policy import require_network_access_disabled
 from apps.sandbox.models.job import Job, Priority
 from apps.sandbox.models.result import ExecutionResult
 
@@ -161,6 +162,8 @@ class FairScheduler:
         organization_id: str = None,
     ) -> ExecutionResult:
         """작업 제출 및 결과 대기"""
+        require_network_access_disabled(enable_network)
+
         if not self._running:
             raise RuntimeError("Scheduler not running")
 

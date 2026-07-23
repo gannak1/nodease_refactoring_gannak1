@@ -20,6 +20,26 @@ storage:
   bucketName: ""
   region: ""
 
+egressProxy:
+  enabled: true
+  policyRevision: "proxy-v1"
+  replicaCount: 2
+  image:
+    repository: ubuntu/squid
+    tag: "6.6-24.04_edge"
+    digest: "sha256:8a3baed477e2c282ab8aa5edad442f69873246964f225c5c2ae8364b6610963c"
+    pullPolicy: IfNotPresent
+  networkPolicy:
+    enabled: true
+    enforced: true
+    enforcementPhase: "final"
+    # Supply the exact pod CIDRs in operator-values.yaml.
+    authorizedSourceCidrs: []
+    # Override when the production cluster DNS endpoint is not in kube-system.
+    dns:
+      namespace: "kube-system"
+      podSelectorLabels: {}
+
 # =============================================================================
 # Application Services
 # =============================================================================

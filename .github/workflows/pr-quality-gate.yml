@@ -48,6 +48,7 @@ jobs:
       helm_validation: ${{ steps.scope_outputs.outputs.helm_validation }}
       support_surface_validation: ${{ steps.scope_outputs.outputs.support_surface_validation }}
       compose_validation: ${{ steps.scope_outputs.outputs.compose_validation }}
+      egress_proxy_validation: ${{ steps.scope_outputs.outputs.egress_proxy_validation }}
       dockerfile_validation: ${{ steps.scope_outputs.outputs.dockerfile_validation }}
       broad_python: ${{ steps.scope_outputs.outputs.broad_python }}
     steps:
@@ -141,6 +142,7 @@ jobs:
           CLASSIFIED_HELM_VALIDATION: ${{ steps.classify.outputs.helm_validation }}
           CLASSIFIED_SUPPORT_SURFACE_VALIDATION: ${{ steps.classify.outputs.support_surface_validation }}
           CLASSIFIED_COMPOSE_VALIDATION: ${{ steps.classify.outputs.compose_validation }}
+          CLASSIFIED_EGRESS_PROXY_VALIDATION: ${{ steps.classify.outputs.egress_proxy_validation }}
           CLASSIFIED_DOCKERFILE_VALIDATION: ${{ steps.classify.outputs.dockerfile_validation }}
           CLASSIFIED_BROAD_PYTHON: ${{ steps.classify.outputs.broad_python }}
         run: |
@@ -175,6 +177,7 @@ jobs:
             emit_boolean helm_validation true
             emit_boolean support_surface_validation true
             emit_boolean compose_validation true
+            emit_boolean egress_proxy_validation true
             emit_boolean dockerfile_validation true
             emit_boolean broad_python true
             exit 0
@@ -200,6 +203,7 @@ jobs:
           emit_boolean helm_validation "$CLASSIFIED_HELM_VALIDATION"
           emit_boolean support_surface_validation "$CLASSIFIED_SUPPORT_SURFACE_VALIDATION"
           emit_boolean compose_validation "$CLASSIFIED_COMPOSE_VALIDATION"
+          emit_boolean egress_proxy_validation "$CLASSIFIED_EGRESS_PROXY_VALIDATION"
           emit_boolean dockerfile_validation "$CLASSIFIED_DOCKERFILE_VALIDATION"
           emit_boolean broad_python "$CLASSIFIED_BROAD_PYTHON"
 
@@ -559,7 +563,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.deployment_validation == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout pull request merge
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -569,7 +573,8 @@ jobs:
       - name: Set up Go for deployment validators
         if: >-
           needs.scope.outputs.actions_validation == 'true' ||
-          needs.scope.outputs.helm_validation == 'true'
+          needs.scope.outputs.helm_validation == 'true' ||
+          needs.scope.outputs.egress_proxy_validation == 'true'
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.25.x"
@@ -578,6 +583,7 @@ jobs:
       - name: Set up Python for deployment contract tests
         if: >-
           needs.scope.outputs.helm_validation == 'true' ||
+          needs.scope.outputs.egress_proxy_validation == 'true' ||
           needs.scope.outputs.dockerfile_validation == 'true'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -586,6 +592,7 @@ jobs:
       - name: Install uv for deployment contract tests
         if: >-
           needs.scope.outputs.helm_validation == 'true' ||
+          needs.scope.outputs.egress_proxy_validation == 'true' ||
           needs.scope.outputs.dockerfile_validation == 'true'
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
@@ -594,6 +601,7 @@ jobs:
       - name: Install deployment contract test dependencies
         if: >-
           needs.scope.outputs.helm_validation == 'true' ||
+          needs.scope.outputs.egress_proxy_validation == 'true' ||
           needs.scope.outputs.dockerfile_validation == 'true'
         run: |
           uv venv .venv-ci-deployment --python "$PYTHON_VERSION"
@@ -654,7 +662,9 @@ jobs:
             :(glob).github/actions/**/action.yaml
 
       - name: Set up Helm
-        if: needs.scope.outputs.helm_validation == 'true'
+        if: >-
+          needs.scope.outputs.helm_validation == 'true' ||
+          needs.scope.outputs.egress_proxy_validation == 'true'
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       - name: Validate Helm chart
@@ -719,6 +729,40 @@ jobs:
           tests/ci/test_supported_deployment_surface.py
           tests/ci/test_storage_deployment_contract.py
           -q
+
+      - name: Prepare Helm dependencies for egress-only validation
+        if: >-
+          needs.scope.outputs.egress_proxy_validation == 'true' &&
+          needs.scope.outputs.helm_validation != 'true'
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm dependency build infra/helm/moduly
+
+      - name: Create pinned kind and Calico policy cluster
+        if: needs.scope.outputs.egress_proxy_validation == 'true'
+        env:
+          KIND_NODE_IMAGE: kindest/node:v1.32.11@sha256:5fc52d52a7b9574015299724bd68f183702956aa4a2116ae75a63cb574b35af8
+          CALICO_MANIFEST_URL: https://raw.githubusercontent.com/projectcalico/calico/0ca9d1b93644778cafdf1812f3dda02ac0c361e8/manifests/calico.yaml
+        run: |
+          go install sigs.k8s.io/kind@v0.31.0
+          "$(go env GOPATH)/bin/kind" create cluster \
+            --name nodease-egress-ci \
+            --image "$KIND_NODE_IMAGE" \
+            --config tests/ci/fixtures/egress-proxy/kind-calico.yaml
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            "$CALICO_MANIFEST_URL" \
+            --output /tmp/nodease-calico.yaml
+          kubectl apply --server-side --force-conflicts \
+            --field-manager=nodease-egress-ci \
+            --filename /tmp/nodease-calico.yaml
+          kubectl rollout status daemonset/calico-node \
+            --namespace kube-system \
+            --timeout=240s
+          kubectl rollout status deployment/calico-kube-controllers \
+            --namespace kube-system \
+            --timeout=240s
+          kubectl wait --for=condition=Ready nodes --all --timeout=120s
 
       - name: Reject unsupported or unapproved deployment surface
         if: needs.scope.outputs.support_surface_validation == 'true'
@@ -791,6 +835,17 @@ jobs:
           done
           echo "Validated $validated tracked Compose configuration(s)."
 
+      - name: Run egress proxy runtime contracts
+        if: needs.scope.outputs.egress_proxy_validation == 'true'
+        env:
+          NODEASE_RUN_EGRESS_PROXY_INTEGRATION: "1"
+          NODEASE_RUN_EGRESS_PROXY_KUBERNETES: "1"
+        run: >-
+          .venv-ci-deployment/bin/python -m pytest
+          tests/ci/test_egress_proxy_runtime.py
+          tests/ci/test_egress_proxy_kubernetes.py
+          -q
+
       - name: Validate changed Dockerfiles
         if: needs.scope.outputs.dockerfile_validation == 'true'
         shell: bash
@@ -834,6 +889,7 @@ jobs:
         run: >-
           .venv-ci-deployment/bin/python -m pytest
           tests/ci/test_demo_seed_image_contract.py
+          tests/ci/test_tokenizer_runtime_contract.py
           -q
 
   knowledge_postgres:
