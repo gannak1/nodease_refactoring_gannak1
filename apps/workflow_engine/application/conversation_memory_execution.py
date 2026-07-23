@@ -98,12 +98,20 @@ class ConversationProviderPreparation:
 class ConversationProviderResult:
     text: str
     usage: Mapping[str, Any]
+    state: object = field(repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
 class ConversationMemoryCheckpoint:
     entry_id: uuid.UUID
     content_digest: str
+    context_attempt_id: uuid.UUID
+    context_attempt_version: int
+    usage_reference: str
+    lifecycle_revision: int
+    turn_version: int
+    state: object = field(repr=False, compare=False)
+    context_attempt_outcome: str = "provider_started"
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +143,12 @@ class ConversationMemoryRuntimePort(Protocol):
     def claim_context(self, binding: ConversationExecutionBinding, **kwargs) -> ConversationMemoryContextClaim: ...
 
     def validate_current(self, binding: ConversationExecutionBinding, **kwargs) -> None: ...
+
+    def recover_checkpoint(
+        self,
+        binding: ConversationExecutionBinding,
+        **kwargs,
+    ) -> ConversationMemoryCheckpoint | None: ...
 
     def mark_provider_started(self, binding: ConversationExecutionBinding, **kwargs) -> int: ...
 
@@ -171,6 +185,14 @@ class ConversationProviderPort(Protocol):
         before_provider_start: Callable[[str], None],
         **kwargs,
     ) -> ConversationProviderResult: ...
+
+    def record_success(self, result: ConversationProviderResult) -> None: ...
+
+    def resume_checkpoint(
+        self,
+        checkpoint: ConversationMemoryCheckpoint,
+        **kwargs,
+    ) -> None: ...
 
 
 class ConversationObserverPort(Protocol):
@@ -229,21 +251,37 @@ class ExecuteConversationTurnUseCase:
                 turn_id=binding.turn_id,
                 state=admitted.state,
             )
-        binding = self.memory.observe_admitted(
+        checkpoint = self.memory.recover_checkpoint(
             binding,
-            admission_id=admitted.admission_id,
-            claim_generation=envelope.claim_generation,
-            broker_message_id=envelope.broker_message_id,
+            execution_id=admitted.execution_id,
         )
-        self._observe("execution_admitted", binding, admitted.admission_id)
+        if checkpoint is None:
+            binding = self.memory.observe_admitted(
+                binding,
+                admission_id=admitted.admission_id,
+                claim_generation=envelope.claim_generation,
+                broker_message_id=envelope.broker_message_id,
+            )
+            self._observe("execution_admitted", binding, admitted.admission_id)
         now = self.clock.now()
+        stable_attempt_id = uuid.uuid5(
+            admitted.execution_id,
+            "conversation-execution-attempt-v1",
+        )
         claimed = self.admissions.claim(
             binding,
             owner=command.worker_owner,
-            attempt_id=command.delivery_attempt_id,
+            attempt_id=stable_attempt_id,
             lease_deadline=now + self.lease_duration,
             now=now,
         )
+        if checkpoint is not None:
+            return self._complete_from_checkpoint(
+                binding=binding,
+                claimed=claimed,
+                checkpoint=checkpoint,
+                worker_owner=command.worker_owner,
+            )
         binding = self.memory.observe_running(
             binding,
             admission_id=claimed.admission_id,
@@ -298,9 +336,10 @@ class ExecuteConversationTurnUseCase:
             history_block=context.history_block,
         )
         context_attempt_version = context.attempt_version
+        usage_reference: str | None = None
 
-        def before_provider_start(usage_reference: str) -> None:
-            nonlocal context_attempt_version
+        def before_provider_start(current_usage_reference: str) -> None:
+            nonlocal context_attempt_version, usage_reference
             now_at_fence = self.clock.now()
             self.admissions.require_fence(
                 binding,
@@ -317,8 +356,9 @@ class ExecuteConversationTurnUseCase:
                 binding,
                 context_attempt_id=context.attempt_id,
                 expected_version=context_attempt_version,
-                usage_reference=usage_reference,
+                usage_reference=current_usage_reference,
             )
+            usage_reference = current_usage_reference
 
         try:
             provider_result = self.provider.generate(
@@ -383,6 +423,20 @@ class ExecuteConversationTurnUseCase:
             )
             raise
 
+        if usage_reference is None:
+            raise ConversationExecutionRuntimeError(
+                "provider_usage.binding_mismatch"
+            )
+        checkpoint = self.memory.checkpoint(
+            binding,
+            execution_id=claimed.execution_id,
+            attempt_id=claimed.attempt_id,
+            assistant_text=provider_result.text,
+            context_attempt_id=context.attempt_id,
+            context_attempt_version=context_attempt_version,
+            usage_reference=usage_reference,
+        )
+        self.provider.record_success(provider_result)
         self.memory.finish_context_attempt(
             binding,
             context_attempt_id=context.attempt_id,
@@ -390,17 +444,48 @@ class ExecuteConversationTurnUseCase:
             outcome="succeeded",
             safe_failure_reason=None,
         )
+        return self._complete_from_checkpoint(
+            binding=binding,
+            claimed=claimed,
+            checkpoint=checkpoint,
+            worker_owner=command.worker_owner,
+            resume_usage=False,
+        )
+
+    def _complete_from_checkpoint(
+        self,
+        *,
+        binding: ConversationExecutionBinding,
+        claimed,
+        checkpoint: ConversationMemoryCheckpoint,
+        worker_owner: str,
+        resume_usage: bool = True,
+    ) -> ExecuteConversationTurnResult:
+        if resume_usage:
+            self.provider.resume_checkpoint(
+                checkpoint,
+                organization_id=binding.organization_id,
+            )
+            if checkpoint.context_attempt_outcome == "provider_started":
+                self.memory.finish_context_attempt(
+                    binding,
+                    context_attempt_id=checkpoint.context_attempt_id,
+                    expected_version=checkpoint.context_attempt_version,
+                    outcome="succeeded",
+                    safe_failure_reason=None,
+                )
+            elif checkpoint.context_attempt_outcome not in {
+                "succeeded",
+                "outcome_unknown",
+            }:
+                raise ConversationExecutionRuntimeError(
+                    "memory.checkpoint_invalid"
+                )
         self.admissions.require_fence(
             binding,
-            owner=command.worker_owner,
+            owner=worker_owner,
             lease_generation=claimed.lease_generation,
             now=self.clock.now(),
-        )
-        checkpoint = self.memory.checkpoint(
-            binding,
-            execution_id=claimed.execution_id,
-            attempt_id=claimed.attempt_id,
-            assistant_text=provider_result.text,
         )
         self.memory.complete(
             binding,
@@ -410,7 +495,7 @@ class ExecuteConversationTurnUseCase:
         )
         self.admissions.finish(
             binding,
-            owner=command.worker_owner,
+            owner=worker_owner,
             lease_generation=claimed.lease_generation,
             outcome="completed",
             result_entry_id=checkpoint.entry_id,

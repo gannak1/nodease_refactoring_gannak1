@@ -59,6 +59,14 @@ class ProviderUsageRecorder(Protocol):
 
     def record(self, request: ProviderUsageRecord) -> float: ...
 
+    def resume_checkpoint(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        provider_attempt_id: uuid.UUID,
+        operation_reference: str,
+    ) -> None: ...
+
 
 __all__ = [
     "ProviderUsageAttempt",

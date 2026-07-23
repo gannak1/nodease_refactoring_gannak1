@@ -29,7 +29,7 @@ from apps.memory.domain.conversation import (
     ProtectedEntryContent,
     RequestIdentity,
 )
-from apps.memory.domain.errors import AccessGrantNotUsableError
+from apps.memory.domain.errors import AccessGrantNotUsableError, StaleTurnVersionError
 from apps.memory.domain.public_access import ConversationAccessGrant
 
 
@@ -139,6 +139,7 @@ def _scope() -> ConversationExecutionScope:
 class _Repository:
     def __init__(self, scope: ConversationExecutionScope) -> None:
         self.scope = scope
+        self.resolve_for_update_calls: list[bool] = []
         protected = ProtectedContent(
             ciphertext=b"ciphertext",
             key_version="content-v1",
@@ -162,6 +163,7 @@ class _Repository:
         return NOW
 
     def resolve_execution_scope(self, _command, *, for_update):
+        self.resolve_for_update_calls.append(for_update)
         return self.scope
 
     def save_session(self, session):
@@ -267,3 +269,108 @@ def test_revoked_grant_blocks_redelivery_before_workflow_admission() -> None:
             repository=repository,
             uow=_Uow(repository),
         ).execute(_resolve_command(repository.scope))
+
+
+def test_running_projection_hands_off_to_reclaimed_workflow_attempt() -> None:
+    repository = _Repository(_scope())
+    uow = _Uow(repository)
+    binding = ResolveConversationExecutionUseCase(
+        repository=repository,
+        uow=uow,
+    ).execute(_resolve_command(repository.scope))
+    admission_id = uuid.uuid4()
+    queued = ObserveConversationExecutionAdmittedUseCase(
+        repository=repository,
+        uow=uow,
+    ).execute(
+        ObserveConversationExecutionAdmittedCommand(
+            binding=binding,
+            workflow_admission_id=admission_id,
+            claim_generation=1,
+            broker_message_id="message-1",
+        )
+    )
+    binding = replace(binding, turn_version=queued.turn_version)
+    execution_id = uuid.uuid4()
+    first_attempt_id = uuid.uuid4()
+    running_use_case = ObserveConversationExecutionRunningUseCase(
+        repository=repository,
+        uow=uow,
+    )
+    first = running_use_case.execute(
+        ObserveConversationExecutionRunningCommand(
+            binding=binding,
+            workflow_admission_id=admission_id,
+            execution_id=execution_id,
+            attempt_id=first_attempt_id,
+        )
+    )
+    first_binding = replace(binding, turn_version=first.turn_version)
+
+    replay = running_use_case.execute(
+        ObserveConversationExecutionRunningCommand(
+            binding=first_binding,
+            workflow_admission_id=admission_id,
+            execution_id=execution_id,
+            attempt_id=first_attempt_id,
+        )
+    )
+
+    replacement_attempt_id = uuid.uuid4()
+    replacement = running_use_case.execute(
+        ObserveConversationExecutionRunningCommand(
+            binding=first_binding,
+            workflow_admission_id=admission_id,
+            execution_id=execution_id,
+            attempt_id=replacement_attempt_id,
+        )
+    )
+    replacement_binding = replace(binding, turn_version=replacement.turn_version)
+    assert replay.replayed is True
+    assert replay.turn_version == first.turn_version
+    assert replacement.replayed is False
+    assert replacement.turn_version == first.turn_version + 1
+    assert repository.scope.turn.execution_id == execution_id
+    assert repository.scope.turn.latest_attempt_id == replacement_attempt_id
+    assert repository.resolve_for_update_calls[-3:] == [True, True, True]
+
+    with pytest.raises(StaleTurnVersionError):
+        ReadCurrentTurnInputUseCase(
+            repository=repository,
+            uow=uow,
+        ).execute(
+            ReadCurrentTurnInputCommand(
+                binding=replacement_binding,
+                execution_id=execution_id,
+                attempt_id=first_attempt_id,
+            )
+        )
+
+    with pytest.raises(AccessGrantNotUsableError):
+        running_use_case.execute(
+            ObserveConversationExecutionRunningCommand(
+                binding=first_binding,
+                workflow_admission_id=admission_id,
+                execution_id=execution_id,
+                attempt_id=first_attempt_id,
+            )
+        )
+
+    repository.scope.turn.complete(
+        expected_version=replacement.turn_version,
+        assistant_entry_id=uuid.uuid4(),
+        now=NOW,
+    )
+    terminal_binding = replace(
+        binding,
+        turn_version=repository.scope.turn.version,
+    )
+    with pytest.raises(StaleTurnVersionError):
+        running_use_case.execute(
+            ObserveConversationExecutionRunningCommand(
+                binding=terminal_binding,
+                workflow_admission_id=admission_id,
+                execution_id=execution_id,
+                attempt_id=uuid.uuid4(),
+            )
+        )

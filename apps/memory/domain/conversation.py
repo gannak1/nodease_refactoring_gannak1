@@ -275,6 +275,22 @@ class ConversationSession:
         if content_changed:
             self.content_revision += 1
 
+    def release_terminal_turn(
+        self,
+        *,
+        turn_id: uuid.UUID,
+        expected_lifecycle_revision: int,
+        now: datetime,
+    ) -> None:
+        """Release a terminally failed dispatch without reviving session access."""
+        self._require_revision(expected_lifecycle_revision)
+        if self.active_turn_id is None:
+            return
+        if self.active_turn_id != turn_id:
+            raise ActiveTurnConflictError()
+        self.active_turn_id = None
+        self.updated_at = now
+
     def require_active(
         self,
         *,
@@ -444,6 +460,27 @@ class ConversationTurn:
         self.execution_id = execution_id
         self.latest_attempt_id = attempt_id
         self.started_at = now
+
+    def handoff_running_attempt(
+        self,
+        *,
+        expected_version: int,
+        execution_id: uuid.UUID,
+        attempt_id: uuid.UUID,
+        now: datetime,
+    ) -> None:
+        if (
+            self.execution_id != execution_id
+            or self.latest_attempt_id == attempt_id
+        ):
+            raise StaleTurnVersionError()
+        self._transition(
+            expected_version=expected_version,
+            allowed={TurnStatus.RUNNING},
+            target=TurnStatus.RUNNING,
+            now=now,
+        )
+        self.latest_attempt_id = attempt_id
 
     def complete(
         self,
@@ -789,6 +826,34 @@ class MemoryTurnDispatchJob:
             return
         self.status = DispatchStatus.RECONCILE_REQUIRED
         self.next_attempt_at = retry_at
+
+    def record_publish_failure(
+        self,
+        *,
+        owner: str,
+        claim_generation: int,
+        safe_reason_code: str,
+        now: datetime,
+    ) -> None:
+        """Release the current owner after a definitive pre-send failure."""
+        _require_safe_version(safe_reason_code, "safe_reason_code")
+        if (
+            self.status is DispatchStatus.ACKNOWLEDGED
+            and self.claim_generation == claim_generation
+        ):
+            return
+        self._require_claim(owner=owner, claim_generation=claim_generation)
+        self.claim_owner = None
+        self.claim_deadline_at = None
+        self.safe_failure_reason = safe_reason_code
+        self.updated_at = now
+        if self.attempt_count >= self.max_attempts:
+            self.status = DispatchStatus.TERMINAL
+            self.next_attempt_at = None
+            self.terminal_at = now
+            return
+        self.status = DispatchStatus.RECONCILE_REQUIRED
+        self.next_attempt_at = now
 
     def mark_published(
         self,

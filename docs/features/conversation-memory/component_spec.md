@@ -444,6 +444,22 @@ Raw Memory content/token/source를 제외한 lifecycle, decision, status와 safe
 
 AuditLog canonical action은 `memory.session.created/closed/reset/delete_requested/purged`, `memory.grant.issued/revoked`를 사용한다. ADR-0008의 `memory.grant.rotated` 명칭은 향후 standalone rotation 계약용으로 예약되며 V1은 발행하지 않는다. Public create는 session created + grant issued, close는 session closed만 기록한다. Reset은 old session reset/grant revoke와 new session created/public grant issued를 각각 한 번 기록하고 closed를 중복 생성하지 않는다. Delete request는 session delete_requested와 active public grant revoke를 기록한다. Physical erasure 완료만 session purged를 기록하며 completed_with_hold/terminal_failure에는 금지한다. Organization-scoped row는 safe `organization_id`를 필수 metadata로 포함한다. 정상 turn/summary 상태는 high-cardinality operational event/trace/metric으로 기록하고 AuditLog row를 만들지 않는다. Permission/policy 차단은 `permission.denied`/`policy.block`, provider 호출은 `llm.call`, workflow 실행은 `workflow.execute`를 재사용한다.
 
+### Runtime Worker Composition And Activation
+
+Gateway publisher와 Worker는 exact task name `workflow.execute_conversation_turn`을 공유한다. Worker process는 이 task를 시작 시 import/register하고, production handler는 reference-only envelope을 검증한 뒤 실제 DB-backed Memory/Workflow admission, frozen deployment graph, ProviderExecutionCapability/usage adapter를 조립한다. 이름만 등록된 placeholder 또는 test fake는 worker readiness 근거가 아니다. 각 실제 delivery는 서로 다른 lease owner를 사용하고 active lease의 다른 owner는 mutation 전에 fence한다. Task 예외는 safe code만 가진 최대 3회의 bounded recovery delivery로 처리하고 첫 countdown은 execution lease보다 길게 둔다. Stable execution/provider attempt와 assistant checkpoint가 provider 재호출을 막는다.
+
+Main-generation capability의 server-owned 상한은 Worker 환경의 다음 세 positive integer에서만 읽는다.
+
+- `MEMORY_RUNTIME_PROVIDER_INPUT_TOKEN_CAP`
+- `MEMORY_RUNTIME_PROVIDER_OUTPUT_TOKEN_CAP`
+- `MEMORY_RUNTIME_PROVIDER_COST_CAP_MICROUSD`
+
+이 값에는 임의 기본값을 두지 않는다. 누락, boolean, 0 이하 또는 정수 형식 오류는 composition 단계에서 provider I/O 전에 fail-closed한다. Client/Access Grant/graph payload는 이 상한을 설정하거나 늘릴 수 없다. 표준 배포는 runtime과 worker-ready를 default-off로 유지하며, 운영자가 승인한 상한, versioned queue/capability worker routing, schema와 dependent readiness를 함께 확인하기 전 `MEMORY_PUBLIC_RUNTIME_WORKER_READY=true`로 전환하지 않는다.
+
+Gateway process는 route serving 전에 public runtime 설정 검증을 실행한다. Runtime이
+활성화됐는데 lifecycle, worker readiness, content encryption/fingerprint key 또는 key
+분리가 불완전하면 첫 요청까지 오류를 늦추지 않고 startup을 fail-closed한다.
+
 ## Runtime Sequence
 
 ```text
@@ -462,11 +478,17 @@ Gateway resolves canonical execution subject/audience, principal roles and versi
        -> materialization plan handle + context lease
   -> Provider adapter claims lease with provider attempt + ProviderExecutionCapability
        -> revalidates authorization and materializes raw context
-       -> durably marks provider_started immediately before outbound call
+       -> commits usage intent
+       -> revalidates current credential permission/relation/egress/capability binding
+       -> commits Memory context-attempt marker
+       -> commits canonical usage provider_started
+       -> invokes provider
   -> LLM node consumes untrusted Memory Context
   -> Workflow propagates RuntimeDataDependencyEnvelope
   -> optional explicit node projection
   -> Workflow maps final assistant output
+  -> Memory stores deterministic provisional assistant checkpoint
+  -> Provider usage records terminal success
   -> Memory.CompleteTurn
   -> Log System observes safe event
 ```

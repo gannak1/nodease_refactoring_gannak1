@@ -7,7 +7,7 @@ import hmac
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Mapping, Protocol
 
 from apps.memory.application.public_lifecycle import (
@@ -18,12 +18,17 @@ from apps.memory.application.content import memory_content_aad
 from apps.memory.domain.conversation import (
     AudienceKind,
     ConversationMemoryEntry,
+    ConversationSession,
     ConversationTurn,
+    DispatchStatus,
+    EntryLifecycle,
+    EntryType,
     MAX_MEMORY_CONTENT_BYTES,
     MemoryTurnDispatchJob,
     ProtectedContent,
     ProtectedEntryContent,
     RequestIdentity,
+    SessionLifecycle,
     TurnStatus,
 )
 from apps.memory.domain.errors import (
@@ -40,12 +45,20 @@ class RuntimeFingerprintPort(Protocol):
 class MemoryContentCipherPort(Protocol):
     def protect(self, value: str, *, associated_data: str) -> ProtectedContent: ...
 
+    def reveal(
+        self,
+        protected: ProtectedContent,
+        *,
+        associated_data: str,
+    ) -> str | None: ...
+
 
 class TurnDispatchPublisherPort(Protocol):
     def publish(
         self,
         *,
         organization_id: uuid.UUID,
+        session_id: uuid.UUID,
         dispatch_id: uuid.UUID,
         turn_id: uuid.UUID,
         memory_contract_version: str,
@@ -67,6 +80,7 @@ class StartPublicConversationTurnCommand:
 
 @dataclass(frozen=True, slots=True)
 class StartPublicConversationTurnResult:
+    session_id: uuid.UUID
     turn_id: uuid.UUID
     dispatch_id: uuid.UUID
     turn_sequence: int
@@ -74,6 +88,16 @@ class StartPublicConversationTurnResult:
     lifecycle_revision: int
     turn_state: TurnStatus
     replayed: bool
+    dispatch_publish_required: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class PublicTurnStatusResult:
+    turn_id: uuid.UUID
+    turn_sequence: int
+    turn_state: TurnStatus
+    display: str | None
+    safe_failure_reason: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,13 +158,14 @@ class StartPublicConversationTurnUseCase:
                 disposition=preflight.disposition,
             )
         result = self._execute(lambda: self._start(command, preflight))
-        if self.dispatch_publisher is not None and result.turn_state not in {
+        if self.dispatch_publisher is not None and result.dispatch_publish_required and result.turn_state not in {
             TurnStatus.COMPLETED,
             TurnStatus.FAILED,
             TurnStatus.CANCELLED,
-        } and not result.replayed:
+        }:
             self.dispatch_publisher.publish(
                 organization_id=preflight.binding.organization_id,
+                session_id=preflight.session_id,
                 dispatch_id=result.dispatch_id,
                 turn_id=result.turn_id,
                 memory_contract_version=preflight.binding.memory_contract_version,
@@ -235,10 +260,75 @@ class StartPublicConversationTurnUseCase:
             idempotency_key_hash=command.idempotency_key_hash,
         )
         if existing is not None:
-            existing.request_identity.ensure_replay_matches(fingerprint)
-            if existing.access_grant_id != grant.id:
+            turn = self.repository.lock_turn(
+                organization_id=binding.organization_id,
+                session_id=session.id,
+                turn_id=existing.id,
+            )
+            if turn is None:
                 raise AccessGrantNotUsableError()
-            return _turn_result(existing, session.lifecycle_revision, replayed=True)
+            turn.request_identity.ensure_replay_matches(fingerprint)
+            if turn.access_grant_id != grant.id:
+                raise AccessGrantNotUsableError()
+            user_entry = self.repository.get_entry(
+                organization_id=binding.organization_id,
+                session_id=session.id,
+                entry_id=turn.user_entry_id,
+            )
+            if user_entry is None or user_entry.turn_id != turn.id:
+                raise AccessGrantNotUsableError()
+            dispatch = self.repository.lock_dispatch_job(
+                organization_id=binding.organization_id,
+                dispatch_id=turn.dispatch_id,
+            )
+            if dispatch is None or dispatch.turn_id != turn.id:
+                raise AccessGrantNotUsableError()
+            if (
+                dispatch.status is DispatchStatus.CLAIMED
+                and dispatch.claim_deadline_at is not None
+                and now >= dispatch.claim_deadline_at
+            ):
+                dispatch.recover_expired_claim(
+                    now=now,
+                    retry_at=(
+                        None
+                        if dispatch.attempt_count >= dispatch.max_attempts
+                        else now + timedelta(seconds=1)
+                    ),
+                    safe_reason_code="memory.dispatch_claim_expired",
+                )
+                self.repository.save_dispatch_job(dispatch)
+            if dispatch.status is DispatchStatus.TERMINAL and not turn.terminal:
+                safe_reason = (
+                    dispatch.safe_failure_reason or "memory.dispatch_terminal"
+                )
+                turn.fail(
+                    expected_version=turn.version,
+                    safe_reason_code=safe_reason,
+                    now=now,
+                )
+                session.release_terminal_turn(
+                    turn_id=turn.id,
+                    expected_lifecycle_revision=session.lifecycle_revision,
+                    now=now,
+                )
+                user_entry.reject(now=now)
+                self.repository.save_turn(turn)
+                self.repository.save_session(session)
+                self.repository.save_entry(user_entry)
+            return _turn_result(
+                turn,
+                session.lifecycle_revision,
+                replayed=True,
+                dispatch_publish_required=(
+                    dispatch.status is DispatchStatus.PENDING
+                    or (
+                        dispatch.status is DispatchStatus.RECONCILE_REQUIRED
+                        and dispatch.next_attempt_at is not None
+                        and now >= dispatch.next_attempt_at
+                    )
+                ),
+            )
 
         turn_id = uuid.uuid4()
         user_entry_id = uuid.uuid4()
@@ -311,7 +401,12 @@ class StartPublicConversationTurnUseCase:
         self.repository.add_turn(turn)
         self.repository.add_entry(entry)
         self.repository.add_dispatch_job(dispatch)
-        return _turn_result(turn, session.lifecycle_revision, replayed=False)
+        return _turn_result(
+            turn,
+            session.lifecycle_revision,
+            replayed=False,
+            dispatch_publish_required=True,
+        )
 
     def _binding(self, url_slug: str, *, for_update: bool) -> PublicDeploymentBinding:
         resolver = (
@@ -425,8 +520,143 @@ def _scope_digest(*, binding, grant_id, session_id) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _turn_result(turn, lifecycle_revision: int, *, replayed: bool):
+class GetPublicTurnStatusUseCase:
+    """Resolve one grant-bound turn without exposing non-display projections."""
+
+    def __init__(self, *, repository, uow, secrets, content_cipher: MemoryContentCipherPort) -> None:
+        self.repository = repository
+        self.uow = uow
+        self.secrets = secrets
+        self.content_cipher = content_cipher
+
+    def execute(
+        self,
+        *,
+        url_slug: str,
+        turn_id: uuid.UUID,
+        access_token: str,
+        now: datetime,
+    ) -> PublicTurnStatusResult:
+        self.uow.begin()
+        try:
+            binding = self.repository.resolve_public_deployment(url_slug)
+            if binding is None:
+                raise AccessGrantNotUsableError()
+            grant, session = self._authorized_transcript_scope(
+                binding=binding,
+                access_token=access_token,
+                now=now,
+            )
+            turn = self.repository.lock_turn(
+                organization_id=binding.organization_id,
+                session_id=session.id,
+                turn_id=turn_id,
+            )
+            if turn is None or turn.access_grant_id != grant.id:
+                raise AccessGrantNotUsableError()
+            result = PublicTurnStatusResult(
+                turn_id=turn.id,
+                turn_sequence=turn.sequence,
+                turn_state=turn.status,
+                display=self._approved_display(
+                    binding=binding,
+                    session=session,
+                    turn=turn,
+                ),
+                safe_failure_reason=turn.safe_failure_reason,
+            )
+            self.uow.commit()
+            return result
+        except Exception:
+            self.uow.rollback()
+            raise
+
+    def _authorized_transcript_scope(
+        self,
+        *,
+        binding: PublicDeploymentBinding,
+        access_token: str,
+        now: datetime,
+    ) -> tuple[object, ConversationSession]:
+        verifiers = self.secrets.access_grant_verifiers(access_token)
+        if not verifiers:
+            raise AccessGrantNotUsableError()
+        grant = self.repository.lock_access_grant(verifier_candidates=verifiers)
+        if grant is None:
+            raise AccessGrantNotUsableError()
+        candidate = next(
+            (digest for version, digest in verifiers if version == grant.verifier_key_version),
+            None,
+        )
+        if candidate is None or not hmac.compare_digest(candidate, grant.verifier_hash):
+            raise AccessGrantNotUsableError()
+        grant.require_transcript(
+            deployment_id=binding.deployment_id,
+            deployment_version=binding.deployment_version,
+            audience_kind=AudienceKind.PUBLIC_CHATBOT,
+            now=now,
+        )
+        session = self.repository.lock_session(
+            organization_id=binding.organization_id,
+            session_id=grant.session_id,
+        )
+        if (
+            session is None
+            or session.lifecycle not in {SessionLifecycle.ACTIVE, SessionLifecycle.CLOSED}
+            or not _session_matches(session, binding)
+        ):
+            raise AccessGrantNotUsableError()
+        return grant, session
+
+    def _approved_display(
+        self,
+        *,
+        binding: PublicDeploymentBinding,
+        session: ConversationSession,
+        turn: ConversationTurn,
+    ) -> str | None:
+        if turn.status is not TurnStatus.COMPLETED:
+            return None
+        if turn.assistant_entry_id is None:
+            raise AccessGrantNotUsableError()
+        entry = self.repository.get_entry(
+            organization_id=binding.organization_id,
+            session_id=session.id,
+            entry_id=turn.assistant_entry_id,
+        )
+        if (
+            entry is None
+            or entry.turn_id != turn.id
+            or entry.entry_type is not EntryType.ASSISTANT_TURN
+            or entry.lifecycle is not EntryLifecycle.APPROVED
+            or entry.content is None
+            or entry.content.display is None
+        ):
+            raise AccessGrantNotUsableError()
+        display = self.content_cipher.reveal(
+            entry.content.display,
+            associated_data=memory_content_aad(
+                organization_id=binding.organization_id,
+                session_id=session.id,
+                turn_id=turn.id,
+                entry_id=entry.id,
+                projection="display",
+            ),
+        )
+        if display is None:
+            raise AccessGrantNotUsableError()
+        return display
+
+
+def _turn_result(
+    turn,
+    lifecycle_revision: int,
+    *,
+    replayed: bool,
+    dispatch_publish_required: bool = False,
+):
     return StartPublicConversationTurnResult(
+        session_id=turn.session_id,
         turn_id=turn.id,
         dispatch_id=turn.dispatch_id,
         turn_sequence=turn.sequence,
@@ -434,11 +664,14 @@ def _turn_result(turn, lifecycle_revision: int, *, replayed: bool):
         lifecycle_revision=lifecycle_revision,
         turn_state=turn.status,
         replayed=replayed,
+        dispatch_publish_required=dispatch_publish_required,
     )
 
 
 __all__ = [
+    "GetPublicTurnStatusUseCase",
     "MemoryContentCipherPort",
+    "PublicTurnStatusResult",
     "RuntimeFingerprintPort",
     "StartPublicConversationTurnCommand",
     "StartPublicConversationTurnResult",

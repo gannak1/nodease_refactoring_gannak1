@@ -204,6 +204,7 @@ class _Memory:
         self.binding = binding
         self.events = []
         self.context_attempt_id = uuid.uuid4()
+        self.checkpoint_value = None
 
     def resolve(self, envelope):
         self.events.append("resolve")
@@ -241,6 +242,10 @@ class _Memory:
     def validate_current(self, binding, **_kwargs):
         self.events.append("validate_current")
 
+    def recover_checkpoint(self, binding, **_kwargs):
+        self.events.append("recover_checkpoint")
+        return self.checkpoint_value
+
     def mark_provider_started(self, binding, **kwargs):
         self.events.append(f"memory_start:{kwargs['usage_reference']}")
         return 2
@@ -251,10 +256,17 @@ class _Memory:
     def checkpoint(self, binding, **kwargs):
         self.events.append("checkpoint")
         assert kwargs["assistant_text"] == "provider answer"
-        return ConversationMemoryCheckpoint(
+        self.checkpoint_value = ConversationMemoryCheckpoint(
             entry_id=uuid.uuid4(),
             content_digest="c" * 64,
+            context_attempt_id=kwargs["context_attempt_id"],
+            context_attempt_version=kwargs["context_attempt_version"],
+            usage_reference=kwargs["usage_reference"],
+            lifecycle_revision=binding.lifecycle_revision,
+            turn_version=binding.turn_version,
+            state=object(),
         )
+        return self.checkpoint_value
 
     def complete(self, binding, **_kwargs):
         self.events.append("complete")
@@ -264,10 +276,19 @@ class _Memory:
 
 
 class _Provider:
-    def __init__(self, *, error=None):
+    def __init__(
+        self,
+        *,
+        error=None,
+        success_error=None,
+        success_error_committed=True,
+    ):
         self.error = error
+        self.success_error = success_error
+        self.success_error_committed = success_error_committed
         self.events = []
         self.messages = None
+        self.terminal_success = False
         self.preparation = ConversationProviderPreparation(
             capability_reference="capability-1",
             capability_revision="3",
@@ -291,7 +312,22 @@ class _Provider:
         return ConversationProviderResult(
             text="provider answer",
             usage={"prompt_tokens": 4, "completion_tokens": 2},
+            state=object(),
         )
+
+    def record_success(self, result):
+        self.events.append("usage_success")
+        if self.success_error is not None:
+            error = self.success_error
+            self.success_error = None
+            self.terminal_success = self.success_error_committed
+            raise error
+        self.terminal_success = True
+
+    def resume_checkpoint(self, checkpoint, **_kwargs):
+        if not self.terminal_success:
+            self.events.append("usage_outcome_unknown")
+        self.events.append("resume_checkpoint")
 
 
 class _Observer:
@@ -371,7 +407,92 @@ def test_vertical_execution_orders_fences_and_keeps_history_untrusted() -> None:
         "intent",
         "usage_started",
         "provider_io",
+        "usage_success",
     ]
+
+
+def test_crash_after_terminal_usage_commit_completes_from_checkpoint_without_provider_io() -> None:
+    binding = _binding()
+    provider = _Provider(success_error=RuntimeError("fault_after_usage_commit"))
+    use_case, memory, admission, _provider = _use_case(binding, provider=provider)
+    command = ExecuteConversationTurnCommand(
+        envelope=_envelope(binding),
+        worker_owner="worker-a",
+        delivery_attempt_id=uuid.uuid4(),
+    )
+
+    with pytest.raises(RuntimeError, match="fault_after_usage_commit"):
+        use_case.execute(command)
+
+    assert memory.checkpoint_value is not None
+    assert provider.events.count("provider_io") == 1
+    first_attempt_id = admission.attempt_id
+
+    result = use_case.execute(replace(command, delivery_attempt_id=uuid.uuid4()))
+
+    assert result.state is ConversationExecutionState.COMPLETED
+    assert admission.attempt_id == first_attempt_id
+    assert provider.events.count("provider_io") == 1
+    assert provider.events.count("intent") == 1
+    assert provider.events[-1] == "resume_checkpoint"
+    assert "complete" in memory.events
+
+
+def test_crash_between_checkpoint_and_usage_terminal_recovers_without_provider_io() -> None:
+    binding = _binding()
+    provider = _Provider(
+        success_error=RuntimeError("fault_before_usage_terminal"),
+        success_error_committed=False,
+    )
+    use_case, memory, _admission, _provider = _use_case(
+        binding,
+        provider=provider,
+    )
+    command = ExecuteConversationTurnCommand(
+        envelope=_envelope(binding),
+        worker_owner="worker-a",
+        delivery_attempt_id=uuid.uuid4(),
+    )
+
+    with pytest.raises(RuntimeError, match="fault_before_usage_terminal"):
+        use_case.execute(command)
+
+    result = use_case.execute(command)
+
+    assert result.state is ConversationExecutionState.COMPLETED
+    assert provider.events.count("provider_io") == 1
+    assert provider.events.count("intent") == 1
+    assert "usage_outcome_unknown" in provider.events
+    assert "complete" in memory.events
+
+
+def test_terminal_context_attempt_checkpoint_completes_without_rewriting_outcome() -> None:
+    binding = _binding()
+    use_case, memory, _admission, provider = _use_case(binding)
+    memory.checkpoint_value = ConversationMemoryCheckpoint(
+        entry_id=uuid.uuid4(),
+        content_digest="c" * 64,
+        context_attempt_id=memory.context_attempt_id,
+        context_attempt_version=3,
+        usage_reference="usage-operation-1",
+        lifecycle_revision=binding.lifecycle_revision,
+        turn_version=binding.turn_version,
+        state=object(),
+        context_attempt_outcome="outcome_unknown",
+    )
+
+    result = use_case.execute(
+        ExecuteConversationTurnCommand(
+            envelope=_envelope(binding),
+            worker_owner="worker-a",
+            delivery_attempt_id=uuid.uuid4(),
+        )
+    )
+
+    assert result.state is ConversationExecutionState.COMPLETED
+    assert provider.events == ["usage_outcome_unknown", "resume_checkpoint"]
+    assert "context_finish:succeeded" not in memory.events
+    assert "complete" in memory.events
 
 
 def test_outcome_unknown_never_replays_provider_and_releases_turn_safely() -> None:

@@ -156,6 +156,17 @@ def test_expired_lease_can_be_reclaimed_and_stale_generation_is_fenced() -> None
             now=_now(),
         )
     )
+    with pytest.raises(ConversationExecutionFenceError):
+        claim_use_case.execute(
+            ClaimConversationExecutionCommand(
+                organization_id=command.organization_id,
+                dispatch_id=command.dispatch_id,
+                owner="worker-b",
+                attempt_id=first.attempt_id,
+                lease_deadline=_now() + timedelta(seconds=31),
+                now=_now() + timedelta(seconds=1),
+            )
+        )
     second = claim_use_case.execute(
         ClaimConversationExecutionCommand(
             organization_id=command.organization_id,

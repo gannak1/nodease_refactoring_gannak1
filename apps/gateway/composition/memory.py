@@ -40,7 +40,10 @@ from apps.memory.application.public_lifecycle import (
     PublicConversationPolicy,
     ResetPublicConversationUseCase,
 )
-from apps.memory.application.public_runtime import StartPublicConversationTurnUseCase
+from apps.memory.application.public_runtime import (
+    GetPublicTurnStatusUseCase,
+    StartPublicConversationTurnUseCase,
+)
 from apps.memory.domain.errors import PublicConversationFeatureDisabledError
 from apps.shared.celery_app import celery_app
 from apps.shared.db.session import SessionLocal
@@ -59,6 +62,7 @@ class PublicConversationApplication:
 @dataclass(frozen=True, slots=True)
 class PublicConversationRuntimeApplication:
     start_turn: StartPublicConversationTurnUseCase
+    turn_status: GetPublicTurnStatusUseCase
 
 
 def build_public_conversation_application(
@@ -161,7 +165,13 @@ def build_public_conversation_runtime_application(
                 1,
                 20,
             ),
-        )
+        ),
+        turn_status=GetPublicTurnStatusUseCase(
+            repository=repository,
+            uow=uow,
+            secrets=secrets,
+            content_cipher=content_cipher,
+        ),
     )
 
 

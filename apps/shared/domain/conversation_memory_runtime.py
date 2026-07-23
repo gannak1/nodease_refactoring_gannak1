@@ -292,15 +292,19 @@ def _validate_llm(
         "value_selector"
     ) != [start_node_id, input_variable]:
         raise _error("memory.input_mapping_invalid")
-    declared = {input_variable}
-    prompt_variables: set[str] = set()
-    for prompt_key in ("system_prompt", "user_prompt", "assistant_prompt"):
-        prompt = data.get(prompt_key)
-        if prompt is not None and not isinstance(prompt, str):
-            raise _error("memory.llm_behavior_unsupported")
-        if prompt:
-            prompt_variables.update(_JINJA_VARIABLE.findall(prompt))
-    if prompt_variables != declared:
+    system_prompt = data.get("system_prompt") or ""
+    user_prompt = data.get("user_prompt") or ""
+    assistant_prompt = data.get("assistant_prompt") or ""
+    if any(
+        not isinstance(prompt, str)
+        for prompt in (system_prompt, user_prompt, assistant_prompt)
+    ):
+        raise _error("memory.llm_behavior_unsupported")
+    if (
+        _JINJA_VARIABLE.findall(system_prompt)
+        or _JINJA_VARIABLE.findall(assistant_prompt)
+        or set(_JINJA_VARIABLE.findall(user_prompt)) != {input_variable}
+    ):
         raise _error("memory.input_mapping_invalid")
 
     parameters = data.get("parameters", {})

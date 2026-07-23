@@ -184,15 +184,25 @@ class ConversationMemoryProviderAdapter:
             raise ConversationProviderExecutionError(
                 "provider_usage.binding_mismatch"
             )
-        usage_attempt = self.usage_recorder.begin(
-            ProviderUsageIntent(
-                attribution=attribution,
-                workflow_id=binding.workflow_id,
-                workflow_run_id=None,
-                node_id=binding.llm_node_id,
+        try:
+            usage_attempt = self.usage_recorder.begin(
+                ProviderUsageIntent(
+                    attribution=attribution,
+                    workflow_id=binding.workflow_id,
+                    workflow_run_id=None,
+                    node_id=binding.llm_node_id,
+                )
             )
-        )
+        except ProviderUsageRuntimeError as exc:
+            if exc.code == "provider_usage.replay_blocked":
+                raise ProviderInvocationOutcomeUnknownError() from exc
+            raise ConversationProviderExecutionError(exc.code) from exc
         if not usage_attempt.durable or not usage_attempt.operation_reference:
+            raise ConversationProviderExecutionError(
+                "provider_usage.binding_mismatch"
+            )
+        current_attribution = lease.revalidate_current_binding()
+        if current_attribution != attribution:
             raise ConversationProviderExecutionError(
                 "provider_usage.binding_mismatch"
             )
@@ -216,9 +226,25 @@ class ConversationMemoryProviderAdapter:
             self._mark_unknown(usage_attempt, "provider_call_failed")
             raise ProviderInvocationOutcomeUnknownError() from exc
 
-        text, usage = _response_projection(response)
         try:
-            latency_value = usage.get("latency_ms", 0)
+            text, usage = _response_projection(response)
+        except ProviderInvocationOutcomeUnknownError:
+            self._mark_unknown(usage_attempt, "provider_call_failed")
+            raise
+        return ConversationProviderResult(
+            text=text,
+            usage=usage,
+            state=usage_attempt,
+        )
+
+    def record_success(self, result: ConversationProviderResult) -> None:
+        usage_attempt = result.state
+        if not hasattr(usage_attempt, "record_success"):
+            raise ConversationProviderExecutionError(
+                "provider_usage.binding_mismatch"
+            )
+        try:
+            latency_value = result.usage.get("latency_ms", 0)
             latency_ms = (
                 latency_value
                 if isinstance(latency_value, int)
@@ -226,10 +252,31 @@ class ConversationMemoryProviderAdapter:
                 and latency_value >= 0
                 else 0
             )
-            usage_attempt.record_success(usage=usage, latency_ms=latency_ms)
+            usage_attempt.record_success(
+                usage=result.usage,
+                latency_ms=latency_ms,
+            )
         except ProviderUsageRuntimeError as exc:
             raise ProviderInvocationOutcomeUnknownError() from exc
-        return ConversationProviderResult(text=text, usage=usage)
+
+    def resume_checkpoint(
+        self,
+        checkpoint,
+        *,
+        organization_id: uuid.UUID | None = None,
+    ) -> None:
+        if organization_id is None:
+            raise ConversationProviderExecutionError(
+                "provider_usage.binding_mismatch"
+            )
+        try:
+            self.usage_recorder.resume_checkpoint(
+                organization_id=organization_id,
+                provider_attempt_id=checkpoint.context_attempt_id,
+                operation_reference=checkpoint.usage_reference,
+            )
+        except ProviderUsageRuntimeError as exc:
+            raise ConversationProviderExecutionError(exc.code) from exc
 
     @staticmethod
     def _mark_unknown(usage_attempt, reason_code: str) -> None:

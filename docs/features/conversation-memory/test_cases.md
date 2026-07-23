@@ -101,9 +101,11 @@ Status: Draft
 - MEM-TC-APP-011: Audit/outbox 실패 시 security/lifecycle mutation을 rollback한다.
 - MEM-TC-APP-012: StartTurn과 TurnDispatchJob은 같은 UoW에서 함께 commit/rollback된다.
 - MEM-TC-APP-013: Commit 직후 Gateway crash 또는 broker publish 실패에도 dispatcher가 job을 재claim한다.
+- MEM-TC-APP-013A: Gateway publisher가 claim commit 뒤 broker 전송 오류를 받으면 current owner/generation만 claim을 retry-eligible reconciliation으로 해제한다. 같은 idempotency key의 즉시 retry는 같은 Turn/Dispatch를 재사용해 재발행하고, acknowledged 또는 다른 active owner의 claim은 중복 발행하지 않는다. 최종 attempt 고갈은 dispatch만 terminal로 남기지 않고 Turn failed, provisional user entry rejected, session active turn released를 같은 terminal finalization UoW에 반영하며 중단된 finalization은 exact retry가 복구한다.
 - MEM-TC-APP-014: Publish 성공 응답 유실과 duplicate publish는 같은 dispatch/turn을 재사용한다.
 - MEM-TC-APP-014A: Durable Workflow admission 전 duplicate publish는 admission에서 제거되고 admission 이후 outcome unknown은 arbitrary execution 재실행 없이 Workflow reconciliation 또는 safe terminal failure로 닫힌다.
 - MEM-TC-APP-015: Required CompleteTurn 실패는 success/applied를 반환하지 않고 durable execution result로 CompleteTurn만 재시도한다. 최초 terminal commit 뒤 응답 유실 retry는 outcome, expected predecessor version, assistant entry와 protected content identity가 모두 일치할 때 canonical result를 재생하고, 하나라도 다르면 conflict로 거부한다.
+- MEM-TC-APP-015A: Provider response는 canonical usage success보다 먼저 deterministic provisional assistant checkpoint로 저장한다. 그 뒤 crash나 acknowledgement 유실이 발생하면 current execution/attempt, provider context attempt와 usage reference에 binding된 protected checkpoint만 복구해 CompleteTurn을 재시도하며 provider를 다시 호출하지 않는다.
 - MEM-TC-APP-016: CompleteTurn의 Turn terminal, Session active-turn/content revision, final entry/projection과 required outbox는 모두 commit되거나 모두 rollback된다.
 
 ### Dispatch Processing
@@ -140,6 +142,7 @@ Status: Draft
 - MEM-TC-APP-029M: Materialized history는 current user message 직전의 untrusted history block으로 한 번 삽입되고 system/developer prompt 또는 durable workflow payload로 승격되지 않는다.
 - MEM-TC-APP-029N: Provider capability의 organization/deployment version/node invocation/purpose/model/pricing revision/expiry 중 하나라도 lease와 다르면 raw context와 provider 호출을 모두 거부한다.
 - MEM-TC-APP-029O: Lease claim은 실제 materialized entry/summary와 정확히 대응하는 RuntimeDataDependencyEnvelope를 반환하고 excluded/stale source를 envelope에 남기지 않는다.
+- MEM-TC-APP-029P: Usage intent commit 뒤 Memory marker 전에 credential permission/relation/egress/capability binding을 다시 검증하며 하나라도 바뀌면 Memory marker, usage start와 provider I/O가 모두 0회다.
 
 ### Summary Generation Process
 
@@ -320,22 +323,31 @@ MBA-317의 자동 검증은 public capability domain/application, encrypted repl
 - MEM-TC-API-040G: Public outer transport boundary는 success, explicit error, dependency Content-Type `415`, body validation `422`, router `404`/`405`, redirect alias와 preflight 모두에 `Cache-Control: no-store`와 `Referrer-Policy: no-referrer`를 적용하고 전역 CORS header와 `Vary: Origin`을 제거한다.
 - MEM-TC-API-040H: Access Grant와 purge receipt exact replay가 필요한 purge/replay row lock을 기다리는 동안 TTL boundary를 지나면, lock 뒤 fresh server time이 idempotency parent retention과 replay parent/child expiry를 다시 확인해 `memory.secret_replay_expired`로 닫고 request-start timestamp로 replay window를 연장하지 않는다.
 
+### MBA-318 Review Regressions
+
+- MEM-TC-API-040I: Valid Conversation capability의 Turn status는 safe state, sequence, approved display와 bounded failure reason만 반환한다. Missing/malformed/expired/revoked/wrong deployment·session·turn capability는 동일한 resource-hidden 404이며 model projection, raw provider response와 내부 queue/Worker detail은 없다.
+
 ## Workflow Runtime Tests
 
 - MEM-TC-RUN-001: Node Memory config가 graph save/load/copy/deployment snapshot round-trip을 보존한다.
 - MEM-TC-RUN-002: Draft 변경이 active deployment Memory policy를 바꾸지 않는다.
 - MEM-TC-RUN-003: Explicit user input/final output mapping이 없으면 activation/runtime을 fail-closed 한다.
+- MEM-TC-RUN-003A: Gateway와 Worker의 공통 validator는 mapped input 변수가 user prompt에만 존재하고 system/assistant prompt에는 없다는 동일 계약을 적용한다.
 - MEM-TC-RUN-004: Multi-answer graph에서 runtime이 final output을 추측하지 않는다.
 - MEM-TC-RUN-005: Knowledge/tool/subworkflow dependency가 transform/LLM/final answer까지 합집합으로 전파된다.
 - MEM-TC-RUN-006: Provenance-incomplete code/custom result의 private/sensitive write를 거부한다.
 - MEM-TC-RUN-007: Enabled node만 Memory를 사용하고 channel이 섞이지 않는다.
 - MEM-TC-RUN-008: Context와 Knowledge block은 untrusted label/order를 유지한다.
 - MEM-TC-RUN-009: Main provider adapter가 호출 직전 context lease를 provider attempt로 claim하고 current authorization을 재검증한 operation에서 raw context를 materialize한다.
-- MEM-TC-RUN-010: Duplicate Worker delivery가 Memory-owned turn/entry/summary/usage mutation을 중복 생성하지 않는다. Arbitrary node/tool side effect idempotency는 Workflow domain contract로 별도 검증한다.
+- MEM-TC-RUN-010: Duplicate Worker delivery마다 서로 다른 live owner를 사용하고 active lease의 다른 owner를 provider/Memory mutation 전에 fence한다. Stable execution/provider attempt identity는 유지해 Memory-owned turn/entry/summary/usage mutation과 provider I/O를 중복 생성하지 않는다. Arbitrary node/tool side effect idempotency는 Workflow domain contract로 별도 검증한다.
 - MEM-TC-RUN-011: Subworkflow는 explicit bounded context/channel만 상속하고 parent table을 직접 조회하지 않는다.
 - MEM-TC-RUN-012: Unsupported contract/version Worker가 새 deployment를 실행하지 않는다.
 - MEM-TC-RUN-013: Worker는 contract/storage/minimum capability mismatch를 외부 node side effect 전에 거부한다.
 - MEM-TC-RUN-014: Dedicated/versioned queue의 old Worker가 target task를 소비하지 못하고 잘못 라우팅된 task도 runtime guard가 거부한다.
+- MEM-TC-RUN-014A: Production Worker는 Gateway가 publish하는 exact task name을 등록하고 실제 DB/Memory/provider application adapter로 조립한다. 등록만 된 placeholder나 test-only composition은 readiness 근거가 아니다.
+- MEM-TC-RUN-014B: Production composition의 input/output token과 micro-USD provider 상한은 server-owned required Worker 환경값이며 누락·boolean·0 이하·정수 형식 오류를 provider I/O 전에 fail-closed한다. Client, grant와 graph payload는 상한을 설정하거나 늘리지 못한다.
+- MEM-TC-RUN-014C: Gateway process는 public runtime activation 설정을 route serving 전에 검증한다. Runtime이 활성인데 lifecycle/worker readiness/content key/fingerprint key 또는 key 분리가 불완전하면 첫 public run 요청까지 오류를 늦추지 않고 startup을 거부한다.
+- MEM-TC-RUN-014D: Registered Conversation task는 application 예외를 safe code로 redaction해 최대 3회의 bounded recovery delivery를 예약한다. 첫 countdown은 production execution lease보다 길어 새 owner가 lease 만료 전에 retry budget을 소진하지 않는다. Provider response checkpoint 뒤 retry는 usage/context terminal 상태를 덮어쓰지 않고 checkpoint로만 completion하며 provider I/O를 다시 수행하지 않는다.
 - MEM-TC-RUN-015: Workflow `AdmitExecution(dispatch_id)`은 같은 dispatch에 admission을 하나만 만들고 lookup으로 acknowledgement 유실을 복구한다.
 - MEM-TC-RUN-016: Memory는 Workflow execution lease/heartbeat를 변경하지 않고 safe state projection만 반영한다.
 - MEM-TC-RUN-017: Knowledge, connector/tool, subworkflow, LLM, transform/code와 system policy producer가 RuntimeDataDependencyEnvelope source-owner contract를 지킨다.
@@ -517,7 +529,7 @@ MBA-316은 production composition을 활성화하지 않고 아래 persistence/l
 | `apps/memory/tests/architecture/test_boundaries.py` | Domain/application framework 독립성, import side effect 부재, Memory ORM direct access 제한 | MEM-TC-ARCH-001, 002, 006, 008 |
 | `apps/memory/tests/domain/test_conversation.py` | Session/Turn revision, active turn, clock expiry late-write 차단, hash-only replay identity, purge receipt 8일 상한, 모든 terminal outcome의 absorbing transition property, dispatch fencing·claim expiry recovery | MEM-TC-DOM-001, 003~013, 015 및 MEM-TC-DOM-016의 dispatch process subset |
 | `apps/memory/tests/application/test_lifecycle.py` | Create/Start/Complete/Close/Delete-pending UoW, same-request replay, matching terminal CompleteTurn replay와 mismatch conflict, clock expiry write 차단, dispatch insert failure rollback, unknown outcome fail-closed | MEM-TC-APP-002, 008~012, 015, 016, 040, 041의 mutation 차단, 043의 tombstone/purge-job 기반 |
-| `apps/memory/tests/application/test_dispatch.py` | Claim/publish/expired-recovery command만 상태를 전이하고 stale fencing을 rollback | MEM-TC-APP-017, 017A, 018 |
+| `apps/memory/tests/application/test_dispatch.py` | Claim/publish/publish-failure/expired-recovery command만 상태를 전이하고 current generation을 즉시 retry 가능하게 해제하며 stale fencing을 rollback | MEM-TC-APP-013A, 017, 017A, 018 |
 | `apps/memory/tests/adapters/test_schema.py`, `test_repository.py` | 15개 model/readiness, nullable reference의 tenant-scoped composite FK와 Access Grant canonical binding FK, lifecycle/turn/entry/dispatch CAS와 terminal/fencing check, projection별 암호화 envelope, safe DB error 변환 | MEM-TC-DB-001, 004, 007, 008, 010, 023의 schema/repository subset |
 | `apps/memory/tests/adapters/test_disposable_postgres.py` | 실제 PostgreSQL clean upgrade와 Memory foundation/Public capability replay revision별 Alembic model drift·round-trip check, Access Grant binding mismatch DB rejection, legacy Run/NodeRun 보존 downgrade, concurrent StartTurn 단일 승자, StartTurn partial-write rollback, dispatch claim/publish | MEM-TC-DB-002, 007, 013, 014, 017 및 MEM-TC-MIG-005 |
 
@@ -530,12 +542,12 @@ MBA-318은 durable Memory resource reference, current authorization과 provider 
 | 저장 | 완료 | `StartTurnUseCase`, `SqlAlchemyConversationMemoryRepository`, `conversation_turns.access_grant_id`와 `dependency_proof_version`; legacy proof `NULL`은 context 후보에서 fail-closed |
 | 관리 API/UI | 해당 없음 | MBA-318은 기존 Public lifecycle/Workflow 실행 경로를 연결하며 새 관리 API/UI를 추가하지 않음 |
 | Preflight | 완료 | Gateway public runtime과 dispatch admission이 organization/deployment/grant 및 immutable Memory 계약을 side effect 전에 검증 |
-| Runtime/background | 완료 | Workflow-owned admission lease/fence, current grant 재검증, bounded reference context와 provider-start/usage marker 테스트 |
-| Lifecycle | 완료 | revoked/expired grant redelivery 차단, terminal execution replay 및 additive migration downgrade guard |
+| Runtime/background | 완료 | `apps/workflow_engine/tests/test_conversation_memory_task.py`, `test_conversation_memory_composition.py`, application execution/provider adapter 테스트가 exact task 등록, production composition, current grant/capability 재검증, bounded reference context와 provider-start/usage marker를 검증 |
+| Lifecycle | 완료 | revoked/expired grant redelivery 차단, RUNNING attempt handoff, deterministic assistant checkpoint recovery, terminal execution replay 및 additive migration downgrade guard |
 | Audit/redaction | 완료 | content-free admission/result reference, safe failure reason, raw Memory/token/provider payload 비영속 계약과 테스트 |
-| 테스트 | 완료 | `apps/memory/tests/application/test_public_runtime.py`, `test_context.py`, `test_execution.py`, Workflow admission/execution tests와 disposable PostgreSQL contract |
+| 테스트 | 완료 | `apps/memory/tests/application/test_public_runtime.py`, `test_context.py`, `test_execution.py`, `test_lifecycle.py`, Gateway public API/publisher 테스트, Workflow task/composition/provider/admission/execution 테스트와 disposable PostgreSQL contract |
 
-Disposable PostgreSQL evidence는 `NODEASE_RUN_DISPOSABLE_DB_TEST=1`인 전용 CI job에서 한 번 실행하고 일반 `memory-tests` job에서는 제외한다. MEM-TC-DOM-016의 active Turn safe terminal 처리, MEM-TC-DB-003/005~007/009/011~012/015~026과 lifecycle audit/outbox cardinality는 관련 application adapter가 구현되기 전 완료로 표시하지 않는다.
+Disposable PostgreSQL evidence는 `NODEASE_RUN_DISPOSABLE_DB_TEST=1`인 전용 CI job에서 한 번 실행하고 일반 `memory-tests` job에서는 제외한다. MEM-TC-DB-003/005~007/009/011~012/015~026과 lifecycle audit/outbox cardinality는 관련 application adapter가 구현되기 전 완료로 표시하지 않는다.
 
 | Requirement range | Primary test sections |
 | --- | --- |

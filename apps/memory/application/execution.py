@@ -263,7 +263,18 @@ class ObserveConversationExecutionRunningUseCase(_ExecutionUseCase):
                         turn_version=scope.turn.version,
                         replayed=True,
                     )
-                raise StaleTurnVersionError()
+                scope.turn.handoff_running_attempt(
+                    expected_version=scope.turn.version,
+                    execution_id=command.execution_id,
+                    attempt_id=command.attempt_id,
+                    now=now,
+                )
+                self.repository.save_turn(scope.turn)
+                return ConversationExecutionObservation(
+                    lifecycle_revision=scope.session.lifecycle_revision,
+                    turn_version=scope.turn.version,
+                    replayed=False,
+                )
             if scope.turn.status is not TurnStatus.QUEUED:
                 raise StaleTurnVersionError()
             scope.turn.mark_running(

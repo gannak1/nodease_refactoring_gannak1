@@ -43,6 +43,14 @@ from apps.workflow_engine import mail_credential_startup  # noqa: F401
 from apps.workflow_engine import llm_credential_startup  # noqa: F401
 from apps.workflow_engine import outbound_proxy_startup  # noqa: F401
 from apps.workflow_engine.runtime_policy import get_deployment_runtime_policy
+from apps.workflow_engine.composition.conversation_memory import (
+    CONVERSATION_EXECUTION_LEASE_SECONDS,
+    build_conversation_turn_use_case,
+)
+from apps.workflow_engine.application.conversation_memory_execution import (
+    ExecuteConversationTurnCommand,
+)
+from apps.shared.domain.conversation_memory_task import ConversationTurnTaskEnvelope
 from apps.workflow_engine.schedule_dispatch_settings import (
     get_schedule_dispatch_settings,
 )
@@ -122,6 +130,53 @@ def _engine_workflow_run_id(engine) -> str | None:
     """API 실험 도구가 결과를 정확한 실행 로그와 연결할 safe 식별자를 반환한다."""
     run_id = getattr(getattr(engine, "logger", None), "workflow_run_id", None)
     return str(run_id) if run_id is not None else None
+
+
+@celery_app.task(
+    name="workflow.execute_conversation_turn",
+    bind=True,
+    max_retries=3,
+    ignore_result=True,
+    acks_late=True,
+    reject_on_worker_lost=True,
+    base=RedactedWorkflowTask,
+)
+def execute_conversation_turn(self, payload: Dict[str, Any]):
+    """Execute one reference-only public Conversation turn."""
+
+    envelope = ConversationTurnTaskEnvelope.from_payload(payload)
+    delivery_attempt_id = uuid.uuid4()
+    worker_owner = f"conversation-worker-{delivery_attempt_id.hex}"
+    try:
+        result = build_conversation_turn_use_case().execute(
+            ExecuteConversationTurnCommand(
+                envelope=envelope,
+                worker_owner=worker_owner,
+                delivery_attempt_id=delivery_attempt_id,
+            )
+        )
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        if (
+            not isinstance(code, str)
+            or not 1 <= len(code) <= 128
+            or any(
+                character
+                not in "abcdefghijklmnopqrstuvwxyz0123456789._-"
+                for character in code
+            )
+        ):
+            code = "workflow.execution_failed"
+        retries = getattr(getattr(self, "request", None), "retries", 0)
+        countdown = max(
+            CONVERSATION_EXECUTION_LEASE_SECONDS + 1,
+            min(2 ** max(int(retries or 0), 0), 30),
+        )
+        raise self.retry(exc=Exception(code), countdown=countdown) from None
+    return {
+        "status": result.state.value,
+        "admission_id": str(result.admission_id),
+    }
 
 
 @celery_app.task(

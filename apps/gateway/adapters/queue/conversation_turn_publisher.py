@@ -16,9 +16,14 @@ from apps.memory.adapters.persistence.repository import (
 from apps.memory.application.dispatch import (
     ClaimTurnDispatchCommand,
     ClaimTurnDispatchUseCase,
+    FinalizeTerminalTurnDispatchCommand,
+    FinalizeTerminalTurnDispatchUseCase,
     MarkTurnDispatchPublishedCommand,
     MarkTurnDispatchPublishedUseCase,
+    RecordTurnDispatchPublishFailureCommand,
+    RecordTurnDispatchPublishFailureUseCase,
 )
+from apps.memory.domain.conversation import DispatchStatus
 from apps.shared.domain.conversation_memory_task import ConversationTurnTaskEnvelope
 from apps.shared.services.workflow_task_publisher import send_workflow_task
 
@@ -39,6 +44,7 @@ class CeleryConversationTurnPublisher:
         self,
         *,
         organization_id: uuid.UUID,
+        session_id: uuid.UUID,
         dispatch_id: uuid.UUID,
         turn_id: uuid.UUID,
         memory_contract_version: str,
@@ -74,14 +80,43 @@ class CeleryConversationTurnPublisher:
                 storage_generation=storage_generation,
                 minimum_worker_capability=minimum_worker_capability,
             )
-            send_workflow_task(
-                self._celery_app,
-                "workflow.execute_conversation_turn",
-                args=[envelope.to_payload()],
-                task_id=message_id,
-                ignore_result=True,
-                retry=False,
-            )
+            try:
+                send_workflow_task(
+                    self._celery_app,
+                    "workflow.execute_conversation_turn",
+                    args=[envelope.to_payload()],
+                    task_id=message_id,
+                    ignore_result=True,
+                    retry=False,
+                )
+            except Exception:
+                failure = RecordTurnDispatchPublishFailureUseCase(
+                    repository=repository,
+                    uow=uow,
+                ).execute(
+                    RecordTurnDispatchPublishFailureCommand(
+                        organization_id=organization_id,
+                        dispatch_id=dispatch_id,
+                        owner=owner,
+                        claim_generation=claim.claim_generation,
+                        safe_reason_code="memory.dispatch_publish_failed",
+                        now=self._clock(),
+                    )
+                )
+                if failure.status is DispatchStatus.TERMINAL:
+                    FinalizeTerminalTurnDispatchUseCase(
+                        repository=repository,
+                        uow=uow,
+                    ).execute(
+                        FinalizeTerminalTurnDispatchCommand(
+                            organization_id=organization_id,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            dispatch_id=dispatch_id,
+                            now=self._clock(),
+                        )
+                    )
+                raise
             MarkTurnDispatchPublishedUseCase(
                 repository=repository,
                 uow=uow,

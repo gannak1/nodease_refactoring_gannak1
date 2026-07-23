@@ -10,13 +10,18 @@ from apps.memory.application.public_lifecycle import (
     PublicDeploymentBinding,
 )
 from apps.memory.application.public_runtime import (
+    GetPublicTurnStatusUseCase,
     StartPublicConversationTurnCommand,
     StartPublicConversationTurnUseCase,
 )
 from apps.memory.domain.conversation import (
     AudienceKind,
+    ConversationMemoryEntry,
     ConversationSession,
+    DispatchStatus,
     ProtectedContent,
+    ProtectedEntryContent,
+    TurnStatus,
 )
 from apps.memory.domain.errors import (
     AccessGrantNotUsableError,
@@ -91,6 +96,7 @@ class _Repository:
         self.turns = {}
         self.entries = {}
         self.dispatches = {}
+        self.now = _now()
 
     def resolve_public_deployment(self, url_slug):
         return self.binding if url_slug == "chatbot" else None
@@ -130,14 +136,49 @@ class _Repository:
     def add_turn(self, turn):
         self.turns[turn.id] = turn
 
+    def save_turn(self, turn):
+        self.turns[turn.id] = turn
+
+    def lock_turn(self, *, organization_id, session_id, turn_id):
+        turn = self.turns.get(turn_id)
+        if (
+            turn is not None
+            and turn.organization_id == organization_id
+            and turn.session_id == session_id
+        ):
+            return turn
+        return None
+
     def add_entry(self, entry):
         self.entries[entry.id] = entry
+
+    def save_entry(self, entry):
+        self.entries[entry.id] = entry
+
+    def get_entry(self, *, organization_id, session_id, entry_id):
+        entry = self.entries.get(entry_id)
+        if (
+            entry is not None
+            and entry.organization_id == organization_id
+            and entry.session_id == session_id
+        ):
+            return entry
+        return None
 
     def add_dispatch_job(self, dispatch):
         self.dispatches[dispatch.id] = dispatch
 
+    def lock_dispatch_job(self, *, organization_id, dispatch_id):
+        dispatch = self.dispatches.get(dispatch_id)
+        if dispatch is not None and dispatch.organization_id == organization_id:
+            return dispatch
+        return None
+
+    def save_dispatch_job(self, dispatch):
+        self.dispatches[dispatch.id] = dispatch
+
     def current_time(self):
-        return _now()
+        return self.now
 
 
 class _Uow:
@@ -165,6 +206,7 @@ class _Fingerprinter:
 class _Cipher:
     def __init__(self):
         self.values = []
+        self.reveals = []
 
     def protect(self, value, *, associated_data):
         self.values.append((value, associated_data))
@@ -175,6 +217,10 @@ class _Cipher:
             content_digest="c" * 64,
             plaintext_byte_length=len(value.encode("utf-8")),
         )
+
+    def reveal(self, protected, *, associated_data):
+        self.reveals.append((protected, associated_data))
+        return "Approved redacted answer"
 
 
 class _Admission:
@@ -193,6 +239,35 @@ class _Publisher:
         self.calls.append(kwargs)
 
 
+class _FailOncePublisher(_Publisher):
+    def publish(self, **kwargs):
+        super().publish(**kwargs)
+        if len(self.calls) == 1:
+            raise RuntimeError("publish unavailable")
+
+
+class _ClaimingFailOncePublisher(_Publisher):
+    def __init__(self, repository):
+        super().__init__()
+        self.repository = repository
+
+    def publish(self, **kwargs):
+        super().publish(**kwargs)
+        if len(self.calls) == 1:
+            self.repository.dispatches[kwargs["dispatch_id"]].claim(
+                owner="gateway-test-owner",
+                deadline=self.repository.now + timedelta(seconds=30),
+                now=self.repository.now,
+            )
+            self.repository.dispatches[kwargs["dispatch_id"]].record_publish_failure(
+                owner="gateway-test-owner",
+                claim_generation=1,
+                safe_reason_code="memory.dispatch_publish_failed",
+                now=self.repository.now,
+            )
+            raise RuntimeError("definitive pre-send failure")
+
+
 def _command(input_text="hello") -> StartPublicConversationTurnCommand:
     return StartPublicConversationTurnCommand(
         url_slug="chatbot",
@@ -205,7 +280,7 @@ def _command(input_text="hello") -> StartPublicConversationTurnCommand:
     )
 
 
-def _use_case(repository, *, publisher=None):
+def _use_case(repository, *, publisher=None, max_dispatch_attempts=5):
     cipher = _Cipher()
     admission = _Admission()
     return (
@@ -218,11 +293,78 @@ def _use_case(repository, *, publisher=None):
             admission=admission,
             dispatch_publisher=publisher,
             minimum_worker_capability="memory-runtime-v1",
-            max_dispatch_attempts=5,
+            max_dispatch_attempts=max_dispatch_attempts,
         ),
         cipher,
         admission,
     )
+
+
+def test_exact_retry_terminalizes_an_exhausted_publish_failure() -> None:
+    repository = _Repository(_binding())
+    publisher = _ClaimingFailOncePublisher(repository)
+    use_case, _cipher, _admission = _use_case(
+        repository,
+        publisher=publisher,
+        max_dispatch_attempts=1,
+    )
+
+    with pytest.raises(RuntimeError, match="definitive pre-send failure"):
+        use_case.execute(_command())
+
+    turn = next(iter(repository.turns.values()))
+    dispatch = repository.dispatches[turn.dispatch_id]
+    assert dispatch.status is DispatchStatus.TERMINAL
+    assert turn.status is TurnStatus.PENDING_DISPATCH
+
+    recovered = use_case.execute(_command())
+
+    assert recovered.turn_state is TurnStatus.FAILED
+    assert recovered.dispatch_publish_required is False
+    assert turn.safe_failure_reason == "memory.dispatch_publish_failed"
+    assert repository.session.active_turn_id is None
+    assert repository.entries[turn.user_entry_id].lifecycle.value == "rejected"
+    assert len(publisher.calls) == 1
+    status = GetPublicTurnStatusUseCase(
+        repository=repository,
+        uow=_Uow(),
+        secrets=_Secrets(),
+        content_cipher=_Cipher(),
+    ).execute(
+        url_slug="chatbot",
+        turn_id=turn.id,
+        access_token="token",
+        now=_now(),
+    )
+    assert status.turn_state is TurnStatus.FAILED
+    assert status.display is None
+    assert status.safe_failure_reason == "memory.dispatch_publish_failed"
+
+
+def test_exact_retry_terminalizes_an_expired_final_claim() -> None:
+    repository = _Repository(_binding())
+    use_case, _cipher, _admission = _use_case(
+        repository,
+        max_dispatch_attempts=1,
+    )
+    started = use_case.execute(_command())
+    dispatch = repository.dispatches[started.dispatch_id]
+    deadline = repository.now + timedelta(seconds=30)
+    dispatch.claim(
+        owner="dispatcher-a",
+        deadline=deadline,
+        now=repository.now,
+    )
+    repository.now = deadline
+
+    recovered = use_case.execute(_command())
+    turn = repository.turns[started.turn_id]
+
+    assert dispatch.status is DispatchStatus.TERMINAL
+    assert recovered.turn_state is TurnStatus.FAILED
+    assert turn.safe_failure_reason == "memory.dispatch_claim_expired"
+    assert repository.session.active_turn_id is None
+    assert repository.entries[turn.user_entry_id].lifecycle.value == "rejected"
 
 
 def test_public_run_starts_exactly_one_grant_bound_turn_and_dispatch() -> None:
@@ -261,6 +403,7 @@ def test_dispatch_notification_is_reference_only_and_occurs_after_commit() -> No
     assert publisher.calls == [
         {
             "organization_id": repository.binding.organization_id,
+            "session_id": repository.session.id,
             "dispatch_id": result.dispatch_id,
             "turn_id": result.turn_id,
             "memory_contract_version": "conversation-memory-v1",
@@ -285,6 +428,141 @@ def test_same_key_and_input_replays_turn_without_second_content_write() -> None:
     assert len(repository.dispatches) == 1
     assert len(cipher.values) == 2
     assert admission.calls[-1]["disposition"] is PublicConversationAdmissionDisposition.EXACT_RETRY
+
+
+def test_exact_retry_republishes_after_initial_publish_failure() -> None:
+    repository = _Repository(_binding())
+    publisher = _FailOncePublisher()
+    use_case, _cipher, _admission = _use_case(repository, publisher=publisher)
+
+    with pytest.raises(RuntimeError, match="publish unavailable"):
+        use_case.execute(_command())
+
+    retry = use_case.execute(_command())
+
+    assert retry.replayed is True
+    assert len(repository.turns) == 1
+    assert len(repository.dispatches) == 1
+    assert len(publisher.calls) == 2
+
+
+def test_exact_retry_republishes_after_committed_claim_publish_failure() -> None:
+    repository = _Repository(_binding())
+    publisher = _ClaimingFailOncePublisher(repository)
+    use_case, _cipher, _admission = _use_case(repository, publisher=publisher)
+
+    with pytest.raises(RuntimeError, match="definitive pre-send failure"):
+        use_case.execute(_command())
+
+    dispatch = next(iter(repository.dispatches.values()))
+    assert dispatch.status is DispatchStatus.RECONCILE_REQUIRED
+    republished = use_case.execute(_command())
+
+    assert republished.replayed is True
+    assert len(repository.turns) == 1
+    assert len(repository.dispatches) == 1
+    assert len(publisher.calls) == 2
+
+
+@pytest.mark.parametrize(
+    "dispatch_status",
+    [DispatchStatus.CLAIMED, DispatchStatus.ACKNOWLEDGED],
+)
+def test_exact_retry_does_not_publish_after_dispatch_is_claimed_or_acknowledged(
+    dispatch_status,
+) -> None:
+    repository = _Repository(_binding())
+    publisher = _Publisher()
+    use_case, _cipher, _admission = _use_case(repository, publisher=publisher)
+
+    first = use_case.execute(_command())
+    dispatch = repository.dispatches[first.dispatch_id]
+    dispatch.claim(
+        owner="gateway-test-owner",
+        deadline=repository.now + timedelta(seconds=30),
+        now=repository.now,
+    )
+    if dispatch_status is DispatchStatus.ACKNOWLEDGED:
+        dispatch.acknowledge(
+            claim_generation=dispatch.claim_generation,
+            broker_message_id="conversation-turn-test",
+            workflow_admission_reference="admission-test",
+            now=repository.now,
+        )
+    replay = use_case.execute(_command())
+
+    assert replay.replayed is True
+    assert len(publisher.calls) == 1
+
+
+def test_public_turn_status_returns_only_approved_display_projection() -> None:
+    repository = _Repository(_binding())
+    start_turn, cipher, _admission = _use_case(repository)
+    started = start_turn.execute(_command())
+    turn = repository.turns[started.turn_id]
+    assistant_entry_id = uuid.uuid4()
+    turn.status = TurnStatus.COMPLETED
+    turn.assistant_entry_id = assistant_entry_id
+    repository.entries[assistant_entry_id] = ConversationMemoryEntry.approved_assistant(
+        entry_id=assistant_entry_id,
+        organization_id=repository.binding.organization_id,
+        session_id=repository.session.id,
+        turn_id=turn.id,
+        sequence=turn.sequence * 2,
+        channel="conversation",
+        content=ProtectedEntryContent(
+            display=cipher.protect("Approved redacted answer", associated_data="test"),
+            model=cipher.protect("raw model projection", associated_data="test"),
+        ),
+        content_revision=1,
+        idempotency_key_hash="2" * 64,
+        now=_now(),
+    )
+    use_case = GetPublicTurnStatusUseCase(
+        repository=repository,
+        uow=_Uow(),
+        secrets=_Secrets(),
+        content_cipher=cipher,
+    )
+
+    result = use_case.execute(
+        url_slug="chatbot",
+        turn_id=turn.id,
+        access_token="token",
+        now=_now(),
+    )
+
+    assert result.turn_id == turn.id
+    assert result.turn_state is TurnStatus.COMPLETED
+    assert result.display == "Approved redacted answer"
+    assert result.safe_failure_reason is None
+    assert cipher.reveals == [
+        (
+            repository.entries[assistant_entry_id].content.display,
+            (
+                f"memory-content-v1:{repository.binding.organization_id}:"
+                f"{repository.session.id}:{turn.id}:{assistant_entry_id}:display"
+            ),
+        )
+    ]
+
+
+def test_public_turn_status_hides_invalid_capability() -> None:
+    repository = _Repository(_binding())
+    use_case = GetPublicTurnStatusUseCase(
+        repository=repository,
+        uow=_Uow(),
+        secrets=_Secrets(),
+        content_cipher=_Cipher(),
+    )
+
+    with pytest.raises(AccessGrantNotUsableError):
+        use_case.execute(
+            url_slug="chatbot",
+            turn_id=uuid.uuid4(),
+            access_token="invalid",
+            now=_now(),
+        )
 
 
 def test_same_key_with_different_input_is_conflict_before_new_write() -> None:

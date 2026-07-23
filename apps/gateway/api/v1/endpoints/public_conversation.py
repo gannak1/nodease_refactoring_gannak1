@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -11,7 +12,10 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_db, require_json_content_type
 from apps.gateway.composition.authentication import login_network_resolver
-from apps.gateway.composition.memory import build_public_conversation_application
+from apps.gateway.composition.memory import (
+    build_public_conversation_application,
+    build_public_conversation_runtime_application,
+)
 from apps.memory.application.public_lifecycle import (
     CreatePublicConversationCommand,
     LifecycleCommand,
@@ -185,6 +189,17 @@ def _application(db: Session):
     try:
         return build_public_conversation_application(db)
     except (RuntimeError, ValueError) as error:
+        raise _map_public_error(error) from None
+
+
+def _runtime_application(db: Session):
+    try:
+        return build_public_conversation_runtime_application(db)
+    except (
+        PublicConversationFeatureDisabledError,
+        RuntimeError,
+        ValueError,
+    ) as error:
         raise _map_public_error(error) from None
 
 
@@ -374,21 +389,32 @@ def get_public_transcript(
 def get_public_turn_status(
     url_slug: str,
     turn_id: str,
+    response: Response,
     authorization: Annotated[str | None, Header()] = None,
     db: Session = Depends(get_db),
 ):
-    # MBA-317 deliberately does not publish a turn/dispatch/runtime path.  The
-    # grant is still validated so this remains a resource-hidden response.
-    application = _application(db)
+    application = _runtime_application(db)
     try:
-        application.transcript.execute(
+        result = application.turn_status.execute(
             url_slug=url_slug,
+            turn_id=uuid.UUID(turn_id),
             access_token=_conversation_token(authorization),
             now=_now(),
         )
+    except (AttributeError, ValueError):
+        raise _hidden_error() from None
     except Exception as error:
         raise _map_public_error(error) from None
-    raise _hidden_error()
+    _set_public_headers(response)
+    return {
+        "turn": {
+            "id": str(result.turn_id),
+            "sequence": result.turn_sequence,
+            "status": result.turn_state.value,
+            "display": result.display,
+            "failure_reason": result.safe_failure_reason,
+        }
+    }
 
 
 @router.get("/run-public/{url_slug}/conversation/purge-status")

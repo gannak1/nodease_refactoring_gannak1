@@ -27,6 +27,7 @@ from apps.workflow_engine.application.provider_usage import (
 from apps.shared.domain.provider_usage_ledger import (
     ProviderUsageLedgerError,
     ProviderUsageOperation,
+    ProviderUsageState,
 )
 from apps.workflow_engine.services import llm_service as workflow_llm_service
 from apps.workflow_engine.services.llm_service import LLMService
@@ -638,3 +639,59 @@ def test_existing_started_operation_blocks_provider_replay() -> None:
         recorder.begin(_intent_for(attribution))
 
     assert exc_info.value.code == "provider_usage.replay_blocked"
+
+
+def test_checkpoint_recovery_classifies_started_usage_without_provider_replay() -> None:
+    organization_id = uuid.uuid4()
+    provider_attempt_id = uuid.uuid4()
+    operation_id = uuid.uuid4()
+    record = type(
+        "Operation",
+        (),
+        {
+            "id": operation_id,
+            "organization_id": organization_id,
+            "provider_attempt_id": provider_attempt_id,
+            "purpose": "main_generation",
+            "state": ProviderUsageState.PROVIDER_STARTED.value,
+            "state_version": 2,
+        },
+    )()
+
+    class _Query:
+        def filter(self, *_criteria):
+            return self
+
+        def one_or_none(self):
+            return record
+
+    class _RecoverySession(_Session):
+        def query(self, _model):
+            return _Query()
+
+    class _RecoveryLedger:
+        def __init__(self):
+            self.calls = []
+
+        def mark_outcome_unknown(self, _db, **kwargs):
+            self.calls.append(kwargs)
+
+    ledger = _RecoveryLedger()
+    recorder = PostgresProviderUsageRecorder(
+        session_factory=_RecoverySession,
+        ledger_service=ledger,  # type: ignore[arg-type]
+    )
+
+    recorder.resume_checkpoint(
+        organization_id=organization_id,
+        provider_attempt_id=provider_attempt_id,
+        operation_reference=str(operation_id),
+    )
+
+    assert ledger.calls == [
+        {
+            "operation_id": operation_id,
+            "expected_state_version": 2,
+            "reason_code": "terminal_record_failed",
+        }
+    ]

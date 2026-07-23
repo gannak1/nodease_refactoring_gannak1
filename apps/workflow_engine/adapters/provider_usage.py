@@ -15,6 +15,7 @@ from apps.shared.domain.provider_usage_ledger import (
     ProviderUsageMeasurement,
     ProviderUsageState,
 )
+from apps.shared.db.models.provider_usage import ProviderUsageOperationRecord
 from apps.shared.services.llm_model_pricing import (
     calculate_text_token_cost_from_rates,
 )
@@ -29,6 +30,9 @@ from apps.workflow_engine.application.provider_usage import (
     ProviderUsageIntent,
     ProviderUsageRecord,
     ProviderUsageRuntimeError,
+)
+from apps.workflow_engine.application.provider_execution import (
+    ProviderExecutionPurpose,
 )
 from apps.workflow_engine.services.llm_service import LLMService
 
@@ -325,6 +329,61 @@ class PostgresProviderUsageRecorder:
             admitted_output_tokens=context.admitted_output_tokens,
             cost_cap_microusd=context.cost_cap_microusd,
         )
+
+    def resume_checkpoint(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        provider_attempt_id: uuid.UUID,
+        operation_reference: str,
+    ) -> None:
+        """Close or accept the ledger state for an already-durable Memory result."""
+
+        try:
+            operation_id = uuid.UUID(operation_reference)
+        except (TypeError, ValueError) as exc:
+            raise ProviderUsageRuntimeError(
+                "provider_usage.binding_mismatch"
+            ) from exc
+        db = self._session_factory()
+        try:
+            record = (
+                db.query(ProviderUsageOperationRecord)
+                .filter(
+                    ProviderUsageOperationRecord.id == operation_id,
+                    ProviderUsageOperationRecord.organization_id
+                    == organization_id,
+                    ProviderUsageOperationRecord.provider_attempt_id
+                    == provider_attempt_id,
+                    ProviderUsageOperationRecord.purpose
+                    == ProviderExecutionPurpose.MAIN_GENERATION.value,
+                )
+                .one_or_none()
+            )
+            if record is None:
+                raise ProviderUsageRuntimeError(
+                    "provider_usage.binding_mismatch"
+                )
+            state = ProviderUsageState(record.state)
+            if state is ProviderUsageState.SUCCEEDED:
+                return
+            if state is ProviderUsageState.OUTCOME_UNKNOWN:
+                return
+            if state is not ProviderUsageState.PROVIDER_STARTED:
+                raise ProviderUsageRuntimeError(
+                    "provider_usage.replay_blocked"
+                )
+            try:
+                self._ledger_service.mark_outcome_unknown(
+                    db,
+                    operation_id=operation_id,
+                    expected_state_version=record.state_version,
+                    reason_code="terminal_record_failed",
+                )
+            except ProviderUsageLedgerError as exc:
+                raise ProviderUsageRuntimeError(exc.code) from exc
+        finally:
+            db.close()
 
     def record(self, request: ProviderUsageRecord) -> float:
         db = self._session_factory()

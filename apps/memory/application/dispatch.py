@@ -47,6 +47,40 @@ class MarkTurnDispatchPublishedResult:
 
 
 @dataclass(frozen=True, slots=True)
+class RecordTurnDispatchPublishFailureCommand:
+    organization_id: uuid.UUID
+    dispatch_id: uuid.UUID
+    owner: str
+    claim_generation: int
+    safe_reason_code: str
+    now: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RecordTurnDispatchPublishFailureResult:
+    dispatch_id: uuid.UUID
+    status: DispatchStatus
+    claim_generation: int
+    next_attempt_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class FinalizeTerminalTurnDispatchCommand:
+    organization_id: uuid.UUID
+    session_id: uuid.UUID
+    turn_id: uuid.UUID
+    dispatch_id: uuid.UUID
+    now: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class FinalizeTerminalTurnDispatchResult:
+    dispatch_id: uuid.UUID
+    turn_id: uuid.UUID
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
 class RecoverExpiredTurnDispatchCommand:
     organization_id: uuid.UUID
     dispatch_id: uuid.UUID
@@ -152,6 +186,99 @@ class MarkTurnDispatchPublishedUseCase(_TransactionalDispatchUseCase):
                 dispatch_id=job.id,
                 status=job.status,
                 claim_generation=job.claim_generation,
+            )
+
+        return self._execute(operation)
+
+
+class RecordTurnDispatchPublishFailureUseCase(_TransactionalDispatchUseCase):
+    def execute(
+        self,
+        command: RecordTurnDispatchPublishFailureCommand,
+    ) -> RecordTurnDispatchPublishFailureResult:
+        def operation() -> RecordTurnDispatchPublishFailureResult:
+            job = self._lock(command.organization_id, command.dispatch_id)
+            job.record_publish_failure(
+                owner=command.owner,
+                claim_generation=command.claim_generation,
+                safe_reason_code=command.safe_reason_code,
+                now=command.now,
+            )
+            self.repository.save_dispatch_job(job)
+            return RecordTurnDispatchPublishFailureResult(
+                dispatch_id=job.id,
+                status=job.status,
+                claim_generation=job.claim_generation,
+                next_attempt_at=job.next_attempt_at,
+            )
+
+        return self._execute(operation)
+
+
+class FinalizeTerminalTurnDispatchUseCase(_TransactionalDispatchUseCase):
+    def execute(
+        self,
+        command: FinalizeTerminalTurnDispatchCommand,
+    ) -> FinalizeTerminalTurnDispatchResult:
+        def operation() -> FinalizeTerminalTurnDispatchResult:
+            session = self.repository.lock_session(
+                organization_id=command.organization_id,
+                session_id=command.session_id,
+            )
+            if session is None:
+                raise DispatchStateConflictError()
+            turn = self.repository.lock_turn(
+                organization_id=command.organization_id,
+                session_id=command.session_id,
+                turn_id=command.turn_id,
+            )
+            if turn is None:
+                raise DispatchStateConflictError()
+            user_entry = self.repository.get_entry(
+                organization_id=command.organization_id,
+                session_id=command.session_id,
+                entry_id=turn.user_entry_id,
+            )
+            if user_entry is None or user_entry.turn_id != turn.id:
+                raise DispatchStateConflictError()
+            job = self._lock(command.organization_id, command.dispatch_id)
+            if (
+                job.status is not DispatchStatus.TERMINAL
+                or job.session_id != session.id
+                or job.turn_id != turn.id
+                or turn.dispatch_id != job.id
+                or not job.safe_failure_reason
+            ):
+                raise DispatchStateConflictError()
+            if turn.terminal:
+                if (
+                    turn.safe_failure_reason != job.safe_failure_reason
+                    or session.active_turn_id == turn.id
+                ):
+                    raise DispatchStateConflictError()
+                return FinalizeTerminalTurnDispatchResult(
+                    dispatch_id=job.id,
+                    turn_id=turn.id,
+                    replayed=True,
+                )
+            turn.fail(
+                expected_version=turn.version,
+                safe_reason_code=job.safe_failure_reason,
+                now=command.now,
+            )
+            session.release_terminal_turn(
+                turn_id=turn.id,
+                expected_lifecycle_revision=session.lifecycle_revision,
+                now=command.now,
+            )
+            user_entry.reject(now=command.now)
+            self.repository.save_turn(turn)
+            self.repository.save_session(session)
+            self.repository.save_entry(user_entry)
+            return FinalizeTerminalTurnDispatchResult(
+                dispatch_id=job.id,
+                turn_id=turn.id,
+                replayed=False,
             )
 
         return self._execute(operation)

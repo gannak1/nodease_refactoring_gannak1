@@ -40,6 +40,7 @@ class ProviderClientInvocationLease:
         self._invalidated = False
         self._json_schema_applied = False
         self._finalized = False
+        self._binding_revalidated = False
 
     @property
     def attribution(self) -> ProviderExecutionAttribution | None:
@@ -95,6 +96,28 @@ class ProviderClientInvocationLease:
                 self._invalidated = True
                 raise
         self._finalized = True
+        return self._attribution
+
+    def revalidate_current_binding(self) -> ProviderExecutionAttribution | None:
+        """Re-admit current capability state after durable usage intent."""
+
+        if (
+            self._invoked
+            or self._invalidated
+            or not self._finalized
+            or self._binding_revalidated
+        ):
+            raise ProviderExecutionConfigurationError()
+        if self._request_revalidator is not None:
+            try:
+                self._attribution = self._request_revalidator(
+                    messages=deepcopy(self._messages),
+                    parameters=deepcopy(self._parameters),
+                )
+            except Exception:
+                self._invalidated = True
+                raise
+        self._binding_revalidated = True
         return self._attribution
 
     def invoke(self) -> Mapping[str, Any]:

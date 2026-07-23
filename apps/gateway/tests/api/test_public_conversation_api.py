@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
+import pytest
 
 from apps.gateway.adapters.authentication.client_network import ClientNetworkResolver
 from apps.gateway.api.deps import get_db
@@ -22,6 +23,7 @@ from apps.memory.application.public_lifecycle import (
 )
 from apps.memory.application.public_runtime import StartPublicConversationTurnResult
 from apps.memory.domain.conversation import SessionLifecycle, TurnStatus
+from apps.memory.domain.errors import AccessGrantNotUsableError
 
 
 def _key() -> str:
@@ -92,12 +94,30 @@ class _Transcript:
         )
 
 
+class _TurnStatus:
+    def __init__(self) -> None:
+        self.queries = []
+
+    def execute(self, **query):
+        self.queries.append(query)
+        if query["access_token"] != "valid-capability":
+            raise AccessGrantNotUsableError()
+        return SimpleNamespace(
+            turn_id=query["turn_id"],
+            turn_sequence=2,
+            turn_state=TurnStatus.COMPLETED,
+            display="Approved redacted answer",
+            safe_failure_reason=None,
+        )
+
+
 class _Application:
     def __init__(self) -> None:
         self.create = _Create()
         self.close = _Close()
         self.reset = _Reset()
         self.transcript = _Transcript()
+        self.turn_status = _TurnStatus()
 
 
 def _client(
@@ -111,6 +131,11 @@ def _client(
     app.include_router(public_conversation.router)
     app.dependency_overrides[get_db] = lambda: object()
     monkeypatch.setattr(public_conversation, "_application", lambda _db: application)
+    monkeypatch.setattr(
+        public_conversation,
+        "_runtime_application",
+        lambda _db: application,
+    )
     resolver = ClientNetworkResolver(trusted_proxy_cidrs)
     monkeypatch.setattr(
         public_conversation,
@@ -304,6 +329,7 @@ class _StartPublicTurn:
     def execute(self, command):
         self.commands.append(command)
         return StartPublicConversationTurnResult(
+            session_id=uuid.uuid4(),
             turn_id=uuid.uuid4(),
             dispatch_id=uuid.uuid4(),
             turn_sequence=2,
@@ -382,3 +408,58 @@ def test_public_run_rejects_an_incomplete_conversation_envelope(monkeypatch):
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "memory.input_mapping_invalid"
     assert start_turn.commands == []
+
+
+def test_public_turn_status_returns_only_approved_display_projection(monkeypatch):
+    application = _Application()
+    client = _client(monkeypatch, application)
+    turn_id = uuid.uuid4()
+
+    response = client.get(
+        f"/run-public/public-chatbot/conversation/turns/{turn_id}",
+        headers={"Authorization": "Conversation valid-capability"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.json() == {
+        "turn": {
+            "id": str(turn_id),
+            "sequence": 2,
+            "status": "completed",
+            "display": "Approved redacted answer",
+            "failure_reason": None,
+        }
+    }
+    assert application.turn_status.queries == [
+        {
+            "url_slug": "public-chatbot",
+            "turn_id": turn_id,
+            "access_token": "valid-capability",
+            "now": application.turn_status.queries[0]["now"],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "authorization",
+    [None, "Bearer authenticated-token", "Conversation invalid-capability"],
+)
+def test_public_turn_status_hides_missing_or_invalid_bearer(monkeypatch, authorization):
+    application = _Application()
+    client = _client(monkeypatch, application)
+    headers = {} if authorization is None else {"Authorization": authorization}
+
+    response = client.get(
+        f"/run-public/public-chatbot/conversation/turns/{uuid.uuid4()}",
+        headers=headers,
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": {
+            "code": "memory.session_hidden",
+            "message": "Conversation not found",
+        }
+    }

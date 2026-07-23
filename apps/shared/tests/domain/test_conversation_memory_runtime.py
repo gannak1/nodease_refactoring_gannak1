@@ -237,6 +237,26 @@ def test_prompt_variables_must_exactly_match_mapped_start_input() -> None:
     _invalid(graph, _config(), "memory.input_mapping_invalid")
 
 
+@pytest.mark.parametrize(
+    ("prompt_key", "prompt_value", "user_prompt"),
+    [
+        ("system_prompt", "Policy for {{ question }}", "Fixed request"),
+        ("assistant_prompt", "Prior answer: {{ question }}", "{{ question }}"),
+    ],
+)
+def test_prompt_mapping_matches_runtime_message_boundary(
+    prompt_key: str,
+    prompt_value: str,
+    user_prompt: str | None,
+) -> None:
+    graph = _graph()
+    graph["nodes"][1]["data"][prompt_key] = prompt_value
+    if user_prompt is not None:
+        graph["nodes"][1]["data"]["user_prompt"] = user_prompt
+
+    _invalid(graph, _config(), "memory.input_mapping_invalid")
+
+
 def test_answer_must_select_the_single_llm_text_result() -> None:
     graph = _graph()
     graph["nodes"][2]["data"]["outputs"][0]["value_selector"] = [

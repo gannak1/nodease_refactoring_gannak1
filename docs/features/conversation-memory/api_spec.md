@@ -6,7 +6,7 @@ Status: Implemented public lifecycle and initial runtime; advanced follow-up pen
 
 이 문서는 [ADR-0030](../../decisions/ADR-0030-memory-bounded-context.md)과 [ADR-0033](../../decisions/ADR-0033-conversation-memory-contract-completion.md)의 목표 API와 runtime application contract를 정의한다. MBA-316은 transport-independent Session/Turn lifecycle과 dispatch command, repository/UnitOfWork의 dormant subset을 구현했고, MBA-317은 Public Chatbot의 session create/close/reset/delete, Access Grant/receipt verifier, bounded encrypted secret replay, transcript projection, purge-status와 Gateway composition을 구현했다. MBA-318은 Public turn admission/dispatch, 제한된 Workflow topology 실행, bounded reference context와 provider fence를 연결한다. 이 public lifecycle/runtime surface는 필요한 Memory table·column이 실제 DB introspection에서 확인된 뒤 `MEMORY_PUBLIC_CONVERSATION_ENABLED=true`, 독립 capability/replay/admission key material, 승인된 `MEMORY_PUBLIC_REPLAY_BACKUP_ERASURE_MODE`와 `MEMORY_PUBLIC_PURGE_WORKER_READY=true`가 함께 설정된 경우에만 startup validation을 통과한다. 준비 상태는 특정 Alembic revision 문자열이나 현재 head와의 일치가 아니라 이 surface가 소비하는 schema capability로 판정한다. 기본 Docker/Helm/Kubernetes 구성은 두 activation flag가 모두 false이고, MBA-320 physical purge worker가 배포되기 전에는 readiness를 true로 설정하지 않는다. 미확인 schema capability, backup contract, worker readiness 또는 누락된 key를 route별 우발적 503으로 늦추지 않고 process activation 단계에서 fail-closed한다.
 
-MBA-318은 `POST /api/v1/run-public/{url_slug}`의 root-level `conversation` envelope을 durable turn/dispatch와 Workflow admission으로 연결하고 `202 Accepted`를 반환한다. Public turn status endpoint는 현재 grant를 검증한 뒤에도 resource-hidden 응답을 유지하며, 별도 안전한 결과 조회 계약 전에는 turn/result 존재를 노출하지 않는다. 현재 Chatbot의 `inputs.memory_mode`와 `inputs.conversation_id`는 legacy contract이며 target API에 포함하지 않는다.
+MBA-318은 `POST /api/v1/run-public/{url_slug}`의 root-level `conversation` envelope을 durable turn/dispatch와 Workflow admission으로 연결하고 `202 Accepted`를 반환한다. Public turn status endpoint는 현재 grant, deployment audience와 turn scope를 검증한 뒤 safe state와 승인된 display projection만 반환하며, invalid/missing/wrong-scope capability에는 동일한 resource-hidden 응답을 유지한다. 현재 Chatbot의 `inputs.memory_mode`와 `inputs.conversation_id`는 legacy contract이며 target API에 포함하지 않는다.
 
 Endpoint path는 목표 contract다. 구현 PR은 additive versioning과 guided migration으로 도입하고 기존 Workflow/Chatbot API 문서를 함께 갱신해야 한다. Authenticated internal Chatbot endpoint는 별도 내부 Chatbot 접근 정책·배포 surface 구현에 의존하며 이 Conversation Memory 설계만으로 현재 제공되는 기능이 아니다. Numeric retention/rate limit은 운영 설정이지만 이 문서의 security/idempotency baseline을 완화할 수 없다.
 
@@ -48,7 +48,7 @@ Canonical Public Conversation endpoint와 framework가 허용하는 trailing-sla
 | --- | --- | --- | --- |
 | POST | `/api/v1/run-public/{url_slug}/conversations` | Public session과 Access Grant 생성 | 구현됨 |
 | POST | `/api/v1/run-public/{url_slug}` | target `conversation` runtime envelope | 구현됨; durable turn/dispatch 생성 후 `202 Accepted` |
-| GET | `/api/v1/run-public/{url_slug}/conversation/turns/{turn_id}` | 현재 grant의 turn 상태/완료 결과 조회 | grant 검증 뒤 hidden; 안전한 결과 조회 계약은 후속 |
+| GET | `/api/v1/run-public/{url_slug}/conversation/turns/{turn_id}` | 현재 grant의 turn 상태/완료 결과 조회 | safe state와 승인된 display projection만 반환; invalid scope는 hidden |
 | GET | `/api/v1/run-public/{url_slug}/conversation/transcript` | 허용 시 redacted public transcript 조회 | 구현됨; completed bounded projection만 반환 |
 | POST | `/api/v1/run-public/{url_slug}/conversation/close` | 현재 grant session close | 구현됨 |
 | POST | `/api/v1/run-public/{url_slug}/conversation/reset` | 기존 session close + 새 session/grant 발급 | 구현됨 |
@@ -216,6 +216,20 @@ Mapped user/final assistant turn write는 conversational surface에서 required�
 ```
 
 Turn status는 `pending_dispatch | queued | running | completed | failed | cancelled`만 노출한다. Pending/failed detail에는 queue name, Worker identity, broker error와 raw exception을 넣지 않는다.
+
+```json
+{
+  "turn": {
+    "id": "turn_opaque_id",
+    "sequence": 4,
+    "status": "completed",
+    "display": "approved redacted assistant display",
+    "failure_reason": null
+  }
+}
+```
+
+`display`는 completed Turn의 approved assistant display projection이 있을 때만 문자열이고 나머지 상태에서는 `null`이다. `failure_reason`은 failed/cancelled 상태의 bounded safe reason만 허용한다. Model projection, raw prompt/provider response, source identity, context/usage reference와 내부 exception은 반환하지 않는다. Missing, malformed, expired, revoked 또는 다른 deployment/session/turn에 속한 Conversation capability는 모두 동일한 resource-hidden `404`다.
 
 ## Transcript Model
 

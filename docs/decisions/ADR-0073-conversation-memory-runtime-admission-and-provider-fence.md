@@ -66,6 +66,75 @@ Memory와 usage ledger의 두 `provider_started` marker가 서로 다른 replay 
 10. Production activation은 별도 rollout/readiness gate다. Versioned worker routing,
     retention/physical purge와 legacy cutover가 준비되기 전에는 default-off를 유지한다.
 
+## 구현 결정 기록
+
+### Provider 상한의 production source
+
+- Context: production Worker composition은 public provider 요청에 input/output token과 비용
+  상한을 반드시 적용해야 하지만, 이 ADR과 배포 문서에는 승인된 운영 숫자가 아직 없다.
+- Options considered: 코드에 임시 기본값을 넣는 방식, graph/public request가 상한을
+  전달하는 방식, Worker 환경에서 승인된 값을 필수로 받는 방식을 검토했다.
+- Final decision: `MEMORY_RUNTIME_PROVIDER_INPUT_TOKEN_CAP`,
+  `MEMORY_RUNTIME_PROVIDER_OUTPUT_TOKEN_CAP`,
+  `MEMORY_RUNTIME_PROVIDER_COST_CAP_MICROUSD`를 양의 bounded 정수로 모두 요구한다. 누락
+  또는 잘못된 값에는 기본값을 적용하지 않고 provider I/O 전에 fail-closed한다.
+- Rationale: 임의 기본값은 승인되지 않은 비용 정책을 만들고, client/graph 값은 public
+  caller가 server-owned 상한을 확장하는 경로가 된다. 필수 환경값은 runtime default-off를
+  유지하면서 운영 승인과 활성화를 같은 rollout gate에 묶는다.
+- Affected files: `apps/workflow_engine/composition/conversation_memory.py`,
+  `apps/workflow_engine/tests/test_conversation_memory_composition.py`,
+  `docs/features/conversation-memory/component_spec.md`,
+  `docs/features/conversation-memory/test_cases.md`.
+- Follow-up review: 운영자가 모델 routing과 함께 세 상한을 승인하고 versioned Worker
+  queue/capability, Memory schema 및 content key readiness를 확인하기 전에는
+  `MEMORY_PUBLIC_RUNTIME_WORKER_READY=true`로 전환하지 않는다.
+
+### Delivery 소유권과 bounded checkpoint recovery
+
+- Context: broker duplicate delivery가 같은 owner를 공유하면 두 Worker가 하나의 live
+  lease로 인정돼 늦게 도착한 delivery가 정상 provider 호출을 terminal 처리할 수 있다.
+  반대로 checkpoint 뒤 DB 오류를 일반 task 실패로 ack하면 no-replay 복구 경로가 실행되지
+  않는다.
+- Options considered: broker message별 stable owner와 Celery retry 금지, delivery별 owner와
+  무제한 retry, delivery별 owner와 bounded retry를 검토했다.
+- Final decision: 각 실제 task invocation은 새 delivery owner를 사용하고, 동일 execution의
+  provider attempt/checkpoint identity만 stable하게 유지한다. Active lease의 다른 owner는
+  provider/Memory mutation 전에 fence하며 task 예외는 최대 3회의 bounded recovery delivery로
+  다시 실행한다. Usage terminal 또는 checkpoint가 있으면 provider send 권한을 복원하지 않고
+  terminal projection 또는 checkpoint completion만 재생한다. 첫 recovery countdown은
+  production execution lease보다 길게 고정해 새 owner가 active lease에 막힌 채 retry
+  budget을 모두 소진하지 않게 한다.
+- Rationale: delivery owner는 동시 실행 fencing identity이고 provider attempt는 no-replay
+  identity이므로 수명이 다르다. Bounded retry는 transient checkpoint/terminal commit 오류를
+  복구하면서 무한 poison-message loop를 막는다.
+- Affected files: `apps/workflow_engine/tasks.py`,
+  `apps/workflow_engine/application/conversation_memory_execution.py`,
+  `apps/workflow_engine/tests/test_conversation_memory_task.py`,
+  `apps/workflow_engine/tests/application/test_conversation_memory_admission.py`,
+  `apps/workflow_engine/tests/application/test_conversation_memory_execution.py`.
+- Follow-up review: 운영 관측은 retry 고갈과 checkpoint reconciliation 실패를 safe code로
+  alert하고 raw provider 응답이나 credential detail을 포함하지 않는다.
+
+### Dispatch 재시도 고갈의 terminal scope
+
+- Context: dispatch만 `terminal`로 바꾸면 pending Turn과 provisional user entry,
+  `session.active_turn_id`가 남아 이후 모든 turn을 막는다.
+- Options considered: dispatch row만 종결, 다음 POST retry에서 lazy reconciliation,
+  definitive publish failure 시 Memory scope를 즉시 종결하고 exact retry도 같은 상태를
+  복구하는 방식을 검토했다.
+- Final decision: 최종 publish attempt가 실패하면 generation-fenced dispatch를 먼저
+  terminal로 기록하고, 별도 bounded transaction이 session/Turn/user entry/dispatch binding을
+  잠가 Turn failed, entry rejected, active turn released를 함께 commit한다. 이 두 번째
+  transaction이 중단돼도 exact retry는 같은 terminal projection을 idempotent하게 완성한다.
+- Rationale: broker send 결과와 DB transaction은 원자화할 수 없지만, dispatch terminal
+  fence를 권위로 사용하면 ACK race를 덮어쓰지 않으면서 session 점유를 복구할 수 있다.
+- Affected files: `apps/memory/application/dispatch.py`,
+  `apps/memory/application/public_runtime.py`,
+  `apps/gateway/adapters/queue/conversation_turn_publisher.py`와 관련 domain/application/Gateway
+  테스트.
+- Follow-up review: 운영 dispatch reconciler가 추가되면 같은 terminal finalizer를 재사용하고
+  session→Turn→entry→dispatch lock 순서와 current generation 검증을 유지한다.
+
 ## 결과
 
 - Public conversation의 raw content는 Memory content store와 provider process-local request
