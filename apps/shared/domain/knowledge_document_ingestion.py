@@ -30,6 +30,7 @@ DEFAULT_HEARTBEAT_SECONDS = 30
 DEFAULT_DISPATCH_LEASE_SECONDS = 2 * 60
 DEFAULT_RECOVERY_BATCH_SIZE = 25
 DEFAULT_TERMINAL_RETENTION_DAYS = 30
+RAW_PARSER_EGRESS_UNAVAILABLE_REASON = "knowledge.raw_parser_egress_unavailable"
 
 SAFE_REASON_CODES = frozenset(
     {
@@ -46,6 +47,7 @@ SAFE_REASON_CODES = frozenset(
         "ingestion.superseded",
         "ingestion.timeout",
         "ingestion.worker_interrupted",
+        RAW_PARSER_EGRESS_UNAVAILABLE_REASON,
     }
 )
 

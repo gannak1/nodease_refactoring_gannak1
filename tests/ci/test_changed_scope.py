@@ -318,6 +318,11 @@ def test_every_composite_action_change_selects_support_boundary_guard(path: str)
         ("docker/docker-compose.connector-demo.yml", "compose_validation"),
         ("docker/gateway/Dockerfile", "dockerfile_validation"),
         ("docker/gateway/Dockerfile.dev", "dockerfile_validation"),
+        ("docker/proxy/squid.conf", "egress_proxy_validation"),
+        (
+            "infra/helm/moduly/templates/proxy-only-networkpolicies.yaml",
+            "egress_proxy_validation",
+        ),
     ],
 )
 def test_deployment_config_selects_only_its_static_validator(
@@ -331,6 +336,16 @@ def test_deployment_config_selects_only_its_static_validator(
     assert scope.client is False
     assert scope.gateway_tests is False
     assert scope.broad_python is False
+
+
+def test_egress_proxy_ci_test_keeps_ci_control_smoke_coverage() -> None:
+    scope = classify_paths(["tests/ci/test_egress_proxy_kubernetes.py"])
+
+    assert scope.egress_proxy_validation is True
+    assert scope.deployment_validation is True
+    assert scope.client is True
+    assert scope.gateway_tests is True
+    assert scope.broad_python is True
 
 
 @pytest.mark.parametrize(

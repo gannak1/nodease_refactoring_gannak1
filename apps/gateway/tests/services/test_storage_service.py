@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from botocore import UNSIGNED
+from botocore.config import Config
 
 from apps.gateway.services import storage as storage_module
 from apps.gateway.services.storage import (
@@ -14,6 +16,10 @@ from apps.gateway.services.storage import (
     StorageDeleteError,
     StorageOperationError,
     StorageReferenceError,
+)
+from apps.shared.services.outbound_proxy_policy import (
+    OutboundProxyPolicy,
+    OutboundTransportMode,
 )
 
 
@@ -122,6 +128,109 @@ def test_s3_storage_rejects_incomplete_configuration_before_provider_setup(
         S3StorageService()
 
     assert provider_calls == []
+
+
+def test_s3_storage_uses_explicit_proxy_and_disables_sdk_retry_and_ambient_env(
+    monkeypatch,
+):
+    captured = {}
+    monkeypatch.setattr(storage_module.settings, "S3_BUCKET_NAME", "bucket")
+    monkeypatch.setattr(storage_module.settings, "AWS_REGION", "region")
+    monkeypatch.setenv("HTTPS_PROXY", "http://ambient.invalid:9999")
+    monkeypatch.setenv("NO_PROXY", "*")
+    monkeypatch.setattr(
+        storage_module,
+        "outbound_proxy_policy_from_environment",
+        lambda: OutboundProxyPolicy(
+            mode=OutboundTransportMode.PROXY_GUARDED_EXTERNAL,
+            proxy_url="http://egress-proxy:3128",
+            allowed_proxy_hosts=("egress-proxy",),
+            policy_revision="proxy-v1",
+        ),
+    )
+
+    class _CaptureAwsSession:
+        def __init__(self, *, botocore_session):
+            captured["botocore_session"] = botocore_session
+
+        def client(self, *args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return _CaptureS3Client()
+
+    monkeypatch.setattr(storage_module.boto3, "Session", _CaptureAwsSession)
+
+    S3StorageService()
+
+    config = captured["botocore_session"].get_default_client_config()
+    assert captured["args"] == ("s3",)
+    assert config.proxies == {"https": "http://egress-proxy:3128"}
+    assert config.retries == {"total_max_attempts": 1, "mode": "standard"}
+    assert "config" not in captured["kwargs"]
+
+
+def test_s3_storage_applies_explicit_proxy_to_shared_aws_credential_session(
+    monkeypatch,
+):
+    captured = {}
+    monkeypatch.setattr(storage_module.settings, "S3_BUCKET_NAME", "bucket")
+    monkeypatch.setattr(storage_module.settings, "AWS_REGION", "region")
+    monkeypatch.setattr(storage_module.settings, "AWS_ACCESS_KEY_ID", "")
+    monkeypatch.setattr(storage_module.settings, "AWS_SECRET_ACCESS_KEY", "")
+    monkeypatch.setattr(
+        storage_module,
+        "outbound_proxy_policy_from_environment",
+        lambda: OutboundProxyPolicy(
+            mode=OutboundTransportMode.PROXY_GUARDED_EXTERNAL,
+            proxy_url="http://egress-proxy:3128",
+            allowed_proxy_hosts=("egress-proxy",),
+            policy_revision="proxy-v1",
+        ),
+    )
+
+    class _CaptureAwsSession:
+        def __init__(self, *, botocore_session):
+            captured["botocore_session"] = botocore_session
+
+        def client(self, service_name, **kwargs):
+            captured["service_name"] = service_name
+            captured["client_kwargs"] = kwargs
+            return _CaptureS3Client()
+
+    monkeypatch.setattr(storage_module.boto3, "Session", _CaptureAwsSession)
+    monkeypatch.setattr(
+        storage_module.boto3,
+        "client",
+        lambda *_args, **_kwargs: pytest.fail(
+            "S3 must use the shared botocore credential session"
+        ),
+    )
+
+    S3StorageService()
+
+    botocore_session = captured["botocore_session"]
+    default_config = botocore_session.get_default_client_config()
+    assert default_config.proxies == {"https": "http://egress-proxy:3128"}
+    assert default_config.retries == {
+        "total_max_attempts": 1,
+        "mode": "standard",
+    }
+
+    # The default credential resolver creates STS through this same botocore
+    # session. Verify that a nested STS client therefore inherits the proxy.
+    credential_resolver = botocore_session.get_component("credential_provider")
+    web_identity_provider = credential_resolver.get_provider(
+        "assume-role-with-web-identity"
+    )
+    sts_client = web_identity_provider._client_creator(  # noqa: SLF001
+        "sts", config=Config(signature_version=UNSIGNED)
+    )
+    assert sts_client.meta.config.proxies == {
+        "https": "http://egress-proxy:3128"
+    }
+    assert captured["service_name"] == "s3"
+    assert captured["client_kwargs"]["aws_access_key_id"] is None
+    assert captured["client_kwargs"]["aws_secret_access_key"] is None
 
 
 def test_s3_delete_raises_safe_typed_error_without_provider_details(caplog):

@@ -2,12 +2,14 @@
 
 import email
 import imaplib
+import ipaddress
 import socket
 import ssl
 import uuid
 from datetime import datetime
 from email.header import decode_header
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from jinja2 import Environment
 
@@ -15,6 +17,10 @@ from apps.shared.db.session import SessionLocal
 from apps.shared.domain.mail_processing import MailSourceReference
 from apps.shared.services.credential_encryption import (
     get_credential_encryption_service,
+)
+from apps.shared.services.outbound_proxy_policy import (
+    OutboundTransportMode,
+    outbound_proxy_policy_from_environment,
 )
 from apps.workflow_engine.adapters.gmail_mailbox_provider import GmailSearchCriteria
 from apps.workflow_engine.composition.mail import (
@@ -38,6 +44,7 @@ from apps.workflow_engine.workflow.nodes.mail.entities import MailNodeData
 _jinja_env = Environment(autoescape=False)
 MAIL_IMAP_TIMEOUT_SECONDS = 10.0
 MAX_IMAP_MESSAGE_BYTES = 2 * 1024 * 1024
+MAX_IMAP_PROXY_RESPONSE_HEADER_BYTES = 4096
 
 
 def _imap_quoted_string(value: str) -> str:
@@ -45,6 +52,62 @@ def _imap_quoted_string(value: str) -> str:
         raise RuntimeError("mail.search_criteria_invalid")
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _imap_connect_authority(resolved_ip: str, port: int) -> str:
+    address = ipaddress.ip_address(resolved_ip)
+    host = f"[{address}]" if address.version == 6 else str(address)
+    return f"{host}:{port}"
+
+
+def _create_pinned_imap_socket(
+    resolved_ip: str,
+    port: int,
+    *,
+    timeout: float,
+) -> socket.socket:
+    transport_policy = outbound_proxy_policy_from_environment()
+    if (
+        transport_policy.mode
+        is OutboundTransportMode.DIRECT_PINNED_INTERNAL_OR_DEDICATED
+    ):
+        return socket.create_connection((resolved_ip, port), timeout)
+
+    proxy_url = urlsplit(transport_policy.proxy_url or "")
+    proxy_host = proxy_url.hostname
+    proxy_port = proxy_url.port
+    if not proxy_host or proxy_port is None:
+        raise OSError("mail.imap_proxy_tunnel_failed")
+
+    tunnel = socket.create_connection((proxy_host, proxy_port), timeout)
+    try:
+        authority = _imap_connect_authority(resolved_ip, port)
+        tunnel.sendall(
+            (
+                f"CONNECT {authority} HTTP/1.1\r\n"
+                f"Host: {authority}\r\n\r\n"
+            ).encode("ascii")
+        )
+        response_header = bytearray()
+        while not response_header.endswith(b"\r\n\r\n"):
+            if len(response_header) >= MAX_IMAP_PROXY_RESPONSE_HEADER_BYTES:
+                raise OSError("mail.imap_proxy_tunnel_failed")
+            chunk = tunnel.recv(1)
+            if not chunk:
+                raise OSError("mail.imap_proxy_tunnel_failed")
+            response_header.extend(chunk)
+        status_line = bytes(response_header).split(b"\r\n", maxsplit=1)[0]
+        status_parts = status_line.split(b" ", maxsplit=2)
+        if (
+            len(status_parts) < 2
+            or status_parts[0] not in {b"HTTP/1.0", b"HTTP/1.1"}
+            or status_parts[1] != b"200"
+        ):
+            raise OSError("mail.imap_proxy_tunnel_failed")
+        return tunnel
+    except Exception:
+        tunnel.close()
+        raise
 
 
 class _PinnedIMAP4(imaplib.IMAP4):
@@ -60,7 +123,11 @@ class _PinnedIMAP4(imaplib.IMAP4):
         super().__init__(host=host, port=port, timeout=timeout)
 
     def _create_socket(self, timeout):
-        return socket.create_connection((self._resolved_ip, self.port), timeout)
+        return _create_pinned_imap_socket(
+            self._resolved_ip,
+            self.port,
+            timeout=timeout,
+        )
 
 
 class _PinnedIMAP4SSL(imaplib.IMAP4_SSL):
@@ -82,7 +149,11 @@ class _PinnedIMAP4SSL(imaplib.IMAP4_SSL):
         )
 
     def _create_socket(self, timeout):
-        raw_socket = socket.create_connection((self._resolved_ip, self.port), timeout)
+        raw_socket = _create_pinned_imap_socket(
+            self._resolved_ip,
+            self.port,
+            timeout=timeout,
+        )
         return self.ssl_context.wrap_socket(raw_socket, server_hostname=self.host)
 
 

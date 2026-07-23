@@ -29,16 +29,10 @@ def test_compose_worker_uses_gateway_image_and_only_knowledge_queue() -> None:
 
 
 def test_helm_worker_is_migration_first_and_has_bounded_concurrency() -> None:
-    template = _read(
-        "infra/helm/moduly/templates/knowledge-worker-deployment.yaml"
-    )
+    template = _read("infra/helm/moduly/templates/knowledge-worker-deployment.yaml")
     gateway_template = _read("infra/helm/moduly/templates/gateway-deployment.yaml")
-    storage_template = _read(
-        "infra/helm/moduly/templates/knowledge-storage-pvc.yaml"
-    )
-    service_account_template = _read(
-        "infra/helm/moduly/templates/serviceaccount.yaml"
-    )
+    storage_template = _read("infra/helm/moduly/templates/knowledge-storage-pvc.yaml")
+    service_account_template = _read("infra/helm/moduly/templates/serviceaccount.yaml")
     helpers = _read("infra/helm/moduly/templates/_helpers.tpl")
     values = _read("infra/helm/moduly/values.yaml")
     production = _read("infra/helm/moduly/values-production.yaml")
@@ -57,8 +51,11 @@ def test_helm_worker_is_migration_first_and_has_bounded_concurrency() -> None:
     assert "livenessProbe:" not in template
     assert 'include "moduly.validateKnowledgeWorker" .' in template
     assert 'define "moduly.validateKnowledgeWorker"' in helpers
-    assert "knowledge worker requires the bundled Celery Beat recovery scheduler" in helpers
-    assert "claimName: {{ include \"moduly.knowledgeUploadClaimName\" . }}" in template
+    assert (
+        "knowledge worker requires the bundled Celery Beat recovery scheduler"
+        in helpers
+    )
+    assert 'claimName: {{ include "moduly.knowledgeUploadClaimName" . }}' in template
     assert "mountPath: /app/uploads" in template
     assert "mountPath: /app/uploads" in gateway_template
     assert "fsGroup: {{ .Values.knowledgeWorker.localStorage.fsGroup }}" in template
@@ -106,8 +103,15 @@ def test_shared_celery_routes_and_recovers_knowledge_jobs() -> None:
     assert "require_knowledge_document_ingestion_ready" in worker_source
 
 
-def test_knowledge_worker_checks_keyring_before_schema_readiness(monkeypatch) -> None:
+def test_knowledge_worker_checks_egress_and_keyring_before_schema_readiness(
+    monkeypatch,
+) -> None:
     calls = []
+    monkeypatch.setattr(
+        knowledge_worker,
+        "require_outbound_proxy_security_ready",
+        lambda: calls.append("egress"),
+    )
     monkeypatch.setattr(
         knowledge_worker,
         "require_llm_credential_keyring_ready",
@@ -121,10 +125,12 @@ def test_knowledge_worker_checks_keyring_before_schema_readiness(monkeypatch) ->
 
     knowledge_worker._require_readiness()
 
-    assert calls == ["keyring", "schema"]
+    assert calls == ["egress", "keyring", "schema"]
 
 
-def test_knowledge_worker_child_process_revalidates_keyring(monkeypatch) -> None:
+def test_knowledge_worker_child_process_revalidates_egress_and_keyring(
+    monkeypatch,
+) -> None:
     calls = []
     monkeypatch.setattr(
         knowledge_worker,
@@ -136,10 +142,15 @@ def test_knowledge_worker_child_process_revalidates_keyring(monkeypatch) -> None
         "require_llm_credential_keyring_ready",
         lambda: calls.append("keyring"),
     )
+    monkeypatch.setattr(
+        knowledge_worker,
+        "require_outbound_proxy_security_ready",
+        lambda: calls.append("egress"),
+    )
 
     knowledge_worker.initialize_knowledge_worker_process()
 
-    assert calls == ["dispose", "keyring"]
+    assert calls == ["dispose", "egress", "keyring"]
 
 
 def test_worker_readiness_bootstep_propagates_startup_failure(monkeypatch) -> None:

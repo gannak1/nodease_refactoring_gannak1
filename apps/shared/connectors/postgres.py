@@ -2,9 +2,13 @@
 import json
 import logging
 from io import StringIO
-from typing import Any
+from typing import Any, cast
 
-import paramiko
+from apps.shared.services.connector_tcp_transport import (
+    HttpConnectProxyDialer,
+    LocalConnectorProxyRelay,
+    connector_tcp_proxy_dialer_from_environment,
+)
 from apps.shared.services.egress_guard import (
     EgressGuardError,
     ensure_db_probe_allowed,
@@ -14,7 +18,6 @@ from apps.shared.services.egress_guard import (
 )
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import URL
-from sshtunnel import SSHTunnelForwarder
 
 from .base import BaseConnector
 
@@ -27,6 +30,21 @@ DB_STATEMENT_TIMEOUT_MS = 5000
 DB_CONNECT_TIMEOUT_SECONDS = 5
 MAX_DB_FETCH_ROWS = 10000
 MAX_DB_FETCH_BYTES = 16 * 1024 * 1024
+_AUTO_CONNECTOR_PROXY = object()
+_AUTO_ALLOWED_DB_PORTS = object()
+_DEFAULT_ALLOWED_DB_PORTS = frozenset({5432})
+
+
+def _load_rsa_private_key(key_content: str) -> Any:
+    import paramiko
+
+    return paramiko.RSAKey.from_private_key(StringIO(key_content))
+
+
+def _create_ssh_tunnel(**ssh_params: Any) -> Any:
+    from sshtunnel import SSHTunnelForwarder
+
+    return SSHTunnelForwarder(**ssh_params)
 
 
 class PostgresConnector(BaseConnector):
@@ -34,10 +52,33 @@ class PostgresConnector(BaseConnector):
         self,
         *,
         allow_ssh_tunnel: bool = False,
-        allowed_db_ports: frozenset[int] | None = frozenset({5432}),
+        allowed_db_ports: frozenset[int] | None | object = _AUTO_ALLOWED_DB_PORTS,
+        connector_proxy_dialer: HttpConnectProxyDialer | None | object = (
+            _AUTO_CONNECTOR_PROXY
+        ),
     ):
         self.allow_ssh_tunnel = allow_ssh_tunnel
         self.allowed_db_ports = allowed_db_ports
+        self._connector_proxy_dialer = connector_proxy_dialer
+
+    def _resolve_connector_proxy_dialer(self) -> HttpConnectProxyDialer | None:
+        if self._connector_proxy_dialer is _AUTO_CONNECTOR_PROXY:
+            return connector_tcp_proxy_dialer_from_environment()
+        if self._connector_proxy_dialer is None or isinstance(
+            self._connector_proxy_dialer, HttpConnectProxyDialer
+        ):
+            return self._connector_proxy_dialer
+        raise TypeError("connector proxy dialer is invalid")
+
+    def _resolve_allowed_db_ports(
+        self,
+        connector_proxy: HttpConnectProxyDialer | None,
+    ) -> frozenset[int] | None:
+        if self.allowed_db_ports is _AUTO_ALLOWED_DB_PORTS:
+            if connector_proxy is not None:
+                return connector_proxy.allowed_target_ports
+            return _DEFAULT_ALLOWED_DB_PORTS
+        return cast(frozenset[int] | None, self.allowed_db_ports)
 
     def _create_tunnel_and_engine(self, config):
         """
@@ -56,7 +97,7 @@ class PostgresConnector(BaseConnector):
                 True,
                 allow_tunnel=self.allow_ssh_tunnel,
             )
-            ssh_host, ssh_port, _ssh_hostaddr = ensure_network_target_allowed(
+            ssh_host, ssh_port, ssh_hostaddr = ensure_network_target_allowed(
                 ssh_config["host"],
                 int(ssh_config["port"]),
                 allowed_ports=None,
@@ -70,23 +111,59 @@ class PostgresConnector(BaseConnector):
             # 인증방식에 따른 처리
             if ssh_config.get("auth_type") == "key":
                 key_content = ssh_config["private_key"]
-                pkey = paramiko.RSAKey.from_private_key(StringIO(key_content))
+                pkey = _load_rsa_private_key(key_content)
                 ssh_params["ssh_pkey"] = pkey
             else:
                 ssh_params["ssh_password"] = ssh_config.get("password")
 
-            # 터널 생성 및 시작
-            tunnel = SSHTunnelForwarder(**ssh_params)
-            tunnel.start()
+            proxy_socket = None
+            try:
+                connector_proxy = self._resolve_connector_proxy_dialer()
+                if connector_proxy is not None:
+                    if not ssh_hostaddr:
+                        raise EgressGuardError("adapter.target_not_allowed")
+                    proxy_socket = connector_proxy.open_tunnel(
+                        ssh_hostaddr,
+                        ssh_port,
+                        timeout_seconds=DB_CONNECT_TIMEOUT_SECONDS,
+                    )
+                    ssh_params["ssh_proxy"] = proxy_socket
+
+                # 터널 생성 및 시작
+                tunnel = _create_ssh_tunnel(**ssh_params)
+                tunnel.start()
+            except Exception:
+                if tunnel is not None:
+                    try:
+                        tunnel.stop()
+                    except Exception:
+                        pass
+                if proxy_socket is not None:
+                    proxy_socket.close()
+                raise
 
             db_host = "127.0.0.1"
             db_port = tunnel.local_bind_port
         else:
+            connector_proxy = self._resolve_connector_proxy_dialer()
             db_host, db_port, db_hostaddr = ensure_network_target_allowed(
                 db_host,
                 db_port,
-                allowed_ports=self.allowed_db_ports,
+                allowed_ports=self._resolve_allowed_db_ports(connector_proxy),
             )
+            if connector_proxy is not None:
+                if not db_hostaddr:
+                    raise EgressGuardError("adapter.target_not_allowed")
+                relay = LocalConnectorProxyRelay(
+                    connector_proxy,
+                    target_address=db_hostaddr,
+                    target_port=db_port,
+                    connect_timeout_seconds=DB_CONNECT_TIMEOUT_SECONDS,
+                )
+                relay.start()
+                tunnel = relay
+                db_hostaddr = "127.0.0.1"
+                db_port = relay.local_bind_port
 
         db_query = {
             "connect_timeout": str(DB_CONNECT_TIMEOUT_SECONDS),
@@ -97,17 +174,25 @@ class PostgresConnector(BaseConnector):
         }
         if db_hostaddr:
             db_query["hostaddr"] = db_hostaddr
-        db_url = URL.create(
-            drivername="postgresql+psycopg2",
-            username=config["username"],
-            password=config["password"],
-            host=db_host,
-            port=db_port,
-            database=config["database"],
-            query=db_query,
-        )
-        # 직접 연결은 검증된 public IP에 hostaddr로 고정하고, SSH tunnel 경로는 local bind로만 연결한다.
-        engine = create_engine(db_url)
+        try:
+            db_url = URL.create(
+                drivername="postgresql+psycopg2",
+                username=config["username"],
+                password=config["password"],
+                host=db_host,
+                port=db_port,
+                database=config["database"],
+                query=db_query,
+            )
+            # 직접 연결은 검증된 public IP에 hostaddr로 고정하고, SSH tunnel 경로는 local bind로만 연결한다.
+            engine = create_engine(db_url)
+        except Exception:
+            if tunnel is not None:
+                try:
+                    tunnel.stop()
+                except Exception:
+                    pass
+            raise
 
         return engine, tunnel
 

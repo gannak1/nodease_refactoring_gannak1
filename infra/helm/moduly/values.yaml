@@ -19,6 +19,46 @@ storage:
   bucketName: ""
   region: ""
 
+# The base chart is a local/development profile and keeps direct-pinned
+# transport. Production values explicitly enable the proxy and supply exact
+# cluster pod CIDRs for the Squid source ACL.
+egressProxy:
+  enabled: false
+  policyRevision: "proxy-v1"
+  replicaCount: 2
+  image:
+    repository: ubuntu/squid
+    tag: "6.6-24.04_edge"
+    digest: "sha256:8a3baed477e2c282ab8aa5edad442f69873246964f225c5c2ae8364b6610963c"
+    pullPolicy: IfNotPresent
+  # Immutable proxy-v1 listener contract. Helm validation rejects overrides.
+  service:
+    httpsPort: 3128
+    httpCompatiblePort: 3129
+    connectorTcpPort: 3130
+  # Deployment-owned public DB/SSH ports accepted by connector-egress-v1.
+  connectorAllowedPorts:
+    - 22
+    - 5432
+  networkPolicy:
+    enabled: true
+    enforced: true
+    enforcementPhase: "final"
+    authorizedSourceCidrs: []
+    # Cluster DNS coordinates shared by every proxy-only egress policy.
+    # Override these values when DNS runs outside kube-system or uses a
+    # deployment-specific pod label.
+    dns:
+      namespace: "kube-system"
+      podSelectorLabels: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
 # Durable distributed schedule dispatch. Keep disabled until the migration-first
 # rollout has completed and the legacy dispatcher has been drained.
 scheduleDispatch:

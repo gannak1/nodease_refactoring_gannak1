@@ -20,6 +20,10 @@ from apps.shared.services.outbound_operation_policy import (
     LLM_PROVIDER_CALL,
     require_outbound_operation_profile,
 )
+from apps.shared.services.outbound_proxy_policy import (
+    OutboundProxyPolicy,
+    OutboundTransportMode,
+)
 
 
 def _address(ip: str, port: int = 443):
@@ -457,3 +461,131 @@ def test_sync_and_async_transports_disable_ambient_proxy_and_pin_network() -> No
     assert async_transport._pool._ssl_context.check_hostname is True
 
     sync_transport.close()
+
+
+def _proxy_policy() -> OutboundProxyPolicy:
+    return OutboundProxyPolicy(
+        mode=OutboundTransportMode.PROXY_GUARDED_EXTERNAL,
+        proxy_url="http://egress-proxy:3128",
+        allowed_proxy_hosts=("egress-proxy",),
+        policy_revision="proxy-v1",
+    )
+
+
+def test_proxy_transport_uses_only_explicit_proxy_and_ignores_ambient_env(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("HTTP_PROXY", "http://ambient.invalid:9999")
+    monkeypatch.setenv("HTTPS_PROXY", "http://ambient.invalid:9999")
+    monkeypatch.setenv("NO_PROXY", "*")
+
+    transport = GuardedHttpTransport(
+        operation=_bound_operation(),
+        transport_policy=_proxy_policy(),
+    )
+
+    assert isinstance(transport._pool, httpcore.HTTPProxy)  # noqa: SLF001
+    assert transport._pool._proxy_url.host == b"egress-proxy"  # noqa: SLF001
+    assert transport._pool._proxy_url.port == 3128  # noqa: SLF001
+    assert not isinstance(
+        transport._pool._network_backend,  # noqa: SLF001
+        GuardedNetworkBackend,
+    )
+    transport.close()
+
+
+def test_proxy_transport_bounds_origin_dns_validation(monkeypatch) -> None:
+    transport = GuardedHttpTransport(
+        operation=_bound_operation(),
+        transport_policy=_proxy_policy(),
+    )
+    transport._guard.policy = replace(  # noqa: SLF001
+        transport._guard.policy,  # noqa: SLF001
+        timeout_seconds=0.005,
+    )
+
+    def slow_resolve(_host: str, _port: int):
+        time.sleep(0.05)
+        return "provider.example", 443, ("93.184.216.34",)
+
+    monkeypatch.setattr(
+        transport._guard,  # noqa: SLF001
+        "validate_host_port_addresses",
+        slow_resolve,
+    )
+    request = httpx.Request("GET", "https://provider.example/v1/models")
+
+    with pytest.raises(EgressGuardError) as captured:
+        transport.handle_request(request)
+
+    assert captured.value.reason_code == "egress.dns_resolution_failed"
+    transport.close()
+
+
+@pytest.mark.asyncio
+async def test_proxy_transport_validates_origin_dns_before_proxy_send(
+    monkeypatch,
+) -> None:
+    operation = _bound_operation()
+    validated: list[tuple[str, int]] = []
+
+    def validate(host: str, port: int):
+        validated.append((host, port))
+        return host, port, ("203.0.113.10",)
+
+    transport = GuardedAsyncHttpTransport(
+        operation=operation,
+        transport_policy=_proxy_policy(),
+    )
+    monkeypatch.setattr(transport._guard, "validate_host_port_addresses", validate)
+    request = httpx.Request(
+        "POST",
+        "https://provider.example/v1/responses",
+        json={"input": "synthetic"},
+    )
+
+    async def fail_before_network(_self, _request):
+        raise httpx.ConnectError("proxy unavailable")
+
+    monkeypatch.setattr(
+        httpx.AsyncHTTPTransport,
+        "handle_async_request",
+        fail_before_network,
+    )
+
+    with pytest.raises(httpx.ConnectError):
+        await transport.handle_async_request(request)
+
+    assert validated == [("provider.example", 443)]
+    await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_async_proxy_transport_bounds_origin_dns_validation(
+    monkeypatch,
+) -> None:
+    transport = GuardedAsyncHttpTransport(
+        operation=_bound_operation(),
+        transport_policy=_proxy_policy(),
+    )
+    transport._guard.policy = replace(  # noqa: SLF001
+        transport._guard.policy,  # noqa: SLF001
+        timeout_seconds=0.005,
+    )
+
+    def slow_resolve(_host: str, _port: int):
+        time.sleep(0.05)
+        return "provider.example", 443, ("93.184.216.34",)
+
+    monkeypatch.setattr(
+        transport._guard,  # noqa: SLF001
+        "validate_host_port_addresses",
+        slow_resolve,
+    )
+    request = httpx.Request("GET", "https://provider.example/v1/models")
+
+    with pytest.raises(EgressGuardError) as captured:
+        await transport.handle_async_request(request)
+
+    assert captured.value.reason_code == "egress.dns_resolution_failed"
+    await transport.aclose()

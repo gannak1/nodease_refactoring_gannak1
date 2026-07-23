@@ -24,6 +24,10 @@ from apps.shared.services.egress_guard import (
     canonicalize_network_host,
     ensure_network_target_allowed,
 )
+from apps.shared.services.connector_tcp_transport import (
+    HttpConnectProxyDialer,
+    LocalConnectorProxyRelay,
+)
 
 _URL_HOST_MARKERS = ("://", "/", "@", "?", "#")
 
@@ -42,8 +46,14 @@ def _configured_ca_file(ca_file: str) -> str:
 
 
 class StrictPostgresConnectorProbe:
-    def __init__(self, policy: ConnectorTestPolicy) -> None:
+    def __init__(
+        self,
+        policy: ConnectorTestPolicy,
+        *,
+        connector_proxy_dialer: HttpConnectProxyDialer | None = None,
+    ) -> None:
         self._policy = policy
+        self._connector_proxy_dialer = connector_proxy_dialer
         self._executor = ThreadPoolExecutor(
             max_workers=policy.global_concurrency_limit,
             thread_name_prefix="connector-test",
@@ -65,6 +75,7 @@ class StrictPostgresConnectorProbe:
 
     def _probe_sync(self, command: ConnectorTestCommand) -> bool:
         engine = None
+        relay = None
         try:
             host_input = command.host.strip()
             if not host_input or any(marker in host_input for marker in _URL_HOST_MARKERS):
@@ -90,12 +101,23 @@ class StrictPostgresConnectorProbe:
                 allowed_ports=self._policy.allowed_ports,
                 trusted_local_targets=trusted_local_targets,
             )
+            connect_port = port
+            if self._connector_proxy_dialer is not None and not is_trusted_local:
+                relay = LocalConnectorProxyRelay(
+                    self._connector_proxy_dialer,
+                    target_address=host_address,
+                    target_port=port,
+                    connect_timeout_seconds=self._policy.connect_timeout_seconds,
+                )
+                relay.start()
+                host_address = "127.0.0.1"
+                connect_port = relay.local_bind_port
             url = URL.create(
                 drivername="postgresql+psycopg2",
                 username=command.username,
                 password=command.password,
                 host=host,
-                port=port,
+                port=connect_port,
                 database=command.database,
                 query={
                     "hostaddr": host_address,
@@ -126,6 +148,8 @@ class StrictPostgresConnectorProbe:
         finally:
             if engine is not None:
                 engine.dispose()
+            if relay is not None:
+                relay.stop()
 
 
 class _StrictPostgresProbeReservation:

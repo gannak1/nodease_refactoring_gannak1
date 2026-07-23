@@ -19,7 +19,11 @@ spec:
     metadata:
       labels:
         {{- include "moduly.componentSelectorLabels" (dict "component" "gateway" "context" .) | nindent 8 }}
+        {{- if .Values.egressProxy.enabled }}
+        nodease.io/egress-mode: proxy-v1
+        {{- end }}
       annotations:
+        nodease.io/egress-enforcement-phase: {{ .Values.egressProxy.networkPolicy.enforcementPhase | quote }}
         nodease.io/schedule-dispatch-fingerprint: {{ include "moduly.scheduleDispatchFingerprint" . | quote }}
         checksum/config: {{ toYaml .Values | sha256sum }}
         checksum/secret: {{ toYaml .Values.secrets | sha256sum }}
@@ -39,6 +43,7 @@ spec:
           containerPort: {{ .Values.gateway.service.port }}
           protocol: TCP
         env:
+        {{- include "moduly.outboundProxyEnv" (dict "context" . "port" .Values.egressProxy.service.httpsPort) | nindent 8 }}
         # Database configuration (from ConfigMap)
         - name: DB_HOST
           valueFrom:

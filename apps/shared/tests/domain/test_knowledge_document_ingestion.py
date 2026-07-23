@@ -135,4 +135,8 @@ def test_runtime_settings_require_lease_headroom() -> None:
 def test_unknown_reason_is_mapped_to_safe_internal_code() -> None:
     assert safe_reason_code("provider leaked detail") == "ingestion.internal_error"
     assert safe_reason_code("ingestion.timeout") == "ingestion.timeout"
+    assert (
+        safe_reason_code("knowledge.raw_parser_egress_unavailable")
+        == "knowledge.raw_parser_egress_unavailable"
+    )
     assert safe_reason_code(None) is None

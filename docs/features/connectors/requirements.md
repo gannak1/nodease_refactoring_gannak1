@@ -99,6 +99,7 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-REQ-069 (MBA-302): PostgreSQL Connection reference lock wait는 local 2초로 제한한다. Lock 획득 또는 같은 reference mutation의 flush/commit에서 발생한 lock timeout, deadlock victim과 serialization failure는 전체 transaction rollback 뒤 새 session에서만 재시도 가능한 `connection.reference_busy`, 기타 store failure는 `connection.reference_unavailable`로 구분하고 raw SQL/driver/lock detail을 노출하지 않아야 한다.
 - CONN-REQ-070 (MBA-302): Runtime PostgreSQL fetch와 schema introspection은 connect 5초, statement 5초와 read-only transaction을 적용한다. Fetch는 bounded batch·총 10,000 row·총 16 MiB row payload 상한을 적용하고, 상한 초과를 일부 성공으로 반환하지 않으며 종료·예외·취소에서 engine과 tunnel을 정리해야 한다.
 - CONN-REQ-071 (MBA-302): Runtime snapshot은 dial 시작 시점의 authorization snapshot이며 실행 중 즉시 revoke를 보장하지 않는다. Lock 관측 정보는 outcome과 coarse wait/hold bucket만 허용하고 Connection identity, target, SQL과 credential을 metric label, log, audit 또는 trace에 포함하지 않아야 한다.
+- CONN-REQ-072 (MBA-357): Production external PostgreSQL/SSH는 DNS 정책으로 검증·고정한 public IP와 배포 관리 포트만 `connector-egress-v1`의 internal `3130` CONNECT listener에 전달해야 한다. Strict test allowlist는 egress allowlist의 부분집합이어야 하고 저장 connection schema/runtime 및 Workflow SSH compatibility도 같은 전용 transport를 사용해야 한다. Proxy config/tunnel 실패 뒤 direct public dial은 허용하지 않는다. Local exact-private demo와 platform internal DB는 기존 dedicated direct 경계를 유지한다.
 
 ## Policies And Edge Cases
 

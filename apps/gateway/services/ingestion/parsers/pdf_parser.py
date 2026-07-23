@@ -6,6 +6,9 @@ import fitz  # PyMuPDF
 import pymupdf4llm
 
 from apps.gateway.services.ingestion.parsers.base import BaseParser
+from apps.shared.domain.knowledge_document_ingestion import (
+    RAW_PARSER_EGRESS_UNAVAILABLE_REASON,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +19,13 @@ class ParsingStrategy(str, Enum):
     IMAGE = "image"
 
 
+class ExternalParserEgressUnavailable(RuntimeError):
+    reason_code = RAW_PARSER_EGRESS_UNAVAILABLE_REASON
+
+    def __init__(self) -> None:
+        super().__init__("External parser is unavailable.")
+
+
 class PdfParser(BaseParser):
     """
     [PdfParser]
@@ -23,8 +33,8 @@ class PdfParser(BaseParser):
 
     기능:
     1. PyMuPDF(pymupdf4llm)를 사용한 빠른 마크다운 변환
-    2. LlamaParse를 사용한 고품질 변환 (OCR 포함)
-    3. 파일 성격(이미지 비중 등)에 따른 분석 및 전략 제안 기능
+    2. 승인된 external parser transport가 준비되지 않은 전략의 fail-closed 차단
+    3. 파일 성격(이미지 비중 등)에 따른 분석 기능
     """
 
     def parse(self, source_path: str, **kwargs) -> List[Dict[str, Any]]:
@@ -34,23 +44,15 @@ class PdfParser(BaseParser):
         Args:
             source_path: PDF 파일의 절대 경로
             kwargs:
-                - strategy (str): 'general' (기본값) 또는 'llamaparse'
-                - api_key (str): LlamaParse API Key (llamaparse 전략 사용 시 필수)
-                - target_pages (str): 파싱할 페이지 범위 (예: "0-4", llamaparse 전용)
+                - strategy (str): 'general' (기본값). 'llamaparse'는 현재 차단된다.
 
         Returns:
             [{"text": "...", "page": 1}, ...]
         """
         strategy = kwargs.get("strategy", "general")
-        target_pages = kwargs.get("target_pages")
-
         if strategy == "llamaparse":
-            api_key = kwargs.get("api_key")
-            if not api_key:
-                raise ValueError("LlamaParse strategy requires 'api_key'")
-            return self._parse_with_llamaparse(source_path, api_key, target_pages)
-        else:
-            return self._parse_with_pymupdf(source_path)
+            raise ExternalParserEgressUnavailable()
+        return self._parse_with_pymupdf(source_path)
 
     def analyze(self, file_path: str) -> Dict[str, Any]:
         """
@@ -157,53 +159,3 @@ class PdfParser(BaseParser):
                 type(exc).__name__,
             )
             return []
-
-    def _parse_with_llamaparse(
-        self, file_path: str, api_key: str, target_pages: str = None
-    ) -> List[Dict[str, Any]]:
-        """LlamaParse API를 사용하여 고품질 파싱 (OCR 수행)"""
-        try:
-            import nest_asyncio
-
-            nest_asyncio.apply()
-        except ImportError:
-            pass
-
-        try:
-            from llama_parse import LlamaParse
-        except ImportError:
-            logger.error("[PdfParser] llama-parse not installed.")
-            return []
-
-        try:
-            # fast_mode=True uses text extraction mostly, False uses OCR (required for scanned docs)
-            # result_type="markdown" caused 'markdown' error in some versions, relying on default for now
-            parser = LlamaParse(
-                api_key=api_key,
-                # result_type="markdown",
-                language="ko",
-                fast_mode=False,
-                target_pages=target_pages,
-                verbose=False,
-            )
-
-            # load_data returns List[Document]
-            documents = parser.load_data(file_path)
-
-            results = []
-            for doc in documents:
-                # LlamaParse Document has 'text' field (markdown) and metadata
-                page_num = 1
-                if "page_label" in doc.metadata:
-                    try:
-                        page_num = int(doc.metadata["page_label"])
-                    except Exception:
-                        pass
-
-                results.append({"text": doc.text, "page": page_num})
-
-            return results
-
-        except Exception as exc:
-            logger.warning("LlamaParse parsing failed: %s", type(exc).__name__)
-            return self._parse_with_pymupdf(file_path)

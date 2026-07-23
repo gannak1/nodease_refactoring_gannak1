@@ -15,6 +15,11 @@ from apps.shared.services.egress_guard import (
     OutboundEgressGuard,
 )
 from apps.shared.services.outbound_operation_policy import BoundOutboundOperation
+from apps.shared.services.outbound_proxy_policy import (
+    OutboundProxyPolicy,
+    OutboundTransportMode,
+    outbound_proxy_policy_from_environment,
+)
 
 
 class EgressResponseRejectedError(EgressGuardError):
@@ -232,11 +237,15 @@ class _GuardedTransportMixin:
         *,
         operation: BoundOutboundOperation | None,
         guard: OutboundEgressGuard | None,
+        transport_policy: OutboundProxyPolicy | None,
     ) -> None:
         if (operation is None) == (guard is None):
             raise ValueError("Exactly one outbound operation or guard is required")
         self._operation = operation
         self._guard = operation.guard if operation is not None else guard
+        self._transport_policy = (
+            transport_policy or outbound_proxy_policy_from_environment()
+        )
 
     def _validate_request(self, request: httpx.Request) -> None:
         url = str(request.url)
@@ -273,6 +282,49 @@ class _GuardedTransportMixin:
         if self._guard.policy.force_identity_encoding:
             request.headers["Accept-Encoding"] = "identity"
 
+    def _validate_proxy_destination(self, request: httpx.Request) -> None:
+        if (
+            self._transport_policy.mode
+            is not OutboundTransportMode.PROXY_GUARDED_EXTERNAL
+        ):
+            return
+        host = request.url.host
+        port = request.url.port or (443 if request.url.scheme == "https" else 80)
+        if not host:
+            raise EgressGuardError("egress.invalid_host")
+        resolution = _SYNC_DNS_EXECUTOR.submit(
+            self._guard.validate_host_port_addresses,
+            host,
+            port,
+        )
+        try:
+            resolution.result(timeout=max(0.0, self._guard.policy.timeout_seconds))
+        except FutureTimeoutError:
+            resolution.cancel()
+            raise EgressGuardError("egress.dns_resolution_failed") from None
+
+    async def _validate_proxy_destination_async(self, request: httpx.Request) -> None:
+        if (
+            self._transport_policy.mode
+            is not OutboundTransportMode.PROXY_GUARDED_EXTERNAL
+        ):
+            return
+        host = request.url.host
+        port = request.url.port or (443 if request.url.scheme == "https" else 80)
+        if not host:
+            raise EgressGuardError("egress.invalid_host")
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    self._guard.validate_host_port_addresses,
+                    host,
+                    port,
+                ),
+                timeout=max(0.0, self._guard.policy.timeout_seconds),
+            )
+        except TimeoutError:
+            raise EgressGuardError("egress.dns_resolution_failed") from None
+
 
 class GuardedHttpTransport(_GuardedTransportMixin, httpx.HTTPTransport):
     def __init__(
@@ -280,8 +332,13 @@ class GuardedHttpTransport(_GuardedTransportMixin, httpx.HTTPTransport):
         guard: OutboundEgressGuard | None = None,
         *,
         operation: BoundOutboundOperation | None = None,
+        transport_policy: OutboundProxyPolicy | None = None,
     ) -> None:
-        self._initialize_guard(operation=operation, guard=guard)
+        self._initialize_guard(
+            operation=operation,
+            guard=guard,
+            transport_policy=transport_policy,
+        )
         limits = httpx.Limits(
             max_connections=10,
             max_keepalive_connections=5,
@@ -294,21 +351,27 @@ class GuardedHttpTransport(_GuardedTransportMixin, httpx.HTTPTransport):
             http2=False,
             limits=limits,
             retries=0,
+            proxy=self._transport_policy.proxy_url,
         )
-        self._pool.close()
-        self._pool = httpcore.ConnectionPool(
-            ssl_context=httpx.create_ssl_context(verify=True, trust_env=False),
-            max_connections=limits.max_connections,
-            max_keepalive_connections=limits.max_keepalive_connections,
-            keepalive_expiry=limits.keepalive_expiry,
-            http1=True,
-            http2=False,
-            retries=0,
-            network_backend=GuardedNetworkBackend(self._guard),
-        )
+        if (
+            self._transport_policy.mode
+            is OutboundTransportMode.DIRECT_PINNED_INTERNAL_OR_DEDICATED
+        ):
+            self._pool.close()
+            self._pool = httpcore.ConnectionPool(
+                ssl_context=httpx.create_ssl_context(verify=True, trust_env=False),
+                max_connections=limits.max_connections,
+                max_keepalive_connections=limits.max_keepalive_connections,
+                keepalive_expiry=limits.keepalive_expiry,
+                http1=True,
+                http2=False,
+                retries=0,
+                network_backend=GuardedNetworkBackend(self._guard),
+            )
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         self._validate_request(request)
+        self._validate_proxy_destination(request)
         response = super().handle_request(request)
         try:
             self._guard.validate_response_headers(
@@ -334,8 +397,13 @@ class GuardedAsyncHttpTransport(_GuardedTransportMixin, httpx.AsyncHTTPTransport
         guard: OutboundEgressGuard | None = None,
         *,
         operation: BoundOutboundOperation | None = None,
+        transport_policy: OutboundProxyPolicy | None = None,
     ) -> None:
-        self._initialize_guard(operation=operation, guard=guard)
+        self._initialize_guard(
+            operation=operation,
+            guard=guard,
+            transport_policy=transport_policy,
+        )
         limits = httpx.Limits(
             max_connections=10,
             max_keepalive_connections=5,
@@ -348,20 +416,26 @@ class GuardedAsyncHttpTransport(_GuardedTransportMixin, httpx.AsyncHTTPTransport
             http2=False,
             limits=limits,
             retries=0,
+            proxy=self._transport_policy.proxy_url,
         )
-        self._pool = httpcore.AsyncConnectionPool(
-            ssl_context=httpx.create_ssl_context(verify=True, trust_env=False),
-            max_connections=limits.max_connections,
-            max_keepalive_connections=limits.max_keepalive_connections,
-            keepalive_expiry=limits.keepalive_expiry,
-            http1=True,
-            http2=False,
-            retries=0,
-            network_backend=GuardedAsyncNetworkBackend(self._guard),
-        )
+        if (
+            self._transport_policy.mode
+            is OutboundTransportMode.DIRECT_PINNED_INTERNAL_OR_DEDICATED
+        ):
+            self._pool = httpcore.AsyncConnectionPool(
+                ssl_context=httpx.create_ssl_context(verify=True, trust_env=False),
+                max_connections=limits.max_connections,
+                max_keepalive_connections=limits.max_keepalive_connections,
+                keepalive_expiry=limits.keepalive_expiry,
+                http1=True,
+                http2=False,
+                retries=0,
+                network_backend=GuardedAsyncNetworkBackend(self._guard),
+            )
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self._validate_request(request)
+        await self._validate_proxy_destination_async(request)
         response = await super().handle_async_request(request)
         try:
             self._guard.validate_response_headers(

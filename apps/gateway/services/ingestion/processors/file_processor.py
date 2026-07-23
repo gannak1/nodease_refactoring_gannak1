@@ -6,9 +6,8 @@ from apps.gateway.services.ingestion.parsers.docx_parser import DocxParser
 from apps.gateway.services.ingestion.parsers.excel_csv_parser import ExcelCsvParser
 from apps.gateway.services.ingestion.parsers.pdf_parser import PdfParser
 from apps.gateway.services.ingestion.parsers.txt_parser import TxtParser
-from apps.gateway.services.llm_service import (
-    LLMCredentialNotAvailableError,
-    LLMService,
+from apps.shared.domain.knowledge_document_ingestion import (
+    RAW_PARSER_EGRESS_UNAVAILABLE_REASON,
 )
 from apps.shared.services.egress_guard import (
     EgressGuardError,
@@ -37,6 +36,15 @@ class FileProcessor(BaseProcessor):
         file_path = source_config.get("file_path")
         if not file_path:
             raise FileNotFoundError("File path is missing")
+        strategy = source_config.get("strategy", "general")
+        if strategy == "llamaparse":
+            return ProcessingResult(
+                chunks=[],
+                metadata={
+                    "error": "External parser is unavailable.",
+                    "reason_code": RAW_PARSER_EGRESS_UNAVAILABLE_REASON,
+                },
+            )
 
         # [MODIFIED] S3/HTTP URL 처리
         is_remote_file = str(file_path).startswith("http") or str(file_path).startswith(
@@ -65,21 +73,6 @@ class FileProcessor(BaseProcessor):
                 )
 
             parse_kwargs = {}
-            strategy = source_config.get("strategy", "general")
-
-            if isinstance(parser, PdfParser) and strategy == "llamaparse":
-                parse_kwargs["strategy"] = "llamaparse"
-                try:
-                    parse_kwargs["api_key"] = self._get_llamaparse_key()
-                except LLMCredentialNotAvailableError:
-                    return ProcessingResult(
-                        chunks=[],
-                        metadata={"error": "Parser credential is unavailable."},
-                    )
-                # Preview 시에는 일부 페이지만 파싱하여 사용자 경험 개선
-                if "target_pages" in source_config:
-                    parse_kwargs["target_pages"] = source_config["target_pages"]
-
             try:
                 parsed_blocks = parser.parse(target_path, **parse_kwargs)
             except Exception as e:
@@ -198,11 +191,3 @@ class FileProcessor(BaseProcessor):
         elif ext in [".csv", ".xlsx", ".xls"]:
             return ExcelCsvParser()
         return None
-
-    def _get_llamaparse_key(self) -> str:
-        """권한이 검증된 LlamaParse credential의 secret만 resolver에서 받는다."""
-        return LLMService.resolve_llamaparse_api_key(
-            self.db,
-            user_id=self.user_id,
-            organization_id=self.organization_id,
-        )

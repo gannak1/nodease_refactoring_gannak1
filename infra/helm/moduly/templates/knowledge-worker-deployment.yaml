@@ -16,7 +16,11 @@ spec:
     metadata:
       labels:
         {{- include "moduly.componentSelectorLabels" (dict "component" "knowledge-worker" "context" .) | nindent 8 }}
+        {{- if .Values.egressProxy.enabled }}
+        nodease.io/egress-mode: proxy-v1
+        {{- end }}
       annotations:
+        nodease.io/egress-enforcement-phase: {{ .Values.egressProxy.networkPolicy.enforcementPhase | quote }}
         checksum/config: {{ toYaml .Values | sha256sum }}
         checksum/secret: {{ toYaml .Values.secrets | sha256sum }}
     spec:
@@ -92,6 +96,7 @@ spec:
         - --concurrency={{ .Values.knowledgeWorker.concurrency }}
         - --prefetch-multiplier=1
         env:
+        {{- include "moduly.outboundProxyEnv" (dict "context" . "port" .Values.egressProxy.service.httpsPort) | nindent 8 }}
         - name: CELERY_WORKER_ROLE
           value: knowledge
         - name: DB_HOST
@@ -166,21 +171,6 @@ spec:
             configMapKeyRef:
               name: {{ include "moduly.configMapName" . }}
               key: NODE_ENV
-        - name: HTTP_PROXY
-          valueFrom:
-            configMapKeyRef:
-              name: {{ include "moduly.configMapName" . }}
-              key: HTTP_PROXY
-        - name: HTTPS_PROXY
-          valueFrom:
-            configMapKeyRef:
-              name: {{ include "moduly.configMapName" . }}
-              key: HTTPS_PROXY
-        - name: NO_PROXY
-          valueFrom:
-            configMapKeyRef:
-              name: {{ include "moduly.configMapName" . }}
-              key: NO_PROXY
         {{- if .Values.secrets.masterKey }}
         - name: MASTER_KEY
           valueFrom:

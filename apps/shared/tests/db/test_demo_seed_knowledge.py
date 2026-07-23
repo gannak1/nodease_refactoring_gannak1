@@ -145,6 +145,36 @@ def write_minimal_demo_fixture(
             handle.write("\n")
 
 
+def test_demo_seed_embedding_uses_shared_guarded_openai_client(monkeypatch):
+    captured = {}
+
+    class FakeOpenAIClient:
+        def __init__(self, *, model_id, credentials):
+            captured["model_id"] = model_id
+            captured["credentials"] = credentials
+
+        def embed_batch_sync(self, texts):
+            captured.setdefault("batches", []).append(tuple(texts))
+            return [
+                [float(index)] * demo_seed.DEMO_EMBEDDING_DIMENSION
+                for index, _text in enumerate(texts)
+            ]
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-placeholder")
+    monkeypatch.setattr(demo_seed, "OpenAIClient", FakeOpenAIClient)
+
+    embeddings = demo_seed._embed_text_batches(["first", "", "third"])
+
+    assert captured["model_id"] == demo_seed.DEMO_EMBEDDING_MODEL
+    assert captured["credentials"]["baseUrl"] == demo_seed.DEMO_OPENAI_BASE_URL
+    assert captured["batches"] == [("first", " ", "third")]
+    assert len(embeddings) == 3
+    assert all(
+        len(embedding) == demo_seed.DEMO_EMBEDDING_DIMENSION
+        for embedding in embeddings
+    )
+
+
 def test_resolve_legal_pdf_picks_latest_effective_date(tmp_path, monkeypatch):
     old_pdf = tmp_path / "채용절차의 공정화에 관한 법률(법률)(제12326호)(20140121).pdf"
     latest_pdf = (

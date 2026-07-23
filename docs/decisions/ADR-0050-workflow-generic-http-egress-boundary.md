@@ -4,6 +4,7 @@ Status: Accepted
 
 Related ADRs: [ADR-0022](ADR-0022-hexagonal-module-boundary.md), [ADR-0035](ADR-0035-external-effect-idempotency-boundary.md), [ADR-0049](ADR-0049-connector-test-security-boundary.md)
 Deployment surface correction: active EKS manifest에 관한 Decision 12와 consequence는 [ADR-0068](ADR-0068-eks-support-surface-removal.md)가 대체한다. Worker egress 정책의 현재 배포 증거는 provider-neutral Helm이다.
+Outbound enforcement correction: Decision 12와 잔여 위험의 direct public 80/443 경계는 [ADR-0072](ADR-0072-outbound-proxy-only-network-enforcement.md)가 대체한다. Generic HTTP의 application port, public 80 호환성과 request/response 계약은 유지한다.
 
 
 ## 배경
@@ -25,7 +26,7 @@ Generic HTTP node는 사용자 설정 URL을 대상으로 Workflow Worker에서 
 9. Provider는 위 phase를 기존 external-effect 결과로 mapping한다. 정책 거부는 `invalid_prepared_request`, 전송 전 일시 연결 실패는 `connection_failed`, 전송 뒤 결과 상실은 `outcome_unknown`을 사용하며 신규 public error code를 추가하지 않는다.
 10. 정상 public 요청의 HTTPX V1 canonical request digest, JSON serialization, 3xx/4xx/5xx를 포함한 status-agnostic transport 성공과 `status`, `data`, `headers` output을 유지한다.
 11. 구현은 기존 wire semantics를 보존하기 위해 HTTPX 0.28과 httpcore 1.0의 custom network backend 조립을 사용한다. `httpx>=0.28.1,<0.29`, `httpcore>=1.0.9,<1.1`을 direct dependency로 고정하고 compatibility test로 내부 pool 조립 회귀를 탐지한다.
-12. Helm production 기본값과 활성 EKS manifest의 Workflow Worker에 egress `NetworkPolicy`를 적용한다. DNS, PostgreSQL 5432, Redis 6379, Sandbox 8194, public 80/443과 Mail 143/993만 필요한 범위로 허용하고 public CIDR에서 private·metadata·special-use network를 제외한다. 외부 dependency CIDR은 해당 service port에만 적용하며 public catch-all CIDR은 거부한다. 배포 cluster는 `NetworkPolicy`를 실제 집행하는 CNI를 사용해야 한다.
+12. Helm production의 후속 network enforcement는 ADR-0072이 소유한다. Workflow Worker는 DNS, configured PostgreSQL port, Redis 6379, Sandbox 8194와 internal Squid 3129만 직접 허용하고 public 80/143/443/993 direct route를 두지 않는다. Generic HTTP/HTTPS와 address-pinned IMAP tunnel은 source/listener ACL이 분리된 Squid를 통과한다. 외부 dependency CIDR은 해당 service port에만 적용하며 public catch-all CIDR은 거부한다. 배포 cluster는 `NetworkPolicy`를 실제 집행하는 CNI를 사용해야 한다.
 
 표준 Kubernetes `NetworkPolicy`는 FQDN이나 같은 Worker process 안의 승인 adapter와 우회 client를 구분하지 못한다. 또한 policy는 additive이고 node-local/`hostNetwork` 트래픽에는 CNI별 예외가 있을 수 있다. 따라서 이번 정책을 public 허용 port의 모든 direct dial을 proxy-only로 강제하는 것으로 표현하지 않는다. 완전한 proxy-only 경계는 전용 egress proxy 또는 FQDN-aware CNI와 admission control을 포함한 후속 아키텍처 결정으로 다룬다.
 
@@ -59,7 +60,7 @@ Generic HTTP node는 사용자 설정 URL을 대상으로 Workflow Worker에서 
 ## 잔여 위험과 후속 검토
 
 - Generic HTTP 외의 GitHub 및 다른 Workflow outbound adapter는 같은 application port로 아직 이관되지 않았다.
-- 표준 `NetworkPolicy`는 public 80/443·143/993의 우회 direct dial을 막지 못하며, 같은 pod를 선택하는 별도 allow-all egress policy가 있으면 제한이 합산되어 약화될 수 있다.
+- 표준 `NetworkPolicy`는 CNI 집행이 없거나 같은 pod를 선택하는 별도 allow-all egress policy가 있으면 제한이 합산되어 direct dial 차단이 약화될 수 있다. ADR-0072의 실제 CNI 음성 probe를 완료 조건으로 사용한다.
 - node-local resolver, node metadata proxy, `hostNetwork`와 CNI 구현별 정책 적용 차이는 cluster 배포 점검이 필요하다.
 - Generic HTTP의 raw response `data`/`headers` output allowlist와 trace redaction 확대는 별도 보안 결정이 필요하다.
 - private SaaS endpoint, 조직별 destination allowlist, private CA와 FQDN-aware policy는 이번 범위에서 지원하지 않는다.
