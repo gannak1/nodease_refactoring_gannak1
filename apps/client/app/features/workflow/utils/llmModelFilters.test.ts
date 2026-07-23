@@ -53,6 +53,14 @@ describe('isWorkflowChatModelOption', () => {
     expect(
       isWorkflowChatModelOption(
         model({
+          model_id_for_api_call: 'gpt-5.4-mini-2026-03-17',
+          name: 'gpt-5.4-mini-2026-03-17',
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isWorkflowChatModelOption(
+        model({
           model_id_for_api_call: 'gpt-5.2-pro-2025-12-11',
           name: 'gpt-5.2-pro-2025-12-11',
         }),

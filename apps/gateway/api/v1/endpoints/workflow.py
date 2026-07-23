@@ -77,6 +77,9 @@ from apps.shared.domain.workflow_graph import (
     WorkflowGraphValidationError,
     validate_workflow_graph,
 )
+from apps.shared.services.model_routing_global_profile_catalog import (
+    is_version_pinned_model_id,
+)
 from apps.shared.permissions import workflow_auth_state_allows
 from apps.workflow_engine.services.llm_service import (
     LLMService as WorkflowRuntimeLLMService,
@@ -730,7 +733,7 @@ def _cost_optimizer_available_model_candidates(
     fallback_models: list[Any] = []
     for model in LLMService.get_my_available_models(db, current_user.id):
         model_id = _cost_optimizer_model_id_from_option(model)
-        if not model_id:
+        if not model_id or is_version_pinned_model_id(model_id):
             continue
         if ModelRouter.is_workflow_chat_model(model):
             candidates_by_id[model_id] = ModelCandidate.from_model(model)

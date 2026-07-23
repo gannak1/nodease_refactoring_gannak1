@@ -15,7 +15,7 @@ def test_official_catalog_covers_all_workflow_chat_model_ids():
     expected_ids = set(WORKFLOW_CHAT_MODEL_ALIASES)
 
     assert set(OFFICIAL_PROVIDER_CATALOG) == expected_ids
-    assert len(OFFICIAL_PROVIDER_CATALOG) == 38
+    assert len(OFFICIAL_PROVIDER_CATALOG) == 35
 
 
 def test_supported_candidates_are_explicit_and_exclude_unprofiled_models():
@@ -136,8 +136,8 @@ def test_catalog_keeps_provider_cost_position_separate_from_capability():
     assert gemini_flash["capability_tier"] == "advanced"
     assert gemini_flash["cost_position"] == "balanced"
     assert gemini_flash["complexity_ceiling"] == "complex_professional"
-def test_dated_openai_model_is_kept_as_an_executable_routing_candidate():
+def test_dated_openai_model_is_excluded_from_routing_candidates():
     executable_id = "gpt-4.1-2025-04-14"
 
-    assert supported_model_routing_ids([executable_id]) == [executable_id]
+    assert supported_model_routing_ids([executable_id]) == []
     assert catalog_metadata_for_model_id(executable_id)["canonical_model_id"] == "gpt-4.1"

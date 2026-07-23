@@ -247,8 +247,8 @@ B 후보는 빈 설정에서 시작하지 않는다. 사용자가 A/B 비교를 
 
 모델 노출 정책은 다음을 따른다.
 
-- alias 계열 모델만 기본 노출한다.
-- 날짜 suffix가 붙은 버전 모델은 기본적으로 숨긴다.
+- alias 계열 모델만 노출하고 실행 후보로 사용한다.
+- 날짜 suffix가 붙은 고정 버전 모델은 가격·과거 이력 조회에는 남길 수 있지만, 새 LLM 노드 선택과 자동 모델 라우팅 후보에서는 제외한다.
 - embedding, image, audio, realtime, moderation, tts, whisper, transcribe, sora, search-only 계열은 일반 LLM 노드와 Cost Optimizer 후보에서 모두 숨긴다.
 - 최신 alias 모델은 provider와 무관하게 whitelist에 포함한다.
 - 가격 정보가 없는 모델은 선택 가능하더라도 결과 분석에서 비용 계산 불가 상태로 표시한다.

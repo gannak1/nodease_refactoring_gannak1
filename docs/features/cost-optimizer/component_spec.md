@@ -528,7 +528,7 @@ LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라
 - 모델 선택 컴포넌트: 기존 `ModelSelectDropdown` 계열을 우선 재사용한다.
 - 사용할 수 없는 credential/model은 목록에서 제외하는 것을 우선한다.
 - 일반 LLM 노드 상세 화면과 Cost Optimizer B 후보 화면은 같은 workflow LLM 모델 필터를 사용한다.
-- alias 계열 모델만 기본 노출하고 날짜 suffix 모델은 숨긴다.
+- alias 계열 모델만 노출하고 날짜 suffix 모델은 선택과 자동 라우팅 후보에서 제외한다.
 - embedding, image, audio, realtime, moderation, tts, whisper, transcribe, sora, search-only 계열은 숨긴다.
 - 목록에 보였더라도 compare API에서 최종 검증에 실패하면 실패 후보 또는 validation error로 표시한다.
 
