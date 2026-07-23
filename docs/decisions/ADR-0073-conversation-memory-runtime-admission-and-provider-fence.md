@@ -1,4 +1,4 @@
-# ADR-0071: Conversation Memory runtime admission과 provider 전송 fence
+# ADR-0073: Conversation Memory runtime admission과 provider 전송 fence
 
 Status: Accepted
 
@@ -75,4 +75,3 @@ Memory와 usage ledger의 두 `provider_started` marker가 서로 다른 replay 
 - 첫 slice 밖 graph를 묵시적으로 지원하지 않으므로 이후 topology/provenance 확장이
   기존 보안 경계를 약화하지 않는다.
 - Memory marker와 usage ledger가 충돌할 때 replay 권위는 usage ledger 하나로 수렴한다.
-
