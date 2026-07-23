@@ -420,6 +420,31 @@ class LLMNode(Node[LLMNodeData]):
     """
 
     node_type = "llmNode"
+    _AUTO_ROUTING_GPT5_MIN_OUTPUT_TOKENS = 1600
+
+    def _effective_provider_parameters(
+        self,
+        parameters: dict[str, Any],
+        *,
+        model_id: str,
+    ) -> dict[str, Any]:
+        """자동 라우팅이 GPT-5를 고르면 추론과 답변에 필요한 출력 예산을 확보한다."""
+
+        effective = dict(parameters)
+        normalized_model_id = str(model_id or "").strip().lower()
+        if normalized_model_id.startswith("models/"):
+            normalized_model_id = normalized_model_id.removeprefix("models/")
+        if not self.data.auto_model_routing or not normalized_model_id.startswith("gpt-5"):
+            return effective
+
+        configured_limit = effective.get("max_tokens")
+        try:
+            output_limit = int(configured_limit)
+        except (TypeError, ValueError):
+            output_limit = 0
+        if output_limit < self._AUTO_ROUTING_GPT5_MIN_OUTPUT_TOKENS:
+            effective["max_tokens"] = self._AUTO_ROUTING_GPT5_MIN_OUTPUT_TOKENS
+        return effective
 
     def bind_knowledge_runtime_candidate_resolver(
         self,
@@ -1611,7 +1636,10 @@ class LLMNode(Node[LLMNodeData]):
                         plan=provider_plan,
                         model_id=model_id,
                         messages=tuple(dict(message) for message in messages),
-                        parameters=dict(llm_params),
+                        parameters=self._effective_provider_parameters(
+                            llm_params,
+                            model_id=model_id,
+                        ),
                         shared_session=db_session,
                     )
                 )

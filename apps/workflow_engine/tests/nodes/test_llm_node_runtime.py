@@ -234,7 +234,7 @@ class StaticTextClient:
         }
 
 
-def test_auto_model_routing_preserves_configured_output_budget(monkeypatch):
+def test_auto_model_routing_raises_gpt5_output_budget_to_minimum(monkeypatch):
     client = StaticTextClient("자동 라우팅 응답")
     node = LLMNode(
         "llm-routing-budget",
@@ -253,6 +253,35 @@ def test_auto_model_routing_preserves_configured_output_budget(monkeypatch):
         "_resolve_model_routing_policy",
         lambda *_args, **_kwargs: (
             "gpt-5-mini",
+            "gpt-4.1",
+            {"enabled": True},
+        ),
+    )
+
+    node.execute({})
+
+    assert client.calls[0]["kwargs"]["max_tokens"] == 1600
+
+
+def test_auto_model_routing_keeps_non_gpt5_output_budget(monkeypatch):
+    client = StaticTextClient("자동 라우팅 응답")
+    node = LLMNode(
+        "llm-routing-budget-non-gpt5",
+        LLMNodeData(
+            title="자동 라우팅 출력 예산",
+            model_id="gpt-4.1-mini",
+            fallback_model_id="gpt-4.1",
+            auto_model_routing=True,
+            user_prompt="환불 정책을 설명해 주세요.",
+            parameters={"max_tokens": 900},
+        ),
+    )
+    node._client_override = client  # noqa: SLF001
+    monkeypatch.setattr(
+        node,
+        "_resolve_model_routing_policy",
+        lambda *_args, **_kwargs: (
+            "gpt-4.1-mini",
             "gpt-4.1",
             {"enabled": True},
         ),
