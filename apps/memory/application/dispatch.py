@@ -63,6 +63,24 @@ class RecoverExpiredTurnDispatchResult:
     next_attempt_at: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class AcknowledgeTurnDispatchCommand:
+    organization_id: uuid.UUID
+    dispatch_id: uuid.UUID
+    claim_generation: int
+    broker_message_id: str
+    workflow_admission_reference: str
+    now: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AcknowledgeTurnDispatchResult:
+    dispatch_id: uuid.UUID
+    status: DispatchStatus
+    claim_generation: int
+    replayed: bool
+
+
 class _TransactionalDispatchUseCase:
     def __init__(
         self,
@@ -157,6 +175,30 @@ class RecoverExpiredTurnDispatchUseCase(_TransactionalDispatchUseCase):
                 status=job.status,
                 claim_generation=job.claim_generation,
                 next_attempt_at=job.next_attempt_at,
+            )
+
+        return self._execute(operation)
+
+
+class AcknowledgeTurnDispatchUseCase(_TransactionalDispatchUseCase):
+    def execute(
+        self,
+        command: AcknowledgeTurnDispatchCommand,
+    ) -> AcknowledgeTurnDispatchResult:
+        def operation() -> AcknowledgeTurnDispatchResult:
+            job = self._lock(command.organization_id, command.dispatch_id)
+            replayed = job.acknowledge(
+                claim_generation=command.claim_generation,
+                broker_message_id=command.broker_message_id,
+                workflow_admission_reference=command.workflow_admission_reference,
+                now=command.now,
+            )
+            self.repository.save_dispatch_job(job)
+            return AcknowledgeTurnDispatchResult(
+                dispatch_id=job.id,
+                status=job.status,
+                claim_generation=job.claim_generation,
+                replayed=replayed,
             )
 
         return self._execute(operation)

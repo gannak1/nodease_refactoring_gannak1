@@ -19,6 +19,7 @@ from apps.memory.application.public_lifecycle import (
 )
 from apps.memory.domain.errors import (
     AccessGrantNotUsableError,
+    ActiveTurnConflictError,
     DuplicateRequestConflictError,
     MemoryAdapterUnavailableError,
     PublicConversationFeatureDisabledError,
@@ -141,6 +142,12 @@ def _map_public_error(error: Exception) -> HTTPException:
         return _safe_error(
             "memory.duplicate_request_conflict",
             "The Idempotency-Key was already used for a different request.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    if isinstance(error, ActiveTurnConflictError):
+        return _safe_error(
+            "memory.active_turn_conflict",
+            "A conversation turn is already in progress.",
             status_code=status.HTTP_409_CONFLICT,
         )
     if isinstance(error, StaleLifecycleRevisionError):

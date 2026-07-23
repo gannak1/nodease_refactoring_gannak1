@@ -49,6 +49,10 @@ from apps.memory.domain.public_access import (
     IdempotencyResultSnapshot,
     IdempotencyStatus,
 )
+from apps.shared.domain.conversation_memory_runtime import (
+    ConversationMemoryRuntimeContractError,
+    validate_conversation_memory_runtime,
+)
 from apps.shared.db.models.app import App
 from apps.shared.db.models.conversation_memory import (
     ConversationAccessGrantRecord,
@@ -155,6 +159,12 @@ class SqlAlchemyConversationMemoryRepository:
 
         return self._resolve_public_deployment(url_slug, lock_app=False)
 
+    def current_time(self) -> datetime:
+        return _execute(
+            self._session,
+            select(func.clock_timestamp()),
+        ).scalar_one()
+
     def lock_public_deployment(
         self,
         url_slug: str,
@@ -227,6 +237,19 @@ class SqlAlchemyConversationMemoryRepository:
         )
         if mapping_version is None or memory_policy_version is None:
             return None
+        runtime_contract = None
+        try:
+            runtime_contract = validate_conversation_memory_runtime(
+                deployment.graph_snapshot,
+                config,
+            )
+        except ConversationMemoryRuntimeContractError:
+            # Lifecycle remains available while activation readiness stays
+            # fail-closed.  The run use case requires this safe projection.
+            runtime_contract = None
+        if runtime_contract is not None:
+            mapping_version = runtime_contract.mapping_version
+            memory_policy_version = runtime_contract.memory_policy_version
         return PublicDeploymentBinding(
             organization_id=workflow.organization_id,
             app_id=app.id,
@@ -237,6 +260,30 @@ class SqlAlchemyConversationMemoryRepository:
             memory_policy_version=memory_policy_version,
             memory_contract_version="conversation-memory-v1",
             storage_generation=1,
+            runtime_contract_ready=runtime_contract is not None,
+            runtime_start_node_id=(
+                runtime_contract.start_node_id if runtime_contract else None
+            ),
+            runtime_input_variable=(
+                runtime_contract.input_variable if runtime_contract else None
+            ),
+            runtime_llm_node_id=(
+                runtime_contract.llm_node_id if runtime_contract else None
+            ),
+            runtime_answer_node_id=(
+                runtime_contract.answer_node_id if runtime_contract else None
+            ),
+            runtime_output_variable=(
+                runtime_contract.output_variable if runtime_contract else None
+            ),
+            runtime_max_turns=(
+                runtime_contract.memory.max_turns if runtime_contract else None
+            ),
+            runtime_max_context_tokens=(
+                runtime_contract.memory.max_context_tokens
+                if runtime_contract
+                else None
+            ),
         )
 
     def reserve_idempotency(
@@ -944,6 +991,8 @@ def _turn_record(turn: ConversationTurn) -> ConversationTurnRecord:
         started_lifecycle_revision=turn.started_lifecycle_revision,
         request_idempotency_hash=turn.request_identity.idempotency_key_hash,
         request_fingerprint=turn.request_identity.request_fingerprint,
+        request_fingerprint_key_version=turn.request_fingerprint_key_version,
+        access_grant_id=turn.access_grant_id,
         status=turn.status.value,
         user_entry_id=turn.user_entry_id,
         assistant_entry_id=turn.assistant_entry_id,
@@ -981,6 +1030,8 @@ def _turn_domain(record: ConversationTurnRecord) -> ConversationTurn:
         updated_at=record.updated_at,
         started_at=record.started_at,
         completed_at=record.completed_at,
+        access_grant_id=record.access_grant_id,
+        request_fingerprint_key_version=record.request_fingerprint_key_version,
     )
 
 

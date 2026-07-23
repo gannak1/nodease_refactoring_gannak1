@@ -64,6 +64,14 @@ class PublicDeploymentBinding:
     memory_policy_version: str
     memory_contract_version: str
     storage_generation: int
+    runtime_contract_ready: bool = False
+    runtime_start_node_id: str | None = None
+    runtime_input_variable: str | None = None
+    runtime_llm_node_id: str | None = None
+    runtime_answer_node_id: str | None = None
+    runtime_output_variable: str | None = None
+    runtime_max_turns: int | None = None
+    runtime_max_context_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

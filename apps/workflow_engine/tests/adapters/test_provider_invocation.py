@@ -119,6 +119,31 @@ def test_json_schema_revalidation_failure_prevents_provider_io() -> None:
     assert client.calls == []
 
 
+def test_explicit_final_request_revalidation_occurs_before_provider_io() -> None:
+    client = _Client()
+    calls = []
+
+    def revalidate(*, messages, parameters):
+        calls.append((messages, parameters))
+        return None
+
+    lease = ProviderClientInvocationLease(
+        client=client,
+        messages=({"role": "user", "content": "synthetic"},),
+        parameters={"max_tokens": 5},
+        attribution=None,
+        request_revalidator=revalidate,
+    )
+
+    assert lease.finalize_request() is None
+    lease.invoke()
+
+    assert len(calls) == 1
+    assert len(client.calls) == 1
+    with pytest.raises(ProviderExecutionConfigurationError):
+        lease.finalize_request()
+
+
 def test_invocation_lease_translates_outcome_unknown_to_application_error():
     lease = ProviderClientInvocationLease(
         client=_OutcomeUnknownClient(),

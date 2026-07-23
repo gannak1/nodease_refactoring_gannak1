@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -19,7 +20,8 @@ from apps.memory.application.public_lifecycle import (
     PublicConversationResult,
     PublicTranscriptResult,
 )
-from apps.memory.domain.conversation import SessionLifecycle
+from apps.memory.application.public_runtime import StartPublicConversationTurnResult
+from apps.memory.domain.conversation import SessionLifecycle, TurnStatus
 
 
 def _key() -> str:
@@ -295,7 +297,25 @@ def test_non_conversation_authorization_uses_typed_resource_hidden_contract(
     assert application.close.commands == []
 
 
-def test_legacy_public_run_rejects_target_conversation_envelope_before_runtime():
+class _StartPublicTurn:
+    def __init__(self) -> None:
+        self.commands = []
+
+    def execute(self, command):
+        self.commands.append(command)
+        return StartPublicConversationTurnResult(
+            turn_id=uuid.uuid4(),
+            dispatch_id=uuid.uuid4(),
+            turn_sequence=2,
+            turn_version=1,
+            lifecycle_revision=3,
+            turn_state=TurnStatus.PENDING_DISPATCH,
+            replayed=False,
+        )
+
+
+def test_public_run_accepts_the_versioned_conversation_envelope(monkeypatch):
+    start_turn = _StartPublicTurn()
     app = FastAPI()
     app.include_router(run.router, prefix="/api/v1")
     app.add_middleware(
@@ -307,17 +327,58 @@ def test_legacy_public_run_rejects_target_conversation_envelope_before_runtime()
     )
     app.add_middleware(PublicConversationCorsBoundaryMiddleware)
     app.dependency_overrides[get_db] = lambda: object()
+    monkeypatch.setattr(
+        run,
+        "build_public_conversation_runtime_application",
+        lambda _db: SimpleNamespace(start_turn=start_turn),
+    )
+    monkeypatch.setattr(run, "_network_address", lambda _request: "198.51.100.0/24")
 
     response = TestClient(app).post(
         "/api/v1/run-public/public-chatbot",
-        json={"conversation": {}},
-        headers={"Origin": "https://parent.example"},
+        json={
+            "inputs": {"question": "Where is the handbook?"},
+            "conversation": {"expected_lifecycle_revision": 3},
+        },
+        headers={
+            "Authorization": f"Conversation cag_v1_{secrets.token_urlsafe(32)}",
+            "Idempotency-Key": _key(),
+            "Origin": "https://parent.example",
+        },
     )
 
-    assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "memory.feature_unavailable"
+    assert response.status_code == 202
+    assert response.json()["status"] == "accepted"
+    assert response.json()["conversation"]["turn_state"] == "pending_dispatch"
+    assert response.json()["conversation"]["turn_sequence"] == 2
+    assert response.headers["etag"] == '"lifecycle-revision-3"'
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["referrer-policy"] == "no-referrer"
     assert "access-control-allow-origin" not in response.headers
     assert "access-control-allow-credentials" not in response.headers
     assert "origin" not in response.headers.get("vary", "").lower()
+    command = start_turn.commands[0]
+    assert command.inputs == {"question": "Where is the handbook?"}
+    assert command.expected_lifecycle_revision == 3
+
+
+def test_public_run_rejects_an_incomplete_conversation_envelope(monkeypatch):
+    start_turn = _StartPublicTurn()
+    app = FastAPI()
+    app.include_router(run.router, prefix="/api/v1")
+    app.add_middleware(PublicConversationCorsBoundaryMiddleware)
+    app.dependency_overrides[get_db] = lambda: object()
+    monkeypatch.setattr(
+        run,
+        "build_public_conversation_runtime_application",
+        lambda _db: SimpleNamespace(start_turn=start_turn),
+    )
+
+    response = TestClient(app).post(
+        "/api/v1/run-public/public-chatbot",
+        json={"inputs": {"question": "hello"}, "conversation": {}},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "memory.input_mapping_invalid"
+    assert start_turn.commands == []

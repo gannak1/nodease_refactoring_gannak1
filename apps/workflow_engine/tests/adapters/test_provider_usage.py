@@ -165,6 +165,24 @@ def test_capability_usage_uses_admission_pricing_snapshot(monkeypatch):
     assert session.closes == 1
 
 
+def test_durable_usage_attempt_exposes_only_safe_operation_reference():
+    service = _LedgerService()
+    attribution = _capability_attribution(
+        organization_id=uuid.uuid4(),
+        model_db_id=uuid.uuid4(),
+        credential_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+    )
+    recorder = PostgresProviderUsageRecorder(
+        session_factory=_Session,
+        ledger_service=service,
+    )
+
+    attempt = recorder.begin(_intent_for(attribution))
+
+    assert uuid.UUID(attempt.operation_reference) == service.operation.id
+
+
 def test_legacy_usage_recorder_preserves_catalog_fallback(monkeypatch):
     session = _Session()
     captured: dict = {}

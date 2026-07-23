@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from apps.memory.application.dispatch import (
+    AcknowledgeTurnDispatchCommand,
+    AcknowledgeTurnDispatchUseCase,
     ClaimTurnDispatchCommand,
     ClaimTurnDispatchUseCase,
     MarkTurnDispatchPublishedCommand,
@@ -172,3 +174,59 @@ def test_expired_claim_recovery_is_a_transactional_application_command():
     assert result.status.value == "reconcile_required"
     assert result.next_attempt_at == retry_at
     assert repository.save_count == 2
+
+
+def test_worker_ack_can_win_the_publish_confirmation_race_idempotently():
+    job = _job()
+    repository = _Repository(job)
+    uow = _UnitOfWork(repository)
+    ClaimTurnDispatchUseCase(repository=repository, uow=uow).execute(
+        ClaimTurnDispatchCommand(
+            organization_id=job.organization_id,
+            dispatch_id=job.id,
+            owner="dispatcher-a",
+            deadline=_now() + timedelta(seconds=30),
+            now=_now(),
+        )
+    )
+
+    first = AcknowledgeTurnDispatchUseCase(repository=repository, uow=uow).execute(
+        AcknowledgeTurnDispatchCommand(
+            organization_id=job.organization_id,
+            dispatch_id=job.id,
+            claim_generation=1,
+            broker_message_id="message-1",
+            workflow_admission_reference="admission-1",
+            now=_now() + timedelta(seconds=1),
+        )
+    )
+    replay = AcknowledgeTurnDispatchUseCase(repository=repository, uow=uow).execute(
+        AcknowledgeTurnDispatchCommand(
+            organization_id=job.organization_id,
+            dispatch_id=job.id,
+            claim_generation=1,
+            broker_message_id="message-1",
+            workflow_admission_reference="admission-1",
+            now=_now() + timedelta(seconds=2),
+        )
+    )
+
+    assert first.replayed is False
+    assert replay.replayed is True
+    assert repository.job.status.value == "acknowledged"
+    assert repository.job.workflow_admission_reference == "admission-1"
+
+    published = MarkTurnDispatchPublishedUseCase(
+        repository=repository,
+        uow=uow,
+    ).execute(
+        MarkTurnDispatchPublishedCommand(
+            organization_id=job.organization_id,
+            dispatch_id=job.id,
+            owner="dispatcher-a",
+            claim_generation=1,
+            broker_message_id="message-1",
+            now=_now() + timedelta(seconds=3),
+        )
+    )
+    assert published.status.value == "acknowledged"

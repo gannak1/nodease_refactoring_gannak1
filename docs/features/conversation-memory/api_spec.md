@@ -359,6 +359,8 @@ Workflow `AdmitExecution(dispatch_id)`은 별도 Workflow application contract�
 
 `BuildMemoryContext`는 summary가 필요하면 provider/usage/projection side effect가 있으므로 순수 query로 간주하지 않는다. Raw context는 이 응답에 포함하지 않는다.
 
+초기 window 구현에서 Build는 raw를 읽지 않고 현재 Turn 이전 completed user/assistant pair를 최신순 최대 `maxTurns`개 reference snapshot으로 고정한다. Claim은 최신 pair부터 연속해서 재검증하고 missing/ineligible pair 또는 실제 history block 직렬화가 token budget을 넘는 pair에서 중단하며 snapshot 밖이나 barrier 뒤의 오래된 pair로 보충하지 않는다. 선택한 pair는 시간순으로 반환한다. Candidate가 0개인 경우에만 `complete` + empty dependency envelope을 허용하며, candidate/provenance/tokenizer 상태가 unknown이면 empty로 완화하지 않는다.
+
 ### ClaimMemoryContextLease
 
 Main provider adapter가 provider 호출 직전에 사용하는 internal contract다.
@@ -386,7 +388,7 @@ LLM Credentials domain의 authoritative internal port를 호출해 opaque capabi
 
 ### MarkMemoryContextProviderStarted
 
-Provider adapter는 outbound call 직전에 provider attempt ID와 expected attempt version을 전달해 `provider_started`를 durable하게 기록한다. Marker commit이 실패하면 provider를 호출하지 않는다. Claim 후 이 marker 전 crash만 claim expiry 뒤 새 lease/attempt로 재승인할 수 있다.
+Provider adapter는 outbound call 직전에 provider attempt ID와 expected attempt version을 전달해 Memory context-attempt marker를 durable하게 기록한다. 이 marker는 context lease lifecycle만 보호하며 전송 권위는 ADR-0069 usage ledger가 가진다. 순서는 context claim/full-request 검증, usage intent, final binding 재검증, Memory marker, usage `provider_started`, provider I/O다. Memory marker commit 또는 usage start commit이 실패하면 provider를 호출하지 않는다. Memory marker만 commit되고 usage가 exact intent인 경우 current owner의 same-attempt continuation만 허용한다. Usage가 started/outcome-unknown/terminal이면 어떤 retry도 전송 권한을 복원하지 않는다.
 
 ### RecordMemoryContextProviderOutcome
 

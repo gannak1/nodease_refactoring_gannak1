@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from apps.memory.application.lifecycle import (
+    CheckpointAssistantResultCommand,
+    CheckpointAssistantResultUseCase,
     CloseSessionCommand,
     CloseSessionUseCase,
     CompleteTurnCommand,
@@ -233,6 +235,8 @@ def _start_command(session: ConversationSession) -> StartTurnCommand:
         minimum_worker_capability="memory-runtime-v1",
         max_dispatch_attempts=5,
         now=_now(),
+        access_grant_id=uuid.uuid4(),
+        request_fingerprint_key_version="admission-v1",
     )
 
 
@@ -249,6 +253,11 @@ def test_create_and_start_turn_commit_session_turn_entry_and_dispatch_together()
     assert result.dispatch_id == command.dispatch_id
     assert repo.sessions[session.id].active_turn_id == command.turn_id
     assert repo.turns[command.turn_id].user_entry_id == command.user_entry_id
+    assert repo.turns[command.turn_id].access_grant_id == command.access_grant_id
+    assert (
+        repo.turns[command.turn_id].request_fingerprint_key_version
+        == "admission-v1"
+    )
     assert repo.entries[command.user_entry_id].lifecycle.value == "provisional"
     assert repo.dispatch_jobs[command.dispatch_id].turn_id == command.turn_id
     assert uow.commit_count == 2
@@ -361,6 +370,119 @@ def test_complete_turn_atomically_approves_user_and_assistant_entries():
     assert repo.entries[start.user_entry_id].lifecycle.value == "approved"
     assert repo.entries[assistant_entry_id].lifecycle.value == "approved"
     assert repo.turns[turn.id].assistant_entry_id == assistant_entry_id
+
+
+def test_checkpoint_then_complete_promotes_same_assistant_entry_without_reexecution():
+    repo = _Repository()
+    uow = _UnitOfWork(repo)
+    session = _create_session(repo, uow)
+    start = _start_command(session)
+    StartTurnUseCase(repository=repo, uow=uow).execute(start)
+    turn = repo.turns[start.turn_id]
+    execution_id = uuid.uuid4()
+    attempt_id = uuid.uuid4()
+    turn.mark_queued(expected_version=1, now=_now())
+    turn.mark_running(
+        expected_version=2,
+        execution_id=execution_id,
+        attempt_id=attempt_id,
+        now=_now(),
+    )
+    assistant_entry_id = uuid.uuid4()
+    assistant_content = _protected(b"assistant")
+    checkpoint = CheckpointAssistantResultCommand(
+        organization_id=session.organization_id,
+        session_id=session.id,
+        turn_id=turn.id,
+        expected_lifecycle_revision=1,
+        expected_turn_version=3,
+        execution_id=execution_id,
+        attempt_id=attempt_id,
+        assistant_entry_id=assistant_entry_id,
+        assistant_content=assistant_content,
+        now=_now(),
+    )
+    checkpoint_use_case = CheckpointAssistantResultUseCase(
+        repository=repo,
+        uow=uow,
+    )
+
+    first = checkpoint_use_case.execute(checkpoint)
+    replay = checkpoint_use_case.execute(checkpoint)
+    result = CompleteTurnUseCase(repository=repo, uow=uow).execute(
+        CompleteTurnCommand(
+            organization_id=session.organization_id,
+            session_id=session.id,
+            turn_id=turn.id,
+            expected_lifecycle_revision=1,
+            expected_turn_version=3,
+            outcome="completed",
+            assistant_entry_id=assistant_entry_id,
+            assistant_content=assistant_content,
+            safe_failure_reason=None,
+            now=_now(),
+        )
+    )
+
+    assert first.replayed is False
+    assert replay.replayed is True
+    assert replay.content_digest == first.content_digest
+    assert result.content_revision == 1
+    assert len(repo.entries) == 2
+    assert repo.entries[assistant_entry_id].lifecycle.value == "approved"
+
+
+def test_failed_completion_rejects_existing_assistant_checkpoint_atomically():
+    repo = _Repository()
+    uow = _UnitOfWork(repo)
+    session = _create_session(repo, uow)
+    start = _start_command(session)
+    StartTurnUseCase(repository=repo, uow=uow).execute(start)
+    turn = repo.turns[start.turn_id]
+    execution_id = uuid.uuid4()
+    attempt_id = uuid.uuid4()
+    turn.mark_queued(expected_version=1, now=_now())
+    turn.mark_running(
+        expected_version=2,
+        execution_id=execution_id,
+        attempt_id=attempt_id,
+        now=_now(),
+    )
+    assistant_entry_id = uuid.uuid4()
+    assistant_content = _protected(b"assistant")
+    CheckpointAssistantResultUseCase(repository=repo, uow=uow).execute(
+        CheckpointAssistantResultCommand(
+            organization_id=session.organization_id,
+            session_id=session.id,
+            turn_id=turn.id,
+            expected_lifecycle_revision=1,
+            expected_turn_version=3,
+            execution_id=execution_id,
+            attempt_id=attempt_id,
+            assistant_entry_id=assistant_entry_id,
+            assistant_content=assistant_content,
+            now=_now(),
+        )
+    )
+
+    CompleteTurnUseCase(repository=repo, uow=uow).execute(
+        CompleteTurnCommand(
+            organization_id=session.organization_id,
+            session_id=session.id,
+            turn_id=turn.id,
+            expected_lifecycle_revision=1,
+            expected_turn_version=3,
+            outcome="failed",
+            assistant_entry_id=assistant_entry_id,
+            assistant_content=assistant_content,
+            safe_failure_reason="memory.provider_outcome_unknown",
+            now=_now(),
+        )
+    )
+
+    assert repo.entries[start.user_entry_id].lifecycle.value == "rejected"
+    assert repo.entries[assistant_entry_id].lifecycle.value == "rejected"
+    assert repo.sessions[session.id].active_turn_id is None
 
 
 def test_complete_turn_replays_same_terminal_result_and_rejects_identity_conflict():

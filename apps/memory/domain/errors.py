@@ -62,6 +62,14 @@ class EntryNotFoundError(MemoryDomainError):
     code = "memory.entry_not_found"
 
 
+class MemoryContextConflictError(MemoryDomainError):
+    code = "memory.context_conflict"
+
+
+class MemoryContextUnavailableError(MemoryDomainError):
+    code = "memory.context_unavailable"
+
+
 class AccessGrantNotUsableError(MemoryDomainError):
     """A public grant must be rendered as a resource-hidden failure."""
 

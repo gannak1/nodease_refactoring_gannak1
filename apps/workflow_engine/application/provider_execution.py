@@ -218,6 +218,29 @@ class ProviderExecutionRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderExecutionPreparationRequest:
+    """Prepare a capability before Memory materializes provider-visible text."""
+
+    plan: ProviderExecutionPlan
+    model_id: str
+    shared_session: Any | None = field(default=None, repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderExecutionPreparation:
+    capability_id: uuid.UUID
+    capability_revision: int
+    provider_attempt_id: uuid.UUID
+    expires_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.capability_revision < 1:
+            raise ValueError("provider capability revision must be positive")
+        if self.expires_at.tzinfo is None or self.expires_at.utcoffset() is None:
+            raise ValueError("provider capability expiry must be timezone-aware")
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderExecutionPricingSnapshot:
     """Immutable non-secret rates approved by capability admission."""
 
@@ -365,6 +388,8 @@ class ProviderInvocationLease(Protocol):
         schema: Mapping[str, Any],
     ) -> bool: ...
 
+    def finalize_request(self) -> ProviderExecutionAttribution | None: ...
+
     def invoke(self) -> Mapping[str, Any]: ...
 
 
@@ -373,6 +398,11 @@ class ProviderExecutionRuntime(Protocol):
         self,
         request: ProviderExecutionPreflight,
     ) -> ProviderExecutionPlan: ...
+
+    def prepare(
+        self,
+        request: ProviderExecutionPreparationRequest,
+    ) -> ProviderExecutionPreparation: ...
 
     def resolve(
         self,
@@ -390,6 +420,8 @@ __all__ = [
     "ProviderExecutionIdentityContext",
     "ProviderExecutionPlan",
     "ProviderExecutionPreflight",
+    "ProviderExecutionPreparation",
+    "ProviderExecutionPreparationRequest",
     "ProviderExecutionPricingSnapshot",
     "ProviderExecutionPrincipal",
     "ProviderExecutionPrincipalKind",

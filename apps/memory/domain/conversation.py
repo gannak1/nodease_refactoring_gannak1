@@ -274,6 +274,15 @@ class ConversationSession:
         if content_changed:
             self.content_revision += 1
 
+    def require_active(
+        self,
+        *,
+        expected_lifecycle_revision: int,
+        now: datetime,
+    ) -> None:
+        self._require_revision(expected_lifecycle_revision)
+        self._require_active(now=now)
+
     def close(
         self,
         *,
@@ -350,6 +359,8 @@ class ConversationTurn:
     updated_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+    access_grant_id: uuid.UUID | None = None
+    request_fingerprint_key_version: str | None = None
 
     @classmethod
     def start(
@@ -363,12 +374,19 @@ class ConversationTurn:
         request_identity: RequestIdentity,
         user_entry_id: uuid.UUID,
         dispatch_id: uuid.UUID,
+        access_grant_id: uuid.UUID | None = None,
+        request_fingerprint_key_version: str | None = None,
         now: datetime,
     ) -> "ConversationTurn":
         if sequence < 1:
             raise ValueError("sequence must be positive")
         if started_lifecycle_revision < 1:
             raise ValueError("started_lifecycle_revision must be positive")
+        if request_fingerprint_key_version is not None:
+            _require_safe_version(
+                request_fingerprint_key_version,
+                "request_fingerprint_key_version",
+            )
         return cls(
             id=turn_id,
             organization_id=organization_id,
@@ -388,6 +406,8 @@ class ConversationTurn:
             updated_at=now,
             started_at=None,
             completed_at=None,
+            access_grant_id=access_grant_id,
+            request_fingerprint_key_version=request_fingerprint_key_version,
         )
 
     @property
@@ -587,6 +607,39 @@ class ConversationMemoryEntry:
             updated_at=now,
         )
 
+    @classmethod
+    def provisional_assistant(
+        cls,
+        *,
+        entry_id: uuid.UUID,
+        organization_id: uuid.UUID,
+        session_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        sequence: int,
+        channel: str,
+        content: ProtectedEntryContent,
+        idempotency_key_hash: str,
+        now: datetime,
+    ) -> "ConversationMemoryEntry":
+        _require_channel(channel)
+        _require_sha256(idempotency_key_hash, "idempotency_key_hash")
+        return cls(
+            id=entry_id,
+            organization_id=organization_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            sequence=sequence,
+            entry_type=EntryType.ASSISTANT_TURN,
+            lifecycle=EntryLifecycle.PROVISIONAL,
+            channel=channel,
+            producer_node_id=None,
+            content=content,
+            content_revision=None,
+            idempotency_key_hash=idempotency_key_hash,
+            created_at=now,
+            updated_at=now,
+        )
+
     def approve(self, *, content_revision: int, now: datetime) -> None:
         if self.lifecycle is not EntryLifecycle.PROVISIONAL:
             raise InvalidTurnTransitionError()
@@ -733,6 +786,12 @@ class MemoryTurnDispatchJob:
         broker_message_id: str,
         now: datetime,
     ) -> None:
+        if (
+            self.status is DispatchStatus.ACKNOWLEDGED
+            and self.claim_generation == claim_generation
+            and self.broker_message_id == broker_message_id
+        ):
+            return
         self._require_claim(owner=owner, claim_generation=claim_generation)
         if not broker_message_id or len(broker_message_id) > 255:
             raise ValueError("broker_message_id is invalid")
@@ -743,6 +802,49 @@ class MemoryTurnDispatchJob:
         self.next_attempt_at = None
         self.published_at = now
         self.updated_at = now
+
+    def acknowledge(
+        self,
+        *,
+        claim_generation: int,
+        broker_message_id: str,
+        workflow_admission_reference: str,
+        now: datetime,
+    ) -> bool:
+        if (
+            not broker_message_id
+            or len(broker_message_id) > 255
+            or not workflow_admission_reference
+            or len(workflow_admission_reference) > 128
+        ):
+            raise ValueError("dispatch acknowledgement reference is invalid")
+        if self.status is DispatchStatus.ACKNOWLEDGED:
+            if (
+                self.claim_generation == claim_generation
+                and self.broker_message_id == broker_message_id
+                and self.workflow_admission_reference
+                == workflow_admission_reference
+            ):
+                return True
+            raise DispatchStateConflictError()
+        if (
+            self.status not in {DispatchStatus.CLAIMED, DispatchStatus.PUBLISHED}
+            or self.claim_generation != claim_generation
+            or (
+                self.broker_message_id is not None
+                and self.broker_message_id != broker_message_id
+            )
+        ):
+            raise DispatchStateConflictError()
+        self.status = DispatchStatus.ACKNOWLEDGED
+        self.broker_message_id = broker_message_id
+        self.workflow_admission_reference = workflow_admission_reference
+        self.claim_owner = None
+        self.claim_deadline_at = None
+        self.next_attempt_at = None
+        self.acknowledged_at = now
+        self.updated_at = now
+        return False
 
     def _require_claim(self, *, owner: str, claim_generation: int) -> None:
         if (

@@ -14,12 +14,18 @@ from apps.memory.application.public_lifecycle import (
     IssuedSecret,
     SecretCiphertext,
 )
+from apps.memory.domain.conversation import (
+    MAX_MEMORY_CONTENT_BYTES,
+    ProtectedContent,
+)
 
 
 _TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43,128}$")
 _VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _DEFAULT_VERIFIER_KEY_VERSION = "memory-public-hmac-v1"
 _DEFAULT_REPLAY_KEY_VERSION = "memory-public-replay-v1"
+_DEFAULT_CONTENT_KEY_VERSION = "memory-content-v1"
+_CONTENT_FORMAT_VERSION = "memory-content-fernet-v1"
 _MAX_KEYRING_SIZE = 2
 
 
@@ -258,6 +264,247 @@ class FernetSecretReplayCipher:
         return tuple(self._key_materials.values())
 
 
+class FernetMemoryContentCipher:
+    """Encrypt bounded Memory projections with versioned keys and keyed digests."""
+
+    def __init__(
+        self,
+        fernet_key: bytes | Mapping[str, bytes],
+        *,
+        digest_hmac_key: bytes,
+        key_version: str = _DEFAULT_CONTENT_KEY_VERSION,
+        primary_key_version: str | None = None,
+    ) -> None:
+        primary = primary_key_version or key_version
+        if isinstance(fernet_key, Mapping):
+            raw_keyring = _validated_fernet_keyring(fernet_key, primary)
+        else:
+            raw_keyring = _validated_fernet_keyring(
+                {key_version: fernet_key},
+                key_version,
+            )
+        if not isinstance(digest_hmac_key, bytes) or len(digest_hmac_key) < 32:
+            raise ValueError("memory content digest HMAC key is invalid")
+        _require_distinct_keyring_materials(
+            (*raw_keyring.values(), digest_hmac_key),
+            "memory content",
+        )
+        self._key_materials = raw_keyring
+        self._fernets = OrderedDict(
+            (version, Fernet(value)) for version, value in raw_keyring.items()
+        )
+        self._key_version = next(iter(self._fernets))
+        self._digest_hmac_key = digest_hmac_key
+
+    @classmethod
+    def from_environment(
+        cls,
+        environ: Mapping[str, str],
+    ) -> "FernetMemoryContentCipher":
+        raw_keyring = environ.get("MEMORY_CONTENT_ENCRYPTION_KEYS", "").strip()
+        primary = environ.get(
+            "MEMORY_CONTENT_ENCRYPTION_PRIMARY_VERSION",
+            "",
+        ).strip()
+        raw_digest_key = environ.get("MEMORY_CONTENT_DIGEST_HMAC_KEY", "")
+        if not raw_keyring or not primary or not raw_digest_key:
+            raise RuntimeError("memory content protection keys are required")
+        try:
+            decoded = json.loads(raw_keyring)
+            if not isinstance(decoded, dict):
+                raise ValueError
+            keyring = {
+                version: value.encode("ascii")
+                for version, value in decoded.items()
+                if isinstance(version, str) and isinstance(value, str)
+            }
+            if len(keyring) != len(decoded):
+                raise ValueError
+            return cls(
+                keyring,
+                primary_key_version=primary,
+                digest_hmac_key=raw_digest_key.encode("utf-8"),
+            )
+        except (
+            json.JSONDecodeError,
+            UnicodeEncodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise RuntimeError("invalid memory content protection keyring") from exc
+
+    def protect(self, value: str, *, associated_data: str) -> ProtectedContent:
+        if not isinstance(value, str) or not isinstance(associated_data, str):
+            raise ValueError("memory content is invalid")
+        raw = value.encode("utf-8")
+        if (
+            not 1 <= len(raw) <= MAX_MEMORY_CONTENT_BYTES
+            or not 1 <= len(associated_data.encode("utf-8")) <= 512
+        ):
+            raise ValueError("memory content is invalid")
+        aad_digest = hashlib.sha256(associated_data.encode("utf-8")).hexdigest()
+        content_digest = self._digest(associated_data=associated_data, raw=raw)
+        payload = json.dumps(
+            {
+                "aad": aad_digest,
+                "digest": content_digest,
+                "value": value,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return ProtectedContent(
+            ciphertext=self._fernets[self._key_version].encrypt(payload),
+            key_version=self._key_version,
+            format_version=_CONTENT_FORMAT_VERSION,
+            content_digest=content_digest,
+            plaintext_byte_length=len(raw),
+        )
+
+    def reveal(
+        self,
+        protected: ProtectedContent,
+        *,
+        associated_data: str,
+    ) -> str | None:
+        if (
+            protected.format_version != _CONTENT_FORMAT_VERSION
+            or not isinstance(associated_data, str)
+            or len(associated_data.encode("utf-8")) > 512
+        ):
+            return None
+        fernet = self._fernets.get(protected.key_version)
+        if fernet is None:
+            return None
+        try:
+            payload = json.loads(fernet.decrypt(protected.ciphertext).decode("utf-8"))
+        except (InvalidToken, UnicodeDecodeError, json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        value = payload.get("value")
+        if not isinstance(value, str):
+            return None
+        raw = value.encode("utf-8")
+        expected_aad = hashlib.sha256(associated_data.encode("utf-8")).hexdigest()
+        expected_digest = self._digest(associated_data=associated_data, raw=raw)
+        stored_aad = payload.get("aad")
+        stored_digest = payload.get("digest")
+        if (
+            not isinstance(stored_aad, str)
+            or not isinstance(stored_digest, str)
+            or not hmac.compare_digest(stored_aad, expected_aad)
+            or not hmac.compare_digest(stored_digest, expected_digest)
+            or not hmac.compare_digest(protected.content_digest, expected_digest)
+            or protected.plaintext_byte_length != len(raw)
+            or not 1 <= len(raw) <= MAX_MEMORY_CONTENT_BYTES
+        ):
+            return None
+        return value
+
+    def configuration_key_materials(self) -> tuple[bytes, ...]:
+        return (*self._key_materials.values(), self._digest_hmac_key)
+
+    def _digest(self, *, associated_data: str, raw: bytes) -> str:
+        payload = (
+            b"memory-content-digest-v1\x00"
+            + associated_data.encode("utf-8")
+            + b"\x00"
+            + raw
+        )
+        return hmac.new(self._digest_hmac_key, payload, hashlib.sha256).hexdigest()
+
+
+class HmacMemoryRuntimeFingerprinter:
+    """Domain-separated request identity; raw mapped content is never stored."""
+
+    def __init__(
+        self,
+        keyring: Mapping[str, bytes],
+        *,
+        primary_key_version: str,
+    ) -> None:
+        self._keys = _validated_hmac_keyring(keyring, primary_key_version)
+        self._primary = next(iter(self._keys))
+
+    @classmethod
+    def from_environment(
+        cls,
+        environ: Mapping[str, str],
+    ) -> "HmacMemoryRuntimeFingerprinter":
+        raw_keyring = environ.get("MEMORY_RUNTIME_ADMISSION_HMAC_KEYS", "").strip()
+        primary = environ.get(
+            "MEMORY_RUNTIME_ADMISSION_HMAC_PRIMARY_VERSION",
+            "",
+        ).strip()
+        if not raw_keyring or not primary:
+            raise RuntimeError("memory runtime admission keyring is required")
+        try:
+            decoded = json.loads(raw_keyring)
+            if not isinstance(decoded, dict):
+                raise ValueError
+            keys = {
+                version: value.encode("utf-8")
+                for version, value in decoded.items()
+                if isinstance(version, str) and isinstance(value, str)
+            }
+            if len(keys) != len(decoded):
+                raise ValueError
+            return cls(keys, primary_key_version=primary)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise RuntimeError("invalid memory runtime admission keyring") from exc
+
+    def fingerprint(self, **values) -> tuple[str, str]:
+        input_text = values.get("input_text")
+        if not isinstance(input_text, str) or not 1 <= len(
+            input_text.encode("utf-8")
+        ) <= MAX_MEMORY_CONTENT_BYTES:
+            raise ValueError("memory runtime request is invalid")
+        canonical = {
+            "organization_id": str(values.get("organization_id")),
+            "deployment_id": str(values.get("deployment_id")),
+            "deployment_version": values.get("deployment_version"),
+            "grant_id": str(values.get("grant_id")),
+            "session_id": str(values.get("session_id")),
+            "expected_lifecycle_revision": values.get(
+                "expected_lifecycle_revision"
+            ),
+            "mapping_version": values.get("mapping_version"),
+            "memory_policy_version": values.get("memory_policy_version"),
+            "memory_contract_version": values.get("memory_contract_version"),
+            "storage_generation": values.get("storage_generation"),
+            "input_variable": values.get("input_variable"),
+            "input_text": input_text,
+        }
+        if (
+            type(canonical["deployment_version"]) is not int
+            or canonical["deployment_version"] < 1
+            or type(canonical["expected_lifecycle_revision"]) is not int
+            or canonical["expected_lifecycle_revision"] < 1
+            or type(canonical["storage_generation"]) is not int
+            or canonical["storage_generation"] < 1
+        ):
+            raise ValueError("memory runtime request is invalid")
+        payload = (
+            b"memory-runtime-admission-v1\x00"
+            + json.dumps(
+                canonical,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        )
+        digest = hmac.new(
+            self._keys[self._primary],
+            payload,
+            hashlib.sha256,
+        ).hexdigest()
+        return self._primary, digest
+
+    def configuration_key_materials(self) -> tuple[bytes, ...]:
+        return tuple(self._keys.values())
+
+
 def _validated_hmac_keyring(
     keyring: Mapping[str, bytes],
     primary_version: str,
@@ -335,4 +582,9 @@ def _require_distinct_keyring_materials(
         raise ValueError(f"{label} keyring values must be distinct")
 
 
-__all__ = ["FernetSecretReplayCipher", "HmacPublicSecretIssuer"]
+__all__ = [
+    "FernetMemoryContentCipher",
+    "FernetSecretReplayCipher",
+    "HmacMemoryRuntimeFingerprinter",
+    "HmacPublicSecretIssuer",
+]

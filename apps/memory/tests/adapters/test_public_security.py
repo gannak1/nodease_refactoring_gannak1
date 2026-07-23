@@ -7,7 +7,9 @@ import pytest
 from cryptography.fernet import Fernet
 
 from apps.memory.adapters.security import (
+    FernetMemoryContentCipher,
     FernetSecretReplayCipher,
+    HmacMemoryRuntimeFingerprinter,
     HmacPublicSecretIssuer,
 )
 
@@ -149,3 +151,87 @@ def test_replay_keyring_encrypts_with_primary_and_decrypts_previous_ciphertext()
         )
         == "bounded-secret"
     )
+
+
+def test_memory_content_cipher_binds_projection_to_associated_data() -> None:
+    cipher = FernetMemoryContentCipher(
+        {"content-v1": Fernet.generate_key()},
+        primary_key_version="content-v1",
+        digest_hmac_key=secrets.token_bytes(32),
+    )
+
+    protected = cipher.protect("private message", associated_data="entry-1:model")
+
+    assert b"private message" not in protected.ciphertext
+    assert protected.plaintext_byte_length == len("private message".encode("utf-8"))
+    assert cipher.reveal(protected, associated_data="entry-1:model") == "private message"
+    assert cipher.reveal(protected, associated_data="entry-2:model") is None
+
+
+def test_memory_content_cipher_rejects_empty_and_oversized_utf8_payloads() -> None:
+    cipher = FernetMemoryContentCipher(
+        Fernet.generate_key(),
+        digest_hmac_key=secrets.token_bytes(32),
+    )
+
+    with pytest.raises(ValueError, match="content is invalid"):
+        cipher.protect("", associated_data="entry:model")
+    with pytest.raises(ValueError, match="content is invalid"):
+        cipher.protect("가" * 6_000, associated_data="entry:model")
+
+
+def test_memory_content_cipher_fails_closed_for_tampering_or_missing_key_version() -> None:
+    cipher = FernetMemoryContentCipher(
+        Fernet.generate_key(),
+        digest_hmac_key=secrets.token_bytes(32),
+    )
+    protected = cipher.protect("answer", associated_data="entry:display")
+
+    tampered = type(protected)(
+        ciphertext=protected.ciphertext,
+        key_version=protected.key_version,
+        format_version=protected.format_version,
+        content_digest="0" * 64,
+        plaintext_byte_length=protected.plaintext_byte_length,
+    )
+    missing_key = type(protected)(
+        ciphertext=protected.ciphertext,
+        key_version="content-missing",
+        format_version=protected.format_version,
+        content_digest=protected.content_digest,
+        plaintext_byte_length=protected.plaintext_byte_length,
+    )
+
+    assert cipher.reveal(tampered, associated_data="entry:display") is None
+    assert cipher.reveal(missing_key, associated_data="entry:display") is None
+
+
+def test_runtime_fingerprint_is_keyed_versioned_and_scope_bound() -> None:
+    key = secrets.token_bytes(32)
+    fingerprinter = HmacMemoryRuntimeFingerprinter(
+        {"admission-v1": key},
+        primary_key_version="admission-v1",
+    )
+    values = {
+        "organization_id": "org",
+        "deployment_id": "deployment",
+        "deployment_version": 1,
+        "grant_id": "grant",
+        "session_id": "session",
+        "expected_lifecycle_revision": 1,
+        "mapping_version": "conversation-mapping-v1",
+        "memory_policy_version": "memory-policy-v1",
+        "memory_contract_version": "conversation-memory-v1",
+        "storage_generation": 1,
+        "input_variable": "question",
+        "input_text": "private input",
+    }
+
+    version, first = fingerprinter.fingerprint(**values)
+    _version, second = fingerprinter.fingerprint(
+        **{**values, "grant_id": "another-grant"}
+    )
+
+    assert version == "admission-v1"
+    assert first != second
+    assert "private input" not in first

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import (
@@ -11,16 +12,44 @@ from fastapi import (
     status,
 )
 from sqlalchemy.orm import Session
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from apps.gateway.api.deps import get_deployment_runtime_policy
 from apps.shared.db.session import get_db
 from apps.gateway.services.deployment_service import DeploymentService
+from apps.gateway.composition.memory import (
+    build_public_conversation_runtime_application,
+)
+from apps.gateway.api.v1.endpoints.public_conversation import (
+    _conversation_token,
+    _idempotency_key_hash,
+    _map_public_error,
+    _network_address,
+    _safe_error,
+    _set_public_headers,
+)
+from apps.memory.application.public_runtime import (
+    StartPublicConversationTurnCommand,
+)
 from apps.gateway.middleware.public_conversation_cors import (
     mark_public_conversation_transport_boundary,
 )
 from apps.shared.domain.deployment_runtime_policy import DeploymentRuntimePolicy
 
 router = APIRouter()
+
+
+class _PublicConversationRunEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_lifecycle_revision: int = Field(ge=1)
+
+
+class _PublicConversationRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    inputs: dict[str, object]
+    conversation: _PublicConversationRunEnvelope
 
 
 @router.post("/run/{url_slug}")
@@ -67,6 +96,8 @@ async def run_workflow_public(
         Depends(get_deployment_runtime_policy),
     ],
     request_body: dict = Body(...),
+    authorization: Annotated[str | None, Header()] = None,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
     response: Response = None,
     db: Session = Depends(get_db),
 ):
@@ -75,18 +106,59 @@ async def run_workflow_public(
     - url_slug: workflow_deployments 생성시 만들어진 고유 주소
 
     """
-    # Target Conversation Memory uses its own lifecycle/grant endpoints.  Do
-    # not let a root-level conversation envelope reach the legacy runtime until
-    # MBA-318 installs the verified vertical execution contract.
     if "conversation" in request_body:
         mark_public_conversation_transport_boundary(request.scope)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "memory.feature_unavailable",
-                "message": "Conversation workflow execution is not available.",
-            },
+        try:
+            body = _PublicConversationRunRequest.model_validate(request_body)
+        except ValidationError:
+            raise _safe_error(
+                "memory.input_mapping_invalid",
+                "The conversation run envelope is invalid.",
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            ) from None
+        try:
+            application = build_public_conversation_runtime_application(db)
+            result = application.start_turn.execute(
+                StartPublicConversationTurnCommand(
+                    url_slug=url_slug,
+                    access_token=_conversation_token(authorization),
+                    idempotency_key_hash=_idempotency_key_hash(idempotency_key),
+                    expected_lifecycle_revision=(
+                        body.conversation.expected_lifecycle_revision
+                    ),
+                    inputs=body.inputs,
+                    network_address=_network_address(request),
+                    now=datetime.now(timezone.utc),
+                )
+            )
+        except ValueError as error:
+            if str(error) == "memory.input_mapping_invalid":
+                raise _safe_error(
+                    "memory.input_mapping_invalid",
+                    "The mapped conversation input is invalid.",
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                ) from None
+            raise
+        except Exception as error:
+            raise _map_public_error(error) from None
+        response.status_code = status.HTTP_202_ACCEPTED
+        _set_public_headers(
+            response,
+            lifecycle_revision=result.lifecycle_revision,
         )
+        turn_id = str(result.turn_id)
+        return {
+            "status": "accepted",
+            "conversation": {
+                "turn_id": turn_id,
+                "turn_state": result.turn_state.value,
+                "turn_sequence": result.turn_sequence,
+                "lifecycle_revision": result.lifecycle_revision,
+                "status_path": (
+                    f"/api/v1/run-public/{url_slug}/conversation/turns/{turn_id}"
+                ),
+            },
+        }
     # 웹 앱/임베딩: 공개 접근 (인증 불필요)
     return await DeploymentService.run_deployment(
         db=db,

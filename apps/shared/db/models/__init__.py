@@ -33,6 +33,9 @@ from apps.shared.db.models.conversation_memory import (
     MemorySummaryGenerationJobRecord,
     MemoryTurnDispatchJobRecord,
 )
+from apps.shared.db.models.conversation_memory_execution import (
+    ConversationWorkflowExecutionAdmissionRecord,
+)
 from apps.shared.db.models.cost_optimizer import (
     CostOptimizerCandidate,
     CostOptimizerExperiment,
@@ -166,6 +169,7 @@ __all__ = [
     "AgentBuilderSession",
     "Connection",
     "ConversationSessionRecord",
+    "ConversationWorkflowExecutionAdmissionRecord",
     "ConversationAccessGrantRecord",
     "ConversationTurnRecord",
     "ConversationMemoryEntryRecord",

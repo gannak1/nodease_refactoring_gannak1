@@ -134,6 +134,10 @@ Status: Draft
 - MEM-TC-APP-029G: Permission revoke는 미사용/claimed-not-started plan과 lease를 무효화하지만 started provider attempt의 actual outcome/usage reconciliation을 삭제하지 않는다.
 - MEM-TC-APP-029H: 다른 attempt claim/stale version은 `memory.provider_attempt_conflict`, started 이후 불명확 결과는 `memory.provider_outcome_unknown`으로 분리한다.
 - MEM-TC-APP-029I: `provider_started` marker commit 실패는 provider 미호출이며 claim expiry/recovery 대상이다.
+- MEM-TC-APP-029J: Build는 raw content를 읽지 않고 현재 Turn 이전 completed pair reference만 최신순 bounded snapshot한다. Claim은 newest-first contiguous barrier를 적용해 missing/ineligible/oversize pair와 그보다 오래된 pair를 제외하고 선택 pair를 시간순으로 materialize한다.
+- MEM-TC-APP-029K: Candidate 0개는 explicit complete-empty dependency proof로 통과하지만 candidate/provenance/tokenizer가 unknown인 경우 empty로 완화하지 않는다.
+- MEM-TC-APP-029L: Memory marker만 commit되고 usage가 exact intent인 같은 attempt는 current owner와 fresh binding으로 usage start까지 한 번 진행할 수 있다. Usage started/outcome-unknown/terminal replay는 provider를 호출하지 않고, Memory marker 또는 usage start commit 실패도 zero-I/O다.
+- MEM-TC-APP-029M: Materialized history는 current user message 직전의 untrusted history block으로 한 번 삽입되고 system/developer prompt 또는 durable workflow payload로 승격되지 않는다.
 - MEM-TC-APP-029J: Provider capability의 organization/deployment version/node invocation/purpose/model/pricing revision/expiry 중 하나라도 lease와 다르면 raw context와 provider 호출을 모두 거부한다.
 - MEM-TC-APP-029K: Lease claim은 실제 materialized entry/summary와 정확히 대응하는 RuntimeDataDependencyEnvelope를 반환하고 excluded/stale source를 envelope에 남기지 않는다.
 

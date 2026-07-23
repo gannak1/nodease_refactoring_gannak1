@@ -38,6 +38,7 @@ _MICROUSD_PER_USD = Decimal("1000000")
 
 class _LegacyProviderUsageAttempt:
     durable = False
+    operation_reference = None
 
     def __init__(
         self,
@@ -99,6 +100,10 @@ class _LedgerProviderUsageAttempt:
         self._cost_cap_microusd = cost_cap_microusd
         self._started = False
         self._terminal = False
+
+    @property
+    def operation_reference(self) -> str:
+        return str(self._operation_id)
 
     def mark_provider_started(self) -> None:
         if self._started or self._terminal:
