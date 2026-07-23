@@ -385,6 +385,16 @@ def test_helm_non_http_workloads_are_default_deny_with_only_internal_dependencie
     assert "port: 3130" not in frontend_policy
 
 
+def test_docker_sandbox_does_not_advertise_unsupported_network_access() -> None:
+    compose = yaml.safe_load(_read("docker/docker-compose.yml"))
+    sandbox = compose["services"]["sandbox"]
+
+    assert "SANDBOX_ENABLE_NETWORK" not in sandbox.get("environment", {})
+    assert "SANDBOX_ENABLE_NETWORK" not in _read("docker/.env.example")
+    assert sandbox["networks"] == ["moduly-network"]
+    assert compose["networks"]["moduly-network"]["internal"] is True
+
+
 def test_proxy_only_frontend_is_restricted_to_the_bundled_gateway() -> None:
     helpers = _read("infra/helm/moduly/templates/_helpers.tpl")
 

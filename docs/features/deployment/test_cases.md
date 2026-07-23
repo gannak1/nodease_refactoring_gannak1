@@ -14,6 +14,7 @@ Status: Draft
 - Remote CI는 pinned kind/Kubernetes와 Calico IPv4에서 target direct HTTPS 실패, authorized Squid HTTPS/Connector 성공과 Sandbox-shaped unauthorized source 실패를 실제 실행한다. Unrestricted control에서 IPv4-mapped public/private 연결이 가능한지 먼저 증명한 뒤 보호 workload의 mapped public/private/metadata direct 연결 실패를 확인한다. Dual-stack과 실제 운영 CNI는 release probe이며 미검증 환경을 지원으로 표시하지 않는다.
 - Image contract는 `cl100k_base`/`o200k_base`, NLTK `punkt`/`punkt_tab`/`stopwords`, runtime 기본값과 동일한 immutable E5 `(model_id, revision)` snapshot과 opt-in CrossEncoder model이 build 단계에 적재되는지 검증한다. E5와 CrossEncoder build identity는 final stage runtime 환경에 유지되어야 하며 ingestion runtime source에는 `nltk.download`가 없어야 한다.
 - External parser readiness가 없는 `llamaparse` 요청은 source fetch, credential lookup, SDK 호출과 PyMuPDF fallback이 모두 0회이고 preview와 durable ingestion 모두 exact safe reason `knowledge.raw_parser_egress_unavailable`를 보존해야 한다.
+- Sandbox `enable_network=true` 요청은 Scheduler 조회와 큐 변경 전에 HTTP `422`와 `sandbox.network_access_unsupported`만 반환해야 한다. 내부 Scheduler·Executor·NSJail command builder 호출도 같은 요청을 거부하고, NSJail command에는 `--disable_clone_newnet`이 없어야 하며 Compose는 `SANDBOX_ENABLE_NETWORK` override를 제공하지 않아야 한다.
 - Synthetic secret marker를 application/proxy logs와 failure output에 넣어도 URL/query/header/body, credential, resolved IP와 raw provider exception이 남지 않아야 한다.
 
 ## Unit Tests

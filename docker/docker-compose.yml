@@ -414,9 +414,6 @@ services:
     environment:
       TZ: Asia/Seoul
       
-      # 네트워크 허용 여부
-      SANDBOX_ENABLE_NETWORK: "${SANDBOX_ENABLE_NETWORK:-false}"
-
       # 워커 설정
       SANDBOX_MIN_WORKERS: "${SANDBOX_MIN_WORKERS:-2}"
       SANDBOX_MAX_WORKERS: "${SANDBOX_MAX_WORKERS:-8}"

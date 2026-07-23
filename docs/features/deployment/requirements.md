@@ -148,6 +148,7 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-117 (MBA-357): Docker demo seed의 runtime embedding은 shared operation-bound guarded OpenAI client를 사용해야 한다. Bare provider SDK, ambient proxy 또는 proxy 실패 뒤 direct fallback을 허용하지 않는다.
 - DEP-REQ-118 (MBA-357): Proxy-only Frontend server의 `API_URL`은 같은 Helm release의 bundled Gateway Service와 정확히 일치해야 한다. Frontend를 활성화하면서 Gateway를 비활성화하거나 다른 backend URL을 지정한 배포는 별도 egress 계약이 추가되기 전까지 render 전에 실패해야 한다.
 - DEP-REQ-119 (MBA-357): External raw parser가 Knowledge의 approval revision과 guarded transport를 갖추지 못한 현재 상태에서는 `llamaparse` strategy를 source fetch, credential lookup, SDK call과 local fallback 전에 `knowledge.raw_parser_egress_unavailable`로 fail-closed해야 한다. Proxy-only 전환이 외부 parser 실패를 일반 parser 결과로 조용히 대체해서는 안 된다.
+- DEP-REQ-120 (MBA-357): Sandbox 사용자 코드의 외부 네트워크 접근은 별도 guarded transport 계약이 완성되기 전까지 지원하지 않는다. `enable_network=true`는 큐 상태 변경과 NSJail 실행 전에 `422 sandbox.network_access_unsupported`로 fail-closed하고, Compose 환경변수나 내부 실행 경로가 NSJail network namespace 격리를 해제해서는 안 된다.
 
 ## Runtime Audience Matrix
 
