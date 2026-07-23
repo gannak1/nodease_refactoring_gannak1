@@ -385,6 +385,14 @@ def test_helm_non_http_workloads_are_default_deny_with_only_internal_dependencie
     assert "port: 3130" not in frontend_policy
 
 
+def test_proxy_only_frontend_is_restricted_to_the_bundled_gateway() -> None:
+    helpers = _read("infra/helm/moduly/templates/_helpers.tpl")
+
+    assert "proxy-only frontend requires the bundled Gateway" in helpers
+    assert "proxy-only frontend API_URL must target the bundled Gateway" in helpers
+    assert '$bundledGatewayUrl := printf "http://%s-gateway:%d"' in helpers
+
+
 def test_helm_proxy_rollout_phase_is_visible_on_enforced_workloads() -> None:
     helpers = _read("infra/helm/moduly/templates/_helpers.tpl")
     assert 'define "moduly.egressWorkloadSelectorLabel"' in helpers

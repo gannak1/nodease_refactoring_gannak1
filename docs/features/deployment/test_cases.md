@@ -9,10 +9,11 @@ Status: Draft
 - S3/object storage client는 explicit proxy 설정 또는 explicit empty proxy map을 사용하며 ambient environment를 신뢰하지 않는다. Invalid proxy config에서는 provider client 생성과 signed request가 0회다.
 - Squid config는 pinned image, CONNECT 443, Workflow-only HTTP 80 listener, IMAP 143/993와 Connector 전용 `3130` listener의 배포 관리 포트 allowlist, final deny-all, private/reserved/metadata IPv4/IPv6 deny, no SSL bump, no cache와 `access_log none`을 검증한다.
 - Compose는 Gateway·Knowledge·Workflow가 egress-capable network에 직접 연결되지 않고 Squid만 egress network를 사용하며 host-published listener가 없는지 검증한다. Disposable runtime은 safe origin 성공, mixed A/AAAA/CNAME/rebind 차단, unauthorized source 차단, direct dial과 proxy-down fallback 실패를 확인한다.
-- Helm render는 Squid Deployment/Service/PDB, immutable digest, minimum replica, security context, resource bounds, listener별 ingress와 workload별 egress를 검증한다. Logger/Beat/Frontend에는 public route와 proxy access가 없어야 한다.
+- Helm render는 Squid Deployment/Service/PDB, immutable digest, minimum replica, security context, resource bounds, listener별 ingress와 workload별 egress를 검증한다. Logger/Beat/Frontend에는 public route와 proxy access가 없어야 한다. Proxy-only Frontend는 exact bundled Gateway URL만 허용하고 Gateway 비활성 또는 alternate `API_URL`을 render 전에 거부한다.
 - Canary render의 workload selector에는 `nodease.io/egress-mode=proxy-v1`이 있고 final render에서는 없어야 한다. Pod phase annotation, `maxUnavailable=0`, `maxSurge=1`과 PDB를 함께 확인한다.
 - Remote CI는 pinned kind/Kubernetes와 Calico IPv4에서 target direct HTTPS 실패, authorized Squid HTTPS/Connector 성공과 Sandbox-shaped unauthorized source 실패를 실제 실행한다. Unrestricted control에서 IPv4-mapped public/private 연결이 가능한지 먼저 증명한 뒤 보호 workload의 mapped public/private/metadata direct 연결 실패를 확인한다. Dual-stack과 실제 운영 CNI는 release probe이며 미검증 환경을 지원으로 표시하지 않는다.
-- Image contract는 `cl100k_base`/`o200k_base`, NLTK `punkt`/`punkt_tab`/`stopwords`와 runtime 기본값과 동일한 immutable E5 `(model_id, revision)` snapshot이 build 단계에 적재되고, build identity가 runtime 환경에 유지되며 ingestion runtime source에 `nltk.download`가 없음을 검증한다.
+- Image contract는 `cl100k_base`/`o200k_base`, NLTK `punkt`/`punkt_tab`/`stopwords`, runtime 기본값과 동일한 immutable E5 `(model_id, revision)` snapshot과 opt-in CrossEncoder model이 build 단계에 적재되는지 검증한다. E5와 CrossEncoder build identity는 final stage runtime 환경에 유지되어야 하며 ingestion runtime source에는 `nltk.download`가 없어야 한다.
+- External parser readiness가 없는 `llamaparse` 요청은 source fetch, credential lookup, SDK 호출과 PyMuPDF fallback이 모두 0회이고 preview와 durable ingestion 모두 exact safe reason `knowledge.raw_parser_egress_unavailable`를 보존해야 한다.
 - Synthetic secret marker를 application/proxy logs와 failure output에 넣어도 URL/query/header/body, credential, resolved IP와 raw provider exception이 남지 않아야 한다.
 
 ## Unit Tests

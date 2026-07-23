@@ -173,6 +173,45 @@ def test_temporary_source_failure_is_retryable(monkeypatch) -> None:
     assert raised.value.reason_code == "ingestion.source_temporarily_unavailable"
 
 
+def test_external_parser_unavailable_is_permanent_and_preserves_reason(
+    monkeypatch,
+) -> None:
+    organization_id = uuid4()
+    knowledge_base_id = uuid4()
+    document_id = uuid4()
+    document = SimpleNamespace(
+        id=document_id,
+        knowledge_base_id=knowledge_base_id,
+        chunk_size=800,
+        chunk_overlap=80,
+    )
+    knowledge_base = SimpleNamespace(
+        id=knowledge_base_id,
+        organization_id=organization_id,
+        lifecycle_state="active",
+        sync_state="active",
+        embedding_model="text-embedding-3-small",
+    )
+
+    monkeypatch.setattr(
+        job_runner.IngestionOrchestrator,
+        "process_document_for_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            DurableIngestionSourceFailure(
+                "knowledge.raw_parser_egress_unavailable"
+            )
+        ),
+    )
+
+    with pytest.raises(DocumentIngestionPermanentFailure) as raised:
+        KnowledgeDocumentIngestionJobRunner(
+            lambda: FakeSession(document, knowledge_base),
+            heartbeat_seconds=60,
+        ).run(_worker_job(organization_id, knowledge_base_id, document_id))
+
+    assert raised.value.reason_code == "knowledge.raw_parser_egress_unavailable"
+
+
 @pytest.mark.parametrize("lease_session_unavailable", [False, True])
 def test_runner_wires_current_job_lease_guard_into_progress_path(
     monkeypatch,

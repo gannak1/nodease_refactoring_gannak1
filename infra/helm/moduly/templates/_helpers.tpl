@@ -78,6 +78,16 @@ CIDRs are deployment coordinates and must be supplied by the operator.
 {{- if ne .Values.egressProxy.policyRevision "proxy-v1" -}}
 {{- fail "egressProxy.policyRevision must be proxy-v1" -}}
 {{- end -}}
+{{- if .Values.frontend.enabled -}}
+{{- if not .Values.gateway.enabled -}}
+{{- fail "proxy-only frontend requires the bundled Gateway" -}}
+{{- end -}}
+{{- $frontendApiUrl := trim (toString (default "" .Values.frontend.env.API_URL)) -}}
+{{- $bundledGatewayUrl := printf "http://%s-gateway:%d" (include "moduly.fullname" .) (.Values.gateway.service.port | int) -}}
+{{- if and (not (empty $frontendApiUrl)) (ne $frontendApiUrl $bundledGatewayUrl) -}}
+{{- fail "proxy-only frontend API_URL must target the bundled Gateway" -}}
+{{- end -}}
+{{- end -}}
 {{- if ne (int .Values.egressProxy.service.httpsPort) 3128 -}}
 {{- fail "egressProxy.service.httpsPort must be 3128" -}}
 {{- end -}}

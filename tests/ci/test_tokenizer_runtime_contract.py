@@ -100,6 +100,7 @@ def test_workflow_image_prefetches_exact_runtime_model_routing_snapshot() -> Non
 
 def test_workflow_image_prefetches_opt_in_rag_reranker() -> None:
     dockerfile = WORKFLOW_DOCKERFILE.read_text(encoding="utf-8")
+    final_stage = dockerfile.split("# --- 2단계: 실행(Final) 스테이지 ---", maxsplit=1)[1]
 
     assert (
         "ARG RAG_CROSS_ENCODER_MODEL_ID="
@@ -110,3 +111,7 @@ def test_workflow_image_prefetches_opt_in_rag_reranker() -> None:
     assert "CrossEncoder('${RAG_CROSS_ENCODER_MODEL_ID}', device='cpu')" in dockerfile
     assert "HF_HOME=/model-routing-hf-cache" in dockerfile
     assert "COPY --from=builder /model-routing-hf-cache /opt/huggingface" in dockerfile
+    assert "ARG RAG_CROSS_ENCODER_MODEL_ID=" in final_stage
+    assert (
+        "ENV RAG_CROSS_ENCODER_MODEL=${RAG_CROSS_ENCODER_MODEL_ID}" in final_stage
+    )

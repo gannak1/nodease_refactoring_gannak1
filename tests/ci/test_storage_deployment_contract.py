@@ -533,6 +533,44 @@ def test_helm_renders_deployment_managed_connector_proxy_port() -> None:
 
 
 @pytest.mark.parametrize(
+    ("override", "expected_message"),
+    [
+        (
+            "gateway.enabled=false",
+            "proxy-only frontend requires the bundled Gateway",
+        ),
+        (
+            "frontend.env.API_URL=http://alternate-gateway.internal:8000",
+            "proxy-only frontend API_URL must target the bundled Gateway",
+        ),
+    ],
+)
+def test_helm_rejects_frontend_backend_without_matching_proxy_only_egress(
+    override: str,
+    expected_message: str,
+) -> None:
+    completed = _render_helm(
+        values_files=("tests/ci/fixtures/helm-values-ci.yaml",),
+        set_values=(override,),
+    )
+
+    assert completed.returncode != 0
+    assert expected_message in f"{completed.stdout}\n{completed.stderr}"
+
+
+def test_helm_accepts_explicit_bundled_gateway_frontend_api_url() -> None:
+    completed = _render_helm(
+        values_files=("tests/ci/fixtures/helm-values-ci.yaml",),
+        set_values=(
+            "frontend.env.API_URL="
+            "http://nodease-knowledge-worker-contract-moduly-gateway:8000",
+        ),
+    )
+
+    assert completed.returncode == 0, f"{completed.stdout}\n{completed.stderr}"
+
+
+@pytest.mark.parametrize(
     ("overrides", "empty_list_override", "expected_message"),
     [
         (

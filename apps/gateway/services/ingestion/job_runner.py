@@ -33,6 +33,7 @@ from apps.shared.db.models.knowledge import Document, KnowledgeBase
 from apps.shared.domain.knowledge_document_ingestion import (
     DEFAULT_HEARTBEAT_SECONDS,
     DEFAULT_LEASE_SECONDS,
+    RAW_PARSER_EGRESS_UNAVAILABLE_REASON,
 )
 from apps.shared.services.knowledge_ingestion_finalizer import (
     KnowledgeIngestionFinalizationError,
@@ -181,6 +182,10 @@ class KnowledgeDocumentIngestionJobRunner:
                 if exc.reason_code == "configuration.invalid":
                     raise DocumentIngestionPermanentFailure(
                         "ingestion.configuration_invalid"
+                    ) from exc
+                if exc.reason_code == RAW_PARSER_EGRESS_UNAVAILABLE_REASON:
+                    raise DocumentIngestionPermanentFailure(
+                        RAW_PARSER_EGRESS_UNAVAILABLE_REASON
                     ) from exc
                 raise DocumentIngestionPermanentFailure(
                     "ingestion.processing_failed"

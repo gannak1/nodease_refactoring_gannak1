@@ -273,3 +273,51 @@ def test_unknown_processor_reason_fails_closed() -> None:
 
     assert error.reason_code == "processing.failed"
     assert str(error) == "Source processing failed."
+
+
+def test_external_parser_unavailable_reason_is_preserved() -> None:
+    error = DurableIngestionSourceFailure(
+        "knowledge.raw_parser_egress_unavailable"
+    )
+
+    assert error.reason_code == "knowledge.raw_parser_egress_unavailable"
+    assert str(error) == "Source processing failed."
+
+
+def test_external_parser_reason_is_recorded_on_failed_indexing_version(
+    monkeypatch,
+) -> None:
+    observed: dict[str, object] = {}
+    commits: list[str] = []
+    db = SimpleNamespace(
+        commit=lambda: commits.append("commit"),
+        rollback=lambda: pytest.fail("recording the safe reason must not roll back"),
+    )
+
+    class Finalizer:
+        def __init__(self, received_db) -> None:
+            assert received_db is db
+
+        def record_failed_indexing_version(self, **kwargs) -> None:
+            observed.update(kwargs)
+
+    monkeypatch.setattr(
+        "apps.gateway.services.ingestion.service.KnowledgeIngestionFinalizer",
+        Finalizer,
+    )
+    service = IngestionOrchestrator(db)
+
+    service._record_failed_indexing_version(
+        {"document_id": "document-id"},
+        error=DurableIngestionSourceFailure(
+            "knowledge.raw_parser_egress_unavailable"
+        ),
+        fencing_token="fencing-token",
+    )
+
+    assert observed == {
+        "document_id": "document-id",
+        "safe_reason_code": "knowledge.raw_parser_egress_unavailable",
+        "fencing_token": "fencing-token",
+    }
+    assert commits == ["commit"]

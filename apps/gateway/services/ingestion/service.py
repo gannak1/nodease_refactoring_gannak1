@@ -26,6 +26,9 @@ from apps.shared.db.models.knowledge import (
 )
 from apps.shared.db.session import SessionLocal
 from apps.shared.distributed_lock import DistributedLock
+from apps.shared.domain.knowledge_document_ingestion import (
+    RAW_PARSER_EGRESS_UNAVAILABLE_REASON,
+)
 from apps.shared.services.knowledge_ingestion_fencing import (
     ACTIVE_FENCING_TOKEN_HASH_KEY,
     KnowledgeIngestionFencing,
@@ -68,6 +71,7 @@ _SAFE_PREVIEW_SOURCE_REASON_CODES = frozenset(
         "configuration.invalid",
         "resource.hidden",
         "source.temporarily_unavailable",
+        RAW_PARSER_EGRESS_UNAVAILABLE_REASON,
     }
 )
 
@@ -379,6 +383,7 @@ class DurableIngestionSourceFailure(RuntimeError):
             "processing.failed",
             "resource.hidden",
             "source.temporarily_unavailable",
+            RAW_PARSER_EGRESS_UNAVAILABLE_REASON,
         }
     )
 
@@ -1007,7 +1012,13 @@ class IngestionOrchestrator:
                 safe_reason_code=(
                     "ingestion.finalization_failed"
                     if isinstance(error, KnowledgeIngestionFinalizationError)
-                    else "ingestion.processing_failed"
+                    else (
+                        error.reason_code
+                        if isinstance(error, DurableIngestionSourceFailure)
+                        and error.reason_code
+                        == RAW_PARSER_EGRESS_UNAVAILABLE_REASON
+                        else "ingestion.processing_failed"
+                    )
                 ),
                 fencing_token=fencing_token,
             )
@@ -1854,6 +1865,11 @@ class IngestionOrchestrator:
     def _safe_ingestion_error_message(self, error: Exception) -> str:
         if isinstance(error, KnowledgeIngestionFinalizationError):
             return "문서 색인 최종화에 실패했습니다."
+        if (
+            isinstance(error, DurableIngestionSourceFailure)
+            and error.reason_code == RAW_PARSER_EGRESS_UNAVAILABLE_REASON
+        ):
+            return "외부 문서 파서를 사용할 수 없습니다."
         return "문서 처리에 실패했습니다."
 
     def reindex_knowledge_base(self, kb_id: UUID, new_model: str):

@@ -210,6 +210,9 @@ from apps.shared.domain.knowledge_collection_sync import (
     progress_category,
     safe_reason_code,
 )
+from apps.shared.domain.knowledge_document_ingestion import (
+    RAW_PARSER_EGRESS_UNAVAILABLE_REASON,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -2666,6 +2669,13 @@ def preview_document_chunking(
                 503,
                 "source.temporarily_unavailable",
                 "The DB source is temporarily unavailable.",
+            )
+        if exc.reason_code == RAW_PARSER_EGRESS_UNAVAILABLE_REASON:
+            raise_api_error(
+                request,
+                409,
+                RAW_PARSER_EGRESS_UNAVAILABLE_REASON,
+                "External document parsing is not available.",
             )
         raise_api_error(
             request,
