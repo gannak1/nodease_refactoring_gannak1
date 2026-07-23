@@ -24,7 +24,6 @@ const allowedModelAliases = new Set([
   'o3',
   'gpt-4.1',
   'gpt-4o',
-  'gpt-5-mini',
   'gpt-5-nano',
   'gpt-4.1-mini',
   'gpt-4o-mini',

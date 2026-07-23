@@ -78,7 +78,7 @@ from apps.shared.domain.workflow_graph import (
     validate_workflow_graph,
 )
 from apps.shared.services.model_routing_global_profile_catalog import (
-    is_version_pinned_model_id,
+    is_workflow_execution_model_excluded,
 )
 from apps.shared.permissions import workflow_auth_state_allows
 from apps.workflow_engine.services.llm_service import (
@@ -733,7 +733,7 @@ def _cost_optimizer_available_model_candidates(
     fallback_models: list[Any] = []
     for model in LLMService.get_my_available_models(db, current_user.id):
         model_id = _cost_optimizer_model_id_from_option(model)
-        if not model_id or is_version_pinned_model_id(model_id):
+        if not model_id or is_workflow_execution_model_excluded(model_id):
             continue
         if ModelRouter.is_workflow_chat_model(model):
             candidates_by_id[model_id] = ModelCandidate.from_model(model)
@@ -747,6 +747,8 @@ def _cost_optimizer_available_model_candidates(
     # 권한이 확인된 모델이면 cold-start 기본 정책 생성에는 사용할 수 있게 한다.
     for model in fallback_models:
         model_id = _cost_optimizer_model_id_from_option(model)
+        if not model_id or is_workflow_execution_model_excluded(model_id):
+            continue
         if not model_id:
             continue
         candidates_by_id[model_id] = ModelCandidate.from_model(model)

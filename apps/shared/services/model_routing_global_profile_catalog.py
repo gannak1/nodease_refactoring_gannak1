@@ -63,6 +63,7 @@ class ModelRoutingCatalogProfile:
 MODEL_ROUTING_MODEL_ALIASES = {
     "gpt-5.6": "gpt-5.6-sol",
 }
+WORKFLOW_EXECUTION_EXCLUDED_MODEL_IDS = frozenset({"gpt-5-mini"})
 _VERSION_PINNED_MODEL_ID_PATTERN = re.compile(r"-(?:\d{4}-\d{2}-\d{2}|\d{8})$")
 
 
@@ -86,6 +87,18 @@ def normalize_model_id(value: object) -> str:
 def canonical_model_routing_id(value: object) -> str:
     normalized = normalize_model_id(value)
     return MODEL_ROUTING_MODEL_ALIASES.get(normalized, normalized)
+
+
+def is_workflow_execution_model_excluded(value: object) -> bool:
+    """새 workflow 실행에서 사용하지 않는 모델 ID인지 판정한다.
+
+    카탈로그와 가격·과거 실행 이력은 보존하되, 새 수동 실행과 자동 라우팅
+    후보에서는 날짜 고정 버전 및 전역 제외 모델을 사용하지 않는다.
+    """
+
+    return is_version_pinned_model_id(value) or (
+        canonical_model_routing_id(value) in WORKFLOW_EXECUTION_EXCLUDED_MODEL_IDS
+    )
 
 
 def deduplicate_model_routing_ids(model_ids: Iterable[str]) -> list[str]:
@@ -474,7 +487,7 @@ def supported_model_routing_ids(model_ids: Iterable[str]) -> list[str]:
 
     supported: list[str] = []
     for model_id in deduplicate_model_routing_ids(model_ids):
-        if is_version_pinned_model_id(model_id):
+        if is_workflow_execution_model_excluded(model_id):
             continue
         normalized = normalize_model_id(model_id)
         if normalized in SUPPORTED_MODEL_ROUTING_PROFILES:

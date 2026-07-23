@@ -21,7 +21,7 @@ from apps.shared.db.models.llm import (
 from apps.shared.services.model_routing_global_profile_catalog import (
     canonical_model_routing_id,
     catalog_metadata_for_model_id,
-    is_version_pinned_model_id,
+    is_workflow_execution_model_excluded,
     normalize_model_id as normalize_model_routing_id,
 )
 from apps.shared.services.llm_model_pricing import get_model_pricing
@@ -68,7 +68,6 @@ WORKFLOW_CHAT_MODEL_ALIASES = {
     "o3",
     "gpt-4.1",
     "gpt-4o",
-    "gpt-5-mini",
     "gpt-5-nano",
     "gpt-4.1-mini",
     "gpt-4o-mini",
@@ -1593,7 +1592,7 @@ class ModelRouter:
         model_type = str(getattr(model, "type", "") or "").lower()
         if not bool(getattr(model, "is_active", True)):
             return False
-        if is_version_pinned_model_id(raw_model_id):
+        if is_workflow_execution_model_excluded(raw_model_id):
             return False
         if model_type in BLOCKED_WORKFLOW_MODEL_TYPES:
             return False

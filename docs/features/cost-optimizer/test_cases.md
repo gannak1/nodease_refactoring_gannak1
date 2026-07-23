@@ -238,6 +238,7 @@ evidence pipeline이 없으면 Workflow-Aware Adaptive Routing 구현 완료로 
 | FR-011-R05 | runtime non-interference | 자동 라우팅 ON이고 active policy가 있다 | workflow engine이 LLM node를 실행한다 | judge를 호출하지 않고 active policy rule만 평가한다. trace metadata에 `judge_called=false`, policy id/version, matched rule, runtime context safe summary를 남긴다. |
 | FR-011-R06 | unavailable rule model | 매칭된 rule의 `selected_model_id`가 현재 사용 가능한 모델 목록에 없다 | `ModelRouter.resolve_policy()`를 호출한다 | 해당 rule을 건너뛰고 default/fallback 정책으로 닫는다. |
 | FR-011-R07 | credential guard | 현재 organization/user가 사용할 수 있는 policy default/rule/fallback model이 없다 | `LLMNode._resolve_model_routing_policy()`를 호출한다 | LLM provider 호출 전에 `model_routing_no_available_model` 오류를 반환한다. credential 원문은 노출하지 않는다. |
+| FR-011-R07A | workflow 전역 실행 제외 모델 | UI 목록, Cost Optimizer 후보, 저장 graph 또는 policy가 `gpt-5-mini`를 참조한다 | 모델 후보를 조회하고 LLM node를 실행한다 | UI와 라우팅 후보에서 제외하고 Provider 호출 전에 차단한다. 유효한 fallback이 있으면 fallback만 실행한다. |
 | FR-011-R08 | policy refresh retention | 정책 갱신 시 judge가 실행 가능한 rule을 만들지 못한다 | `refresh_policy()`를 호출한다 | 기존 active policy를 유지하고 결과를 `pending_review` 또는 `kept_current`로 기록한다. |
 | FR-011-R09 | task/category hint | 사용자가 task type을 직접 입력하지 않는다 | router가 context를 구성한다 | 노드에 명시된 `model_routing_context.node_task` 또는 내부 기본 `task_type`을 `node_task`로 사용한다. 도메인 키워드를 task로 추론하지 않는다. |
 | FR-011-R10 | prompt/input bucket | 입력과 prompt 길이가 달라진다 | `ModelRouter.infer_runtime_context()`를 호출한다 | `input_length_bucket`, `prompt_length_bucket`이 `short`, `medium`, `long` 중 하나로 계산된다. |
@@ -488,7 +489,7 @@ evidence pipeline이 없으면 Workflow-Aware Adaptive Routing 구현 완료로 
 - 원본 LLM 노드 상세 설정은 task type 선택 UI를 제공하지 않는다.
 - B candidate 영역은 모델, fallback 모델, system prompt, user prompt, assistant prompt, `max_tokens`, `temperature`, 출력 형식을 편집할 수 있다.
 - 일반 LLM 노드 상세 화면과 B candidate 영역은 같은 workflow LLM 모델 필터를 사용한다.
-- 모델 후보 목록은 alias 계열 모델을 노출하고 날짜 suffix 모델은 숨긴다.
+- 모델 후보 목록은 alias 계열 모델을 노출하되 날짜 suffix 모델과 `gpt-5-mini`는 숨긴다.
 - 모델 후보 목록은 embedding, image, audio, realtime, moderation, tts, whisper, transcribe, sora, search-only 계열을 숨긴다.
 - B candidate의 task type은 사용자 입력 UI가 아니라 내부 기본값으로 Cost Optimizer local draft에서 원본 LLM node data 변환까지 보존된다.
 - B candidate prompt 입력은 upstream output 변수 삽입을 지원한다.

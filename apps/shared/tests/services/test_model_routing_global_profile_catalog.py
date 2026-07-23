@@ -1,6 +1,7 @@
 from apps.shared.services.model_routing_global_profile_catalog import (
     OFFICIAL_PROVIDER_CATALOG,
     SUPPORTED_MODEL_ROUTING_PROFILES,
+    WORKFLOW_EXECUTION_EXCLUDED_MODEL_IDS,
     canonical_model_routing_id,
     catalog_metadata_for_model_id,
     supported_model_routing_ids,
@@ -11,10 +12,12 @@ from apps.shared.services.model_routing_model_filter import (
 from apps.workflow_engine.services.model_router import WORKFLOW_CHAT_MODEL_ALIASES
 
 
-def test_official_catalog_covers_all_workflow_chat_model_ids():
+def test_official_catalog_covers_executable_and_historical_model_ids():
     expected_ids = set(WORKFLOW_CHAT_MODEL_ALIASES)
 
-    assert set(OFFICIAL_PROVIDER_CATALOG) == expected_ids
+    assert set(OFFICIAL_PROVIDER_CATALOG) == (
+        expected_ids | set(WORKFLOW_EXECUTION_EXCLUDED_MODEL_IDS)
+    )
     assert len(OFFICIAL_PROVIDER_CATALOG) == 35
 
 
@@ -24,6 +27,12 @@ def test_supported_candidates_are_explicit_and_exclude_unprofiled_models():
     )
 
     assert candidates == ["gpt-4o-mini", "gpt-5.4", "gpt-5.6-sol"]
+
+
+def test_supported_candidates_exclude_globally_blocked_workflow_model():
+    assert supported_model_routing_ids(
+        ["gpt-5-mini", "gpt-5.4-mini", "gpt-4.1"]
+    ) == ["gpt-5.4-mini", "gpt-4.1"]
 
 
 def test_supported_candidates_collapse_provider_aliases_to_available_canonical_id():

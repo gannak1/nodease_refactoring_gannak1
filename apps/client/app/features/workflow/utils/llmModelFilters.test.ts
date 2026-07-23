@@ -77,6 +77,17 @@ describe('isWorkflowChatModelOption', () => {
     ).toBe(false);
   });
 
+  it('workflow 실행에서 제외한 모델은 alias여도 숨긴다', () => {
+    expect(
+      isWorkflowChatModelOption(
+        model({
+          model_id_for_api_call: 'gpt-5-mini',
+          name: 'gpt-5-mini',
+        }),
+      ),
+    ).toBe(false);
+  });
+
   it('workflow LLM 노드에 맞지 않는 모델 용도는 숨긴다', () => {
     for (const id of [
       'text-embedding-3-small',
