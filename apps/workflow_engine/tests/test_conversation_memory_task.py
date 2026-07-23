@@ -126,5 +126,5 @@ def test_task_schedules_bounded_recovery_without_exposing_exception_text(
     assert "sensitive provider detail" not in str(captured["exc"])
     assert (
         captured["countdown"]
-        > tasks.CONVERSATION_EXECUTION_LEASE_SECONDS
+        == tasks.CONVERSATION_EXECUTION_LEASE_SECONDS + 1
     )
