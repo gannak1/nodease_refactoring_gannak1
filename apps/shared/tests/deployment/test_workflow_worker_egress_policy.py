@@ -5,6 +5,7 @@ import yaml
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 
+
 def _read(relative_path: str) -> str:
     return (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
 
@@ -20,8 +21,12 @@ def test_helm_worker_policy_is_default_on_and_rejects_unsafe_catch_all() -> None
     assert production["worker"]["networkPolicy"]["externalDatabaseCidrs"] == [
         "10.0.0.0/16"
     ]
-    assert 'eq $cidr "0.0.0.0/0"' in helpers
-    assert 'eq $cidr "::/0"' in helpers
+    assert 'define "moduly.validateExternalDependencyCidr"' in helpers
+    assert 'include "moduly.validateExternalDependencyCidr" $cidr' in helpers
+    assert (
+        "external dependency CIDRs must use valid private networks or exact public hosts"
+        in helpers
+    )
     assert "externalDatabaseCidrs is required" in helpers
     assert "externalRedisCidrs is required" in helpers
     assert "external dependency CIDRs cannot be empty" in helpers
