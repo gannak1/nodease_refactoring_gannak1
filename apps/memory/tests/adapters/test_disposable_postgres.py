@@ -96,12 +96,15 @@ PUBLIC_CONVERSATION_AUTHORIZATION_SCOPE_COLUMNS = {
     "authorization_verifier_key_version",
     "authorization_verifier_hash",
 }
-POST_FOUNDATION_COLUMNS = {
+MEMORY_RUNTIME_COLUMNS = {
     "conversation_turns": {
         "request_fingerprint_key_version",
         "access_grant_id",
     },
     "conversation_memory_entries": {"dependency_proof_version"},
+}
+POST_FOUNDATION_COLUMNS = {
+    **MEMORY_RUNTIME_COLUMNS,
     "conversation_purge_jobs": {
         "deployment_id",
         "deployment_version",
@@ -779,7 +782,12 @@ def test_memory_migration_uow_and_concurrent_start_turn_contracts():
                 config=config,
             )
             with Session(engine) as db:
-                assert check_memory_schema_readiness(db).ready is True
+                readiness = check_memory_schema_readiness(db)
+                assert readiness.ready is False
+                assert {
+                    table_name: set(columns)
+                    for table_name, columns in readiness.missing_columns.items()
+                } == MEMORY_RUNTIME_COLUMNS
                 repository = SqlAlchemyConversationMemoryRepository(db)
                 replacement_now = datetime.now(timezone.utc)
                 expired_now = replacement_now - timedelta(days=2)
