@@ -106,7 +106,9 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 }
 ```
 
-`node_ids`가 비어 있으면 해당 deployment snapshot의 모든 `llmNode`를 뜻한다. 지정한 node id가 snapshot에 없거나 LLM node가 아니면 `422 deployment.parameter_optimization_invalid_node`으로 거부한다. LLM node가 하나도 없으면 `422 deployment.parameter_optimization_no_llm_node`으로 거부한다.
+`enabled=true`에서 `node_ids`가 비어 있으면 해당 deployment snapshot의 모든 `llmNode`를 뜻한다. 지정한 node id가 snapshot에 없거나 LLM node가 아니면 `422 deployment.parameter_optimization_invalid_node`으로 거부한다. LLM node가 하나도 없으면 `422 deployment.parameter_optimization_no_llm_node`으로 거부한다.
+
+`enabled=false`인 배포도 관리 화면에서 실제 대상을 표시하고 이후 재배포 없이 활성화할 수 있도록 deployment snapshot의 전체 LLM node id, 점검 주기와 월간 검증 예산을 `disabled` plan에 보존한다. LLM node가 없는 비활성 배포는 빈 대상 목록으로 정상 생성하며, 활성화할 때만 `deployment.parameter_optimization_no_llm_node`로 거부한다.
 
 상태 응답은 raw prompt, completion, credential, recommendation patch를 포함하지 않는다. 목록 API의 `automatic_optimization`은 node id를 제외한 safe summary만 반환하고, 상세 관리 API는 설정을 유지하기 위해 `node_ids`를 함께 반환한다.
 

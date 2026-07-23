@@ -12,7 +12,6 @@ import type {
   DeploymentParameterOptimizationConfig,
 } from '../../types/Deployment';
 import { InputStep } from './InputStep';
-import { ParameterOptimizationStep } from './ParameterOptimizationStep';
 import { SuccessStep } from './SuccessStep';
 import { ErrorStep } from './ErrorStep';
 import type {
@@ -61,8 +60,6 @@ export function DeploymentFlowModal({
       check_every_runs: 50,
       monthly_validation_budget_usd: 3,
     });
-  const [browserAccessPolicy, setBrowserAccessPolicy] =
-    useState<DeploymentBrowserAccessPolicy>();
 
   useEffect(() => {
     setIssuedSecret(null);
@@ -83,7 +80,6 @@ export function DeploymentFlowModal({
       setDeploymentResult(null);
       setEmbeddingEnabled(false);
       setParentOrigins(['']);
-      setBrowserAccessPolicy(undefined);
     }
   }, [isOpen, llmNodes]);
 
@@ -107,15 +103,17 @@ export function DeploymentFlowModal({
   }, [isOpen, isDeploying, onClose]);
 
   // Handle deployment submission
-  const handleSubmit = async () => {
+  const handleSubmit = async (
+    nextBrowserAccessPolicy?: DeploymentBrowserAccessPolicy,
+  ) => {
     setIsDeploying(true);
 
     try {
-      const result = browserAccessPolicy
+      const result = nextBrowserAccessPolicy
         ? await onDeploy(
             description,
             parameterOptimization,
-            browserAccessPolicy,
+            nextBrowserAccessPolicy,
           )
         : await onDeploy(description, parameterOptimization);
       setDeploymentResult(result);
@@ -141,15 +139,14 @@ export function DeploymentFlowModal({
 
   // Handle retry on error
   const handleRetry = () => {
-    setCurrentStep('optimization');
+    setCurrentStep('input');
     setDeploymentResult(null);
   };
 
   const handleInputSubmit = (
     nextBrowserAccessPolicy?: DeploymentBrowserAccessPolicy,
   ) => {
-    setBrowserAccessPolicy(nextBrowserAccessPolicy);
-    setCurrentStep('optimization');
+    void handleSubmit(nextBrowserAccessPolicy);
   };
 
   if (!isOpen) return null;
@@ -180,8 +177,7 @@ export function DeploymentFlowModal({
     }
   };
 
-  const stepNumber =
-    currentStep === 'input' ? 1 : currentStep === 'optimization' ? 2 : 3;
+  const stepNumber = currentStep === 'input' ? 1 : 2;
 
   return (
     <div
@@ -196,19 +192,17 @@ export function DeploymentFlowModal({
           (deploymentType === 'api' || deploymentType === 'webhook') &&
           currentStep === 'success'
             ? 'max-w-6xl'
-            : currentStep === 'optimization'
-              ? 'max-w-2xl'
-              : 'max-w-lg'
+            : 'max-w-lg'
         }`}
       >
         {/* Compact Step Indicator - Top Right Corner */}
         <div className="absolute top-4 right-4 z-10">
           <div className="bg-blue-50 border border-blue-200 rounded-full px-3 py-1 flex items-center gap-2">
             <span className="text-xs font-semibold text-blue-700">
-              {stepNumber}/3
+              {stepNumber}/2
             </span>
             <div className="flex items-center gap-1">
-              {['input', 'optimization', 'result'].map((step, index) => (
+              {['input', 'result'].map((step, index) => (
                 <div
                   key={step}
                   className={`h-1.5 w-1.5 rounded-full ${
@@ -261,19 +255,7 @@ export function DeploymentFlowModal({
               onCancel={onClose}
               onSubmit={handleInputSubmit}
               isDeploying={isDeploying}
-              submitLabel="다음"
-            />
-          )}
-
-          {currentStep === 'optimization' && (
-            <ParameterOptimizationStep
-              nodes={llmNodes}
-              value={parameterOptimization}
-              onChange={setParameterOptimization}
-              onBack={() => setCurrentStep('input')}
-              onCancel={onClose}
-              onSubmit={handleSubmit}
-              isDeploying={isDeploying}
+              submitLabel="배포"
             />
           )}
 

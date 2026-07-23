@@ -43,7 +43,7 @@ vi.mock('@/app/features/app/components/AppAuthSecretControl', () => ({
 afterEach(cleanup);
 
 describe('DeploymentFlowModal', () => {
-  it('sends the selected automatic optimization settings when deploying', async () => {
+  it('deploys directly without showing the automatic optimization step', async () => {
     const onDeploy = vi.fn().mockResolvedValue({ success: true, version: 1 });
 
     render(
@@ -58,31 +58,23 @@ describe('DeploymentFlowModal', () => {
     );
 
     expect(screen.getByText('REST API 배포')).toBeVisible();
+    expect(screen.getByText('1/2')).toBeVisible();
     expect(screen.getByText('Secret 발급 준비: app-1')).toBeVisible();
-    expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
+    expect(screen.queryByText('운영 비용 자동 최적화')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '배포' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Secret 발급' }));
-    fireEvent.click(screen.getByRole('button', { name: '다음' }));
-
-    expect(screen.getByText('운영 비용 자동 최적화')).toBeVisible();
-    fireEvent.click(
-      screen.getByRole('switch', { name: '운영 비용 자동 최적화 사용' }),
-    );
-    fireEvent.change(screen.getByRole('slider', { name: '자동 점검 주기' }), {
-      target: { value: '80' },
-    });
-    fireEvent.change(screen.getByRole('slider', { name: '월간 검증 예산' }), {
-      target: { value: '4.5' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: '배포하기' }));
+    fireEvent.click(screen.getByRole('button', { name: '배포' }));
 
     await waitFor(() =>
       expect(onDeploy).toHaveBeenCalledWith('', {
-        enabled: true,
+        enabled: false,
         node_ids: ['llm-1'],
-        check_every_runs: 80,
-        monthly_validation_budget_usd: 4.5,
+        check_every_runs: 50,
+        monthly_validation_budget_usd: 3,
       }),
     );
+    expect(screen.getByText('2/2')).toBeVisible();
+    expect(screen.queryByText('운영 비용 자동 최적화')).not.toBeInTheDocument();
   });
 
   it('preserves a one-time App secret through deployment steps in memory', async () => {
@@ -108,12 +100,10 @@ describe('DeploymentFlowModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Secret 발급' }));
     expect(screen.getByText('현재 Secret: one-time-secret')).toBeVisible();
 
-    fireEvent.click(screen.getByRole('button', { name: '다음' }));
-    fireEvent.click(screen.getByRole('button', { name: '배포하기' }));
+    fireEvent.click(screen.getByRole('button', { name: '배포' }));
 
-    expect(
-      await screen.findByText('현재 Secret: one-time-secret'),
-    ).toBeVisible();
+    expect(await screen.findByText('배포 성공 (v1)')).toBeVisible();
+    expect(screen.getByText('현재 Secret: one-time-secret')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Secret 상태 확인' }));
     expect(screen.getByRole('button', { name: '테스트 실행' })).toBeEnabled();
 

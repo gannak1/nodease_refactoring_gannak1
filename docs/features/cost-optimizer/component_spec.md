@@ -35,7 +35,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-011 | Routing controls / learner summary / decision trace | 자동 라우팅 ON/OFF, 작업 설명, 기본·fallback 모델, 정책과 분리된 학습기 상태·활성 버전 및 실제 선택 근거를 보여준다. |
 | FR-012 | Optimization recommendation modal | LLM 노드 상세 화면의 `최적화` 버튼으로 추천 모달을 열고, 추천 근거와 위험도를 확인한 뒤 직접 정책 적용 또는 A/B 후보 실험으로 연결한다. |
 | FR-013 | Recommendation verification / compare quality row | 추천 모달과 일반 결과 분석 화면에서 baseline 대비 candidate 비용·속도·token·품질 점수·schema·downstream 결과를 보여주고 적용 또는 이력 재조회로 연결한다. |
-| FR-014 | 배포별 자동 파라미터 최적화 | 배포 모달에서 운영 로그 수집·점검 주기·월간 검증 예산을 설정하고, 워크플로우 운영 현황에서는 비용 위험과 분리된 자동 최적화 상태를 관리한다. |
+| FR-014 | 배포별 자동 파라미터 최적화 | 배포 모달에서는 자동 최적화 단계를 표시하지 않고 비활성 기본값으로 배포하며, 워크플로우 운영 현황에서 비용 위험과 분리된 자동 최적화 상태를 관리한다. |
 | FR-015 | 제약·난이도/사전 지식 기반 라우터 실험 | 현재 UI와 운영 active policy를 바꾸지 않는다. fixed-fixture 보고서로 검증 전용 전략과 사전 지식 기반 전략을 함께 검토한다. |
 
 ## Implementation Tracking
@@ -58,7 +58,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-011 | Runtime decision trace | `apps/client/app/features/workflow/components/modelRouting/ModelRoutingDecisionDetails.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr11-judge-first-routing-trace.test.tsx`, `apps/client/app/features/workflow/tests/test-sidebar-node-detail.test.tsx` | policy와 learner 식별자, Judge 호출, 학습 포함 여부 표시 통과 |
 | FR-012 | Optimization recommendation modal | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 기록 있음 |
 | FR-013 | Recommendation verification, compare quality row, history restore | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerHistoryPanel.tsx`, `apps/client/app/features/workflow/hooks/useCostOptimizerHistory.ts`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/features/workflow/types/Api.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | modal 검증, 일반 compare 품질 행, 평가 불가, 단건 비교 이력 복원 통과 |
-| FR-014 | Deployment optimization step / management | `apps/client/app/features/workflow/components/deployment/ParameterOptimizationStep.tsx`, `apps/client/app/features/workflow/components/deployment/AutomaticOptimizationManagementModal.tsx`, `apps/client/app/dashboard/mymodule/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/components/deployment/DeploymentFlowModal.test.tsx`, `apps/client/app/features/workflow/components/deployment/AutomaticOptimizationManagementModal.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr14-dashboard-automatic-optimization-management.test.tsx` | 통과 |
+| FR-014 | Deployment default / management | `apps/client/app/features/workflow/components/deployment/DeploymentFlowModal.tsx`, `apps/client/app/features/workflow/components/deployment/AutomaticOptimizationManagementModal.tsx`, `apps/client/app/dashboard/mymodule/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/components/deployment/DeploymentFlowModal.test.tsx`, `apps/client/app/features/workflow/components/deployment/AutomaticOptimizationManagementModal.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr14-dashboard-automatic-optimization-management.test.tsx` | 통과 |
 | FR-015 | 실험 결과 artifact | `scripts/experiment_constraint_difficulty_router.py`, 실행 시 생성되는 로컬 `reports/model-routing/constraint-difficulty-v1-fixed-fixture/` | 실제 semantic matcher fixture, 검증 전용 constraint, prior-guided cold-start 비교를 포함한 개발자용 JSON/Markdown 생성 구현, 제품 UI 없음 | `tests/experiments/test_constraint_difficulty_routing_experiment.py` | 통과 |
 
 ## FR-015 UI Boundary
@@ -71,13 +71,7 @@ safe 판단 근거를 표시한다.
 
 ### 배포 모달
 
-배포 흐름은 `배포 설명 → 운영 비용 자동 최적화 → 결과` 세 단계다. 두 번째 단계는 선택형이며, 사용자가 끄면 배포 설정과 실행 동작은 기존과 동일하다.
-
-- `운영 비용 자동 최적화 사용`: 체크 스위치. 대상 LLM node가 없으면 비활성화한다.
-- `최적화 대상 LLM 노드`: 현재 graph의 LLM node만 나열한다. 전체 선택/해제와 개별 선택을 제공한다.
-- `자동 점검 주기`: `20~200회`, 10회 단위 slider. 성공한 배포 후 운영 실행 수를 기준으로 한다.
-- `월간 검증 예산`: `$0.5~$10`, $0.5 단위 slider. 일반 workflow 운영 비용과 분리해 설명한다.
-- 안내 문구는 응답 길이/RAG context만 다루며 모델 라우팅, 모델 선택, prompt는 바꾸지 않는다는 점을 분명히 표시한다.
+배포 흐름은 `배포 설명 → 결과` 두 단계다. 배포 모달에는 자동 최적화 설정을 노출하지 않으며, 배포 요청은 자동 최적화가 비활성화된 기본 설정을 전달한다. 사용자는 배포 완료 후 워크플로우 운영 현황에서 자동 최적화를 관리한다.
 
 ### 워크플로우 운영 현황
 
