@@ -1069,6 +1069,7 @@ def _entry_record(entry: ConversationMemoryEntry) -> ConversationMemoryEntryReco
         ),
         content_revision=entry.content_revision,
         idempotency_key_hash=entry.idempotency_key_hash,
+        dependency_proof_version=entry.dependency_proof_version,
         sensitivity="unclassified",
         expires_at=entry.expires_at,
         invalidated_at=entry.invalidated_at,
@@ -1101,6 +1102,7 @@ def _entry_domain(record: ConversationMemoryEntryRecord) -> ConversationMemoryEn
         idempotency_key_hash=record.idempotency_key_hash,
         created_at=record.created_at,
         updated_at=record.updated_at,
+        dependency_proof_version=record.dependency_proof_version,
         invalidated_at=record.invalidated_at,
         expires_at=record.expires_at,
     )

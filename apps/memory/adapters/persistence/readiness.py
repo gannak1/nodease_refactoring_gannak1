@@ -35,6 +35,8 @@ REQUIRED_MEMORY_SCHEMA: dict[str, frozenset[str]] = {
             "version",
             "request_idempotency_hash",
             "request_fingerprint",
+            "request_fingerprint_key_version",
+            "access_grant_id",
             "status",
         }
     ),
@@ -54,6 +56,7 @@ REQUIRED_MEMORY_SCHEMA: dict[str, frozenset[str]] = {
             "model_format_version",
             "model_content_digest",
             "model_plaintext_byte_length",
+            "dependency_proof_version",
         }
     ),
     "conversation_memory_summaries": frozenset(

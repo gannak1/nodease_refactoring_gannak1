@@ -4,7 +4,16 @@ import uuid
 from datetime import datetime, timezone
 
 from apps.shared.db.base import Base
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -68,6 +77,10 @@ class ConversationWorkflowExecutionAdmissionRecord(Base):
             "state",
             "lease_deadline",
         ),
+        UniqueConstraint(
+            "execution_id",
+            name="uq_conv_workflow_admission_execution",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -104,7 +117,8 @@ class ConversationWorkflowExecutionAdmissionRecord(Base):
     storage_generation: Mapped[int] = mapped_column(Integer, nullable=False)
     minimum_worker_capability: Mapped[str] = mapped_column(String(128), nullable=False)
     execution_id: Mapped[uuid.UUID] = mapped_column(
-        PGUUID(as_uuid=True), nullable=False, unique=True
+        PGUUID(as_uuid=True),
+        nullable=False,
     )
     state: Mapped[str] = mapped_column(
         String(24), nullable=False, default="admitted", server_default=text("'admitted'")

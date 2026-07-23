@@ -3,7 +3,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-
 from apps.shared.domain.conversation_memory_task import (
     ConversationTurnTaskContractError,
     ConversationTurnTaskEnvelope,

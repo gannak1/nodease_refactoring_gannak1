@@ -22,6 +22,7 @@ _SAFE_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _SAFE_CHANNEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 MAX_MEMORY_CONTENT_BYTES = 16_384
 MAX_PURGE_RECEIPT_LIFETIME = timedelta(days=8)
+CONVERSATION_SOURCE_FREE_PROOF_VERSION = "conversation-source-free-v1"
 
 
 class AudienceKind(StrEnum):
@@ -535,8 +536,16 @@ class ConversationMemoryEntry:
     idempotency_key_hash: str
     created_at: datetime
     updated_at: datetime
+    dependency_proof_version: str | None = None
     invalidated_at: datetime | None = None
     expires_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.dependency_proof_version is not None:
+            _require_safe_version(
+                self.dependency_proof_version,
+                "dependency_proof_version",
+            )
 
     @classmethod
     def provisional_user(
@@ -569,6 +578,7 @@ class ConversationMemoryEntry:
             idempotency_key_hash=idempotency_key_hash,
             created_at=now,
             updated_at=now,
+            dependency_proof_version=CONVERSATION_SOURCE_FREE_PROOF_VERSION,
         )
 
     @classmethod
@@ -605,6 +615,7 @@ class ConversationMemoryEntry:
             idempotency_key_hash=idempotency_key_hash,
             created_at=now,
             updated_at=now,
+            dependency_proof_version=CONVERSATION_SOURCE_FREE_PROOF_VERSION,
         )
 
     @classmethod
@@ -638,6 +649,7 @@ class ConversationMemoryEntry:
             idempotency_key_hash=idempotency_key_hash,
             created_at=now,
             updated_at=now,
+            dependency_proof_version=CONVERSATION_SOURCE_FREE_PROOF_VERSION,
         )
 
     def approve(self, *, content_revision: int, now: datetime) -> None:

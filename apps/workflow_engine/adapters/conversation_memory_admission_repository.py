@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from apps.shared.db.models.conversation_memory_execution import (
+from apps.shared.db.models.workflow_conversation_execution import (
     ConversationWorkflowExecutionAdmissionRecord,
 )
 from apps.workflow_engine.application.conversation_memory_admission import (

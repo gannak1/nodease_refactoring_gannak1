@@ -20,6 +20,7 @@ from apps.memory.application.execution import (
     resolve_command_for_binding,
 )
 from apps.memory.domain.conversation import (
+    CONVERSATION_SOURCE_FREE_PROOF_VERSION,
     ConversationMemoryEntry,
     EntryLifecycle,
     EntryType,
@@ -60,6 +61,7 @@ class ContextEntryReference:
     entry_type: EntryType
     content_revision: int
     content_digest: str
+    dependency_proof_version: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +81,10 @@ class ContextCandidatePair:
             and self.assistant is not None
             and self.user.entry_type is EntryType.USER_TURN
             and self.assistant.entry_type is EntryType.ASSISTANT_TURN
+            and self.user.dependency_proof_version
+            == CONVERSATION_SOURCE_FREE_PROOF_VERSION
+            and self.assistant.dependency_proof_version
+            == CONVERSATION_SOURCE_FREE_PROOF_VERSION
             and self.dependency_count == 0
         )
 

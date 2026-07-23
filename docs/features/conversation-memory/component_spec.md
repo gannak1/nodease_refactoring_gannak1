@@ -1,6 +1,6 @@
 # Conversation Memory Component Specification
 
-Status: Implemented public lifecycle foundation; runtime follow-up pending
+Status: Implemented public lifecycle and initial runtime; advanced follow-up pending
 
 ## Architecture
 
@@ -26,7 +26,7 @@ FastAPI request/response, Celery task, SQLAlchemy expression와 provider SDK는 
 
 ## Session Surface Composition
 
-- MBA-317 Gateway composition은 public Chatbot adapter를 Conversation Session create/close/reset/delete/transcript/purge-status port에 연결한다. public run/turn dispatch는 MBA-318 전 intentionally dormant이며 root-level `conversation` envelope을 fail-closed한다.
+- MBA-317 Gateway composition은 public Chatbot adapter를 Conversation Session create/close/reset/delete/transcript/purge-status port에 연결한다. MBA-318은 root-level `conversation` envelope을 public StartTurn admission과 content-free dispatch publisher에 연결하며 Workflow Engine의 durable admission/lease fence가 실행을 소유한다.
 - `PublicConversationCorsBoundaryMiddleware`는 public route prefix의 outer transport boundary를 소유한다. Endpoint 진입 전 dependency/body validation과 router/preflight 오류를 포함한 모든 응답에 `Cache-Control: no-store`, `Referrer-Policy: no-referrer`를 적용하고 전역 `Access-Control-*` header와 `Vary: Origin`을 제거한다.
 - Authenticated internal Chatbot adapter는 별도 access policy와 route/CSRF/session namespace 계약이 구현된 뒤 연결하는 후속 target이다.
 - Workflow Editor test adapter는 일반 test execution만 수행하고 Conversation Session port를 호출하지 않는다. Editor session은 별도 feature/security contract 전까지 composition allowlist에 등록하지 않는다.

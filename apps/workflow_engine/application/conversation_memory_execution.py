@@ -215,7 +215,7 @@ class ExecuteConversationTurnUseCase:
         binding = self.memory.resolve(envelope)
         self._require_envelope_binding(envelope, binding)
         graph = self.graphs.load(binding)
-        contract = self._require_graph_binding(graph, binding)
+        self._require_graph_binding(graph, binding)
         now = self.clock.now()
         admitted = self.admissions.admit(binding, now=now)
         if admitted.state in {

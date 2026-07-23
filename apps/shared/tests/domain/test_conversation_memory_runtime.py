@@ -3,7 +3,6 @@ from __future__ import annotations
 from copy import deepcopy
 
 import pytest
-
 from apps.shared.domain.conversation_memory_runtime import (
     ConversationMemoryRuntimeContractError,
     validate_conversation_memory_runtime,

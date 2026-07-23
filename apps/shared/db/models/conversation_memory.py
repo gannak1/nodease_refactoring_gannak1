@@ -556,6 +556,11 @@ class ConversationMemoryEntryRecord(_TimestampMixin, Base):
             name="ck_mem_entries_revision",
         ),
         CheckConstraint(
+            "dependency_proof_version IS NULL "
+            "OR length(dependency_proof_version) BETWEEN 1 AND 64",
+            name="ck_mem_entries_dependency_proof_version",
+        ),
+        CheckConstraint(
             _PROTECTED_PROJECTION_ENVELOPE_CHECK,
             name="ck_mem_entries_content_envelope",
         ),
@@ -632,6 +637,10 @@ class ConversationMemoryEntryRecord(_TimestampMixin, Base):
     )
     content_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     idempotency_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    dependency_proof_version: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
     sensitivity: Mapped[str] = mapped_column(
         String(32),
         nullable=False,

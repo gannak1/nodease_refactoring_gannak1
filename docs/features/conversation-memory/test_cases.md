@@ -138,8 +138,8 @@ Status: Draft
 - MEM-TC-APP-029K: Candidate 0개는 explicit complete-empty dependency proof로 통과하지만 candidate/provenance/tokenizer가 unknown인 경우 empty로 완화하지 않는다.
 - MEM-TC-APP-029L: Memory marker만 commit되고 usage가 exact intent인 같은 attempt는 current owner와 fresh binding으로 usage start까지 한 번 진행할 수 있다. Usage started/outcome-unknown/terminal replay는 provider를 호출하지 않고, Memory marker 또는 usage start commit 실패도 zero-I/O다.
 - MEM-TC-APP-029M: Materialized history는 current user message 직전의 untrusted history block으로 한 번 삽입되고 system/developer prompt 또는 durable workflow payload로 승격되지 않는다.
-- MEM-TC-APP-029J: Provider capability의 organization/deployment version/node invocation/purpose/model/pricing revision/expiry 중 하나라도 lease와 다르면 raw context와 provider 호출을 모두 거부한다.
-- MEM-TC-APP-029K: Lease claim은 실제 materialized entry/summary와 정확히 대응하는 RuntimeDataDependencyEnvelope를 반환하고 excluded/stale source를 envelope에 남기지 않는다.
+- MEM-TC-APP-029N: Provider capability의 organization/deployment version/node invocation/purpose/model/pricing revision/expiry 중 하나라도 lease와 다르면 raw context와 provider 호출을 모두 거부한다.
+- MEM-TC-APP-029O: Lease claim은 실제 materialized entry/summary와 정확히 대응하는 RuntimeDataDependencyEnvelope를 반환하고 excluded/stale source를 envelope에 남기지 않는다.
 
 ### Summary Generation Process
 
@@ -245,7 +245,7 @@ Status: Draft
 
 ## Gateway And API Tests
 
-MBA-317의 자동 검증은 public capability domain/application, encrypted replay/admission adapter, Gateway lifecycle transport와 same-origin CORS boundary를 대상으로 한다. provider/dispatch/turn completion 및 physical purge worker 사례는 MBA-318 이후의 runtime/worker test로 남긴다.
+MBA-317의 자동 검증은 public capability domain/application, encrypted replay/admission adapter, Gateway lifecycle transport와 same-origin CORS boundary를 대상으로 한다. MBA-318은 public StartTurn/dispatch, Workflow admission/execution, bounded context와 provider fence를 추가로 검증한다. Physical purge worker 사례는 MBA-320의 runtime/worker test로 남긴다.
 
 - MEM-TC-API-001: Runtime metadata는 business `inputs`와 분리된다.
 - MEM-TC-API-002: Client subject/organization/internal session/storage generation spoofing을 무시한다.
@@ -465,6 +465,7 @@ MBA-317의 자동 검증은 public capability domain/application, encrypted repl
 - MEM-TC-MIG-016: Public old-version session은 version 존재를 노출하지 않고 explicit new conversation으로만 전환한다.
 - MEM-TC-MIG-017: Authenticated old-version session은 typed conflict와 safe new-session action을 반환하고 transcript를 새 session에 자동 복사하지 않는다.
 - MEM-TC-MIG-018: Additive migration 적용 전 public lifecycle feature activation은 누락된 schema capability로 startup에서 실패하고 적용 뒤 성공한다. Migration filename, revision ID 또는 당시의 latest head를 하드코딩하지 않고 실제 required table·column 집합을 검증한다.
+- MEM-TC-MIG-019: Runtime additive revision은 Turn replay key/grant provenance, Entry source-free proof와 Workflow execution admission table을 생성한다. 새 runtime binding 또는 admission data가 있으면 downgrade가 fail-closed하고 명시적 보존·배출 뒤 foundation parent로 round-trip 한다.
 
 ## Performance And Reliability Tests
 
@@ -519,6 +520,20 @@ MBA-316은 production composition을 활성화하지 않고 아래 persistence/l
 | `apps/memory/tests/application/test_dispatch.py` | Claim/publish/expired-recovery command만 상태를 전이하고 stale fencing을 rollback | MEM-TC-APP-017, 017A, 018 |
 | `apps/memory/tests/adapters/test_schema.py`, `test_repository.py` | 15개 model/readiness, nullable reference의 tenant-scoped composite FK와 Access Grant canonical binding FK, lifecycle/turn/entry/dispatch CAS와 terminal/fencing check, projection별 암호화 envelope, safe DB error 변환 | MEM-TC-DB-001, 004, 007, 008, 010, 023의 schema/repository subset |
 | `apps/memory/tests/adapters/test_disposable_postgres.py` | 실제 PostgreSQL clean upgrade와 Memory foundation/Public capability replay revision별 Alembic model drift·round-trip check, Access Grant binding mismatch DB rejection, legacy Run/NodeRun 보존 downgrade, concurrent StartTurn 단일 승자, StartTurn partial-write rollback, dispatch claim/publish | MEM-TC-DB-002, 007, 013, 014, 017 및 MEM-TC-MIG-005 |
+
+### MBA-318 protected-resource completion evidence
+
+MBA-318은 durable Memory resource reference, current authorization과 provider 외부 I/O 경계를 포함하므로 `docs/engineering/protected-resource-feature-completion.md`를 적용한다.
+
+| 경계 | 상태 | Evidence와 follow-up review |
+| --- | --- | --- |
+| 저장 | 완료 | `StartTurnUseCase`, `SqlAlchemyConversationMemoryRepository`, `conversation_turns.access_grant_id`와 `dependency_proof_version`; legacy proof `NULL`은 context 후보에서 fail-closed |
+| 관리 API/UI | 해당 없음 | MBA-318은 기존 Public lifecycle/Workflow 실행 경로를 연결하며 새 관리 API/UI를 추가하지 않음 |
+| Preflight | 완료 | Gateway public runtime과 dispatch admission이 organization/deployment/grant 및 immutable Memory 계약을 side effect 전에 검증 |
+| Runtime/background | 완료 | Workflow-owned admission lease/fence, current grant 재검증, bounded reference context와 provider-start/usage marker 테스트 |
+| Lifecycle | 완료 | revoked/expired grant redelivery 차단, terminal execution replay 및 additive migration downgrade guard |
+| Audit/redaction | 완료 | content-free admission/result reference, safe failure reason, raw Memory/token/provider payload 비영속 계약과 테스트 |
+| 테스트 | 완료 | `apps/memory/tests/application/test_public_runtime.py`, `test_context.py`, `test_execution.py`, Workflow admission/execution tests와 disposable PostgreSQL contract |
 
 Disposable PostgreSQL evidence는 `NODEASE_RUN_DISPOSABLE_DB_TEST=1`인 전용 CI job에서 한 번 실행하고 일반 `memory-tests` job에서는 제외한다. MEM-TC-DOM-016의 active Turn safe terminal 처리, MEM-TC-DB-003/005~007/009/011~012/015~026과 lifecycle audit/outbox cardinality는 관련 application adapter가 구현되기 전 완료로 표시하지 않는다.
 

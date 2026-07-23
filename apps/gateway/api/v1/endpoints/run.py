@@ -6,7 +6,6 @@ from fastapi import (
     Body,
     Depends,
     Header,
-    HTTPException,
     Request,
     Response,
     status,
