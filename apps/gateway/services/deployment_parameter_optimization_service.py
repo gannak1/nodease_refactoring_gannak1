@@ -56,11 +56,15 @@ class DeploymentParameterOptimizationService:
         graph_snapshot: dict[str, Any],
         config: DeploymentParameterOptimizationConfig | None,
     ) -> DeploymentParameterOptimizationPlan | None:
-        if config is None or not config.enabled:
+        if config is None:
             return None
 
         llm_node_ids = cls._llm_node_ids(graph_snapshot)
-        target_node_ids = cls._target_node_ids(config, llm_node_ids)
+        target_node_ids = (
+            cls._target_node_ids(config, llm_node_ids)
+            if config.enabled
+            else llm_node_ids
+        )
         existing = (
             db.query(DeploymentParameterOptimizationPlan)
             .filter(
@@ -74,22 +78,24 @@ class DeploymentParameterOptimizationService:
                 app_id=deployment.app_id,
                 workflow_id=workflow_id,
                 node_ids=target_node_ids,
-                enabled=True,
+                enabled=config.enabled,
                 check_every_runs=config.check_every_runs,
                 monthly_validation_budget_usd=config.monthly_validation_budget_usd,
                 validation_spend_usd=0.0,
                 validation_spend_month=cls._current_month_key(),
-                status="collecting",
+                status="collecting" if config.enabled else "disabled",
                 active_parameter_patch={},
             )
             db.add(existing)
             return existing
 
         existing.node_ids = target_node_ids
-        existing.enabled = True
+        existing.enabled = config.enabled
         existing.check_every_runs = config.check_every_runs
         existing.monthly_validation_budget_usd = config.monthly_validation_budget_usd
-        if existing.status in {"disabled", "paused", "failed"}:
+        if not config.enabled:
+            existing.status = "disabled"
+        elif existing.status in {"disabled", "paused", "failed"}:
             existing.status = "collecting"
         cls._reset_monthly_spend_if_needed(existing)
         return existing

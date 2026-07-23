@@ -267,7 +267,6 @@ def experiment_graph() -> dict[str, Any]:
     knowledge_bases = [
         {"id": str(KB_IDS[key]), "name": key}
         for key in (
-            "onboarding_company_common",
             "onboarding_platform",
             "onboarding_sales",
             "onboarding_finance",

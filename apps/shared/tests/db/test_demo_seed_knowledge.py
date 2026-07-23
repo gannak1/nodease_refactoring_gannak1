@@ -194,13 +194,13 @@ def test_resolve_legal_pdf_picks_latest_effective_date(tmp_path, monkeypatch):
 
 
 def test_resolve_onboarding_pdf_uses_bundled_demodata(tmp_path, monkeypatch):
-    source = tmp_path / "company_common_onboarding.pdf"
+    source = tmp_path / "platform_team_onboarding_v4.pdf"
     source.write_bytes(b"%PDF-1.4\n")
     monkeypatch.setattr(demo_seed, "DEMO_ONBOARDING_PDF_DIR", tmp_path)
     spec = next(
         item
         for item in demo_seed.ONBOARDING_PDF_SPECS
-        if item.key == "onboarding_company_common"
+        if item.key == "onboarding_platform"
     )
 
     assert demo_seed._resolve_onboarding_pdf(spec) == source
@@ -362,7 +362,6 @@ def test_department_onboarding_graph_references_exact_rbac_demo_kbs():
     assert llm_node["data"]["topK"] == 3
     assert llm_node["data"]["answerGroundingCheck"] == "basic"
     assert [item["id"] for item in llm_node["data"]["knowledgeBases"]] == [
-        str(demo_seed.KB_IDS["onboarding_company_common"]),
         str(demo_seed.KB_IDS["onboarding_platform"]),
         str(demo_seed.KB_IDS["onboarding_sales"]),
     ]
@@ -392,8 +391,6 @@ def test_department_onboarding_knowledge_permissions_are_fail_closed_by_team():
     }
 
     assert department_specs == {
-        ("onboarding_company_common", "department_development", "operator"),
-        ("onboarding_company_common", "department_planning", "operator"),
         (
             "onboarding_platform",
             "department_development",
@@ -429,17 +426,24 @@ def test_team_onboarding_access_control_kbs_use_bundled_pdf_specs():
     specs = {spec.key: spec for spec in demo_seed.ONBOARDING_PDF_SPECS}
 
     expected_safe_labels = {
-        "onboarding_company_common": "온보딩 문서: 회사 공통",
         "onboarding_platform": "온보딩 문서: 플랫폼개발팀",
         "onboarding_sales": "온보딩 문서: 영업팀",
         "onboarding_finance": "온보딩 문서: 재무팀",
     }
     expected_filenames = {
-        "onboarding_company_common": "company_common_onboarding.pdf",
         "onboarding_platform": "platform_team_onboarding_v4.pdf",
         "onboarding_sales": "sales_team_onboarding_v2.pdf",
         "onboarding_finance": "finance_team_onboarding_v3.pdf",
     }
+    assert "onboarding_company_common" not in demo_seed.KB_IDS
+    assert "onboarding_company_common" not in demo_seed.DOCUMENT_IDS
+    assert "onboarding_company_common" not in demo_seed.COLLECTION_ITEM_IDS
+    assert "onboarding_company_common" in demo_seed.RETIRED_INTERNAL_DOCUMENT_KB_IDS
+    assert "onboarding_company_common" in demo_seed.RETIRED_INTERNAL_DOCUMENT_IDS
+    assert (
+        "onboarding_company_common"
+        in demo_seed.RETIRED_INTERNAL_DOCUMENT_COLLECTION_ITEM_IDS
+    )
     assert {key: spec.filename for key, spec in specs.items()} == expected_filenames
     assert {key: spec.name for key, spec in specs.items()} == expected_safe_labels
     assert {
@@ -509,10 +513,6 @@ def test_team_onboarding_access_control_permissions_are_fail_closed_by_team():
     }
 
     assert actual == {
-        ("onboarding_company_common", "onboarding_platform", "operator"),
-        ("onboarding_company_common", "onboarding_sales", "operator"),
-        ("onboarding_company_common", "onboarding_finance", "operator"),
-        ("onboarding_company_common", "onboarding_people", "manager"),
         ("onboarding_platform", "onboarding_platform", "operator"),
         ("onboarding_platform", "onboarding_people", "manager"),
         ("onboarding_sales", "onboarding_sales", "operator"),
@@ -586,7 +586,6 @@ def test_enterprise_request_routing_graph_uses_current_routing_context():
         str(demo_seed.KB_IDS[key])
         for key in (
             "legal_privacy",
-            "onboarding_company_common",
             "onboarding_platform",
             "onboarding_sales",
             "onboarding_finance",
@@ -927,7 +926,7 @@ def test_demo_summary_reports_seeded_knowledge_documents():
     assert summary["knowledge_documents"] == {
         "public_law_pdfs": 7,
         "internal_markdown_docs": 2,
-        "bundled_onboarding_pdfs": 4,
+        "bundled_onboarding_pdfs": 3,
         "embedding_model": demo_seed.DEMO_EMBEDDING_MODEL,
         "fixture": demo_seed.DEMO_KNOWLEDGE_FIXTURE_PATH.as_posix(),
     }
@@ -1521,7 +1520,6 @@ def test_internal_it_helpdesk_routing_demo_matches_presentation_contract():
     assert llm_data["auto_model_routing"] is True
     assert llm_data["model_routing_context"]["node_task"] == "internal_it_helpdesk"
     assert llm_data["knowledgeBases"] == [
-        demo_seed._knowledge_base_ref("onboarding_company_common"),
         demo_seed._knowledge_base_ref("onboarding_platform"),
     ]
     assert llm_data["output_format"]["schema"]["required"] == [

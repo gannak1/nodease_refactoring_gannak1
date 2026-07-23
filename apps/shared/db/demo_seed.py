@@ -214,7 +214,6 @@ KB_IDS = {
     "legal_occupational_safety": _uuid(324),
     "legal_retirement_benefits": _uuid(325),
     "legal_fair_hiring": _uuid(326),
-    "onboarding_company_common": _uuid(338),
     "onboarding_platform": _uuid(339),
     "onboarding_sales": _uuid(340),
     "onboarding_finance": _uuid(341),
@@ -233,6 +232,7 @@ RETIRED_INTERNAL_DOCUMENT_KB_IDS = {
     "internal_developer_compensation_band": _uuid(335),
     "internal_compensation_access_policy": _uuid(336),
     "internal_planning_onboarding_guide": _uuid(337),
+    "onboarding_company_common": _uuid(338),
 }
 
 COLLECTION_IDS = {
@@ -310,7 +310,6 @@ DOCUMENT_IDS = {
     "legal_occupational_safety": _uuid(344),
     "legal_retirement_benefits": _uuid(345),
     "legal_fair_hiring": _uuid(346),
-    "onboarding_company_common": _uuid(358),
     "onboarding_platform": _uuid(359),
     "onboarding_sales": _uuid(360),
     "onboarding_finance": _uuid(361),
@@ -328,6 +327,7 @@ RETIRED_INTERNAL_DOCUMENT_IDS = {
     "internal_developer_compensation_band": _uuid(355),
     "internal_compensation_access_policy": _uuid(356),
     "internal_planning_onboarding_guide": _uuid(357),
+    "onboarding_company_common": _uuid(358),
 }
 
 COLLECTION_ITEM_IDS = {
@@ -338,7 +338,6 @@ COLLECTION_ITEM_IDS = {
     "legal_occupational_safety": _uuid(374),
     "legal_retirement_benefits": _uuid(375),
     "legal_fair_hiring": _uuid(376),
-    "onboarding_company_common": _uuid(388),
     "onboarding_platform": _uuid(389),
     "onboarding_sales": _uuid(390),
     "onboarding_finance": _uuid(391),
@@ -358,6 +357,7 @@ RETIRED_INTERNAL_DOCUMENT_COLLECTION_ITEM_IDS = {
     "internal_developer_compensation_band": _uuid(385),
     "internal_compensation_access_policy": _uuid(386),
     "internal_planning_onboarding_guide": _uuid(387),
+    "onboarding_company_common": _uuid(388),
 }
 
 LEGACY_DEMO_DOCUMENT_KB_KEYS = {
@@ -704,20 +704,6 @@ class DemoKnowledgeSeedSpec:
 
 ONBOARDING_PDF_SPECS = (
     DemoKnowledgeSeedSpec(
-        key="onboarding_company_common",
-        name="온보딩 문서: 회사 공통",
-        description="전 직원이 조회하는 공통 온보딩 절차",
-        filename="company_common_onboarding.pdf",
-        summary="첫날 일정, 공통 계정 설정, 보안 교육과 완료 기준",
-        source_tier="private",
-        classification="internal",
-        tags=("온보딩", "회사 공통", "보안 교육"),
-        keywords=("첫날 일정", "SSO", "보안 교육", "메신저"),
-        collection_key="team_onboarding_access_control",
-        chunk_size=800,
-        chunk_overlap=100,
-    ),
-    DemoKnowledgeSeedSpec(
         key="onboarding_platform",
         name="온보딩 문서: 플랫폼개발팀",
         description="플랫폼개발팀 개발환경과 접근 신청 절차",
@@ -905,19 +891,19 @@ TEAM_SPECS = {
     "tester_member": ("테스트 일반팀", "일반 멤버 권한 제한 확인용 팀"),
     "department_development": (
         "개발팀",
-        "공통 온보딩과 개발팀 전용 Knowledge를 사용하는 데모 팀",
+        "플랫폼개발팀 온보딩 Knowledge를 사용하는 데모 팀",
     ),
     "department_planning": (
         "기획팀",
-        "공통 온보딩과 기획팀 전용 Knowledge를 사용하는 데모 팀",
+        "영업팀 온보딩 Knowledge를 사용하는 데모 팀",
     ),
     "onboarding_platform": (
         "플랫폼개발팀",
-        "회사 공통 및 플랫폼개발팀 온보딩 문서를 사용하는 데모 팀",
+        "플랫폼개발팀 온보딩 문서를 사용하는 데모 팀",
     ),
     "onboarding_sales": (
         "영업팀",
-        "회사 공통 및 영업팀 온보딩 문서를 사용하는 데모 팀",
+        "영업팀 온보딩 문서를 사용하는 데모 팀",
     ),
     "onboarding_people": (
         "People 팀",
@@ -925,7 +911,7 @@ TEAM_SPECS = {
     ),
     "onboarding_finance": (
         "재무팀",
-        "회사 공통 및 재무팀 온보딩 문서를 사용하는 권한 경계 데모 팀",
+        "재무팀 온보딩 문서를 사용하는 권한 경계 데모 팀",
     ),
 }
 
@@ -2009,7 +1995,6 @@ def _department_onboarding_knowledge_base_refs() -> list[dict[str, str]]:
     return [
         _knowledge_base_ref(key)
         for key in (
-            "onboarding_company_common",
             "onboarding_platform",
             "onboarding_sales",
         )
@@ -2533,7 +2518,6 @@ def _internal_it_helpdesk_routing_graph() -> dict[str, Any]:
             ],
             "parameters": {"temperature": 0.2, "max_tokens": 900},
             "knowledgeBases": [
-                _knowledge_base_ref("onboarding_company_common"),
                 _knowledge_base_ref("onboarding_platform"),
             ],
             "output_format": {
@@ -2811,7 +2795,6 @@ def _enterprise_request_routing_graph() -> dict[str, Any]:
                 _knowledge_base_ref(key)
                 for key in (
                     "legal_privacy",
-                    "onboarding_company_common",
                     "onboarding_platform",
                     "onboarding_sales",
                     "onboarding_finance",
@@ -3166,18 +3149,12 @@ def _demo_team_knowledge_permission_specs() -> list[tuple[str, str, str]]:
         )
     knowledge_permission_specs.extend(
         [
-            ("onboarding_company_common", "onboarding_platform", "operator"),
-            ("onboarding_company_common", "onboarding_sales", "operator"),
-            ("onboarding_company_common", "onboarding_finance", "operator"),
-            ("onboarding_company_common", "onboarding_people", "manager"),
             ("onboarding_platform", "onboarding_platform", "operator"),
             ("onboarding_platform", "onboarding_people", "manager"),
             ("onboarding_sales", "onboarding_sales", "operator"),
             ("onboarding_sales", "onboarding_people", "manager"),
             ("onboarding_finance", "onboarding_finance", "operator"),
             ("onboarding_finance", "onboarding_people", "manager"),
-            ("onboarding_company_common", "department_development", "operator"),
-            ("onboarding_company_common", "department_planning", "operator"),
             ("onboarding_platform", "department_development", "operator"),
             ("onboarding_sales", "department_planning", "operator"),
         ]
@@ -3402,7 +3379,7 @@ def _seed_knowledge(db: Session) -> None:
         {
             "organization_id": ORG_ID,
             "name": "팀별 온보딩 접근 제어 문서",
-            "description": "회사 공통 및 팀별 온보딩 PDF를 권한 경계별로 묶은 데모 컬렉션",
+            "description": "팀별 온보딩 PDF를 권한 경계별로 묶은 데모 컬렉션",
             "source_identity_id": None,
             "source_connector_ref": "local.demodata.team-onboarding-access-control",
             "is_system_managed": False,

@@ -43,6 +43,9 @@ class _PlanQuery:
     def first(self):
         return self.plan
 
+    def all(self):
+        return [self.plan] if self.plan is not None else []
+
 
 class _PlanDb:
     def __init__(self, plan):
@@ -53,7 +56,11 @@ class _PlanDb:
 
 
 def _deployment():
-    return SimpleNamespace(id=uuid.uuid4(), app_id=uuid.uuid4())
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        app_id=uuid.uuid4(),
+        graph_snapshot=_graph(),
+    )
 
 
 def _graph():
@@ -89,6 +96,75 @@ def test_configure_for_deployment_creates_a_parameter_only_plan():
     assert float(plan.monthly_validation_budget_usd) == 3
     assert plan.active_parameter_patch == {}
     assert plan.status == "collecting"
+
+
+def test_configure_for_deployment_preserves_targets_for_disabled_management(
+    monkeypatch,
+):
+    db = _Db()
+    deployment = _deployment()
+    config = DeploymentParameterOptimizationConfig(
+        enabled=False,
+        node_ids=["llm-triage"],
+        check_every_runs=50,
+        monthly_validation_budget_usd=3,
+    )
+
+    plan = DeploymentParameterOptimizationService.configure_for_deployment(
+        db,
+        deployment=deployment,
+        workflow_id=uuid.uuid4(),
+        graph_snapshot=_graph(),
+        config=config,
+    )
+
+    assert plan is db.added[0]
+    assert plan.enabled is False
+    assert plan.status == "disabled"
+    assert plan.node_ids == ["llm-triage"]
+    assert plan.check_every_runs == 50
+    assert float(plan.monthly_validation_budget_usd) == 3
+
+    monkeypatch.setattr(
+        DeploymentParameterOptimizationService,
+        "_successful_run_counts",
+        classmethod(lambda _cls, _db, _plans: {}),
+    )
+    summary = DeploymentParameterOptimizationService.summary_for_deployment(
+        _PlanDb(plan),
+        deployment.id,
+    )
+    assert summary["enabled"] is False
+    assert summary["node_ids"] == ["llm-triage"]
+    assert summary["node_count"] == 1
+
+    updated = DeploymentParameterOptimizationService.update_plan(
+        _PlanDb(plan),
+        deployment=deployment,
+        workflow_id=plan.workflow_id,
+        config=DeploymentParameterOptimizationConfig(enabled=True),
+    )
+    assert updated is plan
+    assert updated.enabled is True
+    assert updated.status == "collecting"
+    assert updated.node_ids == ["llm-triage"]
+
+
+def test_disabled_deployment_without_llm_nodes_keeps_deployment_available():
+    db = _Db()
+
+    plan = DeploymentParameterOptimizationService.configure_for_deployment(
+        db,
+        deployment=_deployment(),
+        workflow_id=uuid.uuid4(),
+        graph_snapshot={"nodes": [{"id": "answer", "type": "answerNode"}]},
+        config=DeploymentParameterOptimizationConfig(enabled=False),
+    )
+
+    assert plan is db.added[0]
+    assert plan.enabled is False
+    assert plan.status == "disabled"
+    assert plan.node_ids == []
 
 
 def test_configure_for_deployment_rejects_nodes_outside_the_snapshot():
