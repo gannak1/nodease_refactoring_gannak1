@@ -45,6 +45,12 @@ egressProxy:
     enforced: true
     enforcementPhase: "final"
     authorizedSourceCidrs: []
+    # Cluster DNS coordinates shared by every proxy-only egress policy.
+    # Override these values when DNS runs outside kube-system or uses a
+    # deployment-specific pod label.
+    dns:
+      namespace: "kube-system"
+      podSelectorLabels: {}
   resources:
     requests:
       cpu: 100m

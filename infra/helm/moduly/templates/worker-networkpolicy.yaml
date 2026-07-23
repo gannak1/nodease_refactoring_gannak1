@@ -13,12 +13,10 @@ spec:
   policyTypes:
     - Egress
   egress:
-    # Cluster DNS only. Service DNAT behavior remains CNI-specific, so the
-    # namespace boundary is used instead of opening UDP/TCP 53 globally.
+    # Operator-owned cluster DNS only. Service DNAT behavior remains
+    # CNI-specific, so DNS coordinates are shared by all strict policies.
     - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
+        {{- include "moduly.dnsEgressPeer" . | nindent 8 }}
       ports:
         - protocol: UDP
           port: 53

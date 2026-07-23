@@ -55,6 +55,7 @@ Option 3을 채택한다.
 18. Proxy-only workload가 첫 요청에서 외부 package 자산을 내려받지 않도록 Gateway/Knowledge와 Workflow image는 사용하는 tiktoken encoding, NLTK corpus, runtime과 동일한 immutable E5 `(model_id, revision)` snapshot과 build에서 활성화한 CrossEncoder 모델을 build 단계에 포함한다. Workflow image는 build에 사용한 E5 identity와 CrossEncoder model ID를 final stage의 runtime 기본 환경으로 함께 고정하며 model identity override는 build와 runtime을 동시에 바꾸는 custom image build로만 허용한다. Runtime은 NLTK 또는 활성 모델 download를 호출하지 않으며 자산 누락 시 keyword 부가기능만 bounded warning으로 생략한다. 필수 tokenizer 또는 활성 reranker 자산이 없는 image는 배포 계약 실패다. Demo seed의 runtime embedding도 bare provider SDK 대신 shared operation-bound guarded client를 사용한다.
 19. External raw parser는 Knowledge의 별도 approval revision, parser capability와 guarded transport가 모두 구현되기 전까지 지원 대상으로 간주하지 않는다. 현재 `llamaparse` strategy는 source fetch, credential lookup, SDK call과 local parser fallback 전에 `knowledge.raw_parser_egress_unavailable`로 fail-closed하며 raw document를 외부 parser에 전송하지 않는다.
 20. Sandbox의 사용자 코드 외부 네트워크 접근은 현재 지원하지 않는다. `enable_network=true` 요청은 API에서 `422 sandbox.network_access_unsupported`로 거부하고 Scheduler, Executor와 NSJail command builder도 같은 중앙 정책을 다시 적용한다. Compose 환경변수나 내부 호출로 NSJail network namespace 격리를 해제할 수 없다. 향후 지원하려면 Sandbox 전용 guarded outbound port, 목적지·protocol 정책, NetworkPolicy와 audit/redaction 계약을 별도 결정해야 한다.
+21. 모든 strict egress NetworkPolicy는 `egressProxy.networkPolicy.dns`의 단일 operator-owned DNS peer를 공유한다. 기본 namespace는 기존 동작과 같은 `kube-system`이며, cluster DNS가 다른 namespace에 있거나 전용 Pod selector가 필요한 환경은 `namespace`와 선택적 `podSelectorLabels`를 명시해야 한다. 값이 없거나 형식이 잘못되면 Helm render를 실패시킨다. NodeLocal DNS처럼 host-network 또는 CIDR 예외가 필요한 환경은 이 namespace/pod 계약으로 지원된 것으로 간주하지 않으며 별도 결정과 release probe 없이 broad DNS egress를 열지 않는다.
 
 ## Security and protected-resource boundaries
 
@@ -73,6 +74,7 @@ Option 3을 채택한다.
 | Runtime package asset | 완료 | tiktoken encoding과 NLTK corpus를 image build에서 적재하고 runtime download를 금지한다. |
 | External raw parser | 현재 미지원·fail-closed | Approval/guarded transport가 완성되기 전 source fetch·credential·SDK 호출 없이 safe reason으로 종료한다. |
 | Sandbox 사용자 코드 network | 현재 미지원·fail-closed | API·Scheduler·Executor·NSJail command builder가 `enable_network=true`를 거부하고 Compose runtime override를 제공하지 않는다. |
+| Cluster DNS 좌표 | 완료(namespace/pod mode) | 모든 strict policy가 한 Helm helper를 사용하며 기본값과 operator override를 실제 render로 검증한다. NodeLocal/CIDR mode는 release gate 이전 미지원이다. |
 
 ## Consequences
 

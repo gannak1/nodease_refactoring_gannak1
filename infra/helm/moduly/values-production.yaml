@@ -35,6 +35,10 @@ egressProxy:
     enforcementPhase: "final"
     # Supply the exact pod CIDRs in operator-values.yaml.
     authorizedSourceCidrs: []
+    # Override when the production cluster DNS endpoint is not in kube-system.
+    dns:
+      namespace: "kube-system"
+      podSelectorLabels: {}
 
 # =============================================================================
 # Application Services

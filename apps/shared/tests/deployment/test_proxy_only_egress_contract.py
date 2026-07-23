@@ -273,6 +273,30 @@ def test_helm_production_reference_requires_ha_proxy_only_egress() -> None:
         assert "NO_PROXY" not in workload
 
 
+def test_helm_all_egress_policies_share_one_configurable_dns_peer() -> None:
+    values = yaml.safe_load(_read("infra/helm/moduly/values.yaml"))
+    helpers = _read("infra/helm/moduly/templates/_helpers.tpl")
+    policies = _read("infra/helm/moduly/templates/proxy-only-networkpolicies.yaml")
+    worker_policy = _read("infra/helm/moduly/templates/worker-networkpolicy.yaml")
+    sandbox_policy = _read("infra/helm/moduly/templates/sandbox-networkpolicy.yaml")
+
+    assert values["egressProxy"]["networkPolicy"]["dns"] == {
+        "namespace": "kube-system",
+        "podSelectorLabels": {},
+    }
+    assert 'define "moduly.dnsEgressPeer"' in helpers
+    assert 'define "moduly.validateDnsEgressPeer"' in helpers
+    assert "egressProxy.networkPolicy.dns.namespace is required" in helpers
+    assert 'get $dnsConfig "namespace"' in helpers
+    assert 'get $dnsConfig "podSelectorLabels"' in helpers
+
+    assert policies.count('include "moduly.dnsEgressPeer" .') == 6
+    assert worker_policy.count('include "moduly.dnsEgressPeer" .') == 1
+    assert sandbox_policy.count('include "moduly.dnsEgressPeer" .') == 1
+    for source in (policies, worker_policy, sandbox_policy):
+        assert "kubernetes.io/metadata.name: kube-system" not in source
+
+
 def test_helm_network_policies_reuse_the_configured_postgresql_port() -> None:
     helpers = _read("infra/helm/moduly/templates/_helpers.tpl")
     configmap = _read("infra/helm/moduly/templates/configmap.yaml")

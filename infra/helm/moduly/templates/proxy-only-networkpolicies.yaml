@@ -65,9 +65,7 @@ spec:
     - Egress
   egress:
     - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
+        {{- include "moduly.dnsEgressPeer" . | nindent 8 }}
       ports:
         - protocol: UDP
           port: 53
@@ -151,9 +149,7 @@ spec:
     - Egress
   egress:
     - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
+        {{- include "moduly.dnsEgressPeer" . | nindent 8 }}
       ports:
         - protocol: UDP
           port: 53
@@ -219,9 +215,7 @@ spec:
     - Egress
   egress:
     - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
+        {{- include "moduly.dnsEgressPeer" . | nindent 8 }}
       ports:
         - protocol: UDP
           port: 53
@@ -278,9 +272,7 @@ spec:
     - Egress
   egress:
     - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
+        {{- include "moduly.dnsEgressPeer" . | nindent 8 }}
       ports:
         - protocol: UDP
           port: 53
@@ -319,9 +311,7 @@ spec:
     - Egress
   egress:
     - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
+        {{- include "moduly.dnsEgressPeer" . | nindent 8 }}
       ports:
         - protocol: UDP
           port: 53
@@ -352,9 +342,7 @@ spec:
     - Egress
   egress:
     - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
+        {{- include "moduly.dnsEgressPeer" . | nindent 8 }}
       ports:
         - protocol: UDP
           port: 53

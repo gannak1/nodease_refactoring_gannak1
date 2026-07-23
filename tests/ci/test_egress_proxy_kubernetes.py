@@ -34,6 +34,7 @@ def _run(
         input=input_text,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=timeout,
     )
 
@@ -45,10 +46,13 @@ def _require_integration_environment() -> None:
     assert not missing, "required Kubernetes integration tools are unavailable"
 
 
-def _render_proxy_resources(
-    *, enforcement_phase: str = "final"
+def _render_chart_resources(
+    *,
+    enforcement_phase: str = "final",
+    dns_namespace: str | None = None,
+    dns_pod_selector: tuple[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    rendered = _run(
+    command = [
         "helm",
         "template",
         RELEASE_NAME,
@@ -57,12 +61,36 @@ def _render_proxy_resources(
         "tests/ci/fixtures/helm-values-ci.yaml",
         "--set-string",
         f"egressProxy.networkPolicy.enforcementPhase={enforcement_phase}",
-    ).stdout
-    documents = [
+    ]
+    if dns_namespace is not None:
+        command.extend(
+            [
+                "--set-string",
+                f"egressProxy.networkPolicy.dns.namespace={dns_namespace}",
+            ]
+        )
+    if dns_pod_selector is not None:
+        label, value = dns_pod_selector
+        command.extend(
+            [
+                "--set-string",
+                f"egressProxy.networkPolicy.dns.podSelectorLabels.{label}={value}",
+            ]
+        )
+
+    rendered = _run(*command).stdout
+    return [
         document
         for document in yaml.safe_load_all(rendered)
         if isinstance(document, dict)
     ]
+
+
+def _render_proxy_resources(
+    *,
+    enforcement_phase: str = "final",
+) -> list[dict[str, Any]]:
+    documents = _render_chart_resources(enforcement_phase=enforcement_phase)
     selected_names = {
         PROXY_SERVICE,
         f"{RELEASE_NAME}-moduly-egress-proxy-ingress",
@@ -269,6 +297,159 @@ def test_canary_policy_selects_only_proxy_revision_and_final_covers_component() 
 
     assert selectors["canary"]["nodease.io/egress-mode"] == "proxy-v1"
     assert "nodease.io/egress-mode" not in selectors["final"]
+
+
+def test_all_egress_policies_render_the_configured_dns_peer() -> None:
+    _require_integration_environment()
+
+    resources = _render_chart_resources(
+        dns_namespace="nodease-dns",
+        dns_pod_selector=("k8s-app", "nodease-dns"),
+    )
+    dns_policies = [
+        item
+        for item in resources
+        if item["kind"] == "NetworkPolicy"
+        and any(
+            {port["port"] for port in rule.get("ports", [])} == {53}
+            for rule in item["spec"].get("egress", [])
+        )
+    ]
+
+    assert {item["metadata"]["name"] for item in dns_policies} == {
+        f"{RELEASE_NAME}-moduly-gateway-proxy-only-egress",
+        f"{RELEASE_NAME}-moduly-knowledge-worker-proxy-only-egress",
+        f"{RELEASE_NAME}-moduly-worker-egress",
+        f"{RELEASE_NAME}-moduly-logger-internal-only-egress",
+        f"{RELEASE_NAME}-moduly-beat-internal-only-egress",
+        f"{RELEASE_NAME}-moduly-frontend-internal-only-egress",
+        f"{RELEASE_NAME}-moduly-egress-proxy-egress",
+        f"{RELEASE_NAME}-moduly-sandbox-egress",
+    }
+    expected_peer = {
+        "namespaceSelector": {
+            "matchLabels": {
+                "kubernetes.io/metadata.name": "nodease-dns",
+            }
+        },
+        "podSelector": {
+            "matchLabels": {
+                "k8s-app": "nodease-dns",
+            }
+        },
+    }
+    for policy in dns_policies:
+        dns_rules = [
+            rule
+            for rule in policy["spec"]["egress"]
+            if {port["port"] for port in rule.get("ports", [])} == {53}
+        ]
+        assert len(dns_rules) == 1, policy["metadata"]["name"]
+        assert dns_rules[0]["to"] == [expected_peer]
+
+
+@pytest.mark.parametrize(
+    ("set_option", "override", "safe_reason"),
+    [
+        (
+            "--set-string",
+            "egressProxy.networkPolicy.dns.namespace=INVALID_NAMESPACE",
+            "dns.namespace must be a valid Kubernetes namespace",
+        ),
+        (
+            "--set-string",
+            "egressProxy.networkPolicy.dns.podSelectorLabels=not-a-map",
+            "dns.podSelectorLabels must be a map",
+        ),
+        (
+            "--set",
+            "egressProxy.networkPolicy.dns=null",
+            "dns.namespace is required",
+        ),
+    ],
+)
+def test_dns_peer_rejects_invalid_operator_coordinates(
+    set_option: str,
+    override: str,
+    safe_reason: str,
+) -> None:
+    _require_integration_environment()
+
+    result = _run(
+        "helm",
+        "template",
+        RELEASE_NAME,
+        "infra/helm/moduly",
+        "-f",
+        "tests/ci/fixtures/helm-values-ci.yaml",
+        set_option,
+        override,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert safe_reason in result.stderr
+
+
+def test_sandbox_dns_peer_is_validated_when_proxy_is_disabled() -> None:
+    _require_integration_environment()
+
+    result = _run(
+        "helm",
+        "template",
+        RELEASE_NAME,
+        "infra/helm/moduly",
+        "-f",
+        "tests/ci/fixtures/helm-values-ci.yaml",
+        "--set",
+        "egressProxy.enabled=false",
+        "--set-string",
+        "egressProxy.networkPolicy.dns.namespace=INVALID_NAMESPACE",
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "dns.namespace must be a valid Kubernetes namespace" in result.stderr
+
+
+def test_dns_peer_rejects_boolean_selector_in_values() -> None:
+    _require_integration_environment()
+
+    result = _run(
+        "helm",
+        "template",
+        RELEASE_NAME,
+        "infra/helm/moduly",
+        "-f",
+        "tests/ci/fixtures/helm-values-ci.yaml",
+        "--set",
+        "egressProxy.networkPolicy.dns.podSelectorLabels=false",
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "dns.podSelectorLabels must be a map" in result.stderr
+
+
+def test_dns_peer_allows_valid_empty_label_value() -> None:
+    _require_integration_environment()
+
+    resources = _render_chart_resources(
+        dns_pod_selector=("dns-role", ""),
+    )
+    sandbox_policy = next(
+        item
+        for item in resources
+        if item.get("metadata", {}).get("name")
+        == f"{RELEASE_NAME}-moduly-sandbox-egress"
+    )
+    dns_rule = next(
+        rule
+        for rule in sandbox_policy["spec"]["egress"]
+        if {port["port"] for port in rule.get("ports", [])} == {53}
+    )
+
+    assert dns_rule["to"][0]["podSelector"]["matchLabels"] == {"dns-role": ""}
 
 
 def test_calico_enforces_proxy_only_public_https_and_proxy_source_boundary() -> None:

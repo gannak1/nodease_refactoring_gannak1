@@ -11,6 +11,7 @@ Status: Draft
 - Immutable application 및 Squid image identity
 - Connector DB/SSH의 배포 관리 포트 allowlist. 기본은 `22,5432`이며 추가 포트는 workload env, Squid ACL과 proxy NetworkPolicy에 동일하게 반영해야 한다.
 - Exact cluster pod CIDR 목록인 `egressProxy.networkPolicy.authorizedSourceCidrs`
+- 실제 cluster DNS의 namespace와 필요한 경우 Pod label selector인 `egressProxy.networkPolicy.dns`. 기본 `kube-system`과 다르면 operator values에서 반드시 override한다.
 - NetworkPolicy를 실제 집행하는 CNI와 해당 version
 - Release manifest 전체 NetworkPolicy 목록
 - External DB/Redis/Sandbox가 있으면 exact destination CIDR
@@ -18,13 +19,15 @@ Status: Draft
 
 Catch-all, loopback, link-local, metadata 또는 출처를 알 수 없는 source CIDR은 사용하지 않는다. Squid source CIDR은 coarse network coordinate이며 workload identity 증명이 아니다.
 
+NodeLocal DNS처럼 host-network IP 또는 CIDR 허용이 필요한 cluster는 현재 namespace/pod DNS 계약의 지원 대상이 아니다. DNS를 살리기 위해 broad port 53 egress를 추가하지 말고 별도 정책 결정과 실제 CNI positive/negative probe를 먼저 마련한다.
+
 ## Preflight
 
 1. Helm lint/render와 proxy deployment contract를 통과한다.
 2. Squid image가 digest로 고정되고 replica가 2개 이상이며 PDB, resource bound, non-root/read-only/capability drop이 렌더되는지 확인한다. `3128/3129/3130` listener와 Connector allowlist가 application env, ConfigMap과 NetworkPolicy에서 일치해야 한다.
 3. Gateway, Workflow Worker와 Knowledge Worker에 custom `OUTBOUND_*` 설정만 있고 ambient proxy/`NO_PROXY`가 없는지 확인한다.
 4. Release 전체에서 target selector를 여는 다른 public 80/443 egress policy, `hostNetwork`, privileged target pod와 Sandbox proxy source가 없는지 확인한다.
-5. 배포 CNI에서 DNS, Service DNAT, IPv4/IPv6, private/metadata deny와 unauthorized source probe를 실행한다. PR CI의 pinned Calico IPv4 결과는 운영 CNI 또는 dual-stack 증거를 대체하지 않는다.
+5. 모든 strict policy가 동일한 operator-owned DNS namespace/Pod selector를 렌더하는지 확인하고, 배포 CNI에서 DNS, Service DNAT, IPv4/IPv6, private/metadata deny와 unauthorized source probe를 실행한다. PR CI의 pinned Calico IPv4 결과는 운영 CNI 또는 dual-stack 증거를 대체하지 않는다.
 6. Proxy 장애 시 외부 operation이 실패하고 direct 연결이 성공하지 않는지 확인한다.
 
 하나라도 확인할 수 없으면 activation을 중단한다.

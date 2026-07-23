@@ -69,6 +69,30 @@ ingestion contract requires a recovery scheduler and positive worker capacity.
 {{- end -}}
 
 {{/*
+Validate the operator-owned DNS peer wherever a strict egress policy consumes it.
+Kubernetes permits an empty label value, so only the key must be non-empty here.
+*/}}
+{{- define "moduly.validateDnsEgressPeer" -}}
+{{- $dnsConfig := default (dict) .Values.egressProxy.networkPolicy.dns -}}
+{{- if not (kindIs "map" $dnsConfig) -}}
+{{- fail "egressProxy.networkPolicy.dns must be a map" -}}
+{{- end -}}
+{{- $dnsNamespace := trim (toString (required "egressProxy.networkPolicy.dns.namespace is required" (get $dnsConfig "namespace"))) -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" $dnsNamespace) -}}
+{{- fail "egressProxy.networkPolicy.dns.namespace must be a valid Kubernetes namespace" -}}
+{{- end -}}
+{{- $dnsPodSelectorLabels := get $dnsConfig "podSelectorLabels" -}}
+{{- if not (kindIs "map" $dnsPodSelectorLabels) -}}
+{{- fail "egressProxy.networkPolicy.dns.podSelectorLabels must be a map" -}}
+{{- end -}}
+{{- range $labelKey, $_ := $dnsPodSelectorLabels -}}
+{{- if empty (trim (toString $labelKey)) -}}
+{{- fail "egressProxy.networkPolicy.dns.podSelectorLabels cannot contain empty keys" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Validate the immutable, server-owned outbound proxy boundary. The proxy source
 CIDRs are deployment coordinates and must be supplied by the operator.
 */}}
@@ -126,6 +150,7 @@ CIDRs are deployment coordinates and must be supplied by the operator.
 {{- if not (regexMatch "^sha256:[a-f0-9]{64}$" (default "" .Values.egressProxy.image.digest)) -}}
 {{- fail "egressProxy.image.digest must be an immutable sha256 digest" -}}
 {{- end -}}
+{{- include "moduly.validateDnsEgressPeer" . -}}
 {{- if empty .Values.egressProxy.networkPolicy.authorizedSourceCidrs -}}
 {{- fail "egressProxy.networkPolicy.authorizedSourceCidrs is required" -}}
 {{- end -}}
@@ -167,6 +192,24 @@ CIDRs are deployment coordinates and must be supplied by the operator.
 {{- fail "production public HTTP workloads require egressProxy.enabled" -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Render the single operator-owned DNS peer used by every strict egress policy.
+An empty podSelectorLabels map preserves the namespace-only legacy behavior.
+*/}}
+{{- define "moduly.dnsEgressPeer" -}}
+{{- include "moduly.validateDnsEgressPeer" . -}}
+{{- $dnsConfig := .Values.egressProxy.networkPolicy.dns -}}
+{{- $labels := get $dnsConfig "podSelectorLabels" -}}
+- namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: {{ get $dnsConfig "namespace" | quote }}
+{{- with $labels }}
+  podSelector:
+    matchLabels:
+      {{- toYaml . | nindent 6 }}
+{{- end }}
+{{- end }}
 
 {{- define "moduly.outboundProxyEnv" -}}
 {{- if .context.Values.egressProxy.enabled }}
