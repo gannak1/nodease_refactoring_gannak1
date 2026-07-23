@@ -83,3 +83,17 @@ def test_dev_gateway_uses_settled_change_supervisor() -> None:
     )
     assert "$VENV_PYTHON scripts/dev_gateway.py" in script
     assert "-m uvicorn apps.gateway.main:app --reload" not in script
+
+
+def test_windows_dev_local_starts_gateway_with_explicit_cache_on_configuration() -> None:
+    script = (ROOT_DIR / "scripts" / "dev-local.ps1").read_text(encoding="utf-8")
+
+    assert "$env:AGENT_BUILDER_INTENT_CACHE_ENABLED = 'true'" in script
+    assert "$LocalIntentCacheRedisUrl = 'redis://127.0.0.1:6379/15'" in script
+    assert "$env:AGENT_BUILDER_INTENT_CACHE_REDIS_URL = $LocalIntentCacheRedisUrl" in script
+    assert "$LocalIntentCacheHmacKeyVersion = 'dev-local-v1'" in script
+    assert "$env:AGENT_BUILDER_INTENT_CACHE_HMAC_KEY_VERSION = $LocalIntentCacheHmacKeyVersion" in script
+    assert "RandomNumberGenerator" in script
+    assert "$env:NODE_ENV = 'development'" in script
+    assert "$env:AGENT_BUILDER_INTENT_CACHE_PRODUCTION_READY = 'false'" in script
+    assert "Write-Host $env:AGENT_BUILDER_INTENT_CACHE_HMAC_KEY" not in script

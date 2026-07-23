@@ -83,10 +83,10 @@ class Settings(BaseSettings):
     # pod runs the verifier-aware revision.
     APP_AUTH_SECRET_LIFECYCLE_MODE: Literal["disabled", "active"] = "disabled"
 
-    # Agent Builder intent cache values stay raw until the cache-only parser
-    # can disable this optional optimization without failing Gateway startup.
+    # Cache serving is requested by default. Incomplete or invalid configuration
+    # still disables only this optional optimization without failing startup.
     NODE_ENV: str = "development"
-    AGENT_BUILDER_INTENT_CACHE_ENABLED: str | bool = "false"
+    AGENT_BUILDER_INTENT_CACHE_ENABLED: str | bool = "true"
     AGENT_BUILDER_INTENT_CACHE_TTL_SECONDS: str | int = "900"
     AGENT_BUILDER_INTENT_CACHE_TIMEOUT_MS: str | int = "100"
     AGENT_BUILDER_INTENT_CACHE_MAX_BYTES: str | int = str(32 * 1024)

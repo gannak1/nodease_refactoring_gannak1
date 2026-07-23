@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from apps.gateway.application.agent_builder.intent_cache_coordinator import (
     IntentCacheDiagnostic,
 )
@@ -53,3 +55,14 @@ def test_observability_rejects_untrusted_labels_without_recording_them():
         )
         == 1
     )
+
+def test_observability_log_includes_only_safe_cache_diagnostic_labels(caplog):
+    with caplog.at_level(
+        logging.INFO,
+        logger="apps.gateway.application.agent_builder.intent_cache_observability",
+    ):
+        IntentCacheObservability.record(
+            _diagnostic(outcome="miss", reason="not_found")
+        )
+
+    assert "outcome=miss reason=not_found role=none" in caplog.messages[-1]

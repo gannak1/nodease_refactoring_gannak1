@@ -525,12 +525,36 @@ def test_intent_text_v1_manifest_is_exact_closed_and_catalog_applicable():
         },
         "topics": (
             {
+                "ref": "topic.current_safe_message.v1",
+                "canonical_text": "Current safe request",
+                "aliases": (),
+            },
+            {
                 "ref": "topic.internal_documents.v1",
                 "canonical_text": "사내 문서",
                 "aliases": ("내부 문서", "internal documents"),
             },
         ),
         "reason_templates": (
+            {
+                "ref": "guidance.reason.configuration_required.v1",
+                "canonical_template": "Additional configuration is required.",
+                "aliases": (),
+                "allowed_input_types": (
+                    "boolean",
+                    "code",
+                    "credential_ref",
+                    "json",
+                    "number",
+                    "resource_ref",
+                    "secret",
+                    "select",
+                    "text",
+                    "textarea",
+                    "variable_selector",
+                    "variable_selector_list",
+                ),
+            },
             {
                 "ref": "guidance.reason.delivery_destination_required.v1",
                 "canonical_template": "메시지 전달 위치가 필요합니다.",
@@ -543,6 +567,25 @@ def test_intent_text_v1_manifest_is_exact_closed_and_catalog_applicable():
             },
         ),
         "input_guidance_templates": (
+            {
+                "ref": "guidance.input.provide_parameter_value.v1",
+                "canonical_template": "Provide a value for {parameter_key}.",
+                "aliases": (),
+                "allowed_input_types": (
+                    "boolean",
+                    "code",
+                    "credential_ref",
+                    "json",
+                    "number",
+                    "resource_ref",
+                    "secret",
+                    "select",
+                    "text",
+                    "textarea",
+                    "variable_selector",
+                    "variable_selector_list",
+                ),
+            },
             {
                 "ref": "guidance.input.select_slack_channel_id.v1",
                 "canonical_template": "Slack channel ID를 선택하세요.",
@@ -559,15 +602,20 @@ def test_intent_text_v1_manifest_is_exact_closed_and_catalog_applicable():
     )
     assert INTENT_TEXT_V1_MANIFEST.registry_version == "intent-text-v1"
     assert [entry.ref for entry in INTENT_TEXT_V1_MANIFEST.topics] == [
-        "topic.internal_documents.v1"
+        "topic.current_safe_message.v1",
+        "topic.internal_documents.v1",
     ]
     assert [entry.ref for entry in INTENT_TEXT_V1_MANIFEST.reason_templates] == [
-        "guidance.reason.delivery_destination_required.v1"
+        "guidance.reason.configuration_required.v1",
+        "guidance.reason.delivery_destination_required.v1",
     ]
     assert [
         entry.ref for entry in INTENT_TEXT_V1_MANIFEST.input_guidance_templates
-    ] == ["guidance.input.select_slack_channel_id.v1"]
-    assert INTENT_TEXT_V1_MANIFEST.topics[0].canonical_text == "사내 문서"
+    ] == [
+        "guidance.input.provide_parameter_value.v1",
+        "guidance.input.select_slack_channel_id.v1",
+    ]
+    assert registry.render_topic("topic.current_safe_message.v1", full_safe_message="safe request") == "safe request"
     assert registry.project_topic("  INTERNAL\u3000DOCUMENTS ") == (
         "topic.internal_documents.v1"
     )
@@ -662,10 +710,14 @@ def test_registry_rejects_missing_member_alias_conflict_and_free_placeholder():
 
 
 def test_registry_rejects_same_version_canonical_text_drift():
-    topic = INTENT_TEXT_V1_MANIFEST.topics[0]
     drifted = dataclasses.replace(
         INTENT_TEXT_V1_MANIFEST,
-        topics=(dataclasses.replace(topic, canonical_text="changed text"),),
+        topics=tuple(
+            dataclasses.replace(topic, canonical_text="changed text")
+            if topic.ref == "topic.internal_documents.v1"
+            else topic
+            for topic in INTENT_TEXT_V1_MANIFEST.topics
+        ),
     )
 
     with pytest.raises(RegistryContractError, match="same-version"):

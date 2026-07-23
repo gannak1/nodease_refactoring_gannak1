@@ -4,6 +4,8 @@ Status: Accepted
 
 Amends: [ADR-0063](ADR-0063-agent-builder-deterministic-intent-plan-cache.md)
 
+Partially amended by: [ADR-0074](ADR-0074-agent-builder-cache-safe-literal-normalization-amendment.md) (Decision 5 and the related consequences)
+
 Related ADRs: [ADR-0024](ADR-0024-agent-builder-node-capability-catalog.md)
 
 ## Context
@@ -39,7 +41,8 @@ MBA-344의 CACHE-02 범위는 의미 판단이 아니라 표현 정리만 소유
    제공하며 해당 literal을 변환하거나 서로 같은 표현으로 취급하지 않는다. Exact Catalog token과 이
    vocabulary로 전체 요청을 설명할 수 있을 때만 signature를 만든다. Catalog multi-token phrase alias,
    미인식 표현과 지원하지 않는 node 표현이 하나라도 남으면 `unknown_token_sequence`로 lookup/store를
-   모두 bypass하며 capability만 남긴 부분 signature를 만들지 않는다.
+   모두 bypass하며 capability만 남긴 부분 signature를 만들지 않는다. 이 admission 부분은 ADR-0074가
+   safe literal preservation 규칙으로 부분 개정한다.
 6. 인용문과 node label span은 exact token canonicalization에서 보호한다. 숫자, 부정, 순서와
    위치는 literal order로 보존한다. Parameter-like span에 explicit value가 있으면 보존된 값으로
    key를 만들지 않고 lookup/store를 모두 bypass한다.
@@ -51,9 +54,11 @@ MBA-344의 CACHE-02 범위는 의미 판단이 아니라 표현 정리만 소유
 
 ## Consequences
 
-- NFKC/whitespace와 Catalog가 소유한 exact token 변형만 warm normalization hit를 만들 수 있다.
-- Planner가 이해할 수 있는 multilingual phrase라도 deterministic cache eligibility가 증명되지 않으면
-  `unknown_token_sequence`로 bypass하므로 hit ratio는 더 낮을 수 있다.
+- NFKC/whitespace와 Catalog가 소유한 exact token 변형은 warm normalization hit를 만들 수 있다.
+  ADR-0074에 따라 Catalog 미등록 literal도 변환 없이 보존되어, 같은 ordered literal 요청과만 exact warm hit를 만들 수 있다.
+- Planner가 이해할 수 있는 multilingual phrase 또는 미등록 표현은 cache equality에서 번역·alias·semantic
+  equivalence가 되지 않는다. Safety gate를 통과하면 ordered literal signature로 lookup/store에 참여하되,
+  capability만 남긴 부분 signature나 다른 표현과의 재사용은 만들지 않는다.
 - 인용문, label, 숫자, 부정, 순서와 위치가 cache equality에서 사라지지 않는다.
 - Catalog의 Planner alias 계약과 cache normalization 계약이 분리되며, cache normalizer는
   provider capability 해석이나 LLM 결과 수정을 소유하지 않는다.

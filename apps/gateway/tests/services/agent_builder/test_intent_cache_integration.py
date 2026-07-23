@@ -12,14 +12,20 @@ from apps.gateway.application.agent_builder.intent_cache.contracts import (
 from apps.gateway.application.agent_builder.intent_rehydration_registry import (
     CanonicalIntentTextRegistry,
 )
+from apps.gateway.application.agent_builder.semantic_plan import (
+    normalize_parameter_guidance_hints,
+)
 from apps.gateway.services.agent_builder.intent_cache_integration import (
+    _logical_workflow_context,
     current_rehydrator_for,
     project_structured_intent_plan,
 )
+from apps.gateway.services.agent_builder_service import _safe_display_label
 from apps.shared.schemas.agent_builder import (
     AgentBuilderExplicitParameterValue,
     AgentBuilderKnowledgePlacement,
     AgentBuilderKnowledgeRequirement,
+    AgentBuilderParameterGuidanceHint,
     AgentBuilderPlannedStep,
     AgentBuilderStructuredRequest,
 )
@@ -54,6 +60,76 @@ def _context() -> IntentPlanningContext:
             selected_target_type=None,
             selected_target_id=None,
         ),
+    )
+
+
+def test_empty_app_primary_workflow_graph_is_projected_deterministically():
+    class _Workflow:
+        graph = None
+
+    projection = _logical_workflow_context(
+        _Workflow(),
+        safe_label=_safe_display_label,
+    )
+
+    assert projection is not None
+    topology, node_refs, edge_refs = projection
+    assert topology == IntentLogicalTopology(
+        workflow_present=True,
+        nodes=(),
+        edges=(),
+    )
+    assert node_refs == {}
+    assert edge_refs == {}
+
+
+def test_malformed_workflow_graph_bypasses_cache_context_without_raising():
+    class _Workflow:
+        graph = []
+
+    assert (
+        _logical_workflow_context(
+            _Workflow(),
+            safe_label=_safe_display_label,
+        )
+        is None
+    )
+
+
+def test_free_form_safe_guidance_is_normalized_before_plan_projection():
+    registry = CanonicalIntentTextRegistry()
+    structured = AgentBuilderStructuredRequest(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="safe",
+        planned_steps=[
+            AgentBuilderPlannedStep(
+                step_id="step_http",
+                capability="http_request",
+                purpose=registry.purpose_for("http_request"),
+            )
+        ],
+        parameter_guidance_hints=normalize_parameter_guidance_hints(
+            [
+                AgentBuilderParameterGuidanceHint(
+                    step_id="step_http",
+                    parameter_key="url",
+                    reason="A destination endpoint still needs to be configured.",
+                    input_guidance="Enter the endpoint to call for this workflow.",
+                )
+            ],
+            [("step_http", "http_request")],
+        ),
+    )
+
+    plan = project_structured_intent_plan(structured, _context())
+
+    assert plan is not None
+    assert plan.parameter_guidance_refs[0].reason_template_ref == (
+        "guidance.reason.configuration_required.v1"
+    )
+    assert plan.parameter_guidance_refs[0].input_guidance_template_ref == (
+        "guidance.input.provide_parameter_value.v1"
     )
 
 

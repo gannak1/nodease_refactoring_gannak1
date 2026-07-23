@@ -62,6 +62,27 @@ class IntentTextManifest:
     input_guidance_templates: tuple[GuidanceTemplateEntry, ...]
 
 
+_GENERIC_GUIDANCE_REASON_REF = "guidance.reason.configuration_required.v1"
+_GENERIC_INPUT_GUIDANCE_REF = "guidance.input.provide_parameter_value.v1"
+_CURRENT_SAFE_MESSAGE_TOPIC_REF = "topic.current_safe_message.v1"
+_SPECIFIC_SLACK_GUIDANCE_REFS = (
+    "guidance.reason.delivery_destination_required.v1",
+    "guidance.input.select_slack_channel_id.v1",
+)
+_GENERIC_GUIDANCE_REFS = (
+    _GENERIC_GUIDANCE_REASON_REF,
+    _GENERIC_INPUT_GUIDANCE_REF,
+)
+_GENERIC_GUIDANCE_INPUT_TYPES = tuple(
+    sorted(
+        {
+            input_type
+            for parameters in CAPABILITY_PARAMETER_INPUT_TYPES.values()
+            for input_type in parameters.values()
+        }
+    )
+)
+
 INTENT_TEXT_V1_MANIFEST = IntentTextManifest(
     registry_version="intent-text-v1",
     summary_projection=SummaryProjectionEntry(
@@ -73,12 +94,23 @@ INTENT_TEXT_V1_MANIFEST = IntentTextManifest(
     ),
     topics=(
         TopicEntry(
+            ref=_CURRENT_SAFE_MESSAGE_TOPIC_REF,
+            canonical_text="Current safe request",
+            aliases=(),
+        ),
+        TopicEntry(
             ref="topic.internal_documents.v1",
             canonical_text="사내 문서",
             aliases=("내부 문서", "internal documents"),
         ),
     ),
     reason_templates=(
+        GuidanceTemplateEntry(
+            ref=_GENERIC_GUIDANCE_REASON_REF,
+            canonical_template="Additional configuration is required.",
+            aliases=(),
+            allowed_input_types=_GENERIC_GUIDANCE_INPUT_TYPES,
+        ),
         GuidanceTemplateEntry(
             ref="guidance.reason.delivery_destination_required.v1",
             canonical_template="메시지 전달 위치가 필요합니다.",
@@ -91,6 +123,12 @@ INTENT_TEXT_V1_MANIFEST = IntentTextManifest(
         ),
     ),
     input_guidance_templates=(
+        GuidanceTemplateEntry(
+            ref=_GENERIC_INPUT_GUIDANCE_REF,
+            canonical_template="Provide a value for {parameter_key}.",
+            aliases=(),
+            allowed_input_types=_GENERIC_GUIDANCE_INPUT_TYPES,
+        ),
         GuidanceTemplateEntry(
             ref="guidance.input.select_slack_channel_id.v1",
             canonical_template="Slack channel ID를 선택하세요.",
@@ -106,6 +144,7 @@ INTENT_TEXT_V1_MANIFEST = IntentTextManifest(
 _GUIDANCE_CATALOG_CONTEXT = MappingProxyType(
     {("slack_send", "channel"): ("Slack channel", "text")}
 )
+
 _ALLOWED_TEMPLATE_FIELDS = frozenset({"parameter_key", "safe_label", "input_type"})
 
 _SECRET_LIKE_RE = re.compile(
@@ -363,6 +402,11 @@ class CanonicalIntentTextRegistry:
             return None
         return self._topic_projection.get(_normalized_text(provider_text))
 
+    def project_current_safe_message_topic(self, full_safe_message: str) -> str | None:
+        if self.project_summary(full_safe_message) is None:
+            return None
+        return _CURRENT_SAFE_MESSAGE_TOPIC_REF
+
     def project_reason(self, provider_text: str) -> str | None:
         if type(provider_text) is not str:
             return None
@@ -382,7 +426,12 @@ class CanonicalIntentTextRegistry:
         except KeyError as exc:
             raise CanonicalReferenceError("unknown capability purpose") from exc
 
-    def render_topic(self, ref: str) -> str:
+    def render_topic(self, ref: str, *, full_safe_message: str | None = None) -> str:
+        if ref == _CURRENT_SAFE_MESSAGE_TOPIC_REF:
+            rendered = self.project_summary(full_safe_message or "")
+            if rendered is None:
+                raise CanonicalReferenceError("current safe message topic is unavailable")
+            return rendered
         try:
             return self._topics[ref].canonical_text
         except KeyError as exc:
@@ -393,12 +442,101 @@ class CanonicalIntentTextRegistry:
         capability: str,
         parameter_key: str,
     ) -> tuple[str, str]:
-        try:
-            return _GUIDANCE_CATALOG_CONTEXT[(capability, parameter_key)]
-        except KeyError as exc:
+        context = _GUIDANCE_CATALOG_CONTEXT.get((capability, parameter_key))
+        if context is not None:
+            return context
+        input_type = CAPABILITY_PARAMETER_INPUT_TYPES.get(capability, {}).get(
+            parameter_key
+        )
+        if input_type is None:
             raise GuidanceInputTypeError(
                 "guidance is not applicable to Catalog member"
-            ) from exc
+            )
+        return ("required configuration", input_type)
+
+    def canonicalize_guidance(
+        self,
+        *,
+        capability: str,
+        parameter_key: str,
+        provider_reason: str,
+        provider_input_guidance: str,
+    ) -> tuple[str, str]:
+        """Drop provider wording in favour of a deterministic catalog template."""
+        reason_ref = self.project_reason(provider_reason)
+        input_ref = self.project_input_guidance(provider_input_guidance)
+        if not self._is_specific_slack_pair(
+            reason_ref,
+            input_ref,
+            capability,
+            parameter_key,
+        ):
+            reason_ref, input_ref = _GENERIC_GUIDANCE_REFS
+        safe_label, input_type = self.guidance_catalog_context(
+            capability,
+            parameter_key,
+        )
+        return self.render_guidance(
+            reason_ref=reason_ref,
+            input_guidance_ref=input_ref,
+            capability=capability,
+            parameter_key=parameter_key,
+            safe_label=safe_label,
+            input_type=input_type,
+        )
+
+    def project_guidance(
+        self,
+        *,
+        capability: str,
+        parameter_key: str,
+        reason: str,
+        input_guidance: str,
+    ) -> tuple[str, str] | None:
+        """Accept only a rendered catalog pair for storage in a cached plan."""
+        reason_ref = self.project_reason(reason)
+        input_ref = self.project_input_guidance(input_guidance)
+        if self._is_specific_slack_pair(
+            reason_ref,
+            input_ref,
+            capability,
+            parameter_key,
+        ):
+            return _SPECIFIC_SLACK_GUIDANCE_REFS
+        try:
+            safe_label, input_type = self.guidance_catalog_context(
+                capability,
+                parameter_key,
+            )
+            expected_reason, expected_input = self.render_guidance(
+                reason_ref=_GENERIC_GUIDANCE_REASON_REF,
+                input_guidance_ref=_GENERIC_INPUT_GUIDANCE_REF,
+                capability=capability,
+                parameter_key=parameter_key,
+                safe_label=safe_label,
+                input_type=input_type,
+            )
+        except (CanonicalReferenceError, GuidanceInputTypeError):
+            return None
+        if (
+            _normalized_text(reason) == _normalized_text(expected_reason)
+            and _normalized_text(input_guidance) == _normalized_text(expected_input)
+        ):
+            return _GENERIC_GUIDANCE_REFS
+        return None
+
+    @staticmethod
+    def _is_specific_slack_pair(
+        reason_ref: str | None,
+        input_ref: str | None,
+        capability: str,
+        parameter_key: str,
+    ) -> bool:
+        return (
+            (reason_ref, input_ref) == _SPECIFIC_SLACK_GUIDANCE_REFS
+            and capability == "slack_send"
+            and parameter_key == "channel"
+        )
 
     def render_guidance(
         self,
@@ -418,10 +556,18 @@ class CanonicalIntentTextRegistry:
         expected = CAPABILITY_PARAMETER_INPUT_TYPES.get(capability, {}).get(
             parameter_key
         )
-        catalog_context = _GUIDANCE_CATALOG_CONTEXT.get((capability, parameter_key))
+        catalog_context = self.guidance_catalog_context(capability, parameter_key)
+        is_specific_slack_pair = self._is_specific_slack_pair(
+            reason_ref,
+            input_guidance_ref,
+            capability,
+            parameter_key,
+        )
+        is_generic_pair = (reason_ref, input_guidance_ref) == _GENERIC_GUIDANCE_REFS
         if (
             expected != input_type
             or catalog_context != (safe_label, input_type)
+            or not (is_specific_slack_pair or is_generic_pair)
             or input_type not in reason.allowed_input_types
             or input_type not in input_guidance.allowed_input_types
         ):

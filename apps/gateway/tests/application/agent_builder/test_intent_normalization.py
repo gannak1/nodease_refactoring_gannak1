@@ -23,7 +23,7 @@ from apps.gateway.application.agent_builder.intent_normalization import (
 ROOT = Path(__file__).resolve().parents[5]
 FIXTURE_PATH = (
     ROOT
-    / "apps/gateway/tests/fixtures/agent_builder_intent_normalization_v1.json"
+    / "apps/gateway/tests/fixtures/agent_builder_intent_normalization_v2.json"
 )
 HEX_A = "a" * 64
 HEX_B = "b" * 64
@@ -34,7 +34,7 @@ def _context(
     message: str,
     *,
     selected_target_type: str | None = None,
-    normalizer_version: str = "intent-normalizer-v1",
+    normalizer_version: str = NORMALIZER_VERSION,
 ) -> IntentPlanningContext:
     return IntentPlanningContext(
         full_safe_message=message,
@@ -71,7 +71,7 @@ def _context(
 
 def _fixture_cases() -> list[dict[str, object]]:
     fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
-    assert fixture["fixture_version"] == "agent-builder-intent-normalization-v1"
+    assert fixture["fixture_version"] == "agent-builder-intent-normalization-v2"
     assert fixture["normalizer_version"] == NORMALIZER_VERSION
     return fixture["cases"]
 
@@ -157,7 +157,7 @@ def test_signature_is_full_projection_and_version_domain_separated():
 
 def test_version_mismatch_bypasses_instead_of_reading_another_namespace():
     result = DeterministicIntentNormalizer().normalize(
-        _context("LLM 노드 추가", normalizer_version="intent-normalizer-v2")
+        _context("LLM 노드 추가", normalizer_version="intent-normalizer-v1")
     )
 
     assert result.status == "bypass"
@@ -166,22 +166,18 @@ def test_version_mismatch_bypasses_instead_of_reading_another_namespace():
     assert result.normalizer_version == NORMALIZER_VERSION
 
 
-def test_exact_alias_never_rewrites_substrings_or_protected_quotes():
+def test_exact_alias_preserves_non_catalog_tokens_without_rewriting():
     normalizer = DeterministicIntentNormalizer()
 
-    embedded_upper = normalizer.normalize(_context("drILLM 노드 추가"))
-    embedded_lower = normalizer.normalize(_context("drillm 노드 추가"))
-    quoted_upper = normalizer.normalize(_context('이름 "GitHub"인 LLM 노드 추가'))
-    quoted_lower = normalizer.normalize(_context('이름 "github"인 LLM 노드 추가'))
+    embedded_upper = normalizer.normalize(_context("drILLM node create"))
+    embedded_lower = normalizer.normalize(_context("drillm node create"))
+    quoted_upper = normalizer.normalize(_context('label "GitHub" LLM node create'))
+    quoted_lower = normalizer.normalize(_context('label "github" LLM node create'))
 
-    assert embedded_upper.reason == "unknown_token_sequence"
-    assert embedded_lower.reason == "unknown_token_sequence"
-    assert embedded_upper.intent_signature is None
-    assert embedded_lower.intent_signature is None
-    assert quoted_upper.status == "eligible"
-    assert quoted_lower.status == "eligible"
+    assert embedded_upper.status == embedded_lower.status == "eligible"
+    assert embedded_upper.intent_signature != embedded_lower.intent_signature
+    assert quoted_upper.status == quoted_lower.status == "eligible"
     assert quoted_upper.intent_signature != quoted_lower.intent_signature
-
 
 @pytest.mark.parametrize("action", ["modify", "change", "변경"])
 def test_modify_admission_ignores_quoted_labels_and_requires_selected_target(
@@ -200,37 +196,37 @@ def test_modify_admission_ignores_quoted_labels_and_requires_selected_target(
     assert selected.status == "eligible"
 
     quoted_label = normalizer.normalize(
-        _context(f'이름 "{action}"인 LLM 노드 추가')
+        _context(f'label "{action}" LLM node create')
     )
     assert quoted_label.status == "eligible"
 
 
-def test_catalog_token_map_excludes_agent_builder_unsupported_nodes():
+def test_catalog_token_map_keeps_unsupported_node_tokens_as_literals():
     normalizer = DeterministicIntentNormalizer()
 
-    upper = normalizer.normalize(_context("Loop 노드 추가"))
-    lower = normalizer.normalize(_context("loop 노드 추가"))
+    upper = normalizer.normalize(_context("Loop node create"))
+    lower = normalizer.normalize(_context("loop node create"))
 
-    assert upper.reason == "unknown_token_sequence"
-    assert lower.reason == "unknown_token_sequence"
-    assert upper.intent_signature is None
-    assert lower.intent_signature is None
-
+    assert upper.status == lower.status == "eligible"
+    assert upper.intent_signature != lower.intent_signature
 
 def test_unclosed_quote_and_non_request_shape_never_create_partial_signature():
     normalizer = DeterministicIntentNormalizer()
 
-    for message in ('이름 "GitHub인 LLM 노드 추가', "!!!"):
-        result = normalizer.normalize(_context(message))
-        assert result.status == "bypass"
-        assert result.reason == "unknown_token_sequence"
-        assert result.intent_signature is None
+    unclosed_quote = normalizer.normalize(_context('label "GitHub LLM node create'))
+    punctuation_only = normalizer.normalize(_context("!!!"))
+
+    assert unclosed_quote.status == "bypass"
+    assert unclosed_quote.reason == "unknown_token_sequence"
+    assert unclosed_quote.intent_signature is None
+    assert punctuation_only.status == "bypass"
+    assert punctuation_only.reason == "unsupported_request_shape"
+    assert punctuation_only.intent_signature is None
 
     invalid_context = normalizer.normalize(object())  # type: ignore[arg-type]
     assert invalid_context.status == "bypass"
     assert invalid_context.reason == "normalizer_disabled"
     assert invalid_context.intent_signature is None
-
 
 def test_catalog_exact_alias_conflict_fails_static_validation(monkeypatch):
     catalog = {
@@ -315,7 +311,7 @@ def test_normalizer_implements_existing_port_without_raw_message_surface():
     result = normalizer.normalize(_context(message))
 
     assert isinstance(normalizer, IntentNormalizerPort)
-    assert repr(normalizer) == "<DeterministicIntentNormalizer intent-normalizer-v1>"
+    assert repr(normalizer) == "<DeterministicIntentNormalizer intent-normalizer-v2>"
     assert message not in repr(normalizer)
     assert message not in result.model_dump_json()
 

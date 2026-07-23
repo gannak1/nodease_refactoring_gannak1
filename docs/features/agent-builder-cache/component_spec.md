@@ -107,18 +107,18 @@ evidence remains MBA-349.
 4. Explicit parameter value와 selected target 없는 ambiguous natural-language modify를 bypass한다. 인용문 안의 Catalog parameter key/display label 뒤 non-empty value는 value 감지에만 쓰며 label canonicalization을 허용하지 않는다.
 5. 인용문과 node label span을 exact token canonicalization에서 보호한다.
 6. Catalog v3의 단일 lexical-token exact alias와 exact node token만 boundary-aware typed segment로 바꾼다.
-   Case-insensitive canonicalization도 이 token에만 적용한다. Eligibility vocabulary는 case-insensitive admission membership을 사용할 수 있지만 원문 literal을 canonicalize하지 않는다.
-7. 위치, 순서, 부정과 숫자는 versioned exact eligibility vocabulary membership으로만 인정하고
-   원래 순서의 literal segment로 보존한다. 이 vocabulary는 alias나 canonicalization table이 아니다.
-8. Catalog multi-token phrase alias, 미인식 token, unsupported node 또는 닫히지 않은 인용문이 남으면
-   `unknown_token_sequence`로 lookup/store를 모두 bypass하고 partial signature를 만들지 않는다.
+   Case-insensitive canonicalization도 이 token에만 적용한다. Catalog에 없는 token은 admission을 막지 않고
+   원문 literal segment로 보존한다.
+7. 위치, 순서, 부정과 숫자는 변환하지 않고 원래 순서의 literal segment로 보존한다.
+8. 닫히지 않은 인용문처럼 안전하게 segment화할 수 없는 입력만 `unknown_token_sequence`으로 lookup/store를
+   bypass하고 partial signature를 만들지 않는다.
 9. `normalizer_version`과 전체 ordered segments를 domain-separated canonical JSON으로 만들고 SHA-256 signature를 반환한다.
 
 Normalizer는 권위 Catalog v3 JSON의 alias/node metadata를 읽고 alias 충돌을 정적 초기화에서 거부한다.
 Catalog의 multi-token Planner alias, UI 설명과 Planner prompt에서 별도 cache alias를 파생하지 않는다.
 번역, 일반 동의어, phrase 재작성, 조사·형태소 제거, 어순 재구성, embedding과 semantic similarity는 적용하지
-않는다. Exact eligibility vocabulary는 literal을 바꾸지 않고 전체 projection 가능 여부만 판정한다. Profile과
-synthetic adversarial corpus는 같은 `normalizer_version`으로 추적하며 equality 규칙 변경은 namespace miss를 만든다.
+않는다. 미인식 literal은 bypass 근거가 아니라 signature의 ordered segment이며, Profile과 synthetic adversarial
+corpus는 같은 `normalizer_version`으로 추적한다. equality 규칙 변경은 namespace miss를 만든다.
 
 
 **MBA-344 pipeline clarification.** The numbered pipeline above is the executable order: create the transient NFKC/whitespace cleanup form, then inspect it and the raw safe message before any signature/projection. The safety-gate match result is deny-only and never persisted or added as separate signature material; the required cleanup transformations still feed the later normalized typed projection. Quoted Catalog display labels are inspected only to fail closed on an attached value, never canonicalized. Static initialization rejects a node-token/alias collision unless the alias resolves to a capability declared by the same node.
@@ -135,8 +135,7 @@ Fingerprint projection은 다음만 포함한다.
 
 Position, measured size, viewport, raw node data, credential/resource reference와 parameter value는 제외한다.
 Node label이 target 의미에 필요하면 plaintext를 저장하지 않고 key HMAC input의 canonical projection에만
-사용한다. Node 개수 상한으로 topology 일부를 버리지 않는다. 전체 logical topology digest를 계산할 수
-없으면 cache를 우회한다.
+Node 개수 상한으로 topology 일부를 버리지 않는다. 전체 logical topology는 hit 재검증에만 사용하고 cache key에는 포함하지 않는다. 전체 projection을 만들 수 없으면 cache를 우회한다.
 
 `AgentBuilderService`는 Planner prompt용 2,000자 summary 또는 50-node projection을 재사용하지 않고
 cache coordinator 전용 transient DTO를 만든다. Actor/organization scope와 명시적인 selected node/edge
@@ -159,8 +158,7 @@ raw configuration은 DTO에 넣지 않는다.
 
 이 상태는 durable session 상태가 아니며 DB에 저장하지 않는다.
 
-Knowledge candidate fingerprint admission에는 explicit current safe policy revision이 필요하다. revision을
-만들 수 없으면 context/key를 만들지 않고 Planner로 bypass한다. Candidate와 Collection의 safe label/name은
+Knowledge candidate fingerprint admission uses explicit current safe policy revision when present, otherwise a deterministic `derived-policy-state-v1` digest of current permission state (`effective_auth_state`, `source_acl_state`, `reason_code`, and nonnegative `freshness_epoch`). It bypasses to Planner only when neither representation can be formed. Candidate와 Collection의 safe label/name은
 presentation 데이터이므로 HMAC projection에 넣지 않는다.
 - Cache-specific candidate, permission, and collection metadata uses a closed semantic allowlist before the outer context HMAC. Nested protected-resource IDs and safe label/name/description presentation values are omitted; adding a semantic field requires an explicit projection and contract test.
 
@@ -241,6 +239,8 @@ handle과 resolution ID를 발급한다. Rehydrator는 requirement ref와 curren
 
 ### Parameter Guidance
 
+Provider free-form guidance never enters a cache value or a cache-eligible structured response unchanged. After secret screening and Catalog step/key validation, the registry preserves the existing Slack-channel-specific pair only when it is exact; every other safe guidance hint is deterministically rewritten to the closed `guidance.reason.configuration_required.v1` / `guidance.input.provide_parameter_value.v1` pair. The rendered input mentions only the allowlisted Catalog parameter key. The same rendered pair is projected on a cold miss and rehydrated on a warm hit, so the two paths have identical structured guidance. Invalid Catalog members and secret-like guidance remain discarded before projection.
+
 Cache에는 logical step ref, Catalog `parameter_key`, `reason_template_ref`와
 `input_guidance_template_ref`만 둔다. Rehydrator는 현재 logical step을 bind하고 Catalog parameter 및
 template input-type applicability를 검증한 뒤 registry의 고정 template을 렌더링한다. Template에는 현재
@@ -300,12 +300,7 @@ Planner로 복구하며 audit에는 allowlisted outcome/reason/latency만 남긴
 Redis flush, TTL expiry와 HMAC rotation은 DB migration을 요구하지 않는다. Cache disabled 상태가 기능의
 정상 rollback 경로다.
 
-Feature flag 기본값은 false다. Production과 staging serving은 cache 전용 Redis endpoint만 사용하며 URL이
-없을 때 Celery broker/result Redis로 자동 fallback하지 않는다. 환경 판정은 기존 `NODE_ENV`를 재사용하고,
-`production|staging`에서는 전용 URL, HMAC key/version과 유효한 bounded configuration이 모두 존재하며
-명시적인 production-ready attestation이 true일 때만 serving을 허용한다. `development`, `test`와 미설정
-환경에서는 cache가 기본 비활성이다. 운영자는 외부 검증을 완료한 뒤 attestation을 설정하고, 런타임은
-별도 evidence 저장소를 조회하지 않고 해당 선언과 configuration만 검사한다.
+Cache serving is requested by default, but it never falls back to Celery broker/result Redis. Missing or invalid cache-specific configuration disables only cache. `scripts/dev-local.ps1` supplies explicit development cache configuration with a cache-only Redis DB, ephemeral HMAC key, and version, so ordinary local Agent Builder requests begin cache-on. A direct `development`, `test`, or unset-environment Gateway without complete configuration remains cache-disabled. Production/staging serving still requires a dedicated Redis URL, HMAC key/version, valid bounded configuration, and explicit production-ready attestation. Runtime evaluates only that attestation and configuration; operators set it after external validation.
 
 Cache 구현은 전용 URL 지원과 증거가 없을 때 cache를 끄는 configuration gate까지만 포함한다. 전용 instance,
 Helm/Kubernetes secret과 URL wiring, capacity/eviction, failure/network test, monitoring/rollback과 staged rollout은
@@ -349,3 +344,7 @@ Latency benchmark는 제품 API나 cache diagnostic UI를 추가하지 않는 �
 의미가 비슷하다는 이유만으로 같은 plan을 기대하는 dataset은 후속 Graph RAG 이슈가 소유한다.
 이 benchmark에서는 승인된 deterministic alias만 warm normalization hit로 측정하며 semantic-only 문장은
 bypass/negative control로만 남긴다.
+
+### Normalization v2 amendment
+
+The normalization pipeline no longer rejects a request because a word is absent from a fixed vocabulary. After deny-only safety checks, it emits an ordered projection of the entire normalized request: Catalog-owned exact aliases are replaced with their canonical references and every other token is retained as a literal. Thus any safe natural-language request reaches the existing Redis lookup; semantic equivalence beyond the documented NFKC, whitespace, and Catalog exact-alias rules remains out of scope.

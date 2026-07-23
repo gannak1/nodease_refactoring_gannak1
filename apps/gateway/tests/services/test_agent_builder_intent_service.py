@@ -407,6 +407,8 @@ def test_llm_intent_extractor_requests_json_and_preserves_step_order():
     assert kwargs["request_timeout_seconds"] == 90
     assert runtime_calls[0]["credential_id"] == credential_id
     assert runtime_calls[0]["model_id"] == model_id
+    assert extractor.last_call_counts.provider_call_count == 1
+    assert extractor.last_call_counts.repair_call_count == 0
 
 
 def test_llm_intent_extractor_uses_provider_schema_constraint_when_supported():
@@ -746,6 +748,8 @@ def test_llm_intent_extractor_repairs_github_comment_mapped_to_http_once():
 
     assert result.ordered_capabilities == ["github_pr_comment"]
     assert len(client.calls) == 2
+    assert extractor.last_call_counts.provider_call_count == 2
+    assert extractor.last_call_counts.repair_call_count == 1
     assert "GITHUB_OPERATION_CAPABILITY_MISMATCH" in str(client.calls[1][0])
 
 

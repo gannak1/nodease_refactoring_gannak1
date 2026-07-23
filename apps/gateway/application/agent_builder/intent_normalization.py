@@ -14,7 +14,7 @@ from apps.gateway.application.agent_builder.intent_cache.contracts import (
     IntentPlanningContext,
 )
 
-NORMALIZER_VERSION = "intent-normalizer-v1"
+NORMALIZER_VERSION = "intent-normalizer-v2"
 
 _CATALOG_PATH = (
     Path(__file__).resolve().parents[3]
@@ -355,8 +355,6 @@ def _canonicalize_unquoted(value: str) -> list[_Segment] | None:
         raw_token = match.group(0)
         canonical = _CATALOG_EXACT_TOKENS.get(raw_token.casefold())
         if canonical is None:
-            if not _is_allowed_literal_token(raw_token):
-                return None
             canonical = ("literal", raw_token)
         _append_segment(segments, canonical)
         cursor = match.end()
@@ -386,8 +384,6 @@ def _canonical_segments(value: str) -> tuple[_Segment, ...] | None:
     for segment in unquoted_segments:
         _append_segment(segments, segment)
 
-    if not any(kind != "literal" for kind, _ in segments):
-        return None
     return tuple(segments)
 
 
@@ -474,6 +470,8 @@ class DeterministicIntentNormalizer:
             return _bypass("input_projection_truncated")
 
         if not normalized:
+            return _bypass("unsupported_request_shape")
+        if _WORD_RE.search(normalized) is None:
             return _bypass("unsupported_request_shape")
         if _has_explicit_parameter_value(normalized):
             return _bypass("explicit_value_suspected")

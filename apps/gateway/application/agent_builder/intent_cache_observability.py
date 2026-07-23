@@ -89,7 +89,12 @@ class IntentCacheObservability:
                 contract_version=contract_version,
             ).observe(max(0, diagnostic.latency_ms) / 1000)
         logger.info(
-            "agent_builder.intent_cache",
+            "agent_builder.intent_cache outcome=%s reason=%s role=%s latency_ms=%s contract_version=%s",
+            outcome,
+            reason,
+            role,
+            max(0, diagnostic.latency_ms),
+            contract_version,
             extra={
                 "event": "agent_builder.intent_cache",
                 "outcome": outcome,

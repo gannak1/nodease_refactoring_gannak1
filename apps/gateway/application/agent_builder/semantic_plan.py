@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from apps.gateway.application.agent_builder.intent_rehydration_registry import (
+    CanonicalIntentTextRegistry,
+    CanonicalReferenceError,
+    GuidanceInputTypeError,
+)
 from apps.shared.schemas.agent_builder import (
     AgentBuilderExplicitParameterValue,
     AgentBuilderParameterGuidanceHint,
@@ -86,6 +91,7 @@ def normalize_parameter_guidance_hints(
     steps: Iterable[tuple[str, str]],
 ) -> list[AgentBuilderParameterGuidanceHint]:
     step_capabilities = dict(steps)
+    registry = CanonicalIntentTextRegistry()
     result: list[AgentBuilderParameterGuidanceHint] = []
     seen: set[tuple[str, str]] = set()
     for hint in hints:
@@ -106,8 +112,21 @@ def normalize_parameter_guidance_hints(
             hint.input_guidance
         ):
             continue
+        try:
+            reason, input_guidance = registry.canonicalize_guidance(
+                capability=capability,
+                parameter_key=hint.parameter_key,
+                provider_reason=hint.reason,
+                provider_input_guidance=hint.input_guidance,
+            )
+        except (CanonicalReferenceError, GuidanceInputTypeError):
+            continue
         seen.add(key)
-        result.append(hint)
+        result.append(
+            hint.model_copy(
+                update={"reason": reason, "input_guidance": input_guidance}
+            )
+        )
     return result
 
 

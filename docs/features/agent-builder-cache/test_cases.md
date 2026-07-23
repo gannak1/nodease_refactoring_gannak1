@@ -16,19 +16,19 @@ PostgreSQL integration은 별도 환경에서 순차 실행한다.
 | ABC-T002 | `LLM 뒤에 Slack`, `Slack 뒤에 LLM` | 다른 signature |
 | ABC-T003 | `LLM 노드 추가`, `LLM 노드 추가하지 마` | 다른 signature |
 | ABC-T004 | 숫자, 인용문, node label이 다름 | 다른 signature 또는 bypass |
-| ABC-T005 | 번역, 일반 동의어 또는 Catalog multi-token phrase alias | `unknown_token_sequence`로 lookup/store bypass; partial capability signature 없음 |
+| ABC-T005 | 번역, 일반 동의어 또는 Catalog multi-token phrase alias | 원문 순서의 literal을 보존해 eligible이며 같은 literal sequence만 exact hit 가능; phrase alias·번역·partial capability signature 없음 |
 | ABC-T006 | Unicode 호환문자/연속 공백과 non-Catalog 영문 action case | 전자는 canonical normalization, 후자는 원문 case를 보존한 다른 signature |
-| ABC-T007 | token boundary 밖 부분 문자열 alias | `unknown_token_sequence` bypass; substring capability signature 없음 |
+| ABC-T007 | token boundary 밖 부분 문자열 alias | alias로 canonicalize하지 않고 literal을 보존해 eligible이며 같은 literal sequence만 exact hit 가능; substring/partial capability signature 없음 |
 | ABC-T008 | secret-like prefix 또는 redaction 발생 | lookup/store 모두 호출하지 않음 |
 | ABC-T009 | explicit parameter value 가능성이 있는 요청 | lookup/store bypass |
 | ABC-T010 | single-token exact alias가 서로 다른 canonical target에 중복 | startup/static validation 실패 |
 | ABC-T011 | 2,000자 이후만 다른 허용 길이 요청 | 같은 signature를 만들지 않고 전체 canonicalization 또는 bypass |
-| ABC-T012 | 51번째 이후 node/topology만 다른 workflow | 다른 context fingerprint 또는 bypass |
+| ABC-T012 | 51번째 이후 node/topology만 다른 workflow | 같은 general-request key를 유지하되 전체 current topology로 hit 재검증; 적용 불가 plan은 hit를 폐기하고 기존 Planner 경계로 진행 |
 | ABC-T013 | request 또는 graph projection 절단 감지 | lookup/store 모두 bypass |
-| ABC-T014 | `AgentBuilderService` planning DTO | 전체 safe request/topology 사용, 2,000자·50-node 절단 없음, selected target의 ephemeral HMAC material 외 raw config/resource/request/operation ID 없음 |
+| ABC-T014 | `AgentBuilderService` planning DTO | 전체 safe request와 전체 current topology를 사용하며 2,000자·50-node 절단 없음; topology는 rehydration 전용이고 selected target의 ephemeral HMAC material 외 raw config/resource/request/operation ID 없음 |
 | ABC-T015 | versioned normalization profile manifest | NFKC/whitespace, Catalog exact token, 보호 span, bypass와 version이 deterministic하게 로드됨 |
-| ABC-T016 | Catalog가 단일-token alias로 소유한 exact alias 변형 | 같은 signature; standalone alias가 아닌 번역은 bypass |
-| ABC-T017 | phrase alias, 미인식 표현 또는 unsupported node가 남는 요청 | `unknown_token_sequence`로 전체 bypass; partial signature 없음 |
+| ABC-T016 | Catalog가 단일-token alias로 소유한 exact alias 변형 | 같은 signature; Catalog가 소유하지 않은 번역은 변환하지 않은 literal signature로 eligible |
+| ABC-T017 | phrase alias, 미인식 표현 또는 unsupported node가 남는 요청 | 원문 순서의 literal segment로 eligible; partial signature가 아닌 전체 signature를 생성 |
 | ABC-T018 | 인용문·숫자·부정·node label·parameter-like span과 exact alias가 겹침 | 인용/label·숫자·부정·순서/위치는 보존하고 explicit parameter value는 bypass |
 | ABC-T019 | versioned adversarial corpus | 동등·비동등·충돌 사례가 process 간 같은 결과를 내고 profile 변경 시 normalizer version 변경 |
 
@@ -42,9 +42,10 @@ PostgreSQL integration은 별도 환경에서 순차 실행한다.
 | ABC-T020 | 같은 scope/context/version | 같은 HMAC key |
 | ABC-T021 | user 또는 organization 변경 | 다른 key |
 | ABC-T022 | planner model, generation mode 변경 | 다른 key |
-| ABC-T023 | graph topology 또는 selected edge identity 변경 | 실제 UUID는 노출되지 않지만 다른 HMAC key |
+| ABC-T023 | selected edge identity 변경 | 실제 UUID는 노출되지 않지만 다른 HMAC key |
+| ABC-T023a | 같은 actor/organization·message의 general request에서 graph topology만 변경 | 같은 HMAC key; hit 전에 전체 current topology와 plan 적용 가능성을 재검증하고 불가하면 hit 폐기 |
 | ABC-T024 | layout/viewport만 변경 | 같은 context fingerprint |
-| ABC-T025 | Knowledge 후보의 권한, lifecycle, safe metadata 또는 policy revision 변경; current safe policy revision 부재 | 전자는 다른 key, 후자는 cache admission bypass |
+| ABC-T025 | Knowledge 후보의 권한, lifecycle, safe metadata 또는 policy revision 변경; explicit revision 부재이지만 valid permission-state/freshness epoch 존재; 둘 다 불가 | 전자는 다른 key, 중간은 derived-policy-state-v1로 다른 key, 마지막은 cache admission bypass |
 | ABC-T026 | normalizer/catalog/materializer version 변경 | miss |
 | ABC-T027 | Key/cache/log/metric capture 검사 | raw request, candidate ID/handle/name과 resource UUID가 없음 |
 | ABC-T028 | cache value round-trip | strict schema와 canonical bytes 유지 |
@@ -65,7 +66,7 @@ PostgreSQL integration은 별도 환경에서 순차 실행한다.
 
 | ID | Case | Expected |
 |---|---|---|
-| ABC-T040 | 모든 provider topic/guidance가 exact canonical ref로 표현되는 valid actionable new workflow | store eligible |
+| ABC-T040 | valid actionable new workflow with exact canonical topics and safe Catalog-valid provider guidance | the guidance is deterministically rendered as a closed canonical ref pair; store eligible |
 | ABC-T041 | valid replace workflow without explicit value | store eligible |
 | ABC-T042 | selected edge 기반 modify | matching context에서 eligible |
 | ABC-T043 | natural-language target modify | bypass |
@@ -80,7 +81,7 @@ PostgreSQL integration은 별도 환경에서 순차 실행한다.
 | ABC-T052 | 인증/조직/권한 또는 foreground admission 실패 | cache lookup과 provider 호출 모두 0회 |
 | ABC-T053 | request canceled/version stale before lookup, after load before warm rehydration, immediately before a cache-induced Planner fallback, or when planning-context construction bypasses at the 4,000-character safe-message boundary | normalizer/store/rehydrator/Planner work is zero before lookup; after-load cancellation does not rehydrate or call Planner; context bypass retains the bound request fence and does not call Planner/provider/usage; normalizer bypass/exception, cache I/O, invalid decoded plan, lease failure, unavailable cache, warm/follower rehydration failure, and follower timeout/overflow recheck before Planner; safe `request_canceled`/`request_stale` diagnostic and existing terminal contract |
 | ABC-T054 | warm hit가 반복 rate limit을 초과 | 기존 request admission 정책 적용 |
-| ABC-T055 | provider topic/guidance가 모두 exact ref로 표현되는 cold miss와 하나라도 표현되지 않는 cold miss | 전자는 ref projection 뒤 canonical `query_topics`/guidance를 즉시 downstream에 사용하고 put, 후자는 원본 extraction을 non-cache downstream에 사용하고 put 없음 |
+| ABC-T055 | exact canonical topics plus free-form safe Catalog-valid guidance; unknown topic or invalid/secret guidance | the former uses the generic closed guidance pair for both cold miss and warm hit then stores; unknown topic bypasses storage and invalid/secret hints are discarded before projection |
 | ABC-T056 | warm hit canonical rehydration failure | hit 폐기, 기존 Planner 최대 1회, 성공 시 canonical result 사용 |
 | ABC-T057 | cold miss canonical rehydration failure | 원본 extraction 미사용, Planner 재호출·cache put·GraphMutation·save 0회, 기존 terminal error |
 | ABC-T058 | cold miss rehydration failure 전 provider/repair attempt | 이미 발생한 usage는 ADR-0055대로 기록, 실패 때문에 추가 attempt 없음 |
@@ -178,7 +179,7 @@ Live latency evaluation은 deterministic unit test와 분리한 수동 benchmark
 | ABC-T151 | cache disabled baseline | 매 성공 회차 provider 호출 1회 또는 repair 시 최대 2회, cache outcome `disabled`; `disabled`는 이 cache-off baseline에만 허용 |
 | ABC-T152 | cache enabled cold miss | lookup/store overhead 포함, provider 호출 1회 또는 repair 시 최대 2회, outcome `miss` |
 | ABC-T153 | exact/approved normalization warm hit | provider와 usage reservation 0회, outcome `hit`, canonical materialization parity 통과 |
-| ABC-T154 | semantic-only 유사 표현 | outcome `bypass`, provider 호출 유지, deterministic cache 개선 결과에 포함하지 않음 |
+| ABC-T154 | semantic-only 유사 표현 | 각각 literal-preserving eligible request로 다른 signature를 가지며 서로의 entry를 재사용하지 않음; semantic cache hit는 없음 |
 | ABC-T155 | negative control | 순서·부정·수량·target이 다른 요청은 hit하지 않음 |
 | ABC-T156 | paired context reset | 같은 pair는 동일 초기 graph, actor, organization, model, generation mode와 safe candidate fingerprint 사용 |
 | ABC-T157 | latency surfaces | planning과 end-to-end를 각각 기록하며 planning은 cache coordinator 경계, end-to-end는 기존 message API 요청부터 terminal response까지 측정 |
@@ -194,7 +195,18 @@ Live latency evaluation은 deterministic unit test와 분리한 수동 benchmark
 | ABC-T167 | artifact retention policy | 최종 safe bundle은 Git 고정 경로에 추적되고 exploratory 결과는 ignored 경로에만 존재 |
 | ABC-T168 | 25/50/75% hit-rate estimate | 측정 warm/cold mean으로 planning/end-to-end 공식 결과가 정확히 계산됨 |
 | ABC-T169 | modeled estimate presentation | 실제 측정값과 구분되고 `modeled_estimate`로 표시 |
-| ABC-T170 | semantic bypass와 Redis fail-open sample | modeled hit-rate 계산에서 miss 경로로 분류하고 실제 실행은 기존 miss provider 호출 계약을 유지하며 모델링 계산 자체는 provider를 호출하지 않음 |
+| ABC-T170 | semantic non-sharing와 Redis fail-open sample | modeled hit-rate 계산에서 miss 경로로 분류하고 실제 실행은 기존 miss provider 호출 계약을 유지하며 모델링 계산 자체는 provider를 호출하지 않음 |
+| ABC-T171 | loopback benchmark diagnostic | Enabled local process returns only outcome, planning latency, provider/repair counters, benchmark terminal status, and validation status for the same authenticated user/organization. Disabled, non-loopback, missing, or mismatched scope returns `404`; raw request/response, cache, credential, provider, and protected-ID data are absent. |
+| ABC-T172 | loopback live runner and recorded warm-up | Two distinct loopback Gateway arms use the same authorized model/workflow context. Each group records one dedicated warm-up pair plus 10/30 measured pairs; measured rounds alternate baseline/candidate order, each pair has fresh baseline/candidate sessions, and warm-up primes use a separate disposable session. Result fingerprint HMAC canonicalizes request/session/draft/operation and materialization identities and excludes diagnostic timing/outcome, while retaining semantic response differences. Development and final rows pass CACHE-05 row, pair, outcome, and redaction validation before any local evidence or final artifact write; a successful cold miss must be `miss`, successful exact/normalization warm rows must be `hit`, and successful semantic non-sharing rows must preserve their actual `miss|hit` outcome and never reuse a semantically distinct entry. Only safe diagnostic fields and HMAC fingerprints reach collector rows or artifacts. |
+| ABC-T173 | evaluation-only fresh session marker | With diagnostics enabled, direct-loopback `POST /sessions` with `X-Agent-Builder-Benchmark-Fresh-Session: true` creates a new session rather than restoring an active one; the same header from non-loopback or disabled bridge keeps the normal restore-or-create contract. The marker is absent from responses, diagnostics, rows, logs, and final artifacts. |
+
+| ABC-T174 | live runner output boundary | Another worktree as `--repository-root`, a tracked development output, or a development output outside ignored `local/mba-350/evidence/` is rejected before any raw row write or bundle generation. |
+
+| ABC-T175 | workflow context parity during live measurement | Preflight compares private workflow ID, app ID, and version timestamp from both Gateway arms; a mismatch or a change before a pair blocks provider work and yields only the scheduled safe failed row. No context value reaches collector rows or artifacts. |
+
+| ABC-T176 | private scenario input boundary | A raw scenario file outside ignored `local/mba-350/`, including a tracked repository JSON, is rejected before parsing or any provider/session invocation. |
+
+| ABC-T177 | cache-on local startup default | `scripts/dev-local.ps1` starts the local Gateway with cache enabled, explicit cache Redis DB, ephemeral HMAC key/version, and `NODE_ENV=development`; it never prints the HMAC key. Incomplete direct-process configuration remains cache-disabled, and production/staging readiness gates remain unchanged. |
 
 ## Verification Commands
 
@@ -216,6 +228,15 @@ smoke는 cache on/off에서 동일 결과를 확인하는 회귀 검증으로 �
 Live benchmark 실행에 필요한 credential, 비용 승인 또는 서버 환경이 없으면 runner와 report generator
 unit test는 구현하되 실제 측정 행은 blocked로 남기고 cache 기능의 최종 검증을 완료 처리하지 않는다. 최종 완료에는
 comparison group별 30회 live 측정과 약정된 benchmark bundle이 필요하다. Graph RAG 후속 이슈는 의미 유사 요청의 retrieval,
-ranking과 confidence 품질을 별도 dataset과 지표로 검증하며 semantic bypass 결과를 hit 성과로 재사용하지 않는다.
+ranking과 confidence 품질을 별도 dataset과 지표로 검증하며 semantic non-sharing 결과를 hit 성과로 재사용하지 않는다.
 Production/staging serving은 실제 Redis evidence 없이는 활성화 검증 완료로 표시하지 않는다. Production Redis
 운영과 Graph RAG 설계·구현은 deterministic cache 코드의 필수 검증 완료와 별도로 추적한다.
+
+### Normalization v2 regression cases
+
+| ID | Case | Expected |
+|---|---|---|
+| ABC-T095 | `슬랙 노드 생성` and whitespace-only variation | both are eligible and have the same signature |
+| ABC-T096 | `LLM 노드 생성` | eligible without a phrase allowlist |
+| ABC-T097 | arbitrary safe natural-language request with unknown words | eligible; unknown words are preserved as literal signature material |
+| ABC-T098 | secret, redaction, truncation, explicit value, or ambiguous modify request | bypass remains unchanged |

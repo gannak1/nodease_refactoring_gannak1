@@ -315,7 +315,6 @@ class AgentBuilderIntentCacheCoordinator:
                 "id": scope._selected_target_id,
                 "type": scope._selected_target_type,
             },
-            "workflow_context": context.workflow_context.model_dump(mode="json"),
         }
         return json.dumps(
             projection,

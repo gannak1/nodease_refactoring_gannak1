@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -44,7 +45,7 @@ from apps.shared.services.workflow_node_catalog import node_definition
 
 _CACHE_PLANNER_CONTRACT_VERSION = "agent-builder-intent-v1"
 _CACHE_MATERIALIZER_VERSION = "agent-builder-direct-edit-v1"
-_CACHE_NORMALIZER_VERSION = "intent-normalizer-v1"
+_CACHE_NORMALIZER_VERSION = "intent-normalizer-v2"
 _ALLOWED_RISK_FLAGS = frozenset(
     {
         "external_action_requested",
@@ -58,6 +59,16 @@ _INTEGRATION_ACTIONS = {
     "github_pr_read": "github.pull_request.read",
     "github_pr_comment": "github.pull_request.comment",
 }
+logger = logging.getLogger(__name__)
+
+
+def _planning_context_unavailable(reason: str) -> None:
+    """Record a closed, payload-free reason for cache context bypass."""
+    logger.info(
+        "agent_builder.intent_cache_context outcome=unavailable reason=%s",
+        reason,
+    )
+    return None
 @dataclass(frozen=True, slots=True)
 class CachePlanningInputs:
     context: IntentPlanningContext
@@ -173,7 +184,14 @@ def _logical_workflow_context(
             nodes=(),
             edges=(),
         ), {}, {}
-    graph = getattr(workflow, "graph", None) or {}
+    graph = getattr(workflow, "graph", None)
+    # AppService creates the primary workflow before an editor graph exists.
+    # Treat that durable empty state exactly like an explicit empty graph so a
+    # new App can participate in the same deterministic cache contract.
+    if graph is None:
+        graph = {"nodes": [], "edges": []}
+    if not isinstance(graph, dict):
+        return None
     raw_nodes = graph.get("nodes")
     raw_edges = graph.get("edges")
     if not isinstance(raw_nodes, list) or not isinstance(raw_edges, list):
@@ -310,31 +328,31 @@ def build_intent_planning_context(
 ) -> CachePlanningInputs | None:
     """Build the full transient DTO only when every projection is complete."""
     if not isinstance(extractor, LLMAgentBuilderIntentExtractor):
-        return None
+        return _planning_context_unavailable("extractor_unavailable")
     if extractor.credential_id is None or extractor.model_id is None:
-        return None
+        return _planning_context_unavailable("runtime_selection_unavailable")
     generation_mode = _cache_generation_mode(request.generation_mode)
     full_safe_message = safe_summary(request.message, limit=4001)
     if generation_mode is None or not full_safe_message or len(full_safe_message) >= 4000:
-        return None
+        return _planning_context_unavailable("request_projection_unavailable")
     projected = _logical_workflow_context(workflow, safe_label=safe_label)
     if projected is None:
-        return None
+        return _planning_context_unavailable("workflow_context_unavailable")
     topology, node_refs, edge_refs = projected
     selected_target_type = None
     selected_target_id = None
     if request.selected_node_id and request.selected_edge_id:
-        return None
+        return _planning_context_unavailable("selected_target_unavailable")
     if request.selected_node_id:
         selected_target_type = "selected_node"
         selected_target_id = request.selected_node_id
         if selected_target_id not in node_refs:
-            return None
+            return _planning_context_unavailable("selected_target_unavailable")
     elif request.selected_edge_id:
         selected_target_type = "selected_edge"
         selected_target_id = request.selected_edge_id
         if selected_target_id not in edge_refs:
-            return None
+            return _planning_context_unavailable("selected_target_unavailable")
     runtime_fingerprint = _planner_runtime_fingerprint(
         db=db,
         user_id=user_id,
@@ -342,9 +360,9 @@ def build_intent_planning_context(
         extractor=extractor,
     )
     if runtime_fingerprint is None:
-        return None
+        return _planning_context_unavailable("planner_runtime_unavailable")
     if not callable(knowledge_context_fingerprint_factory):
-        return None
+        return _planning_context_unavailable("knowledge_fingerprint_factory_unavailable")
     try:
         knowledge_context_fingerprint = knowledge_context_fingerprint_factory(
             db=db,
@@ -353,7 +371,7 @@ def build_intent_planning_context(
             full_safe_message=full_safe_message,
         )
     except Exception:
-        return None
+        return _planning_context_unavailable("knowledge_fingerprint_unavailable")
     selected_target_logical_ref = (
         node_refs.get(selected_target_id)
         if selected_target_type == "selected_node"
@@ -502,10 +520,15 @@ def project_structured_intent_plan(
             step_ref = step_refs_by_id.get(hint.step_id)
             if step_ref is None:
                 return None
-            reason_ref = registry.project_reason(hint.reason)
-            input_ref = registry.project_input_guidance(hint.input_guidance)
-            if reason_ref is None or input_ref is None:
+            projected_guidance = registry.project_guidance(
+                capability=step_ref.capability,
+                parameter_key=hint.parameter_key,
+                reason=hint.reason,
+                input_guidance=hint.input_guidance,
+            )
+            if projected_guidance is None:
                 return None
+            reason_ref, input_ref = projected_guidance
             guidance.append(
                 CachedParameterGuidanceRef(
                     logical_step_ref=step_ref,
@@ -524,6 +547,15 @@ def project_structured_intent_plan(
                 registry.project_topic(topic)
                 for topic in requirement.query_topics
             )
+            if any(ref is None for ref in topic_refs):
+                current_message_topic_ref = registry.project_current_safe_message_topic(
+                    context.full_safe_message
+                )
+                topic_refs = (
+                    (current_message_topic_ref,)
+                    if current_message_topic_ref is not None
+                    else ()
+                )
             if (
                 target_step_ref is None
                 or not topic_refs

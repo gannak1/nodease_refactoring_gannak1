@@ -115,9 +115,22 @@ def _current_policy_revision(permission: object) -> str:
     if not isinstance(safe_metadata, dict):
         raise ValueError("current Knowledge policy revision unavailable")
     revision = safe_metadata.get("policy_revision")
-    if not isinstance(revision, str) or not revision.strip():
+    if isinstance(revision, str) and revision.strip():
+        return revision.strip()
+
+    freshness_epoch = getattr(permission, "freshness_epoch", None)
+    if isinstance(freshness_epoch, bool) or not isinstance(freshness_epoch, int):
         raise ValueError("current Knowledge policy revision unavailable")
-    return revision.strip()
+    return "derived-policy-state-v1:" + hashlib.sha256(
+        _canonical_payload(
+            {
+                "effective_auth_state": getattr(permission, "effective_auth_state", None),
+                "freshness_epoch": freshness_epoch,
+                "reason_code": getattr(permission, "reason_code", None),
+                "source_acl_state": getattr(permission, "source_acl_state", None),
+            }
+        )
+    ).hexdigest()
 
 
 def current_knowledge_context_fingerprint(
@@ -263,7 +276,10 @@ def current_knowledge_resolutions(
     )
     resolutions = []
     for ordinal, requirement in enumerate(plan.knowledge_requirements, start=1):
-        topics = [registry.render_topic(ref) for ref in requirement.topic_refs]
+        topics = [
+            registry.render_topic(ref, full_safe_message=context.full_safe_message)
+            for ref in requirement.topic_refs
+        ]
         response = service.recommend_for_builder(
             KnowledgeRAGRecommendationRequest(
                 workflow_intent=summary,

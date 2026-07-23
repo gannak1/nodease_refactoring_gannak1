@@ -4,6 +4,7 @@ import json
 import re
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Literal, Protocol
 
@@ -53,6 +54,14 @@ class AgentBuilderIntentExtractionError(RuntimeError):
 
 class AgentBuilderIntentRuntimeUnavailableError(AgentBuilderIntentExtractionError):
     """No permission-aware LLM runtime was available for intent extraction."""
+
+
+@dataclass(frozen=True)
+class AgentBuilderIntentCallCounts:
+    """Allowlisted provider-attempt counters for an individual extraction."""
+
+    provider_call_count: int = 0
+    repair_call_count: int = 0
 
 
 def safe_intent_extraction_reason(
@@ -660,6 +669,13 @@ class LLMAgentBuilderIntentExtractor:
         )
         self.usage_recorder = usage_recorder
         self.requires_explicit_selection = runtime_loader is None
+        self._last_call_counts = AgentBuilderIntentCallCounts()
+
+    @property
+    def last_call_counts(self) -> AgentBuilderIntentCallCounts:
+        """Return only the latest provider/repair counters, never request data."""
+
+        return self._last_call_counts
 
     def extract(
         self,
@@ -668,6 +684,7 @@ class LLMAgentBuilderIntentExtractor:
         workflow_context: dict[str, Any],
         usage_context: AgentBuilderIntentUsageContext | None = None,
     ) -> AgentBuilderIntentExtraction:
+        self._last_call_counts = AgentBuilderIntentCallCounts()
         if (usage_context is None) != (self.usage_recorder is None):
             raise AgentBuilderIntentUsageRecordingError(
                 "intent_usage_recording_failed"
@@ -782,6 +799,10 @@ class LLMAgentBuilderIntentExtractor:
                         "intent_usage_recording_failed"
                     ) from exc
             started_at = perf_counter()
+            self._last_call_counts = AgentBuilderIntentCallCounts(
+                provider_call_count=attempt + 1,
+                repair_call_count=attempt,
+            )
             try:
                 response = runtime.client.invoke_sync(
                     messages,

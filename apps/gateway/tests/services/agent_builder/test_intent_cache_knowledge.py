@@ -297,7 +297,7 @@ def test_knowledge_fingerprint_includes_all_current_permission_and_hierarchy_sta
 
     assert before != after_policy_change != after_hierarchy_change
 
-def test_knowledge_fingerprint_requires_current_policy_revision(monkeypatch):
+def test_knowledge_fingerprint_derives_current_policy_revision_from_permission_state(monkeypatch):
     candidate_id = uuid4()
 
     class FakeService:
@@ -330,14 +330,16 @@ def test_knowledge_fingerprint_requires_current_policy_revision(monkeypatch):
 
     monkeypatch.setattr(intent_cache_knowledge, "KnowledgeRAGRecommendationService", FakeService)
 
-    with pytest.raises(ValueError, match="policy revision unavailable"):
-        intent_cache_knowledge.current_knowledge_context_fingerprint(
-            db=object(),
-            user_id=uuid4(),
-            organization_id=uuid4(),
-            full_safe_message="safe request",
-            hmac_key=b"k" * 32,
-        )
+    fingerprint = intent_cache_knowledge.current_knowledge_context_fingerprint(
+        db=object(),
+        user_id=uuid4(),
+        organization_id=uuid4(),
+        full_safe_message="safe request",
+        hmac_key=b"k" * 32,
+    )
+
+    assert isinstance(fingerprint, str)
+    assert len(fingerprint) == 64
 
 
 def test_knowledge_fingerprint_excludes_nested_identity_and_presentation_metadata(

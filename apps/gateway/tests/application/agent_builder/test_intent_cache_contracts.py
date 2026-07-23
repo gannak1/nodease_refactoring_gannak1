@@ -552,13 +552,19 @@ def test_catalog_snapshot_matches_current_catalog_v3_exactly():
 
 def test_canonical_text_and_purpose_snapshots_are_exact_and_complete():
     assert CANONICAL_KNOWLEDGE_TOPIC_REFS == frozenset(
-        {"topic.internal_documents.v1"}
+        {"topic.current_safe_message.v1", "topic.internal_documents.v1"}
     )
     assert CANONICAL_GUIDANCE_REASON_REFS == frozenset(
-        {"guidance.reason.delivery_destination_required.v1"}
+        {
+            "guidance.reason.configuration_required.v1",
+            "guidance.reason.delivery_destination_required.v1",
+        }
     )
     assert CANONICAL_INPUT_GUIDANCE_REFS == frozenset(
-        {"guidance.input.select_slack_channel_id.v1"}
+        {
+            "guidance.input.provide_parameter_value.v1",
+            "guidance.input.select_slack_channel_id.v1",
+        }
     )
     assert SUMMARY_PROJECTION_DESCRIPTOR == {
         "projection_id": "summary.current_safe_message.v1",

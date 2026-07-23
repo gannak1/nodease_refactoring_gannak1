@@ -51,6 +51,9 @@ from apps.gateway.auth.permissions import (
 from apps.gateway.services.agent_builder.parameter_candidates import (
     ParameterCandidateProvider,
 )
+from apps.gateway.services.agent_builder.benchmark_diagnostics import (
+    AgentBuilderBenchmarkDiagnostics,
+)
 from apps.gateway.services.agent_builder.intent_cache_integration import (
     build_intent_planning_context,
 )
@@ -972,10 +975,13 @@ class AgentBuilderService:
             if intent_plan_cache is not None
             else DisabledIntentPlanCacheBoundary()
         )
+        self._benchmark_cache_diagnostic: tuple[str, int, int, int] | None = None
 
     def create_or_restore_session(
         self,
         request: AgentBuilderSessionCreateRequest,
+        *,
+        force_new: bool = False,
     ) -> AgentBuilderDirectSessionResponse:
         workflow_id = request.workflow_id
         app_id = request.app_id
@@ -999,19 +1005,21 @@ class AgentBuilderService:
                 )
                 raise HTTPException(status_code=denial_status, detail=detail)
 
-        session = (
-            self.db.query(AgentBuilderSession)
-            .filter(
-                AgentBuilderSession.user_id == self.user.id,
-                AgentBuilderSession.organization_id == self.organization_id,
-                AgentBuilderSession.workflow_id == workflow_id,
-                AgentBuilderSession.app_id == app_id,
-                AgentBuilderSession.status == "active",
-                AgentBuilderSession.protocol_version == "direct_edit_v1",
+        session = None
+        if not force_new:
+            session = (
+                self.db.query(AgentBuilderSession)
+                .filter(
+                    AgentBuilderSession.user_id == self.user.id,
+                    AgentBuilderSession.organization_id == self.organization_id,
+                    AgentBuilderSession.workflow_id == workflow_id,
+                    AgentBuilderSession.app_id == app_id,
+                    AgentBuilderSession.status == "active",
+                    AgentBuilderSession.protocol_version == "direct_edit_v1",
+                )
+                .order_by(AgentBuilderSession.updated_at.desc())
+                .first()
             )
-            .order_by(AgentBuilderSession.updated_at.desc())
-            .first()
-        )
         created = False
         if session is None:
             session = AgentBuilderSession(
@@ -2655,7 +2663,11 @@ class AgentBuilderService:
         cache_cancellation_fence=None,
         cache_request_deadline_monotonic: float | None = None,
     ) -> AgentBuilderStructuredRequest:
+        provider_call_count = 0
+        repair_call_count = 0
+
         def planner_call() -> AgentBuilderStructuredRequest:
+            nonlocal provider_call_count, repair_call_count
             if self.intent_extractor is None:
                 raise AgentBuilderIntentRuntimeUnavailableError(
                     "Agent Builder intent extractor is not configured"
@@ -2673,7 +2685,22 @@ class AgentBuilderService:
             )
             if current_usage_context is not None:
                 extract_kwargs["usage_context"] = current_usage_context
-            extraction = self.intent_extractor.extract(**extract_kwargs)
+            try:
+                extraction = self.intent_extractor.extract(**extract_kwargs)
+            finally:
+                call_counts = getattr(self.intent_extractor, "last_call_counts", None)
+                candidate_provider_count = getattr(
+                    call_counts, "provider_call_count", 0
+                )
+                candidate_repair_count = getattr(call_counts, "repair_call_count", 0)
+                if (
+                    isinstance(candidate_provider_count, int)
+                    and not isinstance(candidate_provider_count, bool)
+                    and isinstance(candidate_repair_count, int)
+                    and not isinstance(candidate_repair_count, bool)
+                ):
+                    provider_call_count = candidate_provider_count
+                    repair_call_count = candidate_repair_count
             validate_intent_semantics(
                 extraction,
                 workflow_context,
@@ -2730,18 +2757,42 @@ class AgentBuilderService:
                     )
                     if not self._release_cache_read_transaction():
                         context = None
+        planning_started = time.monotonic()
+
+        def record_benchmark_diagnostic(outcome: str) -> None:
+            self._benchmark_cache_diagnostic = (
+                outcome,
+                max(0, int((time.monotonic() - planning_started) * 1000)),
+                provider_call_count,
+                repair_call_count,
+            )
+
         try:
             execution = cache_boundary.execute(planner_call, context=context)
         except ColdMissRehydrationError as exc:
+            record_benchmark_diagnostic("error")
             # The provider attempt already owns its usage record. Reusing the raw
             # extraction would create a cache-only downstream divergence.
             raise AgentBuilderIntentExtractionError(
                 "Agent Builder intent cache rehydration failed"
             ) from exc
         except RequestFenceAbortedError as exc:
+            record_benchmark_diagnostic("error")
             raise AgentBuilderIntentExtractionError(
                 "Agent Builder request changed before cache planning completed"
             ) from exc
+        except Exception:
+            record_benchmark_diagnostic(
+                "disabled"
+                if isinstance(cache_boundary, DisabledIntentPlanCacheBoundary)
+                else "error"
+            )
+            raise
+        record_benchmark_diagnostic(
+            "disabled"
+            if isinstance(cache_boundary, DisabledIntentPlanCacheBoundary)
+            else execution.decision.outcome
+        )
         return execution.structured_request
 
     def _intent_cache_cancellation_fence(self, request_row: AgentBuilderRequest):
@@ -3307,8 +3358,19 @@ class AgentBuilderService:
         self,
         request: AgentBuilderMessageRequest,
         workflow: Workflow | None,
+        *,
+        usage_context=None,
+        usage_context_factory=None,
+        cache_cancellation_fence=None,
+        cache_request_deadline_monotonic: float | None = None,
     ) -> AgentBuilderStructuredRequest:
         """Legacy deterministic compatibility helper; not a production parser."""
+        del (
+            usage_context,
+            usage_context_factory,
+            cache_cancellation_fence,
+            cache_request_deadline_monotonic,
+        )
         if not _message_looks_like_workflow_request(request.message):
             return AgentBuilderStructuredRequest(
                 request_type="unsupported",
@@ -6513,6 +6575,39 @@ class AgentBuilderService:
             request_row.response_payload = payload
             request_row.structured_request = structured_request
             request_row.completed_at = completed_at
+            diagnostic = self._benchmark_cache_diagnostic
+            if diagnostic is not None:
+                (
+                    outcome,
+                    planning_latency_ms,
+                    provider_call_count,
+                    repair_call_count,
+                ) = diagnostic
+                validation = response.validation_result
+                if response.status == "canceled":
+                    terminal_status = "canceled"
+                elif response.status == "timeout":
+                    terminal_status = "timeout"
+                elif validation is not None and not validation.valid:
+                    terminal_status = "validation_error"
+                elif response.status == "failed":
+                    terminal_status = "provider_error"
+                else:
+                    terminal_status = "success"
+                AgentBuilderBenchmarkDiagnostics.record(
+                    request_id=request_row.id,
+                    user_id=self.user.id,
+                    organization_id=self.organization_id,
+                    outcome=outcome,
+                    planning_latency_ms=planning_latency_ms,
+                    provider_call_count=provider_call_count,
+                    repair_call_count=repair_call_count,
+                    terminal_status=terminal_status,
+                    validation_passed=(
+                        terminal_status == "success"
+                        and (validation is None or validation.valid)
+                    ),
+                )
             return True
         try:
             self.db.refresh(request_row)

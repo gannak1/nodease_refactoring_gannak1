@@ -196,12 +196,17 @@ NodeTypeRef = Literal[
     "gmailDraftNode",
     "mailAcknowledgeNode",
 ]
-CanonicalKnowledgeTopicRef = Literal["topic.internal_documents.v1"]
+CanonicalKnowledgeTopicRef = Literal[
+    "topic.internal_documents.v1",
+    "topic.current_safe_message.v1",
+]
 CanonicalGuidanceReasonRef = Literal[
-    "guidance.reason.delivery_destination_required.v1"
+    "guidance.reason.configuration_required.v1",
+    "guidance.reason.delivery_destination_required.v1",
 ]
 CanonicalInputGuidanceRef = Literal[
-    "guidance.input.select_slack_channel_id.v1"
+    "guidance.input.provide_parameter_value.v1",
+    "guidance.input.select_slack_channel_id.v1",
 ]
 IntegrationActionRef = Literal[
     "github.pull_request.read",
@@ -351,8 +356,22 @@ class CachedParameterGuidanceRef(_StrictFrozenModel):
             raise _ReferenceContractViolation(
                 "unknown input guidance reference"
             )
+        is_slack_channel_pair = (
+            self.reason_template_ref
+            == "guidance.reason.delivery_destination_required.v1"
+            and self.input_guidance_template_ref
+            == "guidance.input.select_slack_channel_id.v1"
+        )
+        is_generic_pair = (
+            self.reason_template_ref == "guidance.reason.configuration_required.v1"
+            and self.input_guidance_template_ref
+            == "guidance.input.provide_parameter_value.v1"
+        )
+        if is_generic_pair:
+            return self
         if not (
-            self.logical_step_ref.capability == "slack_send"
+            is_slack_channel_pair
+            and self.logical_step_ref.capability == "slack_send"
             and self.parameter_key == "channel"
             and parameters[self.parameter_key] == "text"
         ):

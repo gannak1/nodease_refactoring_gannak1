@@ -31,11 +31,12 @@ def _settings(values: dict[str, str] | None = None) -> Settings:
     return Settings(_env_file=None, **(values or {}))
 
 
-def test_cache_defaults_to_disabled_with_bounded_defaults() -> None:
+def test_cache_is_requested_by_default_but_incomplete_configuration_stays_disabled() -> None:
     config = _settings().agent_builder_intent_cache_config()
 
     assert config.enabled is False
-    assert config.disabled_reason == "feature_disabled"
+    assert config.disabled_reason == "cache_redis_url_missing"
+    assert _settings().AGENT_BUILDER_INTENT_CACHE_ENABLED == "true"
     assert config.ttl_seconds == 900
     assert config.operation_timeout_ms == 100
     assert config.max_payload_bytes == 32768
@@ -85,6 +86,7 @@ def test_cache_url_never_falls_back_to_celery_broker_or_result_backend() -> None
 
     assert config.enabled is False
     assert config.disabled_reason == "cache_redis_url_missing"
+    assert _settings().AGENT_BUILDER_INTENT_CACHE_ENABLED == "true"
     assert config.redis_url is None
 
 

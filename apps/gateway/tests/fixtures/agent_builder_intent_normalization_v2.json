@@ -1,6 +1,6 @@
 {
-  "fixture_version": "agent-builder-intent-normalization-v1",
-  "normalizer_version": "intent-normalizer-v1",
+  "fixture_version": "agent-builder-intent-normalization-v2",
+  "normalizer_version": "intent-normalizer-v2",
   "cases": [
     {
       "id": "nfkc-whitespace-01",
@@ -51,16 +51,14 @@
       "equivalence_group": "github-add"
     },
     {
-      "id": "translation-unknown-bypass-01",
+      "id": "translation-unknown-literal-01",
       "synthetic_message": "깃허브 노드 추가",
-      "expected_status": "bypass",
-      "expected_reason": "unknown_token_sequence"
+      "expected_status": "eligible"
     },
     {
-      "id": "phrase-alias-unknown-bypass-01",
+      "id": "phrase-alias-unknown-literal-01",
       "synthetic_message": "언어 모델 노드 추가",
-      "expected_status": "bypass",
-      "expected_reason": "unknown_token_sequence"
+      "expected_status": "eligible"
     },
     {
       "id": "order-preserved-01",
@@ -105,10 +103,9 @@
       "distinct_pair": "quoted-label-preserved"
     },
     {
-      "id": "unknown-residual-bypass-01",
+      "id": "unknown-residual-literal-01",
       "synthetic_message": "LLM 미지표현 추가",
-      "expected_status": "bypass",
-      "expected_reason": "unknown_token_sequence"
+      "expected_status": "eligible"
     },
     {
       "id": "redaction-marker-bypass-01",

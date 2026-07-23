@@ -497,7 +497,10 @@ class CachedIntentPlanRehydrator:
                 if target_step_id is None:
                     return self._failure("logical_reference_invalid")
                 topics = [
-                    self._registry.render_topic(topic_ref)
+                    self._registry.render_topic(
+                        topic_ref,
+                        full_safe_message=context.full_safe_message,
+                    )
                     for topic_ref in requirement.topic_refs
                 ]
                 knowledge_requirements.append(
