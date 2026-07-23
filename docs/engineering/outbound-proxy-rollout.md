@@ -4,7 +4,7 @@ Status: Draft
 
 ## Scope
 
-이 runbook은 ADR-0071의 Docker Compose 및 provider-neutral Helm HTTP/HTTPS egress, Worker IMAP tunnel과 external Connector DB/SSH tunnel 전환을 다룬다. Platform PostgreSQL/Redis와 Sandbox control은 대상이 아니다. Proxy 설정을 제거해 direct egress로 되돌리는 절차는 안전한 rollback이 아니다.
+이 runbook은 ADR-0072의 Docker Compose 및 provider-neutral Helm HTTP/HTTPS egress, Worker IMAP tunnel과 external Connector DB/SSH tunnel 전환을 다룬다. Platform PostgreSQL/Redis와 Sandbox control은 대상이 아니다. Proxy 설정을 제거해 direct egress로 되돌리는 절차는 안전한 rollback이 아니다.
 
 ## Required inputs
 

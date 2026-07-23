@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -5,6 +6,13 @@ ROOT = Path(__file__).resolve().parents[2]
 GATEWAY_DOCKERFILE = ROOT / "docker" / "gateway" / "Dockerfile"
 WORKFLOW_DOCKERFILE = ROOT / "docker" / "workflow_engine" / "Dockerfile"
 INGESTION_SERVICE = ROOT / "apps" / "gateway" / "services" / "ingestion" / "service.py"
+MODEL_ROUTING_CLASSIFIER = (
+    ROOT
+    / "apps"
+    / "workflow_engine"
+    / "services"
+    / "model_routing_local_classifier.py"
+)
 
 
 def test_gateway_image_preloads_runtime_tokenizers_and_nltk_resources() -> None:
@@ -45,6 +53,49 @@ def test_ingestion_never_downloads_nltk_resources_at_runtime() -> None:
         '"corpora/stopwords"',
     ):
         assert resource in source
+
+
+def test_workflow_image_prefetches_exact_runtime_model_routing_snapshot() -> None:
+    dockerfile = WORKFLOW_DOCKERFILE.read_text(encoding="utf-8")
+    source = MODEL_ROUTING_CLASSIFIER.read_text(encoding="utf-8")
+
+    model_id_match = re.search(
+        r'^DEFAULT_MULTILINGUAL_E5_MODEL_ID = "([^"]+)"$',
+        source,
+        flags=re.MULTILINE,
+    )
+    revision_match = re.search(
+        r'^DEFAULT_MULTILINGUAL_E5_REVISION = "([^"]+)"$',
+        source,
+        flags=re.MULTILINE,
+    )
+    assert model_id_match is not None
+    assert revision_match is not None
+    model_id = model_id_match.group(1)
+    revision = revision_match.group(1)
+
+    assert f"ARG MODEL_ROUTING_DIFFICULTY_MODEL_ID={model_id}" in dockerfile
+    assert f"ARG MODEL_ROUTING_DIFFICULTY_MODEL_REVISION={revision}" in dockerfile
+    assert "revision=revision, use_fast=False" in dockerfile
+    assert "AutoModel.from_pretrained(model_id, revision=revision)" in dockerfile
+    assert (
+        "AutoTokenizer.from_pretrained("
+        "model_id, revision=revision, use_fast=False, local_files_only=True"
+        ")"
+    ) in dockerfile
+    assert (
+        "AutoModel.from_pretrained("
+        "model_id, revision=revision, local_files_only=True"
+        ")"
+    ) in dockerfile
+    assert (
+        "MODEL_ROUTING_EMBEDDING_MODEL_ID="
+        "${MODEL_ROUTING_DIFFICULTY_MODEL_ID}"
+    ) in dockerfile
+    assert (
+        "MODEL_ROUTING_EMBEDDING_MODEL_REVISION="
+        "${MODEL_ROUTING_DIFFICULTY_MODEL_REVISION}"
+    ) in dockerfile
 
 
 def test_workflow_image_prefetches_opt_in_rag_reranker() -> None:

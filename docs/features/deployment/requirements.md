@@ -144,7 +144,7 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-113 (MBA-357): `canary` strict policy는 `nodease.io/egress-mode=proxy-v1` pod만 선택하고 `final` policy는 component 전체를 선택해야 한다. Final 전 old pod drain과 additive allow policy 부재를 확인해야 한다. PR CI는 pinned kind+Calico IPv4에서 direct HTTPS 차단, authorized proxy 성공과 unauthorized source 차단을 실제 실행하며 dual-stack과 운영 CNI는 release 환경에서 같은 probe를 통과해야 한다.
 - DEP-REQ-114 (MBA-357): `proxy-v1` listener는 Gateway·Knowledge용 `3128`과 Workflow용 `3129`로 고정한다. Helm은 Service port override를 render 전에 거부하고 Squid egress NetworkPolicy는 IPv4와 IPv6 모두 public 80/443 및 Worker-only IMAP 143/993를 허용해야 한다.
 - DEP-REQ-115 (MBA-357): S3 storage adapter는 S3와 workload identity 자격증명 교환용 nested STS client가 공유하는 botocore session default config에 explicit proxy와 bounded retry를 적용해야 한다. Ambient proxy, STS direct fallback과 provider 원문 오류 노출을 허용하지 않는다.
-- DEP-REQ-116 (MBA-357): Proxy-only image는 runtime이 사용하는 tiktoken·NLTK 자산과 build에서 활성화한 CrossEncoder 모델을 build 단계에 포함해야 한다. 관련 Dockerfile만 변경해도 이 자산 계약 테스트가 선택되어야 하며 runtime download 실패를 조용한 품질 저하로 처리해서는 안 된다.
+- DEP-REQ-116 (MBA-357): Proxy-only image는 runtime이 사용하는 tiktoken·NLTK 자산, runtime과 동일한 immutable E5 `(model_id, revision)` snapshot과 build에서 활성화한 CrossEncoder 모델을 build 단계에 포함해야 한다. Workflow image는 build identity를 runtime 기본 환경으로 고정하고 ID 또는 revision을 독립적으로 override하지 않아야 한다. 관련 Dockerfile만 변경해도 이 자산 계약 테스트가 선택되어야 하며 runtime download 실패를 조용한 품질 저하로 처리해서는 안 된다.
 - DEP-REQ-117 (MBA-357): Docker demo seed의 runtime embedding은 shared operation-bound guarded OpenAI client를 사용해야 한다. Bare provider SDK, ambient proxy 또는 proxy 실패 뒤 direct fallback을 허용하지 않는다.
 
 ## Runtime Audience Matrix

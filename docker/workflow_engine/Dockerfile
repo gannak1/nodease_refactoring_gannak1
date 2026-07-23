@@ -22,6 +22,7 @@ ARG INSTALL_RAG_RERANKER=false
 ARG RAG_CROSS_ENCODER_MODEL_ID=cross-encoder/ms-marco-MiniLM-L-12-v2
 ARG PREFETCH_MODEL_ROUTING_CLASSIFIER=true
 ARG MODEL_ROUTING_DIFFICULTY_MODEL_ID=intfloat/multilingual-e5-base
+ARG MODEL_ROUTING_DIFFICULTY_MODEL_REVISION=d13f1b27baf31030b7fd040960d60d909913633f
 
 # [FIX] 의존성만 설치 (코드는 /app/에서 직접 사용, site-packages 중복 방지)
 # 1. pyproject.toml 기반으로 전체 설치 (의존성 해결을 위해)
@@ -56,7 +57,7 @@ RUN mkdir -p /model-routing-hf-cache && \
         PYTHONPATH=/install/lib/python3.11/site-packages \
         HF_HOME=/model-routing-hf-cache \
         HF_HUB_DISABLE_XET=1 \
-        python -c "from transformers import AutoModel, AutoTokenizer; model_id='${MODEL_ROUTING_DIFFICULTY_MODEL_ID}'; AutoTokenizer.from_pretrained(model_id, use_fast=False); AutoModel.from_pretrained(model_id)"; \
+        python -c "from transformers import AutoModel, AutoTokenizer; model_id='${MODEL_ROUTING_DIFFICULTY_MODEL_ID}'; revision='${MODEL_ROUTING_DIFFICULTY_MODEL_REVISION}'; AutoTokenizer.from_pretrained(model_id, revision=revision, use_fast=False); AutoModel.from_pretrained(model_id, revision=revision); AutoTokenizer.from_pretrained(model_id, revision=revision, use_fast=False, local_files_only=True); AutoModel.from_pretrained(model_id, revision=revision, local_files_only=True)"; \
     fi
 
 # Opt-in reranking must not download model weights after proxy-only startup.
@@ -72,9 +73,14 @@ RUN if [ "$INSTALL_RAG_RERANKER" = "true" ]; then \
 # --- 2단계: 실행(Final) 스테이지 ---
 FROM python:3.11-slim
 
+ARG MODEL_ROUTING_DIFFICULTY_MODEL_ID=intfloat/multilingual-e5-base
+ARG MODEL_ROUTING_DIFFICULTY_MODEL_REVISION=d13f1b27baf31030b7fd040960d60d909913633f
+
 WORKDIR /app
 
 ENV PYTHONPATH=/app
+ENV MODEL_ROUTING_EMBEDDING_MODEL_ID=${MODEL_ROUTING_DIFFICULTY_MODEL_ID}
+ENV MODEL_ROUTING_EMBEDDING_MODEL_REVISION=${MODEL_ROUTING_DIFFICULTY_MODEL_REVISION}
 ENV PYTHONUNBUFFERED=1
 ENV HF_HUB_DISABLE_XET=1
 ENV HF_HOME=/opt/huggingface
