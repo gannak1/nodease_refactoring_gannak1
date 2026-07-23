@@ -53,6 +53,14 @@ describe('isWorkflowChatModelOption', () => {
     expect(
       isWorkflowChatModelOption(
         model({
+          model_id_for_api_call: 'gpt-5.4-mini-2026-03-17',
+          name: 'gpt-5.4-mini-2026-03-17',
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isWorkflowChatModelOption(
+        model({
           model_id_for_api_call: 'gpt-5.2-pro-2025-12-11',
           name: 'gpt-5.2-pro-2025-12-11',
         }),
@@ -64,6 +72,17 @@ describe('isWorkflowChatModelOption', () => {
           model_id_for_api_call: 'claude-3-5-sonnet-20241022',
           name: 'claude-3-5-sonnet-20241022',
           provider_name: 'Anthropic',
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('workflow 실행에서 제외한 모델은 alias여도 숨긴다', () => {
+    expect(
+      isWorkflowChatModelOption(
+        model({
+          model_id_for_api_call: 'gpt-5-mini',
+          name: 'gpt-5-mini',
         }),
       ),
     ).toBe(false);

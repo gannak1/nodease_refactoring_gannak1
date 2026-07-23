@@ -7,6 +7,7 @@ The catalog only records the provider's published positioning and source links.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Iterable
@@ -62,6 +63,19 @@ class ModelRoutingCatalogProfile:
 MODEL_ROUTING_MODEL_ALIASES = {
     "gpt-5.6": "gpt-5.6-sol",
 }
+WORKFLOW_EXECUTION_EXCLUDED_MODEL_IDS = frozenset({"gpt-5-mini"})
+_VERSION_PINNED_MODEL_ID_PATTERN = re.compile(r"-(?:\d{4}-\d{2}-\d{2}|\d{8})$")
+
+
+def is_version_pinned_model_id(value: object) -> bool:
+    """날짜 suffix가 붙은 provider 고정 버전 ID인지 판정한다.
+
+    가격과 과거 실행 이력은 해당 ID를 기본 alias 계열로 정규화해 읽을 수 있다.
+    다만 새 workflow 실행과 자동 라우팅은 사람이 선택하는 alias만 사용한다.
+    """
+
+    raw_model_id = str(value or "").strip().lower().removeprefix("models/")
+    return bool(_VERSION_PINNED_MODEL_ID_PATTERN.search(raw_model_id))
 
 
 def normalize_model_id(value: object) -> str:
@@ -73,6 +87,18 @@ def normalize_model_id(value: object) -> str:
 def canonical_model_routing_id(value: object) -> str:
     normalized = normalize_model_id(value)
     return MODEL_ROUTING_MODEL_ALIASES.get(normalized, normalized)
+
+
+def is_workflow_execution_model_excluded(value: object) -> bool:
+    """새 workflow 실행에서 사용하지 않는 모델 ID인지 판정한다.
+
+    카탈로그와 가격·과거 실행 이력은 보존하되, 새 수동 실행과 자동 라우팅
+    후보에서는 날짜 고정 버전 및 전역 제외 모델을 사용하지 않는다.
+    """
+
+    return is_version_pinned_model_id(value) or (
+        canonical_model_routing_id(value) in WORKFLOW_EXECUTION_EXCLUDED_MODEL_IDS
+    )
 
 
 def deduplicate_model_routing_ids(model_ids: Iterable[str]) -> list[str]:
@@ -312,7 +338,7 @@ OFFICIAL_PROVIDER_CATALOG: dict[str, OfficialProviderCatalogEntry] = {
         pricing_source_url=OPENAI_PRICING_URL,
     ),
     **_entries(
-        ("claude-haiku-4-5", "claude-haiku-4-5-20251001"),
+        ("claude-haiku-4-5",),
         provider="anthropic",
         capability_tier="balanced",
         official_position="fast_cost_efficient",
@@ -326,7 +352,7 @@ OFFICIAL_PROVIDER_CATALOG: dict[str, OfficialProviderCatalogEntry] = {
         pricing_source_url=ANTHROPIC_PRICING_URL,
     ),
     **_entries(
-        ("claude-sonnet-4-5-20250929", "claude-sonnet-4-6", "claude-sonnet-5"),
+        ("claude-sonnet-4-6", "claude-sonnet-5"),
         provider="anthropic",
         capability_tier="advanced",
         official_position="balanced_capability_cost",
@@ -340,7 +366,7 @@ OFFICIAL_PROVIDER_CATALOG: dict[str, OfficialProviderCatalogEntry] = {
         pricing_source_url=ANTHROPIC_PRICING_URL,
     ),
     **_entries(
-        ("claude-fable-5", "claude-opus-4-5-20251101", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8"),
+        ("claude-fable-5", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8"),
         provider="anthropic",
         capability_tier="advanced",
         official_position="high_capability_reasoning",
@@ -461,6 +487,8 @@ def supported_model_routing_ids(model_ids: Iterable[str]) -> list[str]:
 
     supported: list[str] = []
     for model_id in deduplicate_model_routing_ids(model_ids):
+        if is_workflow_execution_model_excluded(model_id):
+            continue
         normalized = normalize_model_id(model_id)
         if normalized in SUPPORTED_MODEL_ROUTING_PROFILES:
             supported.append(str(model_id).strip())

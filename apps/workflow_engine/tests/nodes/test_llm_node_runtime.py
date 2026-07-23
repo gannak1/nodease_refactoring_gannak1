@@ -60,6 +60,9 @@ from apps.workflow_engine.application.query_embedding_execution import (  # noqa
     QueryEmbeddingExecutionResult,
     QueryEmbeddingPlan,
 )
+from apps.workflow_engine.application.provider_execution import (  # noqa: E402
+    ProviderExecutionConfigurationError,
+)
 from apps.workflow_engine.composition.provider_execution import (  # noqa: E402
     build_provider_execution_runtime,
     build_provider_usage_recorder,
@@ -240,7 +243,7 @@ def test_auto_model_routing_preserves_configured_output_budget(monkeypatch):
         "llm-routing-budget",
         LLMNodeData(
             title="자동 라우팅 출력 예산",
-            model_id="gpt-5-mini",
+            model_id="gpt-5.4-mini",
             fallback_model_id="gpt-4.1",
             auto_model_routing=True,
             user_prompt="환불 정책을 설명해 주세요.",
@@ -252,7 +255,7 @@ def test_auto_model_routing_preserves_configured_output_budget(monkeypatch):
         node,
         "_resolve_model_routing_policy",
         lambda *_args, **_kwargs: (
-            "gpt-5-mini",
+            "gpt-5.4-mini",
             "gpt-4.1",
             {"enabled": True},
         ),
@@ -261,6 +264,27 @@ def test_auto_model_routing_preserves_configured_output_budget(monkeypatch):
     node.execute({})
 
     assert client.calls[0]["kwargs"]["max_tokens"] == 900
+
+
+def test_llm_node_rejects_globally_blocked_model_before_provider_call():
+    client = StaticTextClient("호출되면 안 되는 응답")
+    node = LLMNode(
+        "llm-blocked-model",
+        LLMNodeData(
+            title="실행 제외 모델",
+            model_id="gpt-5-mini",
+            user_prompt="이 요청은 provider로 전달되면 안 됩니다.",
+        ),
+    )
+    node._client_override = client  # noqa: SLF001
+
+    with pytest.raises(
+        ProviderExecutionConfigurationError,
+        match="workflow_model_not_allowed",
+    ):
+        node.execute({})
+
+    assert client.calls == []
 
 
 @pytest.fixture(autouse=True)
@@ -2058,6 +2082,60 @@ def test_llm_node_logs_fallback_model_when_primary_client_selection_fails(
     assert cost_calls[0]["allow_catalog_fallback"] is True
     assert log_calls[0]["model_id"] == "fallback-model"
     assert log_calls[0]["credential_id"] == fallback_credential_id
+
+
+def test_llm_node_uses_fallback_without_resolving_globally_blocked_model(
+    monkeypatch,
+):
+    fallback_client = SuccessClient()
+    organization_id = uuid.uuid4()
+    fallback_credential_id = uuid.uuid4()
+    service_calls = []
+
+    def fake_get_runtime_client_for_user(db, user_id, model_id, organization_id=None):
+        service_calls.append(model_id)
+        if model_id != "gpt-4.1":
+            raise AssertionError(f"blocked model reached credential lookup: {model_id}")
+        return SimpleNamespace(
+            client=fallback_client,
+            credential_id=fallback_credential_id,
+            model_id=model_id,
+            organization_id=organization_id,
+        )
+
+    monkeypatch.setattr(
+        LLMService, "get_runtime_client_for_user", fake_get_runtime_client_for_user
+    )
+    monkeypatch.setattr(LLMService, "calculate_cost", lambda *_args, **_kwargs: 0.0)
+    monkeypatch.setattr(LLMService, "log_usage", lambda **_kwargs: None)
+
+    node = LLMNode(
+        "llm-blocked-primary-with-fallback",
+        LLMNodeData(
+            title="실행 제외 모델 fallback",
+            model_id="gpt-5-mini",
+            fallback_model_id="gpt-4.1",
+            user_prompt="fallback으로 처리해 주세요.",
+        ),
+        execution_context={
+            "user_id": str(uuid.uuid4()),
+            "organization_id": str(organization_id),
+            "workflow_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+            "db": object(),
+        },
+    )
+
+    result = node.execute({})
+
+    assert service_calls == ["gpt-4.1"]
+    assert result["model"] == "gpt-4.1"
+    assert result["metadata"]["model_routing"]["fallback_used"] is True
+    assert result["metadata"]["model_routing"]["fallback_from_model"] == "gpt-5-mini"
+    assert (
+        result["metadata"]["model_routing"]["fallback_reason_code"]
+        == "runtime_client_unavailable"
+    )
 
 
 def test_client_selection_fallback_is_not_invoked_twice_on_provider_failure(

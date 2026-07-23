@@ -21,6 +21,7 @@ from apps.shared.db.models.llm import (
 from apps.shared.services.model_routing_global_profile_catalog import (
     canonical_model_routing_id,
     catalog_metadata_for_model_id,
+    is_workflow_execution_model_excluded,
     normalize_model_id as normalize_model_routing_id,
 )
 from apps.shared.services.llm_model_pricing import get_model_pricing
@@ -67,7 +68,6 @@ WORKFLOW_CHAT_MODEL_ALIASES = {
     "o3",
     "gpt-4.1",
     "gpt-4o",
-    "gpt-5-mini",
     "gpt-5-nano",
     "gpt-4.1-mini",
     "gpt-4o-mini",
@@ -75,11 +75,8 @@ WORKFLOW_CHAT_MODEL_ALIASES = {
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-opus-4-6",
-    "claude-opus-4-5-20251101",
     "claude-sonnet-5",
     "claude-sonnet-4-6",
-    "claude-sonnet-4-5-20250929",
-    "claude-haiku-4-5-20251001",
     "claude-haiku-4-5",
     "gemini-3.5-flash",
     "gemini-3.1-pro-preview",
@@ -1594,6 +1591,8 @@ class ModelRouter:
         model_name = str(getattr(model, "name", "") or "").lower()
         model_type = str(getattr(model, "type", "") or "").lower()
         if not bool(getattr(model, "is_active", True)):
+            return False
+        if is_workflow_execution_model_excluded(raw_model_id):
             return False
         if model_type in BLOCKED_WORKFLOW_MODEL_TYPES:
             return False

@@ -48,6 +48,18 @@ def test_workflow_chat_model_allowlist_includes_gpt_56_aliases():
         )
 
 
+def test_workflow_chat_model_allowlist_excludes_dated_model_ids():
+    assert not ModelRouter.is_workflow_chat_model(
+        SimpleNamespace(model_id_for_api_call="gpt-5.4-mini-2026-03-17", type="chat")
+    )
+
+
+def test_workflow_chat_model_allowlist_excludes_globally_blocked_model():
+    assert not ModelRouter.is_workflow_chat_model(
+        SimpleNamespace(model_id_for_api_call="gpt-5-mini", type="chat")
+    )
+
+
 def test_resolve_policy_matches_legacy_alias_default_to_available_canonical_model():
     policy = _policy(
         default_model_id="gpt-5.6",

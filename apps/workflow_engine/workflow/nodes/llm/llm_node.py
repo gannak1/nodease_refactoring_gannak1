@@ -34,6 +34,7 @@ from apps.shared.services.llm_model_pricing import pricing_estimate_metadata
 from apps.shared.services.model_routing_global_profile_catalog import (
     OFFICIAL_PROVIDER_CATALOG,
     catalog_metadata_for_model_id,
+    is_workflow_execution_model_excluded,
     normalize_model_id,
 )
 from apps.shared.services.permission_audit import (
@@ -420,7 +421,6 @@ class LLMNode(Node[LLMNodeData]):
     """
 
     node_type = "llmNode"
-
     def bind_knowledge_runtime_candidate_resolver(
         self,
         resolver: KnowledgeRuntimeCandidateResolver,
@@ -1606,6 +1606,10 @@ class LLMNode(Node[LLMNodeData]):
             fallback_error_metadata: dict[str, Any] = {}
 
             def resolve_provider_execution(model_id: str):
+                if is_workflow_execution_model_excluded(model_id):
+                    raise ProviderExecutionConfigurationError(
+                        f"workflow_model_not_allowed: {model_id}"
+                    )
                 return provider_runtime.resolve(
                     ProviderExecutionRequest(
                         plan=provider_plan,

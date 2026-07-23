@@ -130,6 +130,9 @@ Runtime Judge 요청에는 후보 모델 목록을 넣지 않는다. Judge에는
 `reasoning_profile`, `complexity_ceiling`, `cost_position`, `task_affinities`를 사용해 현재
 실행 가능한 후보를 비교한다. 공식 별칭과 정식 ID가 동시에 실행 가능하면 정식 ID 하나를
 선택하고, 별칭만 실행 가능하면 credential 조회가 가능한 별칭을 유지한다.
+날짜 suffix 고정 버전과 전역 workflow 실행 제외 모델인 `gpt-5-mini`는 후보에서 제거한다.
+기존 graph 또는 저장 policy가 `gpt-5-mini`를 직접 참조하더라도 Provider 호출 전에 차단하고,
+유효한 fallback이 있으면 fallback으로 실행한다.
 
 ### Legacy Bootstrap Contract
 
