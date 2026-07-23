@@ -702,17 +702,15 @@ def test_seed_profile_resets_are_scoped_and_idempotent_in_disposable_postgres():
         )
         assert rbac_state["workflow_permission_count"] == 2
         assert rbac_state["platform_onboarding_permissions"] == {
-            demo_seed.KB_IDS["onboarding_company_common"],
             demo_seed.KB_IDS["onboarding_platform"],
         }
         assert rbac_state["sales_onboarding_permissions"] == {
-            demo_seed.KB_IDS["onboarding_company_common"],
             demo_seed.KB_IDS["onboarding_sales"],
         }
         assert rbac_state["people_onboarding_permissions"] == {
             demo_seed.KB_IDS[spec.key] for spec in demo_seed.ONBOARDING_PDF_SPECS
         }
-        assert rbac_state["bundled_onboarding_document_count"] == 4
+        assert rbac_state["bundled_onboarding_document_count"] == 3
     except OperationalError:
         raise pytest.fail.Exception(
             "disposable PostgreSQL is unavailable or rejected the connection; "
