@@ -6,7 +6,8 @@ from pydantic import ValidationError
 from apps.gateway.core.config import Settings
 
 
-def test_storage_configuration_defaults_to_local_without_cloud_coordinates():
+def test_storage_configuration_defaults_to_local_without_cloud_coordinates(monkeypatch):
+    monkeypatch.delenv("AWS_REGION", raising=False)
     settings = Settings(_env_file=None)
 
     assert settings.STORAGE_TYPE == "LOCAL"

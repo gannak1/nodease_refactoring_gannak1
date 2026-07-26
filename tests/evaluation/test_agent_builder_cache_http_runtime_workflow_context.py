@@ -40,7 +40,7 @@ def test_admission_rejects_gateway_workflow_context_version_mismatch() -> None:
                         {
                             "model": {
                                 "id": configuration.model_id,
-                                "model_api_id": "gpt-5.5",
+                                "model_id_for_api_call": "gpt-5.5",
                             },
                             "credential": {"id": configuration.credential_id},
                         }
@@ -88,7 +88,7 @@ def test_execute_rejects_workflow_context_change_after_admission() -> None:
                         {
                             "model": {
                                 "id": configuration.model_id,
-                                "model_api_id": "gpt-5.5",
+                                "model_id_for_api_call": "gpt-5.5",
                             },
                             "credential": {"id": configuration.credential_id},
                         }

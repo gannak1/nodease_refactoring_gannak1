@@ -37,7 +37,10 @@ from apps.shared.schemas.agent_builder import (
     AgentBuilderKnowledgePlacement,
     AgentBuilderParameterGuidanceHint,
 )
-from apps.shared.services.llm_client.base import LLMResponseValidationError
+from apps.shared.services.llm_client.base import (
+    LLMResponseValidationError,
+    ProviderInvocationError,
+)
 from apps.shared.services.workflow_node_catalog import (
     agent_builder_supported_capabilities,
     capability_contract,
@@ -813,6 +816,24 @@ class LLMAgentBuilderIntentExtractor:
                         AGENT_BUILDER_INTENT_REQUEST_TIMEOUT_SECONDS
                     ),
                 )
+            except ProviderInvocationError as exc:
+                if reservation is not None:
+                    latency_ms = (perf_counter() - started_at) * 1000
+                    if exc.usage is None:
+                        self._cancel_usage(reservation)
+                    else:
+                        self._record_usage(
+                            reservation=reservation,
+                            usage=exc.usage,
+                            latency_ms=latency_ms,
+                        )
+                error_message = (
+                    "LLM intent response is invalid"
+                    if exc.reason_code
+                    in {"responses_incomplete", "responses_empty_text"}
+                    else "Agent Builder intent provider call failed"
+                )
+                raise AgentBuilderIntentExtractionError(error_message) from exc
             except LLMResponseValidationError as exc:
                 if reservation is not None:
                     latency_ms = (perf_counter() - started_at) * 1000

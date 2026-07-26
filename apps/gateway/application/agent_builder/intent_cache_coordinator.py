@@ -28,7 +28,13 @@ class _IntentPlanKeyStore(Protocol):
 
     def load(self, key: IntentCacheKey) -> IntentPlanLoadResult: ...
 
-    def save(self, key: IntentCacheKey, plan: CachedIntentPlanV1): ...
+    def save_if_lease_owner(
+        self,
+        key: IntentCacheKey,
+        plan: CachedIntentPlanV1,
+        owner_token: str,
+        lease_generation: int,
+    ): ...
 
     def new_owner_token(self) -> str: ...
 
@@ -493,7 +499,12 @@ class AgentBuilderIntentCacheCoordinator:
                 saved = None
             else:
                 try:
-                    saved = self._store.save(key, plan)
+                    saved = self._store.save_if_lease_owner(
+                        key,
+                        plan,
+                        owner_token,
+                        generation,
+                    )
                 except Exception:
                     saved = None
             if getattr(saved, "status", None) != "stored":

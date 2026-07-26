@@ -209,6 +209,7 @@ class HttpLiveBenchmarkRuntime(LiveBenchmarkRuntime):
         self._scenarios = self._validate_scenarios(scenarios)
         self._request_json = request_json
         self._sessions: dict[tuple[bool, str], str] = {}
+        self._prime_fingerprints: dict[str, str] = {}
         self._admitted_workflow_context: Mapping[str, str] | None = None
         self._pair_workflow_contexts: dict[str, Mapping[str, str]] = {}
 
@@ -320,7 +321,7 @@ class HttpLiveBenchmarkRuntime(LiveBenchmarkRuntime):
                 if (
                     str(model.get("id", "")) == self._configuration.model_id
                     and str(credential.get("id", "")) == self._configuration.credential_id
-                    and model.get("model_api_id") == "gpt-5.5"
+                    and model.get("model_id_for_api_call") == "gpt-5.5"
                 ):
                     return True
         return False
@@ -578,12 +579,14 @@ class HttpLiveBenchmarkRuntime(LiveBenchmarkRuntime):
             if request.comparison_group == "normalization_warm_hit" and request.cache_enabled:
                 if not isinstance(entry, Mapping):
                     raise RuntimeError("Benchmark private scenario is invalid")
-                self._submit(True, self._scenario_message(entry.get("prime")), request.generation_mode, f"prime:{request.pair_id}")
+                prime_response, prime_diagnostic, _ = self._submit(True, self._scenario_message(entry.get("prime")), request.generation_mode, f"prime:{request.pair_id}")
+                self._prime_fingerprints[request.pair_id] = self._result_fingerprint(prime_response, prime_diagnostic)
                 message = self._scenario_message(entry.get("measure"))
             else:
                 message = self._scenario_message(entry)
                 if request.cache_enabled and request.comparison_group == "exact_warm_hit":
-                    self._submit(True, message, request.generation_mode, f"prime:{request.pair_id}")
+                    prime_response, prime_diagnostic, _ = self._submit(True, message, request.generation_mode, f"prime:{request.pair_id}")
+                    self._prime_fingerprints[request.pair_id] = self._result_fingerprint(prime_response, prime_diagnostic)
             response, diagnostic, end_to_end_latency_ms = self._submit(
                 request.cache_enabled,
                 message,
@@ -598,6 +601,9 @@ class HttpLiveBenchmarkRuntime(LiveBenchmarkRuntime):
                 terminal_status,
                 validation_passed,
             ) = self._validated_diagnostic(diagnostic)
+            result_fingerprint = self._result_fingerprint(response, diagnostic)
+            if request.cache_enabled and request.comparison_group in {"exact_warm_hit", "normalization_warm_hit"} and outcome == "hit" and self._prime_fingerprints.get(request.pair_id) != result_fingerprint:
+                raise RuntimeError("Benchmark cached materialization parity failed")
             return LiveAttemptObservation(
                 cache_outcome=outcome,
                 planning_latency_ms=planning_latency_ms,
@@ -606,7 +612,7 @@ class HttpLiveBenchmarkRuntime(LiveBenchmarkRuntime):
                 repair_call_count=repair_call_count,
                 terminal_status=terminal_status,
                 validation_passed=validation_passed,
-                result_fingerprint=self._result_fingerprint(response, diagnostic),
+                result_fingerprint=result_fingerprint,
             )
         except Exception:
             return self._failure(request)

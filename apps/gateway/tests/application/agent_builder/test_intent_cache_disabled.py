@@ -95,6 +95,9 @@ def test_ports_are_runtime_checkable_narrow_protocols():
         def save(self, key, plan):
             raise NotImplementedError
 
+        def save_if_lease_owner(self, key, plan, owner_token, lease_generation):
+            raise NotImplementedError
+
     class FakeRehydrator:
         def rehydrate(self, plan, context):
             raise NotImplementedError
@@ -119,6 +122,13 @@ def test_ports_are_runtime_checkable_narrow_protocols():
     assert get_type_hints(IntentPlanStorePort.save) == {
         "key": IntentCacheKey,
         "plan": CachedIntentPlanV1,
+        "return": IntentPlanSaveResult,
+    }
+    assert get_type_hints(IntentPlanStorePort.save_if_lease_owner) == {
+        "key": IntentCacheKey,
+        "plan": CachedIntentPlanV1,
+        "owner_token": str,
+        "lease_generation": int,
         "return": IntentPlanSaveResult,
     }
     assert get_type_hints(IntentPlanRehydratorPort.rehydrate) == {

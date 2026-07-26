@@ -106,4 +106,11 @@ def test_parameter_guidance_discards_unknown_mismatched_and_secret_like_hints():
         [("step_slack", "slack_send")],
     )
 
-    assert normalized == [hints[0]]
+    assert normalized == [
+        hints[0].model_copy(
+            update={
+                "reason": "Additional configuration is required.",
+                "input_guidance": "Provide a value for channel.",
+            }
+        )
+    ]

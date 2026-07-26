@@ -122,6 +122,54 @@ def _owned_keys(adapter: RedisIntentPlanCacheAdapter, key, generations=()) -> tu
     )
 
 
+def test_real_redis_fenced_save_rejects_expired_owner_without_overwrite() -> None:
+    client = redis.Redis.from_url(
+        _integration_redis_url(),
+        decode_responses=False,
+        socket_connect_timeout=0.25,
+        socket_timeout=0.25,
+    )
+    client.ping()
+    adapter = _adapter(client)
+    key = adapter.build_key(b"integration-fenced-save")
+    generations: list[int] = []
+    try:
+        first_owner = adapter.new_owner_token()
+        first = adapter.acquire_lease(key, first_owner)
+        assert first.status == "acquired"
+        assert first.generation is not None
+        generations.append(first.generation)
+
+        client.delete(f"{adapter.redis_key(key)}:lease")
+        second_owner = adapter.new_owner_token()
+        second = adapter.acquire_lease(key, second_owner)
+        assert second.status == "acquired"
+        assert second.generation is not None
+        assert second.generation > first.generation
+        generations.append(second.generation)
+        current_plan = _plan()
+        stale_plan = current_plan.model_copy(
+            update={"risk_flags": ("external_action_requested",)}
+        )
+        assert (
+            adapter.save_if_lease_owner(
+                key, current_plan, second_owner, second.generation
+            ).status
+            == "stored"
+        )
+        stored_by_current_owner = client.get(adapter.redis_key(key))
+
+        stale = adapter.save_if_lease_owner(
+            key, stale_plan, first_owner, first.generation
+        )
+
+        assert stale.status == "unavailable"
+        assert client.get(adapter.redis_key(key)) == stored_by_current_owner
+        assert adapter.load(key).plan == current_plan
+    finally:
+        client.delete(*_owned_keys(adapter, key, generations))
+        client.close()
+
 def test_real_redis_round_trip_ttl_key_binding_and_generation_fence() -> None:
     client = redis.Redis.from_url(
         _integration_redis_url(),

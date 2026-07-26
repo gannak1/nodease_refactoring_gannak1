@@ -67,7 +67,7 @@ def test_preflight_checks_both_servers_and_gpt55_relation_without_retaining_payl
     def request_json(method, url, *, headers, payload, timeout_seconds):
         calls.append((method, url, payload))
         if url.endswith("/model-options"):
-            return [{"provider_name": "openai", "options": [{"model": {"id": _config().model_id, "model_api_id": "gpt-5.5"}, "credential": {"id": _config().credential_id}}]}]
+            return [{"provider_name": "openai", "options": [{"model": {"id": _config().model_id, "model_id_for_api_call": "gpt-5.5"}, "credential": {"id": _config().credential_id}}]}]
         if url.endswith(f"/workflows/{_config().workflow_id}"):
             return {
                 "id": _config().workflow_id,
@@ -115,6 +115,54 @@ def test_exact_warm_candidate_primes_cache_then_uses_allowlisted_diagnostic():
     assert observation.provider_call_count == 0
     assert observation.result_fingerprint
     assert "private response" not in repr(observation)
+
+
+def test_exact_warm_candidate_rejects_cached_materialization_mismatch():
+    message_count = 0
+    request_id = "00000000-0000-0000-0000-000000000006"
+
+    def request_json(method, url, *, headers, payload, timeout_seconds):
+        nonlocal message_count
+        if url.endswith("/sessions"):
+            return {
+                "session_id": "00000000-0000-0000-0000-000000000005",
+                "workflow_id": _config().workflow_id,
+                "status": "active",
+            }
+        if url.endswith("/messages"):
+            message_count += 1
+            return {
+                "request_id": request_id,
+                "status": "completed",
+                "structured_plan": {
+                    "intent_summary": (
+                        "private prime response"
+                        if message_count == 1
+                        else "private mismatched response"
+                    )
+                },
+            }
+        if url.endswith(f"/benchmark/diagnostics/{request_id}"):
+            return {
+                "cache_outcome": "hit",
+                "planning_latency_ms": 12.5,
+                "provider_call_count": 0,
+                "repair_call_count": 0,
+                "terminal_status": "success",
+                "validation_passed": True,
+            }
+        raise AssertionError(url)
+
+    observation = HttpLiveBenchmarkRuntime(
+        _config(), _scenarios(), request_json=request_json
+    ).execute(_request("exact_warm_hit"))
+
+    assert message_count == 2
+    assert observation.terminal_status == "provider_error"
+    assert observation.validation_passed is False
+    assert observation.result_fingerprint == ""
+    assert "private prime response" not in repr(observation)
+    assert "private mismatched response" not in repr(observation)
 
 
 def test_non_loopback_or_unexpected_diagnostic_becomes_safe_failure():

@@ -90,6 +90,15 @@ return 1
 """
 
 
+_SAVE_IF_LEASE_OWNER_SCRIPT = r"""
+-- intent-cache:save-if-owner-v1
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+    return 0
+end
+redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
+return 1
+"""
+
 class _DuplicateEnvelopeKey(ValueError):
     pass
 
@@ -395,6 +404,32 @@ class RedisIntentPlanCacheAdapter:
         except Exception:
             return self._unavailable_save()
         if not stored:
+            return self._unavailable_save()
+        return IntentPlanSaveResult(status="stored", reason=None)
+
+    def save_if_lease_owner(
+        self,
+        key: IntentCacheKey,
+        plan: CachedIntentPlanV1,
+        owner_token: str,
+        lease_generation: int,
+    ) -> IntentPlanSaveResult:
+        try:
+            redis_key = self.redis_key(key)
+            expected = self._lease_value(owner_token, lease_generation)
+            envelope = self._encode_envelope(key, plan)
+            stored = self._redis.eval(
+                _SAVE_IF_LEASE_OWNER_SCRIPT,
+                2,
+                f"{redis_key}:lease",
+                redis_key,
+                expected,
+                envelope,
+                self._ttl_seconds,
+            )
+        except Exception:
+            return self._unavailable_save()
+        if stored != 1:
             return self._unavailable_save()
         return IntentPlanSaveResult(status="stored", reason=None)
 

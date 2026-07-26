@@ -220,14 +220,17 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
   generation mode와 초기 logical graph context를 사용해 cache 전후를 paired comparison해야 한다.
 - ABC-NFR-009: Benchmark는 planning latency와 end-to-end latency를 별도 surface로 측정해야 한다.
 - ABC-NFR-010: Benchmark는 cache disabled, cold miss, exact warm hit, 승인된 normalization warm hit,
-  literal-preservation warm hit와 semantic non-sharing negative control을 서로 다른 comparison group으로 기록해야 한다.- ABC-NFR-011: 각 회차의 성공/실패, latency, benchmark cache outcome
+  literal-preservation warm hit와 semantic non-sharing negative control을 서로 다른 comparison group으로 기록해야 한다.
+- ABC-NFR-011: 각 회차의 성공/실패, latency, benchmark cache outcome
   (`disabled|hit|miss|bypass|error`), provider/repair call count와 validation 결과를
   원본 `runs.csv`에 보존하고, 실패를 성공 latency 평균과 분리해야 한다. `disabled`는 cache-off
   baseline 회차에만 사용할 수 있고 cache-on 회차는 실제 `hit|miss|bypass|error`를 기록해야 한다.
 - ABC-NFR-012: Benchmark는 평균, P50, P95, 표준편차, 최소·최대, 실패율, paired 단축 시간,
   개선율과 speedup을 계산하고 모든 회차가 보이는 graph와 요약 결과를 생성해야 한다.
 - ABC-NFR-013: Live provider latency는 CI 절대 시간 gate로 사용하지 않는다. Warm hit의 provider call 0회,
-  예상 hit/miss/bypass, 결과 validation과 cache on/off materialization parity를 deterministic gate로 사용한다.
+  예상 hit/miss/bypass, 결과 validation과 cache-on warm prime 및 이후 hit의 canonical materialization
+  fingerprint parity를 deterministic gate로 사용한다. Cache-off baseline과 cache-on candidate는 독립 provider
+  generation이므로 서로 같은 fingerprint를 요구하지 않는다.
 - ABC-NFR-014: Dataset 외 결과물에는 raw 자연어, access token, API key, credential config/ID,
   user/organization/workflow ID와 provider payload를 기록하지 않아야 한다.
 - ABC-NFR-015: Exploratory benchmark 산출물은 ignored 경로에 두고, PPT/README에서 인용하는 최종 safe
@@ -243,7 +246,9 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
 - 의미 기반 동등성 판정, Graph RAG retrieval/ranking 품질과 의미 유사 요청의 cache hit 성능 주장
 - 완성 graph와 GraphMutation operation replay cache
 - 사용자 간 또는 organization 간 shared semantic cache
-- 신규 public endpoint와 DB table
+- 신규 public endpoint와 DB table. Tenant-scoped durable Intent Plan repository는 현재 범위 밖의 별도 후속 기능이며,
+  [durable-intent-plan-repository-followup.md](durable-intent-plan-repository-followup.md)의 전용 Accepted ADR,
+  additive migration, API와 runtime 경계의 current-state resource permission 검증이 완료되기 전에는 구현하지 않는다.
 - Planner prompt, repair 횟수 또는 supported capability 정책 변경
 - Credential 원문 수집·저장
 - Production 전용 Redis instance 생성, Helm/Kubernetes rollout, 공유 Redis capacity·eviction 검증과 capacity planning

@@ -66,6 +66,7 @@ COPY apps/gateway /app/apps/gateway
 COPY apps/memory /app/apps/memory
 COPY apps/workflow_engine /app/apps/workflow_engine
 COPY scripts/seed_demo.py /app/scripts/seed_demo.py
+COPY demodata /app/demodata
 COPY scripts/check_schedule_dispatch_rollback.py /app/scripts/check_schedule_dispatch_rollback.py
 COPY scripts/rotate_llm_credentials.py /app/scripts/rotate_llm_credentials.py
 COPY scripts/reconcile_provider_usage.py /app/scripts/reconcile_provider_usage.py

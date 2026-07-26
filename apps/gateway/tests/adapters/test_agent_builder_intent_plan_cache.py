@@ -81,6 +81,14 @@ class InMemoryRedis:
             self.values[signal_key] = str(argv[1]).encode("ascii")
             del self.values[lease_key]
             return 1
+        if "intent-cache:save-if-owner-v1" in script:
+            lease_key, value_key = keys
+            expected = str(argv[0]).encode("ascii")
+            if self.values.get(lease_key) != expected:
+                return 0
+            self.values[value_key] = argv[1]
+            return 1
+
         raise AssertionError("unexpected script")
 
 
@@ -276,6 +284,33 @@ def test_save_and_load_use_ttl_strict_codec_and_authenticated_envelope() -> None
     decoded_secret = secret.decode("utf-8", errors="ignore")
     if decoded_secret:
         assert decoded_secret not in serialized_call
+
+
+def test_stale_lease_owner_cannot_overwrite_newer_generation_value() -> None:
+    redis_client = InMemoryRedis()
+    adapter = _adapter(redis_client)
+    key = adapter.build_key(b"canonical-material-v1")
+    first_owner = "a" * 64
+    second_owner = "b" * 64
+
+    first = adapter.acquire_lease(key, first_owner)
+    assert first.status == "acquired"
+    assert first.generation == 1
+
+    redis_client.values.pop(f"{adapter.redis_key(key)}:lease")
+    second = adapter.acquire_lease(key, second_owner)
+    assert second.status == "acquired"
+    assert second.generation == 2
+    assert (
+        adapter.save_if_lease_owner(key, _plan(), second_owner, second.generation).status
+        == "stored"
+    )
+    stored_by_current_owner = redis_client.values[adapter.redis_key(key)]
+
+    stale = adapter.save_if_lease_owner(key, _plan(), first_owner, first.generation)
+
+    assert stale.status == "unavailable"
+    assert redis_client.values[adapter.redis_key(key)] == stored_by_current_owner
 
 
 def test_envelope_is_bound_to_the_final_cache_key() -> None:

@@ -58,7 +58,12 @@ class PostgresConnector(BaseConnector):
         ),
     ):
         self.allow_ssh_tunnel = allow_ssh_tunnel
-        self.allowed_db_ports = allowed_db_ports
+        self._auto_allowed_db_ports = allowed_db_ports is _AUTO_ALLOWED_DB_PORTS
+        self.allowed_db_ports = (
+            _DEFAULT_ALLOWED_DB_PORTS
+            if self._auto_allowed_db_ports
+            else cast(frozenset[int] | None, allowed_db_ports)
+        )
         self._connector_proxy_dialer = connector_proxy_dialer
 
     def _resolve_connector_proxy_dialer(self) -> HttpConnectProxyDialer | None:
@@ -74,11 +79,11 @@ class PostgresConnector(BaseConnector):
         self,
         connector_proxy: HttpConnectProxyDialer | None,
     ) -> frozenset[int] | None:
-        if self.allowed_db_ports is _AUTO_ALLOWED_DB_PORTS:
+        if self._auto_allowed_db_ports:
             if connector_proxy is not None:
                 return connector_proxy.allowed_target_ports
             return _DEFAULT_ALLOWED_DB_PORTS
-        return cast(frozenset[int] | None, self.allowed_db_ports)
+        return self.allowed_db_ports
 
     def _create_tunnel_and_engine(self, config):
         """

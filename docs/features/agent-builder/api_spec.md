@@ -267,8 +267,9 @@ Planner는 KB 선택별 완성 graph 대신 Knowledge가 base topology에 미치
 1. provider: `openai`, `anthropic`, `google`; `llamaparse`는 disabled group
 2. provider 내부: 최신 generation 우선
 3. 같은 generation: `general`, `mini`, `nano`, `pro`
-4. 같은 tier: suffix 없는 기본형, 날짜 또는 명시 release snapshot, `preview`, `latest`
-5. 그 뒤 verified relation priority, safe display name과 안정적인 식별자로 결정적 정렬
+4. 정확히 알려진 OpenAI GPT-5.6 후보: `gpt-5.6`(있으면), `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`; 이 순서는 5.5 계열보다 앞선다.
+5. 같은 tier: suffix 없는 기본형, 날짜 또는 명시 release snapshot, `preview`, `latest`
+6. 그 뒤 verified relation priority, safe display name과 안정적인 식별자로 결정적 정렬
 
 후보는 active organization의 valid credential, active chat model, provider 일치, verified relation과 사용자 credential `use` 권한을 모두 통과해야 한다. 같은 model/credential 관계가 중복이면 가장 낮은 relation priority 하나만 사용한다. 정규화한 model ID로 특수 목적이 확정된 모델은 제외하며, 세대나 tier를 해석하지 못한 verified chat model은 해당 provider의 해석 가능한 후보 뒤에 안정적으로 유지한다. Header의 첫 option과 새 generated LLM node 추천은 같은 후보 집합에서 같아야 하지만 사용자가 Header에서 바꾼 선택은 workflow node로 복사하지 않는다. 선택 id는 message마다 재검증하며 session이나 graph에 저장하지 않는다.
 
@@ -378,6 +379,7 @@ Rules:
 - selected ids는 server-loaded graph 안에 있어야 하며 target hint일 뿐 권위 graph가 아니다.
 - raw graph key, raw credential config, secret parameter payload를 포함하면 422 또는 safe validation failure로 거부한다.
 - 정상 request는 planner provider를 한 번 호출한다. 최초 schema-valid 결과가 semantic invariant만 위반한 경우 safe code repair를 최대 한 번 수행할 수 있다. Provider/JSON/schema 실패에는 repair하지 않는다.
+- Provider 호출 실패는 `status=failed`와 `validation_result.issues[].code=INTENT_PROVIDER_CALL_FAILED`로 종료한다. 문구는 선택한 모델 또는 provider를 확인·변경한 뒤 재시도하라는 일반 안내만 포함하며, provider 원문·HTTP status·provider error token·credential 정보는 포함하지 않는다. 응답은 실제 provider 응답이 비어 있거나 완료되지 않은 경우에만 기존 `INTENT_EXTRACTION_FAILED`를 사용한다.
 - Usage recorder가 연결된 경우 실제로 시작된 attempt의 token/cost는 validation 결과와 별도로 request id에 기록할 수 있지만 이 기록이 미확정 mode를 추측하거나 repair eligibility를 넓히지 않는다. Schema-invalid 응답은 attempt 1만 기록하고 종료한다. Request가 취소된 뒤 도착한 in-flight 응답의 usage는 완료할 수 있으나 planner 결과를 commit하거나 attempt 2를 예약하지 않는다. Usage 저장 실패는 RequestStatus `failed`와 safe validation issue code로 반환하며 별도 RequestStatus를 추가하지 않는다.
 - `parameter_guidance_hints`는 2.13 계약으로 검증하고 잘못된 hint를 graph/task 권위값으로 사용하지 않는다.
 

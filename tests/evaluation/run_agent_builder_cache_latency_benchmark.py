@@ -85,6 +85,7 @@ def run_live_phase(
 ):
     """Execute only after the collector validates the safe preflight."""
 
+    stage = "setup"
     try:
         preflight.require_ready()
     except Exception as exc:
@@ -358,6 +359,21 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _safe_failure_reason(stage: str, exc: Exception) -> str:
+    """Return an allowlisted failure reason without exception detail."""
+
+    if not stage.endswith("_validation"):
+        return "unclassified"
+    detail = str(exc)
+    if "fingerprint mismatch" in detail:
+        return "pair_fingerprint_mismatch"
+    if detail.startswith("Invalid pair:"):
+        return "pair_shape"
+    if detail.startswith("Invalid row"):
+        return "row_contract"
+    return "validation_contract"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -396,6 +412,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_date=args.run_date,
                 git_sha=git_sha,
             )
+            stage = f"{phase}_validation"
             validate_live_rows(rows, metadata=metadata)
             if phase == "development":
                 _write_development_rows(rows, development_output)
@@ -406,8 +423,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 repository_root=repository_root,
                 tracking_preflight=_tracked_bundle_preflight,
             )
-    except Exception:
-        print("Live benchmark did not run; private preflight or validation rejected.")
+    except Exception as exc:
+        print("Live benchmark did not run; private preflight or validation rejected. " f"failure_stage={stage} failure_reason={_safe_failure_reason(stage, exc)}")
         return 2
     if phases == ("development",):
         print("Live benchmark development confirmation completed with validated local evidence.")

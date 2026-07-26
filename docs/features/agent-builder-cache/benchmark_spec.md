@@ -90,10 +90,12 @@ calls. It returns only the allowlisted observation needed by CACHE-05 `RunRow`.
   same workflow through the enabled loopback-only fresh-session marker; a cache
   warm-up prime uses a separate disposable session and cannot become part of
   the measured context.
-- A successful pair's result fingerprint is an HMAC of the semantic direct
-  response only. Request/session/draft/operation and materialization identities
-  are canonicalized; cache outcome, latency, and other diagnostic fields are
-  excluded so the fingerprint tests materialization parity rather than timing.
+- A warm-cache candidate records an HMAC fingerprint for its private prime response and
+  compares the later cache-hit response to that fingerprint inside the runtime. Request,
+  session, draft, operation, and materialization identities are canonicalized; cache
+  outcome, latency, and diagnostic fields are excluded. A cache-disabled baseline and a
+  cache-enabled candidate are independent provider generations, so their fingerprints are
+  not required to match.
 - Every scheduled final baseline/candidate row, including failures, remains in
   raw data and is counted before finalization. Success rate never replaces row
   cardinality, deterministic outcome validation, or artifact safety checks.

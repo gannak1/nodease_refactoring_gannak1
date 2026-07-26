@@ -106,9 +106,40 @@ def test_docker_entrypoint_routes_same_origin_api_directly_to_gateway():
     nginx = _read("docker/nginx/nginx.conf")
 
     assert "location /api {" in nginx
-    assert "proxy_pass http://gateway:8000;" in nginx
+    assert "set $gateway_upstream http://gateway:8000;" in nginx
+    assert "proxy_pass $gateway_upstream;" in nginx
 
 
+def test_local_nginx_keeps_internal_backends_and_a_public_edge_network():
+    compose = yaml.safe_load(_read("docker/docker-compose.yml"))
+    networks = compose["networks"]
+
+    assert compose["services"]["nginx"]["networks"] == [
+        "moduly-network",
+        "public-edge",
+    ]
+    assert networks["moduly-network"]["internal"] is True
+    assert networks["public-edge"]["driver"] == "bridge"
+    assert networks["public-edge"].get("internal") is not True
+
+
+def test_local_postgres_uses_loopback_host_access_without_relaxing_backend_network():
+    compose = yaml.safe_load(_read("docker/docker-compose.yml"))
+    networks = compose["networks"]
+    postgres = compose["services"]["postgres"]
+
+    assert postgres["ports"] == ["127.0.0.1:5432:5432"]
+    assert postgres["networks"] == ["moduly-network", "postgres-host-access"]
+    assert networks["moduly-network"]["internal"] is True
+    assert networks["postgres-host-access"]["driver"] == "bridge"
+    assert networks["postgres-host-access"].get("internal") is not True
+
+
+def test_gateway_image_bundles_demo_knowledge_fixture_for_seed_demo():
+    dockerfile = _read("docker/gateway/Dockerfile")
+
+    assert "COPY scripts/seed_demo.py /app/scripts/seed_demo.py" in dockerfile
+    assert "COPY demodata /app/demodata" in dockerfile
 @pytest.mark.parametrize(
     "relative_path",
     [
@@ -142,3 +173,13 @@ def test_model_discovery_uses_the_registered_guarded_operation(relative_path):
     assert "requests.get" not in source
     assert "safe_http_request(" in source
     assert "operation_id=LLM_MODEL_DISCOVERY" in source
+
+def test_docker_nginx_reresolves_recreated_internal_service_addresses():
+    nginx = _read("docker/nginx/nginx.conf")
+
+    assert "resolver 127.0.0.11 valid=10s ipv6=off;" in nginx
+    assert "resolver_timeout 5s;" in nginx
+    assert "set $frontend_upstream http://frontend:3000;" in nginx
+    assert "set $gateway_upstream http://gateway:8000;" in nginx
+    assert "proxy_pass $frontend_upstream;" in nginx
+    assert nginx.count("proxy_pass $gateway_upstream;") == 5

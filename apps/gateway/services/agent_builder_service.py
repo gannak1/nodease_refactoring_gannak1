@@ -145,6 +145,25 @@ NO_KB_CANDIDATE_LABEL = "Knowledge Base 없이 생성"
 NO_KB_CANDIDATE_WARNING = "사용자가 Knowledge Base 없이 도안 생성을 선택했습니다. LLM node는 Knowledge Base binding 없이 생성됩니다."
 AGENT_BUILDER_KB_RECOMMENDATION_LIMIT = 20
 EXPECTED_APP_PRIMARY_WORKFLOW_ID = "expected_app_primary_workflow_id"
+
+def intent_extraction_failure_issue_details(
+    error: AgentBuilderIntentExtractionError,
+) -> tuple[str, str]:
+    """Return the only public details allowed for planner extraction failures."""
+    if safe_intent_extraction_reason(error) == "provider_call_failed":
+        return (
+            "INTENT_PROVIDER_CALL_FAILED",
+            (
+                "선택한 Agent Builder 모델 또는 provider가 요청을 처리하지 못했습니다. "
+                "모델을 바꾸거나 provider 상태를 확인한 뒤 다시 시도하세요."
+            ),
+        )
+    return (
+        "INTENT_EXTRACTION_FAILED",
+        "Agent Builder가 요청을 안전한 workflow 구조로 변환하지 못했습니다.",
+    )
+
+
 SAFE_SIDE_EFFECT_NOTICE = (
     "Agent Builder 요청 구조화, workflow graph 생성·저장 및 설정 중에는 workflow 실행, Knowledge Base 검색, "
     "Slack/GitHub/HTTP/Mail 외부 호출, workflow node credential 사용/변경, "
@@ -1351,6 +1370,7 @@ class AgentBuilderService:
                 "agent_builder_intent_extraction_failed reason=%s",
                 safe_intent_extraction_reason(exc),
             )
+            issue_code, issue_message = intent_extraction_failure_issue_details(exc)
             response = AgentBuilderMessageResponse(
                 request_id=request_row.id,
                 status="failed",
@@ -1358,8 +1378,8 @@ class AgentBuilderService:
                     valid=False,
                     issues=[
                         AgentBuilderValidationIssue(
-                            code="INTENT_EXTRACTION_FAILED",
-                            message="Agent Builder가 요청을 안전한 workflow 구조로 변환하지 못했습니다.",
+                            code=issue_code,
+                            message=issue_message,
                             path="message",
                         )
                     ],

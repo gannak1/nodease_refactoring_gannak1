@@ -69,7 +69,7 @@ def test_fresh_session_marker_is_not_sent_to_preflight_requests() -> None:
                         {
                             "model": {
                                 "id": configuration.model_id,
-                                "model_api_id": "gpt-5.5",
+                                "model_id_for_api_call": "gpt-5.5",
                             },
                             "credential": {"id": configuration.credential_id},
                         }

@@ -21,6 +21,11 @@ _TIER_ORDER: Final[dict[str, int]] = {
     "nano": 2,
     "pro": 3,
 }
+_OPENAI_GPT_5_6_NAMED_VARIANT_ORDER: Final[dict[str, int]] = {
+    "gpt-5.6-sol": 1,
+    "gpt-5.6-terra": 2,
+    "gpt-5.6-luna": 3,
+}
 _SPECIAL_PURPOSE_TOKENS: Final[frozenset[str]] = frozenset(
     {
         "sora",
@@ -72,6 +77,7 @@ class _ParsedModelRank:
     generation_major: int
     generation_minor: int
     tier_order: int
+    named_variant_order: int
     status_order: int
 
 
@@ -139,10 +145,20 @@ def _generation(
 
 
 def _parse_openai_model(model_id: str, status_order: int) -> _ParsedModelRank | None:
+    named_variant_order = _OPENAI_GPT_5_6_NAMED_VARIANT_ORDER.get(model_id)
+    if named_variant_order is not None:
+        return _ParsedModelRank(
+            5,
+            6,
+            _TIER_ORDER["general"],
+            named_variant_order,
+            status_order,
+        )
+
     match = re.fullmatch(r"gpt-(\d+)o(?:-(mini))?", model_id)
     if match:
         tier = match.group(2) or "general"
-        return _ParsedModelRank(int(match.group(1)), 0, _TIER_ORDER[tier], status_order)
+        return _ParsedModelRank(int(match.group(1)), 0, _TIER_ORDER[tier], 0, status_order)
 
     match = re.fullmatch(
         r"gpt-(\d+)(?:\.(\d+))?(?:-(mini|nano|pro))?",
@@ -151,7 +167,7 @@ def _parse_openai_model(model_id: str, status_order: int) -> _ParsedModelRank | 
     if match:
         major, minor = _generation(match, 1, 2)
         tier = match.group(3) or "general"
-        return _ParsedModelRank(major, minor, _TIER_ORDER[tier], status_order)
+        return _ParsedModelRank(major, minor, _TIER_ORDER[tier], 0, status_order)
 
     match = re.fullmatch(
         r"o(\d+)(?:\.(\d+))?(?:-(mini|nano|pro))?",
@@ -160,7 +176,7 @@ def _parse_openai_model(model_id: str, status_order: int) -> _ParsedModelRank | 
     if match:
         major, minor = _generation(match, 1, 2)
         tier = match.group(3) or "general"
-        return _ParsedModelRank(major, minor, _TIER_ORDER[tier], status_order)
+        return _ParsedModelRank(major, minor, _TIER_ORDER[tier], 0, status_order)
     return None
 
 
@@ -180,7 +196,7 @@ def _parse_anthropic_model(
             "fable": "pro",
         }[product_first.group(1)]
         major, minor = _generation(product_first, 2, 3)
-        return _ParsedModelRank(major, minor, _TIER_ORDER[tier], status_order)
+        return _ParsedModelRank(major, minor, _TIER_ORDER[tier], 0, status_order)
 
     generation_first = re.fullmatch(
         r"claude-(\d+)(?:-(\d+))?-(sonnet|haiku|opus|fable)",
@@ -194,7 +210,7 @@ def _parse_anthropic_model(
             "fable": "pro",
         }[generation_first.group(3)]
         major, minor = _generation(generation_first, 1, 2)
-        return _ParsedModelRank(major, minor, _TIER_ORDER[tier], status_order)
+        return _ParsedModelRank(major, minor, _TIER_ORDER[tier], 0, status_order)
     return None
 
 
@@ -212,7 +228,7 @@ def _parse_google_model(model_id: str, status_order: int) -> _ParsedModelRank | 
         "pro": "pro",
     }[match.group(3)]
     major, minor = _generation(match, 1, 2)
-    return _ParsedModelRank(major, minor, _TIER_ORDER[tier], status_order)
+    return _ParsedModelRank(major, minor, _TIER_ORDER[tier], 0, status_order)
 
 
 def _parse_model_rank(provider_name: str, model_id: str) -> _ParsedModelRank | None:
@@ -246,6 +262,7 @@ def _candidate_sort_key(candidate: ModelRecommendationCandidate) -> tuple[object
             0,
             0,
             0,
+            0,
             *common_tie_break,
         )
     return (
@@ -254,6 +271,7 @@ def _candidate_sort_key(candidate: ModelRecommendationCandidate) -> tuple[object
         -parsed.generation_major,
         -parsed.generation_minor,
         parsed.tier_order,
+        parsed.named_variant_order,
         parsed.status_order,
         *common_tie_break,
     )

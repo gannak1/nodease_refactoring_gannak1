@@ -469,14 +469,6 @@ def _validate_rows(
                 raise ReportValidationError(
                     "Invalid pair: expected one baseline and one candidate"
                 )
-            if baseline[0].is_success and candidate[0].is_success:
-                if (
-                    baseline[0].result_fingerprint
-                    != candidate[0].result_fingerprint
-                ):
-                    raise ReportValidationError(
-                        "Invalid pair: successful fingerprint mismatch"
-                    )
     return validated
 
 

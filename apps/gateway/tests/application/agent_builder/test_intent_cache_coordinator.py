@@ -166,6 +166,7 @@ class _Store:
         self.acquire_calls = 0
         self.wait_calls = 0
         self.wait_kwargs = None
+        self.save_lease = None
         self.completed_calls = 0
         self.released_calls = 0
         self.key_material: bytes | None = None
@@ -182,12 +183,15 @@ class _Store:
         self.load_calls += 1
         return self.loaded
 
-    def save(
+    def save_if_lease_owner(
         self,
         _key: IntentCacheKey,
         _plan: CachedIntentPlanV1,
+        owner: str,
+        generation: int,
     ) -> IntentPlanSaveResult:
         self.save_calls += 1
+        self.save_lease = (owner, generation)
         return self.saved
 
     @staticmethod
@@ -674,6 +678,7 @@ def test_owner_miss_calls_planner_once_rehydrates_then_stores():
     assert execution.decision.reason == "not_found"
     assert calls == 1
     assert store.load_calls == store.acquire_calls == store.save_calls == 1
+    assert store.save_lease == ("owner-token", 1)
     assert store.released_calls == 1
     assert store.completed_calls == 0
     assert sum(rehydrator.calls for rehydrator in rehydrators) == 1
@@ -1017,9 +1022,9 @@ def test_owner_rehydration_closes_session_before_save_and_release_io():
             assert not transaction["open"]
             return super().acquire_lease(key, owner)
 
-        def save(self, key, plan):
+        def save_if_lease_owner(self, key, plan, owner, generation):
             assert not transaction["open"]
-            return super().save(key, plan)
+            return super().save_if_lease_owner(key, plan, owner, generation)
 
         def release_lease(self, key, owner, generation):
             assert not transaction["open"]

@@ -71,6 +71,14 @@ class IntentPlanStorePort(Protocol):
         plan: CachedIntentPlanV1,
     ) -> IntentPlanSaveResult: ...
 
+    def save_if_lease_owner(
+        self,
+        key: IntentCacheKey,
+        plan: CachedIntentPlanV1,
+        owner_token: str,
+        lease_generation: int,
+    ) -> IntentPlanSaveResult: ...
+
 
 @runtime_checkable
 class IntentPlanRehydratorPort(Protocol):

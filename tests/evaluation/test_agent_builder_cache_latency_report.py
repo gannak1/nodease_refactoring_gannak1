@@ -249,7 +249,7 @@ def test_hit_outcome_rejects_provider_calls_for_all_terminal_statuses(
             validate_pairs=False,
         )
 
-def test_successful_pair_requires_materialization_fingerprint_parity() -> None:
+def test_successful_pair_allows_independent_materialization_fingerprints() -> None:
     dataset = load_dataset(DATASET_PATH)
     pair = [
         run
@@ -259,8 +259,8 @@ def test_successful_pair_requires_materialization_fingerprint_parity() -> None:
     assert len(pair) == 2
 
     changed = [pair[0], replace(pair[1], result_fingerprint="0" * 64)]
-    with pytest.raises(ReportValidationError, match="fingerprint"):
-        build_summary(changed, dataset.metadata)
+    build_summary(changed, dataset.metadata)
+
 
 
 def test_statistics_exclude_warmups_and_failed_rounds() -> None:

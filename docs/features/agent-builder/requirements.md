@@ -253,7 +253,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 
 - 기존 KB 후보 3개 높이·최대 20개 표시와 node capability allowlist는 재구현하지 않고 회귀 테스트로 보존한다.
 - 기존 intent model 권한 검증과 generated model 추천은 ADR-0040 계약을 재구현하지 않고 회귀 테스트로 보존한다. 후보는 active organization의 valid credential, active chat model, provider 일치, verified relation과 사용자 credential `use` 권한을 모두 통과해야 한다. 같은 model/credential 관계가 중복이면 가장 낮은 relation priority 하나만 사용한다.
-- Header와 새 generated LLM node는 같은 후보 집합과 `openai -> anthropic -> google`, provider별 최신 세대, 같은 세대 `general -> mini -> nano -> pro`, 같은 tier 기본형 -> 날짜/release snapshot -> preview -> latest 순서를 공유한다. Header에서 사용자가 선택한 planner model은 generated node에 복사하지 않고, 기존 LLM node의 model도 덮어쓰지 않는다.
+- Header와 새 generated LLM node는 같은 후보 집합과 `openai -> anthropic -> google`, provider별 최신 세대, 같은 세대 `general -> mini -> nano -> pro`, 같은 tier 기본형 -> 날짜/release snapshot -> preview -> latest 순서를 공유한다. OpenAI의 정확히 알려진 GPT-5.6 후보는 verified 상태일 때 `gpt-5.6`(있으면) -> `gpt-5.6-sol` -> `gpt-5.6-terra` -> `gpt-5.6-luna` 순으로 5.5 계열보다 먼저 둔다. Header에서 사용자가 선택한 planner model은 generated node에 복사하지 않고, 기존 LLM node의 model도 덮어쓰지 않는다.
 - 정규화한 model ID로 확정되는 특수 목적 모델은 Agent Builder 후보에서 제외하고, 세대나 tier를 해석하지 못한 verified chat model은 임의 등급 없이 해당 provider의 해석 가능한 후보 뒤에 안정적으로 유지한다. LlamaParse는 chat model 미지원 disabled group이다.
 - 최신 dev의 Mail capability인 `mail_search`, `gmail_reply_draft_create`, `mail_terminal_acknowledgement`를 direct-edit catalog와 GraphMutation에서 보존한다.
 - Gmail 답장 초안 workflow는 durable Mail 검색, LLM, Gmail Draft, Mail terminal acknowledgement 순서를 유지한다. Mail terminal acknowledgement를 단독 생성하거나 Gmail Draft 앞에 배치하지 않는다.
@@ -306,7 +306,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - Agent Builder request, GraphMutation 발급, GraphMutation CDS 저장 결과, acknowledgement, parameter/Knowledge 상태 변경, permission/stale/validation 차단을 구분해 audit한다.
 - Agent Builder GraphMutation CDS save와 persisted revert/redo save는 기존 `add_action_audit`를 같은 SQLAlchemy session에서 호출한다. Graph write와 audit insert 중 하나라도 실패하면 transaction 전체를 rollback하고 성공을 반환하지 않는다. 일반 editor autosync마다 신규 audit event를 추가하는 것은 이 기능 범위가 아니며 신규 audit outbox나 worker도 추가하지 않는다.
 - audit에는 session/request/operation/workflow/node/parameter key와 safe reason만 기록한다.
-- Planner 실패 진단은 allowlisted safe code인 `semantic_validation_failed:<codes>`, `schema_validation_failed`, `provider_response_invalid`, `provider_call_failed`, `runtime_loading_failed`, `extraction_failed`로만 축약한다. Unknown/raw exception과 provider 원문을 사용자 응답, audit, trace 또는 log에 반사하지 않는다.
+- Planner 실패 진단은 allowlisted safe code인 `semantic_validation_failed:<codes>`, `schema_validation_failed`, `provider_response_invalid`, `provider_call_failed`, `runtime_loading_failed`, `extraction_failed`로만 축약한다. `ProviderInvocationError` 중 완료되지 않았거나 빈 provider 응답은 `provider_response_invalid`로, 그 밖의 provider 호출 실패는 `provider_call_failed`로 구분한다. Gateway는 후자의 terminal response에만 `INTENT_PROVIDER_CALL_FAILED`와 모델 변경 또는 provider 상태 확인을 안내하는 일반 문구를 반환할 수 있다. Unknown/raw exception과 provider 원문, HTTP status, provider error token을 사용자 응답, audit, trace 또는 log에 반사하지 않는다.
 - raw message 중 secret-like span, parameter value 원문, raw KB content, source path/url, credential config, provider raw response는 audit/trace/log에서 제외한다.
 - planner와 repair usage/cost attribution은 DBP-FR-015를 따른다.
 

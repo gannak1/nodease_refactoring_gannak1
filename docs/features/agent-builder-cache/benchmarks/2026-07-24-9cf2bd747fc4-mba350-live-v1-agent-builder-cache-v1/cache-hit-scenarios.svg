@@ -1,0 +1,1724 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="7600" height="360" viewBox="0 0 7600 360">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text x="40" y="30" font-family="sans-serif" font-size="20">Cache outcomes and provider calls by round</text>
+<text x="15" y="74" font-family="sans-serif" font-size="11">cache_disabled_baseline</text>
+<text x="15" y="112" font-family="sans-serif" font-size="11">cold_miss</text>
+<text x="15" y="150" font-family="sans-serif" font-size="11">exact_warm_hit</text>
+<text x="15" y="188" font-family="sans-serif" font-size="11">normalization_warm_hit</text>
+<text x="15" y="226" font-family="sans-serif" font-size="11">semantic_bypass</text>
+<text x="15" y="264" font-family="sans-serif" font-size="11">negative_control</text>
+<text x="15" y="302" font-family="sans-serif" font-size="11">redis_fail_open</text>
+<g data-run="local-live:p-e9daf28285082cbdf09fa3b1:fin-warmup-01:cache_disabled_baseline" data-warmup="true" opacity="0.45">
+<title>local-live:p-e9daf28285082cbdf09fa3b1:fin-warmup-01:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="179" y="63" width="12" height="14" rx="2" fill="none" stroke="#64748b" stroke-width="2"/>
+<text x="181" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-e9daf28285082cbdf09fa3b1:fin-warmup-01:cold_miss" data-warmup="true" opacity="0.45">
+<title>local-live:p-e9daf28285082cbdf09fa3b1:fin-warmup-01:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="203" y="101" width="12" height="14" rx="2" fill="none" stroke="#f59e0b" stroke-width="2"/>
+<text x="205" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-f3db7ab87b7b4ac11cce0e3e:fin-01:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-f3db7ab87b7b4ac11cce0e3e:fin-01:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="227" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="229" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-f3db7ab87b7b4ac11cce0e3e:fin-01:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-f3db7ab87b7b4ac11cce0e3e:fin-01:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="251" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="253" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-83fe1d8914860ddeae7a49e8:fin-02:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-83fe1d8914860ddeae7a49e8:fin-02:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="275" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="277" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-83fe1d8914860ddeae7a49e8:fin-02:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-83fe1d8914860ddeae7a49e8:fin-02:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="299" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="301" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-4cf595cbdfd0b95732f263f8:fin-03:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-4cf595cbdfd0b95732f263f8:fin-03:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="323" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="325" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-4cf595cbdfd0b95732f263f8:fin-03:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-4cf595cbdfd0b95732f263f8:fin-03:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="347" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="349" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-e1698a73a58789bdd88c4798:fin-04:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-e1698a73a58789bdd88c4798:fin-04:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="371" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="373" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-e1698a73a58789bdd88c4798:fin-04:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-e1698a73a58789bdd88c4798:fin-04:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="395" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="397" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-f0a8434d56f7b873aacba008:fin-05:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-f0a8434d56f7b873aacba008:fin-05:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="419" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="421" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-f0a8434d56f7b873aacba008:fin-05:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-f0a8434d56f7b873aacba008:fin-05:cold_miss outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="443" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 443 101 L 455 115 M 455 101 L 443 115" stroke="#111827" stroke-width="2"/>
+<text x="445" y="130" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-d0d89b34cf41443ab83cb314:fin-06:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-d0d89b34cf41443ab83cb314:fin-06:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="467" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="469" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-d0d89b34cf41443ab83cb314:fin-06:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-d0d89b34cf41443ab83cb314:fin-06:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="491" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="493" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-b8fb91bba741a265ca6a2bfe:fin-07:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-b8fb91bba741a265ca6a2bfe:fin-07:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="515" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="517" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-b8fb91bba741a265ca6a2bfe:fin-07:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-b8fb91bba741a265ca6a2bfe:fin-07:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="539" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="541" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-ab42cc9e6837adcf39cc8342:fin-08:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-ab42cc9e6837adcf39cc8342:fin-08:cold_miss outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="563" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 563 101 L 575 115 M 575 101 L 563 115" stroke="#111827" stroke-width="2"/>
+<text x="565" y="130" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-ab42cc9e6837adcf39cc8342:fin-08:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-ab42cc9e6837adcf39cc8342:fin-08:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="587" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="589" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-788b07b0aa77fa6f270e5dc5:fin-09:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-788b07b0aa77fa6f270e5dc5:fin-09:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="611" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="613" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-788b07b0aa77fa6f270e5dc5:fin-09:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-788b07b0aa77fa6f270e5dc5:fin-09:cold_miss outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="635" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 635 101 L 647 115 M 647 101 L 635 115" stroke="#111827" stroke-width="2"/>
+<text x="637" y="130" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-1657ffc1a040f492d3875baa:fin-10:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-1657ffc1a040f492d3875baa:fin-10:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="659" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="661" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-1657ffc1a040f492d3875baa:fin-10:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-1657ffc1a040f492d3875baa:fin-10:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="683" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="685" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-1a7229b73aef77565ef1ceab:fin-11:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-1a7229b73aef77565ef1ceab:fin-11:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="707" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="709" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-1a7229b73aef77565ef1ceab:fin-11:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-1a7229b73aef77565ef1ceab:fin-11:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="731" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="733" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-3f7d10952ebe62f37bdc54a6:fin-12:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-3f7d10952ebe62f37bdc54a6:fin-12:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="755" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="757" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-3f7d10952ebe62f37bdc54a6:fin-12:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-3f7d10952ebe62f37bdc54a6:fin-12:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="779" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="781" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-6a0ddc256e1a21546e3ebf35:fin-13:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-6a0ddc256e1a21546e3ebf35:fin-13:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="803" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="805" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-6a0ddc256e1a21546e3ebf35:fin-13:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-6a0ddc256e1a21546e3ebf35:fin-13:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="827" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="829" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-254f6ab81a28a0ffab3b2fa2:fin-14:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-254f6ab81a28a0ffab3b2fa2:fin-14:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="851" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="853" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-254f6ab81a28a0ffab3b2fa2:fin-14:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-254f6ab81a28a0ffab3b2fa2:fin-14:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="875" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="877" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-d2c8d8e05e45050fdc1f3ef2:fin-15:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-d2c8d8e05e45050fdc1f3ef2:fin-15:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="899" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="901" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-d2c8d8e05e45050fdc1f3ef2:fin-15:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-d2c8d8e05e45050fdc1f3ef2:fin-15:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="923" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="925" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-19b9fb7dc9f536489413ba16:fin-16:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-19b9fb7dc9f536489413ba16:fin-16:cold_miss outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="947" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 947 101 L 959 115 M 959 101 L 947 115" stroke="#111827" stroke-width="2"/>
+<text x="949" y="130" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-19b9fb7dc9f536489413ba16:fin-16:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-19b9fb7dc9f536489413ba16:fin-16:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="971" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="973" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-87e5538ced41d1b3b5353f16:fin-17:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-87e5538ced41d1b3b5353f16:fin-17:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="995" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="997" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-87e5538ced41d1b3b5353f16:fin-17:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-87e5538ced41d1b3b5353f16:fin-17:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1019" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="1021" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-88c918e7d0445bdb85658e85:fin-18:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-88c918e7d0445bdb85658e85:fin-18:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1043" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="1045" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-88c918e7d0445bdb85658e85:fin-18:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-88c918e7d0445bdb85658e85:fin-18:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1067" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1069" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-c3e0cb3ad19ee41be8bb8cb3:fin-19:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-c3e0cb3ad19ee41be8bb8cb3:fin-19:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1091" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1093" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-c3e0cb3ad19ee41be8bb8cb3:fin-19:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-c3e0cb3ad19ee41be8bb8cb3:fin-19:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1115" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="1117" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-3074418b7635d12a5a34563e:fin-20:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-3074418b7635d12a5a34563e:fin-20:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1139" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="1141" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-3074418b7635d12a5a34563e:fin-20:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-3074418b7635d12a5a34563e:fin-20:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1163" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1165" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-8f5daff3437781e2cc9780cd:fin-21:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-8f5daff3437781e2cc9780cd:fin-21:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1187" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1189" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-8f5daff3437781e2cc9780cd:fin-21:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-8f5daff3437781e2cc9780cd:fin-21:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1211" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="1213" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-a719fd4377a56647b40c0b1c:fin-22:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-a719fd4377a56647b40c0b1c:fin-22:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1235" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="1237" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-a719fd4377a56647b40c0b1c:fin-22:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-a719fd4377a56647b40c0b1c:fin-22:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1259" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1261" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-e31bd0fe41bde23a8c1d5978:fin-23:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-e31bd0fe41bde23a8c1d5978:fin-23:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1283" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1285" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-e31bd0fe41bde23a8c1d5978:fin-23:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-e31bd0fe41bde23a8c1d5978:fin-23:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1307" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="1309" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-119e354ee532391b1ae01cfb:fin-24:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-119e354ee532391b1ae01cfb:fin-24:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1331" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="1333" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-119e354ee532391b1ae01cfb:fin-24:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-119e354ee532391b1ae01cfb:fin-24:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1355" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1357" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-f76fd153cb6bf5d78538d13d:fin-25:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-f76fd153cb6bf5d78538d13d:fin-25:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1379" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1381" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-f76fd153cb6bf5d78538d13d:fin-25:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-f76fd153cb6bf5d78538d13d:fin-25:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1403" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="1405" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-2f1699bc96744c659abedba8:fin-26:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-2f1699bc96744c659abedba8:fin-26:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1427" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="1429" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-2f1699bc96744c659abedba8:fin-26:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-2f1699bc96744c659abedba8:fin-26:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1451" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1453" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-8fac6d0d4993ded4d9ed8922:fin-27:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-8fac6d0d4993ded4d9ed8922:fin-27:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1475" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1477" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-8fac6d0d4993ded4d9ed8922:fin-27:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-8fac6d0d4993ded4d9ed8922:fin-27:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1499" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="1501" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-89cdbabdfe6475076f41775f:fin-28:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-89cdbabdfe6475076f41775f:fin-28:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1523" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="1525" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-89cdbabdfe6475076f41775f:fin-28:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-89cdbabdfe6475076f41775f:fin-28:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1547" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1549" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-a36a11578d05d731cc4eb380:fin-29:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-a36a11578d05d731cc4eb380:fin-29:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1571" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1573" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-a36a11578d05d731cc4eb380:fin-29:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-a36a11578d05d731cc4eb380:fin-29:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1595" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="1597" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-68cc286a019494f755e5c27d:fin-30:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-68cc286a019494f755e5c27d:fin-30:cold_miss outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1619" y="101" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="1621" y="130" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-68cc286a019494f755e5c27d:fin-30:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-68cc286a019494f755e5c27d:fin-30:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1643" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1645" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-3dff963411d991d43f53abbc:fin-warmup-01:cache_disabled_baseline" data-warmup="true" opacity="0.45">
+<title>local-live:p-3dff963411d991d43f53abbc:fin-warmup-01:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1667" y="63" width="12" height="14" rx="2" fill="none" stroke="#64748b" stroke-width="2"/>
+<text x="1669" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-3dff963411d991d43f53abbc:fin-warmup-01:exact_warm_hit" data-warmup="true" opacity="0.45">
+<title>local-live:p-3dff963411d991d43f53abbc:fin-warmup-01:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="1691" y="139" width="12" height="14" rx="2" fill="none" stroke="#f59e0b" stroke-width="2"/>
+<path d="M 1691 139 L 1703 153 M 1703 139 L 1691 153" stroke="#111827" stroke-width="2"/>
+<text x="1693" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-fb3be334e85bcddae70af418:fin-01:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-fb3be334e85bcddae70af418:fin-01:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1715" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1717" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-fb3be334e85bcddae70af418:fin-01:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-fb3be334e85bcddae70af418:fin-01:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="1739" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 1739 139 L 1751 153 M 1751 139 L 1739 153" stroke="#111827" stroke-width="2"/>
+<text x="1741" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-855720678baf4c011e8d413f:fin-02:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-855720678baf4c011e8d413f:fin-02:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="1763" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 1763 139 L 1775 153 M 1775 139 L 1763 153" stroke="#111827" stroke-width="2"/>
+<text x="1765" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-855720678baf4c011e8d413f:fin-02:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-855720678baf4c011e8d413f:fin-02:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1787" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1789" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-0952cfad628a4414489e9830:fin-03:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-0952cfad628a4414489e9830:fin-03:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1811" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1813" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-0952cfad628a4414489e9830:fin-03:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-0952cfad628a4414489e9830:fin-03:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="1835" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 1835 139 L 1847 153 M 1847 139 L 1835 153" stroke="#111827" stroke-width="2"/>
+<text x="1837" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-bf037ba9751b4957e63c18a7:fin-04:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-bf037ba9751b4957e63c18a7:fin-04:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="1859" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 1859 139 L 1871 153 M 1871 139 L 1859 153" stroke="#111827" stroke-width="2"/>
+<text x="1861" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-bf037ba9751b4957e63c18a7:fin-04:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-bf037ba9751b4957e63c18a7:fin-04:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1883" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1885" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-13aa64d0446a67b692de1195:fin-05:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-13aa64d0446a67b692de1195:fin-05:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1907" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1909" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-13aa64d0446a67b692de1195:fin-05:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-13aa64d0446a67b692de1195:fin-05:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="1931" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 1931 139 L 1943 153 M 1943 139 L 1931 153" stroke="#111827" stroke-width="2"/>
+<text x="1933" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-3fd8553fbba4523f1b28e3be:fin-06:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-3fd8553fbba4523f1b28e3be:fin-06:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="1955" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 1955 139 L 1967 153 M 1967 139 L 1955 153" stroke="#111827" stroke-width="2"/>
+<text x="1957" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-3fd8553fbba4523f1b28e3be:fin-06:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-3fd8553fbba4523f1b28e3be:fin-06:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="1979" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="1981" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-a7f404b918190121719cecfe:fin-07:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-a7f404b918190121719cecfe:fin-07:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2003" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2005" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-a7f404b918190121719cecfe:fin-07:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-a7f404b918190121719cecfe:fin-07:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2027" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2027 139 L 2039 153 M 2039 139 L 2027 153" stroke="#111827" stroke-width="2"/>
+<text x="2029" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-17513938896632007bf04404:fin-08:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-17513938896632007bf04404:fin-08:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2051" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2051 139 L 2063 153 M 2063 139 L 2051 153" stroke="#111827" stroke-width="2"/>
+<text x="2053" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-17513938896632007bf04404:fin-08:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-17513938896632007bf04404:fin-08:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2075" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2077" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-40a8e91bb138250c4e032eab:fin-09:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-40a8e91bb138250c4e032eab:fin-09:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2099" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2101" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-40a8e91bb138250c4e032eab:fin-09:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-40a8e91bb138250c4e032eab:fin-09:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2123" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2123 139 L 2135 153 M 2135 139 L 2123 153" stroke="#111827" stroke-width="2"/>
+<text x="2125" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-d0a07af9f5e6ce480073f6c7:fin-10:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-d0a07af9f5e6ce480073f6c7:fin-10:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2147" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2147 139 L 2159 153 M 2159 139 L 2147 153" stroke="#111827" stroke-width="2"/>
+<text x="2149" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-d0a07af9f5e6ce480073f6c7:fin-10:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-d0a07af9f5e6ce480073f6c7:fin-10:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2171" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2173" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-faf8e5ef8b0c50b7b0451902:fin-11:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-faf8e5ef8b0c50b7b0451902:fin-11:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2195" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2197" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-faf8e5ef8b0c50b7b0451902:fin-11:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-faf8e5ef8b0c50b7b0451902:fin-11:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2219" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2219 139 L 2231 153 M 2231 139 L 2219 153" stroke="#111827" stroke-width="2"/>
+<text x="2221" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-5b1bf7aeb51814f9cfd51c7b:fin-12:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-5b1bf7aeb51814f9cfd51c7b:fin-12:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2243" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2243 139 L 2255 153 M 2255 139 L 2243 153" stroke="#111827" stroke-width="2"/>
+<text x="2245" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-5b1bf7aeb51814f9cfd51c7b:fin-12:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-5b1bf7aeb51814f9cfd51c7b:fin-12:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2267" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2269" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-99ab4c6f5becad1eb6f55fb8:fin-13:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-99ab4c6f5becad1eb6f55fb8:fin-13:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2291" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2293" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-99ab4c6f5becad1eb6f55fb8:fin-13:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-99ab4c6f5becad1eb6f55fb8:fin-13:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2315" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2315 139 L 2327 153 M 2327 139 L 2315 153" stroke="#111827" stroke-width="2"/>
+<text x="2317" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-78a73ae56e9e9125bf3193e3:fin-14:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-78a73ae56e9e9125bf3193e3:fin-14:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2339" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2339 139 L 2351 153 M 2351 139 L 2339 153" stroke="#111827" stroke-width="2"/>
+<text x="2341" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-78a73ae56e9e9125bf3193e3:fin-14:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-78a73ae56e9e9125bf3193e3:fin-14:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2363" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2365" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-d876362364604a70858e8bb8:fin-15:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-d876362364604a70858e8bb8:fin-15:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2387" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2389" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-d876362364604a70858e8bb8:fin-15:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-d876362364604a70858e8bb8:fin-15:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2411" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2411 139 L 2423 153 M 2423 139 L 2411 153" stroke="#111827" stroke-width="2"/>
+<text x="2413" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-e92e568b59a02b9729fc6fd4:fin-16:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-e92e568b59a02b9729fc6fd4:fin-16:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2435" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2435 139 L 2447 153 M 2447 139 L 2435 153" stroke="#111827" stroke-width="2"/>
+<text x="2437" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-e92e568b59a02b9729fc6fd4:fin-16:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-e92e568b59a02b9729fc6fd4:fin-16:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2459" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2461" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-43f8476509748db26569b068:fin-17:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-43f8476509748db26569b068:fin-17:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2483" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2485" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-43f8476509748db26569b068:fin-17:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-43f8476509748db26569b068:fin-17:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2507" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2507 139 L 2519 153 M 2519 139 L 2507 153" stroke="#111827" stroke-width="2"/>
+<text x="2509" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-436ebf2bfe34c19788567060:fin-18:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-436ebf2bfe34c19788567060:fin-18:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2531" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2531 139 L 2543 153 M 2543 139 L 2531 153" stroke="#111827" stroke-width="2"/>
+<text x="2533" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-436ebf2bfe34c19788567060:fin-18:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-436ebf2bfe34c19788567060:fin-18:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2555" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2557" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-c4cb9a83e618b6da3a5d8868:fin-19:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-c4cb9a83e618b6da3a5d8868:fin-19:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2579" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2581" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-c4cb9a83e618b6da3a5d8868:fin-19:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-c4cb9a83e618b6da3a5d8868:fin-19:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2603" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2603 139 L 2615 153 M 2615 139 L 2603 153" stroke="#111827" stroke-width="2"/>
+<text x="2605" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-6cde6c181c2edaad9fc915e5:fin-20:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-6cde6c181c2edaad9fc915e5:fin-20:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2627" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2627 139 L 2639 153 M 2639 139 L 2627 153" stroke="#111827" stroke-width="2"/>
+<text x="2629" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-6cde6c181c2edaad9fc915e5:fin-20:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-6cde6c181c2edaad9fc915e5:fin-20:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2651" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2653" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-62c84bedc203355c99a3430c:fin-21:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-62c84bedc203355c99a3430c:fin-21:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2675" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2677" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-62c84bedc203355c99a3430c:fin-21:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-62c84bedc203355c99a3430c:fin-21:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2699" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2699 139 L 2711 153 M 2711 139 L 2699 153" stroke="#111827" stroke-width="2"/>
+<text x="2701" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-56ba8613471561370e2b165d:fin-22:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-56ba8613471561370e2b165d:fin-22:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2723" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2723 139 L 2735 153 M 2735 139 L 2723 153" stroke="#111827" stroke-width="2"/>
+<text x="2725" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-56ba8613471561370e2b165d:fin-22:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-56ba8613471561370e2b165d:fin-22:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2747" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2749" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-86f53872c6f0c0159dc12ab8:fin-23:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-86f53872c6f0c0159dc12ab8:fin-23:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2771" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2773" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-86f53872c6f0c0159dc12ab8:fin-23:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-86f53872c6f0c0159dc12ab8:fin-23:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2795" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2795 139 L 2807 153 M 2807 139 L 2795 153" stroke="#111827" stroke-width="2"/>
+<text x="2797" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-5673d1b5814d203ffbd819d8:fin-24:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-5673d1b5814d203ffbd819d8:fin-24:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2819" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2819 139 L 2831 153 M 2831 139 L 2819 153" stroke="#111827" stroke-width="2"/>
+<text x="2821" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-5673d1b5814d203ffbd819d8:fin-24:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-5673d1b5814d203ffbd819d8:fin-24:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2843" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2845" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-386989aab0adf7d9105703e7:fin-25:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-386989aab0adf7d9105703e7:fin-25:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2867" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2869" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-386989aab0adf7d9105703e7:fin-25:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-386989aab0adf7d9105703e7:fin-25:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2891" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2891 139 L 2903 153 M 2903 139 L 2891 153" stroke="#111827" stroke-width="2"/>
+<text x="2893" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-f548866684a5f18823df0af3:fin-26:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-f548866684a5f18823df0af3:fin-26:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2915" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2915 139 L 2927 153 M 2927 139 L 2915 153" stroke="#111827" stroke-width="2"/>
+<text x="2917" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-f548866684a5f18823df0af3:fin-26:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-f548866684a5f18823df0af3:fin-26:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2939" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2941" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-245d21610a046869cc7268f5:fin-27:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-245d21610a046869cc7268f5:fin-27:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="2963" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="2965" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-245d21610a046869cc7268f5:fin-27:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-245d21610a046869cc7268f5:fin-27:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="2987" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 2987 139 L 2999 153 M 2999 139 L 2987 153" stroke="#111827" stroke-width="2"/>
+<text x="2989" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-34e2fa4a9c66c7484b6fac03:fin-28:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-34e2fa4a9c66c7484b6fac03:fin-28:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3011" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3011 139 L 3023 153 M 3023 139 L 3011 153" stroke="#111827" stroke-width="2"/>
+<text x="3013" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-34e2fa4a9c66c7484b6fac03:fin-28:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-34e2fa4a9c66c7484b6fac03:fin-28:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="3035" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="3037" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-c30e67bf16d83ec905040c62:fin-29:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-c30e67bf16d83ec905040c62:fin-29:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="3059" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="3061" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-c30e67bf16d83ec905040c62:fin-29:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-c30e67bf16d83ec905040c62:fin-29:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3083" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3083 139 L 3095 153 M 3095 139 L 3083 153" stroke="#111827" stroke-width="2"/>
+<text x="3085" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-24099e1873f6b6bdcb60b75f:fin-30:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-24099e1873f6b6bdcb60b75f:fin-30:exact_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3107" y="139" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3107 139 L 3119 153 M 3119 139 L 3107 153" stroke="#111827" stroke-width="2"/>
+<text x="3109" y="168" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-24099e1873f6b6bdcb60b75f:fin-30:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-24099e1873f6b6bdcb60b75f:fin-30:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="3131" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="3133" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-ffc4590b314cb963120774c3:fin-warmup-01:cache_disabled_baseline" data-warmup="true" opacity="0.45">
+<title>local-live:p-ffc4590b314cb963120774c3:fin-warmup-01:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3155" y="63" width="12" height="14" rx="2" fill="none" stroke="#64748b" stroke-width="2"/>
+<path d="M 3155 63 L 3167 77 M 3167 63 L 3155 77" stroke="#111827" stroke-width="2"/>
+<text x="3157" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-ffc4590b314cb963120774c3:fin-warmup-01:normalization_warm_hit" data-warmup="true" opacity="0.45">
+<title>local-live:p-ffc4590b314cb963120774c3:fin-warmup-01:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3179" y="177" width="12" height="14" rx="2" fill="none" stroke="#f59e0b" stroke-width="2"/>
+<path d="M 3179 177 L 3191 191 M 3191 177 L 3179 191" stroke="#111827" stroke-width="2"/>
+<text x="3181" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-0ba7445cf80da2d91f343da8:fin-01:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-0ba7445cf80da2d91f343da8:fin-01:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3203" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 3203 63 L 3215 77 M 3215 63 L 3203 77" stroke="#111827" stroke-width="2"/>
+<text x="3205" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-0ba7445cf80da2d91f343da8:fin-01:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-0ba7445cf80da2d91f343da8:fin-01:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3227" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3227 177 L 3239 191 M 3239 177 L 3227 191" stroke="#111827" stroke-width="2"/>
+<text x="3229" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-d03b919bb1e27645a766d3cd:fin-02:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-d03b919bb1e27645a766d3cd:fin-02:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3251" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3251 177 L 3263 191 M 3263 177 L 3251 191" stroke="#111827" stroke-width="2"/>
+<text x="3253" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-d03b919bb1e27645a766d3cd:fin-02:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-d03b919bb1e27645a766d3cd:fin-02:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3275" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 3275 63 L 3287 77 M 3287 63 L 3275 77" stroke="#111827" stroke-width="2"/>
+<text x="3277" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-3f498bd3003d95fda78d7b0c:fin-03:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-3f498bd3003d95fda78d7b0c:fin-03:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3299" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 3299 63 L 3311 77 M 3311 63 L 3299 77" stroke="#111827" stroke-width="2"/>
+<text x="3301" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-3f498bd3003d95fda78d7b0c:fin-03:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-3f498bd3003d95fda78d7b0c:fin-03:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3323" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3323 177 L 3335 191 M 3335 177 L 3323 191" stroke="#111827" stroke-width="2"/>
+<text x="3325" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-7a3709088d009fcbcd2837e4:fin-04:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-7a3709088d009fcbcd2837e4:fin-04:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3347" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3347 177 L 3359 191 M 3359 177 L 3347 191" stroke="#111827" stroke-width="2"/>
+<text x="3349" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-7a3709088d009fcbcd2837e4:fin-04:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-7a3709088d009fcbcd2837e4:fin-04:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3371" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 3371 63 L 3383 77 M 3383 63 L 3371 77" stroke="#111827" stroke-width="2"/>
+<text x="3373" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-ace65ef89504ac97c0bb8791:fin-05:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-ace65ef89504ac97c0bb8791:fin-05:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3395" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 3395 63 L 3407 77 M 3407 63 L 3395 77" stroke="#111827" stroke-width="2"/>
+<text x="3397" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-ace65ef89504ac97c0bb8791:fin-05:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-ace65ef89504ac97c0bb8791:fin-05:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3419" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3419 177 L 3431 191 M 3431 177 L 3419 191" stroke="#111827" stroke-width="2"/>
+<text x="3421" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-4862435b4a89cb03ab55d83a:fin-06:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-4862435b4a89cb03ab55d83a:fin-06:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3443" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3443 177 L 3455 191 M 3455 177 L 3443 191" stroke="#111827" stroke-width="2"/>
+<text x="3445" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-4862435b4a89cb03ab55d83a:fin-06:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-4862435b4a89cb03ab55d83a:fin-06:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3467" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 3467 63 L 3479 77 M 3479 63 L 3467 77" stroke="#111827" stroke-width="2"/>
+<text x="3469" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-150780ca2322685723f1999c:fin-07:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-150780ca2322685723f1999c:fin-07:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3491" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 3491 63 L 3503 77 M 3503 63 L 3491 77" stroke="#111827" stroke-width="2"/>
+<text x="3493" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-150780ca2322685723f1999c:fin-07:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-150780ca2322685723f1999c:fin-07:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3515" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3515 177 L 3527 191 M 3527 177 L 3515 191" stroke="#111827" stroke-width="2"/>
+<text x="3517" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-bbc51831e653783c8f7e708f:fin-08:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-bbc51831e653783c8f7e708f:fin-08:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3539" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3539 177 L 3551 191 M 3551 177 L 3539 191" stroke="#111827" stroke-width="2"/>
+<text x="3541" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-bbc51831e653783c8f7e708f:fin-08:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-bbc51831e653783c8f7e708f:fin-08:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3563" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 3563 63 L 3575 77 M 3575 63 L 3563 77" stroke="#111827" stroke-width="2"/>
+<text x="3565" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-28075d6dff99175c7b8f2afa:fin-09:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-28075d6dff99175c7b8f2afa:fin-09:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3587" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 3587 63 L 3599 77 M 3599 63 L 3587 77" stroke="#111827" stroke-width="2"/>
+<text x="3589" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-28075d6dff99175c7b8f2afa:fin-09:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-28075d6dff99175c7b8f2afa:fin-09:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3611" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3611 177 L 3623 191 M 3623 177 L 3611 191" stroke="#111827" stroke-width="2"/>
+<text x="3613" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-61e69ae30c520a9f6de8a0dd:fin-10:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-61e69ae30c520a9f6de8a0dd:fin-10:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3635" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3635 177 L 3647 191 M 3647 177 L 3635 191" stroke="#111827" stroke-width="2"/>
+<text x="3637" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-61e69ae30c520a9f6de8a0dd:fin-10:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-61e69ae30c520a9f6de8a0dd:fin-10:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3659" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 3659 63 L 3671 77 M 3671 63 L 3659 77" stroke="#111827" stroke-width="2"/>
+<text x="3661" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-c0534804660bc43eeb654f5c:fin-11:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-c0534804660bc43eeb654f5c:fin-11:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3683" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 3683 63 L 3695 77 M 3695 63 L 3683 77" stroke="#111827" stroke-width="2"/>
+<text x="3685" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-c0534804660bc43eeb654f5c:fin-11:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-c0534804660bc43eeb654f5c:fin-11:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3707" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3707 177 L 3719 191 M 3719 177 L 3707 191" stroke="#111827" stroke-width="2"/>
+<text x="3709" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-ddf1e31e4cb298642ea32007:fin-12:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-ddf1e31e4cb298642ea32007:fin-12:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3731" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3731 177 L 3743 191 M 3743 177 L 3731 191" stroke="#111827" stroke-width="2"/>
+<text x="3733" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-ddf1e31e4cb298642ea32007:fin-12:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-ddf1e31e4cb298642ea32007:fin-12:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3755" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 3755 63 L 3767 77 M 3767 63 L 3755 77" stroke="#111827" stroke-width="2"/>
+<text x="3757" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-3e4a959c4cd5cdd3008559bb:fin-13:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-3e4a959c4cd5cdd3008559bb:fin-13:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3779" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 3779 63 L 3791 77 M 3791 63 L 3779 77" stroke="#111827" stroke-width="2"/>
+<text x="3781" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-3e4a959c4cd5cdd3008559bb:fin-13:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-3e4a959c4cd5cdd3008559bb:fin-13:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3803" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3803 177 L 3815 191 M 3815 177 L 3803 191" stroke="#111827" stroke-width="2"/>
+<text x="3805" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-07b30090d0e348babecae5d5:fin-14:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-07b30090d0e348babecae5d5:fin-14:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3827" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3827 177 L 3839 191 M 3839 177 L 3827 191" stroke="#111827" stroke-width="2"/>
+<text x="3829" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-07b30090d0e348babecae5d5:fin-14:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-07b30090d0e348babecae5d5:fin-14:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3851" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 3851 63 L 3863 77 M 3863 63 L 3851 77" stroke="#111827" stroke-width="2"/>
+<text x="3853" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-9c8e0342fd7b7850ccdeb56c:fin-15:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-9c8e0342fd7b7850ccdeb56c:fin-15:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3875" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 3875 63 L 3887 77 M 3887 63 L 3875 77" stroke="#111827" stroke-width="2"/>
+<text x="3877" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-9c8e0342fd7b7850ccdeb56c:fin-15:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-9c8e0342fd7b7850ccdeb56c:fin-15:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3899" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3899 177 L 3911 191 M 3911 177 L 3899 191" stroke="#111827" stroke-width="2"/>
+<text x="3901" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-25a8e69af98b53ebfc7174a6:fin-16:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-25a8e69af98b53ebfc7174a6:fin-16:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3923" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3923 177 L 3935 191 M 3935 177 L 3923 191" stroke="#111827" stroke-width="2"/>
+<text x="3925" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-25a8e69af98b53ebfc7174a6:fin-16:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-25a8e69af98b53ebfc7174a6:fin-16:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3947" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 3947 63 L 3959 77 M 3959 63 L 3947 77" stroke="#111827" stroke-width="2"/>
+<text x="3949" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-47ab57915d0c3fd8126b24c9:fin-17:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-47ab57915d0c3fd8126b24c9:fin-17:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3971" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 3971 63 L 3983 77 M 3983 63 L 3971 77" stroke="#111827" stroke-width="2"/>
+<text x="3973" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-47ab57915d0c3fd8126b24c9:fin-17:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-47ab57915d0c3fd8126b24c9:fin-17:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="3995" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 3995 177 L 4007 191 M 4007 177 L 3995 191" stroke="#111827" stroke-width="2"/>
+<text x="3997" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-993409bf143aab093a60e1fa:fin-18:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-993409bf143aab093a60e1fa:fin-18:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4019" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 4019 177 L 4031 191 M 4031 177 L 4019 191" stroke="#111827" stroke-width="2"/>
+<text x="4021" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-993409bf143aab093a60e1fa:fin-18:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-993409bf143aab093a60e1fa:fin-18:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4043" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4043 63 L 4055 77 M 4055 63 L 4043 77" stroke="#111827" stroke-width="2"/>
+<text x="4045" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-d6195db8b4060f1be287ac55:fin-19:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-d6195db8b4060f1be287ac55:fin-19:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4067" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4067 63 L 4079 77 M 4079 63 L 4067 77" stroke="#111827" stroke-width="2"/>
+<text x="4069" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-d6195db8b4060f1be287ac55:fin-19:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-d6195db8b4060f1be287ac55:fin-19:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4091" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 4091 177 L 4103 191 M 4103 177 L 4091 191" stroke="#111827" stroke-width="2"/>
+<text x="4093" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-ce2711fc1a23003a0f84962e:fin-20:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-ce2711fc1a23003a0f84962e:fin-20:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4115" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 4115 177 L 4127 191 M 4127 177 L 4115 191" stroke="#111827" stroke-width="2"/>
+<text x="4117" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-ce2711fc1a23003a0f84962e:fin-20:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-ce2711fc1a23003a0f84962e:fin-20:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4139" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4139 63 L 4151 77 M 4151 63 L 4139 77" stroke="#111827" stroke-width="2"/>
+<text x="4141" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-0d3f3a5f01af57ccb18e480d:fin-21:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-0d3f3a5f01af57ccb18e480d:fin-21:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4163" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4163 63 L 4175 77 M 4175 63 L 4163 77" stroke="#111827" stroke-width="2"/>
+<text x="4165" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-0d3f3a5f01af57ccb18e480d:fin-21:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-0d3f3a5f01af57ccb18e480d:fin-21:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4187" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 4187 177 L 4199 191 M 4199 177 L 4187 191" stroke="#111827" stroke-width="2"/>
+<text x="4189" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-dc654220243fb84d40939763:fin-22:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-dc654220243fb84d40939763:fin-22:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4211" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 4211 177 L 4223 191 M 4223 177 L 4211 191" stroke="#111827" stroke-width="2"/>
+<text x="4213" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-dc654220243fb84d40939763:fin-22:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-dc654220243fb84d40939763:fin-22:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4235" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4235 63 L 4247 77 M 4247 63 L 4235 77" stroke="#111827" stroke-width="2"/>
+<text x="4237" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-b3fd1983c6cf8113c44d4bce:fin-23:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-b3fd1983c6cf8113c44d4bce:fin-23:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4259" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4259 63 L 4271 77 M 4271 63 L 4259 77" stroke="#111827" stroke-width="2"/>
+<text x="4261" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-b3fd1983c6cf8113c44d4bce:fin-23:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-b3fd1983c6cf8113c44d4bce:fin-23:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4283" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 4283 177 L 4295 191 M 4295 177 L 4283 191" stroke="#111827" stroke-width="2"/>
+<text x="4285" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-e35ee8ae4776455db780c3c3:fin-24:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-e35ee8ae4776455db780c3c3:fin-24:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4307" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 4307 177 L 4319 191 M 4319 177 L 4307 191" stroke="#111827" stroke-width="2"/>
+<text x="4309" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-e35ee8ae4776455db780c3c3:fin-24:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-e35ee8ae4776455db780c3c3:fin-24:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4331" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4331 63 L 4343 77 M 4343 63 L 4331 77" stroke="#111827" stroke-width="2"/>
+<text x="4333" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-71dcd9ddbf7994d6b9eb1bcd:fin-25:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-71dcd9ddbf7994d6b9eb1bcd:fin-25:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4355" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4355 63 L 4367 77 M 4367 63 L 4355 77" stroke="#111827" stroke-width="2"/>
+<text x="4357" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-71dcd9ddbf7994d6b9eb1bcd:fin-25:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-71dcd9ddbf7994d6b9eb1bcd:fin-25:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4379" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 4379 177 L 4391 191 M 4391 177 L 4379 191" stroke="#111827" stroke-width="2"/>
+<text x="4381" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-210c2a7c5d97292077ba5919:fin-26:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-210c2a7c5d97292077ba5919:fin-26:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4403" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 4403 177 L 4415 191 M 4415 177 L 4403 191" stroke="#111827" stroke-width="2"/>
+<text x="4405" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-210c2a7c5d97292077ba5919:fin-26:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-210c2a7c5d97292077ba5919:fin-26:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4427" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4427 63 L 4439 77 M 4439 63 L 4427 77" stroke="#111827" stroke-width="2"/>
+<text x="4429" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-9f7ae41cc3c2fb53ccff6294:fin-27:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-9f7ae41cc3c2fb53ccff6294:fin-27:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4451" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4451 63 L 4463 77 M 4463 63 L 4451 77" stroke="#111827" stroke-width="2"/>
+<text x="4453" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-9f7ae41cc3c2fb53ccff6294:fin-27:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-9f7ae41cc3c2fb53ccff6294:fin-27:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4475" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 4475 177 L 4487 191 M 4487 177 L 4475 191" stroke="#111827" stroke-width="2"/>
+<text x="4477" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-5507cdfd64aaa84a8a558f7b:fin-28:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-5507cdfd64aaa84a8a558f7b:fin-28:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4499" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 4499 177 L 4511 191 M 4511 177 L 4499 191" stroke="#111827" stroke-width="2"/>
+<text x="4501" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-5507cdfd64aaa84a8a558f7b:fin-28:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-5507cdfd64aaa84a8a558f7b:fin-28:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4523" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4523 63 L 4535 77 M 4535 63 L 4523 77" stroke="#111827" stroke-width="2"/>
+<text x="4525" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-a0392b30eb3d9055db4e3513:fin-29:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-a0392b30eb3d9055db4e3513:fin-29:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4547" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4547 63 L 4559 77 M 4559 63 L 4547 77" stroke="#111827" stroke-width="2"/>
+<text x="4549" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-a0392b30eb3d9055db4e3513:fin-29:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-a0392b30eb3d9055db4e3513:fin-29:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4571" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 4571 177 L 4583 191 M 4583 177 L 4571 191" stroke="#111827" stroke-width="2"/>
+<text x="4573" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-66a1d7612f554b43c0a05006:fin-30:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-66a1d7612f554b43c0a05006:fin-30:normalization_warm_hit outcome=miss calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4595" y="177" width="12" height="14" rx="2" fill="#f59e0b"/>
+<path d="M 4595 177 L 4607 191 M 4607 177 L 4595 191" stroke="#111827" stroke-width="2"/>
+<text x="4597" y="206" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-66a1d7612f554b43c0a05006:fin-30:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-66a1d7612f554b43c0a05006:fin-30:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="4619" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4619 63 L 4631 77 M 4631 63 L 4619 77" stroke="#111827" stroke-width="2"/>
+<text x="4621" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-b2ec21de29f708ffd6115c9c:fin-warmup-01:cache_disabled_baseline" data-warmup="true" opacity="0.45">
+<title>local-live:p-b2ec21de29f708ffd6115c9c:fin-warmup-01:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="4643" y="63" width="12" height="14" rx="2" fill="none" stroke="#64748b" stroke-width="2"/>
+<path d="M 4643 63 L 4655 77 M 4655 63 L 4643 77" stroke="#111827" stroke-width="2"/>
+<text x="4645" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-b2ec21de29f708ffd6115c9c:fin-warmup-01:semantic_bypass" data-warmup="true" opacity="0.45">
+<title>local-live:p-b2ec21de29f708ffd6115c9c:fin-warmup-01:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="4667" y="215" width="12" height="14" rx="2" fill="none" stroke="#7c3aed" stroke-width="2"/>
+<path d="M 4667 215 L 4679 229 M 4679 215 L 4667 229" stroke="#111827" stroke-width="2"/>
+<text x="4669" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-187af51999bc883701143c13:fin-01:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-187af51999bc883701143c13:fin-01:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="4691" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4691 63 L 4703 77 M 4703 63 L 4691 77" stroke="#111827" stroke-width="2"/>
+<text x="4693" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-187af51999bc883701143c13:fin-01:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-187af51999bc883701143c13:fin-01:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="4715" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 4715 215 L 4727 229 M 4727 215 L 4715 229" stroke="#111827" stroke-width="2"/>
+<text x="4717" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-b9a04ffbc734b2e0c250b9a4:fin-02:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-b9a04ffbc734b2e0c250b9a4:fin-02:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="4739" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 4739 215 L 4751 229 M 4751 215 L 4739 229" stroke="#111827" stroke-width="2"/>
+<text x="4741" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-b9a04ffbc734b2e0c250b9a4:fin-02:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-b9a04ffbc734b2e0c250b9a4:fin-02:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="4763" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4763 63 L 4775 77 M 4775 63 L 4763 77" stroke="#111827" stroke-width="2"/>
+<text x="4765" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-29bc5abd062304256bf43427:fin-03:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-29bc5abd062304256bf43427:fin-03:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="4787" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4787 63 L 4799 77 M 4799 63 L 4787 77" stroke="#111827" stroke-width="2"/>
+<text x="4789" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-29bc5abd062304256bf43427:fin-03:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-29bc5abd062304256bf43427:fin-03:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="4811" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 4811 215 L 4823 229 M 4823 215 L 4811 229" stroke="#111827" stroke-width="2"/>
+<text x="4813" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-03e20a948d0b6dcefef6bb3e:fin-04:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-03e20a948d0b6dcefef6bb3e:fin-04:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="4835" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 4835 215 L 4847 229 M 4847 215 L 4835 229" stroke="#111827" stroke-width="2"/>
+<text x="4837" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-03e20a948d0b6dcefef6bb3e:fin-04:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-03e20a948d0b6dcefef6bb3e:fin-04:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="4859" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4859 63 L 4871 77 M 4871 63 L 4859 77" stroke="#111827" stroke-width="2"/>
+<text x="4861" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-11efaf121208beb923469694:fin-05:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-11efaf121208beb923469694:fin-05:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="4883" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4883 63 L 4895 77 M 4895 63 L 4883 77" stroke="#111827" stroke-width="2"/>
+<text x="4885" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-11efaf121208beb923469694:fin-05:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-11efaf121208beb923469694:fin-05:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="4907" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 4907 215 L 4919 229 M 4919 215 L 4907 229" stroke="#111827" stroke-width="2"/>
+<text x="4909" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-fc423ecb48fab69fc0261e52:fin-06:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-fc423ecb48fab69fc0261e52:fin-06:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="4931" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 4931 215 L 4943 229 M 4943 215 L 4931 229" stroke="#111827" stroke-width="2"/>
+<text x="4933" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-fc423ecb48fab69fc0261e52:fin-06:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-fc423ecb48fab69fc0261e52:fin-06:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="4955" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4955 63 L 4967 77 M 4967 63 L 4955 77" stroke="#111827" stroke-width="2"/>
+<text x="4957" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-74deb6bf66547168931afd8f:fin-07:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-74deb6bf66547168931afd8f:fin-07:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="4979" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 4979 63 L 4991 77 M 4991 63 L 4979 77" stroke="#111827" stroke-width="2"/>
+<text x="4981" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-74deb6bf66547168931afd8f:fin-07:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-74deb6bf66547168931afd8f:fin-07:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5003" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5003 215 L 5015 229 M 5015 215 L 5003 229" stroke="#111827" stroke-width="2"/>
+<text x="5005" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-89542c6e85a6c6905739240c:fin-08:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-89542c6e85a6c6905739240c:fin-08:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5027" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5027 215 L 5039 229 M 5039 215 L 5027 229" stroke="#111827" stroke-width="2"/>
+<text x="5029" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-89542c6e85a6c6905739240c:fin-08:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-89542c6e85a6c6905739240c:fin-08:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5051" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5051 63 L 5063 77 M 5063 63 L 5051 77" stroke="#111827" stroke-width="2"/>
+<text x="5053" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-df598902546327ea75786b0a:fin-09:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-df598902546327ea75786b0a:fin-09:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5075" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5075 63 L 5087 77 M 5087 63 L 5075 77" stroke="#111827" stroke-width="2"/>
+<text x="5077" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-df598902546327ea75786b0a:fin-09:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-df598902546327ea75786b0a:fin-09:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5099" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5099 215 L 5111 229 M 5111 215 L 5099 229" stroke="#111827" stroke-width="2"/>
+<text x="5101" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-db9efe26dda70e424cc52930:fin-10:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-db9efe26dda70e424cc52930:fin-10:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5123" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5123 215 L 5135 229 M 5135 215 L 5123 229" stroke="#111827" stroke-width="2"/>
+<text x="5125" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-db9efe26dda70e424cc52930:fin-10:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-db9efe26dda70e424cc52930:fin-10:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5147" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5147 63 L 5159 77 M 5159 63 L 5147 77" stroke="#111827" stroke-width="2"/>
+<text x="5149" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-af5570c34489dcffa06abb57:fin-11:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-af5570c34489dcffa06abb57:fin-11:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5171" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5171 63 L 5183 77 M 5183 63 L 5171 77" stroke="#111827" stroke-width="2"/>
+<text x="5173" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-af5570c34489dcffa06abb57:fin-11:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-af5570c34489dcffa06abb57:fin-11:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5195" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5195 215 L 5207 229 M 5207 215 L 5195 229" stroke="#111827" stroke-width="2"/>
+<text x="5197" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-ff4d99b925eb3235fe4a1568:fin-12:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-ff4d99b925eb3235fe4a1568:fin-12:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5219" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5219 215 L 5231 229 M 5231 215 L 5219 229" stroke="#111827" stroke-width="2"/>
+<text x="5221" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-ff4d99b925eb3235fe4a1568:fin-12:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-ff4d99b925eb3235fe4a1568:fin-12:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5243" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5243 63 L 5255 77 M 5255 63 L 5243 77" stroke="#111827" stroke-width="2"/>
+<text x="5245" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-39ab66909bf5891b6d9fdea5:fin-13:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-39ab66909bf5891b6d9fdea5:fin-13:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5267" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5267 63 L 5279 77 M 5279 63 L 5267 77" stroke="#111827" stroke-width="2"/>
+<text x="5269" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-39ab66909bf5891b6d9fdea5:fin-13:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-39ab66909bf5891b6d9fdea5:fin-13:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5291" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5291 215 L 5303 229 M 5303 215 L 5291 229" stroke="#111827" stroke-width="2"/>
+<text x="5293" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-f9b978f4d7155fc0a23af82e:fin-14:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-f9b978f4d7155fc0a23af82e:fin-14:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5315" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5315 215 L 5327 229 M 5327 215 L 5315 229" stroke="#111827" stroke-width="2"/>
+<text x="5317" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-f9b978f4d7155fc0a23af82e:fin-14:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-f9b978f4d7155fc0a23af82e:fin-14:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5339" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5339 63 L 5351 77 M 5351 63 L 5339 77" stroke="#111827" stroke-width="2"/>
+<text x="5341" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-62ed460db94b763ec8049d7f:fin-15:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-62ed460db94b763ec8049d7f:fin-15:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5363" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5363 63 L 5375 77 M 5375 63 L 5363 77" stroke="#111827" stroke-width="2"/>
+<text x="5365" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-62ed460db94b763ec8049d7f:fin-15:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-62ed460db94b763ec8049d7f:fin-15:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5387" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5387 215 L 5399 229 M 5399 215 L 5387 229" stroke="#111827" stroke-width="2"/>
+<text x="5389" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-425c0dd1206301d4bd8ed52a:fin-16:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-425c0dd1206301d4bd8ed52a:fin-16:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5411" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5411 215 L 5423 229 M 5423 215 L 5411 229" stroke="#111827" stroke-width="2"/>
+<text x="5413" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-425c0dd1206301d4bd8ed52a:fin-16:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-425c0dd1206301d4bd8ed52a:fin-16:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5435" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5435 63 L 5447 77 M 5447 63 L 5435 77" stroke="#111827" stroke-width="2"/>
+<text x="5437" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-75a83188fb446e7b1b93d724:fin-17:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-75a83188fb446e7b1b93d724:fin-17:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5459" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5459 63 L 5471 77 M 5471 63 L 5459 77" stroke="#111827" stroke-width="2"/>
+<text x="5461" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-75a83188fb446e7b1b93d724:fin-17:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-75a83188fb446e7b1b93d724:fin-17:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5483" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5483 215 L 5495 229 M 5495 215 L 5483 229" stroke="#111827" stroke-width="2"/>
+<text x="5485" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-73efd43f26c6118b7c835fce:fin-18:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-73efd43f26c6118b7c835fce:fin-18:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5507" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5507 215 L 5519 229 M 5519 215 L 5507 229" stroke="#111827" stroke-width="2"/>
+<text x="5509" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-73efd43f26c6118b7c835fce:fin-18:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-73efd43f26c6118b7c835fce:fin-18:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5531" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5531 63 L 5543 77 M 5543 63 L 5531 77" stroke="#111827" stroke-width="2"/>
+<text x="5533" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-7a01428b05a6e033fbc712b2:fin-19:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-7a01428b05a6e033fbc712b2:fin-19:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5555" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5555 63 L 5567 77 M 5567 63 L 5555 77" stroke="#111827" stroke-width="2"/>
+<text x="5557" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-7a01428b05a6e033fbc712b2:fin-19:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-7a01428b05a6e033fbc712b2:fin-19:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5579" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5579 215 L 5591 229 M 5591 215 L 5579 229" stroke="#111827" stroke-width="2"/>
+<text x="5581" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-bd867b79b980788d41f9f7c4:fin-20:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-bd867b79b980788d41f9f7c4:fin-20:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5603" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5603 215 L 5615 229 M 5615 215 L 5603 229" stroke="#111827" stroke-width="2"/>
+<text x="5605" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-bd867b79b980788d41f9f7c4:fin-20:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-bd867b79b980788d41f9f7c4:fin-20:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5627" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5627 63 L 5639 77 M 5639 63 L 5627 77" stroke="#111827" stroke-width="2"/>
+<text x="5629" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-6d6eb0160edff1430b89358a:fin-21:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-6d6eb0160edff1430b89358a:fin-21:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5651" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5651 63 L 5663 77 M 5663 63 L 5651 77" stroke="#111827" stroke-width="2"/>
+<text x="5653" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-6d6eb0160edff1430b89358a:fin-21:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-6d6eb0160edff1430b89358a:fin-21:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5675" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5675 215 L 5687 229 M 5687 215 L 5675 229" stroke="#111827" stroke-width="2"/>
+<text x="5677" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-60bcd05e61c04e1d42d39217:fin-22:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-60bcd05e61c04e1d42d39217:fin-22:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5699" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5699 215 L 5711 229 M 5711 215 L 5699 229" stroke="#111827" stroke-width="2"/>
+<text x="5701" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-60bcd05e61c04e1d42d39217:fin-22:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-60bcd05e61c04e1d42d39217:fin-22:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5723" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5723 63 L 5735 77 M 5735 63 L 5723 77" stroke="#111827" stroke-width="2"/>
+<text x="5725" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-9d68ad1c525792a3b9ca2173:fin-23:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-9d68ad1c525792a3b9ca2173:fin-23:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5747" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5747 63 L 5759 77 M 5759 63 L 5747 77" stroke="#111827" stroke-width="2"/>
+<text x="5749" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-9d68ad1c525792a3b9ca2173:fin-23:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-9d68ad1c525792a3b9ca2173:fin-23:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5771" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5771 215 L 5783 229 M 5783 215 L 5771 229" stroke="#111827" stroke-width="2"/>
+<text x="5773" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-5d49a9eebdeaff08a2f62de0:fin-24:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-5d49a9eebdeaff08a2f62de0:fin-24:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5795" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5795 215 L 5807 229 M 5807 215 L 5795 229" stroke="#111827" stroke-width="2"/>
+<text x="5797" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-5d49a9eebdeaff08a2f62de0:fin-24:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-5d49a9eebdeaff08a2f62de0:fin-24:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5819" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5819 63 L 5831 77 M 5831 63 L 5819 77" stroke="#111827" stroke-width="2"/>
+<text x="5821" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-cb0e1c6182fc12a02ee5dde6:fin-25:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-cb0e1c6182fc12a02ee5dde6:fin-25:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5843" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5843 63 L 5855 77 M 5855 63 L 5843 77" stroke="#111827" stroke-width="2"/>
+<text x="5845" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-cb0e1c6182fc12a02ee5dde6:fin-25:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-cb0e1c6182fc12a02ee5dde6:fin-25:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5867" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5867 215 L 5879 229 M 5879 215 L 5867 229" stroke="#111827" stroke-width="2"/>
+<text x="5869" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-67d5e9773af6f1a58508a96c:fin-26:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-67d5e9773af6f1a58508a96c:fin-26:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5891" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5891 215 L 5903 229 M 5903 215 L 5891 229" stroke="#111827" stroke-width="2"/>
+<text x="5893" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-67d5e9773af6f1a58508a96c:fin-26:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-67d5e9773af6f1a58508a96c:fin-26:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5915" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5915 63 L 5927 77 M 5927 63 L 5915 77" stroke="#111827" stroke-width="2"/>
+<text x="5917" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-7dd785c1542900ca19462ba4:fin-27:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-7dd785c1542900ca19462ba4:fin-27:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5939" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 5939 63 L 5951 77 M 5951 63 L 5939 77" stroke="#111827" stroke-width="2"/>
+<text x="5941" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-7dd785c1542900ca19462ba4:fin-27:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-7dd785c1542900ca19462ba4:fin-27:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5963" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5963 215 L 5975 229 M 5975 215 L 5963 229" stroke="#111827" stroke-width="2"/>
+<text x="5965" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-e0d894e55a8061aea28778f8:fin-28:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-e0d894e55a8061aea28778f8:fin-28:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="5987" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 5987 215 L 5999 229 M 5999 215 L 5987 229" stroke="#111827" stroke-width="2"/>
+<text x="5989" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-e0d894e55a8061aea28778f8:fin-28:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-e0d894e55a8061aea28778f8:fin-28:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="6011" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 6011 63 L 6023 77 M 6023 63 L 6011 77" stroke="#111827" stroke-width="2"/>
+<text x="6013" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-8a129113e55430693b54e22e:fin-29:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-8a129113e55430693b54e22e:fin-29:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="6035" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 6035 63 L 6047 77 M 6047 63 L 6035 77" stroke="#111827" stroke-width="2"/>
+<text x="6037" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-8a129113e55430693b54e22e:fin-29:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-8a129113e55430693b54e22e:fin-29:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="6059" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 6059 215 L 6071 229 M 6071 215 L 6059 229" stroke="#111827" stroke-width="2"/>
+<text x="6061" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-e7b7ff99f230ee0bafa56f01:fin-30:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-e7b7ff99f230ee0bafa56f01:fin-30:semantic_bypass outcome=bypass calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="6083" y="215" width="12" height="14" rx="2" fill="#7c3aed"/>
+<path d="M 6083 215 L 6095 229 M 6095 215 L 6083 229" stroke="#111827" stroke-width="2"/>
+<text x="6085" y="244" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-e7b7ff99f230ee0bafa56f01:fin-30:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-e7b7ff99f230ee0bafa56f01:fin-30:cache_disabled_baseline outcome=disabled calls=1/0 terminal=validation_error validation_passed=false</title>
+<rect x="6107" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 6107 63 L 6119 77 M 6119 63 L 6107 77" stroke="#111827" stroke-width="2"/>
+<text x="6109" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-0d7e074085b968bf1499dc62:fin-warmup-01:cache_disabled_baseline" data-warmup="true" opacity="0.45">
+<title>local-live:p-0d7e074085b968bf1499dc62:fin-warmup-01:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6131" y="63" width="12" height="14" rx="2" fill="none" stroke="#64748b" stroke-width="2"/>
+<text x="6133" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-0d7e074085b968bf1499dc62:fin-warmup-01:negative_control" data-warmup="true" opacity="0.45">
+<title>local-live:p-0d7e074085b968bf1499dc62:fin-warmup-01:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6155" y="253" width="12" height="14" rx="2" fill="none" stroke="#f59e0b" stroke-width="2"/>
+<text x="6157" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-10bda04ba63d4c62a8c1a289:fin-01:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-10bda04ba63d4c62a8c1a289:fin-01:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6179" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="6181" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-10bda04ba63d4c62a8c1a289:fin-01:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-10bda04ba63d4c62a8c1a289:fin-01:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6203" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="6205" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-d517440b3bd527fa016024fa:fin-02:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-d517440b3bd527fa016024fa:fin-02:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6227" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="6229" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-d517440b3bd527fa016024fa:fin-02:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-d517440b3bd527fa016024fa:fin-02:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6251" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="6253" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-21164435c518987b7ace1f2c:fin-03:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-21164435c518987b7ace1f2c:fin-03:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6275" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="6277" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-21164435c518987b7ace1f2c:fin-03:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-21164435c518987b7ace1f2c:fin-03:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6299" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="6301" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-5f815ab6546b816d152768ff:fin-04:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-5f815ab6546b816d152768ff:fin-04:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6323" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="6325" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-5f815ab6546b816d152768ff:fin-04:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-5f815ab6546b816d152768ff:fin-04:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6347" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="6349" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-6e178315c7f31a1995463ed2:fin-05:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-6e178315c7f31a1995463ed2:fin-05:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6371" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="6373" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-6e178315c7f31a1995463ed2:fin-05:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-6e178315c7f31a1995463ed2:fin-05:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6395" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="6397" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-08dd88634f71174671fb3d5a:fin-06:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-08dd88634f71174671fb3d5a:fin-06:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6419" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="6421" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-08dd88634f71174671fb3d5a:fin-06:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-08dd88634f71174671fb3d5a:fin-06:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6443" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="6445" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-533254473bfe5a89573d417e:fin-07:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-533254473bfe5a89573d417e:fin-07:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="6467" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 6467 63 L 6479 77 M 6479 63 L 6467 77" stroke="#111827" stroke-width="2"/>
+<text x="6469" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-533254473bfe5a89573d417e:fin-07:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-533254473bfe5a89573d417e:fin-07:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6491" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="6493" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-e8ac4b7f15fcce87967d6cae:fin-08:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-e8ac4b7f15fcce87967d6cae:fin-08:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6515" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="6517" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-e8ac4b7f15fcce87967d6cae:fin-08:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-e8ac4b7f15fcce87967d6cae:fin-08:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6539" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="6541" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-fb3718787fc233fc3995fefe:fin-09:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-fb3718787fc233fc3995fefe:fin-09:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6563" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="6565" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-fb3718787fc233fc3995fefe:fin-09:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-fb3718787fc233fc3995fefe:fin-09:negative_control outcome=error calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="6587" y="253" width="12" height="14" rx="2" fill="#dc2626"/>
+<path d="M 6587 253 L 6599 267 M 6599 253 L 6587 267" stroke="#111827" stroke-width="2"/>
+<text x="6589" y="282" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-fa75c19e0832bdabf3c86d15:fin-10:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-fa75c19e0832bdabf3c86d15:fin-10:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6611" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="6613" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-fa75c19e0832bdabf3c86d15:fin-10:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-fa75c19e0832bdabf3c86d15:fin-10:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6635" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="6637" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-d88bd7382cf139dd893bf123:fin-11:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-d88bd7382cf139dd893bf123:fin-11:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6659" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="6661" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-d88bd7382cf139dd893bf123:fin-11:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-d88bd7382cf139dd893bf123:fin-11:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6683" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="6685" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-69c058c6bd1872f985dbc5f1:fin-12:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-69c058c6bd1872f985dbc5f1:fin-12:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6707" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="6709" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-69c058c6bd1872f985dbc5f1:fin-12:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-69c058c6bd1872f985dbc5f1:fin-12:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6731" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="6733" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-4293d8b3934965e22180a540:fin-13:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-4293d8b3934965e22180a540:fin-13:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6755" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="6757" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-4293d8b3934965e22180a540:fin-13:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-4293d8b3934965e22180a540:fin-13:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6779" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="6781" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-c81e0372bec3e269bced4845:fin-14:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-c81e0372bec3e269bced4845:fin-14:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6803" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="6805" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-c81e0372bec3e269bced4845:fin-14:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-c81e0372bec3e269bced4845:fin-14:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6827" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="6829" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-b9daa07430bf55bfb92f64ff:fin-15:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-b9daa07430bf55bfb92f64ff:fin-15:cache_disabled_baseline outcome=disabled calls=0/0 terminal=provider_error validation_passed=false</title>
+<rect x="6851" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<path d="M 6851 63 L 6863 77 M 6863 63 L 6851 77" stroke="#111827" stroke-width="2"/>
+<text x="6853" y="92" font-family="sans-serif" font-size="8">0</text>
+</g>
+<g data-run="local-live:p-b9daa07430bf55bfb92f64ff:fin-15:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-b9daa07430bf55bfb92f64ff:fin-15:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6875" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="6877" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-bde60c5d78e0f64a13fdbb84:fin-16:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-bde60c5d78e0f64a13fdbb84:fin-16:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6899" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="6901" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-bde60c5d78e0f64a13fdbb84:fin-16:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-bde60c5d78e0f64a13fdbb84:fin-16:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6923" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="6925" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-8bf1e4241536260eb7ddeb6a:fin-17:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-8bf1e4241536260eb7ddeb6a:fin-17:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6947" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="6949" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-8bf1e4241536260eb7ddeb6a:fin-17:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-8bf1e4241536260eb7ddeb6a:fin-17:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6971" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="6973" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-9263a9bff1ded20600e5d013:fin-18:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-9263a9bff1ded20600e5d013:fin-18:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="6995" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="6997" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-9263a9bff1ded20600e5d013:fin-18:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-9263a9bff1ded20600e5d013:fin-18:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7019" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="7021" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-0c9317bc71451497c0b80859:fin-19:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-0c9317bc71451497c0b80859:fin-19:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7043" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="7045" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-0c9317bc71451497c0b80859:fin-19:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-0c9317bc71451497c0b80859:fin-19:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7067" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="7069" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-1768816dc0272a79e328c667:fin-20:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-1768816dc0272a79e328c667:fin-20:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7091" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="7093" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-1768816dc0272a79e328c667:fin-20:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-1768816dc0272a79e328c667:fin-20:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7115" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="7117" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-5e3da8905fbd2f0b8dc4307b:fin-21:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-5e3da8905fbd2f0b8dc4307b:fin-21:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7139" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="7141" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-5e3da8905fbd2f0b8dc4307b:fin-21:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-5e3da8905fbd2f0b8dc4307b:fin-21:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7163" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="7165" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-6f5ab35371c8937979dcb5c9:fin-22:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-6f5ab35371c8937979dcb5c9:fin-22:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7187" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="7189" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-6f5ab35371c8937979dcb5c9:fin-22:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-6f5ab35371c8937979dcb5c9:fin-22:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7211" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="7213" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-96cd27489befd80744a1ff79:fin-23:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-96cd27489befd80744a1ff79:fin-23:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7235" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="7237" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-96cd27489befd80744a1ff79:fin-23:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-96cd27489befd80744a1ff79:fin-23:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7259" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="7261" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-db7a888335d27d08e3070ec3:fin-24:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-db7a888335d27d08e3070ec3:fin-24:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7283" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="7285" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-db7a888335d27d08e3070ec3:fin-24:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-db7a888335d27d08e3070ec3:fin-24:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7307" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="7309" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-577d6aba812817752b93049d:fin-25:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-577d6aba812817752b93049d:fin-25:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7331" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="7333" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-577d6aba812817752b93049d:fin-25:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-577d6aba812817752b93049d:fin-25:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7355" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="7357" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-0a9affe26873ab8ae697681a:fin-26:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-0a9affe26873ab8ae697681a:fin-26:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7379" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="7381" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-0a9affe26873ab8ae697681a:fin-26:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-0a9affe26873ab8ae697681a:fin-26:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7403" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="7405" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-bc1d342e4b87fc13421920f4:fin-27:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-bc1d342e4b87fc13421920f4:fin-27:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7427" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="7429" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-bc1d342e4b87fc13421920f4:fin-27:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-bc1d342e4b87fc13421920f4:fin-27:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7451" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="7453" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-21a103bbb81b86dcfa185e03:fin-28:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-21a103bbb81b86dcfa185e03:fin-28:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7475" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="7477" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-21a103bbb81b86dcfa185e03:fin-28:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-21a103bbb81b86dcfa185e03:fin-28:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7499" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="7501" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-0c468d5779682365c80bead3:fin-29:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-0c468d5779682365c80bead3:fin-29:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7523" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="7525" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-0c468d5779682365c80bead3:fin-29:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-0c468d5779682365c80bead3:fin-29:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7547" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="7549" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-9d09572d8446c4b839263a90:fin-30:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-9d09572d8446c4b839263a90:fin-30:negative_control outcome=miss calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7571" y="253" width="12" height="14" rx="2" fill="#f59e0b"/>
+<text x="7573" y="282" font-family="sans-serif" font-size="8">1</text>
+</g>
+<g data-run="local-live:p-9d09572d8446c4b839263a90:fin-30:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-9d09572d8446c4b839263a90:fin-30:cache_disabled_baseline outcome=disabled calls=1/0 terminal=success validation_passed=true</title>
+<rect x="7595" y="63" width="12" height="14" rx="2" fill="#64748b"/>
+<text x="7597" y="92" font-family="sans-serif" font-size="8">1</text>
+</g>
+</svg>

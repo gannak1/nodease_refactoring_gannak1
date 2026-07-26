@@ -820,7 +820,10 @@ def test_postgres_connector_allows_ssh_tunnel_only_when_explicitly_enabled(monke
         "getaddrinfo",
         lambda *args, **kwargs: _fake_getaddrinfo("8.8.8.8"),
     )
-    monkeypatch.setattr("apps.shared.connectors.postgres.SSHTunnelForwarder", FakeTunnel)
+    monkeypatch.setattr(
+        "apps.shared.connectors.postgres._create_ssh_tunnel",
+        lambda **kwargs: FakeTunnel(**kwargs),
+    )
     monkeypatch.setattr("apps.shared.connectors.postgres.create_engine", fake_create_engine)
 
     connector = PostgresConnector(allow_ssh_tunnel=True, allowed_db_ports=None)

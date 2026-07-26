@@ -184,6 +184,8 @@ DB의 `LLMModel.type=chat`은 provider 동기화 당시 명확히 다른 type으
 | `o<major>[.<minor>]-nano` | 숫자 부분 | `nano` |
 | `o<major>[.<minor>]-pro` | 숫자 부분 | `pro` |
 
+정확히 알려진 OpenAI GPT-5.6 named variant는 일반 parser보다 먼저 해석한다. verified 후보가 함께 있으면 `gpt-5.6`(있으면) -> `gpt-5.6-sol` -> `gpt-5.6-terra` -> `gpt-5.6-luna` 순으로 5.5 계열보다 앞선다. 이 규칙은 정확히 일치하는 네 ID에만 적용하며 원래 model ID를 호출·저장·응답에서 변경하지 않는다.
+
 비교 전 앞뒤 공백을 제거하고 소문자로 바꾸며, 선행 `models/`가 있으면 비교용 값에서만 제거한다. 날짜, release, `preview`, `latest` suffix는 세대와 tier 계산에서 제외할 수 있지만 실제 호출과 저장에 사용하는 원래 model ID는 변경하지 않는다. 예를 들어 `gpt-5.5-2026-04-23`은 5.5세대 general의 날짜 snapshot으로 분류하되 해당 ID 전체를 유지한다. 허용한 이름 형태 뒤에 `codex`, `search`, `audio`, `transcribe`, `tts`, `speech`, `whisper`, `realtime`, `live`, `computer-use` 같은 특수 용도 표기가 완전한 token이나 명시된 연속 token으로 붙으면 앞부분만 보고 일반 대화 모델로 오인하지 않고 제외한다. Provider별 예외가 필요하면 정규화한 model ID 전체에 일치하는 명시적 규칙으로만 추가한다. `gpt-livestream`, `gpt-researcher`, `gpt-audiophile`처럼 금지 token의 문자열 일부만 포함한 ID는 특수 목적으로 판정하지 않는다.
 
 ### 8.3 Anthropic
@@ -232,19 +234,24 @@ Anthropic의 제품명은 OpenAI suffix와 구조가 다르므로 이름을 작�
 3. 세대 큰 번호 내림차순
 4. 세대 작은 번호 내림차순
 5. 제품 등급 오름차순
-6. model ID 상태 순서: 기본형, 날짜 또는 release snapshot, `preview`, `latest`
-7. 관계 우선순위 오름차순
-8. 정규화한 모델 표시 이름 오름차순
-9. 정규화한 credential 표시 이름 오름차순
-10. 안정적 모델 ID 오름차순
-11. 안정적 credential ID 오름차순
+6. 정확히 알려진 OpenAI GPT-5.6 named variant 순서: 기본형, `sol`, `terra`, `luna`
+7. model ID 상태 순서: 기본형, 날짜 또는 release snapshot, `preview`, `latest`
+8. 관계 우선순위 오름차순
+9. 정규화한 모델 표시 이름 오름차순
+10. 정규화한 credential 표시 이름 오름차순
+11. 안정적 모델 ID 오름차순
+12. 안정적 credential ID 오름차순
 
 예를 들어 같은 OpenAI 후보가 있으면 다음과 같다.
 
 | 후보 | 상대 순서 이유 |
 | --- | --- |
-| `gpt-5.6-pro` | 세대가 더 최신이므로 등급과 무관하게 먼저 |
-| `gpt-5.5` | 같은 5.5 계열의 `general` |
+| `gpt-5.6` | GPT-5.6 기본형이 있으면 named variant보다 먼저 |
+| `gpt-5.6-sol` | 정확히 알려진 GPT-5.6 named variant 첫 순서 |
+| `gpt-5.6-terra` | 정확히 알려진 GPT-5.6 named variant 둘째 순서 |
+| `gpt-5.6-luna` | 정확히 알려진 GPT-5.6 named variant 셋째 순서 |
+| `gpt-5.6-pro` | 같은 최신 세대이지만 `pro` tier이므로 위 general 계열 뒤 |
+| `gpt-5.5` | 더 이전 5.5 계열의 `general` |
 | `gpt-5.5-2026-04-23` | 같은 세대와 tier의 날짜 snapshot |
 | `gpt-5.5-preview` | 같은 세대와 tier의 preview |
 | `gpt-5.5-latest` | 같은 세대와 tier의 latest alias |

@@ -33,10 +33,16 @@ from apps.gateway.services.agent_builder_intent_service import (
 from apps.gateway.services.agent_builder.intent_usage_service import (
     AgentBuilderIntentUsageService,
 )
-from apps.gateway.services.agent_builder_service import AgentBuilderService
+from apps.gateway.services.agent_builder_service import (
+    AgentBuilderService,
+    intent_extraction_failure_issue_details,
+)
 from apps.gateway.services.llm_service import LLMCredentialNotAvailableError
 from apps.shared.schemas.agent_builder import AgentBuilderMessageRequest
-from apps.shared.services.llm_client.base import LLMResponseValidationError
+from apps.shared.services.llm_client.base import (
+    LLMResponseValidationError,
+    ProviderInvocationError,
+)
 from apps.shared.services.llm_client.google_client import GoogleClient
 from apps.shared.services.llm_client.openai_client import OpenAIClient
 from apps.shared.services.workflow_node_catalog import (
@@ -83,6 +89,16 @@ class SchemaConstrainedFakeLLMClient(FakeLLMClient):
 class ProviderFailingFakeLLMClient:
     def invoke_sync(self, _messages, **_kwargs):
         raise ValueError("provider raw failure must not escape")
+
+
+class ProviderHttpFailingFakeLLMClient:
+    def invoke_sync(self, _messages, **_kwargs):
+        raise ProviderInvocationError(
+            "provider raw error must not escape",
+            reason_code="provider_http_error",
+            status_code=429,
+            provider_error_code="rate_limit_exceeded",
+        )
 
 
 class UsageResponseValidationFailingFakeLLMClient:
@@ -500,6 +516,42 @@ def test_llm_intent_extractor_classifies_provider_failure_without_raw_details():
 
     assert safe_intent_extraction_reason(captured.value) == "provider_call_failed"
     assert "provider raw failure" not in str(captured.value)
+
+
+def test_llm_intent_extractor_classifies_provider_http_failure_without_raw_details():
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        runtime_loader=lambda **_kwargs: SimpleNamespace(
+            client=ProviderHttpFailingFakeLLMClient()
+        ),
+    )
+
+    with pytest.raises(AgentBuilderIntentExtractionError) as captured:
+        extractor.extract(
+            safe_message="create a basic workflow",
+            workflow_context={"workflow_present": False, "nodes": []},
+        )
+
+    assert str(captured.value) == "Agent Builder intent provider call failed"
+    assert safe_intent_extraction_reason(captured.value) == "provider_call_failed"
+    assert "provider raw error" not in str(captured.value)
+
+
+def test_intent_provider_failure_uses_actionable_safe_issue_details():
+    provider_code, provider_message = intent_extraction_failure_issue_details(
+        AgentBuilderIntentExtractionError("Agent Builder intent provider call failed")
+    )
+    generic_code, generic_message = intent_extraction_failure_issue_details(
+        AgentBuilderIntentExtractionError("LLM intent response is invalid")
+    )
+
+    assert provider_code == "INTENT_PROVIDER_CALL_FAILED"
+    assert "모델" in provider_message
+    assert "provider" in provider_message.lower()
+    assert generic_code == "INTENT_EXTRACTION_FAILED"
+    assert generic_message != provider_message
 
 
 def test_llm_intent_extractor_returns_only_catalog_valid_safe_parameter_hints():
