@@ -318,11 +318,20 @@ environment/organization scope, proposed profile, 명시적 budget과 완전한 
 idempotent command로 제출한 격리 harness에서만 billable Judge/provider 호출을 허용한다. Commit 전 권한
 회수, 다른 organization actor와 같은 command ID의 다른 target/profile/budget/manifest/actor는
 `model_routing.benchmark_command_conflict` 또는 permission denial로 run/receipt/success audit와 provider
-I/O를 zero-write한다. Run intent commit 뒤 각 attempt는
-platform benchmark 권한, target resource `execute` 권한과 current credential·egress·budget admission을
-다시 검증하고 durable intent 뒤에만 provider를 호출한다. 이때 권한이 회수됐으면 새 attempt/provider I/O
-없이 run을 terminal denied로 종결하며, duplicate delivery는 기존 receipt/run만 반환하고 추가 attempt를
-만들지 않는다. Benchmark는 diagnostic
+I/O를 zero-write한다.
+
+Admission transaction은 receipt/run intent/audit와 첫 `benchmark_dispatch_intent`를 함께 commit한다.
+Dispatch는 deterministic stage/ordinal/exact model attempt key, revision, pending/leased/terminal state,
+DB-clock available/lease time과 fencing token을 가진 durable outbox다. Duplicate API delivery는 기존
+receipt/run을 반환하지만 pending 또는 만료 dispatch는 recovery dispatcher가 계속 처리한다. Dispatcher는
+CAS로 bounded lease를 claim하고 같은 run/stage/ordinal/model의 unique attempt intent와 ADR-0069 operation을
+생성하거나 기존 상태에서 재개한다. Admission commit 뒤 attempt 생성 전 crash는 lease expiry 뒤 재개하고,
+attempt intent 뒤 crash는 같은 operation으로 재개한다. `provider_started` 또는 outcome-unknown attempt는
+재호출하지 않으며 concurrent recovery의 stale fencing write는 zero-write다.
+
+각 recovered attempt는 platform benchmark 권한, target resource `execute` 권한과 current
+credential·egress·budget admission을 다시 검증하고 durable intent 뒤에만 provider를 호출한다. 이때 권한이
+회수됐으면 provider I/O 없이 run/dispatch를 terminal denied로 종결한다. Benchmark는 diagnostic
 provenance로만 `effective_strategy_id=capability_routing_v2`와
 `strategy_resolution_reason=benchmark_isolated`을 기록할 수 있지만 proposed profile을
 production-effective로 만들지 않으며, 이 결과를 production policy, learner, accepted cache, activation
@@ -445,9 +454,9 @@ branch의 근거까지 있어야 production promote precondition을 충족한다
 | activation profile propose | `platform routing operator` 후보 작성자 | immutable requirement source manifest, existing rollout family/activation domain, server-issued canary assignment contract reference와 bucket range, locked holdout 이전 threshold, canary와 exact current-valid non-V2 rollback policy 사전 등록 | immutable `proposed` profile 생성, V2 실행 불가. Raw assignment seed 입력 금지 |
 | `activation_holdout_evaluate` | profile 작성자·production 승인자와 분리된 `platform routing holdout operator`; 등록 evaluator workload가 실행·종결 | proposed profile/revision, exact source manifest, `purpose=activation_holdout` dataset ID/version/hash, evaluator·metric·threshold contract, budget·credential·egress policy | Admission run/receipt/audit 원자 commit 뒤 ADR-0069 provider attempt 실행. Terminal `valid/invalid/incomplete` artifact/receipt/audit exactly-once publication. Tuning/product benchmark 대체와 conflicting replay는 zero-write |
 | limited canary start | 작성자와 다른 `platform routing operator` | current guard/profile expected revision과 expected domain generation, exact requirement source, manifest/locked holdout valid, credential policy·Worker·rollback ready | `proposed -> limited_canary`, 다음 generation과 `canary_successor` role을 원자 설정. Existing `production_route`는 유지하고 first rollout의 빈 route만 exact non-V2 rollback policy로 초기화 |
-| `record_canary_evidence` | `platform routing evidence system` workload identity | current profile/canary generation, manifest에 등록된 `activation_canary_runtime` source kind, immutable source event ID, metric contract, bounded event kind와 redacted payload digest | Window-independent source identity unique append-only event/receipt와 open-window aggregate revision 원자 commit. Same event의 다른 window 재사용은 conflict. Blocking event는 exact generation block/epoch와 safe audit도 원자 기록. Holdout/benchmark 거부 |
-| `advance_canary_source_watermark` | exact source에 등록된 authoritative canary source adapter workload | profile/generation/current open-window ID, source kind/opaque instance/contract, monotonic barrier·position, observed-through, expected watermark revision, terminal append receipt/barrier proof | Window pointer/source watermark lock 아래 monotonicity와 receipt coverage를 재검증하고 watermark/receipt/redacted audit 원자 commit. Eventless authoritative scan 허용, old-window request와 client/provider callback/seal의 직접 갱신 금지 |
-| `seal_canary_evidence_window` | `platform routing evidence system` workload identity | profile/generation/window/cutoff, expected open-window aggregate revision과 source별 expected watermark | Window pointer/aggregate/watermark lock 아래 sealed snapshot, next-window pointer, actor/request-bound receipt와 canonical audit 원자 commit. Append winner는 stale 재제출, seal winner 뒤 post-cutoff event는 next window |
+| `record_canary_evidence` | `platform routing evidence system` workload identity | current profile/canary generation, manifest 등록 source kind/opaque instance, instance-local immutable event ID, server-derived authoritative event time, metric contract, bounded event kind와 redacted payload digest | Immutable schedule로 assigned window를 server 결정하고 source-instance identity unique event/receipt와 해당 aggregate revision 원자 commit. Post-cutoff는 seal 순서와 무관하게 pre-registered next window. 같은 instance event 재분류는 conflict, 다른 instance의 같은 event ID는 별개. Blocking event는 exact generation block/epoch와 audit도 원자 기록 |
+| `advance_canary_source_watermark` | exact source instance에 등록된 authoritative canary source adapter workload | profile/generation/target window ID, source kind/opaque instance/contract, monotonic barrier·position, observed-through, expected watermark revision, terminal append receipt/barrier proof | Immutable schedule/target-window source watermark lock 아래 monotonicity와 receipt coverage를 재검증하고 watermark/receipt/redacted audit 원자 commit. Eventless authoritative scan 허용, sealed old-window request와 client/provider callback/seal의 직접 갱신 금지 |
+| `seal_canary_evidence_window` | `platform routing evidence system` workload identity | profile/generation, pre-registered current/next window와 `[start, cutoff)`, expected current aggregate revision과 source별 expected watermark | Schedule/pointer/current aggregate/watermark lock 아래 current assigned events만 sealed snapshot으로 원자 commit하고 pointer를 등록 next window로 이동. Pre-cutoff append winner만 stale 재제출, post-cutoff event는 lock 순서와 무관하게 next window |
 | production promote | current revision의 독립 `platform routing operator` | expected profile/family/domain-role revision과 snapshot identity. Commit 직전 operator 권한과 DB time/profile state·revision, exact canary role/generation, source manifest와 terminal valid holdout, credential policy, actual Worker readiness, global model execution eligibility, exact current-valid rollback, kill/generation safety와 snapshot invalidation 재검증 | 모든 gate가 current일 때 production route를 successor로 전환하고 canary role을 비우며 successor를 `production_active`로 전이. Predecessor가 있을 때만 `superseded`. 선행 expiry/revoke/stale은 cutover/receipt/success audit zero-write |
 | `activation_profile_expire` | `platform routing lifecycle system` workload identity | DB current time >= immutable `valid_until`, current expected profile revision과 optional exact role/generation | `expired` 전이·receipt·redacted audit 원자 commit. Proposed는 role 불변, canary owner는 자기 role/generation만 종료, production owner는 exact current-valid non-V2 rollback route 또는 `blocked_no_safe_path`로 전환. Family reservation 유지 |
 | workflow strategy select/opt-out | workflow `deploy` 권한자 | command idempotency key와 current workflow policy expected version, V2이면 immutable rollout family/domain binding, commit 직전 `deploy` 권한·active organization/resource scope·strategy/family/domain 유효성 | exact profile이 아닌 family/domain을 가진 workflow policy version, receipt와 canonical audit 원자 갱신 |
@@ -455,7 +464,7 @@ branch의 근거까지 있어야 production promote precondition을 충족한다
 | `activation_profile_rollback` | 권한 있는 `platform routing operator` | expected profile/role/generation/revision. Production role target이면 exact current-valid non-V2 rollback policy 필수 | Canary owner는 canary role/generation만 종료하고 production route 유지. Production owner는 rollback policy로 원자 route 전환. Rollback이 commit 직전 부적격이면 `rollback_target_invalid`와 zero-write |
 | `global_routing_kill_enable` | 권한 있는 `platform routing operator` | current expected environment guard state/revision/epoch, bounded incident reason | enabled=true, global epoch/revision 증가, actor/request-bound receipt와 canonical audit 원자 commit |
 | `global_routing_kill_disable` | enable actor와 다른 독립 `platform routing operator` 승인자 | current enabled state/revision/epoch, current remediation approval revision | enabled=false, global epoch/revision 증가, receipt/audit 원자 commit. 기존 capability는 계속 stale |
-| isolated benchmark execute | `platform routing benchmark operator` + target workflow/deployment `execute` 권한자 | actor/request-bound command, explicit environment/organization scope, proposed profile, budget, manifest와 current provider admission | 격리 run/receipt/audit 생성. Production policy·learner·cache·activation·외부 부수효과 write 없음 |
+| isolated benchmark execute | `platform routing benchmark operator` + target workflow/deployment `execute` 권한자 | actor/request-bound command, explicit environment/organization scope, proposed profile, budget, manifest와 current provider admission | 격리 run/receipt/audit와 첫 durable dispatch를 원자 생성. Lease/fencing recovery로 미시작 attempt를 재개하고 deterministic attempt/ADR-0069 operation은 중복하지 않음. Production policy·learner·cache·activation·외부 부수효과 write 없음 |
 
 활성화 진행 경로는 `proposed -> limited_canary -> production_active`다. 유효 기간 종료는 `expired`, 권한 있는
 operator의 disable/rollback은 `disabled`, successor의 production promotion은 predecessor를 `superseded`로
@@ -473,33 +482,39 @@ route를 successor로 전환하고 canary role을 비우며 predecessor update�
 원자 publication한다. 같은 actor/request는 기존 run/artifact를 반환하고 같은 command 또는 artifact identity의
 다른 digest는 `model_routing.activation_holdout_command_conflict`와 success write/provider I/O zero-write다.
 
-Canary evidence는 append-only event와 open-window monotonic revision으로 집계한다. Evidence append의
-canonical dedupe identity는 canary window와 독립된 environment/family/profile ID·revision/safety generation,
-source kind와 immutable source event ID이며 이 identity에 unique constraint를 둔다. Server-assigned
-`assigned_window_id`, metric contract version, bounded event kind와 redacted payload digest는 identity 밖의
-immutable comparison field다. 같은 source identity와 모든 comparison field가 같은 재전달만 기존
-event/receipt를 반환한다. 같은 source event가 다른 window로 재분류되거나 하나라도 다른 값이면
-`model_routing.canary_evidence_conflict`와 event/revision/block/audit zero-write다. 일반 workflow actor와
-provider callback payload가 source identity, assigned window, comparison field 또는 aggregate revision을
-직접 주장할 수 없다.
+Canary evidence는 canary start 때 등록한 immutable window schedule과 append-only event로 집계한다. 각
+window는 반개구간 `[window_start_at, cutoff)`와 pre-registered `next_window_id`를 가진다. Server는
+manifest의 source contract에서 파생한 `authoritative_event_time`으로 aggregate lock 전에
+`assigned_window_id`를 결정한다. Client/provider callback timestamp는 authority가 아니다.
+Post-cutoff non-blocking event는 current window가 아직 seal되지 않았어도 next-window aggregate에만
+append한다. Schedule/time derivation 실패는 event/receipt/aggregate/audit zero-write다.
 
-Authoritative watermark는 exact source에 등록된 adapter workload의
-`advance_canary_source_watermark` command만 변경한다. Canonical request는 current open-window ID, source binding/contract, monotonic barrier·position,
-observed-through, expected revision과 terminal receipt/barrier proof를 포함한다.
-Eventless interval도 authoritative scan이 cutoff까지 완료된 경우에만 허용한다. Same request는 기존
-watermark를 반환하고 다른 payload, stale/regression, 불완전 coverage 또는 seal winner 뒤 old-window request는
-command-specific conflict/stale 오류와 zero-write다. Next window에는 새 window ID로 다시 제출한다.
+Canonical dedupe identity는 canary window와 독립된 environment/family/profile ID·revision/safety
+generation, source kind, manifest에 등록된 immutable opaque source instance ID와 그 instance namespace의
+immutable source event ID다. Event ID는 instance 안에서만 유일하면 된다. Authoritative event time,
+server-assigned window, metric contract version, bounded event kind와 redacted payload digest는 identity 밖의
+immutable comparison field다. 같은 instance identity와 모든 comparison field가 같은 재전달만 기존
+event/receipt를 반환한다. 같은 instance event의 window 재분류나 comparison mismatch는
+`model_routing.canary_evidence_conflict`와 zero-write이고, 서로 다른 등록 instance의 같은 event ID는
+별도 event다.
 
-Sealed snapshot은 `seal_canary_evidence_window` command로만 만든다. Request는 profile/generation/window/
-cutoff, expected open-window aggregate revision과 authoritative source별 expected watermark를 포함한다.
-Request watermark는 expectation일 뿐 authority가 아니다. Transaction은 window pointer, aggregate와
-server-owned watermark row를 잠그고 다시 검증한 뒤 sealed snapshot ID/revision/hash, 다음 open-window
-pointer, receipt와 canonical audit를 원자 commit한다. 같은 actor/request는
-기존 snapshot을 반환하고 audit/receipt 실패나 다른 request 재사용은 snapshot/pointer zero-write다.
-Append가 먼저 commit하면 seal은 stale revision으로 재제출되고 그 event를 포함한다. Seal이 먼저
-commit하면 cutoff 이후 non-blocking event는 다음 window에만 append한다. Cutoff 이전 late arrival은
-`snapshot_invalidation_revision`을 증가시키고, blocking breach는 cutoff와 무관하게 snapshot invalidation과
-exact generation block을 함께 기록한다. Promotion request는 exact snapshot과 `expected_snapshot_invalidation_revision`, expected
+Authoritative watermark는 exact source instance에 등록된 adapter workload의
+`advance_canary_source_watermark` command만 변경한다. Canonical request는 target window ID, source
+binding/contract, monotonic barrier·position, observed-through, expected revision과 terminal
+receipt/barrier proof를 포함한다. Eventless interval도 authoritative scan이 cutoff까지 완료된 경우에만
+허용한다. Same request는 기존 watermark를 반환하고 다른 payload, stale/regression, 불완전 coverage 또는
+seal winner 뒤 old-window request는 command-specific conflict/stale 오류와 zero-write다.
+
+Sealed snapshot은 `seal_canary_evidence_window` command로만 만든다. Request는 profile/generation,
+pre-registered current/next window, immutable cutoff, expected current aggregate revision과 authoritative
+source별 expected watermark를 포함한다. Request watermark는 expectation일 뿐 authority가 아니다.
+Transaction은 schedule, current pointer/aggregate와 watermark row를 잠그고 assigned-window membership을
+다시 검증한 뒤 current window의 `authoritative_event_time < cutoff` event만 snapshot ID/revision/hash에
+포함하고 pointer를 이미 등록된 next window로 이동한다. 같은 actor/request는 기존 snapshot을 반환하고
+audit/receipt 실패나 다른 request 재사용은 snapshot/pointer zero-write다. Cutoff 이전 append가 먼저
+current revision을 바꾸면 seal은 재제출된다. Cutoff 이후 append는 seal 전후 모두 next window만 변경한다.
+Cutoff 이전 late arrival은 `snapshot_invalidation_revision`을 증가시키고, blocking breach는 cutoff와
+무관하게 snapshot invalidation과 exact generation block을 함께 기록한다. Promotion request는 exact snapshot과 `expected_snapshot_invalidation_revision`, expected
 profile/family/domain-role revision을 제출한다. Transaction은 snapshot뿐 아니라 DB time/profile state, exact
 role/generation, source/holdout, credential policy, actual Worker readiness, global model eligibility, rollback과
 global/scoped safety를 commit 직전에 재검증한다. Evidence invalidation 또는 어느 eligibility 회수든 먼저
@@ -924,10 +939,12 @@ Celery는 학습기 행을 잠근 뒤 확정 label을 10건 또는 첫 label 확
 실행에 사용하지 않고 새 label부터 다시 학습한다.
 학습기 응답에는 상태, 건수, 최근 일치율과 활성 버전만 포함한다. feature vector, 원문,
 Judge 내부 입력과 분류기 artifact는 API에 반환하지 않는다.
-`judged_request_count`는 안전한 3축 요구 수준이 있는 처리 완료 Judge label 수다. 계약 실패
-label도 이 건수와 최근 계약 통과율에는 포함되지만 candidate classifier artifact의 가중치에는
-반영하지 않는다.
-`schema_status=not_applicable`는 schema 검사가 실패한 것이 아니라 수행되지 않은 상태이므로 학습
+`judged_request_count`는 안전한 3축 요구 수준이 있는 처리 완료 Judge label 수다. 모든 terminal
+`rejected` label은 이 평가 분모와 최근 계약 통과율에는 한 번 포함되지만 accepted training count와
+candidate classifier artifact의 가중치에는 반영하지 않는다. 계약 실패뿐 아니라 fallback 확정,
+execution/schema/downstream 실패와 outcome-unknown도 `learning_outcome_reason=rejected`이면 같은
+규칙을 적용한다.
+`schema_status=not_applicable`는 schema 검사가 실패한 것이 아니라 수행되지 않은 중립 상태이므로 학습
 거절 사유나 schema 평가·통과 집계의 분모에 포함하지 않는다. 반면 선언된 JSON schema가 유효하지 않아
 검사를 완료하지 못한 `schema_status=not_evaluated`는 `schema_failed` 학습 거절로 처리하고 schema 평가
 분모에는 포함하되 통과 건수에는 포함하지 않는다.
