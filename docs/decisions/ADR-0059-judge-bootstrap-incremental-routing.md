@@ -1,8 +1,13 @@
 # ADR-0059: Judge Bootstrap과 점진 학습 로컬 모델 라우팅
 
-Status: Accepted
+Status: Superseded
+
+Superseded By: [ADR-0073](ADR-0073-requirement-judge-capability-routing-v2.md)
 
 Supersedes: [ADR-0058](ADR-0058-bootstrap-difficulty-routing-policy.md)
+
+ADR-0059의 versioned V1 row와 실행 이력은 호환·rollback을 위해 보존한다. 신규 Target 계약과
+production 활성화 게이트는 ADR-0073을 따른다.
 
 ## Context
 

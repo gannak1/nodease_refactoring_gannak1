@@ -1,25 +1,33 @@
 # Cost Optimizer Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-247 @ 311a4bc2`
+Verified Against: origin/dev @ b270c11deabc4b0d4d77b6e59f3637a49d72f82e
 
 ## Purpose
 
-이 문서는 `requirements.md`의 FR-001부터 FR-015까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
-FR-011은 정책과 분리된 자동 라우팅 학습기로 다룬다. 배포 실행 1~50회는 runtime Judge가
-현재 요청의 요구 수준을 판정하고, 서버가 실행 주체가 사용할 수 있는 전체 후보 중 capability와
-비용을 비교해 모델을 선택한다. 후보가 아직 운영 검증을 통과하지 않았다는 이유만으로 첫 사용을
-막지 않는다. workflow 완료 뒤 schema·후속 노드·fallback 계약을 통과한 label의 요청 요구 능력만
-별도 learner의 local router 학습에 반영한다. 50건 이상이고 선택 모델 분포가 한 모델에
-과도하게 쏠리지 않았을 때 local router가 먼저 요청 요구 능력을 예측한다. 서버는 capability를
-충족하는 후보 중 비용이 낮은 모델을 선택하며, 확신이 낮으면 runtime Judge로 되돌아간다. JSON
-Schema 같은 고정 출력 계약은 후보 capability 검사로만 쓴다. Local 난이도 학습 feature는
-`referenced_variables`의 실행값을 핵심 요청 75%, 동적 문맥 15%, 구조화 특징 10%의 분리
-임베딩으로 결합하고, 변하는 RAG 안전 신호만 구조화 특징에 포함하며 고정 prompt 계약은 제외한다.
+이 문서는 `requirements.md`의 FR-001부터 FR-016까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
+FR-015는 운영 경로를 바꾸지 않는 실험 계약이고, FR-016은 아직 구현되지 않은 Capability Routing
+V2 Target 계약이다.
+
+Current routing code comparison: `origin/dev @ b270c11deabc4b0d4d77b6e59f3637a49d72f82e`
+
+FR-011의 Superseded ADR-0059에 기록된 versioned V1 계약과 현재 구현에는 두 가지 차이가 있다.
+ADR-0059는 Judge의 직접 모델
+선택과 `50 labels / recent 20 / exact 80%` learner gate를 정했지만, 현재 코드는 Judge가 세 축의
+요구 능력만 반환하고 서버가 모델을 선택하며 `100 / 50 / 75%` gate를 사용한다. FR-011 테스트는 authority를 섹션 단위로 분리한다. `FR-011 Historical Adaptive Routing Contracts`의
+`FR-011-B*`와 `FR-011-A*` 행은 제거된 semantic-cohort/evidence pipeline의 비권위 역사 기록이며 현재
+제품 완료나 회귀 기준으로 사용하지 않는다. `FR-011 Current Policy/Runtime Regression Tests`만 현재
+구현 회귀 계약이고, `Capability Routing V2 Target Tests`는 아직 미구현 acceptance contract다.
+FR-016은 별도 `capability_routing_v2` strategy, contract-bound learner/cache와 production activation
+gate를 검증해야 한다.
+
+현재 local learning feature는 `referenced_variables` 실행값을 핵심 요청 75%, 동적 문맥 15%,
+구조화 특징 10%의 분리 임베딩으로 결합하고, 변하는 RAG 안전 신호만 구조화 특징에 포함하며
+고정 prompt 계약은 제외한다.
 
 테스트는 LLM 노드 단위 Cost Optimizer 흐름을 기준으로 한다. 모델 라우팅은 자동 라우팅 토글과 active policy 평가뿐 아니라, operational/replay evidence 출처 분리, Hard Gate, 적합성 분석, candidate 품질 gate, 결정론적 optimizer와 decision trace를 검증한다. 고정 20회는 호환 trigger 테스트일 뿐 adaptive routing 완료 기준이 아니다.
 
-FR-011 Runtime Judge 테스트는 provider 공식 문서 기반 특화 태그와 운영 측정값을 구분하고,
+FR-011 서버 selector 테스트는 provider 공식 문서 기반 특화 태그와 운영 측정값을 구분하고,
 공식 별칭을 후보 하나로 정규화하며, Sol 같은 일반 전문 업무 모델과 o3 같은 전문 추론 모델이
 동일한 `advanced` 후보로 뭉개지지 않는지 검증한다. 특화 태그는 모델 선택을 확정하는 품질
 점수가 아니며 실제 운영 계약 성적이 충분하면 운영 증거가 우선한다.
@@ -32,7 +40,7 @@ Terra·Haiku·Gemini Flash처럼 가격 역할과 능력 위치가 다른 모델
 모델을 유지해야 한다.
 Judge 입력은 요청 JSON 구조와 type, 길이 제한된 세 prompt만 사용하며, 고정 output contract는 요청별 난이도 신호로 전달하지 않아야 한다.
 RAG는 문서 원문 없이 검색량·근거 충분성·부분 결과·query rewrite 같은 safe signal만 전달한다.
-후보 profile은 context window를 유지하고, Judge 요구 능력 4축은 0~3 정수일 때만 safe metadata에
+서버가 관리하는 후보 profile은 context window를 유지하고, Judge 요구 능력 3축은 0~3 정수일 때만 safe metadata에
 남긴다. 정상 호출과 incomplete retry의 출력 한도는 모두 768 token이다.
 
 현재 구현 기준으로 baseline 선택 UI는 최신 baseline을 자동 고정하지 않는다. 테스트는 baseline 목록에서 사용자가 row를 직접 선택한 뒤 B candidate 영역이 열리는 흐름을 기준으로 한다.
@@ -51,11 +59,12 @@ RAG는 문서 원문 없이 검색량·근거 충분성·부분 결과·query re
 | FR-008 | Apply candidate action | PATCH apply | B 후보 설정을 current draft에 적용 | 작성 완료 | 통과 |
 | FR-009 | Cost/usage display | llm usage logging | 비교 실행 비용/토큰/latency 기록과 표시 | 작성 완료 | 통과 |
 | FR-010 | Permission-gated UI | builder permission enforcement | builder 이상 권한 강제 | 작성 완료 | 통과 |
-| FR-011 | Judge-first routing / policy-independent learner | Runtime Judge, learner label, 불변 learner version, local router | 작업 지문 재사용·계약 계보 분리·운영 label 확정·50건 local 전환·테스트 실행 비학습·safe trace | 작성 완료 | `test_model_routing_learner_store.py`, `test_model_routing_learning_batch.py`, `test_model_routing_policy_tasks.py`, `test_judge_first_model_routing_e2e.py`, `test_llm_node_runtime.py` 집중 통과 |
+| FR-011 | Judge-first routing / policy-independent learner | Runtime Judge, learner label, 불변 learner version, local router | 현재 구현의 요구 판정·서버 선택, 작업 지문 재사용, 운영 label 확정, `100/50/75%` 전환, 테스트 실행 비학습, safe trace | 작성 완료. ADR-0059와의 차이는 MBA-365에서 명시 | `test_model_routing_learner_store.py`, `test_model_routing_learning_batch.py`, `test_model_routing_policy_tasks.py`, `test_judge_first_model_routing_e2e.py`, `test_llm_node_runtime.py` 집중 통과 기록 |
 | FR-012 | Optimization recommendation modal | Parameter recommendation API | 운영 로그 기반 추천 조회, `direct_policy_update` 적용, 일반 추천의 A/B 후보 실험 연결 | 작성 완료 | 부분 통과 |
 | FR-013 | Recommendation verification / compare quality row | Recommendation verification·compare API | 최신 성공 또는 사용자 선택 baseline, candidate 1회 실행, 품질 judge, schema/downstream gate, 품질 점수 이력, 적용/상세 분석 연결 | Gateway/frontend 테스트 작성 완료 | Gateway/frontend targeted test 통과 |
 | FR-014 | 배포별 자동 파라미터 최적화 | deployment config / operations summary | 배포 모달 설정, 대상 LLM node 검증, 배포 후 운영 실행 수집, 별도 예산/관리 UI | Gateway/frontend targeted test 작성 완료 | 통과 |
-| FR-015 | 제품 UI 없음 | 독립 constraint strategy/result-matrix contract | 구조 제약 추출, Hard Gate, 안전 기본 모델, 실제 semantic matcher fixture, 결과/RAG 재사용, 채택 기준 판정 | Workflow Engine/experiment test 작성 완료 | 통과 |
+| FR-015 | 제품 UI 없음 | 독립 constraint strategy/result-matrix contract | 구조 제약 추출, Hard Gate, 안전 기본 모델, 실제 semantic matcher fixture, 결과/RAG 재사용, 채택 기준 판정 | 테스트 계약만 작성. 명시한 구현·test artifact는 현재 tree에 없음 | 미구현·미실행 |
+| FR-016 | 제품 UI 미구현 | Capability Routing V2 Target contract | Judge/selector 책임, hard gate, economic admission, cache/learner contract, activation, revoke, trace redaction | 테스트 계약만 작성 | 미구현. MBA-366~369 및 후속 이슈에서 구현 |
 
 ## Test Implementation Tracking
 
@@ -96,7 +105,7 @@ RAG는 문서 원문 없이 검색량·근거 충분성·부분 결과·query re
 | FR-011 | Frontend route | `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | `모델 라우팅 최적화` 버튼이 기존 A/B workspace가 아니라 전용 model-routing route로 이동 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 |
 | FR-011 | Workflow engine service | `apps/workflow_engine/tests/services/test_model_router.py` | `ModelRouter.resolve_policy()`가 저장된 policy의 일반 조건을 평가하고 canonical LLM trace의 terminal 성공/실패 품질 신호와 segment 성능을 profile로 만든다. | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/services/test_model_router.py` | 통과 |
 | FR-011 | Incremental routing mode transition | `apps/workflow_engine/tests/services/test_model_routing_incremental_learning.py` | Judge-first에서는 Runtime Judge가 필요하고 current learner artifact와 충분한 confidence가 있으면 local-router로 전환한다. 이 테스트는 선택 결과가 실행 가능한 후보 안에 있는지 검증하며, catalog capability·bootstrap score·가격에 따른 exact model 선택은 `test_model_router.py`가 소유한다. | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/services/test_model_routing_incremental_learning.py` | 통과 |
-| FR-011 | Learning path E2E | `apps/workflow_engine/tests/e2e/test_judge_first_model_routing_e2e.py` | 첫 Judge label이 `accepted`로 확정돼 count 1이 되고, 서로 다른 계약 통과 label 50건 뒤 51회차가 `local_router` source로 선택되는지 확인한다. | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/e2e/test_judge_first_model_routing_e2e.py` | 통과 |
+| FR-011 | Learning path E2E | `apps/workflow_engine/tests/e2e/test_judge_first_model_routing_e2e.py` | 첫 Judge label이 `accepted`로 확정돼 count 1이 되고, 현재 구현 기준 운영 label 100건과 최근 평가 50건 gate 뒤에만 `local_router` source로 전환되는지 확인한다. | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/e2e/test_judge_first_model_routing_e2e.py` | 통과 |
 | FR-011 | Judge learning observability | `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py`, `apps/workflow_engine/tests/services/test_model_router.py` | label queue 실패는 trace에 원인 코드로 남기며, HMAC hash가 같은 accepted 선택은 Judge 재호출 없이 재사용한다. | 작성 완료 | Workflow Engine 집중 pytest | 통과 |
 | FR-011 | Judge label transaction | `apps/workflow_engine/tests/services/test_model_routing_policy_store.py` | 성공 label은 즉시 commit하고 저장하지 않는 경로는 rollback하여 policy row lock을 최종 provider 호출 전에 해제한다. | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/bin/python -m pytest apps/workflow_engine/tests/services/test_model_routing_policy_store.py` | 통과 |
 | FR-011 | Workflow runtime | `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py` | 자동 라우팅 ON 실행은 active Judge-first policy를 우선 사용한다. 테스트 또는 배포 실행에 policy row가 없으면 실행 주체가 사용할 수 있는 후보로 일회성 Judge-first policy를 구성해 runtime Judge를 호출하며, 테스트와 policy id 없는 예외 실행은 학습 label을 만들지 않는다. 현재 사용자에게 사용할 모델이 없으면 provider 호출 전에 차단한다. | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/nodes/test_llm_node_runtime.py -k auto_model_routing` | 통과 |
@@ -110,7 +119,7 @@ RAG는 문서 원문 없이 검색량·근거 충분성·부분 결과·query re
 | FR-011 | Prior-guided compiler/runtime | `apps/workflow_engine/tests/services/test_model_routing_prior_guided_policy.py`, `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py` | 모델 catalog·운영 집계 기반 profile 생성, semantic embedding 미호출, generic rule 선택, credential 후보 제한 | 작성 완료 | targeted pytest | 통과 |
 | FR-011 | Gateway policy API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | policy 조회/설정/갱신/preview, 입력군 endpoint 미제공, safe summary | 작성 완료 | targeted pytest | 통과 |
 | FR-011 | Redeployment policy inheritance | `apps/shared/tests/services/test_model_routing_policy_inheritance.py`, `apps/gateway/tests/services/test_deployment_preflight.py::test_active_redeployment_inherits_model_routing_state` | 새 활성 deployment는 같은 자동 라우팅 LLM node이면서 cohort/evidence node fingerprint가 새 snapshot과 모두 일치할 때만 active policy, cohort, 대표 예문, evidence를 복제하고 cohort ID 참조를 새 row로 재연결한다. 설정이 달라지면 상속하지 않는다. 운영 run 카운터와 refresh 예약 상태는 초기화한다. | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/shared/tests/services/test_model_routing_policy_inheritance.py apps/gateway/tests/services/test_deployment_preflight.py` | 이번 변경 targeted test |
-| FR-011 | DB adaptive routing integration | 실제 PostgreSQL + worker가 만든 Replay row에서 proposal, active policy, 서로 다른 cohort runtime 모델과 trace까지 연결 | 부분 완료 | 실제 Provider 50회 실험 보고서 | 통과한 deployment/seed에 한정됨. 독립 PostgreSQL integration pytest는 미작성 |
+| FR-011 | DB adaptive routing integration | 독립 PostgreSQL integration pytest 미작성 | 실제 PostgreSQL + worker가 만든 Replay row에서 proposal, active policy, 서로 다른 cohort runtime 모델과 trace까지 연결 | 부분 완료 | 실제 Provider 50회 실험 보고서 | 통과한 deployment/seed에 한정됨 |
 | FR-011 | Workflow-Aware analysis UI | `apps/client/app/features/workflow/tests/costOptimizer/fr11-workflow-aware-routing.test.tsx` | 적합성/evidence gap/policy diff UI | 미작성 | targeted Vitest | 미실행 |
 | FR-011 | Prior-guided routing trace UI | `apps/client/app/features/workflow/tests/costOptimizer/fr11-prior-guided-routing-trace.test.tsx`, `apps/client/app/features/workflow/components/logs/LogDetail.test.tsx` | 테스트 실행과 실행 로그에서 전략 ID, 입력 길이 profile, 선택/fallback 모델, rule/reason, 검토/제외 모델 수, 품질 하한, 예상 비용·지연을 표시하고 입력군·유사도를 표시하지 않음 | 작성 완료 | targeted Vitest | 통과 |
 | FR-011 | Three-arm routing value benchmark | `tests/experiments/test_fresh_routing_benchmark.py`, `scripts/experiment_fresh_routing_benchmark.py` | 대표·Replay 입력과 겹치지 않는 동일 holdout을 고성능 고정, 저비용 고정, 자동 라우팅에 실행한다. 성공/schema/downstream, blind pairwise 품질, 비용/지연, rule 적용 범위·적용 정확도, 고위험 보호율, 검증 비용과 손익분기를 함께 보고한다. 안전하게 기본 모델로 닫힌 `no_match`/`ambiguous`는 오분류와 구분한다. | 작성 완료 | targeted pytest + `--confirm-live` 실제 Provider 실행 | 1차 실제 Provider 48건: 비용 15.3% 절감·고성능 대비 품질 +0.7·저비용 대비 품질 +8.8, 다만 보안 입력 2건 오분류로 안전성 미달. 안전 보호 입력군 catalog 유지 수정 후 재실험 예정. 1차 보고서 `reports/model-routing/fresh-routing-benchmark/routing-value-live-20260715-v1/report.md` |
@@ -123,13 +132,16 @@ RAG는 문서 원문 없이 검색량·근거 충분성·부분 결과·query re
 | FR-013 | Gateway API/service | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, `apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py` | latest success 또는 사용자 선택 baseline, recommendation stale 검증, candidate/judge usage, 품질 평가와 이력, schema/downstream gate, apply payload | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py` | 통과 |
 | FR-014 | deployment/service | `apps/gateway/tests/services/test_deployment_parameter_optimization_service.py` | 비활성 배포도 실제 LLM node 대상 메타데이터를 보존하고 no-LLM 비활성 배포는 허용한다. 활성 설정의 비 LLM/missing node는 거부하며, 대상 node의 실제 검증 비용만 누적하고 한도 도달 뒤 새 검증을 차단한다. | 작성 완료 | targeted pytest | 통과 |
 | FR-014 | frontend deployment/manage | `apps/client/app/features/workflow/components/deployment/DeploymentFlowModal.test.tsx`, `apps/client/app/features/workflow/components/deployment/AutomaticOptimizationManagementModal.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr14-dashboard-automatic-optimization-management.test.tsx` | 배포 모달은 자동 최적화 단계를 생략하고 비활성 기본값으로 즉시 배포한다. 워크플로우 리스트 보기의 배포별 `관리`는 정확한 deployment 설정을 조회해 관리 modal을 열고, 그리드 카드는 자동 최적화 영역을 숨기며, 관리 modal은 대상 node를 보존한 채 주기/예산을 수정한다. | 작성 완료 | targeted Vitest | 통과 |
-| FR-015 | Workflow Engine service | `apps/workflow_engine/tests/services/test_constraint_difficulty_router.py` | 의미 필드 비사용, 실행 주체 모델 권한, context/strict output Hard Gate, 다차원 signature, tier에 맞는 안전 모델과 fallback, 필수 입력·파일 입력, 증거 격리, trace | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/services/test_constraint_difficulty_router.py` | 통과 |
-| FR-015 | Experiment | `tests/experiments/test_constraint_difficulty_routing_experiment.py` | 3 workflow×20 입력×4전략, 실제 `SemanticRouteMatcher` fixture, 입력·모델 result matrix, RAG 1회 재사용, 실패 표본 포함 지표, 채택 기준 자동 판정 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest tests/experiments/test_constraint_difficulty_routing_experiment.py` | 통과 |
+| FR-015 | Workflow Engine service | 후속 `apps/workflow_engine/tests/services/test_constraint_difficulty_router.py` | 의미 필드 비사용, 실행 주체 모델 권한, context/strict output Hard Gate, 다차원 signature, tier에 맞는 안전 모델과 fallback, 필수 입력·파일 입력, 증거 격리, trace | 미작성 | 후속 targeted pytest | 미실행 |
+| FR-015 | Experiment | 후속 `tests/experiments/test_constraint_difficulty_routing_experiment.py` | 3 workflow×20 입력×4전략, 실제 `SemanticRouteMatcher` fixture, 입력·모델 result matrix, RAG 1회 재사용, 실패 표본 포함 지표, 채택 기준 자동 판정 | 미작성 | 후속 targeted pytest | 미실행 |
+| FR-016 | V2 contract/unit/integration | MBA-366~369 및 후속 이슈에서 배정 | 아래 `M365-A01`~`M365-F26`의 Judge/selector, task intent, hard gate, budget, cache, learner, identity, activation, mixed-worker, provider-call revalidation과 redaction | 테스트 계약 작성, 실행 코드 미구현 | 후속 targeted pytest와 PostgreSQL/worker CI | 미실행 |
 
-## Workflow-Aware Adaptive Routing Tests
+## FR-011 Historical Adaptive Routing Contracts (Non-authoritative)
 
-> 현재 FR-011의 신규 기준은 bootstrap 난이도 routing이다. 아래 legacy semantic cohort test는
-> 이력/호환 범위이며 신규 bootstrap 완료 판정에는 사용하지 않는다.
+> **Authority: historical/inactive.** 다음 `FR-011-B*`와 `FR-011-A*` 행은 제품 경로에서 제거된
+> semantic cohort, 대표 예문, embedding route, evidence refresh 설계를 보존하는 역사 기록이다.
+> 현재 구현, 신규 bootstrap 또는 Capability Routing V2의 acceptance/회귀 기준으로 사용하지 않으며
+> 실행 가능한 현재 계약과 충돌할 때는 `requirements.md`의 FR-011/FR-016을 따른다.
 
 | ID | 구분 | Given | When | Then | 코드 |
 | --- | --- | --- | --- | --- | --- |
@@ -216,18 +228,25 @@ RAG는 문서 원문 없이 검색량·근거 충분성·부분 결과·query re
 | FR-011-A66 | quality-margin candidate selection | 같은 입력군에서 품질 하한 87인 후보와 더 싸지만 하한 81.5인 후보가 모두 validated다 | active route 후보를 선택한다 | 최저가 후보를 바로 고르지 않고 최고 품질 하한 3점 이내 후보만 남겨 하한 87인 모델을 선택한다. 더 싼 후보의 하한이 85라면 품질 여유 범위 안이므로 더 싼 모델을 선택한다. |
 | FR-011-A67 | factual reliability judge | authoritative evidence가 없는 동일 입력에 한 출력은 확인되지 않은 제품 메뉴·정책을 단정하고 다른 출력은 근거 부족을 명시한다 | blind 품질 Judge를 실행한다 | `factual_reliability`가 필수 dimension으로 포함되고, 근거 없는 단정은 감점하되 안전한 불확실성 표현 자체는 감점하지 않는다. `authoritative_evidence_available`은 safe RAG summary의 `evidence_sufficient=true`와 양의 정수 retrieval count가 모두 확인될 때만 true다. Boolean, string, 소수 count는 false다. |
 | FR-011-A68 | bidirectional benchmark judge | 동일 A/B 출력 쌍이 있고 Judge 위치 편향을 확인하려 한다 | 보고서용 품질 평가를 실행한다 | `baseline_left`, `candidate_left` 두 순서로 평가하고 A/B 점수와 confidence를 평균내며 Judge 비용은 두 호출 합계로 보고한다. 한 pass가 실패하면 해당 pair는 품질 평가 불가로 처리한다. |
-| FR-011-A69 | runtime Judge 판단 근거 trace | runtime Judge가 모델을 선택한다 | 실행 trace와 노드 상세 UI를 확인한다 | `judge.reason_code`와 `judge.reason_short`만 trace에 저장하고 UI가 이를 한국어 설명으로 표시한다. Judge 자유 문장, 원문 요청·개인정보·RAG 문서 원문은 durable trace에 저장하거나 표시하지 않는다. |
+| FR-011-A69 | runtime Judge 판단 근거 trace | runtime Judge가 요구 능력을 판정하고 서버가 모델을 선택한다 | 실행 trace와 노드 상세 UI를 확인한다 | `judge.reason_code`와 `judge.reason_short`만 trace에 저장하고 UI가 이를 한국어 설명으로 표시한다. Judge 자유 문장, 원문 요청·개인정보·RAG 문서 원문은 durable trace에 저장하거나 표시하지 않는다. |
 | FR-011-A63 | production active route revalidation and revocation | active 입력군 rule의 현재 모델과 새로운 운영 observation window가 있다 | 자동 또는 수동 정책 갱신을 실행한다 | 현재 active 모델을 새 후보보다 먼저 재검증한다. 실패하면 해당 입력군 rule만 철회하고 default model로 복귀하며, 다른 입력군의 active rule은 유지한다. |
 | FR-011-A64 | isolated candidate execution | bootstrap 후보 모델이 JSON 응답을 만들지 못하거나 provider 호출에 실패한다 | 후보 Replay를 실행한다 | `fallback_model_id`를 비운 후보 graph를 사용하고 item을 실패로 기록한다. 기준 모델을 대신 실행한 출력을 후보 품질·비용 증거로 사용하지 않는다. |
 | FR-011-A65 | independent holdout after V14 correction | V14까지 사용하지 않은 입력군별 12개, 총 48개 V15 입력이 있다 | 고정 고가·고정 저가·자동 라우팅을 동일 입력으로 실행한다 | 입력군 최소 점수 차이 0.05와 강화한 품질 gate를 적용한다. 자동 라우팅은 고성능 고정 대비 비용을 줄이고 심각 품질 저하 0건, 검증 모델 적합률 95% 이상, 고위험 보호율 100%, trace 기록률 100%를 만족해야 한다. 결과와 경제성 그래프를 별도 보고서에 남긴다. |
 | FR-011-A54 | automatic cohort semantic identity | 자동 발견 입력군에 서로 가까운 가림 처리 문의가 3~5개 있고 이름이 `자동 발견 입력군 N`이다 | 정책 갱신의 입력군 이름 생성을 실행한다 | 한국어 업무명과 영문 snake_case key로 바꾸고 active rule/catalog 참조도 함께 갱신한다. 생성 실패 시 기존 식별자를 유지하며 라우팅과 검증은 계속된다. |
 
+## FR-011 Current Policy/Runtime Regression Tests
+
+이 섹션부터 `Capability Routing V2 Target Tests` 직전까지는 현재 `judge_bootstrap_incremental_v1`
+구현을 재현하는 권위 있는 회귀 계약이다. 위 Historical 섹션의 입력군·semantic cohort 계약을
+복원하거나 V2 activation을 승인하지 않는다.
+
 ### 기존 policy/runtime 회귀 테스트
 
-아래 테스트는 현재 구현 기반을 보호한다. 이 테스트가 모두 통과해도 A01~A20의
-evidence pipeline이 없으면 Workflow-Aware Adaptive Routing 구현 완료로 표시하지
-않는다. 자동 라우팅 ON 상태의 workflow runtime은 저장된 active policy rule만
-평가하며, 런타임 코드는 도메인 키워드 목록을 내장하지 않는다.
+아래 테스트는 현재 구현 기반을 보호한다. 위 Historical A01~A20 evidence pipeline은
+현재 구현 완료의 전제나 회귀 기준이 아니다. 자동 라우팅 ON 상태에서 persisted policy가
+있으면 해당 policy를 평가하고, policy row가 없는 예외 실행은 `FR-011-L12`의 일회성
+Judge-first policy를 사용한다. 두 경로 모두 런타임 코드에 도메인 키워드 목록을 내장하거나
+Historical semantic cohort를 복원하지 않는다.
 
 | ID | 라우팅 상태 | Given | When | Then |
 | --- | --- | --- | --- | --- |
@@ -272,7 +291,7 @@ evidence pipeline이 없으면 Workflow-Aware Adaptive Routing 구현 완료로 
 | FR-011-R28 | stale refresh recovery | worker 종료나 task 유실로 policy가 갱신 제한 시간보다 오래 `refreshing` 상태에 남아 있다 | 다음 eligible 운영 run event를 반영한다 | 기존 active policy는 유지하면서 stale 요청 시각을 갱신하고 refresh task를 한 번 다시 예약한다. 제한 시간 안의 정상 갱신은 중복 예약하지 않는다. |
 | FR-011-P01 | preview matched rule | active deployment policy에 short 입력 rule이 있고 실행 주체가 rule model을 사용할 수 있다 | preview API를 호출한다 | runtime과 같은 `ModelRouter.resolve_policy()`가 rule model과 profile/rule/reason safe summary를 반환한다. |
 | FR-011-P05 | preview feature parity | 배포 node에 작업 설명, 변수 템플릿과 JSON output schema가 있고 preview 입력이 있다 | preview API를 호출한다 | runtime과 같은 side-effect 없는 prompt renderer와 `routing_feature_text()` builder가 치환된 system/user/assistant prompt, 독립 `OUTPUT_CONTRACT`의 JSON schema 지시, 현재 입력과 작업 계약을 resolver에 전달한다. 저장된 `{{variable}}` 원문을 feature로 사용하지 않으며 Preview는 실제 retrieval을 수행하거나 RAG runtime signal을 합성하지 않는다. |
-| FR-011-P13 | fixed output contract isolation | system prompt가 prompt section 예산보다 길고 JSON schema가 설정되어 있다 | runtime routing feature를 생성한다 | system prompt는 제한되지만 고정 `OUTPUT_CONTRACT`와 JSON mode/schema 정보는 feature에 포함되지 않는다. 구조화 출력 계약이 요청별 난이도·모델 선택 신호가 되지 않는다. |
+| FR-011-P13 | Current fixed output contract preservation | system prompt가 prompt section 예산보다 길고 JSON schema가 설정되어 있다 | Current runtime routing feature를 생성한다 | system prompt는 제한되지만 독립 길이 예산의 `OUTPUT_CONTRACT`와 JSON mode/schema 정보는 보존된다. 이는 Current 회귀 계약이며 FR-016 Target에서는 Requirement Judge 입력이 아니라 server structural hard gate로 이동한다. |
 | FR-011-P11 | invalid schema learning rejection | JSON schema 선언이 유효하지 않아 runtime trace가 `schema_status=not_evaluated`다 | 운영 성적과 학습 label을 확정한다 | 실행은 `schema_failed`로 거절되고 schema 평가 분모 1, 통과 건수 0으로 누적된다. Schema가 없는 `not_required`만 중립 처리한다. |
 | FR-011-P12 | preview prompt render failure | 배포 snapshot의 prompt template이 렌더링 불가능하다 | preview API를 호출한다 | 저장된 template 원문으로 fallback해 모델을 선택하지 않고 `model_routing.prompt_render_failed` safe blocked 상태로 종료한다. Raw template과 input은 응답에 포함하지 않는다. |
 | FR-011-P02 | preview default | active policy에 일치하는 rule이 없다 | preview API를 호출한다 | 규칙 미일치 시 active policy의 default model과 `default_model` source를 반환한다. |
@@ -284,13 +303,13 @@ evidence pipeline이 없으면 Workflow-Aware Adaptive Routing 구현 완료로 
 | FR-011-P07 | Test Sidebar 실행 노드 상세 | 자동 라우팅 trace가 있는 LLM node 테스트 실행이 완료됐다 | 해당 node의 `상세 보기`를 누른다 | 페이지 이동 없이 같은 Sidebar의 본문을 맨 위로 이동하고 실행 상태(상태·비용·시간·토큰), 입력, 실행 모델/자동 라우팅, 출력 순서로 표시한다. 입력 길이 profile·검토/제외 모델 수·품질 하한·예상 비용/지연·선택 이유·policy version을 표시한다. raw input/prompt는 노출하지 않는다. Sidebar와 비교 영역 바깥의 중복 학습 제외 안내는 표시하지 않고, 배포 정책·임시 정책 또는 이전 test trace용 학습 제외 안내를 Judge·학습 상태 다음 상세의 마지막에 한 번 표시한다. `테스트 결과로 돌아가기`로 목록에 복귀한다. |
 | FR-011-P08 | Test Sidebar 실제 fallback | 자동 라우팅 LLM node가 primary 호출 실패 뒤 fallback으로 성공했다 | node 상세를 연다 | 최초 선택 모델, 안전한 실패 사유, 실제 사용한 fallback 모델을 `실제 대체 실행` block으로 표시한다. 계획된 fallback만 있는 정상 실행과 혼동하지 않는다. |
 | FR-011-P09 | Test Sidebar 자동 라우팅 실행 | 자동 라우팅 LLM node를 Test Sidebar에서 실행한다 | 활성 배포 정책 유무와 관계없이 테스트한다 | 설정 fingerprint가 같은 활성 배포 정책이 정확히 하나일 때만 재사용한다. 여러 활성 배포가 일치하면 잘못된 정책을 고르지 않고 임시 Judge-first 정책으로 실행한다. 작업 지문이 같은 검증 learner version이 있으면 로컬 라우터를 사용하고, 없거나 불확실하면 Judge를 사용한다. trace에는 실제 선택 경로인 `decision_source=runtime_judge \| local_router \| stored_model`, 실행 맥락인 `execution_mode=test`, `policy_source=active_deployment 또는 test_ephemeral`, `included_in_routing_learning=false`를 분리해 남긴다. workflow run의 `deployment_id`는 비우고 learner label·학습 횟수·운영 성적·정책 갱신 카운터를 변경하지 않는다. |
-| FR-011-P09A | Judge 실행 상태 trace/UI | Judge 성공, Judge 호출 후 실패, Judge 미호출, 이전 trace 상태가 각각 있다 | 로그 또는 Test Sidebar에서 LLM node 상세를 연다 | 공통 상세 화면은 성공 시 모델·확신도·후보 수·비용을, 호출 후 실패 시 기본 모델 회귀와 오류 코드를, 미호출 시 미호출 이유를 구분해 표시한다. 상태 없는 이전 trace는 실패로 단정하지 않고 `Judge 실행 정보 없음`으로 표시한다. Judge 성공 상세의 header에는 중복된 `Judge가 모델 선택` 배지를 표시하지 않는다. |
+| FR-011-P09A | Judge 실행 상태 trace/UI | Judge 성공, Judge 호출 후 실패, Judge 미호출, 이전 trace 상태가 각각 있다 | 로그 또는 Test Sidebar에서 LLM node 상세를 연다 | 공통 상세 화면은 Judge의 요구 판정 성공과 서버의 모델 선택을 분리한다. 호출 후 실패 시 stored safe path와 오류 코드를, 미호출 시 미호출 이유를 표시한다. 상태 없는 이전 trace는 실패로 단정하지 않고 `Judge 실행 정보 없음`으로 표시한다. `Judge가 모델 선택`이라는 배지는 표시하지 않는다. |
 | FR-011-P10 | Test Sidebar 정책 stale 차단 | current draft의 자동 라우팅 LLM node 설정 fingerprint가 활성 deployment snapshot과 다르다 | Test Sidebar에서 실행한다 | 오래된 deployment policy는 평가하지 않는다. 현재 draft와 실행 주체가 사용할 수 있는 모델로 임시 Judge-first 정책을 만들어 Judge를 호출하되 정책·학습 데이터는 저장하지 않는다. |
-| FR-011-L01 | 요청 경로와 학습 분리 | 운영 요청에서 Judge가 모델을 선택했다 | workflow가 terminal 상태가 된다 | 실행 중에는 학습 전 예측과 안전 label만 저장하고 가중치를 변경하지 않는다. 확정 label은 Celery 학습 task로 전달된다. |
+| FR-011-L01 | 요청 경로와 학습 분리 | 운영 요청에서 Judge가 요구 능력을 판정하고 서버가 모델을 선택했다 | workflow가 terminal 상태가 된다 | 실행 중에는 학습 전 예측과 안전 label만 저장하고 가중치를 변경하지 않는다. 확정 label은 Celery 학습 task로 전달된다. |
 | FR-011-L02 | 학습 batch 경계 | 같은 learner에 확정 label 10건이 쌓이거나 첫 label 후 5분이 지났다 | local router 학습 task를 실행한다 | learner 행을 잠근 뒤 최대 10건을 한 번 처리하고 각 label에 `learning_processed_at`을 기록한다. 남은 label은 후속 task로 처리한다. |
-| FR-011-L03 | 최근 20건 전환 gate | Judge label은 50건 이상이지만 최근 학습 전 예측 비교가 20건 미만이거나 일치율·축 오차·계약 통과율 기준을 충족하지 못한다 | 학습 모드를 재평가한다 | candidate artifact를 실행용으로 승격하지 않고 `judge_first`를 유지한다. |
+| FR-011-L03 | 현재 구현 전환 gate | Judge label은 100건 이상이지만 최근 학습 전 예측 비교가 50건 미만이거나 exact 75%·축 오차·계약 통과율 기준을 충족하지 못한다 | 학습 모드를 재평가한다 | candidate artifact를 실행용으로 승격하지 않고 `judge_first`를 유지한다. 이 값은 현재 구현 회귀값이며 FR-016 activation 기준이 아니다. |
 | FR-011-L04 | 예측 붕괴 차단 | 최근 Judge 정답은 여러 요구 수준인데 로컬 예측은 한 요구 수준으로만 수렴한다 | 학습 모드를 재평가한다 | 높은 표본 수만으로 `local_first`로 전환하지 않는다. |
-| FR-011-L05 | 미지 입력 Judge 회귀 | local-first 상태에서 현재 vector가 학습 표본과 멀거나 예측 경계가 모호하다 | 운영 요청을 실행한다 | 로컬 confidence가 기준 미만이 되어 Runtime Judge가 모델을 선택하고 새 비교 label을 남긴다. |
+| FR-011-L05 | 미지 입력 Judge 회귀 | local-first 상태에서 현재 vector가 학습 표본과 멀거나 예측 경계가 모호하다 | 운영 요청을 실행한다 | 로컬 confidence가 기준 미만이 되어 Runtime Judge가 요구 능력을 판정하고 서버가 모델을 선택한 뒤 새 비교 label을 남긴다. |
 | FR-011-L06 | 그룹 분리 학습 feature | 같은 LLM 노드에서 실행 변수는 같고 제목·작업 설명·system/user/assistant prompt의 고정 문구만 다르다 | local learning feature와 vector를 만든다 | 두 feature는 같아야 한다. 핵심 요청, 동적 문맥, 구조화 특징을 별도 임베딩하고 `75% / 15% / 10%`로 정규화 결합한다. 변하는 RAG 안전 신호는 구조화 특징에 포함하고, 미참조 upstream 값과 고정 prompt 문구는 제외한다. 변수 메타데이터가 없는 레거시 노드는 가장 정보량이 큰 runtime 값을 핵심 요청으로 사용한다. |
 | FR-011-L07 | 학습 feature 버전 격리 | 이전 prompt-context artifact가 있는 정책에 변수 중심 feature 코드가 배포된다 | 운영 요청과 batch 학습을 실행한다 | 이전 artifact로 local 예측하지 않고 Judge-first로 돌아간다. 새 feature label부터 학습 횟수·최근 평가를 다시 시작하고 서로 다른 feature schema의 vector를 섞지 않는다. |
 | FR-011-L08 | Runtime Judge 시간 분리 저장 | Judge provider 호출이 재시도를 포함해 완료된다 | Judge usage와 실행 trace를 저장한다 | 첫 요청부터 최종 재시도 응답까지의 총 경과 시간을 `usage.latency_ms`와 Judge 전용 `llm_usage_logs.latency_ms`에 저장한다. 최종 작업 모델 latency와 섞거나 중복 합산하지 않는다. |
@@ -298,17 +317,252 @@ evidence pipeline이 없으면 Workflow-Aware Adaptive Routing 구현 완료로 
 | FR-011-L10 | 작업 변경 계보 분리 | prompt, RAG, 출력 schema 또는 downstream 계약이 바뀌어 task fingerprint가 달라진다 | 자동 라우팅 policy를 생성한다 | 새 learner를 만들고 이전 learner/version은 수정하지 않는다. |
 | FR-011-L11 | 학습 계약 변경 계보 분리 | Judge rubric, feature schema 또는 E5 encoder 식별자가 바뀐다 | learner를 조회하거나 생성한다 | 새 judge contract hash의 learner를 만들고 기존 learner는 `stale` 읽기 전용 계보로 보존한다. |
 | FR-011-L12 | policy 누락 운영 실행 | 자동 라우팅 배포 실행인데 persisted policy row가 누락됐다 | LLM node를 실행하고 workflow를 완료한다 | 임시 Judge-first 실행을 허용하되 task fingerprint 기준 learner를 조회·생성하고 운영 label은 해당 learner에 저장한다. |
-| FR-011-L13 | 테스트 실행 비학습 | 같은 작업 지문의 검증 learner version이 있거나 Judge 호출이 필요하다 | Test Sidebar에서 실행한다 | 로컬 라우터 또는 Judge로 모델을 선택하지만 learner label, 학습 횟수, 운영 성적, policy refresh counter를 변경하지 않는다. trace에는 `included_in_routing_learning=false`를 남긴다. |
-| FR-011-L14 | 불변 버전 발행·정책 반영 | Judge label 50건, 최근 평가 20건, 일치율·축 오차·계약 품질 gate를 모두 충족한다 | batch 학습을 완료한다 | candidate artifact hash로 중복 발행을 막고 새 learner version을 발행한다. 같은 hash의 과거 version이 있으면 새 row를 만들지 않고 기존 불변 version을 재활성화한다. 같은 learner를 참조하는 활성 policy는 해당 version을 참조한다. |
+| FR-011-L13 | 테스트 실행 비학습 | 같은 작업 지문의 검증 learner version이 있거나 Judge 호출이 필요하다 | Test Sidebar에서 실행한다 | 로컬 라우터 또는 Judge로 요구 능력을 판정하고 서버가 모델을 선택하지만 learner label, 학습 횟수, 운영 성적, policy refresh counter를 변경하지 않는다. trace에는 `included_in_routing_learning=false`를 남긴다. |
+| FR-011-L14 | 현재 구현 불변 버전 발행·정책 반영 | Judge label 100건, 최근 평가 50건, exact 75%·축 오차·계약 품질 gate를 모두 충족한다 | batch 학습을 완료한다 | candidate artifact hash로 중복 발행을 막고 새 learner version을 발행한다. 같은 hash의 과거 version이 있으면 새 row를 만들지 않고 기존 불변 version을 재활성화한다. 같은 learner를 참조하는 활성 policy는 해당 version을 참조한다. |
 | FR-011-L15 | 비정형 출력 중립 schema gate | 출력 schema가 없는 자유형 LLM node의 운영 label이 모두 `not_applicable`이다 | learner version 발행 gate를 계산한다 | schema 미검사를 실패로 취급하지 않고 schema pass rate를 중립 100%로 계산한다. 실행·downstream·fallback 및 최근 Judge 평가가 다른 gate를 충족하면 version을 발행할 수 있다. |
 | FR-011-L16 | 구형 학습 데이터 폐기 migration | policy 소유 label과 `active_policy.learning` artifact가 있는 DB를 신규 head로 올린다 | migration을 실행한다 | 구형 label/artifact를 복원 없이 폐기하고 learner/version/신규 label schema를 만든다. 기존 policy, 실행 로그, 비용·성능 데이터는 유지하며 Alembic head는 하나다. |
 | FR-011-L17 | 활성 학습 버전 운영 품질 저하 | 특정 배포 정책이 검증된 learner version을 사용 중이고 완료된 운영 표본이 20건 이상이다 | 정책 점검에서 실행 성공률, schema 통과율 또는 downstream 성공률이 95% 미만이거나 fallback 비율이 5%를 초과한다 | learner와 불변 version은 감사용으로 보존하되 해당 배포 정책의 `active_learner_version_id`만 해제한다. 다음 실행은 Runtime Judge 우선으로 돌아가며 정책 점검 결과에는 `operational_contract_degraded`를 남긴다. |
+
+## Capability Routing V2 Target Tests
+
+관련 FR: FR-016
+
+이 표는 [ADR-0073 Capability Routing V2](../../decisions/ADR-0073-requirement-judge-capability-routing-v2.md)의
+미구현 acceptance contract다. MBA-365에서는 테스트 ID와 소유 경계를 확정하며, 행에 연결된 구현
+이슈가 실행 가능한 테스트를 추가하기 전에는 `capability_routing_v2`를 활성화하지 않는다.
+
+### A. Judge, task intent와 hard gate
+
+| ID | 실패 재현 | 기대 결과 | 구현 소유 |
+| --- | --- | --- | --- |
+| M365-A01 | Judge 응답에 모델 ID, 후보 또는 unknown field 포함 | 응답 거부 후 safe path. Judge 결과로 모델을 직접 선택하지 않음 | MBA-366 |
+| M365-A01A | 모델 응답이 `judge_contract_version`/`rubric_version`을 echo하거나 server envelope와 다른 값을 주장 | Unknown field contract failure, server-owned invocation envelope는 변경되지 않음 | MBA-366 |
+| M365-A02 | Axis 의미가 다른 rubric/learner 연결 | Local prediction 금지와 contract rotation | MBA-368 |
+| M365-A03 | Legacy graph에 task intent 없음 | `unspecified`, generate floor 자동 적용 없음 | MBA-366 |
+| M365-A03A | Legacy 값이 `summarize`, `reason` 또는 allowlist 밖 자유 `node_task` | 각각 `transform`, `unspecified`, `unspecified`; title/prompt 추측 없음 | MBA-366 |
+| M365-A04 | 명시적 `task_type=generate` | Server-derived generative/output/effect 하한 적용 | MBA-366 |
+| M365-A05 | Human-facing graph에서 Client가 낮은 intent 전송 | Server-derived hard gate 유지 | MBA-366 |
+| M365-A06 | Prompt에 task intent 문자열 삽입 | Intent 영속·안전 하한 변경 없음 | MBA-366 |
+| M365-A07 | Execution subject의 데이터 scope 또는 organization scope 무효 | Candidate 조회, Judge와 provider I/O 전 fail-closed; private detail 숨김 | MBA-366 |
+| M365-A07A | Public·schedule·system 실행에서 execution subject가 없거나 actor가 system/public임 | Data scope는 ADR-0018 anonymous public-only, credential은 ADR-0064 server-derived principal을 사용하며 두 principal을 서로 승격하지 않음 | MBA-366·Knowledge 연동·Provider Candidate Credential Policy 후속 |
+| M365-A07A1 | Subject 없는 public 실행에 active public Collection/KB와 source-managed public exposure approval이 모두 유효 | 해당 public evidence의 bounded safe facts만 query embedding과 Judge projection에 포함. Private evidence와 raw content는 0건 | MBA-366·Knowledge 연동 |
+| M365-A07A2 | Subject 없는 public 실행에 private/visibility 누락 KB 또는 public exposure가 revoke된 source-managed KB만 존재 | 해당 Knowledge candidate/query embedding 0회, safe no-result 또는 node RAG failure policy. Resource ID·이름·정확한 거부 수 비노출 | MBA-366·Knowledge 연동 |
+| M365-A07A3 | Subject 없는 schedule/webhook/API/system 실행에 public KB와 private KB가 함께 연결됨 | ADR-0018 anonymous public-only로 public evidence만 사용하고 private evidence는 Judge/cache/trace/audit에 유입 0회 | MBA-366·Knowledge 연동 |
+| M365-A07A4 | Client/task payload가 owner, deployment creator, `user_id`, system actor 또는 credential principal을 data subject로 주장 | Synthetic execution subject 생성 없이 주장을 무시하고 anonymous public-only를 유지. Private candidate/query embedding 0회 | MBA-366·Knowledge 연동 |
+| M365-A07B | ADR-0064 단일 exact-model policy만 있고 Judge 또는 다중 primary/fallback 후보 policy가 없음 | Capability-required V2 effective decision과 provider I/O 0회, versioned non-V2 path 또는 typed failure | Provider Candidate Credential Policy 후속 |
+| M365-A07C | RAG 사용 V2 실행에 Judge/main-generation/candidate policy는 있지만 ADR-0071 query-embedding policy/capability가 없음 | Query embedding, Requirement Judge와 work-model provider I/O 0회. Query embedding 권한을 다른 purpose policy로 대체하거나 stored model로 우회하지 않음 | MBA-351·320 |
+| M365-A07D | Organization data-egress policy가 현재 Judge와 work-model provider를 모두 거부하거나 없음 | Bounded projection도 외부 전송하지 않고 Judge/work-model provider I/O 0회, current non-V2 safe path 또는 typed failure. Provider 세부사항은 숨김 | MBA-366·Egress 후속 |
+| M365-A08 | 싼 모델이 context/schema/tool/effect capability 미충족 | Utility 계산 전에 제외 | MBA-366 |
+| M365-A08A | Candidate, 저장 graph 또는 저장 policy가 current global workflow model execution eligibility에서 제외된 날짜 고정 ID나 전역 실행 제외 모델을 참조 | Utility 계산과 Provider I/O 전에 제외하고 current-valid fallback만 재검증해 사용. Candidate credential이나 낮은 비용으로 execution eligibility 우회 0회 | MBA-366 |
+| M365-A09 | 동일 contract/evidence와 동률 후보 | Versioned canonical order로 결정론적 선택 | MBA-366 |
+| M365-A10 | 같은 graph/subject/contract로 policy preview와 runtime 평가 | Server-known hard gate는 같고 preview는 provider/Judge/학습 side effect가 없다. Current requirement source가 없으면 모델을 꾸며내지 않고 `preview_status=requirement_pending` 반환 | MBA-366 |
+| M365-A11 | Output schema·tool/effect 요구가 있음 | Judge 추측이 아니라 server structural fact로 gate 적용 | MBA-366 |
+| M365-A12 | 첫 Judge가 계약 응답에 성공했지만 confidence가 policy 기준보다 낮아 secondary Judge 실행 | 같은 bounded schema, 모델 ID 없음, 최대 1회와 budget/adjudication 기록 | MBA-366 |
+
+### B. 경제성, 비용과 fallback
+
+| ID | 실패 재현 | 기대 결과 | 구현 소유 |
+| --- | --- | --- | --- |
+| M365-B01 | 예상 절감이 Judge·retry·fallback 비용과 risk margin 이하 | Judge 0회, current-valid stored safe path | MBA-366·Ledger 후속 |
+| M365-B01A | Admission 계산이 Judge 결과를 요구 | Server-known fact만 사용하거나 routing 생략 | MBA-366·Ledger 후속 |
+| M365-B01B | 경제성은 없지만 stored baseline이 hard gate 실패 | Proven candidate 또는 provider 전 typed failure | MBA-366 |
+| M365-B02 | 저가 모델의 retry/fallback 확률이 높음 | 모든 기대 attempt 비용을 포함해 비교 | Ledger 후속 |
+| M365-B02A | Current pricing version에 가격이 없거나 단위 비교 불가 | 최저 비용으로 승격하지 않고 safe path 유지 | MBA-366·Model Profile 후속 |
+| M365-B03 | Judge 뒤 같은 모델 실행 | Judge routing cost도 전체 비용에 포함 | Ledger 후속 |
+| M365-B04 | Primary 실패 뒤 fallback 성공 | 두 attempt의 상태·비용을 모두 기록 | Ledger 후속 |
+| M365-B05 | Primary timeout 뒤 provider 결과 불명 | 성공/실패로 추측하지 않고 outcome-unknown 유지, 같은 run의 retry/fallback provider I/O 0회 | Ledger 후속 |
+| M365-B05A | Requirement Judge가 `provider_started` 뒤 timeout/response loss로 outcome-unknown | 원 Judge attempt를 terminal unknown으로 종결하고 같은 routing decision의 Judge retry·secondary 호출 0회. 별도 current-valid non-V2 stored safe path가 있으면 독립 work-model capability·budget·egress admission과 durable intent 뒤에만 호출하며, 없으면 provider 전 typed failure | MBA-366·Ledger 후속 |
+| M365-B06 | Default revoke, fallback의 server-derived principal/model-bound policy는 current | Fallback current gate 뒤 실행 | MBA-366 |
+| M365-B07 | Default/fallback 모두 current data scope·model-bound credential policy 또는 hard gate를 통과하지 못함 | Provider 호출 전 `model_routing.no_usable_model` | MBA-366 |
+| M365-B08 | V2 flag/profile 비활성 | 명시적 current-valid non-V2 policy 또는 stored path만 사용 | MBA-366·Activation 후속 |
+| M365-B09 | Secondary Judge budget 또는 경제성 없음 | Secondary 0회, proven baseline | MBA-366·Ledger 후속 |
+| M365-B10 | 선택 뒤 provider 호출 전 credential/model/provider/scope revoke | Primary/fallback I/O 0회, 다음 safe candidate 또는 typed failure | MBA-366 |
+| M365-B10A | 선택 후보만 provider_started 전 revoke되고 원래 승인 후보가 남음 | 같은 pinned contract·원래 후보 안에서 최대 1회 server reselection, 신규 후보/scope 확대 없음 | MBA-366 |
+| M365-B11 | Judge 예산만 승인됐거나 primary/fallback budget·price admission 실패 | 같은 Billing Principal의 attempt별 admission을 요구하고 승인되지 않은 provider I/O 0회 | MBA-366·ADR-0064/0069 연동 |
+| M365-B11A | Requirement Judge가 필요하지만 Judge exact-model capability, budget admission 또는 durable attempt intent 기록이 실패 | Judge provider I/O 0회. 실패 attempt를 primary/fallback admission으로 재사용하지 않고 current-valid stored path 또는 typed failure | MBA-366·ADR-0064/0069 연동 |
+
+### C. Model profile과 cold start
+
+| ID | 실패 재현 | 기대 결과 | 구현 소유 |
+| --- | --- | --- | --- |
+| M365-C01 | Source/version 없는 수동 score | Proven quality 근거로 사용 금지 | Model Profile 후속 |
+| M365-C02 | Freshness 기준이 지난 운영 성적 | Stale 처리하고 강한 자동 선택 근거에서 제외 | Model Profile 후속 |
+| M365-C03 | Catalog/profile/pricing version 변경 뒤 이전 accepted cache 조회 | Mandatory cache miss, current selection contract로 server selector 재실행. Stale model 재검증만으로 hit 복구 금지 | MBA-367·Model Profile 후속 |
+| M365-C04 | 미검증 후보와 reversible internal low-risk 요청 | Versioned budget 안의 bounded canary만 허용 | MBA-366·Model Profile 후속 |
+| M365-C05 | 미검증 후보와 human-facing/security/financial/effect 요청 | Proven safe baseline만 선택 | MBA-366 |
+| M365-C06 | Canary 실패·품질·지연 한도 초과 | Exploration 즉시 중단 | Model Profile·Activation 후속 |
+| M365-C07 | Client가 high risk를 low로 전송 | Server-derived risk 유지 | MBA-366 |
+| M365-C08 | Organization A의 operational evidence로 B 선택 시도 | 승인된 익명 집계 contract 없으면 tenant evidence 혼합 금지 | Model Profile 후속 |
+| M365-C08A | 같은 organization의 다른 workflow 또는 canonical node location evidence를 현재 node 선택에 재사용 시도 | 승인된 익명 집계 contract 없으면 cross-workflow·cross-node evidence 재사용 0회 | Model Profile 후속 |
+| M365-C08B | 같은 organization/workflow/canonical node에서 prompt, RAG, output/schema 또는 downstream 의미를 변경한 새 deployment가 이전 operational evidence를 조회 | Task semantic fingerprint/contract version이 달라 이전 evidence 재사용 0회. Current minimum-quality gate는 새 lineage의 evidence만 집계 | Model Profile 후속 |
+| M365-C08C | 같은 organization/workflow/canonical node를 작업 의미 변경 없이 재배포하고 task semantic fingerprint/contract version도 동일 | Freshness와 evidence contract를 통과한 기존 operational evidence를 같은 lineage에서 재사용 가능. Deployment version 차이만으로 불필요하게 폐기하지 않음 | Model Profile 후속 |
+| M365-C08D | 같은 organization/workflow/node/task fingerprint에서 모델 A 또는 이전 evidence contract의 성적을 모델 B/current contract에 집계 | `model_id`와 `evidence_contract_version`이 다른 evidence는 write/read aggregate와 minimum-quality gate에서 재사용 0회 | Model Profile 후속 |
+| M365-C08E | 같은 terminal ADR-0069 provider usage operation의 finalizer가 순차 재시도되거나 동일 digest로 두 writer에 동시 전달 | `(organization_id, provider_usage_operation_id, evidence_contract_version)` unique/CAS로 event·receipt 하나와 aggregate sample delta 한 번에 수렴. 두 번째 writer는 기존 receipt 반환 | Model Profile·Ledger 후속 |
+| M365-C08F | 같은 provider usage operation/evidence contract append identity가 다른 safe metric digest로 재전달 | `model_routing.operational_evidence_conflict`, 새 event/receipt와 aggregate count·quality metric zero-write | Model Profile·Ledger 후속 |
+| M365-C08G | Client/task payload가 run/node/invocation/Loop/model attempt를 주장하거나 ADR-0069 terminal operation이 없는 legacy 호출을 V2 evidence로 append 시도 | Server-derived operation binding 외 주장을 무시하고 `model_routing.operational_evidence_source_required`; event/receipt/aggregate zero-write, raw identity detail 비노출 | Model Profile·Ledger 후속 |
+| M365-C08H | Judge/query embedding/summary 또는 일반 test/preview/격리 benchmark operation을 operational work-model evidence로 append 시도 | `model_routing.operational_evidence_ineligible`, event/receipt/aggregate zero-write | Model Profile·Ledger 후속 |
+| M365-C08I | 허용 work-model purpose의 deployed/등록 canary operation이 outcome-unknown으로 종결 | Event/receipt는 같은 operation identity에 한 번 보존하되 unknown으로만 집계하고 success/schema/downstream pass와 proven-quality sample 증가 0회 | Model Profile·Ledger 후속 |
+| M365-C08J | 같은 organization/workflow/node/task fingerprint/model이 쉬운 요청 cohort와 high-risk·고난도 cohort에서 각각 성공 | Server-derived `requirement_evidence_cohort_contract_version`/`requirement_evidence_cohort_id`별 aggregate를 분리하고 cross-cohort 표본을 current minimum-quality 근거로 재사용하지 않음 | Model Profile 후속 |
+| M365-C08K | Terminal operation에서 bounded requirement cohort를 server-side로 확정할 수 없음 | Event는 unknown measurement로만 보존하거나 부적격 처리하고 positive quality aggregate 증가 0회. Client가 cohort ID를 주장할 수 없음 | Model Profile·Ledger 후속 |
+
+### D. Cache, learner와 identity
+
+| ID | 실패 재현 | 기대 결과 | 구현 소유 |
+| --- | --- | --- | --- |
+| M365-D01 | 명시적 versioned ADR-0059 V1과 V2 worker 공존 | V1 Selection Judge와 V2 Requirement Judge wire/cache/learner 격리, 상호 migration 없음 | Strategy Registry/Cutover 후속 |
+| M365-D01A | Contract version 없는 기존 row와 재검증·발행된 rollback policy 공존 | 기존 row는 dynamic routing 0회·stored safe path 또는 typed failure, 재발행 policy만 rollback target | Strategy Registry/Cutover 후속 |
+| M365-D01B | Workflow deploy actor가 ambiguous row를 그대로 V1/V2로 저장 시도 | 자동 분류/시간 추정 없이 거부하고 current graph/candidate 재검증을 통한 명시적 reissue 요구 | Strategy Registry/Cutover 후속 |
+| M365-D02 | 같은 text에서 strategy/rubric/task/output/effect/feature/catalog/profile/pricing 변경 | 관련 selection contract가 달라져 accepted cache miss | MBA-367 |
+| M365-D02A | Cache HMAC key epoch 회전 또는 같은 key/contract 동시 fill | 이전 epoch는 miss, 동시 fill은 한 immutable 결과로 수렴 | MBA-367 |
+| M365-D02B | 같은 feature hash가 다른 organization/deployment/canonical node에서 발생 | Cache namespace가 달라 재사용 0회 | MBA-367 |
+| M365-D02C | 같은 requirement/selection contract에서 activation profile 또는 exact requirement source manifest가 learner A에서 B나 `judge_only`로 변경 | Activation profile/source binding이 달라 mandatory cache miss. 이전 source가 만든 requirement/model recommendation 재사용 0회 | MBA-367·368·Activation 후속 |
+| M365-D03 | Cached model revoke/disable 또는 hard gate 변화 | 추천 거부, provider I/O 0회 | MBA-367 |
+| M365-D04 | Old rubric/feature/task-intent-normalization/label contract learner 연결 | Local-first 금지, 새 immutable requirement lineage | MBA-368 |
+| M365-D04A | 같은 active generation에서 두 learner candidate 동시 발행 | Expected generation CAS로 하나만 승격, stale candidate는 실행 불가 | MBA-368 |
+| M365-D04B | Requirement contract는 같고 catalog/profile/pricing만 변경 | Learner 요구 판정은 재사용 가능, accepted cache miss와 server 재선택 | MBA-367·368 |
+| M365-D04C | Runtime 값은 같지만 고정 prompt/instruction, variable mapping, output/schema, Knowledge/RAG 설정 또는 downstream contract 변경 | Task semantic fingerprint와 learner lineage 회전, 이전 local prediction 사용 0회 | MBA-368 |
+| M365-D04D | Prompt/schema가 같아도 canonical task intent가 `classify`에서 `generate` 등으로 변경 | Intent 값과 normalization version을 포함한 task fingerprint/requirement contract가 회전하고 이전 learner·accepted cache 사용 0회 | MBA-367·368 |
+| M365-D05 | Accepted labels 49 또는 recent evaluation 19 | Learner candidate 자격 없음 | MBA-368 |
+| M365-D06 | 50/20 충족, exact match 80% 미만 | Learner candidate 자격 없음 | MBA-368 |
+| M365-D07 | Contract 실패 또는 fallback label 확정 | 평가 분모 포함, accepted count/weight 제외 | MBA-368 |
+| M365-D08 | 저빈도 workflow에서 label 장기 부족 | 영구 Judge 강제 대신 경제성/fixed safe path | MBA-366·368 |
+| M365-D09 | 다른 container/Loop에 같은 terminal node ID | Policy/learner를 canonical location으로 분리 | MBA-369 |
+| M365-D10 | 같은 nested node가 여러 iteration 실행 | Invocation/iteration별 exactly-once label/attempt | MBA-369·Ledger 후속 |
+| M365-D10A | 같은 terminal event를 retry와 background finalizer가 동시에 확정 | Label outcome과 accepted/evaluation count 각각 1회 | MBA-368·369 |
+| M365-D11 | Test Sidebar/Cost Optimizer compare에서 routing 사용 | 운영 label·weight·성적·counter 변경 없음 | MBA-368 |
+
+### E. API, 관측과 redaction
+
+| ID | 실패 재현 | 기대 결과 | 구현 소유 |
+| --- | --- | --- | --- |
+| M365-E01 | Runtime Judge 뒤 server selector 선택 | `runtime_judge`와 `server_capability_selector`를 분리 기록 | MBA-366 |
+| M365-E02 | Local classifier 뒤 server selector 선택 | `local_classifier`와 server selection source 분리 | MBA-366 |
+| M365-E03 | 구형 Client가 `decision_source`만 인식 | Additive projection 파싱 유지, canonical source로 재해석 금지 | MBA-366 |
+| M365-E04 | 권한·credential로 candidate 제외 | 상세 ID/secret 없는 bounded reason | MBA-366 |
+| M365-E05 | Judge/cache/provider 오류 또는 실험 report 생성 | Prompt/RAG 원문, credential, private exclusion detail 비노출 | MBA-366·367·368·Benchmark 후속 |
+| M365-E06 | Judge가 호출되고 서버가 선택 | UI가 Judge를 최종 선택자로 표시하지 않음 | MBA-366·Client 후속 |
+| M365-E07 | Accepted cache 추천 뒤 current selector 실행 | Cached original `requirement_source`를 보존하고 `requirement_evaluation_scope=accepted_decision_cache`, `routing_reuse_source=accepted_decision_cache`, Judge attempt 0회를 기록. UI는 이전 결정 재사용으로 표시하고 selector/current gate는 다시 실행 | MBA-367 |
+| M365-E08 | 구형 preview가 matched/default/fallback 반환 | 호환 유지하되 V2 requirement source로 재해석하지 않음 | MBA-366 |
+| M365-E09 | Effective V2에서 economic admission으로 Judge 의도적 생략 | `requirement_source=not_required` | MBA-366 |
+| M365-E09A | V2 off, profile/scope/credential policy 또는 Worker 부적격으로 non-V2 path 전환 또는 typed failure | requested strategy, non-V2 effective strategy 또는 `null`, bounded resolution reason 기록, V2 source field 없음 | MBA-366·Activation 후속 |
+| M365-E10 | Judge 호출·파싱·contract 실패 | `requirement_source=unavailable`과 safe reason | MBA-366 |
+| M365-E11 | Secondary Judge 1회 사용 | `runtime_judge`, attempt count 2, adjudicated true | MBA-366 |
+
+### F. 실험과 activation governance
+
+| ID | 실패 재현 | 기대 결과 | 구현 소유 |
+| --- | --- | --- | --- |
+| M365-F01 | Git SHA/dataset/contract version 누락 | Run `incomplete`, activation 집계 제외 | Benchmark 후속 |
+| M365-F02 | Dirty source인데 diff reference 없음 | Run `invalid` 또는 명시적 비승인 | Benchmark 후속 |
+| M365-F03 | Crash/부분 benchmark | Run `incomplete`, activation 집계 제외 | Benchmark 후속 |
+| M365-F04 | Tuning과 holdout dataset hash 동일 | Activation 평가 거부 | Benchmark 후속 |
+| M365-F05 | Baseline 사이 pricing/catalog version 다름 | 직접 비용 비교 거부 | Benchmark 후속 |
+| M365-F06 | 전략별 evaluator/version 다름 | 품질 비교 거부 | Benchmark 후속 |
+| M365-F07 | Git report에 raw input/output/RAG/credential 포함 | 저장 차단 또는 redacted aggregate만 허용 | Benchmark 후속 |
+| M365-F08 | Learner candidate gate만 통과 | Production V2는 off 유지 | MBA-340·Activation 후속 |
+| M365-F08A | Learner 50/20/80 통과 후 사전 등록 cohort 분포 위반·설명 불가 단일 수렴·schema/downstream 실패·fallback 초과 | Learner artifact와 별개로 production activation gate 실패. 단일 모델 선택만으로 다양성을 강제하지 않음 | Benchmark·Activation 후속 |
+| M365-F08B | `proposed` profile의 manifest/locked holdout, credential policy, Worker와 rollback readiness가 통과하고 작성자와 다른 actor가 current expected domain generation으로 승인 | Guard lock 아래 다음 profile-bound safety generation을 한 번 할당해 `limited_canary`로만 전이하고 stable canary scope에만 capability 발급. Production scope V2 실행 0회 | Activation 후속 |
+| M365-F08B1 | Profile 작성자가 자신의 proposed revision의 limited canary start를 승인 | 거부, profile state/revision/receipt zero-write. 기존 보안 정책의 safe `permission.denied` audit만 허용 | Activation 후속 |
+| M365-F08C | `proposed` profile을 production으로 직접 승격하거나 limited-canary 표본·기간·guardrail 전에 promote | 거부, profile state/revision/audit/receipt zero-write | Activation 후속 |
+| M365-F08D | Current `limited_canary`가 사전 등록 표본·기간과 품질·비용·지연·fallback·high-risk guardrail을 통과하고 독립 승인을 받음 | `production_active`로 한 번 전이하고 승인 production scope만 활성화 | Activation 후속 |
+| M365-F08D0 | Current canary window의 aggregate revision과 모든 authoritative source watermark가 cutoff를 충족하고 evidence system이 `seal_canary_evidence_window`를 제출 | Window pointer/aggregate/watermark lock 아래 window sealed state, immutable snapshot ID/revision/hash, next-window pointer, actor/request-bound receipt와 canonical audit를 한 번 원자 commit. Same request replay는 기존 snapshot 반환 | Activation·Benchmark 후속 |
+| M365-F08D0A | Seal command의 expected aggregate revision을 읽은 뒤 cutoff 이전 evidence append가 먼저 aggregate revision을 증가시킴 | Seal은 stale revision과 snapshot/pointer/receipt/success audit zero-write. Current revision으로 재제출한 seal은 선행 event를 포함한 snapshot을 생성 | Activation·Benchmark 후속 |
+| M365-F08D0B | Seal transaction이 먼저 commit된 뒤 cutoff 이후 non-blocking event append와 같은 command ID의 다른 cutoff/watermark request가 도착 | Event는 next window에만 append한다. 다른 seal request는 `model_routing.canary_snapshot_seal_conflict`와 zero-write, 원 snapshot/pointer 불변 | Activation·Benchmark 후속 |
+| M365-F08D1 | Promote 요청이 sealed snapshot을 읽은 뒤 commit 전에 cutoff 이전 late arrival reconciliation 또는 blocking breach가 `snapshot_invalidation_revision`을 증가시킴 | Promotion transaction이 exact snapshot과 `expected_snapshot_invalidation_revision`, generation block을 재검증해 `model_routing.canary_evidence_stale`; profile/domain/receipt/success audit zero-write | Activation·Benchmark 후속 |
+| M365-F08D2 | 같은 environment/family/profile revision/safety generation/source kind/source event ID가 같은 window 또는 지연 재전달로 다른 window에 배정되며 metric contract, event kind와 payload digest가 같거나 다름 | Unique source identity는 canary window와 comparison field를 포함하지 않는다. Server-assigned window와 모든 comparison field까지 같으면 기존 event/receipt를 반환하고 aggregate revision/audit를 한 번만 기록한다. 다른 window 재사용 또는 하나라도 다른 값은 `model_routing.canary_evidence_conflict`와 event/revision/block/audit zero-write | Activation·Benchmark 후속 |
+| M365-F08D3 | Sealed cutoff 이후 non-blocking 정상 event가 다음 open canary window에 append되는 동안 current snapshot으로 promote | 정상 event는 next-window aggregate만 갱신하고 sealed snapshot/`snapshot_invalidation_revision`을 바꾸지 않는다. Promotion은 해당 event 때문에 stale되지 않고 다른 gate가 current이면 commit 가능 | Activation·Benchmark 후속 |
+| M365-F08D4 | Locked holdout의 `activation_holdout` artifact를 `record_canary_evidence`로 제출하거나 canary sample/watermark/block에 집계 시도 | `model_routing.canary_evidence_source_ineligible`; holdout artifact는 exact manifest의 locked holdout branch에만 남고 canary event/receipt/aggregate/snapshot/block write 0회 | Activation·Benchmark 후속 |
+| M365-F08E | Production profile이 approved learner A를 고정한 상태에서 learner B가 50/20/80 candidate gate를 통과해 발행됨 | Profile/source version과 production 실행은 A를 유지하고 B 사용 0회. Policy/profile 자동 write 0회 | MBA-368·Activation 후속 |
+| M365-F08F | Profile이 `requirement_source_mode=judge_only`이고 같은 requirement contract의 learner가 존재 | Local classifier 사용 0회, profile에 고정한 exact Judge policy/rubric만 사용 | MBA-366·368·Activation 후속 |
+| M365-F08F1 | `judge_only`에 learner version을 함께 넣거나 `approved_learner`의 learner/contract 또는 enabled Judge fallback의 exact policy/rubric이 누락된 profile propose | Conditional manifest validation 실패, proposed profile/receipt/success audit zero-write | MBA-368·Activation 후속 |
+| M365-F08G | Profile-bound learner가 stale/revoked됐고 profile에 exact Judge fallback이 없음 | 다른 learner/Judge로 대체하지 않고 `activation_requirement_source_unavailable`로 V2 해소. Current-valid non-V2 path가 없을 때만 provider I/O 전 `model_routing.activation_requirement_source_unavailable` | MBA-366·368·Activation 후속 |
+| M365-F08G1 | Profile-bound learner가 사용할 수 없지만 profile에 exact current Judge fallback과 해당 branch의 locked holdout/canary evidence가 있음 | Profile에 고정한 Judge policy만 사용하고 다른 learner/Judge 사용 0회. Actual source는 `runtime_judge`로 기록 | MBA-366·368·Activation 후속 |
+| M365-F08G2 | Approved learner profile이 Judge fallback을 허용하지만 fallback branch의 locked holdout 또는 canary evidence가 없음 | Production promote 거부, profile state/revision/domain claim/receipt/success audit zero-write | MBA-368·Activation 후속 |
+| M365-F08G3 | Approved learner profile이 `learner_judge_fallback=disabled`이고 learner branch의 locked holdout/canary evidence와 나머지 gate가 모두 current | Judge fallback policy/evidence 없이 production promote 가능. Runtime fallback Judge 호출 0회, learner unavailable 시 다른 Judge 합성 없이 V2 해소 | MBA-368·Activation 후속 |
+| M365-F08H | Learner B를 production source로 승격하려고 기존 profile의 learner version만 교체 | In-place update 거부. B를 고정한 새 proposed profile이 locked holdout, limited canary와 독립 production 승격을 모두 통과해야 함 | MBA-368·Activation 후속 |
+| M365-F09 | Holdout에서 high-risk 과소판정 | Activation gate 실패 | MBA-340·Benchmark 후속 |
+| M365-F09A | Holdout 표본 부족 또는 실패·미평가 행을 분모에서 제거해야 기준 통과 | Activation 부적격, 결과를 success로 보고하지 않음 | Benchmark·Activation 후속 |
+| M365-F10 | Canary guardrail 초과 | Monitor는 evidence만 기록한다. 권한 있는 platform routing operator의 idempotent emergency command가 V2 disable 또는 승인 rollback을 수행 | MBA-340·Activation 후속 |
+| M365-F10A | Monitor, benchmark, learner, optimizer 또는 scheduler가 profile state/revision/receipt 직접 변경 시도 | 거부, profile state/revision/receipt zero-write. 각자 허용된 diagnostic/candidate/lifecycle command 외 activation mutation 없음 | Activation 후속 |
+| M365-F11 | V2 flag on, activation profile 없음/stale/scope mismatch/rollback invalid | V2 Requirement Judge 0회, 명시적 non-V2 path 또는 typed failure | MBA-366·Activation 후속 |
+| M365-F11A | 신규 실행에서 profile이 disabled 또는 expired 상태 | V2 Judge/provider I/O 0회, 각각 `profile_disabled`/`profile_expired` reason과 non-V2 path 또는 typed failure | Activation 후속 |
+| M365-F11A1 | 신규 실행이 정상 promotion으로 superseded된 predecessor를 선택하려 함 | V2 Judge/provider I/O 0회, `profile_superseded` reason과 successor 재해소 또는 current-valid non-V2 path/typed failure | Activation 후속 |
+| M365-F11B | `deployed` 또는 일반 `test`가 proposed profile로 V2 실행 시도 | V2 Judge/provider I/O 0회, non-V2 path 또는 typed failure. 격리 benchmark만 M365-F26 예외 | MBA-366·Activation 후속 |
+| M365-F11C | DB current time이 profile `valid_until`을 지났지만 expiry sweeper command가 아직 실행되지 않음 | Resolver가 state row와 무관하게 profile을 expired로 판정해 V2 Judge/provider I/O 0회. Current-valid non-V2 rollback 또는 typed failure | MBA-366·Activation 후속 |
+| M365-F11D | 실행 snapshot 뒤 profile에 고정된 non-V2 rollback policy가 revoke, retire 또는 current contract 불일치 상태가 됨 | 다음 Judge/primary/fallback provider I/O 전 effective V2를 중단하고 `rollback_target_invalid`. 승인된 다른 rollback을 합성하지 않으며 safe path가 없으면 typed failure | MBA-366·Activation 후속 |
+| M365-F12 | Holdout 뒤 activation margin 변경 | 새 profile/version과 독립 재승인 없이는 결과 부적격 | Benchmark·Activation 후속 |
+| M365-F13 | Registry에 없는 strategy/version 선택 | V2 Requirement Judge 0회, 명시적 non-V2 path 또는 typed failure | Activation 후속 |
+| M365-F14 | Organization manager가 전역 profile 활성화/scope 확대 | 권한 거부, profile state/revision/receipt zero-write. 기존 보안 정책의 transaction-bound safe `permission.denied` audit만 허용 | Activation 후속 |
+| M365-F15 | Deploy actor가 profile 밖 strategy 또는 다른 organization scope 선택 | Resource hiding에 맞는 거부, profile state/revision/receipt zero-write. 기존 보안 정책의 transaction-bound safe `permission.denied` audit만 허용 | Activation 후속 |
+| M365-F16 | Profile 작성자가 같은 version을 production 승인 | 승인 거부, profile state/revision/receipt zero-write. 기존 보안 정책의 transaction-bound safe `permission.denied` audit만 허용 | Activation 후속 |
+| M365-F17 | Emergency command로 활성화/threshold 완화/scope 확대 | 거부. Disable과 승인 rollback만 허용 | Activation 후속 |
+| M365-F18 | 같은 assignment contract/seed와 immutable deployment를 서로 다른 Worker, retry와 process restart에서 반복 평가 | Versioned canonical input과 SHA-256 bucket이 동일해 stable canary 배정이 항상 같음. Worker/process/time/runtime random은 입력 0회 | Activation 후속 |
+| M365-F18A | 같은 rollout family에 production predecessor와 limited-canary successor가 공존 | Stable canary match는 successor, non-match는 predecessor를 선택 | Activation 후속 |
+| M365-F18A1 | 같은 family의 새 profile revision/safety generation이 기존 assignment contract·seed·bucket range를 그대로 고정 | Profile revision/generation만으로 rebucketing하지 않고 동일 deployment의 bucket과 target 여부 유지 | Activation 후속 |
+| M365-F18A2 | Canary assignment algorithm/seed/unit/bucket-count contract 또는 target range를 바꾸려는 profile | 기존 profile in-place 변경 0회. 새 proposed profile과 독립 canary-start 승인 뒤에만 새 contract를 사용하며 algorithm/seed/unit/bucket-count 변경만 bucket을 재계산하고 range 변경은 기존 bucket의 eligibility만 변경 | Activation 후속 |
+| M365-F18A3 | Client/profile 작성자가 raw seed를 제출하거나 unknown assignment contract, V1에서 10,000이 아닌 bucket count, empty/겹침/out-of-range 또는 전체를 선택하는 target ranges로 profile propose | Server-issued contract reference 외 입력을 거부하고 profile/family/domain/receipt/success audit zero-write, provider I/O 없음 | Activation 후속 |
+| M365-F18A4 | 권한 있는 platform operator가 신규 environment/domain에 `rollout_family_create`를 제출 | Guard lock 아래 actor/global kill/domain overlap을 재검증하고 CSPRNG seed가 있는 immutable family/domain/assignment contract, domain registry revision, receipt와 canonical audit를 한 transaction에 commit. Raw seed 응답·audit 노출 0회 | Activation 후속 |
+| M365-F18A5 | 같은 family create command ID·actor·request 재전달, 같은 ID의 다른 request 또는 같은/overlap domain concurrent creator 경합 | Exact replay는 기존 family/contract/receipt 반환·seed 재발급 0회. 다른 request는 `rollout_family_command_conflict`, overlap loser는 `activation_domain_conflict`와 family/contract/receipt/success audit zero-write | Activation 후속 |
+| M365-F18A6 | 같은 environment에서 서로 non-overlap domain의 family create 두 건이 같은 guard revision을 읽고 경합 | Environment guard가 overlap check를 직렬화하지만 unrelated guard revision stale로 거부하지 않는다. 둘 다 각자의 immutable family/contract/receipt/audit를 정확히 한 번 commit | Activation 후속 |
+| M365-F18B | Current limited-canary successor가 promote 조건을 만족 | 같은 transaction에서 successor를 production_active, predecessor를 superseded로 전이. In-flight run은 기존 snapshot, 새 run은 successor 사용 | Activation 후속 |
+| M365-F18B1 | Predecessor snapshot을 고정한 multi-node run의 node 사이에 successor promotion이 commit됨 | `superseded`만으로 진행 중 run을 중단하지 않고 이후 node attempt도 predecessor snapshot으로 완료. 별도 kill/block/disable/revoke가 경합하면 해당 safety override는 우선 | Activation·MBA-366 후속 |
+| M365-F18C | 활성 production domain을 바꾸거나 overlap하는 profile을 같은 family revision으로 제안 | 명시적 Accepted migration contract 전 zero-write 거부 | Activation 후속 |
+| M365-F18D | disabled, expired 또는 superseded profile을 canary/production 상태로 재활성화 시도 | 거부하고 profile state/revision/receipt zero-write. 변경 계약은 새 proposed revision으로만 등록 | Activation 후속 |
+| M365-F18E | 서로 다른 rollout family의 겹치는 domain에 canary start 또는 production promote가 같은 environment에서 동시에 진입 | Environment activation guard 아래 한 command만 state/domain claim/receipt/audit를 commit. Loser는 `model_routing.activation_domain_conflict`와 모든 success mutation zero-write | Activation 후속 |
+| M365-F18F | Activation command가 bounded 시간 안에 environment guard lock을 얻지 못함 | `model_routing.activation_domain_conflict`; profile/family/environment revision, domain claim, receipt와 success audit zero-write. 외부 I/O 없음 | Activation 후속 |
+| M365-F18F1 | Environment registry의 activation guard row가 누락된 상태에서 domain mutation command 실행 | Command가 guard를 임의 생성하지 않고 `model_routing.activation_guard_unavailable`. Profile/family/domain/receipt/success audit zero-write | Activation 후속 |
+| M365-F18G | 같은 environment의 서로 겹치지 않는 두 family domain command가 동일 expected guard revision을 읽고 경합 | Coordinator가 guard lock 아래 overlap을 순차 재판정하되 global guard revision을 domain CAS로 사용하지 않는다. 각 command는 자신의 expected family/profile/domain-claim revision만 검증해 둘 다 정상 commit | Activation 후속 |
+| M365-F18H | 최초 rollout family라 production predecessor가 없는 상태에서 limited canary와 production promote를 순서대로 수행 | Canary non-target은 profile에 고정된 current-valid non-V2 rollback을 사용하고 target만 successor를 사용한다. Promote는 successor만 `production_active`로 만들고 존재하지 않는 predecessor update/audit를 생성하지 않는다 | Activation 후속 |
+| M365-F18I | `valid_until`이 지난 `production_active` profile이 exact production claim/generation을 소유하고 deterministic `activation_profile_expire` command가 중복 전달됨 | DB clock, expected revision과 owner profile/revision/claim role/generation을 검증해 한 번만 `expired` 전이, 자기 production claim 해제와 generation epoch 무효화, receipt와 redacted audit를 원자 commit. 다른 profile claim/generation은 변경하지 않고 재전달은 기존 receipt 반환 | Activation 후속 |
+| M365-F18I1 | Production predecessor가 active claim/generation을 소유한 family에서 claim 없는 proposed successor의 `valid_until`이 지나 expiry command 실행 | Successor만 `expired`로 전이하고 receipt/audit를 원자 commit. Predecessor state·claim·generation/epoch·capability 변경 0회, production 실행 지속 | Activation 후속 |
+| M365-F18I2 | Production predecessor와 limited-canary successor가 서로 다른 generation으로 공존할 때 successor가 만료됨 | Successor의 canary claim과 generation/epoch만 무효화한다. Predecessor state·production claim·generation/epoch·capability 변경 0회 | Activation 후속 |
+| M365-F19 | Multi-node run 중 profile/workflow policy 갱신 | 현재 run은 pinned version, 새 run만 신규 version | Activation 후속 |
+| M365-F19A | Policy가 없는 상태의 `expected_version=null` 첫 생성 두 건 또는 같은 current version의 workflow strategy command 두 건이 경합 | 한 요청만 policy version·receipt·audit를 commit하고 loser는 `model_routing.workflow_policy_version_conflict`와 zero-write | Activation 후속 |
+| M365-F19B | Workflow strategy command의 사전 검사 뒤 commit 전에 `deploy` 권한 또는 active organization scope 회수 | Commit-time 재검증으로 policy/version/receipt zero-write, resource hiding을 지키는 safe `permission.denied` audit만 허용 | Activation 후속 |
+| M365-F19C | 같은 canonical workflow strategy request와 idempotency key 재시도 | 기존 receipt를 반환하고 workflow policy mutation과 canonical success audit 각각 1회 | Activation 후속 |
+| M365-F19C1 | 같은 idempotency key로 strategy/version, expected version 또는 opt-out이 다른 request 제출 | `model_routing.workflow_policy_version_conflict`, policy/version/receipt/success audit zero-write | Activation 후속 |
+| M365-F19D | Workflow strategy policy mutation 중 canonical audit 또는 command receipt 기록 실패 | Policy/version/receipt/audit 모두 rollback하고 success response 없음 | Activation 후속 |
+| M365-F19E | Versioned strategy 선택 뒤 opt-out | Policy row를 삭제하지 않고 명시적 opt-out 새 version과 receipt/audit를 원자 저장. In-flight run은 기존 snapshot, 새 run만 opt-out 적용 | Activation 후속 |
+| M365-F19F | Workflow policy가 V2 strategy와 rollout family/domain을 고정한 뒤 같은 family successor가 production으로 승격 | Policy version/write와 재배포 없이 새 run은 successor exact profile/revision/generation을 해소하고, 승격 전에 시작한 run은 별도 safety override가 없는 한 pinned predecessor를 유지 | Activation 후속 |
+| M365-F19G | V2 workflow policy command가 exact profile을 durable binding으로 제출하거나 workflow/deployment 밖 family/domain 또는 dynamic family 해소를 요청 | Commit-time family/domain 검증으로 `model_routing.strategy_out_of_scope`; policy/version/receipt/success audit zero-write, 다른 scope detail 비노출 | Activation 후속 |
+| M365-F20 | Execution snapshot 뒤 credential policy/credential, model/provider, rollback policy 또는 organization authorization이 revoke/disable됨 | 다음 provider-start transaction이 capability-bound lifecycle revision/state 불일치를 확인해 I/O 전 거부, 승인된 safe fallback 또는 typed failure | MBA-366·Activation 후속 |
+| M365-F20A | Provider start가 lifecycle 재검증을 마친 뒤 commit 전 대기하는 동안 organization scope/permission, credential policy/credential, model/provider 또는 rollback policy revoke가 같은 lifecycle fence에서 먼저 commit | 대기한 start는 stale revision을 보고 `provider_started`·provider/network I/O zero-write. Start가 먼저 commit한 경우 그 attempt만 이미 승인된 호출로 종결하고 revoke는 다음 start를 차단 | MBA-366·Activation·Ledger 후속 |
+| M365-F21 | Learner/optimizer/benchmark가 기준 통과 candidate 생성 | Production activation write 0회 | MBA-340·Activation 후속 |
+| M365-F22 | 같은 activation command ID 재시도 | 상태 전이와 audit 각각 1회 | Activation 후속 |
+| M365-F22A | 서로 다른 activation/rollback command가 같은 expected revision으로 경합 | 한 전이만 성공하고 loser는 conflict, audit는 실제 전이만 기록 | Activation 후속 |
+| M365-F22B | Profile activation mutation 중 canonical audit recorder 또는 durable command receipt 기록 실패 | 상태·revision·receipt·audit 모두 rollback, success response 없음 | Activation 후속 |
+| M365-F22C | 같은 activation command ID를 profile/transition/scope/reason/expected profile·family·domain-claim/domain generation/sealed snapshot·`expected_snapshot_invalidation_revision` 또는 actor가 다른 요청에 재사용 | Receipt의 actor와 canonical request hash가 달라 `model_routing.activation_command_conflict`; profile/domain/generation/receipt/success audit zero-write. 같은 actor·hash 재시도만 기존 receipt 반환. Expected guard state/revision/epoch는 global kill command에만 사용 | Activation 후속 |
+| M365-F23 | Profile 선택/rollback/권한 거부 audit | 성공 command audit/receipt는 mutation transaction과 exactly-once로 기록한다. 권한 거부는 state/revision/receipt 없이 기존 정책의 safe `permission.denied` audit만 가능하며, 모두 actor/scope/old-new version/reason만 기록하고 원문·secret은 비노출 | Activation 후속 |
+| M365-F24 | Multi-node run 도중 kill switch epoch 증가 | 미시작 V2 판정과 stale capability의 provider I/O 0회, 승인 rollback 사용. 이미 provider_started인 attempt outcome은 추측하지 않음 | MBA-366·Activation 후속 |
+| M365-F24A | Family A profile만 emergency disable/rollback 또는 expiry되고 겹치지 않는 Family B 실행 capability가 이미 발급됨 | A profile이 소유한 generation epoch만 증가한다. A의 다음 provider I/O는 0회이고 B capability는 global epoch와 B generation/epoch가 current이면 계속 유효 | MBA-366·Activation 후속 |
+| M365-F24B | 권한 있는 platform operator가 current expected guard state/revision/epoch로 global kill enable command 제출 | enabled state·epoch·revision·receipt·canonical audit를 한 transaction에 기록하고 모든 family의 stale capability와 신규 발급을 provider I/O 전에 거부. Scoped epoch 재발급으로 global kill 우회 불가 | MBA-366·Activation 후속 |
+| M365-F24B1 | 같은 global kill command ID·actor·canonical request 재전달 또는 같은 ID에 다른 actor/request 재사용 | 동일 재전달은 기존 receipt 반환·epoch 추가 증가 0회. 다른 actor/request는 `model_routing.global_kill_command_conflict`와 state/epoch/revision/receipt/success audit zero-write | Activation 후속 |
+| M365-F24B2 | 같은 expected guard revision/epoch의 enable과 disable 또는 두 state command가 경합 | Environment guard lock/CAS winner 하나만 state·epoch·receipt·audit commit. Loser는 `model_routing.global_kill_state_conflict`와 zero-write | Activation 후속 |
+| M365-F24B3 | Global kill actor 권한이 commit 전에 회수되거나 enable actor와 같은 actor가 독립 recovery approval 없이 disable 시도 | Enabled state와 epoch 유지, receipt/success audit/capability 발급 zero-write. 기존 정책의 safe denial audit만 허용 | Activation 후속 |
+| M365-F24B4 | 독립 승인된 recovery revision으로 global kill disable 성공 | State·epoch·revision·receipt·audit를 원자 commit하고 기존 capability는 계속 stale. Current profile/policy/scope/credential/rollback/Worker gate를 다시 통과한 새 capability만 새 epoch에 발급 | Activation 후속 |
+| M365-F24C | Production promote 뒤 새 guardrail window에서 blocking safety evidence가 기록됨 | Immutable breach event, deny-only safety block, 해당 profile-bound generation epoch와 redacted security audit를 원자 기록해 다음 provider I/O 0회. Monitor는 activation/scope를 넓히지 않으며 operator의 disable/rollback command가 lifecycle을 종결 | MBA-366·Activation·Benchmark 후속 |
+| M365-F24D | Breach가 난 scoped lifecycle generation의 deny-only block을 해제하거나 같은 profile revision으로 capability를 재발급 | In-place 해제와 재발급을 거부한다. Remediation을 반영한 새 immutable profile이 holdout과 독립 canary-start 승인을 통과하면 별도 generation을 limited-canary 전용으로만 발급 | Activation 후속 |
+| M365-F24D1 | 기존 production generation이 blocking breach로 차단된 뒤 remediation profile이 holdout과 독립 canary-start 승인을 통과 | 기존 block/generation을 변경하지 않고 새 generation과 stable canary capability만 발급한다. Canary target만 새 generation을 사용하고 non-target은 current-valid non-V2 rollback을 사용하며 production 승격은 0회 | Activation 후속 |
+| M365-F24D2 | Remediation limited-canary generation이 사전 등록 evidence를 충족하고 별도 독립 production 승격을 통과 | 같은 remediation generation을 production claim으로 전환한다. 기존 breached generation의 block 해제·재사용 0회 | Activation 후속 |
+| M365-F24D3 | Blocking breach가 난 기존 limited-canary successor가 claim을 소유한 상태에서 새 remediation canary start 시도 후 권한 있는 emergency disable/rollback 수행 | Claim이 남은 동안 새 canary start는 `model_routing.activation_domain_conflict`와 generation/claim zero-write다. Emergency 종료는 기존 claim만 닫고 block은 유지하며, 이후 승인된 remediation canary start가 다음 generation을 한 번 할당 | Activation 후속 |
+| M365-F24E | Provider start가 environment/scoped safety fence를 기다리는 동안 global kill 또는 exact generation breach가 먼저 commit | Start transaction이 current epoch/block 재검증에서 실패하고 `provider_started`와 provider/network I/O 0회. Bounded timeout도 fail-closed | MBA-366·Activation 후속 |
+| M365-F24E1 | Provider start shared fence와 `provider_started` commit이 먼저 완료된 뒤 kill/breach exclusive fence가 commit | 먼저 commit한 attempt만 이미 승인된 호출로 종결하고 kill/breach는 이후 capability/start를 차단. Outcome을 추측하거나 동일 attempt를 replay하지 않음 | MBA-366·Activation·Ledger 후속 |
+| M365-F25 | V2 policy가 mixed-worker pool의 미지원 Worker에 전달 | 실제 consumer의 runtime capability revision을 검사해 V1 의미로 실행하지 않고 current-valid non-V2 path 또는 provider 전 typed failure, requested/effective strategy와 `worker_incompatible` reason 기록, canary 확대 금지 | Activation 후속 |
+| M365-F25A | Client나 producer task payload가 지원 revision을 주장하지만 실제 소비 Worker는 V2 미지원 | Payload 주장을 무시하고 consumer의 code-owned build/runtime identity로 부적격 판정, V2 Judge/provider I/O 0회 | Activation 후속 |
+| M365-F26 | Production profile 없이 diagnostic benchmark 실행 | Proposed profile·명시적 budget·완전한 manifest 아래만 billable 호출. Diagnostic `effective_strategy_id=capability_routing_v2`와 `benchmark_isolated` reason은 기록할 수 있지만 production-effective가 아니며 결과는 production policy/learner/cache/activation/workflow selection과 외부 부수효과에 재사용·write 0회 | MBA-340·Benchmark 후속 |
+| M365-F26A | Platform benchmark 권한과 target workflow/deployment `execute` 권한을 가진 workload/human actor가 명시적 organization scope, proposed profile, budget과 manifest로 benchmark command 제출 | Commit된 command receipt와 run intent 뒤 Judge/후보 attempt별 current 권한·credential·egress·budget admission을 통과한 호출만 실행하고 redacted audit/ledger를 남김 | MBA-340·Benchmark 후속 |
+| M365-F26B | 일반 workflow 사용자, 다른 organization actor 또는 권한이 commit 전에 회수된 actor가 billable benchmark 제출 | Resource hiding을 지키는 권한 거부, benchmark run/receipt/success audit와 Judge/provider I/O 0회. 기존 보안 정책의 safe denial audit만 허용 | Benchmark 후속 |
+| M365-F26C | 같은 benchmark command ID를 같은 canonical request로 재전달하거나 다른 target/profile/budget/manifest/actor로 재사용 | 같은 actor·request는 기존 receipt/run을 반환하고 provider attempt 중복 0회. 다른 actor/request는 `model_routing.benchmark_command_conflict`와 모든 success write/I/O zero | Benchmark 후속 |
+| M365-F26D | Benchmark run intent commit 뒤 Judge 또는 candidate attempt 시작 전에 platform benchmark 권한이나 target `execute` 권한 회수 | 해당 attempt/provider I/O 0회, run을 terminal denied로 종결하고 safe outcome audit를 남긴다. 이미 terminal인 attempt를 재실행하지 않음 | Benchmark 후속 |
+| M365-F26E | `execution_mode=benchmark` 또는 `product_benchmark` source가 `record_canary_evidence`나 activation aggregate/snapshot/safety block write를 시도 | `model_routing.canary_evidence_source_ineligible`; activation event/receipt/aggregate/snapshot/block/success audit zero-write. Diagnostic benchmark evidence만 별도 namespace에 보존 | Activation·Benchmark 후속 |
 
 ## Constraint-Difficulty Router Experimental Tests
 
 관련 FR: FR-015
 
-이 섹션은 운영 active policy와 DB를 변경하지 않는 독립 실험 전략을 검증한다. fixed fixture 결과는 구조와 재사용 계약의 증거일 뿐 실제 Provider 품질 증거로 사용하지 않는다.
+이 섹션은 아직 구현되지 않은 독립 실험 전략의 Target 테스트 계약이다. 현재 tree에는 명시한 router,
+experiment test와 report artifact가 없다. 구현되더라도 운영 active policy와 DB를 변경하지 않아야 하며,
+fixed fixture 결과는 구조와 재사용 계약의 증거일 뿐 실제 Provider 품질 증거로 사용하지 않는다.
 
 | ID | 검증 영역 | Given | When | Then |
 | --- | --- | --- | --- | --- |

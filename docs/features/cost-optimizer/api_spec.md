@@ -1,17 +1,22 @@
 # Cost Optimizer API Spec
 
 Status: Draft
-Verified Against: feature/mba-270 @ d2d416b9
+Verified Against: origin/dev @ b270c11deabc4b0d4d77b6e59f3637a49d72f82e
 
 ## Purpose
 
-이 문서는 `requirements.md`의 FR-001부터 FR-014까지를 API 계약 관점에서 정리한다.
-FR-011은 `judge_bootstrap_incremental_v1` strategy의 무수동-bootstrap 정책으로 다룬다. 초기 운영 요청은 runtime Judge가
+이 문서는 `requirements.md`의 FR-001부터 FR-016까지를 API 계약 관점에서 정리한다.
+FR-015는 비운영 실험 경계, FR-016은 아직 구현되지 않은 Capability Routing V2 Target 계약이다.
+
+Current routing code comparison: `origin/dev @ b270c11deabc4b0d4d77b6e59f3637a49d72f82e`
+
+현재 FR-011은 `judge_bootstrap_incremental_v1` strategy의 무수동-bootstrap 구현을 기술한다. 초기 운영 요청은 runtime Judge가
 요구 수준을 판정하고, 서버가 실행 주체가 사용할 수 있는 전체 후보에서 capability와 가격을
 비교해 모델을 선택한다. Judge 요구 수준 label과 완료된 운영 결과는 배포 정책과 분리된
 자동 라우팅 학습기에 쌓인다. Celery가 학습기 행을 잠그고 10건 또는 최대 5분 batch로
-candidate artifact를 학습한다. 최근
-20건의 학습 전 예측 정확도와 계약 품질을 통과한 artifact만 로컬 라우터로 승격한다. local prediction이 불확실하거나
+candidate artifact를 학습한다. 현재 구현은 처음 50건을 학습한 뒤 다음 50건의 학습 전 예측으로
+총 100 labels, recent evaluation 50건과 exact 75% 및 계약 품질을 통과한 artifact만 로컬 라우터로
+승격한다. 이 값은 ADR-0059와 다른 Current 회귀값이며 FR-016 Target gate가 아니다. Local prediction이 불확실하거나
 권한 모델이 바뀐 경우에는 Judge로 돌아간다. 원문 prompt/input/KB 내용은 API 응답, policy
 artifact, 학습 이력에 저장하지 않는다. 검증을 통과한 artifact는 불변 learner version으로
 발행하며, 배포 정책은 `learner_id`와 `active_learner_version_id`만 참조한다.
@@ -40,10 +45,12 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-008 | 선택한 B 후보 설정을 current draft target LLM node에 적용한다. |
 | FR-009 | 비교 실행에서 발생한 LLM usage/cost를 기록한다. |
 | FR-010 | builder 이상 권한을 API에서 강제한다. |
-| FR-011 | policy 조회/설정/refresh/preview API와 배포 후 run event가 policy table을 관리한다. Judge bootstrap 선택, local router 전환 상태, 실행 주체 후보 모델과 노드별 운영 성적을 사용해 runtime 모델 선택을 제공한다. |
+| FR-011 | policy 조회/설정/refresh/preview API와 배포 후 run event가 policy table을 관리한다. Judge bootstrap 요구 판정, local router 전환 상태, 실행 주체 후보 모델과 노드별 운영 성적을 사용해 서버의 runtime 모델 선택을 제공한다. |
 | FR-012 | 운영 로그와 trace summary를 분석해 LLM 파라미터/모델 라우팅 추천을 반환한다. `direct_policy_update`만 즉시 적용하고, 일반 파라미터 조정은 A/B candidate 생성 경로로 보낸다. |
 | FR-013 | 추천 빠른 검증과 사용자가 baseline을 고르는 일반 compare 모두 candidate 실행 후 semantic 품질 평가를 수행하고 점수·confidence·safe summary를 응답과 이력에 저장한다. |
 | FR-014 | 배포별 자동 파라미터 최적화 설정과 수집/예산 safe summary를 제공한다. 비용 위험 신호와 모델 라우팅 정책은 포함하지 않는다. |
+| FR-015 | Production API와 active policy를 변경하지 않는 실험 manifest/result matrix 계약을 제공한다. |
+| FR-016 | `capability_routing_v2`의 canonical source, activation profile, actor/scope, typed error와 호환 projection Target 계약을 정의한다. |
 
 ## Endpoints
 
@@ -85,13 +92,15 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-008 | `PATCH apply` | `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-009 | LLM usage/cost logging/history | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/`, `apps/shared/db/models/cost_optimizer.py`, `apps/shared/services/cost_optimizer_retention.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py`, `apps/shared/tests/services/test_cost_optimizer_retention.py` | 통과 |
 | FR-010 | builder permission enforcement | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/gateway/auth/permissions.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
-| FR-011 | Judge-first policy persistence, event idempotency, refresh, credential guard, trace | `apps/shared/db/models/model_routing_policy.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/tasks.py`, `apps/workflow_engine/services/model_routing_policy_refresh_task.py`, `apps/workflow_engine/workflow/nodes/llm/llm_node.py` | 구현 완료 | FR-011 targeted tests | 통과 |
-| FR-011 | Runtime Judge, 점진 학습 local classifier, runtime candidate selection | `apps/workflow_engine/services/model_routing_runtime_judge.py`, `model_routing_incremental_learning.py`, `model_routing_local_classifier.py`, `model_router.py`, `llm_node.py` | 구현 완료 | `test_model_router.py`, `test_model_routing_incremental_learning.py`, `test_model_routing_policy_refresh_task.py`, `test_llm_node_runtime.py` | 집중 테스트 통과 |
-| FR-011 | 정책 독립 학습기, 불변 버전, 학습 전 예측과 Celery batch | `apps/workflow_engine/services/model_routing_learner_store.py`, `apps/workflow_engine/services/model_routing_learning_batch.py`, `apps/workflow_engine/tasks.py`, `apps/shared/db/models/model_routing_policy.py` | 구현 완료 | `test_model_routing_learner_store.py`, `test_model_routing_learning_batch.py`, `test_model_routing_policy_tasks.py`, `test_model_routing_requirement_learning.py` | 집중 테스트 통과 |
+| FR-011 | Judge-first policy persistence, event idempotency, refresh, credential guard, trace | `apps/shared/db/models/model_routing_policy.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/tasks.py`, `apps/workflow_engine/services/model_routing_policy_refresh_task.py`, `apps/workflow_engine/workflow/nodes/llm/llm_node.py` | 현재 경로 구현. V1/V2 contract 분리 미완료 | FR-011 targeted tests | 현재 구현 회귀 통과 |
+| FR-011 | Runtime Judge, 점진 학습 local classifier, runtime candidate selection | `apps/workflow_engine/services/model_routing_runtime_judge.py`, `model_routing_incremental_learning.py`, `model_routing_local_classifier.py`, `model_router.py`, `llm_node.py` | 현재 경로 구현. Strategy ID·task intent·learner gate가 Target과 불일치 | `test_model_router.py`, `test_model_routing_incremental_learning.py`, `test_model_routing_policy_refresh_task.py`, `test_llm_node_runtime.py` | 현재 구현 회귀 통과 |
+| FR-011 | 정책 독립 학습기, 불변 버전, 학습 전 예측과 Celery batch | `apps/workflow_engine/services/model_routing_learner_store.py`, `apps/workflow_engine/services/model_routing_learning_batch.py`, `apps/workflow_engine/tasks.py`, `apps/shared/db/models/model_routing_policy.py` | 현재 경로 구현. Rejected label/contract rotation 보완 필요 | `test_model_routing_learner_store.py`, `test_model_routing_learning_batch.py`, `test_model_routing_policy_tasks.py`, `test_model_routing_requirement_learning.py` | 현재 구현 회귀 통과 |
 | FR-011 | 과거 정책 호환 경계 | refresh 시 Judge-first로 1회 이관하고 신규 runtime에서는 레거시 rule을 실행하지 않음 | 구현 완료 | `test_model_routing_policy_refresh_task.py`, `test_llm_node_runtime.py` | 통과 |
 | FR-012 | LLM parameter recommendation contract | `apps/gateway/services/cost_optimizer_parameter_recommendation_service.py`, `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 기록 있음 |
 | FR-013 | Recommendation/compare verification orchestration, quality judge, history summary, modal/result-analysis UI | `apps/gateway/services/cost_optimizer_recommendation_verification_service.py`, `apps/gateway/services/cost_optimizer_output_quality_service.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/shared/db/models/cost_optimizer.py`, `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, `apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | Gateway/frontend targeted test 통과 |
 | FR-014 | deployment config, plan persistence, operations summary, verification spend guard | `apps/shared/db/models/deployment_parameter_optimization.py`, `apps/gateway/services/deployment_parameter_optimization_service.py`, `apps/gateway/api/v1/endpoints/deployment.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/gateway/services/app_service.py` | 수집/상태/예산 설정과 실제 검증 비용 누적 구현 | `apps/gateway/tests/services/test_deployment_parameter_optimization_service.py`, `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, operations API targeted test | 통과 |
+| FR-015 | constraint/prior 실험 manifest와 result matrix | 후속 `tests/experiments/`, `scripts/experiment_constraint_difficulty_router.py` | 계약만 정의. 명시한 script·test·report artifact는 현재 tree에 없고 Production API도 없음 | experiment targeted tests 계획 | 미구현·미실행 |
+| FR-016 | Capability Routing V2 strategy/source/profile/activation governance | MBA-366~369 및 별도 profile/ledger/benchmark/activation 이슈 | Target 계약만 확정. Production 구현·활성화 안 됨 | `test_cases.md`의 M365 matrix | 미구현 |
 
 ## Deployment Parameter Optimization Contract
 
@@ -133,6 +142,563 @@ Runtime Judge 요청에는 후보 모델 목록을 넣지 않는다. Judge에는
 날짜 suffix 고정 버전과 전역 workflow 실행 제외 모델인 `gpt-5-mini`는 후보에서 제거한다.
 기존 graph 또는 저장 policy가 `gpt-5-mini`를 직접 참조하더라도 Provider 호출 전에 차단하고,
 유효한 fallback이 있으면 fallback으로 실행한다.
+
+### Capability Routing V2 Target Contract
+
+이 절은 [ADR-0073 Capability Routing V2](../../decisions/ADR-0073-requirement-judge-capability-routing-v2.md)의
+미구현 Target API·wire 계약이다. 현재 endpoint가 이 필드를 반환하거나 platform activation command를
+지원한다고 해석하지 않는다.
+
+V2 strategy ID는 `capability_routing_v2`다. Workflow policy가 V2를 선택하더라도 서버는 다음
+조건의 교집합이 유효할 때만 이를 effective strategy로 사용한다.
+
+```text
+feature flag와 emergency kill switch 허용
+AND immutable strategy contract 등록
+AND immutable rollout family 안에서 current contract를 만족하는 `limited_canary` 또는 `production_active` profile 존재
+AND profile이 exact Judge-only 또는 approved learner requirement source manifest를 고정하고 현재 사용 가능
+AND family selection으로 deployment가 stable-canary successor 또는 predecessor production profile에 포함
+AND workflow deploy actor가 해당 strategy version과 immutable rollout family/activation domain 선택
+AND Judge와 각 primary/fallback exact model을 승인하는 current V2 credential policy 유효
+AND Judge와 각 primary/fallback이 current global workflow model execution eligibility 충족
+AND 실제 delivery를 소비한 Worker가 profile의 최소 runtime capability revision 충족
+AND 재검증·발행된 non-V2 rollback policy version 유효
+AND environment global kill과 선택 profile-bound safety generation/block/epoch가 current
+```
+
+하나라도 충족하지 못하면 V2 Requirement Judge를 호출하지 않는다. Workflow에 별도로 versioning된
+current-valid non-V2 policy 또는 stored safe path가 있으면 이를 사용하고, 그런 경로도 없으면 외부
+provider 호출 전에 typed error로 닫는다. Contract digest가 없는 legacy V1 artifact를 임의의 V2
+rollback target으로 사용하지 않는다. Rollout family는 immutable activation domain을 가진다. 같은 family에는
+`production_active` predecessor 최대 하나와 `limited_canary` successor 최대 하나만 공존할 수 있다. Stable
+canary 배정이 successor에 일치하면 successor를 사용한다. Predecessor가 있으면 나머지는 predecessor를,
+없으면 exact current-valid non-V2 rollback policy를 사용한다. Promotion은 predecessor가 있을 때만 같은
+transaction에서 successor를 `production_active`, predecessor를 `superseded`로 전이한다. 최초 promotion은
+successor와 domain claim만 갱신한다. `superseded`는 새 run의 predecessor 선택만 막는다. In-flight run은
+시작 snapshot을 유지하고 별도 emergency disable/block/revoke가 없는 한 이후 node attempt도 완료하며,
+새 run만 successor를 선택한다.
+Profile은 server-issued immutable `canary_assignment_contract_version` reference와 target range를 가진다.
+Assignment contract는 rollout family 생성 시 CSPRNG로 발급한 최소 128-bit non-secret opaque seed와
+bucket count를 내부에 가진다. Profile 작성 request는 raw seed를 제출할 수 없다. Server는
+environment/family/domain/organization/workflow/immutable deployment ID를
+versioned canonical encoding과 SHA-256 bucket으로 계산한다. Profile revision, safety generation,
+Worker/process, retry, 시간과 runtime random은 입력에 포함하지 않는다. 같은 contract의 retry/restart는
+같은 bucket을 사용한다. V1 bucket count는 10,000이고 target ranges는 `[0, 10000)` 안의 non-empty,
+정렬·비중첩 구간이며 전체를 선택할 수 없다. Contract/seed/unit 변경은 새 proposed profile과
+canary-start 승인을 요구한다.
+Client/task payload는 assignment input이나 bucket을 제출할 수 없으며 API는 원 unit/seed 대신 safe
+contract version과 range digest만 투영한다.
+Activation domain/scope 변경은 같은 family revision이 아니라 명시적 migration contract가 필요한 별도
+전환이며, 그 contract가 없으면 활성 domain overlap을 zero-write로 거부한다.
+Candidate learner가 gate를 통과하거나 새 version이 발행돼도 current activation profile은 자동으로
+바뀌지 않는다. 다른 learner version 또는 Judge-only 전환은 새 profile revision과 activation 절차를
+요구한다.
+
+#### Canonical decision safe projection
+
+V2 runtime decision safe projection은 구현 이슈에서 기존 응답에 additive하게 다음 필드를 도입한다.
+Policy와 preview는 적용 가능한 필드만 반환한다. `policy_preview`는 provider/Judge를 호출하거나
+학습에 포함되지 않으며 current requirement source가 없으면 최종 모델을 확정하지 않는다.
+
+~~~json
+{
+  "requested_strategy_id": "capability_routing_v2",
+  "effective_strategy_id": "capability_routing_v2",
+  "strategy_resolution_reason": "requested_active",
+  "strategy_contract_version": "opaque-version",
+  "routing_contract_version": "opaque-version",
+  "requirement_contract_version": "opaque-version",
+  "selection_contract_version": "opaque-version",
+  "requirement_rubric_version": "opaque-version",
+  "model_evidence_version": "opaque-version",
+  "pricing_version": "opaque-version",
+  "activation_profile_version": "opaque-version",
+  "activation_requirement_source_mode": "judge_only",
+  "activation_requirement_source_version": "opaque-version",
+  "workflow_policy_version": "opaque-version",
+  "worker_runtime_capability_revision": "opaque-revision",
+  "learner_version": null,
+  "execution_mode": "deployed",
+  "requirement_source": "runtime_judge",
+  "requirement_evaluation_scope": "current_execution",
+  "model_selection_source": "server_capability_selector",
+  "routing_reuse_source": "none",
+  "judge_attempt_count": 1,
+  "requirement_adjudicated": false,
+  "selected_model_id": "current-authorized-model",
+  "fallback_model_id": "current-authorized-fallback",
+  "reason_codes": ["bounded_allowlist_code"],
+  "included_in_routing_learning": true
+}
+~~~
+
+`requested_strategy_id`, `effective_strategy_id`와 bounded `strategy_resolution_reason`은 요청 policy와
+실제 실행 policy를 구분한다. V2 off, profile/requirement source/scope/credential policy 또는 Worker 부적격으로 non-V2
+path가 effective이면 V2 decision object를 만들지 않고 이 strategy resolution과 해당 non-V2
+projection만 반환한다. 실행 가능한 non-V2 path도 없어 provider I/O 전 typed failure로 닫으면
+`effective_strategy_id=null`이다. 기존 `strategy_id`는 호환 기간에 non-null `effective_strategy_id`를
+투영하는 deprecated
+field일 뿐 requested/effective 차이를 대체하지 않는다.
+
+`requirement_contract_version`은 Judge/learner 의미, task intent normalization contract와 canonical
+normalized `task_intent`, internal task semantic fingerprint를,
+`selection_contract_version`은 selector/cache 의미를 고정한다. Task semantic fingerprint는 canonical
+deployment snapshot의 canonical intent/normalization version, 고정 prompt/instruction, variable mapping,
+output/schema, Knowledge/RAG configuration과 downstream structural contract가 바뀌면 함께 회전하지만
+fingerprint와 원본 구성 요소를 API에 노출하지 않는다. `routing_contract_version`은 두 값을 결합한
+server-side top-level provenance를 가리키는 safe
+opaque version이며 raw digest 구성 요소를 노출하지 않는다. `activation_requirement_source_mode`은
+`judge_only | approved_learner`이고 `activation_requirement_source_version`은 profile이 고정한 exact
+Judge source manifest 또는 approved learner manifest의 opaque version이다. `learner_version`은 local
+classifier를 실제 사용한 경우에만 값이 있다. Policy preview에서는 `judge_attempt_count=0`,
+`included_in_routing_learning=false`이고, requirement source가 없으면 `selected_model_id`를 생략한다.
+
+Accepted decision cache의 internal selection contract와 namespace는 organization, deployment/version,
+canonical node location, activation profile ID/revision, exact requirement source manifest digest,
+selector/catalog/profile/pricing contract와 HMAC key epoch를 결합한다. Profile/source가 learner A에서
+B 또는 `judge_only`로 바뀌면 requirement contract가 같아도 mandatory miss다. 이전 source가 만든
+requirement/model recommendation을 새 profile에서 재사용하지 않으며 raw digest 구성 요소는 응답,
+trace와 audit에 노출하지 않는다.
+
+`policy_preview` 전용 `preview_status`는 `complete | requirement_pending | blocked`다. `complete`는
+current local/cache requirement와 server-known gate만으로 safe selection projection을 계산한 경우,
+`requirement_pending`은 Judge 호출 없이는 요구 판정이 없는 경우, `blocked`는 activation/profile 또는
+server hard gate가 실행을 막은 경우다. `requirement_pending`과 `blocked`에서는 최종 선택 모델을
+꾸며내지 않는다.
+
+`profile_superseded`는 신규 실행이 predecessor를 해소할 때만 사용한다. 정상 cutover 전에
+predecessor snapshot을 고정한 in-flight run에는 이 reason을 합성해 중단하지 않는다.
+
+Exact enum은 다음과 같다.
+
+```text
+strategy_resolution_reason:
+  requested_active | economic_admission_skipped | feature_disabled |
+  emergency_disabled | profile_missing | profile_stale | profile_disabled |
+  profile_expired | profile_superseded | strategy_out_of_scope |
+  activation_requirement_source_unavailable | credential_policy_unavailable |
+  worker_incompatible | rollback_policy_selected |
+  strategy_contract_unresolved | rollback_target_invalid | benchmark_isolated |
+  no_safe_path
+
+requirement_source:
+  runtime_judge | local_classifier | not_required | unavailable
+
+activation_requirement_source_mode:
+  judge_only | approved_learner
+
+requirement_evaluation_scope:
+  current_execution | accepted_decision_cache | none
+
+model_selection_source:
+  server_capability_selector | stored_default | stored_fallback
+
+routing_reuse_source:
+  none | accepted_decision_cache
+
+execution_mode:
+  deployed | test | policy_preview | benchmark
+```
+
+`not_required`는 effective V2 안에서 economic admission으로 요구 판정을 의도적으로 생략한 상태다.
+V2 off, profile/requirement source/scope/credential policy 또는 Worker 부적격에는 V2 source enum을
+합성하지 않는다.
+`unavailable`은 effective V2가 Judge/local contract를 얻으려 했지만 호출·파싱·contract validation이 실패한
+상태다. Accepted decision cache 재사용은 원 decision의 `requirement_source`를 보존하고
+`requirement_evaluation_scope=accepted_decision_cache`, `routing_reuse_source=accepted_decision_cache`,
+`judge_attempt_count=0`을 기록한다. 이는 현재 실행의 Judge 호출을 뜻하지 않으며 UI도 "이전 결정 재사용"으로
+표시한다. `not_required`와 `unavailable`은 `requirement_evaluation_scope=none`이다. Cache 추천이 있어도
+최종 선택은 current gate와 selector를 다시 통과하며 selection source와 reuse source를 각각 기록한다.
+
+`deployed`와 일반 `test`는 current activation profile이 있어야 V2를 실행한다. `policy_preview`는
+server-known hard gate와 이미 존재하는 current local/cache 정보만 평가하고 부족하면
+`preview_status=requirement_pending`을 반환한다. `benchmark`는 논리 `platform routing benchmark operator`
+권한과 target workflow/deployment의 current `execute` 권한을 모두 가진 actor가 explicit
+environment/organization scope, proposed profile, 명시적 budget과 완전한 manifest를 actor/request-bound
+idempotent command로 제출한 격리 harness에서만 billable Judge/provider 호출을 허용한다. Commit 전 권한
+회수, 다른 organization actor와 같은 command ID의 다른 target/profile/budget/manifest/actor는
+`model_routing.benchmark_command_conflict` 또는 permission denial로 run/receipt/success audit와 provider
+I/O를 zero-write한다. Run intent commit 뒤 각 attempt는
+platform benchmark 권한, target resource `execute` 권한과 current credential·egress·budget admission을
+다시 검증하고 durable intent 뒤에만 provider를 호출한다. 이때 권한이 회수됐으면 새 attempt/provider I/O
+없이 run을 terminal denied로 종결하며, duplicate delivery는 기존 receipt/run만 반환하고 추가 attempt를
+만들지 않는다. Benchmark는 diagnostic
+provenance로만 `effective_strategy_id=capability_routing_v2`와
+`strategy_resolution_reason=benchmark_isolated`을 기록할 수 있지만 proposed profile을
+production-effective로 만들지 않으며, 이 결과를 production policy, learner, accepted cache, activation
+또는 workflow selection에 재사용하지 않는다. 외부 부수효과도 변경하지 않는다. 현재 platform benchmark
+actor/API가 없으므로 일반 product API에서 billable benchmark를 제공하지 않는다.
+
+`worker_runtime_capability_revision`은 실제 delivery를 소비한 Worker process의 code-owned build/runtime
+identity에서 server-side로 계산한다. Client나 producer가 task payload에 넣은 값을 신뢰하거나 current
+consumer 확인 없이 enqueue 시점의 revision으로 호환성을 판정하지 않는다.
+
+기존 `decision_source`는 구형 Client의 additive 호환 projection으로만 유지한다. V2 canonical
+source를 하나의 문자열로 축약하거나 legacy preview의 `matched_rule | default_model |
+fallback_model`을 Requirement Judge source로 재해석하지 않는다.
+
+#### Requirement Judge internal wire contract
+
+V2 canonical `task_intent`는 existing candidate `task_type` 문자열을 그대로 신뢰하지 않는다.
+
+| Legacy input | V2 canonical value |
+| --- | --- |
+| missing, empty, unknown 자유 문자열 | `unspecified` |
+| `classify` | `classify` |
+| `extract` | `extract` |
+| `summarize` | `transform` |
+| `generate` | `generate` |
+| `reason` | `unspecified` |
+
+`reason`의 난이도는 Requirement Judge의 bounded 축으로 판정한다. Node title, domain-specific
+`node_task`와 prompt keyword로 intent를 추측하거나 canonical 값을 영속하지 않는다.
+
+Routing application은 Client가 보낸 actor/owner 값이 아니라 trusted execution context에서 내부
+`execution_data_scope_kind`를 결정한다.
+
+```text
+authenticated_subject | anonymous_public_only
+```
+
+`authenticated_subject`는 current execution subject 기준 Knowledge/source permission을 적용한다.
+Execution subject가 없는 public·webhook·schedule·API·system 실행은 ADR-0018의
+`anonymous_public_only`이며 active public Collection/KB와 source-managed public exposure approval만
+사용한다. Owner, deployment creator, audit actor, `user_id` 또는 credential principal을 synthetic
+subject로 만들지 않는다. 향후 service account mode는 별도 Accepted 계약과 immutable deployment
+binding 없이는 이 enum에 추가하지 않는다. 이 내부 kind와 subject ID, 거부된 resource detail은
+public decision projection에 포함하지 않는다.
+
+Requirement Judge의 model-visible request body에는 다음 safe input만 포함한다.
+
+- bounded `request_feature`
+- server-derived `structural_facts`
+- raw chunk/document content가 없는 `rag_context`
+
+Provider 호출 전에 routing application이 server-owned immutable invocation envelope에
+`judge_contract_version`과 `rubric_version`을 고정한다. 이 metadata는 Client 입력이나 모델 응답에서
+받지 않으며 파싱된 bounded result의 provenance와 결합한다.
+
+`rag_context`는 ADR-0071의 별도 `purpose=query_embedding` policy/capability와 Knowledge 권한 retrieval이
+완료된 뒤 생성한 bounded safe projection이다. Judge/main-generation/candidate policy는 query embedding
+권한을 대신하지 않으며 query embedding policy/capability 실패 시 Judge 호출이나 stored-model 전환으로
+우회하지 않는다.
+
+이 projection도 무조건 외부로 보낼 수 있는 공개 데이터가 아니다. 위 execution data scope와
+ADR-0071 query-embedding 경계를 통과한 bounded safe facts만 포함한다. 호출 전에 ADR-0064 deployment
+policy에서 server-derived한 credential principal, exact Judge model policy, provider lifecycle과
+organization data egress 정책을 검증하고 승인된 provider에만 일시적으로 전달한다.
+Public·schedule·system actor를 credential principal로 승격하거나 owner credential을 fallback하지 않는다.
+Request/response 원문은 durable trace, audit, cache, label과 Git report에 저장하지 않는다.
+
+정상 응답은 다음 bounded object다.
+
+~~~json
+{
+  "task_complexity": 2,
+  "decision_impact": 1,
+  "evidence_synthesis": 3,
+  "confidence": 0.86,
+  "ambiguity_flags": [],
+  "reason_codes": ["broad_context_synthesis"]
+}
+~~~
+
+모델 ID, 후보 목록, 가격, credential, provider private state, policy ID 또는 unknown field를
+반환하면 contract failure다. 모델이 `judge_contract_version` 또는 `rubric_version`을 echo하거나 다른
+값을 주장해도 unknown field로 거부하며 server-owned envelope 값을 덮어쓰지 않는다. Secondary Judge는
+첫 Judge가 계약 응답에 성공했지만 confidence가 versioned policy 기준보다 낮을 때만 동일 schema로
+최대 한 번 호출하고 budget, attempt count와 adjudication 여부를 남긴다. 첫 Judge가
+`provider_started` 뒤 `outcome_unknown`으로 종결되면 같은 routing decision의 Judge retry와 secondary
+호출은 0회다. 별도로 versioning된 current-valid non-V2 stored safe path만 독립 work-model
+capability·budget·egress admission과 durable intent 뒤에 사용할 수 있다.
+
+#### Activation and benchmark command boundary
+
+Target command는 다음 actor와 scope를 분리한다. 구체 REST path와 persistence schema는 activation
+governance 후속 이슈에서 확정하며, 현재 organization management API에 임시로 추가하지 않는다.
+
+Profile propose request는 server-known immutable artifact를 가리키는 requirement source manifest를
+포함한다.
+
+```text
+requirement_source_mode: judge_only | approved_learner
+requirement_source_version: opaque immutable version
+judge_policy_version: opaque exact policy | null
+judge_contract_version: opaque exact contract | null
+rubric_version: opaque exact rubric | null
+approved_learner_version: opaque exact version | null
+approved_learner_requirement_contract_version: opaque version | null
+learner_judge_fallback: not_applicable | disabled | exact_judge_policy
+```
+
+`judge_only`에서는 exact Judge policy/contract/rubric이 필수이고 learner 관련 필드는 `null`,
+`learner_judge_fallback=not_applicable`이어야 한다. `approved_learner`에서는 exact learner와 requirement contract가 필수이며 Judge fallback을
+허용할 때만 exact current Judge policy/contract/rubric을 함께 고정한다. Candidate gate 통과나
+learner 발행 이벤트는 이 manifest를 변경하지 않는다. Locked holdout과 limited-canary evidence는 exact manifest에서 실제 활성화한 source branch를 포함해야 한다.
+`learner_judge_fallback=disabled`이면 learner branch만 검증하고, `exact_judge_policy`이면 해당 exact Judge
+branch의 근거까지 있어야 production promote precondition을 충족한다.
+
+| Command | Actor | Preconditions | Result |
+| --- | --- | --- | --- |
+| strategy register/retire | 검토된 코드 릴리스 | immutable contract와 compatibility 검증 | registry version 추가 또는 폐기. Production 활성화는 변경하지 않음 |
+| `rollout_family_create` | 권한 있는 `platform routing operator` | actor/request-bound command, environment, canonical immutable activation domain, assignment algorithm/unit contract와 server-allowed bucket count. Raw seed 입력 금지 | Guard lock 아래 domain overlap을 재검증하고 CSPRNG seed, immutable family/domain/assignment contract, receipt와 canonical audit를 원자 생성. Same request replay는 기존 family, conflict는 zero-write |
+| activation profile propose | `platform routing operator` 후보 작성자 | immutable requirement source manifest, existing rollout family/activation domain, server-issued canary assignment contract reference와 bucket range, locked holdout 이전 threshold, canary와 exact current-valid non-V2 rollback policy 사전 등록 | immutable `proposed` profile 생성, V2 실행 불가. Raw assignment seed 입력 금지 |
+| limited canary start | 작성자와 다른 `platform routing operator` | current guard/profile expected revision과 expected domain generation, exact requirement source, manifest/locked holdout valid, credential policy·Worker·rollback ready | `proposed -> limited_canary`, 다음 profile-bound safety generation을 한 번 할당하고 사전 등록 stable canary scope에만 capability 발급 |
+| `record_canary_evidence` | `platform routing evidence system` workload identity | current profile/canary generation, manifest에 등록된 `activation_canary_runtime` source kind, immutable source event ID, metric contract, bounded event kind와 redacted payload digest | Window-independent source identity unique append-only event/receipt와 open-window aggregate revision 원자 commit. Same event의 다른 window 재사용은 conflict. Blocking event는 exact generation block/epoch와 safe audit도 원자 기록. Holdout/benchmark 거부 |
+| `seal_canary_evidence_window` | `platform routing evidence system` workload identity | profile/generation/window/cutoff, expected open-window aggregate revision과 source별 expected watermark | Window pointer/aggregate/watermark lock 아래 sealed snapshot, next-window pointer, actor/request-bound receipt와 canonical audit 원자 commit. Append winner는 stale 재제출, seal winner 뒤 post-cutoff event는 next window |
+| production promote | current revision의 독립 `platform routing operator` | current profile/family/domain-claim revision, sealed evidence snapshot ID/hash와 `expected_snapshot_invalidation_revision`, exact requirement source와 `limited_canary` guardrail 통과 | successor를 `production_active`로 전이한다. Predecessor가 있을 때만 같은 transaction에서 `superseded`로 전이 |
+| `activation_profile_expire` | `platform routing lifecycle system` workload identity | DB current time >= immutable `valid_until`, current expected profile revision | `expired` 전이·receipt·redacted audit 원자 commit. Exact claim/generation owner일 때만 자기 claim 해제와 generation/epoch 무효화 |
+| workflow strategy select/opt-out | workflow `deploy` 권한자 | command idempotency key와 current workflow policy expected version, V2이면 immutable rollout family/domain binding, commit 직전 `deploy` 권한·active organization/resource scope·strategy/family/domain 유효성 | exact profile이 아닌 family/domain을 가진 workflow policy version, receipt와 canonical audit 원자 갱신 |
+| emergency disable/rollback | 권한 있는 `platform routing operator` | guardrail 위반 또는 안전 incident | V2 비활성화 또는 승인 rollback target 전환 |
+| `global_routing_kill_enable` | 권한 있는 `platform routing operator` | current expected environment guard state/revision/epoch, bounded incident reason | enabled=true, global epoch/revision 증가, actor/request-bound receipt와 canonical audit 원자 commit |
+| `global_routing_kill_disable` | enable actor와 다른 독립 `platform routing operator` 승인자 | current enabled state/revision/epoch, current remediation approval revision | enabled=false, global epoch/revision 증가, receipt/audit 원자 commit. 기존 capability는 계속 stale |
+| isolated benchmark execute | `platform routing benchmark operator` + target workflow/deployment `execute` 권한자 | actor/request-bound command, explicit environment/organization scope, proposed profile, budget, manifest와 current provider admission | 격리 run/receipt/audit 생성. Production policy·learner·cache·activation·외부 부수효과 write 없음 |
+
+활성화 진행 경로는 `proposed -> limited_canary -> production_active`다. 유효 기간 종료는 `expired`, 권한 있는
+operator의 disable/rollback은 `disabled`, successor의 production promotion은 predecessor를 `superseded`로
+전이한다. `disabled`, `expired`, `superseded`는 terminal 상태이며 다시 활성화하지 않고 새 `proposed`
+revision을 요구한다.
+
+최초 rollout family에는 predecessor가 없을 수 있다. Limited-canary non-target은 profile의 exact
+current-valid non-V2 rollback policy를 사용한다. 최초 production promotion은 successor와 domain claim만
+갱신하고 predecessor update나 `superseded` audit를 합성하지 않는다.
+
+Canary evidence는 append-only event와 open-window monotonic revision으로 집계한다. Evidence append의
+canonical dedupe identity는 canary window와 독립된 environment/family/profile ID·revision/safety generation,
+source kind와 immutable source event ID이며 이 identity에 unique constraint를 둔다. Server-assigned
+`assigned_window_id`, metric contract version, bounded event kind와 redacted payload digest는 identity 밖의
+immutable comparison field다. 같은 source identity와 모든 comparison field가 같은 재전달만 기존
+event/receipt를 반환한다. 같은 source event가 다른 window로 재분류되거나 하나라도 다른 값이면
+`model_routing.canary_evidence_conflict`와 event/revision/block/audit zero-write다. 일반 workflow actor와
+provider callback payload가 source identity, assigned window, comparison field 또는 aggregate revision을
+직접 주장할 수 없다.
+
+Sealed snapshot은 `seal_canary_evidence_window` command로만 만든다. Request는 profile/generation/window/
+cutoff, expected open-window aggregate revision과 authoritative source별 expected watermark를 포함한다.
+Transaction은 window pointer, aggregate와 watermark를 잠그고 다시 검증한 뒤 sealed snapshot
+ID/revision/hash, 다음 open-window pointer, receipt와 canonical audit를 원자 commit한다. 같은 actor/request는
+기존 snapshot을 반환하고 audit/receipt 실패나 다른 request 재사용은 snapshot/pointer zero-write다.
+Append가 먼저 commit하면 seal은 stale revision으로 재제출되고 그 event를 포함한다. Seal이 먼저
+commit하면 cutoff 이후 non-blocking event는 다음 window에만 append한다. Cutoff 이전 late arrival은
+`snapshot_invalidation_revision`을 증가시키고, blocking breach는 cutoff와 무관하게 snapshot invalidation과
+exact generation block을 함께 기록한다. Promotion request는 exact snapshot과
+`expected_snapshot_invalidation_revision`, expected profile/family/domain-claim revision을 제출한다. 이 둘이
+먼저 commit된 경우에만 `model_routing.canary_evidence_stale`와 success mutation zero-write로 닫는다.
+
+등록된 holdout evaluator의 immutable `activation_holdout` artifact는 locked holdout branch만 충족하며
+canary sample/watermark/block으로 집계하지 않는다. `record_canary_evidence`는 trusted evidence workload
+identity인 canary runtime monitor의 `activation_canary_runtime` event만 허용한다. 격리 product benchmark는
+별도 `product_benchmark` diagnostic namespace만 사용하며 `record_canary_evidence`, activation
+aggregate/snapshot 또는 safety block write를 제출하면
+`model_routing.canary_evidence_source_ineligible`과 zero-write로 거부한다. Learner, optimizer와
+scheduler도 activation evidence producer가 아니며 profile state, revision 또는 command receipt를 직접
+변경할 수 없다. Emergency command는 활성화, threshold 완화 또는 scope 확대에 사용할 수 없고, 권한
+있는 `platform routing operator`의 idempotent command만 V2 disable 또는 승인 rollback을 수행한다.
+`proposed -> production_active` 직접 전이와 canary 시작/production 승격을 하나의 command로 합치는 것도
+거부한다. Activation/profile mutation은 command identity, expected revision과 독립 승인자를 검증한다.
+DB current time이 `valid_until`을 지나면 resolver가 scheduler 상태와 무관하게 V2를 즉시 차단한다.
+Scheduler는 profile row를 직접 변경하지 않고 deterministic expiry command만 제출한다. Expiry는 모든
+current non-terminal profile에 state/receipt/audit를 기록하지만, domain claim 해제와 safety
+generation/epoch 무효화는 owner profile ID/revision, claim role과 generation이 모두 일치할 때만 그
+claim에 수행한다. Claim이 없는 `proposed` successor 만료는 current production predecessor의 claim,
+generation과 capability에 영향을 주지 않는다.
+
+Activation/profile receipt는 command ID, actor principal과 canonical request hash를 저장한다. Hash는
+command kind, environment/family/profile, target state, activation domain/scope digest, bounded reason과
+rollback policy version을 기본으로 포함한다. Family create는 assignment algorithm/unit contract와 bucket
+count, domain command는 expected profile/family/domain-claim revision, canary start는 expected domain
+generation, expiry는 optional expected claim role/generation, promotion은 sealed snapshot ID/hash와
+`expected_snapshot_invalidation_revision`을 추가한다. Global kill command만 expected environment guard
+state/revision/epoch를 포함하며 raw seed와 tenant data는 제외한다. 같은 command ID·actor·hash
+재시도만 기존 receipt를 반환한다. Actor 또는 request가 다르면
+`model_routing.activation_command_conflict`와 profile/domain/receipt/success audit zero-write다.
+성공 mutation의 profile state/revision, command idempotency receipt와 canonical audit는 같은 DB transaction에서
+commit하며 audit recorder 또는 receipt 기록이 실패하면 모든 mutation write를 rollback하고 성공 응답을 반환하지
+않는다. 권한 거부에서는 profile state/revision/receipt가 zero-write이며, 기존 보안 정책의 transaction-bound safe
+`permission.denied` audit는 기록할 수 있다. 이는 성공 command receipt나 profile mutation audit가 아니다. 비동기
+notification outbox는 canonical audit를 대체하지 않는다. 현재 RBAC에 platform actor가 없으므로 관리 API/UI가
+구현되기 전에는 일반 organization owner/manager 요청을 위 zero-write 규칙으로 거부한다.
+
+Rollout family create와 active domain claim을 획득·교체·해제하는 canary start, production promote,
+emergency disable/rollback, expiry/supersede 및 activation-domain migration은 단일
+`RoutingActivationCoordinator`가 처리한다. Coordinator는 외부 I/O 전에 짧은 DB transaction을 열고
+사전 생성된 environment activation guard row를 먼저, family/profile/domain-claim row를 다음 순서로
+잠근다. Missing guard를 command가 임의 생성하지 않고 `model_routing.activation_guard_unavailable`로
+fail-closed한다. Guard는 overlap/global kill 직렬화 fence이며 global kill command만 expected guard
+state/revision/epoch CAS를 사용한다. Family/domain command는 guard lock 아래 current kill/overlap을 다시
+읽고 expected family/profile/domain-claim revision만 검증한다. Production promote는 exact sealed snapshot,
+`expected_snapshot_invalidation_revision`, generation safety row와 blocking breach를 추가로 검증한다.
+겹치는 경합은 winner 하나만 commit하고 loser는 `model_routing.activation_domain_conflict`와 zero-write다.
+Non-overlap command는 unrelated domain mutation 때문에 guard revision이 바뀌었다는 이유로 stale 처리하지
+않고 lock 아래 순차 검증 후 각각 commit한다. Bounded lock timeout도 conflict/zero-write이며 holdout,
+benchmark, provider, notification과 runtime request 동안에는 lock을 유지하지 않는다.
+
+Environment 전체 kill switch는 `global_routing_kill_epoch`로 관리한다. Domain guard는 monotonic
+profile-bound safety generation을 할당하고 profile disable/rollback/expiry와 blocking evidence는 generation별
+scoped epoch와 deny-only block으로 분리한다. ProviderExecutionCapability는 global/generation epoch와 함께
+organization authorization, credential policy/credential, model/provider lifecycle 및 rollback policy revision을
+binding한다. Judge, primary와 fallback은 각각 current scope/lifecycle/egress, capability·budget admission과
+durable intent를 독립 수행한다.
+
+`provider_started` transaction은 environment guard -> organization authorization fence -> credential
+policy/credential -> model/provider lifecycle -> rollback policy -> optional snapshot -> generation safety ->
+attempt 순으로 shared fence를 획득하고 모든 bound revision/state를 다시 검증한다. 각 revoke/disable
+mutation도 자신이 변경하는 동일 authoritative fence를 exclusive하게 획득하고 revision을 증가시킨다.
+Global kill과 scoped breach도 같은 공통 순서의 해당 fence를 사용한다. Provider I/O는 start commit 뒤에만
+시작한다. 어떤 revoke/kill/breach가 먼저 commit하면 대기한 start는 `provider_started`와 provider I/O
+zero-write로 닫고, start가 먼저 commit한 attempt만 이미 승인된 호출로 취급한다. Bounded timeout과
+serialization retry 소진은 fail-closed한다.
+Breach가 난 scoped lifecycle generation의 deny-only block은 in-place로 해제하지 않는다. Remediation을
+반영한 새 immutable profile이 holdout과 독립 canary-start 승인을 통과하면 Coordinator가 새 generation을
+limited-canary 전용으로 열고 stable canary assignment에만 capability를 발급한다. 기존 blocked
+generation은 그대로 유지하고 canary non-target은 current-valid non-V2 rollback policy를 사용한다. 새
+generation의 canary evidence와 별도 production 승격이 완료된 뒤에만 그 generation을 production
+claim으로 전환한다. 기존 blocked generation이 canary successor claim을 소유하면 권한 있는 emergency
+disable/rollback으로 그 claim을 먼저 terminal하게 닫되 block은 유지하고, 이후 canary start가 다음
+generation을 할당한다. Blocking evidence ingestion은 immutable breach event, exact generation의 scoped
+block/epoch와 redacted security audit를 같은 transaction에 기록한다.
+
+Environment guard의 `global_routing_kill_enabled`, monotonic `global_routing_kill_epoch`와 revision은
+`platform routing operator`의 전용 `global_routing_kill_enable | global_routing_kill_disable`
+command로만 변경한다. Enable은 단일 권한 actor가 즉시 fail-safe로 수행할 수 있지만 disable은 enable
+actor와 다른 독립 승인자와 current remediation approval revision을 요구한다. Canonical request는
+command kind, environment, desired state, expected guard revision/epoch, bounded reason과 disable의
+recovery approval revision을 포함한다. Coordinator는 environment guard row를 잠그고 commit-time 권한과
+expected state/revision/epoch를 다시 검증한다. 성공할 때마다 state·epoch·revision,
+actor/request-bound receipt와 canonical audit를 같은 transaction에 commit한다.
+
+같은 command ID·actor·request 재전달은 기존 receipt를 반환하고 epoch를 다시 증가시키지 않는다. 같은
+ID의 다른 actor/request는 `model_routing.global_kill_command_conflict`, stale expected state/revision/epoch
+또는 동시 command loser는 `model_routing.global_kill_state_conflict`와 zero-write다. Commit 전 권한
+회수는 safe permission denial로, disable recovery 승인 누락은
+`model_routing.global_kill_recovery_approval_required`와 zero-write로 닫는다. Audit/receipt 실패도
+state·epoch·revision·receipt·success audit zero-write다. Enabled 동안 V2 capability 발급은 0회이고
+disable 뒤에도 이전 capability를 되살리지 않으며, 모든 current gate를 다시 통과한 새 capability만
+새 global epoch에 binding한다.
+
+Workflow strategy select/opt-out은 activation/profile command와 별도의 workflow policy CAS boundary다. Policy
+row가 없을 때만 `expected_version=null`을 허용해 CAS insert하며 opt-out도 row 삭제가 아니라 명시적 새 policy
+version으로 저장한다. V2 policy는 exact activation profile이 아니라 immutable `rollout_family_id`와
+`activation_domain_digest`를 저장한다. Idempotency key는 workflow, expected version, 요청
+strategy/version, V2이면 family/domain binding 또는 opt-out의 canonical request hash에 결합한다. 같은
+key·request 재시도는 기존 receipt를 반환하고 key가 같지만 request가 다르면 conflict와 zero-write다.
+같은 expected version을 사용한 동시 요청은 한 요청만 성공하고 loser는 conflict로 닫는다. Commit
+직전에 workflow/deployment가 bound domain에 속하고 actor가 해당 family/domain을 선택할 수 있는지
+재검증한다. 새 run은 policy가 고정한 family/domain 안에서 stable assignment로 current profile을 해소해
+exact profile/revision/generation을 execution snapshot에 고정한다. Promotion 뒤 policy mutation이나
+재배포 없이 새 run만 successor를 선택하며 in-flight run은 별도 safety override가 없는 한 predecessor
+snapshot을 유지한다. 다른 family/domain 전환은 새 CAS command를 요구한다. 성공 policy write,
+command receipt와 canonical audit는 같은 transaction에서 commit한다. Stale command, commit-time 권한·scope
+거부와 audit/receipt 실패는 workflow policy와 success audit zero-write다. 권한 거부에서는 기존 보안 정책의
+transaction-bound safe `permission.denied` audit만 허용하며 resource 존재나 다른 scope의 policy detail을
+노출하지 않는다.
+
+#### Target typed errors
+
+구체 HTTP status와 public projection은 구현 이슈에서 기존 error policy와 함께 확정한다. 내부
+canonical reason은 최소 다음 상태를 구분하며 raw candidate, credential 또는 다른 scope 정보를
+message에 포함하지 않는다.
+
+| Code | 의미 |
+| --- | --- |
+| `model_routing.strategy_not_available` | unknown, retired 또는 미지원 strategy/version |
+| `model_routing.activation_profile_required` | V2에 current activation profile이 없음 |
+| `model_routing.activation_profile_stale` | profile contract가 current selector/catalog/pricing과 다름 |
+| `model_routing.activation_requirement_source_unavailable` | profile에 고정된 Judge-only 또는 approved learner source와 명시적 fallback을 현재 사용할 수 없음 |
+| `model_routing.activation_guard_unavailable` | environment registry의 사전 생성 activation guard가 없어 domain mutation을 안전하게 직렬화할 수 없음 |
+| `model_routing.activation_domain_conflict` | 같은 environment의 다른 rollout family가 겹치는 active domain을 먼저 claim했거나 activation guard lock을 bounded 시간 안에 얻지 못함 |
+| `model_routing.rollout_family_command_conflict` | 같은 family create command ID가 다른 actor/request에 재사용되거나 동일 family/domain unique identity와 충돌함 |
+| `model_routing.activation_command_conflict` | 같은 activation command ID가 다른 actor 또는 canonical request에 재사용됨 |
+| `model_routing.global_kill_command_conflict` | 같은 global kill command ID가 다른 actor 또는 canonical request에 재사용됨 |
+| `model_routing.global_kill_state_conflict` | expected global kill state/revision/epoch가 stale하거나 동시 command가 먼저 commit함 |
+| `model_routing.global_kill_recovery_approval_required` | global kill disable에 current 독립 recovery approval이 없거나 enable actor와 승인자가 같음 |
+| `model_routing.operational_evidence_source_required` | V2 evidence append에 terminal ADR-0069 provider usage operation이 없거나 server-derived binding이 불완전함 |
+| `model_routing.operational_evidence_ineligible` | Provider purpose 또는 execution mode가 operational model evidence 계약에 부적격함 |
+| `model_routing.operational_evidence_conflict` | 같은 provider usage operation/evidence contract append identity가 다른 safe metric digest로 재사용됨 |
+| `model_routing.strategy_out_of_scope` | deployment가 승인 scope/stable canary 밖임 |
+| `model_routing.credential_policy_required` | Judge 또는 primary/fallback exact model을 승인하는 current V2 credential policy가 없음 |
+| `model_routing.worker_runtime_incompatible` | 실제 delivery를 소비한 Worker가 activation profile의 최소 runtime capability revision을 충족하지 못함 |
+| `model_routing.activation_approval_required` | 독립 승인 또는 actor 조건 미충족 |
+| `model_routing.canary_evidence_required` | production 승격에 필요한 current limited-canary 표본·기간·guardrail 근거 미충족 |
+| `model_routing.canary_evidence_stale` | promotion request의 sealed `snapshot_invalidation_revision`이 cutoff 이전 late arrival 또는 blocking breach로 stale해짐. Cutoff 이후 non-blocking event의 open-window revision 증가는 이 오류가 아님 |
+| `model_routing.canary_evidence_conflict` | 같은 authoritative source event identity가 다른 assigned window, metric contract, event kind 또는 redacted payload digest로 재사용됨 |
+| `model_routing.canary_snapshot_seal_conflict` | 같은 seal command ID가 다른 cutoff/revision/watermark request에 재사용되거나 open-window revision이 먼저 변경됨 |
+| `model_routing.canary_evidence_source_ineligible` | `activation_holdout`, 격리 `product_benchmark` 또는 등록되지 않은 producer가 canary runtime evidence command를 제출함 |
+| `model_routing.benchmark_command_conflict` | 같은 benchmark command ID가 다른 actor, target, profile, budget 또는 manifest canonical request에 재사용됨 |
+| `model_routing.workflow_policy_version_conflict` | expected workflow policy version 또는 idempotency key의 canonical request가 current state와 충돌 |
+| `model_routing.rollback_target_invalid` | 승인 profile의 non-V2 rollback policy가 없거나 current contract를 통과하지 못함 |
+| `model_routing.no_usable_model` | current authorization과 모든 hard gate를 통과한 model이 없음 |
+| `model_routing.strategy_contract_unresolved` | legacy row에 immutable contract version이 없어 V1/V2 dynamic routing을 실행할 수 없음 |
+
+Budget unavailable·exceeded와 price unavailable은 기존 ProviderExecutionCapability/Workflow budget의
+typed error를 그대로 사용한다. 이를 `no_usable_model`로 축약하거나 다른 Billing Principal의 여유
+예산으로 재시도하지 않는다.
+
+#### Operational model evidence identity
+
+Tenant execution에서 파생한 operational evidence의 내부 write/read identity는 승인된 익명 집계
+contract가 없는 한 다음 값을 모두 포함한다.
+
+```text
+organization_id
+workflow_id
+canonical_node_location
+task_semantic_fingerprint_contract_version
+task_semantic_fingerprint
+requirement_evidence_cohort_contract_version
+requirement_evidence_cohort_id
+model_id
+evidence_contract_version
+```
+
+API와 Client는 fingerprint 원문 구성 요소나 runtime payload를 제공하지 않는다. Server가 immutable
+deployment snapshot에서 identity를 계산한다. Prompt/instruction, variable mapping, output/schema,
+Knowledge/RAG configuration 또는 downstream structural contract 변경으로 fingerprint가 달라지면
+이전 evidence는 조회 결과와 minimum-quality gate에서 제외한다. 이전 row를 current fingerprint로
+update하거나 fallback scope로 읽지 않는다. Public safe projection은 bounded
+`model_evidence_version`만 반환한다.
+
+Server는 canonical task intent, bounded requirement 세 축과 output/effect/context risk class를
+versioned canonical form으로 결합해 opaque `requirement_evidence_cohort_id`를 파생한다. Cohort가
+없거나 다른 표본은 current minimum-quality의 positive evidence로 사용하지 않으며, 별도 Accepted
+transfer policy 없이 cross-cohort quality reuse를 허용하지 않는다. Raw requirement 값은 API,
+trace와 audit에 노출하지 않는다.
+
+개별 evidence sample append는 product API가 아니라 trusted internal
+`record_operational_model_evidence` command다. Canonical source는 ADR-0069의 terminal
+`provider_usage_operation_id`이며, server는 그 immutable snapshot과 canonical workflow/node outcome에서
+organization/workflow/deployment, canonical node location, invocation/Loop iteration, model/purpose와
+task fingerprint를 파생한다. Client, Celery payload와 finalizer 인자는 이 identity를 덮어쓰지 못한다.
+ADR-0069 operation이 없거나 terminal binding이 불완전하면
+`model_routing.operational_evidence_source_required`와 event/receipt/aggregate zero-write다.
+Evidence contract가 허용한 work-model purpose의 production `deployed` 또는 사전 등록
+limited-canary operation만 수용한다. Requirement Judge, query embedding, summary, 일반
+`test`/`policy_preview`와 격리 `benchmark` operation은
+`model_routing.operational_evidence_ineligible`로 거부한다. `outcome_unknown`은 unknown
+measurement로만 보존하며 positive quality count로 올리지 않는다.
+
+Canonical append identity는 다음과 같다.
+
+```text
+organization_id
+provider_usage_operation_id
+evidence_contract_version
+```
+
+Event는 canonical safe metric bundle digest를 저장한다. 같은 identity·digest의 순차 또는 동시
+재전달은 기존 event/receipt를 반환하고 aggregate sample count를 증가시키지 않는다. 같은 identity의
+다른 digest는 `model_routing.operational_evidence_conflict`와 zero-write다. Event, receipt와 aggregate
+delta는 unique constraint와 aggregate row lock/CAS 아래 같은 transaction에 commit하고 provider/network
+I/O를 수행하지 않는다. ADR-0069 correction이나 late reconciliation은 새 sample identity가 아니며,
+별도 correction contract가 구현되기 전에는 기존 evidence를 두 번째 표본으로 append하지 않는다. Raw
+prompt/output, provider payload, exception과 credential은 event/digest/receipt에 포함하지 않는다.
+
+#### Experiment manifest contract
+
+Activation evidence manifest는 source Git SHA/dirty flag, dataset ID/version/hash와 tuning/holdout 구분,
+catalog/pricing/selector/Judge/learner/evaluator version, environment class, redaction/retention reference와
+`valid | invalid | incomplete` 상태를 가진다. Invalid·incomplete·tuning run은 activation 계산에서
+제외한다. API와 Git report에는 raw prompt/output, RAG 원문과 credential을 포함하지 않는다.
 
 ### Legacy Bootstrap Contract
 
@@ -242,32 +808,26 @@ runtime은 이를 레거시 결합으로 간주하고, 현재 실행 주체가 �
 Judge 선호 모델로 교체한다. 명시적으로 다른 Judge가 저장돼 있고 여전히 사용 가능하면 그 값을
 유지한다. 선호 Judge가 없을 때만 기본 모델을 Judge로 사용한다.
 
-Runtime Judge provider request는 외부 API 계약이 아니라 Workflow Engine 내부 계약이다. user content에는
-`request_feature`, `rag_context`, `candidate_models`만 보낸다. `request_feature`는 JSON 구조를 보존한
-`CURRENT_REQUEST_JSON`과 길이 제한된 세 prompt, 출력 계약을 포함한다. `rag_context`는 검색량과
-근거 충분성 같은 safe signal만 허용하며 chunk/document 원문은 금지한다. `candidate_models`에는 가격,
-운영 계약 성적, 공식 역할·특화 태그, 난이도 상한, 비용 역할과 `context_window`를 포함할 수 있다.
-`cost_position`은 모델 능력값이 아니며 `capability_tier` 단독으로 후보를 선택하거나 제외하지 않는다.
-정상 응답은 선택 결과 외에
-다음 선택적 요구 능력 요약을 반환할 수 있다.
+Current Runtime Judge provider request는 외부 API 계약이 아니라 Workflow Engine 내부 계약이다.
+User content에는 bounded `request_feature`, server-derived `structural_facts`, raw chunk/document 원문이
+없는 `rag_context`와 `rubric_version`만 보낸다. 후보 모델, 가격, credential과 provider private
+state는 보내지 않는다. 정상 응답은 모델 선택이 아닌 세 축의 요구 능력 판정이다.
 
 ~~~json
 {
-  "selected_model_id": "gpt-5-mini",
+  "task_complexity": 2,
+  "decision_impact": 1,
+  "evidence_synthesis": 3,
   "confidence": 0.86,
-  "reason_short": "근거 종합 필요",
-  "reason_code": "evidence_synthesis",
-  "task_requirements": {
-    "task_complexity": 2,
-    "decision_impact": 1,
-    "evidence_synthesis": 3,
-    "output_precision": 2
-  }
+  "ambiguity_flags": [],
+  "reason_codes": ["broad_context_synthesis"]
 }
 ~~~
 
-각 요구 능력 점수는 0~3 정수이며, 계약 밖의 값은 trace에서 폐기한다. 정상 Judge 출력 한도는
-768 token이다.
+각 요구 능력 점수는 0~3 정수이며 unknown field, `selected_model_id` 또는 `candidate_models`가
+있으면 응답 전체를 contract failure로 거부한다. 정상 Judge 출력 한도는 768 token이다. 서버는
+판정 뒤 current candidate와 structural hard gate를 적용해 최종 모델을 선택한다. 이 current 동작이
+V1 strategy ID 아래 있다는 사실은 Target V2 activation을 승인하지 않는다.
 
 `last_decision`은 현재 active deployment에서 해당 LLM 노드가 마지막으로 완료한
 실행의 선택 결과다. 패널에서 실제 선택 모델과 판단 사유를 보여주기 위한 값이며,
@@ -288,11 +848,11 @@ Preview response는 deployment_version, policy_version, decision_source,
 selected_model_id, fallback_model_id, default_model_id, configured_fallback_model_id,
 matched_rule_id, reason_code, strategy_id, decision_factors, runtime_context을
 반환한다. Preview는 운영 요청이 아니므로 Judge를 호출·학습·과금하지 않는다. local artifact가
-충분히 확신하면 local 선택을, 그렇지 않으면 기본 또는 대체 모델을 예상값으로 반환한다.
+충분히 확신하면 local 요구 판정에 따른 서버 선택을, 그렇지 않으면 기본 또는 대체 모델을 예상값으로 반환한다.
 Preview와 runtime은 같은 `ModelRouter.routing_feature_text()` builder와 side-effect 없는 prompt renderer로 현재 입력, 노드 제목,
 작업 설명, 현재 입력으로 렌더링된 system/user/assistant prompt를 구성한다. JSON output schema 지시는 긴 prompt에 밀려나지 않도록
 구조 요약과 함께 별도 `OUTPUT_CONTRACT` 섹션 및 독립 길이 예산으로 구성한다. Preview는 실제 RAG retrieval 결과를 만들지 않으므로
-동적 RAG signal은 포함하지 않는다. 따라서 preview의 모델은 배포 실행에서 Judge가 고를 실제 모델을
+동적 RAG signal은 포함하지 않는다. 따라서 preview의 모델은 배포 실행에서 서버 selector가 고를 실제 모델을
 확정한 결과가 아니다.
 배포 prompt template을 렌더링할 수 없으면 저장된 원문으로 fallback하지 않고
 `409 model_routing.prompt_render_failed`로 fail-closed하며 raw template/input을 응답에 포함하지 않는다.
@@ -310,7 +870,7 @@ strategy ID, reason code, runtime context, `decision_source`, `judge_called`,
 | `attempted` | Judge provider 호출을 실제로 시도했는지 |
 | `model` | 호출한 Judge 모델. 준비 전에 실패하면 없을 수 있음 |
 | `candidate_model_count` | Judge가 비교하려던 실행 가능 후보 수 |
-| `confidence`, `reason_code`, `reason_short`, `cost` | `status=selected`일 때의 구조화된 선택 근거. `reason_short`은 사전 정의된 코드에 대응하는 짧은 안전 설명이며, Judge 자유 문장은 durable trace에 저장하지 않는다. |
+| `confidence`, `reason_code`, `reason_short`, `cost` | `status=selected`일 때의 구조화된 요구 판정 근거. `selected`는 Judge 결과를 사용했다는 legacy 상태명이지 Judge가 모델을 선택했다는 뜻이 아니다. `reason_short`은 사전 정의된 코드에 대응하는 짧은 안전 설명이며, Judge 자유 문장은 durable trace에 저장하지 않는다. |
 | `usage.latency_ms` | 첫 Judge provider 요청부터 재시도 응답까지의 총 대기 시간. Judge 전용 `llm_usage_logs` 행에도 같은 값이 저장되며 최종 작업 모델의 latency와 합치지 않는다. |
 | `error_code` | `failed` 또는 `unavailable`일 때의 안전 오류 코드 |
 | `not_called_reason` | local router 선택, 정책 없음, 테스트 preview 등 미호출 이유 |
@@ -323,7 +883,7 @@ strategy ID, reason code, runtime context, `decision_source`, `judge_called`,
 원문 prompt/입력, 검색 문서 원문, embedding vector는 반환하거나 저장하지 않는다.
 Judge 자유형 설명은 원문 요청이나 개인정보를 반복할 수 있으므로 durable trace에 저장하지 않는다. UI는 `reason_code`와 `reason_short`의 안전한 구조화된 값으로 설명을 만든다. 원문 prompt/input, 검색 문서 원문, 개인식별 정보는 저장하지 않으며, 알 수 없는 reason code는 `judge_reason_unrecognized`로 일반화한다.
 
-Judge가 선택한 실행은 처음에는 `learning_status=pending_contract`로 기록한다. workflow
+Judge 요구 판정을 사용한 실행은 처음에는 `learning_status=pending_contract`로 기록한다. workflow
 완료 후 node 성공, schema/downstream 계약, fallback 여부를 확인해 `accepted` 또는
 `rejected`와 `learning_outcome_reason`으로 갱신한다. 요청 중 계산한 로컬 예측과 confidence,
 학습 표본 거리, 예측 경계 여유도 함께 저장한다. label은 필수 `learner_id`와 선택적
@@ -345,7 +905,7 @@ label도 이 건수와 최근 계약 통과율에는 포함되지만 candidate c
 분모에는 포함하되 통과 건수에는 포함하지 않는다.
 
 `accepted` label에는 원문이 아닌 `routing_feature_hash`만 저장한다. 이를 이용해 같은 feature의
-계약 통과 Judge 선택을 재사용할 수 있으며, 모델 사용 권한이 바뀌었거나 hash key가 없으면
+계약 통과 요구 판정과 서버 선택 추천을 재사용할 수 있으며, 모델 사용 권한이 바뀌었거나 hash key가 없으면
 cache hit로 처리하지 않는다.
 
 ### Persistence Model
@@ -358,13 +918,13 @@ cache hit로 처리하지 않는다.
 | llm_node_model_routing_policy_updates | 정책 재평가의 trigger, 안전한 입력/출력 요약, 결과 |
 | llm_node_model_routing_policy_run_events | 배포 후 운영 실행의 중복 없는 점검 카운터 |
 | llm_node_model_routing_performances | 배포/node/model/입력 길이 profile별 운영 성적 |
-| llm_node_model_routing_learners | 작업 지문과 Judge/E5 계약별 지속 학습 상태, candidate artifact, 최근 20건 평가. 배포 정책과 독립적으로 재사용한다. |
+| llm_node_model_routing_learners | 작업 지문과 Judge/E5 계약별 지속 학습 상태, candidate artifact, 현재 구현의 최근 50건 평가 window. 배포 정책과 독립적으로 재사용한다. ADR-0059/V2 Target의 20건 최소 gate와 동일한 의미로 보지 않는다. |
 | llm_node_model_routing_learner_versions | 품질 gate를 통과해 발행한 변경 불가능한 로컬 분류기 버전과 평가 요약. |
 | llm_node_model_routing_learning_labels | 필수 learner와 선택적 source policy를 참조하는 Judge 정답, 안전한 vector, 학습 전 예측, 실행/schema/downstream/fallback 결과와 비동기 처리 상태. 원문 prompt/input은 저장하지 않는다. |
 | llm_model_routing_global_profiles | Judge-first runtime이 후보 모델의 초기 품질·지연·fallback 사전 정보를 읽는 전역 catalog profile. 실행 주체가 사용할 수 있으면서 명시적 catalog에 등록된 모델만 후보가 된다. |
 
-Test Sidebar 실행은 설정 지문이 같은 검증 learner version을 사용할 수 있으면 로컬 라우터를
-사용하고, 없거나 확신이 낮으면 runtime Judge를 호출한다. 어느 경우에도 Judge label,
+Test Sidebar 실행은 설정 지문이 같은 검증 learner version을 사용할 수 있으면 로컬 라우터로
+요구 능력을 예측하고, 없거나 확신이 낮으면 runtime Judge를 호출한 뒤 서버가 모델을 선택한다. 어느 경우에도 Judge label,
 learner count, 운영 정책 카운터, 성적을 변경하지 않는다. Cost Optimizer candidate 비교 실행도
 운영 학습과 정책 카운터에 포함하지 않는다.
 
