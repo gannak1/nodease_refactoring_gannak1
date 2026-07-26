@@ -486,11 +486,21 @@ trusted execution context + immutable workflow/deployment snapshot
   다시 통과해야 한다. Profile에 고정한 learner가 stale/revoked되고 명시적 current Judge fallback도
   없으면 다른 learner/Judge로 조용히 대체하지 않고 V2를 해소해 승인된 non-V2 path 또는 typed failure로
   닫는다.
+  Locked holdout은 profile author·production approver와 분리된 holdout operator의 idempotent
+  `activation_holdout_evaluate` command로만 시작하고 registered evaluator workload가 실행·종결한다.
+  Exact profile/source manifest, holdout dataset/evaluator/metric/threshold와 budget·credential·egress를
+  canonical request에 고정한다. Admission run/receipt/audit를 commit한 뒤 ADR-0069 provider attempt를
+  실행하고 terminal artifact/receipt/audit는 unique identity 아래 exactly-once publish한다. Tuning/product
+  benchmark 대체와 conflicting replay는 zero-write다.
 - `capability_routing_v2` activation profile은 immutable `rollout family` 안에서 `proposed ->
   limited_canary -> production_active` 순서로 진행한다. Family의 production activation domain은 immutable이고
   `production_active` predecessor 최대 하나와 `limited_canary` successor 최대 하나만 허용한다. Stable
   assignment가 successor canary에 일치하면 successor를 사용한다. Predecessor가 있으면 나머지는 predecessor를,
   최초 rollout처럼 predecessor가 없으면 profile에 고정한 exact current-valid non-V2 rollback policy를 사용한다.
+  Family activation-domain reservation은 profile terminal state와 분리된 environment-lifetime overlap
+  boundary이며 별도 Accepted migration/retire 계약 없이 해제하거나 다른 family로 이전하지 않는다.
+  Runtime role은 `canary_successor`와 `production_route`로 나누고 exact owner ID/revision/generation으로만
+  전이한다.
   Profile은 server-issued immutable `canary_assignment_contract_version` reference와 target range를
   고정한다. `platform routing operator`의 idempotent `rollout_family_create` command가 immutable activation
   domain을 검증하고 environment guard 아래 overlap을 다시 확인한 뒤 family와 assignment contract를 만든다.
@@ -504,17 +514,19 @@ trusted execution context + immutable workflow/deployment snapshot
   시간과 runtime random은 입력에서 제외한다. 같은 contract의 retry/restart는 같은 bucket을 사용하고
   algorithm/seed/unit 변경은 새 proposed profile과 canary-start 승인을 요구한다. Client/task payload는
   assignment identity나 bucket을 주장할 수 없고 원 unit/seed는 관측 projection에 노출하지 않는다.
-  최초 production promotion은 successor와 domain claim만 commit하고 존재하지 않는 predecessor update나
-  `superseded` audit를 만들지 않는다. 이후 promotion부터만 predecessor를 같은 transaction에서
-  `superseded`로 전이한다. 신규 run은 predecessor를 선택하지 않지만 기존 run은 시작 시점 snapshot을
-  유지하고 별도 emergency/revoke safety override가 없는 한 이후 node attempt도 완료한다.
   Canary 시작은 valid manifest/locked holdout, credential policy, 호환 Worker, stable canary scope와 rollback
-  readiness를 독립 승인한다. Coordinator는 이 전이에서 새 profile-bound safety generation을 할당하고
-  stable canary assignment에만 capability를 발급한다. Actor/request-bound command의 expected domain
-  generation이 guard lock 안의 current 값과 같을 때만 다음 generation을 한 번 할당한다. Production
-  승격은 그 generation의 사전 등록한
-  canary 표본·기간과 품질·비용·지연·fallback·high-risk guardrail을 통과한 뒤 current revision에 별도
-  독립 승인을 요구한다.
+  readiness를 독립 승인한다. Coordinator는 이 전이에서 새 profile-bound safety generation과
+  `canary_successor` role을 exact profile/revision/generation으로 원자 설정하고 stable canary assignment에만
+  capability를 발급한다. 기존 `production_route`는 유지하며 최초 rollout의 빈 route만 profile에 고정한
+  exact current-valid non-V2 rollback policy로 같은 transaction에서 초기화한다. Actor/request-bound
+  command의 expected domain generation과 role revision이 guard lock 안의 current 값과 같을 때만 다음
+  generation을 한 번 할당한다. Production 승격은 그 generation의 사전 등록 canary 표본·기간과
+  품질·비용·지연·fallback·high-risk guardrail을 통과한 뒤 current revision에 별도 독립 승인을 요구한다.
+  성공한 promotion은 `production_route`를 successor profile/generation으로 전환하고 `canary_successor` role을
+  비우며 successor를 `production_active`로 전이한다. Predecessor가 있을 때만 같은 transaction에서
+  `superseded`로 전이한다. 최초 promotion은 존재하지 않는 predecessor update나 `superseded` audit를 만들지
+  않는다. 신규 run은 predecessor를 선택하지 않지만 기존 run은 시작 시점 snapshot을 유지하고 별도
+  emergency/revoke safety override가 없는 한 이후 node attempt도 완료한다.
   Canary evidence append는 `platform routing evidence system` actor의 source-event-bound
   `record_canary_evidence` command만 허용한다. Canonical dedupe identity는 canary window와 독립된
   environment/family/profile revision/safety generation, source kind와 immutable source event ID로 구성하고
@@ -524,28 +536,41 @@ trusted execution context + immutable workflow/deployment snapshot
   comparison field 하나라도 달라지면 `model_routing.canary_evidence_conflict`와 zero-write다. Append
   transaction은 source identity를 먼저 dedupe하고 current open-window aggregate를 잠근 뒤 event/receipt와
   monotonic aggregate revision을 함께 갱신한다.
+  Source watermark는 exact source에 등록된 adapter workload의 `advance_canary_source_watermark` command만
+  전진시킨다. Current open-window ID, source binding/contract, monotonic barrier·position, observed-through,
+  expected revision과 terminal append receipt/barrier proof를 canonical request에 고정하고 window pointer와
+  watermark lock 아래 monotonicity와
+  coverage를 재검증해 watermark/receipt/audit를 원자 commit한다. Eventless interval은 authoritative scan
+  proof가 있을 때만 허용한다. Seal winner 뒤 old-window command는 stale/zero-write이고 adapter는 next-window
+  ID로 재제출하며 client/provider callback/seal request는 watermark를 직접 갱신하지 못한다.
   승격 근거는 `platform routing evidence system`의 idempotent `seal_canary_evidence_window` command로만 만든다.
   Command는 profile/generation/window/cutoff, expected open-window aggregate revision과 authoritative source별
-  expected watermark를 canonical request에 결합한다. Transaction은 current window pointer, aggregate와
-  watermark row를 고정 순서로 잠그고 cutoff·revision·watermark를 다시 검증한 뒤 window sealed state,
+  expected watermark를 canonical request에 결합한다. Request watermark는 CAS expectation일 뿐 authority가
+  아니다. Transaction은 current window pointer, aggregate와 server-owned watermark row를 고정 순서로
+  잠그고 cutoff·revision·watermark를 다시 검증한 뒤 window sealed state,
   immutable snapshot ID/revision/hash, 다음 open window pointer, receipt와 canonical audit를 원자 commit한다.
   Audit/receipt 실패는 전체 rollback하며 같은 actor/request 재전달은 기존 snapshot을 반환한다. Append가
   먼저 commit하면 그 revision이 snapshot에 포함되고, seal이 먼저 commit하면 cutoff 이후 non-blocking event는
   다음 window로만 이동한다. Cutoff 이전 late arrival은 reconciliation이
   `snapshot_invalidation_revision`을 증가시키고, blocking breach는 cutoff와 무관하게 exact generation block과
   snapshot invalidation을 원자 기록한다. Promotion command는 exact snapshot identity와
-  `expected_snapshot_invalidation_revision`, expected profile/family/domain-claim revision을 canonical request에
-  결합한다. `proposed -> production_active` 직접 전이와 하나의 approve/promote command는 금지한다.
+  `expected_snapshot_invalidation_revision`, expected profile/family/domain-role revision을 canonical request에
+  결합한다. Coordinator는 commit 직전 operator 권한, DB time/profile state·revision, exact canary role/generation,
+  source/terminal valid holdout, credential policy, actual Worker readiness, global model execution eligibility,
+  exact rollback policy, global/scoped safety와 snapshot invalidation을 같은 lock order에서 재검증한다.
+  Precheck 뒤 어느 eligibility든 회수되면 cutover/receipt/success audit는 zero-write다.
+  `proposed -> production_active` 직접 전이와 하나의 approve/promote command는 금지한다.
   Production scope 변경은 별도 activation-domain migration이며 별도 Accepted 계약 전 active overlap은
   zero-write다.
-  Active domain claim을 획득·교체·해제하는 family 생성, canary start, production promote, emergency
+  Active domain reservation/role을 획득·교체·해제하는 family 생성, canary start, production promote, emergency
   disable/rollback, expiry/supersede와 domain migration은 `RoutingActivationCoordinator` 한 경계를 통과한다.
   Coordinator는 외부 I/O 전에 짧은 DB transaction을 열고 environment registry와 함께 사전 생성된 canonical
-  activation guard row, profile/family/domain-claim row를 고정 순서로 잠근다. Environment guard row는
+  activation guard row, profile/family/domain-role row를 고정 순서로 잠근다. Environment guard row는
   overlap과 global kill을 직렬화하는 fence지만 unrelated domain mutation의 optimistic CAS가 아니다.
-  Domain command는 expected profile/family/domain-claim revision을 검증하며, global kill command만 expected
-  guard state/revision/epoch를 검증한다. Production promote는 이어서 exact snapshot과 generation safety row를
-  잠그고 sealed snapshot, `expected_snapshot_invalidation_revision`과 blocking breach를 다시 검증한다.
+  Domain command는 expected profile/family/domain-role revision을 검증하며, global kill command만 expected
+  guard state/revision/epoch를 검증한다. Production promote는 이어서 source/holdout, credential/Worker/model/
+  rollback lifecycle, exact snapshot과 generation safety row를 잠그고 operator 권한, DB time/profile/role, sealed snapshot,
+  `expected_snapshot_invalidation_revision`과 blocking breach를 다시 검증한다.
   Cutoff 이전 late arrival 또는 breach가 먼저 commit되면 `model_routing.canary_evidence_stale`로
   state/domain/receipt/success audit를 zero-write하지만 이후 non-blocking event의 next-window revision은 현재
   promotion을 stale하게 만들지 않는다. Missing guard는 command가 임의 생성하지 않고
@@ -565,20 +590,25 @@ trusted execution context + immutable workflow/deployment snapshot
   operator의 emergency command만 수행한다. Breach가 난 lifecycle generation의
   block을 false로 되돌리지 않는다. Remediation profile은 holdout과 독립 canary-start 승인을 통과하면
   새 generation을 limited-canary 전용으로 열어 evidence를 수집하고, 별도 production 승격 뒤에만 그
-  generation을 production claim으로 전환한다. 기존 blocked generation은 그대로 유지하며 canary
-  non-target은 current-valid non-V2 rollback policy를 사용한다. 차단된 generation이 기존 canary
-  successor claim을 소유하면 권한 있는 emergency 종료로 그 claim만 먼저 닫고 block은 유지한 뒤 새
-  remediation canary generation을 할당한다. Profile 만료는 DB current time으로 즉시
-  실행 부적격 처리하고, scheduler는 `platform routing lifecycle system` actor의 deterministic
-  `activation_profile_expire` command만 제출한다. 만료 state/receipt/audit는 원자 기록하되 domain claim
-  해제와 generation/epoch 무효화는 만료 profile이 exact claim role과 generation을 현재 소유할 때만 그
-  소유분에 수행한다. Claim이 없는 proposed successor 만료는 production predecessor의 claim, generation과
-  capability를 변경하지 않는다.
-  Canary start canonical request는 expected domain generation을, expiry request는 claim을 가진 state에서
-  optional expected claim role/generation을 포함한다. 모든 activation command receipt는 actor principal과
-  canonical request hash에 결합한다. 같은 command
-  ID·actor·request 재시도만 기존 receipt를 반환하고 다른 actor/request 재사용은
-  `model_routing.activation_command_conflict`와 zero-write로 닫는다. 성공 mutation의 profile
+  generation을 production role로 전환한다. 기존 blocked generation은 그대로 유지하며 canary
+  non-target은 current-valid non-V2 rollback policy를 사용한다. 차단된 generation이 기존
+  `canary_successor` role을 소유하면 권한 있는 emergency 종료로 그 role만 먼저 닫고 block은 유지한 뒤 새
+  remediation canary generation을 할당한다.
+  `activation_profile_emergency_disable`과 `activation_profile_rollback`은 exact profile/role/generation
+  owner predicate로 state와 role을 함께 전이한다. Canary owner는 canary role/generation만 종료하고
+  production route를 유지한다. Production rollback은 exact current-valid non-V2 route로 전환하며 부적격이면
+  zero-write다. Production emergency disable은 current-valid rollback이 없으면
+  `blocked_no_safe_path`로 전환한다. Family reservation은 유지한다.
+  Profile 만료는 DB current time으로 즉시 실행 부적격 처리하고 lifecycle system의 deterministic expire
+  command만 state/role/receipt/audit를 변경한다. Proposed는 role 불변, canary는 exact canary role만
+  종료하며 production expiry는 current-valid rollback 또는 `blocked_no_safe_path`로 route를 전환한다.
+  어떤 expiry도 다른 profile role이나 family reservation을 변경하지 않는다.
+  Canary start canonical request는 expected domain generation을, expiry request는 role을 가진 state에서
+  optional expected role/generation을 포함한다. 모든 activation command receipt는 actor principal과
+  canonical request hash에 결합한다. Same command ID·actor·request만 기존 receipt를 반환한다. Different
+  request의 conflict code는 command registry가 family/global kill/holdout/canary evidence/watermark/seal/
+  benchmark/workflow policy별 specific code를 사용하고 profile lifecycle command만
+  `model_routing.activation_command_conflict`를 사용한다. 모든 conflict는 zero-write다. 성공 mutation의 profile
   state/revision, command receipt와 canonical audit는 같은 transaction에서 commit하며 audit 또는 receipt
   실패는 zero-write다. 권한 거부는 state/revision/receipt zero-write이나 safe `permission.denied` audit은
   기존 security audit policy에 따라 남길 수 있다.
