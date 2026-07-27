@@ -532,7 +532,7 @@ services:
     tmpfs:
       - /tmp
     healthcheck:
-      test: ["CMD-SHELL", "nslookup -type=A proxy 127.0.0.1 >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "nslookup -type=A postgres 127.0.0.1 >/dev/null 2>&1 && nslookup -type=A proxy 127.0.0.1 >/dev/null 2>&1"]
       interval: 10s
       timeout: 3s
       start_period: 5s
@@ -560,7 +560,7 @@ services:
     tmpfs:
       - /tmp
     healthcheck:
-      test: ["CMD-SHELL", "nslookup -type=A proxy 127.0.0.1 >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "nslookup -type=A postgres 127.0.0.1 >/dev/null 2>&1 && nslookup -type=A proxy 127.0.0.1 >/dev/null 2>&1"]
       interval: 10s
       timeout: 3s
       start_period: 5s

@@ -242,6 +242,7 @@ def test_compose_internal_workloads_use_dedicated_egress_capable_dns_resolvers()
         assert "no-new-privileges:true" in resolver["security_opt"]
         assert resolver["healthcheck"]["test"] == [
             "CMD-SHELL",
+            "nslookup -type=A postgres 127.0.0.1 >/dev/null 2>&1 && "
             "nslookup -type=A proxy 127.0.0.1 >/dev/null 2>&1",
         ]
 
@@ -251,6 +252,8 @@ def test_compose_internal_workloads_use_dedicated_egress_capable_dns_resolvers()
         )
         proxy_ip = "172.30.250.2" if config_name == "https" else "172.30.251.2"
         assert "no-resolv" in resolver_config
+        assert "no-hosts" in resolver_config
+        assert "domain-needed" not in resolver_config
         assert "server=127.0.0.11" in resolver_config
         assert f"address=/proxy/{proxy_ip}" in resolver_config
 
