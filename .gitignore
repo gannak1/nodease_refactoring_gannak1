@@ -155,9 +155,6 @@ tests/evaluation/reports/
 # Local scratch marker
 /test_localsystem.txt
 
-# Local Windows development entrypoint and proxy
-/scripts/dev-local.ps1
-/dev/nginx.local-host.conf
 
 # 개인 폴더
 .ignore/
