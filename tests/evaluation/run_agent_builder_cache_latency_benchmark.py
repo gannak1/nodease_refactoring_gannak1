@@ -375,12 +375,16 @@ def _safe_failure_reason(stage: str, exc: Exception) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    stage = "setup"
     try:
+        stage = "repository_validation"
         repository_root = _resolve_repository_root(args.repository_root)
+        stage = "development_output_validation"
         development_output = _resolve_development_output(
             args.development_output,
             repository_root,
         )
+        stage = "scenario_validation"
         scenarios = load_private_scenarios(
             _resolve_private_scenarios(args.scenarios, repository_root)
         )
@@ -389,9 +393,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.phase == "all"
             else (args.phase,)
         )
+        stage = "revision_validation"
         git_sha = args.git_sha or _git_sha(repository_root)
         for phase in phases:
+            stage = f"{phase}_scenario_validation"
             validate_private_scenario_capacity(scenarios, phase)
+            stage = f"{phase}_preflight"
             runtime = runtime_from_environment(os.environ, scenarios)
             preflight = build_runtime_preflight(runtime)
             case = BenchmarkScenario(
@@ -399,12 +406,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 scenario_fingerprint=preflight.scenario_fingerprint,
                 generation_mode="configure_and_generate",
             )
+            stage = f"{phase}_collection"
             rows = run_live_phase(
                 runtime=runtime,
                 cases=(case,),
                 preflight=preflight,
                 phase=phase,
             )
+            stage = f"{phase}_metadata_validation"
             metadata = build_live_metadata(
                 dataset_version=args.dataset_version,
                 cache_contract_version=args.cache_contract_version,
@@ -414,8 +423,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             stage = f"{phase}_validation"
             validate_live_rows(rows, metadata=metadata)
             if phase == "development":
+                stage = "development_evidence"
                 _write_development_rows(rows, development_output)
                 continue
+            stage = "final_publication"
             publish_live_bundle(
                 rows,
                 metadata=metadata,

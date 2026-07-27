@@ -92,3 +92,32 @@ def test_development_validation_failure_reports_only_safe_stage(
     assert "failure_stage=development_validation" in stdout
     assert "failure_reason=validation_contract" in stdout
     assert "private detail" not in stdout
+
+
+def test_repository_resolution_failure_reports_safe_stage_without_detail(
+    monkeypatch,
+    capsys,
+) -> None:
+    def reject_repository_root(_value):
+        raise ValueError("private repository path must not be printed")
+
+    monkeypatch.setattr(runner, "_resolve_repository_root", reject_repository_root)
+
+    assert (
+        runner.main(
+            [
+                "--phase",
+                "development",
+                "--scenarios",
+                "private.json",
+                "--git-sha",
+                "a" * 40,
+            ]
+        )
+        == 2
+    )
+
+    stdout = capsys.readouterr().out
+    assert "failure_stage=repository_validation" in stdout
+    assert "failure_reason=validation_contract" in stdout
+    assert "private repository path" not in stdout

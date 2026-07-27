@@ -545,17 +545,9 @@ class HttpLiveBenchmarkRuntime(LiveBenchmarkRuntime):
         ).hexdigest()
 
     @staticmethod
-    def _failure(request: LiveAttemptRequest) -> LiveAttemptObservation:
-        outcome = {
-            "cache_disabled_baseline": "disabled",
-            "cold_miss": "miss",
-            "exact_warm_hit": "miss",
-            "normalization_warm_hit": "miss",
-            "semantic_bypass": "bypass",
-            "negative_control": "error",
-        }.get(request.comparison_group, "error")
+    def _failure() -> LiveAttemptObservation:
         return LiveAttemptObservation(
-            cache_outcome=outcome,
+            cache_outcome="error",
             planning_latency_ms=None,
             end_to_end_latency_ms=None,
             provider_call_count=0,
@@ -565,9 +557,35 @@ class HttpLiveBenchmarkRuntime(LiveBenchmarkRuntime):
             result_fingerprint="",
         )
 
+    @staticmethod
+    def _failure_after_diagnostic(
+        diagnostic: tuple[str, float, int, int, str, bool],
+        end_to_end_latency_ms: float | None,
+    ) -> LiveAttemptObservation:
+        (
+            outcome,
+            planning_latency_ms,
+            provider_call_count,
+            repair_call_count,
+            _terminal_status,
+            _validation_passed,
+        ) = diagnostic
+        return LiveAttemptObservation(
+            cache_outcome=outcome,
+            planning_latency_ms=planning_latency_ms,
+            end_to_end_latency_ms=end_to_end_latency_ms,
+            provider_call_count=provider_call_count,
+            repair_call_count=repair_call_count,
+            terminal_status="provider_error",
+            validation_passed=False,
+            result_fingerprint="",
+        )
+
     def execute(self, request: LiveAttemptRequest) -> LiveAttemptObservation:
         """Prepare each candidate privately, then surface one safe observed row."""
 
+        observed_diagnostic: tuple[str, float, int, int, str, bool] | None = None
+        end_to_end_latency_ms: float | None = None
         try:
             group, entry = self._scenario(request)
             self._verify_pair_workflow_context(request.pair_id)
@@ -593,6 +611,7 @@ class HttpLiveBenchmarkRuntime(LiveBenchmarkRuntime):
                 request.generation_mode,
                 measured_scope,
             )
+            observed_diagnostic = self._validated_diagnostic(diagnostic)
             (
                 outcome,
                 planning_latency_ms,
@@ -600,7 +619,7 @@ class HttpLiveBenchmarkRuntime(LiveBenchmarkRuntime):
                 repair_call_count,
                 terminal_status,
                 validation_passed,
-            ) = self._validated_diagnostic(diagnostic)
+            ) = observed_diagnostic
             result_fingerprint = self._result_fingerprint(response, diagnostic)
             if request.cache_enabled and request.comparison_group in {"exact_warm_hit", "normalization_warm_hit"} and outcome == "hit" and self._prime_fingerprints.get(request.pair_id) != result_fingerprint:
                 raise RuntimeError("Benchmark cached materialization parity failed")
@@ -615,4 +634,9 @@ class HttpLiveBenchmarkRuntime(LiveBenchmarkRuntime):
                 result_fingerprint=result_fingerprint,
             )
         except Exception:
-            return self._failure(request)
+            if observed_diagnostic is not None:
+                return self._failure_after_diagnostic(
+                    observed_diagnostic,
+                    end_to_end_latency_ms,
+                )
+            return self._failure()

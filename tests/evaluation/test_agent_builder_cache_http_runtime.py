@@ -158,6 +158,11 @@ def test_exact_warm_candidate_rejects_cached_materialization_mismatch():
     ).execute(_request("exact_warm_hit"))
 
     assert message_count == 2
+    assert observation.cache_outcome == "hit"
+    assert observation.planning_latency_ms == 12.5
+    assert observation.end_to_end_latency_ms is not None
+    assert observation.provider_call_count == 0
+    assert observation.repair_call_count == 0
     assert observation.terminal_status == "provider_error"
     assert observation.validation_passed is False
     assert observation.result_fingerprint == ""
@@ -183,6 +188,7 @@ def test_non_loopback_or_unexpected_diagnostic_becomes_safe_failure():
         raise AssertionError(url)
 
     observation = HttpLiveBenchmarkRuntime(_config(), _scenarios(), request_json=request_json).execute(_request("exact_warm_hit"))
+    assert observation.cache_outcome == "error"
     assert observation.terminal_status == "provider_error"
     assert observation.result_fingerprint == ""
 
