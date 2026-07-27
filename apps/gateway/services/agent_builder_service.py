@@ -1238,13 +1238,14 @@ class AgentBuilderService:
                         app=app,
                     )
                 elif getattr(self.intent_extractor, "usage_recorder", None) is not None:
-                    usage_context_factory = lambda: self._primary_intent_usage_context(
-                        session=session,
-                        request=message_request,
-                        request_id=request_row.id,
-                        workflow=workflow,
-                        app=app,
-                    )
+                    def usage_context_factory():
+                        return self._primary_intent_usage_context(
+                            session=session,
+                            request=message_request,
+                            request_id=request_row.id,
+                            workflow=workflow,
+                            app=app,
+                        )
             structured = (
                 selected_kb_context["structured_request"]
                 if selected_kb_context

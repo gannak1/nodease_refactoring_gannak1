@@ -18,7 +18,8 @@ def test_docker_nginx_allows_the_agent_builder_planner_timeout_budget():
     read_timeout = re.search(r"proxy_read_timeout\s+(\d+)s;", body)
     assert read_timeout is not None
     assert int(read_timeout.group(1)) >= 420
-    assert "proxy_pass http://gateway:8000;" in body
+    assert "set $gateway_upstream http://gateway:8000;" in config
+    assert "proxy_pass $gateway_upstream;" in body
 
 
 def test_next_proxy_allows_the_agent_builder_planner_timeout_budget():

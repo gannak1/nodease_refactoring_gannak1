@@ -364,7 +364,7 @@ class _PostgresUsagePathStore:
 
 def _postgres_warm_hit_plan() -> CachedIntentPlanV1:
     versions = IntentPlanContractVersions(
-        normalizer_version="intent-normalizer-v1",
+        normalizer_version="intent-normalizer-v2",
         cache_schema_version=1,
         planner_contract_version="agent-builder-intent-v1",
         catalog_version=3,

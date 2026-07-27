@@ -85,7 +85,6 @@ def run_live_phase(
 ):
     """Execute only after the collector validates the safe preflight."""
 
-    stage = "setup"
     try:
         preflight.require_ready()
     except Exception as exc:

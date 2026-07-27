@@ -2938,4 +2938,4 @@ def test_service_binds_clean_transaction_guard_to_cache_coordinator(monkeypatch)
         workflow=None,
     )
 
-    cache_io_guard = bindings[0]["cache_io_guard"]
+    assert callable(bindings[0]["cache_io_guard"])

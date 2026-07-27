@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -105,7 +106,7 @@ def test_runtime_shutdown_closes_the_owned_adapter_once(monkeypatch):
         runtime_module.intent_plan_cache_for_app(app),
         DisabledIntentPlanCacheBoundary,
     )
-import uuid
+
 
 def test_request_composition_uses_the_shared_runtime_cache(monkeypatch):
     from apps.gateway.composition import agent_builder as composition_module

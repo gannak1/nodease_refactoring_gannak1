@@ -5,7 +5,6 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from apps.gateway.api.v1.endpoints import agent_builder as endpoint
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.main import app
 from apps.gateway.services.agent_builder.benchmark_diagnostics import (
