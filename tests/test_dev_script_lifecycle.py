@@ -97,3 +97,18 @@ def test_windows_dev_local_starts_gateway_with_explicit_cache_on_configuration()
     assert "$env:NODE_ENV = 'development'" in script
     assert "$env:AGENT_BUILDER_INTENT_CACHE_PRODUCTION_READY = 'false'" in script
     assert "Write-Host $env:AGENT_BUILDER_INTENT_CACHE_HMAC_KEY" not in script
+
+
+def test_windows_dev_local_stops_gateway_when_frontend_start_raises() -> None:
+    script = (ROOT_DIR / "scripts" / "dev-local.ps1").read_text(encoding="utf-8")
+
+    frontend_start = script.find("$frontendProcess = Start-Process")
+    gateway_cleanup = script.find(
+        "Stop-StartedProcess -Process $gatewayProcess -ServiceName 'Gateway'"
+    )
+    finally_block = script.find("} finally {", frontend_start)
+
+    assert "function Stop-StartedProcess" in script
+    assert frontend_start >= 0
+    assert gateway_cleanup > frontend_start
+    assert finally_block > gateway_cleanup

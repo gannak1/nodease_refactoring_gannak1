@@ -258,3 +258,38 @@ def test_knowledge_projection_stores_closed_topic_ref_not_topic_or_handle():
     payload = plan.model_dump_json()
     assert "사내 문서" not in payload
     assert "current-request-only-handle" not in payload
+
+
+def test_knowledge_projection_rejects_any_unregistered_topic():
+    registry = CanonicalIntentTextRegistry()
+    structured = AgentBuilderStructuredRequest(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="safe",
+        planned_steps=[
+            AgentBuilderPlannedStep(
+                step_id="step_kb",
+                capability="knowledge_backed_llm",
+                purpose=registry.purpose_for("knowledge_backed_llm"),
+            )
+        ],
+        knowledge_requirements=[
+            AgentBuilderKnowledgeRequirement(
+                requirement_id="kr_1",
+                query_topics=["internal documents", "human resources leave policy"],
+                expected_evidence_type="policy_or_reference",
+                required=True,
+                target_step_ref="step_kb",
+            )
+        ],
+        knowledge_placements=[
+            AgentBuilderKnowledgePlacement(
+                requirement_id="kr_1",
+                timing="after_graph",
+                effect_kind="binding_only",
+                target_step_id="step_kb",
+            )
+        ],
+    )
+
+    assert project_structured_intent_plan(structured, _context()) is None

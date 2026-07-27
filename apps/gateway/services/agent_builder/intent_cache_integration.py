@@ -548,14 +548,7 @@ def project_structured_intent_plan(
                 for topic in requirement.query_topics
             )
             if any(ref is None for ref in topic_refs):
-                current_message_topic_ref = registry.project_current_safe_message_topic(
-                    context.full_safe_message
-                )
-                topic_refs = (
-                    (current_message_topic_ref,)
-                    if current_message_topic_ref is not None
-                    else ()
-                )
+                return None
             if (
                 target_step_ref is None
                 or not topic_refs

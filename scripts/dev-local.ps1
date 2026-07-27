@@ -188,6 +188,27 @@ function Stop-RecordedProcess {
     Write-Host "Stopped $ServiceName process tree (PID $($process.Id))."
 }
 
+function Stop-StartedProcess {
+    param([System.Diagnostics.Process]$Process, [Parameter(Mandatory)][string]$ServiceName)
+
+    if ($null -eq $Process) {
+        return
+    }
+    try {
+        if ($Process.HasExited) {
+            return
+        }
+        & taskkill.exe /PID $Process.Id /T /F *> $null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Failed to stop $ServiceName process tree (PID $($Process.Id)) during startup cleanup."
+            return
+        }
+        Write-Host "Stopped $ServiceName process tree (PID $($Process.Id)) during startup cleanup."
+    } catch {
+        Write-Warning "Failed to inspect or stop $ServiceName during startup cleanup: $($_.Exception.Message)"
+    }
+}
+
 function Stop-RecordedEnvironment {
     $state = Get-RecordedState
     if (-not $state) {
@@ -426,6 +447,10 @@ try {
     $frontendProcess = Start-Process -FilePath 'npm.cmd' -ArgumentList @(
         'run', 'dev', '--', '--webpack', '--hostname', '0.0.0.0', '--port', '3000'
     ) -WorkingDirectory $ClientDirectory -PassThru -WindowStyle Hidden -RedirectStandardOutput $frontendOut -RedirectStandardError $frontendErr
+} catch {
+    Stop-StartedProcess -Process $frontendProcess -ServiceName 'Frontend'
+    Stop-StartedProcess -Process $gatewayProcess -ServiceName 'Gateway'
+    throw
 } finally {
     $env:PYTHONPATH = $previousPythonPath
     $env:WATCHFILES_FORCE_POLLING = $previousWatchfilesPolling
