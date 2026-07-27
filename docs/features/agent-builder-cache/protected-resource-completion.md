@@ -8,37 +8,47 @@ Status: Draft
 Knowledge/Collection과 workflow graph에 영향을 줄 수 있으므로 protected-resource completion
 검토 대상이다. Cache 자체는 protected resource를 durable하게 저장하지 않는다.
 
-현재는 문서 설계 단계다. `후속 이슈` 행은 구현 완료를 뜻하지 않으며 해당 이슈의 필수 검증 전에는
-feature 문서와 기능 상태를 완료로 바꾸지 않는다. 구현 전 안전 상태는 cache feature flag 기본 비활성과
-기존 Planner 경로 유지다.
+MBA-348은 normalizer, Redis/single-flight adapter, current-context rehydrator를 coordinator로 조합하고
+`AgentBuilderService`의 planning seam과 composition root에 연결하는 Redis/config/coordinator/lifecycle 런타임 통합을 완료했다.
+Cache-off는 기존 Planner 경로를 유지하고, cache hit/miss/error 진단은 allowlist된 안전한 값만 남긴다.
+기능 플래그는 기본적으로 enabled를 요청하며 `scripts/dev-local.ps1`는 cache-on으로 시작한다. 직접 실행에서
+전용 Redis URL·HMAC key/version·bounded configuration이 불완전하면 Celery Redis fallback 없이 cache만
+비활성화한다. production/staging serving은 운영 evidence와 명시적 readiness attestation 전까지 비활성이다.
 
+**MBA-348 코드 수준 상태.** 아래 matrix는 구현 완료된 코드 수준 경계와 MBA-349가 검증할 실제 소비·운영 경계를 구분한다.
+MBA-349는 실제 Postgres permission/lifecycle/Collection 소비 경계, GraphMutation/CAS/acknowledgement,
+durable audit 및 production serving 증거를 계속 소유한다. MBA-350은 live benchmark와 최종 증거를 소유한다.
 | Boundary | 현재 상태 | Decision and safe interim state | Evidence target |
 |---|---|---|---|
-| 정책·식별자 | 후속 이슈: MBA-343~346, MBA-348~349 | Organization/user scope, selected target과 Knowledge identity는 HMAC 경계 밖으로 노출하지 않는다. 구현 전 cache는 비활성이다. | ADR-0063, ABC-FR-018~026, ABC-T014, ABC-T020~039 |
+| 정책·식별자 | MBA-343~346 및 MBA-348 코드 수준 구현·회귀 검증; MBA-349 실제 소비 경계·운영 증거 | MBA-343 plan은 protected identity를 저장하지 않는다. MBA-344 normalizer는 protected identity를 읽지 않고 전체 safe message에서 유도한 normalized ordered typed canonical projection의 domain-separated SHA-256 `intent_signature`만 반환하며 version mismatch는 bypass한다. MBA-345~346 leaf와 MBA-348 coordinator는 organization/user scope, selected target identity와 Knowledge candidate fingerprint를 HMAC boundary 밖으로 노출하지 않는다. Cache serving은 기본 요청이지만 production/staging은 evidence와 attestation 전 비활성이다. | ADR-0063, ADR-0073, ADR-0074, ABC343-FR-002~005, ABC343-T011~018, ABC-FR-001~008, ABC-T001~019 |
 | 관리 API/UI | 해당 없음 | Cache는 관리 리소스가 아니며 public endpoint, picker, 권한 관리 UI와 client diagnostic을 추가하지 않는다. 기존 Agent Builder UI 계약을 유지한다. | `api_spec.md` External API Boundary, `component_spec.md` PRD and Core Document Impact |
-| Cache storage·GraphMutation | 후속 이슈: MBA-343, MBA-345, MBA-348, MBA-349 | Cache-safe typed plan만 TTL 저장한다. Resource ID, handle, credential, graph와 operation을 저장하지 않고 결과는 기존 GraphMutation/CAS로만 저장한다. | ABC-FR-030~036, ABC-FR-044, ABC-T028~035, ABC-T066~068 |
-| Cache integrity | 후속 이슈: MBA-343, MBA-345, MBA-349 | Key digest와 payload를 authenticated envelope로 묶고 MAC 확인 전 plan을 사용하지 않는다. 구현 전 cache는 비활성이다. | ABC-FR-026, ABC-FR-034~036, ABC-T031~035 |
+| Cache storage·GraphMutation | MBA-343~346 및 MBA-348 코드 수준 구현·회귀 검증; MBA-349 GraphMutation/CAS 소비 경계 검증 | MBA-343은 cache-safe typed plan과 forbidden-content 계약을 제공한다. MBA-348은 adapter에 Resource ID, handle, credential, graph와 operation을 제외한 plan만 저장하고, 결과는 기존 GraphMutation/CAS 경로로만 전달한다. | ABC343-FR-001~004, ABC343-T001~028, ABC-FR-030~036, ABC-FR-044, ABC-T066~068 |
+| Cache integrity | MBA-343 codec 및 MBA-348 adapter 통합 구현·회귀 검증; MBA-349 운영 evidence | Canonical codec·size·schema·forbidden-content 검증과 authenticated envelope가 key digest와 payload를 묶고 MAC 확인 전 plan 사용을 막는다. 운영 evidence/attestation이 없으면 production/staging serving만 비활성이다. | ABC343-FR-004, ABC343-T019~028, ABC343-T059~067, ABC-FR-026, ABC-FR-034~036, ABC-T031~035 |
 | HMAC secret | 후속 이슈: MBA-345, MBA-349 | 기존 untracked/production secret injection 경계만 사용하고 tracked env, repr, log, trace와 audit 노출을 금지한다. | ABC-FR-025, ABC-FR-087~089, ABC-T126~129 |
 | Redis connection secret | 후속 이슈: MBA-345, MBA-349 | URL password와 query credential을 configuration error와 diagnostic에 노출하지 않는다. | ABC-FR-087, ABC-T126, ABC-T129 |
-| Organization scope | 후속 이슈: MBA-345, MBA-348, MBA-349 | Active organization과 user를 HMAC key material에 포함하고 사용자 간 entry를 공유하지 않는다. | ABC-FR-020~024, ABC-T020~027 |
-| Request admission | 후속 이슈: MBA-348, MBA-349 | 인증, 권한, foreground request와 cancellation/version fence 뒤에만 lookup한다. 구현 전에는 기존 admission 뒤 Planner만 호출한다. | ABC-FR-009, ABC-FR-075, ABC-T052~054 |
-| Planner model/credential | 후속 이슈: MBA-346, MBA-348, MBA-349 | Hit 전 valid credential, active model, verified relation과 use permission을 다시 검증한다. | ABC-FR-040, ABC-FR-054, ABC-T060~061 |
-| Knowledge/Collection | 후속 이슈: MBA-346, MBA-349 | Hit마다 현재 route/use permission, lifecycle/readiness를 다시 계산하고 handle을 새로 발급한다. | ABC-FR-050~054, ABC-T080~087 |
-| Workflow target | 후속 이슈: MBA-345, MBA-346, MBA-349 | Selected target identity는 ephemeral HMAC input으로만 사용한다. Hit에서는 server-loaded graph와 target을 다시 resolve하고 UUID를 재사용하지 않는다. | ABC-FR-019, ABC-FR-041~043, ABC-T036, ABC-T062~066 |
+| Cache process lifecycle | MBA-348 code-level implementation/regression; MBA-349 serving evidence | Gateway lifespan owns one optional configured Redis adapter/pool in app state; requests reuse its boundary, disabled cache constructs none, and shutdown closes it once. No Redis URL, HMAC material, cache value, or protected identity is retained outside the process-owned adapter. | `component_spec.md` Lifecycle amendment, ABC-T101, ABC-T133 |
+| Organization scope | MBA-345 및 MBA-348 코드 수준 구현·회귀 검증; MBA-349 실제 소비 경계 검증 | Active organization과 user를 HMAC key material에 포함하고 사용자 간 entry를 공유하지 않는다. | ABC-FR-020~024, ABC-T020~027 |
+| Request admission | MBA-348 code-level implementation/regression; MBA-349 actual consumer-boundary evidence | After existing authentication, permission and foreground admission, a cache-enabled coordinator checks the request cancellation/version fence before normalizer/lookup, before a direct hit is rehydrated, before owner Planner work, and in follower waits. The same bound fence applies when planning-context construction bypasses at the 4,000-character safe-message limit. Canceled or stale requests do not consume a cache value or start Planner work; cache-off calls only the existing Planner. | ABC-FR-009, ABC-FR-075, ABC-T052~054 |
+| Planner model/credential | MBA-346 및 MBA-348 코드 수준 구현·회귀 검증; MBA-349 실제 permission/lifecycle 소비 경계 검증 | Hit 전 valid credential, active model, verified relation과 use permission을 다시 검증한다. | ABC-FR-040, ABC-FR-054, ABC-T060~061 |
+| Knowledge/Collection | MBA-346 및 MBA-348 코드 수준 구현·회귀 검증; MBA-349 실제 permission/lifecycle/Collection 소비 경계 검증 | Hit마다 현재 route/use permission, lifecycle/readiness를 다시 계산하고 handle을 새로 발급한다. | ABC-FR-050~054, ABC-T080~087 |
+| Workflow target | MBA-345~346 및 MBA-348 코드 수준 구현·회귀 검증; MBA-349 실제 소비 경계 검증 | Selected target identity는 ephemeral HMAC input으로만 사용한다. Hit에서는 server-loaded graph와 target을 다시 resolve하고 UUID를 재사용하지 않는다. | ABC-FR-019, ABC-FR-041~043, ABC-T036, ABC-T062~066 |
 | Deployment preflight | 해당 없음 | Cache는 graph/deployment에 reference를 추가하지 않고 생성 단계 plan에만 사용한다. 생성된 graph는 cache outcome과 무관하게 기존 deployment preflight를 그대로 통과한다. | ABC-FR-044, ABC-T142 |
 | Runtime/background | 해당 없음 | Cache는 workflow를 실행하거나 background job을 만들지 않는다. Generated graph의 runtime 권한·lifecycle 검사는 기존 계약이 계속 소유한다. | Side-effect boundary regression, ABC-T142~143 |
-| Transaction·TOCTOU | 후속 이슈: MBA-345, MBA-348, MBA-349 | Redis/provider wait 중 DB transaction이나 row lock을 유지하지 않고 value 사용 직전 cancellation/version을 다시 검사한다. | ABC-FR-063, ABC-FR-068, ABC-T106, ABC-T110~114 |
-| Retry·idempotency | 후속 이슈: MBA-345, MBA-348, MBA-349 | Single-flight는 best-effort 비용 최적화이고 기존 provider usage identity, GraphMutation/CAS idempotency를 대체하지 않는다. | ABC-FR-062~069, ABC-T102~116, ABC-T131~132 |
+| Transaction/TOCTOU | MBA-345 and MBA-348 code-level implementation/regression; MBA-349 actual consumer-boundary evidence | A request-bound guard ends only a clean service read transaction before every Redis operation: lookup, lease, follower wait, save, completion signal and release. This includes Redis work reached after current runtime, graph, membership or Knowledge rehydration has read the service Session. Its terminal-state fence queries through a separate autocommit connection. If the clean boundary cannot be established, the coordinator skips subsequent Redis I/O and preserves the existing Planner or already canonical result path. An unavailable initial guard reaches the existing Planner once only, and a Planner exception is not retried as cache I/O handling. Provider consumer-boundary verification and final request-state CAS remain MBA-349 downstream evidence. | ABC-FR-063, ABC-FR-068, ABC-T053, ABC-T106, ABC-T110~114 |
+| Retry·idempotency | MBA-345 및 MBA-348 코드 수준 구현·회귀 검증; MBA-349 GraphMutation/CAS 소비 경계 검증 | Single-flight는 best-effort 비용 최적화이고 기존 provider usage identity, GraphMutation/CAS idempotency를 대체하지 않는다. | ABC-FR-062~069, ABC-T102~116, ABC-T131~132 |
 | Background coordination | 해당 없음 | Lease는 foreground request의 bounded single-flight에만 사용하며 worker claim이나 durable background coordination을 만들지 않는다. | `component_spec.md` Single-Flight, ABC-T102~116 |
-| Lifecycle | 후속 이슈: MBA-346, MBA-349 | Revoked/deleted/stale resource는 hit revalidation에서 제외하거나 기존 permission/stale 계약으로 차단한다. | ABC-FR-040~048, ABC-FR-050~054, ABC-T060~068, ABC-T080~084 |
+| Lifecycle | MBA-346 및 MBA-348 코드 수준 구현·회귀 검증; MBA-349 실제 lifecycle 소비 경계 검증 | Revoked/deleted/stale resource는 hit revalidation에서 제외하거나 기존 permission/stale 계약으로 차단한다. | ABC-FR-040~048, ABC-FR-050~054, ABC-T060~068, ABC-T080~084 |
 | Cache key rotation·migration | 후속 이슈: MBA-345, MBA-349 | HMAC key/version 변경은 dual-read, migration과 backfill 없이 namespace miss를 만든다. | ABC-FR-082~083, ABC-FR-088, ABC-T125, ABC-T128 |
-| Legacy data | 해당 없음 | Cache는 현재 미구현이고 DB schema나 기존 cache data가 없다. 신규 namespace는 이전 value를 읽지 않는다. | ADR-0063 Decision 12~14 |
-| 오류·resource hiding | 후속 이슈: MBA-345, MBA-346, MBA-348, MBA-349 | Redis 오류는 safe fail-open, protected-resource permission/CAS 오류는 기존 fail-closed 계약으로 처리하고 식별자를 diagnostic에 노출하지 않는다. | ABC-FR-060~061, ABC-FR-073, ABC-T100, ABC-T120~121 |
-| Audit | 후속 이슈: MBA-348, MBA-349 | Cache hit가 workflow mutation audit을 대체하지 않는다. Audit는 cache key/value/plan의 durable copy나 Redis 복구 replay source가 아니다. | ABC-FR-074, ABC-FR-077, ABC-T124, ABC-T130 |
-| Usage/cost | 후속 이슈: MBA-348, MBA-349 | Hit는 provider usage가 없고 miss/repair만 기존 recorder를 사용한다. | ABC-FR-070~071, ABC-T048~050, ABC-T122~123 |
-| Redaction | 후속 이슈: MBA-344~345, MBA-347~350 | Raw request, cache key digest 전체, protected identity, secret과 provider payload를 log, metric, audit와 artifact에 남기지 않는다. | ABC-FR-006, ABC-FR-032~036, ABC-FR-073, ABC-NFR-014~015, ABC-T008, ABC-T027~035, ABC-T121, ABC-T126~130, ABC-T158, ABC-T165~167 |
-| Redis isolation·운영 serving | 후속 이슈: MBA-345, MBA-349 | MBA-345는 전용 URL, no-Celery-fallback과 `NODE_ENV=production|staging` readiness gate를, MBA-349는 운영 evidence 부재 시 fail-closed 통합 검증을 소유한다. 실제 instance/secret wiring/capacity·eviction/failure/network/monitoring/rollback은 별도 운영 범위이며 evidence 전 serving을 비활성으로 유지한다. | ABC-FR-085~094, ABC-T107, ABC-T117~119, 운영 serving 전 evidence |
-| 문서·테스트 | 후속 이슈: MBA-343~350 | MBA-339은 계약과 추적표만 확정한다. 구현 위치, 실행 명령, 결과와 revision은 각 이슈 및 PR/CI에 기록하고 MBA-349가 이 matrix의 실제 evidence를 갱신한다. | `requirements.md`, `api_spec.md`, `component_spec.md`, `test_cases.md`, `local/mba-339/test-matrix.md` |
+| Legacy data | 해당 없음 | Serving cache, DB schema와 기존 cache data는 없다. MBA-343 spine은 value를 저장하지 않으며 신규 namespace는 이전 value를 읽지 않는다. | ADR-0063 Decision 12~14, ABC343-FR-007~009 |
+| 오류·resource hiding | MBA-345~346 및 MBA-348 코드 수준 구현·회귀 검증; MBA-349 실제 소비 경계 검증 | Redis 오류는 safe fail-open, protected-resource permission/CAS 오류는 기존 fail-closed 계약으로 처리하고 식별자를 diagnostic에 노출하지 않는다. | ABC-FR-060~061, ABC-FR-073, ABC-T100, ABC-T120~121 |
+| Audit | MBA-348 코드 수준 구현·회귀 검증; MBA-349 durable audit 소비 경계 검증 | Cache hit가 workflow mutation audit을 대체하지 않는다. Audit는 cache key/value/plan의 durable copy나 Redis 복구 replay source가 아니다. | ABC-FR-074, ABC-FR-077, ABC-T124, ABC-T130 |
+| Usage/cost | MBA-348 코드 수준 구현·회귀 검증; MBA-349 실제 usage/audit 소비 경계 검증 | Hit는 provider usage가 없고 miss/repair만 기존 recorder를 사용한다. | ABC-FR-070~071, ABC-T048~050, ABC-T122~123 |
+| Redaction | MBA-343~346 및 MBA-348 코드 수준 구현·회귀 검증; MBA-349~350 실제 소비 경계·최종 증거 | MBA-343은 cache DTO/codec validation input, 원본 validator context와 exception chain을 제거한다. MBA-344는 redaction/secret marker를 `sensitive_input`으로 bypass하고 result/repr에 message를 노출하지 않는다. 현재 serving 경계도 raw request, cache key digest 전체, protected identity, secret과 provider payload를 log, metric, audit와 artifact에 남기지 않는다. Cache serving은 기본 요청이지만 production/staging은 evidence와 attestation 전 비활성이다. | ABC343-FR-003, ABC343-FR-010, ABC343-T011~T018, ABC343-T056, ABC343-T059, ABC343-T063~T067; ADR-0073, ADR-0074, ABC-FR-001~008, ABC-T001~019; ABC-FR-032~036, ABC-FR-073, ABC-NFR-014~015, ABC-T027~035, ABC-T121, ABC-T126~130, ABC-T158, ABC-T165~167 |
+| Redis isolation·운영 serving | MBA-345 코드 수준 구현·회귀 검증; MBA-349 운영 serving 검증 | MBA-345는 전용 URL, no-Celery-fallback과 `NODE_ENV=production|staging` readiness gate를 소유한다. MBA-349는 운영 evidence 부재 시 fail-closed 통합 검증을 소유한다. 실제 instance/secret wiring/capacity·eviction/failure/network/monitoring/rollback은 별도 운영 범위이며 evidence 전 serving을 비활성으로 유지한다. | ABC-FR-085~094, ABC-T107, ABC-T117~119, 운영 serving 전 evidence |
+| 문서·테스트 | MBA-343~346 및 MBA-348 로컬 코드 수준 evidence 완료; MBA-349~350 후속 evidence | 각 leaf와 MBA-348 통합의 코드·회귀·review evidence를 local 경로에 기록한다. MBA-349가 실제 소비 경계 및 serving 통합 evidence로 이 matrix를 다시 갱신한다. | `requirements.md`, `api_spec.md`, `component_spec.md`, `test_cases.md`, `../agent-builder-cache-343/`, `local/mba-343/evidence/README.md`, `local/mba-344/evidence/README.md`, `local/mba-348/` |
+
+
+**MBA-344 redaction clarification.** Raw safe input and its transient NFKC/whitespace cleanup form both pass fail-closed secret/redaction/truncation gates before lookup/store. The safety-gate match result is not retained, surfaced, or separately signed; the required cleanup transformations still feed the normal signature projection. Quoted Catalog display labels are used only as a value-bypass signal.
 
 ## Merge Blocking Conditions
 
@@ -57,3 +67,34 @@ feature 문서와 기능 상태를 완료로 바꾸지 않는다. 구현 전 안
 위 항목은 운영 증거 확인 전에는 운영자가 ready attestation을 설정할 수 없다는 의미다. 런타임은 별도 evidence
 저장소를 조회하지 않고 attestation과 bounded configuration을 검사한다. Cache 코드·필수 검증 완료는 운영
 작업 번호와 독립적으로 판정하며, 실제 Production Redis evidence 전에는 production/staging serving만 비활성으로 유지한다.
+
+## MBA-349 Actual Consumer Verification
+
+Status: Local Integration Verified (current disposable PostgreSQL rerun)
+
+| Boundary | Status | Code and test evidence | Remaining condition |
+| --- | --- | --- | --- |
+| Cache storage, GraphMutation, CAS, acknowledgement | Complete | `test_actual_cache_hit_reaches_safe_envelope_cas_ack_audit_and_blocks_revoked_credential` passed against disposable PostgreSQL. The current combined workflow-CAS and intent-usage PostgreSQL rerun passed `56` tests. Warm hit reached the ordinary safe envelope, workflow CAS save, and acknowledgement. | No cache plan is persisted with a GraphMutation envelope. |
+| Model/credential permission and lifecycle | Complete | The same PostgreSQL consumer test queries current credential, model, and verified relation state on cache-context construction and revalidation; a committed credential revoke returns `configuration_required` without a GraphMutation or usage row. | No prior permission decision is reused. |
+| Current workflow target and Knowledge/Collection | Complete | Existing current-target and current-Knowledge rehydration regressions cover changed/deleted target and current handle reissue; the PostgreSQL consumer test reaches the same rehydrator factory before GraphMutation. | Current server resolution remains authoritative. |
+| Redis TTL, authenticated envelope, generation fence, rotation | Complete | Existing CACHE-03 Redis integration, including the current stale-lease fenced-save regression, passed (`6 passed`). A live Redis smoke check used two ephemeral HMAC versions and verified new namespace cold miss without dual-read. | Namespace rotation remains a cold-miss contract. |
+| Cache-off, Redis outage, and serving gate | Complete | Existing cache-off service regression remains unchanged. `test_actual_cache_cold_paths_record_single_provider_usage` proves cache-enabled cold miss and cache-unavailable fail-open each call the synthetic provider once and create one request-scoped durable usage row. | Production/staging serving remains disabled without operational evidence. |
+| Audit, usage, and event redaction | Complete | The PostgreSQL consumer test proves a warm hit creates no provider call or usage row, preserves issued/acknowledged audit events, and retains no cached plan in the safe envelope. The cold/error path test proves one provider call and one request-scoped usage row per request. Existing observer/codec tests cover allowlisted redaction. | Cache events are not a durable replay source. |
+| Final benchmark artifact redaction | Complete | MBA-350 final live bundle passed the runner's row, pair, outcome, and artifact-redaction validation before publication. | The published bundle contains only allowlisted summaries, CSV/JSON, and SVG evidence; it is not a serving or replay store. |
+| Deployment preflight and runtime/background | Not applicable | Cache adds no deployment reference or worker/runtime work. | Existing generated-graph consumers retain these checks. |
+| Production Redis rollout | Follow-up operational issue | Production/staging serving gate stays fail closed until operational evidence and attestation; the default cache request remains enabled. | Instance, secret wiring, capacity, failure, monitoring, rollback, and operational attestation are outside CACHE-07. |
+
+Current local execution used the repository's explicit disposable PostgreSQL configuration sourced without printing connection values from the running Compose service. The combined CAS and intent-usage modules passed `56` tests. The Redis integration, including stale-lease fenced-save coverage, passed `6` tests, and the rotation smoke check emitted no key, value, credential, or request content.
+
+## MBA-349 Consumer-Evidence Correction
+
+This section supersedes the MBA-349 consumer-evidence counts and descriptions above.
+
+- The current disposable PostgreSQL workflow-CAS plus intent-usage module result is `56 passed`; it supersedes the historical `19` and `21` counts.
+- The selected-target regression builds a planning context from a persisted workflow, removes the selected target before cache rehydration, and verifies that the real coordinator discards the warm plan before any mutation path.
+- The Knowledge regression deletes a persisted Knowledge row before the current resolver runs and verifies that rehydration emits no restored candidate handle. It does not claim that a historical Knowledge identifier was cached; plan contracts intentionally contain no durable Knowledge identity.
+- The consumer audit query recursively rejects cache-plan and raw-payload metadata field names in durable issued and acknowledged audit rows. It proves that a warm hit has no provider call or planner usage row.
+- The cache-enabled cold-miss and cache-unavailable fail-open regression invokes the synthetic provider once and records one durable usage row for its own request, proving lazy usage-context creation does not lose or duplicate attribution.
+- Credential/model/relation state is separately re-read from PostgreSQL; a committed credential revoke is fail closed before GraphMutation, CAS, acknowledgement, usage, or external provider work.
+
+MBA-350 final benchmark artifacts are recorded in the safe published bundle and remain evaluation evidence only. The actual consumer boundaries above are complete only for the local disposable PostgreSQL environment; production serving remains gated by the existing operational attestation requirement.

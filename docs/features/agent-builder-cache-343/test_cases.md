@@ -28,7 +28,7 @@ payload를 포함하지 않는다.
 | ID | Scenario | Expected Result |
 | --- | --- | --- |
 | ABC343-T011 | graph/nodes/edges/position field를 root 또는 nested에 주입 | `forbidden_cache_content` |
-| ABC343-T012 | workflow/node/edge/request/session/operation UUID 주입 | `forbidden_cache_content` |
+| ABC343-T012 | workflow/node/edge/request/session/operation UUID와 version 4/7/nil UUID 문자열 주입 | UUID version과 무관하게 `forbidden_cache_content` |
 | ABC343-T013 | credential, token, API key, password, Redis URL category 주입 | `forbidden_cache_content` |
 | ABC343-T014 | explicit/actual parameter value 주입 | `forbidden_cache_content` |
 | ABC343-T015 | KB/Collection ID, label, candidate/opaque handle 주입 | `forbidden_cache_content` |
@@ -82,7 +82,7 @@ snapshot, evidence 또는 log file에 기록하지 않는다.
 | --- | --- | --- |
 | ABC343-T041 | natural-language node/edge target ref로 strict plan 생성 | schema 거부; runtime projection/bypass 구현은 호출하지 않음 |
 | ABC343-T042 | 같은 logical plan 입력이지만 서로 다른 `full_safe_message`를 가진 valid `IntentPlanningContext` 두 개 구성 | 전체 safe message가 절단·공통 summary 치환 없이 각각 보존되고 topology, runtime·Knowledge fingerprint와 contract version 보존 |
-| ABC343-T043 | context/scope `json.dumps`, `vars`, `dataclasses.asdict`, `pickle.dumps`, `model_dump`/`dict` 부재와 `repr` 검사 | 네 serialization API는 `TypeError`, dump method 없음, 고정 redacted repr에 identity/request 없음 |
+| ABC343-T043 | context/scope `json.dumps`, `vars`, `dataclasses.asdict`, `pickle.dumps`, `model_dump`/`dict`/`__getstate__` 부재와 `repr` 검사 | 네 serialization API는 `TypeError`, dump/state method 없음, 고정 redacted repr에 identity/request 없음 |
 | ABC343-T044 | `modify_workflow/replace_workflow` plan과 잘못된 request/draft pair | replace는 target 없이 허용, 그 외 잘못된 pair와 replace target은 거부 |
 
 ## 8. Closed Membership and Result Contract Tests
@@ -100,11 +100,18 @@ snapshot, evidence 또는 log file에 기록하지 않는다.
 | ABC343-T053 | boundary 인수 없이 직접 `AgentBuilderService` 구성 후 valid intent 실행 | disabled 기본값 사용, Planner 1회와 baseline structured result 유지 |
 | ABC343-T054 | Catalog v3 snapshot의 parameter input type을 current Catalog와 비교 | capability별 parameter key/input type이 exact match하고 drift는 fail-closed |
 | ABC343-T055 | known topic ref를 `knowledge_backed_llm`이 아닌 target에 사용 | strict schema 거부 |
-| ABC343-T056 | known Slack guidance pair를 다른 capability/parameter/input type에 사용하거나 ref 한쪽만 사용 | strict schema 거부 |
+| ABC343-T056 | known Slack guidance pair를 다른 capability/parameter/input type에 사용하거나 ref 한쪽만 사용 | strict schema와 codec이 `invalid_plan_schema/reference`로 원문 없이 거부 |
 | ABC343-T057 | `intent-text-v1` request-summary projection descriptor와 19개 capability purpose snapshot | generic request/draft summary table이 없고 `summary.current_safe_message.v1`의 source/whitespace/redaction/240-code-point/failure/provider-summary 비재사용/non-persistence 계약과 모든 capability purpose가 exact match하며 누락·초과 없음 |
 | ABC343-T058 | load hit/miss/invalid/unavailable과 save stored/unavailable result 조합 | valid union만 허용하고 unknown status/reason 또는 plan/reason 모순 거부 |
 | ABC343-T059 | codec의 모든 failure code/path category와 string/repr/cause 검사 | public `IntentPlanCodecError`만 발생하고 payload/value/full path/chained parser error 없음 |
 | ABC343-T060 | duplicate guard parse 뒤 tuple plan decode | original bytes의 strict Pydantic JSON-mode 검증으로 성공하고 Python-mode list coercion helper 없음 |
+| ABC343-T061 | unchecked model copy의 invalid member 또는 extra-field subclass plan encode | decoder와 round-trip할 수 없으므로 `invalid_plan_schema/payload_shape`로 거부 |
+| ABC343-T062 | configured byte limit 안의 과도하게 중첩된 JSON decode | raw `RecursionError` 대신 `invalid_json/root`로 거부 |
+| ABC343-T063 | `sk-`, `ghp_`, `xox[baprs]-`, whitespace `Bearer` token-like value를 encode/decode | 양쪽 모두 `forbidden_cache_content/cache_content`, 원문 반사 없음 |
+| ABC343-T064 | strict DTO/port의 constructor, `model_validate`, `model_validate_json`, `model_validate_strings` failure를 모든 public error view로 검사 | `str`/`repr`/`errors()`/`json()`에 원문 없음, input null, exception chain 없음 |
+| ABC343-T065 | GitHub read/comment action 없이 대응 capability만 있거나 capability 없이 action만 존재 | 양방향 membership 불일치를 strict schema와 codec이 `invalid_plan_schema/reference`로 원문 없이 거부 |
+| ABC343-T066 | Knowledge requirement placement 누락, target 불일치 또는 before-graph knowledge step 불일치 | requirement/placement 1:1 target closure를 strict schema가 거부하고 target 불일치 codec 경로는 `invalid_plan_schema/reference`로 분류 |
+| ABC343-T067 | malformed input-guidance ref와 `None`, boolean, 0 이하 또는 string max payload limit을 encode/decode에 전달 | guidance 오류는 `invalid_plan_schema/reference`, 잘못된 limit은 `invalid_payload_limit/payload_size`로 원문 없이 거부 |
 
 ## 9. Suggested Commands
 

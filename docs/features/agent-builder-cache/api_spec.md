@@ -45,8 +45,9 @@ summary와 50-node projection은 이 DTO의 입력이 아니다.
 2. Collection과 KB를 실제 resource identity로 중복 제거한다. 같은 KB가 여러 Collection에 속해도 한 번만
    identity 집합에 포함하되 허용된 hierarchy 관계는 모두 보존한다.
 3. 실제 identity는 `agent-builder-cache:knowledge-resource:<version>` domain의 HMAC으로 즉시 변환한다.
-4. Resource kind, identity digest, safe metadata digest, hierarchy digest, lifecycle state와 policy revision으로
-   canonical projection을 만든다. Safe label이나 이름 원문은 projection에 넣지 않는다.
+4. Resource kind, identity digest, approved semantic metadata digest, hierarchy digest, lifecycle state와 policy revision으로
+   canonical projection을 만든다. Safe label이나 이름 원문은 projection에 넣지 않는다. A policy revision is explicit safe metadata when available; otherwise the server derives `derived-policy-state-v1` from current permission state (`effective_auth_state`, `source_acl_state`, `reason_code`, and nonnegative `freshness_epoch`). Admission bypasses only when neither representation can be formed.
+   The metadata contribution is a closed semantic allowlist. Nested resolver IDs and safe label/name/description presentation values are excluded before the outer context HMAC is calculated.
 5. Projection은 identity digest와 resource kind를 기준으로 안정 정렬하고 최종 candidate-set digest를 만든다.
 6. UI 위치, 추천 순위, score와 request-scoped selection/collection/KB handle은 입력에서 제외한다.
 7. Planning context와 cache key material에는 최종 digest만 전달한다. Fingerprint builder의 입력과 중간
@@ -57,12 +58,12 @@ summary와 50-node projection은 이 DTO의 입력이 아니다.
 | Field | Type | Description |
 |---|---|---|
 | `status` | `eligible \| bypass` | deterministic lookup 가능 여부 |
-| `signature` | string or null | eligible일 때만 존재하는 canonical signature |
-| `reason_code` | safe enum or null | bypass 이유 |
+| `intent_signature` | string or null | eligible일 때만 존재하는 전체 canonical projection의 SHA-256 |
+| `reason` | safe enum or null | bypass 이유 |
 | `normalizer_version` | string | key namespace version |
 | `sensitive_input_detected` | boolean | true이면 lookup/store 금지 |
 
-Allowed bypass reason codes:
+`IntentNormalizationResult` contract가 허용하는 bypass reason codes:
 
 - `sensitive_input`
 - `explicit_value_suspected`
@@ -75,20 +76,35 @@ Allowed bypass reason codes:
 
 Reason에는 사용자 문자열을 포함하지 않는다.
 
+`intent-normalizer-v2` 구현은 `sensitive_input`, `explicit_value_suspected`,
+`unknown_token_sequence`, `ambiguous_target`, `unsupported_request_shape`, `normalizer_disabled`,
+`input_projection_truncated`를 직접 반환한다. 일반 자연어의 미인식 token과 지원하지 않는 node 이름은
+ordered literal segment로 보존해 eligible로 처리한다. `unknown_token_sequence`는 닫히지 않은 인용문처럼
+안전하게 segment화할 수 없는 입력에만 사용한다. `graph_projection_incomplete`는 전체 topology를 만드는
+후속 context fingerprint 경계가 사용한다.
+
 ## Versioned Normalization Profile
 
-Normalizer eligibility는 코드에 고정된 versioned profile로 판정한다. Profile은 다음을 포함한다.
+**MBA-344 fail-closed clarification.** The sensitive/redaction/truncation gates inspect the raw `full_safe_message` and its transient NFKC/whitespace cleanup form. The bypass check's match result is deny-only and is not persisted or separately appended to signature material; the required NFKC/whitespace transformations still define the normalized request projection. A quoted Catalog parameter key/display label followed by a non-empty value is an explicit-value signal only; it never becomes a canonical token. A node token may share an alias only when that alias resolves to a capability declared by the same node; any other node-token/alias collision fails static initialization.
 
-- Catalog capability와 server action의 canonical alias 및 token/phrase boundary
-- 허용되는 의미 없는 조사, 정중 표현과 공백·case 변형
-- `앞에`, `뒤에`, `사이에` 같은 위치 표현과 단계 연결 표현
-- 인용문, 숫자, 부정 표현, node label과 parameter-like span을 alias보다 먼저 보호하는 우선순위
-- 처리 뒤 미인식 잔여 표현이 하나라도 남으면 전체 요청을 bypass하는 규칙
 
-Profile은 UI 문구나 Planner prompt에서 동적으로 파생하지 않는다. Alias canonical target 중복과 부분 문자열
-충돌은 startup/static validation으로 거부한다. Profile 또는 corpus 변경은 `normalizer_version`을 올려 기존
-entry를 namespace miss로 만들고, 동등·비동등·부정·순서·인용·explicit value·충돌 사례를 포함한 versioned
-regression corpus를 함께 갱신한다.
+Normalizer eligibility와 equality는 코드에 고정된 versioned profile로 판정한다. Profile은 다음을 포함한다.
+
+- Unicode NFKC, CR/LF/tab 공백화, 연속 ASCII space 축소와 trim
+- Catalog v3의 단일 lexical-token exact `planner_aliases`와 exact node token
+- Case-insensitive canonicalization은 exact Catalog token에만 적용한다. Catalog에 없는 literal은 admission을 막지 않으며 원문 literal을 canonicalize하지 않는다.
+- 인용문과 node label을 exact token canonicalization보다 먼저 보호하는 우선순위
+- 숫자, 부정, 순서와 위치를 변환하지 않고 ordered literal로 보존하는 규칙
+- explicit parameter value, sensitive/redaction marker, truncation, 닫히지 않은 인용문과 ambiguous
+  modify target의 bypass 규칙
+
+Profile은 UI 문구나 Planner prompt에서 동적으로 파생하지 않는다. Catalog multi-token phrase alias,
+server action alias, 번역, 일반 동의어, 조사·정중 표현 제거, 어순 재구성과 semantic similarity는 적용하지 않는다.
+Exact alias가 서로 다른 canonical target에 충돌하면 startup/static validation에서 거부한다. Canonical
+projection은 `normalizer_version`과 ordered typed segments 전체를 포함하며 SHA-256 전에 domain separation을
+적용한다. Profile 또는 corpus의 equality 규칙 변경은 `normalizer_version`을 올려 기존 entry를 namespace
+miss로 만들고, 동등·비동등·부정·순서·인용·explicit value·충돌 사례를 포함한 versioned regression corpus를
+함께 갱신한다.
 
 ## Cache Key Material
 
@@ -102,18 +118,18 @@ HMAC input은 다음 필드만 포함한다.
 
 | Field | Notes |
 |---|---|
-| `organization_scope` | UUID를 canonical string으로 사용하되 Redis key에는 노출하지 않음 |
-| `actor_scope` | 초기 버전은 user UUID |
-| `planner_runtime_fingerprint` | provider/model과 검증 관계의 digest |
+| `organization_id` | UUID를 canonical string으로 사용하되 Redis key에는 노출하지 않음 |
+| `actor_id` | 현재 actor UUID; Redis key에는 노출하지 않음 |
+| `planner_runtime` | provider/model과 검증 관계의 strict projection |
 | `generation_mode` | canonical mode |
 | `intent_signature` | deterministic signature |
-| `workflow_context_fingerprint` | layout과 raw config를 제외한 safe structural digest |
-| `selection_fingerprint` | selected node/edge type과 실제 target identity를 ephemeral HMAC input으로 만든 digest |
+| `selected_target` | selected node/edge의 type과 actual target identity를 HMAC input으로만 포함 |
 | `knowledge_context_fingerprint` | 현재 표시 가능한 후보 집합과 policy revision digest |
-| `versions` | normalizer/cache/planner/catalog/`canonical_text_registry_version`/materializer/HMAC key version |
+| `contract_versions` | normalizer/cache/planner/catalog/`canonical_text_registry_version`/materializer version strict projection |
 
-Timestamp, request/session ID와 workflow ID는 key material에 넣지 않는다. Workflow identity 대신
-현재 의미 구조 fingerprint를 사용한다.
+Timestamp, request/session ID, workflow ID, full workflow topology와 raw graph/config는 key material에
+넣지 않는다. 전체 current logical topology는 hit마다 current rehydration context에서 plan 적용 가능성을
+재검증하는 입력이며, projection을 완성할 수 없으면 cache를 우회한다.
 
 Key HMAC은 `agent-builder-cache:key:<version>` domain을 사용한다. 같은 key material을 다른 HMAC
 용도에 재사용하지 않는다.
@@ -196,7 +212,7 @@ Registry manifest는 다음 strict field만 가진다.
 | manifest | `registry_version`, `summary_projection`, ordered `topics`, ordered `reason_templates`, ordered `input_guidance_templates` |
 | topic | `ref`, `canonical_text`, ordered explicit `aliases` |
 | guidance template | `ref`, `canonical_template`, ordered explicit `aliases`, ordered `allowed_input_types` |
-| summary projection | `projection_id=summary.current_safe_message.v1`, `source=full_safe_message`, `max_codepoints=240`, `whitespace_profile=python-split-v1`, `redaction_profile=agent-builder-safe-summary-v1` |
+| summary projection | `projection_id=summary.current_safe_message.v1`, `source=IntentPlanningContext.full_safe_message`, `max_codepoints=240`, `whitespace_profile=python-split-v1`, `redaction_profile=agent-builder-safe-summary-v1` |
 | capability purpose | exact Catalog capability, `canonical_text` |
 
 Closed enum 대비 누락·초과 ref, alias와 canonical text 중복, 지원하지 않는 placeholder, alias의 다중 ref
@@ -296,14 +312,26 @@ session의 단일 foreground request와 stale/canceled 판단을 생략하지 �
 Cache eligible miss와 hit는 current safe request별 summary, logical step purpose, Knowledge recommendation `query_topics`,
 parameter guidance, ParameterTask와 graph materialization에 같은 canonical structured request를 사용한다.
 
+A cache-induced fallback to the existing Planner?including normalizer bypass, cache I/O or lease failure, unavailable cache, and follower timeout or overflow?rechecks the cancellation/request-version fence immediately before Planner entry. A `canceled` or `stale` request follows the existing terminal contract without Planner, provider, or usage work.
+
 ## Knowledge Rehydration
 
 - Cache value의 closed Knowledge requirement는 current candidate resolver의 입력일 뿐 선택 결과가 아니다.
 - Ranking용 `query_topics`는 순서 있는 `topic_refs`를 현재 registry version의 고정 canonical string으로 렌더링하며 cache value에는 문자열을 저장하지 않는다.
-- 현재 Collection/KB 권한과 lifecycle을 조회해 hierarchy와 score를 새로 계산한다.
-- Suggested handle이 필요하면 현재 resolution에서 새로 발급한다.
+- 기존 current candidate resolver가 각 requirement마다 현재 Collection/KB 권한, lifecycle, readiness와 hierarchy/score를 다시 계산하고 request-current candidate handle과 resolution ID를 발급한다.
+- Rehydrator는 plan의 requirement ref 순서와 current resolution의 ref 순서가 정확히 일치할 때만 해당 requirement에 candidate handle을 bind한다. Selection handle 발급과 선택 materialization은 기존 downstream Knowledge selection 경계가 소유한다.
 - Cache 당시 candidate가 없어졌거나 순위가 바뀌어도 stale handle을 복원하지 않는다.
 - Knowledge 선택 뒤 Planner를 다시 호출하지 않는 기존 계약은 유지한다.
+
+Internal request-current Knowledge resolution input은 직렬화하거나 cache에 저장하지 않으며 다음 field만 가진다.
+
+| Field | Contract |
+|---|---|
+| `requirement_ref` | plan의 같은 ordinal requirement ref와 exact match |
+| `resolution_id` | current candidate resolver가 해당 요청에서 발급한 unique ID |
+| `status` | `ready \| empty \| ambiguous`; candidate cardinality와 일치 |
+| `candidate_handles` | 현재 resolution의 순서 있는 opaque handles; protected resource ID 없음 |
+| validation flags | current hierarchy authorization, use permission, lifecycle active, operational readiness가 모두 true |
 
 ## Parameter Guidance Rehydration
 
@@ -318,6 +346,8 @@ parameter guidance, ParameterTask와 graph materialization에 같은 canonical s
 - `new_workflow`와 `replace_workflow`는 current base graph snapshot을 cache하지 않는다.
 - `modify_workflow`는 selected node/edge가 현재 server-loaded graph에 존재하고 key의 selection
   fingerprint와 일치할 때만 hit를 사용할 수 있다.
+- Existing target resolver가 current selected target identity를 server-loaded graph의 logical ref에 bind하고,
+  rehydrator는 target kind에 맞는 current node/edge logical ref membership을 다시 확인한다.
 - Natural-language node/edge target, 다중 target과 graph ambiguity는 cache bypass 대상이다.
 - Current target resolution 실패는 cached target ID로 대체하지 않는다.
 
@@ -376,20 +406,7 @@ HMAC key와 credential이 포함될 수 있는 Redis URL은 tracked 환경 파�
 Key version 변경은 dual-read 없이 새 namespace를 사용한다. Invalid secret 또는 URL은 safe reason
 code만 기록하고 cache를 비활성화한다.
 
-Cache flag의 기본값은 false다. Cache 전용 URL이 없을 때 Celery broker/result Redis URL로 자동 fallback하지
-않는다. 환경 판정은 기존 `NODE_ENV`를 재사용한다. `NODE_ENV=production`과 `NODE_ENV=staging`에서
-serving하려면 전용 Redis URL, HMAC key/version, 유효한 TTL/max payload/timeout/lease/wait/waiter 설정과
-`AGENT_BUILDER_INTENT_CACHE_PRODUCTION_READY=true`가 모두 필요하다. `development`, `test`와 미설정
-환경에서는 cache가 기본 비활성이다. 개발 환경에서 명시적으로 cache를 활성화했더라도 Redis 오류는
-기존 Planner로 fail-open한다. 운영자는 외부 Redis 검증을 완료한 뒤에만 ready flag를 설정하며, 런타임은
-별도 evidence 저장소를 조회하지 않고 이 attestation과 나머지 configuration의 유효성을 판정한다.
-
-Cache 구현은 전용 Redis URL을 받을 수 있는 adapter/configuration과 production/staging cache disable gate까지만
-제공한다. 전용 Production Redis instance 생성, Helm/Kubernetes secret/URL wiring, capacity·eviction,
-failure/network 검증, monitoring/rollback과 staged rollout은 별도 후속 운영 범위다. 해당 후속 이슈의
-진행 여부는 cache 코드·필수 검증 완료와 분리한다. 운영 증거가 없으면 운영자가 ready attestation을
-설정하지 않아야 하며 production/staging cache는 비활성으로 유지된다.
-
+Cache serving is requested by default. The cache never derives its Redis URL from Celery broker/result Redis; missing or invalid cache-specific configuration disables only the cache. `scripts/dev-local.ps1` supplies explicit local development configuration: cache enabled, an isolated local Redis DB, an ephemeral process HMAC key, and `dev-local-v1` key version. A direct `development`, `test`, or unset-environment Gateway that lacks complete cache configuration remains safely cache-disabled. Environment classification reuses `NODE_ENV`. `NODE_ENV=production` and `NODE_ENV=staging` additionally require a dedicated Redis URL, HMAC key/version, valid TTL/max payload/timeout/lease/wait/waiter configuration, and `AGENT_BUILDER_INTENT_CACHE_PRODUCTION_READY=true`. Redis failures continue through the existing Planner fail-open path. Operators set the ready flag only after external Redis validation; runtime evaluates only this attestation and the remaining configuration.
 ## HTTP Error Projection
 
 Cache-specific failures are not exposed as new HTTP errors. Planner/runtime, validation, permission, stale,
@@ -398,16 +415,45 @@ response body에 넣지 않는다.
 
 ## Internal Benchmark Contract
 
+### Loopback-only diagnostic bridge
+
+The benchmark runner may read
+`GET /api/v1/agent-builder/benchmark/diagnostics/{request_id}` only from a
+direct loopback Gateway process whose
+`AGENT_BUILDER_CACHE_BENCHMARK_DIAGNOSTICS_ENABLED` value is exactly `true`.
+It is forcibly disabled when `NODE_ENV` is `production` or `staging`, even if
+that local flag is set. It still requires normal authentication plus an
+`X-Organization-Id` that
+matches the requesting user and the process-local record. Disabled, non-
+loopback, missing, or scope-mismatched access returns `404`.
+
+The runner sends `X-Agent-Builder-Benchmark-Fresh-Session: true` on its ordinary
+`POST /sessions` calls. Gateway honors it only while the diagnostic bridge is
+enabled and the caller is direct loopback; then it creates a new direct-edit
+session instead of restoring an active one. Any other caller follows the normal
+restore-or-create session contract. The header never appears in a response,
+diagnostic, row, log, or final artifact.
+
+The response is bounded and allowlisted to `cache_outcome`,
+`planning_latency_ms`, `provider_call_count`, `repair_call_count`, benchmark
+terminal status, and validation status. It never returns request/response
+payloads, cache keys or values, credential material, provider data, or any
+protected identifier. It is evaluation-only: it has no client/UI contract and
+is not enabled for production or staging serving.
+
 Latency evaluation을 위한 public endpoint는 추가하지 않는다. Live collector는 기존 Agent Builder message,
 request/session 조회와 canonical workflow 경계를 사용한다. Planning latency는 coordinator 내부 monotonic
 clock으로 측정하고 end-to-end latency는 collector가 기존 API 호출 전후를 측정한다.
 
-Benchmark 실행 설정은 원문 API token이 아니라 `NODEASE_EVAL_USER_ID`,
-`NODEASE_EVAL_ORGANIZATION_ID`, `NODEASE_EVAL_CREDENTIAL_ID`, `NODEASE_EVAL_MODEL_ID` 같은 로컬 프로세스
-환경변수의 UUID reference를 사용한다. Runtime loader는 active organization, credential `use`, verified model
-relation과 실제 API model ID `gpt-5.5`를 재검증하고 하나라도 다르면 측정을 시작하지 않는다. HTTP
-end-to-end collector에 필요한 Nodease access token은 tracked 파일과 report에 기록하지 않고 실행 프로세스
-환경에서만 제공한다.
+Benchmark runner는 ignored local process configuration의
+`NODEASE_EVAL_CACHE_OFF_URL`, `NODEASE_EVAL_CACHE_ON_URL`,
+`NODEASE_EVAL_AUTHORIZATION`, `NODEASE_EVAL_ORGANIZATION_ID`,
+`NODEASE_EVAL_WORKFLOW_ID`, `NODEASE_EVAL_CREDENTIAL_ID`,
+`NODEASE_EVAL_MODEL_ID`, `NODEASE_EVAL_FINGERPRINT_KEY`를 사용한다.
+auth_token cookie value와 fingerprint key는 실행 프로세스 메모리에만 존재하며 tracked 파일, row, report,
+log, 또는 final bundle에 기록하지 않는다. Runtime loader는 authorization으로 확정된 current actor와
+organization, credential `use`, verified model relation, current workflow context, 그리고 실제 API model
+ID `gpt-5.5`를 재검증하고 하나라도 다르면 측정을 시작하지 않는다.
 
 Report sample에는 case/pair/run ID, comparison group, planning/end-to-end latency, benchmark 전용 cache outcome
 (`disabled|hit|miss|bypass|error`),
@@ -428,3 +474,7 @@ Summary는 측정된 warm-hit mean `W`, cold-miss mean `C`와 hit rate `h`로
 `expected_mean(h) = h * W + (1 - h) * C`를 계산한다. `h=0.25, 0.50, 0.75`의 planning과 end-to-end 값을
 각각 생성하고 반드시 `modeled_estimate`로 표시한다. Semantic bypass와 Redis fail-open은 miss 경로로
 분류한다. 이 모델링 계산 자체는 provider를 호출하지 않는다.
+
+### Normalization v2 amendment
+
+`intent-normalizer-v2` removes the v1 phrase/eligibility-vocabulary admission gate. A non-empty safe request is eligible even when it contains unknown natural-language tokens; those tokens are included unchanged in the ordered signature projection. `unknown_token_sequence` remains reserved for malformed quoted input, not ordinary language. Secret/redaction, truncation, explicit parameter values, and ambiguous modify targets remain bypasses. The final Redis key is still the server-HMAC result; neither the original request text nor the intermediate signature is stored or logged.

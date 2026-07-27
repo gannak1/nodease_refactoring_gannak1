@@ -165,11 +165,13 @@ def test_compose_target_workloads_have_no_direct_egress_or_ambient_proxy() -> No
         "${CONNECTOR_EGRESS_ALLOWED_PORTS:-22,5432}"
     )
     assert "ports" not in proxy
-    assert proxy["networks"] == [
+    assert list(proxy["networks"]) == [
         "proxy-https-clients",
         "proxy-http-clients",
         "proxy-egress",
     ]
+    assert proxy["networks"]["proxy-https-clients"]["ipv4_address"] == "172.30.250.2"
+    assert proxy["networks"]["proxy-http-clients"]["ipv4_address"] == "172.30.251.2"
     assert proxy["read_only"] is True
     assert proxy["cap_drop"] == ["ALL"]
     assert "no-new-privileges:true" in proxy["security_opt"]
@@ -185,6 +187,75 @@ def test_compose_target_workloads_have_no_direct_egress_or_ambient_proxy() -> No
         "exec 3<>/dev/tcp/127.0.0.1/3128",
     ]
 
+def test_compose_gateway_uses_a_dedicated_intent_cache_configuration() -> None:
+    compose = yaml.safe_load(_read("docker/docker-compose.yml"))
+    environment = compose["services"]["gateway"]["environment"]
+    env_example = _read("docker/.env.example")
+
+    assert environment["AGENT_BUILDER_INTENT_CACHE_ENABLED"] == (
+        "${AGENT_BUILDER_INTENT_CACHE_ENABLED:-true}"
+    )
+    assert environment["AGENT_BUILDER_INTENT_CACHE_REDIS_URL"] == (
+        "${AGENT_BUILDER_INTENT_CACHE_REDIS_URL:-redis://redis:6379/15}"
+    )
+    assert environment["AGENT_BUILDER_INTENT_CACHE_HMAC_KEY"] == (
+        "${AGENT_BUILDER_INTENT_CACHE_HMAC_KEY:-}"
+    )
+    assert environment["AGENT_BUILDER_INTENT_CACHE_HMAC_KEY_VERSION"] == (
+        "${AGENT_BUILDER_INTENT_CACHE_HMAC_KEY_VERSION:-docker-local-v1}"
+    )
+    assert environment["AGENT_BUILDER_INTENT_CACHE_PRODUCTION_READY"] == "false"
+    assert "AGENT_BUILDER_INTENT_CACHE_HMAC_KEY=" in env_example
+    assert "AGENT_BUILDER_INTENT_CACHE_REDIS_URL=redis://redis:6379/15" in env_example
+
+
+def test_compose_internal_workloads_use_dedicated_egress_capable_dns_resolvers() -> None:
+    compose = yaml.safe_load(_read("docker/docker-compose.yml"))
+    services = compose["services"]
+
+    expected = {
+        "gateway": ("dns_https", "172.30.250.53"),
+        "knowledge_worker": ("dns_https", "172.30.250.53"),
+        "workflow_engine": ("dns_http", "172.30.251.53"),
+    }
+    for workload_name, (resolver_name, resolver_ip) in expected.items():
+        workload = services[workload_name]
+        assert workload["dns"] == [resolver_ip]
+        assert workload["depends_on"][resolver_name]["condition"] == "service_healthy"
+
+    for resolver_name, client_network, resolver_ip in (
+        ("dns_https", "proxy-https-clients", "172.30.250.53"),
+        ("dns_http", "proxy-http-clients", "172.30.251.53"),
+    ):
+        resolver = services[resolver_name]
+        assert resolver["build"]["dockerfile"] == "docker/dns-resolver/Dockerfile"
+        assert list(resolver["networks"]) == [
+            "moduly-network",
+            client_network,
+            "proxy-egress",
+        ]
+        assert resolver["networks"][client_network]["ipv4_address"] == resolver_ip
+        assert "ports" not in resolver
+        assert resolver["read_only"] is True
+        assert resolver["cap_drop"] == ["ALL"]
+        assert resolver["cap_add"] == ["NET_BIND_SERVICE"]
+        assert "no-new-privileges:true" in resolver["security_opt"]
+        assert resolver["healthcheck"]["test"] == [
+            "CMD-SHELL",
+            "nslookup -type=A postgres 127.0.0.1 >/dev/null 2>&1 && "
+            "nslookup -type=A proxy 127.0.0.1 >/dev/null 2>&1",
+        ]
+
+        config_name = "https" if resolver_name == "dns_https" else "http"
+        resolver_config = _read(
+            f"docker/dns-resolver/dnsmasq-{config_name}.conf"
+        )
+        proxy_ip = "172.30.250.2" if config_name == "https" else "172.30.251.2"
+        assert "no-resolv" in resolver_config
+        assert "no-hosts" in resolver_config
+        assert "domain-needed" not in resolver_config
+        assert "server=127.0.0.11" in resolver_config
+        assert f"address=/proxy/{proxy_ip}" in resolver_config
 
 def test_helm_production_reference_requires_ha_proxy_only_egress() -> None:
     values = yaml.safe_load(_read("infra/helm/moduly/values.yaml"))

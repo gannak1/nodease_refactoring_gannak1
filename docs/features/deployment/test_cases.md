@@ -5,7 +5,7 @@ Status: Draft
 ## MBA-357 Outbound Proxy-Only Contracts
 
 - Production proxy mode는 exact internal host와 HTTP listener `3128/3129`, Connector listener `3130`만 허용하고 blank, public, localhost/loopback/link-local, userinfo, path/query/fragment, stale revision과 direct mode를 network I/O 전에 거부한다. Ambient proxy와 broad `NO_PROXY`는 결과를 바꾸지 않는다.
-- Guarded sync/async transport는 application URL/DNS policy를 proxy 연결 전에 다시 평가하고 Squid만 dial한다. Proxy connection/tunnel failure 뒤 origin direct dial은 0회이며 HTTPS SNI/certificate hostname, response cap, stream/cancellation과 safe error 계약을 유지한다.
+- Guarded sync/async transport는 application URL/DNS policy를 proxy 연결 전에 다시 평가하고 Squid만 dial한다. Compose target workload는 각 internal proxy-client network의 fixed DNS-only resolver를 통해 이 DNS 검증을 수행하되 resolver 또는 Squid의 egress-capable network에 직접 연결하지 않는다. Proxy connection/tunnel failure 뒤 origin direct dial은 0회이며 HTTPS SNI/certificate hostname, response cap, stream/cancellation과 safe error 계약을 유지한다.
 - S3/object storage client는 explicit proxy 설정 또는 explicit empty proxy map을 사용하며 ambient environment를 신뢰하지 않는다. Invalid proxy config에서는 provider client 생성과 signed request가 0회다.
 - Squid config는 pinned image, CONNECT 443, Workflow-only HTTP 80 listener, IMAP 143/993와 Connector 전용 `3130` listener의 배포 관리 포트 allowlist, final deny-all, private/reserved/metadata IPv4/IPv6 deny, no SSL bump, no cache와 `access_log none`을 검증한다.
 - Compose는 Gateway·Knowledge·Workflow가 egress-capable network에 직접 연결되지 않고 Squid만 egress network를 사용하며 host-published listener가 없는지 검증한다. Disposable runtime은 safe origin 성공, mixed A/AAAA/CNAME/rebind 차단, unauthorized source 차단, direct dial과 proxy-down fallback 실패를 확인한다.

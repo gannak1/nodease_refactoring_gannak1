@@ -11,6 +11,9 @@ from apps.gateway.application.agent_builder.intent_usage import (
     AgentBuilderIntentUsageRecordingError,
 )
 from apps.gateway.services import agent_builder_service as service_module
+from apps.gateway.services.agent_builder.benchmark_diagnostics import (
+    AgentBuilderBenchmarkDiagnostics,
+)
 from apps.gateway.services.agent_builder_service import (
     AgentBuilderService,
     calculate_graph_hash,
@@ -524,6 +527,64 @@ def test_finish_request_does_not_overwrite_canceled_request():
     assert response.preview_prompt is None
     assert request_row.response_payload["status"] == "canceled"
     assert request_row.completed_at is not None
+
+
+def test_finish_request_records_allowlisted_benchmark_diagnostic(monkeypatch):
+    class FinishingQuery:
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def update(self, *_args, **_kwargs):
+            return 1
+
+    class FinishingDb(FakeDb):
+        def query(self, _model):
+            return FinishingQuery()
+
+    request_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    request_row = SimpleNamespace(
+        id=request_id,
+        status="processing",
+        response_payload={},
+        structured_request={},
+        completed_at=None,
+    )
+    response = AgentBuilderMessageResponse(
+        request_id=request_id,
+        status="draft_ready",
+        warnings=[],
+    )
+    AgentBuilderBenchmarkDiagnostics.clear()
+    monkeypatch.setenv("AGENT_BUILDER_CACHE_BENCHMARK_DIAGNOSTICS_ENABLED", "true")
+    monkeypatch.setattr(service_module, "Session", FinishingDb)
+    try:
+        svc = AgentBuilderService(
+            FinishingDb(),
+            user=SimpleNamespace(id=user_id),
+            organization_id=organization_id,
+        )
+        svc._benchmark_cache_diagnostic = ("hit", 17, 0, 0)  # noqa: SLF001
+
+        assert svc._finish_request(request_row, response) is True  # noqa: SLF001
+        diagnostic = AgentBuilderBenchmarkDiagnostics.get_for_scope(
+            request_id=request_id,
+            user_id=user_id,
+            organization_id=organization_id,
+        )
+    finally:
+        AgentBuilderBenchmarkDiagnostics.clear()
+
+    assert diagnostic is not None
+    assert diagnostic.payload() == {
+        "cache_outcome": "hit",
+        "planning_latency_ms": 17,
+        "provider_call_count": 0,
+        "repair_call_count": 0,
+        "terminal_status": "success",
+        "validation_passed": True,
+    }
 
 
 def test_finish_request_does_not_overwrite_processing_timeout_terminal_payload():

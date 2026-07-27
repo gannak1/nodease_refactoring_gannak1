@@ -2,6 +2,8 @@
 
 Status: Accepted
 
+Amended by: [ADR-0073](ADR-0073-agent-builder-cache-exact-token-normalization-amendment.md), [ADR-0074](ADR-0074-agent-builder-cache-safe-literal-normalization-amendment.md)
+
 ## Context
 
 Agent Builder는 자연어 요청을 provider LLM으로 구조화하고, schema와 semantic
@@ -19,17 +21,19 @@ CAS 기준까지 과거 요청에서 재생하는 더 큰 위험이 생긴다.
 1. Agent Builder 앞에 삭제 가능한 L1 최적화인 deterministic intent plan cache를 둔다.
    캐시는 의미 판단의 source of truth가 아니며 현재 Planner, Catalog, validation,
    GraphMutation, CAS와 acknowledgement 경계를 대체하지 않는다.
-2. 정규화는 Unicode NFKC, 공백, 영문 대소문자와 승인된 전체-token/phrase 별칭만
-   처리한다. 위치, 순서, 부정, 숫자, 인용문, node label과 parameter 값은 보존한다.
-   규칙이 요청 전체를 안전하게 설명하지 못하면 cache를 우회하고 Planner를 호출한다.
-   정규화 가능 여부는 versioned normalization profile로 판정한다. Profile은 허용 alias,
-   의미 없는 조사·정중 표현, 위치 표현, token/phrase boundary, 인용·숫자·부정·parameter-like
-   span의 보호 우선순위와 미인식 잔여 표현의 bypass를 고정한다. Profile 변경은 normalizer
-   version 변경과 adversarial regression corpus 갱신을 요구한다.
-   Cache normalization과 context fingerprint는 Planner prompt용으로 축약된 summary나
-   일부 node projection을 재사용하지 않는다. 허용된 전체 safe request와 전체 logical
-   topology의 canonical digest를 만들 수 없거나 중간 절단이 발생하면 lookup과 store를
-   모두 우회한다.
+2. 정규화는 Unicode NFKC, 공백과 Catalog가 승인한 단일 lexical-token exact alias 및 exact node
+   token만 처리한다. 위치, 순서, 부정, 숫자, 인용문, node label과 parameter 값은 보존한다.
+   Catalog가 소유하지 않는 안전한 자연어는 ordered literal segment로 보존한다. secret/redaction,
+   truncation, explicit parameter value, ambiguous modify target 또는 닫히지 않은 인용문처럼 안전하게
+   segment화할 수 없는 입력만 cache를 우회하고 Planner를 호출한다.
+   정규화 가능 여부와 equality는 versioned normalization profile로 판정한다. Profile은 허용 alias,
+   token boundary와 인용·숫자·부정·parameter-like span의 보호 우선순위 및 literal 보존 규칙을 고정한다.
+   Profile 변경은 normalizer version 변경과 adversarial regression corpus 갱신을 요구한다.
+   Cache normalization은 Planner prompt용으로 축약된 summary나 일부 node projection을
+   재사용하지 않는다. 허용된 전체 safe request의 canonical digest를 만들 수 없거나 hit
+   재검증에 필요한 전체 current logical topology projection이 중간 절단되면 lookup과
+   store를 모두 우회한다. Topology 자체는 cache key가 아니라 hit마다 새로 만드는
+   current rehydration context에서만 검증한다.
    `AgentBuilderService`가 cache coordinator에 전달할 transient planning context DTO를
    소유한다. 이 DTO에는 전체 safe request, 전체 logical topology, actor/organization scope,
    검증된 planner model과 credential relation fingerprint, generation mode, selected target과
@@ -70,9 +74,10 @@ CAS 기준까지 과거 요청에서 재생하는 더 큰 위험이 생긴다.
    고정 문장을 선택하지도 않는다. 같은 current safe request의 cold miss와 hit는 같은 summary를 만들고,
    서로 다른 safe request는 각 current request에서 독립적으로 summary를 재구성한다.
 5. Cache key는 plaintext 요청이 아니라 canonical key material의 HMAC-SHA256이다.
-   Key material에는 organization, user, 선택한 planner model, generation mode,
-   safe workflow context, selected target, 현재 Knowledge 후보 집합과 contract version을
-   포함한다. 명시적인 selected node/edge 기반 modify에서는 실제 target identity를 HMAC input에만
+   Key material에는 organization/user scope, planner runtime fingerprint, generation mode,
+   intent signature, selected target identity, Knowledge candidate fingerprint와 normalizer/cache/
+   registry contract version을 포함한다. 전체 workflow topology와 raw graph configuration은 key에
+   넣지 않고 hit마다 current rehydration context에서만 재검증한다. 명시적인 selected node/edge 기반 modify에서는 실제 target identity를 HMAC input에만
    포함해 구조가 같은 서로 다른 target도 다른 key를 만든다. 초기 범위는 organization+user
    scope이며 사용자 또는 서로 다른 selected target 간에 entry를 공유하지 않는다.
    Cache value는 key digest와 canonical payload를 domain-separated HMAC으로 묶은
@@ -129,6 +134,8 @@ CAS 기준까지 과거 요청에서 재생하는 더 큰 위험이 생긴다.
     기존 Planner 경로로 진행한다. 완료 신호와 release는 owner token 및 lease generation을 검증해
     원자적으로 수행하며 follower는 자신이 관찰한 generation의 신호만 사용한다. Owner의 비정상 종료로
     완료 신호를 남길 수 없는 경우에만 lease TTL과 bounded wait를 복구 경계로 사용한다.
+    If current-context rehydration leaves the service Session transaction open and the request-bound guard cannot establish a clean boundary, it does not attempt completion signal, lease release, or any later Redis I/O.
+    Any already-acquired lease expires through TTL and followers retain their bounded fallback; this is cache-I/O fail-open rather than negative caching.
     DB transaction이나 workflow row lock을 잡은 채 Redis 또는 provider를 기다리지 않는다.
 12. Normalizer, cache schema, Planner contract, Catalog, canonical text registry, materializer와 HMAC key version을
     key namespace에 포함한다. Version 변경은 기존 entry를 읽지 않는 방식으로
@@ -137,25 +144,30 @@ CAS 기준까지 과거 요청에서 재생하는 더 큰 위험이 생긴다.
     Cache는 Gateway 내부 application port와 Redis adapter로 구현하고 별도 DB table,
     public cache endpoint 또는 operation replay 저장소를 만들지 않는다.
 14. Cache 구현은 전용 Redis URL을 주입할 수 있는 adapter/configuration 경계와 안전하지
-    않은 production 설정에서 cache를 비활성화하는 gate까지만 구현한다. Cache feature flag의
-    기본값은 false이며 Celery broker/result Redis URL로 자동 fallback하지 않는다. 환경 판정은
-    저장소의 기존 `NODE_ENV`를 재사용한다. `production`과 `staging`에서 serving하려면 전용 Redis URL,
-    HMAC key/version, 유효한 TTL/payload/timeout/waiter 설정과 명시적
-    `AGENT_BUILDER_INTENT_CACHE_PRODUCTION_READY=true`가 모두 필요하다. `development`, `test`와
-    미설정 환경에서는 cache가 기본 비활성이고, 명시적으로 활성화한 개발 cache의 Redis 장애도
-    기존 Planner로 fail-open한다. 운영자는 외부 운영 검증을 마친 뒤에만 이 flag를 설정한다. 런타임은
-    별도 evidence 저장소를 조회하지 않고 이 attestation과 나머지 configuration의 유효성을 판정한다.
-    전용 Production Redis instance 생성, Helm/Kubernetes secret과 URL wiring, 용량·eviction,
-    장애·네트워크, 모니터링·rollback과 단계적 rollout은 별도 후속 운영 이슈다.
-    Cache 코드와 필수 검증은 후속 운영 이슈 번호와 독립적으로 완료할 수 있다. 운영 증거가 없으면 운영자가 attestation을
-    설정하지 않아야 하며 production 또는 staging cache serving은 비활성으로 유지된다.
+    않은 production 설정에서 cache를 비활성화하는 gate까지만 구현한다. Cache feature flag는
+    기본적으로 enabled를 요청하며 Celery broker/result Redis URL로 자동 fallback하지 않는다.
+    완전한 cache 전용 Redis URL, HMAC key/version, bounded configuration이 없으면 cache만
+    비활성화한다. `scripts/dev-local.ps1`는 local Gateway에 명시적 cache 전용 Redis DB,
+    ephemeral process HMAC key와 `dev-local-v1` key version을 전달하므로 일반 로컬 Agent
+    Builder 요청은 cache-on으로 시작한다. 반대로 직접 실행한 `development`, `test` 또는
+    미설정 환경 Gateway가 완전한 cache configuration을 받지 못하면 안전하게 cache-disabled다.
+    환경 판정은 기존 `NODE_ENV`를 재사용한다. `production`과 `staging`에서 serving하려면
+    전용 Redis URL, HMAC key/version, 유효한 TTL/payload/timeout/waiter 설정과 명시적
+    `AGENT_BUILDER_INTENT_CACHE_PRODUCTION_READY=true`가 모두 필요하다. 개발 cache의 Redis
+    장애도 기존 Planner로 fail-open한다. 운영자는 외부 운영 검증을 마친 뒤에만 이 flag를
+    설정한다. 런타임은 별도 evidence 저장소를 조회하지 않고 이 attestation과 나머지
+    configuration의 유효성을 판정한다. 전용 Production Redis instance 생성,
+    Helm/Kubernetes secret과 URL wiring, 용량·eviction, 장애·네트워크, 모니터링·rollback과
+    단계적 rollout은 별도 후속 운영 이슈다. Cache 코드와 필수 검증은 후속 운영 이슈 번호와
+    독립적으로 완료할 수 있다. 운영 증거가 없으면 운영자가 attestation을 설정하지 않아야 하며
+    production 또는 staging cache serving은 비활성으로 유지된다.
 15. Cache lookup은 인증, active organization, Agent Builder permission, session/request admission과
     cancellation/version fence를 통과한 뒤 수행하고 provider usage reservation보다 앞에 둔다.
     Hit는 provider-specific 비용 reservation만 생략하며 요청 rate limit, foreground request
     직렬화, stale/canceled 판단과 workflow mutation audit를 생략하지 않는다.
 16. Cache의 성능 효과는 GPT-5.5를 사용하는 내부 live benchmark로 검증한다. Benchmark는
     cache disabled baseline, cold miss, exact warm hit, 승인된 normalization warm hit,
-    semantic bypass와 negative control을 분리하고 planning latency와 사용자 관점의
+    literal-preservation warm hit와 semantic non-sharing negative control을 분리하고 planning latency와 사용자 관점의
     end-to-end latency를 모두 기록한다. 동일 case의 전후 결과는 같은 초기 graph와
     permission/model context에서 paired comparison으로 측정한다. 회차별 원본 데이터,
     모든 회차가 보이는 vector graph와 요약 결과를 별도 산출물로 생성한다. 이는
@@ -174,7 +186,7 @@ CAS 기준까지 과거 요청에서 재생하는 더 큰 위험이 생긴다.
     50%, 75%의 planning/end-to-end 예상 평균을 계산하되 실제 측정이 아닌 모델링 추정치로
     명시한다.
 17. 의미가 비슷하지만 결정적으로 동등하지 않은 요청은 deterministic cache hit로 처리하지 않는다.
-    이들은 semantic bypass/negative control로만 측정한다. Embedding, vector index, graph example
+    이들은 semantic non-sharing negative control로만 측정한다. Embedding, vector index, graph example
     retrieval/ranking, confidence gate와 해당 latency는 별도 Graph RAG 설계·구현 범위가 소유하며
     deterministic cache의 구현 완료 조건으로 사용하지 않는다. 검색 결과는
     곧바로 cache hit처럼 적용하지 않고 Planner와 Schema Validator의 최종 생성·검증 입력으로만 사용한다.
@@ -188,7 +200,7 @@ CAS 기준까지 과거 요청에서 재생하는 더 큰 위험이 생긴다.
   유지되지만 해당 요청의 cache hit ratio는 낮아진다.
 - Redis 데이터가 전부 사라져도 기능은 기존 Planner 경로로 정상 동작한다.
 - Strict schema뿐 아니라 authenticated envelope가 key/value 교체와 변조를 차단한다.
-- Production Redis 분리와 용량 검증은 후속 운영 이슈이며, 완료 전에는 cache를 비활성화한다.
+- Production Redis 분리와 용량 검증은 후속 운영 이슈이며, 운영 evidence와 명시적 readiness attestation 전에는 production/staging serving을 비활성화한다.
 - 의미가 비슷하지만 결정적으로 동등하지 않은 요청은 이 ADR의 대상이 아니며 Graph RAG
   후속 기능에서 별도 confidence gate로 다룬다.
 - Live latency 결과는 provider 상태와 실행 환경에 영향을 받으므로 환경, revision, 반복 횟수와

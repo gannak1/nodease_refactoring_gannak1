@@ -19,7 +19,8 @@ def test_agent_builder_session_uses_header_resolved_organization(monkeypatch):
     captured = {}
 
     class FakeService:
-        def create_or_restore_session(self, payload):
+        def create_or_restore_session(self, payload, *, force_new=False):
+            captured["force_new"] = force_new
             captured["payload_has_organization_id"] = hasattr(payload, "organization_id")
             return AgentBuilderSessionResponse(
                 session_id=uuid.uuid4(),
@@ -54,6 +55,7 @@ def test_agent_builder_session_uses_header_resolved_organization(monkeypatch):
     assert response.status_code == 200
     assert captured["user_id"] == user_id
     assert captured["organization_id"] == organization_id
+    assert captured["force_new"] is False
     assert captured["payload_has_organization_id"] is False
 
 

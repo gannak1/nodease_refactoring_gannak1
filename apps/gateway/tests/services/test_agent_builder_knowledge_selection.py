@@ -873,6 +873,46 @@ def test_knowledge_selection_reads_direct_resolution_candidates_without_legacy_o
     assert db.commits == 1
 
 
+def _current_knowledge_hierarchy_fixture():
+    return {
+        "resolution_id": "res-hierarchy-1",
+        "timing": "after_graph",
+        "required": True,
+        "candidates": [],
+        "collections": [
+            {
+                "collection_handle": "col-safe-1",
+                "safe_label": "사내 문서",
+                "score": 0.8,
+                "children": [
+                    {
+                        "kb_handle": "rec-safe-1",
+                        "selection_key": "kbsel-safe-1",
+                        "safe_label": "휴가 정책",
+                        "score": 0.9,
+                        "shared_collection_count": 1,
+                    }
+                ],
+            }
+        ],
+        "ungrouped_kbs": [],
+        "selected": [],
+    }
+
+
+def test_current_knowledge_hierarchy_fixture_contains_only_safe_current_handles():
+    hierarchy = _current_knowledge_hierarchy_fixture()
+    rendered = repr(hierarchy)
+
+    assert hierarchy["collections"][0]["collection_handle"] == "col-safe-1"
+    assert hierarchy["collections"][0]["children"][0]["kb_handle"] == (
+        "rec-safe-1"
+    )
+    assert "stale" not in rendered
+    assert "knowledge_base_id" not in rendered
+    assert "knowledge_collection_id" not in rendered
+
+
 @pytest.mark.parametrize("selection_source", ["agent_builder", "node_editor"])
 def test_hierarchical_knowledge_selection_rejects_stale_handles_and_materializes_separately(
     monkeypatch,
@@ -930,30 +970,7 @@ def test_hierarchical_knowledge_selection_rejects_stale_handles_and_materializes
         structured_request=structured.model_dump(mode="json"),
         response_payload={
             "safe_step_node_ids": {"step_llm": "llm-1"},
-            "knowledge_resolution": {
-                "resolution_id": "res-hierarchy-1",
-                "timing": "after_graph",
-                "required": True,
-                "candidates": [],
-                "collections": [
-                    {
-                        "collection_handle": "col-safe-1",
-                        "safe_label": "사내 문서",
-                        "score": 0.8,
-                        "children": [
-                            {
-                                "kb_handle": "rec-safe-1",
-                                "selection_key": "kbsel-safe-1",
-                                "safe_label": "휴가 정책",
-                                "score": 0.9,
-                                "shared_collection_count": 1,
-                            }
-                        ],
-                    }
-                ],
-                "ungrouped_kbs": [],
-                "selected": [],
-            },
+            "knowledge_resolution": _current_knowledge_hierarchy_fixture(),
             "operation_envelopes": [
                 {"kind": "initial_graph", "status": "acknowledged"}
             ],

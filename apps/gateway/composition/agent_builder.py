@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import UUID
 
 from fastapi import Request
 from sqlalchemy.orm import Session
 
+from apps.gateway.application.agent_builder.intent_cache import (
+    DisabledIntentPlanCacheBoundary,
+    IntentPlanCacheBoundary,
+)
+from apps.gateway.composition.agent_builder_cache import intent_plan_cache_for_app
 from apps.gateway.services.agent_builder.intent_usage_service import (
     AgentBuilderIntentUsageService,
 )
@@ -30,11 +35,15 @@ from apps.gateway.services.organization_context import resolve_active_organizati
 from apps.shared.db.models.user import User
 
 
+
 @dataclass(frozen=True)
 class AgentBuilderComposition:
     db: Session
     user: User
     organization_id: UUID
+    cache_boundary: IntentPlanCacheBoundary = field(
+        default_factory=DisabledIntentPlanCacheBoundary
+    )
 
     def orchestration(
         self,
@@ -54,7 +63,11 @@ class AgentBuilderComposition:
                 model_id=intent_model_id,
                 usage_recorder=AgentBuilderIntentUsageService(),
             ),
+            intent_plan_cache=self.intent_plan_cache(),
         )
+
+    def intent_plan_cache(self) -> IntentPlanCacheBoundary:
+        return self.cache_boundary
 
     def mutation_lifecycle(self) -> GraphMutationLifecycleService:
         return GraphMutationLifecycleService(
@@ -113,4 +126,5 @@ def compose_agent_builder(
         db=db,
         user=current_user,
         organization_id=organization_id,
+        cache_boundary=intent_plan_cache_for_app(request.app),
     )

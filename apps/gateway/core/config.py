@@ -1,7 +1,73 @@
-from typing import Literal, Optional
+from __future__ import annotations
 
-from pydantic import ValidationInfo, field_validator
+import re
+from dataclasses import dataclass, field
+from typing import Literal, Optional
+from urllib.parse import urlsplit
+
+from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+_CACHE_VERSION_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
+
+
+@dataclass(frozen=True, slots=True)
+class AgentBuilderIntentCacheConfig:
+    enabled: bool
+    disabled_reason: str | None
+    ttl_seconds: int = 900
+    operation_timeout_ms: int = 100
+    max_payload_bytes: int = 32 * 1024
+    lease_seconds: int = 240
+    follower_wait_ms: int = 45_000
+    max_follower_waiters: int = 8
+    redis_url: str | None = field(default=None, repr=False)
+    hmac_key: bytes | None = field(default=None, repr=False)
+    hmac_key_version: str | None = None
+
+
+def _cache_flag(value: str | bool) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    return None
+
+
+def _cache_bounded_int(value: str | int, minimum: int, maximum: int) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if isinstance(value, str) and value.strip() != str(parsed):
+        return None
+    if not minimum <= parsed <= maximum:
+        return None
+    return parsed
+
+
+def _valid_cache_redis_url(value: str) -> bool:
+    if not value or any(character.isspace() for character in value):
+        return False
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme in {"redis", "rediss"}
+        and parsed.hostname
+        and not parsed.query
+        and not parsed.fragment
+        and (parsed.path in {"", "/"} or re.fullmatch(r"/[0-9]+", parsed.path))
+    )
 
 
 class Settings(BaseSettings):
@@ -16,6 +82,27 @@ class Settings(BaseSettings):
     # App auth secret lifecycle rollout gate. Keep disabled until every Gateway
     # pod runs the verifier-aware revision.
     APP_AUTH_SECRET_LIFECYCLE_MODE: Literal["disabled", "active"] = "disabled"
+
+    # Cache serving is requested by default. Incomplete or invalid configuration
+    # still disables only this optional optimization without failing startup.
+    NODE_ENV: str = "development"
+    AGENT_BUILDER_INTENT_CACHE_ENABLED: str | bool = "true"
+    AGENT_BUILDER_INTENT_CACHE_TTL_SECONDS: str | int = "900"
+    AGENT_BUILDER_INTENT_CACHE_TIMEOUT_MS: str | int = "100"
+    AGENT_BUILDER_INTENT_CACHE_MAX_BYTES: str | int = str(32 * 1024)
+    AGENT_BUILDER_INTENT_CACHE_HMAC_KEY: SecretStr | None = Field(
+        default=None,
+        repr=False,
+    )
+    AGENT_BUILDER_INTENT_CACHE_HMAC_KEY_VERSION: str | None = None
+    AGENT_BUILDER_INTENT_CACHE_LEASE_SECONDS: str | int = "240"
+    AGENT_BUILDER_INTENT_CACHE_WAIT_MS: str | int = "45000"
+    AGENT_BUILDER_INTENT_CACHE_MAX_FOLLOWER_WAITERS: str | int = "8"
+    AGENT_BUILDER_INTENT_CACHE_REDIS_URL: SecretStr | None = Field(
+        default=None,
+        repr=False,
+    )
+    AGENT_BUILDER_INTENT_CACHE_PRODUCTION_READY: str | bool = "false"
 
     # Keep query-embedding policy writes dormant until all purpose-unaware
     # Gateway and Worker processes have drained.
@@ -65,6 +152,158 @@ class Settings(BaseSettings):
         extra="ignore",
         validate_default=True,
     )
+
+    def agent_builder_intent_cache_config(self) -> AgentBuilderIntentCacheConfig:
+        requested_enabled = _cache_flag(
+            self.AGENT_BUILDER_INTENT_CACHE_ENABLED
+        )
+        if requested_enabled is None:
+            return AgentBuilderIntentCacheConfig(
+                enabled=False,
+                disabled_reason="invalid_enabled_flag",
+            )
+        if not requested_enabled:
+            return AgentBuilderIntentCacheConfig(
+                enabled=False,
+                disabled_reason="feature_disabled",
+            )
+
+        bounded_fields = (
+            (
+                self.AGENT_BUILDER_INTENT_CACHE_TTL_SECONDS,
+                30,
+                3600,
+                "invalid_ttl",
+            ),
+            (
+                self.AGENT_BUILDER_INTENT_CACHE_TIMEOUT_MS,
+                10,
+                500,
+                "invalid_timeout",
+            ),
+            (
+                self.AGENT_BUILDER_INTENT_CACHE_MAX_BYTES,
+                4 * 1024,
+                64 * 1024,
+                "invalid_max_payload",
+            ),
+            (
+                self.AGENT_BUILDER_INTENT_CACHE_LEASE_SECONDS,
+                5,
+                300,
+                "invalid_lease",
+            ),
+            (
+                self.AGENT_BUILDER_INTENT_CACHE_WAIT_MS,
+                0,
+                60_000,
+                "invalid_wait",
+            ),
+            (
+                self.AGENT_BUILDER_INTENT_CACHE_MAX_FOLLOWER_WAITERS,
+                1,
+                64,
+                "invalid_waiter_cap",
+            ),
+        )
+        parsed_values: list[int] = []
+        for raw, minimum, maximum, reason in bounded_fields:
+            parsed = _cache_bounded_int(raw, minimum, maximum)
+            if parsed is None:
+                return AgentBuilderIntentCacheConfig(
+                    enabled=False,
+                    disabled_reason=reason,
+                )
+            parsed_values.append(parsed)
+
+        redis_url = (
+            self.AGENT_BUILDER_INTENT_CACHE_REDIS_URL.get_secret_value()
+            if self.AGENT_BUILDER_INTENT_CACHE_REDIS_URL is not None
+            else ""
+        )
+        if not redis_url:
+            return AgentBuilderIntentCacheConfig(
+                enabled=False,
+                disabled_reason="cache_redis_url_missing",
+            )
+        if not _valid_cache_redis_url(redis_url):
+            return AgentBuilderIntentCacheConfig(
+                enabled=False,
+                disabled_reason="cache_redis_url_invalid",
+            )
+
+        raw_hmac_key = (
+            self.AGENT_BUILDER_INTENT_CACHE_HMAC_KEY.get_secret_value()
+            if self.AGENT_BUILDER_INTENT_CACHE_HMAC_KEY is not None
+            else ""
+        )
+        if not raw_hmac_key:
+            return AgentBuilderIntentCacheConfig(
+                enabled=False,
+                disabled_reason="hmac_key_missing",
+            )
+        hmac_key = raw_hmac_key.encode("utf-8")
+        if len(hmac_key) < 32:
+            return AgentBuilderIntentCacheConfig(
+                enabled=False,
+                disabled_reason="hmac_key_too_short",
+            )
+
+        hmac_key_version = (
+            self.AGENT_BUILDER_INTENT_CACHE_HMAC_KEY_VERSION or ""
+        ).strip()
+        if not hmac_key_version:
+            return AgentBuilderIntentCacheConfig(
+                enabled=False,
+                disabled_reason="hmac_key_version_missing",
+            )
+        if _CACHE_VERSION_PATTERN.fullmatch(hmac_key_version) is None:
+            return AgentBuilderIntentCacheConfig(
+                enabled=False,
+                disabled_reason="invalid_hmac_key_version",
+            )
+
+        production_ready = _cache_flag(
+            self.AGENT_BUILDER_INTENT_CACHE_PRODUCTION_READY
+        )
+        if production_ready is None:
+            return AgentBuilderIntentCacheConfig(
+                enabled=False,
+                disabled_reason="invalid_production_ready_flag",
+            )
+        node_env = self.NODE_ENV.strip().lower()
+        if node_env not in {"development", "test", "production", "staging"}:
+            return AgentBuilderIntentCacheConfig(
+                enabled=False,
+                disabled_reason="invalid_node_env",
+            )
+        if node_env in {"production", "staging"} and not production_ready:
+            return AgentBuilderIntentCacheConfig(
+                enabled=False,
+                disabled_reason="production_not_ready",
+            )
+
+        (
+            ttl_seconds,
+            operation_timeout_ms,
+            max_payload_bytes,
+            lease_seconds,
+            follower_wait_ms,
+            max_follower_waiters,
+        ) = parsed_values
+        return AgentBuilderIntentCacheConfig(
+            enabled=True,
+            disabled_reason=None,
+            ttl_seconds=ttl_seconds,
+            operation_timeout_ms=operation_timeout_ms,
+            max_payload_bytes=max_payload_bytes,
+            lease_seconds=lease_seconds,
+            follower_wait_ms=follower_wait_ms,
+            max_follower_waiters=max_follower_waiters,
+            redis_url=redis_url,
+            hmac_key=hmac_key,
+            hmac_key_version=hmac_key_version,
+        )
 
 
 settings = Settings()

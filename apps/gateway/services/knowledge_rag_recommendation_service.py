@@ -143,6 +143,7 @@ class KnowledgeRAGRecommendationService:
         *,
         include_materialized_refs: bool = False,
         allow_unready_candidates: bool = False,
+        include_cache_fingerprint_projection: bool = False,
     ) -> KnowledgeRAGRecommendationResponse:
         resolver = self.resolver or self._resolver_for_request(request)
         recommendation_mode = self._resolved_mode(request)
@@ -186,7 +187,11 @@ class KnowledgeRAGRecommendationService:
         except Exception:
             return self._adapter_unavailable_response(request)
         try:
-            ranked = self._rank_candidates(resolution.candidates, request)
+            ranked = self._rank_candidates(
+                resolution.candidates,
+                request,
+                include_presentation=not include_cache_fingerprint_projection,
+            )
         except Exception:
             return self._adapter_unavailable_response(request, resolution.candidates)
 
@@ -278,6 +283,13 @@ class KnowledgeRAGRecommendationService:
                 in visible_collection_handles
             }
         response._issued_kb_resource_ids = issued_kb_handles
+        if include_cache_fingerprint_projection:
+            # These objects are request-transient and consumed only by the cache
+            # HMAC helper. PrivateAttrs keep identities out of API serialization.
+            response._cache_fingerprint_candidates = list(resolution.candidates)
+            response._cache_fingerprint_collections = (
+                list(hierarchy.collections) if hierarchy is not None else []
+            )
         return response
 
     def safe_intent_candidates_for_builder(
@@ -286,7 +298,7 @@ class KnowledgeRAGRecommendationService:
         *,
         max_candidates: int = 20,
     ) -> list[dict[str, Any]]:
-        """Return a bounded, permission-filtered KB projection for intent planning."""
+        """Return a bounded, presentation-free KB projection for intent planning."""
         limit = max(1, min(int(max_candidates), 20))
         request = KnowledgeRAGRecommendationRequest(
             workflow_intent=workflow_intent,
@@ -305,7 +317,11 @@ class KnowledgeRAGRecommendationService:
             )
             ranked = [
                 item
-                for item in self._rank_candidates(resolution.candidates, request)
+                for item in self._rank_candidates(
+                    resolution.candidates,
+                    request,
+                    include_presentation=False,
+                )
                 if item[1] > 0
             ][:limit]
         except Exception:
@@ -325,23 +341,10 @@ class KnowledgeRAGRecommendationService:
                         safe_topics.append(topic)
                     if len(safe_topics) >= 10:
                         break
-            safe_description = metadata.get("kb_safe_description")
             result.append(
                 {
                     "candidate_handle": self._recommendation_id(candidate),
-                    "safe_label": (
-                        candidate.safe_label.strip()[:255]
-                        if isinstance(candidate.safe_label, str)
-                        and candidate.safe_label.strip()
-                        else None
-                    ),
                     "safe_topics": safe_topics,
-                    "safe_description": (
-                        safe_description.strip()[:500]
-                        if isinstance(safe_description, str)
-                        and safe_description.strip()
-                        else None
-                    ),
                     "runtime_availability": candidate.runtime_availability,
                     "relevance_score": round(max(0.0, min(score, 0.99)), 4),
                 }
@@ -563,15 +566,30 @@ class KnowledgeRAGRecommendationService:
         self,
         candidates: list[KnowledgeCandidate],
         request: KnowledgeRAGRecommendationRequest,
+        *,
+        include_presentation: bool = True,
     ) -> list[tuple[KnowledgeCandidate, float, list[str], list[str]]]:
-        terms, query_source = self._ranking_terms(candidates, request)
+        terms, query_source = self._ranking_terms(
+            candidates,
+            request,
+            include_presentation=include_presentation,
+        )
         ranked: list[tuple[KnowledgeCandidate, float, list[str], list[str]]] = []
         for candidate in candidates:
-            matched_terms = self._matched_terms(candidate, terms)
+            matched_terms = self._matched_terms(
+                candidate,
+                terms,
+                include_presentation=include_presentation,
+            )
             source_priority = self._source_tier_priority(candidate)
             availability = _AVAILABILITY_ORDER.get(candidate.runtime_availability, 1)
             freshness = self._sync_freshness_score(candidate)
-            kb_relevance = self._kb_relevance(candidate, terms, matched_terms)
+            kb_relevance = self._kb_relevance(
+                candidate,
+                terms,
+                matched_terms,
+                include_presentation=include_presentation,
+            )
             score = 0.0
             if kb_relevance > 0:
                 score = (
@@ -601,8 +619,12 @@ class KnowledgeRAGRecommendationService:
             ranked,
             key=lambda item: (
                 -item[1],
-                0 if item[0].safe_label else 1,
-                item[0].safe_label.casefold() if item[0].safe_label else "",
+                0 if include_presentation and item[0].safe_label else 1,
+                (
+                    item[0].safe_label.casefold()
+                    if include_presentation and item[0].safe_label
+                    else ""
+                ),
                 self._recommendation_id(item[0]),
             ),
         )
@@ -904,10 +926,15 @@ class KnowledgeRAGRecommendationService:
         self,
         candidate: KnowledgeCandidate,
         terms: list[str],
+        *,
+        include_presentation: bool = True,
     ) -> list[str]:
         if not terms:
             return []
-        haystack, compact_haystack = self._candidate_texts(candidate)
+        haystack, compact_haystack = self._candidate_texts(
+            candidate,
+            include_presentation=include_presentation,
+        )
         matched: list[str] = []
         for term in terms:
             if self._term_matches_text(term, haystack, compact_haystack):
@@ -921,11 +948,17 @@ class KnowledgeRAGRecommendationService:
         candidate: KnowledgeCandidate,
         terms: list[str],
         matched_terms: list[str],
+        *,
+        include_presentation: bool = True,
     ) -> float:
         if not terms:
             return 0.0
         match_ratio = len(matched_terms) / len(terms)
-        if self._has_primary_structured_match(candidate, terms):
+        if self._has_primary_structured_match(
+            candidate,
+            terms,
+            include_presentation=include_presentation,
+        ):
             return min(1.0, max(0.80, 0.75 + match_ratio * 0.25))
         return min(1.0, match_ratio)
 
@@ -933,9 +966,11 @@ class KnowledgeRAGRecommendationService:
         self,
         candidate: KnowledgeCandidate,
         terms: list[str],
+        *,
+        include_presentation: bool = True,
     ) -> bool:
         primary_values: list[str] = []
-        if candidate.safe_label:
+        if include_presentation and candidate.safe_label:
             primary_values.append(candidate.safe_label)
         metadata = candidate.safe_metadata or {}
         for key in _KB_KEYWORD_LIST_METADATA_KEYS:
@@ -952,15 +987,21 @@ class KnowledgeRAGRecommendationService:
     def _candidate_text(self, candidate: KnowledgeCandidate) -> str:
         return self._candidate_texts(candidate)[0]
 
-    def _candidate_texts(self, candidate: KnowledgeCandidate) -> tuple[str, str]:
+    def _candidate_texts(
+        self,
+        candidate: KnowledgeCandidate,
+        *,
+        include_presentation: bool = True,
+    ) -> tuple[str, str]:
         values: list[str] = []
-        if candidate.safe_label:
-            values.append(candidate.safe_label)
         metadata = candidate.safe_metadata or {}
-        for key in _KB_KEYWORD_STRING_METADATA_KEYS:
-            value = metadata.get(key)
-            if isinstance(value, str):
-                values.append(value)
+        if include_presentation:
+            if candidate.safe_label:
+                values.append(candidate.safe_label)
+            for key in _KB_KEYWORD_STRING_METADATA_KEYS:
+                value = metadata.get(key)
+                if isinstance(value, str):
+                    values.append(value)
         for key in _KB_KEYWORD_LIST_METADATA_KEYS:
             value = metadata.get(key)
             if isinstance(value, (list, tuple, set)):
@@ -977,11 +1018,20 @@ class KnowledgeRAGRecommendationService:
         self,
         candidates: list[KnowledgeCandidate],
         request: KnowledgeRAGRecommendationRequest,
+        *,
+        include_presentation: bool = True,
     ) -> tuple[list[str], str]:
         structured_terms = self._query_terms(request)
         if not request.safe_query_topics:
             return structured_terms, "intent"
-        if any(self._matched_terms(candidate, structured_terms) for candidate in candidates):
+        if any(
+            self._matched_terms(
+                candidate,
+                structured_terms,
+                include_presentation=include_presentation,
+            )
+            for candidate in candidates
+        ):
             return structured_terms, "structured"
 
         fallback_terms = self._filtered_terms(

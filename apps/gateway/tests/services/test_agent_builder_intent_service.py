@@ -4,11 +4,21 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session
 
 from apps.gateway.application.agent_builder.intent_usage import (
     AgentBuilderIntentUsageContext,
     AgentBuilderIntentUsageRecordingError,
     AgentBuilderIntentUsageReservation,
+)
+from apps.gateway.application.agent_builder.intent_cache import (
+    CacheBoundaryDecision,
+    DisabledIntentPlanCacheBoundary,
+    IntentPlanExecution,
+)
+from apps.gateway.application.agent_builder.intent_cache_coordinator import (
+    AgentBuilderIntentCacheCoordinator,
 )
 from apps.gateway.services.agent_builder_intent_service import (
     AgentBuilderIntentExtraction,
@@ -23,10 +33,16 @@ from apps.gateway.services.agent_builder_intent_service import (
 from apps.gateway.services.agent_builder.intent_usage_service import (
     AgentBuilderIntentUsageService,
 )
-from apps.gateway.services.agent_builder_service import AgentBuilderService
+from apps.gateway.services.agent_builder_service import (
+    AgentBuilderService,
+    intent_extraction_failure_issue_details,
+)
 from apps.gateway.services.llm_service import LLMCredentialNotAvailableError
 from apps.shared.schemas.agent_builder import AgentBuilderMessageRequest
-from apps.shared.services.llm_client.base import LLMResponseValidationError
+from apps.shared.services.llm_client.base import (
+    LLMResponseValidationError,
+    ProviderInvocationError,
+)
 from apps.shared.services.llm_client.google_client import GoogleClient
 from apps.shared.services.llm_client.openai_client import OpenAIClient
 from apps.shared.services.workflow_node_catalog import (
@@ -73,6 +89,16 @@ class SchemaConstrainedFakeLLMClient(FakeLLMClient):
 class ProviderFailingFakeLLMClient:
     def invoke_sync(self, _messages, **_kwargs):
         raise ValueError("provider raw failure must not escape")
+
+
+class ProviderHttpFailingFakeLLMClient:
+    def invoke_sync(self, _messages, **_kwargs):
+        raise ProviderInvocationError(
+            "provider raw error must not escape",
+            reason_code="provider_http_error",
+            status_code=429,
+            provider_error_code="rate_limit_exceeded",
+        )
 
 
 class UsageResponseValidationFailingFakeLLMClient:
@@ -250,6 +276,77 @@ def _service(extractor):
     )
 
 
+class CapturingIntentPlanCacheBoundary:
+    def __init__(self):
+        self.calls = []
+
+    def execute(self, planner_call, context=None):
+        self.calls.append(context)
+        return IntentPlanExecution(
+            structured_request=planner_call(),
+            decision=CacheBoundaryDecision(
+                outcome="bypass",
+                plan=None,
+                reason="feature_disabled",
+            ),
+        )
+
+
+def test_service_routes_existing_structure_sequence_through_boundary_once():
+    extractor = FakeIntentExtractor(
+        AgentBuilderIntentExtraction(
+            request_type="new_workflow",
+            draft_mode="new_workflow",
+            intent_summary="입력과 응답 workflow",
+            ordered_capabilities=["start_input", "answer"],
+        )
+    )
+    boundary = CapturingIntentPlanCacheBoundary()
+    service = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+        intent_extractor=extractor,
+        intent_plan_cache=boundary,
+    )
+
+    structured = service._structure_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="입력과 응답 workflow를 만들어줘"),
+        workflow=None,
+    )
+
+    assert boundary.calls == [None]
+    assert len(extractor.calls) == 1
+    assert structured.request_type == "new_workflow"
+    assert structured.required_capabilities == ["start_input", "answer"]
+
+
+def test_direct_service_constructor_defaults_to_disabled_intent_plan_cache():
+    extractor = FakeIntentExtractor(
+        AgentBuilderIntentExtraction(
+            request_type="new_workflow",
+            draft_mode="new_workflow",
+            intent_summary="입력과 응답 workflow",
+            ordered_capabilities=["start_input", "answer"],
+        )
+    )
+    service = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+        intent_extractor=extractor,
+    )
+
+    assert isinstance(service.intent_plan_cache, DisabledIntentPlanCacheBoundary)
+    structured = service._structure_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="입력과 응답 workflow를 만들어줘"),
+        workflow=None,
+    )
+    assert len(extractor.calls) == 1
+    assert structured.request_type == "new_workflow"
+    assert structured.required_capabilities == ["start_input", "answer"]
+
+
 def _knowledge_placement():
     return {
         "requirement_id": "kr_1",
@@ -326,6 +423,8 @@ def test_llm_intent_extractor_requests_json_and_preserves_step_order():
     assert kwargs["request_timeout_seconds"] == 90
     assert runtime_calls[0]["credential_id"] == credential_id
     assert runtime_calls[0]["model_id"] == model_id
+    assert extractor.last_call_counts.provider_call_count == 1
+    assert extractor.last_call_counts.repair_call_count == 0
 
 
 def test_llm_intent_extractor_uses_provider_schema_constraint_when_supported():
@@ -417,6 +516,42 @@ def test_llm_intent_extractor_classifies_provider_failure_without_raw_details():
 
     assert safe_intent_extraction_reason(captured.value) == "provider_call_failed"
     assert "provider raw failure" not in str(captured.value)
+
+
+def test_llm_intent_extractor_classifies_provider_http_failure_without_raw_details():
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        runtime_loader=lambda **_kwargs: SimpleNamespace(
+            client=ProviderHttpFailingFakeLLMClient()
+        ),
+    )
+
+    with pytest.raises(AgentBuilderIntentExtractionError) as captured:
+        extractor.extract(
+            safe_message="create a basic workflow",
+            workflow_context={"workflow_present": False, "nodes": []},
+        )
+
+    assert str(captured.value) == "Agent Builder intent provider call failed"
+    assert safe_intent_extraction_reason(captured.value) == "provider_call_failed"
+    assert "provider raw error" not in str(captured.value)
+
+
+def test_intent_provider_failure_uses_actionable_safe_issue_details():
+    provider_code, provider_message = intent_extraction_failure_issue_details(
+        AgentBuilderIntentExtractionError("Agent Builder intent provider call failed")
+    )
+    generic_code, generic_message = intent_extraction_failure_issue_details(
+        AgentBuilderIntentExtractionError("LLM intent response is invalid")
+    )
+
+    assert provider_code == "INTENT_PROVIDER_CALL_FAILED"
+    assert "모델" in provider_message
+    assert "provider" in provider_message.lower()
+    assert generic_code == "INTENT_EXTRACTION_FAILED"
+    assert generic_message != provider_message
 
 
 def test_llm_intent_extractor_returns_only_catalog_valid_safe_parameter_hints():
@@ -665,6 +800,8 @@ def test_llm_intent_extractor_repairs_github_comment_mapped_to_http_once():
 
     assert result.ordered_capabilities == ["github_pr_comment"]
     assert len(client.calls) == 2
+    assert extractor.last_call_counts.provider_call_count == 2
+    assert extractor.last_call_counts.repair_call_count == 1
     assert "GITHUB_OPERATION_CAPABILITY_MISMATCH" in str(client.calls[1][0])
 
 
@@ -929,7 +1066,9 @@ def test_llm_intent_extractor_passes_only_bounded_safe_kb_context():
     assert "rec-safe-1" in prompt
     assert "사내 문서" in prompt
     assert "온보딩" in prompt
-    assert "사내 정책과 절차" in prompt
+    assert '"safe_label"' not in prompt
+    assert '"safe_description"' not in prompt
+    assert "사내 정책과 절차" not in prompt
     assert raw_kb_id not in prompt
     assert "raw_source_path" not in prompt
     assert result.knowledge_candidate_handles == ["rec-safe-1"]
@@ -2628,3 +2767,198 @@ def test_natural_language_direct_edge_target_requires_one_edge(edges):
 
     assert resolution["status"] == "clarification_required"
     assert resolution["options"] == []
+
+
+def test_disabled_cache_does_not_build_context_or_touch_cache_dependencies(monkeypatch):
+    extractor = FakeIntentExtractor(
+        AgentBuilderIntentExtraction(
+            request_type="new_workflow",
+            draft_mode="new_workflow",
+            intent_summary="input and answer workflow",
+            ordered_capabilities=["start_input", "answer"],
+        )
+    )
+    service = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+        intent_extractor=extractor,
+    )
+
+    def unexpected_context_build(**_kwargs):
+        raise AssertionError("disabled cache must not build a planning context")
+
+    monkeypatch.setattr(
+        "apps.gateway.services.agent_builder_service.build_intent_planning_context",
+        unexpected_context_build,
+    )
+    structured = service._structure_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="Create an input and answer workflow"),
+        workflow=None,
+    )
+
+    assert structured.request_type == "new_workflow"
+    assert len(extractor.calls) == 1
+
+def test_cache_context_bypass_checks_request_cancellation_before_planner():
+    """A cache bypass must retain the request fence before any provider work."""
+    extractor = FakeIntentExtractor(
+        AgentBuilderIntentExtraction(
+            request_type="new_workflow",
+            draft_mode="new_workflow",
+            intent_summary="input and answer workflow",
+            ordered_capabilities=["start_input", "answer"],
+        )
+    )
+    coordinator = AgentBuilderIntentCacheCoordinator(
+        normalizer=object(),
+        store=object(),
+        rehydrator_factory=lambda: object(),
+        plan_projector=lambda _structured: object(),
+    )
+    service = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+        intent_extractor=extractor,
+        intent_plan_cache=coordinator,
+    )
+
+    with pytest.raises(AgentBuilderIntentExtractionError):
+        service._structure_request(  # noqa: SLF001
+            AgentBuilderMessageRequest(message="x" * 4000),
+            workflow=None,
+            cache_cancellation_fence=lambda: "canceled",
+        )
+
+    assert extractor.calls == []
+
+def test_cache_preflight_releases_read_transaction_before_cache_io():
+    db = Session(create_engine("sqlite://"))
+    db.execute(text("SELECT 1"))
+    service = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    assert db.in_transaction()
+    assert service._release_cache_read_transaction() is True  # noqa: SLF001
+    assert not db.in_transaction()
+
+
+def test_cache_fence_reads_request_status_without_opening_service_transaction(
+    monkeypatch,
+):
+    db = Session(create_engine("sqlite://"))
+    service = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    request_row = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="processing",
+        created_at=None,
+    )
+    monkeypatch.setattr(
+        service,
+        "_cache_request_status",
+        lambda _request_id: ("canceled", None),
+        raising=False,
+    )
+
+    assert service._intent_cache_cancellation_fence(request_row)() == "canceled"  # noqa: SLF001
+    assert not db.in_transaction()
+
+def test_cache_status_probe_uses_engine_when_service_session_is_connection_bound():
+    class ProbeResult:
+        def one_or_none(self):
+            return SimpleNamespace(status="processing", created_at=None)
+
+    class ProbeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execution_options(self, **_kwargs):
+            return self
+
+        def execute(self, _statement):
+            return ProbeResult()
+
+    probe_connection = ProbeConnection()
+    connection_bound_session = SimpleNamespace(
+        get_bind=lambda: SimpleNamespace(
+            engine=SimpleNamespace(connect=lambda: probe_connection)
+        )
+    )
+    service = AgentBuilderService(
+        connection_bound_session,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    assert service._cache_request_status(uuid.uuid4()) == ("processing", None)  # noqa: SLF001
+
+def test_service_binds_clean_transaction_guard_to_cache_coordinator(monkeypatch):
+    """The request coordinator must receive the service Session boundary guard."""
+    db = Session(create_engine("sqlite://"))
+    extractor = FakeIntentExtractor(
+        AgentBuilderIntentExtraction(
+            request_type="new_workflow",
+            draft_mode="new_workflow",
+            intent_summary="input and answer workflow",
+            ordered_capabilities=["start_input", "answer"],
+        )
+    )
+    coordinator = AgentBuilderIntentCacheCoordinator(
+        normalizer=object(),
+        store=object(),
+        rehydrator_factory=lambda: object(),
+        plan_projector=lambda _structured: object(),
+    )
+    bindings = []
+
+    def record_request_binding(**kwargs):
+        bindings.append(kwargs)
+        return coordinator
+
+    monkeypatch.setattr(coordinator, "for_request", record_request_binding)
+    service = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+        intent_extractor=extractor,
+        intent_plan_cache=coordinator,
+    )
+
+    service._structure_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="Create an input and answer workflow"),
+        workflow=None,
+    )
+
+    assert callable(bindings[0]["cache_io_guard"])
+
+def test_knowledge_candidate_context_excludes_presentation_fields():
+    assert _safe_knowledge_candidate_context(
+        [
+            {
+                "candidate_handle": "rec-safe",
+                "safe_label": "Leave policy",
+                "safe_topics": ["benefits"],
+                "safe_description": "Leave policy guidance",
+                "runtime_availability": "available",
+                "relevance_score": 0.8,
+            }
+        ]
+    ) == [
+        {
+            "candidate_handle": "rec-safe",
+            "safe_topics": ["benefits"],
+            "runtime_availability": "available",
+            "relevance_score": 0.8,
+        }
+    ]

@@ -74,6 +74,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - `웹훅으로 받는 사내 문서 챗봇 워크플로우를 만들어줘`의 최초 응답이 Knowledge placement를 누락하면 typed `after_graph`/`binding_only` placement 계약을 포함해 한 번 repair한다.
 - 같은 사내 문서 챗봇 요청의 유효 응답은 `webhook_trigger -> knowledge_backed_llm -> answer`와 LLM step 대상 `after_graph + binding_only` placement를 사용하고, 명시적인 topology 변경 요청에만 `before_graph + insert_step`을 허용한다.
 - Semantic code는 allowlist 형식만 진단에 남긴다. Provider 호출 예외는 `provider_call_failed`, Pydantic schema 오류는 `schema_validation_failed`로 구분하되 raw provider exception, credential-like value와 사용자 message 원문은 반사하지 않는다.
+- Provider HTTP/transport 오류는 terminal `failed` 응답의 `INTENT_PROVIDER_CALL_FAILED`와 모델 변경 또는 provider 상태 확인을 권하는 일반 문구로 표시한다. Provider 원문, HTTP status, error token과 credential 정보는 issue·audit·trace·log에 포함하지 않는다. 실제 provider 응답이 비었거나 완료되지 않은 경우만 `provider_response_invalid`/`INTENT_EXTRACTION_FAILED`로 남긴다.
 - parameter task 이동과 값 제출은 planner를 호출하지 않는다.
 
 ### DBP-TC-U002 Planner Authority Boundary
@@ -151,6 +152,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - 같은 model/credential의 verified relation이 중복이면 가장 낮은 relation priority 하나만 후보로 사용한다.
 - Header와 새 generated LLM node가 같은 후보 집합에서 동일한 첫 model을 추천한다. Header 사용자 선택은 generated node에 복사하지 않고 기존 node model도 덮어쓰지 않는다.
 - Provider 순서, 최신 세대, 같은 세대 `general -> mini -> nano -> pro`, 같은 tier 기본형 -> 날짜/release -> preview -> latest 순서를 검증한다.
+- verified OpenAI 후보에 `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.5-mini`, `gpt-5.5-pro`가 함께 있으면 Header와 새 generated LLM node의 공통 후보 순서가 위 5.6 네 항목 뒤 5.5 일반형, mini, pro가 되는지 검증한다.
 - 특수 목적 model은 완전한 token 또는 명시된 연속 token/전체 ID 규칙으로 제외하고 단순 부분 문자열 일치로 정상 verified chat model을 제외하지 않는다. 세대/tier 미분류 모델은 provider 후순위에서 안정적으로 유지한다.
 - LlamaParse는 `chat_model_not_supported` disabled group으로 반환한다.
 - 최신 dev catalog의 Mail 검색, Gmail Draft와 Mail terminal acknowledgement capability가 direct-edit allowlist와 template에 유지된다.

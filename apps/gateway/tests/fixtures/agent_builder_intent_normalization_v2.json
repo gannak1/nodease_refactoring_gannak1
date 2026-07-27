@@ -1,0 +1,206 @@
+{
+  "fixture_version": "agent-builder-intent-normalization-v2",
+  "normalizer_version": "intent-normalizer-v2",
+  "cases": [
+    {
+      "id": "nfkc-whitespace-01",
+      "synthetic_message": "ＬＬＭ\t노드\n추가",
+      "expected_status": "eligible",
+      "equivalence_group": "llm-add"
+    },
+    {
+      "id": "nfkc-whitespace-02",
+      "synthetic_message": "  LLM   노드 추가  ",
+      "expected_status": "eligible",
+      "equivalence_group": "llm-add"
+    },
+    {
+      "id": "structural-case-preserved-01",
+      "synthetic_message": "ADD LLM",
+      "expected_status": "eligible",
+      "distinct_pair": "structural-case-preserved"
+    },
+    {
+      "id": "structural-case-preserved-02",
+      "synthetic_message": "add LLM",
+      "expected_status": "eligible",
+      "distinct_pair": "structural-case-preserved"
+    },
+    {
+      "id": "catalog-exact-alias-01",
+      "synthetic_message": "Slack 노드 추가",
+      "expected_status": "eligible",
+      "equivalence_group": "slack-add"
+    },
+    {
+      "id": "catalog-exact-alias-02",
+      "synthetic_message": "슬랙 노드 추가",
+      "expected_status": "eligible",
+      "equivalence_group": "slack-add"
+    },
+    {
+      "id": "catalog-node-token-case-01",
+      "synthetic_message": "GitHub 노드 추가",
+      "expected_status": "eligible",
+      "equivalence_group": "github-add"
+    },
+    {
+      "id": "catalog-node-token-case-02",
+      "synthetic_message": "github 노드 추가",
+      "expected_status": "eligible",
+      "equivalence_group": "github-add"
+    },
+    {
+      "id": "translation-unknown-literal-01",
+      "synthetic_message": "깃허브 노드 추가",
+      "expected_status": "eligible"
+    },
+    {
+      "id": "phrase-alias-unknown-literal-01",
+      "synthetic_message": "언어 모델 노드 추가",
+      "expected_status": "eligible"
+    },
+    {
+      "id": "order-preserved-01",
+      "synthetic_message": "LLM 뒤에 Slack 추가",
+      "expected_status": "eligible",
+      "distinct_pair": "order-preserved"
+    },
+    {
+      "id": "order-preserved-02",
+      "synthetic_message": "Slack 뒤에 LLM 추가",
+      "expected_status": "eligible",
+      "distinct_pair": "order-preserved"
+    },
+    {
+      "id": "negation-preserved-01",
+      "synthetic_message": "LLM 노드 추가하지 마",
+      "expected_status": "eligible",
+      "distinct_group": "llm-add"
+    },
+    {
+      "id": "number-preserved-01",
+      "synthetic_message": "LLM 노드 1개 추가",
+      "expected_status": "eligible",
+      "distinct_pair": "number-preserved"
+    },
+    {
+      "id": "number-preserved-02",
+      "synthetic_message": "LLM 노드 2개 추가",
+      "expected_status": "eligible",
+      "distinct_pair": "number-preserved"
+    },
+    {
+      "id": "quoted-label-preserved-01",
+      "synthetic_message": "이름 \"GitHub\"인 LLM 노드 추가",
+      "expected_status": "eligible",
+      "distinct_pair": "quoted-label-preserved"
+    },
+    {
+      "id": "quoted-label-preserved-02",
+      "synthetic_message": "이름 \"github\"인 LLM 노드 추가",
+      "expected_status": "eligible",
+      "distinct_pair": "quoted-label-preserved"
+    },
+    {
+      "id": "unknown-residual-literal-01",
+      "synthetic_message": "LLM 미지표현 추가",
+      "expected_status": "eligible"
+    },
+    {
+      "id": "redaction-marker-bypass-01",
+      "synthetic_message": "[redacted] 값을 사용하는 노드 추가",
+      "expected_status": "bypass",
+      "expected_reason": "sensitive_input"
+    },
+    {
+      "id": "explicit-parameter-bypass-01",
+      "synthetic_message": "Slack channel=#ops 노드 추가",
+      "expected_status": "bypass",
+      "expected_reason": "explicit_value_suspected"
+    },
+    {
+      "id": "explicit-parameter-bypass-02",
+      "synthetic_message": "httpRequestNode url=https://example.invalid/hook 추가",
+      "expected_status": "bypass",
+      "expected_reason": "explicit_value_suspected"
+    },
+    {
+      "id": "quoted-explicit-parameter-bypass-01",
+      "synthetic_message": "Slack \ub178\ub4dc \"channel #synthetic\" \ucd94\uac00",
+      "expected_status": "bypass",
+      "expected_reason": "explicit_value_suspected"
+    },
+    {
+      "id": "quoted-explicit-parameter-bypass-02",
+      "synthetic_message": "Slack \ub178\ub4dc \u201cchannel #other\u201d \ucd94\uac00",
+      "expected_status": "bypass",
+      "expected_reason": "explicit_value_suspected"
+    },
+    {
+      "id": "quoted-parameter-key-label-preserved-01",
+      "synthetic_message": "Slack \ub178\ub4dc \"channel\" \ucd94\uac00",
+      "expected_status": "eligible"
+    },
+    {
+      "id": "quoted-parameter-label-value-bypass-01",
+      "synthetic_message": "Slack \ub178\ub4dc \"Slack channel #synthetic\" \ucd94\uac00",
+      "expected_status": "bypass",
+      "expected_reason": "explicit_value_suspected"
+    },
+    {
+      "id": "quoted-secret-label-value-bypass-01",
+      "synthetic_message": "GitHub \ub178\ub4dc \"GitHub API Token syntheticvalue\" \ucd94\uac00",
+      "expected_status": "bypass",
+      "expected_reason": "sensitive_input"
+    },
+    {
+      "id": "quoted-generic-secret-label-bypass-01",
+      "synthetic_message": "GitHub \ub178\ub4dc \"API key syntheticvalue\" \ucd94\uac00",
+      "expected_status": "bypass",
+      "expected_reason": "sensitive_input"
+    },
+    {
+      "id": "nfkc-secret-marker-bypass-01",
+      "synthetic_message": "LLM \ub178\ub4dc \"\uff53\uff4b\uff0dabcdefgh\" \ucd94\uac00",
+      "expected_status": "bypass",
+      "expected_reason": "sensitive_input"
+    },
+    {
+      "id": "nfkc-redaction-marker-bypass-01",
+      "synthetic_message": "LLM \ub178\ub4dc \"[\uff52\uff45\uff44\uff41\uff43\uff54\uff45\uff44]\" \ucd94\uac00",
+      "expected_status": "bypass",
+      "expected_reason": "sensitive_input"
+    },
+    {
+      "id": "nfkc-truncation-marker-bypass-01",
+      "synthetic_message": "LLM \ub178\ub4dc \"[\uff54\uff52\uff55\uff4e\uff43\uff41\uff54\uff45\uff44]\" \ucd94\uac00",
+      "expected_status": "bypass",
+      "expected_reason": "input_projection_truncated"
+    },
+    {
+      "id": "truncated-projection-bypass-01",
+      "synthetic_message": "LLM 노드 추가 [truncated]",
+      "expected_status": "bypass",
+      "expected_reason": "input_projection_truncated"
+    },
+    {
+      "id": "ambiguous-modify-bypass-01",
+      "synthetic_message": "기존 LLM 노드를 수정",
+      "expected_status": "bypass",
+      "expected_reason": "ambiguous_target"
+    },
+    {
+      "id": "selected-modify-eligible-01",
+      "synthetic_message": "선택한 LLM 노드를 수정",
+      "selected_target_type": "selected_node",
+      "expected_status": "eligible"
+    },
+    {
+      "id": "empty-after-cleanup-bypass-01",
+      "synthetic_message": " \t\n ",
+      "expected_status": "bypass",
+      "expected_reason": "unsupported_request_shape"
+    }
+  ]
+}

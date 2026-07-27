@@ -1,0 +1,330 @@
+{
+  "schema_version": "agent-builder-cache-latency-summary-v1",
+  "benchmark": {
+    "schema_version": "agent-builder-cache-latency-runs-v1",
+    "dataset_version": "mba350-live-v1",
+    "cache_contract_version": "agent-builder-cache-v1",
+    "benchmark_kind": "live_measurement",
+    "run_date": "2026-07-24",
+    "git_sha": "9cf2bd747fc4515796f77815202e18725e355b07",
+    "benchmark_id": "2026-07-24-9cf2bd747fc4-mba350-live-v1-agent-builder-cache-v1"
+  },
+  "totals": {
+    "row_count": 310,
+    "warmup_run_count": 10,
+    "measured_run_count": 300,
+    "successful_run_count": 143,
+    "failed_run_count": 157,
+    "failure_rate": 0.523
+  },
+  "groups": {
+    "cache_disabled_baseline": {
+      "row_count": 155,
+      "warmup_run_count": 5,
+      "measured_run_count": 150,
+      "successful_run_count": 88,
+      "failed_run_count": 62,
+      "failure_rate": 0.413,
+      "cache_outcome_counts": {
+        "disabled": 155
+      },
+      "provider_call_count": 118,
+      "repair_call_count": 0,
+      "planning_latency_ms": {
+        "mean_ms": 8220.511,
+        "p50_ms": 8671.0,
+        "p95_ms": 11202.55,
+        "stddev_ms": 2106.458,
+        "min_ms": 4047.0,
+        "max_ms": 12250.0
+      },
+      "end_to_end_latency_ms": {
+        "mean_ms": 9036.057,
+        "p50_ms": 9484.5,
+        "p95_ms": 12009.3,
+        "stddev_ms": 2111.455,
+        "min_ms": 4829.0,
+        "max_ms": 13078.0
+      }
+    },
+    "cold_miss": {
+      "row_count": 31,
+      "warmup_run_count": 1,
+      "measured_run_count": 30,
+      "successful_run_count": 26,
+      "failed_run_count": 4,
+      "failure_rate": 0.133,
+      "cache_outcome_counts": {
+        "miss": 31
+      },
+      "provider_call_count": 26,
+      "repair_call_count": 0,
+      "planning_latency_ms": {
+        "mean_ms": 9674.615,
+        "p50_ms": 9648.5,
+        "p95_ms": 11035.25,
+        "stddev_ms": 1174.251,
+        "min_ms": 6782.0,
+        "max_ms": 12656.0
+      },
+      "end_to_end_latency_ms": {
+        "mean_ms": 10552.269,
+        "p50_ms": 10500.0,
+        "p95_ms": 11878.75,
+        "stddev_ms": 1154.391,
+        "min_ms": 7750.0,
+        "max_ms": 13500.0
+      }
+    },
+    "exact_warm_hit": {
+      "row_count": 31,
+      "warmup_run_count": 1,
+      "measured_run_count": 30,
+      "successful_run_count": 0,
+      "failed_run_count": 30,
+      "failure_rate": 1.0,
+      "cache_outcome_counts": {
+        "miss": 31
+      },
+      "provider_call_count": 0,
+      "repair_call_count": 0,
+      "planning_latency_ms": {
+        "mean_ms": null,
+        "p50_ms": null,
+        "p95_ms": null,
+        "stddev_ms": null,
+        "min_ms": null,
+        "max_ms": null
+      },
+      "end_to_end_latency_ms": {
+        "mean_ms": null,
+        "p50_ms": null,
+        "p95_ms": null,
+        "stddev_ms": null,
+        "min_ms": null,
+        "max_ms": null
+      }
+    },
+    "normalization_warm_hit": {
+      "row_count": 31,
+      "warmup_run_count": 1,
+      "measured_run_count": 30,
+      "successful_run_count": 0,
+      "failed_run_count": 30,
+      "failure_rate": 1.0,
+      "cache_outcome_counts": {
+        "miss": 31
+      },
+      "provider_call_count": 0,
+      "repair_call_count": 0,
+      "planning_latency_ms": {
+        "mean_ms": null,
+        "p50_ms": null,
+        "p95_ms": null,
+        "stddev_ms": null,
+        "min_ms": null,
+        "max_ms": null
+      },
+      "end_to_end_latency_ms": {
+        "mean_ms": null,
+        "p50_ms": null,
+        "p95_ms": null,
+        "stddev_ms": null,
+        "min_ms": null,
+        "max_ms": null
+      }
+    },
+    "semantic_bypass": {
+      "row_count": 31,
+      "warmup_run_count": 1,
+      "measured_run_count": 30,
+      "successful_run_count": 0,
+      "failed_run_count": 30,
+      "failure_rate": 1.0,
+      "cache_outcome_counts": {
+        "bypass": 31
+      },
+      "provider_call_count": 30,
+      "repair_call_count": 0,
+      "planning_latency_ms": {
+        "mean_ms": null,
+        "p50_ms": null,
+        "p95_ms": null,
+        "stddev_ms": null,
+        "min_ms": null,
+        "max_ms": null
+      },
+      "end_to_end_latency_ms": {
+        "mean_ms": null,
+        "p50_ms": null,
+        "p95_ms": null,
+        "stddev_ms": null,
+        "min_ms": null,
+        "max_ms": null
+      }
+    },
+    "negative_control": {
+      "row_count": 31,
+      "warmup_run_count": 1,
+      "measured_run_count": 30,
+      "successful_run_count": 29,
+      "failed_run_count": 1,
+      "failure_rate": 0.033,
+      "cache_outcome_counts": {
+        "error": 1,
+        "miss": 30
+      },
+      "provider_call_count": 29,
+      "repair_call_count": 0,
+      "planning_latency_ms": {
+        "mean_ms": 9899.414,
+        "p50_ms": 9952.0,
+        "p95_ms": 11837.4,
+        "stddev_ms": 1407.579,
+        "min_ms": 6952.0,
+        "max_ms": 13405.0
+      },
+      "end_to_end_latency_ms": {
+        "mean_ms": 10767.793,
+        "p50_ms": 10781.0,
+        "p95_ms": 12806.6,
+        "stddev_ms": 1417.309,
+        "min_ms": 7797.0,
+        "max_ms": 14265.0
+      }
+    }
+  },
+  "paired_comparisons": {
+    "cold_miss": {
+      "baseline_group": "cache_disabled_baseline",
+      "paired_success_count": 26,
+      "excluded_pair_count": 5,
+      "planning_latency_ms": {
+        "baseline_mean_ms": 9049.808,
+        "candidate_mean_ms": 9674.615,
+        "mean_paired_delta_ms": -624.808,
+        "improvement_rate_percent": -6.904,
+        "speedup": 0.935
+      },
+      "end_to_end_latency_ms": {
+        "baseline_mean_ms": 9878.615,
+        "candidate_mean_ms": 10552.269,
+        "mean_paired_delta_ms": -673.654,
+        "improvement_rate_percent": -6.819,
+        "speedup": 0.936
+      }
+    },
+    "exact_warm_hit": {
+      "baseline_group": "cache_disabled_baseline",
+      "paired_success_count": 0,
+      "excluded_pair_count": 31,
+      "planning_latency_ms": {
+        "baseline_mean_ms": null,
+        "candidate_mean_ms": null,
+        "mean_paired_delta_ms": null,
+        "improvement_rate_percent": null,
+        "speedup": null
+      },
+      "end_to_end_latency_ms": {
+        "baseline_mean_ms": null,
+        "candidate_mean_ms": null,
+        "mean_paired_delta_ms": null,
+        "improvement_rate_percent": null,
+        "speedup": null
+      }
+    },
+    "normalization_warm_hit": {
+      "baseline_group": "cache_disabled_baseline",
+      "paired_success_count": 0,
+      "excluded_pair_count": 31,
+      "planning_latency_ms": {
+        "baseline_mean_ms": null,
+        "candidate_mean_ms": null,
+        "mean_paired_delta_ms": null,
+        "improvement_rate_percent": null,
+        "speedup": null
+      },
+      "end_to_end_latency_ms": {
+        "baseline_mean_ms": null,
+        "candidate_mean_ms": null,
+        "mean_paired_delta_ms": null,
+        "improvement_rate_percent": null,
+        "speedup": null
+      }
+    },
+    "semantic_bypass": {
+      "baseline_group": "cache_disabled_baseline",
+      "paired_success_count": 0,
+      "excluded_pair_count": 31,
+      "planning_latency_ms": {
+        "baseline_mean_ms": null,
+        "candidate_mean_ms": null,
+        "mean_paired_delta_ms": null,
+        "improvement_rate_percent": null,
+        "speedup": null
+      },
+      "end_to_end_latency_ms": {
+        "baseline_mean_ms": null,
+        "candidate_mean_ms": null,
+        "mean_paired_delta_ms": null,
+        "improvement_rate_percent": null,
+        "speedup": null
+      }
+    },
+    "negative_control": {
+      "baseline_group": "cache_disabled_baseline",
+      "paired_success_count": 27,
+      "excluded_pair_count": 4,
+      "planning_latency_ms": {
+        "baseline_mean_ms": 9664.481,
+        "candidate_mean_ms": 9920.37,
+        "mean_paired_delta_ms": -255.889,
+        "improvement_rate_percent": -2.648,
+        "speedup": 0.974
+      },
+      "end_to_end_latency_ms": {
+        "baseline_mean_ms": 10473.37,
+        "candidate_mean_ms": 10785.889,
+        "mean_paired_delta_ms": -312.519,
+        "improvement_rate_percent": -2.984,
+        "speedup": 0.971
+      }
+    }
+  },
+  "modeled_path_classification": {
+    "warm": [
+      "exact_warm_hit",
+      "normalization_warm_hit"
+    ],
+    "miss": [
+      "cold_miss",
+      "semantic_bypass",
+      "negative_control",
+      "redis_fail_open"
+    ]
+  },
+  "modeled_estimates": [
+    {
+      "estimate_type": "modeled_estimate",
+      "hit_rate": 0.25,
+      "planning_latency_ms": null,
+      "end_to_end_latency_ms": null
+    },
+    {
+      "estimate_type": "modeled_estimate",
+      "hit_rate": 0.5,
+      "planning_latency_ms": null,
+      "end_to_end_latency_ms": null
+    },
+    {
+      "estimate_type": "modeled_estimate",
+      "hit_rate": 0.75,
+      "planning_latency_ms": null,
+      "end_to_end_latency_ms": null
+    }
+  ],
+  "artifact_safety": {
+    "status": "passed",
+    "files_scanned": 7
+  }
+}

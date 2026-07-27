@@ -55,6 +55,26 @@ def test_sort_model_candidates_uses_provider_generation_tier_and_status_order():
     ]
 
 
+def test_sort_model_candidates_orders_gpt_5_6_named_variants_before_gpt_5_5():
+    candidates = [
+        _candidate("openai", "gpt-5.5-pro"),
+        _candidate("openai", "gpt-5.6-terra"),
+        _candidate("openai", "gpt-5.5-mini"),
+        _candidate("openai", "gpt-5.6-luna"),
+        _candidate("openai", "gpt-5.5"),
+        _candidate("openai", "gpt-5.6-sol"),
+        _candidate("openai", "gpt-5.6"),
+    ]
+
+    assert _model_ids(sort_model_candidates(candidates)) == [
+        "gpt-5.6",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.5-mini",
+        "gpt-5.5-pro",
+    ]
 def test_sort_model_candidates_parses_current_provider_model_id_forms():
     candidates = [
         _candidate("google", "gemini-3.1-pro-preview"),

@@ -1,0 +1,1463 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="7560" height="420" viewBox="0 0 7560 420">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text x="40" y="32" font-family="sans-serif" font-size="20">Latency comparison by round</text>
+<line x1="60" y1="350" x2="7530" y2="350" stroke="#64748b"/>
+<text x="40" y="382" font-family="sans-serif" font-size="12">Every input row is retained; open markers are warm-up and crosses are failures.</text>
+<g data-run="local-live:p-e9daf28285082cbdf09fa3b1:fin-warmup-01:cache_disabled_baseline" data-warmup="true" opacity="0.45">
+<title>local-live:p-e9daf28285082cbdf09fa3b1:fin-warmup-01:cache_disabled_baseline disabled success</title>
+<circle cx="75" cy="109.551" r="4" fill="none" stroke="#2563eb" stroke-width="2"/>
+<circle cx="75" cy="93.299" r="4" fill="none" stroke="#16a34a" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-e9daf28285082cbdf09fa3b1:fin-warmup-01:cold_miss" data-warmup="true" opacity="0.45">
+<title>local-live:p-e9daf28285082cbdf09fa3b1:fin-warmup-01:cold_miss miss success</title>
+<circle cx="99" cy="135.304" r="4" fill="none" stroke="#2563eb" stroke-width="2"/>
+<circle cx="99" cy="118.443" r="4" fill="none" stroke="#16a34a" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-f3db7ab87b7b4ac11cce0e3e:fin-01:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-f3db7ab87b7b4ac11cce0e3e:fin-01:cache_disabled_baseline disabled success</title>
+<circle cx="123" cy="180.410" r="4" fill="#2563eb"/>
+<circle cx="123" cy="164.452" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-f3db7ab87b7b4ac11cce0e3e:fin-01:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-f3db7ab87b7b4ac11cce0e3e:fin-01:cold_miss miss success</title>
+<circle cx="147" cy="168.123" r="4" fill="#2563eb"/>
+<circle cx="147" cy="150.948" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-83fe1d8914860ddeae7a49e8:fin-02:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-83fe1d8914860ddeae7a49e8:fin-02:cold_miss miss success</title>
+<circle cx="171" cy="173.658" r="4" fill="#2563eb"/>
+<circle cx="171" cy="156.483" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-83fe1d8914860ddeae7a49e8:fin-02:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-83fe1d8914860ddeae7a49e8:fin-02:cache_disabled_baseline disabled success</title>
+<circle cx="195" cy="178.585" r="4" fill="#2563eb"/>
+<circle cx="195" cy="161.704" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-4cf595cbdfd0b95732f263f8:fin-03:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-4cf595cbdfd0b95732f263f8:fin-03:cache_disabled_baseline disabled success</title>
+<circle cx="219" cy="232.229" r="4" fill="#2563eb"/>
+<circle cx="219" cy="215.663" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-4cf595cbdfd0b95732f263f8:fin-03:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-4cf595cbdfd0b95732f263f8:fin-03:cold_miss miss success</title>
+<circle cx="243" cy="144.215" r="4" fill="#2563eb"/>
+<circle cx="243" cy="124.273" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-e1698a73a58789bdd88c4798:fin-04:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-e1698a73a58789bdd88c4798:fin-04:cold_miss miss success</title>
+<circle cx="267" cy="194.837" r="4" fill="#2563eb"/>
+<circle cx="267" cy="177.328" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-e1698a73a58789bdd88c4798:fin-04:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-e1698a73a58789bdd88c4798:fin-04:cache_disabled_baseline disabled success</title>
+<circle cx="291" cy="142.076" r="4" fill="#2563eb"/>
+<circle cx="291" cy="123.959" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-f0a8434d56f7b873aacba008:fin-05:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-f0a8434d56f7b873aacba008:fin-05:cache_disabled_baseline disabled success</title>
+<circle cx="315" cy="176.720" r="4" fill="#2563eb"/>
+<circle cx="315" cy="159.839" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-f0a8434d56f7b873aacba008:fin-05:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-f0a8434d56f7b873aacba008:fin-05:cold_miss miss provider_error</title>
+<path d="M 334 345 L 344 355 M 344 345 L 334 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-d0d89b34cf41443ab83cb314:fin-06:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-d0d89b34cf41443ab83cb314:fin-06:cold_miss miss success</title>
+<circle cx="363" cy="216.880" r="4" fill="#2563eb"/>
+<circle cx="363" cy="197.879" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-d0d89b34cf41443ab83cb314:fin-06:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-d0d89b34cf41443ab83cb314:fin-06:cache_disabled_baseline disabled success</title>
+<circle cx="387" cy="186.868" r="4" fill="#2563eb"/>
+<circle cx="387" cy="170.890" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-b8fb91bba741a265ca6a2bfe:fin-07:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-b8fb91bba741a265ca6a2bfe:fin-07:cache_disabled_baseline disabled success</title>
+<circle cx="411" cy="187.751" r="4" fill="#2563eb"/>
+<circle cx="411" cy="171.518" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-b8fb91bba741a265ca6a2bfe:fin-07:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-b8fb91bba741a265ca6a2bfe:fin-07:cold_miss miss success</title>
+<circle cx="435" cy="169.379" r="4" fill="#2563eb"/>
+<circle cx="435" cy="151.870" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-ab42cc9e6837adcf39cc8342:fin-08:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-ab42cc9e6837adcf39cc8342:fin-08:cold_miss miss provider_error</title>
+<path d="M 454 345 L 464 355 M 464 345 L 454 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-ab42cc9e6837adcf39cc8342:fin-08:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-ab42cc9e6837adcf39cc8342:fin-08:cache_disabled_baseline disabled success</title>
+<circle cx="483" cy="157.739" r="4" fill="#2563eb"/>
+<circle cx="483" cy="142.370" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-788b07b0aa77fa6f270e5dc5:fin-09:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-788b07b0aa77fa6f270e5dc5:fin-09:cache_disabled_baseline disabled success</title>
+<circle cx="507" cy="137.188" r="4" fill="#2563eb"/>
+<circle cx="507" cy="121.211" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-788b07b0aa77fa6f270e5dc5:fin-09:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-788b07b0aa77fa6f270e5dc5:fin-09:cold_miss miss provider_error</title>
+<path d="M 526 345 L 536 355 M 536 345 L 526 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-1657ffc1a040f492d3875baa:fin-10:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-1657ffc1a040f492d3875baa:fin-10:cold_miss miss success</title>
+<circle cx="555" cy="144.215" r="4" fill="#2563eb"/>
+<circle cx="555" cy="126.726" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-1657ffc1a040f492d3875baa:fin-10:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-1657ffc1a040f492d3875baa:fin-10:cache_disabled_baseline disabled success</title>
+<circle cx="579" cy="126.412" r="4" fill="#2563eb"/>
+<circle cx="579" cy="110.160" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-1a7229b73aef77565ef1ceab:fin-11:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-1a7229b73aef77565ef1ceab:fin-11:cache_disabled_baseline disabled success</title>
+<circle cx="603" cy="221.826" r="4" fill="#2563eb"/>
+<circle cx="603" cy="205.535" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-1a7229b73aef77565ef1ceab:fin-11:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-1a7229b73aef77565ef1ceab:fin-11:cold_miss miss success</title>
+<circle cx="627" cy="185.298" r="4" fill="#2563eb"/>
+<circle cx="627" cy="165.061" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-3f7d10952ebe62f37bdc54a6:fin-12:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-3f7d10952ebe62f37bdc54a6:fin-12:cold_miss miss success</title>
+<circle cx="651" cy="148.494" r="4" fill="#2563eb"/>
+<circle cx="651" cy="131.947" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-3f7d10952ebe62f37bdc54a6:fin-12:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-3f7d10952ebe62f37bdc54a6:fin-12:cache_disabled_baseline disabled success</title>
+<circle cx="675" cy="166.925" r="4" fill="#2563eb"/>
+<circle cx="675" cy="151.576" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-6a0ddc256e1a21546e3ebf35:fin-13:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-6a0ddc256e1a21546e3ebf35:fin-13:cache_disabled_baseline disabled success</title>
+<circle cx="699" cy="200.039" r="4" fill="#2563eb"/>
+<circle cx="699" cy="184.375" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-6a0ddc256e1a21546e3ebf35:fin-13:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-6a0ddc256e1a21546e3ebf35:fin-13:cold_miss miss success</title>
+<circle cx="723" cy="153.401" r="4" fill="#2563eb"/>
+<circle cx="723" cy="136.855" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-254f6ab81a28a0ffab3b2fa2:fin-14:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-254f6ab81a28a0ffab3b2fa2:fin-14:cold_miss miss success</title>
+<circle cx="747" cy="186.829" r="4" fill="#2563eb"/>
+<circle cx="747" cy="170.282" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-254f6ab81a28a0ffab3b2fa2:fin-14:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-254f6ab81a28a0ffab3b2fa2:fin-14:cache_disabled_baseline disabled success</title>
+<circle cx="771" cy="171.538" r="4" fill="#2563eb"/>
+<circle cx="771" cy="152.793" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-d2c8d8e05e45050fdc1f3ef2:fin-15:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-d2c8d8e05e45050fdc1f3ef2:fin-15:cache_disabled_baseline disabled success</title>
+<circle cx="795" cy="201.884" r="4" fill="#2563eb"/>
+<circle cx="795" cy="185.612" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-d2c8d8e05e45050fdc1f3ef2:fin-15:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-d2c8d8e05e45050fdc1f3ef2:fin-15:cold_miss miss success</title>
+<circle cx="819" cy="135.029" r="4" fill="#2563eb"/>
+<circle cx="819" cy="118.443" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-19b9fb7dc9f536489413ba16:fin-16:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-19b9fb7dc9f536489413ba16:fin-16:cold_miss miss provider_error</title>
+<path d="M 838 345 L 848 355 M 848 345 L 838 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-19b9fb7dc9f536489413ba16:fin-16:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-19b9fb7dc9f536489413ba16:fin-16:cache_disabled_baseline disabled success</title>
+<circle cx="867" cy="134.990" r="4" fill="#2563eb"/>
+<circle cx="867" cy="117.226" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-87e5538ced41d1b3b5353f16:fin-17:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-87e5538ced41d1b3b5353f16:fin-17:cache_disabled_baseline disabled success</title>
+<circle cx="891" cy="154.363" r="4" fill="#2563eb"/>
+<circle cx="891" cy="137.757" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-87e5538ced41d1b3b5353f16:fin-17:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-87e5538ced41d1b3b5353f16:fin-17:cold_miss miss success</title>
+<circle cx="915" cy="101.582" r="4" fill="#2563eb"/>
+<circle cx="915" cy="85.016" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-88c918e7d0445bdb85658e85:fin-18:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-88c918e7d0445bdb85658e85:fin-18:cold_miss miss success</title>
+<circle cx="939" cy="170.890" r="4" fill="#2563eb"/>
+<circle cx="939" cy="153.715" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-88c918e7d0445bdb85658e85:fin-18:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-88c918e7d0445bdb85658e85:fin-18:cache_disabled_baseline disabled success</title>
+<circle cx="963" cy="202.787" r="4" fill="#2563eb"/>
+<circle cx="963" cy="186.534" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-c3e0cb3ad19ee41be8bb8cb3:fin-19:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-c3e0cb3ad19ee41be8bb8cb3:fin-19:cache_disabled_baseline disabled success</title>
+<circle cx="987" cy="182.883" r="4" fill="#2563eb"/>
+<circle cx="987" cy="166.611" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-c3e0cb3ad19ee41be8bb8cb3:fin-19:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-c3e0cb3ad19ee41be8bb8cb3:fin-19:cold_miss miss success</title>
+<circle cx="1011" cy="158.623" r="4" fill="#2563eb"/>
+<circle cx="1011" cy="142.370" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-3074418b7635d12a5a34563e:fin-20:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-3074418b7635d12a5a34563e:fin-20:cold_miss miss success</title>
+<circle cx="1035" cy="135.932" r="4" fill="#2563eb"/>
+<circle cx="1035" cy="119.366" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-3074418b7635d12a5a34563e:fin-20:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-3074418b7635d12a5a34563e:fin-20:cache_disabled_baseline disabled success</title>
+<circle cx="1059" cy="163.824" r="4" fill="#2563eb"/>
+<circle cx="1059" cy="148.200" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-8f5daff3437781e2cc9780cd:fin-21:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-8f5daff3437781e2cc9780cd:fin-21:cache_disabled_baseline disabled success</title>
+<circle cx="1083" cy="193.286" r="4" fill="#2563eb"/>
+<circle cx="1083" cy="177.623" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-8f5daff3437781e2cc9780cd:fin-21:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-8f5daff3437781e2cc9780cd:fin-21:cold_miss miss success</title>
+<circle cx="1107" cy="142.665" r="4" fill="#2563eb"/>
+<circle cx="1107" cy="126.098" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-a719fd4377a56647b40c0b1c:fin-22:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-a719fd4377a56647b40c0b1c:fin-22:cold_miss miss success</title>
+<circle cx="1131" cy="151.890" r="4" fill="#2563eb"/>
+<circle cx="1131" cy="135.324" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-a719fd4377a56647b40c0b1c:fin-22:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-a719fd4377a56647b40c0b1c:fin-22:cache_disabled_baseline disabled success</title>
+<circle cx="1155" cy="154.658" r="4" fill="#2563eb"/>
+<circle cx="1155" cy="138.680" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-e31bd0fe41bde23a8c1d5978:fin-23:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-e31bd0fe41bde23a8c1d5978:fin-23:cache_disabled_baseline disabled success</title>
+<circle cx="1179" cy="164.472" r="4" fill="#2563eb"/>
+<circle cx="1179" cy="149.122" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-e31bd0fe41bde23a8c1d5978:fin-23:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-e31bd0fe41bde23a8c1d5978:fin-23:cold_miss miss success</title>
+<circle cx="1203" cy="162.627" r="4" fill="#2563eb"/>
+<circle cx="1203" cy="145.432" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-119e354ee532391b1ae01cfb:fin-24:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-119e354ee532391b1ae01cfb:fin-24:cold_miss miss success</title>
+<circle cx="1227" cy="162.607" r="4" fill="#2563eb"/>
+<circle cx="1227" cy="146.041" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-119e354ee532391b1ae01cfb:fin-24:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-119e354ee532391b1ae01cfb:fin-24:cache_disabled_baseline disabled success</title>
+<circle cx="1251" cy="190.833" r="4" fill="#2563eb"/>
+<circle cx="1251" cy="175.169" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-f76fd153cb6bf5d78538d13d:fin-25:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-f76fd153cb6bf5d78538d13d:fin-25:cache_disabled_baseline disabled success</title>
+<circle cx="1275" cy="127.963" r="4" fill="#2563eb"/>
+<circle cx="1275" cy="112.005" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-f76fd153cb6bf5d78538d13d:fin-25:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-f76fd153cb6bf5d78538d13d:fin-25:cold_miss miss success</title>
+<circle cx="1299" cy="176.131" r="4" fill="#2563eb"/>
+<circle cx="1299" cy="157.700" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-2f1699bc96744c659abedba8:fin-26:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-2f1699bc96744c659abedba8:fin-26:cold_miss miss success</title>
+<circle cx="1323" cy="139.936" r="4" fill="#2563eb"/>
+<circle cx="1323" cy="122.742" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-2f1699bc96744c659abedba8:fin-26:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-2f1699bc96744c659abedba8:fin-26:cache_disabled_baseline disabled success</title>
+<circle cx="1347" cy="176.426" r="4" fill="#2563eb"/>
+<circle cx="1347" cy="160.154" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-8fac6d0d4993ded4d9ed8922:fin-27:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-8fac6d0d4993ded4d9ed8922:fin-27:cache_disabled_baseline disabled success</title>
+<circle cx="1371" cy="150.987" r="4" fill="#2563eb"/>
+<circle cx="1371" cy="134.401" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-8fac6d0d4993ded4d9ed8922:fin-27:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-8fac6d0d4993ded4d9ed8922:fin-27:cold_miss miss success</title>
+<circle cx="1395" cy="179.507" r="4" fill="#2563eb"/>
+<circle cx="1395" cy="162.607" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-89cdbabdfe6475076f41775f:fin-28:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-89cdbabdfe6475076f41775f:fin-28:cold_miss miss success</title>
+<circle cx="1419" cy="157.700" r="4" fill="#2563eb"/>
+<circle cx="1419" cy="140.839" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-89cdbabdfe6475076f41775f:fin-28:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-89cdbabdfe6475076f41775f:fin-28:cache_disabled_baseline disabled success</title>
+<circle cx="1443" cy="129.788" r="4" fill="#2563eb"/>
+<circle cx="1443" cy="113.850" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-a36a11578d05d731cc4eb380:fin-29:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-a36a11578d05d731cc4eb380:fin-29:cache_disabled_baseline disabled success</title>
+<circle cx="1467" cy="156.169" r="4" fill="#2563eb"/>
+<circle cx="1467" cy="141.448" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-a36a11578d05d731cc4eb380:fin-29:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-a36a11578d05d731cc4eb380:fin-29:cold_miss miss success</title>
+<circle cx="1491" cy="169.359" r="4" fill="#2563eb"/>
+<circle cx="1491" cy="153.107" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-68cc286a019494f755e5c27d:fin-30:cold_miss" data-warmup="false" opacity="1">
+<title>local-live:p-68cc286a019494f755e5c27d:fin-30:cold_miss miss success</title>
+<circle cx="1515" cy="132.850" r="4" fill="#2563eb"/>
+<circle cx="1515" cy="116.304" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-68cc286a019494f755e5c27d:fin-30:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-68cc286a019494f755e5c27d:fin-30:cache_disabled_baseline disabled success</title>
+<circle cx="1539" cy="136.540" r="4" fill="#2563eb"/>
+<circle cx="1539" cy="118.757" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-3dff963411d991d43f53abbc:fin-warmup-01:cache_disabled_baseline" data-warmup="true" opacity="0.45">
+<title>local-live:p-3dff963411d991d43f53abbc:fin-warmup-01:cache_disabled_baseline disabled success</title>
+<circle cx="1563" cy="238.981" r="4" fill="none" stroke="#2563eb" stroke-width="2"/>
+<circle cx="1563" cy="223.338" r="4" fill="none" stroke="#16a34a" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-3dff963411d991d43f53abbc:fin-warmup-01:exact_warm_hit" data-warmup="true" opacity="0.45">
+<title>local-live:p-3dff963411d991d43f53abbc:fin-warmup-01:exact_warm_hit miss provider_error</title>
+<path d="M 1582 345 L 1592 355 M 1592 345 L 1582 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-fb3be334e85bcddae70af418:fin-01:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-fb3be334e85bcddae70af418:fin-01:cache_disabled_baseline disabled success</title>
+<circle cx="1611" cy="237.784" r="4" fill="#2563eb"/>
+<circle cx="1611" cy="221.787" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-fb3be334e85bcddae70af418:fin-01:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-fb3be334e85bcddae70af418:fin-01:exact_warm_hit miss provider_error</title>
+<path d="M 1630 345 L 1640 355 M 1640 345 L 1630 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-855720678baf4c011e8d413f:fin-02:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-855720678baf4c011e8d413f:fin-02:exact_warm_hit miss provider_error</title>
+<path d="M 1654 345 L 1664 355 M 1664 345 L 1654 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-855720678baf4c011e8d413f:fin-02:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-855720678baf4c011e8d413f:fin-02:cache_disabled_baseline disabled success</title>
+<circle cx="1683" cy="204.612" r="4" fill="#2563eb"/>
+<circle cx="1683" cy="188.988" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-0952cfad628a4414489e9830:fin-03:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-0952cfad628a4414489e9830:fin-03:cache_disabled_baseline disabled success</title>
+<circle cx="1707" cy="122.761" r="4" fill="#2563eb"/>
+<circle cx="1707" cy="107.098" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-0952cfad628a4414489e9830:fin-03:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-0952cfad628a4414489e9830:fin-03:exact_warm_hit miss provider_error</title>
+<path d="M 1726 345 L 1736 355 M 1736 345 L 1726 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-bf037ba9751b4957e63c18a7:fin-04:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-bf037ba9751b4957e63c18a7:fin-04:exact_warm_hit miss provider_error</title>
+<path d="M 1750 345 L 1760 355 M 1760 345 L 1750 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-bf037ba9751b4957e63c18a7:fin-04:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-bf037ba9751b4957e63c18a7:fin-04:cache_disabled_baseline disabled success</title>
+<circle cx="1779" cy="256.137" r="4" fill="#2563eb"/>
+<circle cx="1779" cy="239.590" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-13aa64d0446a67b692de1195:fin-05:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-13aa64d0446a67b692de1195:fin-05:cache_disabled_baseline disabled success</title>
+<circle cx="1803" cy="236.233" r="4" fill="#2563eb"/>
+<circle cx="1803" cy="219.961" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-13aa64d0446a67b692de1195:fin-05:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-13aa64d0446a67b692de1195:fin-05:exact_warm_hit miss provider_error</title>
+<path d="M 1822 345 L 1832 355 M 1832 345 L 1822 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-3fd8553fbba4523f1b28e3be:fin-06:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-3fd8553fbba4523f1b28e3be:fin-06:exact_warm_hit miss provider_error</title>
+<path d="M 1846 345 L 1856 355 M 1856 345 L 1846 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-3fd8553fbba4523f1b28e3be:fin-06:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-3fd8553fbba4523f1b28e3be:fin-06:cache_disabled_baseline disabled success</title>
+<circle cx="1875" cy="219.647" r="4" fill="#2563eb"/>
+<circle cx="1875" cy="203.689" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-a7f404b918190121719cecfe:fin-07:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-a7f404b918190121719cecfe:fin-07:cache_disabled_baseline disabled success</title>
+<circle cx="1899" cy="230.109" r="4" fill="#2563eb"/>
+<circle cx="1899" cy="212.306" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-a7f404b918190121719cecfe:fin-07:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-a7f404b918190121719cecfe:fin-07:exact_warm_hit miss provider_error</title>
+<path d="M 1918 345 L 1928 355 M 1928 345 L 1918 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-17513938896632007bf04404:fin-08:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-17513938896632007bf04404:fin-08:exact_warm_hit miss provider_error</title>
+<path d="M 1942 345 L 1952 355 M 1952 345 L 1942 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-17513938896632007bf04404:fin-08:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-17513938896632007bf04404:fin-08:cache_disabled_baseline disabled success</title>
+<circle cx="1971" cy="248.796" r="4" fill="#2563eb"/>
+<circle cx="1971" cy="233.446" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-40a8e91bb138250c4e032eab:fin-09:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-40a8e91bb138250c4e032eab:fin-09:cache_disabled_baseline disabled success</title>
+<circle cx="1995" cy="217.842" r="4" fill="#2563eb"/>
+<circle cx="1995" cy="202.492" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-40a8e91bb138250c4e032eab:fin-09:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-40a8e91bb138250c4e032eab:fin-09:exact_warm_hit miss provider_error</title>
+<path d="M 2014 345 L 2024 355 M 2024 345 L 2014 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-d0a07af9f5e6ce480073f6c7:fin-10:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-d0a07af9f5e6ce480073f6c7:fin-10:exact_warm_hit miss provider_error</title>
+<path d="M 2038 345 L 2048 355 M 2048 345 L 2038 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-d0a07af9f5e6ce480073f6c7:fin-10:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-d0a07af9f5e6ce480073f6c7:fin-10:cache_disabled_baseline disabled success</title>
+<circle cx="2067" cy="249.718" r="4" fill="#2563eb"/>
+<circle cx="2067" cy="234.055" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-faf8e5ef8b0c50b7b0451902:fin-11:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-faf8e5ef8b0c50b7b0451902:fin-11:cache_disabled_baseline disabled success</title>
+<circle cx="2091" cy="244.811" r="4" fill="#2563eb"/>
+<circle cx="2091" cy="229.167" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-faf8e5ef8b0c50b7b0451902:fin-11:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-faf8e5ef8b0c50b7b0451902:fin-11:exact_warm_hit miss provider_error</title>
+<path d="M 2110 345 L 2120 355 M 2120 345 L 2110 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-5b1bf7aeb51814f9cfd51c7b:fin-12:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-5b1bf7aeb51814f9cfd51c7b:fin-12:exact_warm_hit miss provider_error</title>
+<path d="M 2134 345 L 2144 355 M 2144 345 L 2134 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-5b1bf7aeb51814f9cfd51c7b:fin-12:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-5b1bf7aeb51814f9cfd51c7b:fin-12:cache_disabled_baseline disabled success</title>
+<circle cx="2163" cy="249.110" r="4" fill="#2563eb"/>
+<circle cx="2163" cy="233.446" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-99ab4c6f5becad1eb6f55fb8:fin-13:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-99ab4c6f5becad1eb6f55fb8:fin-13:cache_disabled_baseline disabled success</title>
+<circle cx="2187" cy="252.761" r="4" fill="#2563eb"/>
+<circle cx="2187" cy="237.431" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-99ab4c6f5becad1eb6f55fb8:fin-13:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-99ab4c6f5becad1eb6f55fb8:fin-13:exact_warm_hit miss provider_error</title>
+<path d="M 2206 345 L 2216 355 M 2216 345 L 2206 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-78a73ae56e9e9125bf3193e3:fin-14:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-78a73ae56e9e9125bf3193e3:fin-14:exact_warm_hit miss provider_error</title>
+<path d="M 2230 345 L 2240 355 M 2240 345 L 2230 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-78a73ae56e9e9125bf3193e3:fin-14:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-78a73ae56e9e9125bf3193e3:fin-14:cache_disabled_baseline disabled success</title>
+<circle cx="2259" cy="242.986" r="4" fill="#2563eb"/>
+<circle cx="2259" cy="226.714" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-d876362364604a70858e8bb8:fin-15:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-d876362364604a70858e8bb8:fin-15:cache_disabled_baseline disabled success</title>
+<circle cx="2283" cy="253.722" r="4" fill="#2563eb"/>
+<circle cx="2283" cy="238.059" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-d876362364604a70858e8bb8:fin-15:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-d876362364604a70858e8bb8:fin-15:exact_warm_hit miss provider_error</title>
+<path d="M 2302 345 L 2312 355 M 2312 345 L 2302 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-e92e568b59a02b9729fc6fd4:fin-16:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-e92e568b59a02b9729fc6fd4:fin-16:exact_warm_hit miss provider_error</title>
+<path d="M 2326 345 L 2336 355 M 2336 345 L 2326 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-e92e568b59a02b9729fc6fd4:fin-16:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-e92e568b59a02b9729fc6fd4:fin-16:cache_disabled_baseline disabled success</title>
+<circle cx="2355" cy="232.543" r="4" fill="#2563eb"/>
+<circle cx="2355" cy="217.508" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-43f8476509748db26569b068:fin-17:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-43f8476509748db26569b068:fin-17:cache_disabled_baseline disabled success</title>
+<circle cx="2379" cy="242.338" r="4" fill="#2563eb"/>
+<circle cx="2379" cy="227.322" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-43f8476509748db26569b068:fin-17:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-43f8476509748db26569b068:fin-17:exact_warm_hit miss provider_error</title>
+<path d="M 2398 345 L 2408 355 M 2408 345 L 2398 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-436ebf2bfe34c19788567060:fin-18:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-436ebf2bfe34c19788567060:fin-18:exact_warm_hit miss provider_error</title>
+<path d="M 2422 345 L 2432 355 M 2432 345 L 2422 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-436ebf2bfe34c19788567060:fin-18:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-436ebf2bfe34c19788567060:fin-18:cache_disabled_baseline disabled success</title>
+<circle cx="2451" cy="239.295" r="4" fill="#2563eb"/>
+<circle cx="2451" cy="222.729" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-c4cb9a83e618b6da3a5d8868:fin-19:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-c4cb9a83e618b6da3a5d8868:fin-19:cache_disabled_baseline disabled success</title>
+<circle cx="2475" cy="240.493" r="4" fill="#2563eb"/>
+<circle cx="2475" cy="224.260" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-c4cb9a83e618b6da3a5d8868:fin-19:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-c4cb9a83e618b6da3a5d8868:fin-19:exact_warm_hit miss provider_error</title>
+<path d="M 2494 345 L 2504 355 M 2504 345 L 2494 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-6cde6c181c2edaad9fc915e5:fin-20:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-6cde6c181c2edaad9fc915e5:fin-20:exact_warm_hit miss provider_error</title>
+<path d="M 2518 345 L 2528 355 M 2528 345 L 2518 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-6cde6c181c2edaad9fc915e5:fin-20:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-6cde6c181c2edaad9fc915e5:fin-20:cache_disabled_baseline disabled success</title>
+<circle cx="2547" cy="236.862" r="4" fill="#2563eb"/>
+<circle cx="2547" cy="220.884" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-62c84bedc203355c99a3430c:fin-21:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-62c84bedc203355c99a3430c:fin-21:cache_disabled_baseline disabled success</title>
+<circle cx="2571" cy="232.877" r="4" fill="#2563eb"/>
+<circle cx="2571" cy="215.368" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-62c84bedc203355c99a3430c:fin-21:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-62c84bedc203355c99a3430c:fin-21:exact_warm_hit miss provider_error</title>
+<path d="M 2590 345 L 2600 355 M 2600 345 L 2590 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-56ba8613471561370e2b165d:fin-22:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-56ba8613471561370e2b165d:fin-22:exact_warm_hit miss provider_error</title>
+<path d="M 2614 345 L 2624 355 M 2624 345 L 2614 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-56ba8613471561370e2b165d:fin-22:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-56ba8613471561370e2b165d:fin-22:cache_disabled_baseline disabled success</title>
+<circle cx="2643" cy="223.946" r="4" fill="#2563eb"/>
+<circle cx="2643" cy="206.457" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-86f53872c6f0c0159dc12ab8:fin-23:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-86f53872c6f0c0159dc12ab8:fin-23:cache_disabled_baseline disabled success</title>
+<circle cx="2667" cy="249.718" r="4" fill="#2563eb"/>
+<circle cx="2667" cy="235.311" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-86f53872c6f0c0159dc12ab8:fin-23:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-86f53872c6f0c0159dc12ab8:fin-23:exact_warm_hit miss provider_error</title>
+<path d="M 2686 345 L 2696 355 M 2696 345 L 2686 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-5673d1b5814d203ffbd819d8:fin-24:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-5673d1b5814d203ffbd819d8:fin-24:exact_warm_hit miss provider_error</title>
+<path d="M 2710 345 L 2720 355 M 2720 345 L 2710 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-5673d1b5814d203ffbd819d8:fin-24:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-5673d1b5814d203ffbd819d8:fin-24:cache_disabled_baseline disabled success</title>
+<circle cx="2739" cy="226.400" r="4" fill="#2563eb"/>
+<circle cx="2739" cy="211.678" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-386989aab0adf7d9105703e7:fin-25:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-386989aab0adf7d9105703e7:fin-25:cache_disabled_baseline disabled success</title>
+<circle cx="2763" cy="234.369" r="4" fill="#2563eb"/>
+<circle cx="2763" cy="219.353" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-386989aab0adf7d9105703e7:fin-25:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-386989aab0adf7d9105703e7:fin-25:exact_warm_hit miss provider_error</title>
+<path d="M 2782 345 L 2792 355 M 2792 345 L 2782 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-f548866684a5f18823df0af3:fin-26:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-f548866684a5f18823df0af3:fin-26:exact_warm_hit miss provider_error</title>
+<path d="M 2806 345 L 2816 355 M 2816 345 L 2806 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-f548866684a5f18823df0af3:fin-26:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-f548866684a5f18823df0af3:fin-26:cache_disabled_baseline disabled success</title>
+<circle cx="2835" cy="227.656" r="4" fill="#2563eb"/>
+<circle cx="2835" cy="211.992" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-245d21610a046869cc7268f5:fin-27:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-245d21610a046869cc7268f5:fin-27:cache_disabled_baseline disabled success</title>
+<circle cx="2859" cy="245.439" r="4" fill="#2563eb"/>
+<circle cx="2859" cy="229.462" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-245d21610a046869cc7268f5:fin-27:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-245d21610a046869cc7268f5:fin-27:exact_warm_hit miss provider_error</title>
+<path d="M 2878 345 L 2888 355 M 2888 345 L 2878 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-34e2fa4a9c66c7484b6fac03:fin-28:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-34e2fa4a9c66c7484b6fac03:fin-28:exact_warm_hit miss provider_error</title>
+<path d="M 2902 345 L 2912 355 M 2912 345 L 2902 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-34e2fa4a9c66c7484b6fac03:fin-28:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-34e2fa4a9c66c7484b6fac03:fin-28:cache_disabled_baseline disabled success</title>
+<circle cx="2931" cy="231.032" r="4" fill="#2563eb"/>
+<circle cx="2931" cy="215.368" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-c30e67bf16d83ec905040c62:fin-29:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-c30e67bf16d83ec905040c62:fin-29:cache_disabled_baseline disabled success</title>
+<circle cx="2955" cy="270.564" r="4" fill="#2563eb"/>
+<circle cx="2955" cy="255.214" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-c30e67bf16d83ec905040c62:fin-29:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-c30e67bf16d83ec905040c62:fin-29:exact_warm_hit miss provider_error</title>
+<path d="M 2974 345 L 2984 355 M 2984 345 L 2974 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-24099e1873f6b6bdcb60b75f:fin-30:exact_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-24099e1873f6b6bdcb60b75f:fin-30:exact_warm_hit miss provider_error</title>
+<path d="M 2998 345 L 3008 355 M 3008 345 L 2998 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-24099e1873f6b6bdcb60b75f:fin-30:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-24099e1873f6b6bdcb60b75f:fin-30:cache_disabled_baseline disabled success</title>
+<circle cx="3027" cy="208.027" r="4" fill="#2563eb"/>
+<circle cx="3027" cy="191.736" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-ffc4590b314cb963120774c3:fin-warmup-01:cache_disabled_baseline" data-warmup="true" opacity="0.45">
+<title>local-live:p-ffc4590b314cb963120774c3:fin-warmup-01:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3046 345 L 3056 355 M 3056 345 L 3046 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-ffc4590b314cb963120774c3:fin-warmup-01:normalization_warm_hit" data-warmup="true" opacity="0.45">
+<title>local-live:p-ffc4590b314cb963120774c3:fin-warmup-01:normalization_warm_hit miss provider_error</title>
+<path d="M 3070 345 L 3080 355 M 3080 345 L 3070 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-0ba7445cf80da2d91f343da8:fin-01:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-0ba7445cf80da2d91f343da8:fin-01:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3094 345 L 3104 355 M 3104 345 L 3094 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-0ba7445cf80da2d91f343da8:fin-01:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-0ba7445cf80da2d91f343da8:fin-01:normalization_warm_hit miss provider_error</title>
+<path d="M 3118 345 L 3128 355 M 3128 345 L 3118 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-d03b919bb1e27645a766d3cd:fin-02:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-d03b919bb1e27645a766d3cd:fin-02:normalization_warm_hit miss provider_error</title>
+<path d="M 3142 345 L 3152 355 M 3152 345 L 3142 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-d03b919bb1e27645a766d3cd:fin-02:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-d03b919bb1e27645a766d3cd:fin-02:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3166 345 L 3176 355 M 3176 345 L 3166 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-3f498bd3003d95fda78d7b0c:fin-03:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-3f498bd3003d95fda78d7b0c:fin-03:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3190 345 L 3200 355 M 3200 345 L 3190 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-3f498bd3003d95fda78d7b0c:fin-03:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-3f498bd3003d95fda78d7b0c:fin-03:normalization_warm_hit miss provider_error</title>
+<path d="M 3214 345 L 3224 355 M 3224 345 L 3214 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-7a3709088d009fcbcd2837e4:fin-04:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-7a3709088d009fcbcd2837e4:fin-04:normalization_warm_hit miss provider_error</title>
+<path d="M 3238 345 L 3248 355 M 3248 345 L 3238 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-7a3709088d009fcbcd2837e4:fin-04:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-7a3709088d009fcbcd2837e4:fin-04:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3262 345 L 3272 355 M 3272 345 L 3262 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-ace65ef89504ac97c0bb8791:fin-05:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-ace65ef89504ac97c0bb8791:fin-05:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3286 345 L 3296 355 M 3296 345 L 3286 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-ace65ef89504ac97c0bb8791:fin-05:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-ace65ef89504ac97c0bb8791:fin-05:normalization_warm_hit miss provider_error</title>
+<path d="M 3310 345 L 3320 355 M 3320 345 L 3310 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-4862435b4a89cb03ab55d83a:fin-06:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-4862435b4a89cb03ab55d83a:fin-06:normalization_warm_hit miss provider_error</title>
+<path d="M 3334 345 L 3344 355 M 3344 345 L 3334 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-4862435b4a89cb03ab55d83a:fin-06:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-4862435b4a89cb03ab55d83a:fin-06:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3358 345 L 3368 355 M 3368 345 L 3358 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-150780ca2322685723f1999c:fin-07:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-150780ca2322685723f1999c:fin-07:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3382 345 L 3392 355 M 3392 345 L 3382 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-150780ca2322685723f1999c:fin-07:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-150780ca2322685723f1999c:fin-07:normalization_warm_hit miss provider_error</title>
+<path d="M 3406 345 L 3416 355 M 3416 345 L 3406 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-bbc51831e653783c8f7e708f:fin-08:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-bbc51831e653783c8f7e708f:fin-08:normalization_warm_hit miss provider_error</title>
+<path d="M 3430 345 L 3440 355 M 3440 345 L 3430 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-bbc51831e653783c8f7e708f:fin-08:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-bbc51831e653783c8f7e708f:fin-08:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3454 345 L 3464 355 M 3464 345 L 3454 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-28075d6dff99175c7b8f2afa:fin-09:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-28075d6dff99175c7b8f2afa:fin-09:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3478 345 L 3488 355 M 3488 345 L 3478 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-28075d6dff99175c7b8f2afa:fin-09:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-28075d6dff99175c7b8f2afa:fin-09:normalization_warm_hit miss provider_error</title>
+<path d="M 3502 345 L 3512 355 M 3512 345 L 3502 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-61e69ae30c520a9f6de8a0dd:fin-10:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-61e69ae30c520a9f6de8a0dd:fin-10:normalization_warm_hit miss provider_error</title>
+<path d="M 3526 345 L 3536 355 M 3536 345 L 3526 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-61e69ae30c520a9f6de8a0dd:fin-10:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-61e69ae30c520a9f6de8a0dd:fin-10:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3550 345 L 3560 355 M 3560 345 L 3550 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-c0534804660bc43eeb654f5c:fin-11:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-c0534804660bc43eeb654f5c:fin-11:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3574 345 L 3584 355 M 3584 345 L 3574 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-c0534804660bc43eeb654f5c:fin-11:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-c0534804660bc43eeb654f5c:fin-11:normalization_warm_hit miss provider_error</title>
+<path d="M 3598 345 L 3608 355 M 3608 345 L 3598 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-ddf1e31e4cb298642ea32007:fin-12:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-ddf1e31e4cb298642ea32007:fin-12:normalization_warm_hit miss provider_error</title>
+<path d="M 3622 345 L 3632 355 M 3632 345 L 3622 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-ddf1e31e4cb298642ea32007:fin-12:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-ddf1e31e4cb298642ea32007:fin-12:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3646 345 L 3656 355 M 3656 345 L 3646 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-3e4a959c4cd5cdd3008559bb:fin-13:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-3e4a959c4cd5cdd3008559bb:fin-13:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3670 345 L 3680 355 M 3680 345 L 3670 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-3e4a959c4cd5cdd3008559bb:fin-13:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-3e4a959c4cd5cdd3008559bb:fin-13:normalization_warm_hit miss provider_error</title>
+<path d="M 3694 345 L 3704 355 M 3704 345 L 3694 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-07b30090d0e348babecae5d5:fin-14:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-07b30090d0e348babecae5d5:fin-14:normalization_warm_hit miss provider_error</title>
+<path d="M 3718 345 L 3728 355 M 3728 345 L 3718 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-07b30090d0e348babecae5d5:fin-14:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-07b30090d0e348babecae5d5:fin-14:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3742 345 L 3752 355 M 3752 345 L 3742 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-9c8e0342fd7b7850ccdeb56c:fin-15:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-9c8e0342fd7b7850ccdeb56c:fin-15:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3766 345 L 3776 355 M 3776 345 L 3766 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-9c8e0342fd7b7850ccdeb56c:fin-15:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-9c8e0342fd7b7850ccdeb56c:fin-15:normalization_warm_hit miss provider_error</title>
+<path d="M 3790 345 L 3800 355 M 3800 345 L 3790 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-25a8e69af98b53ebfc7174a6:fin-16:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-25a8e69af98b53ebfc7174a6:fin-16:normalization_warm_hit miss provider_error</title>
+<path d="M 3814 345 L 3824 355 M 3824 345 L 3814 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-25a8e69af98b53ebfc7174a6:fin-16:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-25a8e69af98b53ebfc7174a6:fin-16:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3838 345 L 3848 355 M 3848 345 L 3838 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-47ab57915d0c3fd8126b24c9:fin-17:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-47ab57915d0c3fd8126b24c9:fin-17:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3862 345 L 3872 355 M 3872 345 L 3862 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-47ab57915d0c3fd8126b24c9:fin-17:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-47ab57915d0c3fd8126b24c9:fin-17:normalization_warm_hit miss provider_error</title>
+<path d="M 3886 345 L 3896 355 M 3896 345 L 3886 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-993409bf143aab093a60e1fa:fin-18:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-993409bf143aab093a60e1fa:fin-18:normalization_warm_hit miss provider_error</title>
+<path d="M 3910 345 L 3920 355 M 3920 345 L 3910 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-993409bf143aab093a60e1fa:fin-18:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-993409bf143aab093a60e1fa:fin-18:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3934 345 L 3944 355 M 3944 345 L 3934 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-d6195db8b4060f1be287ac55:fin-19:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-d6195db8b4060f1be287ac55:fin-19:cache_disabled_baseline disabled provider_error</title>
+<path d="M 3958 345 L 3968 355 M 3968 345 L 3958 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-d6195db8b4060f1be287ac55:fin-19:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-d6195db8b4060f1be287ac55:fin-19:normalization_warm_hit miss provider_error</title>
+<path d="M 3982 345 L 3992 355 M 3992 345 L 3982 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-ce2711fc1a23003a0f84962e:fin-20:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-ce2711fc1a23003a0f84962e:fin-20:normalization_warm_hit miss provider_error</title>
+<path d="M 4006 345 L 4016 355 M 4016 345 L 4006 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-ce2711fc1a23003a0f84962e:fin-20:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-ce2711fc1a23003a0f84962e:fin-20:cache_disabled_baseline disabled provider_error</title>
+<path d="M 4030 345 L 4040 355 M 4040 345 L 4030 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-0d3f3a5f01af57ccb18e480d:fin-21:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-0d3f3a5f01af57ccb18e480d:fin-21:cache_disabled_baseline disabled provider_error</title>
+<path d="M 4054 345 L 4064 355 M 4064 345 L 4054 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-0d3f3a5f01af57ccb18e480d:fin-21:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-0d3f3a5f01af57ccb18e480d:fin-21:normalization_warm_hit miss provider_error</title>
+<path d="M 4078 345 L 4088 355 M 4088 345 L 4078 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-dc654220243fb84d40939763:fin-22:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-dc654220243fb84d40939763:fin-22:normalization_warm_hit miss provider_error</title>
+<path d="M 4102 345 L 4112 355 M 4112 345 L 4102 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-dc654220243fb84d40939763:fin-22:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-dc654220243fb84d40939763:fin-22:cache_disabled_baseline disabled provider_error</title>
+<path d="M 4126 345 L 4136 355 M 4136 345 L 4126 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-b3fd1983c6cf8113c44d4bce:fin-23:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-b3fd1983c6cf8113c44d4bce:fin-23:cache_disabled_baseline disabled provider_error</title>
+<path d="M 4150 345 L 4160 355 M 4160 345 L 4150 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-b3fd1983c6cf8113c44d4bce:fin-23:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-b3fd1983c6cf8113c44d4bce:fin-23:normalization_warm_hit miss provider_error</title>
+<path d="M 4174 345 L 4184 355 M 4184 345 L 4174 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-e35ee8ae4776455db780c3c3:fin-24:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-e35ee8ae4776455db780c3c3:fin-24:normalization_warm_hit miss provider_error</title>
+<path d="M 4198 345 L 4208 355 M 4208 345 L 4198 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-e35ee8ae4776455db780c3c3:fin-24:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-e35ee8ae4776455db780c3c3:fin-24:cache_disabled_baseline disabled provider_error</title>
+<path d="M 4222 345 L 4232 355 M 4232 345 L 4222 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-71dcd9ddbf7994d6b9eb1bcd:fin-25:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-71dcd9ddbf7994d6b9eb1bcd:fin-25:cache_disabled_baseline disabled provider_error</title>
+<path d="M 4246 345 L 4256 355 M 4256 345 L 4246 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-71dcd9ddbf7994d6b9eb1bcd:fin-25:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-71dcd9ddbf7994d6b9eb1bcd:fin-25:normalization_warm_hit miss provider_error</title>
+<path d="M 4270 345 L 4280 355 M 4280 345 L 4270 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-210c2a7c5d97292077ba5919:fin-26:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-210c2a7c5d97292077ba5919:fin-26:normalization_warm_hit miss provider_error</title>
+<path d="M 4294 345 L 4304 355 M 4304 345 L 4294 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-210c2a7c5d97292077ba5919:fin-26:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-210c2a7c5d97292077ba5919:fin-26:cache_disabled_baseline disabled provider_error</title>
+<path d="M 4318 345 L 4328 355 M 4328 345 L 4318 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-9f7ae41cc3c2fb53ccff6294:fin-27:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-9f7ae41cc3c2fb53ccff6294:fin-27:cache_disabled_baseline disabled provider_error</title>
+<path d="M 4342 345 L 4352 355 M 4352 345 L 4342 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-9f7ae41cc3c2fb53ccff6294:fin-27:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-9f7ae41cc3c2fb53ccff6294:fin-27:normalization_warm_hit miss provider_error</title>
+<path d="M 4366 345 L 4376 355 M 4376 345 L 4366 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-5507cdfd64aaa84a8a558f7b:fin-28:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-5507cdfd64aaa84a8a558f7b:fin-28:normalization_warm_hit miss provider_error</title>
+<path d="M 4390 345 L 4400 355 M 4400 345 L 4390 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-5507cdfd64aaa84a8a558f7b:fin-28:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-5507cdfd64aaa84a8a558f7b:fin-28:cache_disabled_baseline disabled provider_error</title>
+<path d="M 4414 345 L 4424 355 M 4424 345 L 4414 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-a0392b30eb3d9055db4e3513:fin-29:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-a0392b30eb3d9055db4e3513:fin-29:cache_disabled_baseline disabled provider_error</title>
+<path d="M 4438 345 L 4448 355 M 4448 345 L 4438 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-a0392b30eb3d9055db4e3513:fin-29:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-a0392b30eb3d9055db4e3513:fin-29:normalization_warm_hit miss provider_error</title>
+<path d="M 4462 345 L 4472 355 M 4472 345 L 4462 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-66a1d7612f554b43c0a05006:fin-30:normalization_warm_hit" data-warmup="false" opacity="1">
+<title>local-live:p-66a1d7612f554b43c0a05006:fin-30:normalization_warm_hit miss provider_error</title>
+<path d="M 4486 345 L 4496 355 M 4496 345 L 4486 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-66a1d7612f554b43c0a05006:fin-30:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-66a1d7612f554b43c0a05006:fin-30:cache_disabled_baseline disabled provider_error</title>
+<path d="M 4510 345 L 4520 355 M 4520 345 L 4510 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-b2ec21de29f708ffd6115c9c:fin-warmup-01:cache_disabled_baseline" data-warmup="true" opacity="0.45">
+<title>local-live:p-b2ec21de29f708ffd6115c9c:fin-warmup-01:cache_disabled_baseline disabled validation_error</title>
+<circle cx="4539" cy="273.940" r="4" fill="none" stroke="#2563eb" stroke-width="2"/>
+<path d="M 4534 268.940 L 4544 278.940 M 4544 268.940 L 4534 278.940" stroke="#dc2626" stroke-width="2"/>
+<circle cx="4539" cy="273.037" r="4" fill="none" stroke="#16a34a" stroke-width="2"/>
+<path d="M 4534 268.037 L 4544 278.037 M 4544 268.037 L 4534 278.037" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-b2ec21de29f708ffd6115c9c:fin-warmup-01:semantic_bypass" data-warmup="true" opacity="0.45">
+<title>local-live:p-b2ec21de29f708ffd6115c9c:fin-warmup-01:semantic_bypass bypass validation_error</title>
+<circle cx="4563" cy="269.366" r="4" fill="none" stroke="#2563eb" stroke-width="2"/>
+<path d="M 4558 264.366 L 4568 274.366 M 4568 264.366 L 4558 274.366" stroke="#dc2626" stroke-width="2"/>
+<circle cx="4563" cy="267.502" r="4" fill="none" stroke="#16a34a" stroke-width="2"/>
+<path d="M 4558 262.502 L 4568 272.502 M 4568 262.502 L 4558 272.502" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-187af51999bc883701143c13:fin-01:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-187af51999bc883701143c13:fin-01:cache_disabled_baseline disabled validation_error</title>
+<path d="M 4582 276.909 L 4592 286.909 M 4592 276.909 L 4582 286.909" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4582 276.006 L 4592 286.006 M 4592 276.006 L 4582 286.006" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-187af51999bc883701143c13:fin-01:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-187af51999bc883701143c13:fin-01:semantic_bypass bypass validation_error</title>
+<path d="M 4606 275.692 L 4616 285.692 M 4616 275.692 L 4606 285.692" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4606 273.533 L 4616 283.533 M 4616 273.533 L 4606 283.533" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-b9a04ffbc734b2e0c250b9a4:fin-02:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-b9a04ffbc734b2e0c250b9a4:fin-02:semantic_bypass bypass validation_error</title>
+<path d="M 4630 260.362 L 4640 270.362 M 4640 260.362 L 4630 270.362" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4630 259.125 L 4640 269.125 M 4640 259.125 L 4630 269.125" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-b9a04ffbc734b2e0c250b9a4:fin-02:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-b9a04ffbc734b2e0c250b9a4:fin-02:cache_disabled_baseline disabled validation_error</title>
+<path d="M 4654 264.680 L 4664 274.680 M 4664 264.680 L 4654 274.680" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4654 263.719 L 4664 273.719 M 4664 263.719 L 4654 273.719" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-29bc5abd062304256bf43427:fin-03:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-29bc5abd062304256bf43427:fin-03:cache_disabled_baseline disabled validation_error</title>
+<path d="M 4678 270.510 L 4688 280.510 M 4688 270.510 L 4678 280.510" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4678 269.568 L 4688 279.568 M 4688 269.568 L 4678 279.568" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-29bc5abd062304256bf43427:fin-03:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-29bc5abd062304256bf43427:fin-03:semantic_bypass bypass validation_error</title>
+<path d="M 4702 243.501 L 4712 253.501 M 4712 243.501 L 4702 253.501" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4702 242.265 L 4712 252.265 M 4712 242.265 L 4702 252.265" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-03e20a948d0b6dcefef6bb3e:fin-04:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-03e20a948d0b6dcefef6bb3e:fin-04:semantic_bypass bypass validation_error</title>
+<path d="M 4726 272.002 L 4736 282.002 M 4736 272.002 L 4726 282.002" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4726 270.157 L 4736 280.157 M 4736 270.157 L 4726 280.157" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-03e20a948d0b6dcefef6bb3e:fin-04:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-03e20a948d0b6dcefef6bb3e:fin-04:cache_disabled_baseline disabled validation_error</title>
+<path d="M 4750 272.316 L 4760 282.316 M 4760 272.316 L 4750 282.316" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4750 270.785 L 4760 280.785 M 4760 270.785 L 4750 280.785" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-11efaf121208beb923469694:fin-05:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-11efaf121208beb923469694:fin-05:cache_disabled_baseline disabled validation_error</title>
+<path d="M 4774 265.564 L 4784 275.564 M 4784 265.564 L 4774 275.564" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4774 264.641 L 4784 274.641 M 4784 264.641 L 4774 274.641" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-11efaf121208beb923469694:fin-05:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-11efaf121208beb923469694:fin-05:semantic_bypass bypass validation_error</title>
+<path d="M 4798 252.373 L 4808 262.373 M 4808 252.373 L 4798 262.373" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4798 250.234 L 4808 260.234 M 4808 250.234 L 4798 260.234" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-fc423ecb48fab69fc0261e52:fin-06:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-fc423ecb48fab69fc0261e52:fin-06:semantic_bypass bypass validation_error</title>
+<path d="M 4822 261.285 L 4832 271.285 M 4832 261.285 L 4822 271.285" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4822 259.420 L 4832 269.420 M 4832 259.420 L 4822 269.420" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-fc423ecb48fab69fc0261e52:fin-06:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-fc423ecb48fab69fc0261e52:fin-06:cache_disabled_baseline disabled validation_error</title>
+<path d="M 4846 268.312 L 4856 278.312 M 4856 268.312 L 4846 278.312" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4846 267.409 L 4856 277.409 M 4856 267.409 L 4846 277.409" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-74deb6bf66547168931afd8f:fin-07:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-74deb6bf66547168931afd8f:fin-07:cache_disabled_baseline disabled validation_error</title>
+<path d="M 4870 248.683 L 4880 258.683 M 4880 248.683 L 4870 258.683" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4870 248.075 L 4880 258.075 M 4880 248.075 L 4870 258.075" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-74deb6bf66547168931afd8f:fin-07:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-74deb6bf66547168931afd8f:fin-07:semantic_bypass bypass validation_error</title>
+<path d="M 4894 271.393 L 4904 281.393 M 4904 271.393 L 4894 281.393" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4894 269.254 L 4904 279.254 M 4904 269.254 L 4894 279.254" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-89542c6e85a6c6905739240c:fin-08:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-89542c6e85a6c6905739240c:fin-08:semantic_bypass bypass validation_error</title>
+<path d="M 4918 236.749 L 4928 246.749 M 4928 236.749 L 4918 246.749" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4918 235.512 L 4928 245.512 M 4928 235.512 L 4918 245.512" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-89542c6e85a6c6905739240c:fin-08:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-89542c6e85a6c6905739240c:fin-08:cache_disabled_baseline disabled validation_error</title>
+<path d="M 4942 272.002 L 4952 282.002 M 4952 272.002 L 4942 282.002" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4942 271.079 L 4952 281.079 M 4952 271.079 L 4942 281.079" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-df598902546327ea75786b0a:fin-09:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-df598902546327ea75786b0a:fin-09:cache_disabled_baseline disabled validation_error</title>
+<path d="M 4966 270.785 L 4976 280.785 M 4976 270.785 L 4966 280.785" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4966 270.176 L 4976 280.176 M 4976 270.176 L 4966 280.176" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-df598902546327ea75786b0a:fin-09:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-df598902546327ea75786b0a:fin-09:semantic_bypass bypass validation_error</title>
+<path d="M 4990 265.897 L 5000 275.897 M 5000 265.897 L 4990 275.897" stroke="#dc2626" stroke-width="2"/>
+<path d="M 4990 264.033 L 5000 274.033 M 5000 264.033 L 4990 274.033" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-db9efe26dda70e424cc52930:fin-10:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-db9efe26dda70e424cc52930:fin-10:semantic_bypass bypass validation_error</title>
+<path d="M 5014 267.134 L 5024 277.134 M 5024 267.134 L 5014 277.134" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5014 264.936 L 5024 274.936 M 5024 264.936 L 5014 274.936" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-db9efe26dda70e424cc52930:fin-10:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-db9efe26dda70e424cc52930:fin-10:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5038 260.676 L 5048 270.676 M 5048 260.676 L 5038 270.676" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5038 260.362 L 5048 270.362 M 5048 260.362 L 5038 270.362" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-af5570c34489dcffa06abb57:fin-11:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-af5570c34489dcffa06abb57:fin-11:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5062 268.626 L 5072 278.626 M 5072 268.626 L 5062 278.626" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5062 267.723 L 5072 277.723 M 5072 267.723 L 5062 277.723" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-af5570c34489dcffa06abb57:fin-11:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-af5570c34489dcffa06abb57:fin-11:semantic_bypass bypass validation_error</title>
+<path d="M 5086 253.001 L 5096 263.001 M 5096 253.001 L 5086 263.001" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5086 251.451 L 5096 261.451 M 5096 251.451 L 5086 261.451" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-ff4d99b925eb3235fe4a1568:fin-12:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-ff4d99b925eb3235fe4a1568:fin-12:semantic_bypass bypass validation_error</title>
+<path d="M 5110 255.161 L 5120 265.161 M 5120 255.161 L 5110 265.161" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5110 252.687 L 5120 262.687 M 5120 252.687 L 5110 262.687" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-ff4d99b925eb3235fe4a1568:fin-12:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-ff4d99b925eb3235fe4a1568:fin-12:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5134 270.510 L 5144 280.510 M 5144 270.510 L 5134 280.510" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5134 269.568 L 5144 279.568 M 5144 269.568 L 5134 279.568" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-39ab66909bf5891b6d9fdea5:fin-13:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-39ab66909bf5891b6d9fdea5:fin-13:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5158 255.141 L 5168 265.141 M 5168 255.141 L 5158 265.141" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5158 253.924 L 5168 263.924 M 5168 253.924 L 5158 263.924" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-39ab66909bf5891b6d9fdea5:fin-13:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-39ab66909bf5891b6d9fdea5:fin-13:semantic_bypass bypass validation_error</title>
+<path d="M 5182 257.614 L 5192 267.614 M 5192 257.614 L 5182 267.614" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5182 255.749 L 5192 265.749 M 5192 255.749 L 5182 265.749" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-f9b978f4d7155fc0a23af82e:fin-14:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-f9b978f4d7155fc0a23af82e:fin-14:semantic_bypass bypass validation_error</title>
+<path d="M 5206 269.254 L 5216 279.254 M 5216 269.254 L 5206 279.254" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5206 267.409 L 5216 277.409 M 5216 267.409 L 5206 277.409" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-f9b978f4d7155fc0a23af82e:fin-14:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-f9b978f4d7155fc0a23af82e:fin-14:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5230 268.037 L 5240 278.037 M 5240 268.037 L 5230 278.037" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5230 267.409 L 5240 277.409 M 5240 267.409 L 5230 277.409" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-62ed460db94b763ec8049d7f:fin-15:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-62ed460db94b763ec8049d7f:fin-15:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5254 262.521 L 5264 272.521 M 5264 262.521 L 5254 272.521" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5254 261.579 L 5264 271.579 M 5264 261.579 L 5254 271.579" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-62ed460db94b763ec8049d7f:fin-15:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-62ed460db94b763ec8049d7f:fin-15:semantic_bypass bypass validation_error</title>
+<path d="M 5278 252.079 L 5288 262.079 M 5288 252.079 L 5278 262.079" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5278 250.214 L 5288 260.214 M 5288 250.214 L 5278 260.214" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-425c0dd1206301d4bd8ed52a:fin-16:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-425c0dd1206301d4bd8ed52a:fin-16:semantic_bypass bypass validation_error</title>
+<path d="M 5302 272.002 L 5312 282.002 M 5312 272.002 L 5302 282.002" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5302 270.157 L 5312 280.157 M 5312 270.157 L 5302 280.157" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-425c0dd1206301d4bd8ed52a:fin-16:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-425c0dd1206301d4bd8ed52a:fin-16:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5326 260.068 L 5336 270.068 M 5336 260.068 L 5326 270.068" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5326 258.811 L 5336 268.811 M 5336 258.811 L 5326 268.811" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-75a83188fb446e7b1b93d724:fin-17:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-75a83188fb446e7b1b93d724:fin-17:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5350 255.749 L 5360 265.749 M 5360 255.749 L 5350 265.749" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5350 254.846 L 5360 264.846 M 5360 254.846 L 5350 264.846" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-75a83188fb446e7b1b93d724:fin-17:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-75a83188fb446e7b1b93d724:fin-17:semantic_bypass bypass validation_error</title>
+<path d="M 5374 274.141 L 5384 284.141 M 5384 274.141 L 5374 284.141" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5374 271.707 L 5384 281.707 M 5384 271.707 L 5374 281.707" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-73efd43f26c6118b7c835fce:fin-18:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-73efd43f26c6118b7c835fce:fin-18:semantic_bypass bypass validation_error</title>
+<path d="M 5398 262.835 L 5408 272.835 M 5408 262.835 L 5398 272.835" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5398 260.657 L 5408 270.657 M 5408 260.657 L 5398 270.657" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-73efd43f26c6118b7c835fce:fin-18:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-73efd43f26c6118b7c835fce:fin-18:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5422 266.486 L 5432 276.486 M 5432 266.486 L 5422 276.486" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5422 265.564 L 5432 275.564 M 5432 265.564 L 5422 275.564" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-7a01428b05a6e033fbc712b2:fin-19:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-7a01428b05a6e033fbc712b2:fin-19:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5446 245.660 L 5456 255.660 M 5456 245.660 L 5446 255.660" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5446 244.404 L 5456 254.404 M 5456 244.404 L 5446 254.404" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-7a01428b05a6e033fbc712b2:fin-19:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-7a01428b05a6e033fbc712b2:fin-19:semantic_bypass bypass validation_error</title>
+<path d="M 5470 272.630 L 5480 282.630 M 5480 272.630 L 5470 282.630" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5470 270.471 L 5480 280.471 M 5480 270.471 L 5470 280.471" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-bd867b79b980788d41f9f7c4:fin-20:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-bd867b79b980788d41f9f7c4:fin-20:semantic_bypass bypass validation_error</title>
+<path d="M 5494 245.307 L 5504 255.307 M 5504 245.307 L 5494 255.307" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5494 243.187 L 5504 253.187 M 5504 243.187 L 5494 253.187" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-bd867b79b980788d41f9f7c4:fin-20:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-bd867b79b980788d41f9f7c4:fin-20:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5518 267.114 L 5528 277.114 M 5528 267.114 L 5518 277.114" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5518 266.486 L 5528 276.486 M 5528 266.486 L 5518 276.486" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-6d6eb0160edff1430b89358a:fin-21:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-6d6eb0160edff1430b89358a:fin-21:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5542 265.564 L 5552 275.564 M 5552 265.564 L 5542 275.564" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5542 264.641 L 5552 274.641 M 5552 264.641 L 5542 274.641" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-6d6eb0160edff1430b89358a:fin-21:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-6d6eb0160edff1430b89358a:fin-21:semantic_bypass bypass validation_error</title>
+<path d="M 5566 262.816 L 5576 272.816 M 5576 262.816 L 5566 272.816" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5566 260.971 L 5576 270.971 M 5576 260.971 L 5566 270.971" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-60bcd05e61c04e1d42d39217:fin-22:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-60bcd05e61c04e1d42d39217:fin-22:semantic_bypass bypass validation_error</title>
+<path d="M 5590 257.300 L 5600 267.300 M 5600 257.300 L 5590 267.300" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5590 255.749 L 5600 265.749 M 5600 255.749 L 5590 265.749" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-60bcd05e61c04e1d42d39217:fin-22:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-60bcd05e61c04e1d42d39217:fin-22:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5614 272.021 L 5624 282.021 M 5624 272.021 L 5614 282.021" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5614 270.785 L 5624 280.785 M 5624 270.785 L 5614 280.785" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-9d68ad1c525792a3b9ca2173:fin-23:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-9d68ad1c525792a3b9ca2173:fin-23:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5638 273.238 L 5648 283.238 M 5648 273.238 L 5638 283.238" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5638 272.021 L 5648 282.021 M 5648 272.021 L 5638 282.021" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-9d68ad1c525792a3b9ca2173:fin-23:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-9d68ad1c525792a3b9ca2173:fin-23:semantic_bypass bypass validation_error</title>
+<path d="M 5662 270.785 L 5672 280.785 M 5672 270.785 L 5662 280.785" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5662 268.940 L 5672 278.940 M 5672 268.940 L 5662 278.940" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-5d49a9eebdeaff08a2f62de0:fin-24:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-5d49a9eebdeaff08a2f62de0:fin-24:semantic_bypass bypass validation_error</title>
+<path d="M 5686 272.924 L 5696 282.924 M 5696 272.924 L 5686 282.924" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5686 271.079 L 5696 281.079 M 5696 271.079 L 5686 281.079" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-5d49a9eebdeaff08a2f62de0:fin-24:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-5d49a9eebdeaff08a2f62de0:fin-24:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5710 253.001 L 5720 263.001 M 5720 253.001 L 5710 263.001" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5710 251.156 L 5720 261.156 M 5720 251.156 L 5710 261.156" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-cb0e1c6182fc12a02ee5dde6:fin-25:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-cb0e1c6182fc12a02ee5dde6:fin-25:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5734 262.816 L 5744 272.816 M 5744 262.816 L 5734 272.816" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5734 261.893 L 5744 271.893 M 5744 261.893 L 5734 271.893" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-cb0e1c6182fc12a02ee5dde6:fin-25:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-cb0e1c6182fc12a02ee5dde6:fin-25:semantic_bypass bypass validation_error</title>
+<path d="M 5758 265.858 L 5768 275.858 M 5768 265.858 L 5758 275.858" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5758 264.033 L 5768 274.033 M 5768 264.033 L 5758 274.033" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-67d5e9773af6f1a58508a96c:fin-26:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-67d5e9773af6f1a58508a96c:fin-26:semantic_bypass bypass validation_error</title>
+<path d="M 5782 263.149 L 5792 273.149 M 5792 263.149 L 5782 273.149" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5782 261.265 L 5792 271.265 M 5792 261.265 L 5782 271.265" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-67d5e9773af6f1a58508a96c:fin-26:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-67d5e9773af6f1a58508a96c:fin-26:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5806 267.409 L 5816 277.409 M 5816 267.409 L 5806 277.409" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5806 266.781 L 5816 276.781 M 5816 266.781 L 5806 276.781" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-7dd785c1542900ca19462ba4:fin-27:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-7dd785c1542900ca19462ba4:fin-27:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5830 253.296 L 5840 263.296 M 5840 253.296 L 5830 263.296" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5830 252.687 L 5840 262.687 M 5840 252.687 L 5830 262.687" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-7dd785c1542900ca19462ba4:fin-27:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-7dd785c1542900ca19462ba4:fin-27:semantic_bypass bypass validation_error</title>
+<path d="M 5854 255.435 L 5864 265.435 M 5864 255.435 L 5854 265.435" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5854 253.590 L 5864 263.590 M 5864 253.590 L 5854 263.590" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-e0d894e55a8061aea28778f8:fin-28:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-e0d894e55a8061aea28778f8:fin-28:semantic_bypass bypass validation_error</title>
+<path d="M 5878 248.389 L 5888 258.389 M 5888 248.389 L 5878 258.389" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5878 246.858 L 5888 256.858 M 5888 246.858 L 5878 256.858" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-e0d894e55a8061aea28778f8:fin-28:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-e0d894e55a8061aea28778f8:fin-28:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5902 265.858 L 5912 275.858 M 5912 265.858 L 5902 275.858" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5902 264.661 L 5912 274.661 M 5912 264.661 L 5902 274.661" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-8a129113e55430693b54e22e:fin-29:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-8a129113e55430693b54e22e:fin-29:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5926 285.192 L 5936 295.192 M 5936 285.192 L 5926 295.192" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5926 283.661 L 5936 293.661 M 5936 283.661 L 5926 293.661" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-8a129113e55430693b54e22e:fin-29:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-8a129113e55430693b54e22e:fin-29:semantic_bypass bypass validation_error</title>
+<path d="M 5950 271.707 L 5960 281.707 M 5960 271.707 L 5950 281.707" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5950 269.862 L 5960 279.862 M 5960 269.862 L 5950 279.862" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-e7b7ff99f230ee0bafa56f01:fin-30:semantic_bypass" data-warmup="false" opacity="1">
+<title>local-live:p-e7b7ff99f230ee0bafa56f01:fin-30:semantic_bypass bypass validation_error</title>
+<path d="M 5974 246.249 L 5984 256.249 M 5984 246.249 L 5974 256.249" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5974 244.090 L 5984 254.090 M 5984 244.090 L 5974 254.090" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-e7b7ff99f230ee0bafa56f01:fin-30:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-e7b7ff99f230ee0bafa56f01:fin-30:cache_disabled_baseline disabled validation_error</title>
+<path d="M 5998 268.626 L 6008 278.626 M 6008 268.626 L 5998 278.626" stroke="#dc2626" stroke-width="2"/>
+<path d="M 5998 267.409 L 6008 277.409 M 6008 267.409 L 5998 277.409" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-0d7e074085b968bf1499dc62:fin-warmup-01:cache_disabled_baseline" data-warmup="true" opacity="0.45">
+<title>local-live:p-0d7e074085b968bf1499dc62:fin-warmup-01:cache_disabled_baseline disabled success</title>
+<circle cx="6027" cy="152.812" r="4" fill="none" stroke="#2563eb" stroke-width="2"/>
+<circle cx="6027" cy="137.149" r="4" fill="none" stroke="#16a34a" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-0d7e074085b968bf1499dc62:fin-warmup-01:negative_control" data-warmup="true" opacity="0.45">
+<title>local-live:p-0d7e074085b968bf1499dc62:fin-warmup-01:negative_control miss success</title>
+<circle cx="6051" cy="178.251" r="4" fill="none" stroke="#2563eb" stroke-width="2"/>
+<circle cx="6051" cy="161.076" r="4" fill="none" stroke="#16a34a" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-10bda04ba63d4c62a8c1a289:fin-01:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-10bda04ba63d4c62a8c1a289:fin-01:cache_disabled_baseline disabled success</title>
+<circle cx="6075" cy="169.654" r="4" fill="#2563eb"/>
+<circle cx="6075" cy="154.324" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-10bda04ba63d4c62a8c1a289:fin-01:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-10bda04ba63d4c62a8c1a289:fin-01:negative_control miss success</title>
+<circle cx="6099" cy="157.406" r="4" fill="#2563eb"/>
+<circle cx="6099" cy="140.545" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-d517440b3bd527fa016024fa:fin-02:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-d517440b3bd527fa016024fa:fin-02:negative_control miss success</title>
+<circle cx="6123" cy="162.627" r="4" fill="#2563eb"/>
+<circle cx="6123" cy="143.293" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-d517440b3bd527fa016024fa:fin-02:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-d517440b3bd527fa016024fa:fin-02:cache_disabled_baseline disabled success</title>
+<circle cx="6147" cy="187.771" r="4" fill="#2563eb"/>
+<circle cx="6147" cy="171.813" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-21164435c518987b7ace1f2c:fin-03:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-21164435c518987b7ace1f2c:fin-03:cache_disabled_baseline disabled success</title>
+<circle cx="6171" cy="169.065" r="4" fill="#2563eb"/>
+<circle cx="6171" cy="153.715" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-21164435c518987b7ace1f2c:fin-03:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-21164435c518987b7ace1f2c:fin-03:negative_control miss success</title>
+<circle cx="6195" cy="111.377" r="4" fill="#2563eb"/>
+<circle cx="6195" cy="93.593" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-5f815ab6546b816d152768ff:fin-04:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-5f815ab6546b816d152768ff:fin-04:negative_control miss success</title>
+<circle cx="6219" cy="149.436" r="4" fill="#2563eb"/>
+<circle cx="6219" cy="133.164" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-5f815ab6546b816d152768ff:fin-04:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-5f815ab6546b816d152768ff:fin-04:cache_disabled_baseline disabled success</title>
+<circle cx="6243" cy="161.076" r="4" fill="#2563eb"/>
+<circle cx="6243" cy="145.118" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-6e178315c7f31a1995463ed2:fin-05:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-6e178315c7f31a1995463ed2:fin-05:cache_disabled_baseline disabled success</title>
+<circle cx="6267" cy="160.487" r="4" fill="#2563eb"/>
+<circle cx="6267" cy="144.529" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-6e178315c7f31a1995463ed2:fin-05:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-6e178315c7f31a1995463ed2:fin-05:negative_control miss success</title>
+<circle cx="6291" cy="145.118" r="4" fill="#2563eb"/>
+<circle cx="6291" cy="127.963" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-08dd88634f71174671fb3d5a:fin-06:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-08dd88634f71174671fb3d5a:fin-06:negative_control miss success</title>
+<circle cx="6315" cy="188.693" r="4" fill="#2563eb"/>
+<circle cx="6315" cy="171.813" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-08dd88634f71174671fb3d5a:fin-06:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-08dd88634f71174671fb3d5a:fin-06:cache_disabled_baseline disabled success</title>
+<circle cx="6339" cy="143.018" r="4" fill="#2563eb"/>
+<circle cx="6339" cy="127.649" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-533254473bfe5a89573d417e:fin-07:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-533254473bfe5a89573d417e:fin-07:cache_disabled_baseline disabled provider_error</title>
+<path d="M 6358 345 L 6368 355 M 6368 345 L 6358 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-533254473bfe5a89573d417e:fin-07:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-533254473bfe5a89573d417e:fin-07:negative_control miss success</title>
+<circle cx="6387" cy="158.956" r="4" fill="#2563eb"/>
+<circle cx="6387" cy="139.917" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-e8ac4b7f15fcce87967d6cae:fin-08:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-e8ac4b7f15fcce87967d6cae:fin-08:negative_control miss success</title>
+<circle cx="6411" cy="213.543" r="4" fill="#2563eb"/>
+<circle cx="6411" cy="196.957" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-e8ac4b7f15fcce87967d6cae:fin-08:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-e8ac4b7f15fcce87967d6cae:fin-08:cache_disabled_baseline disabled success</title>
+<circle cx="6435" cy="179.193" r="4" fill="#2563eb"/>
+<circle cx="6435" cy="163.216" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-fb3718787fc233fc3995fefe:fin-09:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-fb3718787fc233fc3995fefe:fin-09:cache_disabled_baseline disabled success</title>
+<circle cx="6459" cy="175.797" r="4" fill="#2563eb"/>
+<circle cx="6459" cy="160.468" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-fb3718787fc233fc3995fefe:fin-09:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-fb3718787fc233fc3995fefe:fin-09:negative_control error provider_error</title>
+<path d="M 6478 345 L 6488 355 M 6488 345 L 6478 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-fa75c19e0832bdabf3c86d15:fin-10:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-fa75c19e0832bdabf3c86d15:fin-10:negative_control miss success</title>
+<circle cx="6507" cy="154.658" r="4" fill="#2563eb"/>
+<circle cx="6507" cy="138.386" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-fa75c19e0832bdabf3c86d15:fin-10:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-fa75c19e0832bdabf3c86d15:fin-10:cache_disabled_baseline disabled success</title>
+<circle cx="6531" cy="137.757" r="4" fill="#2563eb"/>
+<circle cx="6531" cy="122.428" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-d88bd7382cf139dd893bf123:fin-11:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-d88bd7382cf139dd893bf123:fin-11:cache_disabled_baseline disabled success</title>
+<circle cx="6555" cy="160.154" r="4" fill="#2563eb"/>
+<circle cx="6555" cy="141.448" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-d88bd7382cf139dd893bf123:fin-11:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-d88bd7382cf139dd893bf123:fin-11:negative_control miss success</title>
+<circle cx="6579" cy="153.715" r="4" fill="#2563eb"/>
+<circle cx="6579" cy="137.463" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-69c058c6bd1872f985dbc5f1:fin-12:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-69c058c6bd1872f985dbc5f1:fin-12:negative_control miss success</title>
+<circle cx="6603" cy="200.627" r="4" fill="#2563eb"/>
+<circle cx="6603" cy="184.375" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-69c058c6bd1872f985dbc5f1:fin-12:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-69c058c6bd1872f985dbc5f1:fin-12:cache_disabled_baseline disabled success</title>
+<circle cx="6627" cy="150.045" r="4" fill="#2563eb"/>
+<circle cx="6627" cy="134.695" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-4293d8b3934965e22180a540:fin-13:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-4293d8b3934965e22180a540:fin-13:cache_disabled_baseline disabled success</title>
+<circle cx="6651" cy="194.503" r="4" fill="#2563eb"/>
+<circle cx="6651" cy="178.251" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-4293d8b3934965e22180a540:fin-13:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-4293d8b3934965e22180a540:fin-13:negative_control miss success</title>
+<circle cx="6675" cy="128.257" r="4" fill="#2563eb"/>
+<circle cx="6675" cy="112.005" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-c81e0372bec3e269bced4845:fin-14:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-c81e0372bec3e269bced4845:fin-14:negative_control miss success</title>
+<circle cx="6699" cy="185.906" r="4" fill="#2563eb"/>
+<circle cx="6699" cy="169.359" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-c81e0372bec3e269bced4845:fin-14:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-c81e0372bec3e269bced4845:fin-14:cache_disabled_baseline disabled success</title>
+<circle cx="6723" cy="163.216" r="4" fill="#2563eb"/>
+<circle cx="6723" cy="147.886" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-b9daa07430bf55bfb92f64ff:fin-15:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-b9daa07430bf55bfb92f64ff:fin-15:cache_disabled_baseline disabled provider_error</title>
+<path d="M 6742 345 L 6752 355 M 6752 345 L 6742 355" stroke="#dc2626" stroke-width="2"/>
+</g>
+<g data-run="local-live:p-b9daa07430bf55bfb92f64ff:fin-15:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-b9daa07430bf55bfb92f64ff:fin-15:negative_control miss success</title>
+<circle cx="6771" cy="163.530" r="4" fill="#2563eb"/>
+<circle cx="6771" cy="146.963" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-bde60c5d78e0f64a13fdbb84:fin-16:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-bde60c5d78e0f64a13fdbb84:fin-16:negative_control miss success</title>
+<circle cx="6795" cy="184.081" r="4" fill="#2563eb"/>
+<circle cx="6795" cy="166.906" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-bde60c5d78e0f64a13fdbb84:fin-16:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-bde60c5d78e0f64a13fdbb84:fin-16:cache_disabled_baseline disabled success</title>
+<circle cx="6819" cy="145.157" r="4" fill="#2563eb"/>
+<circle cx="6819" cy="129.494" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-8bf1e4241536260eb7ddeb6a:fin-17:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-8bf1e4241536260eb7ddeb6a:fin-17:cache_disabled_baseline disabled success</title>
+<circle cx="6843" cy="146.355" r="4" fill="#2563eb"/>
+<circle cx="6843" cy="131.005" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-8bf1e4241536260eb7ddeb6a:fin-17:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-8bf1e4241536260eb7ddeb6a:fin-17:negative_control miss success</title>
+<circle cx="6867" cy="127.060" r="4" fill="#2563eb"/>
+<circle cx="6867" cy="110.768" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-9263a9bff1ded20600e5d013:fin-18:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-9263a9bff1ded20600e5d013:fin-18:negative_control miss success</title>
+<circle cx="6891" cy="184.984" r="4" fill="#2563eb"/>
+<circle cx="6891" cy="168.437" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-9263a9bff1ded20600e5d013:fin-18:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-9263a9bff1ded20600e5d013:fin-18:cache_disabled_baseline disabled success</title>
+<circle cx="6915" cy="238.079" r="4" fill="#2563eb"/>
+<circle cx="6915" cy="222.101" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-0c9317bc71451497c0b80859:fin-19:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-0c9317bc71451497c0b80859:fin-19:cache_disabled_baseline disabled success</title>
+<circle cx="6939" cy="174.600" r="4" fill="#2563eb"/>
+<circle cx="6939" cy="158.623" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-0c9317bc71451497c0b80859:fin-19:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-0c9317bc71451497c0b80859:fin-19:negative_control miss success</title>
+<circle cx="6963" cy="174.286" r="4" fill="#2563eb"/>
+<circle cx="6963" cy="157.386" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-1768816dc0272a79e328c667:fin-20:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-1768816dc0272a79e328c667:fin-20:negative_control miss success</title>
+<circle cx="6987" cy="150.948" r="4" fill="#2563eb"/>
+<circle cx="6987" cy="132.242" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-1768816dc0272a79e328c667:fin-20:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-1768816dc0272a79e328c667:fin-20:cache_disabled_baseline disabled success</title>
+<circle cx="7011" cy="134.401" r="4" fill="#2563eb"/>
+<circle cx="7011" cy="119.052" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-5e3da8905fbd2f0b8dc4307b:fin-21:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-5e3da8905fbd2f0b8dc4307b:fin-21:cache_disabled_baseline disabled success</title>
+<circle cx="7035" cy="182.550" r="4" fill="#2563eb"/>
+<circle cx="7035" cy="167.220" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-5e3da8905fbd2f0b8dc4307b:fin-21:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-5e3da8905fbd2f0b8dc4307b:fin-21:negative_control miss success</title>
+<circle cx="7059" cy="144.215" r="4" fill="#2563eb"/>
+<circle cx="7059" cy="127.943" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-6f5ab35371c8937979dcb5c9:fin-22:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-6f5ab35371c8937979dcb5c9:fin-22:negative_control miss success</title>
+<circle cx="7083" cy="189.596" r="4" fill="#2563eb"/>
+<circle cx="7083" cy="172.421" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-6f5ab35371c8937979dcb5c9:fin-22:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-6f5ab35371c8937979dcb5c9:fin-22:cache_disabled_baseline disabled success</title>
+<circle cx="7107" cy="148.808" r="4" fill="#2563eb"/>
+<circle cx="7107" cy="133.164" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-96cd27489befd80744a1ff79:fin-23:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-96cd27489befd80744a1ff79:fin-23:cache_disabled_baseline disabled success</title>
+<circle cx="7131" cy="131.045" r="4" fill="#2563eb"/>
+<circle cx="7131" cy="115.067" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-96cd27489befd80744a1ff79:fin-23:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-96cd27489befd80744a1ff79:fin-23:negative_control miss success</title>
+<circle cx="7155" cy="136.540" r="4" fill="#2563eb"/>
+<circle cx="7155" cy="119.680" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-db7a888335d27d08e3070ec3:fin-24:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-db7a888335d27d08e3070ec3:fin-24:negative_control miss success</title>
+<circle cx="7179" cy="128.885" r="4" fill="#2563eb"/>
+<circle cx="7179" cy="112.613" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-db7a888335d27d08e3070ec3:fin-24:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-db7a888335d27d08e3070ec3:fin-24:cache_disabled_baseline disabled success</title>
+<circle cx="7203" cy="130.711" r="4" fill="#2563eb"/>
+<circle cx="7203" cy="115.381" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-577d6aba812817752b93049d:fin-25:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-577d6aba812817752b93049d:fin-25:cache_disabled_baseline disabled success</title>
+<circle cx="7227" cy="156.483" r="4" fill="#2563eb"/>
+<circle cx="7227" cy="140.525" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-577d6aba812817752b93049d:fin-25:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-577d6aba812817752b93049d:fin-25:negative_control miss success</title>
+<circle cx="7251" cy="133.204" r="4" fill="#2563eb"/>
+<circle cx="7251" cy="117.206" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-0a9affe26873ab8ae697681a:fin-26:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-0a9affe26873ab8ae697681a:fin-26:negative_control miss success</title>
+<circle cx="7275" cy="127.668" r="4" fill="#2563eb"/>
+<circle cx="7275" cy="106.175" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-0a9affe26873ab8ae697681a:fin-26:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-0a9affe26873ab8ae697681a:fin-26:cache_disabled_baseline disabled success</title>
+<circle cx="7299" cy="173.344" r="4" fill="#2563eb"/>
+<circle cx="7299" cy="155.875" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-bc1d342e4b87fc13421920f4:fin-27:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-bc1d342e4b87fc13421920f4:fin-27:cache_disabled_baseline disabled success</title>
+<circle cx="7323" cy="162.607" r="4" fill="#2563eb"/>
+<circle cx="7323" cy="146.669" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-bc1d342e4b87fc13421920f4:fin-27:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-bc1d342e4b87fc13421920f4:fin-27:negative_control miss success</title>
+<circle cx="7347" cy="139.603" r="4" fill="#2563eb"/>
+<circle cx="7347" cy="122.742" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-21a103bbb81b86dcfa185e03:fin-28:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-21a103bbb81b86dcfa185e03:fin-28:negative_control miss success</title>
+<circle cx="7371" cy="162.607" r="4" fill="#2563eb"/>
+<circle cx="7371" cy="146.060" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-21a103bbb81b86dcfa185e03:fin-28:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-21a103bbb81b86dcfa185e03:fin-28:cache_disabled_baseline disabled success</title>
+<circle cx="7395" cy="170.890" r="4" fill="#2563eb"/>
+<circle cx="7395" cy="154.952" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-0c468d5779682365c80bead3:fin-29:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-0c468d5779682365c80bead3:fin-29:cache_disabled_baseline disabled success</title>
+<circle cx="7419" cy="147.611" r="4" fill="#2563eb"/>
+<circle cx="7419" cy="131.947" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-0c468d5779682365c80bead3:fin-29:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-0c468d5779682365c80bead3:fin-29:negative_control miss success</title>
+<circle cx="7443" cy="86.880" r="4" fill="#2563eb"/>
+<circle cx="7443" cy="70.000" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-9d09572d8446c4b839263a90:fin-30:negative_control" data-warmup="false" opacity="1">
+<title>local-live:p-9d09572d8446c4b839263a90:fin-30:negative_control miss success</title>
+<circle cx="7467" cy="170.596" r="4" fill="#2563eb"/>
+<circle cx="7467" cy="154.324" r="4" fill="#16a34a"/>
+</g>
+<g data-run="local-live:p-9d09572d8446c4b839263a90:fin-30:cache_disabled_baseline" data-warmup="false" opacity="1">
+<title>local-live:p-9d09572d8446c4b839263a90:fin-30:cache_disabled_baseline disabled success</title>
+<circle cx="7491" cy="109.551" r="4" fill="#2563eb"/>
+<circle cx="7491" cy="93.299" r="4" fill="#16a34a"/>
+</g>
+<circle cx="70" cy="405" r="4" fill="#2563eb"/><text x="80" y="409" font-family="sans-serif" font-size="12">planning</text>
+<circle cx="160" cy="405" r="4" fill="#16a34a"/><text x="170" y="409" font-family="sans-serif" font-size="12">end-to-end</text>
+</svg>

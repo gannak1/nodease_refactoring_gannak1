@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: admin123
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -20,6 +20,7 @@ services:
       retries: 5
     networks:
       - moduly-network
+      - postgres-host-access
 
   # Redis (Celery Broker & Pub/Sub)
   redis:
@@ -114,6 +115,11 @@ services:
 
       # Agent Builder
       AGENT_BUILDER_DRAFT_MODEL_ID: ${AGENT_BUILDER_DRAFT_MODEL_ID:-gpt-5-mini}
+      AGENT_BUILDER_INTENT_CACHE_ENABLED: ${AGENT_BUILDER_INTENT_CACHE_ENABLED:-true}
+      AGENT_BUILDER_INTENT_CACHE_REDIS_URL: ${AGENT_BUILDER_INTENT_CACHE_REDIS_URL:-redis://redis:6379/15}
+      AGENT_BUILDER_INTENT_CACHE_HMAC_KEY: ${AGENT_BUILDER_INTENT_CACHE_HMAC_KEY:-}
+      AGENT_BUILDER_INTENT_CACHE_HMAC_KEY_VERSION: ${AGENT_BUILDER_INTENT_CACHE_HMAC_KEY_VERSION:-docker-local-v1}
+      AGENT_BUILDER_INTENT_CACHE_PRODUCTION_READY: "false"
 
       # Explicitly activate only after the verifier-aware Gateway is deployed.
       APP_AUTH_SECRET_LIFECYCLE_MODE: ${APP_AUTH_SECRET_LIFECYCLE_MODE:-disabled}
@@ -146,8 +152,12 @@ services:
         condition: service_started
       proxy:
         condition: service_healthy
+      dns_https:
+        condition: service_healthy
     volumes:
       - gateway_uploads:/app/uploads
+    dns:
+      - 172.30.250.53
     networks:
       - moduly-network
       - proxy-https-clients
@@ -216,8 +226,12 @@ services:
         condition: service_healthy
       proxy:
         condition: service_healthy
+      dns_https:
+        condition: service_healthy
     volumes:
       - gateway_uploads:/app/uploads
+    dns:
+      - 172.30.250.53
     networks:
       - moduly-network
       - proxy-https-clients
@@ -304,8 +318,12 @@ services:
         condition: service_healthy
       proxy:
         condition: service_healthy
+      dns_http:
+        condition: service_healthy
     volumes:
       - gateway_uploads:/app/uploads
+    dns:
+      - 172.30.251.53
     networks:
       - moduly-network
       - proxy-http-clients
@@ -472,6 +490,7 @@ services:
         condition: service_started
     networks:
       - moduly-network
+      - public-edge
     healthcheck:
       test:
         [
@@ -488,6 +507,65 @@ services:
 
   # Outbound HTTP/HTTPS proxy. Target workloads have no other Internet-capable
   # network, so proxy failure remains fail-closed.
+  # DNS policy validation runs in every target workload before it reaches this
+  # proxy. The two DNS-only resolvers below make that validation possible
+  # without giving the workloads an egress-capable network of their own.
+  dns_https:
+    build:
+      context: ..
+      dockerfile: docker/dns-resolver/Dockerfile
+    container_name: moduly-dns-https
+    command: ["--conf-file=/etc/dnsmasq-https.conf", "--keep-in-foreground"]
+    networks:
+      moduly-network:
+      proxy-https-clients:
+        ipv4_address: 172.30.250.53
+      proxy-egress:
+    user: "65534:65534"
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD-SHELL", "nslookup -type=A postgres 127.0.0.1 >/dev/null 2>&1 && nslookup -type=A proxy 127.0.0.1 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 6
+
+  dns_http:
+    build:
+      context: ..
+      dockerfile: docker/dns-resolver/Dockerfile
+    container_name: moduly-dns-http
+    command: ["--conf-file=/etc/dnsmasq-http.conf", "--keep-in-foreground"]
+    networks:
+      moduly-network:
+      proxy-http-clients:
+        ipv4_address: 172.30.251.53
+      proxy-egress:
+    user: "65534:65534"
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD-SHELL", "nslookup -type=A postgres 127.0.0.1 >/dev/null 2>&1 && nslookup -type=A proxy 127.0.0.1 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 6
+
   proxy:
     build:
       context: ..
@@ -496,9 +574,11 @@ services:
     environment:
       CONNECTOR_EGRESS_ALLOWED_PORTS: "${CONNECTOR_EGRESS_ALLOWED_PORTS:-22,5432}"
     networks:
-      - proxy-https-clients
-      - proxy-http-clients
-      - proxy-egress
+      proxy-https-clients:
+        ipv4_address: 172.30.250.2
+      proxy-http-clients:
+        ipv4_address: 172.30.251.2
+      proxy-egress:
     user: "13:13"
     read_only: true
     cap_drop:
@@ -530,6 +610,14 @@ networks:
   moduly-network:
     driver: bridge
     internal: true
+  # Nginx is the only browser-facing workload. Docker cannot publish a host
+  # port for a container attached solely to an internal bridge network.
+  public-edge:
+    driver: bridge
+  # PostgreSQL remains on the internal service network; this dedicated bridge
+  # exists only for its loopback-published local development port.
+  postgres-host-access:
+    driver: bridge
   proxy-https-clients:
     driver: bridge
     internal: true

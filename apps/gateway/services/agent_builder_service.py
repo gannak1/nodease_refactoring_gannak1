@@ -3,12 +3,13 @@ import hashlib
 import json
 import logging
 import re
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import HTTPException
-from sqlalchemy import or_
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from apps.gateway.adapters.db.agent_builder_repository import AgentBuilderRepository
@@ -18,6 +19,15 @@ from apps.gateway.application.agent_builder.condition_branches import (
 from apps.gateway.application.agent_builder.intent_usage import (
     AgentBuilderIntentUsageContext,
     AgentBuilderIntentUsageRecordingError,
+)
+from apps.gateway.application.agent_builder.intent_cache import (
+    DisabledIntentPlanCacheBoundary,
+    IntentPlanCacheBoundary,
+)
+from apps.gateway.application.agent_builder.intent_cache_coordinator import (
+    AgentBuilderIntentCacheCoordinator,
+    ColdMissRehydrationError,
+    RequestFenceAbortedError,
 )
 from apps.gateway.application.agent_builder.knowledge_timing import (
     materialize_before_graph_plan,
@@ -40,6 +50,12 @@ from apps.gateway.auth.permissions import (
 )
 from apps.gateway.services.agent_builder.parameter_candidates import (
     ParameterCandidateProvider,
+)
+from apps.gateway.services.agent_builder.benchmark_diagnostics import (
+    AgentBuilderBenchmarkDiagnostics,
+)
+from apps.gateway.services.agent_builder.intent_cache_integration import (
+    build_intent_planning_context,
 )
 from apps.gateway.services.agent_builder_intent_service import (
     AgentBuilderIntentExtraction,
@@ -129,6 +145,25 @@ NO_KB_CANDIDATE_LABEL = "Knowledge Base 없이 생성"
 NO_KB_CANDIDATE_WARNING = "사용자가 Knowledge Base 없이 도안 생성을 선택했습니다. LLM node는 Knowledge Base binding 없이 생성됩니다."
 AGENT_BUILDER_KB_RECOMMENDATION_LIMIT = 20
 EXPECTED_APP_PRIMARY_WORKFLOW_ID = "expected_app_primary_workflow_id"
+
+def intent_extraction_failure_issue_details(
+    error: AgentBuilderIntentExtractionError,
+) -> tuple[str, str]:
+    """Return the only public details allowed for planner extraction failures."""
+    if safe_intent_extraction_reason(error) == "provider_call_failed":
+        return (
+            "INTENT_PROVIDER_CALL_FAILED",
+            (
+                "선택한 Agent Builder 모델 또는 provider가 요청을 처리하지 못했습니다. "
+                "모델을 바꾸거나 provider 상태를 확인한 뒤 다시 시도하세요."
+            ),
+        )
+    return (
+        "INTENT_EXTRACTION_FAILED",
+        "Agent Builder가 요청을 안전한 workflow 구조로 변환하지 못했습니다.",
+    )
+
+
 SAFE_SIDE_EFFECT_NOTICE = (
     "Agent Builder 요청 구조화, workflow graph 생성·저장 및 설정 중에는 workflow 실행, Knowledge Base 검색, "
     "Slack/GitHub/HTTP/Mail 외부 호출, workflow node credential 사용/변경, "
@@ -948,15 +983,24 @@ class AgentBuilderService:
         user: User,
         organization_id: uuid.UUID,
         intent_extractor: AgentBuilderIntentExtractor | None = None,
+        intent_plan_cache: IntentPlanCacheBoundary | None = None,
     ) -> None:
         self.db = db
         self.user = user
         self.organization_id = organization_id
         self.intent_extractor = intent_extractor
+        self.intent_plan_cache = (
+            intent_plan_cache
+            if intent_plan_cache is not None
+            else DisabledIntentPlanCacheBoundary()
+        )
+        self._benchmark_cache_diagnostic: tuple[str, int, int, int] | None = None
 
     def create_or_restore_session(
         self,
         request: AgentBuilderSessionCreateRequest,
+        *,
+        force_new: bool = False,
     ) -> AgentBuilderDirectSessionResponse:
         workflow_id = request.workflow_id
         app_id = request.app_id
@@ -980,19 +1024,21 @@ class AgentBuilderService:
                 )
                 raise HTTPException(status_code=denial_status, detail=detail)
 
-        session = (
-            self.db.query(AgentBuilderSession)
-            .filter(
-                AgentBuilderSession.user_id == self.user.id,
-                AgentBuilderSession.organization_id == self.organization_id,
-                AgentBuilderSession.workflow_id == workflow_id,
-                AgentBuilderSession.app_id == app_id,
-                AgentBuilderSession.status == "active",
-                AgentBuilderSession.protocol_version == "direct_edit_v1",
+        session = None
+        if not force_new:
+            session = (
+                self.db.query(AgentBuilderSession)
+                .filter(
+                    AgentBuilderSession.user_id == self.user.id,
+                    AgentBuilderSession.organization_id == self.organization_id,
+                    AgentBuilderSession.workflow_id == workflow_id,
+                    AgentBuilderSession.app_id == app_id,
+                    AgentBuilderSession.status == "active",
+                    AgentBuilderSession.protocol_version == "direct_edit_v1",
+                )
+                .order_by(AgentBuilderSession.updated_at.desc())
+                .first()
             )
-            .order_by(AgentBuilderSession.updated_at.desc())
-            .first()
-        )
         created = False
         if session is None:
             session = AgentBuilderSession(
@@ -1178,23 +1224,48 @@ class AgentBuilderService:
                 self.db.commit()
                 return response
             usage_context = None
+            usage_context_factory = None
             if selected_kb_context is None and self.intent_extractor is not None:
-                usage_context = self._primary_intent_usage_context(
-                    session=session,
-                    request=message_request,
-                    request_id=request_row.id,
-                    workflow=workflow,
-                    app=app,
-                )
+                if isinstance(
+                    self.intent_plan_cache,
+                    DisabledIntentPlanCacheBoundary,
+                ):
+                    usage_context = self._primary_intent_usage_context(
+                        session=session,
+                        request=message_request,
+                        request_id=request_row.id,
+                        workflow=workflow,
+                        app=app,
+                    )
+                elif getattr(self.intent_extractor, "usage_recorder", None) is not None:
+                    def usage_context_factory():
+                        return self._primary_intent_usage_context(
+                            session=session,
+                            request=message_request,
+                            request_id=request_row.id,
+                            workflow=workflow,
+                            app=app,
+                        )
             structured = (
                 selected_kb_context["structured_request"]
                 if selected_kb_context
                 else self._structure_request(
                     message_request,
                     workflow,
+                    cache_cancellation_fence=(
+                        self._intent_cache_cancellation_fence(request_row)
+                    ),
+                    cache_request_deadline_monotonic=(
+                        self._intent_cache_wait_deadline(request_row)
+                    ),
                     **(
                         {"usage_context": usage_context}
                         if usage_context is not None
+                        else {}
+                    ),
+                    **(
+                        {"usage_context_factory": usage_context_factory}
+                        if usage_context_factory is not None
                         else {}
                     ),
                 )
@@ -1300,6 +1371,7 @@ class AgentBuilderService:
                 "agent_builder_intent_extraction_failed reason=%s",
                 safe_intent_extraction_reason(exc),
             )
+            issue_code, issue_message = intent_extraction_failure_issue_details(exc)
             response = AgentBuilderMessageResponse(
                 request_id=request_row.id,
                 status="failed",
@@ -1307,8 +1379,8 @@ class AgentBuilderService:
                     valid=False,
                     issues=[
                         AgentBuilderValidationIssue(
-                            code="INTENT_EXTRACTION_FAILED",
-                            message="Agent Builder가 요청을 안전한 workflow 구조로 변환하지 못했습니다.",
+                            code=issue_code,
+                            message=issue_message,
                             path="message",
                         )
                     ],
@@ -2606,30 +2678,219 @@ class AgentBuilderService:
         workflow: Workflow | None,
         *,
         usage_context: AgentBuilderIntentUsageContext | None = None,
+        usage_context_factory: (
+            Callable[[], AgentBuilderIntentUsageContext | None] | None
+        ) = None,
+        cache_cancellation_fence=None,
+        cache_request_deadline_monotonic: float | None = None,
     ) -> AgentBuilderStructuredRequest:
-        if self.intent_extractor is None:
-            raise AgentBuilderIntentRuntimeUnavailableError(
-                "Agent Builder intent extractor is not configured"
+        provider_call_count = 0
+        repair_call_count = 0
+
+        def planner_call() -> AgentBuilderStructuredRequest:
+            nonlocal provider_call_count, repair_call_count
+            if self.intent_extractor is None:
+                raise AgentBuilderIntentRuntimeUnavailableError(
+                    "Agent Builder intent extractor is not configured"
+                )
+            workflow_context = self._safe_intent_workflow_context(workflow, request)
+            safe_message = _safe_summary(request.message, limit=2000)
+            extract_kwargs: dict[str, Any] = {
+                "safe_message": safe_message,
+                "workflow_context": workflow_context,
+            }
+            current_usage_context = (
+                usage_context_factory()
+                if usage_context_factory is not None
+                else usage_context
             )
-        workflow_context = self._safe_intent_workflow_context(workflow, request)
-        safe_message = _safe_summary(request.message, limit=2000)
-        extract_kwargs: dict[str, Any] = {
-            "safe_message": safe_message,
-            "workflow_context": workflow_context,
-        }
-        if usage_context is not None:
-            extract_kwargs["usage_context"] = usage_context
-        extraction = self.intent_extractor.extract(**extract_kwargs)
-        validate_intent_semantics(
-            extraction,
-            workflow_context,
-            safe_message=safe_message,
+            if current_usage_context is not None:
+                extract_kwargs["usage_context"] = current_usage_context
+            try:
+                extraction = self.intent_extractor.extract(**extract_kwargs)
+            finally:
+                call_counts = getattr(self.intent_extractor, "last_call_counts", None)
+                candidate_provider_count = getattr(
+                    call_counts, "provider_call_count", 0
+                )
+                candidate_repair_count = getattr(call_counts, "repair_call_count", 0)
+                if (
+                    isinstance(candidate_provider_count, int)
+                    and not isinstance(candidate_provider_count, bool)
+                    and isinstance(candidate_repair_count, int)
+                    and not isinstance(candidate_repair_count, bool)
+                ):
+                    provider_call_count = candidate_provider_count
+                    repair_call_count = candidate_repair_count
+            validate_intent_semantics(
+                extraction,
+                workflow_context,
+                safe_message=safe_message,
+            )
+            return self._normalize_intent_extraction(
+                extraction,
+                request=request,
+                workflow=workflow,
+            )
+
+        context = None
+        cache_boundary = self.intent_plan_cache
+        if isinstance(cache_boundary, AgentBuilderIntentCacheCoordinator):
+            cache_boundary = cache_boundary.for_request(
+                cancellation_fence=cache_cancellation_fence,
+                request_deadline_monotonic=cache_request_deadline_monotonic,
+                cache_io_guard=self._release_cache_read_transaction,
+            )
+        if not isinstance(cache_boundary, DisabledIntentPlanCacheBoundary):
+            def current_workflow_loader():
+                if workflow is None:
+                    return None
+                current_workflow = self._workflow_in_active_org(workflow.id)
+                ensure_workflow_permission(
+                    self.db,
+                    self.user,
+                    current_workflow.id,
+                    "write",
+                )
+                return current_workflow
+
+            planning_inputs = build_intent_planning_context(
+                db=self.db,
+                user_id=self.user.id,
+                organization_id=self.organization_id,
+                extractor=self.intent_extractor,
+                request=request,
+                workflow=workflow,
+                safe_summary=_safe_summary,
+                safe_label=_safe_display_label,
+                current_workflow_loader=current_workflow_loader,
+                knowledge_context_fingerprint_factory=(
+                    cache_boundary.current_knowledge_context_fingerprint
+                    if isinstance(cache_boundary, AgentBuilderIntentCacheCoordinator)
+                    else None
+                ),
+            )
+            if planning_inputs is not None:
+                context = planning_inputs.context
+                if isinstance(cache_boundary, AgentBuilderIntentCacheCoordinator):
+                    cache_boundary = cache_boundary.for_request(
+                        rehydrator_factory=planning_inputs.rehydrator_factory,
+                    )
+                    if not self._release_cache_read_transaction():
+                        context = None
+        planning_started = time.monotonic()
+
+        def record_benchmark_diagnostic(outcome: str) -> None:
+            self._benchmark_cache_diagnostic = (
+                outcome,
+                max(0, int((time.monotonic() - planning_started) * 1000)),
+                provider_call_count,
+                repair_call_count,
+            )
+
+        try:
+            execution = cache_boundary.execute(planner_call, context=context)
+        except ColdMissRehydrationError as exc:
+            record_benchmark_diagnostic("error")
+            # The provider attempt already owns its usage record. Reusing the raw
+            # extraction would create a cache-only downstream divergence.
+            raise AgentBuilderIntentExtractionError(
+                "Agent Builder intent cache rehydration failed"
+            ) from exc
+        except RequestFenceAbortedError as exc:
+            record_benchmark_diagnostic("error")
+            raise AgentBuilderIntentExtractionError(
+                "Agent Builder request changed before cache planning completed"
+            ) from exc
+        except Exception:
+            record_benchmark_diagnostic(
+                "disabled"
+                if isinstance(cache_boundary, DisabledIntentPlanCacheBoundary)
+                else "error"
+            )
+            raise
+        record_benchmark_diagnostic(
+            "disabled"
+            if isinstance(cache_boundary, DisabledIntentPlanCacheBoundary)
+            else execution.decision.outcome
         )
-        return self._normalize_intent_extraction(
-            extraction,
-            request=request,
-            workflow=workflow,
-        )
+        return execution.structured_request
+
+    def _intent_cache_cancellation_fence(self, request_row: AgentBuilderRequest):
+        """Observe terminal request state before cache work and during follower waits."""
+        def fence():
+            status = request_row.status
+            created_at = getattr(request_row, "created_at", None)
+            if isinstance(self.db, Session):
+                current = self._cache_request_status(request_row.id)
+                if current is None:
+                    return "stale"
+                status, created_at = current
+            if status == "canceled":
+                return "canceled"
+            if status != "processing":
+                return "stale"
+            if (
+                created_at is not None
+                and created_at + AGENT_BUILDER_REQUEST_PROCESSING_TIMEOUT <= _now()
+            ):
+                return "stale"
+            return "active"
+
+        return fence
+
+    def _release_cache_read_transaction(self) -> bool:
+        """End clean request reads before each cache Redis I/O without discarding writes."""
+        if not isinstance(self.db, Session) or not self.db.in_transaction():
+            return True
+        if self.db.new or self.db.dirty or self.db.deleted:
+            return False
+        try:
+            self.db.rollback()
+        except Exception:
+            return False
+        return not self.db.in_transaction()
+
+    def _cache_request_status(
+        self,
+        request_id: uuid.UUID,
+    ) -> tuple[str, datetime | None] | None:
+        """Read terminal state without starting a transaction on the service Session."""
+        try:
+            bind = self.db.get_bind()
+            engine = (
+                bind
+                if callable(getattr(bind, "connect", None))
+                else getattr(bind, "engine", None)
+            )
+            if not callable(getattr(engine, "connect", None)):
+                return None
+            with engine.connect() as connection:
+                row = connection.execution_options(
+                    isolation_level="AUTOCOMMIT"
+                ).execute(
+                    select(
+                        AgentBuilderRequest.status,
+                        AgentBuilderRequest.created_at,
+                    ).where(AgentBuilderRequest.id == request_id)
+                ).one_or_none()
+        except Exception:
+            return None
+        if row is None:
+            return None
+        return row.status, row.created_at
+
+    def _intent_cache_wait_deadline(
+        self,
+        request_row: AgentBuilderRequest,
+    ) -> float | None:
+        created_at = getattr(request_row, "created_at", None)
+        if created_at is None:
+            return None
+        remaining = (
+            created_at + AGENT_BUILDER_REQUEST_PROCESSING_TIMEOUT - _now()
+        ).total_seconds()
+        return time.monotonic() + max(0.0, remaining)
 
     def _primary_intent_usage_context(
         self,
@@ -3118,8 +3379,19 @@ class AgentBuilderService:
         self,
         request: AgentBuilderMessageRequest,
         workflow: Workflow | None,
+        *,
+        usage_context=None,
+        usage_context_factory=None,
+        cache_cancellation_fence=None,
+        cache_request_deadline_monotonic: float | None = None,
     ) -> AgentBuilderStructuredRequest:
         """Legacy deterministic compatibility helper; not a production parser."""
+        del (
+            usage_context,
+            usage_context_factory,
+            cache_cancellation_fence,
+            cache_request_deadline_monotonic,
+        )
         if not _message_looks_like_workflow_request(request.message):
             return AgentBuilderStructuredRequest(
                 request_type="unsupported",
@@ -6324,6 +6596,39 @@ class AgentBuilderService:
             request_row.response_payload = payload
             request_row.structured_request = structured_request
             request_row.completed_at = completed_at
+            diagnostic = self._benchmark_cache_diagnostic
+            if diagnostic is not None:
+                (
+                    outcome,
+                    planning_latency_ms,
+                    provider_call_count,
+                    repair_call_count,
+                ) = diagnostic
+                validation = response.validation_result
+                if response.status == "canceled":
+                    terminal_status = "canceled"
+                elif response.status == "timeout":
+                    terminal_status = "timeout"
+                elif validation is not None and not validation.valid:
+                    terminal_status = "validation_error"
+                elif response.status == "failed":
+                    terminal_status = "provider_error"
+                else:
+                    terminal_status = "success"
+                AgentBuilderBenchmarkDiagnostics.record(
+                    request_id=request_row.id,
+                    user_id=self.user.id,
+                    organization_id=self.organization_id,
+                    outcome=outcome,
+                    planning_latency_ms=planning_latency_ms,
+                    provider_call_count=provider_call_count,
+                    repair_call_count=repair_call_count,
+                    terminal_status=terminal_status,
+                    validation_passed=(
+                        terminal_status == "success"
+                        and (validation is None or validation.valid)
+                    ),
+                )
             return True
         try:
             self.db.refresh(request_row)

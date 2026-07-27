@@ -152,9 +152,9 @@ tests/evaluation/reports/
 # Codex local run logs
 .codex-run-logs/
 
-# Local Windows development entrypoint and proxy
-/scripts/dev-local.ps1
-/dev/nginx.local-host.conf
+# Local scratch marker
+/test_localsystem.txt
+
 
 # 개인 폴더
 .ignore/

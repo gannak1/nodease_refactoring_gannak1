@@ -15,6 +15,7 @@ Agent Builder Header와 generated LLM node는 Gateway의 하나의 결정적 추
 
 - DB 후보는 active organization에 속하고 `LLMCredential.is_valid=true`, `LLMModel.is_active=true`, `LLMModel.type=chat`, model과 credential의 provider가 일치하고 `LLMRelCredentialModel.is_verified=true`, 사용자 credential `use` 권한을 모두 통과해야 한다. 같은 model/credential의 verified relation이 중복이면 가장 낮은 relation priority 하나만 추천 후보로 사용한다.
 - Provider는 `openai`, `anthropic`, `google` 순서로 평가한다. 각 provider 안에서는 해석 가능한 최신 세대, 같은 세대의 `general`, `mini`, `nano`, `pro`, 같은 세대와 tier의 기본형, 날짜 또는 명시 release snapshot, `preview`, `latest` 순서로 평가한다.
+- OpenAI의 정확히 알려진 GPT-5.6 후보는 verified 상태일 때 `gpt-5.6`(있으면), `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` 순으로 같은 세대의 5.5 계열보다 먼저 평가한다. 이 규칙은 추천 순서만 정하며 원래 model ID를 다른 ID로 매핑하거나 변경하지 않는다.
 - 그 뒤에는 verified relation priority, 안전한 model/credential 표시 이름과 안정적인 식별자를 사용해 순서를 결정한다. 서로 다른 provider의 세대 숫자는 직접 비교하지 않는다.
 - Provider별 세대와 tier parser는 작은 명시적 정책표로 관리한다. 현재 지원하는 `gpt-4o`, `gpt-4o-mini`, `o` 계열, 제품명 우선 및 세대명 우선 Claude 형식, Gemini 형식을 포함하고 원래 model ID는 변경하지 않는다.
 - Sora, audio, transcribe, TTS, speech, Whisper, realtime, live, image, embedding, moderation, search, Codex, computer-use, robotics처럼 정규화한 API model ID로 특수 목적이 확정된 모델은 Agent Builder Header option과 generated LLM node 추천에서 제외한다. 특수 목적 판정은 앞뒤 공백 제거, 소문자화, 선행 `models/` 제거 후 `-`, `_`, `.`, `/`, `:` 구분자로 나눈 완전한 token 또는 `computer-use` 같은 연속 token과 provider별로 등록한 전체 model ID 일치 규칙에만 적용한다. 단순 부분 문자열 일치는 사용하지 않으며 전역 model catalog row는 변경하지 않는다.

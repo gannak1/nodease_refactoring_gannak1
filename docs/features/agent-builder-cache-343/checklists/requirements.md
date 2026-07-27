@@ -42,5 +42,5 @@ Status: Draft
 
 ## Validation Result
 
-문서 설계 단계 기준으로 checklist를 충족한다. 구현 후에는 test evidence와 diff scope를 다시 확인해야 하며,
-그 전에는 MBA-343 완료 조건을 충족한 것으로 간주하지 않는다.
+요구사항 checklist와 MBA-343 spine 구현의 로컬 test evidence·diff scope를 확인했다. 문서 상태는 원격 CI와
+merge 전까지 `Draft`로 유지하며, enabled serving cache는 이 checklist의 완료 대상이 아니다.

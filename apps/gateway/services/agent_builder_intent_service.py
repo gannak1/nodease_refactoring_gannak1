@@ -4,6 +4,7 @@ import json
 import re
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Literal, Protocol
 
@@ -36,7 +37,10 @@ from apps.shared.schemas.agent_builder import (
     AgentBuilderKnowledgePlacement,
     AgentBuilderParameterGuidanceHint,
 )
-from apps.shared.services.llm_client.base import LLMResponseValidationError
+from apps.shared.services.llm_client.base import (
+    LLMResponseValidationError,
+    ProviderInvocationError,
+)
 from apps.shared.services.workflow_node_catalog import (
     agent_builder_supported_capabilities,
     capability_contract,
@@ -53,6 +57,14 @@ class AgentBuilderIntentExtractionError(RuntimeError):
 
 class AgentBuilderIntentRuntimeUnavailableError(AgentBuilderIntentExtractionError):
     """No permission-aware LLM runtime was available for intent extraction."""
+
+
+@dataclass(frozen=True)
+class AgentBuilderIntentCallCounts:
+    """Allowlisted provider-attempt counters for an individual extraction."""
+
+    provider_call_count: int = 0
+    repair_call_count: int = 0
 
 
 def safe_intent_extraction_reason(
@@ -614,19 +626,10 @@ def _safe_knowledge_candidate_context(value: Any) -> list[dict[str, Any]]:
         if relevance_score <= 0:
             continue
 
-        def safe_text(key: str, limit: int) -> str | None:
-            raw = item.get(key)
-            if not isinstance(raw, str):
-                return None
-            normalized = raw.strip()[:limit]
-            return normalized or None
-
         result.append(
             {
                 "candidate_handle": handle,
-                "safe_label": safe_text("safe_label", 255),
                 "safe_topics": topics,
-                "safe_description": safe_text("safe_description", 500),
                 "runtime_availability": availability,
                 "relevance_score": round(relevance_score, 4),
             }
@@ -660,6 +663,13 @@ class LLMAgentBuilderIntentExtractor:
         )
         self.usage_recorder = usage_recorder
         self.requires_explicit_selection = runtime_loader is None
+        self._last_call_counts = AgentBuilderIntentCallCounts()
+
+    @property
+    def last_call_counts(self) -> AgentBuilderIntentCallCounts:
+        """Return only the latest provider/repair counters, never request data."""
+
+        return self._last_call_counts
 
     def extract(
         self,
@@ -668,6 +678,7 @@ class LLMAgentBuilderIntentExtractor:
         workflow_context: dict[str, Any],
         usage_context: AgentBuilderIntentUsageContext | None = None,
     ) -> AgentBuilderIntentExtraction:
+        self._last_call_counts = AgentBuilderIntentCallCounts()
         if (usage_context is None) != (self.usage_recorder is None):
             raise AgentBuilderIntentUsageRecordingError(
                 "intent_usage_recording_failed"
@@ -782,6 +793,10 @@ class LLMAgentBuilderIntentExtractor:
                         "intent_usage_recording_failed"
                     ) from exc
             started_at = perf_counter()
+            self._last_call_counts = AgentBuilderIntentCallCounts(
+                provider_call_count=attempt + 1,
+                repair_call_count=attempt,
+            )
             try:
                 response = runtime.client.invoke_sync(
                     messages,
@@ -792,6 +807,24 @@ class LLMAgentBuilderIntentExtractor:
                         AGENT_BUILDER_INTENT_REQUEST_TIMEOUT_SECONDS
                     ),
                 )
+            except ProviderInvocationError as exc:
+                if reservation is not None:
+                    latency_ms = (perf_counter() - started_at) * 1000
+                    if exc.usage is None:
+                        self._cancel_usage(reservation)
+                    else:
+                        self._record_usage(
+                            reservation=reservation,
+                            usage=exc.usage,
+                            latency_ms=latency_ms,
+                        )
+                error_message = (
+                    "LLM intent response is invalid"
+                    if exc.reason_code
+                    in {"responses_incomplete", "responses_empty_text"}
+                    else "Agent Builder intent provider call failed"
+                )
+                raise AgentBuilderIntentExtractionError(error_message) from exc
             except LLMResponseValidationError as exc:
                 if reservation is not None:
                     latency_ms = (perf_counter() - started_at) * 1000

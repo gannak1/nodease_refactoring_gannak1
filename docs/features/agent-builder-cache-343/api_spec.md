@@ -46,10 +46,10 @@ field alias 미사용과 coercion 금지를 적용한다. Tuple의 순서는 sem
 | `ordered_capabilities` | tuple of `CapabilityRef` | 1..32, 현재 Catalog v3 allowlist exact membership |
 | `logical_steps` | tuple of `LogicalStepRef` | capability와 같은 순서/개수, 1..32 |
 | `edit_placement` | `CachedEditPlacement` or null | selected-target modify에서만 required |
-| `integration_actions` | tuple of `IntegrationActionRef` | 0..16, 중복 없음 |
+| `integration_actions` | tuple of `IntegrationActionRef` | 0..16, 중복 없음, 대응 capability와 양방향 일치 |
 | `parameter_guidance_refs` | tuple of `CachedParameterGuidanceRef` | 0..128, `(step, parameter_key)` 중복 없음 |
 | `knowledge_requirements` | tuple of `CachedKnowledgeRequirement` | 0..8, requirement ref 중복 없음 |
-| `knowledge_placements` | tuple of `CachedKnowledgePlacement` | 0..8, requirement ref가 존재해야 함 |
+| `knowledge_placements` | tuple of `CachedKnowledgePlacement` | 0..8, 모든 requirement와 정확히 1:1 대응 |
 | `risk_flags` | tuple of `CacheRiskFlag` | 0..8, 중복 없음 |
 | `contract_versions` | `IntentPlanContractVersions` | required |
 
@@ -89,6 +89,9 @@ exact alias가 있더라도 strict plan schema가 거부한다. 전체 요청의
 `IntegrationActionRef` v1 member는 `github.pull_request.read`와
 `github.pull_request.comment`다. Unsupported create action은 cache할 수 없다.
 
+`github.pull_request.read`는 `github_pr_read`, `github.pull_request.comment`는 `github_pr_comment` capability와
+양방향으로 정확히 대응한다. Action만 있거나 capability만 있는 plan은 strict contract가 거부한다.
+
 `CacheRiskFlag` v1 member는 다음 다섯 값이다.
 
 - `external_action_requested`
@@ -107,7 +110,10 @@ exact alias가 있더라도 strict plan schema가 거부한다. 전체 요청의
 | `required` | strict boolean | required |
 | `evidence_kind` | literal `policy_or_reference` | required |
 | `target_step_ref` | `LogicalStepRef` | plan member |
-| `topic_refs` | tuple of `CanonicalKnowledgeTopicRef` | 1..20, 순서 보존, 첫 occurrence만 유지 |
+| `topic_refs` | tuple of `CanonicalKnowledgeTopicRef` | 1..20, 순서 보존, 중복 금지 |
+
+후속 projection은 provider topic의 첫 occurrence만 순서대로 남긴 뒤 이 strict DTO를 구성한다. DTO 자체는
+중복 입력을 조용히 정규화하지 않고 semantic reference 위반으로 거부한다.
 
 ### 3.5 `CachedKnowledgePlacement`
 
@@ -124,6 +130,9 @@ exact alias가 있더라도 strict plan schema가 거부한다. 전체 요청의
 
 After-graph placement는 `binding_only + target_step_ref`만 허용하고 나머지 topology ref를 금지한다.
 Before-graph placement는 `insert_step`과 네 topology/bridge field를 모두 요구한다.
+모든 Knowledge requirement는 같은 `requirement_ref`의 placement를 정확히 하나 가져야 하며 placement의
+`target_step_ref`는 requirement의 `target_step_ref`와 같아야 한다. Before-graph placement에서는
+`knowledge_step_ref`도 같은 requirement target이어야 한다.
 
 ### 3.6 `CachedParameterGuidanceRef`
 
@@ -375,6 +384,13 @@ encode한다. BOM, trailing newline과 trailing whitespace를 붙이지 않는�
 rendered user text가 plan에 없으므로 Unicode normalization은 codec 책임이 아니다. Decoder는 다음 순서를
 고정한다.
 
+금지 value 검사는 key-value secret 표현 외에도 sanitizer와 같은 `sk-`, `ghp_`, `xox[baprs]-`, whitespace
+`Bearer` token과 JWT 형태를 encode/decode 양쪽에서 차단한다. 일치한 원문은 오류에 포함하지 않는다.
+
+Encoder는 금지 content 검사와 canonical encode 뒤 같은 bytes를
+`CachedIntentPlanV1.model_validate_json(payload, strict=True)`로 재검증한다. 따라서 unchecked model copy나
+subclass extension으로 만들어져 decoder와 round-trip할 수 없는 typed 입력은 `invalid_plan_schema`로 거부한다.
+
 1. byte size를 parse 전에 검사한다.
 2. UTF-8 strict mode로 decode한다.
 3. `object_pairs_hook`으로 duplicate key를, `parse_constant`로 non-finite number를 거부해 raw object tree를
@@ -391,9 +407,10 @@ semantic plan의 bytes를 바꾸면 cache schema version을 올리지 않는 한
 
 | Code | Allowed path category | Meaning |
 | --- | --- | --- |
+| `invalid_payload_limit` | `payload_size` | 호출자가 제공한 max bytes가 양의 strict integer가 아님 |
 | `payload_too_large` | `payload_size` | parse 전 bounded size 초과 |
 | `invalid_utf8` | `root` | UTF-8 decode 실패 |
-| `invalid_json` | `root` | JSON object가 아니거나 syntax/duplicate key/non-finite number 오류 |
+| `invalid_json` | `root` | JSON object가 아니거나 syntax/duplicate key/non-finite number/과도한 중첩 오류 |
 | `unsupported_schema_version` | `contract_version` | 지원하지 않는 plan version |
 | `forbidden_cache_content` | `cache_content` | 금지 field/value 발견 |
 | `invalid_plan_schema` | `reference|payload_shape` | strict DTO의 ref 또는 일반 shape 검증 실패 |
@@ -406,6 +423,14 @@ semantic plan의 bytes를 바꾸면 cache schema version을 올리지 않는 한
 payload excerpt와 chained parser exception을 포함하지 않는다. Underlying parser/Pydantic failure를 catch한
 block에서는 closed code/category만 남기고 block을 빠져나온 뒤 public error를 발생시킨다. 결과 error의
 `__cause__`와 `__context__`는 모두 null이어야 하며 traceback local에 parser/Pydantic failure를 연결하지 않는다.
+
+Strict cache DTO와 port result의 Pydantic `ValidationError`도 `str`, `repr`, `errors()`와 `json()`에서 입력값을
+반사하지 않는다. 구조화 오류의 `input`은 null이고, 위치는 allowlisted contract field, 의미 참조 위반용
+safe `reference` 또는 일반 `contract` category로 제한하며 원본 validation exception chain을 보존하지 않는다.
+Model-level 의미 참조 validator는 원본 message 대신 내부 전용 표식만 남기고 redaction 경계가 이를
+`reference` location으로 치환한다. Codec은 이 redacted location만 사용해 `reference|payload_shape`를
+분류한다. Reference 분류와 validation location 보존은 `contracts.py`의 동일한 canonical safe-location
+집합을 사용하며 별도 목록으로 복제하지 않는다.
 
 ### 6.1 `IntentCacheKey`
 
