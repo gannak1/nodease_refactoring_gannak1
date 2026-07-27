@@ -626,19 +626,10 @@ def _safe_knowledge_candidate_context(value: Any) -> list[dict[str, Any]]:
         if relevance_score <= 0:
             continue
 
-        def safe_text(key: str, limit: int) -> str | None:
-            raw = item.get(key)
-            if not isinstance(raw, str):
-                return None
-            normalized = raw.strip()[:limit]
-            return normalized or None
-
         result.append(
             {
                 "candidate_handle": handle,
-                "safe_label": safe_text("safe_label", 255),
                 "safe_topics": topics,
-                "safe_description": safe_text("safe_description", 500),
                 "runtime_availability": availability,
                 "relevance_score": round(relevance_score, 4),
             }

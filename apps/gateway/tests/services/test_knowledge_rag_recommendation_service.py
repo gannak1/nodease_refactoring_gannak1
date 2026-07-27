@@ -561,9 +561,7 @@ def test_safe_intent_candidate_context_is_bounded_and_excludes_raw_identity():
     assert context == [
         {
             "candidate_handle": context[0]["candidate_handle"],
-            "safe_label": "사내 인사 문서",
             "safe_topics": ["인사", "온보딩"],
-            "safe_description": "사내 인사 정책",
             "runtime_availability": "available",
             "relevance_score": context[0]["relevance_score"],
         }
@@ -1143,3 +1141,26 @@ def test_cache_fingerprint_projection_is_private_and_contains_current_hierarchy(
     serialized = result.model_dump(mode="json")
     assert str(first.candidate_id) not in str(serialized)
     assert str(collection_id) not in str(serialized)
+
+def test_safe_intent_candidates_ignore_presentation_only_matches():
+    resolver = FakeResolver(
+        KnowledgeCandidateResolution(
+            candidates=[
+                _candidate(
+                    safe_label="Leave policy",
+                    runtime_availability="available",
+                    safe_metadata={
+                        "kb_safe_topics": ["benefits"],
+                        "kb_safe_description": "Leave policy guidance",
+                    },
+                )
+            ]
+        )
+    )
+
+    context = _service(resolver).safe_intent_candidates_for_builder(
+        "create a leave policy workflow",
+        max_candidates=20,
+    )
+
+    assert context == []

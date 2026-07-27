@@ -1066,7 +1066,9 @@ def test_llm_intent_extractor_passes_only_bounded_safe_kb_context():
     assert "rec-safe-1" in prompt
     assert "사내 문서" in prompt
     assert "온보딩" in prompt
-    assert "사내 정책과 절차" in prompt
+    assert '"safe_label"' not in prompt
+    assert '"safe_description"' not in prompt
+    assert "사내 정책과 절차" not in prompt
     assert raw_kb_id not in prompt
     assert "raw_source_path" not in prompt
     assert result.knowledge_candidate_handles == ["rec-safe-1"]
@@ -2939,3 +2941,24 @@ def test_service_binds_clean_transaction_guard_to_cache_coordinator(monkeypatch)
     )
 
     assert callable(bindings[0]["cache_io_guard"])
+
+def test_knowledge_candidate_context_excludes_presentation_fields():
+    assert _safe_knowledge_candidate_context(
+        [
+            {
+                "candidate_handle": "rec-safe",
+                "safe_label": "Leave policy",
+                "safe_topics": ["benefits"],
+                "safe_description": "Leave policy guidance",
+                "runtime_availability": "available",
+                "relevance_score": 0.8,
+            }
+        ]
+    ) == [
+        {
+            "candidate_handle": "rec-safe",
+            "safe_topics": ["benefits"],
+            "runtime_availability": "available",
+            "relevance_score": 0.8,
+        }
+    ]
