@@ -1,3 +1,4 @@
+import pytest
 from apps.log_system import tasks as log_tasks
 from apps.shared.services.agent_builder_intent_plan_l2_retention import (
     DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_BATCHES_PER_RUN,
@@ -74,3 +75,40 @@ def test_l2_retention_purge_uses_bounded_catch_up_batches(monkeypatch) -> None:
         ("close",),
     ]
     assert DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_BATCHES_PER_RUN >= 3
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"limit": 1001},
+        {"max_batches": 6},
+    ],
+)
+def test_l2_retention_purge_rejects_values_above_the_documented_hard_cap(
+    monkeypatch,
+    data,
+) -> None:
+    events: list[tuple] = []
+
+    class Session:
+        def rollback(self) -> None:
+            events.append(("rollback",))
+
+        def close(self) -> None:
+            events.append(("close",))
+
+    session = Session()
+    monkeypatch.setattr(log_tasks, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        AgentBuilderIntentPlanL2RetentionService,
+        "purge",
+        lambda _db, *, limit: {"purged_count": 0, "limit": limit},
+    )
+
+    result = log_tasks.agent_builder_intent_plan_l2_retention_purge.run(data)
+
+    assert result == {
+        "status": "failed",
+        "error": "invalid_agent_builder_intent_plan_l2_purge_request",
+    }
+    assert events == [("rollback",), ("close",)]
