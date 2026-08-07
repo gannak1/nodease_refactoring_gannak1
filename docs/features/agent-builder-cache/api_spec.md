@@ -194,14 +194,14 @@ allowlist 밖 organization은 두 operation 모두 호출하지 않는다.
 | `lookup_key_version`, `lookup_token` | repository 전용 HMAC domain으로 만든 versioned token; raw request/Redis key/digest 없음 |
 | `envelope_ciphertext` | cache 전용 Fernet keyring으로 암호화한 canonical strict-plan envelope |
 | `envelope_mac` | lookup token, lookup/envelope/key version, algorithm과 ciphertext를 constant-time 비교로 인증 |
-| `created_at`, `expires_at` | creation부터 30일; read는 갱신하지 않음 |
+| `created_at`, `expires_at` | creation부터 30일; read와 unexpired same-key 재저장은 갱신하지 않으며, 만료 row 충돌만 새 30일을 시작 |
 
 L2 load result는 `hit|miss|invalid|unavailable` 중 하나이며, `invalid`와 `unavailable`은 plan을
 반환하지 않는다. expired, unknown key version, Fernet decrypt failure, MAC mismatch와 codec failure는
 L2 plan을 사용하지 않는다. L2 hit은 기존 `IntentPlanRehydratorPort`를 통해 현재 context에서 성공한 뒤에만
 L1 `save`로 승격한다.
 
-L2 save는 isolated short DB transaction으로 commit한다. commit result가 `stored`일 때만 coordinator가
+L2 save는 isolated short DB transaction으로 commit한다. 실제로 한 row를 insert 또는 upsert한 commit result가 `stored`일 때만 coordinator가
 L1 `save_if_lease_owner`를 호출한다. L2 save failure는 Planner response를 바꾸지 않지만 L1 write를
 금지한다. Redis와 PostgreSQL 사이에 distributed transaction이나 retry/backfill contract는 없다.
 
