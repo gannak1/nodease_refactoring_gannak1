@@ -334,6 +334,99 @@ def test_submit_message_records_cache_outcome_only_when_request_history_schema_i
     assert ("intent_cache_outcome" in request_row.__dict__) is schema_ready
 
 
+def test_submit_message_persists_cache_error_after_rollback(monkeypatch):
+    class RollbackRestoringDb(FakeDb):
+        def __init__(self):
+            super().__init__()
+            self._persisted_cache_outcome = None
+
+        def commit(self):
+            super().commit()
+            if self.commits == 1:
+                request_row = next(
+                    row
+                    for row in self.added
+                    if isinstance(row, service_module.AgentBuilderRequest)
+                )
+                self._persisted_cache_outcome = request_row.intent_cache_outcome
+
+        def rollback(self):
+            super().rollback()
+            request_row = next(
+                row
+                for row in self.added
+                if isinstance(row, service_module.AgentBuilderRequest)
+            )
+            request_row.intent_cache_outcome = self._persisted_cache_outcome
+
+    db = RollbackRestoringDb()
+    session_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    session = SimpleNamespace(
+        id=session_id,
+        workflow_id=None,
+        app_id=app_id,
+        status="active",
+        updated_at=None,
+    )
+    service = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+        intent_extractor=None,
+        request_history_schema_readiness=FixedRequestHistorySchemaReadiness(True),
+    )
+
+    def flush_with_generated_ids():
+        db.flushed = True
+        for row in db.added:
+            if getattr(row, "id", None) is None:
+                row.id = uuid.uuid4()
+
+    def raise_after_recording_cache_error(*_args, cache_outcome_sink, **_kwargs):
+        cache_outcome_sink("error")
+        raise RuntimeError("cache planning failed")
+
+    db.flush = flush_with_generated_ids
+    monkeypatch.setattr(service, "_session_or_404", lambda _: session)
+    monkeypatch.setattr(service, "_lock_session_for_request", lambda value: value)
+    monkeypatch.setattr(service, "_reject_if_pending", lambda _: None)
+    monkeypatch.setattr(
+        service,
+        "_app_in_active_org",
+        lambda _: SimpleNamespace(id=app_id),
+    )
+    monkeypatch.setattr(
+        service_module.AppService,
+        "access_denial_status",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        service,
+        "_selected_knowledge_candidate_context",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(service, "_structure_request", raise_after_recording_cache_error)
+    monkeypatch.setattr(
+        service_module,
+        "add_action_audit",
+        lambda *_args, **_kwargs: None,
+    )
+
+    response = service.submit_message(
+        session_id,
+        AgentBuilderMessageRequest(message="새 workflow를 만들어줘"),
+    )
+
+    request_row = next(
+        row for row in db.added if isinstance(row, service_module.AgentBuilderRequest)
+    )
+    assert response.status == "failed"
+    assert db.rollbacks == 1
+    assert db.commits == 2
+    assert request_row.intent_cache_outcome == "error"
+
+
 @pytest.mark.parametrize("scope_mismatch", ["request_session", "app_primary"])
 def test_submit_message_rejects_non_primary_usage_scope_before_provider(
     monkeypatch,

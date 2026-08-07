@@ -1464,7 +1464,13 @@ class AgentBuilderService:
                 "agent_builder_request_processing_failed error_type=%s",
                 type(exc).__name__,
             )
-            return self._fail_processing_request(request_row)
+            return self._fail_processing_request(
+                request_row,
+                cache_error_recorded=(
+                    cache_outcome_available
+                    and getattr(request_row, "intent_cache_outcome", None) == "error"
+                ),
+            )
         if (
             recommendations["status"] == "clarification_required"
             and getattr(session, "protocol_version", None) == "direct_edit_v1"
@@ -6808,8 +6814,12 @@ class AgentBuilderService:
     def _fail_processing_request(
         self,
         request_row: AgentBuilderRequest,
+        *,
+        cache_error_recorded: bool = False,
     ) -> AgentBuilderMessageResponse:
         self.db.rollback()
+        if cache_error_recorded:
+            request_row.intent_cache_outcome = "error"
         response = AgentBuilderMessageResponse(
             request_id=request_row.id,
             status="failed",
