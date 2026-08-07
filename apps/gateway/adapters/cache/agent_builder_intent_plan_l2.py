@@ -303,13 +303,12 @@ class PostgresIntentPlanRepository:
                 **values
             )
             session.execute(
-                statement.on_conflict_do_update(
+                statement.on_conflict_do_nothing(
                     index_elements=(
                         "organization_id",
                         "lookup_key_version",
                         "lookup_token",
-                    ),
-                    set_=values,
+                    )
                 )
             )
             session.commit()

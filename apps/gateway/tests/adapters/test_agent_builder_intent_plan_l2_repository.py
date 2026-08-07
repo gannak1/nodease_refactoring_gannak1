@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from cryptography.fernet import Fernet
+from sqlalchemy.dialects import postgresql
 
 from apps.gateway.adapters.cache.agent_builder_intent_plan_l2 import (
     IntentPlanL2EnvelopeCodec,
@@ -99,6 +100,18 @@ def _read_config(
     )
 
 
+def _write_config(
+    context: IntentPlanningContext,
+    encryption: CredentialEncryptionService,
+) -> AgentBuilderIntentPlanL2Config:
+    return AgentBuilderIntentPlanL2Config(
+        mode="write_only",
+        disabled_reason=None,
+        organization_allowlist=frozenset({context.scope._organization_id}),
+        encryption=encryption,
+    )
+
+
 class _UnexpectedSessionFactory:
     def __init__(self) -> None:
         self.calls = 0
@@ -153,6 +166,44 @@ class _FailingSessionFactory:
     def __call__(self) -> _FailingSession:
         self.calls += 1
         return _FailingSession(self._error)
+
+
+class _RecordingSession:
+    def __init__(self) -> None:
+        self.statement = None
+        self.committed = False
+        self.closed = False
+
+    def execute(self, statement) -> None:
+        self.statement = statement
+
+    def commit(self) -> None:
+        self.committed = True
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_l2_same_key_write_uses_conflict_do_nothing_to_preserve_retention() -> None:
+    context = _context()
+    encryption = _encryption()
+    session = _RecordingSession()
+    repository = PostgresIntentPlanRepository(
+        session_factory=lambda: session,
+        envelope_codec=_envelope_codec(encryption),
+        config=_write_config(context, encryption),
+    )
+
+    result = repository.save(context, b"canonical-material", _plan())
+
+    assert result is not None
+    assert result.status == "stored"
+    assert session.committed is True
+    assert session.closed is True
+    assert session.statement is not None
+    statement_sql = str(session.statement.compile(dialect=postgresql.dialect()))
+    assert "DO NOTHING" in statement_sql
+    assert "DO UPDATE" not in statement_sql
 
 
 def test_l2_missing_schema_safely_disables_l2_without_retrying_db_io() -> None:
