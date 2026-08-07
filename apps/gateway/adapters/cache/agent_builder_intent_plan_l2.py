@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
 from apps.gateway.application.agent_builder.intent_cache import (
@@ -302,15 +302,38 @@ class PostgresIntentPlanRepository:
             statement = postgresql_insert(AgentBuilderIntentPlanCacheRecord).values(
                 **values
             )
-            session.execute(
-                statement.on_conflict_do_nothing(
+            expired_record = AgentBuilderIntentPlanCacheRecord.expires_at <= now
+            excluded = statement.excluded
+            result = session.execute(
+                statement.on_conflict_do_update(
                     index_elements=(
                         "organization_id",
                         "lookup_key_version",
                         "lookup_token",
-                    )
+                    ),
+                    set_={
+                        "envelope_ciphertext": excluded.envelope_ciphertext,
+                        "envelope_mac": excluded.envelope_mac,
+                        "encryption_key_version": excluded.encryption_key_version,
+                        "encryption_algorithm": excluded.encryption_algorithm,
+                        "envelope_version": excluded.envelope_version,
+                        "created_at": case(
+                            (expired_record, excluded.created_at),
+                            else_=AgentBuilderIntentPlanCacheRecord.created_at,
+                        ),
+                        "expires_at": case(
+                            (expired_record, excluded.expires_at),
+                            else_=AgentBuilderIntentPlanCacheRecord.expires_at,
+                        ),
+                    },
                 )
             )
+            if getattr(result, "rowcount", None) != 1:
+                session.rollback()
+                return IntentPlanSaveResult(
+                    status="unavailable",
+                    reason="cache_unavailable",
+                )
             session.commit()
             return IntentPlanSaveResult(status="stored", reason=None)
         except Exception as exc:

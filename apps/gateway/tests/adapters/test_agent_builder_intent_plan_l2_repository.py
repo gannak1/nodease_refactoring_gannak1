@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import uuid4
 
 from cryptography.fernet import Fernet
@@ -169,22 +170,28 @@ class _FailingSessionFactory:
 
 
 class _RecordingSession:
-    def __init__(self) -> None:
+    def __init__(self, *, rowcount: int = 1) -> None:
+        self._rowcount = rowcount
         self.statement = None
         self.committed = False
+        self.rolled_back = False
         self.closed = False
 
-    def execute(self, statement) -> None:
+    def execute(self, statement):
         self.statement = statement
+        return SimpleNamespace(rowcount=self._rowcount)
 
     def commit(self) -> None:
         self.committed = True
+
+    def rollback(self) -> None:
+        self.rolled_back = True
 
     def close(self) -> None:
         self.closed = True
 
 
-def test_l2_same_key_write_uses_conflict_do_nothing_to_preserve_retention() -> None:
+def test_l2_same_key_write_replaces_invalid_or_expired_row_without_extending_retention() -> None:
     context = _context()
     encryption = _encryption()
     session = _RecordingSession()
@@ -202,8 +209,30 @@ def test_l2_same_key_write_uses_conflict_do_nothing_to_preserve_retention() -> N
     assert session.closed is True
     assert session.statement is not None
     statement_sql = str(session.statement.compile(dialect=postgresql.dialect()))
-    assert "DO NOTHING" in statement_sql
-    assert "DO UPDATE" not in statement_sql
+    assert "DO UPDATE SET" in statement_sql
+    assert "DO NOTHING" not in statement_sql
+    assert "envelope_ciphertext = excluded.envelope_ciphertext" in statement_sql
+    assert "created_at = CASE WHEN" in statement_sql
+    assert "expires_at = CASE WHEN" in statement_sql
+
+
+def test_l2_zero_row_upsert_does_not_report_a_durable_store() -> None:
+    context = _context()
+    encryption = _encryption()
+    session = _RecordingSession(rowcount=0)
+    repository = PostgresIntentPlanRepository(
+        session_factory=lambda: session,
+        envelope_codec=_envelope_codec(encryption),
+        config=_write_config(context, encryption),
+    )
+
+    result = repository.save(context, b"canonical-material", _plan())
+
+    assert result is not None
+    assert result.status == "unavailable"
+    assert session.committed is False
+    assert session.rolled_back is True
+    assert session.closed is True
 
 
 def test_l2_missing_schema_safely_disables_l2_without_retrying_db_io() -> None:
