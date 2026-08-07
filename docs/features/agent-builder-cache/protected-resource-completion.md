@@ -66,7 +66,7 @@ JEO-7 implementation에서 각 경계를 코드·테스트·문서로 연결한�
 | Secret and envelope integrity | In Progress | cache 전용 Fernet keyring과 repository HMAC domain을 사용한다. key, allowlist, lookup token, ciphertext, plan과 protected identifier는 response, audit, metric, trace, log와 fixture에서 금지한다. |
 | DB-first transaction boundary | In Progress | Planner/provider/Redis I/O와 분리한 independent short L2 transaction을 사용한다. L2 commit 성공 뒤에만 L1 write하고 failure는 response를 실패시키지 않되 L1 write를 하지 않는다. |
 | Lifecycle and deletion | In Progress | `expires_at`은 30-day immutable retention이다. read는 연장하지 않고 bounded purge가 hard-delete하며 organization delete는 FK cascade다. downgrade는 L2 row 존재 시 거부한다. |
-| Audit and command history | In Progress | canonical cache-purge audit은 만들지 않는다. `agent_builder_requests.intent_cache_outcome`에는 allowlisted outcome만 기록하며 cache source/payload/key/detail을 남기지 않는다. |
+| Audit and command history | In Progress | canonical cache-purge audit은 만들지 않는다. schema-ready `agent_builder_requests.intent_cache_outcome`에는 allowlisted outcome만 기록하며 cache source/payload/key/detail을 남기지 않는다. rolling deploy의 이전 schema 또는 readiness 확인 실패에서는 이 telemetry만 생략하고 request 흐름을 유지한다. |
 | Runtime/background | In Progress | purge task는 bounded expired-row deletion만 수행하며 cache plan을 serving하거나 protected authority를 부여하지 않는다. production allowlist activation은 JEO-7 범위 밖이다. |
 
 ## Merge Blocking Conditions

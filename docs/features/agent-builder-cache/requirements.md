@@ -191,7 +191,7 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
   `waiter_capacity_exceeded` reason을 지원하되 key, actor, organization과 request identity를 label로 사용하지 않아야 한다.
 - ABC-FR-077: PostgreSQL audit는 cache 복구 저장소로 사용하지 않아야 한다. Audit에는 safe outcome,
   reason과 latency만 남기고 request, cache key/value와 plan payload를 저장하거나 Redis data loss 복구에 재생하지 않아야 한다.
-- ABC-FR-078: `agent_builder_requests`에는 `disabled|hit|miss|bypass|error` 중 하나의 `intent_cache_outcome`만 기록해야 한다. L1/L2 source, lookup token, envelope, plan, protected identifier 또는 failure detail은 request history, response, audit, metric, trace와 log에 기록하면 안 된다.
+- ABC-FR-078: schema readiness가 확인된 `agent_builder_requests`에는 `disabled|hit|miss|bypass|error` 중 하나의 `intent_cache_outcome`만 기록해야 한다. 이전 schema 또는 readiness 확인 실패에서는 telemetry만 process lifetime 동안 생략하고 request insert, L1과 Planner 흐름을 유지해야 한다. L1/L2 source, lookup token, envelope, plan, protected identifier 또는 failure detail은 request history, response, audit, metric, trace와 log에 기록하면 안 된다.
 
 ### Configuration and Invalidation
 
@@ -215,7 +215,7 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
 - ABC-FR-094: Production Redis 운영 이슈와 evidence는 cache 코드·필수 검증 완료와 분리하되,
   evidence가 없으면 production 또는 staging serving을 활성화하지 않아야 한다. Graph RAG 설계·구현은
   deterministic cache의 완료 조건으로 사용하지 않아야 한다.
-- ABC-FR-102: `AGENT_BUILDER_INTENT_L2_MODE`, strict UUID `AGENT_BUILDER_INTENT_L2_ORGANIZATION_ALLOWLIST`, cache 전용 `AGENT_BUILDER_INTENT_L2_ENCRYPTION_KEYS`와 active key version은 L2 전용 설정이어야 한다. invalid keyring, invalid allowlist 또는 schema readiness failure는 L2만 safe-disabled 처리해야 하며 key/allowlist 원문을 노출하면 안 된다.
+- ABC-FR-102: `AGENT_BUILDER_INTENT_L2_MODE`, strict UUID `AGENT_BUILDER_INTENT_L2_ORGANIZATION_ALLOWLIST`, cache 전용 `AGENT_BUILDER_INTENT_L2_ENCRYPTION_KEYS`와 active key version은 L2 전용 설정이어야 한다. invalid keyring, invalid allowlist 또는 L2 schema readiness failure는 L2만 safe-disabled 처리해야 하며 key/allowlist 원문을 노출하면 안 된다. 같은 migration의 request-history outcome column이 없거나 확인에 실패하면 outcome telemetry만 safe-disabled 처리하며 request insert, L1과 Planner는 중단하면 안 된다.
 
 ## Non-Functional Requirements
 

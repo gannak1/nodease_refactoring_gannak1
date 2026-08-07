@@ -155,7 +155,8 @@ PostgreSQL integration은 별도 환경에서 순차 실행한다.
 | ABC-T149b | same canonical material across organizations and lookup version rotation | organization predicate 또는 version이 다르면 candidate를 읽지 않으며 raw organization/key/digest는 table, log, fixture에 없음 |
 | ABC-T149c | L2 30-day expiry and bounded purge | read가 expires_at을 연장하지 않고 expired row는 candidate로 사용하지 않으며 batch limit 안에서 hard-delete; purge audit event와 raw row detail 없음 |
 | ABC-T149d | PostgreSQL migration upgrade/downgrade | FK cascade, unique lookup index, expiry index와 nullable historic request outcome 확인; L2 row가 존재하면 downgrade guard가 실패 |
-| ABC-T149e | request history cache result | new request는 allowlisted `intent_cache_outcome`만 기록하며 L1/L2 source, token, envelope, plan, protected identifier와 failure detail 없음 |
+| ABC-T149e | request history cache result | schema-ready new request는 allowlisted `intent_cache_outcome`만 기록하며 L1/L2 source, token, envelope, plan, protected identifier와 failure detail 없음 |
+| ABC-T149f | outcome column 없는 rolling-deploy schema 또는 readiness 확인 실패 | new Gateway가 request row를 계속 저장하고 L1/Planner 흐름을 유지하며 outcome telemetry만 process lifetime 동안 생략 |
 
 ## Observability and Security
 

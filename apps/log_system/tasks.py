@@ -1028,13 +1028,17 @@ def rag_answer_retention_purge(self, data: Dict[str, Any]):
     bind=True,
     max_retries=3,
 )
-def agent_builder_intent_plan_l2_retention_purge(self, data: Dict[str, Any]):
+def agent_builder_intent_plan_l2_retention_purge(
+    self,
+    data: Dict[str, Any] | None = None,
+):
     """Hard-delete a bounded batch of expired Agent Builder L2 cache rows."""
     from apps.shared.services.agent_builder_intent_plan_l2_retention import (
         DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_LIMIT,
         AgentBuilderIntentPlanL2RetentionService,
     )
 
+    data = data or {}
     session = SessionLocal()
     try:
         result = AgentBuilderIntentPlanL2RetentionService.purge(

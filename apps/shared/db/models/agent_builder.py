@@ -6,6 +6,7 @@ from apps.shared.db.base import Base
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
+    FetchedValue,
     ForeignKey,
     Index,
     Integer,
@@ -67,6 +68,7 @@ class AgentBuilderSession(Base):
 
 class AgentBuilderRequest(Base):
     __tablename__ = "agent_builder_requests"
+    __mapper_args__ = {"eager_defaults": False}
     __table_args__ = (
         Index("ix_agent_builder_requests_session_status", "session_id", "status"),
         CheckConstraint(
@@ -93,7 +95,10 @@ class AgentBuilderRequest(Base):
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     intent_cache_outcome: Mapped[Optional[str]] = mapped_column(
-        String(16), nullable=True
+        String(16),
+        nullable=True,
+        server_default=FetchedValue(),
+        deferred=True,
     )
     message_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     structured_request: Mapped[dict] = mapped_column(

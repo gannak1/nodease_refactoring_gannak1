@@ -24,7 +24,7 @@ production cohort 활성화를 포함하지 않는다.
 6. L2는 `disabled`, `write_only`, `read` mode와 strict organization UUID allowlist를 함께 만족할 때만 적용한다. 기본값은 `disabled`이고 빈 allowlist는 어떤 organization에도 L2를 적용하지 않는다. 롤아웃은 `disabled -> write_only -> read`, rollback은 역순이다.
 7. L2가 disabled이거나 allowlist 밖이면 ADR-0063의 L1-only 동작을 유지한다. PostgreSQL `undefined table` 또는 `undefined column` schema-readiness 오류는 process에서 L2만 비활성화하고 L1-only 동작을 유지한다. 그 외 L2 read/query/write failure는 Planner fallback으로 열리되, 대상 cohort의 cold result는 L2 commit 성공 전 L1에 저장하지 않는다.
 8. L2 hit은 기존 cache hit와 같은 현재 membership, credential/model relation, workflow/target, Catalog와 Knowledge revalidation 및 rehydration을 통과한 뒤에만 L1으로 승격한다.
-9. `agent_builder_requests`에는 allowlisted `intent_cache_outcome` (`disabled|hit|miss|bypass|error`)만 기록한다. L1/L2 source, lookup token, envelope, plan, protected identifier와 failure detail은 response, audit, metric, trace, log에 남기지 않는다.
+9. `agent_builder_requests`에는 schema readiness가 확인된 경우에만 allowlisted `intent_cache_outcome` (`disabled|hit|miss|bypass|error`)을 기록한다. rolling deploy의 이전 schema 또는 readiness 확인 실패에서는 이 best-effort telemetry만 process lifetime 동안 생략하고 request insert, L1과 Planner 흐름은 유지한다. L1/L2 source, lookup token, envelope, plan, protected identifier와 failure detail은 response, audit, metric, trace, log에 남기지 않는다.
 10. migration은 additive이며 organization cascade, organization+lookup-version+token unique index, expiry index와 downgrade guard를 제공한다. L2 record가 남아 있으면 downgrade는 거부한다.
 11. Schema/keyring/mode configuration이 불완전하면 L2를 serving하지 않는다. 기존 Agent Builder Planner, permission, usage, GraphMutation/CAS와 audit 경계는 그대로 유지한다.
 
