@@ -5,13 +5,12 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.dialects import postgresql
-
 from apps.shared.services.agent_builder_intent_plan_l2_retention import (
     DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_LIMIT,
     MAX_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_LIMIT,
     AgentBuilderIntentPlanL2RetentionService,
 )
+from sqlalchemy.dialects import postgresql
 
 
 class _PurgeQuery:
