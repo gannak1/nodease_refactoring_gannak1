@@ -6,10 +6,12 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from threading import Lock
 from typing import Any, Callable
+from weakref import WeakKeyDictionary
 
 from fastapi import HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import inspect, or_, select
 from sqlalchemy.orm import Session
 
 from apps.gateway.adapters.db.agent_builder_repository import AgentBuilderRepository
@@ -145,6 +147,52 @@ NO_KB_CANDIDATE_LABEL = "Knowledge Base 없이 생성"
 NO_KB_CANDIDATE_WARNING = "사용자가 Knowledge Base 없이 도안 생성을 선택했습니다. LLM node는 Knowledge Base binding 없이 생성됩니다."
 AGENT_BUILDER_KB_RECOMMENDATION_LIMIT = 20
 EXPECTED_APP_PRIMARY_WORKFLOW_ID = "expected_app_primary_workflow_id"
+_RECORDED_INTENT_CACHE_OUTCOMES = frozenset(
+    {"disabled", "hit", "miss", "bypass", "error"}
+)
+
+
+class AgentBuilderRequestHistorySchemaReadiness:
+    """Keep additive cache-outcome telemetry from blocking a stale-schema request."""
+
+    def __init__(self) -> None:
+        self._availability_by_bind: WeakKeyDictionary[object, bool] = (
+            WeakKeyDictionary()
+        )
+        self._lock = Lock()
+
+    def is_cache_outcome_available(self, db: object) -> bool:
+        get_bind = getattr(db, "get_bind", None)
+        if not callable(get_bind):
+            # Non-SQLAlchemy test doubles retain the current request-history path.
+            return True
+        try:
+            bind = get_bind()
+        except Exception:
+            return False
+        try:
+            with self._lock:
+                return self._availability_by_bind[bind]
+        except (KeyError, TypeError):
+            pass
+
+        try:
+            available = any(
+                column["name"] == "intent_cache_outcome"
+                for column in inspect(bind).get_columns("agent_builder_requests")
+            )
+        except Exception:
+            available = False
+
+        try:
+            with self._lock:
+                self._availability_by_bind[bind] = available
+        except TypeError:
+            pass
+        return available
+
+
+_REQUEST_HISTORY_SCHEMA_READINESS = AgentBuilderRequestHistorySchemaReadiness()
 
 def intent_extraction_failure_issue_details(
     error: AgentBuilderIntentExtractionError,
@@ -984,6 +1032,9 @@ class AgentBuilderService:
         organization_id: uuid.UUID,
         intent_extractor: AgentBuilderIntentExtractor | None = None,
         intent_plan_cache: IntentPlanCacheBoundary | None = None,
+        request_history_schema_readiness: (
+            AgentBuilderRequestHistorySchemaReadiness | None
+        ) = None,
     ) -> None:
         self.db = db
         self.user = user
@@ -993,6 +1044,9 @@ class AgentBuilderService:
             intent_plan_cache
             if intent_plan_cache is not None
             else DisabledIntentPlanCacheBoundary()
+        )
+        self._request_history_schema_readiness = (
+            request_history_schema_readiness or _REQUEST_HISTORY_SCHEMA_READINESS
         )
         self._benchmark_cache_diagnostic: tuple[str, int, int, int] | None = None
 
@@ -1168,6 +1222,9 @@ class AgentBuilderService:
                     raise recorded_permission_denied_exception(detail)
                 raise HTTPException(status_code=denial_status, detail=detail)
 
+        cache_outcome_available = (
+            self._request_history_schema_readiness.is_cache_outcome_available(self.db)
+        )
         request_row = AgentBuilderRequest(
             session_id=session.id,
             organization_id=self.organization_id,
@@ -1178,6 +1235,8 @@ class AgentBuilderService:
             response_payload={},
             expires_at=_now() + SESSION_TTL,
         )
+        if cache_outcome_available:
+            request_row.intent_cache_outcome = "bypass"
         self.db.add(request_row)
         self.db.flush()
         add_action_audit(
@@ -1252,6 +1311,15 @@ class AgentBuilderService:
                 else self._structure_request(
                     message_request,
                     workflow,
+                    cache_outcome_sink=(
+                        lambda outcome: setattr(
+                            request_row,
+                            "intent_cache_outcome",
+                            outcome,
+                        )
+                        if cache_outcome_available
+                        else None
+                    ),
                     cache_cancellation_fence=(
                         self._intent_cache_cancellation_fence(request_row)
                     ),
@@ -2681,6 +2749,7 @@ class AgentBuilderService:
         usage_context_factory: (
             Callable[[], AgentBuilderIntentUsageContext | None] | None
         ) = None,
+        cache_outcome_sink: Callable[[str], None] | None = None,
         cache_cancellation_fence=None,
         cache_request_deadline_monotonic: float | None = None,
     ) -> AgentBuilderStructuredRequest:
@@ -2792,6 +2861,7 @@ class AgentBuilderService:
             execution = cache_boundary.execute(planner_call, context=context)
         except ColdMissRehydrationError as exc:
             record_benchmark_diagnostic("error")
+            self._record_intent_cache_outcome(cache_outcome_sink, "error")
             # The provider attempt already owns its usage record. Reusing the raw
             # extraction would create a cache-only downstream divergence.
             raise AgentBuilderIntentExtractionError(
@@ -2799,22 +2869,45 @@ class AgentBuilderService:
             ) from exc
         except RequestFenceAbortedError as exc:
             record_benchmark_diagnostic("error")
+            self._record_intent_cache_outcome(cache_outcome_sink, "error")
             raise AgentBuilderIntentExtractionError(
                 "Agent Builder request changed before cache planning completed"
             ) from exc
         except Exception:
-            record_benchmark_diagnostic(
+            outcome = (
                 "disabled"
                 if isinstance(cache_boundary, DisabledIntentPlanCacheBoundary)
                 else "error"
             )
+            record_benchmark_diagnostic(outcome)
+            self._record_intent_cache_outcome(cache_outcome_sink, outcome)
             raise
-        record_benchmark_diagnostic(
+        outcome = (
             "disabled"
             if isinstance(cache_boundary, DisabledIntentPlanCacheBoundary)
             else execution.decision.outcome
         )
+        record_benchmark_diagnostic(outcome)
+        self._record_intent_cache_outcome(cache_outcome_sink, outcome)
         return execution.structured_request
+
+    @staticmethod
+    def _record_intent_cache_outcome(
+        sink: Callable[[str], None] | None,
+        outcome: str,
+    ) -> None:
+        if sink is None or outcome not in {
+            "disabled",
+            "hit",
+            "miss",
+            "bypass",
+            "error",
+        }:
+            return
+        try:
+            sink(outcome)
+        except Exception:
+            pass
 
     def _intent_cache_cancellation_fence(self, request_row: AgentBuilderRequest):
         """Observe terminal request state before cache work and during follower waits."""
@@ -6719,7 +6812,19 @@ class AgentBuilderService:
         self,
         request_row: AgentBuilderRequest,
     ) -> AgentBuilderMessageResponse:
+        # A terminal failure may happen after a cache outcome was written but
+        # before the request's final commit. Capture only the closed telemetry
+        # value before rollback so every caller shares the same restoration
+        # boundary without loading an unavailable additive column.
+        cache_outcome = request_row.__dict__.get("intent_cache_outcome")
+        if (
+            not isinstance(cache_outcome, str)
+            or cache_outcome not in _RECORDED_INTENT_CACHE_OUTCOMES
+        ):
+            cache_outcome = None
         self.db.rollback()
+        if cache_outcome is not None:
+            request_row.intent_cache_outcome = cache_outcome
         response = AgentBuilderMessageResponse(
             request_id=request_row.id,
             status="failed",

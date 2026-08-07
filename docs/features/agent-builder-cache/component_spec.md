@@ -26,6 +26,9 @@ MBA-343 cache spine의 내부 module 분리와 disabled runtime seam은
 | `IntentPlanCachePolicy` | lookup/store admission과 bypass reason 결정 | provider 호출, graph 생성 |
 | `IntentPlanCachePort` | cache/lease 의미 계약 | Redis 타입 노출 |
 | `RedisIntentPlanCacheAdapter` | bounded Redis get/put/lease/wait | business validation |
+| `IntentPlanL2EnvelopeCodec` | repository 전용 lookup token, Fernet envelope와 independent HMAC binding | Redis envelope 재사용, raw request/graph/credential을 envelope에 포함 |
+| `PostgresIntentPlanRepository` | allowlisted organization의 L2 load/save와 짧은 독립 DB transaction | authorization·GraphMutation·request replay 소유, L2 commit 전 L1 promotion 허용 |
+| Agent Builder L2 retention task | 만료 encrypted L2 row의 bounded hard-delete와 retry | cache plan serving, cache audit/replay record 생성 |
 | `CachedIntentPlanCodec` | strict serialization, max size와 forbidden field validation | Pydantic validation 우회 |
 | `CanonicalIntentTextRegistry` | provider topic/guidance의 exact ref projection, request-specific safe-summary projection descriptor와 purpose fixed rendering | fuzzy/semantic mapping, 자유 형식 template argument |
 | `RequestIntentSummaryProjector` | current `full_safe_message`에서 versioned bounded `intent_summary` 생성 | provider summary 또는 request/draft 공통 문장 재사용 |
@@ -42,11 +45,15 @@ HTTP endpoint
       -> existing auth / organization / request admission
       -> AgentBuilderIntentCoordinator
           -> application normalizer/policy/fingerprinter/rehydrator
-          -> IntentPlanCachePort
-              <- RedisIntentPlanCacheAdapter
-          -> existing Planner port
-              <- provider-backed intent extractor
-      -> existing structured request / GraphMutation / CAS services
+           -> IntentPlanCachePort
+               <- RedisIntentPlanCacheAdapter
+           -> optional PostgresIntentPlanRepository
+               <- IntentPlanL2EnvelopeCodec / SessionLocal
+           -> existing Planner port
+               <- provider-backed intent extractor
+       -> existing structured request / GraphMutation / CAS services
+
+Celery Beat -> Log System L2 retention task -> expired L2 rows only
 ```
 
 Application types는 `redis.Redis`, FastAPI Request와 SQLAlchemy model을 import하지 않는다. Composition이
@@ -61,6 +68,12 @@ stores the boundary in FastAPI app state, and closes the owned client/pool once 
 composition receives that shared boundary with its current user/organization and never calls Redis client
 construction. Disabled configuration constructs no adapter; initialization failure remains a safe
 fail-open to the existing Planner path, and shutdown errors are contained without configuration-secret disclosure.
+
+**Durable L2 amendment.** The coordinator reads L2 only after an L1 miss. A cache-eligible cold plan first
+commits through `PostgresIntentPlanRepository`; it attempts the lease-owner L1 save only when that commit reports
+`stored`. L2 is optional and fail-closed for invalid configuration or missing schema, while the existing Planner
+response remains available. The Log System task is a retention executor only: every five minutes it processes at
+most five 1,000-row batches, rechecks expiry at delete time, and never serves or audits cache payloads.
 
 **Approved cross-cutting integration scope.** MBA-348 retains three minimal
 user-approved integration surfaces: the `from_url` adapter's idempotent app-owned
@@ -87,11 +100,14 @@ evidence remains MBA-349.
 | `apps/gateway/application/agent_builder/intent_rehydration.py` | current-context rehydration |
 | `apps/gateway/application/agent_builder/intent_rehydration_registry.py` | versioned topic/guidance/purpose manifest, request-summary projection과 fixed template rendering |
 | `apps/gateway/adapters/cache/agent_builder_intent_plan.py` | Redis adapter/codec boundary and app-owned client/pool close |
+| `apps/gateway/adapters/cache/agent_builder_intent_plan_l2.py` | repository HMAC/Fernet envelope, organization-scoped L2 lookup/save와 schema-readiness safe-disable |
 | `apps/gateway/composition/agent_builder_cache.py` | process-lifetime enabled cache construction, app-state ownership, safe close |
 | `apps/gateway/composition/agent_builder.py` | request composition of the shared cache boundary and service |
 | `apps/gateway/lifespan.py` | cache runtime initialization after startup and one-time shutdown close |
 | `apps/gateway/services/agent_builder_service.py` | transient full safe planning context DTO와 coordinator seam |
 | `apps/gateway/services/agent_builder_intent_service.py` | provider-backed extraction과 repair 유지 |
+| `apps/shared/services/agent_builder_intent_plan_l2_retention.py` | expiry recheck를 포함한 bounded L2 hard-delete batch |
+| `apps/log_system/tasks.py` | 5분 Beat가 발행한 L2 retention task의 bounded batch loop와 retry |
 
 `intent_cache_coordinator.py`는 `intent_cache/`의 DTO와 port를 의존할 수 있지만 반대 방향 import는
 허용하지 않는다. Redis client 타입은 adapter 밖의 application module에 노출하지 않는다.

@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import json
 import re
+import uuid
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from apps.shared.services.credential_encryption import (
+    CredentialEncryptionError,
+    CredentialEncryptionService,
+)
 
 
 _CACHE_VERSION_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
@@ -25,6 +32,28 @@ class AgentBuilderIntentCacheConfig:
     redis_url: str | None = field(default=None, repr=False)
     hmac_key: bytes | None = field(default=None, repr=False)
     hmac_key_version: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentBuilderIntentPlanL2Config:
+    mode: Literal["disabled", "write_only", "read"]
+    disabled_reason: str | None
+    organization_allowlist: frozenset[uuid.UUID] = frozenset()
+    encryption: CredentialEncryptionService | None = field(default=None, repr=False)
+
+    def should_read(self, organization_id: uuid.UUID) -> bool:
+        return (
+            self.mode == "read"
+            and organization_id in self.organization_allowlist
+            and self.encryption is not None
+        )
+
+    def should_write(self, organization_id: uuid.UUID) -> bool:
+        return (
+            self.mode in {"write_only", "read"}
+            and organization_id in self.organization_allowlist
+            and self.encryption is not None
+        )
 
 
 def _cache_flag(value: str | bool) -> bool | None:
@@ -103,6 +132,13 @@ class Settings(BaseSettings):
         repr=False,
     )
     AGENT_BUILDER_INTENT_CACHE_PRODUCTION_READY: str | bool = "false"
+    AGENT_BUILDER_INTENT_L2_MODE: str = "disabled"
+    AGENT_BUILDER_INTENT_L2_ORGANIZATION_ALLOWLIST: str = ""
+    AGENT_BUILDER_INTENT_L2_ENCRYPTION_KEYS: SecretStr | None = Field(
+        default=None,
+        repr=False,
+    )
+    AGENT_BUILDER_INTENT_L2_ACTIVE_KEY_VERSION: str | None = None
 
     # Keep query-embedding policy writes dormant until all purpose-unaware
     # Gateway and Worker processes have drained.
@@ -303,6 +339,104 @@ class Settings(BaseSettings):
             redis_url=redis_url,
             hmac_key=hmac_key,
             hmac_key_version=hmac_key_version,
+        )
+
+    def agent_builder_intent_plan_l2_config(
+        self,
+    ) -> AgentBuilderIntentPlanL2Config:
+        requested_mode = self.AGENT_BUILDER_INTENT_L2_MODE.strip()
+        if requested_mode not in {"disabled", "write_only", "read"}:
+            return AgentBuilderIntentPlanL2Config(
+                mode="disabled",
+                disabled_reason="invalid_mode",
+            )
+        if requested_mode == "disabled":
+            return AgentBuilderIntentPlanL2Config(
+                mode="disabled",
+                disabled_reason="feature_disabled",
+            )
+
+        raw_allowlist = self.AGENT_BUILDER_INTENT_L2_ORGANIZATION_ALLOWLIST
+        if not raw_allowlist.strip():
+            return AgentBuilderIntentPlanL2Config(
+                mode="disabled",
+                disabled_reason="organization_allowlist_empty",
+            )
+        organization_ids: list[uuid.UUID] = []
+        for raw_identifier in raw_allowlist.split(","):
+            identifier = raw_identifier.strip()
+            try:
+                parsed_identifier = uuid.UUID(identifier)
+            except (AttributeError, ValueError):
+                return AgentBuilderIntentPlanL2Config(
+                    mode="disabled",
+                    disabled_reason="invalid_organization_allowlist",
+                )
+            if str(parsed_identifier) != identifier:
+                return AgentBuilderIntentPlanL2Config(
+                    mode="disabled",
+                    disabled_reason="invalid_organization_allowlist",
+                )
+            organization_ids.append(parsed_identifier)
+        allowlist = frozenset(organization_ids)
+        if len(allowlist) != len(organization_ids):
+            return AgentBuilderIntentPlanL2Config(
+                mode="disabled",
+                disabled_reason="invalid_organization_allowlist",
+            )
+
+        raw_keyring = (
+            self.AGENT_BUILDER_INTENT_L2_ENCRYPTION_KEYS.get_secret_value()
+            if self.AGENT_BUILDER_INTENT_L2_ENCRYPTION_KEYS is not None
+            else ""
+        )
+        active_key_version = (
+            self.AGENT_BUILDER_INTENT_L2_ACTIVE_KEY_VERSION or ""
+        ).strip()
+        if not raw_keyring or not active_key_version:
+            return AgentBuilderIntentPlanL2Config(
+                mode="disabled",
+                disabled_reason="encryption_keyring_missing",
+            )
+        if _CACHE_VERSION_PATTERN.fullmatch(active_key_version) is None:
+            return AgentBuilderIntentPlanL2Config(
+                mode="disabled",
+                disabled_reason="invalid_encryption_keyring",
+            )
+        try:
+            parsed_keyring = json.loads(raw_keyring)
+            if (
+                not isinstance(parsed_keyring, dict)
+                or not parsed_keyring
+                or any(
+                    not isinstance(version, str)
+                    or _CACHE_VERSION_PATTERN.fullmatch(version) is None
+                    or not isinstance(key, str)
+                    or not key
+                    for version, key in parsed_keyring.items()
+                )
+            ):
+                raise ValueError("invalid keyring")
+            encryption = CredentialEncryptionService(
+                parsed_keyring,
+                active_key_version,
+                subject_label="Agent Builder L2 cache",
+            )
+        except (
+            CredentialEncryptionError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            return AgentBuilderIntentPlanL2Config(
+                mode="disabled",
+                disabled_reason="invalid_encryption_keyring",
+            )
+        return AgentBuilderIntentPlanL2Config(
+            mode=requested_mode,
+            disabled_reason=None,
+            organization_allowlist=allowlist,
+            encryption=encryption,
         )
 
 

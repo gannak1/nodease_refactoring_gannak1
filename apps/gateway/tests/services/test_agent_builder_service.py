@@ -113,6 +113,52 @@ class UnexpectedIntentExtractor:
         raise AssertionError("provider must not be called for a non-primary workflow")
 
 
+class FixedRequestHistorySchemaReadiness:
+    def __init__(self, available: bool) -> None:
+        self.available = available
+        self.calls: list[object] = []
+
+    def is_cache_outcome_available(self, db: object) -> bool:
+        self.calls.append(db)
+        return self.available
+
+
+def test_request_history_schema_readiness_caches_missing_outcome_column(
+    monkeypatch,
+) -> None:
+    class Bind:
+        pass
+
+    class Db:
+        def __init__(self) -> None:
+            self.bind = Bind()
+
+        def get_bind(self):
+            return self.bind
+
+    calls: list[tuple[object, str]] = []
+
+    class Inspector:
+        def get_columns(self, table_name: str):
+            calls.append((db.bind, table_name))
+            return [{"name": "status"}]
+
+    db = Db()
+    monkeypatch.setattr(service_module, "inspect", lambda bind: Inspector())
+    readiness = service_module.AgentBuilderRequestHistorySchemaReadiness()
+
+    assert readiness.is_cache_outcome_available(db) is False
+    assert readiness.is_cache_outcome_available(db) is False
+    assert calls == [(db.bind, "agent_builder_requests")]
+
+
+def _use_legacy_structure_request(monkeypatch, service):
+    def build_structured_request(request, workflow, **_kwargs):
+        return service._build_structured_request(request, workflow)
+
+    monkeypatch.setattr(service, "_structure_request", build_structured_request)
+
+
 def test_agent_builder_llm_preview_uses_default_rag_options():
     service = AgentBuilderService(
         FakeDb(),
@@ -216,6 +262,224 @@ def test_submit_message_returns_safe_usage_recording_failure(monkeypatch):
     assert usage_context.session_id == session_id
     assert usage_context.request_id == response.request_id
     assert "입력을 요약" not in str(response.model_dump(mode="json"))
+
+
+@pytest.mark.parametrize("schema_ready", [False, True])
+def test_submit_message_records_cache_outcome_only_when_request_history_schema_is_ready(
+    monkeypatch,
+    schema_ready,
+):
+    db = FakeDb()
+    session_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    session = SimpleNamespace(
+        id=session_id,
+        workflow_id=None,
+        app_id=app_id,
+        status="active",
+        updated_at=None,
+    )
+    readiness = FixedRequestHistorySchemaReadiness(schema_ready)
+    service = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+        request_history_schema_readiness=readiness,
+    )
+
+    def flush_with_generated_ids():
+        db.flushed = True
+        for row in db.added:
+            if getattr(row, "id", None) is None:
+                row.id = uuid.uuid4()
+
+    db.flush = flush_with_generated_ids
+    monkeypatch.setattr(service, "_session_or_404", lambda _: session)
+    monkeypatch.setattr(service, "_lock_session_for_request", lambda value: value)
+    monkeypatch.setattr(service, "_reject_if_pending", lambda _: None)
+    monkeypatch.setattr(
+        service,
+        "_app_in_active_org",
+        lambda _: SimpleNamespace(id=app_id),
+    )
+    monkeypatch.setattr(
+        service_module.AppService,
+        "access_denial_status",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        service,
+        "_selected_knowledge_candidate_context",
+        lambda *_args, **_kwargs: {"error": "candidate_not_in_prior_options"},
+    )
+    monkeypatch.setattr(
+        service_module,
+        "add_action_audit",
+        lambda *_args, **_kwargs: None,
+    )
+
+    response = service.submit_message(
+        session_id,
+        AgentBuilderMessageRequest(message="새 workflow를 만들어줘"),
+    )
+
+    request_row = next(
+        row for row in db.added if isinstance(row, service_module.AgentBuilderRequest)
+    )
+    assert response.status == "validation_failed"
+    assert readiness.calls == [db]
+    assert request_row.intent_cache_outcome == (
+        "bypass" if schema_ready else None
+    )
+    assert ("intent_cache_outcome" in request_row.__dict__) is schema_ready
+
+
+def test_submit_message_persists_cache_error_after_rollback(monkeypatch):
+    class RollbackRestoringDb(FakeDb):
+        def __init__(self):
+            super().__init__()
+            self._persisted_cache_outcome = None
+
+        def commit(self):
+            super().commit()
+            if self.commits == 1:
+                request_row = next(
+                    row
+                    for row in self.added
+                    if isinstance(row, service_module.AgentBuilderRequest)
+                )
+                self._persisted_cache_outcome = request_row.intent_cache_outcome
+
+        def rollback(self):
+            super().rollback()
+            request_row = next(
+                row
+                for row in self.added
+                if isinstance(row, service_module.AgentBuilderRequest)
+            )
+            request_row.intent_cache_outcome = self._persisted_cache_outcome
+
+    db = RollbackRestoringDb()
+    session_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    session = SimpleNamespace(
+        id=session_id,
+        workflow_id=None,
+        app_id=app_id,
+        status="active",
+        updated_at=None,
+    )
+    service = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+        intent_extractor=None,
+        request_history_schema_readiness=FixedRequestHistorySchemaReadiness(True),
+    )
+
+    def flush_with_generated_ids():
+        db.flushed = True
+        for row in db.added:
+            if getattr(row, "id", None) is None:
+                row.id = uuid.uuid4()
+
+    def raise_after_recording_cache_error(*_args, cache_outcome_sink, **_kwargs):
+        cache_outcome_sink("error")
+        raise RuntimeError("cache planning failed")
+
+    db.flush = flush_with_generated_ids
+    monkeypatch.setattr(service, "_session_or_404", lambda _: session)
+    monkeypatch.setattr(service, "_lock_session_for_request", lambda value: value)
+    monkeypatch.setattr(service, "_reject_if_pending", lambda _: None)
+    monkeypatch.setattr(
+        service,
+        "_app_in_active_org",
+        lambda _: SimpleNamespace(id=app_id),
+    )
+    monkeypatch.setattr(
+        service_module.AppService,
+        "access_denial_status",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        service,
+        "_selected_knowledge_candidate_context",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(service, "_structure_request", raise_after_recording_cache_error)
+    monkeypatch.setattr(
+        service_module,
+        "add_action_audit",
+        lambda *_args, **_kwargs: None,
+    )
+
+    response = service.submit_message(
+        session_id,
+        AgentBuilderMessageRequest(message="새 workflow를 만들어줘"),
+    )
+
+    request_row = next(
+        row for row in db.added if isinstance(row, service_module.AgentBuilderRequest)
+    )
+    assert response.status == "failed"
+    assert db.rollbacks == 1
+    assert db.commits == 2
+    assert request_row.intent_cache_outcome == "error"
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["disabled", "hit", "miss", "bypass", "error"],
+)
+def test_fail_processing_request_restores_recorded_cache_outcome_after_rollback(
+    monkeypatch,
+    outcome,
+):
+    class RollbackRestoringDb(FakeDb):
+        def __init__(self) -> None:
+            super().__init__()
+            self._persisted_cache_outcome = None
+
+        def commit(self):
+            super().commit()
+            if self.commits == 1:
+                self._persisted_cache_outcome = request_row.intent_cache_outcome
+
+        def rollback(self):
+            super().rollback()
+            request_row.intent_cache_outcome = self._persisted_cache_outcome
+
+    db = RollbackRestoringDb()
+    request_row = service_module.AgentBuilderRequest(
+        id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        status="processing",
+        structured_request={},
+        response_payload={},
+    )
+    request_row.intent_cache_outcome = "bypass"
+    db.add(request_row)
+    db.commit()
+    request_row.intent_cache_outcome = outcome
+    service = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=request_row.user_id),
+        organization_id=request_row.organization_id,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "add_action_audit",
+        lambda *_args, **_kwargs: None,
+    )
+
+    response = service._fail_processing_request(request_row)
+
+    assert response.status == "failed"
+    assert db.rollbacks == 1
+    assert db.commits == 2
+    assert request_row.intent_cache_outcome == outcome
 
 
 @pytest.mark.parametrize("scope_mismatch", ["request_session", "app_primary"])
@@ -1893,7 +2157,7 @@ def test_submit_message_preserves_explicit_github_comment_capabilities(
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_structure_request", svc._build_structured_request)
+    _use_legacy_structure_request(monkeypatch, svc)
 
     def flush_with_generated_ids():
         db.flushed = True
@@ -2072,7 +2336,7 @@ def test_submit_message_allows_new_workflow_draft_from_existing_workflow_context
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_structure_request", svc._build_structured_request)
+    _use_legacy_structure_request(monkeypatch, svc)
 
     def flush_with_generated_ids():
         db.flushed = True
@@ -2163,7 +2427,7 @@ def test_submit_message_splices_named_existing_target_and_apply_removes_old_edge
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_structure_request", svc._build_structured_request)
+    _use_legacy_structure_request(monkeypatch, svc)
 
     def flush_with_generated_ids():
         db.flushed = True

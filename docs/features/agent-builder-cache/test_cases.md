@@ -142,6 +142,23 @@ PostgreSQL integration은 별도 환경에서 순차 실행한다.
 | ABC-T131 | owner가 clarification/unsupported/provider failure/store-ineligible/cache put failure 결과로 정상 종료 | lease 즉시 해제, follower가 `owner_completed_without_value`를 받고 wait 잔여 시간 없이 Planner 진행, negative cache 없음 |
 | ABC-T132 | 이전 lease generation의 no-value signal 뒤 새 owner가 lease 획득 | stale signal은 새 follower를 깨우지 않고 현재 generation 결과만 사용 |
 
+## Durable L2 Repository
+
+| ID | Case | Expected |
+|---|---|---|
+| ABC-T145 | L1 hit with L2 `read` enabled | L2 query 없음, Planner와 provider 호출 없이 existing L1 result를 current rehydration으로 사용 |
+| ABC-T146 | L1 miss and valid L2 candidate | Fernet/MAC/codec/current-state revalidation 뒤 provider 호출 없이 current result를 반환하고 L1에만 TTL promotion |
+| ABC-T147 | L2 ciphertext/MAC/lookup binding/key version/codec/expiry failure | plan을 사용하거나 L1로 promotion하지 않고 existing Planner path로 한 번 진행; raw token/envelope/key는 diagnostic에 없음 |
+| ABC-T148 | allowlisted `read` cohort cold cache-eligible result | isolated L2 transaction commit이 L1 write보다 먼저 발생하며 commit 성공 뒤에만 lease-owner L1 save |
+| ABC-T149 | L2 query/write transaction failure | valid Planner response는 유지; L2 write failure 뒤에는 대상 cohort L1 write 없음; L2 session 시작 전과 provider/Redis I/O 전에 service DB transaction을 정리하며, 정리할 수 없으면 L2/L1 저장·completion signal·lease release를 건너뜀 |
+| ABC-T149a | `disabled`, blank/외부 organization allowlist, `write_only`, `read` mode | disabled/외부 organization은 L1-only; write_only는 L2 read 없이 DB-first write; read는 L1 miss 후 L2 read; invalid config/keyring/schema는 L2 safe-disabled |
+| ABC-T149b | same canonical material across organizations and lookup version rotation | organization predicate 또는 version이 다르면 candidate를 읽지 않으며 raw organization/key/digest는 table, log, fixture에 없음 |
+| ABC-T149c | L2 30-day expiry and bounded purge | read 또는 unexpired 같은 unique lookup key 재저장이 created_at/expires_at을 연장하지 않고 expired row는 candidate로 사용하지 않으며, 5분 Beat의 task는 최대 5개 batch로 catch-up하고 full batch 뒤에는 다음 batch를 처리하되 partial batch에서 종료; 후보 선택 뒤 same-key upsert가 row를 갱신하면 delete의 expiry 재검사로 삭제 0건; purge audit event와 raw row detail 없음 |
+| ABC-T149d | PostgreSQL migration upgrade/downgrade | FK cascade, unique lookup index, expiry index와 nullable historic request outcome 확인; L2 row가 존재하면 downgrade guard가 실패 |
+| ABC-T149e | request history cache result | schema-ready new request는 allowlisted `intent_cache_outcome`만 기록하며, `hit|miss|bypass|error` 기록 뒤 terminal failure rollback이 발생해도 같은 outcome을 terminal commit에 복원한다. L1/L2 source, token, envelope, plan, protected identifier와 failure detail 없음 |
+| ABC-T149f | outcome column 없는 rolling-deploy schema 또는 readiness 확인 실패 | new Gateway가 request row를 계속 저장하고 L1/Planner 흐름을 유지하며 outcome telemetry만 process lifetime 동안 생략 |
+| ABC-T149g | 만료·손상 same-key L2 row와 fresh Planner 결과의 upsert | fresh encrypted envelope로 원자 교체하고 만료 row만 새 30일 retention을 시작; rowcount 1 commit 뒤에만 L1 write, 0건 또는 실패면 L1 write 없음 |
+
 ## Observability and Security
 
 | ID | Case | Expected |

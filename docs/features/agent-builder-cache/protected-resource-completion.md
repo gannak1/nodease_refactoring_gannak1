@@ -33,7 +33,8 @@ durable audit 및 production serving 증거를 계속 소유한다. MBA-350은 l
 | Knowledge/Collection | MBA-346 및 MBA-348 코드 수준 구현·회귀 검증; MBA-349 실제 permission/lifecycle/Collection 소비 경계 검증 | Hit마다 현재 route/use permission, lifecycle/readiness를 다시 계산하고 handle을 새로 발급한다. | ABC-FR-050~054, ABC-T080~087 |
 | Workflow target | MBA-345~346 및 MBA-348 코드 수준 구현·회귀 검증; MBA-349 실제 소비 경계 검증 | Selected target identity는 ephemeral HMAC input으로만 사용한다. Hit에서는 server-loaded graph와 target을 다시 resolve하고 UUID를 재사용하지 않는다. | ABC-FR-019, ABC-FR-041~043, ABC-T036, ABC-T062~066 |
 | Deployment preflight | 해당 없음 | Cache는 graph/deployment에 reference를 추가하지 않고 생성 단계 plan에만 사용한다. 생성된 graph는 cache outcome과 무관하게 기존 deployment preflight를 그대로 통과한다. | ABC-FR-044, ABC-T142 |
-| Runtime/background | 해당 없음 | Cache는 workflow를 실행하거나 background job을 만들지 않는다. Generated graph의 runtime 권한·lifecycle 검사는 기존 계약이 계속 소유한다. | Side-effect boundary regression, ABC-T142~143 |
+| Deployment preflight와 generated graph runtime | 해당 없음 | Cache는 graph/deployment reference를 추가하거나 workflow를 실행하지 않는다. Generated graph의 runtime 권한·lifecycle 검사는 기존 계약이 계속 소유한다. | Side-effect boundary regression, ABC-T142~143 |
+| L2 retention background task | In Progress | 5분 Beat와 Log System task는 만료 encrypted L2 row만 bounded hard-delete한다. Cache plan을 serving하거나 protected authority를 부여하지 않고 cache audit/replay record도 만들지 않는다. | ADR-0075 Decision 5, ABC-FR-099, ABC-T149c |
 | Transaction/TOCTOU | MBA-345 and MBA-348 code-level implementation/regression; MBA-349 actual consumer-boundary evidence | A request-bound guard ends only a clean service read transaction before every Redis operation: lookup, lease, follower wait, save, completion signal and release. This includes Redis work reached after current runtime, graph, membership or Knowledge rehydration has read the service Session. Its terminal-state fence queries through a separate autocommit connection. If the clean boundary cannot be established, the coordinator skips subsequent Redis I/O and preserves the existing Planner or already canonical result path. An unavailable initial guard reaches the existing Planner once only, and a Planner exception is not retried as cache I/O handling. Provider consumer-boundary verification and final request-state CAS remain MBA-349 downstream evidence. | ABC-FR-063, ABC-FR-068, ABC-T053, ABC-T106, ABC-T110~114 |
 | Retry·idempotency | MBA-345 및 MBA-348 코드 수준 구현·회귀 검증; MBA-349 GraphMutation/CAS 소비 경계 검증 | Single-flight는 best-effort 비용 최적화이고 기존 provider usage identity, GraphMutation/CAS idempotency를 대체하지 않는다. | ABC-FR-062~069, ABC-T102~116, ABC-T131~132 |
 | Background coordination | 해당 없음 | Lease는 foreground request의 bounded single-flight에만 사용하며 worker claim이나 durable background coordination을 만들지 않는다. | `component_spec.md` Single-Flight, ABC-T102~116 |
@@ -49,6 +50,25 @@ durable audit 및 production serving 증거를 계속 소유한다. MBA-350은 l
 
 
 **MBA-344 redaction clarification.** Raw safe input and its transient NFKC/whitespace cleanup form both pass fail-closed secret/redaction/truncation gates before lookup/store. The safety-gate match result is not retained, surfaced, or separately signed; the required cleanup transformations still feed the normal signature projection. Quoted Catalog display labels are used only as a value-bypass signal.
+
+## JEO-7 Durable L2 Completion Record
+
+JEO-7 진행 상태: In Progress
+
+ADR-0075의 L2는 protected resource의 durable reference를 저장하지 않지만 organization scope,
+credential/model relation, workflow target와 Knowledge revalidation을 다시 소비한다. 이 matrix는
+JEO-7 implementation에서 각 경계를 코드·테스트·문서로 연결한다.
+
+| Boundary | Status | JEO-7 contract and evidence target |
+|---|---|---|
+| Durable cache storage | In Progress | `AgentBuilderIntentPlanCacheRecord`에는 organization scope, encrypted strict plan, MAC와 retention metadata만 저장한다. Graph, raw request, credential reference, parameter value와 authorization decision은 forbidden-content codec 및 repository tests로 차단한다. |
+| Organization and request admission | In Progress | L2 lookup은 authenticated active organization, request admission, cancellation fence와 L1 miss 뒤에만 실행한다. Repository predicate와 unique index는 organization scope를 강제하고 cross-organization integration test가 증명한다. |
+| Credential/model and Knowledge lifecycle | In Progress | L2 hit은 기존 current rehydrator를 재사용한다. current credential/model relation, workflow/target, Catalog와 Knowledge permission/lifecycle 검증을 통과하지 못하면 promotion하지 않고 Planner path를 따른다. |
+| Secret and envelope integrity | In Progress | cache 전용 Fernet keyring과 repository HMAC domain을 사용한다. key, allowlist, lookup token, ciphertext, plan과 protected identifier는 response, audit, metric, trace, log와 fixture에서 금지한다. |
+| DB-first transaction boundary | In Progress | Planner/provider/Redis I/O와 분리한 independent short L2 transaction을 사용한다. L2 commit 성공 뒤에만 L1 write하고 failure는 response를 실패시키지 않되 L1 write를 하지 않는다. |
+| Lifecycle and deletion | In Progress | `expires_at`은 30-day immutable retention이다. read와 unexpired same-key 재저장은 연장하지 않고, bounded purge는 delete 시 expiry를 재검사해 갱신 row를 hard-delete하지 않는다. organization delete는 FK cascade이며 downgrade는 L2 row 존재 시 거부한다. |
+| Audit and command history | In Progress | canonical cache-purge audit은 만들지 않는다. schema-ready `agent_builder_requests.intent_cache_outcome`에는 allowlisted outcome만 기록하며 cache source/payload/key/detail을 남기지 않는다. rolling deploy의 이전 schema 또는 readiness 확인 실패에서는 이 telemetry만 생략하고 request 흐름을 유지한다. |
+| Runtime/background | In Progress | purge task는 bounded expired-row deletion만 수행하며 cache plan을 serving하거나 protected authority를 부여하지 않는다. production allowlist activation은 JEO-7 범위 밖이다. |
 
 ## Merge Blocking Conditions
 
@@ -70,7 +90,7 @@ durable audit 및 production serving 증거를 계속 소유한다. MBA-350은 l
 
 ## MBA-349 Actual Consumer Verification
 
-Status: Local Integration Verified (current disposable PostgreSQL rerun)
+MBA-349 검증 상태: Local Integration Verified (current disposable PostgreSQL rerun)
 
 | Boundary | Status | Code and test evidence | Remaining condition |
 | --- | --- | --- | --- |
@@ -81,7 +101,8 @@ Status: Local Integration Verified (current disposable PostgreSQL rerun)
 | Cache-off, Redis outage, and serving gate | Complete | Existing cache-off service regression remains unchanged. `test_actual_cache_cold_paths_record_single_provider_usage` proves cache-enabled cold miss and cache-unavailable fail-open each call the synthetic provider once and create one request-scoped durable usage row. | Production/staging serving remains disabled without operational evidence. |
 | Audit, usage, and event redaction | Complete | The PostgreSQL consumer test proves a warm hit creates no provider call or usage row, preserves issued/acknowledged audit events, and retains no cached plan in the safe envelope. The cold/error path test proves one provider call and one request-scoped usage row per request. Existing observer/codec tests cover allowlisted redaction. | Cache events are not a durable replay source. |
 | Final benchmark artifact redaction | Complete | MBA-350 final live bundle passed the runner's row, pair, outcome, and artifact-redaction validation before publication. | The published bundle contains only allowlisted summaries, CSV/JSON, and SVG evidence; it is not a serving or replay store. |
-| Deployment preflight and runtime/background | Not applicable | Cache adds no deployment reference or worker/runtime work. | Existing generated-graph consumers retain these checks. |
+| Deployment preflight and generated-graph runtime | Not applicable | Cache adds no deployment reference or workflow runtime work. | Existing generated-graph consumers retain these checks. |
+| L2 retention background task | In Progress | JEO-7 adds a five-minute Beat-triggered Log System task that bounded-hard-deletes expired encrypted L2 rows only; it neither serves a cache plan nor grants protected authority. | The JEO-7 completion record above owns repository/retention tests; no cache audit or replay source is created. |
 | Production Redis rollout | Follow-up operational issue | Production/staging serving gate stays fail closed until operational evidence and attestation; the default cache request remains enabled. | Instance, secret wiring, capacity, failure, monitoring, rollback, and operational attestation are outside CACHE-07. |
 
 Current local execution used the repository's explicit disposable PostgreSQL configuration sourced without printing connection values from the running Compose service. The combined CAS and intent-usage modules passed `56` tests. The Redis integration, including stale-lease fenced-save coverage, passed `6` tests, and the rotation smoke check emitted no key, value, credential, or request content.

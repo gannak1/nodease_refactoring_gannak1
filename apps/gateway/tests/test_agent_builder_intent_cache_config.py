@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import secrets
+from uuid import uuid4
 
+from cryptography.fernet import Fernet
 import pytest
 
 from apps.gateway.core.config import Settings
@@ -169,3 +172,82 @@ def test_configuration_repr_redacts_hmac_key_and_redis_credentials() -> None:
     assert values["AGENT_BUILDER_INTENT_CACHE_HMAC_KEY"] not in rendered
     assert values["AGENT_BUILDER_INTENT_CACHE_REDIS_URL"] not in rendered
     assert values["AGENT_BUILDER_INTENT_CACHE_REDIS_URL"].split("@", 1)[0] not in rendered
+
+
+def test_l2_defaults_to_disabled_without_loading_a_keyring() -> None:
+    config = _settings().agent_builder_intent_plan_l2_config()
+
+    assert config.mode == "disabled"
+    assert config.disabled_reason == "feature_disabled"
+    assert config.should_read(uuid4()) is False
+    assert config.should_write(uuid4()) is False
+
+
+def test_l2_read_mode_requires_a_strict_allowlist_and_dedicated_keyring() -> None:
+    selected_organization = uuid4()
+    other_organization = uuid4()
+    keyring = {"l2-v1": Fernet.generate_key().decode("utf-8")}
+    values = {
+        "AGENT_BUILDER_INTENT_L2_MODE": "read",
+        "AGENT_BUILDER_INTENT_L2_ORGANIZATION_ALLOWLIST": str(
+            selected_organization
+        ),
+        "AGENT_BUILDER_INTENT_L2_ENCRYPTION_KEYS": json.dumps(keyring),
+        "AGENT_BUILDER_INTENT_L2_ACTIVE_KEY_VERSION": "l2-v1",
+    }
+
+    config = _settings(values).agent_builder_intent_plan_l2_config()
+
+    assert config.mode == "read"
+    assert config.disabled_reason is None
+    assert config.should_read(selected_organization) is True
+    assert config.should_write(selected_organization) is True
+    assert config.should_read(other_organization) is False
+    assert config.should_write(other_organization) is False
+    assert json.dumps(keyring) not in repr(config)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("AGENT_BUILDER_INTENT_L2_MODE", "invalid", "invalid_mode"),
+        (
+            "AGENT_BUILDER_INTENT_L2_ORGANIZATION_ALLOWLIST",
+            "not-a-uuid",
+            "invalid_organization_allowlist",
+        ),
+        (
+            "AGENT_BUILDER_INTENT_L2_ENCRYPTION_KEYS",
+            "not-json",
+            "invalid_encryption_keyring",
+        ),
+    ],
+)
+def test_invalid_l2_configuration_disables_l2_without_affecting_l1(
+    field: str,
+    value: str,
+    reason: str,
+) -> None:
+    organization_id = uuid4()
+    values = _valid_cache_environment()
+    values.update(
+        {
+            "AGENT_BUILDER_INTENT_L2_MODE": "read",
+            "AGENT_BUILDER_INTENT_L2_ORGANIZATION_ALLOWLIST": str(
+                organization_id
+            ),
+            "AGENT_BUILDER_INTENT_L2_ENCRYPTION_KEYS": json.dumps(
+                {"l2-v1": Fernet.generate_key().decode("utf-8")}
+            ),
+            "AGENT_BUILDER_INTENT_L2_ACTIVE_KEY_VERSION": "l2-v1",
+        }
+    )
+    values[field] = value
+
+    l1 = _settings(values).agent_builder_intent_cache_config()
+    l2 = _settings(values).agent_builder_intent_plan_l2_config()
+
+    assert l1.enabled is True
+    assert l2.mode == "disabled"
+    assert l2.disabled_reason == reason
+    assert l2.should_write(organization_id) is False
