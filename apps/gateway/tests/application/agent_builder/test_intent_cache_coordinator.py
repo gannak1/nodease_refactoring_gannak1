@@ -655,9 +655,11 @@ def test_warm_hit_rehydrates_without_planner_or_usage_path():
     plan = _plan()
     normalizer = _Normalizer()
     store = _Store(loaded=IntentPlanLoadResult(status="hit", plan=plan, reason=None))
+    l2_store = _L2Store()
     coordinator, rehydrators = _coordinator(
         normalizer=normalizer,
         store=store,
+        l2_store=l2_store,
         rehydrator_result=_success(_structured("rehydrated")),
     )
     calls = 0
@@ -675,6 +677,7 @@ def test_warm_hit_rehydrates_without_planner_or_usage_path():
     assert calls == 0
     assert normalizer.calls == store.load_calls == 1
     assert store.acquire_calls == store.save_calls == 0
+    assert l2_store.load_calls == l2_store.save_calls == 0
     assert sum(rehydrator.calls for rehydrator in rehydrators) == 1
 
 
@@ -1138,7 +1141,7 @@ def test_warm_rehydration_closes_session_before_fallback_lease_io():
 
 
 def test_owner_rehydration_closes_session_before_save_and_release_io():
-    """The owner must not save or release a Redis lease under a rehydration read."""
+    """The owner must not save L2 or Redis under a rehydration read."""
     transaction = {"open": False}
     guard_observations = []
 
@@ -1159,9 +1162,15 @@ def test_owner_rehydration_closes_session_before_save_and_release_io():
             assert not transaction["open"]
             return super().release_lease(key, owner, generation)
 
+    class TransactionAssertingL2Store(_L2Store):
+        def save(self, context, canonical_key_material, plan):
+            assert not transaction["open"]
+            return super().save(context, canonical_key_material, plan)
+
     store = TransactionAssertingStore(
         loaded=IntentPlanLoadResult(status="miss", plan=None, reason="not_found")
     )
+    l2_store = TransactionAssertingL2Store()
 
     def rehydrator_factory(_context, _plan):
         transaction["open"] = True
@@ -1178,23 +1187,26 @@ def test_owner_rehydration_closes_session_before_save_and_release_io():
         rehydrator_factory=rehydrator_factory,
         plan_projector=lambda _structured, _context: _plan(),
         cache_io_guard=cache_io_guard,
+        l2_store=l2_store,
     )
 
     execution = coordinator.execute(_structured, context=_context())
 
     assert execution.decision.outcome == "miss"
+    assert l2_store.save_calls == 1
     assert store.save_calls == 1
     assert store.released_calls == 1
-    assert guard_observations == [False, False, True, False]
+    assert guard_observations == [False, False, True, False, False]
 
 
 def test_owner_with_unclosable_rehydration_transaction_skips_terminal_redis_io():
-    """A dirty current-context read must not signal or release Redis under it."""
+    """A dirty current-context read must not save L2 or touch Redis under it."""
     transaction = {"open": False}
     guard_observations = []
     store = _Store(
         loaded=IntentPlanLoadResult(status="miss", plan=None, reason="not_found")
     )
+    l2_store = _L2Store()
 
     def rehydrator_factory(_context, _plan):
         transaction["open"] = True
@@ -1210,6 +1222,7 @@ def test_owner_with_unclosable_rehydration_transaction_skips_terminal_redis_io()
         rehydrator_factory=rehydrator_factory,
         plan_projector=lambda _structured, _context: _plan(),
         cache_io_guard=cache_io_guard,
+        l2_store=l2_store,
     )
     planner_calls = 0
 
@@ -1224,6 +1237,7 @@ def test_owner_with_unclosable_rehydration_transaction_skips_terminal_redis_io()
     assert execution.decision.outcome == "error"
     assert execution.decision.reason == "cache_unavailable"
     assert planner_calls == 1
+    assert l2_store.save_calls == 0
     assert store.save_calls == store.completed_calls == store.released_calls == 0
     assert guard_observations == [False, False, True, True, True]
 

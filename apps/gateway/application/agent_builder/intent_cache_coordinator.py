@@ -405,6 +405,13 @@ class AgentBuilderIntentCacheCoordinator:
         store = self._l2_store
         if store is None:
             return None
+        # Rehydration can have opened the request-owned service Session.  Release
+        # that read transaction before the repository obtains its own connection.
+        if not self._cache_io_ready():
+            return IntentPlanSaveResult(
+                status="unavailable",
+                reason="cache_unavailable",
+            )
         try:
             return store.save(context, canonical_key_material, plan)
         except Exception:
