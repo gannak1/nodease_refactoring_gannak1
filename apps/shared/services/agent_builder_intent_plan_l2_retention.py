@@ -3,10 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy.orm import Session
-
 from apps.shared.db.models.agent_builder import AgentBuilderIntentPlanCacheRecord
-
+from sqlalchemy.orm import Session
 
 DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_LIMIT = 1000
 MAX_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_LIMIT = 5000

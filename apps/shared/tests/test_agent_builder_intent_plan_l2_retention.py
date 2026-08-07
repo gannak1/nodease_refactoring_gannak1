@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from apps.shared.services.agent_builder_intent_plan_l2_retention import (
     DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_LIMIT,
     MAX_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_LIMIT,

@@ -113,6 +113,13 @@ class UnexpectedIntentExtractor:
         raise AssertionError("provider must not be called for a non-primary workflow")
 
 
+def _use_legacy_structure_request(monkeypatch, service):
+    def build_structured_request(request, workflow, **_kwargs):
+        return service._build_structured_request(request, workflow)
+
+    monkeypatch.setattr(service, "_structure_request", build_structured_request)
+
+
 def test_agent_builder_llm_preview_uses_default_rag_options():
     service = AgentBuilderService(
         FakeDb(),
@@ -1893,7 +1900,7 @@ def test_submit_message_preserves_explicit_github_comment_capabilities(
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_structure_request", svc._build_structured_request)
+    _use_legacy_structure_request(monkeypatch, svc)
 
     def flush_with_generated_ids():
         db.flushed = True
@@ -2072,7 +2079,7 @@ def test_submit_message_allows_new_workflow_draft_from_existing_workflow_context
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_structure_request", svc._build_structured_request)
+    _use_legacy_structure_request(monkeypatch, svc)
 
     def flush_with_generated_ids():
         db.flushed = True
@@ -2163,7 +2170,7 @@ def test_submit_message_splices_named_existing_target_and_apply_removes_old_edge
         user=SimpleNamespace(id=uuid.uuid4()),
         organization_id=uuid.uuid4(),
     )
-    monkeypatch.setattr(svc, "_structure_request", svc._build_structured_request)
+    _use_legacy_structure_request(monkeypatch, svc)
 
     def flush_with_generated_ids():
         db.flushed = True
