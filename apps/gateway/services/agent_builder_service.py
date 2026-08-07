@@ -147,6 +147,9 @@ NO_KB_CANDIDATE_LABEL = "Knowledge Base 없이 생성"
 NO_KB_CANDIDATE_WARNING = "사용자가 Knowledge Base 없이 도안 생성을 선택했습니다. LLM node는 Knowledge Base binding 없이 생성됩니다."
 AGENT_BUILDER_KB_RECOMMENDATION_LIMIT = 20
 EXPECTED_APP_PRIMARY_WORKFLOW_ID = "expected_app_primary_workflow_id"
+_RECORDED_INTENT_CACHE_OUTCOMES = frozenset(
+    {"disabled", "hit", "miss", "bypass", "error"}
+)
 
 
 class AgentBuilderRequestHistorySchemaReadiness:
@@ -1464,13 +1467,7 @@ class AgentBuilderService:
                 "agent_builder_request_processing_failed error_type=%s",
                 type(exc).__name__,
             )
-            return self._fail_processing_request(
-                request_row,
-                cache_error_recorded=(
-                    cache_outcome_available
-                    and getattr(request_row, "intent_cache_outcome", None) == "error"
-                ),
-            )
+            return self._fail_processing_request(request_row)
         if (
             recommendations["status"] == "clarification_required"
             and getattr(session, "protocol_version", None) == "direct_edit_v1"
@@ -6814,12 +6811,20 @@ class AgentBuilderService:
     def _fail_processing_request(
         self,
         request_row: AgentBuilderRequest,
-        *,
-        cache_error_recorded: bool = False,
     ) -> AgentBuilderMessageResponse:
+        # A terminal failure may happen after a cache outcome was written but
+        # before the request's final commit. Capture only the closed telemetry
+        # value before rollback so every caller shares the same restoration
+        # boundary without loading an unavailable additive column.
+        cache_outcome = request_row.__dict__.get("intent_cache_outcome")
+        if (
+            not isinstance(cache_outcome, str)
+            or cache_outcome not in _RECORDED_INTENT_CACHE_OUTCOMES
+        ):
+            cache_outcome = None
         self.db.rollback()
-        if cache_error_recorded:
-            request_row.intent_cache_outcome = "error"
+        if cache_outcome is not None:
+            request_row.intent_cache_outcome = cache_outcome
         response = AgentBuilderMessageResponse(
             request_id=request_row.id,
             status="failed",

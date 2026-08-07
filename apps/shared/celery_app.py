@@ -87,7 +87,7 @@ celery_app.conf.update(
         },
         "agent-builder-intent-plan-l2-retention": {
             "task": "log.agent_builder_intent_plan_l2_retention_purge",
-            "schedule": 3600.0,
+            "schedule": 300.0,
             "options": {"queue": "log"},
         },
         "knowledge-collection-sync-recovery": {

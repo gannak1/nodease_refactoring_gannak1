@@ -205,6 +205,11 @@ L2 save는 isolated short DB transaction으로 commit한다. 실제로 한 row�
 L1 `save_if_lease_owner`를 호출한다. L2 save failure는 Planner response를 바꾸지 않지만 L1 write를
 금지한다. Redis와 PostgreSQL 사이에 distributed transaction이나 retry/backfill contract는 없다.
 
+L2 retention Beat는 5분마다 실행한다. 각 task는 최대 5개의 1,000-row batch만 처리하고, batch가
+full limit보다 적게 삭제되면 즉시 종료한다. 따라서 기본 catch-up 상한은 시간당 60,000 expired row이며,
+selected cohort의 예상 unique write rate가 이를 초과하면 allowlist activation 전에 cadence 또는 batch
+계약을 조정해야 한다. 각 batch는 기존 expiry 재검사와 실제 delete rowcount contract를 독립적으로 유지한다.
+
 ## Canonical Topic, Guidance, Summary and Purpose Contracts
 
 `CachedIntentPlan`은 topic/guidance 문자열 대신 다음 safe reference를 사용한다.

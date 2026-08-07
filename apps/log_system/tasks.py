@@ -1034,6 +1034,7 @@ def agent_builder_intent_plan_l2_retention_purge(
 ):
     """Hard-delete a bounded batch of expired Agent Builder L2 cache rows."""
     from apps.shared.services.agent_builder_intent_plan_l2_retention import (
+        DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_BATCHES_PER_RUN,
         DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_LIMIT,
         AgentBuilderIntentPlanL2RetentionService,
     )
@@ -1041,14 +1042,37 @@ def agent_builder_intent_plan_l2_retention_purge(
     data = data or {}
     session = SessionLocal()
     try:
-        result = AgentBuilderIntentPlanL2RetentionService.purge(
-            session,
-            limit=data.get(
-                "limit",
-                DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_LIMIT,
-            ),
+        if not isinstance(data, dict):
+            raise ValueError("invalid L2 retention purge request")
+        limit = AgentBuilderIntentPlanL2RetentionService.validate_limit(
+            data.get("limit", DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_LIMIT)
         )
-        return {"status": "success", "result": result}
+        max_batches = AgentBuilderIntentPlanL2RetentionService.validate_batch_count(
+            data.get(
+                "max_batches",
+                DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_BATCHES_PER_RUN,
+            )
+        )
+        purged_count = 0
+        batches = 0
+        for _ in range(max_batches):
+            batch_result = AgentBuilderIntentPlanL2RetentionService.purge(
+                session,
+                limit=limit,
+            )
+            batch_purged_count = max(0, int(batch_result["purged_count"]))
+            purged_count += batch_purged_count
+            batches += 1
+            if batch_purged_count < limit:
+                break
+        return {
+            "status": "success",
+            "result": {
+                "purged_count": purged_count,
+                "limit": limit,
+                "batches": batches,
+            },
+        }
     except ValueError:
         session.rollback()
         logger.warning(

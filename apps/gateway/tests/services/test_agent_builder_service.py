@@ -427,6 +427,61 @@ def test_submit_message_persists_cache_error_after_rollback(monkeypatch):
     assert request_row.intent_cache_outcome == "error"
 
 
+@pytest.mark.parametrize(
+    "outcome",
+    ["disabled", "hit", "miss", "bypass", "error"],
+)
+def test_fail_processing_request_restores_recorded_cache_outcome_after_rollback(
+    monkeypatch,
+    outcome,
+):
+    class RollbackRestoringDb(FakeDb):
+        def __init__(self) -> None:
+            super().__init__()
+            self._persisted_cache_outcome = None
+
+        def commit(self):
+            super().commit()
+            if self.commits == 1:
+                self._persisted_cache_outcome = request_row.intent_cache_outcome
+
+        def rollback(self):
+            super().rollback()
+            request_row.intent_cache_outcome = self._persisted_cache_outcome
+
+    db = RollbackRestoringDb()
+    request_row = service_module.AgentBuilderRequest(
+        id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        status="processing",
+        structured_request={},
+        response_payload={},
+    )
+    request_row.intent_cache_outcome = "bypass"
+    db.add(request_row)
+    db.commit()
+    request_row.intent_cache_outcome = outcome
+    service = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=request_row.user_id),
+        organization_id=request_row.organization_id,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "add_action_audit",
+        lambda *_args, **_kwargs: None,
+    )
+
+    response = service._fail_processing_request(request_row)
+
+    assert response.status == "failed"
+    assert db.rollbacks == 1
+    assert db.commits == 2
+    assert request_row.intent_cache_outcome == outcome
+
+
 @pytest.mark.parametrize("scope_mismatch", ["request_session", "app_primary"])
 def test_submit_message_rejects_non_primary_usage_scope_before_provider(
     monkeypatch,

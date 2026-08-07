@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 
 DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_LIMIT = 1000
 MAX_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_LIMIT = 5000
+DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_BATCHES_PER_RUN = 5
+MAX_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_BATCHES_PER_RUN = 10
 
 
 class AgentBuilderIntentPlanL2RetentionService:
@@ -27,6 +29,26 @@ class AgentBuilderIntentPlanL2RetentionService:
         ):
             raise ValueError("L2 retention purge limit is outside the allowed range")
         return normalized_limit
+
+    @staticmethod
+    def validate_batch_count(batch_count: int) -> int:
+        if isinstance(batch_count, bool):
+            raise ValueError("L2 retention purge batch count must be an integer")
+        try:
+            normalized_count = int(batch_count)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "L2 retention purge batch count must be an integer"
+            ) from exc
+        if not (
+            1
+            <= normalized_count
+            <= MAX_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_BATCHES_PER_RUN
+        ):
+            raise ValueError(
+                "L2 retention purge batch count is outside the allowed range"
+            )
+        return normalized_count
 
     @classmethod
     def purge(
