@@ -181,6 +181,30 @@ Redis value는 `CachedIntentPlan`만 직렬화하지 않고 다음 envelope로 �
 처리하고 best-effort로 삭제한다. Key HMAC과 value HMAC은 같은 secret을 사용할 수 있지만 반드시
 domain separation을 적용한다.
 
+## Durable L2 Repository Contract
+
+L2는 public API가 아니라 Gateway 내부 repository port다. `read` mode의 allowlisted organization만
+L1 miss 뒤에 `load(context, canonical_key_material)`을 호출한다. `write_only`는 read를 생략하고
+cache-eligible cold result의 `save(context, canonical_key_material, plan)`만 호출한다. disabled 또는
+allowlist 밖 organization은 두 operation 모두 호출하지 않는다.
+
+| L2 field | Contract |
+|---|---|
+| `organization_id` | active organization FK; read/write predicate와 row ownership에 모두 사용 |
+| `lookup_key_version`, `lookup_token` | repository 전용 HMAC domain으로 만든 versioned token; raw request/Redis key/digest 없음 |
+| `envelope_ciphertext` | cache 전용 Fernet keyring으로 암호화한 canonical strict-plan envelope |
+| `envelope_mac` | lookup token, lookup/envelope/key version, algorithm과 ciphertext를 constant-time 비교로 인증 |
+| `created_at`, `expires_at` | creation부터 30일; read는 갱신하지 않음 |
+
+L2 load result는 `hit|miss|invalid|unavailable` 중 하나이며, `invalid`와 `unavailable`은 plan을
+반환하지 않는다. expired, unknown key version, Fernet decrypt failure, MAC mismatch와 codec failure는
+L2 plan을 사용하지 않는다. L2 hit은 기존 `IntentPlanRehydratorPort`를 통해 현재 context에서 성공한 뒤에만
+L1 `save`로 승격한다.
+
+L2 save는 isolated short DB transaction으로 commit한다. commit result가 `stored`일 때만 coordinator가
+L1 `save_if_lease_owner`를 호출한다. L2 save failure는 Planner response를 바꾸지 않지만 L1 write를
+금지한다. Redis와 PostgreSQL 사이에 distributed transaction이나 retry/backfill contract는 없다.
+
 ## Canonical Topic, Guidance, Summary and Purpose Contracts
 
 `CachedIntentPlan`은 topic/guidance 문자열 대신 다음 safe reference를 사용한다.
@@ -386,6 +410,10 @@ replay에 사용하지 않고 allowlisted outcome/reason/latency만 기록한다
 | `AGENT_BUILDER_INTENT_CACHE_MAX_FOLLOWER_WAITERS` | process-wide follower waiter 상한 |
 | `AGENT_BUILDER_INTENT_CACHE_REDIS_URL` | cache 전용 Redis endpoint; production serving 기본 경계 |
 | `AGENT_BUILDER_INTENT_CACHE_PRODUCTION_READY` | 외부 운영 검증을 완료한 배포 운영자가 설정하는 attestation |
+| `AGENT_BUILDER_INTENT_L2_MODE` | `disabled`, `write_only`, `read`; 기본 `disabled` |
+| `AGENT_BUILDER_INTENT_L2_ORGANIZATION_ALLOWLIST` | comma-separated strict organization UUID; 빈 값은 L2 미적용 |
+| `AGENT_BUILDER_INTENT_L2_ENCRYPTION_KEYS` | cache 전용 versioned Fernet keyring; tracked file에 원문 금지 |
+| `AGENT_BUILDER_INTENT_L2_ACTIVE_KEY_VERSION` | L2 envelope 신규 write key version |
 
 Invalid configuration disables the cache and emits a safe startup/configuration signal. It must not silently
 fall back to a weak unhashed key.
@@ -407,6 +435,12 @@ Key version 변경은 dual-read 없이 새 namespace를 사용한다. Invalid se
 code만 기록하고 cache를 비활성화한다.
 
 Cache serving is requested by default. The cache never derives its Redis URL from Celery broker/result Redis; missing or invalid cache-specific configuration disables only the cache. `scripts/dev-local.ps1` supplies explicit local development configuration: cache enabled, an isolated local Redis DB, an ephemeral process HMAC key, and `dev-local-v1` key version. A direct `development`, `test`, or unset-environment Gateway that lacks complete cache configuration remains safely cache-disabled. Environment classification reuses `NODE_ENV`. `NODE_ENV=production` and `NODE_ENV=staging` additionally require a dedicated Redis URL, HMAC key/version, valid TTL/max payload/timeout/lease/wait/waiter configuration, and `AGENT_BUILDER_INTENT_CACHE_PRODUCTION_READY=true`. Redis failures continue through the existing Planner fail-open path. Operators set the ready flag only after external Redis validation; runtime evaluates only this attestation and the remaining configuration.
+L2 configuration is independently fail-closed: invalid mode/allowlist/keyring/active key version disables L2.
+PostgreSQL `undefined table` or `undefined column` schema-readiness errors also disable only L2 for the running
+process, so every organization continues through ordinary L1 behavior. Other L2 database failures preserve the
+Planner response but prevent an L2-selected cold result from being written to L1. Mode changes do not expose a public
+endpoint. Rollout is `disabled -> write_only -> read`; rollback first removes `read`, then `write_only`.
+
 ## HTTP Error Projection
 
 Cache-specific failures are not exposed as new HTTP errors. Planner/runtime, validation, permission, stale,

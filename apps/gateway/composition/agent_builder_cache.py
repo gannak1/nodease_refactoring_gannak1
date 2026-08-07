@@ -10,6 +10,10 @@ from fastapi import FastAPI
 from apps.gateway.adapters.cache.agent_builder_intent_plan import (
     RedisIntentPlanCacheAdapter,
 )
+from apps.gateway.adapters.cache.agent_builder_intent_plan_l2 import (
+    IntentPlanL2EnvelopeCodec,
+    PostgresIntentPlanRepository,
+)
 from apps.gateway.application.agent_builder.intent_cache import (
     DisabledIntentPlanCacheBoundary,
     IntentPlanCacheBoundary,
@@ -32,6 +36,7 @@ from apps.gateway.services.agent_builder.intent_cache_integration import (
 from apps.gateway.services.agent_builder.intent_cache_knowledge import (
     current_knowledge_context_fingerprint,
 )
+from apps.shared.db.session import SessionLocal
 
 
 logger = logging.getLogger(__name__)
@@ -117,6 +122,7 @@ def _enabled_application(config) -> AgentBuilderIntentCacheApplication:
             follower_wait_ms=config.follower_wait_ms,
             max_follower_waiters=config.max_follower_waiters,
         )
+        l2_store = _l2_store_for(config)
         cache = AgentBuilderIntentCacheCoordinator(
             normalizer=DeterministicIntentNormalizer(),
             store=adapter,
@@ -129,6 +135,7 @@ def _enabled_application(config) -> AgentBuilderIntentCacheApplication:
                     **kwargs,
                 )
             ),
+            l2_store=l2_store,
         )
         return AgentBuilderIntentCacheApplication(cache=cache, owned_adapter=adapter)
     except Exception:
@@ -137,6 +144,30 @@ def _enabled_application(config) -> AgentBuilderIntentCacheApplication:
             "adapter_initialization_failed",
         )
         return AgentBuilderIntentCacheApplication(cache=DisabledIntentPlanCacheBoundary())
+
+
+def _l2_store_for(config) -> PostgresIntentPlanRepository | None:
+    l2_config = settings.agent_builder_intent_plan_l2_config()
+    if l2_config.mode == "disabled" or l2_config.encryption is None:
+        return None
+    try:
+        envelope_codec = IntentPlanL2EnvelopeCodec(
+            hmac_key=config.hmac_key or b"",
+            hmac_key_version=config.hmac_key_version or "",
+            encryption=l2_config.encryption,
+            max_payload_bytes=config.max_payload_bytes,
+        )
+        return PostgresIntentPlanRepository(
+            session_factory=SessionLocal,
+            envelope_codec=envelope_codec,
+            config=l2_config,
+        )
+    except Exception:
+        logger.info(
+            "agent_builder.intent_l2_disabled reason=%s",
+            "initialization_failed",
+        )
+        return None
 
 
 __all__ = [

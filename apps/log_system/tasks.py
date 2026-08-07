@@ -1023,6 +1023,49 @@ def rag_answer_retention_purge(self, data: Dict[str, Any]):
         session.close()
 
 
+@celery_app.task(
+    name="log.agent_builder_intent_plan_l2_retention_purge",
+    bind=True,
+    max_retries=3,
+)
+def agent_builder_intent_plan_l2_retention_purge(self, data: Dict[str, Any]):
+    """Hard-delete a bounded batch of expired Agent Builder L2 cache rows."""
+    from apps.shared.services.agent_builder_intent_plan_l2_retention import (
+        DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_LIMIT,
+        AgentBuilderIntentPlanL2RetentionService,
+    )
+
+    session = SessionLocal()
+    try:
+        result = AgentBuilderIntentPlanL2RetentionService.purge(
+            session,
+            limit=data.get(
+                "limit",
+                DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_LIMIT,
+            ),
+        )
+        return {"status": "success", "result": result}
+    except ValueError:
+        session.rollback()
+        logger.warning(
+            "[Log-System] agent_builder_intent_plan_l2_retention_purge invalid request"
+        )
+        return {
+            "status": "failed",
+            "error": "invalid_agent_builder_intent_plan_l2_purge_request",
+        }
+    except Exception as exc:
+        session.rollback()
+        logger.error(
+            "[Log-System] agent_builder_intent_plan_l2_retention_purge failed: "
+            "error_type=%s",
+            type(exc).__name__,
+        )
+        raise self.retry(exc=exc, countdown=2**self.request.retries)
+    finally:
+        session.close()
+
+
 @celery_app.task(name="log.knowledge_ingestion_outbox_process", bind=True, max_retries=3)
 def knowledge_ingestion_outbox_process(self, data: Dict[str, Any]):
     """Knowledge ingestion outbox의 cleanup/recovery event를 idempotent하게 처리한다."""

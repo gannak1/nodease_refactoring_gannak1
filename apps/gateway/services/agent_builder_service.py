@@ -1173,6 +1173,7 @@ class AgentBuilderService:
             organization_id=self.organization_id,
             user_id=self.user.id,
             status="processing",
+            intent_cache_outcome="bypass",
             message_summary=_safe_summary(message_request.message),
             structured_request={},
             response_payload={},
@@ -1252,6 +1253,11 @@ class AgentBuilderService:
                 else self._structure_request(
                     message_request,
                     workflow,
+                    cache_outcome_sink=lambda outcome: setattr(
+                        request_row,
+                        "intent_cache_outcome",
+                        outcome,
+                    ),
                     cache_cancellation_fence=(
                         self._intent_cache_cancellation_fence(request_row)
                     ),
@@ -2681,6 +2687,7 @@ class AgentBuilderService:
         usage_context_factory: (
             Callable[[], AgentBuilderIntentUsageContext | None] | None
         ) = None,
+        cache_outcome_sink: Callable[[str], None] | None = None,
         cache_cancellation_fence=None,
         cache_request_deadline_monotonic: float | None = None,
     ) -> AgentBuilderStructuredRequest:
@@ -2792,6 +2799,7 @@ class AgentBuilderService:
             execution = cache_boundary.execute(planner_call, context=context)
         except ColdMissRehydrationError as exc:
             record_benchmark_diagnostic("error")
+            self._record_intent_cache_outcome(cache_outcome_sink, "error")
             # The provider attempt already owns its usage record. Reusing the raw
             # extraction would create a cache-only downstream divergence.
             raise AgentBuilderIntentExtractionError(
@@ -2799,22 +2807,45 @@ class AgentBuilderService:
             ) from exc
         except RequestFenceAbortedError as exc:
             record_benchmark_diagnostic("error")
+            self._record_intent_cache_outcome(cache_outcome_sink, "error")
             raise AgentBuilderIntentExtractionError(
                 "Agent Builder request changed before cache planning completed"
             ) from exc
         except Exception:
-            record_benchmark_diagnostic(
+            outcome = (
                 "disabled"
                 if isinstance(cache_boundary, DisabledIntentPlanCacheBoundary)
                 else "error"
             )
+            record_benchmark_diagnostic(outcome)
+            self._record_intent_cache_outcome(cache_outcome_sink, outcome)
             raise
-        record_benchmark_diagnostic(
+        outcome = (
             "disabled"
             if isinstance(cache_boundary, DisabledIntentPlanCacheBoundary)
             else execution.decision.outcome
         )
+        record_benchmark_diagnostic(outcome)
+        self._record_intent_cache_outcome(cache_outcome_sink, outcome)
         return execution.structured_request
+
+    @staticmethod
+    def _record_intent_cache_outcome(
+        sink: Callable[[str], None] | None,
+        outcome: str,
+    ) -> None:
+        if sink is None or outcome not in {
+            "disabled",
+            "hit",
+            "miss",
+            "bypass",
+            "error",
+        }:
+            return
+        try:
+            sink(outcome)
+        except Exception:
+            pass
 
     def _intent_cache_cancellation_fence(self, request_row: AgentBuilderRequest):
         """Observe terminal request state before cache work and during follower waits."""

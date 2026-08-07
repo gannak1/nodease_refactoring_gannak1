@@ -163,6 +163,7 @@ class _Store:
         self.completion_status = completion_status
         self.load_calls = 0
         self.save_calls = 0
+        self.direct_save_calls = 0
         self.acquire_calls = 0
         self.wait_calls = 0
         self.wait_kwargs = None
@@ -192,6 +193,14 @@ class _Store:
     ) -> IntentPlanSaveResult:
         self.save_calls += 1
         self.save_lease = (owner, generation)
+        return self.saved
+
+    def save(
+        self,
+        _key: IntentCacheKey,
+        _plan: CachedIntentPlanV1,
+    ) -> IntentPlanSaveResult:
+        self.direct_save_calls += 1
         return self.saved
 
     @staticmethod
@@ -230,6 +239,46 @@ class _Rehydrator:
         return self.result
 
 
+_L2_SAVE_UNSET = object()
+
+
+class _L2Store:
+    def __init__(
+        self,
+        *,
+        loaded: IntentPlanLoadResult | None = None,
+        saved: IntentPlanSaveResult | None | object = _L2_SAVE_UNSET,
+    ) -> None:
+        self.loaded = loaded
+        self.saved = (
+            IntentPlanSaveResult(status="stored", reason=None)
+            if saved is _L2_SAVE_UNSET
+            else saved
+        )
+        self.load_calls = 0
+        self.save_calls = 0
+        self.materials: list[bytes] = []
+
+    def load(
+        self,
+        _context: IntentPlanningContext,
+        canonical_key_material: bytes,
+    ) -> IntentPlanLoadResult | None:
+        self.load_calls += 1
+        self.materials.append(canonical_key_material)
+        return self.loaded
+
+    def save(
+        self,
+        _context: IntentPlanningContext,
+        canonical_key_material: bytes,
+        _plan: CachedIntentPlanV1,
+    ) -> IntentPlanSaveResult | None:
+        self.save_calls += 1
+        self.materials.append(canonical_key_material)
+        return self.saved
+
+
 def _coordinator(
     *,
     normalizer: _Normalizer,
@@ -239,6 +288,7 @@ def _coordinator(
     diagnostic_observer=None,
     cancellation_fence=None,
     cache_io_guard=None,
+    l2_store=None,
 ):
     rehydrators: list[_Rehydrator] = []
 
@@ -255,6 +305,7 @@ def _coordinator(
         diagnostic_observer=diagnostic_observer,
         cancellation_fence=cancellation_fence,
         cache_io_guard=cache_io_guard,
+        l2_store=l2_store,
     )
     return coordinator, rehydrators
 
@@ -625,6 +676,84 @@ def test_warm_hit_rehydrates_without_planner_or_usage_path():
     assert normalizer.calls == store.load_calls == 1
     assert store.acquire_calls == store.save_calls == 0
     assert sum(rehydrator.calls for rehydrator in rehydrators) == 1
+
+
+def test_l1_miss_l2_hit_rehydrates_then_promotes_to_l1_without_planner():
+    plan = _plan()
+    store = _Store(
+        loaded=IntentPlanLoadResult(status="miss", plan=None, reason="not_found")
+    )
+    l2_store = _L2Store(
+        loaded=IntentPlanLoadResult(status="hit", plan=plan, reason=None)
+    )
+    coordinator, rehydrators = _coordinator(
+        normalizer=_Normalizer(),
+        store=store,
+        l2_store=l2_store,
+        rehydrator_result=_success(_structured("rehydrated from L2")),
+    )
+    planner_calls = 0
+
+    def planner():
+        nonlocal planner_calls
+        planner_calls += 1
+        return _structured("must not plan")
+
+    execution = coordinator.execute(planner, _context())
+
+    assert execution.structured_request.intent_summary == "rehydrated from L2"
+    assert execution.decision.outcome == "hit"
+    assert planner_calls == 0
+    assert store.load_calls == 1
+    assert store.acquire_calls == store.save_calls == 0
+    assert store.direct_save_calls == 1
+    assert l2_store.load_calls == 1
+    assert l2_store.save_calls == 0
+    assert len(l2_store.materials) == 1
+    assert sum(item.calls for item in rehydrators) == 1
+
+
+def test_l2_write_failure_keeps_planner_result_but_prevents_l1_store():
+    store = _Store(
+        loaded=IntentPlanLoadResult(status="miss", plan=None, reason="not_found")
+    )
+    l2_store = _L2Store(
+        loaded=IntentPlanLoadResult(status="miss", plan=None, reason="not_found"),
+        saved=IntentPlanSaveResult(status="unavailable", reason="cache_unavailable"),
+    )
+    coordinator, _ = _coordinator(
+        normalizer=_Normalizer(),
+        store=store,
+        l2_store=l2_store,
+        rehydrator_result=_success(_structured("planner result")),
+    )
+
+    execution = coordinator.execute(lambda: _structured("planner result"), _context())
+
+    assert execution.structured_request.intent_summary == "planner result"
+    assert execution.decision.outcome == "error"
+    assert execution.decision.reason == "cache_unavailable"
+    assert l2_store.load_calls == l2_store.save_calls == 1
+    assert store.save_calls == 0
+
+
+def test_l2_safe_disabled_after_schema_failure_preserves_l1_storage():
+    store = _Store(
+        loaded=IntentPlanLoadResult(status="miss", plan=None, reason="not_found")
+    )
+    l2_store = _L2Store(loaded=None, saved=None)
+    coordinator, _ = _coordinator(
+        normalizer=_Normalizer(),
+        store=store,
+        l2_store=l2_store,
+        rehydrator_result=_success(_structured("planner result")),
+    )
+
+    execution = coordinator.execute(lambda: _structured("planner result"), _context())
+
+    assert execution.decision.outcome == "miss"
+    assert l2_store.load_calls == l2_store.save_calls == 1
+    assert store.save_calls == 1
 
 
 def test_warm_rehydration_failure_discards_hit_then_calls_planner_once():

@@ -142,6 +142,21 @@ PostgreSQL integration은 별도 환경에서 순차 실행한다.
 | ABC-T131 | owner가 clarification/unsupported/provider failure/store-ineligible/cache put failure 결과로 정상 종료 | lease 즉시 해제, follower가 `owner_completed_without_value`를 받고 wait 잔여 시간 없이 Planner 진행, negative cache 없음 |
 | ABC-T132 | 이전 lease generation의 no-value signal 뒤 새 owner가 lease 획득 | stale signal은 새 follower를 깨우지 않고 현재 generation 결과만 사용 |
 
+## Durable L2 Repository
+
+| ID | Case | Expected |
+|---|---|---|
+| ABC-T145 | L1 hit with L2 `read` enabled | L2 query, Planner와 provider 호출 없이 existing L1 result를 current rehydration으로 사용 |
+| ABC-T146 | L1 miss and valid L2 candidate | Fernet/MAC/codec/current-state revalidation 뒤 provider 호출 없이 current result를 반환하고 L1에만 TTL promotion |
+| ABC-T147 | L2 ciphertext/MAC/lookup binding/key version/codec/expiry failure | plan을 사용하거나 L1로 promotion하지 않고 existing Planner path로 한 번 진행; raw token/envelope/key는 diagnostic에 없음 |
+| ABC-T148 | allowlisted `read` cohort cold cache-eligible result | isolated L2 transaction commit이 L1 write보다 먼저 발생하며 commit 성공 뒤에만 lease-owner L1 save |
+| ABC-T149 | L2 query/write transaction failure | valid Planner response는 유지; L2 write failure 뒤에는 대상 cohort L1 write 없음; provider/Redis I/O 중 service DB transaction 또는 L2 transaction을 유지하지 않음 |
+| ABC-T149a | `disabled`, blank/외부 organization allowlist, `write_only`, `read` mode | disabled/외부 organization은 L1-only; write_only는 L2 read 없이 DB-first write; read는 L1 miss 후 L2 read; invalid config/keyring/schema는 L2 safe-disabled |
+| ABC-T149b | same canonical material across organizations and lookup version rotation | organization predicate 또는 version이 다르면 candidate를 읽지 않으며 raw organization/key/digest는 table, log, fixture에 없음 |
+| ABC-T149c | L2 30-day expiry and bounded purge | read가 expires_at을 연장하지 않고 expired row는 candidate로 사용하지 않으며 batch limit 안에서 hard-delete; purge audit event와 raw row detail 없음 |
+| ABC-T149d | PostgreSQL migration upgrade/downgrade | FK cascade, unique lookup index, expiry index와 nullable historic request outcome 확인; L2 row가 존재하면 downgrade guard가 실패 |
+| ABC-T149e | request history cache result | new request는 allowlisted `intent_cache_outcome`만 기록하며 L1/L2 source, token, envelope, plan, protected identifier와 failure detail 없음 |
+
 ## Observability and Security
 
 | ID | Case | Expected |

@@ -8,11 +8,11 @@ Related Features: Agent Builder, Workflow Editor, LLM Cost and Usage
 
 Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 호출을 생략하되,
 현재 권한, Knowledge 후보, workflow graph, Catalog validation과 CAS 저장 계약을 그대로
-유지하는 deterministic L1 intent plan cache를 정의한다.
+유지하는 deterministic Redis L1 및 tenant-scoped PostgreSQL L2 intent plan cache를 정의한다.
 
 ## Authority
 
-- 캐시의 목표 계약은 ADR-0063을 따르며 NFKC/공백과 Catalog exact-token 경계는 ADR-0073, safe literal admission은 ADR-0074가 소유한다.
+- 캐시의 목표 계약은 ADR-0063과 ADR-0075를 따르며 NFKC/공백과 Catalog exact-token 경계는 ADR-0073, safe literal admission은 ADR-0074가 소유한다.
 - MBA-343 cache spine의 strict DTO, codec, port, disabled runtime seam과 세부 파일 소유권은
   [MBA-343 requirements](../agent-builder-cache-343/requirements.md),
   [internal API](../agent-builder-cache-343/api_spec.md)와
@@ -169,6 +169,16 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
 - ABC-FR-069: Follower waiter는 process-wide non-blocking slot으로 제한해야 한다. 초기 기본 상한은 8,
   허용 범위는 1~64이며 overflow는 대기 없이 기존 Planner 경로로 진행하고 모든 종료 경로에서 slot을 반환해야 한다.
 
+### Durable L2 Repository
+
+- ABC-FR-095: L1 Redis miss 뒤에만 strict organization UUID allowlist와 L2 mode를 만족하는 요청이 versioned HMAC lookup token으로 L2를 조회해야 한다. L2 disabled 또는 allowlist 밖 organization은 기존 L1-only 경로를 유지해야 한다.
+- ABC-FR-096: L2 row는 organization scope, lookup token/version, encrypted strict-plan envelope, repository envelope MAC, encryption key version/algorithm, 생성·만료 시각만 저장해야 한다. raw request, graph, node/edge UUID, request/operation ID, credential reference, parameter value와 permission decision은 저장하면 안 된다.
+- ABC-FR-097: L2 envelope는 cache 전용 Fernet keyring으로 암호화하고 Redis key/value와 구분된 HMAC domain으로 lookup token, version, encryption metadata와 ciphertext를 authenticated binding 해야 한다. MAC, decrypt, codec, expiry 또는 current-state revalidation 실패 row는 사용하거나 L1으로 승격하면 안 된다.
+- ABC-FR-098: Cache-eligible Planner 결과는 짧은 독립 DB transaction에서 L2에 먼저 commit해야 한다. commit 성공 후에만 L1 write를 시도하며 L2 write failure는 response를 실패시키지 않되 대상 cohort의 L1 write도 수행하면 안 된다.
+- ABC-FR-099: L2 read는 `expires_at`을 갱신하면 안 된다. 생성 시점부터 30일 뒤 만료되며 bounded background purge가 만료 row를 hard-delete해야 한다. purge는 cache key/value/plan을 audit에 복사하거나 row별 canonical audit event를 만들면 안 된다.
+- ABC-FR-100: L2 mode는 `disabled|write_only|read`만 허용하고 기본은 `disabled`여야 한다. 빈 allowlist는 L2를 적용하지 않아야 하며 rollout은 `disabled -> write_only -> read`, rollback은 역순이어야 한다.
+- ABC-FR-101: additive migration은 organization FK cascade, `(organization_id, lookup_key_version, lookup_token)` unique index, expiry index와 L2 row가 남아 있으면 실행을 거부하는 downgrade guard를 제공해야 한다. Redis/audit에서 backfill하지 않는다.
+
 ### Usage and Observability
 
 - ABC-FR-070: Cache hit에는 provider 호출이 없으므로 planner usage reservation과 usage log를 생성하지 않아야 한다.
@@ -181,6 +191,7 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
   `waiter_capacity_exceeded` reason을 지원하되 key, actor, organization과 request identity를 label로 사용하지 않아야 한다.
 - ABC-FR-077: PostgreSQL audit는 cache 복구 저장소로 사용하지 않아야 한다. Audit에는 safe outcome,
   reason과 latency만 남기고 request, cache key/value와 plan payload를 저장하거나 Redis data loss 복구에 재생하지 않아야 한다.
+- ABC-FR-078: `agent_builder_requests`에는 `disabled|hit|miss|bypass|error` 중 하나의 `intent_cache_outcome`만 기록해야 한다. L1/L2 source, lookup token, envelope, plan, protected identifier 또는 failure detail은 request history, response, audit, metric, trace와 log에 기록하면 안 된다.
 
 ### Configuration and Invalidation
 
@@ -204,6 +215,7 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
 - ABC-FR-094: Production Redis 운영 이슈와 evidence는 cache 코드·필수 검증 완료와 분리하되,
   evidence가 없으면 production 또는 staging serving을 활성화하지 않아야 한다. Graph RAG 설계·구현은
   deterministic cache의 완료 조건으로 사용하지 않아야 한다.
+- ABC-FR-102: `AGENT_BUILDER_INTENT_L2_MODE`, strict UUID `AGENT_BUILDER_INTENT_L2_ORGANIZATION_ALLOWLIST`, cache 전용 `AGENT_BUILDER_INTENT_L2_ENCRYPTION_KEYS`와 active key version은 L2 전용 설정이어야 한다. invalid keyring, invalid allowlist 또는 schema readiness failure는 L2만 safe-disabled 처리해야 하며 key/allowlist 원문을 노출하면 안 된다.
 
 ## Non-Functional Requirements
 
@@ -246,9 +258,7 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
 - 의미 기반 동등성 판정, Graph RAG retrieval/ranking 품질과 의미 유사 요청의 cache hit 성능 주장
 - 완성 graph와 GraphMutation operation replay cache
 - 사용자 간 또는 organization 간 shared semantic cache
-- 신규 public endpoint와 DB table. Tenant-scoped durable Intent Plan repository는 현재 범위 밖의 별도 후속 기능이며,
-  [durable-intent-plan-repository-followup.md](durable-intent-plan-repository-followup.md)의 전용 Accepted ADR,
-  additive migration, API와 runtime 경계의 current-state resource permission 검증이 완료되기 전에는 구현하지 않는다.
+- 신규 public endpoint, Client UI, Graph Template RAG, LLM node cache table·read/write와 DB-backed cohort management UI/API
 - Planner prompt, repair 횟수 또는 supported capability 정책 변경
 - Credential 원문 수집·저장
 - Production 전용 Redis instance 생성, Helm/Kubernetes rollout, 공유 Redis capacity·eviction 검증과 capacity planning
@@ -269,6 +279,7 @@ Agent Builder의 명시적으로 동등한 반복 요청에 대해 provider LLM 
   `docs/features/agent-builder-cache/benchmarks/<benchmark-id>/`에 안전하고 재현 가능한 식별자로 고정된다.
 - Production Redis 운영 evidence 전에는 production/staging serving을 활성화하지 않는다. Production Redis
   운영과 Graph RAG 설계·구현은 deterministic cache 코드의 필수 검증 완료와 별도로 추적한다.
+- L2는 DB-first, tenant isolation, 30-day hard-delete, redaction, mode/allowlist, L2-hit revalidation 및 partial-failure fallback을 테스트로 증명해야 한다.
 - 관련 문서와 실제 구현이 검증된 revision에서만 `Verified Against`를 추가한다.
 
 ### Normalization v2 amendment

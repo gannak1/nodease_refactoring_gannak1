@@ -50,6 +50,25 @@ durable audit 및 production serving 증거를 계속 소유한다. MBA-350은 l
 
 **MBA-344 redaction clarification.** Raw safe input and its transient NFKC/whitespace cleanup form both pass fail-closed secret/redaction/truncation gates before lookup/store. The safety-gate match result is not retained, surfaced, or separately signed; the required cleanup transformations still feed the normal signature projection. Quoted Catalog display labels are used only as a value-bypass signal.
 
+## JEO-7 Durable L2 Completion Record
+
+JEO-7 진행 상태: In Progress
+
+ADR-0075의 L2는 protected resource의 durable reference를 저장하지 않지만 organization scope,
+credential/model relation, workflow target와 Knowledge revalidation을 다시 소비한다. 이 matrix는
+JEO-7 implementation에서 각 경계를 코드·테스트·문서로 연결한다.
+
+| Boundary | Status | JEO-7 contract and evidence target |
+|---|---|---|
+| Durable cache storage | In Progress | `AgentBuilderIntentPlanCacheRecord`에는 organization scope, encrypted strict plan, MAC와 retention metadata만 저장한다. Graph, raw request, credential reference, parameter value와 authorization decision은 forbidden-content codec 및 repository tests로 차단한다. |
+| Organization and request admission | In Progress | L2 lookup은 authenticated active organization, request admission, cancellation fence와 L1 miss 뒤에만 실행한다. Repository predicate와 unique index는 organization scope를 강제하고 cross-organization integration test가 증명한다. |
+| Credential/model and Knowledge lifecycle | In Progress | L2 hit은 기존 current rehydrator를 재사용한다. current credential/model relation, workflow/target, Catalog와 Knowledge permission/lifecycle 검증을 통과하지 못하면 promotion하지 않고 Planner path를 따른다. |
+| Secret and envelope integrity | In Progress | cache 전용 Fernet keyring과 repository HMAC domain을 사용한다. key, allowlist, lookup token, ciphertext, plan과 protected identifier는 response, audit, metric, trace, log와 fixture에서 금지한다. |
+| DB-first transaction boundary | In Progress | Planner/provider/Redis I/O와 분리한 independent short L2 transaction을 사용한다. L2 commit 성공 뒤에만 L1 write하고 failure는 response를 실패시키지 않되 L1 write를 하지 않는다. |
+| Lifecycle and deletion | In Progress | `expires_at`은 30-day immutable retention이다. read는 연장하지 않고 bounded purge가 hard-delete하며 organization delete는 FK cascade다. downgrade는 L2 row 존재 시 거부한다. |
+| Audit and command history | In Progress | canonical cache-purge audit은 만들지 않는다. `agent_builder_requests.intent_cache_outcome`에는 allowlisted outcome만 기록하며 cache source/payload/key/detail을 남기지 않는다. |
+| Runtime/background | In Progress | purge task는 bounded expired-row deletion만 수행하며 cache plan을 serving하거나 protected authority를 부여하지 않는다. production allowlist activation은 JEO-7 범위 밖이다. |
+
 ## Merge Blocking Conditions
 
 - Cache value나 diagnostic에 protected resource ID 또는 credential이 노출된다.
@@ -70,7 +89,7 @@ durable audit 및 production serving 증거를 계속 소유한다. MBA-350은 l
 
 ## MBA-349 Actual Consumer Verification
 
-Status: Local Integration Verified (current disposable PostgreSQL rerun)
+MBA-349 검증 상태: Local Integration Verified (current disposable PostgreSQL rerun)
 
 | Boundary | Status | Code and test evidence | Remaining condition |
 | --- | --- | --- | --- |

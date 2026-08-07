@@ -96,6 +96,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0072](ADR-0072-outbound-proxy-only-network-enforcement.md) | Accepted | Outbound proxy-only 네트워크 강제 경계 | Application guard를 의미 정책 권위로 유지하면서 explicit Squid transport, Compose internal network와 provider-neutral Helm NetworkPolicy를 결합한다. PR CI는 pinned kind+Calico IPv4에서 direct HTTPS 차단을 검증하고 dual-stack·운영 CNI는 release gate로 둔다. |
 | [ADR-0073](ADR-0073-agent-builder-cache-exact-token-normalization-amendment.md) | Accepted | Agent Builder cache exact-token normalization amendment | ADR-0063의 broad alias normalization을 NFKC/공백 정리와 Catalog 단일 exact token으로 좁힌다. Decision 5의 safe literal admission은 ADR-0074가 부분 개정한다. |
 | [ADR-0074](ADR-0074-agent-builder-cache-safe-literal-normalization-amendment.md) | Accepted | Agent Builder cache safe literal normalization amendment | Secret/redaction 등 안전 gate를 통과한 모든 non-empty safe request를 eligible로 두고, Catalog 미등록 자연어와 지원하지 않는 node 이름을 ordered literal로 보존한다. alias·번역·embedding·semantic equality는 도입하지 않는다. |
+| [ADR-0075](ADR-0075-agent-builder-durable-intent-plan-repository.md) | Accepted | Agent Builder durable intent plan repository | Redis L1 miss 뒤 allowlisted organization에 한해 encrypted strict plan L2를 조회하며, DB-first write, 30-day hard-delete, current-state revalidation, cache 전용 keyring과 safe request-history outcome을 확정한다. |
 
 
 ## 참고 보고서

@@ -12,6 +12,7 @@ from apps.gateway.application.agent_builder.intent_cache.contracts import (
     CachedIntentPlanV1,
     IntentCacheKey,
     IntentPlanLoadResult,
+    IntentPlanSaveResult,
     IntentPlanningContext,
 )
 from apps.gateway.application.agent_builder.intent_cache.ports import (
@@ -27,6 +28,8 @@ class _IntentPlanKeyStore(Protocol):
     def build_key(self, canonical_key_material: bytes) -> IntentCacheKey: ...
 
     def load(self, key: IntentCacheKey) -> IntentPlanLoadResult: ...
+
+    def save(self, key: IntentCacheKey, plan: CachedIntentPlanV1): ...
 
     def save_if_lease_owner(
         self,
@@ -61,6 +64,21 @@ class _IntentPlanKeyStore(Protocol):
         *,
         cancellation_fence: Callable[[], Literal["active", "canceled", "stale"]],
         request_deadline_monotonic: float | None = None,
+    ): ...
+
+
+class _IntentPlanL2Store(Protocol):
+    def load(
+        self,
+        context: IntentPlanningContext,
+        canonical_key_material: bytes,
+    ) -> IntentPlanLoadResult | None: ...
+
+    def save(
+        self,
+        context: IntentPlanningContext,
+        canonical_key_material: bytes,
+        plan: CachedIntentPlanV1,
     ): ...
 
 
@@ -147,6 +165,7 @@ class AgentBuilderIntentCacheCoordinator:
         cache_io_guard: CacheIoGuard | None = None,
         diagnostic_observer: DiagnosticObserver | None = None,
         knowledge_context_fingerprint_factory: KnowledgeContextFingerprintFactory | None = None,
+        l2_store: _IntentPlanL2Store | None = None,
     ) -> None:
         self._normalizer = normalizer
         self._store = store
@@ -159,6 +178,7 @@ class AgentBuilderIntentCacheCoordinator:
         self._knowledge_context_fingerprint_factory = (
             knowledge_context_fingerprint_factory
         )
+        self._l2_store = l2_store
 
     def for_request(
         self,
@@ -185,6 +205,7 @@ class AgentBuilderIntentCacheCoordinator:
             knowledge_context_fingerprint_factory=(
                 self._knowledge_context_fingerprint_factory
             ),
+            l2_store=self._l2_store,
         )
 
     def current_knowledge_context_fingerprint(self, **kwargs) -> str:
@@ -237,10 +258,12 @@ class AgentBuilderIntentCacheCoordinator:
                 single_flight_role="none",
             )
 
+        canonical_key_material = self._canonical_key_material(
+            context,
+            normalization.intent_signature,
+        )
         try:
-            key = self._store.build_key(
-                self._canonical_key_material(context, normalization.intent_signature)
-            )
+            key = self._store.build_key(canonical_key_material)
         except Exception:
             return self._planner_execution(
                 planner_call,
@@ -282,6 +305,7 @@ class AgentBuilderIntentCacheCoordinator:
                 planner_call,
                 context,
                 key,
+                canonical_key_material,
                 miss_reason="rehydration_failed",
             )
         if loaded.status == "unavailable":
@@ -291,14 +315,39 @@ class AgentBuilderIntentCacheCoordinator:
                 reason="cache_unavailable",
                 single_flight_role="none",
             )
+        l2_loaded = self._load_l2(context, canonical_key_material)
+        if (
+            l2_loaded is not None
+            and l2_loaded.status == "hit"
+            and l2_loaded.plan is not None
+        ):
+            self._ensure_request_active(single_flight_role="none")
+            rehydrated = self._rehydrate(l2_loaded.plan, context)
+            if rehydrated is not None:
+                self._promote_l2_hit(key, l2_loaded.plan)
+                return self._execution(
+                    rehydrated,
+                    outcome="hit",
+                    reason=None,
+                    single_flight_role="none",
+                    plan=l2_loaded.plan,
+                )
+            l2_miss_reason = "rehydration_failed"
+        else:
+            l2_miss_reason = (
+                "invalid_cached_plan"
+                if l2_loaded is not None and l2_loaded.status == "invalid"
+                else "not_found"
+            )
         return self._after_miss(
             planner_call,
             context,
             key,
+            canonical_key_material,
             miss_reason=(
                 "invalid_cached_plan"
                 if loaded.status == "invalid"
-                else "not_found"
+                else l2_miss_reason
             ),
         )
 
@@ -330,11 +379,58 @@ class AgentBuilderIntentCacheCoordinator:
             allow_nan=False,
         ).encode("utf-8")
 
+    def _load_l2(
+        self,
+        context: IntentPlanningContext,
+        canonical_key_material: bytes,
+    ) -> IntentPlanLoadResult | None:
+        store = self._l2_store
+        if store is None:
+            return None
+        try:
+            return store.load(context, canonical_key_material)
+        except Exception:
+            return IntentPlanLoadResult(
+                status="unavailable",
+                plan=None,
+                reason="cache_unavailable",
+            )
+
+    def _save_l2(
+        self,
+        context: IntentPlanningContext,
+        canonical_key_material: bytes,
+        plan: CachedIntentPlanV1,
+    ):
+        store = self._l2_store
+        if store is None:
+            return None
+        try:
+            return store.save(context, canonical_key_material, plan)
+        except Exception:
+            return IntentPlanSaveResult(
+                status="unavailable",
+                reason="cache_unavailable",
+            )
+
+    def _promote_l2_hit(
+        self,
+        key: IntentCacheKey,
+        plan: CachedIntentPlanV1,
+    ) -> None:
+        if not self._cache_io_ready():
+            return
+        try:
+            self._store.save(key, plan)
+        except Exception:
+            pass
+
     def _after_miss(
         self,
         planner_call: PlannerCall,
         context: IntentPlanningContext,
         key: IntentCacheKey,
+        canonical_key_material: bytes,
         *,
         miss_reason: Literal[
             "not_found", "invalid_cached_plan", "rehydration_failed"
@@ -380,6 +476,7 @@ class AgentBuilderIntentCacheCoordinator:
             planner_call,
             context,
             key,
+            canonical_key_material,
             owner_token,
             lease.generation,
             miss_reason=miss_reason,
@@ -459,6 +556,7 @@ class AgentBuilderIntentCacheCoordinator:
         planner_call: PlannerCall,
         context: IntentPlanningContext,
         key: IntentCacheKey,
+        canonical_key_material: bytes,
         owner_token: str,
         generation: int,
         *,
@@ -495,6 +593,20 @@ class AgentBuilderIntentCacheCoordinator:
                     single_flight_role="owner",
                 )
                 raise ColdMissRehydrationError()
+            l2_saved = self._save_l2(context, canonical_key_material, plan)
+            if (
+                l2_saved is not None
+                and getattr(l2_saved, "status", None) != "stored"
+            ):
+                completed_without_value = self._complete_without_value(
+                    key, owner_token, generation
+                )
+                return self._execution(
+                    rehydrated,
+                    outcome="error",
+                    reason="cache_unavailable",
+                    single_flight_role="owner",
+                )
             if not self._cache_io_ready():
                 saved = None
             else:

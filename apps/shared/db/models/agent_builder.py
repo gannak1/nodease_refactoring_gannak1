@@ -3,7 +3,16 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from apps.shared.db.base import Base
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -60,6 +69,11 @@ class AgentBuilderRequest(Base):
     __tablename__ = "agent_builder_requests"
     __table_args__ = (
         Index("ix_agent_builder_requests_session_status", "session_id", "status"),
+        CheckConstraint(
+            "intent_cache_outcome IS NULL OR intent_cache_outcome IN "
+            "('disabled', 'hit', 'miss', 'bypass', 'error')",
+            name="ck_agent_builder_requests_intent_cache_outcome",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -78,6 +92,9 @@ class AgentBuilderRequest(Base):
         PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    intent_cache_outcome: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True
+    )
     message_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     structured_request: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
@@ -105,6 +122,60 @@ class AgentBuilderRequest(Base):
     )
     draft: Mapped[Optional["AgentBuilderDraft"]] = relationship(
         "AgentBuilderDraft", back_populates="request", uselist=False
+    )
+
+
+class AgentBuilderIntentPlanCacheRecord(Base):
+    """Encrypted organization-scoped L2 candidate; never a request replay."""
+
+    __tablename__ = "agent_builder_intent_plan_cache_records"
+    __table_args__ = (
+        CheckConstraint(
+            "expires_at > created_at",
+            name="ck_agent_builder_intent_plan_cache_records_expiry",
+        ),
+        CheckConstraint(
+            "envelope_version = 1",
+            name="ck_agent_builder_intent_plan_cache_records_envelope_version",
+        ),
+        Index(
+            "uq_agent_builder_intent_plan_cache_records_lookup",
+            "organization_id",
+            "lookup_key_version",
+            "lookup_token",
+            unique=True,
+        ),
+        Index(
+            "ix_agent_builder_intent_plan_cache_records_expires_at",
+            "expires_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    lookup_key_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    lookup_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    envelope_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    envelope_mac: Mapped[str] = mapped_column(String(64), nullable=False)
+    encryption_key_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    encryption_algorithm: Mapped[str] = mapped_column(String(32), nullable=False)
+    envelope_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
     )
 
 
