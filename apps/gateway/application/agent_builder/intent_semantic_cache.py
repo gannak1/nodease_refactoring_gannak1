@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import math
+from typing import Protocol
 
 from apps.gateway.application.agent_builder.intent_cache.contracts import (
     CachedIntentPlanV1,
 )
-from apps.gateway.application.agent_builder.intent_rehydration_registry import (
-    RequestIntentSummaryProjector,
-)
-
 
 SEMANTIC_QUERY_PROJECTION_VERSION = "semantic-query-projection-v1"
+
+
+class SemanticQueryProjectorPort(Protocol):
+    def project_semantic(self, full_safe_message: str) -> str | None: ...
 
 
 class SemanticQueryProjectionV1:
@@ -49,8 +50,14 @@ class SemanticQueryProjectionV1:
 
 
 class SemanticQueryProjectionBuilder:
-    def __init__(self, projector: RequestIntentSummaryProjector | None = None) -> None:
-        self._projector = projector or RequestIntentSummaryProjector()
+    def __init__(self, projector: SemanticQueryProjectorPort | None = None) -> None:
+        if projector is None:
+            from apps.gateway.application.agent_builder.intent_rehydration_registry import (
+                RequestIntentSummaryProjector,
+            )
+
+            projector = RequestIntentSummaryProjector()
+        self._projector = projector
 
     def build(self, full_safe_message: str) -> SemanticQueryProjectionV1 | None:
         text = self._projector.project_semantic(full_safe_message)
