@@ -151,3 +151,26 @@ def test_request_composition_uses_the_shared_runtime_cache(monkeypatch):
 
     assert first.intent_plan_cache() is runtime.cache
     assert second.intent_plan_cache() is runtime.cache
+
+
+def test_production_composition_has_no_unapproved_live_semantic_ports(monkeypatch):
+    from apps.gateway.composition import agent_builder_cache as runtime_module
+
+    app = FastAPI()
+    adapter = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(
+        type(runtime_module.settings),
+        "agent_builder_intent_cache_config",
+        lambda _settings: _enabled_config(),
+    )
+    monkeypatch.setattr(
+        runtime_module.RedisIntentPlanCacheAdapter,
+        "from_url",
+        lambda *args, **kwargs: adapter,
+    )
+
+    runtime = runtime_module.initialize_agent_builder_intent_cache_application(app)
+
+    assert runtime.cache._semantic_external_call_admission is None
+    assert runtime.cache._semantic_embedding_provider is None
+    assert runtime.cache._semantic_verifier is None

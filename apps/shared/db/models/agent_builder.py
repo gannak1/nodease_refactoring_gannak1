@@ -3,15 +3,18 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from apps.shared.db.base import Base
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
     FetchedValue,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -143,6 +146,11 @@ class AgentBuilderIntentPlanCacheRecord(Base):
             "envelope_version = 1",
             name="ck_agent_builder_intent_plan_cache_records_envelope_version",
         ),
+        UniqueConstraint(
+            "organization_id",
+            "id",
+            name="uq_agent_builder_intent_plan_cache_records_org_id",
+        ),
         Index(
             "uq_agent_builder_intent_plan_cache_records_lookup",
             "organization_id",
@@ -181,6 +189,104 @@ class AgentBuilderIntentPlanCacheRecord(Base):
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
+    )
+
+
+class AgentBuilderIntentPlanSemanticCacheEntry(Base):
+    """Private derived-sensitive vector index into an encrypted L2 plan row."""
+
+    __tablename__ = "agent_builder_intent_plan_semantic_cache_entries"
+    __table_args__ = (
+        CheckConstraint(
+            "expires_at > created_at",
+            name="ck_agent_builder_semantic_cache_expiry",
+        ),
+        ForeignKeyConstraint(
+            ("organization_id", "intent_plan_record_id"),
+            (
+                "agent_builder_intent_plan_cache_records.organization_id",
+                "agent_builder_intent_plan_cache_records.id",
+            ),
+            name="fk_agent_builder_semantic_cache_parent_scope",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "intent_plan_record_id",
+            "user_id",
+            "generation_mode",
+            "semantic_query_projection_version",
+            "embedding_profile_version",
+            "embedding_model_version",
+            "planner_contract_version",
+            "catalog_version",
+            "normalizer_version",
+            "rehydration_contract_version",
+            name="uq_agent_builder_semantic_cache_parent_profile_contract",
+        ),
+        Index(
+            "ix_agent_builder_semantic_cache_scope_versions_expiry",
+            "organization_id",
+            "user_id",
+            "generation_mode",
+            "semantic_query_projection_version",
+            "embedding_profile_version",
+            "embedding_model_version",
+            "planner_contract_version",
+            "catalog_version",
+            "normalizer_version",
+            "rehydration_contract_version",
+            "expires_at",
+        ),
+        Index(
+            "ix_agent_builder_semantic_cache_expires_at",
+            "expires_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("organization.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    intent_plan_record_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), nullable=False
+    )
+    generation_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    semantic_query_projection_version: Mapped[str] = mapped_column(
+        String(128), nullable=False
+    )
+    embedding_profile_version: Mapped[str] = mapped_column(
+        String(128), nullable=False
+    )
+    embedding_model_version: Mapped[str] = mapped_column(
+        String(128), nullable=False
+    )
+    planner_contract_version: Mapped[str] = mapped_column(
+        String(128), nullable=False
+    )
+    catalog_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    normalizer_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    rehydration_contract_version: Mapped[str] = mapped_column(
+        String(128), nullable=False
+    )
+    safe_query_embedding: Mapped[list[float]] = mapped_column(
+        Vector(), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )
 
 

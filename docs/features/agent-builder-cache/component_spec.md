@@ -28,7 +28,7 @@ MBA-343 cache spine의 내부 module 분리와 disabled runtime seam은
 | `RedisIntentPlanCacheAdapter` | bounded Redis get/put/lease/wait | business validation |
 | `IntentPlanL2EnvelopeCodec` | repository 전용 lookup token, Fernet envelope와 independent HMAC binding | Redis envelope 재사용, raw request/graph/credential을 envelope에 포함 |
 | `PostgresIntentPlanRepository` | allowlisted organization의 L2 load/save와 짧은 독립 DB transaction | authorization·GraphMutation·request replay 소유, L2 commit 전 L1 promotion 허용 |
-| Agent Builder L2 retention task | 만료 encrypted L2 row의 bounded hard-delete와 retry | cache plan serving, cache audit/replay record 생성 |
+| Agent Builder L2 retention task | 만료 semantic child를 먼저 purge한 뒤 encrypted L2 row를 bounded hard-delete하고 retry | cache plan serving, cache audit/replay record 또는 별도 semantic worker 생성 |
 | `CachedIntentPlanCodec` | strict serialization, max size와 forbidden field validation | Pydantic validation 우회 |
 | `CanonicalIntentTextRegistry` | provider topic/guidance의 exact ref projection, request-specific safe-summary projection descriptor와 purpose fixed rendering | fuzzy/semantic mapping, 자유 형식 template argument |
 | `RequestIntentSummaryProjector` | current `full_safe_message`에서 versioned bounded `intent_summary` 생성 | provider summary 또는 request/draft 공통 문장 재사용 |
@@ -53,7 +53,7 @@ HTTP endpoint
                <- provider-backed intent extractor
        -> existing structured request / GraphMutation / CAS services
 
-Celery Beat -> Log System L2 retention task -> expired L2 rows only
+Celery Beat -> Log System L2 retention task -> expired semantic children -> expired L2 rows
 ```
 
 Application types는 `redis.Redis`, FastAPI Request와 SQLAlchemy model을 import하지 않는다. Composition이
@@ -106,7 +106,7 @@ evidence remains MBA-349.
 | `apps/gateway/lifespan.py` | cache runtime initialization after startup and one-time shutdown close |
 | `apps/gateway/services/agent_builder_service.py` | transient full safe planning context DTO와 coordinator seam |
 | `apps/gateway/services/agent_builder_intent_service.py` | provider-backed extraction과 repair 유지 |
-| `apps/shared/services/agent_builder_intent_plan_l2_retention.py` | expiry recheck를 포함한 bounded L2 hard-delete batch |
+| `apps/shared/services/agent_builder_intent_plan_l2_retention.py` | expiry recheck를 포함한 bounded semantic-child pre-purge와 L2 hard-delete batch |
 | `apps/log_system/tasks.py` | 5분 Beat가 발행한 L2 retention task의 bounded batch loop와 retry |
 
 `intent_cache_coordinator.py`는 `intent_cache/`의 DTO와 port를 의존할 수 있지만 반대 방향 import는
@@ -364,3 +364,71 @@ bypass/negative control로만 남긴다.
 ### Normalization v2 amendment
 
 The normalization pipeline no longer rejects a request because a word is absent from a fixed vocabulary. After deny-only safety checks, it emits an ordered projection of the entire normalized request: Catalog-owned exact aliases are replaced with their canonical references and every other token is retained as a literal. Thus any safe natural-language request reaches the existing Redis lookup; semantic equivalence beyond the documented NFKC, whitespace, and Catalog exact-alias rules remains out of scope.
+
+## JEO-8 Private Dense Semantic Cache
+
+This section describes the Accepted, default-disabled JEO-8 implementation. It does not change the Redis/L2 exact-cache order or enable a live production provider call. The semantic index is a private candidate-assist store, not a GraphRAG corpus, template recommender, cache replay store, public API or Client surface.
+
+### Additional component boundaries
+
+| Component | Responsibility | Must not do |
+|---|---|---|
+| `SemanticQueryProjectionV1` | carry only a non-truncated, at-most-240-code-point `summary.current_safe_message.v1` redaction output and its version for one owner execution | accept `full_safe_message` directly, return a first-240 slice of longer cleaned text, serialize, log or survive the request |
+| `IntentPlanL2SaveResult` / `IntentPlanL2StoredReceipt` | distinguish L2 `stored|unavailable` and carry the same-transaction actual parent ID, timezone-aware expiry and write kind only for `stored` | alter Redis `IntentPlanSaveResult`, serialize/observe a receipt, accept guessed ID/current-time expiry or allow contradictory status/receipt/reason |
+| `SemanticExternalCallBinding` | carry one opaque request-local `query_embedding|semantic_verification` execution/usage binding from admission to exactly the matching provider port | serialize, log, persist, expose its execution reference or reuse one purpose as the other |
+| `SemanticExternalCallAdmissionPort` | after a separately approved Agent Builder `query_embedding` authority exists, authorize the current actor/organization's capability/profile, model/credential lifecycle and durable usage attribution in a short independent Session and return a purpose-bound binding only for `admitted` | reuse deployment/node-bound capability for Agent Builder, read an environment credential directly, retain permission identity, return a binding for `denied|unavailable`, or hold the service Session while resolving authority |
+| `SemanticEmbeddingProviderPort` | embed only a transient `SemanticQueryProjectionV1` with its admitted `query_embedding` binding | retain raw input, accept full message/normalizer internals, call without/mismatch a binding, choose a production model/default threshold, expose provider payload |
+| `SemanticIntentPlanIndexPort` | personal scope/version/expiry-filtered pgvector top-k lookup and best-effort index append | return cross-user/organization rows, decrypt/serve a plan without L2 codec |
+| `SemanticCandidateVerifierPort` | return a closed `verified|rejected|uncertain|unavailable|error` decision for an in-memory candidate and declare whether it is provider-call-free | infer authorization, persist a decision, turn similarity into equality or enable Planner-free serving from a provider-backed verifier |
+| `PostgresSemanticIntentPlanIndexAdapter` | join semantic metadata to its L2 parent, apply SQL predicates before vector ordering, own a short independent session | store request text, plan/envelope duplicate, graph or protected identity in observability |
+| `SemanticCachePolicy` | distinguish assist from Planner-free serving and decide safe fallback | bypass exact L1/L2 order or permit serving without verifier/rehydration |
+
+The dependency direction becomes:
+
+```text
+AgentBuilderIntentCacheCoordinator
+  -> Redis L1 exact port
+  -> optional Postgres L2 exact repository
+  -> optional SemanticCachePolicy
+       -> SemanticExternalCallAdmissionPort
+       -> SemanticEmbeddingProviderPort
+       -> SemanticIntentPlanIndexPort <- PostgresSemanticIntentPlanIndexAdapter (pgvector + short Session)
+       -> SemanticCandidateVerifierPort
+  -> existing CachedIntentPlanRehydrator
+  -> existing Planner port
+```
+
+Composition injects only enabled, validated semantic ports. JEO-8 unit tests may inject fakes, but production composition has no live embedding/provider-backed-verifier adapter until a separately approved Agent Builder `query_embedding` capability/profile and durable usage binding exist. Application modules continue to depend on ports and strict DTOs rather than PostgreSQL, pgvector or provider-client types. The semantic adapter may reuse JEO-7 `IntentPlanL2EnvelopeCodec` to validate/decrypt the joined parent envelope, but it may not duplicate or redesign the parent L2 row.
+
+### Exact-first and semantic flow
+
+1. Existing request admission, cancellation/version fence, safe normalization and HMAC exact-key construction run unchanged.
+2. Redis L1 exact hit rehydrates immediately; it does not create an embedding, vector query or verifier decision.
+3. Only an L1 miss reads JEO-7 L2. A valid L2 hit rehydrates and may promote the existing L1 entry; it does not create an embedding, vector query or verifier decision. Only an explicit L2 `status=miss` is semantic-eligible. L2 `None|invalid|unavailable`, disabled, `write_only`, allowlist-out and schema-unready proceed to the existing Planner without any semantic I/O or append.
+4. A usable L1/L2 double miss first acquires the existing JEO-7 single-flight lease. Only its owner reaches semantic policy; a follower performs no embedding, vector lookup, verifier or candidate rehydration and keeps the existing follower contract.
+5. The owner checks semantic eligibility before projection. `selected_target` presence or modify/replace request makes the request semantic-ineligible: semantic provider/repository/verifier/index calls are all zero and the owner enters the existing Planner path. Exact L1/L2 and Planner behavior remain unchanged.
+6. An eligible owner builds transient `SemanticQueryProjectionV1` only by combining current normalizer eligibility with `summary.current_safe_message.v1`. Whitespace/redaction-cleaned output of exactly 240 code points is allowed; longer output is semantic-ineligible and is not sliced for embedding or verification. Missing, over-limit, redacted or version-mismatched projection enters Planner with `miss` and without embedding/vector/verifier/index I/O. `full_safe_message` and normalizer intermediate text never cross the embedding port.
+7. Before every semantic external/repository I/O, the request-bound guard ends the clean service read transaction. A future live adapter first uses `SemanticExternalCallAdmissionPort` in a separate short Session to validate an approved Agent Builder `query_embedding` capability/profile, current actor/organization, model/credential `use`, lifecycle and durable usage attribution. `admitted` must return an opaque non-serialized binding whose purpose matches `query_embedding` or `semantic_verification`; `denied|unavailable` cannot return one. A provider-backed verifier obtains a separate verification admission/binding and cannot reuse the embedding binding. JEO-8 production composition omits those adapters until the authority exists.
+8. The embedding provider receives only the transient projection and matching `query_embedding` binding. The index adapter binds organization and user scope, generation mode, `semantic_query_projection_version`, embedding profile/model version, planner/catalog/normalizer and rehydration contract versions, and both index/parent expiry predicates in SQL before `ORDER BY` vector distance and `LIMIT top_k`.
+9. A candidate is not a hit. After strict L2 envelope decode and before either verifier or rehydrator, the coordinator requires `request_type=new_workflow`, `draft_mode=new_workflow` and `edit_placement=null`. It discards an ineligible candidate without calling those ports, proceeds in rank order to the next bounded candidate and enters Planner when none remain. An eligible candidate still requires a closed verifier decision and the same current rehydrator used by exact L2. Model/credential use permission, target-independent workflow context, Catalog validation, Knowledge/Collection permission·lifecycle·readiness and current graph materialization remain authoritative.
+10. `semantic_candidate_assist` returns `PlannerRequired` regardless of candidate outcome. `planner_free_semantic_serving` may return a rehydrated result only when its independently enabled flag and a provider-call-free verifier produce `verified`; all other normal paths call the existing Planner once. The coordinator rechecks cancellation/request-version after admission, embedding, vector lookup and verifier, and again before candidate use or Planner fallback. A canceled/stale request performs no further Planner/provider or cache write. Candidate rehydration may open only a clean service read transaction; the guard must close it before serving or Planner. If it cannot, the request ends with a bounded transaction-boundary error rather than waiting on a provider or repository while holding the connection. Planner-free serving does not promise a provider-call-free request because the query embedding may still use an admitted provider call with durable usage attribution. A serving result attempts `save_if_lease_owner` for the current exact L1 key before response; a failed promotion does not invalidate the verified owner response but completes the lease without a follower value.
+11. After a Planner result projects to `CachedIntentPlanV1`, the existing JEO-7 repository commits L2 first and returns strict `IntentPlanL2SaveResult(status=stored)` with a non-serialized `IntentPlanL2StoredReceipt` from the same short independent transaction. The repository locks an existing unique-key row with `SELECT ... FOR UPDATE`; unexpired rows update only the envelope and preserve expiry, while expired rows update envelope/created/expiry. A missing row uses `INSERT ... ON CONFLICT DO NOTHING RETURNING`; only a concurrent insert loser performs one same-transaction locked read. The receipt contains the DB-confirmed actual parent ID, timezone-aware immutable expiry and `inserted|unexpired_conflict|expired_replacement`, never a guessed ID, application-clock substitute or post-commit re-read. Existing Redis `IntentPlanSaveResult` remains unchanged. A semantic append is permitted only when that result, receipt and the already-created in-memory embedding all exist; Planner completion never starts a new embedding call. The append SQL fences on current `IntentPlanningContext.organization_id` plus the receipt parent ID/expiry. `inserted|unexpired_conflict` inserts a missing child and does nothing on existing conflict. `expired_replacement` inserts when retention already removed the child, otherwise updates only an older child. Parent expiry mismatch, same/newer child or late receipt is zero-write. Semantic-only missing-table/column readiness errors disable semantic lookup/append without undoing L2, L1 promotion or the Planner result.
+
+### Semantic index shape and lifecycle
+
+The additive model `AgentBuilderIntentPlanSemanticCacheEntry` has no request text or plan payload. It contains `organization_id`, `user_id`, generation mode, `semantic_query_projection_version`, embedding profile/model version, planner/catalog/normalizer and required rehydration contract versions, `safe_query_embedding`, `intent_plan_record_id`, `created_at` and `expires_at`.
+
+- `organization_id + intent_plan_record_id` references the corresponding L2 organization/id candidate key, so an index row cannot point at another tenant's L2 record. A parent/profile/projection/contract-version unique constraint makes inserted/unexpired appends idempotent; expired-parent replacement uses an expiry-fenced conditional update and is not a similarity or permission assertion.
+- The index has organization/user/version/expiry filtering indexes; the concrete pgvector index/operator class is profile/dimension compatible deployment configuration, not a hard-coded production model or threshold.
+- The L2 parent is the sole plan authority and supplies the child's intended immutable expiry. Index `expires_at` is copied from the same-transaction receipt, is never extended for an unexpired parent, is conditionally replaced with the new immutable expiry when the L2 parent is replaced after expiry and is checked together with parent expiry on reads. The existing L2 retention task first hard-deletes expired semantic children in a savepoint or separate short transaction with a delete-time expiry recheck, then deletes expired parents; parent `ON DELETE CASCADE` removes any remaining child. Child `42P01|42703` rolls back only that step, does not set a process-lifetime flag and does not stop parent purge. The same worker re-probes on the next Beat. Child and parent each use the validated limit, and `batch_full` remains true when either count reaches it so the existing maximum-five-batch loop can drain both. If best-effort replacement fails after an expired parent is renewed in place, the next schema-ready retention run removes the old expired embedding without deleting the renewed parent.
+- Migration downgrade first refuses while semantic rows exist, then removes the semantic table and the parent composite candidate key. JEO-7's parent-table downgrade guard remains unchanged.
+
+### Payload, transaction and observability constraints
+
+`SemanticQueryProjectionV1` text and `safe_query_embedding` are derived sensitive data. Neither live value is emitted to a diagnostic, metric, audit, trace, exception message or captured production fixture; unit tests use only synthetic vectors without provider payload or user provenance. The same prohibition applies to raw/full/normalized text, vector score, L2 record identity, graph/node/edge identity, credential/Knowledge/Connection identity, explicit parameter value, permission decision and provider payload. Existing `intent_cache_outcome` remains coarse: Planner-free semantic serving is `hit`, normal semantic fallback is `miss`, semantic infrastructure/readiness fallback is `error`, and a semantic flow not started retains the exact-cache outcome. Terminal failure restores the selected allowlisted outcome without recording its source.
+
+The request-owned service Session may not remain open while waiting for the embedding provider, Planner provider, Redis or either independent repository session. A semantic guard failure is sticky for the request: retained projection/embedding cannot authorize later append, and an uncloseable post-rehydration transaction ends before Planner/provider/cache writes. A future external semantic provider adapter is preceded by approved Agent Builder capability/profile, current model/credential `use` and lifecycle admission in its own short Session; only the opaque purpose-bound binding crosses into the provider port and it carries no observable raw credential or permission decision. No semantic retry, outbox, background verifier, audit event or new retention task is added. The existing L2 retention task is extended with per-run recoverable child-expiry purge, while current-parent receipt fencing owns replacement concurrency.
+
+### Rollout boundary
+
+Both semantic flags default to disabled. Tests may inject fake ports, but production has no live embedding/provider-backed-verifier composition until a separately approved Agent Builder `query_embedding` capability/profile and durable usage binding exist. `semantic_candidate_assist` then needs validated authority, embedding profile, repository and bounded top-k configuration. `planner_free_semantic_serving` additionally needs an explicit provider-call-free verifier and current rehydration evidence; its query embedding may still be an admitted provider call. Production values for embedding provider/model, dimension, top-k and threshold are deployment configuration decisions; this specification intentionally supplies no defaults. GraphRAG, workflow-template recommendation and shared semantic retrieval remain separately scoped follow-up work.

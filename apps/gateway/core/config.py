@@ -56,6 +56,18 @@ class AgentBuilderIntentPlanL2Config:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class AgentBuilderSemanticCacheConfig:
+    assist_enabled: bool
+    planner_free_serving_enabled: bool
+    disabled_reason: str | None
+    embedding_profile_version: str | None = None
+    embedding_model_version: str | None = None
+    embedding_dimension: int | None = None
+    top_k: int | None = None
+    rehydration_contract_version: str | None = None
+
+
 def _cache_flag(value: str | bool) -> bool | None:
     if isinstance(value, bool):
         return value
@@ -68,7 +80,11 @@ def _cache_flag(value: str | bool) -> bool | None:
     return None
 
 
-def _cache_bounded_int(value: str | int, minimum: int, maximum: int) -> int | None:
+def _cache_bounded_int(
+    value: str | int | None,
+    minimum: int,
+    maximum: int,
+) -> int | None:
     if isinstance(value, bool):
         return None
     try:
@@ -139,6 +155,16 @@ class Settings(BaseSettings):
         repr=False,
     )
     AGENT_BUILDER_INTENT_L2_ACTIVE_KEY_VERSION: str | None = None
+    # JEO-8 remains dormant until every semantic contract coordinate is
+    # supplied explicitly. Provider/model choices are deployment policy, not
+    # source-code defaults.
+    AGENT_BUILDER_SEMANTIC_ASSIST_ENABLED: str | bool = "false"
+    AGENT_BUILDER_SEMANTIC_SERVING_ENABLED: str | bool = "false"
+    AGENT_BUILDER_SEMANTIC_EMBEDDING_PROFILE_VERSION: str | None = None
+    AGENT_BUILDER_SEMANTIC_EMBEDDING_MODEL_VERSION: str | None = None
+    AGENT_BUILDER_SEMANTIC_EMBEDDING_DIMENSION: str | int | None = None
+    AGENT_BUILDER_SEMANTIC_TOP_K: str | int | None = None
+    AGENT_BUILDER_SEMANTIC_REHYDRATION_CONTRACT_VERSION: str | None = None
 
     # Keep query-embedding policy writes dormant until all purpose-unaware
     # Gateway and Worker processes have drained.
@@ -339,6 +365,85 @@ class Settings(BaseSettings):
             redis_url=redis_url,
             hmac_key=hmac_key,
             hmac_key_version=hmac_key_version,
+        )
+
+    def agent_builder_semantic_cache_config(
+        self,
+    ) -> AgentBuilderSemanticCacheConfig:
+        assist_enabled = _cache_flag(self.AGENT_BUILDER_SEMANTIC_ASSIST_ENABLED)
+        if assist_enabled is None:
+            return AgentBuilderSemanticCacheConfig(
+                assist_enabled=False,
+                planner_free_serving_enabled=False,
+                disabled_reason="invalid_assist_flag",
+            )
+
+        serving_enabled = _cache_flag(self.AGENT_BUILDER_SEMANTIC_SERVING_ENABLED)
+        if serving_enabled is None:
+            return AgentBuilderSemanticCacheConfig(
+                assist_enabled=False,
+                planner_free_serving_enabled=False,
+                disabled_reason="invalid_serving_flag",
+            )
+        if serving_enabled and not assist_enabled:
+            return AgentBuilderSemanticCacheConfig(
+                assist_enabled=False,
+                planner_free_serving_enabled=False,
+                disabled_reason="serving_requires_assist",
+            )
+        if not assist_enabled:
+            return AgentBuilderSemanticCacheConfig(
+                assist_enabled=False,
+                planner_free_serving_enabled=False,
+                disabled_reason="feature_disabled",
+            )
+
+        profile_version = (
+            self.AGENT_BUILDER_SEMANTIC_EMBEDDING_PROFILE_VERSION or ""
+        ).strip()
+        model_version = (
+            self.AGENT_BUILDER_SEMANTIC_EMBEDDING_MODEL_VERSION or ""
+        ).strip()
+        rehydration_version = (
+            self.AGENT_BUILDER_SEMANTIC_REHYDRATION_CONTRACT_VERSION or ""
+        ).strip()
+        version_values = (profile_version, model_version, rehydration_version)
+        if any(
+            not value or _CACHE_VERSION_PATTERN.fullmatch(value) is None
+            for value in version_values
+        ):
+            return AgentBuilderSemanticCacheConfig(
+                assist_enabled=False,
+                planner_free_serving_enabled=False,
+                disabled_reason="profile_configuration_incomplete",
+            )
+
+        dimension = _cache_bounded_int(
+            self.AGENT_BUILDER_SEMANTIC_EMBEDDING_DIMENSION, 1, 4096
+        )
+        if dimension is None:
+            return AgentBuilderSemanticCacheConfig(
+                assist_enabled=False,
+                planner_free_serving_enabled=False,
+                disabled_reason="invalid_dimension",
+            )
+        top_k = _cache_bounded_int(self.AGENT_BUILDER_SEMANTIC_TOP_K, 1, 20)
+        if top_k is None:
+            return AgentBuilderSemanticCacheConfig(
+                assist_enabled=False,
+                planner_free_serving_enabled=False,
+                disabled_reason="invalid_top_k",
+            )
+
+        return AgentBuilderSemanticCacheConfig(
+            assist_enabled=True,
+            planner_free_serving_enabled=serving_enabled,
+            disabled_reason=None,
+            embedding_profile_version=profile_version,
+            embedding_model_version=model_version,
+            embedding_dimension=dimension,
+            top_k=top_k,
+            rehydration_contract_version=rehydration_version,
         )
 
     def agent_builder_intent_plan_l2_config(

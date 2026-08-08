@@ -82,6 +82,7 @@ def test_intent_cache_modules_keep_their_documented_dependency_direction():
         },
         "contracts.py": {
             "__future__",
+            "datetime",
             "re",
             "typing",
             "uuid",
@@ -102,6 +103,7 @@ def test_intent_cache_modules_keep_their_documented_dependency_direction():
             "typing",
             "pydantic",
             "apps.gateway.application.agent_builder.intent_cache.contracts",
+            "apps.gateway.application.agent_builder.intent_semantic_cache",
             "apps.shared.schemas.agent_builder",
         },
         "disabled.py": {

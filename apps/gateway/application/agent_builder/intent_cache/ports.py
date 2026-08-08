@@ -11,9 +11,19 @@ from apps.gateway.application.agent_builder.intent_cache.contracts import (
     IntentCacheKey,
     IntentNormalizationResult,
     IntentPlanLoadResult,
+    IntentPlanL2StoredReceipt,
     IntentPlanSaveResult,
     IntentPlanningContext,
     _StrictFrozenModel,
+)
+from apps.gateway.application.agent_builder.intent_semantic_cache import (
+    SemanticCachePolicy,
+    SemanticEmbedding,
+    SemanticExternalCallBinding,
+    SemanticExternalCallAdmissionResult,
+    SemanticIntentPlanCandidate,
+    SemanticQueryProjectionV1,
+    SemanticVerificationResult,
 )
 from apps.shared.schemas.agent_builder import AgentBuilderStructuredRequest
 
@@ -96,3 +106,60 @@ class IntentPlanCacheBoundary(Protocol):
         planner_call: PlannerCall,
         context: IntentPlanningContext | None = None,
     ) -> IntentPlanExecution: ...
+
+
+@runtime_checkable
+class SemanticExternalCallAdmissionPort(Protocol):
+    def authorize(
+        self,
+        *,
+        context: IntentPlanningContext,
+        policy: SemanticCachePolicy,
+        purpose: Literal["query_embedding", "semantic_verification"],
+    ) -> SemanticExternalCallAdmissionResult: ...
+
+
+@runtime_checkable
+class SemanticEmbeddingProviderPort(Protocol):
+    def embed(
+        self,
+        projection: SemanticQueryProjectionV1,
+        *,
+        binding: SemanticExternalCallBinding,
+    ) -> SemanticEmbedding: ...
+
+
+@runtime_checkable
+class SemanticIntentPlanIndexPort(Protocol):
+    def search(
+        self,
+        *,
+        context: IntentPlanningContext,
+        policy: SemanticCachePolicy,
+        projection: SemanticQueryProjectionV1,
+        embedding: SemanticEmbedding,
+    ) -> tuple[SemanticIntentPlanCandidate, ...]: ...
+
+    def append(
+        self,
+        *,
+        context: IntentPlanningContext,
+        policy: SemanticCachePolicy,
+        embedding: SemanticEmbedding,
+        receipt: IntentPlanL2StoredReceipt,
+    ) -> bool: ...
+
+
+@runtime_checkable
+class SemanticCandidateVerifierPort(Protocol):
+    @property
+    def provider_call_free(self) -> bool: ...
+
+    def verify(
+        self,
+        *,
+        projection: SemanticQueryProjectionV1,
+        candidate: SemanticIntentPlanCandidate,
+        context: IntentPlanningContext,
+        binding: SemanticExternalCallBinding | None,
+    ) -> SemanticVerificationResult: ...

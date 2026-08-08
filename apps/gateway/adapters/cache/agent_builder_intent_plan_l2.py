@@ -3,18 +3,20 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
-from sqlalchemy import case, select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
 from apps.gateway.application.agent_builder.intent_cache import (
     CachedIntentPlanV1,
     CanonicalIntentPlanCodec,
+    IntentPlanL2SaveResult,
+    IntentPlanL2StoredReceipt,
     IntentPlanLoadResult,
-    IntentPlanSaveResult,
     IntentPlanningContext,
 )
 from apps.gateway.core.config import AgentBuilderIntentPlanL2Config
@@ -275,7 +277,7 @@ class PostgresIntentPlanRepository:
         context: IntentPlanningContext,
         canonical_key_material: bytes,
         plan: CachedIntentPlanV1,
-    ) -> IntentPlanSaveResult | None:
+    ) -> IntentPlanL2SaveResult | None:
         organization_id = context.scope._organization_id
         if not self._schema_available or not self._config.should_write(organization_id):
             return None
@@ -299,43 +301,84 @@ class PostgresIntentPlanRepository:
                 "created_at": now,
                 "expires_at": now + _RETENTION,
             }
-            statement = postgresql_insert(AgentBuilderIntentPlanCacheRecord).values(
-                **values
-            )
-            expired_record = AgentBuilderIntentPlanCacheRecord.expires_at <= now
-            excluded = statement.excluded
-            result = session.execute(
-                statement.on_conflict_do_update(
-                    index_elements=(
-                        "organization_id",
-                        "lookup_key_version",
-                        "lookup_token",
-                    ),
-                    set_={
-                        "envelope_ciphertext": excluded.envelope_ciphertext,
-                        "envelope_mac": excluded.envelope_mac,
-                        "encryption_key_version": excluded.encryption_key_version,
-                        "encryption_algorithm": excluded.encryption_algorithm,
-                        "envelope_version": excluded.envelope_version,
-                        "created_at": case(
-                            (expired_record, excluded.created_at),
-                            else_=AgentBuilderIntentPlanCacheRecord.created_at,
-                        ),
-                        "expires_at": case(
-                            (expired_record, excluded.expires_at),
-                            else_=AgentBuilderIntentPlanCacheRecord.expires_at,
-                        ),
-                    },
+            locked_statement = select(AgentBuilderIntentPlanCacheRecord).where(
+                AgentBuilderIntentPlanCacheRecord.organization_id == organization_id,
+                AgentBuilderIntentPlanCacheRecord.lookup_key_version
+                == self._envelope_codec.lookup_key_version,
+                AgentBuilderIntentPlanCacheRecord.lookup_token == lookup_token,
+            ).with_for_update()
+            record = session.execute(locked_statement).scalar_one_or_none()
+            if record is None:
+                parent_record_id = uuid.uuid4()
+                inserted = session.execute(
+                    postgresql_insert(AgentBuilderIntentPlanCacheRecord)
+                    .values(id=parent_record_id, **values)
+                    .on_conflict_do_nothing(
+                        index_elements=(
+                            "organization_id",
+                            "lookup_key_version",
+                            "lookup_token",
+                        )
+                    )
+                    .returning(
+                        AgentBuilderIntentPlanCacheRecord.id,
+                        AgentBuilderIntentPlanCacheRecord.expires_at,
+                    )
+                ).first()
+                if inserted is not None:
+                    parent_record_id, receipt_expiry = inserted
+                    write_kind = "inserted"
+                else:
+                    record = session.execute(locked_statement).scalar_one_or_none()
+                    if record is None:
+                        session.rollback()
+                        return IntentPlanL2SaveResult(
+                            status="unavailable",
+                            receipt=None,
+                            reason="cache_unavailable",
+                        )
+            if record is not None:
+                expired = record.expires_at <= now
+                mutation_values = {
+                    "envelope_ciphertext": envelope.ciphertext,
+                    "envelope_mac": envelope.mac,
+                    "encryption_key_version": envelope.encryption_key_version,
+                    "encryption_algorithm": envelope.encryption_algorithm,
+                    "envelope_version": envelope.envelope_version,
+                }
+                if expired:
+                    mutation_values.update(
+                        created_at=values["created_at"],
+                        expires_at=values["expires_at"],
+                    )
+                mutation_result = session.execute(
+                    update(AgentBuilderIntentPlanCacheRecord)
+                    .where(AgentBuilderIntentPlanCacheRecord.id == record.id)
+                    .values(**mutation_values)
                 )
-            )
-            if getattr(result, "rowcount", None) != 1:
-                session.rollback()
-                return IntentPlanSaveResult(
-                    status="unavailable",
-                    reason="cache_unavailable",
+                if getattr(mutation_result, "rowcount", None) != 1:
+                    session.rollback()
+                    return IntentPlanL2SaveResult(
+                        status="unavailable",
+                        receipt=None,
+                        reason="cache_unavailable",
+                    )
+                parent_record_id = record.id
+                receipt_expiry = values["expires_at"] if expired else record.expires_at
+                write_kind = (
+                    "expired_replacement" if expired else "unexpired_conflict"
                 )
+            receipt = IntentPlanL2StoredReceipt(
+                parent_record_id=parent_record_id,
+                expires_at=receipt_expiry,
+                write_kind=write_kind,
+            )
             session.commit()
-            return IntentPlanSaveResult(status="stored", reason=None)
+            return IntentPlanL2SaveResult(
+                status="stored",
+                receipt=receipt,
+                reason=None,
+            )
         except Exception as exc:
             if session is not None:
                 try:
@@ -344,8 +387,9 @@ class PostgresIntentPlanRepository:
                     pass
             if self._disable_for_schema_readiness_failure(exc):
                 return None
-            return IntentPlanSaveResult(
+            return IntentPlanL2SaveResult(
                 status="unavailable",
+                receipt=None,
                 reason="cache_unavailable",
             )
         finally:
