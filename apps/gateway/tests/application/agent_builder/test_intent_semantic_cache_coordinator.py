@@ -696,6 +696,35 @@ def test_only_an_explicit_l2_miss_can_start_semantic_io(l2_result) -> None:
     )
 
 
+def test_l1_invalid_and_l2_miss_do_not_start_semantic_io() -> None:
+    coordinator, _store, _l2, admission, embedding, index, verifier = _coordinator(
+        l1=IntentPlanLoadResult(
+            status="invalid",
+            plan=None,
+            reason="invalid_cached_plan",
+        ),
+        l2=_miss(),
+    )
+    planner_calls = 0
+
+    def planner():
+        nonlocal planner_calls
+        planner_calls += 1
+        return _structured()
+
+    coordinator.execute(planner, _context())
+
+    assert planner_calls == 1
+    assert (
+        admission.calls
+        == embedding.calls
+        == index.search_calls
+        == verifier.calls
+        == index.append_calls
+        == 0
+    )
+
+
 def test_l2_unavailable_result_prevents_semantic_append() -> None:
     coordinator, _store, l2, _admission, _embedding, index, _verifier = _coordinator(
         l1=_miss(),

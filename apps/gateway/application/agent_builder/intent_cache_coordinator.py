@@ -402,7 +402,9 @@ class AgentBuilderIntentCacheCoordinator:
                 else l2_miss_reason
             ),
             semantic_eligible=(
-                l2_loaded is not None and l2_loaded.status == "miss"
+                loaded.status == "miss"
+                and l2_loaded is not None
+                and l2_loaded.status == "miss"
             ),
         )
 
