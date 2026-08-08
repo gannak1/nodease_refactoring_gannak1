@@ -8,6 +8,8 @@ from apps.gateway.application.agent_builder.intent_cache.contracts import (
     EphemeralCacheScope,
     IntentCacheKey,
     IntentNormalizationResult,
+    IntentPlanL2SaveResult,
+    IntentPlanL2StoredReceipt,
     IntentPlanLoadResult,
     IntentPlanSaveResult,
     IntentPlanningContext,
@@ -22,6 +24,10 @@ from apps.gateway.application.agent_builder.intent_cache.ports import (
     IntentPlanRehydratorPort,
     IntentPlanStorePort,
     IntentRehydrationResult,
+    SemanticCandidateVerifierPort,
+    SemanticEmbeddingProviderPort,
+    SemanticExternalCallAdmissionPort,
+    SemanticIntentPlanIndexPort,
 )
 
 __all__ = (
@@ -36,10 +42,16 @@ __all__ = (
     "IntentPlanCacheBoundary",
     "IntentPlanCodecError",
     "IntentPlanExecution",
+    "IntentPlanL2SaveResult",
+    "IntentPlanL2StoredReceipt",
     "IntentPlanLoadResult",
     "IntentPlanRehydratorPort",
     "IntentPlanSaveResult",
     "IntentPlanStorePort",
     "IntentPlanningContext",
     "IntentRehydrationResult",
+    "SemanticCandidateVerifierPort",
+    "SemanticEmbeddingProviderPort",
+    "SemanticExternalCallAdmissionPort",
+    "SemanticIntentPlanIndexPort",
 )

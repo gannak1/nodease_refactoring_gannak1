@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -169,17 +170,49 @@ class _FailingSessionFactory:
         return _FailingSession(self._error)
 
 
+class _ScalarResult:
+    def __init__(self, value) -> None:
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
+class _InsertResult:
+    def __init__(self, row) -> None:
+        self._row = row
+
+    def first(self):
+        return self._row
+
+
 class _RecordingSession:
-    def __init__(self, *, rowcount: int = 1) -> None:
+    def __init__(
+        self,
+        *,
+        existing=None,
+        inserted=None,
+        loser_existing=None,
+        rowcount: int = 1,
+    ) -> None:
+        self._existing = existing
+        self._inserted = inserted
+        self._loser_existing = loser_existing
         self._rowcount = rowcount
-        self.statement = None
+        self.statements = []
         self.committed = False
         self.rolled_back = False
         self.closed = False
 
     def execute(self, statement):
-        self.statement = statement
-        return SimpleNamespace(rowcount=self._rowcount)
+        self.statements.append(statement)
+        if len(self.statements) == 1:
+            return _ScalarResult(self._existing)
+        if self._existing is not None:
+            return SimpleNamespace(rowcount=self._rowcount)
+        if len(self.statements) == 2:
+            return _InsertResult(self._inserted)
+        return _ScalarResult(self._loser_existing)
 
     def commit(self) -> None:
         self.committed = True
@@ -191,39 +224,115 @@ class _RecordingSession:
         self.closed = True
 
 
-def test_l2_same_key_write_replaces_invalid_or_expired_row_without_extending_retention() -> None:
+def test_l2_unexpired_conflict_returns_locked_parent_receipt_and_preserves_expiry() -> None:
     context = _context()
     encryption = _encryption()
-    session = _RecordingSession()
+    now = datetime(2026, 8, 8, tzinfo=timezone.utc)
+    parent = SimpleNamespace(
+        id=uuid4(),
+        created_at=now - timedelta(days=1),
+        expires_at=now + timedelta(days=29),
+    )
+    session = _RecordingSession(existing=parent)
     repository = PostgresIntentPlanRepository(
         session_factory=lambda: session,
         envelope_codec=_envelope_codec(encryption),
         config=_write_config(context, encryption),
+        now=lambda: now,
     )
 
     result = repository.save(context, b"canonical-material", _plan())
 
     assert result is not None
     assert result.status == "stored"
+    assert result.receipt is not None
+    assert result.receipt.parent_record_id == parent.id
+    assert result.receipt.expires_at == parent.expires_at
+    assert result.receipt.write_kind == "unexpired_conflict"
     assert session.committed is True
     assert session.closed is True
-    assert session.statement is not None
-    statement_sql = str(session.statement.compile(dialect=postgresql.dialect()))
-    assert "DO UPDATE SET" in statement_sql
-    assert "DO NOTHING" not in statement_sql
-    assert "envelope_ciphertext = excluded.envelope_ciphertext" in statement_sql
-    assert "created_at = CASE WHEN" in statement_sql
-    assert "expires_at = CASE WHEN" in statement_sql
+    select_sql = str(session.statements[0].compile(dialect=postgresql.dialect()))
+    update_sql = str(session.statements[1].compile(dialect=postgresql.dialect()))
+    assert "FOR UPDATE" in select_sql
+    assert "UPDATE agent_builder_intent_plan_cache_records" in update_sql
+    assert "created_at" not in update_sql
+    assert "expires_at" not in update_sql
+
+
+def test_l2_expired_conflict_returns_replacement_receipt_and_new_expiry() -> None:
+    context = _context()
+    encryption = _encryption()
+    now = datetime(2026, 8, 8, tzinfo=timezone.utc)
+    parent = SimpleNamespace(
+        id=uuid4(),
+        created_at=now - timedelta(days=31),
+        expires_at=now - timedelta(days=1),
+    )
+    session = _RecordingSession(existing=parent)
+    repository = PostgresIntentPlanRepository(
+        session_factory=lambda: session,
+        envelope_codec=_envelope_codec(encryption),
+        config=_write_config(context, encryption),
+        now=lambda: now,
+    )
+
+    result = repository.save(context, b"canonical-material", _plan())
+
+    assert result is not None
+    assert result.status == "stored"
+    assert result.receipt is not None
+    assert result.receipt.parent_record_id == parent.id
+    assert result.receipt.expires_at == now + timedelta(days=30)
+    assert result.receipt.write_kind == "expired_replacement"
+    update_sql = str(session.statements[1].compile(dialect=postgresql.dialect()))
+    assert "created_at" in update_sql
+    assert "expires_at" in update_sql
+
+
+def test_l2_missing_row_uses_returning_receipt_without_post_commit_read() -> None:
+    context = _context()
+    encryption = _encryption()
+    now = datetime(2026, 8, 8, tzinfo=timezone.utc)
+    parent_id = uuid4()
+    expiry = now + timedelta(days=30)
+    session = _RecordingSession(inserted=(parent_id, expiry))
+    repository = PostgresIntentPlanRepository(
+        session_factory=lambda: session,
+        envelope_codec=_envelope_codec(encryption),
+        config=_write_config(context, encryption),
+        now=lambda: now,
+    )
+
+    result = repository.save(context, b"canonical-material", _plan())
+
+    assert result is not None
+    assert result.status == "stored"
+    assert result.receipt is not None
+    assert result.receipt.parent_record_id == parent_id
+    assert result.receipt.expires_at == expiry
+    assert result.receipt.write_kind == "inserted"
+    assert len(session.statements) == 2
+    insert_sql = str(session.statements[1].compile(dialect=postgresql.dialect()))
+    assert "ON CONFLICT" in insert_sql
+    assert "DO NOTHING" in insert_sql
+    assert "RETURNING" in insert_sql
 
 
 def test_l2_zero_row_upsert_does_not_report_a_durable_store() -> None:
     context = _context()
     encryption = _encryption()
-    session = _RecordingSession(rowcount=0)
+    now = datetime(2026, 8, 8, tzinfo=timezone.utc)
+    parent = SimpleNamespace(
+        id=uuid4(),
+        created_at=now - timedelta(days=1),
+        expires_at=now + timedelta(days=29),
+    )
+    session = _RecordingSession(existing=parent, rowcount=0)
     repository = PostgresIntentPlanRepository(
         session_factory=lambda: session,
         envelope_codec=_envelope_codec(encryption),
         config=_write_config(context, encryption),
+        now=lambda: now,
     )
 
     result = repository.save(context, b"canonical-material", _plan())

@@ -1,11 +1,15 @@
 import ast
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
 
 APPLICATION_ROOT = Path(__file__).resolve().parents[2] / "application" / "agent_builder"
 INTENT_CACHE_ROOT = APPLICATION_ROOT / "intent_cache"
+REPOSITORY_ROOT = APPLICATION_ROOT.parents[3]
 FORBIDDEN_PREFIXES = (
     "anthropic",
     "fastapi",
@@ -64,6 +68,26 @@ def test_agent_builder_application_does_not_import_outer_layers():
     assert violations == []
 
 
+def test_intent_rehydration_registry_imports_from_a_clean_process():
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(REPOSITORY_ROOT)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import apps.gateway.application.agent_builder.intent_rehydration_registry",
+        ],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        check=False,
+        env=environment,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_agent_builder_application_allows_shared_pydantic_contracts():
     tree = ast.parse(
         "from apps.shared.schemas.agent_builder import GraphMutation\n"
@@ -82,6 +106,7 @@ def test_intent_cache_modules_keep_their_documented_dependency_direction():
         },
         "contracts.py": {
             "__future__",
+            "datetime",
             "re",
             "typing",
             "uuid",
@@ -102,6 +127,7 @@ def test_intent_cache_modules_keep_their_documented_dependency_direction():
             "typing",
             "pydantic",
             "apps.gateway.application.agent_builder.intent_cache.contracts",
+            "apps.gateway.application.agent_builder.intent_semantic_cache",
             "apps.shared.schemas.agent_builder",
         },
         "disabled.py": {

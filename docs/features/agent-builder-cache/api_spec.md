@@ -201,7 +201,7 @@ L2 load result는 `hit|miss|invalid|unavailable` 중 하나이며, `invalid`와 
 L2 plan을 사용하지 않는다. L2 hit은 기존 `IntentPlanRehydratorPort`를 통해 현재 context에서 성공한 뒤에만
 L1 `save`로 승격한다.
 
-L2 save는 isolated short DB transaction으로 commit한다. 실제로 한 row를 insert 또는 upsert한 commit result가 `stored`일 때만 coordinator가
+현재 JEO-7 L2 save는 isolated short DB transaction으로 commit한다. 실제로 한 row를 insert 또는 upsert한 commit result가 `stored`일 때만 coordinator가
 L1 `save_if_lease_owner`를 호출한다. L2 save failure는 Planner response를 바꾸지 않지만 L1 write를
 금지한다. Redis와 PostgreSQL 사이에 distributed transaction이나 retry/backfill contract는 없다.
 
@@ -209,6 +209,76 @@ L2 retention Beat는 5분마다 실행한다. 각 task는 최대 5개의 1,000-r
 full limit보다 적게 삭제되면 즉시 종료한다. 따라서 기본 catch-up 상한은 시간당 60,000 expired row이며,
 selected cohort의 예상 unique write rate가 이를 초과하면 allowlist activation 전에 cadence 또는 batch
 계약을 조정해야 한다. 각 batch는 기존 expiry 재검사와 실제 delete rowcount contract를 독립적으로 유지한다.
+
+### JEO-8 internal port amendment
+
+ADR-0076 acceptance 뒤에도 public Agent Builder endpoint, request/response와 Client API는 변경하지 않는다.
+JEO-8은 Gateway application 내부 L2/semantic port만 확장하며 기존 Redis
+`IntentPlanSaveResult(status, reason)`에는 receipt를 추가하지 않는다.
+
+L2 port signature는 다음과 같다.
+
+```text
+save(context, canonical_key_material, plan) -> IntentPlanL2SaveResult | None
+```
+
+`None`은 L2 adapter 미조합 또는 configuration/schema safe-disable만 뜻하며 `stored`로 해석하지 않는다.
+실제 save attempt의 closed DTO는 다음 invariant를 갖는다.
+
+| Type/field | Contract |
+|---|---|
+| `IntentPlanL2SaveResult.status` | `stored|unavailable` |
+| `IntentPlanL2SaveResult.receipt` | `stored`이면 required, `unavailable`이면 null |
+| `IntentPlanL2SaveResult.reason` | `stored`이면 null, `unavailable`이면 `cache_unavailable` |
+| `IntentPlanL2StoredReceipt.parent_record_id` | 같은 transaction에서 DB가 확인한 actual L2 PK; request memory 밖으로 직렬화·노출 금지 |
+| `IntentPlanL2StoredReceipt.expires_at` | DB가 확인한 timezone-aware immutable parent expiry |
+| `IntentPlanL2StoredReceipt.write_kind` | `inserted|unexpired_conflict|expired_replacement` |
+
+Receipt와 result는 strict immutable application DTO다. L2 record identity, receipt와 write kind는 response,
+request history, audit, log, metric과 trace에 남기지 않는다. Coordinator는 `stored`와 valid receipt가 모두
+있을 때만 same-owner transient embedding으로 semantic append를 시도한다.
+
+`SemanticQueryProjectionV1` builder는 `summary.current_safe_message.v1` whitespace/redaction 결과가
+exactly 240 code point 이하일 때만 bounded text와 `semantic_query_projection_version`을 반환한다.
+240을 초과하면 first-240 slice를 반환하지 않고 semantic-ineligible `miss`로 Planner를 호출한다.
+이 경우 embedding, vector lookup, verifier와 semantic append call count는 모두 0이다.
+
+Semantic external-call port signature는 다음 closed contract를 사용한다.
+
+```text
+authorize(context, policy, purpose="query_embedding|semantic_verification")
+  -> SemanticExternalCallAdmissionResult(status, binding)
+embed(projection, binding=query_embedding_binding) -> SemanticEmbedding
+verify(projection, candidate, context, binding=semantic_verification_binding|None)
+  -> SemanticVerificationResult
+```
+
+`status=admitted`는 동일 purpose의 opaque `SemanticExternalCallBinding`이 필수이며
+`denied|unavailable`은 binding이 null이다. Binding은 immutable, repr-redacted, non-serialized이고 request
+memory 밖으로 나가지 않는다. Provider-call-free verifier만 null binding을 허용한다. Provider-backed verifier는
+query embedding binding을 재사용하지 않고 별도의 `semantic_verification` admission/binding을 사용한다.
+L2 load의 명시적 `status=miss`만 semantic port 호출을 허용하며 `None|invalid|unavailable`은 모든 semantic
+provider/repository/verifier/index call을 건너뛴다.
+
+Semantic append는 현재 `IntentPlanningContext.organization_id`와 receipt의 parent ID/expiry가 current parent row와 같은지를 같은 SQL에서
+확인한다. `inserted|unexpired_conflict`는 missing child를 insert하고 existing unique conflict는
+`DO NOTHING`이다. `expired_replacement`는 missing child를 insert하며 existing child는 expiry가 receipt보다
+과거일 때만 update한다. Parent expiry mismatch, same/newer child와 late receipt는 zero-write다.
+
+Existing L2 retention service의 JEO-8 batch result는 다음 safe aggregate만 반환한다.
+
+| Field | Contract |
+|---|---|
+| `semantic_purged_count` | 이번 batch에서 hard-delete된 expired semantic child 수 |
+| `parent_purged_count` | 이번 batch에서 hard-delete된 expired L2 parent 수 |
+| `purged_count` | 두 count의 합계; compatibility/reporting only |
+| `limit` | child와 parent 각각에 적용한 validated per-kind limit |
+| `batch_full` | 어느 한 count라도 limit과 같으면 true; Log System의 최대 5회 loop 조건 |
+
+Child purge는 savepoint 또는 별도 짧은 transaction으로 격리한다. `42P01|42703`은 해당 child 단계만
+rollback하고 parent purge를 계속하며 process-lifetime disable flag를 남기지 않는다. 같은 worker가 매 Beat에
+다시 시도하므로 migration 적용 뒤 재시작 없이 복구한다. Result와 retry diagnostic에는 row identity와 raw DB
+error를 포함하지 않는다.
 
 ## Canonical Topic, Guidance, Summary and Purpose Contracts
 
@@ -276,6 +346,11 @@ warm hit 모두 현재 요청의 transient `IntentPlanningContext.full_safe_mess
    고정한다.
 3. Redaction 뒤 첫 240 Unicode code point만 사용한다.
 4. 결과가 비어 있거나 `[redacted]` marker를 포함하면 cache admission 또는 rehydration을 fail-closed한다.
+
+위 3번은 기존 exact-cache rehydration이 사용자에게 돌려주는 `intent_summary` 표시 계약이다. JEO-8
+`SemanticQueryProjectionV1`은 이 절단 결과를 재사용하지 않는다. 동일 redaction의 절단 전 cleaned output 길이를 먼저
+검사하고, 240 code point를 초과하면 semantic-ineligible `miss`로 Planner에 진행하며 embedding, vector retrieval,
+verifier 또는 semantic append를 호출하지 않는다.
 
 Provider가 반환한 자유 형식 `intent_summary`는 projection 전 validation과 non-cache fallback에는 남아 있지만,
 cache-safe plan projection에 성공한 cold miss의 downstream structured request에는 사용하지 않는다. Rehydrator는

@@ -183,6 +183,89 @@ def test_l2_defaults_to_disabled_without_loading_a_keyring() -> None:
     assert config.should_write(uuid4()) is False
 
 
+def test_semantic_assist_and_planner_free_serving_default_to_disabled() -> None:
+    config = _settings().agent_builder_semantic_cache_config()
+
+    assert config.assist_enabled is False
+    assert config.planner_free_serving_enabled is False
+    assert config.disabled_reason == "feature_disabled"
+
+
+def test_semantic_serving_cannot_enable_without_assist() -> None:
+    config = _settings(
+        {
+            "AGENT_BUILDER_SEMANTIC_ASSIST_ENABLED": "false",
+            "AGENT_BUILDER_SEMANTIC_SERVING_ENABLED": "true",
+        }
+    ).agent_builder_semantic_cache_config()
+
+    assert config.assist_enabled is False
+    assert config.planner_free_serving_enabled is False
+    assert config.disabled_reason == "serving_requires_assist"
+
+
+def test_semantic_assist_requires_explicit_profile_model_dimension_and_top_k() -> None:
+    values = {
+        "AGENT_BUILDER_SEMANTIC_ASSIST_ENABLED": "true",
+        "AGENT_BUILDER_SEMANTIC_SERVING_ENABLED": "false",
+        "AGENT_BUILDER_SEMANTIC_EMBEDDING_PROFILE_VERSION": "profile-v1",
+        "AGENT_BUILDER_SEMANTIC_EMBEDDING_MODEL_VERSION": "model-v1",
+        "AGENT_BUILDER_SEMANTIC_EMBEDDING_DIMENSION": "2",
+        "AGENT_BUILDER_SEMANTIC_TOP_K": "3",
+        "AGENT_BUILDER_SEMANTIC_REHYDRATION_CONTRACT_VERSION": (
+            "agent-builder-direct-edit-v1"
+        ),
+    }
+
+    config = _settings(values).agent_builder_semantic_cache_config()
+
+    assert config.assist_enabled is True
+    assert config.planner_free_serving_enabled is False
+    assert config.disabled_reason is None
+    assert config.embedding_profile_version == "profile-v1"
+    assert config.embedding_model_version == "model-v1"
+    assert config.embedding_dimension == 2
+    assert config.top_k == 3
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("AGENT_BUILDER_SEMANTIC_ASSIST_ENABLED", "invalid", "invalid_assist_flag"),
+        ("AGENT_BUILDER_SEMANTIC_EMBEDDING_DIMENSION", "0", "invalid_dimension"),
+        ("AGENT_BUILDER_SEMANTIC_TOP_K", "21", "invalid_top_k"),
+        (
+            "AGENT_BUILDER_SEMANTIC_EMBEDDING_MODEL_VERSION",
+            "",
+            "profile_configuration_incomplete",
+        ),
+    ],
+)
+def test_invalid_semantic_configuration_fails_closed(
+    field: str,
+    value: str,
+    reason: str,
+) -> None:
+    values = {
+        "AGENT_BUILDER_SEMANTIC_ASSIST_ENABLED": "true",
+        "AGENT_BUILDER_SEMANTIC_SERVING_ENABLED": "false",
+        "AGENT_BUILDER_SEMANTIC_EMBEDDING_PROFILE_VERSION": "profile-v1",
+        "AGENT_BUILDER_SEMANTIC_EMBEDDING_MODEL_VERSION": "model-v1",
+        "AGENT_BUILDER_SEMANTIC_EMBEDDING_DIMENSION": "2",
+        "AGENT_BUILDER_SEMANTIC_TOP_K": "3",
+        "AGENT_BUILDER_SEMANTIC_REHYDRATION_CONTRACT_VERSION": (
+            "agent-builder-direct-edit-v1"
+        ),
+    }
+    values[field] = value
+
+    config = _settings(values).agent_builder_semantic_cache_config()
+
+    assert config.assist_enabled is False
+    assert config.planner_free_serving_enabled is False
+    assert config.disabled_reason == reason
+
+
 def test_l2_read_mode_requires_a_strict_allowlist_and_dedicated_keyring() -> None:
     selected_organization = uuid4()
     other_organization = uuid4()

@@ -1032,7 +1032,7 @@ def agent_builder_intent_plan_l2_retention_purge(
     self,
     data: Dict[str, Any] | None = None,
 ):
-    """Hard-delete a bounded batch of expired Agent Builder L2 cache rows."""
+    """Hard-delete bounded expired semantic children and L2 cache rows."""
     from apps.shared.services.agent_builder_intent_plan_l2_retention import (
         DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_BATCHES_PER_RUN,
         DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_LIMIT,
@@ -1053,6 +1053,8 @@ def agent_builder_intent_plan_l2_retention_purge(
                 DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_BATCHES_PER_RUN,
             )
         )
+        semantic_purged_count = 0
+        parent_purged_count = 0
         purged_count = 0
         batches = 0
         for _ in range(max_batches):
@@ -1061,13 +1063,23 @@ def agent_builder_intent_plan_l2_retention_purge(
                 limit=limit,
             )
             batch_purged_count = max(0, int(batch_result["purged_count"]))
+            batch_semantic_count = max(
+                0, int(batch_result["semantic_purged_count"])
+            )
+            batch_parent_count = max(
+                0, int(batch_result["parent_purged_count"])
+            )
+            semantic_purged_count += batch_semantic_count
+            parent_purged_count += batch_parent_count
             purged_count += batch_purged_count
             batches += 1
-            if batch_purged_count < limit:
+            if not bool(batch_result["batch_full"]):
                 break
         return {
             "status": "success",
             "result": {
+                "semantic_purged_count": semantic_purged_count,
+                "parent_purged_count": parent_purged_count,
                 "purged_count": purged_count,
                 "limit": limit,
                 "batches": batches,

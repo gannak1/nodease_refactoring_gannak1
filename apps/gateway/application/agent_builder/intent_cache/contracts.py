@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -838,6 +839,114 @@ class IntentPlanSaveResult(_StrictFrozenModel):
         if self.reason != expected_reason:
             raise ValueError("invalid save result")
         return self
+
+
+class IntentPlanL2StoredReceipt:
+    """Request-memory-only proof of the L2 row committed by the repository."""
+
+    __slots__ = ("_parent_record_id", "_expires_at", "_write_kind")
+    __hash__ = None
+
+    def __init__(
+        self,
+        *,
+        parent_record_id: uuid.UUID,
+        expires_at: datetime,
+        write_kind: Literal[
+            "inserted", "unexpired_conflict", "expired_replacement"
+        ],
+    ) -> None:
+        if type(parent_record_id) is not uuid.UUID:
+            raise TypeError("invalid L2 receipt parent identity")
+        if type(expires_at) is not datetime or expires_at.tzinfo is None:
+            raise ValueError("invalid L2 receipt expiry")
+        if expires_at.utcoffset() is None:
+            raise ValueError("invalid L2 receipt expiry")
+        if write_kind not in {
+            "inserted",
+            "unexpired_conflict",
+            "expired_replacement",
+        }:
+            raise ValueError("invalid L2 receipt write kind")
+        object.__setattr__(self, "_parent_record_id", parent_record_id)
+        object.__setattr__(self, "_expires_at", expires_at)
+        object.__setattr__(self, "_write_kind", write_kind)
+
+    @property
+    def parent_record_id(self) -> uuid.UUID:
+        return self._parent_record_id
+
+    @property
+    def expires_at(self) -> datetime:
+        return self._expires_at
+
+    @property
+    def write_kind(
+        self,
+    ) -> Literal["inserted", "unexpired_conflict", "expired_replacement"]:
+        return self._write_kind
+
+    def __setattr__(self, _name, _value) -> None:
+        raise TypeError("L2 receipt is immutable")
+
+    def __repr__(self) -> str:
+        return "<IntentPlanL2StoredReceipt redacted>"
+
+    def __getstate__(self):
+        raise TypeError("L2 receipt is not serializable")
+
+    def __reduce_ex__(self, _protocol):
+        raise TypeError("L2 receipt is not serializable")
+
+
+class IntentPlanL2SaveResult:
+    """Strict L2-only save result; Redis keeps using IntentPlanSaveResult."""
+
+    __slots__ = ("_status", "_receipt", "_reason")
+    __hash__ = None
+
+    def __init__(
+        self,
+        *,
+        status: Literal["stored", "unavailable"],
+        receipt: IntentPlanL2StoredReceipt | None,
+        reason: Literal["cache_unavailable"] | None,
+    ) -> None:
+        if status == "stored":
+            valid = isinstance(receipt, IntentPlanL2StoredReceipt) and reason is None
+        elif status == "unavailable":
+            valid = receipt is None and reason == "cache_unavailable"
+        else:
+            valid = False
+        if not valid:
+            raise ValueError("invalid L2 save result")
+        object.__setattr__(self, "_status", status)
+        object.__setattr__(self, "_receipt", receipt)
+        object.__setattr__(self, "_reason", reason)
+
+    @property
+    def status(self) -> Literal["stored", "unavailable"]:
+        return self._status
+
+    @property
+    def receipt(self) -> IntentPlanL2StoredReceipt | None:
+        return self._receipt
+
+    @property
+    def reason(self) -> Literal["cache_unavailable"] | None:
+        return self._reason
+
+    def __setattr__(self, _name, _value) -> None:
+        raise TypeError("L2 save result is immutable")
+
+    def __repr__(self) -> str:
+        return f"<IntentPlanL2SaveResult status={self._status!r}>"
+
+    def __getstate__(self):
+        raise TypeError("L2 save result is not serializable")
+
+    def __reduce_ex__(self, _protocol):
+        raise TypeError("L2 save result is not serializable")
 
 
 class CacheBoundaryDecision(_StrictFrozenModel):

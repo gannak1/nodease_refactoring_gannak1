@@ -12,7 +12,7 @@ from apps.gateway.application.agent_builder.intent_cache.contracts import (
     CachedIntentPlanV1,
     IntentCacheKey,
     IntentPlanLoadResult,
-    IntentPlanSaveResult,
+    IntentPlanL2SaveResult,
     IntentPlanningContext,
 )
 from apps.gateway.application.agent_builder.intent_cache.ports import (
@@ -20,6 +20,18 @@ from apps.gateway.application.agent_builder.intent_cache.ports import (
     IntentPlanExecution,
     IntentPlanRehydratorPort,
     PlannerCall,
+    SemanticCandidateVerifierPort,
+    SemanticEmbeddingProviderPort,
+    SemanticExternalCallAdmissionPort,
+    SemanticIntentPlanIndexPort,
+)
+from apps.gateway.application.agent_builder.intent_semantic_cache import (
+    SemanticCachePolicy,
+    SemanticEmbedding,
+    SemanticExternalCallBinding,
+    SemanticIntentPlanCandidate,
+    SemanticQueryProjectionBuilder,
+    SemanticQueryProjectionV1,
 )
 from apps.shared.schemas.agent_builder import AgentBuilderStructuredRequest
 
@@ -93,6 +105,17 @@ CacheIoGuard = Callable[[], bool]
 
 
 @dataclass(frozen=True, slots=True)
+class _SemanticAttempt:
+    started: bool = False
+    projection: SemanticQueryProjectionV1 | None = None
+    embedding: SemanticEmbedding | None = None
+    append_allowed: bool = False
+    served_plan: CachedIntentPlanV1 | None = None
+    served_request: AgentBuilderStructuredRequest | None = None
+    outcome: Literal["miss", "error"] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class IntentCacheDiagnostic:
     outcome: Literal["hit", "miss", "bypass", "error"]
     reason: str | None
@@ -132,6 +155,13 @@ class RequestFenceAbortedError(RuntimeError):
         super().__init__(f"agent_builder_intent_cache_request_{status}")
 
 
+class SemanticTransactionBoundaryError(RuntimeError):
+    """Semantic work could not release the request-owned service transaction."""
+
+    def __init__(self) -> None:
+        super().__init__("agent_builder_semantic_transaction_boundary_unavailable")
+
+
 class FollowerWaitAbortedError(RequestFenceAbortedError):
     """The adapter observed the request cancellation/version fence while waiting."""
 
@@ -166,6 +196,13 @@ class AgentBuilderIntentCacheCoordinator:
         diagnostic_observer: DiagnosticObserver | None = None,
         knowledge_context_fingerprint_factory: KnowledgeContextFingerprintFactory | None = None,
         l2_store: _IntentPlanL2Store | None = None,
+        semantic_policy: SemanticCachePolicy | None = None,
+        semantic_projection_builder: SemanticQueryProjectionBuilder | None = None,
+        semantic_external_call_admission: SemanticExternalCallAdmissionPort
+        | None = None,
+        semantic_embedding_provider: SemanticEmbeddingProviderPort | None = None,
+        semantic_index: SemanticIntentPlanIndexPort | None = None,
+        semantic_verifier: SemanticCandidateVerifierPort | None = None,
     ) -> None:
         self._normalizer = normalizer
         self._store = store
@@ -179,6 +216,12 @@ class AgentBuilderIntentCacheCoordinator:
             knowledge_context_fingerprint_factory
         )
         self._l2_store = l2_store
+        self._semantic_policy = semantic_policy
+        self._semantic_projection_builder = semantic_projection_builder
+        self._semantic_external_call_admission = semantic_external_call_admission
+        self._semantic_embedding_provider = semantic_embedding_provider
+        self._semantic_index = semantic_index
+        self._semantic_verifier = semantic_verifier
 
     def for_request(
         self,
@@ -206,6 +249,14 @@ class AgentBuilderIntentCacheCoordinator:
                 self._knowledge_context_fingerprint_factory
             ),
             l2_store=self._l2_store,
+            semantic_policy=self._semantic_policy,
+            semantic_projection_builder=self._semantic_projection_builder,
+            semantic_external_call_admission=(
+                self._semantic_external_call_admission
+            ),
+            semantic_embedding_provider=self._semantic_embedding_provider,
+            semantic_index=self._semantic_index,
+            semantic_verifier=self._semantic_verifier,
         )
 
     def current_knowledge_context_fingerprint(self, **kwargs) -> str:
@@ -307,6 +358,7 @@ class AgentBuilderIntentCacheCoordinator:
                 key,
                 canonical_key_material,
                 miss_reason="rehydration_failed",
+                semantic_eligible=False,
             )
         if loaded.status == "unavailable":
             return self._planner_execution(
@@ -348,6 +400,11 @@ class AgentBuilderIntentCacheCoordinator:
                 "invalid_cached_plan"
                 if loaded.status == "invalid"
                 else l2_miss_reason
+            ),
+            semantic_eligible=(
+                loaded.status == "miss"
+                and l2_loaded is not None
+                and l2_loaded.status == "miss"
             ),
         )
 
@@ -408,15 +465,17 @@ class AgentBuilderIntentCacheCoordinator:
         # Rehydration can have opened the request-owned service Session.  Release
         # that read transaction before the repository obtains its own connection.
         if not self._cache_io_ready():
-            return IntentPlanSaveResult(
+            return IntentPlanL2SaveResult(
                 status="unavailable",
+                receipt=None,
                 reason="cache_unavailable",
             )
         try:
             return store.save(context, canonical_key_material, plan)
         except Exception:
-            return IntentPlanSaveResult(
+            return IntentPlanL2SaveResult(
                 status="unavailable",
+                receipt=None,
                 reason="cache_unavailable",
             )
 
@@ -442,6 +501,7 @@ class AgentBuilderIntentCacheCoordinator:
         miss_reason: Literal[
             "not_found", "invalid_cached_plan", "rehydration_failed"
         ],
+        semantic_eligible: bool,
     ) -> IntentPlanExecution:
         self._ensure_request_active(single_flight_role="none")
         try:
@@ -487,6 +547,7 @@ class AgentBuilderIntentCacheCoordinator:
             owner_token,
             lease.generation,
             miss_reason=miss_reason,
+            semantic_eligible=semantic_eligible,
         )
 
     def _follower_execution(
@@ -570,10 +631,40 @@ class AgentBuilderIntentCacheCoordinator:
         miss_reason: Literal[
             "not_found", "invalid_cached_plan", "rehydration_failed"
         ],
+        semantic_eligible: bool,
     ) -> IntentPlanExecution:
         completed_without_value = False
         try:
             self._ensure_request_active(single_flight_role="owner")
+            semantic_attempt = (
+                self._semantic_attempt(context)
+                if semantic_eligible
+                else _SemanticAttempt()
+            )
+            self._ensure_request_active(single_flight_role="owner")
+            if semantic_attempt.started:
+                self._require_semantic_transaction_boundary()
+            if (
+                semantic_attempt.served_plan is not None
+                and semantic_attempt.served_request is not None
+            ):
+                saved = self._save_semantic_serving_to_l1(
+                    key,
+                    semantic_attempt.served_plan,
+                    owner_token,
+                    generation,
+                )
+                if not saved:
+                    completed_without_value = self._complete_without_value(
+                        key, owner_token, generation
+                    )
+                return self._execution(
+                    semantic_attempt.served_request,
+                    outcome="hit",
+                    reason=None,
+                    single_flight_role="owner",
+                    plan=semantic_attempt.served_plan,
+                )
             structured_request = planner_call()
             try:
                 plan = self._plan_projector(structured_request, context)
@@ -614,6 +705,11 @@ class AgentBuilderIntentCacheCoordinator:
                     reason="cache_unavailable",
                     single_flight_role="owner",
                 )
+            semantic_append_error = self._append_semantic_index(
+                context=context,
+                attempt=semantic_attempt,
+                l2_saved=l2_saved,
+            )
             if not self._cache_io_ready():
                 saved = None
             else:
@@ -636,15 +732,319 @@ class AgentBuilderIntentCacheCoordinator:
                     reason="cache_unavailable",
                     single_flight_role="owner",
                 )
+            final_outcome = (
+                "error"
+                if semantic_append_error
+                else semantic_attempt.outcome or "miss"
+            )
             return self._execution(
                 rehydrated,
-                outcome="miss",
-                reason=miss_reason,
+                outcome=final_outcome,
+                reason=(
+                    "cache_unavailable"
+                    if final_outcome == "error"
+                    else miss_reason
+                ),
                 single_flight_role="owner",
             )
         finally:
             if not completed_without_value:
                 self._release_lease(key, owner_token, generation)
+
+    def _semantic_attempt(self, context: IntentPlanningContext) -> _SemanticAttempt:
+        policy = self._semantic_policy
+        builder = self._semantic_projection_builder
+        provider = self._semantic_embedding_provider
+        index = self._semantic_index
+        admission = self._semantic_external_call_admission
+        if (
+            policy is None
+            or not policy.assist_enabled
+            or builder is None
+            or admission is None
+            or provider is None
+            or index is None
+        ):
+            return _SemanticAttempt()
+        if (
+            context.workflow_context.workflow_present
+            or context.scope._selected_target_id is not None
+        ):
+            return _SemanticAttempt(outcome="miss")
+        projection = builder.build(context.full_safe_message)
+        if projection is None:
+            return _SemanticAttempt(started=True, outcome="miss")
+        self._require_semantic_transaction_boundary()
+        try:
+            admission_result = admission.authorize(
+                context=context,
+                policy=policy,
+                purpose="query_embedding",
+            )
+        except Exception:
+            return _SemanticAttempt(
+                started=True,
+                projection=projection,
+                outcome="error",
+            )
+        self._ensure_request_active(single_flight_role="owner")
+        admission_status = getattr(admission_result, "status", None)
+        if admission_status != "admitted":
+            return _SemanticAttempt(
+                started=True,
+                projection=projection,
+                outcome="miss" if admission_status == "denied" else "error",
+            )
+        embedding_binding = getattr(admission_result, "binding", None)
+        if (
+            not isinstance(embedding_binding, SemanticExternalCallBinding)
+            or embedding_binding.purpose != "query_embedding"
+        ):
+            return _SemanticAttempt(
+                started=True,
+                projection=projection,
+                outcome="error",
+            )
+        self._require_semantic_transaction_boundary()
+        try:
+            embedding = provider.embed(projection, binding=embedding_binding)
+        except Exception:
+            return _SemanticAttempt(
+                started=True,
+                projection=projection,
+                outcome="error",
+            )
+        self._ensure_request_active(single_flight_role="owner")
+        if (
+            not isinstance(embedding, SemanticEmbedding)
+            or len(embedding.values) != policy.embedding_dimension
+        ):
+            return _SemanticAttempt(
+                started=True,
+                projection=projection,
+                outcome="error",
+            )
+        self._require_semantic_transaction_boundary()
+        try:
+            candidates = tuple(
+                index.search(
+                    context=context,
+                    policy=policy,
+                    projection=projection,
+                    embedding=embedding,
+                )
+            )[: policy.top_k]
+        except Exception:
+            return _SemanticAttempt(
+                started=True,
+                projection=projection,
+                embedding=embedding,
+                outcome="error",
+            )
+        self._ensure_request_active(single_flight_role="owner")
+        for candidate in candidates:
+            if not isinstance(candidate, SemanticIntentPlanCandidate):
+                continue
+            plan = candidate.plan
+            if not (
+                plan.request_type == "new_workflow"
+                and plan.draft_mode == "new_workflow"
+                and plan.edit_placement is None
+            ):
+                continue
+            verifier = self._semantic_verifier
+            if verifier is None:
+                return _SemanticAttempt(
+                    started=True,
+                    projection=projection,
+                    embedding=embedding,
+                    append_allowed=True,
+                    outcome="miss",
+                )
+            verifier_provider_call_free = (
+                getattr(verifier, "provider_call_free", False) is True
+            )
+            verification_binding = None
+            if not verifier_provider_call_free:
+                self._require_semantic_transaction_boundary()
+                try:
+                    verification_admission = admission.authorize(
+                        context=context,
+                        policy=policy,
+                        purpose="semantic_verification",
+                    )
+                except Exception:
+                    return _SemanticAttempt(
+                        started=True,
+                        projection=projection,
+                        embedding=embedding,
+                        outcome="error",
+                    )
+                self._ensure_request_active(single_flight_role="owner")
+                verification_admission_status = getattr(
+                    verification_admission,
+                    "status",
+                    None,
+                )
+                if verification_admission_status != "admitted":
+                    return _SemanticAttempt(
+                        started=True,
+                        projection=projection,
+                        embedding=embedding,
+                        append_allowed=(verification_admission_status == "denied"),
+                        outcome=(
+                            "miss"
+                            if verification_admission_status == "denied"
+                            else "error"
+                        ),
+                    )
+                verification_binding = getattr(
+                    verification_admission,
+                    "binding",
+                    None,
+                )
+                if (
+                    not isinstance(
+                        verification_binding,
+                        SemanticExternalCallBinding,
+                    )
+                    or verification_binding.purpose != "semantic_verification"
+                ):
+                    return _SemanticAttempt(
+                        started=True,
+                        projection=projection,
+                        embedding=embedding,
+                        outcome="error",
+                    )
+            self._require_semantic_transaction_boundary()
+            try:
+                verification = verifier.verify(
+                    projection=projection,
+                    candidate=candidate,
+                    context=context,
+                    binding=verification_binding,
+                )
+            except Exception:
+                return _SemanticAttempt(
+                    started=True,
+                    projection=projection,
+                    embedding=embedding,
+                    outcome="error",
+                )
+            self._ensure_request_active(single_flight_role="owner")
+            verification_status = getattr(verification, "status", None)
+            if verification_status not in {
+                "verified",
+                "rejected",
+                "uncertain",
+                "unavailable",
+                "error",
+            }:
+                return _SemanticAttempt(
+                    started=True,
+                    projection=projection,
+                    embedding=embedding,
+                    outcome="error",
+                )
+            if verification_status != "verified":
+                return _SemanticAttempt(
+                    started=True,
+                    projection=projection,
+                    embedding=embedding,
+                    append_allowed=(
+                        verification_status not in {"unavailable", "error"}
+                    ),
+                    outcome=(
+                        "error"
+                        if verification_status in {"unavailable", "error"}
+                        else "miss"
+                    ),
+                )
+            rehydrated = self._rehydrate(plan, context)
+            self._ensure_request_active(single_flight_role="owner")
+            self._require_semantic_transaction_boundary()
+            if rehydrated is None:
+                return _SemanticAttempt(
+                    started=True,
+                    projection=projection,
+                    embedding=embedding,
+                    append_allowed=True,
+                    outcome="miss",
+                )
+            if policy.planner_free_serving_enabled and verifier_provider_call_free:
+                return _SemanticAttempt(
+                    started=True,
+                    projection=projection,
+                    embedding=embedding,
+                    served_plan=plan,
+                    served_request=rehydrated,
+                )
+            return _SemanticAttempt(
+                started=True,
+                projection=projection,
+                embedding=embedding,
+                append_allowed=True,
+                outcome="miss",
+            )
+        return _SemanticAttempt(
+            started=True,
+            projection=projection,
+            embedding=embedding,
+            append_allowed=True,
+            outcome="miss",
+        )
+
+    def _save_semantic_serving_to_l1(
+        self,
+        key: IntentCacheKey,
+        plan: CachedIntentPlanV1,
+        owner_token: str,
+        generation: int,
+    ) -> bool:
+        if not self._cache_io_ready():
+            return False
+        try:
+            result = self._store.save_if_lease_owner(
+                key,
+                plan,
+                owner_token,
+                generation,
+            )
+        except Exception:
+            return False
+        return getattr(result, "status", None) == "stored"
+
+    def _append_semantic_index(
+        self,
+        *,
+        context: IntentPlanningContext,
+        attempt: _SemanticAttempt,
+        l2_saved,
+    ) -> bool:
+        policy = self._semantic_policy
+        index = self._semantic_index
+        if (
+            policy is None
+            or index is None
+            or attempt.embedding is None
+            or not attempt.append_allowed
+            or attempt.outcome == "error"
+            or not isinstance(l2_saved, IntentPlanL2SaveResult)
+            or l2_saved.status != "stored"
+            or l2_saved.receipt is None
+            or not self._cache_io_ready()
+        ):
+            return False
+        try:
+            index.append(
+                context=context,
+                policy=policy,
+                embedding=attempt.embedding,
+                receipt=l2_saved.receipt,
+            )
+        except Exception:
+            return True
+        return False
 
     def _rehydrate(
         self,
@@ -710,6 +1110,10 @@ class AgentBuilderIntentCacheCoordinator:
             return bool(self._cache_io_guard())
         except Exception:
             return False
+
+    def _require_semantic_transaction_boundary(self) -> None:
+        if not self._cache_io_ready():
+            raise SemanticTransactionBoundaryError()
 
     def _planner_execution(
         self,

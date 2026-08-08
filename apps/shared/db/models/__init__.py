@@ -10,6 +10,7 @@ Celery Worker에서 모델을 import할 때 순서 문제를 방지합니다.
 from apps.shared.db.models.agent_builder import (
     AgentBuilderDraft,
     AgentBuilderIntentPlanCacheRecord,
+    AgentBuilderIntentPlanSemanticCacheEntry,
     AgentBuilderRequest,
     AgentBuilderSession,
 )
@@ -164,6 +165,7 @@ __all__ = [
     "AuditLog",
     "AgentBuilderDraft",
     "AgentBuilderIntentPlanCacheRecord",
+    "AgentBuilderIntentPlanSemanticCacheEntry",
     "AgentBuilderRequest",
     "AgentBuilderSession",
     "Connection",

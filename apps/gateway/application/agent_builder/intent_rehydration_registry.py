@@ -303,7 +303,7 @@ class RequestIntentSummaryProjector:
         ):
             raise RegistryContractError("summary projection contract mismatch")
 
-    def project(self, full_safe_message: str) -> str | None:
+    def _clean_redacted(self, full_safe_message: str) -> str | None:
         if type(full_safe_message) is not str:
             return None
         cleaned = " ".join(full_safe_message.split())
@@ -322,8 +322,20 @@ class RequestIntentSummaryProjector:
         cleaned = _URL_VALUE_RE.sub("[redacted]", cleaned)
         cleaned = _PATH_VALUE_RE.sub("[redacted]", cleaned)
         cleaned = _SECRET_LIKE_RE.sub("[redacted]", cleaned)
-        cleaned = cleaned[: self._descriptor.max_codepoints]
         if not cleaned or "[redacted]" in cleaned.casefold():
+            return None
+        return cleaned
+
+    def project(self, full_safe_message: str) -> str | None:
+        cleaned = self._clean_redacted(full_safe_message)
+        if cleaned is None:
+            return None
+        return cleaned[: self._descriptor.max_codepoints]
+
+    def project_semantic(self, full_safe_message: str) -> str | None:
+        """Return an untruncated safe projection or fail closed above the limit."""
+        cleaned = self._clean_redacted(full_safe_message)
+        if cleaned is None or len(cleaned) > self._descriptor.max_codepoints:
             return None
         return cleaned
 

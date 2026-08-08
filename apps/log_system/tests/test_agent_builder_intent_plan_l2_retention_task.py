@@ -20,7 +20,13 @@ def test_l2_retention_purge_beat_can_run_without_task_data(monkeypatch) -> None:
         AgentBuilderIntentPlanL2RetentionService,
         "purge",
         lambda db, *, limit: events.append(("purge", db, limit))
-        or {"purged_count": 0, "limit": limit},
+        or {
+            "semantic_purged_count": 0,
+            "parent_purged_count": 0,
+            "purged_count": 0,
+            "limit": limit,
+            "batch_full": False,
+        },
     )
 
     result = log_tasks.agent_builder_intent_plan_l2_retention_purge.run()
@@ -28,6 +34,8 @@ def test_l2_retention_purge_beat_can_run_without_task_data(monkeypatch) -> None:
     assert result == {
         "status": "success",
         "result": {
+            "semantic_purged_count": 0,
+            "parent_purged_count": 0,
             "purged_count": 0,
             "limit": DEFAULT_AGENT_BUILDER_INTENT_PLAN_L2_PURGE_LIMIT,
             "batches": 1,
@@ -47,13 +55,19 @@ def test_l2_retention_purge_uses_bounded_catch_up_batches(monkeypatch) -> None:
             events.append(("close",))
 
     session = Session()
-    purge_results = iter((10, 10, 4))
+    purge_results = iter(((10, 0), (0, 10), (1, 3)))
     monkeypatch.setattr(log_tasks, "SessionLocal", lambda: session)
     monkeypatch.setattr(
         AgentBuilderIntentPlanL2RetentionService,
         "purge",
         lambda db, *, limit: events.append(("purge", db, limit))
-        or {"purged_count": next(purge_results), "limit": limit},
+        or (lambda counts: {
+            "semantic_purged_count": counts[0],
+            "parent_purged_count": counts[1],
+            "purged_count": counts[0] + counts[1],
+            "limit": limit,
+            "batch_full": counts[0] == limit or counts[1] == limit,
+        })(next(purge_results)),
     )
 
     result = log_tasks.agent_builder_intent_plan_l2_retention_purge.run(
@@ -63,6 +77,8 @@ def test_l2_retention_purge_uses_bounded_catch_up_batches(monkeypatch) -> None:
     assert result == {
         "status": "success",
         "result": {
+            "semantic_purged_count": 11,
+            "parent_purged_count": 13,
             "purged_count": 24,
             "limit": 10,
             "batches": 3,
@@ -102,7 +118,13 @@ def test_l2_retention_purge_rejects_values_above_the_documented_hard_cap(
     monkeypatch.setattr(
         AgentBuilderIntentPlanL2RetentionService,
         "purge",
-        lambda _db, *, limit: {"purged_count": 0, "limit": limit},
+        lambda _db, *, limit: {
+            "semantic_purged_count": 0,
+            "parent_purged_count": 0,
+            "purged_count": 0,
+            "limit": limit,
+            "batch_full": False,
+        },
     )
 
     result = log_tasks.agent_builder_intent_plan_l2_retention_purge.run(data)
